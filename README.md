@@ -18,7 +18,7 @@ and optional in-process execution.
 [`@mlx-bun/quantize`](packages/quantize/README.md) owns checkpoint quantization: calibration, sensitivity, mixed-precision allocation, rotation, and Trellis packing.
 [`@mlx-bun/training`](packages/training/README.md) owns LoRA and preference training, optimizers, losses, and adapter production.
 [`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry and Hugging Face downloads and uploads.
-`@mlx-bun/app-core` holds the core-service interfaces and module manifest contract, and `@mlx-bun/app-host` the host-side module loader, for the [modular app](ARCHITECTURE.md#modular-application).
+`@mlx-bun/app-core` holds the core-service interfaces and module manifest contract, `@mlx-bun/app-host` the host-side module loader, and [`@mlx-bun/web-shell`](packages/web-shell/README.md) the web shell that mounts module panels, for the [modular app](ARCHITECTURE.md#modular-application).
 [`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; startup composes the migrated engine, HTTP API, and browser chat.
 The [public website](apps/website/README.md) owns user guides and build-only reference pages.
 See [the architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.

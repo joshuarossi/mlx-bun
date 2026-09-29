@@ -4,8 +4,8 @@ import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { disposeResources, applyStateChanges } from "../../../runtime/resources";
 import type { PreparedStateChange } from "../../../contracts/portable/resources";
 import type { AssistantRowsTarget, DraftPrefillGroup, DraftRowGroup, GroupedDraftProvider } from "../source";
-import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
-import type { GemmaAssistantDrafter } from "../../../models/gemma4/assistant";
+import { DRAFT_CHECKPOINT_SCHEMA, type DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
+import type { AssistantDrafterModel } from "../../../contracts/mlx/drafter";
 
 /** The assistant owns only its last true target hidden and coverage. Donor
  * attention stays with target storage; checkpoints contain no duplicate KV. */
@@ -14,7 +14,7 @@ class AssistantRows implements DraftPrefillGroup, DraftRowGroup {
   readonly tapLayers: readonly number[] = [];
   #hidden: MlxArray | null = null;
   #processed: number[] = [];
-  constructor(readonly target: AssistantRowsTarget, readonly drafter: GemmaAssistantDrafter,
+  constructor(readonly target: AssistantRowsTarget, readonly drafter: AssistantDrafterModel,
     readonly namespace: string, checkpoints: readonly (DraftRowCheckpoint | null)[]) { this.append(checkpoints); }
   get rowCount(): number { return this.#processed.length; }
   append(checkpoints: readonly (DraftRowCheckpoint | null)[]): void {
@@ -25,7 +25,7 @@ class AssistantRows implements DraftPrefillGroup, DraftRowGroup {
     const example = this.#hidden ?? checkpoints.find(checkpoint => checkpoint !== null)?.attachment.tensors[0];
     const held: MlxArray[] = []; let hidden: MlxArray | null = null;
     try {
-      for (const checkpoint of checkpoints) if (checkpoint && (checkpoint.attachment.schema !== "gemma-assistant-v1" ||
+      for (const checkpoint of checkpoints) if (checkpoint && (checkpoint.attachment.schema !== DRAFT_CHECKPOINT_SCHEMA.assistant ||
         checkpoint.attachment.metadata.processedTokens !== checkpoint.processedTokens))
         throw new Error("invalid assistant checkpoint alignment");
       if (example) {
@@ -53,7 +53,7 @@ class AssistantRows implements DraftPrefillGroup, DraftRowGroup {
   capture(row: number): DraftRowCheckpoint {
     const processedTokens=this.#processed[row]!;
     const hidden=this.#hidden!.slice([row,0,0],[row+1,1,this.target.hiddenSize]);
-    return { processedTokens, attachment: { schema:"gemma-assistant-v1",metadata:{processedTokens},tensors:[hidden] } };
+    return { processedTokens, attachment: { schema:DRAFT_CHECKPOINT_SCHEMA.assistant,metadata:{processedTokens},tensors:[hidden] } };
   }
   draft(pending: readonly number[], depth: number, _steps: readonly number[]): number[][] {
     if (!depth) return pending.map(()=>[]);
@@ -85,7 +85,7 @@ class AssistantRows implements DraftPrefillGroup, DraftRowGroup {
   dispose(): void { this.#hidden?.dispose(); this.#hidden=null; this.#processed=[]; }
 }
 
-export function assistantGroups(drafter: GemmaAssistantDrafter, namespace: string): GroupedDraftProvider {
+export function assistantGroups(drafter: AssistantDrafterModel, namespace: string): GroupedDraftProvider {
   return {
     checkpointNamespace: () => namespace,
     openPrefill: ({target,checkpoints}) => new AssistantRows(target.assistantRows!,drafter,namespace,checkpoints),

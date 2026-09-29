@@ -142,11 +142,11 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets, quantize and train landed (their browser
-    panels, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, move with the web shell; quantize's
-    panel calls the app-shell's toast, push and library-refresh helpers, so it needs the shell's panel
-    contract first). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
+  - [ ] (d) Remaining modules, one PR each: models, chat, memory
+    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks and train landed (benchmarks' panel is the shell's, from its manifest; datasets' and quantize's browser
+    pages, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, are still legacy pages that become
+    panels the `@mlx-bun/web-shell` mounts; quantize's calls the app's toast, push and library-refresh
+    helpers, which a panel gets through its connection or the shell instead). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
     picker also calls it), and so do `/v1/adapters*`. Adapter merge and export
     (`/api/finetune/merge`, `/export`, `server/adapter-artifact-routes.ts`) are training's but run native MLX
     under the engine's lock in the model process, so they move to the train module with (e)'s lease. Modules contribute to each other through the
@@ -154,7 +154,8 @@ Migration gaps stay required work in the feature table.
     hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
     when the first module that declares them lands (they refuse them until then); job runners are served
     by any host that binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners).
-    Exit per module: its domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and
+    Exit per module: its domain leaves `apps/mlx-bun/src`, its browser page becomes its panel (the shell
+    mounts it; the app's legacy pages shrink), the app's domain map shrinks accordingly, and
     served-surface inventories are unchanged.
   - [ ] (e) Model host: pool removal, events and the combined service. Residency, live switching, saved state and the
     model router landed (the default server swaps models in-process by memory fit), and the host publishes

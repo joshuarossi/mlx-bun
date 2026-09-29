@@ -2,6 +2,7 @@ import type { GraphCapabilities } from "../portable/graph";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "./cache";
 import type { TargetView } from "./draft-target";
+import type { NativeMtpHead } from "./drafter";
 import type { TrainableGraph } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, PixelInput, TextEmbeddingModel, Vision } from "./media";
 
@@ -41,6 +42,21 @@ export interface MlxCompiledDecodeStep {
   step(token: MlxArray, state: Cache[]): { logits: MlxArray; evalWith: MlxArray[] };
 }
 
+/** method `denoising`: what the canvas denoiser drives over a graph's weights, with the prefill state
+ * an array of caches. A graph that declares the method implements these; binding refuses one that does not. */
+export interface MlxDenoisingOperations {
+  readonly config: { readonly text: { readonly vocabSize: number } };
+  readonly canvasLength: number;
+  readonly embedScale: number;
+  prefill(promptIds: number[]): Cache[];
+  /** Image-conditioned prefill from channel-first pixels. */
+  prefillVision?(promptIds: number[], pixels: MlxArray): Cache[];
+  extendPrefill(tokens: MlxArray, state: Cache[]): void;
+  decoderLogits(canvas: MlxArray, state: Cache[], feedback: MlxArray | null): MlxArray;
+  dequantEmbedWeight(): MlxArray;
+  softEmbeddings(logits: MlxArray, weight: MlxArray): MlxArray;
+}
+
 /** The operations behind a graph's declared capabilities. A graph implements
  * the ones its `graphCapabilities` promise; composition checks the pairing once
  * when it binds (`declaredGraph`), so execution never probes for them. */
@@ -61,6 +77,9 @@ export interface MlxDeclaredGraph {
   pixelInput?(): PixelInput | null;
   /** Ports over this graph's live caches that draft sources may consume. */
   draftTarget?(caches: Cache[]): TargetView;
+  /** `nativeDraft`: the checkpoint's own multi-token-prediction head, refused when its tier is not loaded. */
+  nativeDraftHead?(): NativeMtpHead;
+
   /** What the trainer consumes: the head, segmented backward, prefix sharing,
    * gradient checkpointing, flash-attention constraint and denoising objective
    * this graph implements. Undeclared parts make the trainer refuse. */

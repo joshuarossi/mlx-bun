@@ -26,7 +26,7 @@ const allowed = {
   generation: ["portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "models", "mlx"],
   scoring: ["portable", "mlx-contracts", "kernels", "state", "models", "mlx"],
   embeddings: ["artifacts", "input", "models", "mlx"],
-  transcription: ["input", "models", "mlx"],
+  transcription: ["mlx-contracts", "input", "mlx"],
   execution: ["portable", "mlx-contracts", "runtime", "artifacts", "layers", "state", "input", "sampling", "models", "generation", "mlx"],
   api: ["contracts", "portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "adapters", "models", "generation", "scoring", "embeddings", "transcription", "execution", "mlx"],
 } satisfies Record<string, string[]>;
@@ -62,9 +62,12 @@ function appDomain(path: string, owner: Library): string {
 // graph handle, its declaration, profiles, the registry-level role predicates
 // (`models/support.ts`) and shared input helpers, never a concrete model, and
 // never branch on a model's class, type string, architecture list or family flag.
+// Drafters are models too, reached through `models/drafters.ts` (their conventions) and
+// `models/drafter-loaders.ts` (their lazy loaders, which hand the draft sources ports from `contracts/mlx/drafter`); the DSpark
+// producer (training) builds its module through `models/speculative/loader.ts`.
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
-  "models/chat-template.ts", "models/support.ts"]);
+  "models/chat-template.ts", "models/support.ts", "models/drafters.ts", "models/drafter-loaders.ts", "models/speculative/loader.ts"]);
 /** The family registry lists one record per family (`models/families.ts`); the role predicates of
  * `models/support.ts` (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only
  * ones consumers may use, and a per-family structural predicate must not reappear as an export. */
@@ -75,6 +78,8 @@ const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 // (and later service implementations) the host side, `module-<id>` the features.
 const coreName = "@mlx-bun/app-core";
 const isModulePackage = (name: string) => name.startsWith("@mlx-bun/module-");
+/** The web shell: browser code every host's UI reuses. It depends on no workspace package; modules never depend on it. */
+const webShellName = "@mlx-bun/web-shell";
 const isHostLibrary = (name: string) => name.startsWith("@mlx-bun/app-") && name !== coreName;
 /** Libraries below the app: everything that is not a contract, host library, module or app. */
 const belowApp = (owner: Library) => !owner.app && owner.name !== coreName && !isHostLibrary(owner.name) && !isModulePackage(owner.name);
@@ -309,8 +314,10 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (owner.app) for (const dependency of workspaceDependencies.filter(item => item.app))
       violations.push(`${owner.name}: hosts never depend on hosts (${dependency.name})`);
     if (isModulePackage(owner.name)) for (const dependency of workspaceDependencies)
-      if (dependency.name !== coreName && (dependency.app || isModulePackage(dependency.name) || isHostLibrary(dependency.name)))
+      if (dependency.name !== coreName && (dependency.app || isModulePackage(dependency.name) || isHostLibrary(dependency.name) || dependency.name === webShellName))
         violations.push(`${owner.name}: a module depends only on app-core and domain libraries (${dependency.name})`);
+    if (owner.name === webShellName && workspaceDependencies.length)
+      violations.push(`${owner.name}: the web shell has no workspace dependencies (${workspaceDependencies.map(item => item.name).join(", ")})`);
   }
   const packageGraph = new Map(libraries.map(item => [item.name, item.dependencies.filter(name => names.includes(name))]));
   violations.push(...cycles(packageGraph).map(cycle => `Package cycle: ${cycle}`));
@@ -373,6 +380,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (inModulePanel(file, owner) && (external.has(specifier) || (dependency !== undefined && !names.includes(dependency)))) {
         violations.push(`${at}: panel code imports only panel files and its protocol.ts (${specifier})`); continue;
       }
+      if (owner.name === webShellName && isExternal) {
+        violations.push(`${at}: the web shell is browser code and imports only its own files (${specifier})`); continue;
+      }
       const browser = owner.app && relative(owner.source, file).startsWith("web/browser/");
       if (browser && isExternal) { violations.push(`${at}: browser cannot import ${specifier}`); continue; }
       if (isExternal) {
@@ -386,10 +396,12 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       const actual = specifier.endsWith(".js") && sources.has(resolve(dirname(file), specifier))
         ? resolve(dirname(file), specifier) : target;
       if (!actual || !sources.has(actual)) { violations.push(`${at}: unresolved or unclassified import ${specifier}`); continue; }
-      if (browser && !(actual.startsWith(resolve(owner.source, "web/browser") + "/") ||
-          actual === resolve(owner.source, "chat/protocol.ts") || actual === resolve(owner.source, "jobs/protocol.ts")))
-        violations.push(`${at}: browser may import only browser modules and data protocols (${specifier})`);
       const targetOwner = ownerOf(actual)!;
+      if (browser && !(actual.startsWith(resolve(owner.source, "web/browser") + "/") || targetOwner.name === webShellName ||
+          actual === resolve(owner.source, "chat/protocol.ts") || actual === resolve(owner.source, "jobs/protocol.ts")))
+        violations.push(`${at}: browser may import only browser modules, the web shell and data protocols (${specifier})`);
+      if (owner.name === webShellName && targetOwner !== owner)
+        violations.push(`${at}: the web shell is browser code and imports only its own files (${specifier})`);
       const to = layer(actual, targetOwner);
       if (inModulePanel(file, owner) && !(targetOwner === owner &&
           (actual.startsWith(resolve(owner.source, "panel") + "/") || actual === resolve(owner.source, "protocol.ts"))))
@@ -397,9 +409,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (owner.name === coreName && targetOwner !== owner) violations.push(`${at}: app-core has no workspace imports (${specifier})`);
       if (targetOwner.name === coreName && belowApp(owner)) violations.push(`${at}: libraries below the app never import app-core`);
       if (isModulePackage(owner.name) && targetOwner !== owner && targetOwner.name !== coreName &&
-          (targetOwner.app || isModulePackage(targetOwner.name) || isHostLibrary(targetOwner.name)))
+          (targetOwner.app || isModulePackage(targetOwner.name) || isHostLibrary(targetOwner.name) || targetOwner.name === webShellName))
         violations.push(`${at}: a module imports only app-core, domain libraries and its own files, not ${
-          targetOwner.app ? "an app" : isModulePackage(targetOwner.name) ? "another module" : "a core-service implementation"} (${specifier})`);
+          targetOwner.app ? "an app" : isModulePackage(targetOwner.name) ? "another module" : targetOwner.name === webShellName ? "the web shell" : "a core-service implementation"} (${specifier})`);
       if (isModulePackage(targetOwner.name) && targetOwner !== owner && !isModulePackage(owner.name)) {
         if (isCompositionFile(file, owner)) named.get(owner)!.add(targetOwner.name);
         else violations.push(`${at}: only a host's src/modules.ts imports module packages (${specifier})`);
@@ -567,44 +579,10 @@ function checkRatchet(findings: readonly Finding[], table: RatchetTable): { fail
 
 /** The current violations, per rule and file. Lower a count, or delete a line, when a cleanup lands; never raise one. */
 const seamRatchet: RatchetTable = {
-  "model-class": {
-    "packages/inference/src/generation/bindings/denoising.ts": 1,
-    "packages/inference/src/generation/diffusion.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/deepspec-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/glm52-mtp-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/qwen-mtp-rows.ts": 1,
-    "packages/inference/src/generation/speculative/draft-kind.ts": 2,
-    "packages/inference/src/generation/speculative/dspark/loader.ts": 3,
-    "packages/inference/src/generation/speculative/sources/assistant-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/deepspec-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/dflash-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/glm52-mtp-source.ts": 3,
-    "packages/inference/src/generation/speculative/sources/qwen-mtp-source.ts": 1,
-    "packages/inference/src/state/glm52-cache.ts": 1,
-    "packages/inference/src/state/target-layout.ts": 1,
-    "packages/inference/src/transcription/index.ts": 1,
-    "packages/inference/src/transcription/whisper/decode.ts": 2,
-    "packages/inference/src/transcription/whisper/timing.ts": 1,
-    "packages/inference/src/transcription/whisper/transcribe.ts": 1,
-  },
-  "family-subpath": {
-    "packages/quantize/src/drafter.ts": 1,
-  },
-  "family-identity": {
-    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
-    "packages/inference/src/generation/speculative/draft-kind.ts": 1,
-    "packages/inference/src/layers/rope.ts": 1,
-    "packages/inference/src/models/profile.ts": 1,
-    "packages/inference/src/state/speculative/glm52-mtp-state.ts": 1,
-    "packages/inference/src/state/speculative/qwen-mtp-state.ts": 1,
-    "packages/quantize/src/drafter.ts": 1,
-    "packages/quantize/src/weight-transform.ts": 6,
-  },
-  "cache-class": {
-    "packages/inference/src/generation/autoregressive.ts": 2,
-    "packages/inference/src/scoring/full-sequence.ts": 2,
-  },
+  "model-class": {},
+  "family-subpath": {},
+  "family-identity": {},
+  "cache-class": {},
   "model-env-flag": {},
   "scheduler-core": {},
 };
@@ -1075,6 +1053,7 @@ function moduleWorkspace() {
     ["packages/hub", "@mlx-bun/hub", {}],
     ["packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "" }],
     ["packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "" }],
+    ["packages/web-shell", "@mlx-bun/web-shell", {}],
     ["apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "" }],
   ];
   for (const [path, name, dependencies] of packages) { manifest(path, name, dependencies); link(name, path); }
@@ -1088,6 +1067,7 @@ function moduleWorkspace() {
   write("packages/module-a/src/panel/index.ts", 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const panel = (p: Progress) => helper(p.done);');
   write("packages/module-a/src/panel/helper.ts", "export const helper = (n: number) => n;");
   write("packages/module-b/src/index.ts", "export default { id: \"b\" };");
+  write("packages/web-shell/src/index.ts", "export const shell = 1;");
   write("apps/example/src/modules.ts", 'import a from "@mlx-bun/module-a"; import type { Thing } from "@mlx-bun/app-core"; export const modules: readonly unknown[] = [a]; export type T = Thing;');
   write("apps/example/src/cli/main.ts", 'import { modules } from "../modules"; import { load } from "@mlx-bun/app-host"; export const main = () => [modules, load];');
   return { root, write, manifest, packages, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -1226,12 +1206,46 @@ test("module, host-library and host code cannot branch on model identity or impo
   } finally { cleanup(); }
 });
 
+test("the web shell is browser code that imports only its own files; modules cannot use it and an app's browser code can", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    const host = { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "" };
+    const shell = "packages/web-shell/src/index.ts";
+    for (const specifier of ["node:fs", "bun", "@mlx-bun/app-core", "@mlx-bun/hub", "@mlx-bun/module-a"]) {
+      write(shell, `import * as x from ${JSON.stringify(specifier)}; export const y = x;`);
+      expect(mentions(await inspectWorkspaces(root), `${shell}:1: the web shell is browser code and imports only its own files (${specifier})`)).toBe(true);
+    }
+    write(shell, 'import { own } from "./own"; export const y = own;');
+    write("packages/web-shell/src/own.ts", "export const own = 1;");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    manifest("packages/web-shell", "@mlx-bun/web-shell", { "@mlx-bun/app-core": "" });
+    expect(mentions(await inspectWorkspaces(root), "@mlx-bun/web-shell: the web shell has no workspace dependencies (@mlx-bun/app-core)")).toBe(true);
+    manifest("packages/web-shell", "@mlx-bun/web-shell");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    // A module is handed its connection by the shell; it never imports the shell.
+    manifest("packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "", "@mlx-bun/web-shell": "" });
+    write("packages/module-b/src/index.ts", 'import { shell } from "@mlx-bun/web-shell"; export default { id: "b", shell };');
+    const found = await inspectWorkspaces(root);
+    expect(mentions(found, "@mlx-bun/module-b: a module depends only on app-core and domain libraries (@mlx-bun/web-shell)")).toBe(true);
+    expect(mentions(found, "packages/module-b/src/index.ts:1: a module imports only app-core, domain libraries and its own files, not the web shell")).toBe(true);
+    // The app's browser code may import it (declared), and nothing else outside the browser.
+    write("packages/module-b/src/index.ts", 'export default { id: "b" };');
+    manifest("packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "" });
+    manifest("apps/example", "example-host", { ...host, "@mlx-bun/web-shell": "" });
+    write("apps/example/src/web/browser/main.ts", 'import { shell } from "@mlx-bun/web-shell"; export const start = () => shell;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("apps/example/src/web/browser/main.ts", 'import a from "@mlx-bun/module-a";');
+    expect(mentions(await inspectWorkspaces(root), "browser may import only browser modules, the web shell and data protocols")).toBe(true);
+  } finally { cleanup(); }
+});
+
 test("panel code imports only panel files and its protocol.ts, and the protocol imports nothing", async () => {
   const { root, write, cleanup } = moduleWorkspace();
   try {
     expect(await inspectWorkspaces(root)).toEqual([]);
     const panel = "packages/module-a/src/panel/index.ts";
-    for (const specifier of ["../own", "@mlx-bun/app-core", "@mlx-bun/hub", "node:fs", "bun", "../index"]) {
+    for (const specifier of ["../own", "@mlx-bun/app-core", "@mlx-bun/hub", "@mlx-bun/web-shell", "node:fs", "bun", "../index"]) {
       write(panel, `import * as x from ${JSON.stringify(specifier)}; export const y = x;`);
       expect(mentions(await inspectWorkspaces(root), `${panel}:1: panel code imports only panel files and its protocol.ts (${specifier})`)).toBe(true);
     }

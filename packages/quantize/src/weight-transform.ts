@@ -45,6 +45,8 @@ export interface WeightTransformContext {
 /** Common seam for the Llama, Qwen3.5 trunk, and Qwen MTP fold recipes. */
 export interface WeightTransform {
   readonly id: string;
+  /** Whether this transform's recipe reads a checkpoint with these tensor names and this config. */
+  accepts(names: readonly string[], config: ModelConfig): boolean;
   /** Name/config analysis only: no mlx arrays, model load, or device work. */
   plan(names: readonly string[], config: ModelConfig): WeightTransformPlan;
   createContext(weights: Weights, plan: WeightTransformPlan): WeightTransformContext;
@@ -227,66 +229,71 @@ function createQwenContext(
   };
 }
 
+/** A plan produced by the transform `id`, or a loud refusal: plans are not interchangeable. */
+function ownPlan<T extends WeightTransformPlan>(id: string, plan: WeightTransformPlan): T {
+  if (plan.id !== id) throw new Error(`weight transform ${id} received plan ${plan.id}`);
+  return plan as T;
+}
+
+/** The Qwen3.5 MTP companion's tensors: the fold recipe recognizes it by schema, not by config. */
+const isQwenMtpCompanion = (names: readonly string[]): boolean =>
+  names.includes("fc.weight") && names.includes("pre_fc_norm_hidden.weight");
+
+/** `model_type`s each fold recipe reads. A recipe declares its own; a config outside them is refused. */
+const llamaModelTypes: readonly string[] = ["llama"];
+const qwen35ModelTypes: readonly string[] = ["qwen3_5"];
+
 /** Llama-family γ+R1+R2 adapter. */
 export function llamaWeightTransform(options: FoldOptions): WeightTransform {
+  const id = "rotation.llama";
   return {
-    id: "rotation.llama",
+    id,
+    accepts: (names, config) => llamaModelTypes.includes(config.modelType) && !isQwenMtpCompanion(names),
     plan: (names, config) => planLlamaWeightTransform(names, config, options),
-    createContext(weights, plan) {
-      if (!("kind" in plan) || plan.kind !== "llama")
-        throw new Error(`weight transform rotation.llama received plan ${plan.id}`);
-      return createLlamaContext(weights, plan as LlamaWeightTransformPlan);
-    },
+    createContext: (weights, plan) => createLlamaContext(weights, ownPlan<LlamaWeightTransformPlan>(id, plan)),
   };
 }
 
 /** Qwen3.5 trunk/VL adapter (R1 only because of the attention output gate). */
 export function qwen35WeightTransform(options: QwenFoldOptions): WeightTransform {
+  const id = "rotation.qwen3_5";
   return {
-    id: "rotation.qwen3_5",
-    plan: (names, config) =>
-      qwenTransformPlan(names, config, options.seed, false, options.prefix),
-    createContext(weights, plan) {
-      if (!("kind" in plan) || plan.kind !== "qwen3_5")
-        throw new Error(`weight transform rotation.qwen3_5 received plan ${plan.id}`);
-      return createQwenContext(weights, plan as QwenWeightTransformPlan);
-    },
+    id,
+    accepts: (names, config) => qwen35ModelTypes.includes(config.modelType) && !isQwenMtpCompanion(names),
+    plan: (names, config) => qwenTransformPlan(names, config, options.seed, false, options.prefix),
+    createContext: (weights, plan) => createQwenContext(weights, ownPlan<QwenWeightTransformPlan>(id, plan)),
   };
 }
 
 /** Qwen3.5 MTP companion adapter. Must use the same seed as its trunk. */
 export function qwenMtpWeightTransform(seed: number): WeightTransform {
+  const id = "rotation.qwen3_5_mtp";
   return {
-    id: "rotation.qwen3_5_mtp",
+    id,
+    accepts: names => isQwenMtpCompanion(names),
     plan: (names, config) => qwenTransformPlan(names, config, seed, true),
-    createContext(weights, plan) {
-      if (!("kind" in plan) || plan.kind !== "qwen3_5_mtp")
-        throw new Error(`weight transform rotation.qwen3_5_mtp received plan ${plan.id}`);
-      return createQwenContext(weights, plan as QwenWeightTransformPlan);
-    },
+    createContext: (weights, plan) => createQwenContext(weights, ownPlan<QwenWeightTransformPlan>(id, plan)),
   };
 }
 
-/** Select one of the three adapters from the source model and tensor schema. */
+/** Select the adapter that accepts the source's tensor schema and config; each declares its own. */
 export function automaticRotationWeightTransform(
   options: FoldOptions & { prefix?: string },
 ): WeightTransform {
+  const adapters = [qwenMtpWeightTransform(options.seed), qwen35WeightTransform(options), llamaWeightTransform(options)];
+  const owner = (id: string): WeightTransform => {
+    const adapter = adapters.find(item => item.id === id);
+    if (!adapter) throw new Error(`rotation transform: invalid plan ${id}`);
+    return adapter;
+  };
   return {
     id: "rotation.auto",
+    accepts: (names, config) => adapters.some(adapter => adapter.accepts(names, config)),
     plan(names, config) {
-      if (names.includes("fc.weight") && names.includes("pre_fc_norm_hidden.weight"))
-        return qwenTransformPlan(names, config, options.seed, true);
-      if (config.modelType === "qwen3_5")
-        return qwenTransformPlan(names, config, options.seed, false, options.prefix);
-      if (config.modelType === "llama")
-        return planLlamaWeightTransform(names, config, options);
-      throw new Error(`rotation transform: unsupported model_type ${config.modelType}`);
+      const adapter = adapters.find(item => item.accepts(names, config));
+      if (!adapter) throw new Error(`rotation transform: unsupported model_type ${config.modelType}`);
+      return adapter.plan(names, config);
     },
-    createContext(weights, plan) {
-      if (!("kind" in plan)) throw new Error(`rotation transform: invalid plan ${plan.id}`);
-      return plan.kind === "llama"
-        ? createLlamaContext(weights, plan as LlamaWeightTransformPlan)
-        : createQwenContext(weights, plan as QwenWeightTransformPlan);
-    },
+    createContext: (weights, plan) => owner(plan.id).createContext(weights, plan),
   };
 }

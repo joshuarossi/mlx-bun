@@ -2,7 +2,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { MLACache } from "../glm52-cache";
 import { cloneAttachments } from "../checkpoint";
 import { disposeResources } from "../../runtime/resources";
-import type { DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
+import { DRAFT_CHECKPOINT_SCHEMA, type DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
 
 export function captureGlm52MtpState(state: Glm52MtpRowState): DraftRowCheckpoint {
   const held: MlxArray[] = [];
@@ -12,7 +12,7 @@ export function captureGlm52MtpState(state: Glm52MtpRowState): DraftRowCheckpoin
     }
     held.push(state.hidden.slice([0, 0, 0], [...state.hidden.shape]));
     return { processedTokens: state.processedTokens, attachment: {
-      schema: "glm52-native-mtp-v1", metadata: { processedTokens: state.processedTokens, draftOffset: state.cache.offset },
+      schema: DRAFT_CHECKPOINT_SCHEMA.glm52Mtp, metadata: { processedTokens: state.processedTokens, draftOffset: state.cache.offset },
       tensors: held.splice(0),
     } };
   } finally { disposeResources(held); }
@@ -20,7 +20,7 @@ export function captureGlm52MtpState(state: Glm52MtpRowState): DraftRowCheckpoin
 
 export function restoreGlm52MtpState(checkpoint: DraftRowCheckpoint, makeCache: () => MLACache): Glm52MtpRowState {
   const { attachment, processedTokens } = checkpoint;
-  if (attachment.schema !== "glm52-native-mtp-v1" || attachment.metadata.processedTokens !== processedTokens)
+  if (attachment.schema !== DRAFT_CHECKPOINT_SCHEMA.glm52Mtp || attachment.metadata.processedTokens !== processedTokens)
     throw new Error("invalid native GLM MTP checkpoint alignment");
   const held = cloneAttachments([attachment])[0]!.tensors;
   let cache: MLACache | null = makeCache();

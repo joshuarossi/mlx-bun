@@ -191,7 +191,7 @@ export class DSAIndexCache {
   }
 }
 
-export class Glm52Cache implements BatchableCache {
+export class MLACache implements BatchableCache {
   readonly kvLoraRank: number;
   readonly ropeHeadDim: number;
   readonly maxTokens: number;
@@ -542,8 +542,8 @@ export class Glm52Cache implements BatchableCache {
     );
   }
 
-  makeEmptyBatch(): Glm52Cache {
-    const CacheType = this.constructor as typeof Glm52Cache;
+  makeEmptyBatch(): MLACache {
+    const CacheType = this.constructor as typeof MLACache;
     return new CacheType({
       kvLoraRank: this.kvLoraRank,
       ropeHeadDim: this.ropeHeadDim,
@@ -564,7 +564,7 @@ export class Glm52Cache implements BatchableCache {
     const offsets: number[] = [];
     try {
       for (const generic of rows) {
-        if (!(generic instanceof Glm52Cache))
+        if (!(generic instanceof MLACache))
           throw new Error("MLA mergeRows requires GLM compressed caches");
         if (
           generic.kvLoraRank !== this.kvLoraRank ||
@@ -645,7 +645,7 @@ export class Glm52Cache implements BatchableCache {
   }
 
   /** Copy one logical row into an independently-owned serial cache. */
-  extractRow(row: number): Glm52Cache {
+  extractRow(row: number): MLACache {
     if (this.batchSize === null) throw new Error("MLA cache is empty");
     validateRowIndex(row, this.batchSize, "MLA extract");
     if (this.rowOffsets[row] === 0) return this.makeEmptyBatch();
@@ -736,7 +736,7 @@ export class Glm52Cache implements BatchableCache {
   }
 
   projectedBytes(tokens: number): number {
-    return Glm52Cache.projectedByteLength({
+    return MLACache.projectedByteLength({
       kvLoraRank: this.kvLoraRank,
       ropeHeadDim: this.ropeHeadDim,
       ...(this.dsa ? { dsa: { headDim: this.dsa.headDim } } : {}),
@@ -779,6 +779,3 @@ export class Glm52Cache implements BatchableCache {
     this.#padding.clear();
   }
 }
-
-/** Architecture-name alias retained for code that speaks in MLA terms. */
-export class MLACache extends Glm52Cache {}

@@ -21,7 +21,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../kernels/attention/masks";
 import { type Cache, type Mask } from "../contracts/mlx/cache";
-import { SSMCache } from "../state/ssm";
+import { isRecurrentCache } from "../state/capabilities";
 import { TrainingCache, TrainingSSMCache } from "../state/training-cache";
 import type { RuntimeModel } from "../models/factory";
 
@@ -61,7 +61,7 @@ export function trainForwardHidden(
   // forward is pure and safe to recompute under gradient checkpointing.
   const probe = model.makeCache();
   const cache: Cache[] = probe.map((c) =>
-    c instanceof SSMCache ? new TrainingSSMCache() : new TrainingCache());
+    isRecurrentCache(c) ? new TrainingSSMCache() : new TrainingCache());
   for (const c of probe) c.dispose();
   try {
     return model.forwardHidden(ids, cache); // [B, L, hidden]
@@ -191,7 +191,7 @@ function wrapWithBatchedMask(
   const distinct = new Set(windows);
   const store = new Map<number | null, MlxArray>();
   for (const w of distinct) store.set(w, buildBatchedPadMask(B, L, validLengths, w));
-  return realCache.map((c, i) => c instanceof SSMCache ? new TrainingSSMCache() : new BatchedMaskCache(c, windows[i]!, store));
+  return realCache.map((c, i) => isRecurrentCache(c) ? new TrainingSSMCache() : new BatchedMaskCache(c, windows[i]!, store));
 }
 
 /** The sliding-window size a cache enforces, or null for full attention.

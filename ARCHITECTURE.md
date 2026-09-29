@@ -230,8 +230,12 @@ services. One module's contributions to another (memory's tools in chat, a
 module's settings in the shell) go through a `registry` core service: the
 contributor registers a declared extension and the consumer lists what is
 registered, so neither names the other. The web shell (navigation, routing,
-theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
-host's UI, native webviews included. Modules start as private workspace
+theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
+`{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
+page, creating the element on first visit. A host's browser build imports each installed module's panel entry from
+the host's installed modules (`apps/mlx-bun/src/web/build.ts` reads the host's `package.json`, which the gate ties to `src/modules.ts`), so the bundle holds the panels the host installs and no
+others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
 **Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`
@@ -256,7 +260,7 @@ The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app sta
 model loader, the Whisper host and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
 request from the run's own stats and samples the gateway and caches) publish into the bus the modules subscribe to.
 A module's scoped bus publishes only its own `<id>.*` events, never a core type. A module that requires `jobs`
-(datasets, metrics) activates in the app's persistent state and gets the job service over the app's job host; a
+(datasets, metrics, benchmarks) activates in the app's persistent state and gets the job service over the app's job host; a
 runner that declares `gpu: "exclusive"` holds the engine's execution lease for its run.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
@@ -272,7 +276,7 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets, quantize, train) activate in the persistent state, beside the job store, with
+require `jobs` (datasets, metrics, quantize, benchmarks, train) activate in the persistent state, beside the job store, with
 `jobs` (the job host's `task` runners in this process, and `process` runners as a child that
 stops with its parent under the execution lease, which activates the owning module itself),
 `storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
@@ -302,6 +306,8 @@ the host's automatic choice (`pickDefault`), which the app supplies from the sel
   drop prints a reminder to lower it); each cleanup PR shrinks the table.
 - Panel code imports only panel files and its `protocol.ts`, which imports
   nothing; this generalizes the browser rule for `chat/` and `jobs/`.
+- `web-shell` is browser code with no workspace dependencies and no imports beyond its own files; no module imports
+  it (a panel is handed its connection, not the shell), and an app's browser code may import it.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
   kinds and storage paths (an identical entry in two modules is one shared entry);
   every `requires` satisfied.
