@@ -302,15 +302,28 @@ function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
   );
 }
 
+/** Fine-tuning defaults a graph may declare. The CLI reads these from the
+ * resolved profile; nothing outside the model decides them by name. */
+export interface TrainingDefaults {
+  /** Default maximum training sequence length in tokens. */
+  readonly maxSeqLength: number;
+}
+
+/** Applies to every graph that declares nothing of its own. */
+export const GENERIC_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 4096 });
+const GEMMA_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 8192 });
+
 interface GraphMetadata {
   readonly accepts: (config: ModelConfig) => boolean;
   readonly capabilities: readonly EngineCapability[];
+  readonly trainingDefaults?: TrainingDefaults;
 }
 
 const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freeze({
   "gemma4": {
     accepts: (config) => config.modelType.startsWith("gemma4"),
     capabilities: ["gemma4-graph"],
+    trainingDefaults: GEMMA_TRAINING_DEFAULTS,
   },
   "minicpm5": { accepts: isMiniCPM5Config, capabilities: ["minicpm5-graph"] },
   "qwen3.5": {
@@ -322,6 +335,7 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
   "diffusion-gemma": {
     accepts: isDiffusionGemmaConfig,
     capabilities: ["diffusion-gemma-graph"],
+    trainingDefaults: GEMMA_TRAINING_DEFAULTS,
   },
   "glm5.2": {
     accepts: isGlm52Config,
@@ -335,6 +349,12 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
     capabilities: ["universal-dense-graph"],
   },
 });
+
+/** The fine-tuning defaults the resolved model's graph declares, else the
+ * generic ones. */
+export function trainingDefaultsFor(resolved: ResolvedModelProfile): TrainingDefaults {
+  return GRAPH_METADATA[resolved.profile.execution.graph].trainingDefaults ?? GENERIC_TRAINING_DEFAULTS;
+}
 
 function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {
   return GRAPH_METADATA[profile.execution.graph].accepts(config);

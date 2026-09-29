@@ -207,13 +207,13 @@ test("mlx-bun.lora: mlx_lm.lora's flags resolve to an SFT train run over the sam
   expect(parsed.values).toEqual({ query: "/m", data: "/d", "num-layers": "8", batch: "2", iters: "50", "val-size": "20", lr: "1e-4", "steps-per-report": "5",
     "steps-per-eval": "20", "grad-accum": "4", resume: "/prev", adapter: "/out", "save-every": "10", seq: "512", "grad-checkpoint": true, seed: "9",
     method: "sft", "weight-decay": "0" });
-  const plan = trainPlan(parseTrainArgs(parsed, () => true), { path: "/m", repoId: "m" }, false, "/store");
+  const plan = trainPlan(parseTrainArgs(parsed, () => true), { path: "/m", repoId: "m" }, { maxSeqLength: 4096 }, "/store");
   expect(plan.method).toBe("sft");
   expect(plan.cfg).toMatchObject({ model_dir: "/m", data_dir: "/d", adapter_path: "/out", method: "sft", num_layers: 8, batch_size: 2, iters: 50,
     val_max_examples: 20, learning_rate: 1e-4, steps_per_report: 5, steps_per_eval: 20, grad_accumulation_steps: 4, warm_start_adapter: "/prev",
     save_checkpoints: true, max_seq_length: 512, grad_checkpoint: true, seed: 9, weight_decay: 0 });
   // Output stays under the storage root unless --adapter-path names one.
-  expect(trainPlan(parseTrainArgs(translate("lora", "--model", "/m", "--train", "--data", "/d").parsed, () => true), { path: "/m", repoId: "org/m" }, false, "/store").adapter)
+  expect(trainPlan(parseTrainArgs(translate("lora", "--model", "/m", "--train", "--data", "/d").parsed, () => true), { path: "/m", repoId: "org/m" }, { maxSeqLength: 4096 }, "/store").adapter)
     .toBe("/store/adapters/sft-m");
   // adamw keeps mlx-bun's weight decay; the verb's own --method stays available.
   expect(values("lora", "--train", "--optimizer", "adamw")).not.toHaveProperty("weight-decay");
@@ -299,7 +299,8 @@ test("each launcher, run directly or through a symlink named like the alias, is 
 test("spawned aliases resolve mlx_lm's argument forms to the verbs and fail with mlx_lm-named refusals", async () => {
   const home = temporary("mlx-alias-spawn-"), cwd = join(home, "cwd"), snapshot = join(home, "snap"), data = join(home, "data"), adapter = join(home, "adapter");
   for (const dir of [cwd, snapshot, data, adapter]) mkdirSync(dir);
-  writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "minicpm5", hidden_size: 64 }));
+  writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "qwen3", hidden_size: 8, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64 }));
   writeFileSync(join(snapshot, "model.safetensors"), new Uint8Array(4096));
   writeFileSync(join(data, "train.jsonl"), [0, 1].map(preference).join(""));
   const run = (name: string, ...argv: string[]) => spawn([process.execPath, "--no-env-file", launcher(`mlx-bun.${name}`), ...argv], home, cwd);

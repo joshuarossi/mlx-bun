@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { TrainConfig } from "@mlx-bun/training";
 import { parseCommand } from "../src/cli/args";
-import { parseTrainArgs, runFuse, runTrain, runTrainWatch, trainPlan, type FuseDependencies, type TrainDependencies } from "../src/cli/train";
+import { modelTrainingDefaults, parseTrainArgs, runFuse, runTrain, runTrainWatch, trainPlan, type FuseDependencies, type TrainDependencies } from "../src/cli/train";
 import { parseFinetuneConfig } from "../src/finetune/config";
 import { inspectDataset } from "../src/finetune/inspect";
 import { parseStream, renderFrame, runWatch, sPerStep, type WatchTerminal } from "../src/finetune/watch";
@@ -16,11 +16,23 @@ const parse = (...args: string[]) => parseCommand("train", args);
 const preference = (i: number) => JSON.stringify({ prompt: `p${i}`, chosen: "c", rejected: "r" }) + "\n";
 
 /** A synthetic snapshot (config.json only; no weights are read) and a JSONL dataset. */
-function fixture({ gemma = false, rows = 3, valid = 1 } = {}) {
+/** Complete-enough configs for profile resolution: the real Gemma4 family type, MiniCPM5's llama-shaped
+ * geometry (the family is recognized by it), plain Qwen3, and a Diffusion-Gemma stub. */
+const configs = {
+  gemma4: { model_type: "gemma4", hidden_size: 8, num_hidden_layers: 2, num_attention_heads: 2, num_key_value_heads: 1,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64 },
+  minicpm5: { model_type: "llama", hidden_size: 1536, num_hidden_layers: 24, num_attention_heads: 16, num_key_value_heads: 2,
+    head_dim: 128, intermediate_size: 4096, vocab_size: 130560, max_position_embeddings: 4096, tie_word_embeddings: false },
+  qwen3: { model_type: "qwen3", hidden_size: 8, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64, tie_word_embeddings: true },
+  diffusionGemma: { model_type: "diffusion_gemma" },
+};
+
+function fixture({ rows = 3, valid = 1, config = configs.minicpm5 }: { rows?: number; valid?: number; config?: object } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mlx-train-cli-"));
   const modelDir = join(root, "model"), dataDir = join(root, "data");
   mkdirSync(modelDir); mkdirSync(dataDir);
-  writeFileSync(join(modelDir, "config.json"), JSON.stringify({ model_type: gemma ? "gemma4" : "minicpm5" }));
+  writeFileSync(join(modelDir, "config.json"), JSON.stringify(config));
   writeFileSync(join(dataDir, "train.jsonl"), Array.from({ length: rows }, (_, i) => preference(i)).join(""));
   if (valid) writeFileSync(join(dataDir, "valid.jsonl"), Array.from({ length: valid }, (_, i) => preference(i)).join(""));
   return { root, modelDir, dataDir, dispose: () => rmSync(root, { recursive: true, force: true }) };
@@ -35,7 +47,7 @@ function harness(modelDir: string, run?: JobRunner) {
     inspect: inspectDataset,
     runner: () => async (emit, cfg, signal) => { runs.push({ cfg, signal }); return run ? run(emit, cfg, signal) : { outputPath: String(cfg.adapter_path) }; },
     memory: async () => ({ peak: () => 3 * 2 ** 30, reset: () => { resets++; } }),
-    exists: existsSync, readText: path => Bun.file(path).text(),
+    exists: existsSync, trainingDefaults: modelTrainingDefaults,
     log: line => logs.push(line), root: () => "/store", now: () => (clock += 1500),
   };
   return { deps, logs, selections, selectionSignals, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
@@ -86,36 +98,36 @@ test("train validates usage, dataset, method, scope, and numbers before resolvin
   } finally { f.dispose(); }
 });
 
-test("train builds main's exact submit record per method, with e4b and explicit overrides", () => {
+test("train builds main's exact submit record per method, with model-declared and explicit overrides", () => {
   const f = fixture();
   try {
     const m = { path: f.modelDir, repoId: "example/model" };
     const base = { model_dir: f.modelDir, data_dir: f.dataDir, rank_scaling: "by_bits", num_layers: -1, iters: 100,
       max_seq_length: 4096, batch_size: 1, grad_accumulation_steps: 1, seed: 0, steps_per_report: 1, steps_per_eval: 1_000_000,
       save_checkpoints: false, grad_clip_norm: 1, val_max_examples: 256, warm_start_adapter: "" };
-    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, false, "/store");
+    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, { maxSeqLength: 4096 }, "/store");
     expect(orpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/orpo-model", method: "orpo",
       rank: 16, scale: 2, learning_rate: 1e-5, segment_size: 2, orpo_lambda: 0.1, orpo_lr_schedule: "cosine", orpo_warmup_iters: 10,
       orpo_chunk_size: 512, orpo_flash_ce: true, orpo_fused_ce: false, orpo_prefix_shared: true });
-    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, false, "/store");
+    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, { maxSeqLength: 4096 }, "/store");
     expect(dpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/dpo-model", method: "dpo",
       rank: 8, scale: 1, learning_rate: 5e-5, segment_size: 0 });
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, true, "/store").cfg)
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, { maxSeqLength: 8192 }, "/store").cfg)
       .toEqual({ ...base, adapter_path: "/store/adapters/sft-model", method: "sft",
         rank: 8, scale: 1, learning_rate: 2e-4, max_seq_length: 8192, segment_size: 0 });
     const overridden = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--adapter", "/out", "--iters", "45", "--lr", "3e-5",
       "--rank", "4", "--scale", "0.5", "--seq", "1024", "--batch", "2", "--grad-accum", "3", "--grad-clip", "0", "--seed", "7",
       "--val-size", "8", "--lambda", "0.3", "--sft-scope", "response", "--seg", "3", "--save-every", "5", "--resume", "/prev",
-      "--no-flash", "--no-prefix")), m, true, "/store");
+      "--no-flash", "--no-prefix")), m, { maxSeqLength: 8192 }, "/store");
     expect(overridden.cfg).toEqual({ model_dir: f.modelDir, data_dir: f.dataDir, adapter_path: "/out", method: "orpo", rank: 4,
       scale: 0.5, rank_scaling: "by_bits", num_layers: -1, iters: 45, learning_rate: 3e-5, max_seq_length: 1024, batch_size: 2,
       grad_accumulation_steps: 3, seed: 7, steps_per_report: 1, steps_per_eval: 5, save_checkpoints: true, segment_size: 3,
       grad_clip_norm: 0, val_max_examples: 8, warm_start_adapter: "/prev", sft_scope: "response", orpo_lambda: 0.3,
       orpo_lr_schedule: "cosine", orpo_warmup_iters: 4, orpo_chunk_size: 512, orpo_flash_ce: false, orpo_fused_ce: true,
       orpo_prefix_shared: false });
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--no-segment", "--seg", "9")), m, false).cfg.segment_size).toBe(0);
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--iters", "5")), m, false).cfg.orpo_warmup_iters).toBe(0);
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--sft-scope", "full")), m, false).cfg.sft_scope).toBe("full");
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--no-segment", "--seg", "9")), m, { maxSeqLength: 4096 }).cfg.segment_size).toBe(0);
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--iters", "5")), m, { maxSeqLength: 4096 }).cfg.orpo_warmup_iters).toBe(0);
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--sft-scope", "full")), m, { maxSeqLength: 4096 }).cfg.sft_scope).toBe("full");
     // Every key the verb emits is one the app's finetune config consumes, with its value.
     const consumed = parseFinetuneConfig(overridden.cfg, mainLibraryDefaults);
     expect(consumed.dataDir).toBe(f.dataDir);
@@ -131,6 +143,28 @@ test("train builds main's exact submit record per method, with e4b and explicit 
   } finally { f.dispose(); }
 });
 
+test("the default sequence length comes from the model's resolved profile, not a name match", async () => {
+  const seqOf = async (config: object, ...extra: string[]) => {
+    const f = fixture({ config });
+    try {
+      const run = harness(f.modelDir);
+      await runTrain(parse("--data", f.dataDir, "--dry-run", "--method", "sft", ...extra), run.deps);
+      return { seq: run.text().match(/seq (\d+)/)?.[1], text: run.text() };
+    } finally { f.dispose(); }
+  };
+  // Gemma-family graphs declare 8192; MiniCPM5 and Qwen3 declare nothing and get the generic 4096.
+  expect((await seqOf(configs.gemma4)).seq).toBe("8192");
+  expect((await seqOf(configs.diffusionGemma)).seq).toBe("8192");
+  expect((await seqOf(configs.minicpm5)).seq).toBe("4096");
+  expect((await seqOf(configs.qwen3)).seq).toBe("4096");
+  // An explicit --seq always wins, and no family label is printed.
+  const explicit = await seqOf(configs.gemma4, "--seq", "1024");
+  expect(explicit.seq).toBe("1024"); expect(explicit.text).not.toContain("defaults");
+  // The words in the config text are irrelevant: a qwen3 config that merely mentions gemma stays generic.
+  expect((await seqOf({ ...configs.qwen3, _name_or_path: "not-gemma-at-all" })).seq).toBe("4096");
+  expect(Object.keys(trainPlan(parseTrainArgs(parse("--data", "/d"), () => true), { path: "/m", repoId: "m" }, { maxSeqLength: 4096 }))).not.toContain("isGemma");
+});
+
 test("dataset preflight failure stops after resolution and before training", async () => {
   const f = fixture();
   try {
@@ -142,7 +176,7 @@ test("dataset preflight failure stops after resolution and before training", asy
 });
 
 test("dry run prints main's plan box and runs no training", async () => {
-  const f = fixture({ valid: 2 }), g = fixture({ gemma: true, valid: 0 });
+  const f = fixture({ valid: 2 }), g = fixture({ config: configs.gemma4, valid: 0 });
   try {
     const run = harness(f.modelDir);
     await runTrain(parse("--data", f.dataDir, "--dry-run", "--save-every", "5", "--resume", "/prev", "--grad-accum", "2", "--query", "q"), run.deps);
@@ -160,7 +194,7 @@ test("dry run prints main's plan box and runs no training", async () => {
     const auto = harness(g.modelDir);
     await runTrain(parse("--data", g.dataDir, "--dry-run", "--method", "sft", "--no-segment", "--no-flash", "--grad-clip", "0"), auto.deps);
     expect(auto.selections).toEqual([null]);
-    for (const line of ["● train sft · example/model (auto-picked) · e4b defaults", "data       3 train · format preference",
+    for (const line of ["● train sft · example/model (auto-picked)", "data       3 train · format preference",
       "lr 0.0002 · rank 8 · scale 1 · seq 8192", "stack      segmented off", "adapter    /store/adapters/sft-model"])
       expect(auto.text()).toContain(line);
     expect(auto.text()).not.toContain("head "); expect(auto.text()).not.toContain("checkpoint ");
@@ -244,14 +278,14 @@ test("train's layer count, report/eval cadence, dropout, weight decay and gradie
   try {
     const m = { path: f.modelDir, repoId: "example/model" };
     const cfg = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--num-layers", "8", "--steps-per-report", "10",
-      "--steps-per-eval", "200", "--dropout", "0.05", "--weight-decay", "0", "--grad-checkpoint")), m, false, "/store").cfg;
+      "--steps-per-eval", "200", "--dropout", "0.05", "--weight-decay", "0", "--grad-checkpoint")), m, { maxSeqLength: 4096 }, "/store").cfg;
     expect(cfg).toMatchObject({ num_layers: 8, steps_per_report: 10, steps_per_eval: 200, lora_dropout: 0.05, weight_decay: 0, grad_checkpoint: true });
     // Not given: the submit record carries none of the optional keys and keeps the existing cadence.
-    const plain = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, false, "/store").cfg;
+    const plain = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, { maxSeqLength: 4096 }, "/store").cfg;
     expect(plain).toMatchObject({ num_layers: -1, steps_per_report: 1, steps_per_eval: 1_000_000 });
     for (const key of ["lora_dropout", "weight_decay", "grad_checkpoint"]) expect(plain).not.toHaveProperty(key);
     // A checkpoint cadence still drives evaluation unless --steps-per-eval names its own.
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--save-every", "25")), m, false, "/store").cfg.steps_per_eval).toBe(25);
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--save-every", "25")), m, { maxSeqLength: 4096 }, "/store").cfg.steps_per_eval).toBe(25);
     expect(() => parseTrainArgs(parse("--data", f.dataDir, "--num-layers", "many"))).toThrow('--num-layers expects a number (got "many")');
   } finally { f.dispose(); }
 });
@@ -497,7 +531,8 @@ test("the spawned CLI prints help, usage errors, refusals, and a dry-run plan wi
   const snapshot = join(home, "snap"), data = join(home, "data"), adapter = join(home, "adapter");
   try {
     mkdirSync(snapshot); mkdirSync(data); mkdirSync(adapter);
-    writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "minicpm5", hidden_size: 64 }));
+    writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "qwen3", hidden_size: 8, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64 }));
     writeFileSync(join(snapshot, "model.safetensors"), new Uint8Array(4096));
     writeFileSync(join(data, "train.jsonl"), preference(0) + preference(1));
     writeFileSync(join(data, "valid.jsonl"), preference(2));

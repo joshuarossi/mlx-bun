@@ -77,7 +77,7 @@ test("every producer's default adapter directory is offered by /v1/adapters/avai
   const data = join(root, "data"); mkdirSync(data); writeFileSync(join(data, "train.jsonl"), "");
   const logs: string[] = [];
   await runTrain(parseCommand("train", ["--data", data, "--method", "sft", "--dry-run"]), {
-    resolve: async () => ({ m: { path: "/m", repoId: "org/Tiny-Model" }, picked: false }), readText: async () => "{}",
+    resolve: async () => ({ m: { path: "/m", repoId: "org/Tiny-Model" }, picked: false }), trainingDefaults: async () => ({ maxSeqLength: 4096 }),
     inspect: async () => ({ ok: true, n_train: 1, n_valid: 0, format: "chat" }) as never, log: line => logs.push(plain(line)) });
   const train = logs.map(line => /^.*adapter\s+(\S+)/.exec(line)?.[1]).find(Boolean)!;
   expect(train).toBe(join(store, "adapters", "sft-Tiny-Model"));

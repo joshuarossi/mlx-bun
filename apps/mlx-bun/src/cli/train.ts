@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Registry } from "@mlx-bun/hub/registry";
+import type { TrainingDefaults } from "@mlx-bun/inference/models/profile";
 import type { fuseAdapter } from "@mlx-bun/training";
 import { createFinetuneRunner } from "../finetune/job";
 import { inspectDataset } from "../finetune/inspect";
@@ -66,20 +67,21 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
 }
 
 export interface TrainPlan {
-  method: TrainMethod; isOrpo: boolean; isGemma: boolean; adapter: string; iters: number; seq: number; seg: number;
+  method: TrainMethod; isOrpo: boolean; adapter: string; iters: number; seq: number; seg: number;
   saveEvery: number; flashOn: boolean; prefixOn: boolean; resume: string;
   /** The snake_case submit record the finetune runner parses (finetune/config.ts). */
   cfg: Record<string, unknown>;
 }
 
-/** Main's method- and model-dependent defaults over the validated flags. The
- * adapter defaults to `<root>/adapters/<method>-<model>` (root: MLX_BUN_HOME). */
-export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: boolean, root: string = mlxBunHome()): TrainPlan {
+/** Method-dependent defaults over the validated flags; model-dependent ones
+ * (`defaults`) are declared by the model's profile. The adapter defaults to
+ * `<root>/adapters/<method>-<model>` (root: MLX_BUN_HOME). */
+export function trainPlan(parsed: TrainArgs, model: SelectedModel, defaults: TrainingDefaults, root: string = mlxBunHome()): TrainPlan {
   const num = (name: string, fallback: number) => parsed.numbers.get(name) ?? fallback;
   const { method } = parsed, isOrpo = method === "orpo";
   const adapter = parsed.adapter ?? join(storagePath("adapters", root), `${method}-${modelShortName(model.repoId)}`);
   const iters = num("iters", 100);
-  const seq = num("seq", isGemma ? 8192 : 4096);
+  const seq = num("seq", defaults.maxSeqLength);
   const seg = parsed.noSegment ? 0 : num("seg", isOrpo ? 2 : 0);
   const saveEvery = num("save-every", 0);
   const cfg: Record<string, unknown> = {
@@ -118,7 +120,7 @@ export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: bool
       orpo_prefix_shared: parsed.prefixOn,
     } : {}),
   };
-  return { method, isOrpo, isGemma, adapter, iters, seq, seg, saveEvery, flashOn: parsed.flashOn, prefixOn: parsed.prefixOn,
+  return { method, isOrpo, adapter, iters, seq, seg, saveEvery, flashOn: parsed.flashOn, prefixOn: parsed.prefixOn,
     resume: parsed.resume, cfg };
 }
 
@@ -126,7 +128,7 @@ function planLines(plan: TrainPlan, model: SelectedModel, picked: boolean,
   ds: { n_train: number; n_valid: number; format: string }): string[] {
   const { cfg } = plan;
   const lines = [
-    `${style.green("●")} ${style.bold(`train ${plan.method}`)} ${style.dim(`· ${model.repoId}${picked ? " (auto-picked)" : ""}${plan.isGemma ? " · e4b defaults" : ""}`)}`,
+    `${style.green("●")} ${style.bold(`train ${plan.method}`)} ${style.dim(`· ${model.repoId}${picked ? " (auto-picked)" : ""}`)}`,
     "",
     `data       ${style.bold(`${ds.n_train} train`)}${ds.n_valid ? ` · ${ds.n_valid} valid` : ""} ${style.dim(`· format ${ds.format}`)}`,
     `loop       ${style.dim(`iters ${plan.iters} · lr ${cfg.learning_rate} · rank ${cfg.rank} · scale ${cfg.scale} · seq ${plan.seq} · batch ${cfg.batch_size}`)}`,
@@ -153,11 +155,19 @@ export interface TrainDependencies {
   /** Peak-memory reader; null when the native binding is unavailable. */
   memory(): Promise<PeakMemory | null>;
   exists(path: string): boolean;
-  readText(path: string): Promise<string>;
+  /** The fine-tuning defaults the model at `modelDir` declares through its resolved profile. */
+  trainingDefaults(modelDir: string): Promise<TrainingDefaults>;
   log(line: string): void;
   /** Storage root for default outputs (MLX_BUN_HOME). */
   root(): string;
   now(): number;
+}
+/** Resolve the model's profile from its config alone (no weights, no native
+ * load) and return the fine-tuning defaults its graph declares. */
+export async function modelTrainingDefaults(modelDir: string): Promise<TrainingDefaults> {
+  const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
+  const { resolveModelProfile, trainingDefaultsFor } = await import("@mlx-bun/inference/models/profile");
+  return trainingDefaultsFor(resolveModelProfile(await loadModelConfig(modelDir)));
 }
 const trainDefaults: TrainDependencies = {
   resolve: (query, signal) => resolveModelAuto(query, {}, signal),
@@ -171,7 +181,8 @@ const trainDefaults: TrainDependencies = {
       return { peak: ffi.peakMemory, reset: ffi.resetPeakMemory };
     } catch { return null; }
   },
-  exists: existsSync, readText: path => Bun.file(path).text(),
+  exists: existsSync,
+  trainingDefaults: modelTrainingDefaults,
   log: line => console.log(line), root: () => mlxBunHome(), now: Date.now,
 };
 
@@ -183,8 +194,7 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   const parsed = parseTrainArgs(args, deps.exists);
   signal?.throwIfAborted();
   const { m, picked } = await deps.resolve(parsed.query, signal);
-  const isGemma = (await deps.readText(`${m.path}/config.json`)).toLowerCase().includes("gemma");
-  const plan = trainPlan(parsed, m, isGemma, deps.root());
+  const plan = trainPlan(parsed, m, await deps.trainingDefaults(m.path), deps.root());
 
   // Pre-flight: dataset counts + detected format (bail before loading the model).
   const ds = await deps.inspect(parsed.dataDir);
