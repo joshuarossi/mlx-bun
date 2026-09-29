@@ -75,7 +75,7 @@ test("the jobs service lists, reads and streams module jobs, and rejects kinds a
     expect(await jobs.list({ status: "failed" })).toEqual([]);
     await expect(jobs.submit({ kind: "unknown", config: {} })).rejects.toThrow('no installed module runs job kind "unknown"');
     jobs.serve(new Map([["process.kind", { spec: { kind: "process.kind", isolation: "process", gpu: "none" }, runner: (async () => {}) as JobRunner }]]));
-    await expect(jobs.submit({ kind: "process.kind", config: {} })).rejects.toThrow("runs as a process");
+    await expect(jobs.submit({ kind: "process.kind", config: {} })).rejects.toThrow("only with the exclusive GPU lease");
     expect(store.recent(10).map(row => row.kind)).toEqual(["dataset"]);
   } finally { await loaded.stop(); await host.close(); }
 });

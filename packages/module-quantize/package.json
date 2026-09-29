@@ -1,0 +1,36 @@
+{
+  "name": "@mlx-bun/module-quantize",
+  "version": "0.0.0",
+  "description": "Quantization module for mlx-bun applications: the quantize job, its web routes, and the convert verb",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/quantize": "workspace:*"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-services": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

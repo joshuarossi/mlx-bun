@@ -1,120 +1,84 @@
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { Registry } from "@mlx-bun/hub/registry";
-import type { DownloadOptions } from "@mlx-bun/hub/download";
-import { createHfCredentials } from "../publishing/credentials";
-import type { PublishRequest } from "../publishing/upload";
-import { parseCommand, type CommandArgs } from "./args";
-import { box, step, style, type Step } from "./terminal";
-import { CONVERT_DTYPES, convertedModelName, quantizedModelName } from "../quantize/output-name";
-import { mlxBunHome, openRegistry, storagePath } from "../storage/paths";
+import type { CliTerminal, JobService, ModelCatalog } from "@mlx-bun/app-core";
+import { CONVERT_DTYPES, convertedModelName, quantizedModelName } from "./output-name";
 
-type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
-type Progress = NonNullable<DownloadOptions["onProgress"]>;
 const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GB`;
 const REPO_ID = /^[\w.-]+\/[\w.-]+$/;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** What a `convert` run was given: the verb's parsed options and positionals. */
+export interface ConvertArgs {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly positionals: readonly string[];
+}
 
 export interface ConvertDependencies {
   /** The web quantize job's producer, run as an owned child process with the
    * same snake_case config. The sensitivity sweep is synchronous, so only a
    * separate process keeps the parent responsive; cancellation terminates and
    * joins the child and discards its staging. */
-  quantize(config: Record<string, unknown>, outDir: string, progress: (message: string) => void, signal?: AbortSignal,
-    owner?: { spawn?: typeof Bun.spawn; entry?: string }): Promise<{ outputPath: string }>;
-  /** Child creation and entry for the default producer owner; tests inject a slow or failing child. */
-  spawn?: typeof Bun.spawn;
-  entry?: string;
-  download(repoId: string, options: { onProgress: Progress; signal?: AbortSignal }): Promise<string>;
-  registry(): ModelRegistry;
-  /** Storage root for the default output (MLX_BUN_HOME). */
-  root(): string;
-  credentials(): Pick<ReturnType<typeof createHfCredentials>, "get">;
-  publish(request: PublishRequest): Promise<{ url: string }>;
-  step: (text: string) => Step;
-  box: (lines: string[]) => void;
+  quantize(config: Record<string, unknown>, outDir: string, progress: (message: string) => void, signal?: AbortSignal): Promise<{ outputPath: string }>;
+  catalog: Pick<ModelCatalog, "find" | "download" | "canPublish" | "publish">;
+  /** The default output's parent: the module's `models` storage entry. */
+  modelsDir(): string;
+  terminal: CliTerminal;
   log(line?: string): void;
 }
+
 /** Run the quantize job in an owned child over a private root created beside
- * the destination (same filesystem): the child's result, its atomic staging,
- * any temporary probe (TMPDIR), and the job store all live under that root.
- * The parent tails the job log for progress, publishes only a complete result
- * with one rename, and on every other exit joins the child first and then
- * removes only the root it owns. Nothing is inferred from filename prefixes. */
-export async function quantizeInChild(config: Record<string, unknown>, outDir: string, progress: (message: string) => void,
-  signal?: AbortSignal, owner: { spawn?: typeof Bun.spawn; entry?: string } = {}): Promise<{ outputPath: string }> {
-  const [{ createJobHost }, { JobStore }, { tailJob }] = await Promise.all([import("../jobs/host"), import("../jobs/db"), import("../jobs/sse")]);
+ * the destination (same filesystem): the child's result, its atomic staging and
+ * any temporary probe (its `TMPDIR`) all live under that root. The parent tails
+ * the job's events for progress, publishes only a complete result with one
+ * rename, and on every other exit stops the job and waits for its process to be
+ * gone, then removes only the root it owns. Nothing is inferred from filename
+ * prefixes. */
+export async function quantizeInChild(jobs: Pick<JobService, "submit" | "get" | "events" | "cancel">, config: Record<string, unknown>, outDir: string,
+  progress: (message: string) => void, signal?: AbortSignal): Promise<{ outputPath: string }> {
   const destination = resolve(outDir);
   mkdirSync(dirname(destination), { recursive: true });
   const root = mkdtempSync(join(dirname(destination), `.${basename(destination)}.convert-`));
-  const result = join(root, "result"), temp = join(root, "tmp"), jobsRoot = join(root, "jobs");
-  mkdirSync(temp); mkdirSync(jobsRoot);
-  const spawn = owner.spawn ?? Bun.spawn;
-  const jobs = createJobHost({ entry: owner.entry ?? fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
-    acquire: async () => ({ dispose() {} }),
-    // The child's temporary files (mixed-precision probes) land under the owned root.
-    spawn: ((command: string[], options?: Parameters<typeof Bun.spawn>[1]) =>
-      spawn(command, { ...options, env: { ...(options?.env ?? process.env), TMPDIR: temp } })) as typeof Bun.spawn,
-    createStore: () => new JobStore(join(jobsRoot, "jobs.db"), join(jobsRoot, "logs")) });
-  const cancel = () => { void jobs.close().catch(() => {}); };
+  const result = join(root, "result"), scratch = join(root, "tmp");
+  mkdirSync(scratch);
+  let jobId: string | undefined, settled: Promise<void> | undefined;
+  // Stops the job if it still runs and waits until its process is gone, so nothing writes into the root once it is removed.
+  const settle = () => settled ??= jobId ? jobs.cancel(jobId) : Promise.resolve();
   try {
     signal?.throwIfAborted();
-    const { jobId } = jobs.submit("quantize", { ...config, out_dir: result }, result);
+    const job = await jobs.submit({ kind: "quantize", config: { ...config, out_dir: result }, outputPath: result, scratchDir: scratch });
+    jobId = job.id;
+    if (signal?.aborted) { await settle(); throw signal.reason; }
+    const cancel = () => { void jobs.cancel(job.id).catch(() => {}); };
     signal?.addEventListener("abort", cancel, { once: true });
-    const store = jobs.ensureStore();
-    for await (const event of tailJob(store, jobId, { signal })) {
-      if (event.type === "stage" && event.message) progress(event.message);
-    }
-    if (signal?.aborted) { await jobs.close(); throw signal.reason; }
-    const row = store.get(jobId);
+    try {
+      for await (const event of jobs.events(job.id, signal)) {
+        if (event.type === "stage" && event.message) progress(event.message);
+      }
+    } finally { signal?.removeEventListener("abort", cancel); }
+    if (signal?.aborted) { await settle(); throw signal.reason; }
+    const row = await jobs.get(job.id);
     if (!row || row.status !== "done") throw new Error(row?.error ?? `quantize job ${row?.status ?? "missing"}`);
     if (!existsSync(result)) throw new Error("quantize job reported success without a result");
     if (existsSync(destination)) throw new Error(`Cannot save to the path ${outDir} as it already exists — delete it or pass a fresh --mlx-path.`);
+    await settle();
     renameSync(result, destination);
     return { outputPath: destination };
   } finally {
-    signal?.removeEventListener("abort", cancel);
-    // Join the child (SIGTERM, then SIGKILL after a grace period) before the
-    // root it writes into goes away.
-    try { await jobs.close(); } finally { rmSync(root, { recursive: true, force: true }); }
+    // Join the job's process (SIGTERM, then SIGKILL after a grace period) before the root it writes into goes away.
+    try { await settle(); } finally { rmSync(root, { recursive: true, force: true }); }
   }
 }
-
-/** The Hub credentials and publisher behind `--upload-repo` (convert and fuse). */
-export const uploadDefaults: Pick<ConvertDependencies, "credentials" | "publish"> = {
-  credentials: () => createHfCredentials(),
-  async publish(request) {
-    const { createPublisher } = await import("../publishing/upload");
-    return createPublisher({ credentials: createHfCredentials(), getJob: () => null })(request);
-  },
-};
-
-const defaults: ConvertDependencies = {
-  quantize: quantizeInChild,
-  async download(repoId, { onProgress, signal }) {
-    const { downloadModel } = await import("@mlx-bun/hub/download");
-    // The hub download honors the signal at every checkpoint and keeps the
-    // blob's .incomplete prefix resumable; nothing is published after an abort.
-    return downloadModel(repoId, { onProgress, signal });
-  },
-  registry: () => openRegistry(),
-  root: () => mlxBunHome(),
-  ...uploadDefaults,
-  step, box, log: (line = "") => { console.log(line); },
-};
 
 const TRELLIS_OPTIONS = ["trellis-bits", "trellis-k-map", "trellis-k-budget", "trellis-ldlq", "trellis-reuse",
   "trellis-down-axis", "trellis-interleave", "trellis-layers"] as const;
 
-export interface TrellisSettings {
+interface TrellisSettings {
   bits: number; downAxis: "out" | "in"; kMap?: string; kBudget: string; ldlq?: string; reuse: string[];
   interleave: boolean; layers?: number;
 }
 
 /** The `--trellis-*` options of `--q-mode trellis`, checked against the files they name. Paths become absolute for the job child. */
-function parseTrellisOptions(args: CommandArgs): TrellisSettings {
+function parseTrellisOptions(args: ConvertArgs): TrellisSettings {
   const opt = (name: string): string | undefined => { const value = args.values[name]; return typeof value === "string" ? value : undefined; };
   const bitsRaw = opt("trellis-bits") ?? "3", bits = Number(bitsRaw);
   if (!Number.isInteger(bits) || bits < 1 || bits > 8) throw new Error(`--trellis-bits must be an integer in [1, 8] (got "${bitsRaw}")`);
@@ -133,13 +97,6 @@ function parseTrellisOptions(args: CommandArgs): TrellisSettings {
     interleave: args.values["trellis-interleave"] === true, ...(layers !== undefined ? { layers } : {}) };
 }
 
-/** Strict parsing would report a generic missing value; main names the expectation. */
-export function parseConvertArgs(args: string[]): CommandArgs {
-  const at = args.indexOf("--upload-repo");
-  if (at !== -1 && (!args[at + 1] || args[at + 1]!.startsWith("-"))) throw new Error("--upload-repo expects a repo id (org/name)");
-  return parseCommand("convert", args);
-}
-
 /** mlx_lm.convert counterpart: main's flags, messages, and check order; the
  * output defaults to the app's models directory instead of `./mlx_model`.
  * Uniform affine 4/8-bit or the OptiQ mixed path via --target-bpw, or without
@@ -147,14 +104,14 @@ export function parseConvertArgs(args: string[]): CommandArgs {
  * same producer as the web quantize job in an owned child. Cancellation
  * terminates and joins that child; the atomic writer never publishes a partial
  * output and the parent removes the child's staging. */
-export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDependencies> = {}, signal?: AbortSignal): Promise<void> {
-  const deps = { ...defaults, ...supplied };
+export async function runConvert(args: ConvertArgs, deps: ConvertDependencies, signal?: AbortSignal): Promise<void> {
+  const { terminal } = deps, { style } = terminal;
   const opt = (name: string): string | undefined => { const value = args.values[name]; return typeof value === "string" ? value : undefined; };
   const flag = (name: string) => args.values[name] === true;
 
   // The write token is resolved before any conversion work (mlx_lm.convert parity).
   const uploadRepo = opt("upload-repo");
-  if (uploadRepo !== undefined) requireWriteToken(deps.credentials());
+  if (uploadRepo !== undefined) requireWriteToken(deps.catalog);
   if (opt("quant-predicate") !== undefined)
     throw new Error("--quant-predicate: not supported (mlx_lm's mixed_* recipes need 2/3/6-bit; for mixed precision use --target-bpw; see: mlx-bun help convert)");
   const qMode = opt("q-mode") ?? "affine";
@@ -196,32 +153,27 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   signal?.throwIfAborted();
 
   // Source: a local model directory as given; else a downloaded model through the
-  // registry; else an org/name repo id, downloaded first and then re-indexed.
+  // catalog; else an org/name repo id, downloaded first and then indexed.
   let srcDir = hfPath;
   if (!existsSync(join(hfPath, "config.json"))) {
-    const registry = deps.registry();
-    try {
-      if (registry.list().length === 0) await registry.scan();
-      try { srcDir = registry.resolve(hfPath).path; }
-      catch (error) {
-        if (!REPO_ID.test(hfPath)) throw error;
-        signal?.throwIfAborted();
-        const download = deps.step(`downloading ${hfPath}`);
-        try {
-          srcDir = await deps.download(hfPath, { signal, onProgress: (file, received, total) => {
-            const pct = total ? Math.floor((received / total) * 100) : 0;
-            download.update(`${style.bold(hfPath)} ${style.dim(`· ${file} · ${gb(received)} / ${gb(total)} (${pct}%)`)}`);
-          } });
-        } catch (error) { download.fail(signal?.aborted ? "download cancelled" : "download failed"); throw error; }
-        download.done(`${style.bold(hfPath)} ${style.dim("downloaded · verified")}`);
-        await registry.scan();
-      }
-    } finally { registry.close(); }
+    try { srcDir = (await deps.catalog.find(hfPath)).directory; }
+    catch (error) {
+      if (!REPO_ID.test(hfPath)) throw error;
+      signal?.throwIfAborted();
+      const download = terminal.step(`downloading ${hfPath}`);
+      try {
+        srcDir = (await deps.catalog.download(hfPath, { ...(signal ? { signal } : {}), onProgress: (file, received, total) => {
+          const pct = total ? Math.floor((received / total) * 100) : 0;
+          download.update(`${style.bold(hfPath)} ${style.dim(`· ${file} · ${gb(received)} / ${gb(total)} (${pct}%)`)}`);
+        } })).directory;
+      } catch (error) { download.fail(signal?.aborted ? "download cancelled" : "download failed"); throw error; }
+      download.done(`${style.bold(hfPath)} ${style.dim("downloaded · verified")}`);
+    }
   }
 
-  // Default: `<root>/models/<model>-<bits>bit` (or `-mixed-<bpw>bpw`, `-rot<seed>`),
-  // named from the resolved source so a registry query names the real model.
-  const mlxPath = explicitPath ?? join(storagePath("models", deps.root()), quantizing
+  // Default: `<models>/<model>-<bits>bit` (or `-mixed-<bpw>bpw`, `-rot<seed>`),
+  // named from the resolved source so a catalog query names the real model.
+  const mlxPath = explicitPath ?? join(deps.modelsDir(), quantizing
     ? quantizedModelName(srcDir, { bits: qBits, targetBpw,
       rotationSeed: rotateWeights && (!trellis || opt("rotation-seed") !== undefined) ? rotationSeed : undefined,
       ...(trellisSettings ? { trellis: { bits: trellisSettings.bits, mixed: trellisSettings.kMap !== undefined } } : {}) })
@@ -229,7 +181,7 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   if (explicitPath === undefined) refuseExisting(mlxPath);
   signal?.throwIfAborted();
   const converting = dtype !== undefined || dequantize ? `${dequantize ? "dequantizing" : "casting"}${dtype ? ` to ${dtype}` : ""}` : "copying";
-  const working = deps.step(!quantizing ? `converting (${converting})` : trellisSettings
+  const working = terminal.step(!quantizing ? `converting (${converting})` : trellisSettings
     ? `quantizing (packed trellis, ${trellisSettings.kMap ? "per-tensor allocation" : `${trellisSettings.bits}-bit`} MLP — Viterbi encode, slow)` : targetBpw !== undefined
     ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)` : `quantizing (${qBits}-bit, group ${qGroup})`);
   const config: Record<string, unknown> = !quantizing
@@ -253,12 +205,12 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   const progress = (message: string) => { summary = message; working.update(message); };
   let outDir = mlxPath;
   try {
-    const result = await deps.quantize(config, mlxPath, progress, signal, { spawn: deps.spawn, entry: deps.entry });
+    const result = await deps.quantize(config, mlxPath, progress, signal);
     outDir = result.outputPath;
   } catch (error) { working.fail(signal?.aborted ? "convert cancelled" : "convert failed"); throw error; }
   working.done(summary ?? (quantizing ? "quantized" : "converted"));
   deps.log();
-  deps.box([
+  terminal.box([
     `${style.green("●")} ${style.bold("convert complete")}`, "",
     `source    ${style.dim(srcDir)}`,
     `model     ${style.bold(outDir)}`,
@@ -270,28 +222,27 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   ]);
 
   if (uploadRepo === undefined) return;
-  await publishModel(deps, { kind: "quantize", repoId: uploadRepo, dir: outDir, what: "converted" }, signal);
+  await publishModel(deps, { repoId: uploadRepo, dir: outDir }, signal);
 }
 
-/** The write-token check `--upload-repo` runs before any work (convert and fuse). */
-export function requireWriteToken(credentials: Pick<ReturnType<typeof createHfCredentials>, "get">): void {
-  if (!credentials.get())
+/** The write-token check `--upload-repo` runs before any work. */
+function requireWriteToken(catalog: Pick<ModelCatalog, "canPublish">): void {
+  if (!catalog.canPublish())
     throw new Error("--upload-repo needs a Hugging Face WRITE token and none was found —\n" +
       "run `hf auth login`, export HF_TOKEN, or save one in the web UI (Settings → Hugging Face).");
 }
 
-/** The push after a successful `convert`/`fuse`: an owned step, then, on failure, a
+/** The push after a successful `convert`: an owned step, then, on failure, a
  * hint naming the retry command; the model on disk is complete either way. */
-export async function publishModel(deps: Pick<ConvertDependencies, "step" | "publish" | "log">,
-  request: { kind: PublishRequest["kind"]; repoId: string; dir: string; what: string }, signal?: AbortSignal): Promise<void> {
+async function publishModel(deps: ConvertDependencies, request: { repoId: string; dir: string }, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
-  const { repoId, dir } = request;
-  const uploading = deps.step(`uploading ${dir} → ${repoId}`);
+  const { repoId, dir } = request, { style } = deps.terminal;
+  const uploading = deps.terminal.step(`uploading ${dir} → ${repoId}`);
   let uploaded: { url: string };
-  try { uploaded = await deps.publish({ kind: request.kind, repoId, sourcePath: dir, signal }); }
+  try { uploaded = await deps.catalog.publish(dir, { repoId, ...(signal ? { signal } : {}) }); }
   catch (error) {
     // The model is complete either way; only the push is undone or unfinished.
-    const hint = `the ${request.what} model is intact at ${dir} — retry with: mlx-bun upload --path ${dir} --upload-repo ${repoId}`;
+    const hint = `the converted model is intact at ${dir} — retry with: mlx-bun upload --path ${dir} --upload-repo ${repoId}`;
     if (signal?.aborted) { uploading.fail("upload cancelled"); deps.log(hint); throw signal.reason; }
     uploading.fail(`upload failed: ${message(error)}`);
     throw new Error(hint);

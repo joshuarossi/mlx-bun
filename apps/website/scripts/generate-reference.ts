@@ -55,7 +55,7 @@ export function commandReference(source: string): CommandReference[] {
   });
 }
 
-/** A manifest's verbs as command entries. `number` options render like `string` ones: both take a value. */
+/** A manifest's verbs as command entries. `number` options render like `string` ones: both take a value; a `short` spelling is listed. */
 export function moduleCommandReference(source: string, path: string): CommandReference[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   let manifest: ts.Expression | undefined;
@@ -77,7 +77,8 @@ export function moduleCommandReference(source: string, path: string): CommandRef
     return { name, description: literal(fields, "summary"), positional: positional.map(item => item.required ? `<${item.name}>` : `[${item.name}]`).join(" "),
       options: list(fields, "options").map(option => {
         const parts = properties(option), type = literal(parts, "type");
-        return { name: literal(parts, "name"), type: type === "number" ? "string" : type, description: literal(parts, "summary") };
+        return { name: literal(parts, "name"), type: type === "number" ? "string" : type, description: literal(parts, "summary"),
+          ...(parts.has("short") ? { short: literal(parts, "short") } : {}) };
       }) };
   });
 }

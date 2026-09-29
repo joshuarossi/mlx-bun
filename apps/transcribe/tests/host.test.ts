@@ -17,7 +17,8 @@ function catalog(entries: CatalogEntry[]): ModelCatalog {
   return {
     list: async () => entries, resolve: async id => entries.find(item => item.id === id),
     find: async query => entries.find(item => item.id === query) ?? (() => { throw new Error(`no model matching "${query}"`); })(),
-    estimate: async () => undefined, register: async () => { throw new Error("unused"); }, download: async () => { throw new Error("unused"); },
+    estimate: async () => undefined, locate: async () => undefined, register: async () => { throw new Error("unused"); }, download: async () => { throw new Error("unused"); },
+    canPublish: () => false, publish: async () => { throw new Error("unused"); },
   };
 }
 

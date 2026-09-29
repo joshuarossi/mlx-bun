@@ -138,13 +138,16 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, quantize, train, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets landed (its browser panel,
-    `web/browser/dataset.ts`, moves with the web shell). Modules contribute to each other through the
+  - [ ] (d) Remaining modules, one PR each: models, train, benchmarks, chat, memory
+    (last, moved as is: the memory feature stays deferred). Datasets and quantize landed (their browser
+    panels, `web/browser/dataset.ts` and `web/browser/quantize.ts`, move with the web shell; quantize's
+    panel calls the app-shell's toast, push and library-refresh helpers, so it needs the shell's panel
+    contract first). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
+    picker also calls it). Modules contribute to each other through the
     `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
     hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
     when the first module that declares them lands (they refuse them until then); job runners are served
-    by any host that binds `jobs` (the app's job host runs `task` runners; `process` runners with quantize).
+    by any host that binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners).
     Exit per module: its domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and
     served-surface inventories are unchanged.
   - [ ] (e) Model host events reach every consumer. Residency, live switching, saved state and the model router landed
