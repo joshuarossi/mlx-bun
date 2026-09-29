@@ -2,33 +2,30 @@
 // built-in draft provider over its target, with plain, affine, TurboQuant or
 // per-layer KV and an optional delayed start. Requests are placed by the
 // binding's plan and bound through methodRequest, then run in the binding's
-// execution group, as the app composes them. This ports main's shared-group
-// consumers, which ran against the group directly:
-// `02d723a:tests/parity/qwen-mtp-serving-group.test.ts` (library part; its HTTP
-// part belongs to the app), `qwen-mtp-generated-prefix.test.ts` and
-// `adapter-lookup.test.ts`. Checked within this tree:
+// execution group, as the app composes them. Checked within this tree:
 // - placement: the configured provider/target/KV combination resolves to
 //   continuous speculation (a refusal fails with the plan's reasons);
 // - B1 equals the serial producer (`specServeRun`) in tokens and draft counts
 //   when that producer serves the settings (no per-layer KV, start 0, no custom
 //   window, whose wrap ends its speculation), or repeats exactly otherwise; B4
-//   cohorts repeat exactly and run real rounds;
+//   cohorts (submitted under an admission hold, released together) prefill as
+//   one cohort, repeat exactly and run real rounds;
 // - retirement in a B4 cohort: a stop, a consumer failure and an abort at exact
-//   counts after the cohort formed, a survivor to its budget, a drained group,
-//   and EOS on the first token; a late joiner with a longer prompt and a joiner
+//   counts, no token published after retirement, a survivor to its budget, a
+//   drained group, and EOS on the first token; a late joiner with a longer prompt and a joiner
 //   admitted during the first prefill chunk, each repeating exactly;
-// - companion state: a repeated prompt restores its prompt snapshot with the
-//   draft attachment from RAM; stopped and finished rows publish generated
-//   prefixes with the provider's attachment, cancelled and failed rows none;
+// - companion state: the B4 prefix cohort prefills together; a repeated prompt
+//   restores its prompt snapshot with the draft attachment from RAM; stopped and
+//   finished rows publish generated prefixes with the provider's attachment, cancelled and failed rows none;
 //   continuations restore them from RAM, repeatably and without mutating the
 //   stored entries, and, after a durable flush and a provider reload, from a
 //   fresh SSD store with identical tokens and entry digests;
 // - with MLX_BUN_TEST_SPEC_ADAPTER, multi-row adapter requests with the draft
 //   configured: every adapter row is served, speculating only through a
 //   provider that supports target adapters and otherwise decoding ordinarily
-//   with the draft ignored, as main did; each row equals its B1 control without
-//   a draft (greedy tokens), seeded B4 cohorts repeat, groups never mix adapter
-//   contexts, a failing row leaves its peers intact, and prefix reuse stays
+//   with the draft ignored; the adapter changes the B1 control's logprobs; each
+//   row equals its B1 control without a draft (greedy tokens), seeded B4 cohorts
+//   repeat, groups never mix adapter contexts, a failing row leaves its peers intact, and prefix reuse stays
 //   isolated by adapter. Drafted base rows join these checks where placement
 //   serves them; delayed affine KV on MiniCPM5 and encoded Universal graphs
 //   refuses them by design (genuine delayed speculation is excluded).
@@ -42,7 +39,7 @@
 // and optionally
 //   MLX_BUN_TEST_SPEC_KV=bf16|4|8|turbo|config   (config: the target's kv_config.json)
 //   MLX_BUN_TEST_SPEC_KV_START=<n>                (default 0)
-//   MLX_BUN_TEST_SPEC_DEPTH=<n>                   (default: main's 2, and 3 for prefixes)
+//   MLX_BUN_TEST_SPEC_DEPTH=<n>                   (default 2, and 3 for prefixes)
 //   MLX_BUN_TEST_SPEC_WINDOW=<n>   a custom graph over a Llama-family target's unchanged
 //                                  weights: alternating sliding (window n) and full layers
 //                                  (not a published model)
@@ -97,7 +94,7 @@ export function optIn(env: Record<string, string | undefined>) {
 }
 type Inputs = NonNullable<ReturnType<typeof optIn>>;
 
-/** The attachment a provider's generated prefix carries, as main checked it. */
+/** The attachment a provider's generated prefix carries. */
 export function attachmentMatches(kind: Kind, tokens: number, attachment: A): boolean {
   if (kind === "ngram") return attachment?.tensors?.[0]?.shape?.[0] === tokens;
   if (kind === "mtp") return attachment?.metadata?.draftOffset === tokens - 1;
@@ -169,10 +166,27 @@ async function bindFor(loaded: Loaded, provider: A, depth: number) {
       `placement: ${plan.method}/${plan.mechanism} (${plan.reasons.join(", ")})`);
     return binding.methodRequest!(plan, options)!;
   };
-  const group = (options: { maxBatch?: number; promptCache?: A } = {}) => binding.createBatchGroup({ maxBatch: options.maxBatch ?? 4,
-    ...(loaded.kv.scheme && quantizedBatch ? { kvScheme: loaded.kv.scheme } : {}),
-    ...(options.promptCache ? { promptCache: options.promptCache } : {}) });
+  /** An execution group. `held` keeps admission closed until `release()`, so
+   * rows submitted meanwhile enter as one cohort. */
+  const group = (options: { maxBatch?: number; promptCache?: A; held?: boolean } = {}) => {
+    let held = options.held ?? false;
+    const created: A = binding.createBatchGroup({ maxBatch: options.maxBatch ?? 4, admissionHeld: () => held,
+      ...(loaded.kv.scheme && quantizedBatch ? { kvScheme: loaded.kv.scheme } : {}),
+      ...(options.promptCache ? { promptCache: options.promptCache } : {}) });
+    return Object.assign(created, { release() { held = false; created.kick(); } });
+  };
   return { binding, place, method, group };
+}
+
+/** Target forward shapes while no row has produced a token: the prefill cohort. */
+function watchPrefill(model: A, outputs: number[][]) {
+  const shapes: number[][] = [];
+  const forward = model.forwardHidden.bind(model);
+  const spy = spyOn(model, "forwardHidden").mockImplementation((ids: A, ...rest: A[]) => {
+    if (outputs.every(tokens => tokens.length === 0)) shapes.push([...ids.shape]);
+    return forward(ids, ...rest);
+  });
+  return { shapes, restore: () => spy.mockRestore() };
 }
 
 const inputs = optIn(Bun.env);
@@ -183,7 +197,8 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
   const loaded = await load(inputs!);
   const { model } = loaded;
-  const fullCohort = inputs!.kind === "mtp";
+  // Full-prefill providers feed the whole prompt; tail-split ones hold its last token for the first round.
+  const prefillLength = (prompt: number[]) => prompt.length - (inputs!.kind === "mtp" ? 0 : 1);
   let provider: A;
   try {
     provider = await loaded.loadProvider();
@@ -197,18 +212,25 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
     const old = inputs!.kv !== "config" && inputs!.start === 0 && inputs!.window === undefined
       ? await specServeRun(model, provider, depth, prompt, options, token => { reference.push(token); }) : undefined;
     clearCache();
+    // Rows submitted under an admission hold, released together: one prefill cohort.
     const run = async (count: number) => {
-      const group = groupOf();
+      const group = groupOf({ held: true });
       let maxRows = 0;
       const tokens = Array.from({ length: count }, () => [] as number[]);
+      const prefill = watchPrefill(model, tokens);
       try {
-        const stats = await Promise.all(tokens.map(output => group.submit({
+        const pending = tokens.map(output => group.submit({
           method: method(options), promptIds: prompt, maxTokens: options.maxTokens, eosTokenIds: [],
           onToken(token: number) { output.push(token); maxRows = Math.max(maxRows, group.activeRows); },
-        })));
+        }));
+        group.release();
+        const stats = await Promise.all(pending);
         expect(group.activeRows + group.pendingRows).toBe(0);
+        // The whole cohort prefills together: its first forward holds every row's prompt.
+        expect(prefill.shapes[0]).toEqual([count, prefillLength(prompt)]);
+        expect(prefill.shapes.every(shape => shape[0] === count)).toBe(true);
         return { tokens, stats, maxRows };
-      } finally { await group.close(); clearCache(); }
+      } finally { prefill.restore(); await group.close(); clearCache(); }
     };
     const single = await run(1);
     if (old) {
@@ -235,32 +257,31 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
     }
     console.log(JSON.stringify({ kind: inputs!.kind, kv: inputs!.kv, start: inputs!.start, single: single.stats, batch: batch.stats }));
 
-    // Retirement: stop, consumer failure and abort after a four-row cohort formed.
-    const retiring = groupOf();
-    const aborted = new AbortController(), seen = [0, 0, 0, 0], afterJoin = [0, 0, 0, 0];
-    let formed = fullCohort, retirementMaxRows = 0;
+    // Retirement: stop, consumer failure and abort inside a four-row cohort.
+    const retiring = groupOf({ held: true });
+    const aborted = new AbortController(), seen = [0, 0, 0, 0];
+    let retirementMaxRows = 0;
     try {
-      const outcomes = await Promise.allSettled(seen.map((_, row) => retiring.submit({
+      const pending = seen.map((_, row) => retiring.submit({
         method: method(options), promptIds: prompt, maxTokens: 24, eosTokenIds: [],
         ...(row === 2 ? { signal: aborted.signal } : {}),
         onToken() {
           retirementMaxRows = Math.max(retirementMaxRows, retiring.activeRows);
           seen[row]!++;
-          // Tail-pending methods may start emitting before every admission.
-          if (retiring.activeRows === 4) formed = true;
-          if (formed) afterJoin[row]!++;
-          if (row === 0 && afterJoin[row] === 3) return false;
-          if (row === 1 && afterJoin[row] === 4) throw new Error("consumer failed");
-          if (row === 2 && afterJoin[row] === 5) aborted.abort(new Error("request cancelled"));
+          if (row === 0 && seen[row] === 3) return false;
+          if (row === 1 && seen[row] === 4) throw new Error("consumer failed");
+          if (row === 2 && seen[row] === 5) aborted.abort(new Error("request cancelled"));
         },
-      })));
+      }));
+      retiring.release();
+      const outcomes = await Promise.allSettled(pending);
       expect(retirementMaxRows).toBe(4);
       expect(outcomes[0]).toMatchObject({ status: "fulfilled", value: { generatedTokens: seen[0], finishReason: "stop" } });
       expect(outcomes[1]).toMatchObject({ status: "rejected", reason: { message: "consumer failed" } });
       expect(outcomes[2]).toMatchObject({ status: "rejected", reason: { message: "request cancelled" } });
       expect(outcomes[3]).toMatchObject({ status: "fulfilled", value: { generatedTokens: 24, finishReason: "length" } });
-      expect(afterJoin.slice(0, 3)).toEqual([3, 4, 5]);
-      if (fullCohort) expect(seen).toEqual([3, 4, 5, 24]);
+      // No row publishes past its retirement.
+      expect(seen).toEqual([3, 4, 5, 24]);
       expect(retiring.activeRows + retiring.pendingRows).toBe(0);
       const eos = await retiring.submit({ method: method(options), promptIds: prompt, maxTokens: 24,
         eosTokenIds: [reference[0]!], onToken() { throw new Error("EOS reached the content sink"); } });
@@ -391,19 +412,14 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
     }
     return put(...args);
   });
-  let maxPrefillRows = 0;
-  const forward = model.forwardHidden.bind(model);
-  const prefillProbe = spyOn(model, "forwardHidden").mockImplementation((ids: A, caches: A, ...rest: A[]) => {
-    if (outputs.every(tokens => tokens.length === 0)) maxPrefillRows = Math.max(maxPrefillRows, ids.shape[0]!);
-    return forward(ids, caches, ...rest);
-  });
+  const prefill = watchPrefill(model, outputs);
   try {
     provider = await loaded.loadProvider();
     const bound = await bindFor(loaded, provider, depth);
-    const group = bound.group({ promptCache: cache });
+    const group = bound.group({ promptCache: cache, held: true });
     const aborted = new AbortController(); let maxRows = 0;
     try {
-      const outcomes = await Promise.allSettled(prompts.map((promptIds, row) => group.submit({
+      const pending = prompts.map((promptIds, row) => group.submit({
         method: bound.method(options), promptIds,
         cacheNamespace: `generated-${row}`, cacheSessionId: `agent-${row}`, maxTokens: 20, eosTokenIds: [],
         ...(row === 3 ? { signal: aborted.signal } : {}),
@@ -413,10 +429,13 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
           if (row === 2 && outputs[row]!.length === 7) throw new Error("failed consumer");
           if (row === 3 && outputs[row]!.length === 8) aborted.abort(new Error("cancelled consumer"));
         },
-      })));
+      }));
+      group.release();
+      const outcomes = await Promise.allSettled(pending);
       expect(maxRows).toBe(4);
-      if (kind === "mtp") expect(maxPrefillRows).toBe(4);
-      else expect(maxPrefillRows).toBeGreaterThanOrEqual(3);
+      // The four rows prefill as one cohort (the snapshot boundary may split the prompt).
+      expect(prefill.shapes.length).toBeGreaterThan(0);
+      expect(prefill.shapes.every(shape => shape[0] === 4)).toBe(true);
       expect(outcomes.map(value => value.status)).toEqual(["fulfilled", "fulfilled", "rejected", "rejected"]);
       expect([...snapshots.keys()].sort()).toEqual([0, 1]);
     } finally { await group.close(); }
@@ -464,10 +483,10 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
       try { expect(digest(hit)).toBe(snapshot.hash); } finally { release(hit); releasePrefetch(); }
       expect(await continueRow(row, restored)).toEqual(warm[row]!);
     }
-    console.log(JSON.stringify({ kind, kv: inputs!.kv, depth, generated: outputs.map(tokens => tokens.length),
+    console.log(JSON.stringify({ kind, kv: inputs!.kv, depth, generated: outputs.map(tokens => tokens.length), prefill: prefill.shapes,
       prefixes: [...snapshots.values()].map(item => item.ids.length) }));
   } finally {
-    putSpy.mockRestore(); prefillProbe.mockRestore();
+    putSpy.mockRestore(); prefill.restore();
     try { await cache.durability.flush(); }
     finally {
       cache.clear(); restored?.clear();
@@ -478,12 +497,15 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
 }, 900_000);
 
 test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, B1 controls, grouped contexts, failure cleanup and prefix isolation", async () => {
-  const { generate } = await import("@mlx-bun/inference");
+  const { generate, loadTokenizer } = await import("@mlx-bun/inference");
   const { AdapterManager } = await import("@mlx-bun/inference/adapters");
   const { createRowSampling } = await import("@mlx-bun/inference/execution");
   const { makeStepSampler } = await import("@mlx-bun/inference/sampling");
   const { PromptCache } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
+  // The target's own tokenization of a short instruction, so any target family works.
+  const prompt = (await loadTokenizer(inputs!.target)).encode("Write one sentence about the sea.");
+  expect(prompt.length).toBeGreaterThan(4);
   const loaded = await load(inputs!);
   const { model } = loaded;
   let provider: A;
@@ -501,7 +523,6 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
     frames.push({ batch: ids.shape[0]!, adapters: [...model.loraState.active] });
     return forward(ids, caches, ...rest);
   });
-  const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
   type Request = { adapters: string[]; tokens?: number; fail?: boolean };
   try {
     provider = await loaded.loadProvider();
@@ -577,7 +598,9 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
         return { results, frames: [...frames] };
       } finally { await group.close(); expect(model.loraState.active).toEqual([]); clearCache(); }
     };
-    const serial = await run(1, [upper]);
+    const serial = await run(1, [upper]), baseSerial = await run(1, [base]);
+    // The mounted adapter is live: its control differs from the base control.
+    expect(serial.results[0]!.metadata).not.toEqual(baseSerial.results[0]!.metadata);
     expect((await run(4, [upper])).results[0]!.output).toEqual(serial.results[0]!.output);
     const pair = await run(4, [upper, upper]);
     expect(pair.frames.some(frame => frame.batch === 2)).toBe(true);
@@ -588,7 +611,7 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
       .toEqual(four.results.map(({ output, metadata }) => ({ output, metadata })));
     const baseAlone = baseServed ? await run(4, [base]) : undefined;
     if (baseAlone) {
-      expect(baseAlone.results[0]!.output).toEqual((await run(1, [base])).results[0]!.output);
+      expect(baseAlone.results[0]!.output).toEqual(baseSerial.results[0]!.output);
       const mixed = await run(4, [upper, upper, base, upper]);
       expect(mixed.results.slice(0, 2).map(result => result.output)).toEqual(pair.results.map(result => result.output));
       expect(mixed.results[2]!.output).toEqual(baseAlone.results[0]!.output);
