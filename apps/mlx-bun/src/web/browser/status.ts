@@ -269,48 +269,20 @@ export function createStatusController() {
     }).join("");
   }
 
-  // The metrics module's panel is a self-contained custom element the module serves itself
-  // (`/api/metrics/panel.js`); this page mounts it while visible and knows nothing else about it. A server
-  // without the module answers 404, the script fails to load, and the section stays hidden.
-  let metricsPanel: (HTMLElement & { connection?: { apiBase: string; eventsUrl: string } }) | null = null;
-  function loadMetricsPanel(): void {
-    const script = document.createElement("script");
-    script.type = "module";
-    script.src = "/api/metrics/panel.js";
-    script.onload = () => {
-      if (!customElements.get("mlx-metrics-panel")) return;
-      metricsPanel = document.createElement("mlx-metrics-panel");
-      metricsPanel.connection = { apiBase: "/api/metrics", eventsUrl: "/api/metrics/stream" };
-      if (visible) showMetricsPanel();
-    };
-    document.head.append(script);
-  }
-  let visible = false;
-  function showMetricsPanel(): void {
-    if (!metricsPanel) return;
-    $("st-metrics-host").append(metricsPanel);
-    $("st-metrics-section").style.display = "";
-  }
-
   return {
     init() {
-      loadMetricsPanel();
       // trigger scroll reveals once mounted
       const page = $("status-page");
       requestAnimationFrame(() => page.classList.add("lit"));
       page.classList.add("lit");
     },
     enter() {
-      visible = true;
-      showMetricsPanel();
       tick();
       timer = setInterval(tick, 2000);
       loadLibrary();
       libTimer = setInterval(loadLibrary, 15_000);
     },
     leave() {
-      visible = false;
-      metricsPanel?.remove();
       if (timer) clearInterval(timer); timer = null;
       if (libTimer) clearInterval(libTimer); libTimer = null;
     },

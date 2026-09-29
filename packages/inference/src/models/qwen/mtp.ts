@@ -8,6 +8,7 @@ import { disposing } from "../../layers/helpers";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { type Cache } from "../../contracts/mlx/cache";
+import type { RecurrentMtpModule } from "../../contracts/mlx/drafter";
 import { DenseLinear } from "../../layers/dense-linear";
 import { compiledSwiglu } from "../../layers/swiglu";
 import { Qwen3Attention } from "./qwen3_5";
@@ -26,7 +27,7 @@ function loadMtpLinear(
 }
 
 /** The one MTP decoder block: fc-merge → attention → swiglu MLP → norm. */
-export class MtpModule {
+export class MtpModule implements RecurrentMtpModule {
   readonly fc: MtpLinear;
   readonly preFcNormEmbedding: RMSNorm;
   readonly preFcNormHidden: RMSNorm;

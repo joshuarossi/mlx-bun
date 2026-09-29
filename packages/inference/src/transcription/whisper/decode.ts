@@ -9,8 +9,7 @@ import { deflateSync } from "node:zlib";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { WhisperKvCache, type WhisperModel } from "../../models/whisper/model";
-import { FastKvCache, type FastFilterConfig } from "../../models/whisper/fast";
+import type { FastFilterConfig, WhisperDecoderCache, WhisperFastCache, WhisperGraph } from "../../contracts/mlx/whisper";
 import { WHISPER_CHUNK_SECONDS } from "../../input/audio/whisper-mel";
 import { normalizeWhisperLanguage, type WhisperTask, type WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
 
@@ -29,7 +28,7 @@ export interface WhisperDecodingOptions {
   /** Token ids to suppress; "-1" = the tokenizer's non-speech set (default). */
   suppressTokens?: number[] | "-1" | null;
   /** Execution path: `true` (default) runs the optimized graphs
-   *  (packages/inference/src/models/whisper/fast.ts) for temperature-0 decoding; `false` forces the
+   *  (the graph's fast path) for temperature-0 decoding; `false` forces the
    *  faithful oracle graph. Sampling (temperature > 0) always uses the
    *  faithful path. */
   fast?: boolean;
@@ -77,7 +76,7 @@ const dispose = (old: MlxArray, next: MlxArray): MlxArray => {
 
 /** DecodingTask over one audio window (n_audio = 1). */
 export class WhisperDecodingTask {
-  readonly model: WhisperModel;
+  readonly model: WhisperGraph;
   readonly tokenizer: WhisperTokenizer;
   readonly options: Required<Omit<WhisperDecodingOptions, "language">> & { language: string | null };
   readonly nGroup: number;
@@ -96,7 +95,7 @@ export class WhisperDecodingTask {
   /** Language for the tokenizer sequence (oracle: options.language or "en"). */
   readonly tokenizerLanguage: string;
 
-  constructor(model: WhisperModel, tokenizer: WhisperTokenizer, options: WhisperDecodingOptions) {
+  constructor(model: WhisperGraph, tokenizer: WhisperTokenizer, options: WhisperDecodingOptions) {
     this.model = model;
     this.tokenizer = tokenizer;
     const o = {
@@ -278,7 +277,7 @@ export class WhisperDecodingTask {
   /** detect_language on encoded audio features [1, 1500, D]. */
   detectLanguage(audioFeatures: MlxArray): { token: number; code: string; probs: Record<string, number> } {
     const t = this.tokenizer;
-    const cache = new WhisperKvCache(this.model.dims.nTextLayer);
+    const cache = this.model.makeCache();
     const x = ops.fromInt32([t.sot], [1, 1]);
     const { logits: raw } = this.model.decode(x, audioFeatures, cache);
     x.dispose();
@@ -349,7 +348,7 @@ export class WhisperDecodingTask {
   #runGreedyFast(audioFeatures: MlxArray, rows: number[][], language: string, languageProbs: Record<string, number> | undefined): WhisperDecodingResult {
     const { model, tokenizer: t } = this;
     const B = rows.length;
-    const cache = new FastKvCache();
+    const cache = model.fast.makeCache();
     const cfg = this.#fastFilterConfig();
     model.fast.crossKv(audioFeatures, cache);
     const sumLp: number[] = new Array(B).fill(0);
@@ -481,9 +480,9 @@ export class WhisperDecodingTask {
     const fast = this.useFast;
     if (fast && this.options.beamSize === null && !this.options.observer.onStepLogits)
       return this.#runGreedyFast(audioFeatures, rows, language!, languageProbs);
-    const cache: WhisperKvCache | FastKvCache = fast ? new FastKvCache() : new WhisperKvCache(model.dims.nTextLayer);
+    const cache: WhisperDecoderCache = fast ? model.fast.makeCache() : model.makeCache();
     const fastCfg = fast ? this.#fastFilterConfig() : null;
-    if (fast) model.fast.crossKv(audioFeatures, cache as FastKvCache);
+    if (fast) model.fast.crossKv(audioFeatures, cache as WhisperFastCache);
     const decoder = this.options.beamSize !== null
       ? new BeamSearchDecoder(this.options.beamSize, t.eot, cache, this.options.patience)
       : new GreedyDecoder(this.options.temperature, t.eot);
@@ -500,8 +499,8 @@ export class WhisperDecodingTask {
             ? ops.fromInt32(rows.flat(), [nGroup, initial.length])
             : ops.fromInt32(rows.map((r) => r[r.length - 1]!), [nGroup, 1]);
           const raw = fast
-            ? model.fast.prefill(inputTokens, cache as FastKvCache)
-            : model.decode(inputTokens, audioFeatures, cache as WhisperKvCache).logits;
+            ? model.fast.prefill(inputTokens, cache as WhisperFastCache)
+            : model.decode(inputTokens, audioFeatures, cache).logits;
           inputTokens.dispose();
           const preLogits = raw.astype(Dtype.float32);
           raw.dispose();
@@ -535,7 +534,7 @@ export class WhisperDecodingTask {
             atBegin: rows[0]!.length === this.sampleBegin,
           };
           if (decoder instanceof BeamSearchDecoder) {
-            const out = model.fast.beamStep(rows.map((r) => r[r.length - 1]!), cache as FastKvCache, fastCfg!, decoder.beamSize + 1, state);
+            const out = model.fast.beamStep(rows.map((r) => r[r.length - 1]!), cache as WhisperFastCache, fastCfg!, decoder.beamSize + 1, state);
             this.options.observer.onStepLogits?.(i, out.pre);
             out.pre.dispose();
             const step = decoder.updateFromTopK(rows, out.idx, out.vals, sumLogprobs);
@@ -546,7 +545,7 @@ export class WhisperDecodingTask {
             if (completed) break;
             continue;
           }
-          const out = model.fast.step(rows.map((r) => r[r.length - 1]!), cache as FastKvCache, fastCfg!, state);
+          const out = model.fast.step(rows.map((r) => r[r.length - 1]!), cache as WhisperFastCache, fastCfg!, state);
           last = out.pre;
           filtered = out.filtered;
           this.options.observer.onStepLogits?.(i, last);

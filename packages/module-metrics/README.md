@@ -25,8 +25,8 @@ other event, so a recorded stream always renders the same `MetricsSnapshot` (`sr
 Routes (declared in `src/manifest.ts`, mounted at `/api/metrics`): `GET /snapshot` (JSON), `GET /stream`
 (server-sent: `retry: 1500`, then an `event: snapshot` frame on connect and one after each change, at most two a
 second, with `: keepalive` comments every 15 s; a client that stops reading skips frames instead of buffering them),
-`GET /history`, `GET /history/<id>`, `GET /bench/profiles`, `POST /bench`, `GET /bench`, `GET /bench/<id>`,
-`DELETE /bench/<id>`, and `GET /panel.js` (the panel element as a browser module).
+`GET /history`, `GET /history/<id>`, `GET /bench/profiles`, `POST /bench`, `GET /bench`, `GET /bench/<id>`
+and `DELETE /bench/<id>`.
 
 Who publishes, in the app: `@mlx-bun/app-services`' `createEventHub` is the bus (`publish` appends to each
 subscriber's bounded queue, 1024 events, dropping the oldest and counting it; handlers run later off the publisher's
@@ -64,13 +64,10 @@ job fails; performance acceptance stays unreviewed, as in bench-serve.
 
 `src/panel/index.ts` defines `<mlx-metrics-panel>`: one self-contained custom element (shadow DOM, no imports but
 its data protocol's types) that takes `connection = { apiBase, eventsUrl }`, follows the stream, and lists profiles,
-the running job and the history with a Run button. Until the web shell exists the module serves the element itself
-(`GET /api/metrics/panel.js`, its one source file with the types erased) and the app's status page mounts it while
-visible (`web/browser/status.ts` adds the script and the element; a server without the module answers 404 and the
-section stays hidden). In the shell the manifest's `panel` (`mlx-metrics-panel`, `@mlx-bun/module-metrics/panel`, path
-`/metrics`) is imported at build time and the same element is mounted with the same connection; the status-page
-loader and the route go away. The standalone binary does not embed the panel source yet, so there the route answers
-404 until the shell bundles panels.
+the running job and the history with a Run button. The app's web shell (`@mlx-bun/web-shell`) mounts it: the app's
+browser build imports the manifest's `panel.entry` (`@mlx-bun/module-metrics/panel`) and gives the shell the manifest's
+tag, title and path (a Metrics tab under Developer, route `#/metrics`) with `connection = { apiBase: "/api/metrics",
+eventsUrl: "/api/metrics/stream" }`, so the standalone binary carries it too and the module serves no script.
 
 ## Tests
 

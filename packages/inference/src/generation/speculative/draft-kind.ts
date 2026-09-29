@@ -1,5 +1,4 @@
-import { isAssistantModelType, isMtpModelType, NATIVE_MTP_DRAFT } from "../../models/drafters";
-import type { Glm52Model } from "../../models/glm52/model";
+import { isAssistantModelType, isDeepspecDrafterConfig, isMtpModelType, NATIVE_MTP_DRAFT } from "../../models/drafters";
 import type { DraftProvider } from "./source";
 import { DraftProviderRegistry, type DraftLoadRequest, type DraftProviderKind, type LoadedDraft } from "./draft-registry";
 
@@ -48,10 +47,7 @@ const dspark: DraftProviderKind = {
  *  config's block_size (e.g. 7 for dspark_gemma4_12b_block7). */
 const deepspec: DraftProviderKind = {
   kind: "deepspec", artifact: true,
-  async detect(artifact) {
-    const architectures = (await artifact.config())?.architectures;
-    return Array.isArray(architectures) && architectures[0] === "Gemma4DSparkModel";
-  },
+  detect: async artifact => isDeepspecDrafterConfig(await artifact.config()),
   async load(request) {
     const { DeepspecProvider } = await import("./sources/deepspec-source");
     const provider = await DeepspecProvider.load(artifactDir(request));
@@ -133,6 +129,6 @@ const nativeMtp = {
   kind: NATIVE_MTP_DRAFT,
   async create(graph: object): Promise<DraftProvider> {
     const { Glm52NativeMtpProvider } = await import("./sources/glm52-mtp-source");
-    return new Glm52NativeMtpProvider(graph as Glm52Model);
+    return new Glm52NativeMtpProvider(graph);
   },
 };

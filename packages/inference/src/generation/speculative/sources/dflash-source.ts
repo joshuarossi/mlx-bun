@@ -22,8 +22,8 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { DflashDrafter } from "../../../models/speculative/dflash";
-import { loadDsparkDrafter } from "../dspark/loader";
+import type { DsparkDrafterModel } from "../../../contracts/mlx/drafter";
+import { loadDsparkDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView } from "../source";
 import { targetLacks } from "../source";
 import type { DraftProjection } from "../../../contracts/mlx/draft-projection";
@@ -44,7 +44,7 @@ export class DflashProvider implements DraftProvider {
    *  serve loop never asks for more positions than the block was trained for. */
   readonly gamma: number;
 
-  private constructor(private readonly drafter: DflashDrafter, id: string, weightsBytes: number, namespace: string) {
+  private constructor(private readonly drafter: DsparkDrafterModel, id: string, weightsBytes: number, namespace: string) {
     this.id = id;
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.cfg.gamma;
@@ -68,7 +68,7 @@ export class DflashProvider implements DraftProvider {
   }
 
   static async load(modelDir: string): Promise<DflashProvider> {
-    const drafter = loadDsparkDrafter(modelDir); // variant dispatch (dspark|legacy dflash)
+    const drafter = await loadDsparkDrafter(modelDir); // variant dispatch (dspark|legacy dflash)
     const id = modelDir.split("/").filter(Boolean).at(-1)!;
     try {
       const identity = await artifactIdentity(await Bun.file(`${modelDir}/dspark.json`).text(),
@@ -95,7 +95,7 @@ export class DflashSource implements DraftSource {
   private readonly minConf = runtimeValue("MLX_BUN_DSPARK_MINCONF");
   private hCtx: MlxArray | null = null; // [1, L, m*H] — grows with the accepted stream
 
-  constructor(private readonly drafter: Pick<DflashDrafter, "cfg" | "forwardInfer">, target: TargetView) {
+  constructor(private readonly drafter: Pick<DsparkDrafterModel, "cfg" | "forwardInfer">, target: TargetView) {
     if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
     this.model = target.hiddenLayerTaps.projection;
     this.tapLayers = drafter.cfg.tapLayers;

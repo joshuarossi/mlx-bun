@@ -69,17 +69,11 @@ test("events another module publishes, and core events this module does not redu
   } finally { await loaded.stop(); }
 });
 
-test("an open stream ends when the host stops the module, and the panel route serves the element as JavaScript", async () => {
+test("an open stream ends when the host stops the module", async () => {
   const { routes, loaded } = await host();
   const response = (await routes.handle(new Request("http://x/api/metrics/stream")))!;
   const reader = response.body!.getReader();
   await reader.read();
-  const panel = (await routes.handle(new Request("http://x/api/metrics/panel.js")))!;
-  expect(panel.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-  const source = await panel.text();
-  expect(source).toContain("mlx-metrics-panel");
-  expect(source).not.toContain("import type");
-  expect(() => new Bun.Transpiler({ loader: "js" }).transformSync(source)).not.toThrow();
   await loaded.stop();
   let done = false;
   for (let reads = 0; reads < 5 && !done; reads++) done = (await reader.read()).done;

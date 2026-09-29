@@ -29,6 +29,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
+import type { WhisperDecoderCache, WhisperDims, WhisperGraph } from "../../contracts/mlx/whisper";
 import { WhisperFastPath } from "./fast";
 
 export function parseWhisperDims(raw: Record<string, unknown>): WhisperDims {
@@ -60,7 +61,7 @@ export interface WhisperLayerCache {
   crossV: MlxArray | null;
 }
 
-export class WhisperKvCache {
+export class WhisperKvCache implements WhisperDecoderCache {
   readonly layers: WhisperLayerCache[];
   constructor(nLayers: number) {
     this.layers = Array.from({ length: nLayers }, () => ({ k: null, v: null, crossK: null, crossV: null }));
@@ -96,7 +97,7 @@ export class WhisperKvCache {
   }
 }
 
-export class WhisperModel {
+export class WhisperModel implements WhisperGraph {
   readonly dims: WhisperDims;
   readonly dtype: Dtype;
   readonly #w: Weights;
@@ -119,6 +120,11 @@ export class WhisperModel {
     this.#w = weights;
     this.dims = parseWhisperDims(config.raw as Record<string, unknown>);
     this.dtype = weights.tensor("decoder.token_embedding.weight").dtype;
+  }
+
+  /** A fresh faithful-path decoder cache. */
+  makeCache(): WhisperKvCache {
+    return new WhisperKvCache(this.dims.nTextLayer);
   }
 
   get isMultilingual(): boolean {
@@ -421,5 +427,4 @@ export class WhisperModel {
   }
 }
 
-import { WhisperDims } from "./contracts";
-export { type WhisperDims } from "./contracts";
+export { type WhisperDims };

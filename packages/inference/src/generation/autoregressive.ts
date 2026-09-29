@@ -39,7 +39,7 @@ type StepExtras
 } from "../sampling/index";
 import { createKvMaintenance } from "../state/kv-maintenance";
 import { maybePageKv } from "../state/request-policy";
-import { RotatingKVCache } from "../state/rotating-kv";
+import { isRotatingPlainCache } from "../state/capabilities";
 import {
 fillTraceEnabled,
 fillTracePath,
@@ -226,7 +226,7 @@ async function* generateInner(
   // A model whose caches can do neither still gets assert-policy fills; verify
   // proposals are dropped and counted (stats.verifyUnsupported).
   const verifyCapable = fillOn && !options.kvBits && !options.kvConfig?.length && !options.turboQuant && cache.every(
-    (c) => c.isTrimmable() || c instanceof RotatingKVCache || typeof rewindable(c).specRoundRollback === "function",
+    (c) => c.isTrimmable() || isRotatingPlainCache(c) || typeof rewindable(c).specRoundRollback === "function",
   );
   closeBatchSetup?.();
 
@@ -421,7 +421,7 @@ async function* generateInner(
           // was one concat write that keeps the newest window-1 positions plus
           // the block in temporal order: dropping its rejected tail leaves at
           // least the window (accepted >= 1).
-          else rc.trim(ids.length - accepted, c instanceof RotatingKVCache);
+          else rc.trim(ids.length - accepted, isRotatingPlainCache(c));
         }
         roundOpen = false;
       } else if (roundOpen) {

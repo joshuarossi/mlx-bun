@@ -2,13 +2,13 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import { KVCache } from "../kv";
 import { cloneAttachments } from "../checkpoint";
 import { disposeResources } from "../../runtime/resources";
-import type { DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
+import { DRAFT_CHECKPOINT_SCHEMA, type DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
 
 /** The existing Qwen companion attachment is also the state interchange
  * between prepared requests and a group. Storage-tier policy stays outside. */
 export function restoreQwenMtpState(checkpoint: DraftRowCheckpoint): MtpRowState {
   const { processedTokens: tokens, attachment } = checkpoint;
-  if (attachment.schema !== "qwen-mtp-v1" || attachment.metadata.draftOffset !== tokens - 1)
+  if (attachment.schema !== DRAFT_CHECKPOINT_SCHEMA.qwenMtp || attachment.metadata.draftOffset !== tokens - 1)
     throw new Error("invalid paired Qwen MTP checkpoint alignment");
   const held = cloneAttachments([attachment])[0]!.tensors;
   let cache: KVCache | null = new KVCache();
@@ -24,7 +24,7 @@ export function captureQwenMtpState(state: MtpRowState): DraftRowCheckpoint {
     if (state.cache.offset > 0) held.push(...state.cache.temporalView());
     held.push(state.hidden.slice([0, 0, 0], [...state.hidden.shape]));
     return { processedTokens: state.cache.offset + 1,
-      attachment: { schema: "qwen-mtp-v1", metadata: { draftOffset: state.cache.offset }, tensors: held.splice(0) } };
+      attachment: { schema: DRAFT_CHECKPOINT_SCHEMA.qwenMtp, metadata: { draftOffset: state.cache.offset }, tensors: held.splice(0) } };
   } finally { disposeResources(held); }
 }
 

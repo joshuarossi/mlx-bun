@@ -1,10 +1,10 @@
 import { projectedDraftGroups } from "./projected-draft-rows";
 import type { GroupedDraftProvider, TargetView } from "../source";
 import { targetLacks } from "../source";
-import type { DeepspecDrafter } from "../../../models/speculative/deepspec";
+import type { DeepspecDrafterModel } from "../../../contracts/mlx/drafter";
 
 /** Existing pairing requirements are checked once when the provider opens. */
-export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDrafter, "cfg">): void {
+export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDrafterModel, "cfg">): void {
   if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
   const layers = drafter.cfg.num_target_layers;
   if (target.hiddenLayerTaps.layerCount !== layers) throw new Error(
@@ -12,7 +12,7 @@ export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDra
     `this model has ${target.hiddenLayerTaps.layerCount} layers — wrong (target, drafter) pairing`);
 }
 
-export function deepspecGroups(drafter: DeepspecDrafter, namespace: string): GroupedDraftProvider {
+export function deepspecGroups(drafter: DeepspecDrafterModel, namespace: string): GroupedDraftProvider {
   return projectedDraftGroups(namespace, drafter.tapLayers, target => {
     bindDeepspecTarget(target, drafter);
     return {
