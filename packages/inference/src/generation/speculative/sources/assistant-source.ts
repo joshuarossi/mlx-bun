@@ -3,9 +3,7 @@ import { artifactIdentity } from "../../../artifacts/identity";
 import { assistantGroups } from "../bindings/assistant-rows";
 // AssistantSource — the optiq KV-borrowing Gemma "-assistant" drafter
 // (packages/inference/src/models/gemma4/assistant.ts) behind the serve-time DraftSource seam. L2 oracle:
-// optiq spec_generate. This is the SAME drafter the standalone specGenerate
-// loop (packages/inference/src/generation/speculative/generate.ts) drives; here
-// it plugs into the shared verify/accept executor
+// optiq spec_generate. It plugs into the shared verify/accept executor
 // (packages/inference/src/generation/speculative/run.ts) so it composes with grammar,
 // logits processors, admission accounting, and stats like any other source.
 //
@@ -20,7 +18,7 @@ import { assistantGroups } from "../bindings/assistant-rows";
 // Drafting is GREEDY (the drafter's own argmax head), independent of the
 // request sampler — drafts are only proposals; the target's verify (which does
 // honor the sampler) decides every emitted token, so correctness holds at any
-// temperature and only the acceptance RATE moves. Matches specGenerate.
+// temperature and only the acceptance RATE moves.
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -86,8 +84,8 @@ export class AssistantSource implements DraftSource {
 
   /** Draft n tokens against the target's donor K/V, conditioning the first
    *  step on the anchor (the last emitted token + its target hidden) and
-   *  chaining the drafter's own post-projected hiddens after that — exactly
-   *  specGenerate's 2a block. anchorHidden is borrowed; never disposed here. */
+   *  chaining the drafter's own post-projected hiddens after that.
+   *  anchorHidden is borrowed; never disposed here. */
   draft(feed: number[], n: number, _stepBase: number, anchorHidden?: MlxArray): number[] {
     if (!anchorHidden) throw new Error("assistant drafter needs the target anchor hidden");
     const shared = this.target.readDonors();

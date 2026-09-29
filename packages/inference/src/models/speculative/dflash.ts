@@ -26,9 +26,9 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** STS calibration (§3.2.1) — per-position confidence thresholds fit on real
- *  (confidence, accepted) verify outcomes
- *  (packages/inference/src/generation/speculative/dspark/calibration.ts,
- *  `02d723a:scripts/dspark.ts` calibrate). Consumed by the confidence-scheduled
+ *  (confidence, accepted) verify outcomes (the fitter lived in the deleted
+ *  standalone loop; `git log -- generation/speculative/dspark/calibration.ts`).
+ *  Consumed by the confidence-scheduled
  *  draft-length pruning (Alg 1, single-user form) in forwardInfer. Stored
  *  inside DflashConfig so it round-trips through dspark.json for free.
  *  ABSENT ⟹ no pruning — an uncalibrated checkpoint drafts exactly as before. */
@@ -93,10 +93,9 @@ export interface DflashDraftOpts {
   thresholds?: number[];
   minConf?: number;
   /** Materialize+concat the per-position draft logits into the returned
-   *  DflashDraftBlock.draftLogits. Default true (the standalone
-   *  dflashGenerate sampling-verify path reads it). The serve-loop draft()
-   *  path runs its own verify lm-head and never reads it — pass false there
-   *  to skip the dead concat + a host-unrelated GPU alloc every round. */
+   *  DflashDraftBlock.draftLogits. Default true. The serve-loop
+   *  draft() path runs its own verify lm-head and never reads it — pass false
+   *  there to skip the dead concat + a host-unrelated GPU alloc every round. */
   collectLogits?: boolean;
   /** Return confidence telemetry; pruning still computes it when needed. */
   collectConfidence?: boolean;
