@@ -3,8 +3,9 @@
 // gateway's execution lock so decoding never overlaps chat.
 import type { LoadedModules } from "@mlx-bun/app-host";
 import { activateModules, type HostServices } from "@mlx-bun/app-services";
-import { installedModules } from "../modules";
+import { installedModules, type ModuleScope } from "../modules";
 
-export async function loadInstalledModules(host: Pick<HostServices, "bindings">): Promise<LoadedModules> {
-  return activateModules(await installedModules(), host);
+/** Activate the installed modules of a scope (see `ModuleScope`) over the host's core services. */
+export async function loadInstalledModules(host: Pick<HostServices, "bindings">, scope: ModuleScope = "model"): Promise<LoadedModules> {
+  return activateModules(await installedModules(scope), host);
 }

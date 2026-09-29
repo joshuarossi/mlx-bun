@@ -142,7 +142,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal(await state.memorySurface(), undefined);
     assert.equal(state.responses.size, 0);
     assert.equal(state.sessionDir, "/unused/sessions");
-    for (const name of ["hub", "sessions", "memory", "jobs", "quantize", "dataset", "finetune", "publishing"])
+    for (const name of ["hub", "sessions", "memory", "jobs", "quantize", "appModules", "finetune", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);
@@ -264,7 +264,7 @@ function fakeHost(events: string[], beforeBind?: () => void | Promise<void>, clo
       beforeDrain: async () => { await hooks.beforeDrain?.(); events.push("producers close"); },
       closeEngine: async () => { events.push("engine close"); } }, { unix: hooks.unix! });
     // What the model host lends the app state; the admin lease reaches the gateway through it.
-    if (hooks.link) hooks.link.current = { port: 0, unix: hooks.unix, invalidateLibrary() {},
+    if (hooks.link) hooks.link.current = { model: { id: model.repoId, bytes: 0 }, port: 0, unix: hooks.unix, invalidateLibrary() {},
       async acquireExecutionLease() { events.push("lease"); return { dispose() { events.push("release"); } }; } };
     return { downloads: { active: [], start() {} }, async close() {
       events.push("app close"); await listener.close();

@@ -158,7 +158,7 @@ record) puts the worker's last stderr line into the rejection.
 
 In the app form, memory synthesis runs on the app's own task model, as in
 `serve`, and dataset jobs reach the model through the attached host's own
-`/v1/chat/completions` over its socket (the loopback URL's
+`/v1/chat/completions` over its socket (the request's
 `127.0.0.1:<--port>` is a placeholder), so they call the same app. Pi web chat
 does not: its SDK takes a base URL rather than a fetch, so it targets TCP
 `127.0.0.1:<--port>`, as in the model form and main. An embedding host that
@@ -1196,70 +1196,17 @@ so the fused model and the adapter are not bit-exact by contract. Run with
 
 ## Dataset jobs
 
-`dataset/` owns the existing template inputs, generation, Hugging Face import,
-and 90/10 JSONL split. `server/dataset-routes.ts` owns template discovery and
-submission; CLI composition supplies the bound loopback port and runner. Jobs
-run in-process and call the normal HTTP inference surface, so each inference
-request uses continuous batching without an exclusive GPU lease. Shutdown
-cancels requests and retry waits and joins tasks before closing job storage.
-
-All thirteen templates are enabled. `verified_code` keeps main's prompt, code
-extraction and rows: every extracted program is kept with `metadata.verified`,
-`language`, and `verify_error` (a failure's first 400 characters of stderr, else
-stdout, or `unverified (<reason>): <diagnostic>`); other languages are not run.
-Main ran the code with the host's `python3`. Here `dataset/python-verifier.ts`
-owns the only execution path, `verifyPython(source, signal)`, used by the dataset
-job and by `scripts/verify-python.ts`; there is no host-Python fallback, and
-verification takes no inference lease.
-
-Each program runs in a new container created with `--pull=never` for linux/arm64
-from the digest-pinned image: no network, shared memory, mounts, environment
-or log driver; a read-only root with a 16 MiB non-executable `/tmp` tmpfs;
-user 65534 with every capability dropped and
-`no-new-privileges`; Docker's default seccomp profile; 256 MiB of memory without
-swap, 64 processes and one CPU. The program arrives on stdin. The docker CLI
-receives only `PATH` and, when set, `DOCKER_HOST`. Fixed limits: 15 s per run,
-64 KiB of combined output, 20 s for each create, inspect and remove. The
-verifier owns every docker CLI process group and the container: a timeout,
-cancellation (job shutdown) or output overflow kills and joins the CLI, then
-`docker rm --force` removes the container, since killing the CLI does not stop
-it; exit status and OOM come from `docker inspect`. Only a zero exit within every
-limit, with removal confirmed, counts as verified. Containers are not created
-with `--rm`, because the exit state is read after the program ends; each carries
-an `mlx-bun.python-verifier.owner=<hostname>:<pid>` label instead, and a
-verifier's first run removes labelled containers whose owner process on this
-host is gone, such as those left when the app was killed mid-verification. A missing docker CLI, an
-unreachable daemon, a missing or unpinned image, a timeout, cancellation, output
-overflow, an OOM kill or an unconfirmed removal leaves `verified: false` with
-that reason.
-
-`PYTHON_VERIFIER_IMAGE` pins the linux/arm64 manifest of the official
-`python:3.14-slim` image (3.14.7-slim-trixie, read from Docker Hub on
-2026-09-27). The verifier never pulls, so a machine without that image leaves
-rows unverified (`image-missing`). Provision it once:
-
-```sh
-docker pull --platform linux/arm64 python@sha256:67994a05c712036dbfc4385b4bceafc0ce20df950f54b9ea355582c153bf6157
-```
-
-To move to a newer image, read its linux/arm64 manifest digest
-(`docker buildx imagetools inspect python:3.14-slim`), pull exactly that and
-update the constant. An `--image` override without a digest is refused
-(`image-unpinned`).
-
-Without Docker Desktop's default socket, set
-`DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`. `bun apps/mlx-bun/scripts/verify-python.ts
-[--image <ref>] [file]` verifies one program by hand (`--help`).
-
-[Dataset tests](tests/dataset/lifecycle.test.ts) use temporary storage and synthetic
-HTTP responses, without a model or download. [Verifier tests](tests/dataset/python-verifier.test.ts)
-drive the container lifecycle against a scripted docker CLI. The opt-in
-[Docker acceptance](tests/dataset/python-verifier-docker.test.ts)
-(`MLX_BUN_TEST_DOCKER_VERIFIER=1 MLX_BUN_TEST_DOCKER_IMAGE=python@sha256:<digest>`)
-runs real containers for pass, fail, a missing image, file, host, environment,
-privilege and network isolation, flooding, timeout, cancellation, OOM and the
-runner's SIGTERM, and leftover removal, and checks that each container is removed.
-It passes on Docker Desktop 29.8.0 (linux/arm64, M1 Max) with the pinned image.
+Dataset generation is the datasets module's ([`@mlx-bun/module-datasets`](../../packages/module-datasets/README.md):
+the thirteen templates, `/api/dataset/templates` and `/api/dataset/submit`, the `dataset`
+job kind, the Docker Python verifier). This app installs it (`src/modules.ts`) and supplies
+its core services in the persistent state (`cli/serve-state.ts`), because a module that
+requires `jobs` runs beside the job store: `jobs/service.ts` runs its task runners on the
+job host, so its rows, logs and `/api/jobs` streams are the same as any job's;
+`storage` resolves the module's `datasets/` entry under `MLX_BUN_HOME` (the
+`artifactRoot` override replaces it, as for other produced artifacts); and
+`cli/served-model-host.ts` is the `modelHost` that leases the attached serving host's
+model for `generate`, sending the request to its own HTTP listener (its Unix socket in
+the worker app form; through the proxy under `--isolate`), so jobs call the same app.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;

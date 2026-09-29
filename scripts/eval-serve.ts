@@ -56,7 +56,7 @@ run starts the server as <command> --model <plan model> --port <free port> in a 
 with the plan's MLX library (MLX_BUN_LIBMLXC), evaluates the plan's tasks and stops it. Put serve
 options in the command (e.g. '["bun","/abs/main/src/cli.ts","serve","--kv-quant","config"]');
 main's eval defaults matched serve's defaults (bf16 KV). HumanEval executes generated programs
-only through the app's Docker verifier (apps/mlx-bun/src/dataset/python-verifier.ts) with the
+only through the datasets module's Docker verifier (packages/module-datasets/src/python-verifier.ts) with the
 plan's --python-image; when that module, Docker or the image is unavailable, HumanEval is skipped
 as unverified, never run on the host. Outputs: result.json (compact, with provenance),
 samples.jsonl (per-sample detail), report.md, server.stderr.log. run exits 0 only for a complete
@@ -76,7 +76,7 @@ Gate (main versus candidate, same plan, quiet machine):
 
 /** The app's Docker verifier (PR #223), resolved from a checkout at run time so
  * this runner never falls back to host execution when the module is absent. */
-export const VERIFIER_MODULE = "apps/mlx-bun/src/dataset/python-verifier.ts";
+export const VERIFIER_MODULE = "packages/module-datasets/src/python-verifier.ts";
 export async function resolveVerifier(root: string, image: string | null): Promise<{ verify: VerifyPython; image: string | null } | string> {
   const path = join(root, VERIFIER_MODULE);
   if (!existsSync(path)) return `verifier unavailable: ${VERIFIER_MODULE} is not in ${root}`;

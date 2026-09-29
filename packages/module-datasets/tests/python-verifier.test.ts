@@ -8,7 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createPythonVerifier, PYTHON_VERIFIER_OWNER_LABEL, spawnDocker, type DockerProcess, type SpawnDocker } from "../../src/dataset/python-verifier";
+import { createPythonVerifier, PYTHON_VERIFIER_OWNER_LABEL, spawnDocker, type DockerProcess, type SpawnDocker } from "../src/python-verifier";
 
 const IMAGE = `python@sha256:${"0".repeat(64)}`;
 const PASSING = "def inc(x):\n    return x + 1\n\nassert inc(1) == 2  # mlx-bun-source-marker\n";
@@ -254,7 +254,7 @@ test("an unconfirmed removal turns any outcome into cleanup-uncertain; an alread
 });
 
 test("the standalone runner prints the shared verifier's result and maps it to its exit status", () => {
-  const script = resolve(import.meta.dir, "../../scripts/verify-python.ts");
+  const script = resolve(import.meta.dir, "../scripts/verify-python.ts");
   const run = (args: string[], stdin?: string) => {
     const child = Bun.spawnSync([process.execPath, "--no-env-file", script, ...args], { stdin: stdin === undefined ? "ignore" : Buffer.from(stdin) });
     return { code: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };

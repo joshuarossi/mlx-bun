@@ -6,22 +6,24 @@
 // serves is attached explicitly; no service reaches a model through globals.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AppModule } from "@mlx-bun/app-core";
+import { activateModules, createModuleRoutes, createStorage, mlxBunHome } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import { defaultSessionDir } from "../chat/session-files";
-import { createDatasetRunner } from "../dataset/job";
 import { createDownloadOwner, type DownloadOwner } from "../hub/downloads";
 import { JobStore } from "../jobs/db";
 import { createJobHost } from "../jobs/host";
+import { createJobService } from "../jobs/service";
 import { createMemorySurface } from "../memory/surface";
 import { vaultRoot } from "../memory/vault";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
-import { createDatasetRoutes } from "../server/dataset-routes";
 import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
 import { createJobRoutes } from "../server/job-routes";
 import type { InProcessMemoryClient } from "./memory-engine";
+import { createServedModelHost, type ServedHostLink } from "./served-model-host";
 import type { MemoryCompletionClient } from "../memory/model";
 import { createMemoryRoutes } from "../server/memory-routes";
 import { createMemorySynthesis } from "../server/memory-synthesis";
@@ -52,13 +54,9 @@ export interface AppStateOptions {
   memoryCompletions?: (signal: AbortSignal) => MemoryCompletionClient;
 }
 
-/** What a live model host lends the persistent services while it serves. */
-export interface ModelHostLink {
-  /** The public port loopback clients (dataset jobs) target. */
-  readonly port: number;
-  /** Internal (worker app form): the Unix socket the host listens on instead
-   * of TCP. Loopback clients then fetch over it; their URL's port is a placeholder. */
-  readonly unix?: string;
+/** What a live model host lends the persistent services while it serves: its model and listener
+ * (`ServedHostLink`), the execution lease and the library refresh. */
+export interface ModelHostLink extends ServedHostLink {
   /** Managed GPU jobs hold this lease until their child exits and logs drain. */
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   /** A finished download or job changes the model library the host lists. */
@@ -82,7 +80,7 @@ export interface AppState {
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
     hub: RouteGroup; sessions: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    quantize: RouteGroup; dataset: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
+    quantize: RouteGroup; appModules: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -91,8 +89,10 @@ export interface AppState {
 }
 
 /** CPU composition owns its services until the app closes them; the model host
- * only borrows what it mounts. */
-export async function createAppState(options: AppStateOptions, storagePaths: AppStoragePaths = {}): Promise<AppState> {
+ * only borrows what it mounts. `modules` are the installed modules that run
+ * here (`installedModules("state")`, supplied by the composition root so this
+ * file never reaches module packages that load the engine). */
+export async function createAppState(options: AppStateOptions, storagePaths: AppStoragePaths = {}, modules: readonly AppModule[] = []): Promise<AppState> {
   const web = await createWebHandler();
   let host: ModelHostLink | undefined;
   const requireHost = () => { if (!host) throw new Error("no model host is attached"); return host; };
@@ -120,11 +120,15 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
   const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
-  // Loopback clients reach the attached host's own API: over its Unix socket
-  // when it listens on one, else over TCP to its port.
-  const loopback = ((url: string | URL | Request, init?: RequestInit) =>
-    fetch(url, host?.unix ? { ...init, unix: host.unix } as RequestInit : init)) as typeof fetch;
-  const datasetRunner = createDatasetRunner({ loopback });
+  // The installed modules that need job runners (datasets) run here, beside
+  // the job store. They reach the served model through the attached host's own
+  // API: over its Unix socket when it listens on one, else over TCP to its port.
+  const jobService = createJobService(jobs);
+  const served = createServedModelHost({ link: () => host,
+    fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
+  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served,
+    storage: createStorage(() => storagePaths.artifactRoot ?? mlxBunHome()) } });
+  jobService.serve(loaded.jobs);
   // Memory synthesis runs on the task model, created on first use (its weights
   // load with the first completion) and kept until close, as in main. Each of
   // its completions or batches runs under the attached host's execution lease,
@@ -152,8 +156,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
     quantize: createQuantizeRoutes(jobs, { outputRoot: storagePaths.artifactRoot }),
-    dataset: createDatasetRoutes({ serverPort: () => host?.port ?? options.port, outputRoot: storagePaths.artifactRoot,
-      submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) }),
+    appModules: createModuleRoutes(loaded.routes),
     finetune: createFinetuneRoutes(jobs, storagePaths.artifactRoot
       ? () => join(storagePath("adapters", storagePaths.artifactRoot), `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
@@ -173,7 +176,15 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
       const errors: unknown[] = [];
       // Synthesis rows, managed children and transfers are cancelled and joined
       // before the task model's weights are released; no lease is taken here.
-      for (const result of await Promise.allSettled([synthesis.close(), jobs.close(), downloads.close()]))
+      // Modules stop before the job host, which joins their running tasks.
+      const stopJobs = async () => {
+        const failures: unknown[] = [];
+        try { await loaded.stop(); } catch (error) { failures.push(error); }
+        try { await jobs.close(); } catch (error) { failures.push(error); }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, "job shutdown failed");
+      };
+      for (const result of await Promise.allSettled([synthesis.close(), stopJobs(), downloads.close()]))
         if (result.status === "rejected") errors.push(result.reason);
       try { await taskModel?.close(); } catch (error) { errors.push(error); }
       if (errors.length === 1) throw errors[0];

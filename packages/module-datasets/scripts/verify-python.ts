@@ -1,20 +1,20 @@
 // Standalone runner for the Docker Python verifier that the verified_code
-// dataset template uses (src/dataset/python-verifier.ts).
+// dataset template uses (src/python-verifier.ts).
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { createPythonVerifier } from "../src/dataset/python-verifier";
+import { createPythonVerifier } from "../src/python-verifier";
 
 const USAGE = `Verify one Python program in the Docker verifier used by verified_code.
 
-  bun apps/mlx-bun/scripts/verify-python.ts [--image <repo@sha256:digest>] [file | -]
+  bun packages/module-datasets/scripts/verify-python.ts [--image <repo@sha256:digest>] [file | -]
 
 Reads the program from the file, or from stdin without one. Prints the result
 as JSON and exits 0 (verified), 1 (failed) or 2 (unverified); 64 on a usage error.
 --image replaces PYTHON_VERIFIER_IMAGE; it must be pinned by digest and already
 present for linux/arm64, because nothing is pulled. DOCKER_HOST, when set,
 selects the daemon; no other environment reaches docker. SIGINT or SIGTERM
-stops and removes the container. Provisioning the image is described in the app
-README's Dataset jobs section.`;
+stops and removes the container. Provisioning the image is described in the
+datasets module README.`;
 
 if (import.meta.main) {
   let parsed;

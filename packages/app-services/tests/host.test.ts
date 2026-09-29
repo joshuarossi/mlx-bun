@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { AppModule, CatalogEntry, ModelCatalog } from "@mlx-bun/app-core";
+import type { AppModule, CatalogEntry, CoreServices, ModelCatalog } from "@mlx-bun/app-core";
 import { activateModules, createHostServices, runVerb } from "../src";
 
 const entry: CatalogEntry = { id: "org/whisper", kind: "model", directory: "/w", bytes: 1, operations: ["transcribe"] };
@@ -31,6 +31,12 @@ test("activation refuses what these hosts do not serve yet, stopping what it act
   await expect(activateModules([module({ jobs: [{ kind: "echo.run", isolation: "task", gpu: "none" }], activate: () => ({ jobs: { "echo.run": async () => {} }, dispose() { events.push("module stop"); } }) })],
     services)).rejects.toThrow("this host does not serve job kind echo.run yet");
   expect(events).toEqual(["module stop", "module stop"]);
+  // A host that binds the `jobs` service serves job runners.
+  const jobs = {} as CoreServices["jobs"];
+  const running = await activateModules([module({ requires: ["jobs"], jobs: [{ kind: "echo.run", isolation: "task", gpu: "none" }], activate: () => ({ jobs: { "echo.run": async () => {} } }) })],
+    { bindings: { ...services.bindings, jobs: () => jobs } });
+  expect([...running.jobs.keys()]).toEqual(["echo.run"]);
+  await running.stop();
   await services.whisper.close();
 });
 

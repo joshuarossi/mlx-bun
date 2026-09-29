@@ -167,9 +167,9 @@ is a dependency constraint; domain ownership determines the home.
 owns quantization job policy and consumes jobs contracts plus public libraries.
 The CLI composes producers and child entry paths, so jobs infrastructure imports
 neither producer implementations nor engine internals. HTTP adapters consume
-these domains from `server/`. `dataset/` owns templates, JSONL production, and
-HTTP clients; its loopback requests enter the server scheduler without holding
-an exclusive execution lease.
+these domains from `server/`. Dataset generation is the datasets module's
+(`@mlx-bun/module-datasets`): its requests reach the served model through the `modelHost`
+service and enter the server scheduler without holding an exclusive execution lease.
 
 `publishing/` owns app credential storage and artifact/source selection. Server
 routes parse settings and push requests; CLI composition supplies a read-only
@@ -240,9 +240,9 @@ mounting, module activation and verb running. A host adds only its own execution
 lock and serving. A module's manifest is also importable alone
 (`@mlx-bun/module-<id>/manifest`, data only), so a host lists commands and
 `--help` and the documentation generators read verbs and routes without loading
-the module. A host refuses a module that declares sockets or job runners until
-it serves them. Installation is build-time; a user setting may disable an
-installed module at start.
+the module. A host refuses a module that declares sockets, and one that declares
+job runners unless it binds the `jobs` service, which then runs them. Installation
+is build-time; a user setting may disable an installed module at start.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
 { services })` validates the manifests before activating anything (unique ids,
@@ -256,7 +256,11 @@ counters a module reports for the host's health and stats surfaces. The host
 serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
-the weights they leased.
+the weights they leased. The app composes its services at two scopes: modules that
+require `jobs` (datasets) activate in the persistent state, beside the job store, with
+`jobs` (the job host's task runners), `storage` and a `modelHost` that leases the serving
+host's model for `generate` over its own HTTP surface (so the `--isolate` parent, which
+loads no model, runs them too); the others activate with the model host.
 
 **Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 

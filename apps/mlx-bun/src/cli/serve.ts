@@ -8,6 +8,7 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { DraftKind } from "../engine/model-host";
+import { installedModules } from "../modules";
 import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
 import type { ModelHostHooks } from "./serve-host";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
@@ -187,7 +188,7 @@ function observeLink(state: AppState, holder: { current?: ModelHostLink }): AppS
  * resolves with the host's own result once the state has closed too. */
 export async function startApp<Host extends { close(): Promise<unknown> }>(options: AppStateOptions, storagePaths: AppStoragePaths,
   start: (state: AppState) => Promise<Host>) {
-  const state = await createAppState(options, storagePaths);
+  const state = await createAppState(options, storagePaths, await installedModules("state"));
   let host: Host;
   try {
     host = await start(state);
@@ -214,7 +215,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   if (options.isolate) {
     // A nested isolated app would bind TCP and never the launch socket.
     if (hooks.unix) throw new Error("--isolate is not supported in a worker app launch");
-    return (await import("./serve-isolated")).startIsolatedServer(model, options);
+    return (await import("./serve-isolated")).startIsolatedServer(model, options, { modules: await installedModules("state") });
   }
   const [{ startModelHost }, { createInProcessMemoryClient }] = await Promise.all([import("./serve-host"), import("./memory-engine")]);
   // Memory synthesis gets main's own task model, loaded by the first run (the isolated parent has none).

@@ -54,13 +54,19 @@ test("the persistent state composes and serves its routes with fakes, without th
     mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request =>
       new URL(request.url).pathname === "/" ? new Response("web") : null }));
-    let serverPort;
-    mock.module(app + "src/server/dataset-routes.ts", () => ({ createDatasetRoutes(deps) { serverPort = deps.serverPort; return { handle: async () => null }; } }));
+    let servedLink;
+    mock.module(app + "src/cli/served-model-host.ts", () => ({ createServedModelHost(options) { servedLink = options.link; return {}; } }));
+    const serverPort = () => servedLink()?.port ?? 0;
     const { createAppState } = await import(app + "src/cli/serve-state.ts");
     const memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
     const chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
     const storagePaths = { jobsDb: join(root, "store", "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
-    const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths);
+    const { installedModules } = await import(app + "src/modules.ts");
+    // The state runs the modules that need job runners; Whisper's module belongs to the model host.
+    const stateModules = await installedModules("state");
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets"]);
+    assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
+    const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
     assert.equal(state.sessionDir, chatPaths.sessionDir);
     assert.deepEqual(state.memoryPaths, memoryPaths);
     assert.equal(state.chatPaths, chatPaths);
@@ -72,6 +78,18 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.deepEqual(await (await state.routes.hub.handle(get("/api/hub/local"))).json(), { ok: true, models: [] });
     assert.deepEqual(await (await state.routes.jobs.handle(get("/api/jobs"))).json(), { ok: true, jobs: [] });
     assert.ok(existsSync(storagePaths.jobsDb), "the job store follows the storage seam");
+    // The datasets module runs in the state: shipped paths, one task job in the state's store, output under the artifact root.
+    assert.equal((await (await state.routes.appModules.handle(get("/api/dataset/templates"))).json()).templates.length, 13);
+    assert.equal(await state.routes.appModules.handle(get("/api/dataset/unknown")), null);
+    const submitted = await (await state.routes.appModules.handle(new Request("http://127.0.0.1/api/dataset/submit", { method: "POST",
+      body: JSON.stringify({ template_id: "sft_qa_pairs", inputs: { pairs_text: "Q: a\\nA: b" } }) }))).json();
+    assert.ok(submitted.ok && submitted.output_dir.startsWith(join(storagePaths.artifactRoot, "datasets")), submitted.output_dir);
+    let job;
+    for (let i = 0; i < 200 && job?.status !== "done" && job?.status !== "failed"; i++) {
+      job = (await (await state.routes.jobs.handle(get("/api/jobs/" + submitted.job_id))).json()).job; await Bun.sleep(10);
+    }
+    assert.equal(job.status, "done", job.error);
+    assert.equal(job.kind, "dataset");
     const status = await (await state.routes.memory.handle(get("/api/memory/status"))).json();
     assert.deepEqual([status.ok, status.enabled, status.root], [false, false, memoryPaths.vault]);
     assert.equal(await state.memorySurface(), undefined);
@@ -79,9 +97,9 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.deepEqual(await (await state.routes.sessions.handle(get("/api/sessions/search?q=hello"))).json(), { ok: true, results: [] });
     assert.deepEqual(await (await state.routes.publishing.handle(get("/api/settings/hf-token"))).json(), { ok: true, hasToken: false });
     for (const group of ["quantize", "finetune"]) assert.equal(await state.routes[group].handle(get("/api/" + group + "/anything")), null);
-    // Loopback clients follow the attached host's port and fall back to the requested one.
+    // Modules leasing the served model follow the attached host's port; none is lent before one attaches and after it detaches.
     assert.equal(serverPort(), 0);
-    const detach = state.attach({ port: 4321, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} });
+    const detach = state.attach({ model: { id: "m", bytes: 1 }, port: 4321, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} });
     assert.equal(serverPort(), 4321);
     detach();
     assert.equal(serverPort(), 0);
@@ -149,7 +167,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
       web: () => null, downloads: { snapshot, active: [], start() {}, async close() {} }, responses: { size: 0 },
       memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" }, chatPaths, sessionDir: "/unused/sessions",
       storagePaths: { artifactRoot: "/unused/artifacts" }, memorySurface: async () => surface,
-      routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "quantize", "dataset", "finetune", "publishing"].map(name => [name, group(name)])),
+      routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "quantize", "appModules", "finetune", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
     };
@@ -176,7 +194,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.equal(listenerInput.web, state.web);
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "modules", "memory", "jobs", "quantize", "dataset", "finetune", "adapterArtifacts", "publishing", "completions"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "modules", "memory", "jobs", "quantize", "appModules", "finetune", "adapterArtifacts", "publishing", "completions"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
     // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
@@ -221,8 +239,9 @@ test("two sequential model hosts share one persistent state; only the app closes
     mock.module(app + "src/jobs/host.ts", () => ({ createJobHost() { let closing;
       return { signal: new AbortController().signal, ensureStore() { throw new Error("unused"); }, submit() {}, submitTask() {},
         close() { return closing ??= (async () => { events.push("jobs close"); })(); } }; } }));
-    let serverPort;
-    mock.module(app + "src/server/dataset-routes.ts", () => ({ createDatasetRoutes(deps) { serverPort = deps.serverPort; return { handle: async () => null }; } }));
+    let servedLink;
+    mock.module(app + "src/cli/served-model-host.ts", () => ({ createServedModelHost(options) { servedLink = options.link; return {}; } }));
+    const serverPort = () => servedLink()?.port ?? 0;
     let port = 1000;
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing; const bound = ++port;
       return { server: { port: bound }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));

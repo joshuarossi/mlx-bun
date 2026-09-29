@@ -32,8 +32,9 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
 ];
 
 type Kind = "req" | "url" | "method" | "path" | "route" | "segments" | "tainted";
-/** A route factory, or the installed modules' routes (`MODULE_ROUTES`), which come from their manifests. */
-type Group = ts.FunctionDeclaration | "modules";
+/** A route factory, or the installed modules' routes (`MODULE_ROUTES`), which come from their manifests:
+ * `state-modules` in the persistent app state (modules that require `jobs`), `modules` with the model host (the rest). */
+type Group = ts.FunctionDeclaration | "modules" | "state-modules";
 type Groups = ReadonlyMap<string, Group | undefined>;
 interface Frame { from: ts.Node; stop: ts.Node; params: Set<ts.Node> }
 interface Cond { text: string; served: boolean; node: ts.Node }
@@ -405,13 +406,16 @@ class Inventory {
     return { ws };
   }
 
-  /** The installed modules' routes in manifest order: each `routes` entry of a `manifest` literal, at its mounted path. */
-  private moduleFacts(): Fact[] {
+  /** The routes of the installed modules that run in a scope, in manifest order: each `routes` entry of a `manifest` literal, at its mounted path.
+   * A module runs in the persistent app state when it requires `jobs`, else with the model host (the app's `installedModules(scope)`). */
+  private moduleFacts(scope: "state" | "model"): Fact[] {
     const string = (e: ts.Expression | undefined, what: string, at: ts.Node): string => { const x = e && skip(e); return x && ts.isStringLiteralLike(x) ? x.text : this.fail(at, `${what} must be a string literal`); };
     return [...this.files.keys()].filter(path => MANIFEST.test(path)).flatMap(path => {
       const file = this.file(path), manifest = find(file, ts.isVariableDeclaration).find(d => d.name.getText() === "manifest")?.initializer;
       if (!manifest) return this.fail(file, "the module manifest was not found");
       const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get("routes") && skip(fields.get("routes")!);
+      const requires = stringList(fields.get("requires")) ?? this.fail(manifest, "the module's requires must be a literal list of strings");
+      if (requires.some(([name]) => name === "jobs") !== (scope === "state")) return [];
       if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, "manifest routes must be a literal array");
       return (list?.elements ?? []).map(route => {
         const parts = props(route), method = string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), "a route path", route);
@@ -463,7 +467,8 @@ class Inventory {
     const appState = this.fn(cli("serve-state.ts"), "createAppState"), state = props(appState.body!.statements.find(ts.isReturnStatement)?.expression);
     const appRoutes = state.has("routes") && state.has("web") ? this.local(state.get("routes")!) : undefined;
     if (!appRoutes || !ts.isObjectLiteralExpression(appRoutes)) return this.fail(appState, "unrecognized composition shape; createAppState must return its web handler and literal routes");
-    const app: Groups = new Map([...props(appRoutes)].map(([key, e]) => [key, this.factoryOf(e)])), web = this.factoryOf(this.local(state.get("web")!));
+    const stateGroup = (e: ts.Expression): Group => { const made = skip(e); return ts.isCallExpression(made) && made.expression.getText() === MODULE_ROUTES ? "state-modules" : this.factoryOf(e); };
+    const app: Groups = new Map([...props(appRoutes)].map(([key, e]) => [key, stateGroup(e)])), web = this.factoryOf(this.local(state.get("web")!));
     // The worker's state stands in for the web app and every persistent group with one that serves nothing.
     const workerState = this.fn(cli("worker-entry.ts"), "createWorkerState"), fields = props(workerState.body!.statements.find(ts.isReturnStatement)?.expression);
     const stubs = props(fields.get("routes")), worker: Groups = new Map([...stubs.keys()].map(key => [key, undefined]));
@@ -513,7 +518,7 @@ class Inventory {
     const { ws } = this.listener();
     const modes = this.modes().map(spec => {
       const facts = [...ws.map(f => ({ ...f, status: `WebSocket upgrade (${spec.chat})` })), ...(spec.web ? this.groupFacts(spec.web) : []),
-        ...spec.groups.flatMap(group => group === "modules" ? this.moduleFacts() : this.groupFacts(group))];
+        ...spec.groups.flatMap(group => group === "modules" ? this.moduleFacts("model") : group === "state-modules" ? this.moduleFacts("state") : this.groupFacts(group))];
       // The first unconditional match answers; the proxy's forward takes every path it did not name.
       const kept: Fact[] = [];
       for (const f of facts) if (!kept.some(k => !k.declined && !k.conds.length && (k.method === "*" || k.method === f.method) &&

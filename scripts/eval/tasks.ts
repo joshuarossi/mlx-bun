@@ -62,7 +62,7 @@ export interface EvalResponse {
 export type Send = (request: EvalRequest, signal?: AbortSignal) => Promise<EvalResponse>;
 
 // ---- the Docker Python verifier seam ------------------------------------------------
-/** Structurally the app's `dataset/python-verifier.ts` contract (PR #223):
+/** Structurally the datasets module's `python-verifier.ts` contract (PR #223):
  * `verified` only for a zero exit within every limit; never host execution. */
 export type PythonVerification =
   | { status: "verified" }

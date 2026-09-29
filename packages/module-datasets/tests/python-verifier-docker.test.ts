@@ -1,15 +1,15 @@
 // Opt-in acceptance for the Docker Python verifier with real containers. After
-// provisioning the image (app README, Dataset jobs), from apps/mlx-bun:
+// provisioning the image (the module README), from packages/module-datasets:
 //
 //   MLX_BUN_TEST_DOCKER_VERIFIER=1 MLX_BUN_TEST_DOCKER_IMAGE='python@sha256:<digest>' \
-//     bun test tests/dataset/python-verifier-docker.test.ts
+//     bun test tests/python-verifier-docker.test.ts
 //
 // The image must already be present for linux/arm64: nothing is pulled. Each
 // case then checks that no verifier container remains. Skipped without the flag.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { createPythonVerifier, PYTHON_VERIFIER_LIMITS, PYTHON_VERIFIER_OWNER_LABEL } from "../../src/dataset/python-verifier";
+import { createPythonVerifier, PYTHON_VERIFIER_LIMITS, PYTHON_VERIFIER_OWNER_LABEL } from "../src/python-verifier";
 
 const enabled = process.env.MLX_BUN_TEST_DOCKER_VERIFIER === "1";
 const image = process.env.MLX_BUN_TEST_DOCKER_IMAGE ?? "";
@@ -127,7 +127,7 @@ for attempt in (lambda: socket.create_connection(("1.1.1.1", 53), timeout=2), la
   }, CASE_MS);
 
   test("the standalone runner uses the same verifier and removes the container on SIGTERM", async () => {
-    const script = resolve(import.meta.dir, "../../scripts/verify-python.ts");
+    const script = resolve(import.meta.dir, "../scripts/verify-python.ts");
     const run = (source: string) => Bun.spawn([process.execPath, "--no-env-file", script, "--image", image],
       { stdin: Buffer.from(source), stdout: "pipe", stderr: "pipe" });
     const passing = run("assert sorted([3, 1, 2]) == [1, 2, 3]\n");

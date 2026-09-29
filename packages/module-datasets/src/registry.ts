@@ -3,7 +3,7 @@
 // forms from it) plus the generate() dispatcher that does the 90/10 split and
 // JSONL writing exactly like the Python reference.
 
-import type { Emit } from "../jobs/protocol";
+import type { JobEmit as Emit } from "@mlx-bun/app-core";
 import type { DatasetHttp, LlmClient } from "./llm";
 import {
   genCodeCompletion,

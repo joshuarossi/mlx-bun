@@ -1,115 +1,103 @@
+// The datasets module on this app's job host and store: the job rows, logs and
+// shutdown order of a real in-process task. The module's own behavior (routes,
+// templates, generators, the verifier) is tested in packages/module-datasets.
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createJobHost } from "../../src/jobs/host";
+import type { JobRunner } from "@mlx-bun/app-core";
+import { loadModules } from "@mlx-bun/app-host";
+import { createModuleRoutes, createStorage } from "@mlx-bun/app-services";
+import { createDatasetsModule, createPythonVerifier, type DatasetsModuleOptions, type SpawnDocker } from "@mlx-bun/module-datasets";
 import { JobStore } from "../../src/jobs/db";
-import { createDatasetRunner } from "../../src/dataset/job";
-import { makeLlmClient } from "../../src/dataset/llm";
-import { genCodeCompletion, genHfDatasetImport } from "../../src/dataset/generators";
-import { createDatasetRoutes } from "../../src/server/dataset-routes";
-import { generate } from "../../src/dataset/registry";
-import { createPythonVerifier, type SpawnDocker, type VerifyPython } from "../../src/dataset/python-verifier";
+import { createJobHost } from "../../src/jobs/host";
+import { createJobService } from "../../src/jobs/service";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function setup() {
+const fetcher = (fn: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) => fn as typeof fetch;
+const wait = async (check: () => boolean) => { for (let i = 0; !check(); i++) {
+  if (i > 100) throw new Error("condition did not settle"); await Bun.sleep(5);
+} };
+
+/** A served model whose `generate` is `answer`: what the model host lends the module. */
+const modelHost = (answer: typeof fetch) => ({
+  async defaultFor() { return "served"; },
+  async acquire() { return { model: {}, loadMs: 0, release() {}, operations: { generate: (request: Request) => answer(request) } }; },
+}) as never;
+
+/** The module over the app's real job host and store, with storage under a temporary root. */
+async function setup(options: DatasetsModuleOptions = {}, answer: typeof fetch = fetcher(async () => { throw new Error("no model request expected"); })) {
   const root = mkdtempSync(join(tmpdir(), "mlx-dataset-")); roots.push(root);
   const store = new JobStore(join(root, "jobs.sqlite"), join(root, "logs"));
   let leases = 0;
   const host = createJobHost({ createStore: () => store, entry: "unused", acquire: async () => {
     leases++; throw new Error("dataset must not acquire a GPU lease");
   } });
-  return { root, store, host, leases: () => leases };
+  const jobs = createJobService(host);
+  const loaded = await loadModules([createDatasetsModule(options)], { services: { jobs: () => jobs, storage: createStorage(() => root), modelHost: () => modelHost(answer) } });
+  jobs.serve(loaded.jobs);
+  const routes = createModuleRoutes(loaded.routes);
+  const submit = async (body: unknown) => (await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST", body: JSON.stringify(body) })))!.json();
+  return { root, store, host, jobs, loaded, submit, leases: () => leases };
 }
-const fetcher = (fn: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) => fn as typeof fetch;
-const wait = async (check: () => boolean) => { for (let i = 0; !check(); i++) {
-  if (i > 100) throw new Error("condition did not settle"); await Bun.sleep(5);
-} };
-
-test("dataset HTTP submission writes the existing split through an in-process job without a GPU lease", async () => {
-  const { root, store, host, leases } = setup();
-  const routes = createDatasetRoutes({ outputRoot: root, serverPort: () => 9876,
-    submit: (config, output) => host.submitTask("dataset", config, createDatasetRunner(), output) });
-  try {
-    const response = await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST",
-      body: JSON.stringify({ template_id: "sft_qa_pairs", inputs: { pairs_text: "Q: hello\nA: world" } }) }));
-    const result = await response!.json();
-    await wait(() => store.get(result.job_id)?.status === "done");
-    expect(result.ok).toBe(true);
-    const row = store.get(result.job_id)!;
-    expect(JSON.parse(row.config_json).api_url).toBe("http://127.0.0.1:9876");
-    const train = readFileSync(join(result.output_dir, "train.jsonl"), "utf8");
-    expect(JSON.parse(train)).toEqual({ messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] });
-    expect(readFileSync(join(result.output_dir, "valid.jsonl"), "utf8")).toBe(train);
-    expect(leases()).toBe(0);
-    expect(readFileSync(row.log_path, "utf8")).toContain('"type":"done"');
-  } finally { await host.close(); }
-});
-
-test("templates list all thirteen templates; submission refuses only unknown ids", async () => {
-  const submitted: string[] = [];
-  const routes = createDatasetRoutes({ serverPort: () => 1, submit: config => { submitted.push(String(config.template_id)); return { jobId: "job" }; } });
-  const templates = await (await routes.handle(new Request("http://local/api/dataset/templates")))!.json();
-  expect(templates.templates).toHaveLength(13);
-  expect(templates.templates.find((t: any) => t.id === "verified_code").description).toContain("isolated Docker container");
-  for (const [id, status] of [["verified_code", 200], ["constructor", 400], ["missing", 400]] as const) {
-    expect((await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST", body: JSON.stringify({ template_id: id }) })))!.status).toBe(status);
-  }
-  expect(submitted).toEqual(["verified_code"]);
-  const root = mkdtempSync(join(tmpdir(), "mlx-dataset-")); roots.push(root);
-  await expect(generate("verified_code", { specs: "spec" }, join(root, "out"), () => {})).rejects.toThrow("requires a served model");
-});
-
 const IMAGE = `python@sha256:${"0".repeat(64)}`;
 const fence = (code: string) => "```python\n" + code + "\n```";
-/** A loopback chat server answering each verified_code prompt with the reply its SPEC names. */
-const chatWith = (replies: Record<string, string>) => fetcher(async (_url, init) => {
-  const spec = JSON.parse(init!.body as string).messages[0].content.match(/SPEC:\n(.*)\n/)[1];
-  return Response.json({ choices: [{ message: { content: replies[spec] } }] });
+
+test("dataset HTTP submission writes the existing split through an in-process job row without a GPU lease", async () => {
+  const { root, store, host, loaded, submit, leases } = await setup();
+  try {
+    const result = await submit({ template_id: "sft_qa_pairs", inputs: { pairs_text: "Q: hello\nA: world" } });
+    await wait(() => store.get(result.job_id)?.status === "done");
+    expect(result.ok).toBe(true);
+    expect(result.output_dir.startsWith(join(root, "datasets"))).toBe(true);
+    const row = store.get(result.job_id)!;
+    expect(row.kind).toBe("dataset");
+    expect(JSON.parse(row.config_json)).toEqual({ template_id: "sft_qa_pairs", inputs: { pairs_text: "Q: hello\nA: world" }, output_dir: result.output_dir, model_name: "local" });
+    expect(row.output_path).toBe(result.output_dir);
+    const train = readFileSync(join(result.output_dir, "train.jsonl"), "utf8");
+    expect(JSON.parse(train)).toEqual({ messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] });
+    expect(leases()).toBe(0);
+    expect(readFileSync(row.log_path, "utf8")).toContain('"type":"done"');
+  } finally { await loaded.stop(); await host.close(); }
 });
 
-test("verified_code runs over HTTP as an in-process job and keeps failed and unverifiable pairs, without a GPU lease", async () => {
-  const { root, store, host, leases } = setup();
-  const code = { passes: "assert sum([1, 2]) == 3", fails: "assert sum([1, 2]) == 4", unverifiable: "assert len('abc') == 3" };
-  const noDocker = createPythonVerifier({ image: IMAGE, spawn: () => { throw Object.assign(new Error("docker CLI not found on PATH"), { code: "ENOENT" }); } });
-  const seen: Array<{ source: string; signal?: AbortSignal }> = [];
-  const verifyPython: VerifyPython = async (source, signal) => {
-    seen.push({ source, signal });
-    if (source === code.passes) return { status: "verified" };
-    if (source === code.fails) return { status: "failed", exitCode: 1, error: "AssertionError" };
-    return noDocker(source, signal);
-  };
-  const runner = createDatasetRunner({ verifyPython, loopback: chatWith({ passes: fence(code.passes), fails: fence(code.fails),
-    empty: "", unverifiable: `Here you go:\n${fence(code.unverifiable)}\nDone.` }) });
-  const routes = createDatasetRoutes({ outputRoot: root, serverPort: () => 9876,
-    submit: (config, output) => host.submitTask("dataset", config, runner, output) });
+test("the jobs service lists, reads and streams module jobs, and rejects kinds and isolations it does not run", async () => {
+  const { host, loaded, jobs, submit, store } = await setup();
   try {
-    const response = await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST",
-      body: JSON.stringify({ template_id: "verified_code", inputs: { specs: "passes\nfails\nempty\nunverifiable" } }) }));
-    const result = await response!.json();
-    await wait(() => store.get(result.job_id)?.status === "done");
-    const rows = ["train.jsonl", "valid.jsonl"].flatMap(file =>
-      readFileSync(join(result.output_dir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
-    expect(rows.map(row => row.messages)).toEqual((["passes", "fails", "unverifiable"] as const).map(spec =>
-      [{ role: "user", content: spec }, { role: "assistant", content: fence(code[spec]) }]));
-    expect(rows.map(row => row.metadata)).toEqual([
-      { verified: true, language: "python", verify_error: null },
-      { verified: false, language: "python", verify_error: "AssertionError" },
-      { verified: false, language: "python", verify_error: expect.stringMatching(/^unverified \(docker-missing\): the docker CLI was not found on PATH/) },
-    ]);
-    expect(seen.map(call => call.source)).toEqual([code.passes, code.fails, code.unverifiable]);
-    expect(seen.every(call => call.signal instanceof AbortSignal && !call.signal.aborted)).toBe(true);
-    expect(leases()).toBe(0);
-    expect(readFileSync(store.get(result.job_id)!.log_path, "utf8")).toContain("1/4 specs verified (unverified rows kept with verified=false)");
-  } finally { await host.close(); }
+    const result = await submit({ template_id: "sft_qa_pairs", inputs: { pairs_text: "Q: a\nA: b" } });
+    const events: string[] = [];
+    for await (const event of jobs.events(result.job_id)) events.push(event.type);
+    expect(events[0]).toBe("started");
+    expect(events.at(-1)).toBe("done");
+    expect(await jobs.get(result.job_id)).toMatchObject({ id: result.job_id, kind: "dataset", status: "done", progress: 1, outputPath: result.output_dir, error: null });
+    expect((await jobs.list({ kind: "dataset", status: "done" })).map(job => job.id)).toEqual([result.job_id]);
+    expect(await jobs.list({ status: "failed" })).toEqual([]);
+    await expect(jobs.submit({ kind: "unknown", config: {} })).rejects.toThrow('no installed module runs job kind "unknown"');
+    jobs.serve(new Map([["process.kind", { spec: { kind: "process.kind", isolation: "process", gpu: "none" }, runner: (async () => {}) as JobRunner }]]));
+    await expect(jobs.submit({ kind: "process.kind", config: {} })).rejects.toThrow("runs as a process");
+    expect(store.recent(10).map(row => row.kind)).toEqual(["dataset"]);
+  } finally { await loaded.stop(); await host.close(); }
+});
+
+test("cancelling a running task job ends it failed and stops its runner", async () => {
+  const { host, loaded, jobs, store } = await setup();
+  try {
+    let stopped: unknown;
+    jobs.serve(new Map([["wait", { spec: { kind: "wait", isolation: "task", gpu: "none" }, runner: ((_emit, _config, signal) =>
+      new Promise((_, reject) => signal.addEventListener("abort", () => { stopped = signal.reason; reject(signal.reason); }, { once: true }))) as JobRunner }]]));
+    const job = await jobs.submit({ kind: "wait", config: {} });
+    await wait(() => store.get(job.id)?.status === "running");
+    await jobs.cancel(job.id);
+    await wait(() => store.get(job.id)?.status === "failed");
+    expect(String(stopped)).toContain("job cancelled");
+    expect(store.get(job.id)!.error).toBe("Error: job cancelled");
+    await jobs.cancel(job.id); await jobs.cancel("job_unknown");
+  } finally { await loaded.stop(); await host.close(); }
 });
 
 test("shutdown during verification kills the docker CLI and removes the container before closing job storage", async () => {
-  const { root, host, store } = setup();
   const events: string[] = [];
-  const close = store.close.bind(store);
-  store.close = () => { events.push("store closed"); close(); };
   const spawn: SpawnDocker = args => {
     const command = args[0]!, hang = command === "start";
     events.push(`spawn ${command}`);
@@ -121,12 +109,13 @@ test("shutdown during verification kills the docker CLI and removes the containe
     return { stdout: stream(), stderr: stream(), exited,
       kill() { events.push(`kill ${command}`); for (const controller of controllers) controller.close(); finish(null); } };
   };
-  const runner = createDatasetRunner({ verifyPython: createPythonVerifier({ image: IMAGE, spawn }),
-    loopback: chatWith({ loops: fence("while True:\n    pass") }) });
-  const output = join(root, "dataset");
-  const { jobId } = host.submitTask("dataset", { template_id: "verified_code", inputs: { specs: "loops" },
-    output_dir: output, api_url: "http://unused" }, runner);
+  const { root, host, store, loaded, submit } = await setup({ verifyPython: createPythonVerifier({ image: IMAGE, spawn }) },
+    fetcher(async () => Response.json({ choices: [{ message: { content: fence("while True:\n    pass") } }] })));
+  const close = store.close.bind(store);
+  store.close = () => { events.push("store closed"); close(); };
+  const { job_id: jobId, output_dir: output } = await submit({ template_id: "verified_code", inputs: { specs: "loops" } });
   await wait(() => events.includes("spawn start"));
+  await loaded.stop();
   await host.close();
   expect(events).toEqual(["spawn ps", "spawn create", "spawn start", "kill start", "spawn rm", "store closed"]);
   expect(existsSync(join(output, "train.jsonl"))).toBe(false);
@@ -134,107 +123,31 @@ test("shutdown during verification kills the docker CLI and removes the containe
   try { expect(reopened.get(jobId)?.status).toBe("failed"); } finally { reopened.close(); }
 });
 
-test("simultaneous dataset submissions retain separate output files", async () => {
-  const { root, store, host } = setup();
-  const clock = spyOn(Date, "now").mockReturnValue(123456789);
-  const routes = createDatasetRoutes({ outputRoot: root, serverPort: () => 1,
-    submit: (config, output) => host.submitTask("dataset", config, createDatasetRunner(), output) });
-  try {
-    const results = await Promise.all(["first", "second"].map(async answer => {
-      const response = await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST",
-        body: JSON.stringify({ template_id: "sft_qa_pairs", inputs: { pairs_text: `Q: hello\nA: ${answer}` } }) }));
-      return response!.json();
-    }));
-    await wait(() => results.every(result => store.get(result.job_id)?.status === "done"));
-    expect(results[0].output_dir).not.toBe(results[1].output_dir);
-    for (const [i, answer] of ["first", "second"].entries()) {
-      const row = JSON.parse(readFileSync(join(results[i].output_dir, "train.jsonl"), "utf8"));
-      expect(row.messages[1].content).toBe(answer);
-    }
-  } finally { clock.mockRestore(); await host.close(); }
-});
-
-test("loopback client preserves defaults, tool payload and cancellation signal", async () => {
-  const controller = new AbortController();
-  const requests: any[] = [];
-  const client = makeLlmClient("http://127.0.0.1:1234/", "local-model", { signal: controller.signal,
-    fetch: fetcher(async (url, init) => { requests.push({ url, ...init, body: JSON.parse(init!.body as string) });
-      return Response.json({ choices: [{ message: { content: "answer", tool_calls: [{ id: "one" }] } }] }); }) });
-  expect(await client.chat([{ role: "user", content: "hi" }])).toBe("answer");
-  expect(requests[0]).toMatchObject({ url: "http://127.0.0.1:1234/v1/chat/completions", signal: controller.signal,
-    headers: { Authorization: "Bearer sk-mlx-bun-local" }, body: { model: "local-model", max_tokens: 512,
-      temperature: .7, chat_template_kwargs: { enable_thinking: false } } });
-  const tools = [{ type: "function", function: { name: "example" } }];
-  expect((await client.chatRaw([], { tools, maxTokens: 42, temperature: .2, enableThinking: true })).choices[0].message.tool_calls).toHaveLength(1);
-  expect(requests[1].body).toMatchObject({ tools, max_tokens: 42, temperature: .2, chat_template_kwargs: { enable_thinking: true } });
-});
-
-test("Hugging Face import preserves config discovery, row filtering and pagination", async () => {
-  const urls: string[] = [];
-  const rows = await genHfDatasetImport({ hf_id: "owner/data", min_chars: 3, label_column: "label", label_filter: "yes" }, () => {}, undefined,
-    { fetch: fetcher(async url => { urls.push(String(url));
-      if (urls.length === 1) return Response.json({ splits: [{ config: "config-a", split: "train" }] });
-      return Response.json({ rows: urls.length === 2 ? [{ row: { text: "valid text", label: "yes" } }, { row: { text: "xx", label: "yes" } }, { row: { text: "other text", label: "no" } }] : [] }); }) });
-  expect(rows).toEqual([{ text: "valid text" }]);
-  expect(urls[1]).toContain("config=config-a&split=train&offset=0");
-  expect(urls[2]).toContain("offset=3");
-});
-
-test("shutdown aborts an active loopback fetch and joins task cleanup before closing SQLite", async () => {
-  const { root, host, store } = setup();
+test("shutdown aborts an active model request and joins task cleanup before closing SQLite", async () => {
   let entered = false, settled = false, closed = false;
-  const close = store.close.bind(store);
-  store.close = () => { expect(settled).toBe(true); closed = true; close(); };
-  const runner = createDatasetRunner({ fetch: fetcher(async (_url, init) => {
+  const { root, host, store, loaded, submit } = await setup({}, fetcher(async (input) => {
+    const signal = (input as Request).signal;
     entered = true;
-    try { await new Promise<void>((_, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true })); }
+    try { await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); }
     finally { await Bun.sleep(5); expect(closed).toBe(false); settled = true; }
     return Response.json({});
-  }) });
-  const { jobId } = host.submitTask("dataset", { template_id: "style_transfer", inputs: { reference_samples: "ref", raw_text: "text" },
-    output_dir: join(root, "out"), api_url: "http://unused" }, runner);
+  }));
+  const close = store.close.bind(store);
+  store.close = () => { expect(settled).toBe(true); closed = true; close(); };
+  const { job_id: jobId } = await submit({ template_id: "style_transfer", inputs: { reference_samples: "ref", raw_text: "text" } });
   await wait(() => entered);
+  await loaded.stop();
   await host.close();
   expect(closed).toBe(true);
   const reopened = new JobStore(join(root, "jobs.sqlite"), join(root, "logs"));
   try { expect(reopened.get(jobId)?.status).toBe("failed"); } finally { reopened.close(); }
 });
 
-test("Hugging Face cancellation interrupts retry backoff without another request", async () => {
-  const abort = new AbortController();
-  let calls = 0;
-  const pending = genHfDatasetImport({ hf_id: "owner/data", config: "default" }, () => {}, undefined,
-    { signal: abort.signal, fetch: fetcher(async () => { calls++; return new Response("retry", { status: 503 }); }) });
-  await Bun.sleep(10); abort.abort();
-  await expect(pending).rejects.toThrow();
-  expect(calls).toBe(1);
-});
-
-test("code-completion cancellation closes an active directory iterator before reading files", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mlx-dataset-scan-")); roots.push(root);
-  const abort = new AbortController();
-  const reason = new Error("cancel scan");
-  let closed = false, reachedTail = false;
-  const scan = spyOn(Bun.Glob.prototype, "scan").mockImplementation(async function* () {
-    try {
-      yield "a.py";
-      abort.abort(reason);
-      yield "b.py";
-      reachedTail = true;
-    } finally { closed = true; }
-  });
-  try {
-    await expect(genCodeCompletion({ src_dir: root }, undefined, undefined, { signal: abort.signal })).rejects.toBe(reason);
-    expect(closed).toBe(true);
-    expect(reachedTail).toBe(false);
-  } finally { scan.mockRestore(); }
-});
-
 test("shutdown joins the current code-completion file read without reading more files or writing a dataset", async () => {
-  const { root, host, store } = setup();
-  const output = join(root, "dataset");
-  writeFileSync(join(root, "a.py"), "def first():\n    return 'some useful training content'\n");
-  writeFileSync(join(root, "b.py"), "def second():\n    return 'more useful training content'\n");
+  const { root, host, store, loaded, submit } = await setup();
+  const source = mkdtempSync(join(tmpdir(), "mlx-dataset-src-")); roots.push(source);
+  writeFileSync(join(source, "a.py"), "def first():\n    return 'some useful training content'\n");
+  writeFileSync(join(source, "b.py"), "def second():\n    return 'more useful training content'\n");
   const originalFile = Bun.file;
   let releaseRead!: () => void;
   const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
@@ -242,7 +155,7 @@ test("shutdown joins the current code-completion file read without reading more 
   const originalClose = store.close.bind(store);
   store.close = () => { expect(readSettled).toBe(true); closed = true; originalClose(); };
   const file = spyOn(Bun, "file").mockImplementation(((path: string) => {
-    if (path === join(root, "a.py") || path === join(root, "b.py")) return {
+    if (path === join(source, "a.py") || path === join(source, "b.py")) return {
       async text() {
         reads++;
         await readGate;
@@ -254,9 +167,9 @@ test("shutdown joins the current code-completion file read without reading more 
     return originalFile(path);
   }) as typeof Bun.file);
   try {
-    const { jobId } = host.submitTask("dataset", { template_id: "code_completion", inputs: { src_dir: root },
-      output_dir: output }, createDatasetRunner());
+    const { job_id: jobId, output_dir: output } = await submit({ template_id: "code_completion", inputs: { src_dir: source } });
     await wait(() => reads === 1);
+    await loaded.stop();
     const closing = host.close();
     expect(closed).toBe(false);
     releaseRead();

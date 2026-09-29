@@ -11,7 +11,7 @@ import {
   TEMPLATES,
   getTemplate,
   generate,
-} from "../../src/dataset/registry";
+} from "../src/registry";
 import {
   type Row,
   genSftQa,
@@ -29,8 +29,8 @@ import {
   extractPythonBlock,
   parseCsv,
   parseInstructionList,
-} from "../../src/dataset/generators";
-import type { Emit } from "../../src/jobs/protocol";
+} from "../src/generators";
+import type { JobEmit as Emit } from "@mlx-bun/app-core";
 
 // A no-op emit sink for tests that don't assert on events.
 const noopEmit: Emit = () => {};
