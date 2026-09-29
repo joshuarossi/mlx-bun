@@ -494,11 +494,32 @@ test("memory completions neutralize serving processors and use template defaults
   for (const options of rendered) expect(options).toMatchObject({ enableThinking: undefined });
 });
 
+test("default sampling temperature follows the thinking state under the model's declared cap", async () => {
+  const temperatureFor = async (context: Partial<ModelContext>, body: Record<string, unknown>) => {
+    const { routes, seen } = harness(undefined, { context: { genDefaults: { temperature: 0.9 }, ...context } });
+    const response = await routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }], ...body }));
+    expect(response!.status).toBe(200);
+    return seen[0]![1].temperature;
+  };
+  // A model that declares nothing: the configured temperature, capped at the generic 0.7 only when thinking is off.
+  expect(await temperatureFor({}, {})).toBe(0.9);
+  expect(await temperatureFor({}, { chat_template_kwargs: { enable_thinking: true } })).toBe(0.9);
+  expect(await temperatureFor({}, { chat_template_kwargs: { enable_thinking: false } })).toBe(0.7);
+  expect(await temperatureFor({}, { reasoning_effort: "none" })).toBe(0.7);
+  // A model that declares direct replies by default and its own cap: both apply without any request field.
+  const declared = { generationDefaults: { enableThinking: false, noThinkTemperatureCap: 0.5 } };
+  expect(await temperatureFor(declared, {})).toBe(0.5);
+  expect(await temperatureFor(declared, { chat_template_kwargs: { enable_thinking: true } })).toBe(0.9);
+  expect(await temperatureFor(declared, { temperature: 0.2 })).toBe(0.2);
+});
+
 test("thinking null uses the template default while absence and booleans retain their precedence", async () => {
   for (const serverDefault of [true, false, undefined]) {
     const modes: (boolean | undefined)[] = [];
     const { routes } = harness(undefined, {
-      context: { model: { config: { modelType: "llama", eosTokenIds: [0], text: { vocabSize: 130560, hiddenSize: 1536, numHiddenLayers: 24, numAttentionHeads: 16, numKeyValueHeads: 2, headDim: 128, tieWordEmbeddings: false } } } as ModelContext["model"],
+      // The model declares direct replies by default (as the MiniCPM5 profile does).
+      context: { model: { config: { modelType: "llama", eosTokenIds: [0], text: { vocabSize: 130560 } } } as ModelContext["model"],
+        generationDefaults: { enableThinking: false, noThinkTemperatureCap: 0.7 },
         template: { render: (_messages: unknown, options: { enableThinking?: boolean }) => { modes.push(options.enableThinking); return "prompt"; },
           supportsThinking: true, thinkingFormat: "tags" } as unknown as ModelContext["template"] },
       serverOptions: { defaultThinking: serverDefault },

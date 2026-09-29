@@ -2,8 +2,8 @@
 // points supply the artifact and options; no HTTP or scheduling lives here.
 import type { KvQuantSpec, ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import type { Weights } from "@mlx-bun/inference/artifacts";
-import type { RuntimeModel, RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider } from "@mlx-bun/inference/models";
-import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
+import type { RuntimeModel, RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider, GenerationDefaults } from "@mlx-bun/inference/models";
+import type { ChatTemplate, LoadedTokenizer, SentinelTokens } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
 import type { AudioEncoder } from "@mlx-bun/inference/contracts/mlx";
@@ -32,6 +32,12 @@ export interface ModelContext<Model = RuntimeModel> {
   profile: ResolvedModelProfile;
   tokenizer: LoadedTokenizer;
   template: ChatTemplate | null;
+  /** The model's declared marker tokens for tool calls and the reasoning
+   * channel, resolved against `tokenizer`; absent when generated text carries
+   * them as ordinary text. */
+  sentinels?: SentinelTokens | null;
+  /** The model's declared chat-generation defaults; absent means the generic ones. */
+  generationDefaults?: GenerationDefaults;
   modelId: string;
   /** Lazily-loaded vision tower cache — null until the first image request
    *  (see `getVisionTower`). The tower (SigLIP ~hundreds of MB, encoder-free
@@ -41,7 +47,8 @@ export interface ModelContext<Model = RuntimeModel> {
    *  (supported) vision sidecar. Invoked at most once, then cached in
    *  `vision`. */
   loadVision: (() => VisionEncoder) | null;
-  visionTokenIds: VisionTokenIds;
+  /** Null when neither the config nor the model's declaration supplies the image soft tokens. */
+  visionTokenIds: VisionTokenIds | null;
   /** Lazily-loaded Conformer audio tower — null until the first audio
    *  request (see `getAudioTower`). Same sidecar file as vision
    *  (optiq_vision.safetensors), separate tower; text-only sessions never
@@ -169,8 +176,10 @@ export async function loadContext(
     const { implementations: _provider, ...options } = opts;
     return implementation.create({ modelDir, modelId, options }, config, profile);
   }
-  const [{ Weights }, { createModel, declaredGraph, openPlannedRuntime, plansMemory },
-    { ChatTemplate, loadTokenizer }, { AdapterManager }, { bindLegacyDraftTarget }, { nativeDraftProvider }] = await Promise.all([
+  const [{ Weights }, { createModel, declaredGraph, openPlannedRuntime, plansMemory, loadModelChatTemplate,
+      sentinelDeclarationFor, mediaTokenDeclarationFor, generationDefaultsFor },
+    { loadTokenizer, resolveSentinelTokens, resolveVisionTokenIds, resolveAudioTokenIds },
+    { AdapterManager }, { bindLegacyDraftTarget }, { nativeDraftProvider }] = await Promise.all([
     import("@mlx-bun/inference/artifacts"), import("@mlx-bun/inference/models"),
     import("@mlx-bun/inference/input"),
     import("@mlx-bun/inference/adapters"), import("@mlx-bun/inference/generation/speculative/binding"),
@@ -393,20 +402,13 @@ export async function loadContext(
     // after the owning engine has drained, including if later loading fails.
     const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
     owned.add({ dispose() { CompiledDecode.release(model); } });
-    const template = await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => ChatTemplate.load(dir));
+    const template = await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => loadModelChatTemplate(dir, profile));
     const id = modelId ?? modelDir.split("/").filter(Boolean).at(-1)!;
-    const visionTokenIds = {
-      imageTokenId: (config.raw.image_token_id as number) ?? 258880,
-      boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
-      eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
-    };
-    const audioTokenIds = config.raw.audio_config
-      ? {
-          audioTokenId: (config.raw.audio_token_id as number) ?? 258881,
-          boaTokenId: (config.raw.boa_token_id as number) ?? 256000,
-          eoaTokenId: (config.raw.eoa_token_id as number) ?? 258883,
-        }
-      : null;
+    // Soft-token ids: the checkpoint's config, else the token text the profile declares.
+    const mediaTokens = mediaTokenDeclarationFor(profile);
+    const visionTokenIds = resolveVisionTokenIds(config.raw, tokenizer, mediaTokens?.vision ?? null);
+    const audioTokenIds = resolveAudioTokenIds(config.raw, tokenizer, mediaTokens?.audio ?? null);
+    const sentinelTexts = sentinelDeclarationFor(profile);
     const { bindMediaPreparation } = await import("./media-preparation");
     // Encoders load lazily (getVisionTower/getAudioTower): text-only sessions
     // never pay for a tower. The graph knows which its checkpoint ships.
@@ -416,6 +418,8 @@ export async function loadContext(
       draft,
       model,
       profile,
+      sentinels: sentinelTexts ? resolveSentinelTokens(tokenizer, sentinelTexts) : null,
+      generationDefaults: generationDefaultsFor(profile),
       memoryPlan: runtime?.memoryPlan ?? null,
       ...(runtime ? { runtimeDiagnostics: runtime.diagnostics } : {}),
       adapters,

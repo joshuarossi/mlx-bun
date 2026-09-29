@@ -35,7 +35,13 @@ refused. The gateway plans from the declarations, the request and dynamic state
 `MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
 means declaring and implementing; `execution/` and the app engine need no edit.
 The architecture gate rejects concrete model imports, model-class `instanceof`,
-model-type string checks and model-scoped flags there. A model-level option stays
+model-type and `architectures` checks, family predicates and model-scoped flags there
+and in the app's engine, server and CLI. What those need to know about a model is
+declared in its profile (`models/profile`: `embeddingDeclarationFor`,
+`sentinelDeclarationFor`, `mediaTokenDeclarationFor`, `generationDefaultsFor`,
+`chatTemplateFallbackFor`, `trainingDefaultsFor`) or returned by its opened runtime
+(`models/runtime`, `models/memory-plan`); token text resolves to ids against the
+tokenizer in use (`input/special-tokens`). A model-level option stays
 with its graph: Qwen3.5 reads `MLX_BUN_QWEN_SPEC_KV4` (on by default) where it
 declares speculation over affine KV.
 

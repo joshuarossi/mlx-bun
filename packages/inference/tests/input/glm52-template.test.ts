@@ -1,18 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
 import {
-  ChatTemplate,
   renderGlm52Chat,
   type ToolDefinition,
 } from "../../src/input/chat-template";
-
-const dirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
 
 describe("GLM-5.2 chat template", () => {
   test("matches the pinned role and thinking format", () => {
@@ -74,24 +64,6 @@ describe("GLM-5.2 chat template", () => {
     expect(rendered).toContain(
       "<|observation|><tool_response>sunny</tool_response>" +
       "<tool_response>warm</tool_response>",
-    );
-  });
-
-  test("loads the dedicated fallback only for glm_moe_dsa", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "mlx-bun-glm52-template-"));
-    dirs.push(dir);
-    writeFileSync(join(dir, "config.json"), JSON.stringify({
-      model_type: "glm_moe_dsa",
-    }));
-    writeFileSync(join(dir, "tokenizer_config.json"), JSON.stringify({
-      bos_token: null,
-      eos_token: "<|endoftext|>",
-    }));
-    const template = await ChatTemplate.load(dir);
-    expect(template.supportsThinking).toBe(true);
-    expect(template.thinkingFormat).toBe("think-tag");
-    expect(template.render([{ role: "user", content: "Hi" }])).toBe(
-      "[gMASK]<sop><|user|>Hi<|assistant|><think></think>",
     );
   });
 

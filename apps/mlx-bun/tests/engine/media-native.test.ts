@@ -131,7 +131,7 @@ describe.skipIf(!native || !models.gemma4Audio)("Gemma4 SigLIP and audio", () =>
   test("image, audio and mixed prompts splice their soft tokens and reuse the encoder cache", async () => {
     const f = await family(models.gemma4Audio!);
     try {
-      const v = f.ctx.visionTokenIds, a = f.ctx.audioTokenIds!;
+      const v = f.ctx.visionTokenIds!, a = f.ctx.audioTokenIds!;
       expect(a).not.toBeNull();
       expect(f.ctx.model.config.raw.vision_config).toMatchObject({ model_type: "gemma4_vision" });
       await coldWarm(f, [text, image(3)], built => {
@@ -170,7 +170,7 @@ describe.skipIf(!native || !models.gemma4Unified)("Gemma4 unified vision", () =>
   test("images splice through the encoder-free tower and reuse the encoder cache", async () => {
     const f = await family(models.gemma4Unified!);
     try {
-      const v = f.ctx.visionTokenIds;
+      const v = f.ctx.visionTokenIds!;
       expect(f.ctx.model.config.raw.vision_config).toMatchObject({ model_type: "gemma4_unified_vision" });
       await coldWarm(f, [text, image(3)], built => {
         embeddingShape(built);
@@ -231,7 +231,7 @@ describe.skipIf(!native || !models.diffusion)("DiffusionGemma vision", () => {
   test("one image becomes owned pixels and a spliced soft-token run, reproduced exactly", async () => {
     const f = await family(models.diffusion!);
     try {
-      const v = f.ctx.visionTokenIds;
+      const v = f.ctx.visionTokenIds!;
       const prepared: Awaited<ReturnType<typeof fingerprint>>[] = [];
       for (let pass = 0; pass < 2; pass++) await f.build([text, image(3)], async built => {
         expect(built.vision).toBeUndefined();

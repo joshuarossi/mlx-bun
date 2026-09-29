@@ -74,8 +74,12 @@ allowlists. For example, a missing draft head is a missing component. Dynamic
 request data, batch membership, cancellation, and state transitions still need
 runtime handling. Graphs declare their capabilities when constructed; the gateway
 plans from those declarations and the app engine binds media through graph
-operations, and the architecture gate rejects model classes and model-identity
-checks in both. Elsewhere this remains the target design and a review criterion
+operations. Facts the server and CLI need (memory plans, native draft heads,
+pooled-embedding recipes, tool-call and reasoning marker tokens, media soft
+tokens, chat defaults, template fallbacks) are declared by the model layer, in
+the profile or the opened runtime, and consumed as data. The architecture gate
+rejects model classes, model-type and architecture checks, family predicates and
+model-identity checks in the engine, server and CLI. Elsewhere this remains the target design and a review criterion
 for remaining migration work, not a claim that every existing path already
 satisfies it.
 

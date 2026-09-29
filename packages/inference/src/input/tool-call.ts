@@ -6,21 +6,13 @@
 // blocks the model emits <|tool_response> (token 50, in the EOS set) —
 // the request to the runtime for results.
 //
-// Token ids (tokenizer.json added_tokens; stable for this family):
-//   <|tool_call> 48   <tool_call|> 49   <|tool_response> 50   <|"|> 52
-//   <|channel> 100   <channel|> 101  (reasoning channel; see CHANNEL_* below)
-
-export const TOOL_CALL_START = 48;
-export const TOOL_CALL_END = 49;
-export const TOOL_RESPONSE_START = 50;
-
-/** Gemma 4 reasoning channel sentinels. With thinking on, the model wraps its
- *  chain-of-thought as  <|channel>thought\n…<channel|>  before the final
- *  answer. soc_token=`<|channel>` (100), eoc_token=`<channel|>` (101). These
- *  are special tokens stripped at decode, so reasoning must be split at the
- *  TOKEN level (ToolAwareStream), not from decoded text. */
-export const CHANNEL_START = 100;
-export const CHANNEL_END = 101;
+// The marker tokens (<|tool_call>, <tool_call|>, <|channel>, <channel|>) are
+// declared by the model profile as token text and resolved to ids against the
+// tokenizer in use (input/special-tokens.ts); nothing here names vocabulary ids.
+// With thinking on, the model wraps its chain-of-thought as
+// <|channel>thought\n…<channel|> before the final answer; those special tokens
+// are stripped at decode, so reasoning is split at the TOKEN level
+// (ToolAwareStream), not from decoded text.
 
 const QUOTE = '<|"|>';
 
