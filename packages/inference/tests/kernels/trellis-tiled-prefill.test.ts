@@ -36,7 +36,7 @@ test("tiled trellis prefill preserves precise expansion on other matrix shapes",
       }
     }
   }
-});
+}, 60_000); // 21 native kernel comparisons; slower on CI runners than the 5 s default
 
 test("tiled trellis dispatch requires the measured shape and numerical contract", () => {
   const g = { k: 3, L: 12, T: 256, axis: 1 as const, rows: 17408, cols: 5120, inFeatures: 5120, outFeatures: 17408 };
