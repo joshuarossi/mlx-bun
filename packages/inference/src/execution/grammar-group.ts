@@ -11,7 +11,7 @@ import { createKvMaintenance, type KvMaintenance } from "../state/kv-maintenance
 import { cleanupFailure, disposeResources } from "../runtime/resources";
 import { snapshotGenerationPolicy } from "./request-policy";
 import { MlxPrefillCohort } from "./prefill-cohort";
-import { DenseKvReadError, unreadableRows } from "../state/dense-kv-reads";
+import { DenseKvReadError, denseKvLayerList, unreadableRows } from "../state/dense-kv-reads";
 import type { MlxGroupedMethod, MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, Row } from "./batch-types";
 
 interface RequestState {
@@ -30,11 +30,7 @@ interface RequestState {
  * It is copied once; a row whose next append would not be read plain there is
  * refused before any layer appends. */
 export function bindGrammarGroupRequests(model: RuntimeModel, denseKvReads: readonly number[], cacheCount: number) {
-  if (!Array.isArray(denseKvReads))
-    throw new TypeError("forced grammar spans require the graph's dense KV read layers");
-  const layers = Object.freeze([...denseKvReads]);
-  if (layers.some(layer => !Number.isSafeInteger(layer) || layer < 0 || layer >= cacheCount) || new Set(layers).size !== layers.length)
-    throw new RangeError(`dense KV read layers must be distinct layer indices below ${cacheCount}`);
+  const layers = denseKvLayerList(denseKvReads, cacheCount);
   return (input: GenerateOptions): MlxGroupMethodRequest => ({
     key: "grammar-forced-span", data: snapshotGenerationPolicy(input),
     open: host => new GrammarGroup(host, model, layers),
