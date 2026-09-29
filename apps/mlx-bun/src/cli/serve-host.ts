@@ -175,7 +175,7 @@ async function localRecords(): Promise<readonly ModelRecord[]> {
   try {
     // A fresh machine's index is empty until its first scan.
     if (registry.list().length === 0) await registry.scan();
-    return registry.listCanonical().filter(record => declaredOperations(record.modelType, record.repoId).includes("generate"));
+    return registry.listCanonical().filter(record => declaredOperations(record.modelType).includes("generate"));
   } finally { registry.close(); }
 }
 
@@ -290,7 +290,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       async resolve(id) {
         const record = await known(id);
         if (!record) return undefined;
-        return { id: record.repoId, bytes: await estimate(record), operations: declaredOperations(record.modelType, record.repoId) };
+        return { id: record.repoId, bytes: await estimate(record), operations: declaredOperations(record.modelType) };
       },
       async load(entry) {
         const record = (await known(entry.id))!;
