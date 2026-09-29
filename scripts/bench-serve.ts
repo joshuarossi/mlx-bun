@@ -42,13 +42,13 @@ mlx-lm reference); anything narrower is scoped and never full qualification. Out
 every tree. run exits 0 only when every applicable cell measured every required phase with stable
 decode, verified library provenance and matching probes; performance acceptance stays unreviewed.`;
 
-function machine(): RunRecord["machine"] {
+export function machine(): RunRecord["machine"] {
   const sysctl = (name: string) => Bun.spawnSync(["sysctl", "-n", name]).stdout.toString().trim();
   return { chip: sysctl("machdep.cpu.brand_string"), memoryBytes: Number(sysctl("hw.memsize")),
     loadAverage: sysctl("vm.loadavg"), host: hostname(), os: release(), bun: Bun.version };
 }
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
   const { port } = listener;
   listener.stop(true);
@@ -57,7 +57,7 @@ async function freePort(): Promise<number> {
 
 /** A cell's environment: a sandbox HOME and caches, offline, and the intended
  * library (intent only; the loaded library is observed from the process). */
-function cellEnvironment(sandbox: string, library: string | null): Record<string, string> {
+export function cellEnvironment(sandbox: string, library: string | null): Record<string, string> {
   for (const sub of ["home", "tmp", "cache", "config", "data", "hf"]) mkdirSync(join(sandbox, sub), { recursive: true });
   return { PATH: process.env.PATH ?? "", LANG: process.env.LANG ?? "en_US.UTF-8", HOME: join(sandbox, "home"),
     TMPDIR: join(sandbox, "tmp"), XDG_CACHE_HOME: join(sandbox, "cache"), XDG_CONFIG_HOME: join(sandbox, "config"),

@@ -22,6 +22,8 @@ export interface ServeOptions {
   memoryBudgetBytes?: number;
   /** Main's `--context-length`: GLM-5.2 resource-plan reservation; other families ignore it. */
   contextTokens?: number;
+  /** Startup kernel override; absent derives from the selected KV scheme. */
+  fusedSdpa?: boolean;
   forceWire?: boolean;
   expertOffload?: boolean;
   allowPrivateMedia?: boolean;

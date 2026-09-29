@@ -1,4 +1,4 @@
-import type { JobStore } from "./db";
+import { jobError, nowIso, type JobStore } from "./db";
 import { makeEmit } from "./events";
 import type { JobKind, JobRunner } from "./protocol";
 
@@ -23,11 +23,12 @@ export function createInProcessJobs() {
           signal.throwIfAborted();
           if (result?.outputPath) store.setOutputPath(row.id, result.outputPath);
           store.setProgress(row.id, 1);
-          store.setStatus(row.id, "done", { endedAt: new Date().toISOString() });
+          store.setStatus(row.id, "done", { endedAt: nowIso() });
           emit({ type: "done", ts: Date.now(), output_dir: result?.outputPath ?? outputPath });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          store.setStatus(row.id, "failed", { error: message, endedAt: new Date().toISOString() });
+          // Main's row format for every job kind: the timestamp and the failure's name.
+          const message = jobError(error);
+          store.setStatus(row.id, "failed", { error: message, endedAt: nowIso() });
           emit({ type: "failed", error: message, ts: Date.now() });
         }
       }).catch(error => { failures.push(error); }).finally(() => { tasks.delete(task); });
