@@ -302,6 +302,59 @@ function proportionalFreqs(
   return out;
 }
 
+/** What a scaling type builds its rope from. `scaling` is empty for the plain `default` type. */
+interface RopeInit {
+  dims: number;
+  base: number;
+  traditional: boolean;
+  scaling: RopeScalingConfig;
+  maxPositionEmbeddings: number | null;
+}
+
+const yarnRope = ({ dims, base, traditional, scaling: sc }: RopeInit): UniversalRope => {
+  const [freqs, mscale] = yarnFreqs(
+    dims,
+    base,
+    requireNum(sc, "factor"),
+    num(sc.original_max_position_embeddings, 4096),
+    num(sc.beta_fast, 32),
+    num(sc.beta_slow, 1),
+    num(sc.mscale, 1),
+    num(sc.mscale_all_dim, 0),
+  );
+  // YarnRoPE scales x only when mscale != 1.0 (preScaleAlways=false).
+  return new UniversalRope(dims, traditional, null, 1.0, freqs, mscale, false);
+};
+
+/** The `rope_scaling` types initialize_rope understands, keyed by the config's type string (data,
+ *  not a model family). A new scaling scheme is one entry here. */
+const ropeScalers: Readonly<Record<string, (init: RopeInit) => UniversalRope>> = {
+  default: ({ dims, base, traditional }) => new UniversalRope(dims, traditional, base, 1.0, null, 1, false),
+  linear: ({ dims, base, traditional, scaling }) =>
+    new UniversalRope(dims, traditional, base, 1 / requireNum(scaling, "factor"), null, 1, false),
+  llama3: ({ dims, base, traditional, scaling }) =>
+    new UniversalRope(dims, traditional, null, 1.0, llama3Freqs(dims, base, scaling), 1, false),
+  yarn: yarnRope,
+  deepseek_yarn: yarnRope,
+  "telechat3-yarn": yarnRope,
+  longrope: ({ dims, base, maxPositionEmbeddings, scaling: sc }) => {
+    const [freqs, scale] = suFreqsAndScale(
+      dims,
+      base,
+      maxPositionEmbeddings ?? 131072,
+      requireNum(sc, "original_max_position_embeddings"),
+      (sc.long_factor as number[] | number | undefined) ?? 1.0,
+    );
+    // SuScaledRoPE hardcodes traditional=False and ALWAYS pre-scales.
+    return new UniversalRope(dims, false, null, 1.0, freqs, scale, true);
+  },
+  proportional: ({ dims, base, traditional, scaling: sc }) => {
+    const rotatedDims = Math.floor(dims * num(sc.partial_rotary_factor, 1.0));
+    const freqs = proportionalFreqs(dims, rotatedDims, base, num(sc.factor, 1.0));
+    return new UniversalRope(dims, traditional, null, 1.0, freqs, 1, false);
+  },
+};
+
 /** Port of rope_utils.initialize_rope — the shared entry every
  *  initialize_rope-style arch (llama, qwen2/3, olmo2, granite, …) uses. */
 export function initializeRope(
@@ -314,54 +367,9 @@ export function initializeRope(
   const ropeType = scalingConfig
     ? String(scalingConfig.type ?? scalingConfig.rope_type ?? "default")
     : "default";
-
-  if (ropeType === "default" || ropeType === "linear") {
-    const scale = ropeType === "linear" ? 1 / requireNum(scalingConfig!, "factor") : 1.0;
-    return new UniversalRope(dims, traditional, base, scale, null, 1, false);
-  }
-
-  if (ropeType === "llama3") {
-    const freqs = llama3Freqs(dims, base, scalingConfig!);
-    return new UniversalRope(dims, traditional, null, 1.0, freqs, 1, false);
-  }
-
-  if (ropeType === "yarn" || ropeType === "deepseek_yarn" || ropeType === "telechat3-yarn") {
-    const sc = scalingConfig!;
-    const [freqs, mscale] = yarnFreqs(
-      dims,
-      base,
-      requireNum(sc, "factor"),
-      num(sc.original_max_position_embeddings, 4096),
-      num(sc.beta_fast, 32),
-      num(sc.beta_slow, 1),
-      num(sc.mscale, 1),
-      num(sc.mscale_all_dim, 0),
-    );
-    // YarnRoPE scales x only when mscale != 1.0 (preScaleAlways=false).
-    return new UniversalRope(dims, traditional, null, 1.0, freqs, mscale, false);
-  }
-
-  if (ropeType === "longrope") {
-    const sc = scalingConfig!;
-    const [freqs, scale] = suFreqsAndScale(
-      dims,
-      base,
-      maxPositionEmbeddings ?? 131072,
-      requireNum(sc, "original_max_position_embeddings"),
-      (sc.long_factor as number[] | number | undefined) ?? 1.0,
-    );
-    // SuScaledRoPE hardcodes traditional=False and ALWAYS pre-scales.
-    return new UniversalRope(dims, false, null, 1.0, freqs, scale, true);
-  }
-
-  if (ropeType === "proportional") {
-    const sc = scalingConfig!;
-    const rotatedDims = Math.floor(dims * num(sc.partial_rotary_factor, 1.0));
-    const freqs = proportionalFreqs(dims, rotatedDims, base, num(sc.factor, 1.0));
-    return new UniversalRope(dims, traditional, null, 1.0, freqs, 1, false);
-  }
-
-  throw new Error(`Unsupported RoPE type ${ropeType}`);
+  const scaler = Object.hasOwn(ropeScalers, ropeType) ? ropeScalers[ropeType] : undefined;
+  if (!scaler) throw new Error(`Unsupported RoPE type ${ropeType}`);
+  return scaler({ dims, base, traditional, scaling: scalingConfig ?? {}, maxPositionEmbeddings });
 }
 
 /** SuScaledRoPE constructed the phi3.py way (NOT via initialize_rope):

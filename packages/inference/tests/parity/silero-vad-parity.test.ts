@@ -41,13 +41,13 @@ const oracle = opted ? readPinnedJson<Oracle>(join(reference!, "silero-vad.json"
 const main = opted ? readPinnedJson<Main>(join(reference!, "main-vad.json"), opted.MLX_BUN_TEST_VAD_MAIN_SHA256, "main reference") : null;
 
 describe.skipIf(!opted)("silero vad vs silero-vad 6.2.1 and main", () => {
-  let SileroVad: typeof import("@mlx-bun/inference/models/audio/silero-vad").SileroVad;
-  let vad: import("@mlx-bun/inference/models/audio/silero-vad").SileroVad;
+  let SileroVad: typeof import("@mlx-bun/inference/transcription/silero-vad").SileroVad;
+  let vad: import("@mlx-bun/inference/transcription/silero-vad").SileroVad;
   const clips = new Map<string, Float32Array>();
 
   beforeAll(async () => {
     assert.equal(await fileSha256(opted!.MLX_BUN_TEST_VAD_MODEL), main!.modelSha256, "the VAD model differs from main's reference");
-    const [{ decodeWav }, silero] = await Promise.all([import("@mlx-bun/inference/input/audio"), import("@mlx-bun/inference/models/audio/silero-vad")]);
+    const [{ decodeWav }, silero] = await Promise.all([import("@mlx-bun/inference/input/audio"), import("@mlx-bun/inference/transcription/silero-vad")]);
     SileroVad = silero.SileroVad;
     const wav = (name: string) => decodeWav(new Uint8Array(readFileSync(join(opted!.MLX_BUN_TEST_VAD_AUDIO, name)))).samples;
     clips.set("fox", wav("speech-fox.wav"));

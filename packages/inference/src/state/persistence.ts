@@ -53,7 +53,7 @@ import { dirname,join } from "node:path";
 import { MADV_DONTNEED,MmapFile } from "../artifacts/mmap";
 import { type Cache } from "../contracts/mlx/cache";
 import { cacheSignature } from "./capabilities";
-import { Glm52Cache,MLACache } from "./glm52-cache";
+import { MLACache } from "./glm52-cache";
 import { KVCache } from "./kv";
 import { pagedCacheCodec } from "./paged/codec";
 import { kvReader,kvWriter,type KvWriteRequest } from "./persistence-worker";
@@ -87,7 +87,7 @@ const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
  *  materialization until rawBytes at write time). */
 interface TensorSource { arr: MlxArray; disposeAfter: boolean }
 
-const requireMlaState = (cache: Glm52Cache, operation: string): void => {
+const requireMlaState = (cache: MLACache, operation: string): void => {
   if (!cache.latent || !cache.rope || cache.batchSize === null || cache.offset === 0)
     throw new Error(`cannot ${operation} an empty GLM compressed cache`);
   if (cache.dsa && (!cache.dsa.data || cache.dsa.offset !== cache.offset))
@@ -99,7 +99,7 @@ const snapshotMla = (
   cache: Cache,
   context: SnapshotContext,
 ): CacheHeaderEntry => {
-  const c = cache as Glm52Cache;
+  const c = cache as MLACache;
   requireMlaState(c, "persist");
   context.push(context.liveMlaSlice(c.latent!, c.offset), true);
   context.push(context.liveMlaSlice(c.rope!, c.offset), true);
@@ -116,7 +116,7 @@ const snapshotMla = (
 };
 
 const cloneMla = (cache: Cache, context: CloneContext): Cache => {
-  const c = cache as Glm52Cache;
+  const c = cache as MLACache;
   requireMlaState(c, "clone");
   const clone = new MLACache({
     kvLoraRank: c.kvLoraRank,
@@ -778,7 +778,7 @@ function validateGlm52Prototype(
       throw new Error(`${path}: GLM cache kind ${entry.kind} does not match model cache`);
     return;
   }
-  const glmPrototype = prototype as Glm52Cache;
+  const glmPrototype = prototype as MLACache;
   const expectedKind: CacheKind = glmPrototype.role === "mtp"
     ? "mtp-mla"
     : glmPrototype.dsa ? "mla-dsa" : "mla";

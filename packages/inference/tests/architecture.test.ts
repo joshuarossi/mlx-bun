@@ -26,7 +26,7 @@ const allowed = {
   generation: ["portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "models", "mlx"],
   scoring: ["portable", "mlx-contracts", "kernels", "state", "models", "mlx"],
   embeddings: ["artifacts", "input", "models", "mlx"],
-  transcription: ["input", "models", "mlx"],
+  transcription: ["mlx-contracts", "input", "mlx"],
   execution: ["portable", "mlx-contracts", "runtime", "artifacts", "layers", "state", "input", "sampling", "models", "generation", "mlx"],
   api: ["contracts", "portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "adapters", "models", "generation", "scoring", "embeddings", "transcription", "execution", "mlx"],
 } satisfies Record<string, string[]>;
@@ -581,12 +581,6 @@ const seamRatchet: RatchetTable = {
     "packages/inference/src/generation/speculative/sources/dflash-source.ts": 1,
     "packages/inference/src/generation/speculative/sources/glm52-mtp-source.ts": 3,
     "packages/inference/src/generation/speculative/sources/qwen-mtp-source.ts": 1,
-    "packages/inference/src/state/glm52-cache.ts": 1,
-    "packages/inference/src/state/target-layout.ts": 1,
-    "packages/inference/src/transcription/index.ts": 1,
-    "packages/inference/src/transcription/whisper/decode.ts": 2,
-    "packages/inference/src/transcription/whisper/timing.ts": 1,
-    "packages/inference/src/transcription/whisper/transcribe.ts": 1,
   },
   "family-subpath": {
     "packages/quantize/src/drafter.ts": 1,
@@ -594,17 +588,11 @@ const seamRatchet: RatchetTable = {
   "family-identity": {
     "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
     "packages/inference/src/generation/speculative/draft-kind.ts": 1,
-    "packages/inference/src/layers/rope.ts": 1,
-    "packages/inference/src/models/profile.ts": 1,
     "packages/inference/src/state/speculative/glm52-mtp-state.ts": 1,
     "packages/inference/src/state/speculative/qwen-mtp-state.ts": 1,
     "packages/quantize/src/drafter.ts": 1,
-    "packages/quantize/src/weight-transform.ts": 6,
   },
-  "cache-class": {
-    "packages/inference/src/generation/autoregressive.ts": 2,
-    "packages/inference/src/scoring/full-sequence.ts": 2,
-  },
+  "cache-class": {},
   "model-env-flag": {},
   "scheduler-core": {},
 };

@@ -130,12 +130,15 @@ export const BUILTIN_ARTIFACT_PROFILES: readonly ArtifactModelProfile[] = Object
   }),
 ]);
 
+/** The engine capability each generation loop needs. */
+const loopCapability: Readonly<Record<GenerationLoop, EngineCapability>> = {
+  autoregressive: "autoregressive", diffusion: "diffusion", "encoder-decoder": "encoder-decoder",
+};
+
 /** What the engine must provide to run a composition: its loader, its loop, and its graph's own capabilities. */
 function executionCapabilities(execution: ModelExecutionComposition, family: ModelFamily): EngineCapability[] {
   const required: EngineCapability[] = [execution.loader === "colibri" ? "colibri-container" : "safetensors"];
-  if (execution.loop === "diffusion") required.push("diffusion");
-  else if (execution.loop === "encoder-decoder") required.push("encoder-decoder");
-  else required.push("autoregressive");
+  required.push(loopCapability[execution.loop]);
   required.push(...family.capabilities);
   if (execution.specialization === "generated") required.push("generated-graph");
   return required;

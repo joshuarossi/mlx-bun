@@ -18,7 +18,7 @@ WHISPER_FRAMES_PER_SECOND,WHISPER_HOP,WHISPER_N_FRAMES,WHISPER_N_SAMPLES,
 WHISPER_SAMPLE_RATE,WhisperMelExtractor,padOrTrimFrames,
 } from "../../input/audio/whisper-mel";
 import { normalizeWhisperLanguage,type WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
-import type { WhisperModel } from "../../models/whisper/model";
+import type { WhisperGraph } from "../../contracts/mlx/whisper";
 import {
 WhisperDecodingTask,type WhisperDecodingOptions,type WhisperDecodingResult,
 } from "./decode";
@@ -62,7 +62,7 @@ const DEFAULT_TEMPERATURES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
 
 export class WhisperTranscriber {
   readonly mel: WhisperMelExtractor;
-  constructor(readonly model: WhisperModel, readonly tokenizer: WhisperTokenizer) {
+  constructor(readonly model: WhisperGraph, readonly tokenizer: WhisperTokenizer) {
     this.mel = new WhisperMelExtractor(model.dims.nMels);
   }
 
