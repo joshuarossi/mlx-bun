@@ -6,7 +6,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
-import { isDrafterModelType } from "@mlx-bun/inference/models/support";
+import { isDrafterModelType, supportTierOfModelDir } from "@mlx-bun/inference/models/support";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 
 /** The user's home directory, from HOME when set. */
@@ -28,5 +28,6 @@ export const MODEL_LAYOUT = {
 
 /** The model index over the hub cache and the root's own model directory. */
 export function openModelRegistry(root: string = mlxBunHome()): Registry {
-  return new Registry(join(root, MODEL_LAYOUT.registryDb), { modelDirs: [join(root, MODEL_LAYOUT.models)], isCompanion: isDrafterModelType });
+  return new Registry(join(root, MODEL_LAYOUT.registryDb), { modelDirs: [join(root, MODEL_LAYOUT.models)], isCompanion: isDrafterModelType,
+    supportTier: record => supportTierOfModelDir(record.path, record.modelType) });
 }

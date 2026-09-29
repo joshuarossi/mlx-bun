@@ -7,7 +7,7 @@ import {
   type ArtifactModelProfile, chatTemplateFallbackFor, embeddingDeclarationFor, generationDefaultsFor, mediaTokenDeclarationFor, resolveModelProfile,
   sentinelDeclarationFor, trainingDefaultsFor,
 } from "../../src/models/profile";
-import { isEmbeddingModelType, isSupportedModelConfig, isTranscriptionModelType, supportTier } from "../../src/models/support";
+import { isEmbeddingModelType, isSupportedModelConfig, isTranscriptionModelType, listedSupportTier, supportTier, supportTierOfModelDir } from "../../src/models/support";
 import { ENGINE_CAPABILITIES, MODEL_FAMILIES, familyForGraph, familyOf, familyOfModelType } from "../../src/models/families";
 import { configFingerprint } from "../../src/artifacts/fingerprint";
 import { fit } from "../../src/execution/fit";
@@ -221,6 +221,23 @@ describe("the family registry", () => {
     // A listing with only the model_type cannot tell them apart, so it reports what every llama is.
     expect(supportTier("llama")).toBe("generic");
     expect(familyOfModelType("llama")!.graph).toBe("universal-dense");
+  });
+
+  test("a listing shows the exact tier from the config: MiniCPM5 targeted, a plain Llama generic, and the record-level tier where no family reads the config", async () => {
+    const dir = (name: string) => join(root, name);
+    await loaded();
+    expect(await supportTierOfModelDir(dir("minicpm5"), "llama")).toBe("targeted");
+    expect(await supportTierOfModelDir(dir("minicpm5-one-dimension-off"), "llama")).toBe("generic");
+    expect(await supportTierOfModelDir(dir("llama"), "llama")).toBe("generic");
+    expect(await supportTierOfModelDir(dir("whisper-hf-format"), "whisper")).toBe("targeted");
+    expect(await supportTierOfModelDir(dir("qwen3.5-moe-variant"), "qwen3_5")).toBe("targeted");
+    expect(await supportTierOfModelDir(dir("gemma4-drafter"), "gemma4_assistant")).toBeNull();
+    expect(await supportTierOfModelDir(dir("unsupported"), "not_a_real_architecture")).toBeNull();
+    expect(await supportTierOfModelDir(join(root, "missing"), "llama")).toBe("generic");
+    // A registry that indexed a tier is believed; one that did not falls back to the model_type.
+    expect(listedSupportTier({ modelType: "llama", supportTier: "targeted" })).toBe("targeted");
+    expect(listedSupportTier({ modelType: "llama", supportTier: null })).toBe("generic");
+    expect(listedSupportTier({ modelType: "llama" })).toBe("generic");
   });
 
   test("the roles a model_type plays come from its family's declarations", () => {

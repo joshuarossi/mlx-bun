@@ -1,6 +1,6 @@
 import { isUnservableDrafterModelType } from "./drafters";
 import { familyOf, familyOfModelType } from "./families";
-import type { ModelConfig } from "../artifacts/config";
+import { loadModelConfig, type ModelConfig } from "../artifacts/config";
 import type { MoeDeclaration } from "./family";
 
 /** Registry-level role of a `model_type` before any weights are read: a
@@ -54,4 +54,26 @@ export function isSupportedModelConfig(config: ModelConfig): boolean {
  * unsupported or unreadable model (sizing estimates never throw). */
 export function moeOf(config: ModelConfig): MoeDeclaration | null {
   try { return familyOf(config)?.moe?.(config) ?? null; } catch { return null; }
+}
+
+export type SupportTier = "targeted" | "generic";
+
+/** The exact tier of a model directory: the family that accepts its config,
+ *  where the `model_type` alone is ambiguous (MiniCPM5 shares `llama`); the
+ *  record-level tier when the config names no family or cannot be read.
+ *  Reads one config, so a registry calls it once per snapshot at index time. */
+export async function supportTierOfModelDir(modelDir: string, modelType: string): Promise<SupportTier | null> {
+  if (isDrafterModelType(modelType)) return null;
+  try {
+    return familyOf(await loadModelConfig(modelDir))?.tier ?? supportTier(modelType);
+  } catch {
+    return supportTier(modelType);
+  }
+}
+
+/** The tier a listed record shows: the one its registry classified at index time,
+ *  else the record-level tier for its `model_type`. */
+export function listedSupportTier(record: { modelType: string; supportTier?: string | null }): SupportTier | null {
+  const indexed = record.supportTier;
+  return indexed === "targeted" || indexed === "generic" ? indexed : supportTier(record.modelType);
 }

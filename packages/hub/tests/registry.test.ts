@@ -34,6 +34,20 @@ function makeHub(): string {
 }
 
 describe("Registry", () => {
+  test("a supplied classifier decides each snapshot's support tier once, at index time", async () => {
+    const hub = makeHub();
+    const seen: string[] = [];
+    const reg = new Registry(":memory:", { supportTier: async record => { seen.push(record.repoId); return record.modelType === "llama" ? "generic" : null; } });
+    await reg.scan(hub);
+    expect(reg.list().map(m => [m.repoId, m.supportTier])).toEqual(expect.arrayContaining([["test/big-bf16", "generic"], ["test/tiny-4bit", undefined]]));
+    const listed = seen.length;
+    reg.list(); reg.listCanonical();
+    expect(seen).toHaveLength(listed); // listing reads the index, not the classifier
+    const plain = new Registry(":memory:");
+    await plain.scan(hub);
+    expect(plain.list().every(m => m.supportTier === undefined)).toBe(true);
+  });
+
   test("scan indexes snapshots with capabilities", async () => {
     const hub = makeHub();
     const reg = new Registry(":memory:");

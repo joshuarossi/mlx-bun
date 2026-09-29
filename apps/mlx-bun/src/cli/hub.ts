@@ -117,10 +117,10 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
           break;
         }
         const { visionCapable } = await import("@mlx-bun/hub/registry");
-        const { supportTier } = await import("@mlx-bun/inference/models/support");
+        const { listedSupportTier } = await import("@mlx-bun/inference/models/support");
         const canonicalPaths = new Set(reg.listCanonical(lsFilter).map((m) => m.path));
         const capabilities = (m: (typeof models)[number]) => {
-          const tier = supportTier(m.modelType);
+          const tier = listedSupportTier(m);
           return [
             tier ? `supported (${tier})` : `unsupported (${m.modelType})`,
             visionCapable(m) ? "vision" : null,

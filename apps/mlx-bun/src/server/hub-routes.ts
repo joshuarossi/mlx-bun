@@ -2,7 +2,7 @@ import { hfToken } from "@mlx-bun/hub/download";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { visionCapable, type ModelRecord, type Registry } from "@mlx-bun/hub/registry";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
-import { supportTier } from "@mlx-bun/inference/models/support";
+import { listedSupportTier } from "@mlx-bun/inference/models/support";
 import { errorResponse } from "./http";
 import { DuplicateDownloadError, type DownloadOwner } from "../hub/downloads";
 import { openRegistry } from "../storage/paths";
@@ -19,7 +19,7 @@ export interface HubRouteOptions {
 }
 
 async function localRow(model: ModelRecord) {
-  const tier = supportTier(model.modelType);
+  const tier = listedSupportTier(model);
   let assessment: { fits: boolean; max_safe_context: number; predicted_decode_tps: number } | null = null;
   try {
     const config = await loadModelConfig(model.path);

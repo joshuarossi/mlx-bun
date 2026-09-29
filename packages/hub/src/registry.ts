@@ -45,6 +45,9 @@ export interface ModelRecord {
   hasAudioTower: boolean;
   hasKvConfig: boolean;
   hasToolTemplate: boolean;
+  /** The support tier the caller's `supportTier` classifier assigned when the
+   *  snapshot was indexed; absent when none did (or no classifier is set). */
+  supportTier?: string | null;
   numLayers: number | null;
   hiddenSize: number | null;
   vocabSize: number | null;
@@ -79,6 +82,11 @@ CREATE TABLE IF NOT EXISTS models (
   license TEXT,
   scanned_at INTEGER NOT NULL
 );
+-- Beside the model rows, so an index written before tiers existed stays readable.
+CREATE TABLE IF NOT EXISTS support_tiers (
+  path TEXT PRIMARY KEY,
+  tier TEXT NOT NULL
+);
 `;
 
 /** HF hub cache root, resolved at call time the way huggingface_hub does:
@@ -100,17 +108,25 @@ export interface RegistryOptions {
    *  model on its own. The registry holds no model facts: the caller supplies
    *  this from the declaring layer. Default: none is. */
   isCompanion?: (modelType: string) => boolean;
+  /** The support tier of a snapshot, decided when it is indexed so listings
+   *  never re-read config files. It sees the record and the snapshot
+   *  directory (a family can share a `model_type` and differ only in its
+   *  config). The registry holds no model facts: the caller supplies this
+   *  from the declaring layer. Default: none. */
+  supportTier?: (record: ModelRecord) => Promise<string | null> | string | null;
 }
 
 export class Registry {
   readonly db: Database;
   readonly #modelDirs: readonly string[];
   readonly #isCompanion: (modelType: string) => boolean;
+  readonly #supportTier: (record: ModelRecord) => Promise<string | null> | string | null;
 
   /** `dbPath` is the index file, or ":memory:"; the caller owns its location. */
   constructor(dbPath: string, options: RegistryOptions = {}) {
     this.#modelDirs = options.modelDirs ?? [];
     this.#isCompanion = options.isCompanion ?? (() => false);
+    this.#supportTier = options.supportTier ?? (() => null);
     if (dbPath !== ":memory:") {
       const dir = dbPath.slice(0, dbPath.lastIndexOf("/"));
       try { require("node:fs").mkdirSync(dir, { recursive: true }); } catch {}
@@ -140,6 +156,7 @@ export class Registry {
     const prune = this.db.prepare("DELETE FROM models WHERE path = $path");
     for (const r of this.db.query("SELECT path FROM models").all() as { path: string }[])
       if (!existsSync(r.path)) prune.run({ $path: r.path });
+    this.db.exec("DELETE FROM support_tiers WHERE path NOT IN (SELECT path FROM models)");
     const directories: [dir: string, repoId: string][] = [];
     if (existsSync(hubDir)) {
       for (const entry of readdirSync(hubDir)) {
@@ -161,9 +178,12 @@ export class Registry {
        $vision, $vtype, $audiocfg, $audiotower, $kv, $tools, $layers, $hidden,
        $vocab, $license, $at)
     `);
+    const setTier = this.db.prepare("INSERT OR REPLACE INTO support_tiers VALUES ($path, $tier)");
+    const clearTier = this.db.prepare("DELETE FROM support_tiers WHERE path = $path");
     for (const [dir, repoId] of directories) {
       const rec = await scanSnapshot(dir, repoId);
       if (!rec) continue;
+      const tier = (await this.#supportTier(rec)) ?? null;
       upsert.run({
         $path: rec.path, $repo: rec.repoId, $type: rec.modelType,
         $params: rec.paramCount, $size: rec.sizeBytes,
@@ -178,6 +198,7 @@ export class Registry {
         $layers: rec.numLayers, $hidden: rec.hiddenSize, $vocab: rec.vocabSize,
         $license: rec.license, $at: rec.scannedAt,
       });
+      if (tier === null) clearTier.run({ $path: rec.path }); else setTier.run({ $path: rec.path, $tier: tier });
       count++;
     }
     return count;
@@ -204,7 +225,8 @@ export class Registry {
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
-      .query(`SELECT * FROM models ${where} ORDER BY size_bytes ASC`)
+      .query(`SELECT models.*, support_tiers.tier AS support_tier FROM models
+              LEFT JOIN support_tiers USING (path) ${where} ORDER BY size_bytes ASC`)
       .all(params as never) as Record<string, unknown>[];
     // Self-heal: never surface a row whose snapshot dir was deleted out from
     // under us (scan() reaps these from the DB; this keeps reads correct even
@@ -310,6 +332,7 @@ function rowToRecord(r: Record<string, unknown>): ModelRecord {
     hiddenSize: r.hidden_size as number | null,
     vocabSize: r.vocab_size as number | null,
     license: r.license as string | null,
+    ...(r.support_tier ? { supportTier: r.support_tier as string } : {}),
     scannedAt: r.scanned_at as number,
   };
 }
