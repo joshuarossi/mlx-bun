@@ -41,6 +41,7 @@ test.skipIf(!native || !modelDir)("Gemma4 generates from image, audio, and mixed
     options.readOnly = true;
     options.chatPaths = { cwd: join(root, "project"), agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
     options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+    options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), jobsLogs: join(root, "jobs"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
     mkdirSync(options.chatPaths.cwd!);
     app = await startModelServer(model, options);
     const base = `http://127.0.0.1:${app.port}`;

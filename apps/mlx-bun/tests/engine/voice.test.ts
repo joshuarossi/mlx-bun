@@ -14,7 +14,8 @@
 // - With MLX_BUN_APP_TEST_MODEL, a chat server with the Whisper companion:
 //   discovery and the web chat's mic probe, idle unload after its timeout,
 //   transcription while a chat reply streams (and chat while a transcription
-//   runs) with the chat output unchanged, a streaming voice session, the
+//   runs) with the chat output unchanged, a streaming voice session (finished,
+//   and another abandoned and deleted), the
 //   unload route, and `dictate --server` against it.
 // Transcript checks are word-level on clear synthetic speech, not parity.
 import { afterAll, describe, expect, test } from "bun:test";
@@ -149,6 +150,7 @@ describe.skipIf(!enabled || !chatDir)("a chat server with the Whisper companion"
       options.readOnly = true;
       options.chatPaths = { cwd: join(root, "project"), agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
       options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+      options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), jobsLogs: join(root, "jobs"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
       mkdirSync(options.chatPaths.cwd!);
       app = await startModelServer(model, options);
       const base = `http://127.0.0.1:${app.port}`;
@@ -180,7 +182,12 @@ describe.skipIf(!enabled || !chatDir)("a chat server with the Whisper companion"
         expect(response.status).toBe(200);
         return await response.json() as { text: string; mlx_bun: { timings: { load_ms: number } } };
       };
-      const health = async () => (await (await fetch(`${base}/health`)).json()).transcription as { resident: boolean; loads: number; unloads: number };
+      // The chat server reports the companion's residency on its /v1/models row
+      // (its /health carries no transcription block; the transcription-only server's does).
+      const resident = async () => ((await (await fetch(`${base}/v1/models`)).json()).data as { id: string; resident?: boolean }[])
+        .find(row => row.id === "test-whisper")!.resident;
+      const unload = async () => await (await fetch(`${base}/admin/transcription/unload`, { method: "POST" })).json() as
+        { unloaded: boolean; resident: boolean; loads: number; unloads: number };
       const solo = await chat();
       expect(solo.text.length).toBeGreaterThan(0);
 
@@ -189,15 +196,16 @@ describe.skipIf(!enabled || !chatDir)("a chat server with the Whisper companion"
       const tookAt = performance.now();
       expect(missingWords(first.text)).toEqual([]);
       expect(first.mlx_bun.timings.load_ms).toBeGreaterThan(0);
-      expect((await health()).resident).toBe(true);
+      expect(await resident()).toBe(true);
       let released = false;
       while (performance.now() - tookAt < 15_000) {
-        if (!(await health()).resident) { released = true; break; }
+        if (!(await resident())) { released = true; break; }
         await Bun.sleep(250);
       }
       expect(released).toBe(true);
       expect(performance.now() - tookAt).toBeGreaterThanOrEqual(2_500);
-      expect(await health()).toMatchObject({ loads: 1, unloads: 1 });
+      // The idle timer did the one unload; the route finds nothing resident to release.
+      expect(await unload()).toMatchObject({ unloaded: false, resident: false, loads: 1, unloads: 1 });
 
       // A transcription requested while a chat reply streams: both complete, the reply is unchanged.
       const stream = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
@@ -236,7 +244,16 @@ describe.skipIf(!enabled || !chatDir)("a chat server with the Whisper companion"
       const finished = await fetch(`${base}/v1/audio/sessions/${id}/finish`, { method: "POST" });
       expect(finished.status).toBe(200);
       expect(missingWords((await finished.json()).text)).toEqual([]);
-      expect((await fetch(`${base}/v1/audio/sessions/${id}`, { method: "DELETE" })).status).toBe(204);
+      // Finish closes the session; an abandoned one is closed by DELETE.
+      expect((await fetch(`${base}/v1/audio/sessions/${id}`, { method: "DELETE" })).status).toBe(404);
+      const abandoned = (await (await fetch(`${base}/v1/audio/sessions`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ language: "en" }) })).json()).id as string;
+      const fedOnce = await fetch(`${base}/v1/audio/sessions/${abandoned}/audio`, { method: "POST", headers: { "content-type": "audio/pcm;rate=16000" },
+        body: new Uint8Array(clip.samples.slice(0, 4_000).buffer) });
+      expect(fedOnce.status).toBe(200);
+      await fedOnce.body?.cancel();
+      expect((await fetch(`${base}/v1/audio/sessions/${abandoned}`, { method: "DELETE" })).status).toBe(204);
+      expect((await fetch(`${base}/v1/audio/sessions/${abandoned}/finish`, { method: "POST" })).status).toBe(404);
 
       // dictate's server backend: the same sessions, driven by the verb.
       const remote = await dictate(["--server", base, ...(vad ? [] : ["--no-vad"]), "--hotkey"],
@@ -244,9 +261,8 @@ describe.skipIf(!enabled || !chatDir)("a chat server with the Whisper companion"
       expect(remote.code, remote.stderr).toBe(0);
       expect(missingWords(remote.stdout)).toEqual([]);
 
-      const unloaded = await (await fetch(`${base}/admin/transcription/unload`, { method: "POST" })).json();
-      expect(unloaded.resident).toBe(false);
-      expect((await health()).resident).toBe(false);
+      expect((await unload()).resident).toBe(false);
+      expect(await resident()).toBe(false);
     } finally {
       try { await app?.close(); } finally { rmSync(root, { recursive: true, force: true }); }
     }
