@@ -77,14 +77,13 @@ test.skipIf(!modelDir)("a real load and requests are published as events and the
     expect(snapshot.caches[0]!.kv).toMatchObject({ bytes: stats.batch.kv_bytes });
     expect(snapshot.series.length).toBeGreaterThan(0);
 
-    // The stream carries the same snapshot shape; the panel and history routes are served.
+    // The stream carries the same snapshot shape; the history route is served.
     const stream = await fetch(`${base}/api/metrics/stream`, { signal: budget });
     const streamReader = stream.body!.getReader(), decoder = new TextDecoder();
     let text = "";
     while (!text.includes("event: snapshot")) text += decoder.decode((await streamReader.read()).value);
     await streamReader.cancel();
     expect(JSON.parse(text.split("data: ")[1]!.split("\n")[0]!).models[0].model).toBe(snapshot.models[0]!.model);
-    expect((await fetch(`${base}/api/metrics/panel.js`, { signal: budget })).headers.get("content-type")).toContain("javascript");
     expect(await get("/api/metrics/history")).toEqual({ runs: [] });
   } finally {
     await app?.close();

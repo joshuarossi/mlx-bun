@@ -1,62 +1,48 @@
-// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split. Built into apps/mlx-bun/dist/web/app.js by
-// scripts/build-web.ts.
-//
-// App shell: DOM helpers, toast, HF settings modal, focus trap, theme,
-// keyboard shortcut sheet, mobile drawer, router, connection pill + model
-// identity polling, and the global keydown sweep. Behavior-identical port
-// of the original inline <script> in app.html. Owns the `controllers`
-// registry that the per-tab modules populate (see main.ts for the exact
-// registration order, which callers must preserve).
+// The app's shell glue: what the page needs around the generic web shell (`@mlx-bun/web-shell`, which owns
+// navigation, hash routing, theme, the Developer switch, the shortcut sheet, the Escape overlay sweep, panel mounting
+// and the palette chrome). Here: the app's routes and chrome hooks, the Hugging Face token settings and the shared
+// push-to-hub flow, the agent-tools settings, the mobile chat drawer, the overlays and key bindings the chat needs,
+// the connection pill and model identity polling, and the routes-map probe. The generic helpers the per-page modules
+// import from here are re-exported from the shell package. main.ts holds the boot order.
 
+import { $, createShell, toast, trapFocus, type FocusTrap, type Overlay, type Palette, type RouteController } from "@mlx-bun/web-shell";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
+
+export { $, el, injectStyles, toast, trapFocus, type FocusTrap } from "@mlx-bun/web-shell";
+export type Controller = RouteController;
+
+/* ════════════════════════════════════════════════════════════════════
+   THE SHELL — the app's pages and the chrome that depends on the page
+   ════════════════════════════════════════════════════════════════════ */
+/** Chat is the product; the other pages are developer tools behind the nav's Developer switch. */
+export const shell = createShell({
+  routes: [
+    { id: "chat" }, { id: "quantize", developer: true }, { id: "finetune", developer: true },
+    { id: "dataset", developer: true }, { id: "status", developer: true }, { id: "routes", developer: true },
+  ],
+  home: "chat",
+  onRoute(route) {
+    // dim the ambient bloom slightly in the chat workspace so text reads cleanly
+    $("bloom").style.opacity = route === "chat" ? "0.55" : "1";
+    // The mobile drawer hamburger only makes sense on /chat (it opens the recent-chats sidebar, which only exists
+    // there): CSS hides it >=760px; this hides it off-route regardless of viewport width.
+    $("chat-hamburger").style.display = route === "chat" ? "" : "none";
+    if (route !== "chat") closeDrawer();
+  },
+});
+/** Page controllers by route id, populated by main.ts; pages reach each other through it. */
+export const controllers = shell.controllers;
+export const currentRoute = (): string => shell.currentRoute();
+export const isDeveloperMode = (): boolean => shell.isDeveloperMode();
+export const setDeveloperMode = (on: boolean): void => shell.setDeveloperMode(on);
 
 /* ════════════════════════════════════════════════════════════════════
    SHARED HELPERS
    ════════════════════════════════════════════════════════════════════ */
-export const $ = (id: string): HTMLElement => document.getElementById(id) as HTMLElement;
 export const gb = (b: number | null | undefined): string => b == null ? "—" : (b / 2 ** 30).toFixed(2) + " GB";
 export const mb = (b: number | null | undefined): string => b == null ? "—" : (b / 2 ** 20).toFixed(1) + " MB";
 export const num = (n: number | null | undefined): string => n == null ? "—" : Math.round(n).toLocaleString();
-
-/** Build a DOM node quickly. */
-export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, parent?: Element | null): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (parent) parent.appendChild(e);
-  return e;
-}
-
-/** Toast notification. kind: "" | "ok" | "err". */
-export function toast(msg: string, kind = "", ms = 4200): void {
-  const t = el("div", "toast " + kind, $("toasts"));
-  t.textContent = msg;
-  setTimeout(() => { t.style.transition = "opacity .4s,transform .4s"; t.style.opacity = "0"; t.style.transform = "translateY(10px)"; setTimeout(() => t.remove(), 420); }, ms);
-}
-
-const injectedStyleIds = new Set<string>();
-
-/** Append a `<style>` block to `<head>` exactly once per `id`, keyed
- *  independent of call order/count (idempotent — safe to call from a
- *  module's own top-level init every boot). Used by modules that build
- *  their DOM entirely via createElement (no app.html markup of their own)
- *  and therefore have nowhere else to put CSS for their new classes — the
- *  command palette (palette.ts) and the sidebar's full-text-search /
- *  export-menu additions (sessions.ts) both use this instead of touching
- *  app.html's <style> block, which is out of scope for the modules that
- *  introduce them. All rules should reference the existing `:root` design
- *  tokens (var(--card), var(--hairline), etc.) so injected chrome matches
- *  the current theme (dark/light/auto) automatically — those custom
- *  properties cascade regardless of where in the document this tag lands. */
-export function injectStyles(id: string, css: string): void {
-  if (injectedStyleIds.has(id)) return;
-  injectedStyleIds.add(id);
-  const style = document.createElement("style");
-  style.id = id;
-  style.textContent = css;
-  document.head.appendChild(style);
-}
 
 /* ════════════════════════════════════════════════════════════════════
    HUGGING FACE — shared token settings + push-to-hub flow
@@ -192,7 +178,7 @@ export function initHfSettings(): void {
   $("hf-save").onclick = saveHfToken;
   $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
   $("hf-token-input").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") saveHfToken(); });
-  // Escape is handled globally by closeTopOverlay (one
+  // Escape is handled globally by the shell's overlay sweep (one
   // Escape mechanism for every popover/overlay, not a bespoke one per modal).
   hfOverlayTrap = trapFocus($("hf-overlay"), () => $("hf-overlay").classList.contains("open"));
   refreshHfGear();
@@ -287,105 +273,6 @@ function initCodingToolsToggle(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   POPOVER / OVERLAY A11Y SWEEP
-   A single reusable focus-trap: Tab/Shift+Tab cycle within the container
-   while `isOpen()` is true, and focus returns to whatever triggered the
-   overlay when it closes. Applied uniformly to the HF modal, the
-   shortcut sheet, the sampling popover, and the drawer — one mechanism,
-   not four bespoke ones.
-   ════════════════════════════════════════════════════════════════════ */
-export interface FocusTrap {
-  /** Call right before opening: remembers the trigger to restore focus to. */
-  capture(): void;
-  /** Call right after closing. */
-  restore(): void;
-}
-
-export function trapFocus(container: HTMLElement, isOpen: () => boolean): FocusTrap {
-  let lastFocused: HTMLElement | null = null;
-  const focusables = (): HTMLElement[] => [...container.querySelectorAll(
-    'a[href],button:not([disabled]),textarea,input:not([disabled]),select,[tabindex]:not([tabindex="-1"])'
-  )].filter((e) => (e as HTMLElement).offsetParent !== null || e === document.activeElement) as HTMLElement[];
-  container.addEventListener("keydown", (e) => {
-    const ke = e as KeyboardEvent;
-    if (ke.key !== "Tab" || !isOpen()) return;
-    const items = focusables();
-    if (!items.length) return;
-    const first = items[0]!, last = items[items.length - 1]!;
-    if (ke.shiftKey && document.activeElement === first) { ke.preventDefault(); last.focus(); }
-    else if (!ke.shiftKey && document.activeElement === last) { ke.preventDefault(); first.focus(); }
-  });
-  return {
-    capture() { lastFocused = document.activeElement as HTMLElement | null; },
-    restore() { if (lastFocused && lastFocused.focus) lastFocused.focus(); lastFocused = null; },
-  };
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   THEME: auto/dark/light, persisted, honors prefers-color-scheme
-   when the choice is "auto" (the default). Ambient bloom/shimmer already
-   respect prefers-reduced-motion via CSS above — this only handles color.
-   ════════════════════════════════════════════════════════════════════ */
-const THEME_KEY = "mlxbun.theme"; // "auto" | "dark" | "light"
-const themeMedia = window.matchMedia("(prefers-color-scheme: light)");
-
-function effectiveTheme(choice: string): "dark" | "light" {
-  if (choice === "dark" || choice === "light") return choice;
-  return themeMedia.matches ? "light" : "dark";
-}
-function applyTheme(choice: string): void {
-  document.documentElement.setAttribute("data-theme", effectiveTheme(choice));
-  document.querySelectorAll<HTMLButtonElement>("#theme-toggle button").forEach((b) =>
-    b.classList.toggle("active", b.dataset.themeChoice === choice));
-}
-export function setTheme(choice: string): void {
-  localStorage.setItem(THEME_KEY, choice);
-  applyTheme(choice);
-}
-export function initTheme(): void {
-  const saved = localStorage.getItem(THEME_KEY) || "auto";
-  applyTheme(saved);
-  document.querySelectorAll<HTMLButtonElement>("#theme-toggle button").forEach((b) =>
-    b.addEventListener("click", () => setTheme(b.dataset.themeChoice || "auto")));
-  // Live-follow the OS when the user's choice is "auto" (default).
-  themeMedia.addEventListener("change", () => {
-    if ((localStorage.getItem(THEME_KEY) || "auto") === "auto") applyTheme("auto");
-  });
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   KEYBOARD SHORTCUT SHEET (Cmd/Ctrl+/) + global bindings
-   ════════════════════════════════════════════════════════════════════ */
-let skTrap: FocusTrap;
-
-/** Exported (not just used internally) so palette.ts's "Open shortcut
- *  sheet" action can call it directly — same registered-entry-point
- *  posture as openMemPanel/openHubPanel below, just a plain export since
- *  this one takes no arguments and lives in the same module as its own
- *  close/trap state. */
-export function openShortcutSheet(): void {
-  skTrap.capture();
-  $("shortcut-overlay").classList.add("open");
-  $("nav-shortcuts").setAttribute("aria-expanded", "true");
-  setTimeout(() => $("sk-close").focus(), 30);
-}
-function closeShortcutSheet(): void {
-  $("shortcut-overlay").classList.remove("open");
-  $("nav-shortcuts").setAttribute("aria-expanded", "false");
-  skTrap.restore();
-}
-export function initShortcutSheet(): void {
-  skTrap = trapFocus($("shortcut-overlay"), () => $("shortcut-overlay").classList.contains("open"));
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  document.querySelectorAll("#sk-mod-label, .sk-mod").forEach((e) => { e.textContent = isMac ? "⌘" : "Ctrl"; });
-  $("nav-shortcuts").onclick = () => {
-    $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet();
-  };
-  $("sk-close").onclick = closeShortcutSheet;
-  $("shortcut-overlay").addEventListener("click", (e) => { if (e.target === $("shortcut-overlay")) closeShortcutSheet(); });
-}
-
-/* ════════════════════════════════════════════════════════════════════
    MOBILE DRAWER — chat sidebar becomes a
    slide-over on narrow viewports instead of vanishing outright. Chat-route
    only: the hamburger button is CSS-hidden >=760px and JS-hidden off /chat
@@ -415,7 +302,7 @@ export function initDrawer(): void {
 }
 
 /** Set by controllers.chat's initSampling() once the popover exists; let
- *  closeTopOverlay's global Escape sweep close it without a second,
+ *  the shell's Escape sweep close it without a second,
  *  divergent Escape listener living inside the controller. */
 export let samplingPopoverClose: (() => void) | null = null;
 export function setSamplingPopoverClose(fn: (() => void) | null): void { samplingPopoverClose = fn; }
@@ -455,184 +342,66 @@ export function setOpenHubFromModelPicker(fn: (() => void) | null): void { openH
 export let sysPromptPopoverClose: (() => void) | null = null;
 export function setSysPromptPopoverClose(fn: (() => void) | null): void { sysPromptPopoverClose = fn; }
 
-/** Same pattern, for the command palette (palette.ts, `02d723a:docs/design/web-chat-redesign.md`
- *  Appendix A, beat-matrix Axis 10 "Command palette" row). Its own module
- *  builds 100%
- *  of its DOM via createElement (no app.html markup to look up), so
- *  isPaletteOpen()/openPalette() are registered functions rather than
- *  `$(id)`-based lookups like the overlays above. */
-export let paletteClose: (() => void) | null = null;
-export function setPaletteClose(fn: (() => void) | null): void { paletteClose = fn; }
-export let paletteIsOpen: (() => boolean) | null = null;
-export function setPaletteIsOpen(fn: (() => boolean) | null): void { paletteIsOpen = fn; }
-export let paletteOpen: (() => void) | null = null;
-export function setPaletteOpen(fn: (() => void) | null): void { paletteOpen = fn; }
-
-/** Any open popover/drawer/sheet this Escape binding knows how to close,
- *  checked in a fixed priority order (most-recently-opened-ish first).
- *  Returns true if it closed something, so callers can stop there. */
-function closeTopOverlay(): boolean {
-  if ($("shortcut-overlay").classList.contains("open")) { closeShortcutSheet(); return true; }
-  if ($("hf-overlay").classList.contains("open")) { closeHfSettings(); return true; }
-  const samplePop = $("chat-sampling-pop");
-  if (samplePop && samplePop.classList.contains("open") && samplingPopoverClose) { samplingPopoverClose(); return true; }
-  const sysPop = $("chat-sysprompt-pop");
-  if (sysPop && sysPop.classList.contains("open") && sysPromptPopoverClose) { sysPromptPopoverClose(); return true; }
-  const memOverlay = $("mem-overlay");
-  if (memOverlay && memOverlay.classList.contains("open") && memPanelClose) { memPanelClose(); return true; }
-  const adaptersOverlay = $("adapters-overlay");
-  if (adaptersOverlay && adaptersOverlay.classList.contains("open") && adaptersPanelClose) { adaptersPanelClose(); return true; }
-  const modelPop = $("model-pop");
-  if (modelPop && modelPop.classList.contains("open") && modelPopClose) { modelPopClose(); return true; }
-  const hubOverlay = $("hub-overlay");
-  if (hubOverlay && hubOverlay.classList.contains("open") && hubPanelClose) { hubPanelClose(); return true; }
-  if (paletteIsOpen && paletteIsOpen() && paletteClose) { paletteClose(); return true; }
-  if ($("chat-sidebar").classList.contains("drawer-open")) { closeDrawer(); return true; }
-  return false;
-}
-
-export function initGlobalKeydown(): void {
-  document.addEventListener("keydown", (e) => {
-    const mod = e.metaKey || e.ctrlKey;
-    // Cmd/Ctrl+K — command palette (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-    // beat-matrix Axis 10). Checked before
-    // Cmd/Ctrl+/ below since they're different keys but both live here;
-    // order doesn't matter functionally, kept first as the newer addition.
-    if (mod && (e.key === "k" || e.key === "K")) {
-      e.preventDefault();
-      if (paletteIsOpen && paletteIsOpen()) { if (paletteClose) paletteClose(); }
-      else if (paletteOpen) paletteOpen();
-      return;
-    }
-    // Cmd/Ctrl+/ — shortcut sheet. Not a browser-reserved combo.
-    if (mod && e.key === "/") { e.preventDefault(); $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet(); return; }
-    // Cmd/Ctrl+Shift+O — new chat. (Ctrl+Shift+O is free in every major
-    // browser; Cmd+Shift+O has no macOS Safari/Chrome reservation either.)
-    if (mod && e.shiftKey && (e.key === "O" || e.key === "o")) {
-      if (currentRoute() !== "chat") return; // no-op off the chat route
-      e.preventDefault();
-      const newChat = controllers.chat && controllers.chat.newChat as (() => void) | undefined;
-      newChat && newChat();
-      return;
-    }
-    // Cmd/Ctrl+Shift+C — copy last response. Reuses the wave-3 copy action.
-    if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
-      if (currentRoute() !== "chat") return;
-      e.preventDefault();
-      const copyLastResponse = controllers.chat && controllers.chat.copyLastResponse as (() => void) | undefined;
-      copyLastResponse && copyLastResponse();
-      return;
-    }
-    // Shift+Escape — focus the composer (skipped while already typing
-    // somewhere else that isn't the composer, so it doesn't steal focus
-    // from e.g. the HF token field — but Escape's own overlay-close below
-    // still fires first via closeTopOverlay for the "any open thing" case).
-    if (e.shiftKey && e.key === "Escape") {
-      if (currentRoute() !== "chat") return;
-      e.preventDefault();
-      $("chat-box").focus();
-      return;
-    }
-    // Escape alone — close whatever overlay is open, with focus restored to
-    // its trigger. Never shadows a plain Escape when nothing is open (e.g.
-    // the composer's own Escape-to-cancel-edit keeps working, since
-    // closeTopOverlay simply returns false and this handler does nothing else).
-    if (e.key === "Escape" && !e.shiftKey && !mod) {
-      closeTopOverlay();
-    }
+/** The overlays Escape closes, in priority order (the shell adds its shortcut sheet first): each is open when its
+ *  element carries `.open` and its page registered a close callback. */
+export function registerOverlays(palette: Palette): void {
+  const byId = (id: string, close: () => (() => void) | null): Overlay => ({
+    isOpen: () => { const e = document.getElementById(id); return !!e && e.classList.contains("open") && close() !== null; },
+    close: () => close()!(),
   });
+  const add = (overlay: Overlay) => shell.overlays.add(overlay);
+  add({ isOpen: () => $("hf-overlay").classList.contains("open"), close: closeHfSettings });
+  add(byId("chat-sampling-pop", () => samplingPopoverClose));
+  add(byId("chat-sysprompt-pop", () => sysPromptPopoverClose));
+  add(byId("mem-overlay", () => memPanelClose));
+  add(byId("adapters-overlay", () => adaptersPanelClose));
+  add(byId("model-pop", () => modelPopClose));
+  add(byId("hub-overlay", () => hubPanelClose));
+  add(palette);
+  add({ isOpen: () => $("chat-sidebar").classList.contains("drawer-open"), close: closeDrawer });
 }
 
-/* ════════════════════════════════════════════════════════════════════
-   DEVELOPER TOGGLE — Chat is the product; Quantize /
-   Fine-tune / Build Dataset / Status / Curves / Routes are developer tools
-   that collapse behind one nav switch. Persisted; default OFF for a fresh
-   browser, but default ON (once) when ANY pre-existing mlxbun.* localStorage
-   key is found — an existing user never has tabs yanked out from under
-   them. Deep links still work: entering a dev route with the toggle off
-   flips it on (capability is never unreachable, just not the default view).
-   ════════════════════════════════════════════════════════════════════ */
-const DEV_KEY = "mlxbun.developer";
-/** Dev-only tabs, matching data-tab on the <a class="tab"> elements in nav
- *  (routes' visibility is further gated by the /dag probe below). */
-const DEV_TABS = ["quantize", "finetune", "dataset", "status", "routes"] as const;
-
-/** True if any OTHER mlxbun.* key already exists — i.e. this is a returning
- *  user of the app, not a fresh browser profile. Checked BEFORE writing the
- *  developer key itself, so it can't self-detect on a later load. */
-function hasExistingMlxbunState(): boolean {
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith("mlxbun.") && k !== DEV_KEY) return true;
+/** The chat's keyboard bindings, consulted after the shell's own. */
+export function appKeys(e: KeyboardEvent): boolean {
+  const mod = e.metaKey || e.ctrlKey;
+  // Cmd/Ctrl+Shift+O: new chat. (Ctrl+Shift+O is free in every major browser; Cmd+Shift+O has no macOS Safari/Chrome reservation either.)
+  if (mod && e.shiftKey && (e.key === "O" || e.key === "o")) {
+    if (currentRoute() !== "chat") return true; // no-op off the chat route
+    e.preventDefault();
+    const newChat = controllers.chat && controllers.chat.newChat as (() => void) | undefined;
+    newChat && newChat();
+    return true;
+  }
+  // Cmd/Ctrl+Shift+C: copy last response.
+  if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
+    if (currentRoute() !== "chat") return true;
+    e.preventDefault();
+    const copyLastResponse = controllers.chat && controllers.chat.copyLastResponse as (() => void) | undefined;
+    copyLastResponse && copyLastResponse();
+    return true;
+  }
+  // Shift+Escape: focus the composer.
+  if (e.shiftKey && e.key === "Escape") {
+    if (currentRoute() !== "chat") return true;
+    e.preventDefault();
+    $("chat-box").focus();
+    return true;
   }
   return false;
 }
 
-export function isDeveloperMode(): boolean {
-  const saved = localStorage.getItem(DEV_KEY);
-  if (saved != null) return saved === "1";
-  // First-ever read: decide + persist the one-time default so it's stable
-  // across reloads (a fresh browser stays OFF; an existing user's tabs
-  // don't flicker between "on" and "off" from the detection re-running).
-  const on = hasExistingMlxbunState();
-  localStorage.setItem(DEV_KEY, on ? "1" : "0");
-  return on;
-}
-
-/** Reflect developer mode into the DOM: dev-tab visibility + the toggle's
- *  own pressed state. Safe to call before /dag has been probed — the
- *  routes tab's extra hide (see initRoutesProbe) is independent and only
- *  ever hides further, never re-shows a tab this function would show. */
-function applyDeveloperMode(on: boolean): void {
-  document.querySelectorAll<HTMLElement>("nav .tab[data-dev]").forEach((t) => {
-    // Once /dag has been probed and failed, routes stays hidden regardless
-    // of developer mode (dataset routesUnavailable === "1" marks that).
-    if (t.dataset.tab === "routes" && t.dataset.routesUnavailable === "1") { t.style.display = "none"; return; }
-    t.style.display = on ? "" : "none";
-  });
-  const btn = $("nav-developer");
-  if (btn) btn.setAttribute("aria-checked", on ? "true" : "false");
-  const dot = document.getElementById("nav-developer-dot");
-  if (dot) dot.classList.toggle("on", on);
-  updateTabFades();
-}
-
-export function setDeveloperMode(on: boolean): void {
-  localStorage.setItem(DEV_KEY, on ? "1" : "0");
-  applyDeveloperMode(on);
-}
-
-/** Called by the router when a deep link (or brand-new hash) lands on a
- *  dev-only route while developer mode is off — capability must never be
- *  unreachable just because the toggle defaulted off. Flips the
- *  preference on (persisted, not a one-time peek) so the tab row itself
- *  stops looking broken/mismatched with what's showing. */
-function ensureDeveloperModeFor(route: Route): void {
-  if ((DEV_TABS as readonly string[]).includes(route) && !isDeveloperMode()) setDeveloperMode(true);
-}
-
-export function initDeveloperToggle(): void {
-  applyDeveloperMode(isDeveloperMode());
-  const btn = $("nav-developer");
-  if (btn) btn.onclick = () => setDeveloperMode(!isDeveloperMode());
-}
-
-/* ── Routes tab feature-detection (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #17) ──
-   /dag readFileSync's a repo-relative doc that's absent from compiled
-   binaries/npm installs. Probe once at boot with a HEAD request; on 404
-   hide the Routes tab entirely (rather than leaving a dead link that
-   iframes a raw 404) and, if the user is already sitting on #/routes, swap
-   in a graceful in-app note instead of the broken iframe. Could instead
-   embed the artifact server-side like app.html's /curves fallback does. */
+/* ── Routes tab feature-detection ──
+   /dag reads a repo-relative doc that is absent from compiled binaries and npm installs. Probe once at boot with a
+   HEAD request; on 404 hide the Routes tab entirely (rather than leaving a dead link that iframes a raw 404) and, if
+   the user is already sitting on #/routes, swap in a graceful in-app note instead of the broken iframe. */
 export async function initRoutesProbe(): Promise<void> {
-  const tab = document.querySelector<HTMLElement>('nav .tab[data-tab="routes"]');
   let ok = true;
   try {
     const r = await fetch("/dag", { method: "HEAD" });
     ok = r.ok;
   } catch { ok = false; }
   if (ok) return;
-  if (tab) { tab.dataset.routesUnavailable = "1"; tab.style.display = "none"; }
+  shell.markUnavailable("routes");
   const section = $("s-routes");
   if (section) {
     section.innerHTML =
@@ -641,109 +410,10 @@ export async function initRoutesProbe(): Promise<void> {
       "<p>The training/inference route diagram ships alongside the repo checkout " +
       "and isn't bundled into this build.</p></div>";
   }
-  // If a deep link landed here directly, bounce to chat rather than sit on
-  // an orphaned nav state with no visible tab pointing at it.
+  // If a deep link landed here directly, bounce to chat rather than sit on an orphaned nav state with no visible tab pointing at it.
   if (currentRoute() === "routes") location.replace("#/chat");
 }
 
-/* ════════════════════════════════════════════════════════════════════
-   ROUTER  — toggles section[data-route]; lazily inits each controller.
-   ════════════════════════════════════════════════════════════════════ */
-export const ROUTES = ["chat", "quantize", "finetune", "dataset", "status", "routes"] as const;
-export type Route = typeof ROUTES[number];
-
-/** A tab controller: init() runs once (lazy, on first enter); enter()/leave()
- *  run every time the route is (de)activated. Extra fields (refreshAdapters,
- *  newChat, copyLastResponse, refreshLibrary) are controller-specific
- *  cross-calls other controllers use — kept loose (unknown) here since the
- *  registry is shared infrastructure, not a single controller's contract. */
-export interface Controller {
-  init?(): void;
-  enter?(): void;
-  leave?(): void;
-  [extra: string]: unknown;
-}
-
-const inited: Partial<Record<Route, boolean>> = {};
-/** name -> { init, enter, leave }. Populated by main.ts in the exact order
- *  the original inline script declared controllers.chat/.quantize/.finetune/
- *  .dataset/.status — load-bearing for the module-init side effects each
- *  IIFE ran at declaration time (e.g. chat's samplingPopoverClose wiring). */
-export const controllers: Partial<Record<Route, Controller>> = {};
-
-export function currentRoute(): Route {
-  const h = (location.hash || "").replace(/^#\/?/, "").split("?")[0] || "";
-  return (ROUTES as readonly string[]).includes(h) ? (h as Route) : "chat";
-}
-
-export function router(): void {
-  const route = currentRoute();
-  ensureDeveloperModeFor(route); // deep link to a dev tab always flips the toggle on
-  document.querySelectorAll<HTMLElement>("section[data-route]").forEach((s) => {
-    const on = s.dataset.route === route;
-    if (on && !s.classList.contains("active")) {
-      s.classList.add("active");
-      const c = controllers[route];
-      if (c) { if (!inited[route]) { inited[route] = true; c.init && c.init(); } c.enter && c.enter(); }
-    } else if (!on && s.classList.contains("active")) {
-      s.classList.remove("active");
-      const c = controllers[s.dataset.route as Route];
-      if (c && c.leave) c.leave();
-    }
-  });
-  document.querySelectorAll<HTMLElement>("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === route));
-  // dim the ambient bloom slightly in the chat workspace so text reads cleanly
-  $("bloom").style.opacity = route === "chat" ? "0.55" : "1";
-  // The mobile drawer hamburger only makes sense on /chat (it opens the
-  // recent-chats sidebar, which only exists there) — CSS already hides it
-  // >=760px; this hides it off-route regardless of viewport width.
-  $("chat-hamburger").style.display = route === "chat" ? "" : "none";
-  if (route !== "chat") closeDrawer();
-}
-
-/* Nav-tab scroll-edge fades (2026-07-06 jank fix): the tab row scrolls with
-   its scrollbar hidden, so overflow read as clipped/broken text. Toggle
-   .fade-r/.fade-l so the CSS mask signals "more this way" only when true. */
-export function updateTabFades(): void {
-  const t = $("tabs");
-  const over = t.scrollWidth - t.clientWidth > 1;
-  t.classList.toggle("fade-r", over && t.scrollLeft + t.clientWidth < t.scrollWidth - 1);
-  t.classList.toggle("fade-l", over && t.scrollLeft > 1);
-}
-
-export function initRouter(): void {
-  window.addEventListener("hashchange", router);
-  $("tabs").addEventListener("scroll", updateTabFades, { passive: true });
-  window.addEventListener("resize", updateTabFades);
-  updateTabFades();
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   PWA SERVICE WORKER REGISTRATION (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-   beat-matrix Axis 10)
-   Shell-only cache-first worker (apps/mlx-bun/src/web/public/sw.js) — installability + instant
-   shell paint, explicitly NOT offline chat (the app is useless without the
-   local model server running, see sw.js's own header comment). Guarded so
-   it never registers somewhere a service worker can't run at all
-   (`'serviceWorker' in navigator`) or where the browser would refuse it
-   anyway (secure-context requirement: https, or localhost/127.0.0.1 for
-   local dev — a plain `http://<lan-ip>` load would silently no-op without
-   this check, so failing the guard is preferable to a console error on
-   every load in that case).
-   ════════════════════════════════════════════════════════════════════ */
-export function initServiceWorker(): void {
-  if (!("serviceWorker" in navigator)) return;
-  const host = location.hostname;
-  const isLocalhost = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  if (location.protocol !== "https:" && !isLocalhost) return;
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      // Registration failure isn't user-actionable (browser policy, private
-      // browsing, etc.) — the app works identically without it, so this is
-      // silent rather than a toast.
-    });
-  });
-}
 
 /* ════════════════════════════════════════════════════════════════════
    GLOBAL CONNECTION PILL + MODEL ID  (polled lightly, always on)

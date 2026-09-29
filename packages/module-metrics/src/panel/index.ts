@@ -1,8 +1,7 @@
 // `<mlx-metrics-panel>`: the module's web panel as one self-contained custom
 // element. It imports only its data protocol (types), draws into its own
 // shadow root and reaches the backend only through `connection`, so any host
-// (the app's status page today, the web shell or a native webview later) mounts
-// it the same way: create the element, set `connection`, append it.
+// (the web shell, a native webview) mounts it the same way: create the element, set `connection`, append it.
 import type {
   BenchHistoryEntry, BenchJob, BenchProfile, Distribution, MetricsSnapshot, ModelMetrics, PanelConnection,
 } from "../protocol";

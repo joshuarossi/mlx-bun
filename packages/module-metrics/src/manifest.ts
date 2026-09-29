@@ -18,7 +18,6 @@ export const manifest = {
     { id: "bench-list", method: "GET", path: "/bench", summary: "Recent bench-serve jobs", response: "json" },
     { id: "bench-job", method: "GET", path: "/bench/:id", summary: "One bench-serve job", response: "json" },
     { id: "bench-cancel", method: "DELETE", path: "/bench/:id", summary: "Stop a running bench-serve job", response: "json" },
-    { id: "panel", method: "GET", path: "/panel.js", summary: "The `mlx-metrics-panel` custom element as a browser module", response: "binary" },
   ],
   jobs: [{ kind: "bench-serve", isolation: "task", gpu: "exclusive" }],
   storage: [
