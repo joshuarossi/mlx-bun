@@ -284,6 +284,12 @@ loads no model, runs them too); the others activate with the model host.
   test walks it); no rule above lets a library or another host add one.
 - Module, host-library and host code obey the engine's model-identity rule: declared
   operations only, no `instanceof <Model>` or model-type checks.
+- Seam ratchet: model-class and cache-class `instanceof`, imports of concrete model
+  modules (`models/<family>`, from other inference layers and other packages), model-type,
+  `architectures` and repo-id/name checks, family-named env flags read outside
+  `models/`, and scheduler-core imports beyond contracts and runtime. The code that
+  still breaks them is listed per file in `seamRatchet` (a count may only fall; a
+  drop prints a reminder to lower it); each cleanup PR shrinks the table.
 - Panel code imports only panel files and its `protocol.ts`, which imports
   nothing; this generalizes the browser rule for `chat/` and `jobs/`.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
