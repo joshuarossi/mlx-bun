@@ -766,6 +766,31 @@ uses temporary paths and a fixed loopback SSE response to exercise real Pi
 startup, provider hooks, streaming, cancellation, and transcript persistence
 without a model or access to the installed app's chat storage.
 
+The sidebar lists every chat in the session directory, whatever working
+directory it recorded; main listed only chats recorded under the server's
+working directory, which a server started by brew or launchd does not
+meaningfully have. Opening a chat whose recorded directory no longer exists (a moved
+or deleted checkout) continues it in the server's directory, the SDK's
+"continue in current cwd" choice; main, and the SDK without that choice, refuse
+to open it. The file keeps its recorded header, and opening a chat appends the
+SDK's session entries, as before.
+
+The [existing-user data test](tests/existing-user-data.test.ts) opens data a
+prior version left under HOME (sessions, Pi settings, approvals, the saved
+token, the vault and its Reference links, adapter stores, the nightly schedule)
+through the app with HOME set to a clone and native MLX blocked, and requires
+nothing lost: the supplied directory and its link targets unchanged, no
+deletion, a byte-identical vault, and only the app's own databases
+(`.mlx-bun/db`), its bundled skill, and append-only or message-preserving
+session rewrites. The earlier `~/.cache/mlx-bun` jobs, memory and registry
+databases are not carried over and must stay byte-identical; its adapter stores
+must appear in the picker's catalog. Its default case builds main's formats
+in-test; `MLX_BUN_APP_TEST_USER_DATA=<isolated copy laid out as a HOME>` runs it
+on real data and prints what to preserve before an old checkout is deleted. It
+refuses a copy holding, at any depth, a link that resolves into a live store
+(`~/.mlx-bun`, `MLX_BUN_HOME`, `~/.cache`, `~/.pi`, `~/Library`) or a directory
+link leaving the copy.
+
 ## Browser app
 
 `src/web/browser/` preserves the existing chat, model, training, quantization,

@@ -164,3 +164,47 @@ test("Pi read-only chat executes injected memory and loads only the supplied bun
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("the sidebar lists every recorded chat, and one whose directory no longer exists opens in the server's directory and keeps its record", async () => {
+  const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+  const root = mkdtempSync(join(tmpdir(), "mlx-pi-moved-"));
+  const cwd = join(root, "server"), kept = join(root, "kept"), sessionDir = join(root, "sessions");
+  mkdirSync(cwd); mkdirSync(kept);
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  /** A two-message chat as an earlier server wrote it, recorded under `recordedCwd`. */
+  const chat = (recordedCwd: string, text: string) => {
+    const manager = SessionManager.create(recordedCwd, sessionDir);
+    manager.appendMessage({ role: "user", content: text, timestamp: 1 });
+    manager.appendMessage({ role: "assistant", content: [{ type: "text", text: `Re: ${text}` }], api: "openai-completions",
+      provider: "mlx-bun", model: "local", usage, stopReason: "stop", timestamp: 2 });
+    return manager.getSessionFile()!;
+  };
+  // The checkout a prior server ran from has since been deleted.
+  const moved = chat(join(root, "deleted-checkout"), "Old chat"), existing = chat(kept, "Kept chat");
+  const movedBytes = readFileSync(moved, "utf8");
+  const frames: ServerMessage[] = [];
+  const backend = createPiBackend({ port: 1, readOnly: true,
+    paths: { cwd, agentDir: join(root, "agent"), sessionDir, toolApprovalsFile: join(root, "approvals.json") } })(frame => frames.push(frame));
+  const runtime = () => (backend as unknown as { runtime: AgentSessionRuntime }).runtime;
+  try {
+    await bounded(backend.start());
+    // Neither chat was recorded under the server's directory; both are listed, beside the new chat start opened.
+    const listed = frames.filter(frame => frame.type === "sessions").at(-1) as Extract<ServerMessage, { type: "sessions" }> | undefined;
+    expect(listed?.items.map(item => item.path)).toEqual(expect.arrayContaining([moved, existing]));
+    for (const [path, expectedCwd, text] of [[moved, cwd, "Old chat"], [existing, kept, "Kept chat"]] as const) {
+      const before = frames.length;
+      await bounded(backend.handle({ type: "open_session", path }));
+      const reply = frames.slice(before);
+      expect(reply.filter(frame => frame.type === "error")).toEqual([]);
+      const history = reply.find(frame => frame.type === "history");
+      expect(JSON.stringify(history)).toContain(text);
+      expect(runtime().session.sessionManager.getSessionFile()).toBe(path);
+      expect(runtime().session.sessionManager.getCwd()).toBe(expectedCwd);
+    }
+    // Opening appends the SDK's session entries; the recorded header and history are untouched.
+    expect(readFileSync(moved, "utf8").startsWith(movedBytes)).toBe(true);
+  } finally {
+    await bounded(Promise.resolve(backend.dispose()));
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
