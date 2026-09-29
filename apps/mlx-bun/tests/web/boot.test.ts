@@ -31,6 +31,10 @@ const fakeFetch = (async (input: string | URL | Request) => {
 const GLOBALS = ["window", "document", "navigator", "location", "localStorage", "customElements", "HTMLElement", "Node", "Event", "KeyboardEvent",
   "MouseEvent", "CustomEvent", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "EventSource", "WebSocket", "fetch", "getComputedStyle"] as const;
 const saved = new Map<string, PropertyDescriptor | undefined>();
+/** The page polls on intervals of the runtime's own clock, which no window teardown stops: record them to clear them. */
+const realSetInterval = globalThis.setInterval;
+const intervals: ReturnType<typeof setInterval>[] = [];
+const stopIntervals = () => { for (const id of intervals.splice(0)) clearInterval(id); };
 let win: GlobalWindow;
 let bundle: string;
 
@@ -48,15 +52,19 @@ function boot(hash: string, storage: Record<string, string> = {}): void {
     requestAnimationFrame: win.requestAnimationFrame.bind(win), cancelAnimationFrame: win.cancelAnimationFrame.bind(win),
     EventSource: FakeEventSource, WebSocket: FakeWebSocket, fetch: fakeFetch,
   });
+  stopIntervals();
   requests.length = 0; FakeEventSource.urls.length = 0; FakeEventSource.closed.length = 0; FakeWebSocket.opened = 0;
   (0, eval)(bundle);
 }
 
 beforeAll(async () => {
   for (const name of GLOBALS) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => { const id = realSetInterval(...args); intervals.push(id); return id; }) as typeof setInterval;
   bundle = await buildWebBundle();
 });
 afterAll(() => {
+  stopIntervals();
+  globalThis.setInterval = realSetInterval;
   for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete (globalThis as Record<string, unknown>)[name];
   // Timers the page started (identity polling) would keep the process alive.
   (win as unknown as { happyDOM: { abort(): Promise<void> } }).happyDOM.abort();
