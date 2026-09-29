@@ -26,7 +26,7 @@ export function resolveMlxPrefillPolicy(graph: PrefillSizedGraph, runtime: Runti
   if (!declaredGraph(graph).graphCapabilities.prefill.boundedWorkspace) return { chunkSize: () => 2048 };
   const config = graph.config;
   // Capture geometry now, independently of later configuration mutation.
-  const geometry = { ...config, text: { ...config.text, layerTypes: [...config.text.layerTypes] } };
+  const geometry = { ...config, text: { ...config.text, layerTypes: [...(config.text.layerTypes ?? [])] } };
   const workspaceBytes = 1024 ** 3;
   return { chunkSize(promptTokens) {
     let chunk = 2048;

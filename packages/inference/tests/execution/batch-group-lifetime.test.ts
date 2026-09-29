@@ -225,6 +225,8 @@ test("automatic request chunks reach ordinary and grouped preparation without re
   const f = fixture(), chunks: number[] = [], methodChunks: (number | undefined)[] = [];
   Object.assign(f.model.config.text, { numHiddenLayers: 2, numAttentionHeads: 24,
     globalHeadDim: 256, headDim: 256, layerTypes: ["linear_attention", "full_attention"] });
+  // A recurrent-attention graph declares its bounded prefill workspace.
+  Object.assign(f.model, { graphCapabilities: declareGraph({ kv: { denseReads: true }, prefill: { boundedWorkspace: true } }) });
   f.model.forwardHidden = ids => { chunks.push(ids.shape[1]!); throw new Error("observed chunk"); };
   const runtime = createRuntimeConfig({});
   const ordinary = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, runtime });
