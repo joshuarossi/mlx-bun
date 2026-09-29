@@ -110,7 +110,7 @@ export function createLoopbackMemoryClient(apiUrl: () => string, http: MemoryCli
   return { complete, completeBatch };
 }
 
-/** Where one memory call goes: the worker (a pool supervisor's socket fetch)
+/** Where one memory call goes: the worker (its supervisor's socket fetch)
  * and the task model snapshot selected for it, which that worker loads if
  * this call is the one that loads its task model. */
 export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit): Promise<Response> }; snapshot: string }
@@ -118,9 +118,9 @@ export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit)
 /** The `--isolate` parent's client for one synthesis run: each `complete` or
  * `completeBatch` is one POST of the rows and the selected snapshot to the
  * private `/admin/memory/complete` of the worker `select` returns (the
- * default model worker), answered with the ordered raw outputs. A failed
+ * model worker), answered with the ordered raw outputs. A failed
  * selection fails the call as it is. The worker's task model runs the call
- * under the worker's own execution lease; none is taken here (a pool lease
+ * under the worker's own execution lease; none is taken here (one
  * would wait on that worker). The run's signal aborts the request, and the
  * worker then aborts and joins every row. A call is never retried: a worker
  * that stops mid-call fails it rather than replay a POST. */
