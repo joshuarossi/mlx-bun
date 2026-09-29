@@ -166,10 +166,11 @@ host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
 
-`jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes; `quantize/`
-owns quantization job policy and consumes jobs contracts plus public libraries.
-The CLI composes producers and child entry paths, so jobs infrastructure imports
-neither producer implementations nor engine internals. HTTP adapters consume
+`jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes. Quantization
+job policy and the `convert` verb are the quantize module's (`@mlx-bun/module-quantize`), which
+consumes the `jobs`, `storage` and `catalog` services and the public libraries. The CLI composes
+child entry paths (a job child activates the module that registered its kind), so jobs
+infrastructure imports neither producer implementations nor engine internals. HTTP adapters consume
 these domains from `server/`. Dataset generation is the datasets module's
 (`@mlx-bun/module-datasets`): its requests reach the served model through the `modelHost`
 service and enter the server scheduler without holding an exclusive execution lease.
@@ -228,8 +229,12 @@ services. One module's contributions to another (memory's tools in chat, a
 module's settings in the shell) go through a `registry` core service: the
 contributor registers a declared extension and the consumer lists what is
 registered, so neither names the other. The web shell (navigation, routing,
-theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
-host's UI, native webviews included. Modules start as private workspace
+theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
+`{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
+page, creating the element on first visit. A host's browser build imports each installed module's panel entry from
+the host's installed modules (`apps/mlx-bun/src/web/build.ts` reads the host's `package.json`, which the gate ties to `src/modules.ts`), so the bundle holds the panels the host installs and no
+others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
 **Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`
@@ -270,10 +275,14 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets) activate in the persistent state, beside the job store, with
-`jobs` (the job host's task runners), `storage` and a `modelHost` that leases the serving
-host's model for `generate` over its own HTTP surface (so the `--isolate` parent, which
-loads no model, runs them too); the others activate with the model host.
+require `jobs` (datasets, quantize) activate in the persistent state, beside the job store, with
+`jobs` (the job host's `task` runners in this process, and `process` runners as a child that
+stops with its parent under the execution lease, which activates the owning module itself),
+`storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
+its own HTTP surface (so the `--isolate` parent, which loads no model, runs them too); the
+others activate with the model host. A one-shot CLI verb (`convert`) activates only its own
+module over a private, throwaway job store, and a translated spelling of a verb (`mlx-bun.convert`)
+reaches it through the same verb table.
 
 **Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 
@@ -295,6 +304,8 @@ loads no model, runs them too); the others activate with the model host.
   drop prints a reminder to lower it); each cleanup PR shrinks the table.
 - Panel code imports only panel files and its `protocol.ts`, which imports
   nothing; this generalizes the browser rule for `chat/` and `jobs/`.
+- `web-shell` is browser code with no workspace dependencies and no imports beyond its own files; no module imports
+  it (a panel is handed its connection, not the shell), and an app's browser code may import it.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
   kinds and storage paths; every `requires` satisfied.
 

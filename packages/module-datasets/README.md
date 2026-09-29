@@ -90,6 +90,5 @@ It passes on Docker Desktop 29.8.0 (linux/arm64, M1 Max) with the pinned image.
 The browser panel (`apps/mlx-bun/src/web/browser/dataset.ts`) stays in the app: it is
 written against the app shell's helpers (`api`, `jobStream`, `toast`, `pushToHub`,
 the active model) and the static markup in `app.html`, so it does not load without
-them. It moves when the web shell package exists, as a `mlx-datasets-panel` custom
-element. Pushing a dataset to Hugging Face (`POST /api/dataset/push`) belongs to
-publishing.
+them. It moves as a `mlx-datasets-panel` custom element that `@mlx-bun/web-shell` mounts.
+Pushing a dataset to Hugging Face (`POST /api/dataset/push`) belongs to publishing.

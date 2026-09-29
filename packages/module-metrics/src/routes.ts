@@ -19,8 +19,6 @@ export interface MetricsRoutesOptions {
   jobs: JobService;
   /** Calls `listener` after the store changed; how the stream learns to send. */
   onChange(listener: () => void): Unsubscribe;
-  /** The panel element's browser module, or undefined where the source is not available. */
-  panel?: () => Promise<string | undefined>;
   /** Fewest milliseconds between two snapshots on one stream. Default 500. */
   minIntervalMs?: number;
   /** Milliseconds between comment frames that keep an idle connection open. Default 15 000. */
@@ -123,11 +121,6 @@ export function createMetricsRoutes(options: MetricsRoutesOptions) {
       if (!record) return error("no such job", 404);
       await jobs.cancel(record.id);
       return Response.json(job((await jobs.get(record.id)) ?? record));
-    }) as RouteHandler,
-    panel: (async () => {
-      const source = await options.panel?.();
-      return source === undefined ? error("the panel source is not available in this build", 404)
-        : new Response(source, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" } });
     }) as RouteHandler,
   } as const;
 }

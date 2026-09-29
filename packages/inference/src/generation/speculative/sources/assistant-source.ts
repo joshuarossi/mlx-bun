@@ -23,7 +23,9 @@ import { assistantGroups } from "../bindings/assistant-rows";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import { GemmaAssistantDrafter } from "../../../models/gemma4/assistant";
+import type { AssistantDrafterModel } from "../../../contracts/mlx/drafter";
+import { DRAFT_CHECKPOINT_SCHEMA } from "../../../contracts/mlx/draft-checkpoint";
+import { loadAssistantDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView, AssistantRowsTarget } from "../source";
 import { targetLacks } from "../source";
 
@@ -41,7 +43,7 @@ export class AssistantProvider implements DraftProvider {
   readonly grouped: import("../source").GroupedDraftProvider;
 
   private constructor(
-    private readonly drafter: GemmaAssistantDrafter,
+    private readonly drafter: AssistantDrafterModel,
     id: string,
     weightsBytes: number, namespace: string,
   ) {
@@ -51,13 +53,13 @@ export class AssistantProvider implements DraftProvider {
   }
 
   static async load(modelDir: string): Promise<AssistantProvider> {
-    const drafter = await GemmaAssistantDrafter.load(modelDir);
+    const drafter = await loadAssistantDrafter(modelDir);
     const id = modelDir.split("/").filter(Boolean).at(-1)!;
     try {
       const identity = await artifactIdentity(await Bun.file(`${modelDir}/config.json`).text(),
         readdirSync(modelDir).filter(file => file.endsWith(".safetensors"))
           .map(name => ({ name, path: join(modelDir, name) })));
-      return new AssistantProvider(drafter, id, safetensorsBytes(modelDir), `gemma-assistant-v1:${identity}`);
+      return new AssistantProvider(drafter, id, safetensorsBytes(modelDir), `${DRAFT_CHECKPOINT_SCHEMA.assistant}:${identity}`);
     } catch (error) { drafter.dispose(); throw error; }
   }
 
@@ -74,7 +76,7 @@ export class AssistantSource implements DraftSource {
   readonly weightsBytes = 0; // provider-owned weights; per-request adds nothing
   private readonly target: AssistantRowsTarget;
 
-  constructor(private readonly drafter: Pick<GemmaAssistantDrafter, "forwardRows">, target: TargetView) {
+  constructor(private readonly drafter: Pick<AssistantDrafterModel, "forwardRows">, target: TargetView) {
     if (!target.assistantRows) throw targetLacks("assistantRows");
     this.target = target.assistantRows;
   }

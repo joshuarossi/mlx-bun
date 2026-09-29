@@ -32,9 +32,11 @@
         "@mlx-bun/mlx": "workspace:*",
         "@mlx-bun/module-datasets": "workspace:*",
         "@mlx-bun/module-metrics": "workspace:*",
+        "@mlx-bun/module-quantize": "workspace:*",
         "@mlx-bun/module-transcription": "workspace:*",
         "@mlx-bun/quantize": "workspace:*",
         "@mlx-bun/training": "workspace:*",
+        "@mlx-bun/web-shell": "workspace:*",
         "typebox": "1.1.38",
       },
       "devDependencies": {
@@ -131,6 +133,18 @@
         "happy-dom": "20.10.6",
       },
     },
+    "packages/module-quantize": {
+      "name": "@mlx-bun/module-quantize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/quantize": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-services": "workspace:*",
+      },
+    },
     "packages/module-transcription": {
       "name": "@mlx-bun/module-transcription",
       "version": "0.0.0",
@@ -157,6 +171,13 @@
       "dependencies": {
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
+      },
+    },
+    "packages/web-shell": {
+      "name": "@mlx-bun/web-shell",
+      "version": "0.0.0",
+      "devDependencies": {
+        "happy-dom": "20.10.6",
       },
     },
   },
@@ -419,11 +440,15 @@
 
     "@mlx-bun/module-metrics": ["@mlx-bun/module-metrics@workspace:packages/module-metrics"],
 
+    "@mlx-bun/module-quantize": ["@mlx-bun/module-quantize@workspace:packages/module-quantize"],
+
     "@mlx-bun/module-transcription": ["@mlx-bun/module-transcription@workspace:packages/module-transcription"],
 
     "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
     "@mlx-bun/training": ["@mlx-bun/training@workspace:packages/training"],
+
+    "@mlx-bun/web-shell": ["@mlx-bun/web-shell@workspace:packages/web-shell"],
 
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 

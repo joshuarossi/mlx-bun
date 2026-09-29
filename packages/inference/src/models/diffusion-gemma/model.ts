@@ -34,7 +34,7 @@ import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxDenoisingOperations } from "../../contracts/mlx/graph";
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { declareGraph } from "../capabilities";
 import type { PixelInput } from "../../contracts/mlx/media";
@@ -537,7 +537,7 @@ class DiffDecoderLayer {
   }
 }
 
-export class DiffusionGemmaModel implements MlxDeclaredGraph {
+export class DiffusionGemmaModel implements MlxDeclaredGraph, MlxDenoisingOperations {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly embed: QuantizedEmbedding;

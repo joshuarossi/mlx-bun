@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { manifest as quantize } from "../../../packages/module-quantize/src/manifest";
 import { manifest as transcription } from "../../../packages/module-transcription/src/manifest";
 import { CLI_SOURCE, INSTALLER_SOURCE, commandReference, generateReference, helpReference, installedCommandReference, moduleCommandReference, renderCommandReference } from "../scripts/generate-reference";
 
@@ -59,20 +60,26 @@ test("generated CLI covers the real help's complete command and option sets", as
 
 test("the installed modules' verbs are read from their manifests, matching the manifest values", async () => {
   const installed = await installedCommandReference(root);
-  expect(installed.map(command => command.name)).toEqual(transcription.verbs.map(verb => verb.name));
-  for (const [index, verb] of transcription.verbs.entries()) {
+  // In the app's installation order (`src/modules.ts`): transcription's verbs, then quantize's.
+  const verbs = [...transcription.verbs, ...quantize.verbs] as readonly { name: string; summary: string; positional: readonly { name: string; required?: boolean }[];
+    options: readonly { name: string; type: string; summary: string; short?: string }[] }[];
+  expect(installed.map(command => command.name)).toEqual(verbs.map(verb => verb.name));
+  for (const [index, verb] of verbs.entries()) {
     const command = installed[index]!;
     expect(command.description).toBe(verb.summary);
     expect(command.positional).toBe(verb.positional.map(item => "required" in item ? `<${item.name}>` : `[${item.name}]`).join(" "));
     expect(command.options.map(option => [option.name, option.description])).toEqual(verb.options.map(option => [option.name, option.summary]));
     // Options that take a value render with one, `number` included.
     expect(command.options.map(option => option.type)).toEqual(verb.options.map(option => option.type === "boolean" ? "boolean" : "string"));
+    expect(command.options.map(option => option.short)).toEqual(verb.options.map(option => option.short));
   }
   expect(installed.map(command => command.name)).toContain("transcribe");
   const rendered = renderCommandReference([...commandReference(await readFile(resolve(root, CLI_SOURCE), "utf8")), ...installed], helpReference(await readFile(resolve(root, CLI_SOURCE), "utf8")));
   expect(rendered).toContain("Usage: `mlx-bun transcribe <audio-file> [query] [options]`");
   expect(rendered).toContain("| `--beam-size <value>` | Beam search width [default: greedy] |");
   expect(rendered).toContain("| `--hotkey <value>` |");
+  expect(rendered).toContain("| `-q`, `--quantize` | Quantize the model (uniform affine);");
+  expect(rendered).toContain("| `-d`, `--dequantize` |");
 });
 
 test("a changed module manifest shape fails instead of publishing an incomplete inventory", () => {

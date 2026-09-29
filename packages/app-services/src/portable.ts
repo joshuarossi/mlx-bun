@@ -5,8 +5,10 @@
 export { activateModules, runVerb } from "./activation";
 export { createEventHub } from "./events";
 export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
+export { createRegistryCatalog } from "./catalog";
+export type { CatalogHub, RegistryCatalogOptions } from "./catalog";
 export { ModelHostFailure } from "./failure";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";
-export { mlxBunHome } from "./home";
+export { MODEL_LAYOUT, mlxBunHome } from "./home";
 export { createStorage } from "./storage";

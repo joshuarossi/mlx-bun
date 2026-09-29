@@ -26,21 +26,13 @@ try {
   } else if (command === "help" || command === "--help" || command === "-h") {
     console.log(renderHelp(help(args[0])));
   } else if (installedVerbs().has(command)) {
-    // A verb an installed module declares (`src/modules.ts`).
+    // A verb an installed module declares (`src/modules.ts`); an alias (`mlx-bun.convert`) arrives already translated to the verb's options.
     if (args.includes("--help") || args.includes("-h")) console.log(renderHelp(help(command)));
-    else process.exitCode = await runInstalledVerb(command, args);
+    else process.exitCode = await runInstalledVerb(command, parsedArgs ?? args);
   } else if (!isCommand(command)) {
     throw new Error(`Unknown command: ${command}. Use mlx-bun --help.`);
   } else if (args.includes("--help") || args.includes("-h")) {
     console.log(renderHelp(help(command)));
-  } else if (command === "convert") {
-    const { parseConvertArgs, runConvert } = await import("./convert");
-    const parsed = parsedArgs ?? parseConvertArgs(args);
-    const cancellation = new AbortController();
-    const stop = () => cancellation.abort(new Error("convert cancelled"));
-    process.on("SIGINT", stop); process.on("SIGTERM", stop);
-    try { await runConvert(parsed, {}, cancellation.signal); }
-    finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
   } else {
     const parsed = parsedArgs ?? parseCommand(command, args);
     if (command === "serve") {

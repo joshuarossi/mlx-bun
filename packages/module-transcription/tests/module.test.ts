@@ -3,7 +3,7 @@
 // with what the host parsed, and live counters for the host's health surface.
 import { expect, test } from "bun:test";
 import { checkManifests, loadModules } from "@mlx-bun/app-host";
-import { createModuleRoutes, createWhisperModelHost, parseVerb } from "@mlx-bun/app-services";
+import { createModuleRoutes, createWhisperModelHost, parseVerb, plainTerminal } from "@mlx-bun/app-services";
 import transcription, { createTranscriptionModule } from "../src/index";
 import { manifest } from "../src/manifest";
 import { fakeCatalog, MODEL_ID, type TranscriptionRuntime } from "./support";
@@ -52,7 +52,7 @@ test("activated, it serves its routes at the root, transcribes through the verb,
     expect([...loaded.verbs.keys()]).toEqual(["transcribe", "dictate"]);
     const verb = loaded.verbs.get("transcribe")!;
     const code = await verb.handler({ ...parseVerb("mlx-bun", verb.spec, ["clip.wav", "--format", "json"]), signal: new AbortController().signal,
-      stdout: text => { written.push(text); }, stderr: () => {} });
+      stdout: text => { written.push(text); }, stderr: () => {}, terminal: plainTerminal(() => {}) });
     expect(code).toBe(0);
     expect(written).toEqual(['{"text":"hello"}\n']);
     // The routes answer through the same module: an unload of nothing resident reports it.
@@ -74,7 +74,7 @@ test("a cancelled transcribe verb rejects with its own message", async () => {
   try {
     const verb = loaded.verbs.get("transcribe")!, abort = new AbortController();
     abort.abort(new Error("transcribe cancelled"));
-    await expect(verb.handler({ ...parseVerb("mlx-bun", verb.spec, ["clip.wav"]), signal: abort.signal, stdout: () => {}, stderr: () => {} }))
+    await expect(verb.handler({ ...parseVerb("mlx-bun", verb.spec, ["clip.wav"]), signal: abort.signal, stdout: () => {}, stderr: () => {}, terminal: plainTerminal(() => {}) }))
       .rejects.toThrow("transcription cancelled");
   } finally { await loaded.stop(); await host.close(); }
 });

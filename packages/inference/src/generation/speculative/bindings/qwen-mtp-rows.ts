@@ -3,7 +3,7 @@ import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { PreparedStateChange } from "../../../contracts/portable/resources";
 import { normalizedArgmax } from "../../../kernels/sampling/normalized-argmax";
-import type { MtpModule } from "../../../models/qwen/mtp";
+import type { RecurrentMtpModule } from "../../../contracts/mlx/drafter";
 import { applyStateChanges,cleanupFailure,disposeResources } from "../../../runtime/resources";
 import { toLogprobs } from "../../../sampling/index";
 import { BatchedKVCache } from "../../../state/batched-kv";
@@ -29,7 +29,7 @@ export class QwenMtpRows {
 
   constructor(
     readonly target: RecurrentMtpTarget,
-    readonly module: MtpModule,
+    readonly module: RecurrentMtpModule,
     readonly sampling: MtpRowSampling | null,
     states: readonly (MtpRowState | null)[],
   ) {

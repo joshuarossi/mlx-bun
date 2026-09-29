@@ -11,11 +11,11 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { toLogprobs } from "../../../sampling/index";
-import { Glm52DecoderLayer, Glm52Model } from "../../../models/glm52/model";
+import type { NativeMtpHead } from "../../../contracts/mlx/drafter";
+import { nativeMtpHeadOf } from "../../../models/drafter-loaders";
 import { MLACache } from "../../../state/glm52-cache";
-import { Glm52MtpGraph } from "../../../models/glm52/mtp";
 import type { DraftProvider, DraftSource, GroupedDraftProvider, TargetView, DraftRowSampling, DraftRowGroup, DraftPrefillGroup } from "../source";
-import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
+import { DRAFT_CHECKPOINT_SCHEMA, type DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
 import { Glm52MtpRows } from "../bindings/glm52-mtp-rows";
 import { type Glm52MtpRowState } from "../../../state/speculative/glm52-mtp-state";
 import { captureGlm52MtpState, restoreGlm52MtpState } from "../../../state/speculative/glm52-mtp-state";
@@ -32,52 +32,29 @@ function lastToken(feed: readonly number[]): number {
 
 export class Glm52NativeMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
-    checkpointNamespace: () => "glm52-native-mtp-v1",
+    checkpointNamespace: () => DRAFT_CHECKPOINT_SCHEMA.glm52Mtp,
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
     openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
   };
   readonly id = "glm52-native-mtp";
   readonly weightsBytes = 0;
-  readonly #layer: Glm52DecoderLayer;
+  readonly #head: NativeMtpHead;
 
-  constructor(readonly model: Glm52Model) {
-    if (!(model instanceof Glm52Model))
-      throw new Error("native GLM-5.2 MTP binds only to the GLM-5.2 graph that declares it");
-    if (!model.capabilities.mtpMetadata)
-      throw new Error("GLM-5.2 artifact does not contain a complete MTP row");
-    if (model.capabilities.mtpEnabled === false)
-      throw new Error("native GLM-5.2 MTP is disabled for this model instance");
-    if (model.glmConfig.numNextnPredictLayers !== 1) {
-      throw new Error(
-        `native GLM-5.2 MTP requires exactly one next-token layer; got ` +
-        `${model.glmConfig.numNextnPredictLayers}`,
-      );
-    }
-    const mtpBackend = model.expertRuntime?.mtpExecutor ?? null;
-    if (model.expertBackend && !mtpBackend) {
-      throw new Error(
-        "streamed GLM-5.2 MTP requires the bounded int8 MTP expert tier",
-      );
-    }
-    this.#layer = new Glm52DecoderLayer(
-      model.glmConfig,
-      model.weights,
-      model.glmConfig.numHiddenLayers,
-      false,
-      mtpBackend,
-    );
+  /** Binds the native MTP head `model` declares (`GraphCapabilities.nativeDraft`); it owns every shared and MTP weight. */
+  constructor(readonly model: object) {
+    this.#head = nativeMtpHeadOf(model);
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
     if (opts.target.identity !== this.model)
       throw new Error("native MTP provider was opened for a different target");
-    return new Glm52NativeMtpSource(this.model, this.#layer, opts.sampler);
+    return new Glm52NativeMtpSource(this.#head, opts.sampler);
   }
 
   #openRows(target: TargetView, sampling: DraftRowSampling | null,
     checkpoints: readonly (DraftRowCheckpoint | null)[]): DraftRowGroup & DraftPrefillGroup {
     if (target.identity !== this.model) throw new Error("native MTP provider was opened for a different target");
-    const rows = new Glm52MtpRows(new Glm52MtpGraph(this.model, this.#layer), sampling);
+    const rows = new Glm52MtpRows(this.#head, sampling);
     const prepareAppend = (checkpoints: readonly (DraftRowCheckpoint | null)[]) => {
       const states: (Glm52MtpRowState | null)[] = [];
       try {
@@ -88,7 +65,7 @@ export class Glm52NativeMtpProvider implements DraftProvider {
     const append = (states: readonly (DraftRowCheckpoint | null)[]) => applyStateChanges([() => prepareAppend(states)]);
     try { append(checkpoints); } catch (error) { rows.dispose(); throw error; }
     return {
-      namespace: "glm52-native-mtp-v1", prefillMode: "full", tapLayers: [],
+      namespace: DRAFT_CHECKPOINT_SCHEMA.glm52Mtp, prefillMode: "full", tapLayers: [],
       get rowCount() { return rows.rowCount; },
       append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!),
       materialize: rows.materialize.bind(rows), filterRows: rows.filterRows.bind(rows),
@@ -112,23 +89,17 @@ export class Glm52NativeMtpSource implements DraftSource {
   readonly pinTargetKernelFamily = true;
   readonly weightsBytes = 0;
   #cache: MLACache;
-  readonly #graph: Glm52MtpGraph;
+  readonly #head: NativeMtpHead;
   #roundStart = 0;
   #lastDraftCount = 0;
   #closed = false;
 
   constructor(
-    readonly model: Glm52Model,
-    readonly layer: Glm52DecoderLayer,
+    head: NativeMtpHead,
     readonly sampler: Sampler,
   ) {
-    this.#graph = new Glm52MtpGraph(model, layer);
-    this.#cache = new MLACache({
-      kvLoraRank: model.glmConfig.kvLoraRank,
-      ropeHeadDim: model.glmConfig.qkRopeHeadDim,
-      maxTokens: model.glmConfig.maxPositionEmbeddings,
-      role: "mtp",
-    });
+    this.#head = head;
+    this.#cache = new MLACache({ ...head.cache, role: "mtp" });
   }
 
   get cacheOffset(): number {
@@ -214,9 +185,9 @@ export class Glm52NativeMtpSource implements DraftSource {
     if (this.#lastDraftCount !== 0)
       throw new Error("native MTP draft called before the prior round committed");
     const [batch, tokens, hidden] = anchorHidden.shape;
-    if (batch !== 1 || tokens !== 1 || hidden !== this.model.glmConfig.hiddenSize) {
+    if (batch !== 1 || tokens !== 1 || hidden !== this.#head.hiddenSize) {
       throw new Error(
-        `native MTP anchor must be [1,1,${this.model.glmConfig.hiddenSize}], ` +
+        `native MTP anchor must be [1,1,${this.#head.hiddenSize}], ` +
         `got [${anchorHidden.shape.join(",")}]`,
       );
     }
@@ -299,8 +270,8 @@ export class Glm52NativeMtpSource implements DraftSource {
     sampleStep: number,
   ): Promise<{ hidden: MlxArray; token: number }> {
     using ids = ops.fromInt32([token], [1, 1]);
-    using output = await this.#graph.forward(ids, hidden, this.#cache);
-    using logits = this.#graph.project(output);
+    using output = await this.#head.forward(ids, hidden, this.#cache);
+    using logits = this.#head.project(output);
     // Sampling consumes [B,V], independently of the graph's token dimension.
     using flat = ops.reshape(logits, [1, logits.shape.at(-1)!]);
     using logprobs = toLogprobs(flat);
@@ -311,8 +282,8 @@ export class Glm52NativeMtpSource implements DraftSource {
   async #absorb(acceptedTokens: readonly number[], verifiedHidden: MlxArray): Promise<void> {
     const count = acceptedTokens.length;
     using ids = ops.fromInt32([...acceptedTokens], [1, count]);
-    using trueRows = verifiedHidden.slice([0, 0, 0], [1, count, this.model.glmConfig.hiddenSize]);
-    using output = await this.#graph.forward(ids, trueRows, this.#cache);
+    using trueRows = verifiedHidden.slice([0, 0, 0], [1, count, this.#head.hiddenSize]);
+    using output = await this.#head.forward(ids, trueRows, this.#cache);
     output.eval();
   }
 

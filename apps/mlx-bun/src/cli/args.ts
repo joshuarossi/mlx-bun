@@ -176,33 +176,6 @@ const commands = {
     "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
     private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
   } },
-  convert: { description: "Quantize an HF model into a local MLX snapshot (mlx_lm.convert counterpart)", positional: "[repo-or-path]", options: {
-    "hf-path": { type: "string", description: "Source model: local path, downloaded model, or HF repo id (fetched first); --model and the positional are aliases" },
-    model: { type: "string", description: "Alias for --hf-path" },
-    "mlx-path": { type: "string", description: "Output directory; must not already exist [default: ~/.mlx-bun/models/<model>-<bits>bit]" },
-    quantize: { type: "boolean", short: "q", description: "Quantize the model (uniform affine); without -q or --target-bpw the model is rewritten with --dtype and/or -d only" },
-    "q-bits": { type: "string", description: "Bits per weight: 4 or 8 [default: 4]" },
-    "q-group-size": { type: "string", description: "Quantization group size: 32 or 64 [default: 64]" },
-    "upload-repo": { type: "string", description: "Push the converted model to this Hugging Face repo afterwards (write token checked first)" },
-    "target-bpw": { type: "string", description: "Mixed precision target bits-per-weight, e.g. 4.5: OptiQ sensitivity sweep + per-layer knapsack; implies -q" },
-    "candidate-bits": { type: "string", description: "Comma list the knapsack may pick from [default: 4,8]" },
-    "calibration-mix": { type: "string", description: "\"optiq\" or a JSONL path [default: optiq]" },
-    "n-calibration": { type: "string", description: "Calibration samples [default: 2]" },
-    "rotate-weights": { type: "boolean", description: "Fold the model's offline TurboQuant rotation before quantization (auto-detects Llama/Qwen3.5/Qwen MTP)" },
-    "rotation-seed": { type: "string", description: "Deterministic rotation seed [default: 42]" },
-    "q-mode": { type: "string", description: "Quantization mode: affine, or trellis for packed Trellis (TCQ) MLP tensors of an HF-layout Qwen3.5-family model (rotation fold implied; implies -q) [default: affine]" },
-    "trellis-bits": { type: "string", description: "--q-mode trellis: bits per coded weight, 1-8 [default: 3]" },
-    "trellis-k-map": { type: "string", description: "--q-mode trellis: allocation JSON with per-tensor bits (budgets[--trellis-k-budget].kmap, optional affine_map)" },
-    "trellis-k-budget": { type: "string", description: "--q-mode trellis: budget key inside --trellis-k-map [default: 3.00]" },
-    "trellis-ldlq": { type: "string", description: "--q-mode trellis: directory of per-layer Hessian factors (layer-NNN-mlp|down.safetensors) enabling BlockLDLQ error feedback" },
-    "trellis-reuse": { type: "string", description: "--q-mode trellis: comma list of packed artifacts to copy unchanged-geometry tensors from instead of re-encoding" },
-    "trellis-down-axis": { type: "string", description: "--q-mode trellis: dim of down_proj the trellis runs along, out (rotated dim) or in [default: out]" },
-    "trellis-interleave": { type: "boolean", description: "--q-mode trellis: reorder eligible 3-bit axis-0 codes into the two-block scatter layout" },
-    "trellis-layers": { type: "string", description: "--q-mode trellis: trellis-code only the first N decoder layers (the rest ride the 3-bit affine base tier)" },
-    dtype: { type: "string", description: "Dtype of the non-quantized tensors and of the quantization scales/biases: float16 | bfloat16 | float32 [default: bf16 scales/biases, other tensors unchanged]" },
-    dequantize: { type: "boolean", short: "d", description: "Dequantize a quantized model to dense weights (not with -q)" },
-    "quant-predicate": { type: "string", description: "Not supported (mlx-lm's mixed_* recipes need 2/3/6-bit); use --target-bpw for mixed precision" },
-  } },
   train: { description: "Fine-tune a LoRA adapter on your data (sft | dpo | orpo)", positional: "[model]", options: {
     query: { type: "string", description: "Model to fine-tune when no positional query is supplied (auto-picks the default model if omitted)" },
     data: { type: "string", description: "Dataset dir with train.jsonl (+ optional valid.jsonl); rows are {prompt, chosen, rejected} for dpo/orpo, {messages|text} for sft  (required)" },
@@ -319,9 +292,13 @@ export function usage(command: Command): string {
   return (commands[command] as { usage?: string }).usage ?? `usage: mlx-bun ${command} ${commands[command].positional}`;
 }
 
-/** A verb's option table (name → type, short); the alias parser reads the same one. */
-export function commandOptions(command: Command): Record<string, { type: "string" | "boolean"; short?: string }> {
-  return commands[command].options;
+/** A verb's option table (name → type, short); the alias parser reads the same one. A module's verb reads from its manifest. */
+export function commandOptions(command: string): Record<string, { type: "string" | "boolean"; short?: string }> {
+  if (isCommand(command)) return commands[command].options;
+  const spec = installedVerbs().get(command);
+  if (!spec) throw new Error(`Unknown command: ${command}`);
+  return Object.fromEntries(spec.options.map(option => [option.name, { type: option.type === "boolean" ? "boolean" as const : "string" as const,
+    ...(option.short ? { short: option.short } : {}) }]));
 }
 
 /** The positional-count and required-positional rules shared by every way of building a verb's arguments. */
