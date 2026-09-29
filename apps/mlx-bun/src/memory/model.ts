@@ -21,8 +21,9 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_HUB, pickCanonicalRevision, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
+import { hubCacheRoot, pickCanonicalRevision, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { storagePath } from "../storage/paths";
 
 /** The memory task model main's synthesis loaded when it had no client
  *  supplied. Owned here, independent of the app's starter-model default. */
@@ -32,7 +33,7 @@ export const MEMORY_TASK_MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
  *  (the canonical revision when several are cached), or main's fetch hint.
  *  Reads the cache only (no MLX, never a download), so a process that loads
  *  no model can select the snapshot another one loads. */
-export async function locateTaskModel(repoId: string, hub = DEFAULT_HUB): Promise<string> {
+export async function locateTaskModel(repoId: string, hub = hubCacheRoot()): Promise<string> {
   const snapshots = join(hub, `models--${repoId.replace("/", "--")}`, "snapshots");
   const candidates = existsSync(snapshots)
     ? readdirSync(snapshots).map(name => join(snapshots, name)).filter(dir => existsSync(join(dir, "config.json"))) : [];
@@ -46,7 +47,7 @@ export async function locateTaskModel(repoId: string, hub = DEFAULT_HUB): Promis
 /** Per-stage adapter dir, or undefined when none is symlinked (run base). Only
  *  the `chunk` stage has a trained adapter on disk today (`memory-chunk`). */
 export function adapterDirFor(stage: string): string | undefined {
-  const dir = `${process.env.HOME}/.cache/mlx-bun/adapters/memory-${stage}`;
+  const dir = join(storagePath("adapters"), `memory-${stage}`);
   return existsSync(dir) ? dir : undefined;
 }
 

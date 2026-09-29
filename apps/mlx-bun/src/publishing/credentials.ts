@@ -1,13 +1,13 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { hfToken, type HfTokenOptions } from "@mlx-bun/hub/download";
+import { mlxBunHome, storagePath, userHome } from "../storage/paths";
 
 /** The app owns its saved token. Hub owns the shared environment/cache fallback.
  * Explicit paths and environment isolate embedded consumers and tests. */
 export function createHfCredentials(options: HfTokenOptions & { tokenFile?: string } = {}) {
   const environment = () => options.environment ?? process.env;
-  const file = () => options.tokenFile ?? join(environment().HOME || homedir(), ".mlx-bun", "hf.json");
+  const file = () => options.tokenFile ?? storagePath("credentials", mlxBunHome(userHome(environment())));
   return {
     get(): string | null {
       try {
@@ -16,7 +16,7 @@ export function createHfCredentials(options: HfTokenOptions & { tokenFile?: stri
           return saved.token.trim();
       } catch { /* Missing or malformed app settings fall back to shared credentials. */ }
       const env = environment();
-      return hfToken({ environment: { HOME: env.HOME || homedir(), HF_TOKEN: env.HF_TOKEN?.trim() || undefined },
+      return hfToken({ environment: { HOME: userHome(env), HF_TOKEN: env.HF_TOKEN?.trim() || undefined },
         cacheTokenPath: options.cacheTokenPath });
     },
     save(token: string): void {

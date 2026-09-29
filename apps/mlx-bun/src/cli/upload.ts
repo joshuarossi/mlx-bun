@@ -32,10 +32,11 @@ function option(args: CommandArgs, name: string): string | undefined {
 
 export async function runUpload(args: CommandArgs, supplied: Partial<UploadDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...defaults, ...supplied };
-  const dir = option(args, "path") || "mlx_model"; // mlx_lm.upload's --path default
+  // No working-directory default (mlx_lm.upload's `mlx_model`): the path is required.
+  const dir = option(args, "path");
   const repoValue = option(args, "upload-repo");
   const repo = repoValue && !repoValue.startsWith("-") ? repoValue : null;
-  if (!repo) throw new Error(usage("upload"));
+  if (!repo || !dir) throw new Error(usage("upload"));
   if (!deps.isDirectory(dir)) throw new Error(`not a directory: ${dir} (pass the model directory via --path)`);
   const token = deps.credentials.get();
   if (!token) throw new Error([

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Registry } from "@mlx-bun/hub/registry";
+import type { Registry } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, type KvQuantOverride, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { createRuntimeConfig, runtimeConfig, runtimeValue, withRuntimeConfig } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme, type TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
@@ -13,6 +13,7 @@ import { planRequest, RequestOwnership } from "../server/request-plan";
 import { textPrompt } from "../server/text-prompt";
 import type { CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
+import { openRegistry } from "../storage/paths";
 
 type InferenceCommand = "generate" | "embed";
 interface SelectedModel { path: string; repoId: string; }
@@ -21,7 +22,7 @@ type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
 /** One-shot selection has no starter or background downloads. Generate keeps
  * main's direct registry resolution; embed alone scans an empty cache. */
 export async function resolveInferenceModel(command: InferenceCommand, query: string,
-  registry: () => ModelRegistry = () => new Registry()): Promise<SelectedModel> {
+  registry: () => ModelRegistry = () => openRegistry()): Promise<SelectedModel> {
   if (query && existsSync(join(query, "config.json"))) {
     const path = resolve(query), hf = /models--([^/]+)--([^/]+)\/snapshots\//.exec(path);
     return { path, repoId: hf ? `${hf[1]}/${hf[2]}` : basename(path) };

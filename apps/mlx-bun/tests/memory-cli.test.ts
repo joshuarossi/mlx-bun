@@ -27,7 +27,7 @@ function home(seed = true): { home: string; vault: string } {
 }
 async function cli(paths: { home: string; vault: string }, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", entry, "memory", ...args], {
-    env: { ...process.env, HOME: paths.home, MLX_BUN_WIKI: paths.vault, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib",
+    env: { ...process.env, HOME: paths.home, MLX_BUN_HOME: join(paths.home, ".mlx-bun"), MLX_BUN_WIKI: paths.vault, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib",
       HF_HUB_OFFLINE: "1", HF_HUB_CACHE: join(paths.home, "hub") },
     stdout: "pipe", stderr: "pipe",
   });
@@ -129,7 +129,7 @@ test("the deterministic link stage runs without a model and persists its store u
   expect(linked.out).toContain("link: cross-linking 2 article(s)");
   expect(linked.out).toContain("linked Alpha (+1 mention(s), 1 See also)");
   expect(linked.out).toContain("link: 2 article(s) linked · 2 mention edge(s) · 0 gated");
-  expect(await Bun.file(join(paths.home, ".cache", "mlx-bun", "memory.sqlite")).exists()).toBe(true);
+  expect(await Bun.file(join(paths.home, ".mlx-bun", "db", "memory.sqlite")).exists()).toBe(true);
   const again = await cli(paths, "link", "--limit", "5");
   expect(again.out).toContain("link: 0 article(s) linked · 0 mention edge(s) · 0 gated");
 });
@@ -141,7 +141,7 @@ test("a stage that needs the model fails clearly when no server answers at --hos
   writeFileSync(join(paths.vault, "Meta", "Chunking.md"), "# Chunking\n\nOne chunk per topic.\n");
   writeFileSync(join(paths.vault, "Meta", "Topics_to_Ignore.md"), "# Topics to Ignore\n\nNothing.\n");
   const { MemoryStore } = await import("../src/memory/db");
-  const store = new MemoryStore(join(paths.home, ".cache", "mlx-bun", "memory.sqlite"));
+  const store = new MemoryStore(join(paths.home, ".mlx-bun", "db", "memory.sqlite"));
   store.db.run("INSERT INTO conversations (conv, source, title, updated_at, chunked_at) VALUES (?,?,?,?,?)", ["c1", "pi", "t", 1000, null]);
   store.db.run("INSERT INTO messages (conv, position, role, uuid, text) VALUES (?,?,?,?,?)", ["c1", 0, "user", "u0", "which lens for reach?"]);
   store.db.run("INSERT INTO messages (conv, position, role, uuid, text) VALUES (?,?,?,?,?)", ["c1", 1, "assistant", "u1", "the 150-600"]);

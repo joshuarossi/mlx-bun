@@ -1,4 +1,3 @@
-import { Registry } from "@mlx-bun/hub/registry";
 import { fit, skuMatrix, thisMachine } from "@mlx-bun/inference/execution/fit";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
@@ -9,6 +8,7 @@ import {
   GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES, planGlm52MemoryForArtifact,
 } from "@mlx-bun/inference/artifacts/glm52/memory";
 import type { Command, CommandArgs } from "./args";
+import { openRegistry } from "../storage/paths";
 
 const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GB`;
 function parseSize(s: string): number {
@@ -30,7 +30,7 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
     if (ctx !== null && (!Number.isSafeInteger(Number(ctx)) || Number(ctx) <= 0))
       throw new Error("--ctx must be a positive integer");
   }
-  const reg = new Registry();
+  const reg = openRegistry();
   try {
     switch (cmd) {
       case "get": {
@@ -53,8 +53,8 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
         const { step, style } = await import("./terminal");
         const { join: joinPath, basename } = await import("node:path");
         const { readdirSync, existsSync } = await import("node:fs");
-        const { DEFAULT_HUB, planRepoGc } = await import("@mlx-bun/hub/registry");
-        const repoDir = joinPath(DEFAULT_HUB, `models--${repoId.replaceAll("/", "--")}`);
+        const { hubCacheRoot, planRepoGc } = await import("@mlx-bun/hub/registry");
+        const repoDir = joinPath(hubCacheRoot(), `models--${repoId.replaceAll("/", "--")}`);
         const priorSnapshots = existsSync(joinPath(repoDir, "snapshots"))
           ? readdirSync(joinPath(repoDir, "snapshots"))
           : [];
@@ -169,10 +169,10 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
       }
 
       case "gc": {
-        const { planGc, executeGc, DEFAULT_HUB } = await import("@mlx-bun/hub/registry");
+        const { planGc, executeGc } = await import("@mlx-bun/hub/registry");
         const { table, style, h1 } = await import("./terminal");
         const force = flag("force");
-        const plans = planGc(DEFAULT_HUB, { force }).filter(
+        const plans = planGc(undefined, { force }).filter(
           (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
         );
         h1("gc — superseded snapshots + dead blobs");
