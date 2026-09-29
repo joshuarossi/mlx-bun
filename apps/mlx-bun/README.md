@@ -998,8 +998,7 @@ and every tensor outside the folded modules byte-identical, changes only folded
 modules, and loads with `serve` and generates. Its output is not compared with
 the mounted adapter: `fuse` re-quantizes folded modules with their source spec,
 so the fused model and the adapter are not bit-exact by contract. Run with
-`cd apps/mlx-bun && MLX_BUN_APP_TEST_MODEL=<cached snapshot directory> bun test tests/engine/managed-jobs.test.ts -t "finished fine-tune outputs"`;
-this case has not been run.
+`cd apps/mlx-bun && MLX_BUN_APP_TEST_MODEL=<cached snapshot directory> bun test tests/engine/managed-jobs.test.ts -t "finished fine-tune outputs"`.
 
 ## Dataset jobs
 
