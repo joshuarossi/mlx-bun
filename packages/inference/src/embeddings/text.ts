@@ -1,8 +1,8 @@
 // Text-embedding entry point. Wraps a graph's `embedPooled` (last-token hidden,
 // L2-normalized vector) with the input convention its profile declares, so the
 // CLI (`mlx-bun embed`), the server (`/v1/embeddings`), and in-repo experiments
-// all produce the SAME vectors — the ones verified bit-exact vs mlx-lm in
-// `02d723a:tests/parity/qwen3-embed-parity.test.ts` for the Qwen3-Embedding backbone.
+// all produce the SAME vectors — the ones verified bit-exact vs mlx-lm and main in
+// tests/parity/embedding-parity.test.ts (opt-in) for the Qwen3-Embedding backbone.
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { declaredGraph } from "../models/capabilities";

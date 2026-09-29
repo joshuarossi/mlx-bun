@@ -2,7 +2,7 @@
 // mlx-whisper's whisper.py (mlx-community/whisper-* checkpoints: fp16
 // weights in a single weights.safetensors + config.json ModelDimensions).
 // L1 gate: encoder output and per-step decoder logits bit-exact vs the
-// pinned mlx-whisper oracle (`02d723a:tests/parity/whisper.test.ts`).
+// pinned mlx-whisper oracle (tests/parity/whisper-parity.test.ts, opt-in).
 //
 // Graph (dtype = weight dtype, fp16 for the shipped artifacts):
 //   encoder: mel [B,3000,n_mels] → conv1(k3,p1)+gelu → conv2(k3,s2,p1)+gelu
