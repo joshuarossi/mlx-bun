@@ -101,10 +101,13 @@ for each registered fingerprint (12B, e4b, 26B-A4B). With
 `MLX_BUN_TEST_GENERATED_MODEL` naming an artifact that ships `kv_config.json`, it
 requires `createModel` to select the generated graph, byte-identical vectors
 against `new Gemma4Model` over caches converted to `kv_config` before a prompt past
-the sliding window, identical 24-token greedy trajectories uncompiled and with
-compiled decode (counting generated forwards), and the monolith fallback under
-plain caches. This is specialization identity within this tree, not an oracle
-claim, and no run is recorded yet.
+the sliding window, identical 24-token greedy trajectories (stop tokens off, so
+every trajectory is full length) uncompiled and with compiled decode (counting
+generated forwards), and the monolith fallback under plain caches. This is
+specialization identity within this tree, not an oracle claim. On 2026-09-28 it
+passed on the M1 Max for mlx-community gemma-4-e4b-it-OptiQ-4bit (`98d7dc6a`; 24
+generated forwards uncompiled, 2 compiled) and gemma-4-12B-it-OptiQ-4bit
+(`5b110106`; 24 uncompiled, 1 compiled). The 26B-A4B cell was not run.
 
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections

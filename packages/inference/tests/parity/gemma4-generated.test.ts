@@ -8,7 +8,8 @@
 // - three uncompiled steps over caches converted to kv_config before the first
 //   forward, from a prompt past the sliding window: byte-identical full
 //   vocabulary vectors, with at least every decode step on the unrolled path;
-// - 24-token greedy trajectories under kv_config (quantized from token 0) are
+// - 24-token greedy trajectories under kv_config (quantized from token 0; stop
+//   tokens off, since e4b's first token for this raw prompt is EOS) are
 //   identical uncompiled, where every forward is generated, and with compiled
 //   decode, whose trace runs the generated layers (12B: exactly the one
 //   quantized step the dense segmented closure leaves to it, as in main);
@@ -124,7 +125,8 @@ test.skipIf(!inputs)("generated Gemma4 graph equals the monolith under kv_config
       try {
         const run = async (model: A) => {
           const out: number[] = [];
-          const generation = generate(model, prompt, { maxTokens: TOKENS, temperature: 0, kvConfig, quantizedKvStart: 0 });
+          // No stop tokens: every trajectory is TOKENS long whatever the artifact's first token (e4b's is EOS here).
+          const generation = generate(model, prompt, { maxTokens: TOKENS, temperature: 0, kvConfig, quantizedKvStart: 0, eosTokenIds: [] });
           for await (const token of generation) out.push(token.token);
           ffi.clearCache();
           return out;
@@ -133,7 +135,7 @@ test.skipIf(!inputs)("generated Gemma4 graph equals the monolith under kv_config
         const specialized = await run(gen);
         const used = generated.generatedForwardUses - before;
         const dedicated = await run(mono);
-        expect(specialized.length).toBeGreaterThan(4);
+        expect(specialized.length).toBe(TOKENS);
         expect({ compiled, specialized }).toEqual({ compiled, specialized: dedicated });
         if (!compiled) expect(used).toBeGreaterThanOrEqual(specialized.length - 1);
         else if (fingerprint === modules[0].FINGERPRINT) expect(used).toBe(1);
