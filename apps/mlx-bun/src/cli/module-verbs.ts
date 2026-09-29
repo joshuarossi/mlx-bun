@@ -1,7 +1,7 @@
 // The CLI verbs the installed modules declare (`src/modules.ts`): their
 // manifests are plain data, so the command list, `--help` and argument parsing
-// read them without activating anything. Running one activates the modules over
-// this app's core services and hands the verb what the host parsed.
+// read them without activating anything. Running one activates the verb's
+// module over this app's core services and hands the verb what the host parsed.
 import type { CliVerbSpec } from "@mlx-bun/app-core";
 import { manifests } from "../modules";
 
@@ -12,11 +12,28 @@ export function installedVerbs(): ReadonlyMap<string, CliVerbSpec> {
   return new Map(manifests.flatMap(manifest => (manifest.verbs ?? []).map(spec => [spec.name, spec] as const)));
 }
 
-/** Run an installed module's verb; resolves to the exit code. */
-export async function runInstalledVerb(name: string, argv: string[]): Promise<number> {
+/** Run an installed module's verb, from its argv or from the values another spelling of the verb (`mlx-bun.convert`) already parsed; resolves to the exit code. */
+export async function runInstalledVerb(name: string, input: string[] | { values: Readonly<Record<string, unknown>>; positionals: readonly string[] }): Promise<number> {
   const spec = installedVerbs().get(name);
   if (!spec) throw new Error(`Unknown command: ${name}`);
   // The module code and its services load only now, so the command list and help stay light.
-  const [{ createHostServices, runVerb }, { installedModules }] = await Promise.all([import("@mlx-bun/app-services"), import("../modules")]);
-  return runVerb({ program: PROGRAM, spec, argv, modules: installedModules, services: createHostServices({ log() {} }) });
+  const [{ createHostServices, runVerb }, { installedModules }, { createCatalogHub }, terminal, { createJobHost }, { createJobService }, { JobStore }, { fileURLToPath }, fs, os, path] = await Promise.all([
+    import("@mlx-bun/app-services"), import("../modules"), import("../publishing/catalog-hub"), import("./terminal"), import("../jobs/host"), import("../jobs/service"), import("../jobs/db"),
+    import("node:url"), import("node:fs"), import("node:os"), import("node:path") ]);
+  // A one-shot verb records the jobs it starts in a store of its own, created on first use and removed when it ends:
+  // nothing of it is left in the app's job history. Its children hold no lease: no model is loaded beside them.
+  const scratch = path.join(os.tmpdir(), `mlx-bun-verb-${crypto.randomUUID()}`);
+  const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)), acquire: async () => ({ dispose() {} }),
+    createStore: () => new JobStore(path.join(scratch, "jobs.db"), path.join(scratch, "logs")) });
+  const jobService = createJobService(jobs);
+  const host = createHostServices({ log() {}, hub: createCatalogHub() });
+  try {
+    return await runVerb({ program: PROGRAM, spec, ...(Array.isArray(input) ? { argv: input } : input), services: { ...host, bindings: { ...host.bindings, jobs: () => jobService } },
+      // Only the verb's own module activates (a verb of one module never starts another's runners).
+      modules: () => installedModules(manifest => manifest.verbs?.some(verb => verb.name === name) ?? false),
+      activated: loaded => jobService.serve(loaded.jobs),
+      terminal: { step: terminal.step, box: lines => terminal.box([...lines]), style: terminal.style } });
+  } finally {
+    try { await jobs.close(); } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  }
 }

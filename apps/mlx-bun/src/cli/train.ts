@@ -8,7 +8,7 @@ import { inspectDataset } from "../finetune/inspect";
 import { runWatch } from "../finetune/watch";
 import type { JobEvent, JobRunner } from "../jobs/protocol";
 import type { CommandArgs } from "./args";
-import { publishModel, requireWriteToken, uploadDefaults, type ConvertDependencies } from "./convert";
+import { publishModel, requireWriteToken, uploadDefaults, type UploadDependencies } from "./publish-model";
 import { resolveModelAuto } from "./model-selection";
 import { boxLines, step, style } from "./terminal";
 import { mlxBunHome, modelShortName, openRegistry, storagePath } from "../storage/paths";
@@ -249,8 +249,8 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
 export interface FuseDependencies {
   registry(): ModelRegistry;
   /** The Hub write token and push behind `--upload-repo`, as convert's. */
-  credentials: ConvertDependencies["credentials"];
-  publish: ConvertDependencies["publish"];
+  credentials: UploadDependencies["credentials"];
+  publish: UploadDependencies["publish"];
   /** Storage root for the default output (MLX_BUN_HOME). */
   root(): string;
   fuse: typeof fuseAdapter;

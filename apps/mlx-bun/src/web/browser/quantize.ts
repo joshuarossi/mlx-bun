@@ -76,7 +76,7 @@ export function createQuantizeController() {
     const d = await api("/api/quantize/inspect", { method: "POST", body: { model_id: id } }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
     if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not inspect this model") + "</div>"; return; }
-    // inspectModel returns support: boolean (src/quantize/job.ts); size_gb
+    // inspectModel returns support: boolean (packages/module-quantize/src/inspect.ts); size_gb
     // can be 0 when a direct path bypasses the registry — hide it then.
     const supported = d.support === true;
     const cls = supported ? "ok" : "err";

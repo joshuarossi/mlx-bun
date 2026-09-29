@@ -3,10 +3,19 @@ import { makeEmit } from "../jobs/events";
 import { runtimeFlag, runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { JobRunner } from "../jobs/protocol";
 
-async function resolveRunner(kind: string): Promise<JobRunner> {
-  if (kind === "quantize") return (await import("../quantize/job")).createQuantizeRunner();
-  if (kind === "finetune") return (await import("../finetune/job")).createFinetuneRunner();
-  throw new Error(`no runner registered for kind "${kind}"`);
+/** A job's runner and what to release after it: this app's own kinds, else the installed module that registered the kind. */
+async function resolveRunner(kind: string): Promise<{ runner: JobRunner; release?(): Promise<void> }> {
+  if (kind === "finetune") return { runner: (await import("../finetune/job")).createFinetuneRunner() };
+  const [{ installedModules }, { loadModules }, { createHostServices }] = await Promise.all([
+    import("../modules"), import("@mlx-bun/app-host"), import("@mlx-bun/app-services") ]);
+  const [owner] = await installedModules(manifest => manifest.jobs?.some(job => job.kind === kind) ?? false);
+  if (!owner) throw new Error(`no runner registered for kind "${kind}"`);
+  // The child activates only the module that owns the kind, over the services a job needs; it submits no jobs of its own.
+  const host = createHostServices({ log() {} });
+  const loaded = await loadModules([owner], { services: { catalog: host.bindings.catalog, storage: host.bindings.storage,
+    jobs: () => ({ submit: () => Promise.reject(new Error("a job child submits no jobs")), get: async () => undefined, list: async () => [],
+      cancel: async () => {}, events: () => (async function* () {})() }) } });
+  return { runner: loaded.jobs.get(kind)!.runner as unknown as JobRunner, release: async () => { try { await loaded.stop(); } finally { await host.whisper.close(); } } };
 }
 
 /** The job host spawns this child as the leader of its own process group
@@ -61,21 +70,25 @@ export async function runJobEntry(jobId = process.argv[2]): Promise<number> {
     return 1;
   }
 
+  let release: (() => Promise<void>) | undefined;
   try {
-    const runner = await resolveRunner(row.kind);
-    const result = await runner(emit, config);
+    const resolved = await resolveRunner(row.kind);
+    release = resolved.release;
+    const result = await resolved.runner(emit, config);
     const out = result?.outputPath;
     if (out) store.setOutputPath(jobId, out);
     store.setProgress(jobId, 1);
     store.setStatus(jobId, "done", { endedAt: nowIso() });
     emit({ type: "done", ts: Date.now(), output_dir: out ?? row.output_path ?? undefined });
     store.close();
+    await release?.().catch(() => {});
     return 0;
   } catch (e) {
     const error = jobError(e);
     store.setStatus(jobId, "failed", { error, endedAt: nowIso() });
     emit({ type: "failed", error, ts: Date.now() });
     store.close();
+    await release?.().catch(() => {});
     return 1;
   }
 }

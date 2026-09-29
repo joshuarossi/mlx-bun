@@ -1,7 +1,10 @@
 // The `jobs` core service over this app's job host and store: what a module's
-// job runners run on. A module submits by kind; the runner the loaded module
-// declared for it runs as an in-process task, recorded in the same job store
-// (and streamed by the same `/api/jobs` routes) as every other job.
+// job runners run on. A module submits by kind and the loaded module's runner
+// spec decides how it runs, recorded in the same job store (and streamed by
+// the same `/api/jobs` routes) as every other job: a `task` runs in this
+// process; a `process` runs as a child that stops with its parent, under the
+// host's execution lease (the child activates the module itself,
+// `cli/job-entry.ts`).
 import type { JobEmit, JobEvent, JobRecord, JobRunner, JobRunnerSpec, JobService } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { JobStore } from "./db";
@@ -15,7 +18,10 @@ export type JobRunners = ReadonlyMap<string, { readonly spec: JobRunnerSpec; rea
 export interface JobTasks {
   ensureStore(): JobStore;
   submitTask(kind: string, config: Record<string, unknown>, runner: AppJobRunner, outputPath?: string): { jobId: string };
-  cancelTask(jobId: string): void;
+  cancelTask(jobId: string): Promise<void>;
+  /** Queue a child process for the kind under the host's execution lease. */
+  submit(kind: string, config: Record<string, unknown>, outputPath?: string, scratchDir?: string): { jobId: string };
+  cancelProcess(jobId: string): Promise<void>;
 }
 
 export interface AppJobService extends JobService {
@@ -39,7 +45,13 @@ export function createJobService(host: JobTasks, options: JobServiceOptions = {}
     async submit(submission) {
       const registered = runners.get(submission.kind);
       if (!registered) throw new Error(`no installed module runs job kind "${submission.kind}"`);
-      if (registered.spec.isolation !== "task") throw new Error(`job kind "${submission.kind}" runs as a ${registered.spec.isolation}; this host runs task jobs only`);
+      const { isolation, gpu } = registered.spec;
+      if (isolation === "process") {
+        // The host's children run under its execution lease, so no model generates meanwhile.
+        if (gpu !== "exclusive") throw new Error(`job kind "${submission.kind}": this host runs process jobs only with the exclusive GPU lease`);
+        const { jobId } = host.submit(submission.kind, { ...submission.config }, submission.outputPath, submission.scratchDir);
+        return recordOf(store().get(jobId)!);
+      }
       // The module's runner speaks the contract's event type; the store records every event the same way.
       const exclusive = registered.spec.gpu === "exclusive" && options.acquire;
       const run: AppJobRunner = async (emit, config, signal) => {
@@ -57,7 +69,7 @@ export function createJobService(host: JobTasks, options: JobServiceOptions = {}
       // The store's newest-first window; a status filter applies within it.
       return store().recent(1000, filter?.kind).filter(row => !filter?.status || row.status === filter.status).map(recordOf);
     },
-    async cancel(id) { host.cancelTask(id); },
+    async cancel(id) { await Promise.all([host.cancelTask(id), host.cancelProcess(id)]); },
     events(id, signal) { return tailJob(store(), id, { follow: true, ...(signal ? { signal } : {}) }) as AsyncIterable<JobEvent>; },
   };
 }

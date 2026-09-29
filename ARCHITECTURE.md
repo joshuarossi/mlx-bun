@@ -166,10 +166,11 @@ host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
 
-`jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes; `quantize/`
-owns quantization job policy and consumes jobs contracts plus public libraries.
-The CLI composes producers and child entry paths, so jobs infrastructure imports
-neither producer implementations nor engine internals. HTTP adapters consume
+`jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes. Quantization
+job policy and the `convert` verb are the quantize module's (`@mlx-bun/module-quantize`), which
+consumes the `jobs`, `storage` and `catalog` services and the public libraries. The CLI composes
+child entry paths (a job child activates the module that registered its kind), so jobs
+infrastructure imports neither producer implementations nor engine internals. HTTP adapters consume
 these domains from `server/`. Dataset generation is the datasets module's
 (`@mlx-bun/module-datasets`): its requests reach the served model through the `modelHost`
 service and enter the server scheduler without holding an exclusive execution lease.
@@ -270,10 +271,14 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets) activate in the persistent state, beside the job store, with
-`jobs` (the job host's task runners), `storage` and a `modelHost` that leases the serving
-host's model for `generate` over its own HTTP surface (so the `--isolate` parent, which
-loads no model, runs them too); the others activate with the model host.
+require `jobs` (datasets, quantize) activate in the persistent state, beside the job store, with
+`jobs` (the job host's `task` runners in this process, and `process` runners as a child that
+stops with its parent under the execution lease, which activates the owning module itself),
+`storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
+its own HTTP surface (so the `--isolate` parent, which loads no model, runs them too); the
+others activate with the model host. A one-shot CLI verb (`convert`) activates only its own
+module over a private, throwaway job store, and a translated spelling of a verb (`mlx-bun.convert`)
+reaches it through the same verb table.
 
 **Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 
