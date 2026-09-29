@@ -20,7 +20,9 @@
 // GQA is handled inside the kernel (hk_idx = hv_idx / (Hv/Hk)); q/k stay at Hk.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { Vjp } from "@mlx-bun/mlx/autograd";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
+import { CustomVjp } from "@mlx-bun/mlx/custom-vjp";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -155,28 +157,14 @@ export function computeG(aLog: MlxArray, a: MlxArray, dtBias: MlxArray): MlxArra
   return _computeGFn.apply([aLog, a, dtBias])[0]!;
 }
 
-/** gated_delta_update (use_kernel path): returns [y, newState].
- *   q, k: [B, S, Hk, Dk] bf16   v: [B, S, Hv, Dv] bf16
- *   a, b: [B, S, Hv] bf16        aLog, dtBias: [Hv]
- *   state: [B, Hv, Dv, Dk] f32 (or null → zeros) */
-export function gatedDeltaUpdate(
-  q: MlxArray, k: MlxArray, v: MlxArray, a: MlxArray, b: MlxArray,
-  aLog: MlxArray, dtBias: MlxArray, state: MlxArray | null, mask: MlxArray | null = null,
+/** The kernel launch shared by the inference and training entries.
+ *  q, k: [B, T, Hk, Dk]   v: [B, T, Hv, Dv]   g, beta: [B, T, Hv]
+ *  state: [B, Hv, Dv, Dk] f32 (never null here)   mask: [B, T] or null */
+function launchRecurrence(
+  q: MlxArray, k: MlxArray, v: MlxArray, g: MlxArray, beta: MlxArray, stateIn: MlxArray, mask: MlxArray | null,
 ): [MlxArray, MlxArray] {
-  const [B, , Hk, Dk] = q.shape as [number, number, number, number];
+  const [B, T, Hk, Dk] = q.shape as [number, number, number, number];
   const [, , Hv, Dv] = v.shape as [number, number, number, number];
-
-  const beta = ops.sigmoid(b); // bf16
-  const g = computeG(aLog, a, dtBias); // f32
-
-  let stateIn = state;
-  let ownState = false;
-  if (!stateIn) {
-    stateIn = ops.zeros([B, Hv, Dv, Dk], Dtype.float32);
-    ownState = true;
-  }
-
-  const T = q.shape[1]!;
   const tArr = MlxArray.fromInt32(new Int32Array([T]), [1]);
   const inputs = [q, k, v, g, beta, stateIn, tArr];
   if (mask) inputs.push(mask);
@@ -190,9 +178,129 @@ export function gatedDeltaUpdate(
     templateInts: { Dk, Dv, Hk, Hv },
     templateDtypes: { InT: q.dtype, StT: Dtype.float32 },
   });
+  tArr.dispose();
+  return [y!, stateOut!];
+}
+
+/** [B, T, Hk, D] in any float dtype -> float32 [B, T, Hv, D], head hv reading
+ *  key head hv / (Hv / Hk): the kernel's GQA mapping. */
+function float32PerValueHead(x: MlxArray, Hv: number): MlxArray {
+  const [B, T, Hk, D] = x.shape as [number, number, number, number];
+  using wide = x.astype(Dtype.float32);
+  using expanded = ops.expandDims(wide, 3);
+  using tiled = ops.broadcastTo(expanded, [B, T, Hk, Hv / Hk, D]);
+  return ops.reshape(tiled, [B, T, Hv, D]);
+}
+
+/** Position `t` of `x` [B, T, ...] with the T axis dropped. */
+function atPosition(x: MlxArray, t: number): MlxArray {
+  const start = x.shape.map((_, axis) => (axis === 1 ? t : 0));
+  const stop = x.shape.map((size, axis) => (axis === 1 ? t + 1 : size));
+  using view = x.slice(start, stop);
+  return ops.reshape(view, x.shape.filter((_, axis) => axis !== 1));
+}
+
+/** The kernel's recurrence written in differentiable ops, float32 throughout
+ *  like the kernel (mlx-lm's `gated_delta_ops`, with the state kept in float32).
+ *  primals = [q, k, v, g, beta, state]; returns [y (q dtype), state (f32)].
+ *  Only the training backward runs it (forward values come from the kernel). */
+function recurrenceOps(primals: MlxArray[]): MlxArray[] {
+  const [q, k, v, g, beta, state0] = primals as [MlxArray, MlxArray, MlxArray, MlxArray, MlxArray, MlxArray];
+  const Hv = v.shape[2]!;
+  const T = q.shape[1]!;
+  using q32 = float32PerValueHead(q, Hv);
+  using k32 = float32PerValueHead(k, Hv);
+  using v32 = v.astype(Dtype.float32);
+  using beta32 = beta.astype(Dtype.float32);
+  let state = state0.astype(Dtype.float32);
+  const ys: MlxArray[] = [];
+  try {
+    for (let t = 0; t < T; t++) {
+      using qt = atPosition(q32, t); // [B, Hv, Dk]
+      using kt = atPosition(k32, t);
+      using vt = atPosition(v32, t); // [B, Hv, Dv]
+      using bt = atPosition(beta32, t); // [B, Hv]
+      using gt = atPosition(g, t);
+      using kRow = ops.expandDims(kt, 2); // [B, Hv, 1, Dk]
+      using qRow = ops.expandDims(qt, 2);
+      using decay = ops.reshape(gt, [...gt.shape, 1, 1]);
+      using decayed = ops.mul(state, decay);
+      using kvProduct = ops.mul(decayed, kRow);
+      using kvMem = ops.sumAxis(kvProduct, -1, false); // [B, Hv, Dv]
+      using residual = ops.sub(vt, kvMem);
+      using betaCol = ops.expandDims(bt, 2);
+      using delta = ops.mul(residual, betaCol);
+      using deltaCol = ops.expandDims(delta, 3); // [B, Hv, Dv, 1]
+      using update = ops.mul(kRow, deltaCol);
+      const next = ops.add(decayed, update);
+      state.dispose();
+      state = next;
+      using readout = ops.mul(state, qRow);
+      ys.push(ops.sumAxis(readout, -1, false));
+    }
+    using stacked = ops.stackAxis(ys, 1); // [B, T, Hv, Dv]
+    return [stacked.astype(q.dtype), state];
+  } catch (error) {
+    state.dispose();
+    throw error;
+  } finally {
+    for (const y of ys) y.dispose();
+  }
+}
+
+// Forward = the kernel above, so a training forward is bit-identical to an
+// inference forward. The kernel is a CustomKernel with no vjp, so the backward
+// recomputes the recurrence in `recurrenceOps` and differentiates that.
+// Module-cached (never disposed): the closures read every shape from their
+// arguments and must outlive each value_and_grad apply.
+let differentiableRecurrence: CustomVjp | null = null;
+function getDifferentiableRecurrence(): CustomVjp {
+  return differentiableRecurrence ??= new CustomVjp(
+    ([q, k, v, g, beta, state]) => launchRecurrence(q!, k!, v!, g!, beta!, state!, null),
+    (primals, cotangents) => {
+      const backward = new Vjp(recurrenceOps, 2);
+      try {
+        const { outputs, vjps } = backward.apply(primals, cotangents);
+        for (const output of outputs) output.dispose();
+        return vjps;
+      } finally {
+        backward.dispose();
+      }
+    },
+  );
+}
+
+/** gated_delta_update (use_kernel path): returns [y, newState].
+ *   q, k: [B, S, Hk, Dk] bf16   v: [B, S, Hv, Dv] bf16
+ *   a, b: [B, S, Hv] bf16        aLog, dtBias: [Hv]
+ *   state: [B, Hv, Dv, Dk] f32 (or null → zeros)
+ *  `differentiable` (unpadded training forwards) returns the same values and
+ *  attaches a backward, so an enclosing value_and_grad can differentiate
+ *  through the recurrence with respect to q, k, v, a, b and the state. */
+export function gatedDeltaUpdate(
+  q: MlxArray, k: MlxArray, v: MlxArray, a: MlxArray, b: MlxArray,
+  aLog: MlxArray, dtBias: MlxArray, state: MlxArray | null, mask: MlxArray | null = null,
+  differentiable = false,
+): [MlxArray, MlxArray] {
+  if (differentiable && mask) throw new Error("gatedDeltaUpdate: the differentiable recurrence takes no padding mask");
+  const [B, , Hk, Dk] = q.shape as [number, number, number, number];
+  const [, , Hv, Dv] = v.shape as [number, number, number, number];
+
+  const beta = ops.sigmoid(b); // bf16
+  const g = computeG(aLog, a, dtBias); // f32
+
+  let stateIn = state;
+  let ownState = false;
+  if (!stateIn) {
+    stateIn = ops.zeros([B, Hv, Dv, Dk], Dtype.float32);
+    ownState = true;
+  }
+
+  const [y, stateOut] = differentiable
+    ? getDifferentiableRecurrence().apply([q, k, v, g, beta, stateIn]) as [MlxArray, MlxArray]
+    : launchRecurrence(q, k, v, g, beta, stateIn, mask);
   beta.dispose();
   g.dispose();
-  tArr.dispose();
   if (ownState) stateIn.dispose();
-  return [y!, stateOut!];
+  return [y, stateOut];
 }

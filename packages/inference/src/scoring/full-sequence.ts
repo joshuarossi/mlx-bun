@@ -22,41 +22,10 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../kernels/attention/masks";
 import { type Cache, type Mask } from "../contracts/mlx/cache";
 import { SSMCache } from "../state/ssm";
-import { TrainingCache } from "../state/training-cache";
+import { TrainingCache, TrainingSSMCache } from "../state/training-cache";
 import type { RuntimeModel } from "../models/factory";
 
-export { TrainingCache };
-
-/** Stateless DeltaNet stand-in (same re-runnability contract as
- *  TrainingCache): state WRITES are discarded immediately, so a gradient-
- *  checkpoint recompute re-enters with the identical null-state conditions;
- *  reads always yield null (zeros inside the kernel) — a full-sequence
- *  forward from t=0, exactly the training/perplexity semantics. Before this
- *  existed, qwen3_5 routed its DeltaNet layers into plain TrainingCache and
- *  threw on the missing conv/recurrent/advance surface (the recorded
- *  "mlx-bun perplexity cannot score qwen3_5" gap). */
-export class TrainingSSMCache implements Cache {
-  /** Training-only adapter; never admitted, merged, or persisted. */
-  signature(): string { return "train:training-ssm"; }
-  offset = 0;
-  specRound: null = null;
-  get conv(): MlxArray | null { return null; }
-  set conv(v: MlxArray | null) { v?.dispose(); }
-  get recurrent(): MlxArray | null { return null; }
-  set recurrent(v: MlxArray | null) { v?.dispose(); }
-  advance(_n: number): void { /* offset pinned at 0 */ }
-  rowOffset(_i: number): number { return 0; }
-  updateAndFetch(): [MlxArray, MlxArray] {
-    throw new Error("TrainingSSMCache: DeltaNet layers do not use the KV path");
-  }
-  makeMask(_N: number, _w: number | null): Mask {
-    return { mode: "", arr: null }; // ssm_mask is None at B=1 (SSMCache parity)
-  }
-  state(): MlxArray[] { return []; }
-  isTrimmable(): boolean { return true; }
-  trim(_n: number): void { /* stateless */ }
-  dispose(): void { /* owns no arrays */ }
-}
+export { TrainingCache, TrainingSSMCache };
 
 /** Run a full-sequence forward for training.
  *  @param ids int32 array [B, L].
@@ -84,7 +53,7 @@ export function trainForwardHidden(
       return model.forwardHidden(ids, cache);
     } finally {
       for (const c of realCache) c.dispose();
-      for (const c of cache) (c as BatchedMaskCache).disposeOwnMask();
+      for (const c of cache) if (c instanceof BatchedMaskCache) c.disposeOwnMask();
     }
   }
 
@@ -209,7 +178,9 @@ class BatchedMaskCache implements Cache {
 
 /** Wrap each real cache in a BatchedMaskCache, precomputing one padding-aware
  *  mask per distinct window. Caches without a sliding window get the
- *  full-attention (null) mask. */
+ *  full-attention (null) mask. Recurrent layers get the stateless
+ *  TrainingSSMCache instead: rows are right-padded and the recurrence is
+ *  causal, so padding never reaches a real position and needs no mask. */
 function wrapWithBatchedMask(
   realCache: Cache[],
   B: number,
@@ -220,7 +191,7 @@ function wrapWithBatchedMask(
   const distinct = new Set(windows);
   const store = new Map<number | null, MlxArray>();
   for (const w of distinct) store.set(w, buildBatchedPadMask(B, L, validLengths, w));
-  return realCache.map((c, i) => new BatchedMaskCache(c, windows[i]!, store));
+  return realCache.map((c, i) => c instanceof SSMCache ? new TrainingSSMCache() : new BatchedMaskCache(c, windows[i]!, store));
 }
 
 /** The sliding-window size a cache enforces, or null for full attention.
