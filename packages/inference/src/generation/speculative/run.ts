@@ -5,9 +5,8 @@
 // from the oracle venv): per round, draft n tokens from the DraftSource, run
 // ONE target forward over [pending, ...drafts] (n+1 positions), sample the
 // target per position over the BATCHED lm-head logits (one matmul — matches
-// both oracles; see packages/inference/src/generation/speculative/generate.ts
-// header on why this legitimately
-// diverges from stock decode at bf16 knife-edges), accept the longest prefix
+// both oracles; this legitimately diverges from stock decode at bf16
+// knife-edges), accept the longest prefix
 // where target token == draft token (exact token-match acceptance, NOT
 // distribution-level rejection sampling), emit the correction (or bonus)
 // token, and trim the target caches by the rejected count.
@@ -554,8 +553,8 @@ async function specRunInner(
       // stop — the target caches are about to be disposed). commit takes
       // ownership of vCtxML (DSpark grows H_ctx by the accepted window; the
       // others ignore it). The next anchor = the target hidden at the emitted
-      // position (the assistant borrows it; generate.ts:230 pattern — the slice
-      // outlives its parent's dispose).
+      // position (the assistant borrows it; the slice outlives its parent's
+      // dispose).
       if (!stop) {
         // The verify window kept positions 0..kAccept (pending + accepted
         // drafts). Trimmable caches drop the rejected tail; recurrent caches
