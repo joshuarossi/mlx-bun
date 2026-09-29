@@ -271,6 +271,23 @@ test("queued persistence failure still joins the child before closing its store 
   await expect(host.close()).rejects.toBe(error);
 });
 
+test("in-process job rows keep main's ended_at and error formats", async () => {
+  const { store } = fresh();
+  const host = createJobHost({ entry: "unused", acquire: async () => ({ dispose() {} }), createStore: () => store });
+  stores.splice(stores.indexOf(store), 1); // The host owns this connection.
+  try {
+    const failed = host.submitTask("dataset", {}, async () => { throw new TypeError("bad input"); });
+    const done = host.submitTask("dataset", {}, async () => ({ outputPath: "/out" }));
+    const terminal = (id: string) => ["done", "failed"].includes(store.get(id)!.status);
+    await until(() => terminal(failed.jobId) && terminal(done.jobId));
+    expect(store.get(failed.jobId)).toMatchObject({ status: "failed", error: "TypeError: bad input" });
+    expect(store.get(done.jobId)).toMatchObject({ status: "done", output_path: "/out" });
+    // SQLite's datetime('now') format, which main's subprocess and in-process jobs both wrote.
+    for (const { jobId } of [failed, done]) expect(store.get(jobId)!.ended_at).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+    expect(await terminals(store, failed.jobId)).toMatchObject([{ type: "failed", error: "TypeError: bad input" }]);
+  } finally { await host.close(); }
+});
+
 test("job HTTP responses preserve rows, filters, missing IDs and SSE framing", async () => {
   const { store } = fresh(); const row = store.create("quantize", {});
   makeEmit(store, row.id, row.log_path)({ type: "stage", stage: "test", progress: 0.5 });

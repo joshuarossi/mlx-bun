@@ -12,6 +12,7 @@ import type { GenerationGateway } from "../engine/generation-gateway";
 import { planRequest, RequestOwnership } from "../server/request-plan";
 import { textPrompt } from "../server/text-prompt";
 import type { CommandArgs } from "./args";
+import { numericalPolicy } from "./numerical-policy";
 
 type InferenceCommand = "generate" | "embed";
 interface SelectedModel { path: string; repoId: string; }
@@ -96,15 +97,15 @@ function numeric(args: CommandArgs, name: string, input: { integer?: boolean; mi
 /** App CLI policy: raw generated text, greedy/full-precision defaults, no
  * model-author server sampling defaults or thinking/tool output filtering. */
 export function generateOptions(args: CommandArgs): { prompt: string; raw: boolean; options: GenerateOptions;
-  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme } {
+  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme; fusedSdpa: boolean } {
   const prompt = option(args, "prompt") ?? args.positionals[1];
   if (!prompt) throw new Error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
-  const kv = option(args, "kv-quant");
+  const { kv, fusedSdpa } = numericalPolicy(args);
   // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
   const turboQuant = kv === undefined ? null : parseTurboQuantScheme(kv);
   if (kv !== undefined && !turboQuant && !["off", "config", "4", "8"].includes(kv))
     throw new Error("--kv-quant must be off, config, 4, 8, or turbo[:k<bits>v<bits>]");
-  return { prompt, raw: args.values.raw === true,
+  return { prompt, raw: args.values.raw === true, fusedSdpa,
     kvQuant: turboQuant || kv === undefined ? undefined : kv === "4" || kv === "8" ? Number(kv) : kv as KvQuantOverride,
     ...(turboQuant ? { turboQuant } : {}),
     options: {
@@ -131,12 +132,11 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
   signal?.throwIfAborted();
   const model = await deps.resolve(command, args.positionals[0] ?? option(args, "query") ?? "");
   signal?.throwIfAborted();
-  // Main's decode route for generate: explicit --kv-quant config runs the fused
-  // quantized attention; every other choice (default, off, 4, 8, turbo) runs
-  // unfused. The policy is scoped to this command's load, bind, run and cleanup.
+  // Resolve the numerical policy once for this command's load, bind, run and
+  // cleanup. Embedding keeps its ambient policy.
   const scoped = (run: () => Promise<void>) => !generation ? run()
     : withRuntimeConfig(createRuntimeConfig({ ...runtimeConfig().values,
-      MLX_BUN_NO_FUSED_SDPA: generation.kvQuant === "config" ? "0" : "1" }), run);
+      MLX_BUN_NO_FUSED_SDPA: generation.fusedSdpa ? "0" : "1" }), run);
   return scoped(async () => {
     const context = await deps.load(model, generation?.options.maxTokens);
     let close: (() => void | Promise<void>) | undefined = () => context.dispose();

@@ -35,7 +35,47 @@ The process-wide settings an app applies (offload routing, the allocator limit,
 the runtime switches) are restored after its engine releases the model, on close
 and on startup failure, so a later app in the same process starts from what it
 found; offload restore only redirects routing and never unmaps borrowed weights.
-`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the model loads, before any request, under the directory's basename as its id; it becomes the default for requests without an `adapter` field, an explicit `adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad directory fails startup with `adapter mount failed: …` after releasing the model. The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces a three-step adapter with the fine-tune producer and serves with it. Main's speculative flags are restored with its validation: `--draft-model` resolves like the main model (a query never downloads) and its kind is auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min` (ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2. The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with ngram drafting and checks the speculation telemetry and exactness against a plain run. `--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size` (only alongside paging) sets the paged KV request default; Gemma4-family requests use the paged path and other families answer the typed capability error, never a hidden serial lane. Startup rejects paging combined with a loaded draft, per-layer KV quantization, or TurboQuant; bf16 and uniform KV4/KV8 remain supported. As main's server did, startup also rejects `--kv-quant turbo` when the model's full-attention head dimension is not one the TurboQuant codec encodes (`TURBOQUANT_HEAD_DIMS`), before any request, instead of failing each request in prefill. The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family outcomes.
+`serve` and `generate` accept numerical presets: `--l1` selects KV off
+and unfused SDPA; `--l2` selects model-config KV and fused SDPA, and wins if both
+are given. An explicit `--kv-quant` overrides the preset and sets the kernel
+default (fused for `config`, unfused otherwise); `--fused-sdpa on|off` overrides
+that default. The policy is resolved before model loading, including in isolated
+model workers, and restored on shutdown or startup failure.
+
+`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the
+model loads, before any request, under the directory's basename as its id; it
+becomes the default for requests without an `adapter` field, an explicit
+`adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad
+directory fails startup with `adapter mount failed: …` after releasing the
+model.
+The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces
+a three-step adapter with the fine-tune producer and serves with it.
+Main's speculative flags are restored with its validation: `--draft-model`
+resolves like the main model (a query never downloads) and its kind is
+auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
+mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min`
+(ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2.
+The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with
+ngram drafting and checks the speculation telemetry and exactness against a
+plain run.
+`--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size`
+(only alongside paging) sets the paged KV request default; Gemma4-family
+requests use the paged path and other families answer the typed capability
+error, never a hidden serial lane.
+Startup rejects paging combined with a loaded draft, per-layer KV quantization,
+or TurboQuant; bf16 and uniform KV4/KV8 remain supported.
+As main's server did, startup also rejects `--kv-quant turbo` when the model's
+full-attention head dimension is not one the TurboQuant codec encodes
+(`TURBOQUANT_HEAD_DIMS`), before any request, instead of failing each request in
+prefill.
+Startup, and `generate`, also reject a requested KV scheme the model's cache
+layers cannot take, since every request carries it: GLM-5.2's MLA cache takes no
+KV scheme, so `--kv-quant 4|8|turbo` (and `config` or `--l2` when a
+`kv_config.json` exists) is refused there; main accepted the option and served GLM-5.2 in bf16
+while reporting the requested scheme.
+`--kv-quant config` without the model's `kv_config.json` stays bf16.
+The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family
+outcomes.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
@@ -445,6 +485,19 @@ revision `664aabaed233c653f82716d8dc822234d0091f78`.
 It never downloads weights; missing native libraries or an invalid supplied
 checkpoint fail. This checks HTTP/Pi behavior, not quantize jobs, a compiled-binary
 lifecycle, numerical parity, or performance.
+
+The opt-in [paged KV test](tests/engine/paged-kv.test.ts) also covers Gemma4
+HTTP cancellation for each paged reader: the gathered reader and the direct
+reader that `MLX_BUN_PAGED_ATTN=1` selects (read, like every `MLX_BUN_` switch,
+into the runtime snapshot from the environment). A client leaves a greedy
+`/v1/completions` stream mid-generation; the server observes the disconnect, the
+row stops storing tokens before its natural end, and the scheduler drains. The
+same server then answers another prompt and the abandoned one exactly as a fresh
+paged server with the same reader does, and the frames the client received equal
+a control stopped (`max_tokens`) at the token that published the last of them.
+Every paged cache in the case uses the selected reader; both servers run without
+the RAM prompt cache so every compared request prefills cold. Run with
+`cd apps/mlx-bun && MLX_BUN_COMPILED_GEMMA_E4B=<cached Gemma4 snapshot directory> bun test tests/engine/paged-kv.test.ts -t "reader"`.
 
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
 Responses-history counters for `GET /stats`; `GET /fit` uses the public inference
@@ -922,11 +975,20 @@ upload, cancellation, the child owner (complete-result publish, a SIGTERM-ignori
 and the spawned CLI with native MLX blocked; they do not quantize real weights.
 
 Composition injects the engine execution lease. A job drains active inference
-and holds that lease until its child exits and output streams finish; inference
-then resumes. As in main's direct-process server, resident model weights and
-caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
-admission waits, terminates active children, and awaits them before closing the
-store and engine. Opening the app does not create the job database until a job
+and holds that lease until its child's process group is gone and output streams
+finish; inference then resumes. The child leads its own process group, so
+descendants that outlive it are stopped (SIGTERM, then SIGKILL after 3 s) before
+the job counts as joined. The wait is bounded: a process still alive 3 s after
+SIGKILL, or one outside the group still holding the output after another 3 s, is
+logged and left behind, and the lease is released. Terminal signals no longer reach a group leader, so the
+parent holds a pipe on the child's stdin and the child stops its group when that
+pipe ends (`MLX_BUN_JOB_PARENT_PIPE`, set by the runner). A row the runner cannot
+read after admission fails the job before anything is spawned. As in main's
+direct-process server, resident model weights and caches remain allocated while
+the child runs. Shutdown stops queued jobs, aborts admission waits, terminates
+the active child's process group, and awaits all of it (with the same bound) before closing the store
+and engine. Every job row records main's `ended_at` format
+(`YYYY-MM-DD HH:MM:SS`, UTC) and `Name: message` errors, in-process dataset jobs included. Opening the app does not create the job database until a job
 route is used. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
@@ -945,7 +1007,9 @@ directory. [Training CLI tests](tests/train-cli.test.ts) use injected
 dependencies and a spawned CLI with native MLX blocked.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
-paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
+paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage;
+[process-group tests](tests/jobs/process-group.test.ts) use real child processes
+with descendants holding the job's output.
 [Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
 and output naming with an injected numerical operation. They do not run or
 establish parity for actual checkpoint quantization.
@@ -969,6 +1033,23 @@ boundary, and, with a cached bf16 snapshot named by
 `MLX_BUN_APP_TEST_BF16_MODEL`, a `convert` interrupted after its durable job log
 reaches the Probing/Sensitivity stage and a complete uniform conversion whose
 output reloads and generates. It downloads nothing.
+
+A further case in the same file consumes finished fine-tune outputs as
+artifacts, with the RAM prompt cache off so every compared request prefills
+cold. Two SFT jobs train on sentences written at run time. Each finished
+adapter (not a checkpoint), and their merge through `POST /api/finetune/merge`,
+is mounted with `POST /v1/adapters` and selected per request. A selected
+adapter changes the greedy `/v1/completions` text; requests without one, and
+requests after `DELETE /v1/adapters/<id>`, return the base choice exactly, text
+and per-token logprobs, and an unmounted id is refused. A fresh process mounting
+the same two directories reproduces both adapters' choices exactly.
+`mlx-bun fuse` then folds one adapter into the base. The output keeps
+`config.json`, the tokenizer files, the tensor inventory (names, dtypes, shapes)
+and every tensor outside the folded modules byte-identical, changes only folded
+modules, and loads with `serve` and generates. Its output is not compared with
+the mounted adapter: `fuse` re-quantizes folded modules with their source spec,
+so the fused model and the adapter are not bit-exact by contract. Run with
+`cd apps/mlx-bun && MLX_BUN_APP_TEST_MODEL=<cached snapshot directory> bun test tests/engine/managed-jobs.test.ts -t "finished fine-tune outputs"`.
 
 ## Dataset jobs
 
@@ -1211,7 +1292,9 @@ command into `bin`. Preparation checks archive members; release verification
 must additionally check that its binary version matches the archive filename.
 Preparation does not install, sign, notarize, publish, or
 update the tap. [Installer tests](tests/install.test.ts) use local archives and
-temporary homes, including reinstall and failure paths, without network access.
+temporary homes, including reinstall, failure, and every refusal path (usage,
+tag, platform, archive layout, executable and version, command destination,
+app-root and `current` ownership), without network access.
 
 ## Release preparation
 
