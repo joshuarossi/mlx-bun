@@ -1,6 +1,6 @@
-import { JobStore } from "../jobs/db";
+import { jobError, JobStore, nowIso } from "../jobs/db";
 import { makeEmit } from "../jobs/events";
-import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { runtimeFlag, runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { JobRunner } from "../jobs/protocol";
 
 async function resolveRunner(kind: string): Promise<JobRunner> {
@@ -9,8 +9,19 @@ async function resolveRunner(kind: string): Promise<JobRunner> {
   throw new Error(`no runner registered for kind "${kind}"`);
 }
 
-function nowIso(): string {
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
+/** The job host spawns this child as the leader of its own process group
+ * (jobs/runner.ts), which the terminal's signals no longer reach, and holds a
+ * pipe on its stdin for the child's life. The pipe's end means the host is
+ * gone: the child then stops itself and everything it started, as the host's
+ * own shutdown would have (SIGTERM to the group). */
+export function stopWithParent(stdin: ReadableStream<Uint8Array>): void {
+  void (async () => {
+    const reader = stdin.getReader();
+    try { while (!(await reader.read()).done) { /* nothing is sent on this pipe */ } }
+    catch { /* a broken pipe is the host's end too */ }
+    try { process.kill(-process.pid, "SIGTERM"); }
+    catch { process.kill(process.pid, "SIGTERM"); } // not a group leader
+  })();
 }
 
 export async function runJobEntry(jobId = process.argv[2]): Promise<number> {
@@ -18,6 +29,8 @@ export async function runJobEntry(jobId = process.argv[2]): Promise<number> {
     console.error("usage: bun job-entry.ts <jobId>");
     return 2;
   }
+
+  if (runtimeFlag("MLX_BUN_JOB_PARENT_PIPE", false)) stopWithParent(Bun.stdin.stream());
 
   // Own fresh connection — overrides come from env so a spawned child finds
   // the same DB/logs the parent used (tests set these to a tmp dir).
@@ -59,7 +72,7 @@ export async function runJobEntry(jobId = process.argv[2]): Promise<number> {
     store.close();
     return 0;
   } catch (e) {
-    const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    const error = jobError(e);
     store.setStatus(jobId, "failed", { error, endedAt: nowIso() });
     emit({ type: "failed", error, ts: Date.now() });
     store.close();
