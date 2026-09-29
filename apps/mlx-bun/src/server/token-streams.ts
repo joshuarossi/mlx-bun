@@ -4,10 +4,8 @@
 // sequences), ThinkingTagSplitter (<think> markup → reasoning deltas).
 import type { ToolDefinition } from "@mlx-bun/inference/input";
 import type { LoadedTokenizer } from "@mlx-bun/inference/input";
-import {
-  CHANNEL_END, CHANNEL_START, parseGeneratedToolCalls, parseToolCalls,
-  TOOL_CALL_END, TOOL_CALL_START,
-} from "@mlx-bun/inference/input/tool-call";
+import type { SentinelTokens } from "@mlx-bun/inference/input";
+import { parseGeneratedToolCalls, parseToolCalls } from "@mlx-bun/inference/input/tool-call";
 
 export interface OpenAIToolCall {
   id: string;
@@ -15,28 +13,26 @@ export interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
-export type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
+export type ToolStreamMode = "sentinel-tokens" | "plain" | "buffered-text";
 
-/** Pick the stream router for a model family. The token-id sentinel router is
- *  Gemma-4-ONLY: ids 48/49 (<|tool_call>/<tool_call|>) and 100/101
- *  (<|channel>/<channel|>) are special tokens of that tokenizer family
- *  (packages/inference/src/input/tool-call.ts). On every other tokenizer — MiniCPM5, Qwen3/3.5, and
- *  the Tier-0 generics (llama, qwen2, phi3, …) — those ids are ordinary
- *  low-id vocab, so the sentinel router would silently swallow output into a
- *  phantom tool/reasoning segment. Everyone else parses tool calls from
- *  decoded text (buffered-text; parseGeneratedToolCalls covers the
- *  OpenAI-JSON <tool_call>, Qwen <function=…>, and MiniCPM5 <function name=…>
- *  shapes) when tools are present, and streams plain otherwise. Models whose
- *  markup isn't covered fail soft: the markup stays in content. */
-export function selectToolStreamMode(modelType: string, hasTools: boolean): ToolStreamMode {
-  if (modelType.startsWith("gemma4")) return "gemma-sentinel";
+/** Pick the stream router. A model whose profile declares sentinel tokens
+ *  (special tokens delimiting tool calls and the reasoning channel, resolved
+ *  against its tokenizer) is routed at the token level: on any other tokenizer
+ *  the same ids would be ordinary vocab, so a router must never guess them.
+ *  Everyone else parses tool calls from decoded text (buffered-text;
+ *  parseGeneratedToolCalls covers the OpenAI-JSON <tool_call>, Qwen
+ *  <function=…>, and MiniCPM5 <function name=…> shapes) when tools are present,
+ *  and streams plain otherwise. Models whose markup isn't covered fail soft:
+ *  the markup stays in content. */
+export function selectToolStreamMode(sentinels: SentinelTokens | null | undefined, hasTools: boolean): ToolStreamMode {
+  if (sentinels) return "sentinel-tokens";
   return hasTools ? "buffered-text" : "plain";
 }
 
-/** Routes generated tokens. Gemma uses family-specific sentinel token ids;
- *  MiniCPM5 and other text-template models use decoded-text parsing so
- *  ordinary tokenizer ids like "<" are never swallowed globally. Exported for
- *  unit tests (gemma-channel reasoning split). */
+/** Routes generated tokens. Models declaring sentinel tokens are routed by id;
+ *  text-template models use decoded-text parsing so ordinary tokenizer ids
+ *  like "<" are never swallowed globally. Exported for unit tests
+ *  (reasoning-channel split). */
 export class ToolAwareStream {
   readonly #decoder: StreamDecoder;
   #inTool = false;
@@ -50,9 +46,9 @@ export class ToolAwareStream {
   #textToolParseFailed = false;
   readonly toolSegments: number[][] = [];
 
-  /** Gemma reasoning-channel state (gemma-sentinel mode). The model wraps
-   *  chain-of-thought as `<|channel>thought\n…<channel|>` using special tokens
-   *  100/101 that the content decoder strips, so reasoning is captured here at
+  /** Reasoning-channel state (sentinel-tokens mode). The model wraps
+   *  chain-of-thought as `<|channel>thought\n…<channel|>` using the channel
+   *  sentinel tokens, which the content decoder strips, so reasoning is captured here at
    *  the token level. A SEPARATE decoder keeps the reasoning byte-stream's
    *  incremental state independent of content's. The `thought` channel-name
    *  word is stripped before the reasoning text (mlx-lm's think-start marker
@@ -77,7 +73,10 @@ export class ToolAwareStream {
      *  parser refuses is a request whose template rendering disagreed with
      *  what the model emits, so its strict rows are disarmed. */
     private readonly onParseFailure?: () => void,
+    /** The resolved sentinel ids; required in sentinel-tokens mode. */
+    private readonly sentinels?: SentinelTokens | null,
   ) {
+    if (mode === "sentinel-tokens" && !sentinels) throw new Error("sentinel-tokens routing needs the resolved sentinel ids");
     this.#decoder = new StreamDecoder(tokenizer, mode !== "buffered-text");
     this.#channelDecoder = new StreamDecoder(tokenizer, true);
   }
@@ -100,7 +99,7 @@ export class ToolAwareStream {
     return rest;
   }
 
-  /** Drain reasoning captured since the last call (gemma-channel thinking). */
+  /** Drain reasoning captured since the last call (channel-token thinking). */
   takeReasoning(): string {
     const r = this.#reasoning;
     this.#reasoning = "";
@@ -138,7 +137,7 @@ export class ToolAwareStream {
 
   /** Returns the content text delta for this token ("" while capturing). */
   push(token: number): string {
-    if (this.mode !== "gemma-sentinel") {
+    if (this.mode !== "sentinel-tokens") {
       this.#text += this.#decoder.push(token);
       if (this.mode === "plain") {
         const out = this.#text.slice(this.#sent);
@@ -148,7 +147,7 @@ export class ToolAwareStream {
       return this.#textDelta();
     }
     if (this.#inTool) {
-      if (token === TOOL_CALL_END) {
+      if (token === this.sentinels!.toolCallEnd) {
         this.#inTool = false;
         this.toolSegments.push(this.#toolTokens);
         this.#toolTokens = [];
@@ -159,11 +158,11 @@ export class ToolAwareStream {
     }
     // Reasoning channel: tokens between <|channel> and <channel|> are thought,
     // captured to #reasoning (drained via takeReasoning), never content. An
-    // empty block (<|channel>thought\n<channel|>, emitted by larger Gemmas even
+    // empty block (<|channel>thought\n<channel|>, emitted by some checkpoints even
     // with thinking off) yields only the "\n" as reasoning (mlx-lm parity) and
     // leaks nothing into content.
     if (this.#inChannel) {
-      if (token === CHANNEL_END) {
+      if (token === this.sentinels!.channelEnd) {
         this.#inChannel = false;
         this.#reasoning += this.#feedChannel(this.#channelDecoder.flush());
       } else {
@@ -171,13 +170,13 @@ export class ToolAwareStream {
       }
       return "";
     }
-    if (token === CHANNEL_START) {
+    if (token === this.sentinels!.channelStart) {
       this.#inChannel = true;
       this.#channelNameDone = false;
       this.#channelNamePending = "";
       return "";
     }
-    if (token === TOOL_CALL_START) {
+    if (token === this.sentinels!.toolCallStart) {
       this.#inTool = true;
       return "";
     }
@@ -185,7 +184,7 @@ export class ToolAwareStream {
   }
 
   flush(): string {
-    if (this.mode !== "gemma-sentinel") {
+    if (this.mode !== "sentinel-tokens") {
       this.#text += this.#decoder.flush();
       if (this.mode === "buffered-text") {
         const calls = this.toolCalls();
@@ -220,7 +219,7 @@ export class ToolAwareStream {
   }
 
   toolCalls(): OpenAIToolCall[] {
-    if (this.mode !== "gemma-sentinel") {
+    if (this.mode !== "sentinel-tokens") {
       if (this.#textToolCalls) return this.#textToolCalls;
       try {
         this.#textToolCalls = parseGeneratedToolCalls(this.#text, this.tools ?? []).map((c) => ({

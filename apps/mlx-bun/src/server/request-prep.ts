@@ -18,7 +18,7 @@ import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { GrammarRequest } from "@mlx-bun/inference/sampling/grammar";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
-import { isMiniCPM5Config } from "@mlx-bun/inference/models/support";
+import { GENERIC_GENERATION_DEFAULTS } from "@mlx-bun/inference/models/profile";
 import type { HlgConfig } from "@mlx-bun/inference/sampling";
 import {
   nextDefaultSeed,
@@ -55,6 +55,7 @@ export function createRequestPrep(input: {
   tokenHistory?: PromptTokenHistory;
 }) {
   const { ctx, serverOptions, kvScheme, defaultGeneratedTokens } = input;
+  const generationDefaults = ctx.generationDefaults ?? GENERIC_GENERATION_DEFAULTS;
 
   // XTC never removes EOS or the newline token: mlx_lm.server passes
   // [tokenizer.eos_token_id, tokenizer.encode("\n")] as xtc_special_tokens.
@@ -70,7 +71,7 @@ export function createRequestPrep(input: {
   // Effective enable_thinking for a request, with the same precedence the chat
   // template uses (extracted so sampling and template rendering can't disagree):
   // explicit chat_template_kwargs.enable_thinking (null = template default) → reasoning_effort ("none" =
-  // off) → server --thinking default → model default (MiniCPM5 → off). undefined
+  // off) → server --thinking default → the model's declared default. undefined
   // means "not a switchable-thinking model / leave the template default".
   const resolveEnableThinking = (req: ChatRequestParams): boolean | undefined => {
     const explicit = req.chat_template_kwargs?.enable_thinking;
@@ -79,22 +80,21 @@ export function createRequestPrep(input: {
     const effort = req.reasoning_effort;
     if (effort !== undefined) return effort !== "none";
     if (serverOptions.defaultThinking !== undefined) return serverOptions.defaultThinking;
-    return isMiniCPM5Config(ctx.model.config) ? false : undefined;
+    return generationDefaults.enableThinking;
   };
 
   const toOptions = (req: ChatRequestParams): GenerateOptions & { stopSequences: string[] } => {
     // Sampling follows the thinking state — which the web UI's thinking button
     // drives via enable_thinking. Model authors publish a SINGLE
     // generation_config temperature (the think-mode value) but recommend a
-    // cooler one for direct, no-think replies (MiniCPM5 card: 0.9 think / 0.7
-    // no-think, top_p 0.95 for both). So with no explicit temperature set, a
-    // no-think turn runs at most NO_THINK_TEMPERATURE while a think turn keeps
-    // the model's hotter configured default. An explicit request/CLI
-    // temperature always wins. top_p is unchanged by mode.
-    const NO_THINK_TEMPERATURE = 0.7;
+    // cooler one for direct, no-think replies. So with no explicit temperature
+    // set, a no-think turn runs at most the model's declared
+    // noThinkTemperatureCap while a think turn keeps the model's hotter
+    // configured default. An explicit request/CLI temperature always wins.
+    // top_p is unchanged by mode.
     const genTemp = ctx.genDefaults.temperature ?? 0.7;
     const defaultTemp = resolveEnableThinking(req) === false
-      ? Math.min(genTemp, NO_THINK_TEMPERATURE)
+      ? Math.min(genTemp, generationDefaults.noThinkTemperatureCap)
       : genTemp;
     return {
       cacheSessionId: typeof req.session_id === "string" ? req.session_id :
@@ -158,11 +158,11 @@ export function createRequestPrep(input: {
     return { controller: r.controller, degradeHint: r.degradeHint };
   };
 
-  // Map OpenAI reasoning_effort levels onto the Qwen3.8 template's supported
-  // set (xhigh|medium|low — the template raises on anything else). "none"
+  // Map OpenAI reasoning_effort levels onto the depth set a template that reads
+  // `reasoning_effort` supports (xhigh|medium|low — such a template raises on anything else). "none"
   // means thinking off (handled by resolveEnableThinking), so no depth is
   // passed. Only consumed for templates with readsReasoningEffort.
-  const qwenReasoningEffort = (
+  const templateReasoningEffort = (
     effort: ChatRequestParams["reasoning_effort"],
   ): "xhigh" | "medium" | "low" | undefined => {
     switch (effort) {
@@ -185,7 +185,7 @@ export function createRequestPrep(input: {
     return {
       tools,
       enableThinking: resolveEnableThinking(req),
-      reasoningEffort: qwenReasoningEffort(req.reasoning_effort),
+      reasoningEffort: templateReasoningEffort(req.reasoning_effort),
       preserveThinking: req.chat_template_kwargs?.preserve_thinking,
     };
   };
@@ -265,16 +265,15 @@ export function createRequestPrep(input: {
   };
 
   const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode =>
-    // Gemma-4 keeps the token-level sentinel path; every other family
-    // (MiniCPM5, Qwen3/3.5, Tier-0 generics) emits tool calls as DECODED TEXT
-    // — see selectToolStreamMode for why sentinel ids must stay family-gated.
-    selectToolStreamMode(ctx.model.config.modelType, !!tools?.length);
+    // A model that declares sentinel tokens keeps the token-level path; every
+    // other model emits tool calls as DECODED TEXT — see selectToolStreamMode.
+    selectToolStreamMode(ctx.sentinels, !!tools?.length);
 
   const toolRouter = (
     tools: ToolDefinition[] | null,
     onParseFailure?: () => void,
   ): ToolAwareStream =>
-    new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools, onParseFailure);
+    new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools, onParseFailure, ctx.sentinels);
 
   /** Strict fill rows are a function of (template mode, tool signature) only —
    *  they are token spans of the assistant turn, which opens with a special

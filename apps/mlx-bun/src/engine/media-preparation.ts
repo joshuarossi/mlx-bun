@@ -21,7 +21,8 @@ export interface MediaSource {
   readonly modelId: string;
   readonly tokenizer: LoadedTokenizer;
   readonly template: ChatTemplate | null;
-  readonly visionTokenIds: VisionTokenIds;
+  /** Null when the model supplies no image soft tokens; the routes that splice them refuse then. */
+  readonly visionTokenIds: VisionTokenIds | null;
   readonly audioTokenIds: AudioTokenIds | null;
   visionTower(): VisionEncoder | null;
   audioTower(): AudioEncoder | null;
@@ -41,7 +42,28 @@ export interface MediaRequest {
 }
 
 export type MediaRejection =
-  | "audio-tower-unavailable" | "vision-sidecar-unavailable" | "vision-tower-absent" | "single-image-only";
+  | "audio-tower-unavailable" | "vision-sidecar-unavailable" | "vision-tower-absent" | "single-image-only"
+  | "vision-tokens-undeclared";
+
+/** The 400 text each refusal answers with. The routes here are the ones that
+ * know which checkpoints supply what they need. */
+const refusals: Record<MediaRejection | "video-with-audio" | "video-unsupported", (modelId: string) => string> = {
+  "audio-tower-unavailable": (modelId) =>
+    `model ${modelId} has no audio tower — audio input needs ` +
+    `a model whose config.json carries audio_config and whose ` +
+    `sidecar ships the audio tensors (e.g. gemma-4 e4b OptiQ)`,
+  "vision-sidecar-unavailable": () => "model has no vision sidecar",
+  "vision-tower-absent": () => "this checkpoint has no vision tower",
+  "single-image-only": () => "DiffusionGemma image input supports exactly one image",
+  "vision-tokens-undeclared": (modelId) => `model ${modelId} declares no image soft tokens`,
+  "video-with-audio": () => "video and audio content parts cannot be combined",
+  "video-unsupported": (modelId) => `model ${modelId} does not accept video input — video ` +
+    `content parts need a Qwen3.5-family model (e.g. Qwen3.8-27B)`,
+};
+
+export function mediaRefusalMessage(reason: keyof typeof refusals, modelId: string): string {
+  return refusals[reason](modelId);
+}
 
 /** Every tensor here belongs to the caller once `prepare` resolves. */
 export interface PreparedMedia { readonly promptIds: number[]; readonly vision?: Vision; readonly pixels?: MlxArray }
@@ -102,6 +124,7 @@ export async function prepareAudio(source: MediaSource, model: TextEmbeddingMode
     if (request.parts.images) {
       const tower = source.visionTower();
       if (!tower) return { rejected: "vision-sidecar-unavailable" };
+      if (!source.visionTokenIds) return { rejected: "vision-tokens-undeclared" };
       visionSide = { tower, tokenIds: source.visionTokenIds,
         cache: objects && tower.cacheIdentity ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
     }
@@ -138,6 +161,8 @@ export async function prepareDiffusionImage(
 ): Prepared {
   const tower = pixelInput();
   if (!tower) return { rejected: "vision-tower-absent" };
+  const tokenIds = source.visionTokenIds;
+  if (!tokenIds) return { rejected: "vision-tokens-undeclared" };
   const { messages, images } = await extractImages(request.messages);
   if (images.length !== 1) return { rejected: "single-image-only" };
   const rendered = template(source).render(messages, { tools: request.tools, addGenerationPrompt: true });
@@ -145,9 +170,9 @@ export async function prepareDiffusionImage(
   const { pixels, softTokens } = await request.nativeWork(() => tower.preprocess(images[0]!));
   try {
     const promptIds = tower.spliceTokens(rawIds, softTokens, {
-      image: source.visionTokenIds.imageTokenId,
-      boi: source.visionTokenIds.boiTokenId,
-      eoi: source.visionTokenIds.eoiTokenId,
+      image: tokenIds.imageTokenId,
+      boi: tokenIds.boiTokenId,
+      eoi: tokenIds.eoiTokenId,
     });
     return { promptIds, pixels };
   } catch (error) { pixels.dispose(); throw error; }
@@ -198,6 +223,7 @@ export async function prepareTowerImages(source: MediaSource, model: TextEmbeddi
       ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
   });
   if (!towers) return { rejected: "vision-sidecar-unavailable" };
+  if (!source.visionTokenIds) return { rejected: "vision-tokens-undeclared" };
   const vp = await buildVisionPrompt(
     towers.model, towers.tower, source.tokenizer, template(source),
     messages, images, source.visionTokenIds, request.tools, nativeWork, towers.encoderCache,
