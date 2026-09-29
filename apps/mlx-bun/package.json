@@ -5,7 +5,13 @@
   "type": "module",
   "private": true,
   "bin": {
-    "mlx-bun": "./bin/mlx-bun.mjs"
+    "mlx-bun": "./bin/mlx-bun.mjs",
+    "mlx-bun.server": "./bin/mlx-bun.server.mjs",
+    "mlx-bun.generate": "./bin/mlx-bun.generate.mjs",
+    "mlx-bun.convert": "./bin/mlx-bun.convert.mjs",
+    "mlx-bun.fuse": "./bin/mlx-bun.fuse.mjs",
+    "mlx-bun.lora": "./bin/mlx-bun.lora.mjs",
+    "mlx-bun.upload": "./bin/mlx-bun.upload.mjs"
   },
   "exports": {
     "./package.json": "./package.json",

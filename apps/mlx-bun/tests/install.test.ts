@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepareHomebrew } from "../../../scripts/prepare-homebrew";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
+import { ALIASES } from "../src/cli/mlx-lm-aliases";
 
 const installer = resolve(import.meta.dir, "../../../scripts/install.sh");
 const required = BUNDLE_FILES.filter(file => file !== "mlx-bun");
@@ -41,15 +42,18 @@ done
 cp "$TEST_ARCHIVE" "$output"
 `);
   await writeFile(join(tools, "mv"), `#!/bin/sh
-if [ "$TEST_FAIL_LINK" = 1 ]; then
+if [ -n "$TEST_FAIL_LINK" ]; then
   for arg in "$@"; do
-    if [ "$arg" = "$HOME/.local/bin/mlx-bun" ]; then echo "injected link failure" >&2; exit 1; fi
+    if [ "$arg" = "$HOME/.local/bin/mlx-bun" ] && [ "$TEST_FAIL_LINK" = 1 ]; then echo "injected link failure" >&2; exit 1; fi
+    if [ "$arg" = "$HOME/.local/bin/mlx-bun.lora" ] && [ "$TEST_FAIL_LINK" = alias ]; then echo "injected alias link failure" >&2; exit 1; fi
   done
 fi
 exec /bin/mv "$@"
 `);
   await chmod(join(tools, "curl"), 0o755); await chmod(join(tools, "mv"), 0o755);
   const installRoot = join(home, ".mlx-bun"), app = join(installRoot, "app-install"), bin = join(home, ".local/bin/mlx-bun");
+  /** The mlx-lm command aliases, linked beside `mlx-bun`. */
+  const aliasLinks = Object.keys(ALIASES).map(name => `${bin}.${name}`);
   async function archive(version: string, missing?: string) {
     const directory = await mkdtemp(join(home, "input-"));
     for (const file of required) if (file !== missing) await writeFile(join(directory, file), `fixture ${file}\n`);
@@ -63,7 +67,7 @@ exec /bin/mv "$@"
     return run(["/bin/sh", script], { ...process.env, HOME: home, PATH: `${tools}:/usr/bin:/bin`,
       MLX_BUN_INSTALL_DIR: undefined, MLX_BUN_VERSION: "latest", TEST_ARCHIVE: path, ...options });
   }
-  return { home, tools, installRoot, app, bin, archive, install, close: () => rm(home, { recursive: true, force: true }) };
+  return { home, tools, installRoot, app, bin, aliasLinks, archive, install, close: () => rm(home, { recursive: true, force: true }) };
 }
 
 test("latest and pinned reinstalls replace only the owned bundle and keep user data", async () => {
@@ -78,12 +82,19 @@ test("latest and pinned reinstalls replace only the owned bundle and keep user d
     expect(installed.code, installed.err).toBe(0); expect(installed.err).toBe("");
     expect(await readFile(join(f.home, "request-url"), "utf8")).toContain("releases/latest/download/mlx-bun-arm64.tar.gz");
     expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.2.3\n");
+    // Each mlx-lm alias is a symlink to the same executable, through `current`.
+    for (const link of f.aliasLinks) {
+      expect(await readlink(link)).toBe(join(await realpath(f.installRoot), "app-install/current/mlx-bun"));
+      expect((await run([link, "--version"])).out).toBe("mlx-bun 1.2.3\n");
+    }
+    expect((await readdir(join(f.home, ".local/bin"))).sort()).toEqual(["mlx-bun", ...Object.keys(ALIASES).map(name => `mlx-bun.${name}`)].sort());
     const old = await readlink(join(f.app, "current"));
     await mkdir(join(f.app, "bundle.interrupted"));
     const second = await f.archive("1.2.4");
     expect((await f.install(second, { MLX_BUN_VERSION: "v1.2.4" })).code).toBe(0);
     expect(await readFile(join(f.home, "request-url"), "utf8")).toContain("releases/download/v1.2.4/mlx-bun-arm64.tar.gz");
     expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.2.4\n");
+    for (const link of f.aliasLinks) expect((await run([link, "--version"])).out).toBe("mlx-bun 1.2.4\n");
     expect(await readlink(join(f.app, "current"))).not.toBe(old);
     expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(2);
     expect((await run([join(f.app, old, "mlx-bun"), "--version"])).out).toBe("mlx-bun 1.2.3\n");
@@ -104,10 +115,14 @@ test("corrupt, incomplete, wrong-version and failed-link upgrades preserve the p
     const incomplete = await f.archive("1.0.1", "mlx.metallib");
     const withoutMic = await f.archive("1.0.3", "mlx-bun-mic-capture");
     const next = await f.archive("1.0.2");
-    for (const [archive, options] of [[corrupt, {}], [incomplete, {}], [withoutMic, {}], [next, { MLX_BUN_VERSION: "v2.0.0" }], [next, { TEST_FAIL_LINK: "1" }]] as const) {
+    for (const [archive, options] of [[corrupt, {}], [incomplete, {}], [withoutMic, {}], [next, { MLX_BUN_VERSION: "v2.0.0" }], [next, { TEST_FAIL_LINK: "1" }],
+      [next, { TEST_FAIL_LINK: "alias" }]] as const) {
       expect((await f.install(archive, options)).code).not.toBe(0);
       expect(await readlink(join(f.app, "current"))).toBe(original);
       expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.0.0\n");
+      // A failure at any link leaves the prior runnable aliases and no temporary link behind.
+      for (const link of f.aliasLinks) expect((await run([link, "--version"])).out).toBe("mlx-bun 1.0.0\n");
+      expect((await readdir(join(f.home, ".local/bin"))).filter(name => name.startsWith(".mlx-bun-install-"))).toEqual([]);
       expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(1);
     }
   } finally { await f.close(); }
@@ -136,6 +151,10 @@ test("custom installation roots with spaces work through the command symlink", a
     expect(result.code, result.err).toBe(0);
     expect(await readlink(f.bin)).toBe(join(await realpath(custom), "app-install/current/mlx-bun"));
     expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.0.0\n");
+    for (const link of f.aliasLinks) {
+      expect(await readlink(link)).toBe(join(await realpath(custom), "app-install/current/mlx-bun"));
+      expect((await run([link, "--version"])).out).toBe("mlx-bun 1.0.0\n");
+    }
   } finally { await f.close(); }
 }, 30000);
 
@@ -198,6 +217,7 @@ test("usage, tag, platform and app-root refusals install nothing and leave no lo
     expect(first.code).not.toBe(0); expect(first.err).toContain("incomplete bundle: libmlxc.dylib");
     expect(await readdir(f.app)).toEqual([".installer-owned"]);
     await expect(readlink(f.bin)).rejects.toThrow("ENOENT");
+    for (const link of f.aliasLinks) await expect(readlink(link)).rejects.toThrow("ENOENT");
   } finally { await f.close(); }
 }, 30000);
 
@@ -235,8 +255,16 @@ test("nested, reserved, non-executable and misversioned bundles and a directory 
     expect(blocked.code).not.toBe(0); expect(blocked.err).toContain("command destination is a directory");
     expect(await readlink(join(f.app, "current"))).toBe(original);
     expect(await readFile(join(f.bin, "mine"), "utf8")).toBe("keep");
+    // The same for an alias name: refused before the switch, and kept.
+    await rm(f.bin, { recursive: true }); await symlink(join(f.app, "current/mlx-bun"), f.bin);
+    const aliasDirectory = f.aliasLinks[0]!; await rm(aliasDirectory); await mkdir(aliasDirectory); await writeFile(join(aliasDirectory, "mine"), "keep");
+    const aliasBlocked = await f.install(await f.archive("1.0.1"));
+    expect(aliasBlocked.code).not.toBe(0); expect(aliasBlocked.err).toContain(`command destination is a directory: ${aliasDirectory}`);
+    expect(await readlink(join(f.app, "current"))).toBe(original);
+    expect(await readFile(join(aliasDirectory, "mine"), "utf8")).toBe("keep");
+    await rm(aliasDirectory, { recursive: true });
     // A `current` that is not the installer's symlink is refused, not replaced.
-    await rm(f.bin, { recursive: true }); await rm(join(f.app, "current")); await mkdir(join(f.app, "current"));
+    await rm(f.bin, { recursive: true, force: true }); await rm(join(f.app, "current")); await mkdir(join(f.app, "current"));
     const replaced = await f.install(good);
     expect(replaced.code).not.toBe(0); expect(replaced.err).toContain("current must be an installer symlink");
     expect(await readdir(join(f.app, "current"))).toEqual([]);
@@ -389,3 +417,11 @@ test("a legacy command earlier on PATH is reported instead of suggesting it runs
     expect(again.out).toContain("Run: mlx-bun"); expect(again.err).toBe("");
   } finally { await f.close(); }
 }, 30000);
+
+test("the installer links exactly the aliases the application implements", async () => {
+  const listed = /^ALIASES="([^"]*)"$/m.exec(await readFile(installer, "utf8"))?.[1]?.split(" ");
+  expect(listed).toBeDefined();
+  expect([...listed!].sort()).toEqual(Object.keys(ALIASES).sort());
+  const help = await run(["/bin/sh", installer, "--help"], { ...process.env });
+  expect(help.out).toContain(`mlx-bun.<cmd> beside it for each mlx-lm command mlx-bun implements (${listed!.join(" ")})`);
+});

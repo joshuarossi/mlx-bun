@@ -6,6 +6,7 @@ loads and specializes on. Inference never quantizes; this package never serves.
 | Module | Owns |
 | --- | --- |
 | `quantizer` | Quantize a checkpoint directory: per-module bit selection, dequantize/requantize through MLX, sharded output, config rewrite |
+| `convert` | Non-quantizing rewrite of a checkpoint: cast floating tensors to one dtype and/or dequantize quantized modules to dense weights (`mlx_lm.convert` without `-q`) |
 | `allocator` | Mixed-precision allocation from per-layer sensitivity under a bits-per-weight budget |
 | `sensitivity` | Exact per-layer KL sensitivity on calibration text |
 | `calibration` | Calibration sample loading and tokenization |

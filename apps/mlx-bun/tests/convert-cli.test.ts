@@ -56,15 +56,13 @@ function workspace() {
 
 test("main's refusals and validation messages fire before any registry, download, or producer work", async () => {
   const cases: [string[], string][] = [
-    [["--hf-path", "x", "-q", "--dtype", "float16"], "--dtype: not supported (mixed precision: --target-bpw; see: mlx-bun help convert)"],
-    [["--hf-path", "x", "-q", "-d"], "--dequantize: not supported (mixed precision: --target-bpw; see: mlx-bun help convert)"],
-    [["--hf-path", "x", "-q", "--dequantize"], "--dequantize: not supported"],
-    [["--hf-path", "x", "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported"],
-    [["--hf-path", "x", "-q", "--dtype", "f", "--quant-predicate", "p"], "--dtype, --quant-predicate: not supported"],
+    [["--hf-path", "x", "-q", "--dtype", "int8"], '--dtype must be float16, bfloat16, float32 (got "int8")'],
+    [["--hf-path", "x", "-q", "-d"], "Choose either quantize or dequantize, not both."],
+    [["--hf-path", "x", "--target-bpw", "4.5", "--dequantize"], "Choose either quantize or dequantize, not both."],
+    [["--hf-path", "x", "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported (mlx_lm's mixed_* recipes need 2/3/6-bit; for mixed precision use --target-bpw; see: mlx-bun help convert)"],
+    [["--hf-path", "x", "--rotate-weights"], "--rotate-weights folds a rotation before quantization — pass -q or --target-bpw"],
     [["--hf-path", "x", "-q", "--q-mode", "mxfp4"], '--q-mode mxfp4: only "affine" is supported'],
-    [["-q"], "usage: mlx-bun convert --hf-path <repo-or-path> -q [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F]"],
-    [["--hf-path", "x"], "plain (non-quantizing) conversion is not supported yet — pass -q or --target-bpw"],
-    [["--model", "x"], "pass -q or --target-bpw"],
+    [["-q"], "usage: mlx-bun convert --hf-path <repo-or-path> [-q] [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F] [--dtype float16|bfloat16|float32] [-d]"],
     [["x", "--target-bpw", "abc"], '--target-bpw expects a positive number (got "abc")'],
     [["x", "--target-bpw", "0"], '--target-bpw expects a positive number (got "0")'],
     [["x", "-q", "--q-bits", "3"], '--q-bits must be 4 or 8 (got "3")'],
@@ -192,11 +190,53 @@ test("mixed precision and rotation flags reach the producer as the web job's con
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("--dtype and -d reach the producer, with and without -q; without either the model is only copied", async () => {
+  const { root, local, out } = workspace();
+  try {
+    const quantized = harness();
+    await runConvert(parse(local, "-q", "--dtype", "float16", "--mlx-path", out), quantized.deps);
+    expect(quantized.runs[0]!.config).toEqual({ src_dir: local, out_dir: out, bits: 4, group_size: 64, mode: "affine", dtype: "float16" });
+    const cast = harness();
+    await runConvert(parse(local, "--dtype", "bfloat16", "--mlx-path", out), cast.deps);
+    expect(cast.runs[0]!.config).toEqual({ src_dir: local, out_dir: out, quantize: false, dtype: "bfloat16" });
+    expect(cast.lines[0]).toBe("step: converting (casting to bfloat16)");
+    expect(cast.lines.at(-1)).toContain("convert   casting to bfloat16 |  | serve it");
+    const dense = harness();
+    await runConvert(parse(local, "-d", "--mlx-path", out), dense.deps);
+    expect(dense.runs[0]!.config).toEqual({ src_dir: local, out_dir: out, quantize: false, dequantize: true });
+    expect(dense.lines[0]).toBe("step: converting (dequantizing)");
+    const both = harness();
+    await runConvert(parse(local, "--dequantize", "--dtype", "float32"), both.deps);
+    expect(both.runs[0]!.config).toEqual({ src_dir: local, out_dir: "/store/models/src-dense-float32", quantize: false, dequantize: true, dtype: "float32" });
+    const copy = harness();
+    await runConvert(parse(local), copy.deps);
+    expect(copy.runs[0]!.config).toEqual({ src_dir: local, out_dir: "/store/models/src-converted", quantize: false });
+    expect(copy.lines[0]).toBe("step: converting (copying)");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the producer job routes a non-quantizing config to the conversion and validates its dtype", async () => {
+  const events: unknown[] = [], converts: unknown[][] = [];
+  const producer = createQuantizeRunner({
+    convert: (async (...args: unknown[]) => { converts.push(args); return { outDir: args[1], nDequantized: 3, write: { totalSize: 0 } }; }) as never,
+    quantize: (async () => { throw new Error("must not quantize"); }) as never,
+  });
+  const result = await producer(event => events.push(event), { src_dir: "/src", out_dir: "/dst", quantize: false, dequantize: true, dtype: "float16" });
+  expect(result).toEqual({ outputPath: "/dst" });
+  expect(converts[0]!.slice(0, 3)).toEqual(["/src", "/dst", { dtype: "float16", dequantize: true }]);
+  expect(events.at(-1)).toMatchObject({ stage: "done", message: "Dequantized 3 modules", output_dir: "/dst" });
+  await expect(producer(() => {}, { src_dir: "/src", out_dir: "/dst", quantize: false, dtype: "int8" })).rejects.toThrow("dtype must be float16, bfloat16 or float32 (got int8)");
+  const seen: unknown[][] = [];
+  const quantizing = createQuantizeRunner({ quantize: (async (...args: unknown[]) => { seen.push(args); return { outDir: args[1], nQuantized: 1, achievedBpw: 4.5, write: { totalSize: 0 } }; }) as never });
+  await quantizing(() => {}, { src_dir: "/src", out_dir: "/dst", bits: 4, group_size: 64, dtype: "float16" });
+  expect(seen[0]!.slice(0, 3)).toEqual(["/src", "/dst", { bits: 4, groupSize: 64, mode: "affine", dtype: "float16" }]);
+});
+
 test("--upload-repo resolves the write token before any work and publishes only after success", async () => {
   const { root, local, out } = workspace();
   try {
     const denied = harness({ token: null });
-    await expect(runConvert(parse(local, "-q", "--dtype", "f", "--upload-repo", "org/quant", "--mlx-path", out), denied.deps))
+    await expect(runConvert(parse(local, "-q", "--dtype", "float16", "--upload-repo", "org/quant", "--mlx-path", out), denied.deps))
       .rejects.toThrow("--upload-repo needs a Hugging Face WRITE token and none was found —\n" +
         "run `hf auth login`, export HF_TOKEN, or save one in the web UI (Settings → Hugging Face).");
     expect(denied.order).toEqual(["credentials"]);
@@ -346,10 +386,9 @@ test("the spawned CLI renders help, refuses usage errors with main's messages, a
     const local = join(home, "src"); mkdirSync(local); writeFileSync(join(local, "config.json"), JSON.stringify({ model_type: "qwen3" }));
     const taken = join(home, "taken"); mkdirSync(taken);
     const refusals: [string[], string][] = [
-      [["convert"], "usage: mlx-bun convert --hf-path <repo-or-path> -q"],
-      [["convert", "--hf-path", "x"], "pass -q or --target-bpw"],
-      [["convert", "--hf-path", "x", "-q", "--dtype", "float16"], "--dtype: not supported"],
-      [["convert", "--hf-path", "x", "-q", "-d"], "--dequantize: not supported"],
+      [["convert"], "usage: mlx-bun convert --hf-path <repo-or-path> [-q]"],
+      [["convert", "--hf-path", "x", "-q", "--dtype", "int8"], "--dtype must be float16, bfloat16, float32"],
+      [["convert", "--hf-path", "x", "-q", "-d"], "Choose either quantize or dequantize, not both."],
       [["convert", "--hf-path", "x", "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported"],
       [["convert", "--hf-path", "x", "-q", "--q-mode", "mxfp4"], 'only "affine" is supported'],
       [["convert", "--hf-path", "x", "-q", "--upload-repo"], "--upload-repo expects a repo id (org/name)"],

@@ -239,8 +239,25 @@ test("cancellation mid-run reaches the runner, unwinds its cleanup, and exits wi
   } finally { f.dispose(); }
 });
 
-function fuseHarness(fuse?: FuseDependencies["fuse"]) {
-  const logs: string[] = [], steps: string[] = [], calls: unknown[][] = [], registry: string[] = [];
+test("train's layer count, report/eval cadence, dropout, weight decay and gradient checkpointing reach the submit record", () => {
+  const f = fixture();
+  try {
+    const m = { path: f.modelDir, repoId: "example/model" };
+    const cfg = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--num-layers", "8", "--steps-per-report", "10",
+      "--steps-per-eval", "200", "--dropout", "0.05", "--weight-decay", "0", "--grad-checkpoint")), m, false, "/store").cfg;
+    expect(cfg).toMatchObject({ num_layers: 8, steps_per_report: 10, steps_per_eval: 200, lora_dropout: 0.05, weight_decay: 0, grad_checkpoint: true });
+    // Not given: the submit record carries none of the optional keys and keeps the existing cadence.
+    const plain = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, false, "/store").cfg;
+    expect(plain).toMatchObject({ num_layers: -1, steps_per_report: 1, steps_per_eval: 1_000_000 });
+    for (const key of ["lora_dropout", "weight_decay", "grad_checkpoint"]) expect(plain).not.toHaveProperty(key);
+    // A checkpoint cadence still drives evaluation unless --steps-per-eval names its own.
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--save-every", "25")), m, false, "/store").cfg.steps_per_eval).toBe(25);
+    expect(() => parseTrainArgs(parse("--data", f.dataDir, "--num-layers", "many"))).toThrow('--num-layers expects a number (got "many")');
+  } finally { f.dispose(); }
+});
+
+function fuseHarness(fuse?: FuseDependencies["fuse"], token: string | null = "hf_token") {
+  const logs: string[] = [], steps: string[] = [], calls: unknown[][] = [], registry: string[] = [], published: unknown[] = [], options: unknown[] = [];
   const cached = { path: "/cache/model", repoId: "org/cached" } as ModelRecord;
   const deps: FuseDependencies = {
     root: () => "/store",
@@ -250,28 +267,27 @@ function fuseHarness(fuse?: FuseDependencies["fuse"]) {
       resolve: query => { registry.push(`resolve:${query}`); if (query !== "cached") throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``); return cached; },
       close: () => { registry.push("close"); },
     }),
-    fuse: fuse ?? (async (modelDir, adapterDir, outDir, onProgress) => {
-      calls.push([modelDir, adapterDir, outDir]);
+    credentials: () => ({ get: () => token }),
+    publish: async request => { published.push(request); return { url: "https://huggingface.co/org/fused" }; },
+    fuse: fuse ?? (async (modelDir, adapterDir, outDir, onProgress, fuseOptions) => {
+      calls.push([modelDir, adapterDir, outDir]); options.push(fuseOptions);
       onProgress?.({ stage: "fusing", message: "Module 1/2: layers.0", progress: 0.5 });
       return { outDir, fusedModules: 2, skippedAdapterTensors: 0, totalTensors: 5 };
     }),
     exists: existsSync, log: line => logs.push(line),
     step: text => { steps.push(`start:${text}`); return { update: t => steps.push(`update:${t}`), done: t => steps.push(`done:${t}`), fail: t => steps.push(`fail:${t}`) }; },
   };
-  return { deps, logs, steps: () => steps.map(strip), calls, registry, text: () => strip(logs.join("\n")) };
+  return { deps, logs, steps: () => steps.map(strip), calls, registry, published, options, text: () => strip(logs.join("\n")) };
 }
 const fuseArgs = (...args: string[]) => parseCommand("fuse", args);
 
-test("fuse refuses main's unsupported mlx_lm flags and usage errors before touching anything", async () => {
+test("fuse refuses GGUF export and reports usage errors before touching anything", async () => {
   const f = fixture();
   try {
     const cases: [string[], string][] = [
-      [[f.modelDir, "--adapter", f.dataDir, "--de-quantize"], "--de-quantize: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--dequantize"], "--dequantize: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--export-gguf"], "--export-gguf: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--gguf-path", "x.gguf"], "--gguf-path: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--upload-repo", "org/repo"], "--upload-repo: not supported (see: mlx-bun help fuse)"],
-      [["--upload-repo", "u", "--de-quantize", "--export-gguf"], "--de-quantize, --export-gguf, --upload-repo: not supported (see: mlx-bun help fuse)"],
+      [[f.modelDir, "--adapter", f.dataDir, "--export-gguf"], "--export-gguf: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)"],
+      [[f.modelDir, "--adapter", f.dataDir, "--gguf-path", "x.gguf"], "--gguf-path: not supported (GGUF export"],
+      [["--export-gguf", "--gguf-path", "x.gguf"], "--export-gguf, --gguf-path: not supported (GGUF export"],
       [[], "usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]"],
       [[f.modelDir, "--adapter", "/nonexistent"], "adapter dir not found: /nonexistent"],
       [[f.modelDir], "adapter dir not found: adapters"],
@@ -306,6 +322,44 @@ test("fuse merges by snapshot path or registry query with main's flag spellings 
     for (const line of ["base      /cache/model", "model     /out", "skipped   3 adapter tensor(s) with no matching base weight", "serve it   mlx-bun serve /out"])
       expect(byQuery.text()).toContain(line);
     expect(fuseArgs("positional", "--model", "flag").positionals[0]).toBe("positional");
+  } finally { f.dispose(); }
+});
+
+test("fuse --dequantize reaches the merge, and --upload-repo checks the token first and pushes only a finished, uninterrupted merge", async () => {
+  const f = fixture();
+  try {
+    const dense = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--dequantize"), dense.deps);
+    expect(dense.options).toEqual([{ dequantize: true }]);
+    expect(dense.text()).toContain("weights   dequantized to dense");
+    const plain = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir), plain.deps);
+    expect(plain.options).toEqual([{ dequantize: false }]); expect(plain.text()).not.toContain("dequantized");
+    expect(plain.published).toEqual([]);
+
+    // No write token: refused before the registry, the merge, or any output.
+    const denied = fuseHarness(undefined, null);
+    await expect(runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--upload-repo", "org/fused"), denied.deps))
+      .rejects.toThrow("--upload-repo needs a Hugging Face WRITE token and none was found");
+    expect(denied.calls).toEqual([]); expect(denied.steps()).toEqual([]); expect(denied.published).toEqual([]);
+
+    const pushed = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), pushed.deps);
+    expect(pushed.published).toEqual([{ kind: "finetune", repoId: "org/fused", sourcePath: "/out", signal: undefined }]);
+    expect(pushed.steps().slice(-2)).toEqual(["start:uploading /out → org/fused", "done:uploaded https://huggingface.co/org/fused"]);
+
+    // The fused model stays intact when the push fails, and the error names the retry command.
+    const failed = fuseHarness();
+    failed.deps.publish = async () => { throw new Error("network down"); };
+    await expect(runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), failed.deps))
+      .rejects.toThrow("the fused model is intact at /out — retry with: mlx-bun upload --path /out --upload-repo org/fused");
+    expect(failed.steps()).toContain("fail:upload failed: network down");
+
+    // A cancel that arrived during the merge completes the output but starts no push.
+    const during = new AbortController();
+    const interrupted = fuseHarness(async (_m, _a, outDir) => { during.abort(new Error("fuse cancelled")); return { outDir, fusedModules: 1, skippedAdapterTensors: 0, totalTensors: 1 }; });
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), interrupted.deps, during.signal);
+    expect(interrupted.published).toEqual([]); expect(interrupted.text()).toContain("● fuse complete");
   } finally { f.dispose(); }
 });
 
@@ -460,8 +514,8 @@ test("the spawned CLI prints help, usage errors, refusals, and a dry-run plan wi
       [["train", snapshot, "--data", data, "--iters", "ten"], '--iters expects a number (got "ten")'],
       [["train", "--data", data, "--serial"], "Unknown option"],
       [["fuse"], "usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]"],
-      [["fuse", "m", "--de-quantize", "--export-gguf"], "--de-quantize, --export-gguf: not supported (see: mlx-bun help fuse)"],
-      [["fuse", "m", "--adapter", adapter, "--upload-repo", "org/repo"], "--upload-repo: not supported (see: mlx-bun help fuse)"],
+      [["fuse", "m", "--export-gguf"], "--export-gguf: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)"],
+      [["fuse", "m", "--de-quantize"], "Unknown option '--de-quantize'"],
       [["fuse", "m", "--adapter", "/nope"], "adapter dir not found: /nope"],
       [["fuse", "m", "--adapter", adapter], 'no model matching "m"'],
       [["train-watch", "/nope"], "no metrics.jsonl in /nope"],
