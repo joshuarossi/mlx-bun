@@ -8,6 +8,7 @@ import type { ClientMessage, ServerMessage } from "../src/chat/protocol";
 import { parseCommand } from "../src/cli/args";
 import { startIsolatedServer } from "../src/cli/serve-isolated";
 import { parseServeOptions } from "../src/cli/serve";
+import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 
 // The isolated composition (src/cli/serve-isolated.ts) over the fake worker
 // (tests/fake-worker.ts): the parent never loads the engine, spawns the worker
@@ -325,7 +326,7 @@ test("memory synthesis under isolation: the parent keeps the pipeline and SSE, e
     await running.close();
     assert.ok(!(await interrupted).includes("[DONE]"));
     const last = events().filter(item => item.pid === respawned).map(item => item.event).filter(event => event !== "loading" && event !== "ready");
-    assert.deepEqual(last.filter(event => event !== "drain"), ["memory", "memory aborted", "stop"]);
+    assert.deepEqual(last.filter(event => event !== "drain"), ["memory", "memory aborted", "stop", "stopped"]);
     assert.ok(last.includes("drain"));
     assert.ok(!existsSync(dirname(socket)), "the socket directory is removed");
     assert.ok(!alive(respawned), "the worker has exited");
@@ -556,4 +557,22 @@ test("a hub switch reaches the worker, which serves the new model as the current
   }
   expect(workerDirs()).toBe(before);
   expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/model"]);
+}, 40_000);
+
+test("the worker is given the CLI's shutdown budget to close, so a slow flush of saved state is not cut by a kill after the default grace", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-budget-"));
+  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const eventsFile = join(root, "events.jsonl");
+  const events = () => existsSync(eventsFile) ? readFileSync(eventsFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as { event: string; pid: number }) : [];
+  const restore = configureRuntime({ MLX_BUN_SHUTDOWN_TIMEOUT_MS: "20000" });
+  try {
+    // The worker takes 4.5 s to close, longer than the supervisor's default 3 s grace before a kill.
+    const running = await startIsolatedServer(model(root), options, { entry, env: { ...workerEnv, FAKE_WORKER_STOP_MS: "4500", FAKE_WORKER_EVENTS: eventsFile },
+      notice() {}, log() {}, error() {} });
+    await running.close();
+    expect(events().map(item => item.event).filter(event => event !== "loading" && event !== "ready" && event !== "drain")).toEqual(["stop", "stopped"]);
+  } finally { restore(); rmSync(root, { recursive: true, force: true }); }
 }, 40_000);

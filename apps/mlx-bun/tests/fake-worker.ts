@@ -5,7 +5,7 @@
 // model surface on the socket. Behavior is driven by request content and `/fake/*` control
 // routes, so a test reaches everything through the parent's proxy. Env:
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
-// FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop (pool timing);
+// FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop, and stopped (the exit after a slow close);
 // FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load;
 // FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only, and refuses a switch to it (`POST /admin/serve`: 502);
 // FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
@@ -201,6 +201,7 @@ const stop = async () => {
   console.error("stopping"); event("stop");
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
   await gateOpen(process.env.FAKE_WORKER_STOP_GATE);
+  event("stopped");
   void server.stop(true); process.exit(0);
 };
 process.on("SIGTERM", stop);

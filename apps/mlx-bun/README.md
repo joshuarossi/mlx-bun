@@ -317,7 +317,10 @@ respawned completion.
 
 **Shutdown.** Synthesis runs, jobs, and downloads stop while the worker is alive, chat sessions
 and HTTP responses drain, then the worker is drained (`POST /admin/drain`),
-sent SIGTERM, SIGKILL after 3 seconds, joined, and the socket directory removed;
+sent SIGTERM, and killed only after the CLI's shutdown budget
+(`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s, for the drain and again for the stop),
+because its close flushes every resident model's saved state; it is then joined and
+the socket directory removed;
 a respawn in progress is joined too. The worker's own close aborts and joins its
 memory calls, then closes its task model, before its engine.
 
