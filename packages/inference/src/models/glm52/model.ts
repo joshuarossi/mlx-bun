@@ -29,6 +29,7 @@ glm52DsaScoresMlx,
 Glm52DsaSelectionState,
 type Glm52DsaSelectionObserver,
 } from "./dsa";
+import { Glm52MtpGraph } from "./mtp";
 import { Glm52Mla,partialInterleavedRopeMlx,rmsNormF32Mlx,type Glm52MlaBatchedSelection } from "./mla";
 import {
 composeGlm52MoeOutputsMlx,
@@ -679,6 +680,33 @@ export class Glm52Model implements MlxDeclaredGraph {
       nativeDraft: this.capabilities?.mtpEnabled === true
         ? { kind: NATIVE_MTP_DRAFT, numDraftTokens: this.capabilities.mtpDraftTokens ?? 3 } : null,
     });
+  }
+  /** The checkpoint's native MTP row (`nativeDraft`): the head's numerics over this model's shared
+   * embeddings, output head and resident weights. Refused unless the MTP tier is loaded. */
+  nativeDraftHead(): Glm52MtpGraph {
+    if (!this.capabilities.mtpMetadata)
+      throw new Error("GLM-5.2 artifact does not contain a complete MTP row");
+    if (this.capabilities.mtpEnabled === false)
+      throw new Error("native GLM-5.2 MTP is disabled for this model instance");
+    if (this.glmConfig.numNextnPredictLayers !== 1) {
+      throw new Error(
+        `native GLM-5.2 MTP requires exactly one next-token layer; got ` +
+        `${this.glmConfig.numNextnPredictLayers}`,
+      );
+    }
+    const mtpBackend = this.expertRuntime?.mtpExecutor ?? null;
+    if (this.expertBackend && !mtpBackend) {
+      throw new Error(
+        "streamed GLM-5.2 MTP requires the bounded int8 MTP expert tier",
+      );
+    }
+    return new Glm52MtpGraph(this, new Glm52DecoderLayer(
+      this.glmConfig,
+      this.weights,
+      this.glmConfig.numHiddenLayers,
+      false,
+      mtpBackend,
+    ));
   }
   expertResidency(): Record<string, unknown> | null {
     const runtime = this.expertRuntime;

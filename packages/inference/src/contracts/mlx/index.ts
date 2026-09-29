@@ -4,6 +4,7 @@ export * from "./checkpoint";
 export * from "./draft-checkpoint";
 export * from "./draft-projection";
 export * from "./draft-target";
+export * from "./drafter";
 export * from "./forward-work";
 export * from "./glm52-weights";
 export * from "./graph";

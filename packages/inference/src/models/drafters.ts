@@ -1,6 +1,15 @@
 // Conventions by which speculative-decoding artifacts and graphs declare
 // themselves. Pure string facts, so the model index, the hub and the draft
-// provider registry all read one definition without loading MLX.
+// provider registry all read one definition without loading MLX (the drafters
+// themselves load through `drafter-loaders`).
+
+import { isDeepspecArchitecture } from "./speculative/deepspec-artifact";
+
+/** A DeepSpec drafter (DeepSeek's released DSpark checkpoints): a plain HF config stamped with its
+ *  architecture. */
+export function isDeepspecDrafterConfig(config: Record<string, unknown> | null): boolean {
+  return isDeepspecArchitecture(config?.architectures);
+}
 
 /** A drafter whose weights are Q-only and have no standalone LM head
  *  (`gemma4_assistant`, `gemma4_unified_assistant`). */

@@ -25,6 +25,8 @@
 // `draftBlock` below for the seam.
 
 import { Weights } from "../../artifacts/weights";
+import type { ContextKV, DeepspecContextAttention, DeepspecDraftBlock, DeepspecDraftRows, DeepspecDrafterModel } from "../../contracts/mlx/drafter";
+import { isDeepspecArchitecture } from "./deepspec-artifact";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -127,8 +129,7 @@ export interface DeepspecConfig {
 }
 
 function readConfig(raw: Record<string, any>): DeepspecConfig {
-  const arch = raw.architectures?.[0];
-  if (arch !== "Gemma4DSparkModel")
+  if (!isDeepspecArchitecture(raw.architectures))
     throw new Error(`DeepspecDrafter: expected architectures[0]==="Gemma4DSparkModel", got ${JSON.stringify(raw.architectures)}`);
 
   // RoPE: their config nests rope params under rope_parameters.full_attention
@@ -208,17 +209,6 @@ interface Layer {
   layerScalar: MlxArray; // [1]
 }
 
-/** Per-layer context K/V rows, already projected + normed + roped —
- *  cacheable across draft rounds (see projectContext doc). */
-export interface ContextKV {
-  k: MlxArray; // [1, nKvHeads, ctxLen, headDim]
-  v: MlxArray; // [1, nKvHeads, ctxLen, headDim] (v ≡ k when attention_k_eq_v)
-}
-
-/** Storage owns context validity; the graph supplies only Q and new block KV. */
-export interface DeepspecContextAttention {
-  attend(layer: number, query: MlxArray, blockKeys: MlxArray, blockValues: MlxArray): MlxArray;
-}
 export function plainDeepspecContext(context: readonly ContextKV[]): DeepspecContextAttention {
   return { attend(layer, query, blockKeys, blockValues) {
     using keys = ops.concatAxis([context[layer]!.k, blockKeys], 2);
@@ -226,30 +216,7 @@ export function plainDeepspecContext(context: readonly ContextKV[]): DeepspecCon
     return ops.sdpa(query, keys, values, 1, "", null);
   } };
 }
-export interface DraftRowsResult {
-  tokens: number[][];
-  conf: number[][];
-  baseLogits?: MlxArray;
-}
-
-export interface DraftBlockResult {
-  /** Sequentially-sampled draft tokens, length 0..gamma (0 iff confidence
-   *  truncation fires at the very first position — EMPTY proposal). */
-  tokens: number[];
-  /** Per-position sigmoid confidence, aligned with `tokens` (same length;
-   *  empty when the confidence head is disabled). */
-  conf: number[];
-  /** Raw base_logits (post target-forward, PRE-Markov-bias, post-softcap)
-   *  for the full block [1, gamma, vocab] (float32 COPY; sampling runs in
-   *  model dtype separately) — caller disposes. NOTE: the reference
-   *  verifier's temp>0 draft_probs come from the Markov-CORRECTED logits
-   *  (draft_ops.py:140-143), NOT these — at temp 0 (our oracle regime) the
-   *  distinction is moot (verify degenerates to argmax token-match), but a
-   *  future temp>0 verify must add the per-position Markov bias first. */
-  baseLogits: MlxArray;
-}
-
-export class DeepspecDrafter {
+export class DeepspecDrafter implements DeepspecDrafterModel {
   readonly cfg: DeepspecConfig;
   /** === config.target_layer_ids, alias for the ground-truth term. */
   readonly tapLayers: number[];
@@ -699,7 +666,7 @@ export class DeepspecDrafter {
    * anchorTok: the just-verified/bonus token starting this block.
    * anchorPos: its absolute sequence position (blockPositions[0]).
    */
-  draftBlock(ctxKV: ContextKV[], anchorTok: number, anchorPos: number): DraftBlockResult {
+  draftBlock(ctxKV: ContextKV[], anchorTok: number, anchorPos: number): DeepspecDraftBlock {
     const result = this.draftRows(plainDeepspecContext(ctxKV), [anchorTok], anchorPos, true);
     return { tokens: result.tokens[0]!, conf: result.conf[0]!, baseLogits: result.baseLogits! };
   }
@@ -707,7 +674,7 @@ export class DeepspecDrafter {
   /** The graph and sequential proposal head run at the active row count.
    * Confidence selects each row's length after the full device chain. */
   draftRows(context: DeepspecContextAttention, anchors: readonly number[], position: number | MlxArray,
-    collectLogits = false): DraftRowsResult {
+    collectLogits = false): DeepspecDraftRows {
     const B = anchors.length, G = this.gamma, V = this.cfg.vocab_size;
     using ids = ops.fromInt32(anchors.flatMap(anchor => [anchor, ...Array(G - 1).fill(this.cfg.mask_token_id)]), [B, G]);
     using hidden = this.#forwardBackbone(context, ids, position);

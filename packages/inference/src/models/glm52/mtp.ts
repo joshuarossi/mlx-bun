@@ -1,13 +1,34 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import type { NativeMtpHead } from "../../contracts/mlx/drafter";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Glm52DecoderLayer, Glm52Model } from "./model";
+import type { Glm52Config } from "../../artifacts/glm52-config";
+import type { Glm52WeightSource } from "../../contracts/mlx/glm52-weights";
 import type { MLACache } from "../../state/glm52-cache";
 import { rmsNormF32Mlx } from "./mla";
 
+/** What the MTP graph reads of the GLM-5.2 model it shares weights with. */
+export interface Glm52MtpHost {
+  readonly glmConfig: Glm52Config;
+  readonly weights: Glm52WeightSource;
+  logitsFromHidden(hidden: MlxArray): MlxArray;
+}
+
+/** The MTP decoder layer (the layer after the target's last). */
+export interface Glm52MtpLayer {
+  forwardAsync(input: MlxArray, cache: MLACache, dsaState: null): Promise<MlxArray>;
+}
+
 /** Native MTP numerical graph. Tokens, anchor hidden and compressed state may
  * have one or several rows; sampling and state retention belong to callers. */
-export class Glm52MtpGraph {
-  constructor(readonly model: Glm52Model, readonly layer: Glm52DecoderLayer) {}
+export class Glm52MtpGraph implements NativeMtpHead {
+  constructor(readonly model: Glm52MtpHost, readonly layer: Glm52MtpLayer) {}
+
+  get hiddenSize(): number { return this.model.glmConfig.hiddenSize; }
+
+  get cache(): NativeMtpHead["cache"] {
+    const config = this.model.glmConfig;
+    return { kvLoraRank: config.kvLoraRank, ropeHeadDim: config.qkRopeHeadDim, maxTokens: config.maxPositionEmbeddings };
+  }
 
   async forward(ids: MlxArray, hidden: MlxArray, cache: MLACache): Promise<MlxArray> {
     const { glmConfig: config, weights } = this.model;
