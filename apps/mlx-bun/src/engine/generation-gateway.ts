@@ -103,6 +103,15 @@ export class GenerationGateway implements CompletionEngine {
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error("execution capacity must be a positive integer");
     this.#batch = capacity;
     this.#requests = new AdmissionPool(this.#batch);
+    // Every request carries the server-wide KV scheme, so a requested scheme
+    // this model cannot serve is refused here, at startup (for example
+    // GLM-5.2's MLA cache, which no KV scheme converts). Main accepted such an
+    // option and silently ignored it. A `config` request without the model's
+    // kv_config.json resolves to bf16 and is not a requested scheme.
+    const kvScheme = this.opts.kvScheme;
+    if (kvScheme && kvScheme.kind !== "bf16" && !this.#kvBatchable())
+      throw new Error(`${binding.config.modelType} cannot serve the requested KV cache scheme ${kvScheme.cacheKey}: ` +
+        "this model's cache layers do not take it; omit --kv-quant or choose a scheme this model supports");
   }
 
   /** Rows currently decoding in the batch (0 if no scheduler / idle). */
