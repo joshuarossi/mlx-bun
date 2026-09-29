@@ -1,8 +1,23 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AvailableAdapter } from "@mlx-bun/inference/adapters";
 import type { LoadedModelContext } from "../engine/model-host";
 import type { GenerationGateway } from "../engine/generation-gateway";
+import { legacyAdapterDirs, storagePath } from "../storage/paths";
+
+/** The stores `GET /v1/adapters/available` lists: the app's adapter store,
+ * where `train`, web fine-tunes, merges and memory stages write by default,
+ * then the stores earlier versions wrote, read-only. Stores reaching the same
+ * directory (a symlink) are listed once. */
+export function adapterCatalogDirs(): string[] {
+  const seen = new Set<string>();
+  return [storagePath("adapters"), ...legacyAdapterDirs()].filter(dir => {
+    let key = resolve(dir);
+    try { key = realpathSync(dir); } catch { /* a missing store lists nothing */ }
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
 
 /** HTTP owns presentation; the borrowed engine owns adapter tensors and locking. */
 export function createAdapterRoutes(
@@ -10,7 +25,7 @@ export function createAdapterRoutes(
   gateway: Pick<GenerationGateway, "runExclusive">,
   catalog: () => Promise<AvailableAdapter[]> = async () => {
     const { listAvailableAdapters } = await import("@mlx-bun/inference/adapters");
-    return listAvailableAdapters([join(homedir(), ".cache/mlx-bun-finetunes"), join(homedir(), ".cache/mlx-bun/adapters")]);
+    return listAvailableAdapters(adapterCatalogDirs());
   },
 ) {
   const error = (message: string, status = 400) => Response.json({ error: { message } }, { status });

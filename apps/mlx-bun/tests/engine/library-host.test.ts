@@ -273,7 +273,7 @@ test.skipIf(!native || !chatModel)("openIsolatedHost serves the full app to a na
   expect(result.servesAfterAbort).toBe(1);
   expect(result.closed).toBe("engine host is closed");
   // The app's jobs store opened under the temporary HOME.
-  expect(homeStores).toContain(".cache/mlx-bun/jobs.sqlite");
+  expect(homeStores).toContain(".mlx-bun/db/jobs.sqlite");
 }, 20 * 60_000);
 
 test.skipIf(!native || !chatModel)("openIsolatedHost runs a standalone CLI built from the staged natives as an explicit command", async () => {

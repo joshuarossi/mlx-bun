@@ -1,10 +1,10 @@
 import { readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { resolve, sep } from "node:path";
+import { storagePath } from "../storage/paths";
 
 /** Shared by Pi persistence and the read-only session HTTP surface. */
 export function defaultSessionDir(): string {
-  return join(homedir(), ".mlx-bun", "sessions");
+  return storagePath("sessions");
 }
 
 export function isUnderSessionDir(path: string, sessionDir: string): boolean {

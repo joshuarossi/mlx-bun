@@ -1,15 +1,17 @@
 // Model registry: bun:sqlite index over the HF cache. Answers questions
 // like "vision-capable models under 10 GB" without shell archaeology.
 //
-// scan() walks ~/.cache/huggingface/hub/models--*/snapshots/*, reading
-// only config.json + the safetensors index header (never tensor bytes).
+// scan() walks the HF hub cache's models--*/snapshots/* plus any plain model
+// directories the caller names, reading only config.json + the safetensors
+// headers (never tensor bytes).
 
 import { Database } from "bun:sqlite";
 import {
   closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync,
   readlinkSync, readSync, rmSync, statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 
 /** Speculative-decoding drafters declare themselves in config.json with a
  *  `model_type` ending in `_assistant` (`gemma4_assistant`,
@@ -87,20 +89,29 @@ CREATE TABLE IF NOT EXISTS models (
 );
 `;
 
-/** HF hub cache root, honoring the standard env overrides the same way
- *  huggingface_hub does: HF_HUB_CACHE > HF_HOME/hub >
+/** HF hub cache root, resolved at call time the way huggingface_hub does:
+ *  HF_HUB_CACHE > HF_HOME/hub > XDG_CACHE_HOME/huggingface/hub >
  *  ~/.cache/huggingface/hub. */
-export const DEFAULT_HUB =
-  process.env.HF_HUB_CACHE ??
-  (process.env.HF_HOME
-    ? join(process.env.HF_HOME, "hub")
-    : `${process.env.HOME}/.cache/huggingface/hub`);
-export const DEFAULT_DB = `${process.env.HOME}/.cache/mlx-bun/registry.sqlite`;
+export function hubCacheRoot(env: Record<string, string | undefined> = process.env): string {
+  if (env.HF_HUB_CACHE) return env.HF_HUB_CACHE;
+  if (env.HF_HOME) return join(env.HF_HOME, "hub");
+  return join(env.XDG_CACHE_HOME || join(env.HOME || homedir(), ".cache"), "huggingface", "hub");
+}
+
+export interface RegistryOptions {
+  /** Directories whose immediate subdirectories are plain model directories
+   *  (config.json + weights, no hub layout). scan() indexes them beside the
+   *  hub cache; each record's id is the subdirectory name. */
+  modelDirs?: readonly string[];
+}
 
 export class Registry {
   readonly db: Database;
+  readonly #modelDirs: readonly string[];
 
-  constructor(dbPath: string = DEFAULT_DB) {
+  /** `dbPath` is the index file, or ":memory:"; the caller owns its location. */
+  constructor(dbPath: string, options: RegistryOptions = {}) {
+    this.#modelDirs = options.modelDirs ?? [];
     if (dbPath !== ":memory:") {
       const dir = dbPath.slice(0, dbPath.lastIndexOf("/"));
       try { require("node:fs").mkdirSync(dir, { recursive: true }); } catch {}
@@ -122,13 +133,28 @@ export class Registry {
     }
   }
 
-  async scan(hubDir: string = DEFAULT_HUB): Promise<number> {
-    if (!existsSync(hubDir)) return 0;
-    // The cache is the source of truth and we only ever INSERT, so reap rows
-    // whose snapshot dir was deleted (else they linger as phantom matches).
+  /** Index the hub cache (default `hubCacheRoot()`) and the configured plain
+   *  model directories. Returns the number of records written. */
+  async scan(hubDir: string = hubCacheRoot()): Promise<number> {
+    // Disk is the source of truth and we only ever INSERT, so reap rows
+    // whose directory was deleted (else they linger as phantom matches).
     const prune = this.db.prepare("DELETE FROM models WHERE path = $path");
     for (const r of this.db.query("SELECT path FROM models").all() as { path: string }[])
       if (!existsSync(r.path)) prune.run({ $path: r.path });
+    const directories: [dir: string, repoId: string][] = [];
+    if (existsSync(hubDir)) {
+      for (const entry of readdirSync(hubDir)) {
+        if (!entry.startsWith("models--")) continue;
+        const repoId = entry.slice("models--".length).replaceAll("--", "/");
+        const snapsDir = join(hubDir, entry, "snapshots");
+        if (!existsSync(snapsDir)) continue;
+        for (const snap of readdirSync(snapsDir)) directories.push([join(snapsDir, snap), repoId]);
+      }
+    }
+    for (const root of this.#modelDirs) {
+      if (!existsSync(root)) continue;
+      for (const entry of readdirSync(root)) if (!entry.startsWith(".")) directories.push([join(root, entry), basename(entry)]);
+    }
     let count = 0;
     const upsert = this.db.prepare(`
       INSERT OR REPLACE INTO models VALUES
@@ -136,31 +162,24 @@ export class Registry {
        $vision, $vtype, $audiocfg, $audiotower, $kv, $tools, $layers, $hidden,
        $vocab, $license, $at)
     `);
-    for (const entry of readdirSync(hubDir)) {
-      if (!entry.startsWith("models--")) continue;
-      const repoId = entry.slice("models--".length).replaceAll("--", "/");
-      const snapsDir = join(hubDir, entry, "snapshots");
-      if (!existsSync(snapsDir)) continue;
-      for (const snap of readdirSync(snapsDir)) {
-        const dir = join(snapsDir, snap);
-        const rec = await scanSnapshot(dir, repoId);
-        if (!rec) continue;
-        upsert.run({
-          $path: rec.path, $repo: rec.repoId, $type: rec.modelType,
-          $params: rec.paramCount, $size: rec.sizeBytes,
-          $sidecar: rec.sidecarBytes, $experts: rec.expertsBytes,
-          $bits: rec.quantBits, $gs: rec.quantGroupSize, $mode: rec.quantMode,
-          $vision: rec.hasVisionSidecar ? 1 : 0,
-          $vtype: rec.visionConfigType,
-          $audiocfg: rec.hasAudioConfig ? 1 : 0,
-          $audiotower: rec.hasAudioTower ? 1 : 0,
-          $kv: rec.hasKvConfig ? 1 : 0,
-          $tools: rec.hasToolTemplate ? 1 : 0,
-          $layers: rec.numLayers, $hidden: rec.hiddenSize, $vocab: rec.vocabSize,
-          $license: rec.license, $at: rec.scannedAt,
-        });
-        count++;
-      }
+    for (const [dir, repoId] of directories) {
+      const rec = await scanSnapshot(dir, repoId);
+      if (!rec) continue;
+      upsert.run({
+        $path: rec.path, $repo: rec.repoId, $type: rec.modelType,
+        $params: rec.paramCount, $size: rec.sizeBytes,
+        $sidecar: rec.sidecarBytes, $experts: rec.expertsBytes,
+        $bits: rec.quantBits, $gs: rec.quantGroupSize, $mode: rec.quantMode,
+        $vision: rec.hasVisionSidecar ? 1 : 0,
+        $vtype: rec.visionConfigType,
+        $audiocfg: rec.hasAudioConfig ? 1 : 0,
+        $audiotower: rec.hasAudioTower ? 1 : 0,
+        $kv: rec.hasKvConfig ? 1 : 0,
+        $tools: rec.hasToolTemplate ? 1 : 0,
+        $layers: rec.numLayers, $hidden: rec.hiddenSize, $vocab: rec.vocabSize,
+        $license: rec.license, $at: rec.scannedAt,
+      });
+      count++;
     }
     return count;
   }
@@ -222,6 +241,10 @@ export class Registry {
     // dirs), each a registry row. Resolving a repo name must not be "ambiguous"
     // just because a stale revision lingers — collapse same-repo matches to the
     // canonical snapshot. Genuinely different repos stay ambiguous.
+    // An exact id wins over substring matches, so a local model named like
+    // part of a hub repo (`Qwen3-4B-4bit` beside `org/Qwen3-4B-4bit`) resolves.
+    const exact = matches.filter((m) => m.repoId === query);
+    if (exact.length > 0) return pickCanonicalRevision(exact);
     const repos = [...new Set(matches.map((m) => m.repoId))];
     if (repos.length === 1) return pickCanonicalRevision(matches);
     throw new Error(`"${query}" is ambiguous:\n` + repos.map((r) => `  ${r}`).join("\n"));
@@ -484,7 +507,7 @@ export function planRepoGc(repoDir: string, opts: { force?: boolean } = {}): GcR
   return plan;
 }
 
-export function planGc(hubDir: string = DEFAULT_HUB, opts: { force?: boolean } = {}): GcRepoPlan[] {
+export function planGc(hubDir: string = hubCacheRoot(), opts: { force?: boolean } = {}): GcRepoPlan[] {
   if (!existsSync(hubDir)) return [];
   const plans: GcRepoPlan[] = [];
   for (const entry of readdirSync(hubDir)) {

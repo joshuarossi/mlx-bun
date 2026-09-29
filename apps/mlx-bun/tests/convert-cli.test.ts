@@ -38,6 +38,7 @@ function harness(input: { token?: string | null; models?: Partial<ModelRecord>[]
       return input.downloaded ?? "/downloaded/snapshot";
     },
     registry: () => { order.push("registry"); return registry; },
+    root: () => "/store",
     credentials: () => ({ get() { order.push("credentials"); return input.token === undefined ? "hf_token" : input.token; } }),
     async publish(request) { order.push("publish"); publishes.push(request); return { url: "https://huggingface.co/org/quant" }; },
     step: text => { lines.push(`step: ${plain(text)}`); return {
@@ -86,7 +87,7 @@ test("main's refusals and validation messages fire before any registry, download
   expect(aborted.order).toEqual([]);
 });
 
-test("an existing --mlx-path is refused before any work; the default output is mlx_model", async () => {
+test("an existing --mlx-path is refused before any work; the default output is named in the models directory", async () => {
   const { root, local, out } = workspace();
   try {
     const taken = harness();
@@ -95,7 +96,10 @@ test("an existing --mlx-path is refused before any work; the default output is m
     expect(taken.order).toEqual([]);
     const run = harness();
     await runConvert(parse(local, "-q"), run.deps);
-    expect(run.runs[0]!.config).toEqual({ src_dir: local, out_dir: "mlx_model", bits: 4, group_size: 64, mode: "affine" });
+    expect(run.runs[0]!.config).toEqual({ src_dir: local, out_dir: "/store/models/src-4bit", bits: 4, group_size: 64, mode: "affine" });
+    const mixed = harness();
+    await runConvert(parse(local, "--target-bpw", "4.5", "--rotate-weights"), mixed.deps);
+    expect(mixed.runs[0]!.config.out_dir).toBe("/store/models/src-mixed-4.5bpw-rot42");
     expect(existsSync(out)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -322,7 +326,7 @@ test("a failed child and the real job entry without native MLX both fail cleanly
 async function cli(home: string, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", entry, ...args], {
     cwd: home, stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, HOME: home, HF_HUB_CACHE: join(home, "hub"), HF_HUB_OFFLINE: "1", HF_TOKEN: "", NO_COLOR: "1",
+    env: { ...process.env, HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: join(home, "hub"), HF_HUB_OFFLINE: "1", HF_TOKEN: "", NO_COLOR: "1",
       MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
@@ -360,11 +364,16 @@ test("the spawned CLI renders help, refuses usage errors with main's messages, a
       const result = await cli(home, ...args);
       expect(result.code).toBe(1); expect(result.err).toContain(message);
     }
-    expect(existsSync(join(home, ".cache/mlx-bun/registry.sqlite"))).toBe(false);
+    expect(existsSync(join(home, ".mlx-bun/db/registry.sqlite"))).toBe(false);
     const missing = await cli(home, "convert", "tiny", "-q");
     expect(missing.code).toBe(1); expect(missing.err).toContain('no model matching "tiny"');
     const failed = await cli(home, "convert", local, "-q");
     expect(failed.code).toBe(1); expect(failed.out).toContain("convert failed"); expect(failed.err).not.toBe("");
-    expect(existsSync(join(home, "mlx_model"))).toBe(false);
+    expect(readdirSync(join(home, ".mlx-bun", "models"))).toEqual([]);
+    // Nothing lands in the working directory (HOME here) by default: no mlx_lm-style
+    // `mlx_model`, no models or staging outside MLX_BUN_HOME. (The OS may add its own
+    // entries such as ~/Library, so this names what must not exist.)
+    for (const name of ["mlx_model", "src-4bit", "models", "hub"]) expect(existsSync(join(home, name))).toBe(false);
+    expect(readdirSync(home).filter(name => name.startsWith(".src-4bit"))).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

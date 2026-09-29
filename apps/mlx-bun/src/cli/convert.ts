@@ -2,12 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Registry } from "@mlx-bun/hub/registry";
+import type { Registry } from "@mlx-bun/hub/registry";
 import type { DownloadOptions } from "@mlx-bun/hub/download";
 import { createHfCredentials } from "../publishing/credentials";
 import type { PublishRequest } from "../publishing/upload";
 import { parseCommand, type CommandArgs } from "./args";
 import { box, step, style, type Step } from "./terminal";
+import { quantizedModelName } from "../quantize/output-name";
+import { mlxBunHome, openRegistry, storagePath } from "../storage/paths";
 
 type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
 type Progress = NonNullable<DownloadOptions["onProgress"]>;
@@ -27,6 +29,8 @@ export interface ConvertDependencies {
   entry?: string;
   download(repoId: string, options: { onProgress: Progress; signal?: AbortSignal }): Promise<string>;
   registry(): ModelRegistry;
+  /** Storage root for the default output (MLX_BUN_HOME). */
+  root(): string;
   credentials(): Pick<ReturnType<typeof createHfCredentials>, "get">;
   publish(request: PublishRequest): Promise<{ url: string }>;
   step: (text: string) => Step;
@@ -86,7 +90,8 @@ const defaults: ConvertDependencies = {
     // blob's .incomplete prefix resumable; nothing is published after an abort.
     return downloadModel(repoId, { onProgress, signal });
   },
-  registry: () => new Registry(),
+  registry: () => openRegistry(),
+  root: () => mlxBunHome(),
   credentials: () => createHfCredentials(),
   async publish(request) {
     const { createPublisher } = await import("../publishing/upload");
@@ -102,7 +107,8 @@ export function parseConvertArgs(args: string[]): CommandArgs {
   return parseCommand("convert", args);
 }
 
-/** mlx_lm.convert counterpart: main's flags, defaults, messages, and check order.
+/** mlx_lm.convert counterpart: main's flags, messages, and check order; the
+ * output defaults to the app's models directory instead of `./mlx_model`.
  * Uniform affine 4/8-bit or the OptiQ mixed path via --target-bpw, through the
  * same producer as the web quantize job in an owned child. Cancellation
  * terminates and joins that child; the atomic writer never publishes a partial
@@ -138,8 +144,11 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   const rotateWeights = flag("rotate-weights");
   const rotationSeed = Number(opt("rotation-seed") ?? "42");
   if (!Number.isInteger(rotationSeed)) throw new Error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);
-  const mlxPath = opt("mlx-path") ?? "mlx_model";
-  if (existsSync(mlxPath)) throw new Error(`Cannot save to the path ${mlxPath} as it already exists — delete it or pass a fresh --mlx-path.`);
+  const refuseExisting = (path: string) => {
+    if (existsSync(path)) throw new Error(`Cannot save to the path ${path} as it already exists — delete it or pass a fresh --mlx-path.`);
+  };
+  const explicitPath = opt("mlx-path");
+  if (explicitPath !== undefined) refuseExisting(explicitPath);
   signal?.throwIfAborted();
 
   // Source: a local model directory as given; else a downloaded model through the
@@ -166,6 +175,11 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
     } finally { registry.close(); }
   }
 
+  // Default: `<root>/models/<model>-<bits>bit` (or `-mixed-<bpw>bpw`, `-rot<seed>`),
+  // named from the resolved source so a registry query names the real model.
+  const mlxPath = explicitPath ?? join(storagePath("models", deps.root()),
+    quantizedModelName(srcDir, { bits: qBits, targetBpw, rotationSeed: rotateWeights ? rotationSeed : undefined }));
+  if (explicitPath === undefined) refuseExisting(mlxPath);
   signal?.throwIfAborted();
   const quantizing = deps.step(targetBpw !== undefined
     ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)` : `quantizing (${qBits}-bit, group ${qGroup})`);

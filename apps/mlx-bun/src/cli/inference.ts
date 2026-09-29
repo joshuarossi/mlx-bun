@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Registry } from "@mlx-bun/hub/registry";
+import type { Registry } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, type KvQuantOverride, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { createRuntimeConfig, runtimeConfig, runtimeValue, withRuntimeConfig } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme, type TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
@@ -12,6 +12,8 @@ import type { GenerationGateway } from "../engine/generation-gateway";
 import { planRequest, RequestOwnership } from "../server/request-plan";
 import { textPrompt } from "../server/text-prompt";
 import type { CommandArgs } from "./args";
+import { numericalPolicy } from "./numerical-policy";
+import { openRegistry } from "../storage/paths";
 
 type InferenceCommand = "generate" | "embed";
 interface SelectedModel { path: string; repoId: string; }
@@ -20,7 +22,7 @@ type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
 /** One-shot selection has no starter or background downloads. Generate keeps
  * main's direct registry resolution; embed alone scans an empty cache. */
 export async function resolveInferenceModel(command: InferenceCommand, query: string,
-  registry: () => ModelRegistry = () => new Registry()): Promise<SelectedModel> {
+  registry: () => ModelRegistry = () => openRegistry()): Promise<SelectedModel> {
   if (query && existsSync(join(query, "config.json"))) {
     const path = resolve(query), hf = /models--([^/]+)--([^/]+)\/snapshots\//.exec(path);
     return { path, repoId: hf ? `${hf[1]}/${hf[2]}` : basename(path) };
@@ -96,15 +98,15 @@ function numeric(args: CommandArgs, name: string, input: { integer?: boolean; mi
 /** App CLI policy: raw generated text, greedy/full-precision defaults, no
  * model-author server sampling defaults or thinking/tool output filtering. */
 export function generateOptions(args: CommandArgs): { prompt: string; raw: boolean; options: GenerateOptions;
-  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme } {
+  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme; fusedSdpa: boolean } {
   const prompt = option(args, "prompt") ?? args.positionals[1];
   if (!prompt) throw new Error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
-  const kv = option(args, "kv-quant");
+  const { kv, fusedSdpa } = numericalPolicy(args);
   // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
   const turboQuant = kv === undefined ? null : parseTurboQuantScheme(kv);
   if (kv !== undefined && !turboQuant && !["off", "config", "4", "8"].includes(kv))
     throw new Error("--kv-quant must be off, config, 4, 8, or turbo[:k<bits>v<bits>]");
-  return { prompt, raw: args.values.raw === true,
+  return { prompt, raw: args.values.raw === true, fusedSdpa,
     kvQuant: turboQuant || kv === undefined ? undefined : kv === "4" || kv === "8" ? Number(kv) : kv as KvQuantOverride,
     ...(turboQuant ? { turboQuant } : {}),
     options: {
@@ -131,12 +133,11 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
   signal?.throwIfAborted();
   const model = await deps.resolve(command, args.positionals[0] ?? option(args, "query") ?? "");
   signal?.throwIfAborted();
-  // Main's decode route for generate: explicit --kv-quant config runs the fused
-  // quantized attention; every other choice (default, off, 4, 8, turbo) runs
-  // unfused. The policy is scoped to this command's load, bind, run and cleanup.
+  // Resolve the numerical policy once for this command's load, bind, run and
+  // cleanup. Embedding keeps its ambient policy.
   const scoped = (run: () => Promise<void>) => !generation ? run()
     : withRuntimeConfig(createRuntimeConfig({ ...runtimeConfig().values,
-      MLX_BUN_NO_FUSED_SDPA: generation.kvQuant === "config" ? "0" : "1" }), run);
+      MLX_BUN_NO_FUSED_SDPA: generation.fusedSdpa ? "0" : "1" }), run);
   return scoped(async () => {
     const context = await deps.load(model, generation?.options.maxTokens);
     let close: (() => void | Promise<void>) | undefined = () => context.dispose();

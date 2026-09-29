@@ -36,7 +36,7 @@ function harness(modelDir: string, run?: JobRunner) {
     runner: () => async (emit, cfg, signal) => { runs.push({ cfg, signal }); return run ? run(emit, cfg, signal) : { outputPath: String(cfg.adapter_path) }; },
     memory: async () => ({ peak: () => 3 * 2 ** 30, reset: () => { resets++; } }),
     exists: existsSync, readText: path => Bun.file(path).text(),
-    log: line => logs.push(line), home: () => "/home/test", now: () => (clock += 1500),
+    log: line => logs.push(line), root: () => "/store", now: () => (clock += 1500),
   };
   return { deps, logs, selections, selectionSignals, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
 }
@@ -93,20 +93,20 @@ test("train builds main's exact submit record per method, with e4b and explicit 
     const base = { model_dir: f.modelDir, data_dir: f.dataDir, rank_scaling: "by_bits", num_layers: -1, iters: 100,
       max_seq_length: 4096, batch_size: 1, grad_accumulation_steps: 1, seed: 0, steps_per_report: 1, steps_per_eval: 1_000_000,
       save_checkpoints: false, grad_clip_norm: 1, val_max_examples: 256, warm_start_adapter: "" };
-    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, false, "/home/test");
-    expect(orpo.cfg).toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", method: "orpo",
+    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, false, "/store");
+    expect(orpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/orpo-model", method: "orpo",
       rank: 16, scale: 2, learning_rate: 1e-5, segment_size: 2, orpo_lambda: 0.1, orpo_lr_schedule: "cosine", orpo_warmup_iters: 10,
       orpo_chunk_size: 512, orpo_flash_ce: true, orpo_fused_ce: false, orpo_prefix_shared: true });
-    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, false, "/home/test");
-    expect(dpo.cfg).toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/dpo-cpm5", method: "dpo",
+    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, false, "/store");
+    expect(dpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/dpo-model", method: "dpo",
       rank: 8, scale: 1, learning_rate: 5e-5, segment_size: 0 });
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, true, "/home/test").cfg)
-      .toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/sft-e4b", method: "sft",
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, true, "/store").cfg)
+      .toEqual({ ...base, adapter_path: "/store/adapters/sft-model", method: "sft",
         rank: 8, scale: 1, learning_rate: 2e-4, max_seq_length: 8192, segment_size: 0 });
     const overridden = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--adapter", "/out", "--iters", "45", "--lr", "3e-5",
       "--rank", "4", "--scale", "0.5", "--seq", "1024", "--batch", "2", "--grad-accum", "3", "--grad-clip", "0", "--seed", "7",
       "--val-size", "8", "--lambda", "0.3", "--sft-scope", "response", "--seg", "3", "--save-every", "5", "--resume", "/prev",
-      "--no-flash", "--no-prefix")), m, true, "/home/test");
+      "--no-flash", "--no-prefix")), m, true, "/store");
     expect(overridden.cfg).toEqual({ model_dir: f.modelDir, data_dir: f.dataDir, adapter_path: "/out", method: "orpo", rank: 4,
       scale: 0.5, rank_scaling: "by_bits", num_layers: -1, iters: 45, learning_rate: 3e-5, max_seq_length: 1024, batch_size: 2,
       grad_accumulation_steps: 3, seed: 7, steps_per_report: 1, steps_per_eval: 5, save_checkpoints: true, segment_size: 3,
@@ -152,8 +152,8 @@ test("dry run prints main's plan box and runs no training", async () => {
       "loop       iters 100 · lr 0.00001 · rank 16 · scale 2 · seq 4096 · batch 1", "head       flash-CCE Metal ([M,vocab]-free)",
       "stack      prefix-share on · segmented 2/seg · λ 0.1", "stability  grad-clip 1 · val-size 256 · grad-accum 2 (eff batch 2)",
       "warm-start from /prev (weights only)", "checkpoint every 5 steps",
-      "adapter    /home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5",
-      "watch live (other tab): mlx-bun train-watch /home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", "dry run — not training."])
+      "adapter    /store/adapters/orpo-model",
+      "watch live (other tab): mlx-bun train-watch /store/adapters/orpo-model", "dry run — not training."])
       expect(text).toContain(line);
     expect(text).toContain("╭"); expect(text).toContain("╰");
     expect(run.runs).toEqual([]); expect(run.resets()).toBe(0);
@@ -161,7 +161,7 @@ test("dry run prints main's plan box and runs no training", async () => {
     await runTrain(parse("--data", g.dataDir, "--dry-run", "--method", "sft", "--no-segment", "--no-flash", "--grad-clip", "0"), auto.deps);
     expect(auto.selections).toEqual([null]);
     for (const line of ["● train sft · example/model (auto-picked) · e4b defaults", "data       3 train · format preference",
-      "lr 0.0002 · rank 8 · scale 1 · seq 8192", "stack      segmented off", "adapter    /home/test/.cache/mlx-bun/mlx-bun-finetunes/sft-e4b"])
+      "lr 0.0002 · rank 8 · scale 1 · seq 8192", "stack      segmented off", "adapter    /store/adapters/sft-model"])
       expect(auto.text()).toContain(line);
     expect(auto.text()).not.toContain("head "); expect(auto.text()).not.toContain("checkpoint ");
     const orpo = harness(f.modelDir);
@@ -243,6 +243,7 @@ function fuseHarness(fuse?: FuseDependencies["fuse"]) {
   const logs: string[] = [], steps: string[] = [], calls: unknown[][] = [], registry: string[] = [];
   const cached = { path: "/cache/model", repoId: "org/cached" } as ModelRecord;
   const deps: FuseDependencies = {
+    root: () => "/store",
     registry: () => ({
       list: () => { registry.push("list"); return []; },
       scan: async () => { registry.push("scan"); return 0; },
@@ -292,9 +293,9 @@ test("fuse merges by snapshot path or registry query with main's flag spellings 
   try {
     const byPath = fuseHarness();
     await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir), byPath.deps);
-    expect(byPath.registry).toEqual([]); expect(byPath.calls).toEqual([[f.modelDir, f.dataDir, "fused_model"]]);
+    expect(byPath.registry).toEqual([]); expect(byPath.calls).toEqual([[f.modelDir, f.dataDir, "/store/models/model-fused"]]);
     expect(byPath.steps()).toEqual([`start:fusing ${f.dataDir} into ${f.modelDir}`, "update:Module 1/2: layers.0", "done:fused 2 module(s) · 5 tensors written"]);
-    for (const line of ["● fuse complete", `base      ${f.modelDir}`, `adapter   ${f.dataDir}`, "model     fused_model", "serve it   mlx-bun serve fused_model"])
+    for (const line of ["● fuse complete", `base      ${f.modelDir}`, `adapter   ${f.dataDir}`, "model     /store/models/model-fused", "serve it   mlx-bun serve /store/models/model-fused"])
       expect(byPath.text()).toContain(line);
     expect(byPath.text()).not.toContain("skipped");
 
@@ -417,20 +418,20 @@ test("runWatch draws on the alternate screen, stops on q or the external signal,
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("train-watch takes the positional, then --adapter, then main's default directory", async () => {
+test("train-watch takes the positional, then --adapter, then the latest run in the adapter store", async () => {
   const watched: [string, AbortSignal | undefined][] = [];
-  const deps = { watch: async (dir: string, options?: { signal?: AbortSignal }) => { watched.push([dir, options?.signal]); }, home: () => "/home/test" };
+  const deps = { watch: async (dir: string, options?: { signal?: AbortSignal }) => { watched.push([dir, options?.signal]); }, root: () => "/nonexistent-store" };
   const signal = new AbortController().signal;
   await runTrainWatch(parseCommand("train-watch", ["/run", "--adapter", "/flag"]), deps, signal);
   await runTrainWatch(parseCommand("train-watch", ["--adapter", "/flag"]), deps);
-  await runTrainWatch(parseCommand("train-watch", []), deps);
-  expect(watched).toEqual([["/run", signal], ["/flag", undefined], ["/home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", undefined]]);
+  await expect(runTrainWatch(parseCommand("train-watch", []), deps)).rejects.toThrow("no training run found in /nonexistent-store/adapters");
+  expect(watched).toEqual([["/run", signal], ["/flag", undefined]]);
 });
 
 const entry = process.env.MLX_BUN_TEST_CLI ?? resolve(import.meta.dir, "../src/cli/main.ts");
 async function cli(home: string, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", entry, ...args], {
-    env: { ...process.env, HOME: home, HF_HUB_CACHE: join(home, "absent"), HF_HUB_OFFLINE: "1", NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
+    env: { ...process.env, HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: join(home, "absent"), HF_HUB_OFFLINE: "1", NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
     stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
