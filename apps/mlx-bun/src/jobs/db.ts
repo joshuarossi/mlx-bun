@@ -42,6 +42,17 @@ export function newJobId(): string {
   return `job_${hex}`;
 }
 
+/** The `ended_at` format: SQLite's datetime('now') ("YYYY-MM-DD HH:MM:SS",
+ * UTC), so the column is uniform whoever writes it (main's rows included). */
+export function nowIso(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
+/** A job row's `error`: the failure's name and message, as main recorded it. */
+export function jobError(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+}
+
 export class JobStore {
   readonly db: Database;
   readonly dbPath: string;
