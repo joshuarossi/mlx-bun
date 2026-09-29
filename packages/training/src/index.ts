@@ -35,7 +35,7 @@ export {
 
 export { mergeAdapters, type MergeStats } from "./merge";
 
-export { fuseAdapter, type FuseStats, type FuseProgress } from "./fuse";
+export { fuseAdapter, type FuseStats, type FuseProgress, type FuseOptions } from "./fuse";
 
 export { exportAdapter, type ExportManifest } from "./export";
 

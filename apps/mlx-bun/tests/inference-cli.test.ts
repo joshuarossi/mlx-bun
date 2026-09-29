@@ -335,3 +335,47 @@ test("cancellation during loading releases the context before creating execution
   }, abort.signal)).rejects.toThrow("cancelled during load");
   expect(run.events).toEqual(["dispose"]); expect(run.writes).toEqual([]);
 });
+
+test("generate's mlx_lm-shaped sampling, system prompt, stdin prompt and KV start options reach the request", async () => {
+  expect(generateOptions(parse("--prompt", "x", "--min-p", "0.05", "--min-tokens-to-keep", "2", "--xtc-probability", "0.5", "--xtc-threshold", "0.1",
+    "--system-prompt", "be brief", "--adapter-path", "/adapters/a", "--quantized-kv-start", "5000")))
+    .toEqual({ prompt: "x", raw: false, kvQuant: undefined, fusedSdpa: false, system: "be brief", adapter: "/adapters/a", quantizedKvStart: 5000,
+      options: { maxTokens: 256, temperature: 0, topP: 0, topK: 0, minP: 0.05, minTokensToKeep: 2, xtcProbability: 0.5, xtcThreshold: 0.1 } });
+  for (const args of [["--min-p", "2"], ["--min-tokens-to-keep", "0"], ["--xtc-threshold", "0.9"], ["--quantized-kv-start", "-1"], ["--adapter", " "]])
+    expect(() => generateOptions(parse("--prompt", "x", ...args))).toThrow();
+
+  const run = harness();
+  await runInference("generate", parse("--prompt", "hi", "--system-prompt", "be brief", "--xtc-probability", "0.5", "--min-p", "0.1"), run.dependencies);
+  expect(run.rendered[0]![0]).toEqual([{ role: "system", content: "be brief" }, { role: "user", content: "hi" }]);
+  // XTC never removes EOS or the newline token, as the server's request policy.
+  expect(run.runs[0]![1]).toMatchObject({ minP: 0.1, xtcProbability: 0.5, xtcSpecialTokens: [0, 7, 8] });
+  const raw = harness();
+  await runInference("generate", parse("--prompt", "hi", "--system-prompt", "ignored", "--raw"), raw.dependencies);
+  expect(raw.rendered).toEqual([]); expect(raw.encoded).toEqual([["hi", true]]);
+
+  const piped = harness();
+  piped.dependencies.stdin = async () => "from stdin";
+  await runInference("generate", parse("--prompt", "-"), piped.dependencies);
+  expect(piped.rendered[0]![0]).toEqual([{ role: "user", content: "from stdin" }]);
+});
+
+test("generate --adapter mounts the directory under its name before the request and selects it", async () => {
+  const run = harness(), mounts: unknown[][] = [];
+  (run.context as unknown as { adapters: unknown }).adapters = { mount: async (...args: unknown[]) => { mounts.push(args); run.events.push("mount"); } };
+  await runInference("generate", parse("--prompt", "hi", "--adapter", "/tmp/adapters/my-lora"), run.dependencies);
+  expect(mounts).toEqual([["my-lora", "/tmp/adapters/my-lora"]]);
+  expect(run.events).toEqual(["load:256", "exclusive", "mount", "close", "dispose"]);
+  expect(run.runs[0]![1]).toMatchObject({ adapters: ["my-lora"] });
+  const plain = harness();
+  await runInference("generate", parse("--prompt", "hi"), plain.dependencies);
+  expect(plain.runs[0]![1]).not.toHaveProperty("adapters");
+});
+
+test("--quantized-kv-start feeds the KV scheme's start; without it affine KV starts at token 0", async () => {
+  const started = harness();
+  await runInference("generate", parse("--prompt", "hi", "--kv-quant", "4", "--quantized-kv-start", "5000"), started.dependencies);
+  expect(started.schemes).toEqual([{ kvBits: 4, quantizedKvStart: 5000 }]);
+  const immediate = harness();
+  await runInference("generate", parse("--prompt", "hi", "--kv-quant", "4"), immediate.dependencies);
+  expect(immediate.schemes).toEqual([{ kvBits: 4, quantizedKvStart: 0 }]);
+});

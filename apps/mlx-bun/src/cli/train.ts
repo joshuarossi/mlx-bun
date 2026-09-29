@@ -7,6 +7,7 @@ import { inspectDataset } from "../finetune/inspect";
 import { runWatch } from "../finetune/watch";
 import type { JobEvent, JobRunner } from "../jobs/protocol";
 import type { CommandArgs } from "./args";
+import { publishModel, requireWriteToken, uploadDefaults, type ConvertDependencies } from "./convert";
 import { resolveModelAuto } from "./model-selection";
 import { boxLines, step, style } from "./terminal";
 import { mlxBunHome, modelShortName, openRegistry, storagePath } from "../storage/paths";
@@ -33,7 +34,7 @@ export interface TrainArgs {
   query: string | null; dataDir: string; method: TrainMethod; sftScope: "full" | "response" | null;
   /** Validated numeric flags that were supplied; defaults are method/model dependent. */
   numbers: ReadonlyMap<string, number>;
-  adapter?: string; resume: string; noSegment: boolean; flashOn: boolean; prefixOn: boolean; dryRun: boolean;
+  adapter?: string; resume: string; noSegment: boolean; flashOn: boolean; prefixOn: boolean; dryRun: boolean; gradCheckpoint: boolean;
 }
 
 /** Main's checks in main's order, all before any model resolution: usage,
@@ -51,7 +52,8 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
   const noSegment = flag(args, "no-segment");
   const numbers = new Map<string, number>();
   for (const name of ["iters", "seq", ...(noSegment ? [] : ["seg"]), "save-every", "rank", "scale", "lr", "batch",
-    "grad-accum", "seed", "grad-clip", "val-size", ...(method === "orpo" ? ["lambda"] : [])]) {
+    "grad-accum", "seed", "grad-clip", "val-size", "num-layers", "steps-per-report", "steps-per-eval", "dropout", "weight-decay",
+    ...(method === "orpo" ? ["lambda"] : [])]) {
     const raw = opt(args, name);
     if (raw === undefined) continue;
     const value = Number(raw);
@@ -59,7 +61,8 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
     numbers.set(name, value);
   }
   return { query, dataDir, method, sftScope, numbers, adapter: opt(args, "adapter"), resume: opt(args, "resume") ?? "",
-    noSegment, flashOn: !flag(args, "no-flash"), prefixOn: !flag(args, "no-prefix"), dryRun: flag(args, "dry-run") };
+    noSegment, flashOn: !flag(args, "no-flash"), prefixOn: !flag(args, "no-prefix"), dryRun: flag(args, "dry-run"),
+    gradCheckpoint: flag(args, "grad-checkpoint") };
 }
 
 export interface TrainPlan {
@@ -87,20 +90,23 @@ export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: bool
     rank: num("rank", isOrpo ? 16 : 8),
     scale: num("scale", isOrpo ? 2.0 : 1.0),
     rank_scaling: "by_bits",
-    num_layers: -1,
+    num_layers: num("num-layers", -1),
     iters,
     learning_rate: num("lr", isOrpo ? 1e-5 : method === "dpo" ? 5e-5 : 2e-4),
     max_seq_length: seq,
     batch_size: num("batch", 1),
     grad_accumulation_steps: num("grad-accum", 1),
     seed: num("seed", 0),
-    steps_per_report: 1,
-    steps_per_eval: saveEvery > 0 ? saveEvery : 1_000_000,
+    steps_per_report: num("steps-per-report", 1),
+    steps_per_eval: num("steps-per-eval", saveEvery > 0 ? saveEvery : 1_000_000),
     save_checkpoints: saveEvery > 0,
     segment_size: seg,
     grad_clip_norm: num("grad-clip", 1.0),
     val_max_examples: num("val-size", 256),
     warm_start_adapter: parsed.resume,
+    ...(parsed.numbers.has("dropout") ? { lora_dropout: parsed.numbers.get("dropout") } : {}),
+    ...(parsed.numbers.has("weight-decay") ? { weight_decay: parsed.numbers.get("weight-decay") } : {}),
+    ...(parsed.gradCheckpoint ? { grad_checkpoint: true } : {}),
     ...(parsed.sftScope ? { sft_scope: parsed.sftScope } : {}),
     ...(isOrpo ? {
       orpo_lambda: num("lambda", 0.1),
@@ -232,6 +238,9 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
 
 export interface FuseDependencies {
   registry(): ModelRegistry;
+  /** The Hub write token and push behind `--upload-repo`, as convert's. */
+  credentials: ConvertDependencies["credentials"];
+  publish: ConvertDependencies["publish"];
   /** Storage root for the default output (MLX_BUN_HOME). */
   root(): string;
   fuse: typeof fuseAdapter;
@@ -240,19 +249,24 @@ export interface FuseDependencies {
   step: typeof step;
 }
 const fuseDefaults: FuseDependencies = {
-  registry: () => openRegistry(), root: () => mlxBunHome(),
+  registry: () => openRegistry(), root: () => mlxBunHome(), ...uploadDefaults,
   fuse: async (...call) => (await import("@mlx-bun/training")).fuseAdapter(...call),
   exists: existsSync, log: line => console.log(line), step,
 };
-const REFUSED_FUSE_FLAGS = ["de-quantize", "dequantize", "export-gguf", "gguf-path", "upload-repo"];
+const REFUSED_FUSE_FLAGS = ["export-gguf", "gguf-path"];
 
-/** `fuse`: mlx_lm.fuse counterpart over the public training library. The merge
+/** `fuse`: mlx_lm.fuse counterpart over the public training library
+ * (`--dequantize` writes dense weights; `--upload-repo` pushes the result like
+ * convert's). GGUF export is refused. The merge
  * itself has no cancellation seam: a signal is honored before it starts; one
  * arriving during the merge lets it finish so the output is never half-written. */
 export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...fuseDefaults, ...supplied };
   const unsupported = REFUSED_FUSE_FLAGS.filter(name => args.values[name] !== undefined).map(name => `--${name}`);
-  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (see: mlx-bun help fuse)`);
+  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)`);
+  // The write token is resolved before any fuse work, as convert does.
+  const uploadRepo = opt(args, "upload-repo");
+  if (uploadRepo !== undefined) requireWriteToken(deps.credentials());
   const modelArg = args.positionals[0] ?? opt(args, "model");
   if (!modelArg) throw new Error("usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]");
   const adapterDir = opt(args, "adapter") ?? opt(args, "adapter-path") ?? "adapters";
@@ -280,8 +294,10 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
     s.update(`fusing ${adapterDir} into ${modelDir} ${style.dim(`· cancellation requested; the merge cannot be interrupted, finishing so ${savePath} is not left half-written`)}`);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
+  let fusedDir: string | undefined;
   try {
-    const stats = await deps.fuse(modelDir, adapterDir, savePath, e => s.update(e.message));
+    const dequantize = flag(args, "dequantize");
+    const stats = await deps.fuse(modelDir, adapterDir, savePath, e => s.update(e.message), { dequantize });
     s.done(`fused ${stats.fusedModules} module(s) ${style.dim(`· ${stats.totalTensors} tensors written`)}`);
     deps.log("");
     for (const line of boxLines([
@@ -290,16 +306,21 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
       `base      ${style.dim(modelDir)}`,
       `adapter   ${style.dim(adapterDir)}`,
       `model     ${style.bold(stats.outDir)}`,
+      ...(dequantize ? [`weights   ${style.dim("dequantized to dense")}`] : []),
       ...(stats.skippedAdapterTensors > 0
         ? [`skipped   ${style.dim(`${stats.skippedAdapterTensors} adapter tensor(s) with no matching base weight`)}`] : []),
       "",
       `serve it   ${style.accent(`mlx-bun serve ${stats.outDir}`)}`,
     ])) deps.log(line);
     if (interrupted) deps.log(`  ${style.dim("cancellation arrived during the merge; it cannot be interrupted, so the output was completed.")}`);
+    fusedDir = stats.outDir;
   } catch (error) {
     s.fail(`fuse failed: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   } finally { signal?.removeEventListener("abort", onAbort); }
+  // The push starts only for an uninterrupted run; a cancel that arrived mid-merge only completes the output.
+  if (uploadRepo !== undefined && fusedDir !== undefined && !interrupted)
+    await publishModel(deps, { kind: "finetune", repoId: uploadRepo, dir: fusedDir, what: "fused" }, signal);
 }
 
 export interface WatchDependencies { watch: typeof runWatch; root(): string }

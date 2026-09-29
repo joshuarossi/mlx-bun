@@ -98,7 +98,7 @@ function numeric(args: CommandArgs, name: string, input: { integer?: boolean; mi
 /** App CLI policy: raw generated text, greedy/full-precision defaults, no
  * model-author server sampling defaults or thinking/tool output filtering. */
 export function generateOptions(args: CommandArgs): { prompt: string; raw: boolean; options: GenerateOptions;
-  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme; fusedSdpa: boolean } {
+  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme; fusedSdpa: boolean; system?: string; adapter?: string; quantizedKvStart?: number } {
   const prompt = option(args, "prompt") ?? args.positionals[1];
   if (!prompt) throw new Error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
   const { kv, fusedSdpa } = numericalPolicy(args);
@@ -106,7 +106,13 @@ export function generateOptions(args: CommandArgs): { prompt: string; raw: boole
   const turboQuant = kv === undefined ? null : parseTurboQuantScheme(kv);
   if (kv !== undefined && !turboQuant && !["off", "config", "4", "8"].includes(kv))
     throw new Error("--kv-quant must be off, config, 4, 8, or turbo[:k<bits>v<bits>]");
+  const adapter = option(args, "adapter") ?? option(args, "adapter-path");
+  if (adapter !== undefined && !adapter.trim()) throw new Error("--adapter expects a directory");
+  const system = option(args, "system-prompt");
+  const quantizedKvStart = numeric(args, "quantized-kv-start", { integer: true, minimum: 0 });
   return { prompt, raw: args.values.raw === true, fusedSdpa,
+    ...(quantizedKvStart !== undefined ? { quantizedKvStart } : {}),
+    ...(system !== undefined ? { system } : {}), ...(adapter !== undefined ? { adapter } : {}),
     kvQuant: turboQuant || kv === undefined ? undefined : kv === "4" || kv === "8" ? Number(kv) : kv as KvQuantOverride,
     ...(turboQuant ? { turboQuant } : {}),
     options: {
@@ -114,6 +120,10 @@ export function generateOptions(args: CommandArgs): { prompt: string; raw: boole
       temperature: numeric(args, "temperature", { minimum: 0 }) ?? numeric(args, "temp", { minimum: 0 }) ?? 0,
       topP: numeric(args, "top-p", { minimum: 0, maximum: 1 }) ?? 0,
       topK: numeric(args, "top-k", { integer: true, minimum: 0 }) ?? 0,
+      ...(option(args, "min-p") !== undefined ? { minP: numeric(args, "min-p", { minimum: 0, maximum: 1 })! } : {}),
+      ...(option(args, "min-tokens-to-keep") !== undefined ? { minTokensToKeep: numeric(args, "min-tokens-to-keep", { integer: true, minimum: 1 })! } : {}),
+      ...(option(args, "xtc-probability") !== undefined ? { xtcProbability: numeric(args, "xtc-probability", { minimum: 0, maximum: 1 })! } : {}),
+      ...(option(args, "xtc-threshold") !== undefined ? { xtcThreshold: numeric(args, "xtc-threshold", { minimum: 0, maximum: 0.5 })! } : {}),
       ...(option(args, "seed") !== undefined ? { seed: numeric(args, "seed", { integer: true })! } : {}),
     },
   };
@@ -130,6 +140,8 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
       ? (await deps.stdin(signal)).split("\n").map(line => line.trim()).filter(Boolean) : [];
     if (!texts.length) throw new Error('usage: mlx-bun embed [query] --text "…" (or pipe text, one per line)');
   }
+  // `--prompt -` reads the prompt from stdin, as mlx_lm.generate does.
+  if (generation?.prompt === "-") generation.prompt = await deps.stdin(signal);
   signal?.throwIfAborted();
   const model = await deps.resolve(command, args.positionals[0] ?? option(args, "query") ?? "");
   signal?.throwIfAborted();
@@ -146,7 +158,8 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
       signal?.throwIfAborted();
       const scheme = resolveKvScheme({ turboQuant: generation?.turboQuant, override: generation?.kvQuant ??
         (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" : "off"), config: context.kvConfig,
-        ...(generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
+        ...(generation?.quantizedKvStart !== undefined ? { quantizedKvStart: generation.quantizedKvStart }
+          : generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
       });
       close = undefined; // engine construction owns failure cleanup from here
       const engine = await deps.engine(context, scheme);
@@ -154,12 +167,21 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
       signal?.throwIfAborted();
       if (generation) {
         const ids = !generation.raw && context.template
-          ? textPrompt(context.template, context.tokenizer, [{ role: "user", content: generation.prompt }],
+          ? textPrompt(context.template, context.tokenizer, [...generation.system !== undefined ? [{ role: "system" as const, content: generation.system }] : [],
+            { role: "user" as const, content: generation.prompt }],
             { addGenerationPrompt: true, enableThinking: runtimeValue("MLX_BUN_EVAL_THINK") === "1" }, false).ids
           : context.tokenizer.encode(generation.prompt, true);
-        const plan = planRequest({ promptIds: ids, options: { ...generation.options, ...scheme.generationOptions, stopSequences: [] },
+        // XTC never removes EOS or the newline token (as the server's request policy).
+        const xtc = generation.options.xtcProbability ? { xtcSpecialTokens: [...context.model.config.eosTokenIds, ...context.tokenizer.encode("\n", false)] } : {};
+        const adapterIds: string[] = [];
+        if (generation.adapter) {
+          const id = basename(resolve(generation.adapter));
+          await engine.gateway.runExclusive(async () => { await context.adapters.mount(id, generation.adapter!); }, undefined, signal);
+          adapterIds.push(id);
+        }
+        const plan = planRequest({ promptIds: ids, options: { ...generation.options, ...xtc, ...scheme.generationOptions, stopSequences: [] },
           requestedMaxTokens: generation.options.maxTokens!, contextLimit: context.glmMemoryPlan?.contextTokens ?? null,
-          stream: false, wantLogprobs: false, topLogprobs: 0, adapterIds: [], hasVision: false,
+          stream: false, wantLogprobs: false, topLogprobs: 0, adapterIds, hasVision: false,
           userSeed: generation.options.seed !== undefined, hasGrammar: false, hasDraft: false, ownership: new RequestOwnership() });
         if (!plan.ok) { plan.dispose(); throw new Error(plan.error.message); }
         const tokens: number[] = [];

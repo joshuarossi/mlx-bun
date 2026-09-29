@@ -1006,9 +1006,15 @@ uniform affine quantization; `--target-bpw` with `--candidate-bits`,
 `--calibration-mix`, `--n-calibration`, `--rotate-weights`, and
 `--rotation-seed` select the mixed path. `--upload-repo` resolves the write
 token before any work and publishes through the app publisher afterwards; an
-upload failure keeps the model and prints the retry hint. `--dtype`,
-`-d`/`--dequantize`, `--quant-predicate`, a non-affine `--q-mode`, and plain
-non-quantizing conversion are refused with main's messages. Each conversion owns a
+upload failure keeps the model and prints the retry hint. Without `-q` or
+`--target-bpw` the model is rewritten only as asked: `--dtype float16|bfloat16|float32`
+casts every floating tensor (a quantized model's scales and biases included; router
+and expert biases and SSM decay parameters keep their dtype, as mlx-lm's per-model
+cast predicates do) and `-d`/`--dequantize` writes dense weights and drops the
+quantization block (`convertModelDir` in `@mlx-bun/quantize`); with `-q`, `--dtype`
+is the scales/biases dtype and the dtype of the unquantized tensors (bf16 scales
+and unchanged tensors without it). `--quant-predicate` and a non-affine `--q-mode`
+are refused, as are `-q` with `-d`. Each conversion owns a
 private root beside the destination holding the child's result, staging, temp
 probes, and job store; only a complete result is published, by one rename.
 SIGINT/SIGTERM terminate and join the child immediately, even mid-sweep
@@ -1048,10 +1054,13 @@ save already started is allowed to finish and is reported as success. `train-wat
 `<adapter>/metrics.jsonl` (default: the most recently updated run in
 `~/.mlx-bun/adapters`); `train` writes `~/.mlx-bun/adapters/<method>-<model>`
 unless `--adapter` is given. `fuse` merges an adapter through `fuseAdapter` into
-`--save-path` (default `~/.mlx-bun/models/<model>-fused`, refused if it exists) and
-refuses the mlx_lm.fuse flags main refused; the merge cannot be interrupted, so
-a signal arriving during it lets the output finish rather than leaving a partial
-directory. [Training CLI tests](tests/train-cli.test.ts) use injected
+`--save-path` (default `~/.mlx-bun/models/<model>-fused`, refused if it exists);
+`--dequantize` writes dense weights for every quantized module and drops the
+quantization block, and `--upload-repo` checks the write token first and pushes the
+finished model as `convert` does. GGUF export (`--export-gguf`, `--gguf-path`) is
+refused. The merge cannot be interrupted, so
+a signal arriving during it lets the output finish (without pushing) rather than
+leaving a partial directory. [Training CLI tests](tests/train-cli.test.ts) use injected
 dependencies and a spawned CLI with native MLX blocked.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error

@@ -1,5 +1,5 @@
 // Fuse a LoRA adapter into base model weights → a standalone model snapshot
-// (mlx_lm.fuse counterpart, minus GGUF/de-quantize export).
+// (mlx_lm.fuse counterpart, minus GGUF export).
 //
 // Math (matches mlx-lm's LoRALinear.fuse and our QuantizedLinear.forward):
 //   forward:  y = x @ W_dequantᵀ + scale · ((x @ A) @ B)
@@ -34,6 +34,12 @@ export interface FuseStats {
   /** Adapter tensors that matched no base weight (skipped). */
   skippedAdapterTensors: number;
   totalTensors: number;
+}
+
+export interface FuseOptions {
+  /** `mlx_lm.fuse --dequantize`: write dense weights for every quantized
+   *  module (fused or not) and drop the config's quantization block. */
+  dequantize?: boolean;
 }
 
 export interface FuseProgress {
@@ -76,14 +82,17 @@ function groupPairs(tensors: Map<string, MlxArray>): {
  * write a complete, loadable snapshot to `outDir` (weights + config.json +
  * tokenizer aux files). Quantization layout is preserved verbatim: fused
  * modules are dequantized, updated, and re-quantized with their own source
- * spec; untouched modules pass through bit-identical.
+ * spec; untouched modules pass through bit-identical. With
+ * `options.dequantize` every quantized module is written dense instead.
  */
 export async function fuseAdapter(
   modelDir: string,
   adapterDir: string,
   outDir: string,
   onProgress?: (e: FuseProgress) => void,
+  options: FuseOptions = {},
 ): Promise<FuseStats> {
+  const dense = options.dequantize === true;
   const progress = (stage: string, message: string, frac: number) =>
     onProgress?.({ stage, message, progress: frac });
 
@@ -154,6 +163,12 @@ export async function fuseAdapter(
       if (processed % CACHE_CLEAR_EVERY === 0) clearCache();
       const pair = suffixes.has("weight") ? byModule.get(base) : undefined;
       if (!pair) {
+        const spec = dense && suffixes.has("weight") && suffixes.has("scales") ? quantFor(config.quantization, base) : null;
+        if (spec) {
+          const biases = suffixes.has("biases") ? weights.tensor(`${base}.biases`) : null;
+          out.push({ name: `${base}.weight`, array: ops.dequantize(weights.tensor(`${base}.weight`), weights.tensor(`${base}.scales`), biases, spec, cpuStream) });
+          continue;
+        }
         for (const suf of suffixes) {
           const n = `${base}.${suf}`;
           out.push({ name: n, array: weights.tensor(n) });
@@ -204,7 +219,7 @@ export async function fuseAdapter(
       w16.dispose();
       delta.dispose();
 
-      if (srcSpec) {
+      if (srcSpec && !dense) {
         const q = ops.quantize(fusedW, srcSpec.groupSize, srcSpec.bits, srcSpec.mode, cpuStream);
         fusedW.dispose();
         out.push({ name: `${base}.weight`, array: q.packed });
@@ -222,7 +237,12 @@ export async function fuseAdapter(
 
     // Config is unchanged (same quantization layout) — copy it and the aux
     // files (tokenizer, chat template, …) verbatim for a loadable snapshot.
-    await Bun.write(join(outDir, "config.json"), Bun.file(join(modelDir, "config.json")));
+    // A dequantized model drops its quantization block instead.
+    if (dense) {
+      const raw = await Bun.file(join(modelDir, "config.json")).json() as Record<string, unknown>;
+      delete raw.quantization; delete raw.quantization_config;
+      await Bun.write(join(outDir, "config.json"), JSON.stringify(raw, null, 2));
+    } else await Bun.write(join(outDir, "config.json"), Bun.file(join(modelDir, "config.json")));
     await copyAuxFiles(modelDir, outDir);
 
     progress("done", `Fused ${fusedModules} module(s) → ${outDir}`, 1);
