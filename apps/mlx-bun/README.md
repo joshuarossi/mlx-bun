@@ -707,8 +707,10 @@ uses temporary paths and a fixed loopback SSE response to exercise real Pi
 startup, provider hooks, streaming, cancellation, and transcript persistence
 without a model or access to the installed app's chat storage.
 
-The sidebar lists the chats Pi recorded under the server's working directory,
-as in main. Opening a chat whose recorded directory no longer exists (a moved
+The sidebar lists every chat in the session directory, whatever working
+directory it recorded; main listed only chats recorded under the server's
+working directory, which a server started by brew or launchd does not
+meaningfully have. Opening a chat whose recorded directory no longer exists (a moved
 or deleted checkout) continues it in the server's directory, the SDK's
 "continue in current cwd" choice; main, and the SDK without that choice, refuse
 to open it. The file keeps its recorded header, and opening a chat appends the
@@ -725,7 +727,9 @@ append-only or message-preserving session rewrites. Its default case builds
 main's formats in-test; `MLX_BUN_APP_TEST_USER_DATA=<isolated copy laid out as
 a HOME>` (with `MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME=<its original HOME>`
 to follow recorded job paths into the copy) runs it on real data and prints what
-to preserve before an old checkout is deleted.
+to preserve before an old checkout is deleted. It refuses a copy holding, at any
+depth, a link that resolves into a live store (`~/.mlx-bun`, `MLX_BUN_HOME`,
+`~/.cache`, `~/.pi`, `~/Library`) or a directory link leaving the copy.
 
 ## Browser app
 

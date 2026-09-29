@@ -165,7 +165,7 @@ test("Pi read-only chat executes injected memory and loads only the supplied bun
   }
 }, 15_000);
 
-test("a chat recorded in a directory that no longer exists opens in the server's directory and keeps its record", async () => {
+test("the sidebar lists every recorded chat, and one whose directory no longer exists opens in the server's directory and keeps its record", async () => {
   const { SessionManager } = await import("@earendil-works/pi-coding-agent");
   const root = mkdtempSync(join(tmpdir(), "mlx-pi-moved-"));
   const cwd = join(root, "server"), kept = join(root, "kept"), sessionDir = join(root, "sessions");
@@ -188,6 +188,9 @@ test("a chat recorded in a directory that no longer exists opens in the server's
   const runtime = () => (backend as unknown as { runtime: AgentSessionRuntime }).runtime;
   try {
     await bounded(backend.start());
+    // Neither chat was recorded under the server's directory; both are listed, beside the new chat start opened.
+    const listed = frames.filter(frame => frame.type === "sessions").at(-1) as Extract<ServerMessage, { type: "sessions" }> | undefined;
+    expect(listed?.items.map(item => item.path)).toEqual(expect.arrayContaining([moved, existing]));
     for (const [path, expectedCwd, text] of [[moved, cwd, "Old chat"], [existing, kept, "Kept chat"]] as const) {
       const before = frames.length;
       await bounded(backend.handle({ type: "open_session", path }));

@@ -18,11 +18,11 @@
 //   [MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME=<the HOME the data was copied from>] \
 //     bun test tests/existing-user-data.test.ts
 // The copy must hold .mlx-bun and/or .cache/mlx-bun (and Library/LaunchAgents
-// for the schedule); make it with `cp -c -R -P -p`, never with links into the
-// live stores. Job logs and outputs recorded under the original HOME are read
+// for the schedule); make it with `cp -c -R -P -p`. A copy holding, at any
+// depth, a link into a live store or a directory link out of the copy is refused. Job logs and outputs recorded under the original HOME are read
 // from their copies; nothing outside the copy is read except the targets of
 // its symlinks, which are only fingerprinted. It needs no weights or GPU and
-// prints a summary: counts, per-cwd sidebar listings, broken and external
+// prints a summary: counts, sidebar and per-cwd listings, broken and external
 // Reference links (the targets to preserve before deleting an old checkout),
 // adapter directories, external job paths, and the schedule's command.
 import { expect, test } from "bun:test";
@@ -73,6 +73,29 @@ function externalTargets(root: string, tree: Map<string, Node>) {
   return out;
 }
 
+/** The live HOME's stores, which the probe must never reach: mlx-bun's data (and
+ * MLX_BUN_HOME when set), the caches, Pi's directory, and Library. */
+function liveStores(realHome: string, env: Record<string, string | undefined> = process.env): string[] {
+  return [join(realHome, ".mlx-bun"), join(realHome, ".cache"), join(realHome, ".pi"), join(realHome, "Library"),
+    ...(env.MLX_BUN_HOME ? [env.MLX_BUN_HOME] : [])].map(path => existsSync(path) ? realpathSync(path) : path);
+}
+
+/** Symlinks anywhere in `copy` the probe could read or write through into a live
+ * store: any link resolving into one, and any directory link leaving the copy
+ * (whose contents may link onward). Dangling links and file links elsewhere
+ * (Reference docs in an old checkout) are allowed; they are only fingerprinted. */
+function unsafeLinks(copy: string, live: string[]): string[] {
+  const unsafe: string[] = [];
+  for (const [path, node] of fingerprint(copy)) {
+    if (node.type !== "symlink") continue;
+    let resolved: string;
+    try { resolved = realpathSync(join(copy, path)); } catch { continue; }
+    if (inside(resolved, copy)) continue;
+    if (live.some(store => inside(resolved, store)) || statSync(resolved).isDirectory()) unsafe.push(`${path} -> ${resolved}`);
+  }
+  return unsafe;
+}
+
 async function sha(path: string) {
   const hasher = new Bun.CryptoHasher("sha256");
   for await (const chunk of Bun.file(path).stream()) hasher.update(chunk);
@@ -112,7 +135,7 @@ export interface Acceptance {
 /** Clone `source`, open it through the app with HOME set to the clone, and verify nothing was lost. */
 async function acceptUserData(source: string, originalHome?: string): Promise<Acceptance> {
   const before = fingerprint(source), targets = externalTargets(source, before);
-  const scratch = mkdtempSync(join(tmpdir(), "mlx-user-data-")), work = join(scratch, "home");
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "mlx-user-data-"))), work = join(scratch, "home");
   try {
     mkdirSync(work);
     let clone = await run(["/bin/cp", "-c", "-R", "-P", "-p", `${source}/.`, work], { PATH: process.env.PATH ?? "" }, scratch);
@@ -325,6 +348,8 @@ test("main's user data under HOME opens through the app without loss", async () 
     const sessions = report.sessions as Exclude<UserDataReport["sessions"], { error: string }>;
     expect(sessions.files).toBe(3);
     expect(sessions.listed).toBe(3);
+    // The probe's server runs from neither recorded directory; the sidebar still lists every chat.
+    expect(sessions.sidebar).toBe(3);
     expect(sessions.byCwd).toEqual({ [join(root, "projectA")]: 2, [join(root, "projectB")]: 1 });
     expect(Object.values(sessions.versions).map(v => v.version).sort()).toEqual([1, 3, 3]);
     expect(Object.values(sessions.opened).map(o => o.messages).sort()).toEqual([2, 2, 4]);
@@ -363,20 +388,47 @@ test("main's user data under HOME opens through the app without loss", async () 
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 120_000);
 
+test("the copy guard refuses links into a live store at any depth and directory links out of the copy", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mlx-copy-guard-")));
+  try {
+    const realHome = join(root, "home"), copy = join(root, "copy"), checkout = join(root, "checkout");
+    for (const dir of [join(realHome, ".mlx-bun", "sessions"), join(realHome, ".cache", "mlx-bun"), join(checkout, "docs"),
+      join(copy, ".mlx-bun", "sessions"), join(copy, ".mlx-bun", "wiki", "Reference"), join(copy, ".cache")]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(realHome, ".mlx-bun", "sessions", "live.jsonl"), "{}\n");
+    writeFileSync(join(checkout, "docs", "architecture.md"), "# doc\n");
+    const live = liveStores(realHome, { MLX_BUN_HOME: join(root, "elsewhere") });
+    expect(live).toContain(join(root, "elsewhere"));
+    // Allowed: a file link to an old checkout, a dangling link, a link inside the copy.
+    symlinkSync(join(checkout, "docs", "architecture.md"), join(copy, ".mlx-bun", "wiki", "Reference", "architecture.md"));
+    symlinkSync(join(checkout, "docs", "deleted.md"), join(copy, ".mlx-bun", "wiki", "Reference", "deleted.md"));
+    symlinkSync(join(copy, ".mlx-bun", "sessions"), join(copy, ".mlx-bun", "sessions-link"));
+    expect(unsafeLinks(copy, live)).toEqual([]);
+    // Refused: a nested file link into the live store, a nested directory link into it, and a directory link out of the copy.
+    symlinkSync(join(realHome, ".mlx-bun", "sessions", "live.jsonl"), join(copy, ".mlx-bun", "sessions", "live.jsonl"));
+    symlinkSync(join(realHome, ".cache", "mlx-bun"), join(copy, ".cache", "mlx-bun"));
+    symlinkSync(join(checkout, "docs"), join(copy, ".mlx-bun", "wiki", "Reference", "docs"));
+    expect(unsafeLinks(copy, live).sort()).toEqual([
+      `.cache/mlx-bun -> ${join(realHome, ".cache", "mlx-bun")}`,
+      `.mlx-bun/sessions/live.jsonl -> ${join(realHome, ".mlx-bun", "sessions", "live.jsonl")}`,
+      `.mlx-bun/wiki/Reference/docs -> ${join(checkout, "docs")}`,
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 const supplied = process.env.MLX_BUN_APP_TEST_USER_DATA;
 test.skipIf(!supplied)("an isolated copy of real user data opens through the app without loss", async () => {
-  const copy = realpathSync(supplied!), realHome = realpathSync(homedir());
-  if (copy === realHome || inside(realHome, copy) || [".mlx-bun", ".cache", "Library"].some(dir => inside(copy, join(realHome, dir))))
+  const copy = realpathSync(supplied!), realHome = realpathSync(homedir()), live = liveStores(realHome);
+  if (copy === realHome || inside(realHome, copy) || live.some(store => inside(copy, store) || inside(store, copy)))
     throw new Error(`MLX_BUN_APP_TEST_USER_DATA must be an isolated copy, not the live HOME or its stores: ${copy}`);
   const roots = [".mlx-bun", ".cache/mlx-bun"].filter(dir => existsSync(join(copy, dir)));
   if (!roots.length) throw new Error(`MLX_BUN_APP_TEST_USER_DATA has neither .mlx-bun nor .cache/mlx-bun: ${copy}`);
-  for (const dir of roots)
-    if (!inside(realpathSync(join(copy, dir)), copy)) throw new Error(`${join(copy, dir)} links outside the copy`);
+  const unsafe = unsafeLinks(copy, live);
+  if (unsafe.length) throw new Error(`MLX_BUN_APP_TEST_USER_DATA links into a live store or out of the copy by directory:\n${unsafe.join("\n")}`);
   const result = await acceptUserData(copy, process.env.MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME);
   const { report } = result;
   const vault = report.vault as { symlinks?: { path: string; target: string; state: string }[] };
   console.log(JSON.stringify({
-    sessions: "error" in report.sessions ? report.sessions : { files: report.sessions.files, listed: report.sessions.listed,
+    sessions: "error" in report.sessions ? report.sessions : { files: report.sessions.files, listed: report.sessions.listed, sidebar: report.sessions.sidebar,
       versions: Object.values(report.sessions.versions).reduce<Record<number, number>>((out, v) => ({ ...out, [v.version]: (out[v.version] ?? 0) + 1 }), {}),
       byCwd: report.sessions.byCwd, failures: report.sessions.failures, agentFiles: report.sessions.agentFiles },
     jobs: report.jobs, vault: { ...report.vault, symlinks: undefined },

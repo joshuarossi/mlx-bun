@@ -96,8 +96,11 @@ async function sessions() {
     }
   } finally { await backend.dispose(); }
   const ready = frames.find(frame => frame.type === "ready");
+  // The sidebar the web chat sent last: recorded chats it lists, from any directory.
+  const sidebar = (frames.filter(frame => frame.type === "sessions").at(-1)?.items as { path: string }[] | undefined ?? [])
+    .filter(item => files.includes(relative(dir, item.path))).length;
   return {
-    dir: relative(home, dir), files: files.length, versions, listed: listed.length, byCwd, exported, opened, history, failures,
+    dir: relative(home, dir), files: files.length, versions, listed: listed.length, sidebar, byCwd, exported, opened, history, failures,
     webChat: { ready: !!ready, startErrors: frames.filter(frame => frame.type === "error").map(frame => String(frame.message)) },
     agentFiles: existsSync(join(home, ".mlx-bun", "pi-sessions")) ? readdirSync(join(home, ".mlx-bun", "pi-sessions")).sort() : [],
   };

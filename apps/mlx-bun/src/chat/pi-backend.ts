@@ -320,11 +320,13 @@ class PiBackend implements ChatBackend {
     }
   }
 
-  /** Send the recent-chats list (sidebar), marking the active session. */
+  /** Send the recent-chats list (sidebar), marking the active session. Every
+   *  chat in the session directory is listed, whatever directory it recorded:
+   *  a server started by brew or launchd has no meaningful cwd to filter by. */
   private async sendSessions(): Promise<void> {
     let infos: SessionInfo[] = [];
     try {
-      infos = await SessionManager.list(this.cwd, this.sessionDir);
+      infos = await SessionManager.listAll(this.sessionDir);
     } catch {
       infos = [];
     }
