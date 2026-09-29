@@ -6,7 +6,7 @@ import { sha256 } from "../bench/plan";
 import { parseResponse, REQUEST_DEFAULTS } from "./client";
 import { callsMatch, extractToolCall } from "./bfcl";
 import { scoreIfevalInstance } from "./ifeval";
-import { DATASETS, hasChatTemplate, makePlan, validatePlan, type DatasetPin, type EvalPlan } from "./plan";
+import { DATASETS, hasChatTemplate, listTasks, makePlan, validatePlan, type DatasetPin, type EvalPlan } from "./plan";
 import { compare, qualification, type EvalResult } from "./report";
 import { buildProgram, computeCapabilityScore, extractAnswer, extractPred, gsm8kPrompt, sampleIndices, truncateCompletion } from "./scoring";
 import { humanevalBody, letterFromTopLogprobs, parseTasks, TASKS, type EvalRequest, type EvalResponse, type PythonVerification,
@@ -245,6 +245,24 @@ test("task sets, capability aggregation and response parsing", () => {
   expect(parseResponse("completions", { choices: [{ text: " A", logprobs: { top_logprobs: [{ " A": -0.1, " B": -2 }] } }] }).topLogprobs)
     .toEqual([{ token: " A", logprob: -0.1 }, { token: " B", logprob: -2 }]);
   expect(() => parseResponse("completions", { error: "x" })).toThrow("without choices");
+});
+
+test("the task listing names every task with its sets, verifier need and pinned datasets, and whether each file is present", () => {
+  const listing = listTasks();
+  expect(listing.map(task => task.id)).toEqual(["gsm8k", "mmlu", "ifeval", "bfcl", "humaneval", "hashhop", "gsm8k-50"]);
+  expect(listing.map(task => task.sets.join("+"))).toEqual(["capability+all", "capability+all", "capability+all", "capability+all", "capability+all", "capability+all", "smoketest+all"]);
+  expect(listing.filter(task => task.needsVerifier).map(task => task.id)).toEqual(["humaneval"]);
+  expect(listing.find(task => task.id === "mmlu")!.datasets.map(dataset => [dataset.name, dataset.rows, dataset.sha256])).toEqual(
+    ["mmlu_optiq_frozen", "mmlu_optiq_dev"].map(name => [name, DATASETS[name]!.rows, DATASETS[name]!.sha256]));
+  expect(listing.some(task => task.datasets.some(dataset => "present" in dataset))).toBe(false);
+  const data = fresh("listing");
+  writeFileSync(join(data, "mmlu_optiq_dev.jsonl"), "");
+  expect(listTasks(data).find(task => task.id === "mmlu")!.datasets.map(dataset => [dataset.name, dataset.present])).toEqual([["mmlu_optiq_frozen", false], ["mmlu_optiq_dev", true]]);
+  // The CLI prints the same listing as JSON, and refuses a relative directory.
+  const cli = Bun.spawnSync([process.execPath, CLI, "tasks", "--data", data]);
+  expect(cli.exitCode).toBe(0);
+  expect(JSON.parse(cli.stdout.toString())).toEqual({ tasks: listTasks(data) });
+  expect(Bun.spawnSync([process.execPath, CLI, "tasks", "--data", "relative"]).exitCode).not.toBe(0);
 });
 
 // ---- plan pins ---------------------------------------------------------------------------------

@@ -1,0 +1,37 @@
+{
+  "name": "@mlx-bun/module-benchmarks",
+  "version": "0.0.0",
+  "description": "Answer-quality benchmarks module for mlx-bun applications: launches the capability evaluation runner (scripts/eval-serve.ts) as a job and keeps its results history",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./panel": "./src/panel/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "happy-dom": "20.10.6"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

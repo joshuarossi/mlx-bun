@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { artifactFiles, describeModel, nativeFiles, sha256, type FileRecord, type ModelSpec } from "../bench/plan";
 import { diskGb } from "./scoring";
-import { parseTasks, TASKS, type TaskId } from "./tasks";
+import { CAPABILITY, parseTasks, SMOKETEST, TASKS, type TaskId } from "./tasks";
 
 export interface DatasetPin { sha256: string; rows: number; source: string }
 /** Main's evaluation data by content. Main read these from
@@ -159,4 +159,25 @@ export function checkPins(plan: EvalPlan): { problems: string[]; rows: Record<st
     if (JSON.stringify(nativeFiles(plan.native.library)) !== JSON.stringify(plan.native.files)) problems.push("native library files changed");
   } catch (error) { problems.push(`native library unreadable: ${String(error)}`); }
   return { problems, rows };
+}
+
+export interface TaskListing {
+  id: TaskId;
+  /** Main's capability component; the smoketest subset has none. */
+  component: string | null;
+  /** The task sets that contain it (`--tasks capability|smoketest|all`). */
+  sets: string[];
+  /** Executes generated code, so it needs the Docker verifier. */
+  needsVerifier: boolean;
+  /** Each dataset file the task reads, with its pin and, when a data directory is named, whether the file is there. */
+  datasets: Array<{ name: string; rows: number; sha256: string; source: string; present?: boolean }>;
+}
+
+/** The tasks a plan can name, in main's order. `data` adds each dataset's presence (never its content: `plan` verifies the pins). */
+export function listTasks(data?: string, pins: Readonly<Record<string, DatasetPin>> = DATASETS): TaskListing[] {
+  return parseTasks("all").map(id => ({ id, component: TASKS[id].component,
+    sets: [...(CAPABILITY.includes(id) ? ["capability"] : []), ...(SMOKETEST.includes(id) ? ["smoketest"] : []), "all"],
+    needsVerifier: TASKS[id].needsVerifier === true,
+    datasets: TASKS[id].datasets.map(name => ({ name, rows: pins[name]!.rows, sha256: pins[name]!.sha256, source: pins[name]!.source,
+      ...(data ? { present: existsSync(join(data, `${name}.jsonl`)) } : {}) })) }));
 }

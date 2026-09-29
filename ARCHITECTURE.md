@@ -259,7 +259,7 @@ The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app sta
 model loader, the Whisper host and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
 request from the run's own stats and samples the gateway and caches) publish into the bus the modules subscribe to.
 A module's scoped bus publishes only its own `<id>.*` events, never a core type. A module that requires `jobs`
-(datasets, metrics) activates in the app's persistent state and gets the job service over the app's job host; a
+(datasets, metrics, benchmarks) activates in the app's persistent state and gets the job service over the app's job host; a
 runner that declares `gpu: "exclusive"` holds the engine's execution lease for its run.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
@@ -275,7 +275,7 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets, quantize) activate in the persistent state, beside the job store, with
+require `jobs` (datasets, metrics, quantize, benchmarks) activate in the persistent state, beside the job store, with
 `jobs` (the job host's `task` runners in this process, and `process` runners as a child that
 stops with its parent under the execution lease, which activates the owning module itself),
 `storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over

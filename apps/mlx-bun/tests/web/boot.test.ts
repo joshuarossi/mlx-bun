@@ -75,8 +75,9 @@ const shown = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].fi
 const activePages = () => [...document.querySelectorAll<HTMLElement>("section[data-route].active")].map(section => section.dataset.route);
 
 test("the browser build takes the panels of the host's installed modules that export one, and no others", () => {
-  expect(panelModules()).toEqual(["@mlx-bun/module-metrics"]);
+  expect(panelModules()).toEqual(["@mlx-bun/module-benchmarks", "@mlx-bun/module-metrics"]);
   const source = installedPanelsSource();
+  expect(source).toContain('import "@mlx-bun/module-benchmarks/panel";');
   expect(source).toContain('import "@mlx-bun/module-metrics/panel";');
   expect(source).not.toContain("datasets");
   expect(installedPanelsSource([])).toBe('import { panelsFromManifests } from "@mlx-bun/web-shell";\nexport const panels = panelsFromManifests([]);\n');
@@ -84,7 +85,7 @@ test("the browser build takes the panels of the host's installed modules that ex
 
 test("the bundle boots app.html: the legacy pages keep their tabs in order and the installed module's panel gets its own, after them", () => {
   boot("#/chat");
-  expect(tabs()).toEqual(["chat", "quantize", "finetune", "dataset", "status", "routes", "metrics"]);
+  expect(tabs()).toEqual(["chat", "quantize", "finetune", "dataset", "status", "routes", "benchmarks", "metrics"]);
   expect(document.querySelector('#tabs .tab[data-tab="metrics"]')!.textContent).toBe("Metrics");
   expect(document.querySelector('#tabs .tab[data-tab="metrics"]')!.getAttribute("href")).toBe("#/metrics");
   expect(activePages()).toEqual(["chat"]);
@@ -101,7 +102,7 @@ test("a fresh browser sees only Chat; the developer tabs, the panel among them, 
   expect(localStorage.getItem("mlxbun.developer")).toBe("0");
   expect(document.getElementById("nav-developer")!.getAttribute("aria-checked")).toBe("false");
   document.getElementById("nav-developer")!.click();
-  expect(shown()).toEqual(["chat", "quantize", "finetune", "dataset", "status", "routes", "metrics"]);
+  expect(shown()).toEqual(["chat", "quantize", "finetune", "dataset", "status", "routes", "benchmarks", "metrics"]);
   expect(localStorage.getItem("mlxbun.developer")).toBe("1");
 });
 
@@ -137,12 +138,22 @@ test("opening the metrics route mounts the panel through the shell with its conn
   expect(FakeEventSource.urls).toEqual(["/api/metrics/stream", "/api/metrics/stream"]);
 });
 
+test("opening the benchmarks route mounts its panel through the shell, which reads its tasks, history and jobs", () => {
+  boot("#/benchmarks");
+  expect(activePages()).toEqual(["benchmarks"]);
+  const panel = document.querySelector("#s-benchmarks mlx-benchmarks-panel") as HTMLElement & { connection?: unknown };
+  expect(panel).not.toBeNull();
+  expect(panel.connection).toEqual({ apiBase: "/api/benchmarks", eventsUrl: "/api/benchmarks/stream" });
+  expect(requests.filter(url => url.startsWith("/api/benchmarks/")).sort()).toEqual(["/api/benchmarks/jobs", "/api/benchmarks/runs", "/api/benchmarks/tasks"]);
+  expect(requests).not.toContain("/api/benchmarks/panel.js");
+});
+
 test("Cmd+K opens the palette with the commands, the panel's among them, and Escape closes it", () => {
   boot("#/chat");
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }) as unknown as Event);
   const labels = () => [...document.querySelectorAll("#palette-overlay .prow-label")].map(node => node.textContent);
   expect(labels()).toEqual(["New chat", "Toggle thinking", "Toggle theme", "Toggle Developer mode", "Open Memory panel", "Browse models (Hub)",
-    "Open shortcut sheet", "Export this chat", "Open Metrics"]);
+    "Open shortcut sheet", "Export this chat", "Open Benchmarks", "Open Metrics"]);
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event);
   expect(document.getElementById("palette-overlay")!.classList.contains("open")).toBe(false);
 });

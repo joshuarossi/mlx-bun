@@ -23,7 +23,7 @@ import { loadedMlxLibraries, ServerProcess, stopAll, waitReady } from "./bench/m
 import { checkOutputDirectory, fileSha, outsideTrees, sha256, sourceSnapshot } from "./bench/plan";
 import type { ToolPin } from "./bench/report";
 import { createSend, emptyStats, REQUEST_DEFAULTS, REQUEST_TIMEOUT_MS, type RequestStats } from "./eval/client";
-import { checkPins, DATASETS, makePlan, validatePlan, type DatasetPin, type EvalPlan } from "./eval/plan";
+import { checkPins, DATASETS, listTasks, makePlan, validatePlan, type DatasetPin, type EvalPlan } from "./eval/plan";
 import { capabilityOf, compare, markdown, outcomeSummary, qualification, type EvalResult, type TaskResult } from "./eval/report";
 import { TASKS, type PythonVerification, type ScoredSample, type Send, type TaskContext, type VerifyPython } from "./eval/tasks";
 
@@ -36,6 +36,7 @@ const USAGE = `Capability evaluation of an OpenAI-compatible server with main's 
   bun scripts/eval-serve.ts run --plan /abs/plan.json --root /abs/tree --command '<JSON argv>'
       --out /abs/empty-dir [--label NAME] [--ready-timeout-ms N]
   bun scripts/eval-serve.ts compare /abs/baseline/result.json /abs/candidate/result.json
+  bun scripts/eval-serve.ts tasks [--data /abs/eval-data]      # JSON: every task, its sets, datasets and pins
 
 Tasks (main's scripts/eval.ts): capability = gsm8k mmlu ifeval bfcl humaneval hashhop, main's
 default frozen sets in full; smoketest = gsm8k-50 (main's GSM8K-50 draw of the full export);
@@ -287,6 +288,12 @@ async function main(argv: string[]) {
     return run(values.plan, { root: values.root, command: parseCommand(values.command), out: values.out,
       ...(values.label ? { label: values.label } : {}) },
     values["ready-timeout-ms"] ? { readyTimeoutMs: Number(values["ready-timeout-ms"]) } : {});
+  }
+  if (command === "tasks") {
+    const { values } = parseArgs({ args: rest, options: { data: { type: "string" } } });
+    if (values.data && !isAbsolute(values.data)) throw new Error("--data must be an absolute path");
+    console.log(JSON.stringify({ tasks: listTasks(values.data) }, null, 1));
+    return 0;
   }
   if (command === "compare") {
     if (rest.length !== 2) throw new Error("compare needs a baseline and a candidate result.json");
