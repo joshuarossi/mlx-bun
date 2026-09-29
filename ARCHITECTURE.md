@@ -79,7 +79,10 @@ pooled-embedding recipes, tool-call and reasoning marker tokens, media soft
 tokens, chat defaults, template fallbacks) are declared by the model layer, in
 the profile or the opened runtime, and consumed as data. The architecture gate
 rejects model classes, model-type and architecture checks, family predicates and
-model-identity checks in the engine, server and CLI. Elsewhere this remains the target design and a review criterion
+model-identity checks in the engine, server and CLI.
+Scheduling (`execution/`) is written against the structural `MlxTokenGraph`, not
+the registry's closed `RuntimeModel` union of model classes, and the gate rejects
+the union there. Elsewhere this remains the target design and a review criterion
 for remaining migration work, not a claim that every existing path already
 satisfies it.
 
