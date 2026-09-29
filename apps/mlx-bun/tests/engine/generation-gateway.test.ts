@@ -239,7 +239,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     // The text facts KV scheme policy reads; this one-layer graph uses full attention.
     config: { modelType: "gemma2", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   });
   const binding = bindMlxGateway(model);
   let created = false;
@@ -311,7 +311,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 places shared gen
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   });
   const binding = bindMlxGateway(model);
   binding.createBatchGroup = () => { throw new Error("unexpected execution"); };
@@ -333,4 +333,19 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 places shared gen
       expect(() => enabled!.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
     expect(() => enabled!.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
   } finally { for (const gateway of gateways) await gateway.close(); }
+});
+
+test("a requested KV scheme the model cannot serve is refused at startup; a missing kv_config and a servable scheme are not", async () => {
+  const { resolveKvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
+  const f = fake(), refusing = { ...f.binding, kvBatchable: () => false } as MlxGatewayBinding;
+  for (const scheme of [resolveKvScheme({ override: 4 }), resolveKvScheme({ override: 8, quantizedKvStart: 64 }),
+    resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } }),
+    resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] })])
+    expect(() => new GenerationGateway(refusing, 1, { kvScheme: scheme }))
+      .toThrow(`replacement cannot serve the requested KV cache scheme ${scheme.cacheKey}`);
+  // `config` without the model's kv_config.json resolves to bf16: no scheme was requested.
+  const absent = resolveKvScheme({ override: "config", config: null });
+  expect(absent.kind).toBe("bf16");
+  await new GenerationGateway(refusing, 1, { kvScheme: absent }).close();
+  await new GenerationGateway(f.binding, 1, { kvScheme: resolveKvScheme({ override: 4 }) }).close();
 });

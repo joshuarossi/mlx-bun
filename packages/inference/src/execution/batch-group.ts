@@ -229,7 +229,13 @@ export class MlxBatchExecutionGroup {
             ? "ssm"
             : "full",
     );
-    this.#denseKvLayers = opts.denseKvReads ? this.#kinds.flatMap((kind, layer) => kind === "ssm" ? [] : [layer]) : null;
+    // The graph's declared dense-read layers, bound once: a row whose next
+    // append is not certified plain-readable there is rejected before any
+    // shared append, after its pending output publishes.
+    let denseKvLayers: readonly number[];
+    try { denseKvLayers = bindRequiredDenseKvLayers(model.requiredDenseKvLayers, proto); }
+    catch (error) { for (const cache of proto) cache.dispose(); throw error; }
+    this.#denseKvLayers = denseKvLayers.length ? denseKvLayers : null;
     this.#compressedProjectors = proto.every(isBatchableCache)
       ? proto.map((cache) => (tokens: number) => cache.projectedBytes(tokens))
       : null;
@@ -1671,5 +1677,5 @@ export class MlxBatchExecutionGroup {
 }
 
 import { BatchRequest,BatchStats,ExclusiveLock,MlxBatchExecutionGroupOptions,MlxGroupedMethod,MlxGroupPreparation,Row,RowPromptCache } from "./batch-types";
-import { DenseKvReadError, unreadableRows } from "../state/dense-kv-reads";
+import { DenseKvReadError, bindRequiredDenseKvLayers, unreadableRows } from "../state/dense-kv-reads";
 export { type BatchRequest,type BatchRequestFields,type BatchStats,type ExclusiveLock,type MlxBatchExecutionGroupOptions,type MlxGroupedMethod,type MlxGroupMethodHost,type MlxGroupMethodRequest,type MlxGroupPreparation,type Row,type RowPromptCache,type RowSampler } from "./batch-types";

@@ -1,12 +1,20 @@
 #!/usr/bin/env bun
 import "../jobs/executable";
 import { commandInvocation, help, isCommand, parseCommand } from "./args";
+import { invokedAlias, translateAlias, type AliasResult } from "./mlx-lm-aliases";
 import { renderHelp } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
 
 try {
-  const { command, args } = commandInvocation(process.argv.slice(2));
-  if (command === "__job") {
+  // Started as `mlx-bun.<cmd>` (an mlx-lm alias): the verb and its arguments come from the translation.
+  const alias = invokedAlias();
+  const aliased: AliasResult | undefined = alias ? translateAlias(alias, process.argv.slice(2)) : undefined;
+  const { command, args } = aliased && "command" in aliased ? { command: aliased.command as string, args: [] as string[] }
+    : commandInvocation(process.argv.slice(2));
+  const parsedArgs = aliased && "parsed" in aliased ? aliased.parsed : undefined;
+  if (aliased && "help" in aliased) {
+    console.log(renderHelp(aliased.help));
+  } else if (command === "__job") {
     process.exit(await (await import("./job-entry")).runJobEntry(args[0]));
   } else if (command === "__worker") {
     // Private: the isolation worker a parent spawns (jobs/worker-process.ts);
@@ -22,7 +30,7 @@ try {
     console.log(renderHelp(help(command)));
   } else if (command === "convert") {
     const { parseConvertArgs, runConvert } = await import("./convert");
-    const parsed = parseConvertArgs(args);
+    const parsed = parsedArgs ?? parseConvertArgs(args);
     const cancellation = new AbortController();
     const stop = () => cancellation.abort(new Error("convert cancelled"));
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
@@ -38,7 +46,7 @@ try {
       else { const { parseDictateArgs, runDictate } = await import("./dictate"); await runDictate(parseDictateArgs(args), {}, cancellation.signal); }
     } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
   } else {
-    const parsed = parseCommand(command, args);
+    const parsed = parsedArgs ?? parseCommand(command, args);
     if (command === "serve") {
       const { runServe } = await import("./serve");
       await runServe(parsed);

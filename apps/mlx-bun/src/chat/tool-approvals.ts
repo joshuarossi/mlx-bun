@@ -1,17 +1,13 @@
-// Durable per-tool approval choices for web chat. Stored under ~/.mlx-bun
+// Durable per-tool approval choices for web chat. Stored under MLX_BUN_HOME
 // with mode0600; absent, corrupt, or unknown-version data means ask again.
 
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { storagePath } from "../storage/paths";
 
-/** Honor the app home at call time so isolated callers can choose their store. */
-function home(): string {
-  return process.env.HOME || homedir();
-}
-
+/** Resolved at call time so isolated callers can choose their store. */
 function configPath(): string {
-  return join(home(), ".mlx-bun", "tool-approvals.json");
+  return storagePath("toolApprovals");
 }
 
 export const TOOL_APPROVALS_VERSION = 1 as const;

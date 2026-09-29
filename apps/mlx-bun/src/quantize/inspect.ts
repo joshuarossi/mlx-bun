@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
-import { Registry } from "@mlx-bun/hub/registry";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
+import { openRegistry } from "../storage/paths";
 
 /** Resolve the source model directory from a job config. Accepts an explicit
  *  filesystem path (src_dir) or a registry query / model id (model_id). */
@@ -11,7 +11,7 @@ export function resolveSrcDir(config: Record<string, unknown>): string {
   if (!modelId) throw new Error("quantize job: missing src_dir or model_id");
   // A path-looking model_id is taken literally; otherwise resolve via registry.
   if (modelId.includes("/") && existsSyncSafe(modelId)) return modelId;
-  const reg = new Registry();
+  const reg = openRegistry();
   try {
     return reg.resolve(modelId).path;
   } finally {
@@ -45,7 +45,7 @@ export async function inspectModel(model_id: string): Promise<{
     let sizeBytes = 0;
 
     if (!(model_id.includes("/") && existsSyncSafe(model_id))) {
-      const reg = new Registry();
+      const reg = openRegistry();
       try {
         const rec = reg.resolve(model_id);
         path = rec.path;

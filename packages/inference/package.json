@@ -63,8 +63,6 @@
     "./transcription": "./src/transcription/index.ts",
     "./transcription/format": "./src/transcription/whisper/format.ts",
     "./generation/speculative": "./src/generation/speculative/index.ts",
-    "./generation/speculative/dspark": "./src/generation/speculative/dspark/generate.ts",
-    "./generation/speculative/dflash": "./src/generation/speculative/dspark/generate-dflash.ts",
     "./generation/speculative/loader": "./src/generation/speculative/dspark/loader.ts",
     "./generation/speculative/binding": "./src/generation/speculative/bindings/binding.ts",
     "./models/gemma4/assistant": "./src/models/gemma4/assistant.ts",

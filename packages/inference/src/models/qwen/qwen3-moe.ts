@@ -32,6 +32,7 @@ import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
+import { captureKvAttention } from "../../state/kv-attention-view";
 
 // ── activations.py swiglu (mx.compile) ───────────────────────────────────────
 // `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`
@@ -98,10 +99,11 @@ class Attention {
     v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));              // values.reshape(...).transpose(0,2,1,3)
     q = disposing(q, ops.rope(q, this.headDim, this.ropeBase, cache.offset, null)); // self.rope(queries, offset=cache.offset)
     k = disposing(k, ops.rope(k, this.headDim, this.ropeBase, cache.offset, null)); // self.rope(keys, offset=cache.offset)
-    const [keys, values] = cache.updateAndFetch(k, v);                 // cache.update_and_fetch(keys, values)
-    k.dispose(); v.dispose();
-    let out = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr); // scaled_dot_product_attention(...)
-    q.dispose(); keys.dispose(); values.dispose();
+    let out: MlxArray;                                                 // cache.update_and_fetch(keys, values)
+    try {                                                              // scaled_dot_product_attention(..., cache=cache)
+      const view = captureKvAttention(cache, k, v);
+      try { out = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+    } finally { k.dispose(); v.dispose(); q.dispose(); }
     out = disposing(out, ops.transposeAxes(out, [0, 2, 1, 3]));        // output.transpose(0,2,1,3)
     out = disposing(out, ops.reshape(out, [B, L, -1]));                //   .reshape(B, L, -1)
     const y = this.oProj.forward(out); out.dispose();                 // self.o_proj(output)
@@ -298,6 +300,10 @@ export class Qwen3MoeModel {
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Every attention layer reads encoded (affine) KV views. */
+  readonly encodedKvAttention = true;
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3MoeDecoderLayer[];
   readonly finalNorm: RMSNorm;

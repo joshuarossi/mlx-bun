@@ -1,14 +1,17 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { Registry } from "@mlx-bun/hub/registry";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import type { Registry } from "@mlx-bun/hub/registry";
+import type { TrainingDefaults } from "@mlx-bun/inference/models/profile";
 import type { fuseAdapter } from "@mlx-bun/training";
 import { createFinetuneRunner } from "../finetune/job";
 import { inspectDataset } from "../finetune/inspect";
 import { runWatch } from "../finetune/watch";
 import type { JobEvent, JobRunner } from "../jobs/protocol";
 import type { CommandArgs } from "./args";
+import { publishModel, requireWriteToken, uploadDefaults, type ConvertDependencies } from "./convert";
 import { resolveModelAuto } from "./model-selection";
 import { boxLines, step, style } from "./terminal";
+import { mlxBunHome, modelShortName, openRegistry, storagePath } from "../storage/paths";
 
 // Thin verbs over the app's fine-tuning producer and the public training
 // library: argument policy, main's plan/summary presentation, and process
@@ -27,13 +30,12 @@ function opt(args: CommandArgs, name: string): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 const flag = (args: CommandArgs, name: string): boolean => args.values[name] === true;
-const home = () => process.env.HOME ?? homedir();
 
 export interface TrainArgs {
   query: string | null; dataDir: string; method: TrainMethod; sftScope: "full" | "response" | null;
   /** Validated numeric flags that were supplied; defaults are method/model dependent. */
   numbers: ReadonlyMap<string, number>;
-  adapter?: string; resume: string; noSegment: boolean; flashOn: boolean; prefixOn: boolean; dryRun: boolean;
+  adapter?: string; resume: string; noSegment: boolean; flashOn: boolean; prefixOn: boolean; dryRun: boolean; gradCheckpoint: boolean;
 }
 
 /** Main's checks in main's order, all before any model resolution: usage,
@@ -51,7 +53,8 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
   const noSegment = flag(args, "no-segment");
   const numbers = new Map<string, number>();
   for (const name of ["iters", "seq", ...(noSegment ? [] : ["seg"]), "save-every", "rank", "scale", "lr", "batch",
-    "grad-accum", "seed", "grad-clip", "val-size", ...(method === "orpo" ? ["lambda"] : [])]) {
+    "grad-accum", "seed", "grad-clip", "val-size", "num-layers", "steps-per-report", "steps-per-eval", "dropout", "weight-decay",
+    ...(method === "orpo" ? ["lambda"] : [])]) {
     const raw = opt(args, name);
     if (raw === undefined) continue;
     const value = Number(raw);
@@ -59,23 +62,26 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
     numbers.set(name, value);
   }
   return { query, dataDir, method, sftScope, numbers, adapter: opt(args, "adapter"), resume: opt(args, "resume") ?? "",
-    noSegment, flashOn: !flag(args, "no-flash"), prefixOn: !flag(args, "no-prefix"), dryRun: flag(args, "dry-run") };
+    noSegment, flashOn: !flag(args, "no-flash"), prefixOn: !flag(args, "no-prefix"), dryRun: flag(args, "dry-run"),
+    gradCheckpoint: flag(args, "grad-checkpoint") };
 }
 
 export interface TrainPlan {
-  method: TrainMethod; isOrpo: boolean; isGemma: boolean; adapter: string; iters: number; seq: number; seg: number;
+  method: TrainMethod; isOrpo: boolean; adapter: string; iters: number; seq: number; seg: number;
   saveEvery: number; flashOn: boolean; prefixOn: boolean; resume: string;
   /** The snake_case submit record the finetune runner parses (finetune/config.ts). */
   cfg: Record<string, unknown>;
 }
 
-/** Main's method- and model-dependent defaults over the validated flags. */
-export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: boolean, homeDir: string = home()): TrainPlan {
+/** Method-dependent defaults over the validated flags; model-dependent ones
+ * (`defaults`) are declared by the model's profile. The adapter defaults to
+ * `<root>/adapters/<method>-<model>` (root: MLX_BUN_HOME). */
+export function trainPlan(parsed: TrainArgs, model: SelectedModel, defaults: TrainingDefaults, root: string = mlxBunHome()): TrainPlan {
   const num = (name: string, fallback: number) => parsed.numbers.get(name) ?? fallback;
   const { method } = parsed, isOrpo = method === "orpo";
-  const adapter = parsed.adapter ?? `${homeDir}/.cache/mlx-bun/mlx-bun-finetunes/${method}-${isGemma ? "e4b" : "cpm5"}`;
+  const adapter = parsed.adapter ?? join(storagePath("adapters", root), `${method}-${modelShortName(model.repoId)}`);
   const iters = num("iters", 100);
-  const seq = num("seq", isGemma ? 8192 : 4096);
+  const seq = num("seq", defaults.maxSeqLength);
   const seg = parsed.noSegment ? 0 : num("seg", isOrpo ? 2 : 0);
   const saveEvery = num("save-every", 0);
   const cfg: Record<string, unknown> = {
@@ -86,20 +92,23 @@ export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: bool
     rank: num("rank", isOrpo ? 16 : 8),
     scale: num("scale", isOrpo ? 2.0 : 1.0),
     rank_scaling: "by_bits",
-    num_layers: -1,
+    num_layers: num("num-layers", -1),
     iters,
     learning_rate: num("lr", isOrpo ? 1e-5 : method === "dpo" ? 5e-5 : 2e-4),
     max_seq_length: seq,
     batch_size: num("batch", 1),
     grad_accumulation_steps: num("grad-accum", 1),
     seed: num("seed", 0),
-    steps_per_report: 1,
-    steps_per_eval: saveEvery > 0 ? saveEvery : 1_000_000,
+    steps_per_report: num("steps-per-report", 1),
+    steps_per_eval: num("steps-per-eval", saveEvery > 0 ? saveEvery : 1_000_000),
     save_checkpoints: saveEvery > 0,
     segment_size: seg,
     grad_clip_norm: num("grad-clip", 1.0),
     val_max_examples: num("val-size", 256),
     warm_start_adapter: parsed.resume,
+    ...(parsed.numbers.has("dropout") ? { lora_dropout: parsed.numbers.get("dropout") } : {}),
+    ...(parsed.numbers.has("weight-decay") ? { weight_decay: parsed.numbers.get("weight-decay") } : {}),
+    ...(parsed.gradCheckpoint ? { grad_checkpoint: true } : {}),
     ...(parsed.sftScope ? { sft_scope: parsed.sftScope } : {}),
     ...(isOrpo ? {
       orpo_lambda: num("lambda", 0.1),
@@ -111,7 +120,7 @@ export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: bool
       orpo_prefix_shared: parsed.prefixOn,
     } : {}),
   };
-  return { method, isOrpo, isGemma, adapter, iters, seq, seg, saveEvery, flashOn: parsed.flashOn, prefixOn: parsed.prefixOn,
+  return { method, isOrpo, adapter, iters, seq, seg, saveEvery, flashOn: parsed.flashOn, prefixOn: parsed.prefixOn,
     resume: parsed.resume, cfg };
 }
 
@@ -119,7 +128,7 @@ function planLines(plan: TrainPlan, model: SelectedModel, picked: boolean,
   ds: { n_train: number; n_valid: number; format: string }): string[] {
   const { cfg } = plan;
   const lines = [
-    `${style.green("●")} ${style.bold(`train ${plan.method}`)} ${style.dim(`· ${model.repoId}${picked ? " (auto-picked)" : ""}${plan.isGemma ? " · e4b defaults" : ""}`)}`,
+    `${style.green("●")} ${style.bold(`train ${plan.method}`)} ${style.dim(`· ${model.repoId}${picked ? " (auto-picked)" : ""}`)}`,
     "",
     `data       ${style.bold(`${ds.n_train} train`)}${ds.n_valid ? ` · ${ds.n_valid} valid` : ""} ${style.dim(`· format ${ds.format}`)}`,
     `loop       ${style.dim(`iters ${plan.iters} · lr ${cfg.learning_rate} · rank ${cfg.rank} · scale ${cfg.scale} · seq ${plan.seq} · batch ${cfg.batch_size}`)}`,
@@ -146,10 +155,19 @@ export interface TrainDependencies {
   /** Peak-memory reader; null when the native binding is unavailable. */
   memory(): Promise<PeakMemory | null>;
   exists(path: string): boolean;
-  readText(path: string): Promise<string>;
+  /** The fine-tuning defaults the model at `modelDir` declares through its resolved profile. */
+  trainingDefaults(modelDir: string): Promise<TrainingDefaults>;
   log(line: string): void;
-  home(): string;
+  /** Storage root for default outputs (MLX_BUN_HOME). */
+  root(): string;
   now(): number;
+}
+/** Resolve the model's profile from its config alone (no weights, no native
+ * load) and return the fine-tuning defaults its graph declares. */
+export async function modelTrainingDefaults(modelDir: string): Promise<TrainingDefaults> {
+  const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
+  const { resolveModelProfile, trainingDefaultsFor } = await import("@mlx-bun/inference/models/profile");
+  return trainingDefaultsFor(resolveModelProfile(await loadModelConfig(modelDir)));
 }
 const trainDefaults: TrainDependencies = {
   resolve: (query, signal) => resolveModelAuto(query, {}, signal),
@@ -163,8 +181,9 @@ const trainDefaults: TrainDependencies = {
       return { peak: ffi.peakMemory, reset: ffi.resetPeakMemory };
     } catch { return null; }
   },
-  exists: existsSync, readText: path => Bun.file(path).text(),
-  log: line => console.log(line), home, now: Date.now,
+  exists: existsSync,
+  trainingDefaults: modelTrainingDefaults,
+  log: line => console.log(line), root: () => mlxBunHome(), now: Date.now,
 };
 
 /** `train`: validate, resolve the model, preflight the dataset, print the plan,
@@ -175,8 +194,7 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   const parsed = parseTrainArgs(args, deps.exists);
   signal?.throwIfAborted();
   const { m, picked } = await deps.resolve(parsed.query, signal);
-  const isGemma = (await deps.readText(`${m.path}/config.json`)).toLowerCase().includes("gemma");
-  const plan = trainPlan(parsed, m, isGemma, deps.home());
+  const plan = trainPlan(parsed, m, await deps.trainingDefaults(m.path), deps.root());
 
   // Pre-flight: dataset counts + detected format (bail before loading the model).
   const ds = await deps.inspect(parsed.dataDir);
@@ -230,37 +248,53 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
 
 export interface FuseDependencies {
   registry(): ModelRegistry;
+  /** The Hub write token and push behind `--upload-repo`, as convert's. */
+  credentials: ConvertDependencies["credentials"];
+  publish: ConvertDependencies["publish"];
+  /** Storage root for the default output (MLX_BUN_HOME). */
+  root(): string;
   fuse: typeof fuseAdapter;
   exists(path: string): boolean;
   log(line: string): void;
   step: typeof step;
 }
 const fuseDefaults: FuseDependencies = {
-  registry: () => new Registry(),
+  registry: () => openRegistry(), root: () => mlxBunHome(), ...uploadDefaults,
   fuse: async (...call) => (await import("@mlx-bun/training")).fuseAdapter(...call),
   exists: existsSync, log: line => console.log(line), step,
 };
-const REFUSED_FUSE_FLAGS = ["de-quantize", "dequantize", "export-gguf", "gguf-path", "upload-repo"];
+const REFUSED_FUSE_FLAGS = ["export-gguf", "gguf-path"];
 
-/** `fuse`: mlx_lm.fuse counterpart over the public training library. The merge
+/** `fuse`: mlx_lm.fuse counterpart over the public training library
+ * (`--dequantize` writes dense weights; `--upload-repo` pushes the result like
+ * convert's). GGUF export is refused. The merge
  * itself has no cancellation seam: a signal is honored before it starts; one
  * arriving during the merge lets it finish so the output is never half-written. */
 export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...fuseDefaults, ...supplied };
   const unsupported = REFUSED_FUSE_FLAGS.filter(name => args.values[name] !== undefined).map(name => `--${name}`);
-  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (see: mlx-bun help fuse)`);
+  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)`);
+  // The write token is resolved before any fuse work, as convert does.
+  const uploadRepo = opt(args, "upload-repo");
+  if (uploadRepo !== undefined) requireWriteToken(deps.credentials());
   const modelArg = args.positionals[0] ?? opt(args, "model");
   if (!modelArg) throw new Error("usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]");
   const adapterDir = opt(args, "adapter") ?? opt(args, "adapter-path") ?? "adapters";
-  const savePath = opt(args, "save-path") ?? "fused_model";
   if (!deps.exists(adapterDir)) throw new Error(`adapter dir not found: ${adapterDir}`);
-  let modelDir = modelArg;
+  let modelDir = modelArg, modelId = modelArg;
   if (!deps.exists(`${modelArg}/config.json`)) {
     const reg = deps.registry();
     try {
       if (reg.list().length === 0) await reg.scan();
-      modelDir = reg.resolve(modelArg).path;
+      ({ path: modelDir, repoId: modelId } = reg.resolve(modelArg));
     } finally { reg.close(); }
+  }
+  // An explicit --save-path keeps mlx_lm.fuse's semantics; the default is a
+  // fresh directory in the app's models, never overwritten.
+  let savePath = opt(args, "save-path");
+  if (savePath === undefined) {
+    savePath = join(storagePath("models", deps.root()), `${modelShortName(modelId)}-fused`);
+    if (deps.exists(savePath)) throw new Error(`${savePath} already exists — delete it or pass --save-path <dir>`);
   }
   signal?.throwIfAborted();
   const s = deps.step(`fusing ${adapterDir} into ${modelDir}`);
@@ -270,8 +304,10 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
     s.update(`fusing ${adapterDir} into ${modelDir} ${style.dim(`· cancellation requested; the merge cannot be interrupted, finishing so ${savePath} is not left half-written`)}`);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
+  let fusedDir: string | undefined;
   try {
-    const stats = await deps.fuse(modelDir, adapterDir, savePath, e => s.update(e.message));
+    const dequantize = flag(args, "dequantize");
+    const stats = await deps.fuse(modelDir, adapterDir, savePath, e => s.update(e.message), { dequantize });
     s.done(`fused ${stats.fusedModules} module(s) ${style.dim(`· ${stats.totalTensors} tensors written`)}`);
     deps.log("");
     for (const line of boxLines([
@@ -280,24 +316,47 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
       `base      ${style.dim(modelDir)}`,
       `adapter   ${style.dim(adapterDir)}`,
       `model     ${style.bold(stats.outDir)}`,
+      ...(dequantize ? [`weights   ${style.dim("dequantized to dense")}`] : []),
       ...(stats.skippedAdapterTensors > 0
         ? [`skipped   ${style.dim(`${stats.skippedAdapterTensors} adapter tensor(s) with no matching base weight`)}`] : []),
       "",
       `serve it   ${style.accent(`mlx-bun serve ${stats.outDir}`)}`,
     ])) deps.log(line);
     if (interrupted) deps.log(`  ${style.dim("cancellation arrived during the merge; it cannot be interrupted, so the output was completed.")}`);
+    fusedDir = stats.outDir;
   } catch (error) {
     s.fail(`fuse failed: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   } finally { signal?.removeEventListener("abort", onAbort); }
+  // The push starts only for an uninterrupted run; a cancel that arrived mid-merge only completes the output.
+  if (uploadRepo !== undefined && fusedDir !== undefined && !interrupted)
+    await publishModel(deps, { kind: "finetune", repoId: uploadRepo, dir: fusedDir, what: "fused" }, signal);
 }
 
-export interface WatchDependencies { watch: typeof runWatch; home(): string }
-const watchDefaults: WatchDependencies = { watch: runWatch, home };
+export interface WatchDependencies { watch: typeof runWatch; root(): string }
+const watchDefaults: WatchDependencies = { watch: runWatch, root: () => mlxBunHome() };
 
-/** `train-watch`: live dashboard over `<adapter>/metrics.jsonl`. */
+/** The adapter directory under `<root>/adapters` whose metrics.jsonl changed last. */
+function latestRun(root: string): string | undefined {
+  const adapters = storagePath("adapters", root);
+  let latest: { dir: string; at: number } | undefined;
+  try {
+    for (const name of readdirSync(adapters)) {
+      const dir = join(adapters, name);
+      try {
+        const at = statSync(join(dir, "metrics.jsonl")).mtimeMs;
+        if (!latest || at > latest.at) latest = { dir, at };
+      } catch { /* not a training run */ }
+    }
+  } catch { /* no adapter store yet */ }
+  return latest?.dir;
+}
+
+/** `train-watch`: live dashboard over `<adapter>/metrics.jsonl`; without a
+ * directory, the most recently updated run in the app's adapter store. */
 export async function runTrainWatch(args: CommandArgs, supplied: Partial<WatchDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...watchDefaults, ...supplied };
-  const dir = args.positionals[0] ?? opt(args, "adapter") ?? `${deps.home()}/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5`;
+  const dir = args.positionals[0] ?? opt(args, "adapter") ?? latestRun(deps.root());
+  if (!dir) throw new Error(`no training run found in ${storagePath("adapters", deps.root())} — usage: mlx-bun train-watch <adapter-dir>`);
   await deps.watch(dir, { signal });
 }

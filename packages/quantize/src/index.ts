@@ -1,8 +1,11 @@
 // Public checkpoint-quantization API: allocation, weight transforms, sharded
 // output, and quantization metadata. Model discovery belongs to @mlx-bun/hub.
 
-export { quantizeModelDir, isQuantizable, withPreparedProbe } from "./quantizer";
+export { quantizeModelDir, isQuantizable, withPreparedProbe, CONVERT_DTYPES } from "./quantizer";
+export { convertModelDir } from "./convert";
+export type { ConvertOptions, ConvertResult } from "./convert";
 export type {
+  ConvertDtype,
   PreparedProbe,
   ProbeSource,
   QuantizeOptions,

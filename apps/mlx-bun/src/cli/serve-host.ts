@@ -80,7 +80,7 @@ export function startModelHost(state: AppState, model: ModelRecord, options: Ser
 export async function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks = {}): Promise<RunningModelHost | RunningWorkerHost> {
   const [{ loadContext }, { configureRuntime }] = await Promise.all([import("../engine"), import("@mlx-bun/inference/runtime/config")]);
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
-  const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1",
+  const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: (options.fusedSdpa ?? options.cache.kvQuant === "config") ? "0" : "1",
     ...(options.forceWire ? { MLX_BUN_FORCE_WIRE: "1" } : {}),
     ...(options.allowPrivateMedia ? { MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" } : {}) });
   // Offload routing and the runtime switches are restored only after the

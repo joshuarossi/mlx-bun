@@ -95,10 +95,6 @@ export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void 
   createKvMaintenance(options)(cache);
 }
 
-/** Emitted once per process: token fast-forwarding skips models with
- *  sliding-window layers in v1 (see the gate in generateInner). */
-let warnedFillRotating = false;
-
 /** The rewind surface a verify-policy fill needs. `Cache` declares the
  *  spec-round trio as optional members, but the cache list is a UNION with
  *  GLM's MLACache (which declares none of them), so the union has no such
@@ -217,21 +213,10 @@ async function* generateInner(
     throw error;
   }
   const cachedTokens = cache[0]!.offset;
-  // Token fast-forwarding gate (see shouldUseFill). RotatingKVCache (sliding
-  // window) layers append multi-token writes through #updateConcat — O(window)
-  // per append rather than the O(L) a plain ring pays — so v1 warns and skips
-  // the whole feature for those models rather than paying it silently.
-  let fillOn = shouldUseFill(options, runtime, appender);
-  if (fillOn && cache.some((c) => c instanceof RotatingKVCache)) {
-    fillOn = false;
-    if (!warnedFillRotating) {
-      warnedFillRotating = true;
-      console.warn(
-        "[fill] sliding-window (RotatingKVCache) layers skip token " +
-        "fast-forwarding in v1 (multi-token append is O(window) there).",
-      );
-    }
-  }
+  // Token fast-forwarding gate (see shouldUseFill). Sliding-window layers take
+  // part: a multi-token append is one concat write, and a rejected verify tail
+  // leaves the ring by the bypass trim that write allows (see rewind below).
+  const fillOn = shouldUseFill(options, runtime, appender);
   const fillTrace = fillOn && fillTraceEnabled();
   const fillTraceFile = fillOn ? fillTracePath() : null;
   // Verify-policy proposals (echo tier) need the rejected tail rewound. That
@@ -241,7 +226,7 @@ async function* generateInner(
   // A model whose caches can do neither still gets assert-policy fills; verify
   // proposals are dropped and counted (stats.verifyUnsupported).
   const verifyCapable = fillOn && !options.kvBits && !options.kvConfig?.length && !options.turboQuant && cache.every(
-    (c) => c.isTrimmable() || typeof rewindable(c).specRoundRollback === "function",
+    (c) => c.isTrimmable() || c instanceof RotatingKVCache || typeof rewindable(c).specRoundRollback === "function",
   );
   closeBatchSetup?.();
 
@@ -432,7 +417,11 @@ async function* generateInner(
         for (const c of cache) {
           const rc = rewindable(c);
           if (rc.specRoundRollback) rc.specRoundRollback(accepted);
-          else rc.trim(ids.length - accepted);
+          // A ring stops being trimmable once it wraps, but the verify block
+          // was one concat write that keeps the newest window-1 positions plus
+          // the block in temporal order: dropping its rejected tail leaves at
+          // least the window (accepted >= 1).
+          else rc.trim(ids.length - accepted, c instanceof RotatingKVCache);
         }
         roundOpen = false;
       } else if (roundOpen) {

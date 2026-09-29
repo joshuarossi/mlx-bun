@@ -24,6 +24,8 @@ function fixture() {
     config: { modelType: "fixture", text: { numHiddenLayers: 1, layerTypes: ["full_attention"],
       numGlobalKeyValueHeads: 1, globalHeadDim: 8, slidingWindow: 0 } },
     makeCache() { calls.allocations++; return [new TrackedCache()]; },
+    // Its one layer's keys and values are read plain (updateAndFetch).
+    requiredDenseKvLayers: [0],
   } as unknown as RuntimeModel;
   const request: BatchRequest = { promptIds: [0, 1], maxTokens: 1, eosTokenIds: [],
     sample() { throw new Error("unexpected sampling"); }, onToken() { throw new Error("unexpected output"); } };
@@ -465,6 +467,14 @@ test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row
 });
 
 
+test("the forced-span binding requires the graph's dense-read layers as distinct indices within its caches", () => {
+  const f = fixture();
+  expect(() => bindGrammarGroupRequests(f.model, undefined as never, 1)).toThrow(TypeError);
+  // The fixture's graph has one cache layer.
+  for (const layers of [[-1], [0.5], [0, 0], [1]]) expect(() => bindGrammarGroupRequests(f.model, layers, 1), String(layers)).toThrow(RangeError);
+  expect(bindGrammarGroupRequests(f.model, [0], 1)({}).key).toBe("grammar-forced-span");
+});
+
 function grammarGroupFixture() {
   const f = fixture();
   const forwards: { owner: number; ids: number[] }[] = [];
@@ -484,7 +494,10 @@ function grammarGroupFixture() {
     ids.forEach((token, index) => { values[index * 16 + (token + 1) % 16] = 20; });
     return MlxArray.fromFloat32(values, [1, ids.length, 16]);
   };
-  const method = bindGrammarGroupRequests(f.model);
+  // The graph reads its one layer's keys and values plain. The binding keeps
+  // its own copy: a layer the caller adds later would refuse every row.
+  const layers = [0], method = bindGrammarGroupRequests(f.model, layers, 1);
+  layers.push(1);
   const request = (forcedIds: number[], terminal = false, overrides: import("../../src/generation/index").GenerateOptions = {}) => {
     let jumped = false, terminated = false, disposed = 0;
     const accepted: number[] = [], tokens: number[] = [];

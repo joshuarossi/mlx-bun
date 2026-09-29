@@ -547,6 +547,8 @@ export class DiffusionGemmaModel {
   // Shared RuntimeModel surface. LoRA mounts onto the (quantized) decoder
   // linears like the AR models; the diffusion engine activates it per request.
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: none; denoising takes no encoded KV scheme. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
   /** Dedicated DiffusionGemma SigLIP vision tower (image-text-to-text). */
   readonly visionTower: DiffusionVisionTower | null;
   readonly imageTokenId: number;

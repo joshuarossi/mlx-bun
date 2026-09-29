@@ -4,8 +4,7 @@
 // target. L1 oracle:
 // mlx_lm.server with the same target/draft pair, greedy, token-for-token
 // (spec-vs-spec — both batch the verify lm-head, so neither is bit-exact to
-// stock decode at knife-edges; see
-// packages/inference/src/generation/speculative/generate.ts header).
+// stock decode at knife-edges).
 //
 // Faithfulness notes (read from the oracle venv's generate.py):
 //  - drafts are sampled with the REQUEST sampler (generate.py:593-601) —

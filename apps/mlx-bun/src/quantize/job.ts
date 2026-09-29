@@ -1,14 +1,33 @@
 import type { Emit, JobRunner } from "../jobs/protocol";
 import { resolveSrcDir } from "./inspect";
-import type { quantizeModelDir, QuantizeOptions } from "@mlx-bun/quantize/quantizer";
+import { CONVERT_DTYPES } from "./output-name";
+import type { quantizeModelDir, QuantizeOptions, ConvertDtype } from "@mlx-bun/quantize/quantizer";
+import type { convertModelDir } from "@mlx-bun/quantize/convert";
 import type { automaticRotationWeightTransform } from "@mlx-bun/quantize/weight-transform";
 
 export function createQuantizeRunner(supplied: Partial<{
-  quantize: typeof quantizeModelDir; rotation: typeof automaticRotationWeightTransform;
+  quantize: typeof quantizeModelDir; rotation: typeof automaticRotationWeightTransform; convert: typeof convertModelDir;
 }> = {}): JobRunner {
  return async (emit: Emit, config) => {
   const outDir = String(config.out_dir ?? "");
   if (!outDir) throw new Error("quantize job: missing out_dir");
+
+  const dtype = config.dtype === undefined ? undefined : String(config.dtype) as ConvertDtype;
+  if (dtype !== undefined && !CONVERT_DTYPES.includes(dtype))
+    throw new Error(`quantize job: dtype must be float16, bfloat16 or float32 (got ${String(config.dtype)})`);
+
+  // No quantization requested: rewrite the checkpoint with --dtype and/or dequantized weights.
+  if (config.quantize === false) {
+    const srcDir = resolveSrcDir(config);
+    emit({ type: "stage", stage: "starting", progress: 0.01,
+      message: `Converting ${srcDir}${config.dequantize ? " → dense" : ""}${dtype ? ` (${dtype})` : ""}` });
+    const convert = supplied.convert ?? (await import("@mlx-bun/quantize/convert")).convertModelDir;
+    const r = await convert(srcDir, outDir, { dtype, dequantize: config.dequantize === true },
+      (e) => emit({ type: "stage", stage: e.stage, progress: e.progress, message: e.message }));
+    emit({ type: "stage", stage: "done", progress: 1,
+      message: r.nDequantized ? `Dequantized ${r.nDequantized} modules` : "Converted", output_dir: r.outDir });
+    return { outputPath: r.outDir };
+  }
 
   const bits = Number(config.bits ?? 4) as 4 | 8;
   const groupSize = Number(config.group_size ?? 64) as 32 | 64;
@@ -41,6 +60,7 @@ export function createQuantizeRunner(supplied: Partial<{
     (await import("@mlx-bun/quantize/weight-transform")).automaticRotationWeightTransform : undefined;
   const opts: QuantizeOptions = {
     bits, groupSize, mode: String(config.mode ?? "affine"),
+    ...(dtype ? { dtype } : {}),
     ...(targetBpw !== undefined ? { targetBpw } : {}),
     ...(Array.isArray(config.candidate_bits) ? { candidateBits: (config.candidate_bits as number[]).map(Number) } : {}),
     ...(config.reference ? { reference: String(config.reference) } : {}),

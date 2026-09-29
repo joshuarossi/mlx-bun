@@ -57,7 +57,10 @@ const commands = {
     temp: { type: "string", description: "Alias for --temperature" },
     "top-p": { type: "string", description: "Default nucleus sampling [0..1]" },
     "top-k": { type: "string", description: "Default top-k sampling" },
-    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3) [default: off]" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3); config without the model's kv_config.json stays bf16, and a scheme the model's cache cannot take is refused at startup [default: off]" },
+    l1: { type: "boolean", description: "Numerical preset: KV off, unfused SDPA (the default); explicit KV/kernel flags override" },
+    l2: { type: "boolean", description: "Numerical preset: model-config KV, fused SDPA; wins over --l1, explicit KV/kernel flags override" },
+    "fused-sdpa": { type: "string", description: "Startup SDPA override: on | off [default: on for KV config, off otherwise]" },
     "kv-budget": { type: "string", description: "Aggregate batch KV budget, decimal GB; unset means no budget" },
     "prompt-cache": { type: "string", description: "RAM prompt cache cap, GiB; 0 disables [default: 8 GB]" },
     "ssd-cache": { type: "string", description: "Optional durable prompt-cache directory" },
@@ -95,15 +98,26 @@ const commands = {
   } },
   generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {
     query: { type: "string", description: "Cached model query when no positional query is supplied" },
-    prompt: { type: "string", description: "Prompt text (or second positional argument)" },
+    prompt: { type: "string", description: "Prompt text (or second positional argument); - reads stdin" },
+    "system-prompt": { type: "string", description: "System message placed before the prompt in the chat template (ignored with --raw)" },
     raw: { type: "boolean", description: "Skip the chat template and tokenize the prompt verbatim" },
     "max-tokens": { type: "string", description: "Completion cap [default: 256]" },
     temperature: { type: "string", description: "Sampling temperature [default: 0]" },
     temp: { type: "string", description: "Alias for --temperature" },
     "top-p": { type: "string", description: "Nucleus sampling" },
     "top-k": { type: "string", description: "Top-k sampling" },
+    "min-p": { type: "string", description: "Min-p sampling: keep tokens with probability >= min-p times the top token's [0..1]" },
+    "min-tokens-to-keep": { type: "string", description: "Tokens min-p never filters out, integer >= 1 [default: 1]" },
+    "xtc-probability": { type: "string", description: "Probability per step of XTC (exclude top choices) sampling [0..1]" },
+    "xtc-threshold": { type: "string", description: "Probability a token must exceed to be an XTC removal candidate [0..0.5]" },
+    adapter: { type: "string", description: "Mount a LoRA adapter directory for this generation" },
+    "adapter-path": { type: "string", description: "Alias for --adapter (mlx_lm spelling)" },
     seed: { type: "string", description: "Sampler seed" },
-    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3) [default: off]" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3); config without the model's kv_config.json stays bf16, and a scheme the model's cache cannot take is refused at startup [default: off]" },
+    "quantized-kv-start": { type: "string", description: "Token count at which KV quantization starts with --kv-quant 4 | 8 | turbo | config [default: 0]" },
+    l1: { type: "boolean", description: "Numerical preset: KV off, unfused SDPA (the default); explicit KV/kernel flags override" },
+    l2: { type: "boolean", description: "Numerical preset: model-config KV, fused SDPA; wins over --l1, explicit KV/kernel flags override" },
+    "fused-sdpa": { type: "string", description: "Startup SDPA override: on | off [default: on for KV config, off otherwise]" },
   } },
   embed: { description: "Embed local text and print vectors", positional: "[query] [text]", options: {
     query: { type: "string", description: "Cached model query; defaults to the first downloaded embedding model" },
@@ -132,15 +146,15 @@ const commands = {
   } },
   upload: { description: "Push a local model directory to the Hugging Face Hub (mlx_lm.upload counterpart)", positional: "",
     usage: "usage: mlx-bun upload --path <model-dir> --upload-repo <org/repo> [--private]", options: {
-    path: { type: "string", description: "Local model directory to upload [default: mlx_model]" },
+    path: { type: "string", description: "Local model directory to upload (required)" },
     "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
     private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
   } },
   convert: { description: "Quantize an HF model into a local MLX snapshot (mlx_lm.convert counterpart)", positional: "[repo-or-path]", options: {
     "hf-path": { type: "string", description: "Source model: local path, downloaded model, or HF repo id (fetched first); --model and the positional are aliases" },
     model: { type: "string", description: "Alias for --hf-path" },
-    "mlx-path": { type: "string", description: "Output directory; must not already exist [default: mlx_model]" },
-    quantize: { type: "boolean", short: "q", description: "Quantize the model (uniform affine)" },
+    "mlx-path": { type: "string", description: "Output directory; must not already exist [default: ~/.mlx-bun/models/<model>-<bits>bit]" },
+    quantize: { type: "boolean", short: "q", description: "Quantize the model (uniform affine); without -q or --target-bpw the model is rewritten with --dtype and/or -d only" },
     "q-bits": { type: "string", description: "Bits per weight: 4 or 8 [default: 4]" },
     "q-group-size": { type: "string", description: "Quantization group size: 32 or 64 [default: 64]" },
     "upload-repo": { type: "string", description: "Push the converted model to this Hugging Face repo afterwards (write token checked first)" },
@@ -151,20 +165,20 @@ const commands = {
     "rotate-weights": { type: "boolean", description: "Fold the model's offline TurboQuant rotation before quantization (auto-detects Llama/Qwen3.5/Qwen MTP)" },
     "rotation-seed": { type: "string", description: "Deterministic rotation seed [default: 42]" },
     "q-mode": { type: "string", description: "Quantization mode; only affine is supported [default: affine]" },
-    dtype: { type: "string", description: "Not supported (mlx_lm.convert flag); exits with an error" },
-    dequantize: { type: "boolean", short: "d", description: "Not supported (mlx_lm.convert flag); exits with an error" },
-    "quant-predicate": { type: "string", description: "Not supported (mlx-lm recipe); use --target-bpw for mixed precision" },
+    dtype: { type: "string", description: "Dtype of the non-quantized tensors and of the quantization scales/biases: float16 | bfloat16 | float32 [default: bf16 scales/biases, other tensors unchanged]" },
+    dequantize: { type: "boolean", short: "d", description: "Dequantize a quantized model to dense weights (not with -q)" },
+    "quant-predicate": { type: "string", description: "Not supported (mlx-lm's mixed_* recipes need 2/3/6-bit); use --target-bpw for mixed precision" },
   } },
   train: { description: "Fine-tune a LoRA adapter on your data (sft | dpo | orpo)", positional: "[model]", options: {
     query: { type: "string", description: "Model to fine-tune when no positional query is supplied (auto-picks the default model if omitted)" },
     data: { type: "string", description: "Dataset dir with train.jsonl (+ optional valid.jsonl); rows are {prompt, chosen, rejected} for dpo/orpo, {messages|text} for sft  (required)" },
     method: { type: "string", description: "sft | dpo | orpo  [default: orpo]" },
-    adapter: { type: "string", description: "Output adapter dir  [default: ~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>]" },
+    adapter: { type: "string", description: "Output adapter dir  [default: ~/.mlx-bun/adapters/<method>-<model>]" },
     iters: { type: "string", description: "Training iterations  [default: 100]" },
     lr: { type: "string", description: "Learning rate  [default: orpo 1e-5 · dpo 5e-5 · sft 2e-4]" },
     rank: { type: "string", description: "LoRA rank  [default: orpo 16 · else 8]" },
     scale: { type: "string", description: "LoRA scale  [default: orpo 2.0 · else 1.0]" },
-    seq: { type: "string", description: "Max sequence length  [default: gemma 8192 · else 4096]" },
+    seq: { type: "string", description: "Max sequence length  [default: the model's own; 4096 when it declares none]" },
     batch: { type: "string", description: "Batch size  [default: 1]" },
     "grad-accum": { type: "string", description: "Gradient accumulation steps (effective batch = batch × grad-accum at batch-size-1 memory)  [default: 1]" },
     "grad-clip": { type: "string", description: "Gradient-norm clip (0 = off)  [default: 1.0]" },
@@ -178,21 +192,26 @@ const commands = {
     "no-flash": { type: "boolean", description: "Disable the flash-CCE Metal head (use the MLX fused head)" },
     "no-prefix": { type: "boolean", description: "Disable prefix-sharing (two-forward branches)" },
     "no-segment": { type: "boolean", description: "Disable the segmented backward (hold all activations)" },
+    "num-layers": { type: "string", description: "Layers to adapt, counted from the last; -1 = all  [default: -1]" },
+    "steps-per-report": { type: "string", description: "Steps between loss reports  [default: 1]" },
+    "steps-per-eval": { type: "string", description: "Steps between validations  [default: every --save-every steps, else never]" },
+    dropout: { type: "string", description: "LoRA dropout  [default: 0]" },
+    "weight-decay": { type: "string", description: "AdamW weight decay  [default: 0.01]" },
+    "grad-checkpoint": { type: "boolean", description: "Recompute activations in the backward pass to save memory" },
     "dry-run": { type: "boolean", description: "Inspect the dataset + print the resolved plan, don't train" },
   } },
   "train-watch": { description: "Live dashboard for a training run (tails <adapter-dir>/metrics.jsonl)", positional: "[adapter-dir]", options: {
-    adapter: { type: "string", description: "Adapter directory to watch; accepted for the positional  [default: ~/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5]" },
+    adapter: { type: "string", description: "Adapter directory to watch; accepted for the positional  [default: the latest run in ~/.mlx-bun/adapters]" },
   } },
   fuse: { description: "Merge a LoRA adapter into the base weights (writes a standalone snapshot)", positional: "[model]", options: {
     model: { type: "string", description: "Base model (registry query or a snapshot path); the mlx_lm.fuse spelling of the positional" },
     adapter: { type: "string", description: "Adapter directory (adapters.safetensors + adapter_config.json)  [default: adapters]" },
     "adapter-path": { type: "string", description: "mlx_lm.fuse alias for --adapter" },
-    "save-path": { type: "string", description: "Output model directory  [default: fused_model]" },
-    "de-quantize": { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
-    dequantize: { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    "save-path": { type: "string", description: "Output model directory  [default: ~/.mlx-bun/models/<model>-fused]" },
+    dequantize: { type: "boolean", description: "Write dense weights instead of the base's quantized layout (drops the config's quantization block)" },
     "export-gguf": { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
     "gguf-path": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
-    "upload-repo": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    "upload-repo": { type: "string", description: "Push the fused model to this Hugging Face repo afterwards (write token checked first)" },
   } },
   transcribe: { description: "Speech-to-text from an audio file with a local Whisper model (no server)", positional: "<audio-file> [query]",
     usage: "usage: mlx-bun transcribe <audio-file> [query] [--language en] [--format text|json|verbose_json|srt|vtt]", options: {
@@ -271,6 +290,18 @@ export function usage(command: Command): string {
   return (commands[command] as { usage?: string }).usage ?? `usage: mlx-bun ${command} ${commands[command].positional}`;
 }
 
+/** A verb's option table (name → type, short); the alias parser reads the same one. */
+export function commandOptions(command: Command): Record<string, { type: "string" | "boolean"; short?: string }> {
+  return commands[command].options;
+}
+
+/** The positional-count and required-positional rules shared by every way of building a verb's arguments. */
+export function checkPositionals(command: Command, parsed: CommandArgs): void {
+  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" || command === "transcribe" ? 2 : commands[command].positional ? 1 : 0;
+  if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
+  if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
+}
+
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean"; short?: string }> = commands[command].options;
   let parsed: CommandArgs;
@@ -281,9 +312,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
       throw new Error(usage(command));
     throw error;
   }
-  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" || command === "transcribe" ? 2 : commands[command].positional ? 1 : 0;
-  if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
-  if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
+  checkPositionals(command, parsed);
   return parsed;
 }
 

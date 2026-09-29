@@ -1,14 +1,17 @@
 // Opt-in acceptance with real weights: managed quantize and fine-tune jobs
 // through a real `mlx-bun serve` process over HTTP, shutdown cancelling an
-// active child, restart on the same storage, and spawned `train`/`convert`
-// runs interrupted by SIGINT. Storage is isolated by a temporary HOME and
-// HF_HUB_CACHE; the served model is the cached snapshot named by
-// MLX_BUN_APP_TEST_MODEL, and the conversion cases need a cached bf16
-// snapshot named by MLX_BUN_APP_TEST_BF16_MODEL. Nothing is downloaded.
+// active child, restart on the same storage, spawned `train`/`convert`
+// runs interrupted by SIGINT, and finished fine-tune outputs consumed as
+// artifacts: mounted, merged and unmounted over HTTP, reloaded in a fresh
+// process, and fused with `mlx-bun fuse` into a model that `serve` loads.
+// Storage is isolated by a temporary HOME and HF_HUB_CACHE; the served model
+// is the cached snapshot named by MLX_BUN_APP_TEST_MODEL, and the conversion
+// cases need a cached bf16 snapshot named by MLX_BUN_APP_TEST_BF16_MODEL.
+// Nothing is downloaded; training data is written here at run time.
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
 const bf16Dir = process.env.MLX_BUN_APP_TEST_BF16_MODEL;
@@ -20,7 +23,7 @@ function isolated() {
   const row = (i: number) => JSON.stringify({ text: `Example ${i}: the quick brown fox jumps over the lazy dog, number ${i * 7}.` }) + "\n";
   writeFileSync(join(data, "train.jsonl"), Array.from({ length: 4 }, (_, i) => row(i)).join(""));
   writeFileSync(join(data, "valid.jsonl"), Array.from({ length: 2 }, (_, i) => row(10 + i)).join(""));
-  return { home, hub, data, env: { HOME: home, HF_HUB_CACHE: hub, HF_HUB_OFFLINE: "1", NO_COLOR: "1" },
+  return { home, hub, data, env: { HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: hub, HF_HUB_OFFLINE: "1", NO_COLOR: "1" },
     dispose: () => rmSync(home, { recursive: true, force: true }) };
 }
 
@@ -81,8 +84,8 @@ function cli(args: string[], env: Record<string, string>) {
   };
 }
 
-async function serve(env: Record<string, string>, model = modelDir!) {
-  const app = cli(["serve", model, "--port", "0", "--no-open", "--max-tokens", "8", "--thinking", "off", "--prompt-cache", "0.125"], env);
+async function serve(env: Record<string, string>, model = modelDir!, promptCacheGiB = "0.125") {
+  const app = cli(["serve", model, "--port", "0", "--no-open", "--max-tokens", "8", "--thinking", "off", "--prompt-cache", promptCacheGiB], env);
   try {
     await app.waitFor(/App http:\/\/127\.0\.0\.1:\d+\//, 180_000);
     const base = new URL(/App (http:\/\/127\.0\.0\.1:\d+)\//.exec(app.out())![1]!);
@@ -155,6 +158,36 @@ const maxStep = (metrics: string) => Math.max(0, ...readFileSync(metrics, "utf8"
   .map(line => JSON.parse(line)).filter(row => row.type === "metric" && row.kind === "train").map(row => row.step as number));
 const checkpointOf = (adapter: string, step: string) =>
   readdirSync(join(adapter, "checkpoints")).find(name => name.startsWith(`step-${step}-`));
+/** A one-sentence text dataset a short fine-tune learns. */
+function sentenceData(root: string, name: string, sentence: string) {
+  const directory = join(root, "data-" + name), row = JSON.stringify({ text: sentence }) + "\n";
+  mkdirSync(directory);
+  writeFileSync(join(directory, "train.jsonl"), row.repeat(4));
+  writeFileSync(join(directory, "valid.jsonl"), row.repeat(2));
+  return directory;
+}
+type TensorEntry = { dtype: string; shape: number[]; bytes(): Promise<Buffer> };
+/** The tensors a safetensors header names; bytes are read on demand, without native code. */
+async function safetensorsTensors(path: string, into = new Map<string, TensorEntry>()) {
+  const file = Bun.file(path);
+  const length = Number(Buffer.from(await file.slice(0, 8).arrayBuffer()).readBigUInt64LE(0)), start = 8 + length;
+  const header = JSON.parse(await file.slice(8, start).text()) as Record<string, { dtype: string; shape: number[]; data_offsets: [number, number] }>;
+  for (const [name, entry] of Object.entries(header)) {
+    if (name === "__metadata__") continue;
+    const [begin, end] = entry.data_offsets;
+    into.set(name, { dtype: entry.dtype, shape: entry.shape, bytes: async () => Buffer.from(await file.slice(start + begin, start + end).arrayBuffer()) });
+  }
+  return into;
+}
+/** A snapshot's tensors, enumerated as the loader does: the index's shards, else the single file. */
+async function snapshotTensors(directory: string) {
+  const index = join(directory, "model.safetensors.index.json");
+  const files = existsSync(index) ? [...new Set(Object.values(JSON.parse(readFileSync(index, "utf8")).weight_map as Record<string, string>))]
+    : [existsSync(join(directory, "model.safetensors")) ? "model.safetensors" : "weights.safetensors"];
+  const tensors = new Map<string, TensorEntry>();
+  for (const file of files) await safetensorsTensors(join(directory, file), tensors);
+  return tensors;
+}
 
 test.skipIf(!modelDir)("managed quantize and fine-tune jobs run through a real serve process, shutdown cancels an active child, and a restart resumes serving", async () => {
   const io = isolated();
@@ -173,7 +206,8 @@ test.skipIf(!modelDir)("managed quantize and fine-tune jobs run through a real s
     expect(existsSync(join(submitted.output_dir, "config.json"))).toBe(true);
     expect(readdirSync(submitted.output_dir).some(name => name.endsWith(".safetensors"))).toBe(true);
     const library = await (await fetch(new URL("/library", app.base))).json();
-    expect(library.models.some((model: { repo_id: string }) => model.repo_id.includes("-OptiQ-4bit"))).toBe(true);
+    expect(submitted.output_dir).toBe(join(io.home, ".mlx-bun", "models", basename(submitted.output_dir)));
+    expect(library.models.some((model: { repo_id: string }) => model.repo_id === basename(submitted.output_dir))).toBe(true);
     await chat(app.base); // inference resumes after the job's lease
     await generateFromArtifact(submitted.output_dir, io.env);
     // A short fine-tune with a periodic checkpoint.
@@ -202,7 +236,7 @@ test.skipIf(!modelDir)("managed quantize and fine-tune jobs run through a real s
     app.proc.kill("SIGTERM");
     expect(await app.exited(180_000, 0)).toBe(0);
     const { JobStore } = await import("../../src/jobs/db");
-    const store = new JobStore(join(io.home, ".cache/mlx-bun/jobs.sqlite"), join(io.home, ".cache/mlx-bun/jobs"));
+    const store = new JobStore(join(io.home, ".mlx-bun/db/jobs.sqlite"), join(io.home, ".mlx-bun/jobs"));
     try {
       const cancelled = store.get(longJob.job_id)!;
       expect(cancelled.status).toBe("failed");
@@ -291,4 +325,140 @@ test.skipIf(!bf16Dir)("a spawned convert is interrupted during the synchronous s
     expect(readdirSync(io.home).filter(name => name.startsWith(".uniform.convert-"))).toEqual([]);
     await generateFromArtifact(uniform, io.env);
   } finally { io.dispose(); }
+}, 1_200_000);
+
+test.skipIf(!modelDir)("finished fine-tune outputs mount, merge and unmount over HTTP, change output only for requests that select them, reload identically in a fresh process, and fuse into a model that serves", async () => {
+  const io = isolated();
+  const prompt = "The lighthouse keeper's secret word is";
+  /** Greedy raw completion with per-token logprobs: the whole choice is compared. */
+  const complete = async (base: URL, adapter?: string) => {
+    const response = await post(base, "/v1/completions", { prompt, max_tokens: 8, temperature: 0, logprobs: true, ...(adapter ? { adapter } : {}) });
+    const payload = await response.json();
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload.usage.completion_tokens).toBeGreaterThan(0);
+    expect(payload.choices[0].logprobs.content).toHaveLength(payload.usage.completion_tokens);
+    return payload.choices as { text: string; logprobs: unknown; finish_reason: string }[];
+  };
+  const mount = async (base: URL, id: string, path: string) => {
+    const response = await post(base, "/v1/adapters", { id, path });
+    const mounted = await response.json();
+    expect(response.status, JSON.stringify(mounted)).toBe(200);
+    expect(mounted.mounted_layers).toBeGreaterThan(0);
+  };
+  const unmount = async (base: URL, id: string) => {
+    const response = await fetch(new URL(`/v1/adapters/${id}`, base), { method: "DELETE" });
+    const removed = await response.json();
+    expect(response.status, JSON.stringify(removed)).toBe(200);
+    expect(removed.removed_layers).toBeGreaterThan(0);
+  };
+  let app: Awaited<ReturnType<typeof serve>> | undefined;
+  try {
+    // RAM prompt cache off: every request prefills cold, so whole choices,
+    // logprobs included, compare exactly across requests and processes.
+    app = await serve(io.env, modelDir!, "0");
+    const base = await complete(app.base);
+    const train = async (name: string, sentence: string, iters: number) => {
+      const adapter = join(io.home, "adapters", name);
+      const submitted = await (await post(app!.base, "/api/finetune/submit", { model_dir: modelDir, data_dir: sentenceData(io.home, name, sentence),
+        adapter_path: adapter, method: "sft", iters, learning_rate: 1e-3, max_seq_length: 64, steps_per_report: 1,
+        save_checkpoints: false, val_max_examples: 2 })).json();
+      expect(submitted.ok).toBe(true);
+      const events = await streamJob(app!.base, submitted.job_id, terminal, 300_000);
+      expect(events.at(-1)?.type, JSON.stringify(events.at(-1))).toBe("done");
+      // The finished output, not a periodic checkpoint.
+      for (const file of ["adapters.safetensors", "adapter_config.json"]) expect(existsSync(join(adapter, file))).toBe(true);
+      return adapter;
+    };
+    const keeper = await train("keeper", `${prompt} marmalade.`, 32);
+    const tide = await train("tide", "The harbor master writes down the evening tide with a brass pencil.", 8);
+    expect(await complete(app.base)).toEqual(base);
+    await mount(app.base, "keeper", keeper);
+    const withKeeper = await complete(app.base, "keeper");
+    expect(withKeeper[0]!.text).not.toBe(base[0]!.text);
+    // A request that selects no adapter is untouched by the mount.
+    expect(await complete(app.base)).toEqual(base);
+    expect(await complete(app.base, "none")).toEqual(base);
+    // Main's merge route: the two finished adapters concatenated by rank.
+    const mergeResponse = await post(app.base, "/api/finetune/merge", { adapter_a: keeper, adapter_b: tide });
+    const merge = await mergeResponse.json();
+    expect(mergeResponse.status, JSON.stringify(merge)).toBe(200);
+    expect(merge.ok).toBe(true);
+    // The default output root is the app's storage policy, not this test's: it
+    // only has to stay inside the isolated HOME and hold a loadable adapter.
+    expect(merge.merged_path.startsWith(io.home + "/")).toBe(true);
+    expect(existsSync(join(merge.merged_path, "adapters.safetensors"))).toBe(true);
+    expect(merge.stats.layersMerged).toBeGreaterThan(0);
+    await mount(app.base, "merged", merge.merged_path);
+    const withMerged = await complete(app.base, "merged");
+    expect(withMerged[0]!.text).not.toBe(base[0]!.text);
+    expect(await complete(app.base, "keeper")).toEqual(withKeeper);
+    expect(await complete(app.base)).toEqual(base);
+    // Unmounting restores the base output exactly, and the id no longer selects.
+    await unmount(app.base, "keeper");
+    await unmount(app.base, "merged");
+    expect((await (await fetch(new URL("/v1/adapters", app.base))).json()).adapters).toEqual([]);
+    expect(await complete(app.base)).toEqual(base);
+    const stale = await post(app.base, "/v1/completions", { prompt, max_tokens: 8, temperature: 0, adapter: "keeper" });
+    expect(stale.status).toBe(400);
+    app.proc.kill("SIGTERM");
+    expect(await app.exited(180_000, 0)).toBe(0);
+    app = undefined;
+
+    // `fuse` guarantees (packages/training/src/fuse.ts): config.json and the
+    // tokenizer files copied verbatim, the source quantization layout kept
+    // (same tensors, dtypes and shapes), every module the adapter does not
+    // touch byte-identical, and each adapter module folded into its base
+    // module by dequantizing, adding the bf16 delta and re-quantizing with the
+    // module's own spec. That re-quantization rounds, so the fused model is not
+    // a bit-exact substitute for the mounted adapter; the check is this
+    // contract plus a real `serve` load and generation, not the adapter's output.
+    const fused = join(io.home, "fused");
+    const fuse = cli(["fuse", modelDir!, "--adapter", keeper, "--save-path", fused], io.env);
+    try { expect(await fuse.exited(900_000, 0)).toBe(0); } finally { await fuse.stop(); }
+    expect(fuse.out()).toContain("fuse complete");
+    for (const name of ["config.json", "tokenizer.json", "tokenizer_config.json"]) {
+      if (name !== "config.json" && !existsSync(join(modelDir!, name))) continue;
+      expect(readFileSync(join(fused, name)).equals(readFileSync(join(modelDir!, name))), name).toBe(true);
+    }
+    const source = await snapshotTensors(modelDir!), output = await snapshotTensors(fused);
+    const layout = (tensors: Map<string, TensorEntry>) => [...tensors].map(([name, tensor]) => `${name} ${tensor.dtype} ${tensor.shape.join("x")}`).sort();
+    expect(layout(output)).toEqual(layout(source));
+    const adapterModules = [...(await safetensorsTensors(join(keeper, "adapters.safetensors"))).keys()]
+      .flatMap(name => /^(.*)\.(?:lora_a|lora_A)(?:\.weight)?$/.exec(name)?.[1] ?? []);
+    expect(adapterModules.length).toBeGreaterThan(0);
+    const foldedModules = new Set(adapterModules.map(path => {
+      const module = [path, `language_model.${path}`, path.startsWith("language_model.") ? path.slice("language_model.".length) : undefined]
+        .find(candidate => candidate !== undefined && source.has(`${candidate}.weight`));
+      if (!module) throw new Error(`adapter module ${path} matches no base weight`);
+      return module;
+    }));
+    expect(foldedModules.size).toBe(adapterModules.length);
+    const passthroughChanged: string[] = [], foldedChanged: string[] = [];
+    for (const [name, tensor] of source) {
+      const same = (await tensor.bytes()).equals(await output.get(name)!.bytes());
+      const module = /^(.*)\.(?:weight|scales|biases)$/.exec(name)?.[1];
+      if (module !== undefined && foldedModules.has(module)) { if (!same) foldedChanged.push(name); }
+      else if (!same) passthroughChanged.push(name);
+    }
+    expect(passthroughChanged).toEqual([]);
+    expect(foldedChanged.length).toBeGreaterThan(0);
+    await generateFromArtifact(fused, io.env);
+
+    // Reload: a fresh process mounting the same finished and merged adapters reproduces their outputs exactly.
+    app = await serve(io.env, modelDir!, "0");
+    expect(await complete(app.base)).toEqual(base);
+    await mount(app.base, "keeper", keeper);
+    await mount(app.base, "merged", merge.merged_path);
+    expect(await complete(app.base, "keeper")).toEqual(withKeeper);
+    expect(await complete(app.base, "merged")).toEqual(withMerged);
+    await unmount(app.base, "keeper");
+    await unmount(app.base, "merged");
+    expect(await complete(app.base)).toEqual(base);
+    app.proc.kill("SIGTERM");
+    expect(await app.exited(180_000, 0)).toBe(0);
+    app = undefined;
+  } finally {
+    if (app) await app.stop();
+    io.dispose();
+  }
 }, 1_200_000);

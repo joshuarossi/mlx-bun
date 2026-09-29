@@ -83,7 +83,7 @@ export function assertMlxSpeculativeBinding(binding: MlxSpeculativeBinding): voi
  *  DSpark-style source), also return the captured multi-layer context
  *  [1,L,m*H] (tapLayers concatenated on the feature axis; index nLayers is the
  *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
- *  touch model.hiddenTap. Mirrors generate-dflash.ts forwardTapped. */
+ *  touch model.hiddenTap. */
 async function legacyForwardWithTaps(
   model: RuntimeModel,
   ids: MlxArray,

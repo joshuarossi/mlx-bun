@@ -1,10 +1,17 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { hubCacheRoot } from "@mlx-bun/hub/registry";
 import { inspectModel } from "../quantize/inspect";
+import { quantizedModelName } from "../quantize/output-name";
 import type { SubmitResult } from "../jobs/runner";
+import { openRegistry, storagePath } from "../storage/paths";
 
 export interface QuantizeRouteDeps {
   submit(kind: "quantize", config: Record<string, unknown>, outputPath: string): SubmitResult;
 }
-export function createQuantizeRoutes(deps: QuantizeRouteDeps) {
+/** `outputRoot` is the storage root: quantized models land in its `models/`
+ * (default ~/.mlx-bun/models) and the folder picker searches it beside the hub cache. */
+export function createQuantizeRoutes(deps: QuantizeRouteDeps, options: { outputRoot?: string } = {}) {
   return { async handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     if (request.method !== "POST") return null;
@@ -14,26 +21,19 @@ export function createQuantizeRoutes(deps: QuantizeRouteDeps) {
         return Response.json(await inspectModel(body?.model_id ?? ""));
       }
       case "/api/model/resolve-folder":
-      case "/api/quantize/resolve-folder": return resolveModelFolder(request);
-      case "/api/quantize/submit": return submitQuantize(request, deps);
+      case "/api/quantize/resolve-folder": return resolveModelFolder(request, options.outputRoot);
+      case "/api/quantize/submit": return submitQuantize(request, deps, options.outputRoot);
       default: return null;
     }
   } };
 }
 
-export async function resolveModelFolder(request: Request): Promise<Response> {
+export async function resolveModelFolder(request: Request, outputRoot?: string): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as {
     folder_name?: string;
     rel_path?: string;
   };
-  const { statSync, readdirSync, readFileSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { homedir } = await import("node:os");
-  const hubRoot = process.env.HF_HUB_CACHE ??
-    (process.env.HF_HOME
-      ? join(process.env.HF_HOME, "hub")
-      : join(homedir(), ".cache/huggingface/hub"));
-  const roots = [hubRoot, join(homedir(), ".cache/mlx-bun")];
+  const hubRoot = hubCacheRoot(), modelsRoot = storagePath("models", outputRoot);
   const hasConfig = (dir: string) => {
     try {
       return statSync(join(dir, "config.json")).isFile();
@@ -86,14 +86,11 @@ export async function resolveModelFolder(request: Request): Promise<Response> {
     } catch {}
   }
 
-  for (const root of roots) {
-    if (folder && hasConfig(join(root, folder))) {
-      return Response.json({ ok: true, path: join(root, folder) });
-    }
-  }
+  if (folder && hasConfig(join(hubRoot, folder))) return Response.json({ ok: true, path: join(hubRoot, folder) });
+  // The app's own models are plain directories whose name is their id.
+  if (folder && hasConfig(join(modelsRoot, folder))) return Response.json({ ok: true, path: join(modelsRoot, folder), repo_id: folder });
 
-  const { Registry } = await import("@mlx-bun/hub/registry");
-  const registry = new Registry();
+  const registry = openRegistry(outputRoot);
   try {
     await registry.scan();
     const all = registry.list();
@@ -119,7 +116,7 @@ export async function resolveModelFolder(request: Request): Promise<Response> {
   });
 }
 
-async function submitQuantize(request: Request, deps: QuantizeRouteDeps): Promise<Response> {
+async function submitQuantize(request: Request, deps: QuantizeRouteDeps, outputRoot?: string): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as {
     model_id?: string;
     bits?: number;
@@ -134,46 +131,12 @@ async function submitQuantize(request: Request, deps: QuantizeRouteDeps): Promis
   };
   if (!body.model_id)
     return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
-  const { homedir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { mkdirSync, writeFileSync } = await import("node:fs");
-  const { createHash } = await import("node:crypto");
   const bits = body.bits ?? 4;
   const groupSize = body.group_size ?? 64;
-  const snapshotMatch = body.model_id.match(/(models--[^/]+)\/snapshots\//);
-  let org = "local";
-  let name: string;
-  if (snapshotMatch) {
-    const parts = snapshotMatch[1]!.split("--");
-    org = parts[1] ?? "local";
-    name = parts.slice(2).join("--");
-  } else if (
-    body.model_id.includes("/") &&
-    !body.model_id.startsWith("/") &&
-    !body.model_id.startsWith("~")
-  ) {
-    const segments = body.model_id.split("/");
-    org = segments[0]!;
-    name = segments.slice(1).join("-");
-  } else {
-    name = body.model_id.split("/").filter(Boolean).at(-1) ?? "model";
-  }
-  name = (name || "model").replace(/[^a-z0-9_.-]/gi, "");
-  org = (org || "local").replace(/[^a-z0-9_.-]/gi, "");
-  const suffix = `${body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`}` +
-    `${body.rotate_weights ? `-rot${body.rotation_seed ?? 42}` : ""}`;
-  const quantRepo = `${name}-OptiQ-${suffix}`;
-  const hubRoot = process.env.HF_HUB_CACHE ??
-    (process.env.HF_HOME
-      ? join(process.env.HF_HOME, "hub")
-      : join(homedir(), ".cache/huggingface/hub"));
-  const repoDir = join(hubRoot, `models--${org}--${quantRepo}`);
-  const snapshotHash = createHash("sha1").update(`${org}/${quantRepo}`).digest("hex");
-  const outDir = join(repoDir, "snapshots", snapshotHash);
-  try {
-    mkdirSync(join(repoDir, "refs"), { recursive: true });
-    writeFileSync(join(repoDir, "refs", "main"), snapshotHash);
-  } catch {}
+  // A plain model directory; the same model and settings name the same
+  // directory, which the producer refuses to overwrite.
+  const outDir = join(storagePath("models", outputRoot), quantizedModelName(body.model_id, {
+    bits, targetBpw: body.target_bpw, rotationSeed: body.rotate_weights ? body.rotation_seed ?? 42 : undefined }));
   const { jobId } = deps.submit("quantize", {
     model_id: body.model_id,
     out_dir: outDir,

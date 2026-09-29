@@ -21,21 +21,24 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions implemented",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
     "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
-    "POST /v1/audio/sessions/{id}/finish implemented [falls through if !host]", "* /engine 501 not migrated"]) expect(serve).toContain(row);
+    "POST /v1/audio/sessions/{id}/finish implemented [falls through if !host]"]) expect(serve).toContain(row);
+  // Routes no serve composition mounts have no row: lease, drain and /engine are unknown paths (404) here.
+  expect(serve.filter(row => /^\S+ \/(admin\/(lease|drain)|engine)\b/.test(row))).toEqual([]);
   const isolate = rows(baseline, "isolate");
   for (const row of ["* /admin/lease served by parent", "* /admin/memory/complete served by parent", "GET /engine implemented", "POST /v1/responses routed by model id", "POST /v1/embeddings routed by model id",
-    "* (any other path) forwarded to the worker", "* /admin/lease 501 not migrated", "* /engine 501 not migrated"]) expect(isolate).toContain(row);
+    "* (any other path) forwarded to the worker"]) expect(isolate).toContain(row);
   expect(isolate).not.toContain("POST /v1/chat/completions implemented");
   const worker = rows(baseline, "worker");
-  for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented", "POST /admin/memory/complete implemented",
-    "* /admin/memory/complete 405 method not allowed", "POST /v1/chat/completions implemented"]) expect(worker).toContain(row);
-  // The admin routes answer first: discovery's /health and the listener's 501 for the admin paths are unreachable here.
-  expect(worker.filter(row => row.includes(" /health ") || row.startsWith("* /admin/lease 501"))).toEqual(["GET /health implemented", "* /health 405 method not allowed"]);
+  for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented [served if options.acquireExecutionLease]",
+    "POST /admin/memory/complete implemented [served if options.memoryTaskModel] [served if options.acquireExecutionLease]",
+    "* /admin/memory/complete 405 method not allowed [served if options.memoryTaskModel] [served if options.acquireExecutionLease]", "POST /v1/chat/completions implemented"]) expect(worker).toContain(row);
+  // The admin routes answer first: discovery's /health is unreachable here.
+  expect(worker.filter(row => row.includes(" /health "))).toEqual(["GET /health implemented", "* /health 405 method not allowed"]);
   // The worker state stands in for the persistent groups with ones that serve nothing.
   expect(worker.some(row => /^\S+ \/api\/(hub|jobs|memory|sessions|quantize|dataset)\b/.test(row))).toBe(false);
   // The app launch form: the Server app, web and chat included, with the same admin routes ahead of its groups.
   const appWorker = rows(baseline, "app-worker");
-  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 9), ...serve.slice(13).filter(row => !/^(GET \/health|\* \/admin\/(lease|drain) 501)/.test(row))]);
+  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 9), ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
   expect(transcription).toContain("GET /ws/chat WebSocket upgrade (no chat model)");
@@ -107,6 +110,12 @@ test("a changed or removed allowlisted non-route site fails", () => {
     .toThrow("Allowlisted non-route site changed or disappeared: server/adapter-artifact-routes.ts createAdapterArtifactRoutes");
   expect(() => serverApiReference(mutate("server/proxy-routes.ts", '  if (pathname === "/v1/responses")\n', "  if (false)\n")))
     .toThrow("Allowlisted non-route site changed or disappeared: server/proxy-routes.ts unavailableFrame");
+});
+
+test("a path answered by the listener itself, not a route group, fails the dispatch check", () => {
+  expect(() => serverApiReference(mutate("server/start.ts", '        return Response.json({ error: { message: "Not found" } }, { status: 404 });',
+    '        if (url.pathname === "/engine") return Response.json({ error: { message: "placeholder" } }, { status: 501 });\n        return Response.json({ error: { message: "Not found" } }, { status: 404 });')))
+    .toThrow(/^server\/start\.ts:\d+: the listener's dispatch changed/);
 });
 
 test("a route factory outside every server mode fails", () => {

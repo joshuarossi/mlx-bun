@@ -23,17 +23,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../src/contracts/mlx/cache";
-import { releaseAll, sha256, storedFloatDtype } from "../parity/real-weight-inputs";
+import { applyDescriptor, descriptorFor, releaseAll, storedFloatDtype } from "../parity/real-weight-inputs";
+import { rotatingRowReader, type Layer, type Tensor } from "../parity/rotating-rows";
 
 const MODEL = "MLX_BUN_TEST_ROTATING_JOIN_MODEL", WINDOW = "MLX_BUN_TEST_ROTATING_JOIN_WINDOW";
 const FIRST = 40, JOINER = 24, JOIN_AFTER = 5;
 
 // ---- opt-in, descriptor and plan (no native libraries) -------------------------------------
-interface Descriptor { layerTypes: string[]; slidingWindow: number }
-/** A custom graph's descriptor: alternating sliding and full layers, one value source. */
-export function descriptorFor(layers: number, window: number): Descriptor {
-  return { layerTypes: Array.from({ length: layers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention"), slidingWindow: window };
-}
 function optIn(env: Record<string, string | undefined>) {
   const model = env[MODEL], window = env[WINDOW];
   if (model === undefined && window === undefined) return null;
@@ -77,8 +73,6 @@ export function planFor(window: number, vocab: number) {
 }
 
 // ---- report checks (pure; no native libraries) ----------------------------------------------
-export interface Tensor { shape: number[]; dtype: string; sha: string }
-export interface Layer { kind: "rotating" | "full"; offset: number; keys: Tensor; values: Tensor }
 export interface Projection { shape: number[]; dtype: string; sha: string; finite: boolean }
 export interface Forward { B: number; L: number; labels: string[]; ids: number[][]; states: { offset: number; layers: Layer[] }[] | null;
   projections: Projection[] }
@@ -148,63 +142,11 @@ test.skipIf(!inputs)("rotating rows keep their newest window through late joins 
   const { loadModelConfig, Weights, createModel } = await import("@mlx-bun/inference");
   const { bindMlxGateway, createRuntimeConfig } = await import("../../src/execution");
   const { RotatingKVCache } = await import("../../src/state/rotating-kv");
-  const { KVCache } = await import("../../src/state/kv");
-  const { BatchedRotatingCache } = await import("../../src/state/batched-rotating");
-  const { BatchedDecodeMaskCache } = await import("../../src/state/batched-mask");
-  const { rotatingSourcePosition } = await import("../../src/state/rotating-kv-layout");
-  const { plainRowStorage, temporalStorageView } = await import("../../src/state/batched-row-storage");
-  const hash = (a: MlxArray) => { const c = ops.contiguous(a); try { return sha256(new Uint8Array(c.rawBytes())); } finally { c.dispose(); } };
-  const tensor = (a: MlxArray): Tensor => ({ shape: [...a.shape], dtype: a.dtypeName, sha: hash(a) });
-  /** A serial rotating cache's newest min(offset, window) rows, through the source
-   * position; each view is handed to `own` as soon as it exists. */
-  const newest = (c: InstanceType<typeof RotatingKVCache>, own: (a: MlxArray) => MlxArray): [MlxArray, MlxArray] => {
-    const state = rotatingSourcePosition(c), valid = Math.min(c.offset, c.maxSize);
-    const range = { from: Math.max(0, state.activeLength - valid), to: state.activeLength };
-    const keys = own(temporalStorageView(plainRowStorage, c.keys!, state, range));
-    return [keys, own(temporalStorageView(plainRowStorage, c.values!, state, range))];
-  };
-  /** Every row's valid state, read through public state only. Views made for a
-   * layer are released before the next layer, even when a read throws. */
-  const rowStates = (caches: Cache[], B: number) => {
-    const rows = Array.from({ length: B }, () => ({ offset: -1, layers: [] as Layer[] }));
-    const batched = caches.find(c => c instanceof BatchedRotatingCache) as InstanceType<typeof BatchedRotatingCache> | undefined;
-    for (const c of caches) {
-      const owned: (() => void)[] = [];
-      const own = <T extends { dispose(): void }>(a: T): T => { owned.push(() => a.dispose()); return a; };
-      try {
-        if (c instanceof RotatingKVCache) {
-          assert.equal(B, 1, "serial rotating cache in a multi-row forward");
-          const [k, v] = newest(c, own);
-          rows[0]!.layers.push({ kind: "rotating", offset: c.offset, keys: tensor(k), values: tensor(v) });
-        } else if (c instanceof BatchedRotatingCache) {
-          for (let r = 0; r < B; r++) {
-            const [k, v] = newest(own(c.extractRow(r)!), own);
-            rows[r]!.layers.push({ kind: "rotating", offset: c.offsetArr[r]!, keys: tensor(k), values: tensor(v) });
-          }
-        } else {
-          // Full layers: rows are right-aligned in the batched buffer; each holds its own offset.
-          assert(c instanceof KVCache || c instanceof BatchedDecodeMaskCache, `unsupported cache ${c.signature()}`);
-          const [keys, values] = c.state(), width = c.offset;
-          for (let r = 0; r < B; r++) {
-            const valid = B === 1 ? width : batched!.offsetArr[r]!;
-            const cut = (a: MlxArray) => own(a.slice([r, 0, width - valid, 0], [r + 1, a.shape[1]!, width, a.shape[3]!]));
-            const k = cut(keys!), v = cut(values!);
-            rows[r]!.layers.push({ kind: "full", offset: valid, keys: tensor(k), values: tensor(v) });
-          }
-        }
-      } finally { releaseAll(owned.reverse()); }
-    }
-    for (const row of rows) row.offset = row.layers[0]!.offset;
-    return rows;
-  };
+  const { hash, newest, rowStates } = await rotatingRowReader();
 
   const config = await loadModelConfig(inputs!.model);
-  if (custom) {
-    // One descriptor for both the parsed config and the raw arguments the graph is built from.
-    const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
-    raw.layer_types = [...custom.layerTypes]; raw.sliding_window = custom.slidingWindow;
-    config.text.layerTypes = [...custom.layerTypes]; config.text.slidingWindow = custom.slidingWindow;
-  }
+  // One descriptor for both the parsed config and the raw arguments the graph is built from.
+  if (custom) applyDescriptor(config, custom);
   const weights = await Weights.open(inputs!.model);
   const originalView = RotatingKVCache.prototype.temporalView;
   try {

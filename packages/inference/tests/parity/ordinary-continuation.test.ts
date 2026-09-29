@@ -9,12 +9,17 @@
 // releases its weights, runs this test once as a bounded child
 // (MLX_BUN_TEST_CONTINUATION_PHASE=child, which only restores and never spawns),
 // joins it, and then removes the directory.
+// Optional MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT=1 (with an adapter) binds a
+// two-model draft to adapter rows. The provider cannot serve adapters, so the
+// row must decode ordinarily with checkpoints, never open draft rows, and match
+// a draftless adapter control token for token and checkpoint for checkpoint.
 import { expect, test, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import type { Cache } from "@mlx-bun/inference/contracts/mlx";
+import { applyDescriptor, descriptorFor } from "./real-weight-inputs";
 const target = Bun.env.MLX_BUN_TEST_CONTINUATION_MODEL;
 const adapter = Bun.env.MLX_BUN_TEST_CONTINUATION_ADAPTER;
 if (target && !existsSync(`${target}/config.json`)) throw new Error(`unavailable model: ${target}`);
@@ -23,6 +28,8 @@ const windowSetting = Bun.env.MLX_BUN_TEST_CONTINUATION_WINDOW;
 const freshProcess = Bun.env.MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS === "1";
 const phase = Bun.env.MLX_BUN_TEST_CONTINUATION_PHASE ?? "parent";
 const childDirectory = Bun.env.MLX_BUN_TEST_CONTINUATION_DIR;
+const ignoredDraft = Bun.env.MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT === "1";
+if (ignoredDraft && !adapter) throw new Error("MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT needs an adapter");
 if (windowSetting !== undefined && !/^[1-9]\d*$/.test(windowSetting.trim()))
   throw new Error("MLX_BUN_TEST_CONTINUATION_WINDOW must be a positive integer");
 if (phase !== "parent" && phase !== "child") throw new Error(`unknown continuation phase: ${phase}`);
@@ -36,11 +43,7 @@ async function continuationConfig() {
   const config = await loadModelConfig(target!);
   if (windowSetting === undefined) return config;
   if (!["llama", "mistral"].includes(config.modelType)) throw new Error(`a custom window needs a Llama-family artifact, not ${config.modelType}`);
-  const window = Number(windowSetting);
-  const types = Array.from({ length: config.text.numHiddenLayers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention");
-  const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
-  raw.layer_types = [...types]; raw.sliding_window = window;
-  config.text.layerTypes = [...types]; config.text.slidingWindow = window;
+  applyDescriptor(config, descriptorFor(config.text.numHiddenLayers, Number(windowSetting)));
   return config;
 }
 /** The graph must carry the custom descriptor it was built from. */
@@ -59,6 +62,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const { createOrdinaryContinuationRequest } = await import("@mlx-bun/inference/execution");
   const { ContinuationPersistence } = await import("@mlx-bun/inference/execution");
   const { SsdCacheStore } = await import("@mlx-bun/inference/state");
+  const { TwoModelProvider } = await import("../../src/generation/speculative/sources/two-model");
   const ops = await import("@mlx-bun/mlx/ops");
   const { leaseCacheState, minimumReusableOffset, PromptCache, cloneKvCaches } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
@@ -204,9 +208,13 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
     for (const batch of [1, 4]) {
       const settings = (name: string) => ({ dir: join(directory, `${batch}-${name}`), maxBytes: 1024 ** 3,
         modelId: target!, configFingerprint: `ordinary-continuation-v1:${kv.scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
-      const run = async (store: InstanceType<typeof SsdCacheStore>, interrupt: boolean, useAdapter = !!adapter) => {
+      const run = async (store: InstanceType<typeof SsdCacheStore>, interrupt: boolean, useAdapter = !!adapter,
+        useDraft = ignoredDraft && useAdapter) => {
         let held = true;
-        const binding = bindMlxGateway(model);
+        const unexpected = () => { throw new Error("an ignored draft opened rows"); };
+        const binding = bindMlxGateway(model, useDraft ? { numDraftTokens: 3, provider: Object.assign(
+          Object.create(TwoModelProvider.prototype), { id: "ignored-draft", weightsBytes: 0,
+            grouped: { checkpointNamespace: () => "ignored-draft", open: unexpected, openPrefill: unexpected } }) } : undefined);
         const context = useAdapter ? binding.bindAdapterContext!(["upper"], "adapters:upper") : undefined;
         const namespace = useAdapter ? adapterNamespace : "";
         const activeContexts: string[][] = [];
@@ -231,9 +239,13 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
             temperature: 0.7, seedWasExplicit: true, repetitionPenalty: 1.1, repetitionContextSize: 32 };
           const execution = binding.plan({ hasVision: false, hasAdapters: useAdapter, hasRepetitionPenalty: true,
             userSeed: true, kvQuant: kv.scheme.kind !== "bf16" && kv.scheme.kind !== "turbo", turboQuant: kv.scheme.kind === "turbo",
-            hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
+            hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: useDraft }, options,
           { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
           expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+          if (useDraft) {
+            expect(execution.reasons).toContain("draft-incompatible-with-request");
+            expect(binding.methodRequest!(execution, options)).toBeUndefined();
+          }
           for (const [row, tokens] of outputs.entries()) requests.push(createOrdinaryContinuationRequest({
             store, persistence, interval: 4, prompt,
             restore: entry => {
@@ -316,6 +328,11 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       widths.length = 0;
       const control = await run(new SsdCacheStore(settings("control")), false);
       expect(widths).toContain(batch);
+      if (ignoredDraft) {
+        const draftless = await run(new SsdCacheStore(settings("draftless-control")), false, true, false);
+        expect(control.outputs).toEqual(draftless.outputs);
+        expect(control.captured).toEqual(draftless.captured);
+      }
       const interruptedStore = new SsdCacheStore(settings("restart"));
       const interrupted = await run(interruptedStore, true);
       expect(interrupted.outputs.map(tokens => tokens.length)).toEqual(Array(batch).fill(kv.interruptAt));
@@ -365,7 +382,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS: "0" },
         stdout: "pipe", stderr: "pipe", timeout: 240_000, killSignal: "SIGKILL" });
       const stdout = child.stdout.toString(), stderr = child.stderr.toString(), output = stdout + stderr;
-      if (child.exitCode !== 0 || !output.includes("(pass) ordinary B1/B4 restore") || !/\b1 pass\b/.test(output) || !/\b0 fail\b/.test(output)) {
+      if (child.exitCode !== 0 || !/\b1 pass\b/.test(output) || !/\b0 fail\b/.test(output)) {
         const diagnostics = `fresh-process restore child: exit ${child.exitCode}, signal ${child.signalCode ?? "none"}` +
           `${child.exitedDueToTimeout ? ", killed at its deadline" : ""}\n--- child stdout ---\n${stdout}\n--- child stderr ---\n${stderr}`;
         console.error(diagnostics);

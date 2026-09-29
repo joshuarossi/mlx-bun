@@ -1,12 +1,12 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { getTemplate, TEMPLATES } from "../dataset/registry";
 import type { SubmitResult } from "../jobs/runner";
+import { storagePath } from "../storage/paths";
 
 export function createDatasetRoutes(deps: {
   submit(config: Record<string, unknown>, outputPath: string): SubmitResult;
   serverPort(): number;
-  outputRoot?: string;
+  outputRoot?: string; // storage root; datasets land in its datasets/ (default ~/.mlx-bun/datasets)
 }) {
   return { async handle(request: Request): Promise<Response | null> {
     const path = new URL(request.url).pathname;
@@ -16,7 +16,7 @@ export function createDatasetRoutes(deps: {
     const id = body?.template_id;
     if (typeof id !== "string" || !getTemplate(id))
       return Response.json({ ok: false, error: `unknown template ${JSON.stringify(id)}` }, { status: 400 });
-    const outDir = join(deps.outputRoot ?? join(homedir(), ".cache/mlx-bun/datasets"),
+    const outDir = join(storagePath("datasets", deps.outputRoot),
       `dataset-${id.replace(/[^a-z0-9_-]/gi, "")}-${Date.now()}-${crypto.randomUUID()}`);
     const result = deps.submit({ template_id: id, inputs: body.inputs ?? {}, output_dir: outDir,
       api_url: `http://127.0.0.1:${deps.serverPort()}`, model_name: body.model_name ?? "local" }, outDir);

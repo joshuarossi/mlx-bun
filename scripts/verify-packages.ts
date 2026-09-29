@@ -14,6 +14,11 @@ const scratch = await mkdtemp(join(tmpdir(), "mlx-package-consumer-"));
 const consumer = join(scratch, "consumer"), archives = join(scratch, "archives");
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("MLX_BUN_") && name !== "NODE_PATH"));
 
+// The app's mlx-lm aliases are its `mlx-bun.<cmd>` bins.
+const aliasNames = Object.keys(JSON.parse(await readFile(join(workspace, "apps/mlx-bun/package.json"), "utf8")).bin as Record<string, string>)
+  .filter(name => name.startsWith("mlx-bun.")).map(name => name.slice("mlx-bun.".length));
+assert(aliasNames.length > 0, "the app declares its mlx-lm aliases");
+
 async function run(command: string[], cwd: string, environment = env): Promise<string> {
   const child = Bun.spawn(command, { cwd, env: environment, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, status] = await Promise.all([
@@ -86,6 +91,12 @@ try {
   const installedBin = join(consumer, "node_modules/.bin/mlx-bun");
   assert.equal(await realpath(installedBin), await realpath(appEntry));
   const noNative = { ...env, MLX_BUN_LIBMLXC: "/does-not-exist" };
+  // Each mlx-lm alias is a bin linked to its own launcher file, which names the alias.
+  for (const name of aliasNames) {
+    const link = join(consumer, "node_modules/.bin", `mlx-bun.${name}`);
+    assert.equal(await realpath(link), await realpath(join(consumer, "node_modules/mlx-bun/bin", `mlx-bun.${name}.mjs`)));
+    assert((await run([link, "--help"], consumer, noNative)).startsWith(`mlx-bun.${name} — mlx_lm.${name}-compatible alias of`), `${name} alias help`);
+  }
   const help = await run([installedBin, "--help"], consumer, noNative);
   assert(help.includes("Usage: mlx-bun"));
   const version = `mlx-bun ${packages.find(pkg => pkg.name === "mlx-bun")!.version}\n`;
@@ -95,6 +106,11 @@ try {
   const linkedBin = join(linkedBun, "bin/mlx-bun");
   assert.equal(await realpath(linkedBin), await realpath(join(workspace, "apps/mlx-bun/bin/mlx-bun.mjs")));
   assert.equal(await run([linkedBin, "--version"], consumer, noNative), version);
+  for (const name of aliasNames) {
+    const linked = join(linkedBun, "bin", `mlx-bun.${name}`);
+    assert.equal(await realpath(linked), await realpath(join(workspace, "apps/mlx-bun/bin", `mlx-bun.${name}.mjs`)));
+    assert((await run([linked, "--help"], consumer, noNative)).startsWith(`mlx-bun.${name} — `), `linked ${name} alias help`);
+  }
   await run([process.execPath, "-e", `
     const { resolveMicCapture, MIC_CAPTURE_STAGED } = await import("./node_modules/mlx-bun/src/engine/mic-capture.ts");
     const { realpathSync } = await import("node:fs");

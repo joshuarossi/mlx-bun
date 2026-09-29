@@ -1,10 +1,11 @@
 import { hfToken } from "@mlx-bun/hub/download";
 import { fit } from "@mlx-bun/inference/execution/fit";
-import { Registry, visionCapable, type ModelRecord } from "@mlx-bun/hub/registry";
+import { visionCapable, type ModelRecord, type Registry } from "@mlx-bun/hub/registry";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { supportTier } from "@mlx-bun/inference/models/support";
 import { errorResponse } from "./http";
 import { DuplicateDownloadError, type DownloadOwner } from "../hub/downloads";
+import { openRegistry } from "../storage/paths";
 
 export interface HubRouteOptions {
   hubDirectory?: string;
@@ -59,7 +60,7 @@ export function createHubRoutes(options: HubRouteOptions = {}) {
         return Response.json({ ok: true, repo, started: true });
       }
       if (route === "GET /api/hub/local") {
-        const registry = options.createRegistry?.() ?? new Registry();
+        const registry = options.createRegistry?.() ?? openRegistry();
         try {
           await registry.scan(options.hubDirectory);
           const models = [];

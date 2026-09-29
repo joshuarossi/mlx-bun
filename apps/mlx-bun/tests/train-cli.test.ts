@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { TrainConfig } from "@mlx-bun/training";
 import { parseCommand } from "../src/cli/args";
-import { parseTrainArgs, runFuse, runTrain, runTrainWatch, trainPlan, type FuseDependencies, type TrainDependencies } from "../src/cli/train";
+import { modelTrainingDefaults, parseTrainArgs, runFuse, runTrain, runTrainWatch, trainPlan, type FuseDependencies, type TrainDependencies } from "../src/cli/train";
 import { parseFinetuneConfig } from "../src/finetune/config";
 import { inspectDataset } from "../src/finetune/inspect";
 import { parseStream, renderFrame, runWatch, sPerStep, type WatchTerminal } from "../src/finetune/watch";
@@ -16,11 +16,23 @@ const parse = (...args: string[]) => parseCommand("train", args);
 const preference = (i: number) => JSON.stringify({ prompt: `p${i}`, chosen: "c", rejected: "r" }) + "\n";
 
 /** A synthetic snapshot (config.json only; no weights are read) and a JSONL dataset. */
-function fixture({ gemma = false, rows = 3, valid = 1 } = {}) {
+/** Complete-enough configs for profile resolution: the real Gemma4 family type, MiniCPM5's llama-shaped
+ * geometry (the family is recognized by it), plain Qwen3, and a Diffusion-Gemma stub. */
+const configs = {
+  gemma4: { model_type: "gemma4", hidden_size: 8, num_hidden_layers: 2, num_attention_heads: 2, num_key_value_heads: 1,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64 },
+  minicpm5: { model_type: "llama", hidden_size: 1536, num_hidden_layers: 24, num_attention_heads: 16, num_key_value_heads: 2,
+    head_dim: 128, intermediate_size: 4096, vocab_size: 130560, max_position_embeddings: 4096, tie_word_embeddings: false },
+  qwen3: { model_type: "qwen3", hidden_size: 8, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64, tie_word_embeddings: true },
+  diffusionGemma: { model_type: "diffusion_gemma" },
+};
+
+function fixture({ rows = 3, valid = 1, config = configs.minicpm5 }: { rows?: number; valid?: number; config?: object } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mlx-train-cli-"));
   const modelDir = join(root, "model"), dataDir = join(root, "data");
   mkdirSync(modelDir); mkdirSync(dataDir);
-  writeFileSync(join(modelDir, "config.json"), JSON.stringify({ model_type: gemma ? "gemma4" : "minicpm5" }));
+  writeFileSync(join(modelDir, "config.json"), JSON.stringify(config));
   writeFileSync(join(dataDir, "train.jsonl"), Array.from({ length: rows }, (_, i) => preference(i)).join(""));
   if (valid) writeFileSync(join(dataDir, "valid.jsonl"), Array.from({ length: valid }, (_, i) => preference(i)).join(""));
   return { root, modelDir, dataDir, dispose: () => rmSync(root, { recursive: true, force: true }) };
@@ -35,8 +47,8 @@ function harness(modelDir: string, run?: JobRunner) {
     inspect: inspectDataset,
     runner: () => async (emit, cfg, signal) => { runs.push({ cfg, signal }); return run ? run(emit, cfg, signal) : { outputPath: String(cfg.adapter_path) }; },
     memory: async () => ({ peak: () => 3 * 2 ** 30, reset: () => { resets++; } }),
-    exists: existsSync, readText: path => Bun.file(path).text(),
-    log: line => logs.push(line), home: () => "/home/test", now: () => (clock += 1500),
+    exists: existsSync, trainingDefaults: modelTrainingDefaults,
+    log: line => logs.push(line), root: () => "/store", now: () => (clock += 1500),
   };
   return { deps, logs, selections, selectionSignals, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
 }
@@ -86,36 +98,36 @@ test("train validates usage, dataset, method, scope, and numbers before resolvin
   } finally { f.dispose(); }
 });
 
-test("train builds main's exact submit record per method, with e4b and explicit overrides", () => {
+test("train builds main's exact submit record per method, with model-declared and explicit overrides", () => {
   const f = fixture();
   try {
     const m = { path: f.modelDir, repoId: "example/model" };
     const base = { model_dir: f.modelDir, data_dir: f.dataDir, rank_scaling: "by_bits", num_layers: -1, iters: 100,
       max_seq_length: 4096, batch_size: 1, grad_accumulation_steps: 1, seed: 0, steps_per_report: 1, steps_per_eval: 1_000_000,
       save_checkpoints: false, grad_clip_norm: 1, val_max_examples: 256, warm_start_adapter: "" };
-    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, false, "/home/test");
-    expect(orpo.cfg).toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", method: "orpo",
+    const orpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir)), m, { maxSeqLength: 4096 }, "/store");
+    expect(orpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/orpo-model", method: "orpo",
       rank: 16, scale: 2, learning_rate: 1e-5, segment_size: 2, orpo_lambda: 0.1, orpo_lr_schedule: "cosine", orpo_warmup_iters: 10,
       orpo_chunk_size: 512, orpo_flash_ce: true, orpo_fused_ce: false, orpo_prefix_shared: true });
-    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, false, "/home/test");
-    expect(dpo.cfg).toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/dpo-cpm5", method: "dpo",
+    const dpo = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "dpo")), m, { maxSeqLength: 4096 }, "/store");
+    expect(dpo.cfg).toEqual({ ...base, adapter_path: "/store/adapters/dpo-model", method: "dpo",
       rank: 8, scale: 1, learning_rate: 5e-5, segment_size: 0 });
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, true, "/home/test").cfg)
-      .toEqual({ ...base, adapter_path: "/home/test/.cache/mlx-bun/mlx-bun-finetunes/sft-e4b", method: "sft",
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, { maxSeqLength: 8192 }, "/store").cfg)
+      .toEqual({ ...base, adapter_path: "/store/adapters/sft-model", method: "sft",
         rank: 8, scale: 1, learning_rate: 2e-4, max_seq_length: 8192, segment_size: 0 });
     const overridden = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--adapter", "/out", "--iters", "45", "--lr", "3e-5",
       "--rank", "4", "--scale", "0.5", "--seq", "1024", "--batch", "2", "--grad-accum", "3", "--grad-clip", "0", "--seed", "7",
       "--val-size", "8", "--lambda", "0.3", "--sft-scope", "response", "--seg", "3", "--save-every", "5", "--resume", "/prev",
-      "--no-flash", "--no-prefix")), m, true, "/home/test");
+      "--no-flash", "--no-prefix")), m, { maxSeqLength: 8192 }, "/store");
     expect(overridden.cfg).toEqual({ model_dir: f.modelDir, data_dir: f.dataDir, adapter_path: "/out", method: "orpo", rank: 4,
       scale: 0.5, rank_scaling: "by_bits", num_layers: -1, iters: 45, learning_rate: 3e-5, max_seq_length: 1024, batch_size: 2,
       grad_accumulation_steps: 3, seed: 7, steps_per_report: 1, steps_per_eval: 5, save_checkpoints: true, segment_size: 3,
       grad_clip_norm: 0, val_max_examples: 8, warm_start_adapter: "/prev", sft_scope: "response", orpo_lambda: 0.3,
       orpo_lr_schedule: "cosine", orpo_warmup_iters: 4, orpo_chunk_size: 512, orpo_flash_ce: false, orpo_fused_ce: true,
       orpo_prefix_shared: false });
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--no-segment", "--seg", "9")), m, false).cfg.segment_size).toBe(0);
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--iters", "5")), m, false).cfg.orpo_warmup_iters).toBe(0);
-    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--sft-scope", "full")), m, false).cfg.sft_scope).toBe("full");
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--no-segment", "--seg", "9")), m, { maxSeqLength: 4096 }).cfg.segment_size).toBe(0);
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--iters", "5")), m, { maxSeqLength: 4096 }).cfg.orpo_warmup_iters).toBe(0);
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--sft-scope", "full")), m, { maxSeqLength: 4096 }).cfg.sft_scope).toBe("full");
     // Every key the verb emits is one the app's finetune config consumes, with its value.
     const consumed = parseFinetuneConfig(overridden.cfg, mainLibraryDefaults);
     expect(consumed.dataDir).toBe(f.dataDir);
@@ -131,6 +143,28 @@ test("train builds main's exact submit record per method, with e4b and explicit 
   } finally { f.dispose(); }
 });
 
+test("the default sequence length comes from the model's resolved profile, not a name match", async () => {
+  const seqOf = async (config: object, ...extra: string[]) => {
+    const f = fixture({ config });
+    try {
+      const run = harness(f.modelDir);
+      await runTrain(parse("--data", f.dataDir, "--dry-run", "--method", "sft", ...extra), run.deps);
+      return { seq: run.text().match(/seq (\d+)/)?.[1], text: run.text() };
+    } finally { f.dispose(); }
+  };
+  // Gemma-family graphs declare 8192; MiniCPM5 and Qwen3 declare nothing and get the generic 4096.
+  expect((await seqOf(configs.gemma4)).seq).toBe("8192");
+  expect((await seqOf(configs.diffusionGemma)).seq).toBe("8192");
+  expect((await seqOf(configs.minicpm5)).seq).toBe("4096");
+  expect((await seqOf(configs.qwen3)).seq).toBe("4096");
+  // An explicit --seq always wins, and no family label is printed.
+  const explicit = await seqOf(configs.gemma4, "--seq", "1024");
+  expect(explicit.seq).toBe("1024"); expect(explicit.text).not.toContain("defaults");
+  // The words in the config text are irrelevant: a qwen3 config that merely mentions gemma stays generic.
+  expect((await seqOf({ ...configs.qwen3, _name_or_path: "not-gemma-at-all" })).seq).toBe("4096");
+  expect(Object.keys(trainPlan(parseTrainArgs(parse("--data", "/d"), () => true), { path: "/m", repoId: "m" }, { maxSeqLength: 4096 }))).not.toContain("isGemma");
+});
+
 test("dataset preflight failure stops after resolution and before training", async () => {
   const f = fixture();
   try {
@@ -142,7 +176,7 @@ test("dataset preflight failure stops after resolution and before training", asy
 });
 
 test("dry run prints main's plan box and runs no training", async () => {
-  const f = fixture({ valid: 2 }), g = fixture({ gemma: true, valid: 0 });
+  const f = fixture({ valid: 2 }), g = fixture({ config: configs.gemma4, valid: 0 });
   try {
     const run = harness(f.modelDir);
     await runTrain(parse("--data", f.dataDir, "--dry-run", "--save-every", "5", "--resume", "/prev", "--grad-accum", "2", "--query", "q"), run.deps);
@@ -152,16 +186,16 @@ test("dry run prints main's plan box and runs no training", async () => {
       "loop       iters 100 · lr 0.00001 · rank 16 · scale 2 · seq 4096 · batch 1", "head       flash-CCE Metal ([M,vocab]-free)",
       "stack      prefix-share on · segmented 2/seg · λ 0.1", "stability  grad-clip 1 · val-size 256 · grad-accum 2 (eff batch 2)",
       "warm-start from /prev (weights only)", "checkpoint every 5 steps",
-      "adapter    /home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5",
-      "watch live (other tab): mlx-bun train-watch /home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", "dry run — not training."])
+      "adapter    /store/adapters/orpo-model",
+      "watch live (other tab): mlx-bun train-watch /store/adapters/orpo-model", "dry run — not training."])
       expect(text).toContain(line);
     expect(text).toContain("╭"); expect(text).toContain("╰");
     expect(run.runs).toEqual([]); expect(run.resets()).toBe(0);
     const auto = harness(g.modelDir);
     await runTrain(parse("--data", g.dataDir, "--dry-run", "--method", "sft", "--no-segment", "--no-flash", "--grad-clip", "0"), auto.deps);
     expect(auto.selections).toEqual([null]);
-    for (const line of ["● train sft · example/model (auto-picked) · e4b defaults", "data       3 train · format preference",
-      "lr 0.0002 · rank 8 · scale 1 · seq 8192", "stack      segmented off", "adapter    /home/test/.cache/mlx-bun/mlx-bun-finetunes/sft-e4b"])
+    for (const line of ["● train sft · example/model (auto-picked)", "data       3 train · format preference",
+      "lr 0.0002 · rank 8 · scale 1 · seq 8192", "stack      segmented off", "adapter    /store/adapters/sft-model"])
       expect(auto.text()).toContain(line);
     expect(auto.text()).not.toContain("head "); expect(auto.text()).not.toContain("checkpoint ");
     const orpo = harness(f.modelDir);
@@ -239,38 +273,55 @@ test("cancellation mid-run reaches the runner, unwinds its cleanup, and exits wi
   } finally { f.dispose(); }
 });
 
-function fuseHarness(fuse?: FuseDependencies["fuse"]) {
-  const logs: string[] = [], steps: string[] = [], calls: unknown[][] = [], registry: string[] = [];
+test("train's layer count, report/eval cadence, dropout, weight decay and gradient checkpointing reach the submit record", () => {
+  const f = fixture();
+  try {
+    const m = { path: f.modelDir, repoId: "example/model" };
+    const cfg = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft", "--num-layers", "8", "--steps-per-report", "10",
+      "--steps-per-eval", "200", "--dropout", "0.05", "--weight-decay", "0", "--grad-checkpoint")), m, { maxSeqLength: 4096 }, "/store").cfg;
+    expect(cfg).toMatchObject({ num_layers: 8, steps_per_report: 10, steps_per_eval: 200, lora_dropout: 0.05, weight_decay: 0, grad_checkpoint: true });
+    // Not given: the submit record carries none of the optional keys and keeps the existing cadence.
+    const plain = trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--method", "sft")), m, { maxSeqLength: 4096 }, "/store").cfg;
+    expect(plain).toMatchObject({ num_layers: -1, steps_per_report: 1, steps_per_eval: 1_000_000 });
+    for (const key of ["lora_dropout", "weight_decay", "grad_checkpoint"]) expect(plain).not.toHaveProperty(key);
+    // A checkpoint cadence still drives evaluation unless --steps-per-eval names its own.
+    expect(trainPlan(parseTrainArgs(parse("--data", f.dataDir, "--save-every", "25")), m, { maxSeqLength: 4096 }, "/store").cfg.steps_per_eval).toBe(25);
+    expect(() => parseTrainArgs(parse("--data", f.dataDir, "--num-layers", "many"))).toThrow('--num-layers expects a number (got "many")');
+  } finally { f.dispose(); }
+});
+
+function fuseHarness(fuse?: FuseDependencies["fuse"], token: string | null = "hf_token") {
+  const logs: string[] = [], steps: string[] = [], calls: unknown[][] = [], registry: string[] = [], published: unknown[] = [], options: unknown[] = [];
   const cached = { path: "/cache/model", repoId: "org/cached" } as ModelRecord;
   const deps: FuseDependencies = {
+    root: () => "/store",
     registry: () => ({
       list: () => { registry.push("list"); return []; },
       scan: async () => { registry.push("scan"); return 0; },
       resolve: query => { registry.push(`resolve:${query}`); if (query !== "cached") throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``); return cached; },
       close: () => { registry.push("close"); },
     }),
-    fuse: fuse ?? (async (modelDir, adapterDir, outDir, onProgress) => {
-      calls.push([modelDir, adapterDir, outDir]);
+    credentials: () => ({ get: () => token }),
+    publish: async request => { published.push(request); return { url: "https://huggingface.co/org/fused" }; },
+    fuse: fuse ?? (async (modelDir, adapterDir, outDir, onProgress, fuseOptions) => {
+      calls.push([modelDir, adapterDir, outDir]); options.push(fuseOptions);
       onProgress?.({ stage: "fusing", message: "Module 1/2: layers.0", progress: 0.5 });
       return { outDir, fusedModules: 2, skippedAdapterTensors: 0, totalTensors: 5 };
     }),
     exists: existsSync, log: line => logs.push(line),
     step: text => { steps.push(`start:${text}`); return { update: t => steps.push(`update:${t}`), done: t => steps.push(`done:${t}`), fail: t => steps.push(`fail:${t}`) }; },
   };
-  return { deps, logs, steps: () => steps.map(strip), calls, registry, text: () => strip(logs.join("\n")) };
+  return { deps, logs, steps: () => steps.map(strip), calls, registry, published, options, text: () => strip(logs.join("\n")) };
 }
 const fuseArgs = (...args: string[]) => parseCommand("fuse", args);
 
-test("fuse refuses main's unsupported mlx_lm flags and usage errors before touching anything", async () => {
+test("fuse refuses GGUF export and reports usage errors before touching anything", async () => {
   const f = fixture();
   try {
     const cases: [string[], string][] = [
-      [[f.modelDir, "--adapter", f.dataDir, "--de-quantize"], "--de-quantize: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--dequantize"], "--dequantize: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--export-gguf"], "--export-gguf: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--gguf-path", "x.gguf"], "--gguf-path: not supported (see: mlx-bun help fuse)"],
-      [[f.modelDir, "--adapter", f.dataDir, "--upload-repo", "org/repo"], "--upload-repo: not supported (see: mlx-bun help fuse)"],
-      [["--upload-repo", "u", "--de-quantize", "--export-gguf"], "--de-quantize, --export-gguf, --upload-repo: not supported (see: mlx-bun help fuse)"],
+      [[f.modelDir, "--adapter", f.dataDir, "--export-gguf"], "--export-gguf: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)"],
+      [[f.modelDir, "--adapter", f.dataDir, "--gguf-path", "x.gguf"], "--gguf-path: not supported (GGUF export"],
+      [["--export-gguf", "--gguf-path", "x.gguf"], "--export-gguf, --gguf-path: not supported (GGUF export"],
       [[], "usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]"],
       [[f.modelDir, "--adapter", "/nonexistent"], "adapter dir not found: /nonexistent"],
       [[f.modelDir], "adapter dir not found: adapters"],
@@ -292,9 +343,9 @@ test("fuse merges by snapshot path or registry query with main's flag spellings 
   try {
     const byPath = fuseHarness();
     await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir), byPath.deps);
-    expect(byPath.registry).toEqual([]); expect(byPath.calls).toEqual([[f.modelDir, f.dataDir, "fused_model"]]);
+    expect(byPath.registry).toEqual([]); expect(byPath.calls).toEqual([[f.modelDir, f.dataDir, "/store/models/model-fused"]]);
     expect(byPath.steps()).toEqual([`start:fusing ${f.dataDir} into ${f.modelDir}`, "update:Module 1/2: layers.0", "done:fused 2 module(s) · 5 tensors written"]);
-    for (const line of ["● fuse complete", `base      ${f.modelDir}`, `adapter   ${f.dataDir}`, "model     fused_model", "serve it   mlx-bun serve fused_model"])
+    for (const line of ["● fuse complete", `base      ${f.modelDir}`, `adapter   ${f.dataDir}`, "model     /store/models/model-fused", "serve it   mlx-bun serve /store/models/model-fused"])
       expect(byPath.text()).toContain(line);
     expect(byPath.text()).not.toContain("skipped");
 
@@ -305,6 +356,44 @@ test("fuse merges by snapshot path or registry query with main's flag spellings 
     for (const line of ["base      /cache/model", "model     /out", "skipped   3 adapter tensor(s) with no matching base weight", "serve it   mlx-bun serve /out"])
       expect(byQuery.text()).toContain(line);
     expect(fuseArgs("positional", "--model", "flag").positionals[0]).toBe("positional");
+  } finally { f.dispose(); }
+});
+
+test("fuse --dequantize reaches the merge, and --upload-repo checks the token first and pushes only a finished, uninterrupted merge", async () => {
+  const f = fixture();
+  try {
+    const dense = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--dequantize"), dense.deps);
+    expect(dense.options).toEqual([{ dequantize: true }]);
+    expect(dense.text()).toContain("weights   dequantized to dense");
+    const plain = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir), plain.deps);
+    expect(plain.options).toEqual([{ dequantize: false }]); expect(plain.text()).not.toContain("dequantized");
+    expect(plain.published).toEqual([]);
+
+    // No write token: refused before the registry, the merge, or any output.
+    const denied = fuseHarness(undefined, null);
+    await expect(runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--upload-repo", "org/fused"), denied.deps))
+      .rejects.toThrow("--upload-repo needs a Hugging Face WRITE token and none was found");
+    expect(denied.calls).toEqual([]); expect(denied.steps()).toEqual([]); expect(denied.published).toEqual([]);
+
+    const pushed = fuseHarness();
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), pushed.deps);
+    expect(pushed.published).toEqual([{ kind: "finetune", repoId: "org/fused", sourcePath: "/out", signal: undefined }]);
+    expect(pushed.steps().slice(-2)).toEqual(["start:uploading /out → org/fused", "done:uploaded https://huggingface.co/org/fused"]);
+
+    // The fused model stays intact when the push fails, and the error names the retry command.
+    const failed = fuseHarness();
+    failed.deps.publish = async () => { throw new Error("network down"); };
+    await expect(runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), failed.deps))
+      .rejects.toThrow("the fused model is intact at /out — retry with: mlx-bun upload --path /out --upload-repo org/fused");
+    expect(failed.steps()).toContain("fail:upload failed: network down");
+
+    // A cancel that arrived during the merge completes the output but starts no push.
+    const during = new AbortController();
+    const interrupted = fuseHarness(async (_m, _a, outDir) => { during.abort(new Error("fuse cancelled")); return { outDir, fusedModules: 1, skippedAdapterTensors: 0, totalTensors: 1 }; });
+    await runFuse(fuseArgs(f.modelDir, "--adapter", f.dataDir, "--save-path", "/out", "--upload-repo", "org/fused"), interrupted.deps, during.signal);
+    expect(interrupted.published).toEqual([]); expect(interrupted.text()).toContain("● fuse complete");
   } finally { f.dispose(); }
 });
 
@@ -417,20 +506,20 @@ test("runWatch draws on the alternate screen, stops on q or the external signal,
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("train-watch takes the positional, then --adapter, then main's default directory", async () => {
+test("train-watch takes the positional, then --adapter, then the latest run in the adapter store", async () => {
   const watched: [string, AbortSignal | undefined][] = [];
-  const deps = { watch: async (dir: string, options?: { signal?: AbortSignal }) => { watched.push([dir, options?.signal]); }, home: () => "/home/test" };
+  const deps = { watch: async (dir: string, options?: { signal?: AbortSignal }) => { watched.push([dir, options?.signal]); }, root: () => "/nonexistent-store" };
   const signal = new AbortController().signal;
   await runTrainWatch(parseCommand("train-watch", ["/run", "--adapter", "/flag"]), deps, signal);
   await runTrainWatch(parseCommand("train-watch", ["--adapter", "/flag"]), deps);
-  await runTrainWatch(parseCommand("train-watch", []), deps);
-  expect(watched).toEqual([["/run", signal], ["/flag", undefined], ["/home/test/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5", undefined]]);
+  await expect(runTrainWatch(parseCommand("train-watch", []), deps)).rejects.toThrow("no training run found in /nonexistent-store/adapters");
+  expect(watched).toEqual([["/run", signal], ["/flag", undefined]]);
 });
 
 const entry = process.env.MLX_BUN_TEST_CLI ?? resolve(import.meta.dir, "../src/cli/main.ts");
 async function cli(home: string, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", entry, ...args], {
-    env: { ...process.env, HOME: home, HF_HUB_CACHE: join(home, "absent"), HF_HUB_OFFLINE: "1", NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
+    env: { ...process.env, HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: join(home, "absent"), HF_HUB_OFFLINE: "1", NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
     stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
@@ -442,7 +531,8 @@ test("the spawned CLI prints help, usage errors, refusals, and a dry-run plan wi
   const snapshot = join(home, "snap"), data = join(home, "data"), adapter = join(home, "adapter");
   try {
     mkdirSync(snapshot); mkdirSync(data); mkdirSync(adapter);
-    writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "minicpm5", hidden_size: 64 }));
+    writeFileSync(join(snapshot, "config.json"), JSON.stringify({ model_type: "qwen3", hidden_size: 8, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2,
+    intermediate_size: 16, vocab_size: 32, max_position_embeddings: 64 }));
     writeFileSync(join(snapshot, "model.safetensors"), new Uint8Array(4096));
     writeFileSync(join(data, "train.jsonl"), preference(0) + preference(1));
     writeFileSync(join(data, "valid.jsonl"), preference(2));
@@ -459,8 +549,8 @@ test("the spawned CLI prints help, usage errors, refusals, and a dry-run plan wi
       [["train", snapshot, "--data", data, "--iters", "ten"], '--iters expects a number (got "ten")'],
       [["train", "--data", data, "--serial"], "Unknown option"],
       [["fuse"], "usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]"],
-      [["fuse", "m", "--de-quantize", "--export-gguf"], "--de-quantize, --export-gguf: not supported (see: mlx-bun help fuse)"],
-      [["fuse", "m", "--adapter", adapter, "--upload-repo", "org/repo"], "--upload-repo: not supported (see: mlx-bun help fuse)"],
+      [["fuse", "m", "--export-gguf"], "--export-gguf: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)"],
+      [["fuse", "m", "--de-quantize"], "Unknown option '--de-quantize'"],
       [["fuse", "m", "--adapter", "/nope"], "adapter dir not found: /nope"],
       [["fuse", "m", "--adapter", adapter], 'no model matching "m"'],
       [["train-watch", "/nope"], "no metrics.jsonl in /nope"],

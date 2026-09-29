@@ -2,12 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Registry } from "@mlx-bun/hub/registry";
+import type { Registry } from "@mlx-bun/hub/registry";
 import type { DownloadOptions } from "@mlx-bun/hub/download";
 import { createHfCredentials } from "../publishing/credentials";
 import type { PublishRequest } from "../publishing/upload";
 import { parseCommand, type CommandArgs } from "./args";
 import { box, step, style, type Step } from "./terminal";
+import { CONVERT_DTYPES, convertedModelName, quantizedModelName } from "../quantize/output-name";
+import { mlxBunHome, openRegistry, storagePath } from "../storage/paths";
 
 type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
 type Progress = NonNullable<DownloadOptions["onProgress"]>;
@@ -27,6 +29,8 @@ export interface ConvertDependencies {
   entry?: string;
   download(repoId: string, options: { onProgress: Progress; signal?: AbortSignal }): Promise<string>;
   registry(): ModelRegistry;
+  /** Storage root for the default output (MLX_BUN_HOME). */
+  root(): string;
   credentials(): Pick<ReturnType<typeof createHfCredentials>, "get">;
   publish(request: PublishRequest): Promise<{ url: string }>;
   step: (text: string) => Step;
@@ -78,6 +82,15 @@ export async function quantizeInChild(config: Record<string, unknown>, outDir: s
   }
 }
 
+/** The Hub credentials and publisher behind `--upload-repo` (convert and fuse). */
+export const uploadDefaults: Pick<ConvertDependencies, "credentials" | "publish"> = {
+  credentials: () => createHfCredentials(),
+  async publish(request) {
+    const { createPublisher } = await import("../publishing/upload");
+    return createPublisher({ credentials: createHfCredentials(), getJob: () => null })(request);
+  },
+};
+
 const defaults: ConvertDependencies = {
   quantize: quantizeInChild,
   async download(repoId, { onProgress, signal }) {
@@ -86,12 +99,9 @@ const defaults: ConvertDependencies = {
     // blob's .incomplete prefix resumable; nothing is published after an abort.
     return downloadModel(repoId, { onProgress, signal });
   },
-  registry: () => new Registry(),
-  credentials: () => createHfCredentials(),
-  async publish(request) {
-    const { createPublisher } = await import("../publishing/upload");
-    return createPublisher({ credentials: createHfCredentials(), getJob: () => null })(request);
-  },
+  registry: () => openRegistry(),
+  root: () => mlxBunHome(),
+  ...uploadDefaults,
   step, box, log: (line = "") => { console.log(line); },
 };
 
@@ -102,8 +112,10 @@ export function parseConvertArgs(args: string[]): CommandArgs {
   return parseCommand("convert", args);
 }
 
-/** mlx_lm.convert counterpart: main's flags, defaults, messages, and check order.
- * Uniform affine 4/8-bit or the OptiQ mixed path via --target-bpw, through the
+/** mlx_lm.convert counterpart: main's flags, messages, and check order; the
+ * output defaults to the app's models directory instead of `./mlx_model`.
+ * Uniform affine 4/8-bit or the OptiQ mixed path via --target-bpw, or without
+ * -q a dtype cast and/or dequantization (--dtype, -d), through the
  * same producer as the web quantize job in an owned child. Cancellation
  * terminates and joins that child; the atomic writer never publishes a partial
  * output and the parent removes the child's staging. */
@@ -114,20 +126,22 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
 
   // The write token is resolved before any conversion work (mlx_lm.convert parity).
   const uploadRepo = opt("upload-repo");
-  if (uploadRepo !== undefined && !deps.credentials().get())
-    throw new Error("--upload-repo needs a Hugging Face WRITE token and none was found —\n" +
-      "run `hf auth login`, export HF_TOKEN, or save one in the web UI (Settings → Hugging Face).");
-  const unsupported = [opt("dtype") !== undefined && "--dtype", flag("dequantize") && "--dequantize",
-    opt("quant-predicate") !== undefined && "--quant-predicate"].filter((name): name is string => typeof name === "string");
-  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (mixed precision: --target-bpw; see: mlx-bun help convert)`);
+  if (uploadRepo !== undefined) requireWriteToken(deps.credentials());
+  if (opt("quant-predicate") !== undefined)
+    throw new Error("--quant-predicate: not supported (mlx_lm's mixed_* recipes need 2/3/6-bit; for mixed precision use --target-bpw; see: mlx-bun help convert)");
   const qMode = opt("q-mode") ?? "affine";
   if (qMode !== "affine") throw new Error(`--q-mode ${qMode}: only "affine" is supported`);
   const hfPath = opt("hf-path") ?? opt("model") ?? args.positionals[0];
-  if (!hfPath) throw new Error("usage: mlx-bun convert --hf-path <repo-or-path> -q [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F]");
+  if (!hfPath) throw new Error("usage: mlx-bun convert --hf-path <repo-or-path> [-q] [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F] [--dtype float16|bfloat16|float32] [-d]");
   const targetBpwRaw = opt("target-bpw");
-  if (!flag("quantize") && targetBpwRaw === undefined) throw new Error("plain (non-quantizing) conversion is not supported yet — pass -q or --target-bpw");
   const targetBpw = targetBpwRaw !== undefined ? Number(targetBpwRaw) : undefined;
   if (targetBpw !== undefined && (!Number.isFinite(targetBpw) || targetBpw <= 0)) throw new Error(`--target-bpw expects a positive number (got "${targetBpwRaw}")`);
+  const dtype = opt("dtype");
+  if (dtype !== undefined && !CONVERT_DTYPES.includes(dtype))
+    throw new Error(`--dtype must be ${CONVERT_DTYPES.join(", ")} (got "${dtype}")`);
+  const dequantize = flag("dequantize");
+  const quantizing = flag("quantize") || targetBpw !== undefined;
+  if (quantizing && dequantize) throw new Error("Choose either quantize or dequantize, not both.");
   const qBits = Number(opt("q-bits") ?? "4");
   if (qBits !== 4 && qBits !== 8) throw new Error(`--q-bits must be 4 or 8 (got "${opt("q-bits")}")`);
   const qGroup = Number(opt("q-group-size") ?? "64");
@@ -136,10 +150,14 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   if (candidateBits && candidateBits.some((bits) => !Number.isInteger(bits) || bits < 2 || bits > 8))
     throw new Error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
   const rotateWeights = flag("rotate-weights");
+  if (rotateWeights && !quantizing) throw new Error("--rotate-weights folds a rotation before quantization — pass -q or --target-bpw");
   const rotationSeed = Number(opt("rotation-seed") ?? "42");
   if (!Number.isInteger(rotationSeed)) throw new Error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);
-  const mlxPath = opt("mlx-path") ?? "mlx_model";
-  if (existsSync(mlxPath)) throw new Error(`Cannot save to the path ${mlxPath} as it already exists — delete it or pass a fresh --mlx-path.`);
+  const refuseExisting = (path: string) => {
+    if (existsSync(path)) throw new Error(`Cannot save to the path ${path} as it already exists — delete it or pass a fresh --mlx-path.`);
+  };
+  const explicitPath = opt("mlx-path");
+  if (explicitPath !== undefined) refuseExisting(explicitPath);
   signal?.throwIfAborted();
 
   // Source: a local model directory as given; else a downloaded model through the
@@ -166,41 +184,66 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
     } finally { registry.close(); }
   }
 
+  // Default: `<root>/models/<model>-<bits>bit` (or `-mixed-<bpw>bpw`, `-rot<seed>`),
+  // named from the resolved source so a registry query names the real model.
+  const mlxPath = explicitPath ?? join(storagePath("models", deps.root()), quantizing
+    ? quantizedModelName(srcDir, { bits: qBits, targetBpw, rotationSeed: rotateWeights ? rotationSeed : undefined })
+    : convertedModelName(srcDir, { dtype, dequantize }));
+  if (explicitPath === undefined) refuseExisting(mlxPath);
   signal?.throwIfAborted();
-  const quantizing = deps.step(targetBpw !== undefined
+  const converting = dtype !== undefined || dequantize ? `${dequantize ? "dequantizing" : "casting"}${dtype ? ` to ${dtype}` : ""}` : "copying";
+  const working = deps.step(!quantizing ? `converting (${converting})` : targetBpw !== undefined
     ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)` : `quantizing (${qBits}-bit, group ${qGroup})`);
-  const config: Record<string, unknown> = { src_dir: srcDir, out_dir: mlxPath, bits: qBits, group_size: qGroup, mode: "affine",
+  const config: Record<string, unknown> = !quantizing
+    ? { src_dir: srcDir, out_dir: mlxPath, quantize: false, ...(dtype ? { dtype } : {}), ...(dequantize ? { dequantize: true } : {}) }
+    : { src_dir: srcDir, out_dir: mlxPath, bits: qBits, group_size: qGroup, mode: "affine",
+    ...(dtype ? { dtype } : {}),
     ...(targetBpw !== undefined ? { target_bpw: targetBpw } : {}),
     ...(candidateBits ? { candidate_bits: candidateBits } : {}),
     ...(opt("calibration-mix") ? { calibration_mix: opt("calibration-mix") } : {}),
     ...(opt("n-calibration") ? { n_calibration: Number(opt("n-calibration")) } : {}),
     ...(rotateWeights ? { rotate_weights: true, rotation_seed: rotationSeed } : {}) };
   let summary: string | undefined;
-  const progress = (message: string) => { summary = message; quantizing.update(message); };
+  const progress = (message: string) => { summary = message; working.update(message); };
   let outDir = mlxPath;
   try {
     const result = await deps.quantize(config, mlxPath, progress, signal, { spawn: deps.spawn, entry: deps.entry });
     outDir = result.outputPath;
-  } catch (error) { quantizing.fail(signal?.aborted ? "convert cancelled" : "convert failed"); throw error; }
-  quantizing.done(summary ?? "quantized");
+  } catch (error) { working.fail(signal?.aborted ? "convert cancelled" : "convert failed"); throw error; }
+  working.done(summary ?? (quantizing ? "quantized" : "converted"));
   deps.log();
   deps.box([
     `${style.green("●")} ${style.bold("convert complete")}`, "",
     `source    ${style.dim(srcDir)}`,
     `model     ${style.bold(outDir)}`,
-    `quant     ${style.dim(targetBpw !== undefined ? `mixed (target ${targetBpw} bpw)` : `${qBits}-bit g${qGroup} affine`)}`,
+    `${quantizing ? "quant    " : "convert  "} ${style.dim(!quantizing ? converting : targetBpw !== undefined ? `mixed (target ${targetBpw} bpw)` : `${qBits}-bit g${qGroup} affine`)}`,
     ...(rotateWeights ? [`transform ${style.dim(`TurboQuant rotation seed ${rotationSeed}`)}`] : []),
     "", `serve it   ${style.accent(`mlx-bun serve ${outDir}`)}`,
   ]);
 
   if (uploadRepo === undefined) return;
+  await publishModel(deps, { kind: "quantize", repoId: uploadRepo, dir: outDir, what: "converted" }, signal);
+}
+
+/** The write-token check `--upload-repo` runs before any work (convert and fuse). */
+export function requireWriteToken(credentials: Pick<ReturnType<typeof createHfCredentials>, "get">): void {
+  if (!credentials.get())
+    throw new Error("--upload-repo needs a Hugging Face WRITE token and none was found —\n" +
+      "run `hf auth login`, export HF_TOKEN, or save one in the web UI (Settings → Hugging Face).");
+}
+
+/** The push after a successful `convert`/`fuse`: an owned step, then, on failure, a
+ * hint naming the retry command; the model on disk is complete either way. */
+export async function publishModel(deps: Pick<ConvertDependencies, "step" | "publish" | "log">,
+  request: { kind: PublishRequest["kind"]; repoId: string; dir: string; what: string }, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
-  const uploading = deps.step(`uploading ${outDir} → ${uploadRepo}`);
+  const { repoId, dir } = request;
+  const uploading = deps.step(`uploading ${dir} → ${repoId}`);
   let uploaded: { url: string };
-  try { uploaded = await deps.publish({ kind: "quantize", repoId: uploadRepo, sourcePath: outDir, signal }); }
+  try { uploaded = await deps.publish({ kind: request.kind, repoId, sourcePath: dir, signal }); }
   catch (error) {
-    // The converted model is complete either way; only the push is undone or unfinished.
-    const hint = `the converted model is intact at ${outDir} — retry with: mlx-bun upload --path ${outDir} --upload-repo ${uploadRepo}`;
+    // The model is complete either way; only the push is undone or unfinished.
+    const hint = `the ${request.what} model is intact at ${dir} — retry with: mlx-bun upload --path ${dir} --upload-repo ${repoId}`;
     if (signal?.aborted) { uploading.fail("upload cancelled"); deps.log(hint); throw signal.reason; }
     uploading.fail(`upload failed: ${message(error)}`);
     throw new Error(hint);

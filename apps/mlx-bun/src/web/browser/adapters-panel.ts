@@ -166,7 +166,7 @@ export function renderAdaptersBodyHtml(state: AdaptersPanelState): string {
     return (
       '<div class="ad-empty">No adapters found on disk yet.<br>' +
       "Fine-tune one in the Developer tab, or drop an adapter directory into " +
-      "<code>~/.cache/mlx-bun/adapters</code>.</div>"
+      "<code>~/.mlx-bun/adapters</code>.</div>"
     );
   }
   const selected = selectedIds(state);

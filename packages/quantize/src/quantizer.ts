@@ -50,9 +50,29 @@ const CACHE_CLEAR_EVERY = 16;
 /** Bits used per group for affine scale + bias (one bf16 each = 32 bits). */
 const AFFINE_GROUP_OVERHEAD_BITS = 32;
 
+/** The floating dtypes `mlx_lm.convert --dtype` accepts. */
+export type ConvertDtype = "float16" | "bfloat16" | "float32";
+export const CONVERT_DTYPES: readonly ConvertDtype[] = ["float16", "bfloat16", "float32"];
+const DTYPE_OF: Record<ConvertDtype, Dtype> = { float16: Dtype.float16, bfloat16: Dtype.bfloat16, float32: Dtype.float32 };
+const FLOATING = new Set<Dtype>([Dtype.float16, Dtype.bfloat16, Dtype.float32, Dtype.float64]);
+
+/** mlx-lm's per-model `cast_predicate`s, as one name rule: router/expert bias
+ * and state-space decay parameters stay in their source dtype. */
+const KEEP_DTYPE = /e_score_correction_bias|expert_bias|A_log$|dt_bias$/;
+
+/** Cast one floating tensor to `dtype` (lazy); anything else passes through. */
+export function castTensor(name: string, array: MlxArray, dtype: ConvertDtype | undefined): MlxArray {
+  if (!dtype || KEEP_DTYPE.test(name) || !FLOATING.has(array.dtype) || array.dtype === DTYPE_OF[dtype]) return array;
+  return array.astype(DTYPE_OF[dtype], cpuStream);
+}
+
 export interface QuantizeOptions {
   bits: 4 | 8;
   groupSize: 32 | 64;
+  /** `mlx_lm.convert --dtype`: dtype of the non-quantized tensors and of the
+   *  quantization scales/biases. Absent keeps bf16 scales/biases and the
+   *  source dtype for everything else. */
+  dtype?: ConvertDtype;
   /** Quantization scheme; v1 only exercises "affine". */
   mode?: string;
   /** Extra per-module gate on top of the shape-eligibility check: return
@@ -187,6 +207,9 @@ async function writeQuantizedModelDir(
   const mode = opts.mode ?? "affine";
 
   const bits = opts.bits;
+  // Dtype of the quantization input (so of its scales/biases): bf16 unless --dtype names one.
+  const castDtype = opts.dtype ? DTYPE_OF[opts.dtype] : Dtype.bfloat16;
+  const cast = (tensor: NamedTensor): NamedTensor => ({ name: tensor.name, array: castTensor(tensor.name, tensor.array, opts.dtype) });
 
   mkdirSync(outDir, { recursive: true });
 
@@ -263,7 +286,7 @@ async function writeQuantizedModelDir(
         // Module with only scales/biases and no weight — shouldn't happen, but
         // pass any present tensors through unchanged.
         for (const suf of suffixes)
-          out.push(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`));
+          out.push(cast(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`)));
         bumpProgress();
         continue;
       }
@@ -283,7 +306,7 @@ async function writeQuantizedModelDir(
         if (!srcSpec) {
           // Has scales but config says unquantized — fall back to passthrough.
           for (const suf of suffixes)
-            out.push(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`));
+            out.push(cast(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`)));
           bumpProgress();
           continue;
         }
@@ -310,11 +333,11 @@ async function writeQuantizedModelDir(
         // Not eligible: pass the full-precision weight through unchanged
         // (re-materialized to bf16 if it had been quantized).
         if (alreadyQuant) {
-          const bf16 = materialized!.astype(Dtype.bfloat16, cpuStream);
-          out.push({ name: weightName, array: bf16 });
+          const dense = materialized!.astype(castDtype, cpuStream);
+          out.push({ name: weightName, array: dense });
           materialized!.dispose();
         } else {
-          out.push({ name: weightName, array: fullWeight });
+          out.push(cast({ name: weightName, array: fullWeight }));
         }
         // Policy-excluded (shape-eligible) modules get an explicit `false`
         // in the quantization block — the loader must not apply the block's
@@ -329,9 +352,9 @@ async function writeQuantizedModelDir(
       // module base path (e.g. "model.layers.0.self_attn.q_proj").
       const moduleBits = perLayerBits?.get(base) ?? bits;
 
-      // Cast to bf16 before quantizing (mx.quantize expects a float weight;
-      // bf16 matches the reference dtype and the scales/biases dtype on disk).
-      const bf16 = fullWeight.astype(Dtype.bfloat16, cpuStream);
+      // Cast before quantizing (mx.quantize expects a float weight; the input
+      // dtype is the scales/biases dtype on disk: bf16, or --dtype).
+      const bf16 = fullWeight.astype(castDtype, cpuStream);
       if (materialized) materialized.dispose();
       else if (transformContext) fullWeight.dispose();
 
@@ -355,7 +378,7 @@ async function writeQuantizedModelDir(
 
     // Pass through non-weight/scale/bias tensors (e.g. anything unusual).
     for (const name of passthroughNames)
-      out.push(outputTensor(weights, transformPlan, transformContext, name));
+      out.push(cast(outputTensor(weights, transformPlan, transformContext, name)));
 
     progress("writing", `Writing ${out.length} tensors to ${publishedOutDir}`, 1);
     const write = writeShardedSafetensors(outDir, out);

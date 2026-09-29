@@ -22,8 +22,14 @@ build. Once a compatible release is available, use
 artifacts and does not publish anything.
 
 `MLX_BUN_VERSION` selects a release tag (default `latest`); `MLX_BUN_INSTALL_DIR` changes the bundle
-installation root (default `~/.mlx-bun`), not the app's data location. The command
-is linked at `~/.local/bin/mlx-bun`; that directory must precede older installations
+installation root (default `~/.mlx-bun`), not the app's data location. The app writes
+its data (converted models, adapters, datasets, job history, chats) under `~/.mlx-bun`,
+or `MLX_BUN_HOME` when set; the Hugging Face cache holds only downloads. The command
+is linked at `~/.local/bin/mlx-bun`, with `mlx-bun.server`, `mlx-bun.generate`,
+`mlx-bun.convert`, `mlx-bun.fuse`, `mlx-bun.lora` and `mlx-bun.upload` beside it: mlx-lm's
+commands under mlx-bun's names, accepting `mlx_lm`'s arguments (see the app's
+[mlx-lm compatibility notes](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/apps/mlx-bun/README.md#mlx-lm-compatibility-mlx-buncmd)
+for the flag mapping and what is not supported). That directory must precede older installations
 on `PATH`. Restart a running app after upgrading to use the new version.
 
 ## Refactor source checkout

@@ -4,10 +4,8 @@
 // engine or a native module at runtime, so a process without the MLX library
 // can own this state while a model host runs elsewhere. The model host it
 // serves is attached explicitly; no service reaches a model through globals.
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Registry } from "@mlx-bun/hub/registry";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import { defaultSessionDir } from "../chat/session-files";
@@ -32,7 +30,11 @@ import { createQuantizeRoutes } from "../server/quantize-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
 import { createSessionRoutes } from "../server/session-routes";
 import { createWebHandler } from "../web/assets";
+import { openRegistry, storagePath } from "../storage/paths";
 
+/** Overrides for the app's default storage (storage/paths.ts). `artifactRoot`
+ * replaces MLX_BUN_HOME for produced artifacts: its models/, adapters/,
+ * exports/ and datasets/ receive quantize, fine-tune, merge and dataset outputs. */
 export interface AppStoragePaths { jobsDb?: string; jobsLogs?: string; credentialsFile?: string; artifactRoot?: string }
 
 export interface AppStateOptions {
@@ -100,7 +102,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // shutdown joins every transfer before the engine closes.
   const downloads = createDownloadOwner({
     onComplete: async repoId => {
-      const registry = new Registry();
+      const registry = openRegistry();
       try { await registry.scan(); } finally { registry.close(); }
       invalidateLibrary();
       console.log(`[hub] download complete: ${repoId}`);
@@ -115,7 +117,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
         storagePaths.jobsLogs ?? (storagePaths.jobsDb !== undefined ? join(dirname(storagePaths.jobsDb), "jobs") : undefined)),
     } : {}),
   });
-  const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: join(homedir(), ".mlx-bun", "skills") };
+  const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
   const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
   // Loopback clients reach the attached host's own API: over its Unix socket
@@ -149,11 +151,11 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     sessions: createSessionRoutes(sessionDir),
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
-    quantize: createQuantizeRoutes(jobs),
-    dataset: createDatasetRoutes({ serverPort: () => host?.port ?? options.port,
+    quantize: createQuantizeRoutes(jobs, { outputRoot: storagePaths.artifactRoot }),
+    dataset: createDatasetRoutes({ serverPort: () => host?.port ?? options.port, outputRoot: storagePaths.artifactRoot,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) }),
     finetune: createFinetuneRoutes(jobs, storagePaths.artifactRoot
-      ? () => join(storagePaths.artifactRoot!, "adapters", `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),
+      ? () => join(storagePath("adapters", storagePaths.artifactRoot), `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
     }) }),

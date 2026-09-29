@@ -1,9 +1,6 @@
 // DflashSource — DSpark (faithful DFlash + Markov + confidence,
 // packages/inference/src/models/speculative/dflash.ts) behind the serve-time
-// DraftSource seam. L3 (KL/quality-gated). The DRAFT half of the standalone
-// dflashGenerate loop
-// (packages/inference/src/generation/speculative/dspark/generate-dflash.ts)
-// plugged into the shared
+// DraftSource seam. L3 (KL/quality-gated). It plugs into the shared
 // verify/accept executor (packages/inference/src/generation/speculative/run.ts).
 //
 // H_ctx (why the seam taps): DSpark drafts by attending to a GROWING
@@ -17,8 +14,7 @@
 // (mlx-lm/optiq style — lossless at any temperature), NOT the paper's
 // distribution-level rejection-sampling verify. Greedy is identical; temp>0 is
 // still lossless but lower-acceptance. Drafting here is greedy (proposals; the
-// target verify decides). The richer rejection-sampling verify stays in the
-// standalone dflashGenerate for the measure script.
+// target verify decides).
 
 import { artifactIdentity } from "../../../artifacts/identity";
 import { projectedDraftGroups } from "../bindings/projected-draft-rows";
