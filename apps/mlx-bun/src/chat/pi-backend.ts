@@ -102,6 +102,8 @@ class PiBackend implements ChatBackend {
       memory?: () => Promise<MemorySurface | undefined>;
       downloadsSnapshot?: () => readonly { state: string; repoId: string }[];
     },
+    /** What the served model is, read when this chat connects (see PiBackendOptions.model). */
+    private readonly modelFacts?: PiBackendOptions["model"],
   ) {
     this.cwd = opts.paths.cwd;
     this.agentDir = opts.paths.agentDir;
@@ -110,6 +112,9 @@ class PiBackend implements ChatBackend {
 
   /** Build the provider, resume the most recent chat, and start streaming. */
   async start(): Promise<void> {
+    if (this.disposed) return;
+    // The model that answers may have changed since the backend was composed.
+    Object.assign(this.opts, definedOnly(await this.modelFacts?.()));
     if (this.disposed) return;
     // Resolve the port lazily: the WS handler is constructed before
     // Bun.serve() binds, so an ephemeral (0) port is only known at the
@@ -951,7 +956,8 @@ export interface PiBackendOptions {
   modelId?: string;
   contextWindow?: number;
   /** What the served model is, read when each chat connects; overrides the static fields below. A host that swaps models supplies it. */
-  model?: () => Pick<PiBackendOptions, "modelId" | "contextWindow" | "vision" | "audio" | "thinking" | "genDefaults">;
+  model?: () => Pick<PiBackendOptions, "modelId" | "contextWindow" | "vision" | "audio" | "thinking" | "genDefaults"> |
+    Promise<Pick<PiBackendOptions, "modelId" | "contextWindow" | "vision" | "audio" | "thinking" | "genDefaults">>;
   readOnly?: boolean;
   vision?: boolean;
   audio?: boolean;
@@ -985,5 +991,5 @@ export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
     genDefaults: options.genDefaults ?? { temperature: null, topP: null, topK: null },
     transcription: options.transcription ?? (async () => false),
   };
-  return (send) => new PiBackend(send, { ...resolved, ...definedOnly(options.model?.()) });
+  return (send) => new PiBackend(send, { ...resolved }, options.model);
 }
