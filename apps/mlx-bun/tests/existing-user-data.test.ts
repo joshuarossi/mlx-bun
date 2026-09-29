@@ -333,8 +333,11 @@ test("main's user data under HOME opens through the app without loss", async () 
     const git = Bun.which("git");
     if (git) {
       const vault = join(home, ".mlx-bun", "wiki");
+      // No detached auto-maintenance: it writes .git/objects/maintenance.lock after
+      // the commit returns, racing the check that the supplied data is untouched.
+      const quiet = ["-c", "maintenance.auto=false", "-c", "gc.auto=0"];
       for (const args of [["init", "-q"], ["add", "-A"], ["-c", "user.name=prior", "-c", "user.email=prior@example.invalid", "commit", "-q", "-m", "prior vault"]])
-        expect((await run([git, ...args], { PATH: process.env.PATH ?? "", HOME: root }, vault)).code).toBe(0);
+        expect((await run([git, ...quiet, ...args], { PATH: process.env.PATH ?? "", HOME: root }, vault)).code).toBe(0);
     }
     const result = await acceptUserData(home);
     expectAccepted(result);
