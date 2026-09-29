@@ -17,6 +17,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Gemma4Model } from "../gemma4/model";
 import type { DraftProjection } from "../../contracts/mlx/draft-projection";
+import type { DsparkContextAttention, DsparkDrafterModel } from "../../contracts/mlx/drafter";
 import { loadAdapterTensors } from "../../adapters/manager";
 import { writeShardedSafetensors, type NamedTensor } from "../../artifacts/safetensors-writer";
 import { processLogits, sampleToken, KeyStream, type DSparkSampleConfig } from "../../sampling/draft";
@@ -75,9 +76,7 @@ export interface DflashTrainOut { draftLogits: MlxArray; conf: MlxArray }
  *  never materialized/concatenated the per-position logits). */
 export interface DflashDraftBlock { tokens: number[]; conf: number[]; draftLogits?: MlxArray }
 export interface DflashDraftRows { tokens: number[][]; conf: number[][]; draftLogits?: MlxArray; }
-export interface DflashContextAttention {
-  attend(layer: number, query: MlxArray, keys: MlxArray, values: MlxArray, scale: number): MlxArray;
-}
+export type DflashContextAttention = DsparkContextAttention;
 export interface DflashDraftOpts {
   sample?: DSparkSampleConfig;
   keys?: KeyStream;
@@ -122,7 +121,7 @@ function normalArray(rng: () => number, shape: number[], std: number): MlxArray 
 const zerosArray = (shape: number[]) => MlxArray.fromFloat32(new Float32Array(shape.reduce((a, b) => a * b, 1)), shape);
 const constArray = (shape: number[], v: number) => MlxArray.fromFloat32(new Float32Array(shape.reduce((a, b) => a * b, 1)).fill(v), shape);
 
-export class DflashDrafter {
+export class DflashDrafter implements DsparkDrafterModel {
   readonly cfg: DflashConfig;
   readonly dims: TargetDims;
   readonly targetId: string;

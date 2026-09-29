@@ -31,7 +31,9 @@ import { toLogprobs } from "../../../sampling/index";
 import { loadModelConfig, type ModelConfig } from "../../../artifacts/config";
 import { Weights } from "../../../artifacts/weights";
 import { KVCache } from "../../../state/kv";
-import { MtpModule } from "../../../models/qwen/mtp";
+import type { RecurrentMtpModule } from "../../../contracts/mlx/drafter";
+import { DRAFT_CHECKPOINT_SCHEMA } from "../../../contracts/mlx/draft-checkpoint";
+import { loadQwenMtpModule } from "../../../models/drafters";
 import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, RecurrentMtpTarget, TargetView } from "../source";
 import { targetLacks } from "../source";
 import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
@@ -62,12 +64,12 @@ export class QwenMtpProvider implements DraftProvider {
   };
   readonly id: string;
   readonly weightsBytes: number;
-  readonly #module: MtpModule;
+  readonly #module: RecurrentMtpModule;
   readonly #config: ModelConfig;
   readonly #resources: DisposableStack;
   readonly #checkpointNamespace: string;
 
-  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack, checkpointNamespace: string) {
+  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: RecurrentMtpModule, resources: DisposableStack, checkpointNamespace: string) {
     this.id = id;
     this.#config = config;
     this.#module = module;
@@ -83,14 +85,14 @@ export class QwenMtpProvider implements DraftProvider {
     resources.defer(() => weights.dispose());
     const weightsBytes = [...weights.shards.files.values()]
       .reduce((a, f) => a + f.mmap.size, 0);
-    const module = new MtpModule(weights, config, resources);
+    const module = await loadQwenMtpModule(weights, config, resources);
     // Stable across restarts and distinct for differently folded/quantized
     // companions. Hash once at provider load, outside inference execution.
     const identity = await artifactIdentity(configFingerprint(config),
       [...weights.shards.files].map(([name, shard]) => ({ name, path: shard.path })));
     const provider = new QwenMtpProvider(
       dir.split("/").filter(Boolean).at(-1) ?? "qwen-mtp",
-      config, weightsBytes, module, resources.move(), `qwen-mtp-v1:${identity}`,
+      config, weightsBytes, module, resources.move(), `${DRAFT_CHECKPOINT_SCHEMA.qwenMtp}:${identity}`,
     );
     (provider.grouped as { artifactDir?: string }).artifactDir = dir;
     return provider;
@@ -170,7 +172,7 @@ export class QwenMtpSource implements DraftSource {
   readonly tapLayers: number[];
 
   readonly #target: RecurrentMtpTarget;
-  readonly #module: MtpModule;
+  readonly #module: RecurrentMtpModule;
   readonly #sampler: Sampler;
   #cache = new KVCache();
   readonly checkpoint: NonNullable<DraftSource["checkpoint"]>;
@@ -183,8 +185,8 @@ export class QwenMtpSource implements DraftSource {
   #roundAppended = 0;
   #closed = false;
 
-  constructor(target: RecurrentMtpTarget, module: MtpModule, sampler: Sampler,
-    namespace = "qwen-mtp-v1") {
+  constructor(target: RecurrentMtpTarget, module: RecurrentMtpModule, sampler: Sampler,
+    namespace: string = DRAFT_CHECKPOINT_SCHEMA.qwenMtp) {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;

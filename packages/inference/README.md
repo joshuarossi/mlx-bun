@@ -29,8 +29,8 @@ qualified for, dense reads, whether long prompts prefill in workspace-bounded
 chunks, and what its verifier qualifies (adapters, logprobs, affine and TurboQuant
 KV, external tokens, grammar proposals).
 `MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
-`mediaEncoders`, `pixelInput`, `draftTarget`, `compiledDecodeStep` and
-`releaseCompiledDecode`, `trainable`, `expertResidency`), and
+`mediaEncoders`, `pixelInput`, `draftTarget`, `nativeDraftHead`, `denoisingGraph`,
+`compiledDecodeStep` and `releaseCompiledDecode`, `trainable`, `expertResidency`), and
 `declaredGraph` in `models/capabilities` checks the pairing once when composition
 binds the graph: an undeclared graph, or a declaration without its operation, is
 refused. The gateway plans from the declarations, the request and dynamic state
@@ -1007,9 +1007,9 @@ assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal provid
 Supply the target graph, draft provider, token budget, and token callback yourself.
 `specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.
-`generation/speculative/loader` loads a `dspark.json` checkpoint (`loadDsparkDrafter`) and
-also exports the drafter class and its config types, which `@mlx-bun/training/dspark` uses
-to produce those checkpoints.
+`generation/speculative/loader` (a file of `models/speculative`) loads a `dspark.json`
+checkpoint (`loadDsparkDrafter`) and also exports the drafter class and its config types,
+which `@mlx-bun/training/dspark` uses to produce those checkpoints.
 
 `DraftProviderRegistry` (`generation/speculative/draft-registry`) is how a server
 selects and loads a draft: each provider kind registers `detect(artifact)` (files
@@ -1025,7 +1025,12 @@ Providers read the target through capability-named ports on `TargetView`
 one with `target graph does not provide <port>`.
 
 Draft graphs live in `models/gemma4/assistant`, `models/qwen/mtp`, `models/glm52/mtp`,
-and `models/speculative/*`. Proposal sources live in `generation/speculative/sources`;
+and `models/speculative/*`. Drafters are models: `models/drafters` holds their artifact
+conventions and lazy loaders (`loadAssistantDrafter`, `loadDeepspecDrafter`,
+`loadDsparkDrafter`, `loadQwenMtpModule`), and hands the sources the ports of
+`contracts/mlx/drafter`; a graph that declares `nativeDraft` also provides
+`nativeDraftHead()`. Sources and the packages above (quantization included) never name
+a drafter class. Proposal sources live in `generation/speculative/sources`;
 verification and acceptance belong to `generation/speculative`; batched draft work
 belongs to `generation/speculative/bindings`; draft checkpoints belong to `state/speculative`.
 Existing sampling, rejection, rollback, and specialized kernel behavior is preserved.

@@ -18,7 +18,7 @@
 // here is the drafter acceptance A/B (`scripts/drafter-ab.ts`), not a KL battery.
 
 import { quantizeModelDir, type QuantizeResult } from "./quantizer";
-import { DeepspecDrafter } from "@mlx-bun/inference/models/speculative/deepspec";
+import { isDeepspecDrafterConfig, loadDeepspecDrafter } from "@mlx-bun/inference/models/drafters";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 
@@ -41,7 +41,7 @@ export interface QuantizeDrafterOptions {
 
 /**
  * Quantize the DeepSpec drafter at `srcDir` into `outDir` and smoke the
- * result: reload through DeepspecDrafter (quantized detection + graph
+ * result: reload through the DeepSpec drafter loader (quantized detection + graph
  * build) and eval one projectContext row through the quantized fc path.
  */
 export async function quantizeDrafterDir(
@@ -50,7 +50,7 @@ export async function quantizeDrafterDir(
   opts: QuantizeDrafterOptions,
 ): Promise<QuantizeResult> {
   const raw = (await Bun.file(`${srcDir}/config.json`).json()) as Record<string, any>;
-  if (raw.architectures?.[0] !== "Gemma4DSparkModel")
+  if (!isDeepspecDrafterConfig(raw))
     throw new Error(
       `quantizeDrafterDir: expected a DeepSpec checkpoint (architectures[0]==="Gemma4DSparkModel"), got ${JSON.stringify(raw.architectures)} — for regular models use \`mlx-bun convert -q\``,
     );
@@ -71,7 +71,7 @@ export async function quantizeDrafterDir(
   if (!opts.skipLoadSmoke) {
     // Load smoke: quantized detection + one real quantized matmul (fc) so a
     // wrong spec/layout fails HERE, not at serve time.
-    const d = await DeepspecDrafter.load(outDir);
+    const d = await loadDeepspecDrafter(outDir);
     try {
       const width = d.tapLayers.length * d.hidden;
       const zeros = MlxArray.fromFloat32(new Float32Array(width), [1, 1, width]);

@@ -40,6 +40,8 @@ export function declaredGraph(model: object): MlxDeclaredGraph & { readonly grap
   if (!capabilities) throw new TypeError("the graph must declare its capabilities (graphCapabilities)");
   if (capabilities.embeddings && typeof graph.embedPooled !== "function")
     throw new TypeError("the graph declares pooled embeddings but provides no embedPooled");
+  if (capabilities.method === "denoising" && typeof graph.denoisingGraph !== "function")
+    throw new TypeError("the graph declares the denoising method but provides no denoisingGraph");
   const media = capabilities.media;
   if (media && media.input !== "pixels" && typeof graph.bindMediaInput !== "function")
     throw new TypeError(`the graph declares ${media.input} media input but provides no bindMediaInput`);

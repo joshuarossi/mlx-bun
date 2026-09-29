@@ -1,7 +1,9 @@
 import type { GraphCapabilities } from "../portable/graph";
+import type { DenoisingGraph } from "../portable/denoising";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "./cache";
 import type { TargetView } from "./draft-target";
+import type { NativeMtpHead } from "./drafter";
 import type { TrainableGraph } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, PixelInput, TextEmbeddingModel, Vision } from "./media";
 
@@ -61,6 +63,11 @@ export interface MlxDeclaredGraph {
   pixelInput?(): PixelInput | null;
   /** Ports over this graph's live caches that draft sources may consume. */
   draftTarget?(caches: Cache[]): TargetView;
+  /** `nativeDraft`: the checkpoint's own multi-token-prediction head, refused when its tier is not loaded. */
+  nativeDraftHead?(): NativeMtpHead;
+  /** method `denoising`: the canvas-denoising operations over this graph's weights; each call opens
+   * a graph whose prefill state is an array of caches. */
+  denoisingGraph?(): DenoisingGraph<MlxArray, Cache[]>;
   /** What the trainer consumes: the head, segmented backward, prefix sharing,
    * gradient checkpointing, flash-attention constraint and denoising objective
    * this graph implements. Undeclared parts make the trainer refuse. */

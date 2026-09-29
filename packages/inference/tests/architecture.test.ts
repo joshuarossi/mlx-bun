@@ -62,9 +62,12 @@ function appDomain(path: string, owner: Library): string {
 // graph handle, its declaration, profiles, the registry-level role predicates
 // (`models/support.ts`) and shared input helpers, never a concrete model, and
 // never branch on a model's class, type string, architecture list or family flag.
+// Drafters are models too, reached through `models/drafters.ts` (their conventions and lazy
+// loaders, which hand the draft sources ports from `contracts/mlx/drafter`); the DSpark
+// producer (training) builds its module through `models/speculative/loader.ts`.
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
-  "models/chat-template.ts", "models/support.ts"]);
+  "models/chat-template.ts", "models/support.ts", "models/drafters.ts", "models/speculative/loader.ts"]);
 /** The family registry lists one record per family (`models/families.ts`); the role predicates of
  * `models/support.ts` (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only
  * ones consumers may use, and a per-family structural predicate must not reappear as an export. */
@@ -568,19 +571,6 @@ function checkRatchet(findings: readonly Finding[], table: RatchetTable): { fail
 /** The current violations, per rule and file. Lower a count, or delete a line, when a cleanup lands; never raise one. */
 const seamRatchet: RatchetTable = {
   "model-class": {
-    "packages/inference/src/generation/bindings/denoising.ts": 1,
-    "packages/inference/src/generation/diffusion.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/deepspec-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/glm52-mtp-rows.ts": 1,
-    "packages/inference/src/generation/speculative/bindings/qwen-mtp-rows.ts": 1,
-    "packages/inference/src/generation/speculative/draft-kind.ts": 2,
-    "packages/inference/src/generation/speculative/dspark/loader.ts": 3,
-    "packages/inference/src/generation/speculative/sources/assistant-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/deepspec-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/dflash-source.ts": 1,
-    "packages/inference/src/generation/speculative/sources/glm52-mtp-source.ts": 3,
-    "packages/inference/src/generation/speculative/sources/qwen-mtp-source.ts": 1,
     "packages/inference/src/state/glm52-cache.ts": 1,
     "packages/inference/src/state/target-layout.ts": 1,
     "packages/inference/src/transcription/index.ts": 1,
@@ -588,17 +578,10 @@ const seamRatchet: RatchetTable = {
     "packages/inference/src/transcription/whisper/timing.ts": 1,
     "packages/inference/src/transcription/whisper/transcribe.ts": 1,
   },
-  "family-subpath": {
-    "packages/quantize/src/drafter.ts": 1,
-  },
+  "family-subpath": {},
   "family-identity": {
-    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
-    "packages/inference/src/generation/speculative/draft-kind.ts": 1,
     "packages/inference/src/layers/rope.ts": 1,
     "packages/inference/src/models/profile.ts": 1,
-    "packages/inference/src/state/speculative/glm52-mtp-state.ts": 1,
-    "packages/inference/src/state/speculative/qwen-mtp-state.ts": 1,
-    "packages/quantize/src/drafter.ts": 1,
     "packages/quantize/src/weight-transform.ts": 6,
   },
   "cache-class": {

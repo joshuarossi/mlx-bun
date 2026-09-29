@@ -1,11 +1,9 @@
 import type { DenoisingGraph } from "../../contracts/portable/denoising";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../contracts/mlx/cache";
-import type { DiffusionGemmaModel } from "../../models/diffusion-gemma/model";
 import type { MlxModelMemory } from "./autoregressive";
 import type { MlxTokenGraph } from "../../models/graph";
 import { declaredGraph } from "../../models/capabilities";
-import { disposeResources } from "../../runtime/resources";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime/config";
 
 export interface MlxDenoisingBinding<State = Cache[]> {
@@ -15,26 +13,12 @@ export interface MlxDenoisingBinding<State = Cache[]> {
   readonly adapters?: { active: string[] };
 }
 
-/** Only a graph that declares the denoising method binds here. */
+/** Only a graph that declares the denoising method binds here; it provides the graph itself. */
 export function bindLegacyDenoisingModel(resident: MlxTokenGraph): MlxDenoisingBinding {
-  if (declaredGraph(resident).graphCapabilities.method !== "denoising")
+  const declared = declaredGraph(resident);
+  if (declared.graphCapabilities.method !== "denoising")
     throw new TypeError("the graph does not declare the denoising method");
-  const model = resident as DiffusionGemmaModel;
-  return {
-    runtime: runtimeConfig(),
-    memory: model, adapters: model.loraState,
-    graph: {
-      descriptor: Object.freeze({ id: "legacy-diffusion-gemma", backend: "mlx",
-        graphAbi: "mlx-denoising-v1", stateAbi: "legacy-cache-array-v1", artifact: "legacy-resident-model" }),
-      vocabSize: model.config.text.vocabSize, canvasLength: model.canvasLength, embedScale: model.embedScale,
-      prefill: (ids, vision) => vision ? model.prefillVision(ids, vision) : model.prefill(ids),
-      extendPrefill: model.extendPrefill.bind(model),
-      decoderLogits: model.decoderLogits.bind(model),
-      dequantEmbedWeight: model.dequantEmbedWeight.bind(model),
-      softEmbeddings: model.softEmbeddings.bind(model),
-      closeState: disposeResources,
-    },
-  };
+  return { runtime: runtimeConfig(), memory: resident, adapters: resident.loraState, graph: declared.denoisingGraph!() };
 }
 
 export function assertMlxDenoisingGraph<State>(graph: DenoisingGraph<MlxArray, State>): void {

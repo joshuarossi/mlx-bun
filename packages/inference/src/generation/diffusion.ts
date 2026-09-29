@@ -14,7 +14,7 @@
 // model-default (entropy-bound). temperature 0 (greedy) is the default and the
 // only RNG consumers then are the canvas draws.
 
-import type { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
+import type { MlxTokenGraph } from "../models/graph";
 import type { DenoisingGraph } from "../contracts/portable/denoising";
 import { assertMlxDenoisingGraph, bindLegacyDenoisingModel } from "./bindings/denoising";
 import { cleanupFailure, disposeResources, ownResource } from "../runtime/resources";
@@ -265,7 +265,7 @@ export function openDenoisingRun<State>(
 }
 
 /** Compatibility entry. Both sync and asynchronous callers drain one algorithm. */
-export function diffusionGenerate(model: DiffusionGemmaModel, promptIds: number[], opts: DiffusionGenOptions): DiffusionGenResult {
+export function diffusionGenerate(model: MlxTokenGraph, promptIds: number[], opts: DiffusionGenOptions): DiffusionGenResult {
   return denoiseSync(bindLegacyDenoisingModel(model).graph, promptIds, opts);
 }
 
