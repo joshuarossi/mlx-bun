@@ -1564,7 +1564,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const options = { temperature: 0, maxTokens, ...env.kvScheme!.generationOptions, grammar };
     const failure = new Error("consumer failed");
     const outcome = await env.group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], grammar, signal: abort.signal,
-      method: (method ?? bindGrammarGroupRequests(env.model, LAYERS))(options),
+      method: (method ?? bindGrammarGroupRequests(env.model, LAYERS, LAYERS.length))(options),
       onToken(token: number) {
         tokens.push(token); onPublish?.();
         if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
@@ -2237,7 +2237,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       // No dense-read layers reach this group; only the method's binding has them.
       const group = new MlxBatchExecutionGroup(env.model, { maxBatch: 2, prefillChunkSize: 64,
         runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }), kvScheme, kvBatchCapabilities: { delayedAffine: true } });
-      const layers = [...LAYERS], bound = bindGrammarGroupRequests(env.model, layers);
+      const layers = [...LAYERS], bound = bindGrammarGroupRequests(env.model, layers, LAYERS.length);
       layers.length = 0;   // a later edit to the caller's list cannot reach the binding
       try {
         expect(await submitSpans({ ...env, kvScheme, group } as typeof env, A, 10, [[11, 12]], {}, undefined, bound))

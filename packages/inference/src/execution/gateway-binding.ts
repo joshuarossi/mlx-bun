@@ -150,7 +150,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
   // Spans on a softcap graph are held to plain reads in every KV layer, as its
   // ordinary rows are (the group's denseKvReads, below).
-  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers) : undefined;
+  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers, storage.convertible.length) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
