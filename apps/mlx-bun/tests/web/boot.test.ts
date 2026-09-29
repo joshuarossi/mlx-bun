@@ -143,7 +143,7 @@ test("opening the benchmarks route mounts its panel through the shell, which rea
   expect(activePages()).toEqual(["benchmarks"]);
   const panel = document.querySelector("#s-benchmarks mlx-benchmarks-panel") as HTMLElement & { connection?: unknown };
   expect(panel).not.toBeNull();
-  expect(panel.connection).toEqual({ apiBase: "/api/benchmarks", eventsUrl: "/api/benchmarks/stream" });
+  expect(panel.connection).toEqual({ apiBase: "/api/benchmarks", eventsUrl: "" }); // benchmarks serves no event stream
   expect(requests.filter(url => url.startsWith("/api/benchmarks/")).sort()).toEqual(["/api/benchmarks/jobs", "/api/benchmarks/runs", "/api/benchmarks/tasks"]);
   expect(requests).not.toContain("/api/benchmarks/panel.js");
 });
