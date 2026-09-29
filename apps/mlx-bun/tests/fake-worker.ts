@@ -12,15 +12,17 @@
 // FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 // FAKE_WORKER_VERSION=<v> plays a worker of that package version: a launch record
 // with another one is refused as the real entry refuses it (exit 2, the reason on stderr).
-// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing.
+// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing;
+// FAKE_WORKER_STOP_GATE=<path> holds it until that file exists (no clock involved).
 // `POST /admin/memory/complete` plays the memory task model: each row answers
 // `task <stage>: <user>` in order; a row whose user text contains `hold` waits
 // for `/fake/memory/release` or the parent's disconnect, and `crash` exits 137
 // under the call (events: memory, memory aborted, memory answered). The first
 // call that answers "loads" the snapshot it carries (`task_snapshot` in
 // `/fake/seen`), after any hold, like a lazy load behind the execution lease.
-// FAKE_WORKER_MEMORY_JOIN_MS delays an aborted call's settling, like rows
-// joining; SIGTERM waits for those joins, as the real worker's close does.
+// FAKE_WORKER_MEMORY_JOIN_GATE=<path> holds an aborted call's settling until that
+// file exists, like rows joining; SIGTERM waits for those joins, as the real
+// worker's close does.
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -47,6 +49,7 @@ if (process.env.FAKE_WORKER_LOAD_MS) await Bun.sleep(Number(process.env.FAKE_WOR
 interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }
 const seen: Seen[] = [];
 const leases = new Set<object>();
+const gateOpen = async (path: string | undefined) => { while (path && !existsSync(path)) await Bun.sleep(10); };
 const heldMemory = new Set<() => void>(), memoryJoins = new Set<Promise<void>>();
 let taskSnapshot: string | undefined;
 let draining = false, inFlight = 0, responseCount = 0;
@@ -126,7 +129,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       heldMemory.add(release);
       request.signal.addEventListener("abort", () => {
         entry.aborted = true;
-        const join = Bun.sleep(Number(process.env.FAKE_WORKER_MEMORY_JOIN_MS ?? "0")).then(() => { event("memory aborted"); release(); });
+        const join = gateOpen(process.env.FAKE_WORKER_MEMORY_JOIN_GATE).then(() => { event("memory aborted"); release(); });
         memoryJoins.add(join);
         void join.finally(() => memoryJoins.delete(join));
       }, { once: true });
@@ -184,6 +187,7 @@ const stop = async () => {
   await Promise.allSettled([...memoryJoins]);
   console.error("stopping"); event("stop");
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
+  await gateOpen(process.env.FAKE_WORKER_STOP_GATE);
   void server.stop(true); process.exit(0);
 };
 process.on("SIGTERM", stop);
