@@ -34,8 +34,10 @@ refused. The gateway plans from the declarations, the request and dynamic state
 (batch membership, cache contents, cancellation), and
 `MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
 means declaring and implementing; `execution/` and the app engine need no edit.
-A model-level option stays with its graph: Qwen3.5 reads `MLX_BUN_QWEN_SPEC_KV4`
-(on by default) where it declares speculation over affine KV.
+The architecture gate rejects concrete model imports, model-class `instanceof`,
+model-type string checks and model-scoped flags there. A model-level option stays
+with its graph: Qwen3.5 reads `MLX_BUN_QWEN_SPEC_KV4` (on by default) where it
+declares speculation over affine KV.
 
 ## Numerical and execution policy
 

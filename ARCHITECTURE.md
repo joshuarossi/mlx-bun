@@ -74,7 +74,8 @@ allowlists. For example, a missing draft head is a missing component. Dynamic
 request data, batch membership, cancellation, and state transitions still need
 runtime handling. Graphs declare their capabilities when constructed; the gateway
 plans from those declarations and the app engine binds media through graph
-operations. Elsewhere this remains the target design and a review criterion
+operations, and the architecture gate rejects model classes and model-identity
+checks in both. Elsewhere this remains the target design and a review criterion
 for remaining migration work, not a claim that every existing path already
 satisfies it.
 
