@@ -5,6 +5,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
+import { HEADER } from "./codebook";
 import { nativeTrellisWidePrefill } from "./wide-prefill";
 
 /** Dispatch profile measured on Qwen's MLP geometry. No model-name check. */
@@ -18,7 +19,7 @@ let kernel: MetalKernel | undefined;
 function tiledKernel(): MetalKernel {
   return kernel ??= new MetalKernel({ name: "mlx_bun_trellis_prefill_tile",
     inputNames: ["x", "codes", "scales"], outputNames: ["out"],
-    header: "#include <metal_simdgroup_matrix>\n",
+    header: "#include <metal_simdgroup_matrix>\n" + HEADER,
     source: String.raw`
     const uint tid=thread_position_in_threadgroup.x;
     const uint lane=thread_index_in_simdgroup;
@@ -61,15 +62,8 @@ function tiledKernel(): MetalKernel {
           uint win=bw[wi]>>off;
           if(off+L>32)win|=bw[wi+1==wpb?0:wi+1]<<(32-off);
           win&=(1u<<L)-1;
-          const uint z=win*34038481u+76625530u;
-          const uint p=(z&0x00FF00FFu)+((z>>8)&0x00FF00FFu);
-          const int code=int((p&0xFFFFu)+(p>>16))-510;
           // Expansion consumes the precise host LUT even for variant 6.
-          // Refine the reciprocal product before scaling and bf16 rounding.
-          const float reciprocal=1.0f/147.800537109375f;
-          const float approx=float(code)*reciprocal;
-          const float residual=metal::fma(-approx,147.800537109375f,float(code));
-          const float value=metal::fma(residual,reciprocal,approx);
+          const float value=trellis_val_rcp(win);
           w=T(value*float(scales[row]));
         }
         Bs[b]=w;

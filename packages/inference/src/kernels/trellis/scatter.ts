@@ -4,13 +4,14 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
 import { HEADER, lutFor, decoderVariant, wordsPerBlock } from "./codebook";
+import { TRELLIS_THREADS, TRELLIS_SG_PER_TG } from "./launch";
 
-const THREADS = 128, SG_PER_TG = 4, SCATTER_SPLITS = 128;
+const SCATTER_SPLITS = 128;
 
 const SCATTER_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -111,7 +112,7 @@ const BALANCED_SCATTER_SOURCE = String.raw`
       uint win = lo >> shift;
       if (shift + (uint)L > 32u) win |= hi << (32u - shift);
       win &= (1u << (uint)L) - 1u;
-      const float value = (float)trellis_y(win) * (1.0f / 147.800537109375f);
+      const float value = trellis_unrefined_y(trellis_y(win));
       acc[i] = metal::fma(value * sr, xr, acc[i]);
     }
   }
@@ -124,7 +125,7 @@ const BALANCED_SCATTER_SOURCE = String.raw`
 const SCATTER_SHARED_M_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -245,7 +246,7 @@ const BALANCED_SCATTER_SHARED_M_SOURCE = String.raw`
       uint win = lo >> shift;
       if (shift + (uint)L > 32u) win |= hi << (32u - shift);
       win &= (1u << (uint)L) - 1u;
-      const float value = (CODEBOOK ? (float)codebookY[win] : (float)trellis_y(win)) * (1.0f / 147.800537109375f);
+      const float value = trellis_unrefined_y(CODEBOOK ? (int)codebookY[win] : trellis_y(win));
       const float weight = value * sr;
       #pragma clang loop unroll(full)
       for (uint m = 0; m < (uint)M; ++m) acc[m][i] = metal::fma(weight, xr[m], acc[m][i]);
@@ -306,10 +307,10 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
     : balanced ? balancedScatterKernel() : scatterKernel();
   const [partial] = kernel.apply([x2, codes, scales, lutFor(g.L)], {
     outputs: [{ shape: [M, SCATTER_SPLITS, g.cols], dtype: Dtype.float32 }],
-    grid: [THREADS, Math.ceil(groups / SG_PER_TG), (shared ? 1 : M) * SCATTER_SPLITS],
-    threadGroup: [THREADS, 1, 1],
+    grid: [TRELLIS_THREADS, Math.ceil(groups / TRELLIS_SG_PER_TG), (shared ? 1 : M) * SCATTER_SPLITS],
+    threadGroup: [TRELLIS_THREADS, 1, 1],
     templateDtypes: { T: x2.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG,
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: TRELLIS_SG_PER_TG,
       SPLITS: SCATTER_SPLITS, NP, VARIANT: decoderVariant(selected), INTERLEAVE: g.blockInterleave ?? 0, CODEBOOK: Number(codebook) },
   });
   const sum = ops.sumAxis(partial!, 1, false);

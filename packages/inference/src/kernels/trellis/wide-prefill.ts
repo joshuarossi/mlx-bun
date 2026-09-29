@@ -6,6 +6,7 @@ import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import { type MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import { type TrellisGeometry } from "./geometry";
+import { HEADER } from "./codebook";
 
 /** Matches the bundled runtime's native reduction on M3 and newer GPUs. */
 export function nativeTrellisWidePrefill(m: number): boolean {
@@ -22,7 +23,7 @@ export function wideTrellisPrefillEligible(g: TrellisGeometry, m: number, dtype:
 let kernel: MetalKernel | undefined;
 function wideKernel() {
   return kernel ??= new MetalKernel({ name: 'mlx_bun_trellis_wide_prefill',
-    inputNames: ['x', 'codes', 'scales'], outputNames: ['out'], source: String.raw`
+    inputNames: ['x', 'codes', 'scales'], outputNames: ['out'], header: HEADER, source: String.raw`
     constexpr uint unroll=8, rows_per_simd=32/KL, simdgroups=KL/8;
     const uint lane=thread_index_in_simdgroup, sg=simdgroup_index_in_threadgroup;
     const uint kl=lane%KL, row=threadgroup_position_in_grid.y*4+sg*rows_per_simd+lane/KL;
@@ -43,13 +44,7 @@ function wideKernel() {
           uint win=bw[wi]>>off;
           if(off+L>32)win|=bw[wi+1==wpb?0:wi+1]<<(32-off);
           win&=(1u<<L)-1;
-          const uint z=win*34038481u+76625530u;
-          const uint p=(z&0x00FF00FFu)+((z>>8)&0x00FF00FFu);
-          const int code=int((p&0xFFFFu)+(p>>16))-510;
-          const float reciprocal=1.0f/147.800537109375f;
-          const float approx=float(code)*reciprocal;
-          const float residual=metal::fma(-approx,147.800537109375f,float(code));
-          const float value=metal::fma(residual,reciprocal,approx);
+          const float value=trellis_val_rcp(win);
           wf[i][c]=float(T(value*scale));
         }
       }
