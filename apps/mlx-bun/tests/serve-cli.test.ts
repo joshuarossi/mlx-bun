@@ -21,6 +21,24 @@ test("serving defaults to continuous capacity eight; capacity one uses the same 
   expect(() => parse("--compiled-decode", "on")).toThrow();
 });
 
+test("serving numerical aliases and kernel overrides survive isolated worker serialization", () => {
+  for (const [flags, kvQuant, fusedSdpa] of [
+    [[], "off", false], [["--l1"], "off", false], [["--l2"], "config", true],
+    [["--l2", "--l1"], "config", true], [["--l1", "--l2"], "config", true],
+    [["--l2", "--kv-quant", "off"], "off", false], [["--l2", "--kv-quant", "4"], 4, false],
+    [["--l1", "--kv-quant", "config"], "config", true],
+    [["--l2", "--fused-sdpa", "off"], "config", false], [["--l1", "--fused-sdpa", "on"], "off", true],
+  ] as const) {
+    const options = parse("--isolate", ...flags);
+    expect(options).toMatchObject({ cache: { kvQuant }, fusedSdpa });
+    expect(decodeLaunch(encodeLaunch({ ...options, isolate: false }))).toMatchObject({ cache: { kvQuant }, fusedSdpa });
+  }
+  for (const value of ["on", "1", "true"]) expect(parse("--fused-sdpa", value).fusedSdpa).toBe(true);
+  for (const value of ["off", "0", "false"]) expect(parse("--l2", "--fused-sdpa", value).fusedSdpa).toBe(false);
+  expect(parse("--l2", "--kv-quant", "turbo", "--fused-sdpa", "on"))
+    .toMatchObject({ cache: { turboQuant: { kBits: 8, vBits: 3 } }, fusedSdpa: true });
+});
+
 test("serving forwards explicit sampling and cache choices with their original units", () => {
   expect(parse("fallback", "--model", "chosen", "--query", "ignored", "--port", "0",
     "--temp", "0.7", "--thinking", "off", "--top-p", "0.9", "--top-k", "20", "--max-tokens", "7.9",
@@ -92,7 +110,7 @@ test("serving parses main's TurboQuant spec into the cache scheme, through the i
 
 test("invalid serving input fails before model selection", async () => {
   for (const args of [["--batch", "0"], ["--batch", "1.5"], ["--port", "65536"],
-    ["--temp", "6"], ["--top-p", "2"], ["--thinking", "maybe"], ["--kv-quant", "3"], ["--kv-quant", "turbo:k3v3"],
+    ["--temp", "6"], ["--top-p", "2"], ["--thinking", "maybe"], ["--fused-sdpa", "maybe"], ["--kv-quant", "3"], ["--kv-quant", "turbo:k3v3"],
     ["--ssd-cache-verify"], ["--generation-checkpoint", "128"], ["--ssd-cache", "/cache", "--prompt-cache", "0"]]) {
     let selected = false;
     await expect(runServe(parseCommand("serve", args), { resolve: async () => { selected = true; throw new Error("must not select"); } })).rejects.toThrow();
@@ -455,11 +473,13 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
       stopIdleDemotion() {}, async close() { return { durable: true }; } };
     const expected = fit(config, 2e9, 1, undefined, undefined, 0, 8e9, undefined).maxSafeContext;
     let loadOptions, cacheOptions, statusBudget, contextLimit, defaultAdapter;
+    const routes = [];
+    const route = seam => routes.push(seam + ":" + runtimeValue("MLX_BUN_NO_FUSED_SDPA"));
     mock.module(app + "src/engine/index.ts", () => ({
-      loadContext: async (path, id, options) => { loadOptions = options; events.push("load wire=" + runtimeValue("MLX_BUN_FORCE_WIRE") + " media=" + runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA")); return context; },
-      modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
-      createCacheServices: async (_context, _binding, options) => { cacheOptions = options; return cache; },
-      createAppEngine: async () => ({ gateway: {}, async close() { context.dispose(); } }),
+      loadContext: async (path, id, options) => { loadOptions = options; route("load"); events.push("load wire=" + runtimeValue("MLX_BUN_FORCE_WIRE") + " media=" + runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA")); return context; },
+      modelServingBinding: async () => { route("binding"); return { gateway: { configureContinuation() {} } }; },
+      createCacheServices: async (_context, _binding, options) => { cacheOptions = options; route("cache"); return cache; },
+      createAppEngine: async () => { route("engine"); return { gateway: {}, async close() { route("close"); context.dispose(); } }; },
     }));
     let limit = 77;
     mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
@@ -488,7 +508,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
       "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/",
       "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off",
-      "--paged-kv", "--paged-kv-block-size", "128", "--no-open"]));
+      "--paged-kv", "--paged-kv-block-size", "128", "--l2", "--kv-quant", "off", "--fused-sdpa", "on", "--no-open"]));
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
     // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
@@ -500,16 +520,20 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     assert.equal(statusBudget, 8e9);
     assert.equal(contextLimit, expected);
     await running.close();
+    assert.deepEqual(routes, ["load:0", "binding:0", "cache:0", "engine:0", "close:0"]);
+    assert.equal(runtimeValue("MLX_BUN_NO_FUSED_SDPA"), undefined);
     // Process settings restore only after the engine released the model.
     assert.deepEqual(events.slice(5), ["model close", "restore offload", "allocator 77"]);
     assert.equal(limit, 77);
     assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
     assert.equal(runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA"), undefined);
     // A bad adapter fails startup with main's message and releases the model before anything else was created.
-    events.length = 0; mountFails = true;
+    events.length = 0; mountFails = true; routes.length = 0; options.fusedSdpa = false; options.cache.kvQuant = "config";
     await assert.rejects(startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options), /adapter mount failed: adapter_config.json missing/);
     assert.deepEqual(events, ["load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "model close"]);
-    mountFails = false;
+    assert.deepEqual(routes, ["load:1"]);
+    assert.equal(runtimeValue("MLX_BUN_NO_FUSED_SDPA"), undefined);
+    mountFails = false; options.cache.kvQuant = "off";
     events.length = 0;
     const dense = await startModelServer({ path: "/dense", repoId: "dense", expertsBytes: 0 }, options);
     assert.deepEqual(events, ["load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
