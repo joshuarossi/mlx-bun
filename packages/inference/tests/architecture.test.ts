@@ -99,11 +99,9 @@ const closedModelUnion: ReadonlySet<string> = new Set(["RuntimeModel"]);
 const isScheduling = (file: string, owner: Library) =>
   owner.name === "@mlx-bun/inference" && relative(owner.source, file).startsWith("execution/");
 
-/** Concrete cache modules: the files under `state/` that export a cache class, that
- * is a class declaring `signature()` (the Cache contract's identity) or extending
- * one. Scheduling moves rows through the row-layout port (`state/layout`) and
- * never names a storage family. */
-function cacheModules(sources: ReadonlyMap<string, ts.SourceFile>, stateRoot: string): Set<string> {
+/** Concrete cache classes: the classes under `state/` that declare `signature()` (the Cache
+ * contract's identity) or extend one, with the file each lives in. */
+function cacheClasses(sources: ReadonlyMap<string, ts.SourceFile>, stateRoot: string): { name: string; file: string }[] {
   const classes: { name: string; file: string; signature: boolean; base: string | undefined }[] = [];
   for (const [file, source] of sources) {
     if (!file.startsWith(stateRoot + "/")) continue;
@@ -119,7 +117,13 @@ function cacheModules(sources: ReadonlyMap<string, ts.SourceFile>, stateRoot: st
     grown = false;
     for (const item of classes) if (item.base && caches.has(item.base) && !caches.has(item.name)) { caches.add(item.name); grown = true; }
   }
-  return new Set(classes.filter(item => caches.has(item.name)).map(item => item.file));
+  return classes.filter(item => caches.has(item.name)).map(({ name, file }) => ({ name, file }));
+}
+
+/** Concrete cache modules: the files under `state/` that export a cache class. Scheduling moves
+ * rows through the row-layout port (`state/layout`) and never names a storage family. */
+function cacheModules(sources: ReadonlyMap<string, ts.SourceFile>, stateRoot: string): Set<string> {
+  return new Set(cacheClasses(sources, stateRoot).map(item => item.file));
 }
 
 /** Anything in a types-only package that exists at runtime: values, `export *`, non-type exports, side-effect imports. */
@@ -264,14 +268,30 @@ interface Library {
   dependencies: string[];
 }
 
-async function inspectWorkspaces(root: string): Promise<string[]> {
-  root = realpathSync(root);
+async function readLibraries(root: string): Promise<Library[]> {
   const libraries: Library[] = [];
   for await (const file of new Bun.Glob("{packages,apps}/*/package.json").scan(root)) {
     const manifest = await Bun.file(resolve(root, file)).json();
     libraries.push({ app: file.startsWith("apps/"), name: manifest.name, source: resolve(root, dirname(file), "src"),
       dependencies: Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies }) });
   }
+  return libraries;
+}
+
+async function readSources(libraries: readonly Library[]): Promise<Map<string, ts.SourceFile>> {
+  const sources = new Map<string, ts.SourceFile>();
+  for (const library of libraries) {
+    for await (const file of new Bun.Glob("**/*.{ts,tsx,js,mjs,cjs}").scan(library.source)) {
+      const absolute = resolve(library.source, file);
+      sources.set(absolute, ts.createSourceFile(absolute, await Bun.file(absolute).text(), ts.ScriptTarget.Latest, true));
+    }
+  }
+  return sources;
+}
+
+async function inspectWorkspaces(root: string): Promise<string[]> {
+  root = realpathSync(root);
+  const libraries = await readLibraries(root);
   const violations: string[] = [];
   const names = libraries.map(item => item.name);
   if (new Set(names).size !== names.length) violations.push("Duplicate workspace package names");
@@ -297,13 +317,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
   const ownerOf = (path: string) => libraries.find(item => path.startsWith(`${item.source}/`));
   const options: ts.CompilerOptions = { moduleResolution: ts.ModuleResolutionKind.Bundler, module: ts.ModuleKind.Preserve };
   const cache = ts.createModuleResolutionCache(root, path => path, options);
-  const sources = new Map<string, ts.SourceFile>();
-  for (const library of libraries) {
-    for await (const file of new Bun.Glob("**/*.{ts,tsx,js,mjs,cjs}").scan(library.source)) {
-      const absolute = resolve(library.source, file);
-      sources.set(absolute, ts.createSourceFile(absolute, await Bun.file(absolute).text(), ts.ScriptTarget.Latest, true));
-    }
-  }
+  const sources = await readSources(libraries);
   const dependencies = new Map<string, string[]>();
   const external = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), "bun", "bun:ffi", "bun:sqlite"]);
   const packageOwners: Record<string, Layer> = {
@@ -420,6 +434,305 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
   violations.push(...cycles(dependencies).map(cycle => `Module cycle: ${cycle}`));
   return violations;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Repo-wide seam ratchet. The rules above are hard: a violation fails the gate outright. The
+// rules below hold for every remaining source file too, but the code that already breaks them is
+// listed per file with its current count (`seamRatchet`). A count may only go down: a new file, or
+// a count that rises, fails; a count that drops prints a reminder to lower the entry, so each
+// cleanup PR shrinks the table until it is empty.
+//
+//   model-class      `instanceof <X>Model` and imports of concrete model modules (`models/<family>/...`,
+//                    anything under `models/` that is not a graph contract) outside `models/`.
+//   family-subpath   the same imports from any other workspace package (training, apps, modules,
+//                    quantize, hub, ...): `@mlx-bun/inference/models/<family>` subpaths.
+//   family-identity  comparing or matching a config's `model_type`/`architectures`, importing a
+//                    per-family predicate, and repo-id or name checks (`id.includes("qwen")`,
+//                    `/gemma/i.test(name)`), outside the family registry and the artifact readers.
+//   cache-class      `instanceof <concrete cache class>` outside `state/` and the graphs in `models/`.
+//   model-env-flag   an env flag whose name holds a family name, read outside `models/`.
+//   scheduler-core   scheduler core files import only contracts, runtime and each other.
+// ---------------------------------------------------------------------------------------------
+type RatchetRule = "model-class" | "family-subpath" | "family-identity" | "cache-class" | "model-env-flag" | "scheduler-core";
+interface Finding { rule: RatchetRule; file: string; line: number; text: string }
+type RatchetTable = Partial<Record<RatchetRule, Record<string, number>>>;
+
+/** The scheduler core: lifecycle, admission, cancellation, task and plan resolution. Everything
+ * model- or storage-shaped reaches it through a contract. */
+const schedulerCore = new Set(["scheduler", "coordinator", "engine", "session", "admission", "cancellation", "tasks", "plan"]
+  .map(name => `execution/${name}.ts`));
+const modelEnvFlag = /^MLX_BUN_\w*(GEMMA|QWEN|MINICPM|LLAMA|GLM|DIFFUSION|UNIVERSAL)/;
+const equality = [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken];
+const familyName = /^(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
+const nameChecks = ["startsWith", "endsWith", "includes", "match", "test", "indexOf", "search", "exec"];
+
+/** `instanceof X` for every identifier X, and the calls that test a repo id or a display name for a family word. */
+function nameAndClassChecks(source: ts.SourceFile): { instances: { name: string; node: ts.Node }[]; names: { text: string; node: ts.Node }[]; flags: { text: string; node: ts.Node }[] } {
+  const instances: { name: string; node: ts.Node }[] = [], names: { text: string; node: ts.Node }[] = [], flags: { text: string; node: ts.Node }[] = [];
+  const familyLiteral = (node: ts.Node) => (ts.isStringLiteralLike(node) && familyWord.test(node.text)) ||
+    (ts.isRegularExpressionLiteral(node) && familyWord.test(node.text));
+  const visit = (node: ts.Node) => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword && ts.isIdentifier(node.right))
+      instances.push({ name: node.right.text, node });
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && nameChecks.includes(node.expression.name.text) &&
+        (node.arguments.some(familyLiteral) || familyLiteral(node.expression.expression)))
+      names.push({ text: `${node.expression.name.text} with a family name`, node });
+    if (ts.isBinaryExpression(node) && equality.includes(node.operatorToken.kind) &&
+        (familyName.test(ts.isStringLiteralLike(node.left) ? node.left.text : "") || familyName.test(ts.isStringLiteralLike(node.right) ? node.right.text : "")))
+      names.push({ text: "comparing to a family name", node });
+    if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression) && familyName.test(node.expression.text))
+      names.push({ text: "switching on a family name", node });
+    if ((ts.isStringLiteralLike(node) || ts.isIdentifier(node)) && modelEnvFlag.test(node.text)) flags.push({ text: node.text, node });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { instances, names, flags };
+}
+
+const nodeModules = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), "bun", "bun:ffi", "bun:sqlite"]);
+
+/** Every ratchet finding in the workspace at `root`, with paths relative to it. */
+async function seamFindings(root: string): Promise<Finding[]> {
+  root = realpathSync(root);
+  const libraries = await readLibraries(root), sources = await readSources(libraries);
+  const options: ts.CompilerOptions = { moduleResolution: ts.ModuleResolutionKind.Bundler, module: ts.ModuleKind.Preserve };
+  const cache = ts.createModuleResolutionCache(root, path => path, options);
+  const inference = libraries.find(item => item.name === "@mlx-bun/inference");
+  const cacheNames = new Set(inference ? cacheClasses(sources, resolve(inference.source, "state")).map(item => item.name) : []);
+  const found: Finding[] = [];
+  for (const [file, source] of sources) {
+    const owner = libraries.find(item => file.startsWith(`${item.source}/`))!;
+    if (owner.name === "mlx-bun-website" || owner.name === "@mlx-bun/mlx") continue;
+    const inInference = owner === inference, name = relative(owner.source, file), at = relative(root, file);
+    const inModels = inInference && name.startsWith("models/");
+    const add = (rule: RatchetRule, node: ts.Node | undefined, text: string) =>
+      found.push({ rule, file: at, line: node ? source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 : 0, text });
+    const { instances, names, flags } = nameAndClassChecks(source);
+    if (!inModels) {
+      for (const { name: klass, node } of instances) {
+        if (/Model$/.test(klass) || familyWord.test(klass)) add("model-class", node, `instanceof ${klass}`);
+        if (cacheNames.has(klass) && !(inInference && name.startsWith("state/"))) add("cache-class", node, `instanceof ${klass}`);
+      }
+      for (const { text, node } of flags) add("model-env-flag", node, text);
+    }
+    if (!(inInference && ownsFamilyIdentity(name))) {
+      for (const { text, line } of familyIdentityChecks(source)) found.push({ rule: "family-identity", file: at, line, text });
+      const typed = new Set(familyIdentityChecks(source).map(item => item.line));
+      for (const { text, node } of names)
+        if (!(text.endsWith("family name") && !text.includes("with") && typed.has(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1)))
+          add("family-identity", node, text);
+    }
+    if (inInference && schedulerCore.has(name)) {
+      for (const { specifier, line } of references(source)) {
+        const target = specifier?.startsWith(".") ? relative(inference!.source, resolve(dirname(file), specifier)) : specifier;
+        if (target === undefined || !(target.startsWith("contracts/") || target.startsWith("runtime/") ||
+            schedulerCore.has(`${target}.ts`)))
+          found.push({ rule: "scheduler-core", file: at, line, text: `imports ${specifier ?? "a non-literal module"}` });
+      }
+    }
+    if (inModels || !inference) continue;
+    for (const { specifier, line } of references(source)) {
+      if (!specifier || nodeModules.has(specifier)) continue;
+      const actual = ts.resolveModuleName(specifier, file, options, ts.sys, cache).resolvedModule?.resolvedFileName;
+      if (!actual || !sources.has(actual) || !actual.startsWith(`${inference.source}/`)) continue;
+      const target = relative(inference.source, actual);
+      if (target.startsWith("models/") && !graphContracts.has(target))
+        found.push({ rule: owner === inference ? "model-class" : "family-subpath", file: at, line, text: `imports ${specifier}` });
+    }
+  }
+  return found;
+}
+
+/** Compare findings with the allowlist: anything above it fails, anything below it is a reminder to lower it. */
+function checkRatchet(findings: readonly Finding[], table: RatchetTable): { failures: string[]; reminders: string[] } {
+  const seen = new Map<string, Finding[]>();
+  for (const item of findings) {
+    const key = `${item.rule}\0${item.file}`;
+    seen.set(key, [...seen.get(key) ?? [], item]);
+  }
+  const failures: string[] = [], reminders: string[] = [];
+  for (const [key, items] of seen) {
+    const [rule, file] = key.split("\0") as [RatchetRule, string];
+    const allowed = table[rule]?.[file] ?? 0;
+    if (items.length > allowed)
+      failures.push(`${rule} ${file}: ${items.length} violations, ${allowed} allowed${allowed ? "" : " (a new file)"}: ` +
+        items.map(item => `${item.line}: ${item.text}`).join("; "));
+    else if (items.length < allowed) reminders.push(`${rule} ${file}: ${items.length} now, lower the allowlist from ${allowed}`);
+  }
+  for (const [rule, files] of Object.entries(table) as [RatchetRule, Record<string, number>][])
+    for (const [file, allowed] of Object.entries(files))
+      if (!seen.has(`${rule}\0${file}`)) reminders.push(`${rule} ${file}: 0 now, delete the allowlist entry (was ${allowed})`);
+  return { failures, reminders };
+}
+
+/** The current violations, per rule and file. Lower a count, or delete a line, when a cleanup lands; never raise one. */
+const seamRatchet: RatchetTable = {
+  "model-class": {
+    "packages/inference/src/generation/bindings/denoising.ts": 1,
+    "packages/inference/src/generation/diffusion.ts": 1,
+    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
+    "packages/inference/src/generation/speculative/bindings/deepspec-rows.ts": 1,
+    "packages/inference/src/generation/speculative/bindings/glm52-mtp-rows.ts": 1,
+    "packages/inference/src/generation/speculative/bindings/qwen-mtp-rows.ts": 1,
+    "packages/inference/src/generation/speculative/draft-kind.ts": 2,
+    "packages/inference/src/generation/speculative/dspark/loader.ts": 3,
+    "packages/inference/src/generation/speculative/sources/assistant-source.ts": 1,
+    "packages/inference/src/generation/speculative/sources/deepspec-source.ts": 1,
+    "packages/inference/src/generation/speculative/sources/dflash-source.ts": 1,
+    "packages/inference/src/generation/speculative/sources/glm52-mtp-source.ts": 3,
+    "packages/inference/src/generation/speculative/sources/qwen-mtp-source.ts": 1,
+    "packages/inference/src/state/glm52-cache.ts": 1,
+    "packages/inference/src/state/target-layout.ts": 1,
+    "packages/inference/src/transcription/index.ts": 1,
+    "packages/inference/src/transcription/whisper/decode.ts": 2,
+    "packages/inference/src/transcription/whisper/timing.ts": 1,
+    "packages/inference/src/transcription/whisper/transcribe.ts": 1,
+  },
+  "family-subpath": {
+    "packages/quantize/src/drafter.ts": 1,
+  },
+  "family-identity": {
+    "packages/inference/src/generation/speculative/bindings/assistant-rows.ts": 1,
+    "packages/inference/src/generation/speculative/draft-kind.ts": 1,
+    "packages/inference/src/layers/rope.ts": 1,
+    "packages/inference/src/models/profile.ts": 1,
+    "packages/inference/src/state/speculative/glm52-mtp-state.ts": 1,
+    "packages/inference/src/state/speculative/qwen-mtp-state.ts": 1,
+    "packages/quantize/src/drafter.ts": 1,
+    "packages/quantize/src/weight-transform.ts": 6,
+  },
+  "cache-class": {
+    "packages/inference/src/generation/autoregressive.ts": 2,
+    "packages/inference/src/scoring/full-sequence.ts": 2,
+  },
+  "model-env-flag": {},
+  "scheduler-core": {},
+};
+
+test("the seam ratchet: no new violation, no file above its allowlisted count", async () => {
+  const { failures, reminders } = checkRatchet(await seamFindings(workspace), seamRatchet);
+  if (reminders.length) console.warn(`Seam ratchet: lower the allowlist in architecture.test.ts:\n  ${reminders.join("\n  ")}`);
+  expect(failures).toEqual([]);
+});
+
+test("the ratchet fires for each seam rule, ignores the owners, and only ever tightens", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-seam-ratchet-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = { name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts", "./models": "./src/models/index.ts",
+    "./models/gemma4": "./src/models/gemma4/model.ts" }, dependencies: { "@mlx-bun/mlx": "workspace:*",
+    "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } };
+  const rules = async (file: string) => (await seamFindings(root)).filter(item => item.file === file).map(item => item.rule);
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify(inference));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/models/index.ts", "export const graphs = 1;");
+    write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model { modelType = 'gemma4'; }");
+    write("packages/inference/src/state/kv.ts", "export class KVCache { signature() { return 'kv'; } }");
+    write("packages/inference/src/state/rotating.ts", 'import { KVCache } from "./kv"; export class Rotating extends KVCache {}');
+    write("packages/quantize/package.json", JSON.stringify({ name: "@mlx-bun/quantize", type: "module", exports: { ".": "./src/index.ts" },
+      dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/quantize/src/index.ts", "export const quantize = 1;");
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    for (const name of ["inference", "mlx"]) symlinkSync(resolve(root, `packages/${name}`), resolve(root, `node_modules/@mlx-bun/${name}`));
+    // The owners are free: a graph's own binding, the family registry, the artifact readers, state, the row-layout port.
+    write("packages/inference/src/models/gemma4/binding.ts", 'import { Gemma4Model } from "./model"; import { KVCache } from "../../state/kv";\n' +
+      'export const own = (m: object, c: object) => [m instanceof Gemma4Model, c instanceof KVCache, process.env.MLX_BUN_GEMMA4_FAST, (m as { modelType: string }).modelType === "gemma4"];');
+    write("packages/inference/src/models/families.ts", 'export const is = (n: string) => n.includes("gemma");');
+    write("packages/inference/src/artifacts/config-dialects.ts", 'export const dialect = (t: string) => t === "qwen3";');
+    write("packages/inference/src/state/uses.ts", 'import { KVCache } from "./kv"; export const kv = (c: object) => c instanceof KVCache;');
+    write("packages/inference/src/execution/scheduler.ts",
+      'import type { Group } from "../contracts/portable/scheduling"; import { free } from "../runtime/resources"; import { admit } from "./admission"; export const s = [free, admit];');
+    write("packages/inference/src/execution/admission.ts", "export const admit = 1;");
+    write("packages/inference/src/contracts/portable/scheduling.ts", "export interface Group { id: string }");
+    write("packages/inference/src/runtime/resources.ts", "export const free = 1;");
+    expect(await seamFindings(root)).toEqual([]);
+
+    // model-class: `instanceof <X>Model` and concrete model imports, outside models/.
+    write("packages/inference/src/generation/plan.ts",
+      'import { Gemma4Model } from "../models/gemma4/model"; export const paged = (m: object) => m instanceof Gemma4Model;');
+    expect(await rules("packages/inference/src/generation/plan.ts")).toEqual(["model-class", "model-class"]);
+    rmSync(resolve(root, "packages/inference/src/generation/plan.ts"));
+
+    // family-subpath: another workspace package importing `@mlx-bun/inference/models/<family>`.
+    write("packages/quantize/src/drafter.ts", 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const kind = Gemma4Model;');
+    expect(await rules("packages/quantize/src/drafter.ts")).toEqual(["family-subpath"]);
+    write("packages/quantize/src/drafter.ts", 'import { graphs } from "@mlx-bun/inference/models"; export const kind = graphs;');
+    expect(await rules("packages/quantize/src/drafter.ts")).toEqual([]);
+    rmSync(resolve(root, "packages/quantize/src/drafter.ts"));
+
+    // family-identity: model type, architectures, family predicates, repo-id and name checks, literal comparisons.
+    const identity = {
+      type: 'export const a = (c: { modelType: string }) => c.modelType === "qwen3";',
+      architectures: 'export const a = (c: { architectures: string[] }) => c.architectures.includes("X");',
+      substring: 'export const a = (id: string) => id.toLowerCase().includes("gemma");',
+      regex: 'export const a = (id: string) => /qwen/i.test(id);',
+      path: 'export const a = (id: string) => id.startsWith("mlx-community/Llama");',
+      comparison: 'export const a = (kind: string) => kind !== "glm52";',
+      switch: 'export const a = (k: string) => { switch (k) { case "minicpm5": return 1; default: return 0; } };',
+    };
+    for (const [label, code] of Object.entries(identity)) {
+      write("packages/quantize/src/kind.ts", code);
+      expect(await rules("packages/quantize/src/kind.ts"), label).toEqual(["family-identity"]);
+      write("packages/inference/src/generation/kind.ts", code);
+      expect(await rules("packages/inference/src/generation/kind.ts"), label).toEqual(["family-identity"]);
+      rmSync(resolve(root, "packages/inference/src/generation/kind.ts"));
+    }
+    // Ordinary strings and comparisons are untouched.
+    write("packages/quantize/src/kind.ts", 'export const a = (id: string, c: { name: string }) => id.includes("llm") || c.name === "small";');
+    expect(await rules("packages/quantize/src/kind.ts")).toEqual([]);
+    rmSync(resolve(root, "packages/quantize/src/kind.ts"));
+
+    // cache-class: the classes are whatever `state/` declares, subclasses included; owners are state/ and models/.
+    for (const klass of ["KVCache", "Rotating"]) {
+      write("packages/inference/src/scoring/full.ts", `export const a = (c: object) => c instanceof ${klass};`);
+      expect(await rules("packages/inference/src/scoring/full.ts")).toEqual(["cache-class"]);
+      write("packages/quantize/src/full.ts", `export const a = (c: object) => c instanceof ${klass};`);
+      expect(await rules("packages/quantize/src/full.ts")).toEqual(["cache-class"]);
+    }
+    write("packages/inference/src/scoring/full.ts", "export const a = (c: object) => c instanceof Map;");
+    expect(await rules("packages/inference/src/scoring/full.ts")).toEqual([]);
+    rmSync(resolve(root, "packages/inference/src/scoring/full.ts")); rmSync(resolve(root, "packages/quantize/src/full.ts"));
+
+    // model-env-flag: any flag whose name holds a family name, string or property.
+    write("packages/quantize/src/flags.ts", 'export const a = [process.env.MLX_BUN_SPEC_QWEN_KV4, process.env["MLX_BUN_GLM52_PIN"], process.env.MLX_BUN_KV_SCHEME];');
+    expect(await rules("packages/quantize/src/flags.ts")).toEqual(["model-env-flag", "model-env-flag"]);
+    rmSync(resolve(root, "packages/quantize/src/flags.ts"));
+
+    // scheduler-core: contracts, runtime and core siblings only.
+    for (const bad of ["../state/layout", "../models/capabilities", "../generation/index", "./batch-group", "external-package"]) {
+      write("packages/inference/src/execution/coordinator.ts", `import { x } from "${bad}"; export const c = x;`);
+      const found = (await seamFindings(root)).filter(item => item.file === "packages/inference/src/execution/coordinator.ts");
+      expect(found.map(item => item.rule), bad).toEqual(["scheduler-core"]);
+      expect(found[0]!.text).toBe(`imports ${bad}`);
+    }
+    write("packages/inference/src/execution/coordinator.ts", 'import { admit } from "./admission"; export const c = admit;');
+    expect(await seamFindings(root)).toEqual([]);
+    // Files outside the core may import whatever the layer rules allow.
+    write("packages/inference/src/execution/batch-group.ts", 'import { KVCache } from "../state/kv"; export const b = KVCache;');
+    expect(await seamFindings(root)).toEqual([]);
+
+    // The ratchet: a new file and a rising count fail, a falling count reminds, an exact match is quiet.
+    write("packages/quantize/src/kind.ts", 'export const a = (id: string) => id.includes("gemma") || id.includes("qwen");');
+    const findings = await seamFindings(root);
+    const table: RatchetTable = { "family-identity": { "packages/quantize/src/kind.ts": 2 } };
+    expect(checkRatchet(findings, table)).toEqual({ failures: [], reminders: [] });
+    const fresh = checkRatchet(findings, {});
+    expect(fresh.failures).toHaveLength(1);
+    expect(fresh.failures[0]).toContain("family-identity packages/quantize/src/kind.ts: 2 violations, 0 allowed (a new file)");
+    const risen = checkRatchet(findings, { "family-identity": { "packages/quantize/src/kind.ts": 1 } });
+    expect(risen.failures[0]).toContain("2 violations, 1 allowed");
+    const dropped = checkRatchet(findings, { "family-identity": { "packages/quantize/src/kind.ts": 3 } });
+    expect(dropped).toEqual({ failures: [], reminders: ["family-identity packages/quantize/src/kind.ts: 2 now, lower the allowlist from 3"] });
+    const gone = checkRatchet([], { "cache-class": { "packages/inference/src/scoring/full.ts": 1 } });
+    expect(gone.reminders).toEqual(["cache-class packages/inference/src/scoring/full.ts: 0 now, delete the allowlist entry (was 1)"]);
+    expect(gone.failures).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("all library and app workspaces follow their declared DAG and inference layer rules, including type-only dependencies", async () => {
   expect(cycles(new Map(Object.entries(allowed)))).toEqual([]);
