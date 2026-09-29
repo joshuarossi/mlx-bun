@@ -1498,13 +1498,14 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
 
   type Reference = { encoded?: boolean; sampling?: Partial<GenerateOptions> };
-  /** Main's serial order with jump-forward (generate.ts at 02d723a) from
-   * `cached` restored tokens. On a plain-read graph main's softcap attention
-   * throws when a forward reads a converted affine layer, so the reference stops
-   * at the first maintenance that leaves one: that step's token reaches the
-   * matcher but is never published. An encoded-read graph reads converted
-   * layers and continues. The caller owns `model` and `caches`. */
-  const serialSpansFrom = async (model: SpanGraph, caches: Cache[], prompt: number[], cached: number, maxTokens: number,
+  /** The direct B1 jump-forward step order from `cached` restored tokens: one
+   * maintenance, then one unsplit forward of the pending token and its forced
+   * span. Softcap attention cannot read a converted affine layer, so on a
+   * plain-read graph the reference stops at the first maintenance that leaves
+   * one: that step's token reaches the matcher but is never published. An
+   * encoded-read graph reads converted layers and continues. The caller owns
+   * `model` and `caches`. */
+  const directSpansFrom = async (model: SpanGraph, caches: Cache[], prompt: number[], cached: number, maxTokens: number,
     scheme: ReturnType<typeof resolveKvScheme>, spans: number[][], { encoded = false, sampling = {} }: Reference = {}) => {
     const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
     const { makeStepSampler } = await import("../../../src/sampling");
@@ -1520,7 +1521,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       using last = hidden.slice([0, length - 1, 0], [1, length, width]);
       const logits = model.logitsFromHidden(last); seen.push(record(logits)); return logits;
     };
-    // Sampled tokens stay on device until main commits them to history.
+    // Sampled tokens stay on device until the step commits them to history.
     const draw = (logits: MlxArray, step: number) => sampler.sample(logits, step).token;
     let pending: MlxArray | null = null;
     try {
@@ -1563,10 +1564,10 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       return { tokens, seen, accepted: grammar.accepted, refused, kinds: caches.map(cache => cache.constructor.name) };
     } finally { pending?.dispose(); sampler.dispose(); }
   };
-  const serialSpans = async (prompt: number[], maxTokens: number, scheme: ReturnType<typeof resolveKvScheme>, spans: number[][],
+  const directSpans = async (prompt: number[], maxTokens: number, scheme: ReturnType<typeof resolveKvScheme>, spans: number[][],
     reference: Reference = {}) => {
     const f = mixedFixture(types, !reference.encoded, HEAD_DIM), model = f.make(), caches = model.makeCache();
-    try { return await serialSpansFrom(model, caches, prompt, 0, maxTokens, scheme, spans, reference); }
+    try { return await directSpansFrom(model, caches, prompt, 0, maxTokens, scheme, spans, reference); }
     finally { dispose(caches); f.dispose(); }
   };
 
@@ -1966,7 +1967,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     describe("grammar spans", () => {
 
       for (const start of [0, A.length + 2]) test(`solo spans from start ${start} equal main's serial jump in tokens, matcher history and every projection`, async () => {
-        const reference = await serialSpans(A, 9, turbo(start), spansA);
+        const reference = await directSpans(A, 9, turbo(start), spansA);
         // Nonempty spans were forced and sampling continued after them; full layers converted.
         expect(reference.tokens).toHaveLength(9);
         expect(reference.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
@@ -2093,7 +2094,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
 
       test("two interleaved span rows each equal their solo reference; a stopped, cancelled or failing row leaves its peer and the group usable", async () => {
         // A runs longer than B, so both are active together.
-        const referenceA = await serialSpans(A, 12, turbo(0), spansA), referenceB = await serialSpans(B, 7, turbo(0), spansB);
+        const referenceA = await directSpans(A, 12, turbo(0), spansA), referenceB = await directSpans(B, 7, turbo(0), spansB);
         const env = await setup(0, { turbo: true });
         try {
           let overlap = 0;
@@ -2117,11 +2118,10 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     });
   });
 
-  // Main's serial jump served these requests with no KV-format gate: a span or
-  // step whose maintenance leaves every layer plain appends unsplit, even across
-  // the transition; its softcap read then threw in the first forward over a
-  // converted layer. The span method refuses that row before the forward, with
-  // the layers the gateway binds from its cache probe. Preservation is checked
+  // A span or step whose maintenance leaves every layer plain appends unsplit,
+  // even across the transition; softcap attention cannot read a converted
+  // layer, so the span method refuses that row before the forward, with the
+  // layers the gateway binds from its cache probe. Preservation is checked
   // at matched options and chunking (chunk 64, tail split).
   describe("affine grammar spans", () => {
     const plainKinds = types.map(type => type === F ? "KVCache" : "RotatingKVCache");
@@ -2134,8 +2134,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       return forwards;
     };
 
-    test("below the transition, spans equal main's serial jump in tokens, matcher history and every projection", async () => {
-      const reference = await serialSpans(A, 9, affine(64), spansA);
+    test("below the transition, spans equal the direct B1 jump in tokens, matcher history and every projection", async () => {
+      const reference = await directSpans(A, 9, affine(64), spansA);
       expect(reference.refused).toBe(false);
       expect(reference.tokens).toHaveLength(9);
       expect(reference.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
@@ -2149,9 +2149,9 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       } finally { await env.close(); }
     });
 
-    test("a final span crossing the transition completes and stores its plain prefix, as main's did; reusing that prefix is refused before its suffix forward", async () => {
+    test("a final span crossing the transition completes and stores its plain prefix; reusing that prefix is refused before its suffix forward", async () => {
       const { PromptCache, cloneKvCaches } = await import("../../../src/state");
-      const reference = await serialSpans(A, 3, affine(7), [[11, 12]]);
+      const reference = await directSpans(A, 3, affine(7), [[11, 12]]);
       expect(reference.refused).toBe(false);
       expect(reference.tokens).toHaveLength(3);
       expect(reference.tokens.slice(1)).toEqual([11, 12]);
@@ -2188,8 +2188,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
 
     test("crossing and continuing, the row is refused before its next forward with that token unpublished; an interleaved peer and the group continue", async () => {
       // A crosses the transition (11) in a plain step after its span; B finishes below it.
-      const referenceA = await serialSpans(A, 10, affine(11), [[11, 12]]);
-      const referenceB = await serialSpans(B, 7, affine(11), spansB);
+      const referenceA = await directSpans(A, 10, affine(11), [[11, 12]]);
+      const referenceB = await directSpans(B, 7, affine(11), spansB);
       expect(referenceA.refused).toBe(true);
       expect(referenceA.tokens.slice(1, 3)).toEqual([11, 12]);
       expect(referenceA.accepted).toHaveLength(referenceA.tokens.length + 1);
@@ -2216,7 +2216,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
 
     test("a prefill reaching the transition is refused before its tail forward with no output, also for immediate affine KV", async () => {
       for (const start of [3, 0]) {
-        const reference = await serialSpans(A, 4, affine(start), spansA);
+        const reference = await directSpans(A, 4, affine(start), spansA);
         expect(reference, `start ${start}`).toMatchObject({ refused: true, tokens: [], accepted: [], seen: [] });
         const env = await jumping(start);
         const forwards = offsets(env);
@@ -2234,7 +2234,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     test("a later layer converting alone refuses the row before any earlier plain layer appends", async () => {
       // Per-layer config: only layer 2 converts at the transition; 0, 1 and 3 read plain.
       const partial = resolveKvScheme({ override: "config", config: [{ layerIdx: 2, bits: 4, groupSize: HEAD_DIM }], quantizedKvStart: 11 });
-      const reference = await serialSpans(A, 10, partial, [[11, 12]]);
+      const reference = await directSpans(A, 10, partial, [[11, 12]]);
       expect(reference.refused).toBe(true);
       expect(reference.kinds).toEqual(["KVCache", "RotatingKVCache", "QuantizedKVCache", "RotatingKVCache"]);
       const env = await jumping(null, { kvScheme: partial });
@@ -2251,7 +2251,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     test("a directly bound span method refuses by its own copy of the graph's layers on a group composed without dense-read metadata", async () => {
       const { MlxBatchExecutionGroup, createRuntimeConfig } = await import("../../../src/execution");
       const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
-      const reference = await serialSpans(A, 10, affine(11), [[11, 12]]);
+      const reference = await directSpans(A, 10, affine(11), [[11, 12]]);
       const env = await setup(null), kvScheme = affine(11);
       // No dense-read layers reach this group; only the method's binding has them.
       const group = new MlxBatchExecutionGroup(env.model, { maxBatch: 2, prefillChunkSize: 64,
@@ -2265,9 +2265,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     });
   });
 
-  // Main served delayed affine KV on encoded-read graphs serially, so its direct
-  // jump committed spans there, before and after conversion: these graphs read
-  // converted layers. The gateway binds the span method with no dense-read
+  // Encoded-read graphs commit spans over delayed affine KV before and after
+  // conversion: they read converted layers. The gateway binds the span method with no dense-read
   // requirement for them. Preservation is checked at matched options and
   // chunking; a repetition penalty makes sampling read the committed history.
   describe("encoded-read graph spans over delayed affine KV", () => {
@@ -2287,8 +2286,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       return forwards;
     };
 
-    test("spans before and after conversion equal main's serial jump: unsplit inputs, matcher and sampler history, every projection", async () => {
-      const reference = await serialSpans(A, 9, affine(7), spansA, { encoded: true, sampling: penalty });
+    test("spans before and after conversion equal the direct B1 jump: unsplit inputs, matcher and sampler history, every projection", async () => {
+      const reference = await directSpans(A, 9, affine(7), spansA, { encoded: true, sampling: penalty });
       expect(reference.refused).toBe(false);
       expect(reference.tokens).toHaveLength(9);
       expect(reference.tokens.slice(1, 3)).toEqual([11, 12]);
@@ -2327,7 +2326,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         reference = prefix.take(prompt, namespaces[0]);
         expect(reference!.tokens).toEqual(committed);
         expect(reference!.caches.map(cache => cache.constructor.name)).toEqual(plainKinds);
-        const expected = await serialSpansFrom(env.model, reference!.caches, prompt, committed.length, 6, affine(7), [[21, 22]],
+        const expected = await directSpansFrom(env.model, reference!.caches, prompt, committed.length, 6, affine(7), [[21, 22]],
           { encoded: true, sampling: penalty });
         expect(expected.refused).toBe(false);
         expect(expected.tokens.slice(1, 3)).toEqual([21, 22]);
@@ -2348,8 +2347,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
 
     test("interleaved rows across the conversion each equal their solo reference; a row stopped, cancelled or failing beside an active peer leaves it and the group usable", async () => {
       // B runs longer than A and is submitted first, so it is active whenever A publishes.
-      const referenceA = await serialSpans(A, 12, affine(7), spansA, { encoded: true, sampling: penalty });
-      const referenceB = await serialSpans(B, 12, affine(7), spansB, { encoded: true, sampling: penalty });
+      const referenceA = await directSpans(A, 12, affine(7), spansA, { encoded: true, sampling: penalty });
+      const referenceB = await directSpans(B, 12, affine(7), spansB, { encoded: true, sampling: penalty });
       expect(referenceA.kinds).toEqual(convertedKinds);
       expect(referenceB.kinds).toEqual(convertedKinds);
       const env = await encodedEnv(7);
@@ -2383,7 +2382,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       // Per-layer config: only layer 2 converts at the start; the others keep plain storage.
       const partial = resolveKvScheme({ override: "config", config: [{ layerIdx: 2, bits: 4, groupSize: HEAD_DIM }], quantizedKvStart: 7 });
       const mixedKinds = ["KVCache", "RotatingKVCache", "QuantizedKVCache", "RotatingKVCache"];
-      const reference = await serialSpans(A, 9, partial, spansA, { encoded: true, sampling: penalty });
+      const reference = await directSpans(A, 9, partial, spansA, { encoded: true, sampling: penalty });
       expect(reference.refused).toBe(false);
       expect(reference.kinds).toEqual(mixedKinds);
       const env = await encodedEnv(null, { kvScheme: partial });
@@ -2449,13 +2448,13 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       } };
     };
 
-    test("a MiniCPM5 graph: spans before and after conversion equal main's serial jump in tokens, histories and every projection", async () => {
+    test("a MiniCPM5 graph: spans before and after conversion equal the direct B1 jump in tokens, histories and every projection", async () => {
       const { bindMlxGateway, createRuntimeConfig, withRuntimeConfig } = await import("../../../src/execution");
       const plainMini = ["KVCache", "KVCache"], convertedMini = ["QuantizedKVCache", "QuantizedKVCache"];
       const referenceGraph = await miniCpm(), graph = await miniCpm();
       const caches = referenceGraph.model.makeCache();
-      let reference: Awaited<ReturnType<typeof serialSpansFrom>>;
-      try { reference = await serialSpansFrom(referenceGraph.model, caches, A, 0, 9, affine(7), spansA, { encoded: true, sampling: penalty }); }
+      let reference: Awaited<ReturnType<typeof directSpansFrom>>;
+      try { reference = await directSpansFrom(referenceGraph.model, caches, A, 0, 9, affine(7), spansA, { encoded: true, sampling: penalty }); }
       finally { try { dispose(caches); } finally { referenceGraph.dispose(); } }
       expect(reference.refused).toBe(false);
       expect(reference.tokens).toHaveLength(9);
@@ -2494,10 +2493,10 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         try { await group.close(); expect(group.activeRows + group.pendingRows).toBe(0); } finally { graph.dispose(); }
       } };
     };
-    /** Main's serial order over a separate, identical MiniCPM5 graph. */
+    /** The direct B1 order over a separate, identical MiniCPM5 graph. */
     const miniReference = async (prompt: number[], maxTokens: number, scheme: ReturnType<typeof resolveKvScheme>, spans: number[][]) => {
       const graph = await miniCpm(), caches = graph.model.makeCache();
-      try { return await serialSpansFrom(graph.model, caches, prompt, 0, maxTokens, scheme, spans, { encoded: true, sampling: penalty }); }
+      try { return await directSpansFrom(graph.model, caches, prompt, 0, maxTokens, scheme, spans, { encoded: true, sampling: penalty }); }
       finally { try { dispose(caches); } finally { graph.dispose(); } }
     };
 
@@ -2544,7 +2543,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         reference = prefix.take(prompt, namespaces[0]);
         expect(reference!.tokens).toEqual(committed);
         expect(reference!.caches.map(cache => cache.constructor.name)).toEqual(["KVCache", "KVCache"]);
-        const expected = await serialSpansFrom(env.model, reference!.caches, prompt, committed.length, 6, affine(7), [[21, 22]],
+        const expected = await directSpansFrom(env.model, reference!.caches, prompt, committed.length, 6, affine(7), [[21, 22]],
           { encoded: true, sampling: penalty });
         expect(expected.refused).toBe(false);
         expect(expected.tokens.slice(1, 3)).toEqual([21, 22]);
