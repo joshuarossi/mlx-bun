@@ -178,7 +178,7 @@ const commands = {
     lr: { type: "string", description: "Learning rate  [default: orpo 1e-5 · dpo 5e-5 · sft 2e-4]" },
     rank: { type: "string", description: "LoRA rank  [default: orpo 16 · else 8]" },
     scale: { type: "string", description: "LoRA scale  [default: orpo 2.0 · else 1.0]" },
-    seq: { type: "string", description: "Max sequence length  [default: gemma 8192 · else 4096]" },
+    seq: { type: "string", description: "Max sequence length  [default: the model's own; 4096 when it declares none]" },
     batch: { type: "string", description: "Batch size  [default: 1]" },
     "grad-accum": { type: "string", description: "Gradient accumulation steps (effective batch = batch × grad-accum at batch-size-1 memory)  [default: 1]" },
     "grad-clip": { type: "string", description: "Gradient-norm clip (0 = off)  [default: 1.0]" },
