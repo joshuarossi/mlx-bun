@@ -35,17 +35,41 @@ The process-wide settings an app applies (offload routing, the allocator limit,
 the runtime switches) are restored after its engine releases the model, on close
 and on startup failure, so a later app in the same process starts from what it
 found; offload restore only redirects routing and never unmaps borrowed weights.
-`serve` and `generate` accept main's numerical aliases: `--l1` selects KV off
-and unfused SDPA; `--l2` selects model-config KV and fused SDPA. If both aliases
-are supplied, `--l2` wins. An explicit `--kv-quant` overrides the alias and
-sets the kernel default (fused for `config`, unfused otherwise);
-`--fused-sdpa on|off` overrides that default. The app resolves this policy before
-model loading, including isolated model workers, and restores it on shutdown or
-startup failure. Compilation remains owned by model layers. CLI tests cover
-policy precedence and startup propagation with native loading blocked; this
-change does not add numerical or performance qualification.
+`serve` and `generate` accept numerical presets: `--l1` selects KV off
+and unfused SDPA; `--l2` selects model-config KV and fused SDPA, and wins if both
+are given. An explicit `--kv-quant` overrides the preset and sets the kernel
+default (fused for `config`, unfused otherwise); `--fused-sdpa on|off` overrides
+that default. The policy is resolved before model loading, including in isolated
+model workers, and restored on shutdown or startup failure.
 
-`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the model loads, before any request, under the directory's basename as its id; it becomes the default for requests without an `adapter` field, an explicit `adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad directory fails startup with `adapter mount failed: …` after releasing the model. The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces a three-step adapter with the fine-tune producer and serves with it. Main's speculative flags are restored with its validation: `--draft-model` resolves like the main model (a query never downloads) and its kind is auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min` (ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2. The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with ngram drafting and checks the speculation telemetry and exactness against a plain run. `--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size` (only alongside paging) sets the paged KV request default; Gemma4-family requests use the paged path and other families answer the typed capability error, never a hidden serial lane. Startup rejects paging combined with a loaded draft, per-layer KV quantization, or TurboQuant; bf16 and uniform KV4/KV8 remain supported. As main's server did, startup also rejects `--kv-quant turbo` when the model's full-attention head dimension is not one the TurboQuant codec encodes (`TURBOQUANT_HEAD_DIMS`), before any request, instead of failing each request in prefill. The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family outcomes.
+`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the
+model loads, before any request, under the directory's basename as its id; it
+becomes the default for requests without an `adapter` field, an explicit
+`adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad
+directory fails startup with `adapter mount failed: …` after releasing the
+model.
+The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces
+a three-step adapter with the fine-tune producer and serves with it.
+Main's speculative flags are restored with its validation: `--draft-model`
+resolves like the main model (a query never downloads) and its kind is
+auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
+mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min`
+(ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2.
+The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with
+ngram drafting and checks the speculation telemetry and exactness against a
+plain run.
+`--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size`
+(only alongside paging) sets the paged KV request default; Gemma4-family
+requests use the paged path and other families answer the typed capability
+error, never a hidden serial lane.
+Startup rejects paging combined with a loaded draft, per-layer KV quantization,
+or TurboQuant; bf16 and uniform KV4/KV8 remain supported.
+As main's server did, startup also rejects `--kv-quant turbo` when the model's
+full-attention head dimension is not one the TurboQuant codec encodes
+(`TURBOQUANT_HEAD_DIMS`), before any request, instead of failing each request in
+prefill.
+The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family
+outcomes.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
