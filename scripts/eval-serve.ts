@@ -47,7 +47,7 @@ MLX_BUN_EVAL_THINK). Main's --n caps were ignored by its default frozen sets and
 Datasets are read from --data, never downloaded, and must match the sha256 pins in
 scripts/eval/plan.ts. gsm8k.jsonl comes from main's exporter, run natively in the oracle venv:
     git -C <main> show 02d723a:scripts/oracle/export-datasets.py > /tmp/export-datasets.py
-    <oracle-venv>/bin/python /tmp/export-datasets.py      # writes ~/.cache/mlx-bun/eval-data
+    <oracle-venv>/bin/python /tmp/export-datasets.py      # main's exporter writes ~/.cache/mlx-bun/eval-data
 The *_optiq_frozen.jsonl files (main's default for every task) are mlx-optiq's captured draws that
 no tracked script produces: copy the pinned files from a machine that holds them or from their
 published dataset revision. plan refuses a missing file or one whose content differs.
@@ -66,7 +66,7 @@ comparable; acceptance is the reviewer's.
 
 Gate (main versus candidate, same plan, quiet machine):
     P=/abs/evals/<model>
-    bun scripts/eval-serve.ts plan --out $P/plan.json --model <snapshot> --data ~/.cache/mlx-bun/eval-data \\
+    bun scripts/eval-serve.ts plan --out $P/plan.json --model <snapshot> --data /abs/eval-data \\
       --native <libmlxc.dylib> --python-image python@sha256:<digest>
     bun scripts/eval-serve.ts run --plan $P/plan.json --label main --root <main> \\
       --command '["bun","<main>/src/cli.ts","serve"]' --out $P/main

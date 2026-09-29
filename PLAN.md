@@ -44,7 +44,7 @@ these gates. The full applicable numerical parity suites remain required too.
   splits, prompts/templates, scoring, sampling settings, seeds and limits.
   Report per-benchmark scores and failed or skipped evaluations; investigate
   and resolve regressions before accepting the gate. A smoke run or subset
-  does not establish full-suite acceptance.
+  does not establish full-suite acceptance. Runner: `bun scripts/eval-serve.ts --help`.
 - [ ] **Head-to-head performance.** Run the usual full H2H suite on the same
   quiet machine with the same artifacts, inputs, configuration and execution
   shapes, including single-request and batched workloads. Exit: decode,
