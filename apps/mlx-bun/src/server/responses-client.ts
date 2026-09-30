@@ -1,4 +1,4 @@
-// The parent's Responses conversation history under --isolate (main's
+// The parent's Responses conversation history in the isolated server (main's
 // responses-client.ts): `previous_response_id` resolves against the parent's
 // store, the resolved conversation goes to the worker without one, and the
 // completed record is remembered here, so history survives worker restarts.

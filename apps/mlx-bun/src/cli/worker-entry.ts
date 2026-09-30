@@ -3,7 +3,7 @@
 // first stdin line, the ready line leaves on stdout, and the end of stdin
 // means the parent is gone. No flag selects it. Two launch forms, both
 // carrying the app's package version (a record with another one exits 2):
-// - model (`--isolate`): only the model-scoped host (serve-host.ts) over the
+// - model (the isolated server's worker, one per resident model): only the model-scoped host (serve-host.ts) over the
 //   parent's Unix socket, with the persistent services stubbed because the
 //   parent owns them, plus the memory task model the parent's synthesis calls
 //   through the admin surface (only the default worker is ever asked);
@@ -130,15 +130,18 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   // lease, and shutdown joins those calls, then closes the task model, both
   // ahead of the host's engine.
   const memory = (await import("./memory-engine")).createInProcessMemoryClient();
+  // The engine's events stay in this process's bus; the parent subscribes to them over the admin surface.
+  const state = createWorkerState(launch.options, link);
   const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid,
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
-    }, memoryTaskModel: memory });
+    }, memoryTaskModel: memory, events: state.events });
   let host: Awaited<ReturnType<typeof startModelHost>>;
   try {
-    host = await startModelHost(createWorkerState(launch.options, link), launch.model, launch.options,
-      { unix: launch.socketPath, routes: model => admin.wrap(model),
+    // One model per worker: the parent holds the residency of the workers, so this host never loads another.
+    host = await startModelHost(state, launch.model, launch.options,
+      { unix: launch.socketPath, oneModel: true, routes: model => admin.wrap(model),
         beforeDrain: async () => { try { await admin.close(); } finally { await memory.close(); } } });
   } catch (error) {
     // Nothing was served, so the task model never loaded; closing only refuses later calls.
@@ -155,7 +158,8 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
       if (closing) return;
       closing = true;
       ports.signals.removeListener("SIGTERM", stop); ports.signals.removeListener("SIGINT", stop);
-      host.close().then(() => resolve(0), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
+      // A close whose saved state is not durable exits 3, so the parent that asked for it can say the flush was incomplete.
+      host.close().then(result => resolve(result.durable ? 0 : 3), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
     };
     ports.signals.on("SIGTERM", stop); ports.signals.on("SIGINT", stop);
     void parentLeft().finally(stop);

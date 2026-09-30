@@ -114,8 +114,10 @@ app's order; `startModelServer` and
 
 ### Model host: residency by memory fit
 
-`engine/model-residency.ts` implements the `modelHost` contract (`@mlx-bun/app-core`)
-for models that generate. Residency is by memory, not count: a model that fits
+`residency/model-residency.ts` implements the `modelHost` contract (`@mlx-bun/app-core`)
+for models that generate, over units it does not know the kind of: a loaded model
+(`--in-process`) or a worker process that holds one (the default,
+[Runtime isolation](#runtime-isolation-the-default)). Residency is by memory, not count: a model that fits
 the budget loads beside the others; otherwise the least recently used unpinned,
 unleased model is drained (admission stops, work in flight ends), its saved
 prompt/KV state is flushed durably under `MLX_BUN_HOME/kv`, and its weights are
@@ -126,7 +128,7 @@ prior conversation as `cached_tokens`). A request for a model that cannot fit
 while every other model is busy waits, and never evicts one mid-request. A model
 bigger than the whole budget is still served alone. The budget is `--model-budget`
 (decimal GB; default 70% of the GPU's recommended working set); a model's need is
-its weights plus the KV and prefill working set of an 8k context (`engine/resident-estimate.ts`,
+its weights plus the KV and prefill working set of an 8k context (`residency/resident-estimate.ts`,
 the `/fit` model) and, once loaded, what it
 reports it holds (weights, projected KV, RAM prefix cache), floored by the process's measured
 MLX active memory. A runtime that plans its own memory is served alone. The Whisper companion
@@ -154,9 +156,10 @@ whenever it is (re)loaded; the other models load plain. Adapters mounted at runt
 lost when their model is evicted. `--expert-offload` routes the process's loads through one
 file, so that model is all the process serves. A host built with `createServer` around a
 caller's context serves only that context (never evicted); `POST /api/hub/serve` then still
-answers that a restart is needed. The [residency tests](tests/engine/model-residency.test.ts),
+answers that a restart is needed. The [residency tests](tests/residency/model-residency.test.ts),
 [router tests](tests/server/model-routes.test.ts) and the opt-in
-[native test](tests/engine/model-host-native.test.ts) cover it.
+[native test](tests/engine/model-host-native.test.ts) (the default isolated mode and `--in-process`)
+cover it.
 
 Worker mode serves over a Unix socket a parent supplies, in another process.
 `jobs/worker-process.ts` is the parent-side owner: it spawns the executable
@@ -167,17 +170,19 @@ stdout, and stops the worker with SIGTERM, then SIGKILL after a grace; the end
 of stdin means the parent is gone. `cli/worker-entry.ts` takes two private
 launch forms, and no flag selects either:
 
-- The model form `{ version, socketPath, model, options }`, sent by
-  `--isolate`, runs `startModelHost` alone with the persistent services stubbed
-  because the parent owns them.
+- The model form `{ version, socketPath, model, options }`, sent by the default
+  isolated `serve` (one worker per resident model), runs `startModelHost` alone,
+  for that one model, with the persistent services stubbed because the parent
+  owns them.
 - The app form `{ kind: "app", version, socketPath, argv }` runs serve
   arguments (`["--model", model, ...]`) through the CLI's `parseCommand` and
   `runServe`, so the whole app listens on the socket instead of TCP.
   `openIsolatedHost` ([`mlx-bun/engine`](#engine-entry-mlx-bunengine)) sends
   it. `validateAppLaunchArgv` (`serve.ts`) is the CLI's strict
   parse with three differences: `--host`, `--port`, and `--no-open` are
-  accepted and never steer the socket bind; `--isolate` and `--model-pool` are
-  refused, because a nested isolated app binds TCP instead of the socket; and a
+  accepted and never steer the socket bind; the app always loads its models in
+  its own process (`--in-process` is implied and `--isolate` is ignored), because a nested
+  isolated app would bind TCP instead of the socket; and a
   missing or empty model is refused, because automatic selection may download
   the starter model. SIGTERM, SIGINT, or the end of stdin during startup
   aborts through runServe's startup signal and announces nothing. After ready,
@@ -188,9 +193,10 @@ launch forms, and no flag selects either:
   serve the model form).
 
 `server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`,
-`POST /admin/drain`, and `POST /admin/memory/complete` ahead of the routes on
-the socket only: a TCP listener answers 404 for all three, and `/engine`
-outside `--isolate` is 404 too. In the app form its `/health` replaces
+`POST /admin/drain`, `POST /admin/memory/complete` and `GET /admin/events` (the
+worker's own event stream, NDJSON) ahead of the routes on
+the socket only: a TCP listener answers 404 for all of them, and `/engine`
+under `--in-process` is 404 too. In the app form its `/health` replaces
 discovery's, and the transcription-only app, which has no execution lease, has
 no `/admin/lease` route (404). The memory route (see
 [Memory synthesis](#memory-synthesis)) is the model form's: the app form's
@@ -220,181 +226,142 @@ shared without locks, and a worker's job children are not stopped when the
 worker crashes. These behaviors predate the app form and match main. Tests
 compose the app form with a temporary HOME and every storage override.
 
-## Runtime isolation (`--isolate`)
+## Runtime isolation (the default)
 
-`--isolate` is an optional capability, off by default: the model runs in a
-crash-isolated worker process while this process keeps the app up. It mirrors
-main's documented `--isolate` semantics with the deviations listed at the end.
+`serve` runs one worker process per resident model and keeps the app up in this
+process, which loads no model; `--in-process` opts out and loads the models in the
+serving process (the composition every earlier release had). `--isolate` is
+accepted, ignored, and warns: it is the default now. Crash isolation is the point: a
+model that crashes the native runtime takes down its own worker, not the app or the
+other models. It costs a process per model and a loopback hop per request.
 
 **Process layout.** `serve.ts` resolves the model as usual, then `startModelServer`
 composes `cli/serve-isolated.ts` instead of the direct host: the same persistent
 `createAppState` (web app, download owner, Responses history, memory, jobs,
-sessions, credentials, publishing), a parent-owned proxy, and a pool of workers
-(`jobs/worker-pool.ts`: one per exact `/v1/models` id up to `--model-pool`, one
-by default) each supervised by `jobs/worker-supervisor.ts` over
-`jobs/worker-process.ts`. A launch
-record pins the resolved model by path and carries the parsed serve options
-(draft and Whisper queries already resolved to directories, `isolate` cleared),
-so the worker never re-resolves a query; every exported `MLX_BUN_*` variable
-reaches it unchanged, and its output is forwarded to this process's log with a
-`[worker]` prefix. Sockets live in a private `mlx-worker-*` temp directory
-(0700, sockets 0600), one per worker, that this process removes on close. This process loads no
-engine or native module: `serve.ts` imports the model half only inside the
-direct composition, and the [composition test](tests/serve-isolated.test.ts)
+sessions, credentials, publishing), the model router and a proxy, and one worker per
+resident model (`cli/worker-unit.ts`), each supervised by `jobs/worker-supervisor.ts`
+over `jobs/worker-process.ts` on its own Unix socket. A worker's launch record pins
+its model by path and carries the parsed serve options (draft and Whisper queries
+already resolved, `isolate` cleared, `inProcess` set; `--draft-*`, `--adapter` and
+`--mtp` go to the startup model's worker only), so a worker never re-resolves a query;
+every exported `MLX_BUN_*` variable reaches it unchanged (that includes
+`MLX_BUN_HOME`, so every worker shares `kv/`), and its output is forwarded to this
+process's log with a `[worker]` prefix. Sockets live in a private `mlx-worker-*`
+temp directory (0700, socket 0600) that this process removes on close. This process
+loads no engine or native module: `serve.ts` imports the model half only inside the
+in-process composition, and the [composition test](tests/serve-isolated.test.ts)
 gates both the static closure and the runtime with tripwire mocks.
 
-**Readiness.** The listener binds after the worker's ready line (up to 15
-minutes for large models, as main), so startup succeeds or fails the way the
-direct composition does: a worker that dies before its first ready line rejects
-startup with its exit and is never retried; the browser opens once the model
-serves. The Pi backend learns the model's capabilities, generation defaults, and
-enforced context window from the worker's `/v1/models` and `/stats` once, after
-that first ready line.
+**Residency.** This process runs the same residency manager as `--in-process`
+([Model host](#model-host-residency-by-memory-fit)) over workers. A model that
+fits `--model-budget` gets a worker beside the others; otherwise the least recently
+used unpinned, unleased model is drained (`POST /admin/drain`, then SIGTERM), its
+worker flushes its saved state and exits, and only then does the newcomer's worker
+spawn, so resident bytes never exceed the budget. A worker gets the CLI's shutdown
+budget (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s, for the drain and again for
+the stop) and is never killed before its flush is durable; it exits 0 when the flush
+was durable and 3 when it was not, which the `model.unload` event reports as
+`flushed`. Naming an evicted model again spawns a worker that resumes from
+`MLX_BUN_HOME/kv` (`cached_tokens` on the next turn). The default budget is derived
+here from the machine's RAM (70% of the memory the GPU can wire, as `/fit` does)
+because this process cannot ask Metal; a model's need is the `/fit` estimate until
+its worker reports its weights. Whisper is a worker of its own (the
+transcription-only server, `--whisper-resident` pins it), started on the first audio
+request and drained like a chat model when memory is short.
+
+**Readiness.** The listener binds after the startup model's worker reports ready (up
+to 15 minutes for large models, as main), so startup succeeds or fails the way the
+in-process composition does: a worker that dies before its first ready line rejects
+startup with its exit and is never retried; the browser opens once the model serves.
+Other workers spawn when a request or the hub names their model, and that request
+waits for the ready line. The Pi backend learns the current model's capabilities,
+generation defaults, and enforced context window from its worker's `/v1/models` and
+`/stats`, again after each switch, and again for a respawned worker.
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
 downloads, sessions, memory (the vault and the synthesis pipeline; its task
-model is the default worker's), tool-approval settings, and hub GC (which still
-protects every resident or loading snapshot, and the task model snapshot
-selected for a worker) live here and survive worker restarts. The chat module runs in
-this process and reaches the model through the served model host over this listener's
-proxy, so web chat works under isolation (main answered 501 on `/ws/chat`).
+model is the current worker's), tool-approval settings, and hub GC (which
+protects the snapshot of every resident worker's model, and the task model snapshot
+selected for a worker, kept for that worker's lifetime) live here and survive worker
+restarts. The chat module runs in this process and reaches the model through the served model host over this listener's
+proxy, so web chat works under isolation (main answered 501 on `/ws/chat`); its
+`local` model is the current one. Managed jobs pause every resident worker through
+each worker's execution lease.
 
-**Proxying.** `server/proxy-routes.ts` is one route group mounted after the
-persistent groups: every remaining path (chat and text completions, Messages,
-embeddings, audio, `/v1/models`, `/library`, `/fit`, cache admin, adapters,
-adapter artifacts, unknown paths) forwards over the socket with hop-by-hop
-headers stripped, request and response bodies streaming through unchanged, and a
-client abort aborting the proxied request so the worker sees the disconnect (a
-request whose client left answers `499`). `POST /v1/responses` goes through
-`server/responses-client.ts`: `previous_response_id` resolves against this
-process's store, the worker receives the resolved conversation without one (and
-the `x-mlx-bun-response-owner: parent` header), and the completed record is
-remembered here, so conversations survive a worker restart. The parent answers
-`GET /engine` (`{ isolated, state, pid, restarts, socket, model, last_exit,
-response_store, pool }`; `state` is `starting`, `ready`, `restarting`,
-`exhausted`, `closed`, or `evicted`; the worker fields describe the default
-worker), `GET /health` (`{ status: "ok", isolated, engine: { state, pid,
-restarts, socket, model, last_exit, in_flight, leases }, pool }` with `in_flight`,
-`leases`, and a `draining` state from the worker while it serves), `GET /stats` (the worker's
-body with this process's `response_store` and an `engine` report on top; while
-the worker is down, 200 with only the parent's part and an `unavailable`
-message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
-`/admin/drain` stay unix-socket-only and answer 404 on TCP.
-`GET /v1/memory/synthesize` is served by this process's memory owner; each
-stage call or batch runs on the default model worker's memory task model over
-that worker's private `POST /admin/memory/complete` (never forwarded from TCP,
-see [Memory synthesis](#memory-synthesis)).
+**Routing and proxying.** `server/model-routes.ts` is the same router as in-process,
+over worker units: a model-scoped POST is leased to the worker of the model its body
+names (the lease lasts until the response ends, so a stream is never cut by an
+eviction), anything else is the current model's, `GET /v1/models`, `/library` and
+`/stats` add residency, and `/v1/audio/*` and `/admin/transcription/*` go to Whisper's
+worker. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
+the hop-by-hop headers are stripped, bodies stream through unchanged, a client abort
+aborts the proxied request (`499`), and a worker that cannot take a request answers
+`502 { error: { type: "engine_unavailable", state } }`. `POST /v1/responses` goes
+through `server/responses-client.ts`: `previous_response_id` resolves against this
+process's store, the worker receives the resolved conversation without one (and the
+`x-mlx-bun-response-owner: parent` header), and the completed record is remembered
+here, so conversations survive a worker restart. This process answers `GET /engine`
+(`{ isolated, state, pid, restarts, socket, model, last_exit, response_store, workers }`,
+the current model's worker first and `workers` listing every resident one with its
+`id`, `role`, `pid`, `state`, `restarts` and `socket`; `state` is `starting`, `ready`,
+`restarting`, `exhausted`, `closed`, or `none` when no worker is resident),
+`GET /health` (`{ status: "ok", isolated, engine, workers }`), `GET /stats` (the current
+worker's body with the residency block, this process's `response_store` and an `engine`
+report; with no worker, 200 with only this process's part and an `unavailable` message),
+and `GET /downloads`. `/admin/lease`, `/admin/drain`, `/admin/memory/complete`,
+`/admin/events` and `/v1/memory/synthesize` stay socket-only or this process's own
+and are not forwarded. The hub's `POST /api/hub/serve` is answered here: it acquires the
+model (spawning its worker, draining another when memory is short) and makes it current;
+`404` for an id that is not local, `502` for a failed spawn.
 
-**Crashes.** An unexpected worker exit is respawned with main's budget: at most
-three restarts in a rolling 60-second window, and a worker that died within
-10 seconds of its spawn waits 5 seconds before the retry. A managed job's
-execution lease is a connection-owned `POST /admin/lease` inside the worker,
-acquired after the worker serves and after generation in flight has finished;
-a respawn waits until every such lease is released, so a reload never shares the
-GPU with a job. Requests in flight when the worker dies end with
-`502 { error: { type: "engine_unavailable", state } }`; an SSE response ends
-with the protocol's own error frame naming the cause (OpenAI `data: {"error"}`,
-Anthropic `event: error`, Responses `event: error`), so a client parser ends
-with an error rather than a silent truncation and Pi ends the turn with an error
-frame instead of replaying the generation. While the worker is down or
-restarting, new requests answer 502 with the reason and `— retry shortly`;
-exhausting the budget leaves 502 (`engine restart limit reached … restart the
-server`) and `/engine` reporting `exhausted` until the server restarts (no
-restart route, as main). The [supervisor](tests/jobs/worker-supervisor.test.ts)
-and [proxy](tests/server/proxy-routes.test.ts) tests drive these paths against a
-fake worker over a real socket; the opt-in
-[isolation test](tests/engine/isolate.test.ts) kills a real worker and checks the
-respawned completion.
+**Events.** Each worker publishes its engine's events (request timings, samples,
+prefix and KV counters, load progress) on its own bus and serves them on
+`GET /admin/events`; this process subscribes to every worker's stream and republishes
+onto the app's bus, so the metrics module sees all of them. The residency manager
+here reports `model.load`, `model.unload` and `model.memory` (a worker's own load and
+unload events are dropped), and a respawned worker's stream is resubscribed.
 
-**Shutdown.** Synthesis runs, jobs, and downloads stop while the worker is alive, chat sessions
-and HTTP responses drain, then the worker is drained (`POST /admin/drain`),
-sent SIGTERM, SIGKILL after 3 seconds, joined, and the socket directory removed;
-a respawn in progress is joined too. The worker's own close aborts and joins its
-memory calls, then closes its task model, before its engine.
+**Crashes.** A worker's unexpected exit is respawned by its supervisor with that
+worker's model (the one that was resident, not the startup model) within main's
+budget: at most three restarts in a rolling 60-second window, and a worker that died
+within 10 seconds of its spawn waits 5 seconds before the retry. The other workers
+and the app are untouched. A managed job's execution lease is a connection-owned
+`POST /admin/lease` inside each worker, so a respawn waits until it is released and a
+reload never shares the GPU with a job. Requests in flight when a worker dies end with
+`502`; an SSE response ends with the protocol's own error frame naming the cause
+(OpenAI `data: {"error"}`, Anthropic `event: error`, Responses `event: error`), so a
+client parser ends with an error rather than a silent truncation and Pi ends the turn
+with an error frame instead of replaying the generation. While a worker is down,
+new requests for its model answer 502 with the reason and `- retry shortly`; a worker
+that exhausts its budget is reported `exhausted` and is replaced by a fresh spawn on
+the next request that names its model (a broken unit is evicted, never leased). The
+[supervisor](tests/jobs/worker-supervisor.test.ts), [proxy](tests/server/proxy-routes.test.ts)
+and [composition](tests/serve-isolated.test.ts) tests drive these paths against a fake
+worker over a real socket; the opt-in [native test](tests/engine/model-host-native.test.ts)
+kills a real worker mid-request.
+
+**Shutdown.** Synthesis runs, jobs, and downloads stop while the workers are alive, chat
+sessions and HTTP responses drain, then every worker is drained, sent SIGTERM (killed
+only after the CLI's shutdown budget), and joined, and the socket directory is removed; a
+respawn in progress is joined too. A worker's own close aborts and joins its memory calls,
+then closes its task model, before its engine.
 
 **Deviations from main.** Main bound the listener before the engine loaded and
-made every request wait on readiness, including across restarts, retrying
-bodyless GET/HEAD once; here the listener binds after the first ready line and a
-request during a restart fails fast with 502 so the UI can report the restart
-instead of hanging, and nothing is retried. Main answered 501 on `/ws/chat`;
-Pi lives in the parent here. Main's parent `/health` was the child's; here it
-is the parent's with the worker's contribution. Main's coordinator serialized
-worker startup against jobs from the parent; here the lease is the worker's and
-only the respawn waits for a held lease. Pi's own SDK policy still retries a
-request refused with 502 before generation started (three attempts, 2/4/8 s),
-which rides out a fast respawn; a generation that started is never replayed.
-`--isolate` with a Whisper checkpoint as the main model is refused before
-anything starts.
+made every request wait on readiness, including across restarts, retrying bodyless
+GET/HEAD once; here the listener binds after the first ready line and a request
+during a restart fails fast with 502 so the UI can report the restart instead of
+hanging, and nothing is retried. Main answered 501 on `/ws/chat`; Pi lives in the
+parent here. Main's parent `/health` was the child's; here it is this process's with
+the workers'. Pi's own SDK policy still retries a request refused with 502 before
+generation started (three attempts, 2/4/8 s), which rides out a fast respawn; a
+generation that started is never replayed. A Whisper checkpoint as the main model
+serves the transcription-only server in this process, as before.
 
-## Model pool (`--model-pool`)
+**Limits.** This process has no measured-memory floor (it cannot read the GPU's
+active memory): residency uses estimates until a worker reports its weights. Memory
+synthesis runs on the current worker's task model without holding a residency lease
+on it.
 
-`--model-pool <n>` (integer >= 1, default 1) sets how many model workers stay
-resident under `--isolate`; without `--isolate` it warns
-(`--model-pool has no effect without --isolate (child-per-model pool) — ignored`)
-and is ignored, as main. `jobs/worker-pool.ts` owns up to `n` supervisors keyed
-by exact `/v1/models` id, each on its own socket in the private directory, with
-the model resolved at startup as the default worker. The
-[pool test](tests/jobs/worker-pool.test.ts), the
-[proxy routing test](tests/server/proxy-routes.test.ts), and the
-[composition test](tests/serve-isolated.test.ts) drive these paths against fake
-workers; the opt-in [native pool test](tests/engine/model-pool.test.ts) keeps
-two real models resident and evicts at cap 1.
-
-**Routing.** `POST` bodies on `/v1/chat/completions`, `/v1/completions`,
-`/v1/messages`, `/v1/responses`, and `/v1/embeddings` are buffered to read
-`model` and forwarded to the chosen worker byte for byte. An **exact** id the
-worker's `/v1/models` lists (a supported canonical registry record, resolved
-without a scan or download) routes to that model's own worker, spawning it on
-first use; anything else (empty, Pi's `local`, a fuzzy name, `gpt-4`) rides the
-default worker, mlx-lm's ignored-field semantics, respawning it when it was
-evicted. A body that is not JSON goes to the default worker, which answers its
-own 400. Resolution misses are remembered until the library changes. Every
-other path (`/v1/models`, `/library`, `/stats`, cache admin, adapters) goes to
-the default worker while it is resident or loading, else to the most recently
-used resident, and never loads a model.
-
-**Cold starts and eviction.** Cold starts run one at a time; the resident
-workers keep serving while the new one loads (spawn-overlap). Each routed
-request refreshes its worker's LRU position. Once the new worker is ready it
-becomes routable and, over the cap, the least recently used worker (the default
-included) is deregistered at once, then drained (`POST /admin/drain` over its
-socket: no new admissions, generation in flight finishes) and stopped through
-its ordinary close, where the worker's cache services demote its prompt cache to
-the saved state (on unless `--ssd-cache off`); the next cold start waits for that stop.
-Naming the evicted id again respawns it. A cold start that fails answers only
-the request that caused it (502 with the worker's exit) and leaves the pool
-unchanged.
-
-**Jobs, invalidation, GC.** A managed job's execution lease covers every
-resident worker (one `/admin/lease` connection per worker) until the job's child
-exits and its logs drain. Admission joins already-started loads and draining
-evictions before leasing the resident workers; cold starts wait until all job
-leases release, so model loading never overlaps a job's GPU use. Cancellation
-and shutdown abort admission waits. A finished download or job refreshes every
-serving worker's library and forgets resolution misses. Hub GC refuses to prune
-the snapshot of any resident, queued/loading, draining, or closing model, or the
-memory task model snapshot selected for a worker's memory calls, which the pool
-retains on that worker until its close has settled (the task model is not a
-pool worker: it gets no id, lease, or cap slot).
-
-**Reporting.** `GET /engine` gains `pool: { cap, default, resident: [{ id, pid,
-state, restarts, socket }], loading: [ids] }` (residents least recently used
-first); its worker fields keep describing the default worker and are `null` with
-`state: "evicted"` while it is evicted. `GET /health` carries the same summary
-with resident ids only and `GET /stats` the full `engine` report. `/v1/models`
-keeps the available-model listing and merges each additional resident's own
-discovery row, so checkpoints resolved outside the shared registry still appear
-with their actual capabilities. Rows gain `resident: boolean` (and
-`loading: true` while a cold start runs). Peer discovery is bounded and preserves
-the base listing when another worker is unavailable.
-
-**Deviations from main.** Main clamped any bad `--model-pool` value to 1; here
-it is validated like the other numeric flags. Main forwarded every non-routed
-request to the default worker, respawning it when evicted, which the browser's
-`/stats` and `/library` polls would turn into a spawn loop at cap 1; here those
-requests never load a model. Main's requester waited for the victim's drain
-before its first answer; here the victim is deregistered at once and drained in
-the background, while the next cold start and any job lease wait for it.
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 
@@ -683,7 +650,7 @@ retry, and close rules.
 
 - `arguments` are `mlx-bun serve` arguments. `--host`, `--port`, and
   `--no-open` only concern a TCP listener and have no effect on the socket;
-  `--isolate` and `--model-pool` are refused before anything is spawned.
+  `--isolate` is ignored, as the app form is always in-process.
 - `command` must run the mlx-bun CLI of the same package version: the
   installed binary, `[bun, <package>/bin/mlx-bun.mjs]`, or
   `[bun, <package>/src/cli/main.ts]`. A compiled consumer must supply it,
@@ -944,23 +911,22 @@ model template's thinking defaults, the stage's system/user turns,
 `~/.mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise):
 `memory --host`/`--port` use it.
 
-Under `serve --isolate` the parent, which loads no model, keeps the pipeline,
-vault, and SSE; the default model worker owns the task model (the same
-in-process client, loaded by its first call and kept until that worker stops,
-as main's default child did). The parent's worker client (also in
+In the default isolated `serve` the parent, which loads no model, keeps the pipeline,
+vault, and SSE; the current model's worker owns the task model (the same
+in-process client, loaded by its first call and kept until that worker stops). The parent's worker client (also in
 `server/memory-completion-client.ts`) sends each `complete` or
-`completeBatch` as one `POST /admin/memory/complete` over the default worker's
+`completeBatch` as one `POST /admin/memory/complete` over the worker's
 socket (`{ call, snapshot, requests: [{ stage, input, maxTokens }] }`, answered
 `{ outputs }` in input order). The worker runs the call under its own execution
 lease, taken before the lazy load and released after every row joined, so it
 waits for a managed job's lease and a job waits for it; the parent takes no
-pool lease for it. The parent selects the task model snapshot once per call
+lease of its own for it. The parent selects the task model snapshot once per call
 (`locateTaskModel`), the call carries it, and the call that loads the task model
-loads exactly that directory; the pool retains the selected snapshot on that
-worker, out of hub GC, until the worker has closed. A cancelled run, a client
+loads exactly that directory; the parent keeps the selected snapshot out of hub GC
+for that worker's lifetime (until it is respawned or the server stops). A cancelled run, a client
 disconnect, or the parent's shutdown aborts the request, and the worker aborts
 and joins every row. A call is never retried: a worker that stops mid-call fails
-that call with an error, and eviction or a restart drops the task model with
+that call with an error, and a restart drops the task model with
 its worker. Every path rides a continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
 (default 1) bounds the calls in flight per batched stage. Nothing in the memory
 domain loads a model, and no serial lane exists. Each run receives its client
@@ -1164,7 +1130,7 @@ job host, so its rows, logs and `/api/jobs` streams are the same as any job's;
 `artifactRoot` override replaces it, as for other produced artifacts); and
 `cli/served-model-host.ts` is the `modelHost` that leases the attached serving host's
 model for `generate`, sending the request to its own HTTP listener (its Unix socket in
-the worker app form; through the proxy under `--isolate`), so jobs call the same app.
+the worker app form; through the proxy in the default isolated mode), so jobs call the same app.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
@@ -1263,8 +1229,8 @@ against `--kv-budget`, prompt-cache bytes, hits and misses, per-model memory), q
 Publishing only appends to bounded queues, so a slow subscriber never delays generation; nothing under the engine
 imports the bus. The module requires `jobs`, so it activates in the persistent state (`serve-state.ts`) with the state's bus;
 `jobs/service.ts` runs its `bench-serve` runner as a managed task (rows and logs in the job store, listed by
-`/api/jobs`), under the engine's execution lease because the runner declares `gpu: "exclusive"`. Under `--isolate`
-the workers' events do not reach the parent yet, so the view there is empty. `/stats`, `/health` and `/fit` are unchanged. The status page loads the
+`/api/jobs`), under the engine's execution lease because the runner declares `gpu: "exclusive"`. In the default isolated mode
+each worker's events are relayed to the parent's bus, so the view there covers every resident model. `/stats`, `/health` and `/fit` are unchanged. The status page loads the
 module's panel element while it is visible (`web/browser/status.ts`). The opt-in [real-weights
 test](tests/engine/metrics-native.test.ts) (`MLX_BUN_APP_TEST_MODEL=<snapshot directory>`) serves a model and requires
 the module's numbers to equal each response's `usage` and `/stats`.

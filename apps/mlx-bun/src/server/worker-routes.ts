@@ -1,10 +1,11 @@
 // The private admin surface an isolation worker serves on its Unix socket,
 // ahead of the model routes: readiness for the parent, a connection-owned
 // execution lease for managed GPU jobs, a drain that stops admission and
-// waits for the work in flight, and the default model worker's memory task
-// model for the parent's synthesis. It is never mounted on a TCP listener,
-// where all three paths are unknown (404), as they are on a worker that lacks
-// the capability behind one.
+// waits for the work in flight, the model worker's memory task model for the
+// parent's synthesis, and the worker's event stream (`/admin/events`). It is
+// never mounted on a TCP listener, where every one of these paths is unknown
+// (404), as they are on a worker that lacks the capability behind one.
+import type { EventBus } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
 
@@ -26,12 +27,15 @@ export interface WorkerRoutesOptions {
   pid?: number;
   /** The model form's memory task model (Gemma-4 e4b with its chunk adapter,
    * loaded by the first call): `POST /admin/memory/complete` runs one memory
-   * `complete` or `completeBatch` on it for the `--isolate` parent's synthesis,
+   * `complete` or `completeBatch` on it for the isolated parent's synthesis,
    * under the execution lease; the call that loads it loads exactly the
    * snapshot the call carries. The composition owns it and closes it after
    * `close()` has joined the calls. Without it (or without a lease) there is
    * no such route (404). */
   memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
+  /** The worker's own events (its engine's request timings and samples, its model's memory): `GET /admin/events` streams them
+   * as JSON lines for the parent, which publishes them on its bus. Without it there is no such route (404). */
+  events?: Pick<EventBus, "subscribe">;
 }
 
 /** The private memory call's body: one `complete` (a single row) or one
@@ -144,6 +148,24 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
     }
   };
 
+  // The parent subscribes to what this worker's engine publishes. Each connection is one subscription, released when
+  // the parent leaves or the surface closes; a held connection is not model work, so drain does not wait for it.
+  const streams = new Set<() => void>();
+  const events = (request: Request): Response => {
+    let unsubscribe = () => {}, stop = () => {};
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        unsubscribe = options.events!.subscribe("*", event => { try { controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); } catch { stop(); } });
+        stop = () => { streams.delete(stop); unsubscribe(); try { controller.close(); } catch { /* already ended */ } };
+        streams.add(stop);
+        request.signal.addEventListener("abort", stop, { once: true });
+        controller.enqueue(encoder.encode("\n"));
+      },
+      cancel() { stop(); },
+    });
+    return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
+  };
+
   // Drain: no new model request is admitted from now on (503), then wait for
   // the admitted ones to return and for generation to quiesce, within the
   // deadline. The report is honest either way; the gate stays shut.
@@ -187,6 +209,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         if (pathname === "/health") return request.method === "GET" ? health() : methodNotAllowed("GET");
         if (pathname === "/admin/lease" && options.acquireExecutionLease) return request.method === "POST" ? lease(request) : methodNotAllowed("POST");
         if (pathname === "/admin/drain") return request.method === "POST" ? drain(request) : methodNotAllowed("POST");
+        if (pathname === "/admin/events" && options.events) return request.method === "GET" ? events(request) : methodNotAllowed("GET");
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
         try {
@@ -203,6 +226,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
     async close(): Promise<void> {
       closed = true;
       shutdown.abort(new Error("worker admin surface closed"));
+      for (const end of [...streams]) end();
       for (const entry of [...held]) {
         entry.release();
         try { entry.controller.close(); } catch { /* already cancelled */ }

@@ -8,8 +8,8 @@ export interface ManagementRouteOptions {
   invalidateLibrary(): void;
   /** The loaded model may still need files from this snapshot after startup. */
   servedModelPath?: string;
-  /** Under a model pool: every resident or loading model's snapshot, read at execution time. */
-  servedModelPaths?: () => readonly string[];
+  /** Every model the host holds resident: its snapshot, read at execution time (a host that swaps models, or one in another process, answers late). */
+  servedModelPaths?: () => readonly string[] | Promise<readonly string[]>;
   /** Composition overrides for isolated storage; omitted paths use hub defaults. */
   hubDirectory?: string;
   createRegistry?: () => Pick<Registry, "scan" | "close">;
@@ -44,7 +44,7 @@ export function createManagementRoutes(options: ManagementRouteOptions) {
           // Recompute from disk at execution time; never accept a client-supplied
           // deletion plan. Even a partial failure must invalidate discovery.
           const plans = gcPlans();
-          const served = [...(options.servedModelPath ? [options.servedModelPath] : []), ...(options.servedModelPaths?.() ?? [])].map(canonicalPath);
+          const served = [...(options.servedModelPath ? [options.servedModelPath] : []), ...(await options.servedModelPaths?.() ?? [])].map(canonicalPath);
           if (served.length && plans.some(plan => plan.pruneSnapshots.some(snapshot => {
             const candidate = canonicalPath(snapshot);
             return served.some(path => path === candidate || path.startsWith(candidate + sep));

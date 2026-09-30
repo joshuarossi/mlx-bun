@@ -1,13 +1,13 @@
 // One loaded model, served: its binding, caches, engine, and the routes bound
-// to them. A unit is what the model host holds resident (engine/model-residency.ts);
+// to them. A unit is what the model host holds resident (residency/model-residency.ts);
 // closing it drains its work, flushes its saved state durably, and releases the
 // context by the ownership rule. Persistent services and the listener belong to
 // the host that holds units (serve-host.ts), never to a unit.
 import { releaseContext, requireChatTemplate, type ContextOwnership, type LoadedModelContext } from "../engine/model-host";
 import type { ModelBinding } from "../engine/model-binding";
 import type { KvBudget } from "../engine/kv-budget";
-import type { UnitClosed, ResidentUnit } from "../engine/model-residency";
-import { servingReserveBytes } from "../engine/resident-estimate";
+import type { UnitClosed, ResidentUnit } from "../residency/model-residency";
+import { servingReserveBytes } from "../residency/resident-estimate";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { EventBus } from "@mlx-bun/app-core";

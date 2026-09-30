@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CoreEvent, ModelOperations } from "@mlx-bun/app-core";
-import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidentUnit, type UnitClosed } from "../../src/engine/model-residency";
+import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidentUnit, type UnitClosed } from "../../src/residency/model-residency";
 
 const GB = 1000;
 /** Models by id and size; a unit records what the host did to it. Nothing here loads weights. */

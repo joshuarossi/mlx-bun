@@ -394,3 +394,45 @@ test("a managed job holding the worker's execution lease delays a memory call, l
   } finally { await app.close(); }
   socket.remove();
 });
+
+test("the worker streams its own events to the parent as JSON lines, one subscription per connection, released when the parent leaves or the surface closes; without the capability the path is 404", async () => {
+  const socket = socketDir();
+  const listeners = new Set<(event: unknown) => void>();
+  const bus = { subscribe(_types: "*" | readonly string[], handler: (event: never) => void) { listeners.add(handler as (event: unknown) => void); return () => { listeners.delete(handler as (event: unknown) => void); }; } };
+  const emit = (event: unknown) => { for (const listener of [...listeners]) listener(event); };
+  const admin = createWorkerRoutes({ modelId: "org/model", pid: 42, events: bus as never });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const call = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
+  try {
+    expect((await call("/admin/events", { method: "POST" })).status).toBe(405);
+    const holder = new AbortController();
+    const stream = await call("/admin/events", { signal: holder.signal });
+    expect([stream.status, stream.headers.get("content-type")]).toEqual([200, "application/x-ndjson"]);
+    const reader = stream.body!.getReader(), decoder = new TextDecoder();
+    await until(() => listeners.size === 1, "the subscription");
+    emit({ type: "scheduler.sample", model: "org/model", active: 1 });
+    emit({ type: "request.finished", model: "org/model", totalMs: 12 });
+    let text = "";
+    while (text.split("\n").filter(Boolean).length < 2) text += decoder.decode((await reader.read()).value);
+    expect(text.split("\n").filter(Boolean).map(line => JSON.parse(line).type)).toEqual(["scheduler.sample", "request.finished"]);
+    // A held stream is not model work: drain does not wait for it, and the parent leaving releases the subscription.
+    expect((await (await call("/health")).json()).in_flight).toBe(0);
+    holder.abort();
+    await until(() => listeners.size === 0, "the release on disconnect");
+    // Closing the surface ends a stream still open.
+    const second = await call("/admin/events");
+    await until(() => listeners.size === 1, "the second subscription");
+    await admin.close();
+    const tail = second.body!.getReader();
+    let ended = false;
+    for (let reads = 0; reads < 5 && !ended; reads++) ended = (await tail.read().catch(() => ({ done: true }))).done;
+    expect(ended).toBe(true);
+    expect(listeners.size).toBe(0);
+  } finally { await app.close(); }
+  const bare = socketDir();
+  const plain = createWorkerRoutes({ modelId: "org/model", pid: 42 });
+  const second = await startServer({ routes: plain.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => plain.close(), async closeEngine() {} }, { unix: bare.unix });
+  try { expect((await fetch("http://worker/admin/events", { unix: bare.unix } as RequestInit)).status).toBe(404); }
+  finally { await second.close(); }
+  socket.remove(); bare.remove();
+});

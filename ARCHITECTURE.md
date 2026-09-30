@@ -209,7 +209,7 @@ dependencies). A host implements them once and every module depends only on them
 
 | Service | Owns |
 | --- | --- |
-| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`), never for a model family. |
+| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. `serve` holds each model in its own worker process (the parent runs this same manager over workers and loads nothing; `--in-process` loads them in the serving process). Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`), never for a model family. |
 | `jobs` | Persisted job state, task and child-process lifetimes, the GPU lease (`exclusive` jobs drain models first). |
 | `storage` | A module's declared entries under `MLX_BUN_HOME`; nothing else is written by default. |
 | `catalog` | Local models and adapters, fit estimates, downloads, registering outputs. |
@@ -287,7 +287,7 @@ require `jobs` (datasets, metrics, quantize, benchmarks, train) or declare socke
 `jobs` (the job host's `task` runners in this process, and `process` runners as a child that
 stops with its parent under the execution lease, which activates the owning module itself),
 `storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
-its own HTTP surface (so the `--isolate` parent, which loads no model, runs them too); the
+its own HTTP surface (so the isolated parent, which loads no model, runs them too); the
 others activate with the model host. The chat talks to the model only through that `modelHost`: each connection reads the
 current model's description from its wire (`GET /v1/models`, `/stats`), and the Pi SDK, which takes no transport of ours,
 reaches the model through a private loopback (a per-run bearer token, started with the first chat) that leases

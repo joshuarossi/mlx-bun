@@ -12,14 +12,14 @@ import type { DraftKind } from "../engine/model-host";
 import { installedModules, type ModuleSettings } from "../modules";
 import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
 import type { ModelHostHooks } from "./serve-host";
-import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
+import { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
 // serve-host (model-scoped). This module parses flags, composes both, and owns
 // the process (signals, browser, shutdown deadline). The model half is
 // imported only by the composition that runs it, so an isolated parent
 // (serve-isolated.ts) never loads the engine.
-export { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions };
+export { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, type RunningApp, type ServeOptions };
 
 /** The saved-state root's default byte budget, across every model's directory (`--ssd-cache-max` overrides). */
 export const DEFAULT_SAVED_STATE_BYTES = 20 * 2 ** 30;
@@ -142,10 +142,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
   const maxTokens = number("max-tokens", 1, 10_000_000);
-  // Main's --model-pool: pool policy is the parent's and means nothing without a worker.
-  const isolate = args.values.isolate === true;
-  const modelPool = number("model-pool", 1, Number.MAX_SAFE_INTEGER, true);
-  if (modelPool !== undefined && !isolate) console.warn("--model-pool has no effect without --isolate (child-per-model pool) — ignored");
+  const inProcess = args.values["in-process"] === true;
+  if (args.values.isolate === true) console.warn("--isolate is the default now and is ignored; use --in-process to load the models in this process");
   const profileLimit = profileContextLimit();
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
@@ -164,8 +162,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(draft ? { draft } : {}),
     ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
     ...(whisper ? { whisper } : {}),
-    readOnly: false, noOpen: args.values["no-open"] === true, isolate,
-    ...(isolate && modelPool !== undefined ? { modelPool } : {}),
+    readOnly: false, noOpen: args.values["no-open"] === true, ...(inProcess ? { inProcess } : {}),
     cache, request, fusedSdpa: policy.fusedSdpa,
   };
 }
@@ -227,10 +224,9 @@ export async function startApp<Host extends { close(): Promise<unknown> }>(optio
  * borrows it. The host stops the state's producers inside its drain step, so
  * jobs and downloads end while the engine is alive, as before the split. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions, hooks: AppSocketHooks = {}): Promise<RunningApp> {
-  // --isolate: the same persistent state, with the model host in a worker process behind a proxy.
-  if (options.isolate) {
-    // A nested isolated app would bind TCP and never the launch socket.
-    if (hooks.unix) throw new Error("--isolate is not supported in a worker app launch");
+  // The default: the same persistent state, with each model's host in a worker process behind a proxy. A worker's own app
+  // (the launch socket) and `--in-process` load the models in this process.
+  if (!options.inProcess && !hooks.unix) {
     return (await import("./serve-isolated")).startIsolatedServer(model, options, { modules: await installedModules("state", stateModuleSettings(options)) });
   }
   const [{ startModelHost }, { createInProcessMemoryClient }] = await Promise.all([import("./serve-host"), import("./memory-engine")]);
@@ -249,23 +245,14 @@ export async function startTranscriptionServer(model: ModelRecord, options: Serv
   return (await import("./serve-host")).startTranscriptionHost(model, options, hooks);
 }
 
-/** Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s. */
-export function shutdownTimeoutMs(): number {
-  const raw = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
-  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
-}
-
 /** Internal (the worker app form; a parent may call it to fail fast before
  * spawning): serve arguments parsed and validated exactly as the CLI does,
  * minus what cannot run behind a launch socket. `--host`, `--port`, and
- * `--no-open` are accepted and never steer the socket bind. `--isolate` and
- * `--model-pool` are refused: a nested isolated app binds TCP, never the
- * socket. A missing or empty model is refused: automatic selection may
+ * `--no-open` are accepted and never steer the socket bind. A worker's app always loads its models in its own process
+ * (`--in-process` is implied, and `--isolate` is ignored). A missing or empty model is refused: automatic selection may
  * download the starter model. */
 export function validateAppLaunchArgv(argv: readonly string[]): CommandArgs {
   const args = parseCommand("serve", [...argv]);
-  for (const flag of ["isolate", "model-pool"])
-    if (args.values[flag] !== undefined) throw new Error(`--${flag} is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket`);
   if (!parseServeOptions(args).query?.trim())
     throw new Error("a worker app launch needs a non-empty --model: automatic selection may download the starter model");
   return args;
@@ -352,7 +339,6 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     startup.signal.throwIfAborted();
     if (isTranscriptionModelType(selection.m.modelType)) {
       // Main: a Whisper checkpoint as the main model starts the transcription-only server.
-      if (options.isolate) throw new Error("--isolate is not supported for the transcription-only server: a Whisper checkpoint as the main model has no chat model to isolate");
       deps.log(`Serving ${selection.m.repoId} as a transcription-only server${options.whisper?.preload ? " (loading the weights first)" : ""}`);
       running = await deps.startTranscription(selection.m, options);
     } else {
@@ -395,7 +381,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity}) over the Unix socket`);
     return app;
   }
-  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? ` in an isolated engine worker (model pool ${options.modelPool ?? 1})` : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
+  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.inProcess ? " in this process" : " in isolated model workers"}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }
   }

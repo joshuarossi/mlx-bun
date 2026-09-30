@@ -97,8 +97,8 @@ const commands = {
     "whisper-resident": { type: "boolean", description: "Never release the Whisper weights" },
     preload: { type: "boolean", description: "Transcription-only server: load the Whisper weights before listening instead of on the first request" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
-    isolate: { type: "boolean", description: "Serve the model from a crash-isolated worker process that respawns after a crash; the app, web chat, and jobs stay in this process" },
-    "model-pool": { type: "string", description: "With --isolate: max resident model workers, integer >= 1; a request naming an exact /v1/models id gets its own worker, the least recently used is drained and stopped over the cap [default: 1]" },
+    "in-process": { type: "boolean", description: "Load the models in this process instead of one worker process per resident model. Isolated serving is the default: this process keeps the app, web chat and jobs and loads no model, each worker is crash-isolated and respawns after a crash, and the workers are held by memory fit (--model-budget)" },
+    isolate: { type: "boolean", description: "Deprecated, accepted and ignored: isolated serving is the default (see --in-process)" },
   } },
   generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {
     query: { type: "string", description: "Cached model query when no positional query is supplied" },

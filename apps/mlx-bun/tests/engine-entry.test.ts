@@ -101,9 +101,7 @@ test("a blank model, a refused flag, or a bad argument rejects in the caller bef
       await expect(openIsolatedHost(blank, { command: ["/nonexistent/mlx-bun"] })).rejects.toThrow("openIsolatedHost needs a model");
       await expect(openLibraryHost(blank, { command }, f.seams)).rejects.toThrow("an empty query selects one automatically and may download the starter model");
     }
-    await expect(openIsolatedHost(model, { command: ["/nonexistent/mlx-bun"], arguments: ["--isolate"] }))
-      .rejects.toThrow("--isolate is not supported in a worker app launch");
-    await expect(openLibraryHost(model, { command, arguments: ["--model-pool", "2"] }, f.seams)).rejects.toThrow("--model-pool is not supported in a worker app launch");
+    await expect(openLibraryHost(model, { command, arguments: ["--model-pool", "2"] }, f.seams)).rejects.toThrow("Unknown option '--model-pool'");
     await expect(openLibraryHost(model, { command, arguments: ["--bogus"] }, f.seams)).rejects.toThrow("Unknown option '--bogus'");
     await expect(openLibraryHost(model, { command, arguments: ["--port"] }, f.seams)).rejects.toThrow("argument missing");
     // The arguments cannot swap the model for a blank one either.
@@ -264,7 +262,7 @@ test("close drains and stops the worker once, removes the socket directory only 
     await closing;
     expect(alive(launched!.pid)).toBe(false);
     expect(existsSync(socketDir)).toBe(false);
-    expect(f.events().map(entry => entry.event)).toEqual(["loading", "ready", "drain", "stop"]);
+    expect(f.events().map(entry => entry.event)).toEqual(["loading", "ready", "drain", "stop", "stopped"]);
     await expect(host.forward(new Request("http://engine/health"))).rejects.toThrow("engine host is closed");
     await expect(host.ready).rejects.toThrow("engine host is closed");
     await expect(createCompletionClient({ baseUrl: "http://engine/v1", host }).complete({ body: {} })).rejects.toThrow("engine host is closed");
