@@ -362,7 +362,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     } }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) {
       assert.equal(options.toolApprovalsFile, chatPaths.toolApprovalsFile);
-      assert.deepEqual(options.servedModelPaths(), ["/unused"]); assert.equal(typeof options.invalidateLibrary, "function");
+      assert.deepEqual(Object.keys(options), ["toolApprovalsFile"]);
       return { handle: async () => null };
     } }));
     mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async (root, skills) => {
@@ -385,8 +385,6 @@ for (const [sessionDir, jobPaths, expectedStore] of [
         close() { return closing ??= (async () => { events.push("jobs close"); })(); } }; } }));
     mock.module(app + "src/publishing/credentials.ts", () => ({ createHfCredentials(options) {
       assert.equal(options.tokenFile, storagePaths.credentialsFile); return { get: () => null, save() {} }; } }));
-    mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) {
-      assert.equal(options.outputRoot, storagePaths.artifactRoot); return { handle: async () => null }; } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
       assert.equal(typeof options.memory, "function"); memoryCallback = options.memory;

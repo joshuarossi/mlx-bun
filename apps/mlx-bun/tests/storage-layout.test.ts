@@ -13,13 +13,11 @@ import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { resolveModelAuto } from "../src/cli/model-selection";
 import type { AppModule, CatalogEntry, JobEvent, JobRecord } from "@mlx-bun/app-core";
 import { createRegistryCatalog, createStorage, parseVerb, plainTerminal } from "@mlx-bun/app-services";
+import { createAdapterHandlers, createFolderHandler, manifest as modelsManifest } from "@mlx-bun/module-models";
 import { createQuantizeHandlers, createQuantizeRunner, manifest as quantizeManifest, runConvert } from "@mlx-bun/module-quantize";
 import { createTrainHandlers, fuseDependencies, manifest as trainManifest, runFuse, runTrain, runTrainWatch, trainDependencies } from "@mlx-bun/module-train";
 import { adapterDirFor } from "../src/memory/model";
-import { createAdapterArtifactRoutes } from "../src/server/adapter-artifact-routes";
-import { createAdapterRoutes } from "../src/server/adapter-routes";
-import { createModelFolderRoutes } from "../src/server/model-folder-routes";
-import { legacyAdapterDirs, mlxBunHome, modelShortName, openRegistry, storagePath } from "../src/storage/paths";
+import { adapterStores, legacyAdapterDirs, mlxBunHome, modelShortName, openRegistry, storagePath } from "../src/storage/paths";
 import { writeQuantizedArtifact, writeSourceModel } from "./quantized-artifact";
 
 const AUX = ["tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json"];
@@ -44,9 +42,9 @@ afterEach(() => {
 
 const writeAdapter = (dir: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "adapters.safetensors"), ""); };
 async function availableAdapters(): Promise<{ id: string; path: string }[]> {
-  // The route's own default catalog; only the loaded model's view is stubbed.
-  const routes = createAdapterRoutes({ modelId: "org/Model", adapters: { list: () => [] } } as never, { runExclusive: (work: () => Promise<unknown>) => work() } as never);
-  return (await (await routes.handle(new Request("http://app/v1/adapters/available")))!.json()).adapters;
+  // The adapters the app's catalog lists, from the stores it is built with.
+  const catalog = createRegistryCatalog({ adapterDirs: () => adapterStores() });
+  return (await catalog.list({ kind: "adapter" })).map(adapter => ({ id: adapter.id, path: adapter.directory }));
 }
 
 /** The train module's own view of the storage service: the entries its manifest declares, under MLX_BUN_HOME. */
@@ -76,9 +74,9 @@ test("every producer's default adapter directory is offered by /v1/adapters/avai
     jobs: { async submit(submission) { outputs.push(submission.outputPath!); return { id: "job_1" } as JobRecord; } } });
   await finetune.submit(new Request("http://app/api/finetune/submit", { method: "POST", body: JSON.stringify({ model_dir: "/m", data_dir: "/d" }) }));
   // Web merge (default output root).
-  const artifacts = createAdapterArtifactRoutes({ runExclusive: (work: () => Promise<unknown>) => work() } as never,
-    { merge: (async (_adapters: string[], output: string) => { outputs.push(output); return { tensors: 0 }; }) as never });
-  await artifacts.handle(new Request("http://app/api/finetune/merge", { method: "POST", body: JSON.stringify({ adapter_a: "/a", adapter_b: "/b" }) }));
+  const artifacts = createAdapterHandlers({ catalog: createRegistryCatalog(), storage: createStorage()({ moduleId: modelsManifest.id, manifest: modelsManifest } as never),
+    modelHost: { defaultFor: async () => "org/Model", acquire: async () => ({ operations: { adapters: { merge: async (request: { output: string }) => { outputs.push(request.output); return { tensors: 0 }; } } }, release() {} }) as never } });
+  await artifacts["adapter-merge"]!(new Request("http://app/api/finetune/merge", { method: "POST", body: JSON.stringify({ adapter_a: "/a", adapter_b: "/b" }) }));
   // `mlx-bun train` with its real defaults (dry run: plan only).
   const data = join(root, "data"); mkdirSync(data); writeFileSync(join(data, "train.jsonl"), "");
   const logs: string[] = [];
@@ -149,10 +147,9 @@ test("a web quantize job writes a plain model directory that the registry, `serv
   // `serve <path>`, `serve <name>` and the web folder picker resolve the same directory under the same id.
   expect(await resolveModelAuto(output)).toMatchObject({ picked: false, m: { repoId: "tiny-qwen3-4bit", path: output } });
   expect(await resolveModelAuto("tiny-qwen3-4bit")).toMatchObject({ picked: false, m: { repoId: "tiny-qwen3-4bit", path: output } });
-  const folder = createModelFolderRoutes(catalog);
-  const picked = (path: string) => folder.handle(new Request(`http://app${path}`, { method: "POST", body: JSON.stringify({ folder_name: "tiny-qwen3-4bit" }) }));
-  expect(await (await picked("/api/model/resolve-folder"))!.json()).toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
-  expect(await picked("/api/quantize/resolve-folder")).toBeNull(); // the quantize module answers its own path
+  const folder = createFolderHandler(catalog);
+  const picked = () => folder(new Request("http://app/api/model/resolve-folder", { method: "POST", body: JSON.stringify({ folder_name: "tiny-qwen3-4bit" }) }));
+  expect(await (await picked()).json()).toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
   expect(await (await post("resolve-folder", { folder_name: "tiny-qwen3-4bit" })).json()).toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
   // The same model and settings name the same directory, which the producer refuses to overwrite.
   expect((await (await post("submit", { model_id: source, bits: 4, group_size: 64 })).json()).output_dir).toBe(output);
@@ -169,9 +166,9 @@ test("earlier quantize outputs in the hub cache (`models--local--…`) stay list
     await registry.scan();
     expect(registry.listCanonical().map(model => [model.repoId, model.path])).toEqual([["local/tiny-qwen3-OptiQ-4bit", snapshot]]);
   } finally { registry.close(); }
-  const routes = createModelFolderRoutes(createRegistryCatalog());
-  expect(await (await routes.handle(new Request("http://app/api/model/resolve-folder", { method: "POST",
-    body: JSON.stringify({ folder_name: "models--local--tiny-qwen3-OptiQ-4bit" }) })))!.json())
+  const routes = createFolderHandler(createRegistryCatalog());
+  expect(await (await routes(new Request("http://app/api/model/resolve-folder", { method: "POST",
+    body: JSON.stringify({ folder_name: "models--local--tiny-qwen3-OptiQ-4bit" }) }))).json())
     .toEqual({ ok: true, path: snapshot, repo_id: "local/tiny-qwen3-OptiQ-4bit" });
 });
 

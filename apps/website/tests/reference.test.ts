@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { manifest as models } from "../../../packages/module-models/src/manifest";
 import { manifest as quantize } from "../../../packages/module-quantize/src/manifest";
 import { manifest as train } from "../../../packages/module-train/src/manifest";
 import { manifest as transcription } from "../../../packages/module-transcription/src/manifest";
@@ -61,8 +62,8 @@ test("generated CLI covers the real help's complete command and option sets", as
 
 test("the installed modules' verbs are read from their manifests, matching the manifest values", async () => {
   const installed = await installedCommandReference(root);
-  // In the app's installation order (`src/modules.ts`): transcription's verbs, then quantize's, then train's.
-  const verbs = [...transcription.verbs, ...quantize.verbs, ...train.verbs] as readonly { name: string; summary: string; positional: readonly { name: string; required?: boolean }[];
+  // In the app's installation order (`src/modules.ts`): transcription's verbs, then quantize's, train's and models'.
+  const verbs = [...transcription.verbs, ...quantize.verbs, ...train.verbs, ...models.verbs] as readonly { name: string; summary: string; positional: readonly { name: string; required?: boolean }[];
     options: readonly { name: string; type: string; summary: string; short?: string }[] }[];
   expect(installed.map(command => command.name)).toEqual(verbs.map(verb => verb.name));
   for (const [index, verb] of verbs.entries()) {

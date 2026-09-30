@@ -21,7 +21,7 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   const serve = rows(baseline, "serve");
   for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions routed by model id",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
-    "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
+    "POST /api/hub/download implemented", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
     "POST /v1/audio/sessions/{id}/finish implemented", "GET /api/dataset/templates implemented", "POST /api/dataset/submit implemented"]) expect(serve).toContain(row);
   // The datasets module needs job runners, so it runs in the persistent state: the isolated parent serves it, the transcription-only host does not.
   expect(rows(baseline, "isolate")).toContain("POST /api/dataset/submit implemented");
@@ -78,20 +78,20 @@ test("generation writes a build-owned page with source links at the revision", a
 });
 
 test("an added unsupported routing predicate fails with its location; an unrelated path does not", () => {
-  const guard = '    if (request.method !== "POST" || !["/api/finetune/merge", "/api/finetune/export"].includes(path)) return null;';
-  expect(() => serverApiReference(mutate("server/adapter-artifact-routes.ts", guard, `    if (path.endsWith("/templates")) return null;\n${guard}`)))
-    .toThrow(/^server\/adapter-artifact-routes\.ts:17: unsupported routing predicate `path\.endsWith\("\/templates"\)`/);
+  const guard = '    if (!(settings && ["GET", "POST"].includes(request.method)) && !(push && request.method === "POST")) return null;';
+  expect(() => serverApiReference(mutate("server/publishing-routes.ts", guard, `    if (path.endsWith("/templates")) return null;\n${guard}`)))
+    .toThrow(/^server\/publishing-routes\.ts:\d+: unsupported routing predicate `path\.endsWith\("\/templates"\)`/);
   expect(() => serverApiReference(mutate("server/job-routes.ts", "/^\\/api\\/jobs\\/([^/]+?)(\\/stream)?$/", "/^\\/api\\/jobs\\/(.*)$/")))
     .toThrow(/^server\/job-routes\.ts:13: unsupported regex syntax/);
   // A value named `path` that is not the request's path is not a route.
-  const unrelated = mutate("server/management-routes.ts", "  const canonicalPath = (path: string) => {", '  const isRoot = (path: string) => path === "/";\n  const canonicalPath = (path: string) => {');
+  const unrelated = mutate("server/management-routes.ts", "  return { async handle(request: Request): Promise<Response | null> {\n    const pathname", '  const isRoot = (path: string) => path === "/";\n  return { async handle(request: Request): Promise<Response | null> {\n    const pathname');
   expect(rows(serverApiReference(unrelated), "serve")).toEqual(rows(baseline, "serve"));
 });
 
 test("string-keyed request reads route like property reads; a computed key on the request fails with its location", () => {
   // `request["method"]` and `new URL(request["url"])["pathname"]` are the same routes as their property forms.
   expect(serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'if (request["method"] !== "GET") return null;'))).toEqual(baseline);
-  expect(serverApiReference(mutate("server/adapter-artifact-routes.ts", "const path = new URL(request.url).pathname;", 'const path = new URL(request["url"])["pathname"];'))).toEqual(baseline);
+  expect(serverApiReference(mutate("server/publishing-routes.ts", "const path = new URL(request.url).pathname;", 'const path = new URL(request["url"])["pathname"];'))).toEqual(baseline);
   // The reviewer's case: a new route written only with string keys is listed, not silently omitted.
   const added = serverApiReference(mutate("server/status-routes.ts", '  return { async handle(request: Request): Promise<Response | null> {\n',
     '  return { async handle(request: Request): Promise<Response | null> {\n    if (request["method"] === "GET" && new URL(request["url"]).pathname === "/new-route") return Response.json({});\n'));
@@ -101,8 +101,8 @@ test("string-keyed request reads route like property reads; a computed key on th
   expect(cache.modes.map(mode => rows(cache, mode.id))).toEqual(baseline.modes.map(mode => rows(baseline, mode.id)));
   expect(() => serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'const key = "method"; if (request[key] !== "GET") return null;')))
     .toThrow(/^server\/status-routes\.ts:50: unsupported routing predicate `request\[key\] !== "GET"`/);
-  expect(() => serverApiReference(mutate("server/adapter-artifact-routes.ts", "const path = new URL(request.url).pathname;", 'const key = "url"; const path = new URL(request[key]).pathname;')))
-    .toThrow(/^server\/adapter-artifact-routes\.ts:\d+: unsupported routing predicate `request\[key\]`/);
+  expect(() => serverApiReference(mutate("server/publishing-routes.ts", "const path = new URL(request.url).pathname;", 'const key = "url"; const path = new URL(request[key]).pathname;')))
+    .toThrow(/^server\/publishing-routes\.ts:\d+: unsupported routing predicate `request\[key\]`/);
 });
 
 test("removing a route removes exactly its row", () => {
@@ -155,8 +155,8 @@ test("the model router lists its own rows first, then the current model's route 
 });
 
 test("a changed or removed allowlisted non-route site fails", () => {
-  expect(() => serverApiReference(mutate("server/adapter-artifact-routes.ts", 'path.endsWith("/merge")', 'path.endsWith("/merged")')))
-    .toThrow("Allowlisted non-route site changed or disappeared: server/adapter-artifact-routes.ts createAdapterArtifactRoutes");
+  expect(() => serverApiReference(mutate("server/discovery-routes.ts", 'url.pathname.length > "/v1/models/".length - 1', 'url.pathname.length > "/v1/models/".length')))
+    .toThrow("Allowlisted non-route site changed or disappeared: server/discovery-routes.ts createDiscoveryRoutes");
   expect(() => serverApiReference(mutate("server/proxy-routes.ts", '  if (pathname === "/v1/responses")\n', "  if (false)\n")))
     .toThrow("Allowlisted non-route site changed or disappeared: server/proxy-routes.ts unavailableFrame");
 });

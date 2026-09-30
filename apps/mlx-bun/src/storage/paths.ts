@@ -39,6 +39,12 @@ export function legacyAdapterDirs(home: string = userHome()): string[] {
   return [join(home, ".cache/mlx-bun/adapters"), join(home, ".cache/mlx-bun/mlx-bun-finetunes"), join(home, ".cache/mlx-bun-finetunes")];
 }
 
+/** The stores the adapter listing reads: the app's own adapter store (where `train`, web fine-tunes, merges and memory stages write by default)
+ * under `root`, then the stores earlier versions wrote, read-only. */
+export function adapterStores(root: string = mlxBunHome(), home: string = userHome()): string[] {
+  return [storagePath("adapters", root), ...legacyAdapterDirs(home)];
+}
+
 /** A model's short name for derived output directories: the repo name of an
  * `org/name` id or a hub snapshot path, else the directory's basename. */
 export function modelShortName(model: string): string {

@@ -38,20 +38,15 @@ try {
     if (command === "serve") {
       const { runServe } = await import("./serve");
       await runServe(parsed);
-    } else if (command === "generate" || command === "embed" || command === "upload") {
+    } else if (command === "generate" || command === "embed") {
       // SIGINT/SIGTERM abort the one-shot work; the verb rejects with the reason and exits 1.
       const cancellation = new AbortController();
-      const stop = () => cancellation.abort(new Error(`${command === "upload" ? "upload" : "inference"} cancelled`));
+      const stop = () => cancellation.abort(new Error("inference cancelled"));
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
-      try {
-        if (command === "upload") await (await import("./upload")).runUpload(parsed, {}, cancellation.signal);
-        else await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal);
-      } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+      try { await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal); }
+      finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
     } else if (command === "memory" || command === "setup") {
       await (await import("./memory")).runMemory(parsed);
-    } else {
-      const { runHub } = await import("./hub");
-      await runHub(command, parsed);
     }
   }
 } catch (error) {

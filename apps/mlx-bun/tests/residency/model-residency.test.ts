@@ -4,7 +4,8 @@ import { createResidencyHost, ResidencyError, type ResidencyEntry, type Residenc
 
 const GB = 1000;
 /** Models by id and size; a unit records what the host did to it. Nothing here loads weights. */
-function fixture(sizes: Record<string, number>, options: { budget: number; pinned?: string[]; measured?: () => number; external?: () => number; failLoad?: Set<string> }) {
+function fixture(sizes: Record<string, number>, options: { budget: number; pinned?: string[]; measured?: () => number; external?: () => number; failLoad?: Set<string>;
+  serve?: (id: string, signal: AbortSignal | undefined) => Promise<void>; uses?: (unit: { id: string }) => readonly string[] }) {
   const log: string[] = [];
   const events: CoreEvent[] = [];
   const units = new Map<string, FakeUnit>();
@@ -34,7 +35,7 @@ function fixture(sizes: Record<string, number>, options: { budget: number; pinne
   const resumes = new Set<string>();
   const loads: string[] = [];
   const host = createResidencyHost<FakeUnit>({
-    budgetBytes: options.budget, pinned: options.pinned, measured: options.measured, external: options.external,
+    budgetBytes: options.budget, pinned: options.pinned, measured: options.measured, external: options.external, serve: options.serve, uses: options.uses,
     events: { publish: event => events.push(event) },
     source: {
       async resolve(id): Promise<ResidencyEntry | undefined> { return id in sizes ? { id, bytes: sizes[id]!, operations: ["generate"] } : undefined; },
@@ -316,4 +317,18 @@ test("a unit that could not make its state durable is still released, and says s
   (await f.host.acquire("b")).release();
   expect(f.events.find(event => event.type === "model.unload")).toMatchObject({ model: "a", flushed: false });
   expect(ids(f.host)).toEqual(["b"]);
+});
+
+test("a host switches through the composition's own switch and reports the directories its units read; without a switch it says it holds one model", async () => {
+  const { host: plain } = fixture({ a: 2 * GB }, { budget: 10 * GB });
+  await expect(plain.serve("a")).rejects.toMatchObject({ code: "not-switchable" });
+  const served: { id: string; aborted: boolean | undefined }[] = [];
+  const { host } = fixture({ a: 2 * GB, b: 3 * GB }, { budget: 10 * GB, serve: async (id, signal) => { served.push({ id, aborted: signal?.aborted }); }, uses: unit => [`/snapshots/${unit.id}`, "/extra"] });
+  (await host.acquire("a")).release();
+  await host.serve("b", { signal: new AbortController().signal });
+  await host.serve("a");
+  expect(served).toEqual([{ id: "b", aborted: false }, { id: "a", aborted: undefined }]);
+  expect(host.resident().map(model => [model.id, model.uses])).toEqual([["a", ["/snapshots/a", "/extra"]]]);
+  (await plain.acquire("a")).release();
+  expect(plain.resident().map(model => model.uses)).toEqual([undefined]);
 });
