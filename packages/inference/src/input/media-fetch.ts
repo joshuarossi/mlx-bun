@@ -6,11 +6,8 @@
 // URL and each redirect — must be a public http(s) host, the whole fetch
 // is wall-clock bounded, and the response is size-capped.
 //
-// Escape hatch: `mlx-bun serve --allow-private-media` (or
-// MLX_BUN_ALLOW_PRIVATE_MEDIA=1) re-permits private/loopback/link-local
-// destinations — this is a local single-user server and pointing it at a
-// NAS or another LAN box is legitimate. Scheme/timeout/size limits still
-// apply.
+// Callers may allow private/loopback/link-local destinations with the policy's
+// `allowPrivate` option. Scheme/timeout/size limits still apply.
 //
 // DNS names are resolved and every resolved address is checked before the
 // fetch. The request then dials one of those checked IP literals while
@@ -82,8 +79,7 @@ export function defaultMediaFetchPolicy(): MediaFetchPolicy {
 }
 
 const PRIVATE_HINT =
-  "private/loopback hosts are blocked by default; start the server with " +
-  "--allow-private-media (or MLX_BUN_ALLOW_PRIVATE_MEDIA=1) to fetch from LAN hosts";
+  "private/loopback hosts are blocked by default; set MediaFetchPolicy.allowPrivate to true to fetch from LAN hosts";
 
 function privateHint(policy: MediaFetchPolicy): string {
   return policy.privateDestinationHint ?? PRIVATE_HINT;
