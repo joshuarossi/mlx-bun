@@ -7,7 +7,7 @@ import { DenseKvReadError } from "@mlx-bun/inference/state/dense-kv-reads";
 import { createCompletionRoutes } from "../../src/server/routes";
 import { errorResponse } from "../../src/server/http";
 import { startServer } from "../../src/server/start";
-import { createLoopbackMemoryClient } from "../../src/server/memory-completion-client";
+import { createLoopbackMemoryClient } from "@mlx-bun/module-memory/completion-client";
 import { ResponseStore } from "../../src/server/responses";
 
 const execution = { method: "autoregressive", mechanism: "continuous" as const, pagedKv: false, promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] };

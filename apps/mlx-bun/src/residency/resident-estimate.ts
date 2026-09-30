@@ -2,13 +2,26 @@
 // plus the KV cache and prefill working set of a typical serving context, from
 // the same fit model `/fit` reports. Loading replaces the estimate with what the
 // loaded model reports (its real weights bytes and the state it carries).
+import { totalmem } from "node:os";
 import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
-import { fit, type MachineSpec } from "@mlx-bun/inference/execution/fit";
+import { fit, WIRED_FRACTION, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 
 /** The context the estimate reserves KV for; longer contexts grow into the budget's headroom or evict others. */
 export const SERVING_CONTEXT_TOKENS = 8192;
+
+/** The share of the device working set all resident models may use together by default; the rest is headroom for
+ * KV growth, prefill transients and the system. */
+export const DEFAULT_BUDGET_FRACTION = 0.7;
+
+/** The default residency budget, one rule for both compositions: a share of the device working set (Metal's recommended
+ * maximum, which `cache-services` also plans against), or of the RAM the GPU may wire (`fit`'s rule) when the device does
+ * not say. The in-process host reads the working set itself; an isolated host is told it by its first worker. */
+export function defaultBudgetBytes(workingSetBytes?: number): number {
+  const workingSet = workingSetBytes !== undefined && workingSetBytes > 0 ? workingSetBytes : totalmem() * WIRED_FRACTION;
+  return Math.floor(workingSet * DEFAULT_BUDGET_FRACTION);
+}
 
 /** Bytes a model's KV and prefill working set take at the serving context. */
 export function servingReserveBytes(config: ModelConfig, weightsBytes: number,

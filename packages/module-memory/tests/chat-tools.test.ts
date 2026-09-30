@@ -1,14 +1,14 @@
 // The real Pi SDK must advertise and execute memory tools in a read-only chat, rather than merely accepting injected
 // definitions that never reach the model. Memory reaches the chat only through the registry: its module registers the
 // tools (`chat.tool`) and the hint and skill (`chat.guidance`), and the chat module's surface is built from them.
-import * as chatPolicy from "../../../../packages/module-chat/src/policy";
+import * as chatPolicy from "../../module-chat/src/policy";
 import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPiBackend, type ServerMessage } from "@mlx-bun/module-chat";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/tools";
-import { memorySurface } from "../support/memory-surface";
+import { memorySurface } from "./support/memory-surface";
 
 async function bounded<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

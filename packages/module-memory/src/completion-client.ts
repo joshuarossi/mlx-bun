@@ -109,8 +109,3 @@ export function createLoopbackMemoryClient(apiUrl: () => string, http: MemoryCli
   return { complete, completeBatch };
 }
 
-/** Where one memory call goes: the worker (its supervisor's socket fetch)
- * and the task model snapshot selected for it, which that worker loads if
- * this call is the one that loads its task model. */
-export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit): Promise<Response> }; snapshot: string }
-

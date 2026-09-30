@@ -19,7 +19,7 @@ const app = join(root, "apps/mlx-bun");
 export async function compileApp(entry: string, output: string, metafile?: string): Promise<void> {
   const proc = Bun.spawn([process.execPath, "build", "--compile", entry, "--outfile", output,
     "--asset", join(app, "src/web/public"), "--asset", OUTFILE,
-    "--asset", join(app, "src/memory/skills"),
+    "--asset", join(root, "packages/module-memory/src/skills"),
     "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig",
     ...metafile ? [`--metafile=${metafile}`] : []],
     { cwd: root, stdout: "inherit", stderr: "inherit" });

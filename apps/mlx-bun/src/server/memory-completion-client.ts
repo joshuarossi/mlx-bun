@@ -1,6 +1,6 @@
-import { memoryBatchSize, type MemoryCompletionClient } from "@mlx-bun/module-memory/model";
+import type { TaskCompletionClient as MemoryCompletionClient } from "@mlx-bun/app-core";
 import type { WorkerMemoryCall } from "./worker-routes";
-export { createLoopbackMemoryClient } from "@mlx-bun/module-memory/completion-client";
+export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit): Promise<Response> }; snapshot: string }
 /** The isolated parent's client for one synthesis run: each `complete` or
  * `completeBatch` is one POST of the rows and the selected snapshot to the
  * private `/admin/memory/complete` of the worker `select` returns (the

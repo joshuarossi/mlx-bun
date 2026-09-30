@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
-import { memorySurface } from "../support/memory-surface";
+import { memorySurface } from "./support/memory-surface";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/tools";
 import { searchArticles } from "../src/vault";
 

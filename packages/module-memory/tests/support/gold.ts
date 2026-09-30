@@ -6,7 +6,7 @@
 // file is committed. `loadDreamingGold()` with no file present yields an empty
 // gold; every test passes this one explicitly.
 
-import type { DreamingGold } from "../src/resolve";
+import type { DreamingGold } from "../../src/resolve";
 
 export const TEST_GOLD: DreamingGold = {
   variantGroups: [

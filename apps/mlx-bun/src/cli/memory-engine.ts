@@ -14,7 +14,7 @@ import type { GenerationGateway } from "../engine/generation-gateway";
 import {
   MEMORY_TASK_MODEL, adapterDirFor, locateTaskModel, memoryBatchSize, memoryPromptIds,
   type MemoryCompletionClient, type MemoryCompletionRequest,
-} from "@mlx-bun/module-memory/model";
+} from "../modules";
 import { planRequest, RequestOwnership } from "../server/request-plan";
 
 /** The chunk stage's trained adapter, mounted once under this id when present. */

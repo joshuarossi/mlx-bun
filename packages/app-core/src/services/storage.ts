@@ -15,5 +15,5 @@ export interface StorageEntrySpec {
  * defaults. */
 export interface StorageService {
   /** Absolute path of an entry the module declared; throws for any other key. */
-  path(key: string): string;
+  path(key: string, options?: { readonly create?: boolean }): string;
 }

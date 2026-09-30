@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
-import { createLoopbackMemoryClient, createWorkerMemoryClient, type MemoryTarget } from "../../src/server/memory-completion-client";
+import { createLoopbackMemoryClient } from "@mlx-bun/module-memory/completion-client";
+import { createWorkerMemoryClient, type MemoryTarget } from "../../src/server/memory-completion-client";
 import { memoryMessages } from "@mlx-bun/module-memory/model";
 import { CHUNK_SYSTEM, chunkInput } from "@mlx-bun/module-memory/chunk";
 

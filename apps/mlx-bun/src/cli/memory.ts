@@ -1,21 +1,20 @@
 import { fileURLToPath } from "node:url";
-import { runMemory as runModuleMemory, type MemoryDependencies, type CommandArgs } from "@mlx-bun/module-memory/cli";
-import { vaultRoot } from "@mlx-bun/module-memory/vault";
+import { runModuleMemory, vaultRoot, memoryManifest, type MemoryDependencies, type MemoryCommandArgs as CommandArgs } from "../modules";
+import { verbHelp } from "@mlx-bun/app-services";
 import { executablePath } from "../jobs/executable";
 import { userHome } from "../storage/paths";
 import { createInProcessMemoryClient } from "./memory-engine";
-import { help } from "./args";
-import { banner, boxLines, renderHelp, step, style } from "./terminal";
+import { banner, boxLines, renderHelp, step, style, gradient } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
-export type { MemoryDependencies } from "@mlx-bun/module-memory/cli";
+export type { MemoryDependencies } from "../modules";
 
 /** The app's executable, terminal and task-model adapters; memory policy belongs to its module. */
 export function defaultMemoryDependencies(): MemoryDependencies {
   const entry = fileURLToPath(new URL("./main.ts", import.meta.url));
   return {
     log: console.log, error: console.error, banner: () => banner(pkg.version),
-    box: lines => { for (const line of boxLines(lines)) console.log(line); }, step, style,
-    help: () => renderHelp(help("memory")), vault: vaultRoot(), home: userHome(),
+    box: lines => { for (const line of boxLines(lines)) console.log(line); }, step, style: { ...style, gradient },
+    help: () => renderHelp(verbHelp("mlx-bun", memoryManifest.verbs[0])), vault: vaultRoot(), home: userHome(),
     program: entry.includes("$bunfs") ? [executablePath] : [executablePath, entry],
     taskModel: () => createInProcessMemoryClient(),
     async open(args) { return await Bun.spawn(["open", ...args], { stdout: "ignore", stderr: "ignore" }).exited; },

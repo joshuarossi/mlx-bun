@@ -64,7 +64,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     const { installedModules } = await import(app + "src/modules.ts");
     // The state runs the modules that need job runners or serve a socket (chat); Whisper's module belongs to the model host.
     const stateModules = await installedModules("state");
-    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "benchmarks", "train", "models", "chat"]);
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "benchmarks", "train", "models", "chat", "memory"]);
     assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
     const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
     assert.deepEqual(state.memoryPaths, memoryPaths);
@@ -120,7 +120,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.equal(training.kind, "finetune");
     assert.equal(training.status, "failed");
     assert.match(training.error, /no model host is attached/);
-    const status = await (await state.routes.memory.handle(get("/api/memory/status"))).json();
+    const status = await (await state.routes.appModules.handle(get("/api/memory/status"))).json();
     assert.deepEqual([status.ok, status.enabled, status.root], [false, false, memoryPaths.vault]);
     assert.ok(!existsSync(memoryPaths.vault), "reading memory status never initializes a vault");
     // The chat module runs in the state: its shipped paths, over the stores the embedder chose (an explicit path wins and is never created by a read), and its socket.
@@ -201,7 +201,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
       memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" },
       storagePaths: { artifactRoot: "/unused/artifacts" }, sockets,
       events: createEventHub(),
-      routes: Object.fromEntries(["memory", "jobs", "appModules", "publishing"].map(name => [name, group(name)])),
+      routes: Object.fromEntries(["jobs", "appModules", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
     };
@@ -223,7 +223,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.equal(listenerInput.web, state.web); assert.equal(listenerInput.sockets, state.sockets, "the listener upgrades the state's module sockets");
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "completions", "modules", "memory", "jobs", "appModules", "publishing"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "completions", "modules", "jobs", "appModules", "publishing"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
     // with Whisper alongside them before drain, HTTP drain (the chat's sockets closed with the state's modules, in the hook), Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
@@ -366,13 +366,13 @@ test("memory synthesis runs on one lazily created task model, bound to each run'
       clientFor(signal) { signals.push(signal); return { complete: held(signal), completeBatch: held(signal) }; },
       async close() { events.push("task model close"); } }; };
     const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
-      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {}, async client => [(await import("@mlx-bun/module-memory")).createMemoryModule({ client })]);
     assert.equal(created, 0, "composing the state creates no task model");
     // Each task-model call holds the attached host's execution lease, as managed jobs do.
     state.attach({ port: 1, invalidateLibrary() {}, async acquireExecutionLease(signal) { signal.throwIfAborted(); events.push("lease");
       return { dispose() { events.push("release"); } }; } });
-    const first = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
-    const second = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const first = await state.routes.appModules.handle(new Request("http://app/v1/memory/synthesize"));
+    const second = await state.routes.appModules.handle(new Request("http://app/v1/memory/synthesize"));
     const bodies = Promise.all([first.text(), second.text()]);
     await twoReached.promise;
     assert.equal(created, 1, "concurrent runs share one resident task model");
@@ -417,7 +417,7 @@ test("a synthesis run waiting on the execution lease is cancelled cleanly, and c
     const memoryTaskModel = () => { const client = { async complete() { events.push("completion"); return ""; }, async completeBatch() { events.push("completion"); return []; } };
       return { client, clientFor: () => client, async close() { events.push("task model close"); } }; };
     const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
-      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {}, async client => [(await import("@mlx-bun/module-memory")).createMemoryModule({ client })]);
     // The host's execution lease is exclusive; a waiter leaves the queue when its signal aborts.
     let holder = false;
     const queue = [];
@@ -435,7 +435,7 @@ test("a synthesis run waiting on the execution lease is cancelled cleanly, and c
     const waitFor = async what => { for (let i = 0; i < 500 && !events.includes(what); i++) await Bun.sleep(10); assert.ok(events.includes(what), what); };
     // A run waiting for the lease is cancelled by its request: no completion starts.
     const request = new AbortController();
-    const first = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize", { signal: request.signal }));
+    const first = await state.routes.appModules.handle(new Request("http://app/v1/memory/synthesize", { signal: request.signal }));
     const firstBody = first.text().catch(() => "");
     await waitFor("waiting");
     request.abort(new Error("client left"));
@@ -443,7 +443,7 @@ test("a synthesis run waiting on the execution lease is cancelled cleanly, and c
     assert.ok(!(await firstBody).includes("[DONE]"));
     // Close while the job still holds the lease and another run waits: runs and the job are joined, then the task model closes.
     events.length = 0;
-    const second = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const second = await state.routes.appModules.handle(new Request("http://app/v1/memory/synthesize"));
     const secondBody = second.text();
     await waitFor("waiting");
     await state.close();
@@ -485,7 +485,7 @@ test("a memory call holding the execution lease delays a managed job until it se
     const memoryTaskModel = () => { const client = { complete: call, completeBatch: async () => { await call(); return []; } };
       return { client, clientFor: () => client, async close() { events.push("task model close"); } }; };
     const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
-      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {}, async client => [(await import("@mlx-bun/module-memory")).createMemoryModule({ client })]);
     let holder = false;
     const queue = [];
     state.attach({ port: 1, invalidateLibrary() {}, acquireExecutionLease(signal) {
@@ -498,7 +498,7 @@ test("a memory call holding the execution lease delays a managed job until it se
     } });
     const waitFor = async what => { for (let i = 0; i < 500 && !events.includes(what); i++) await Bun.sleep(10); assert.ok(events.includes(what), what); };
     // A memory call holds the lease: a managed job's lease waits until that call settles.
-    const run = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const run = await state.routes.appModules.handle(new Request("http://app/v1/memory/synthesize"));
     const body = run.text();
     await waitFor("memory call");
     const job = jobOptions.acquire(new AbortController().signal).then(lease => { events.push("job lease"); return lease; });

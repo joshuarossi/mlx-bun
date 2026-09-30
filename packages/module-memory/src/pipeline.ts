@@ -54,6 +54,7 @@ export type { SynthesisEvent, SynthesisStage } from "./events";
 import type { SynthesisEvent, SynthesisStage } from "./events";
 
 export interface SynthesisOptions {
+  dbPath?: string;
   client?: MemoryCompletionClient;
   signal?: AbortSignal;
   /** Only synthesize conversations newer than this (ISO date / conv cursor). */
@@ -244,7 +245,7 @@ export async function runSynthesis(
     return { implemented: true, stages: STAGES, note: "dry-run: DAG wired; no model calls made." };
   }
 
-  const store = new MemoryStore();
+  const store = new MemoryStore(opts.dbPath);
   try {
     // WRITE branch: ingest → segment → extract → route → create → commit.
     const root = opts.root ?? vaultRoot();

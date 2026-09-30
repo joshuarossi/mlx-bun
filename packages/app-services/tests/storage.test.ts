@@ -14,6 +14,10 @@ test("a module resolves only the entries it declared, and each is created under 
     ] } as unknown as AppModule;
     const storage = createStorage(() => root)({ moduleId: "notes", manifest });
     expect(existsSync(join(root, "notes"))).toBe(false);
+    expect(storage.path("dir", { create: false })).toBe(join(root, "notes/files"));
+    expect(storage.path("db", { create: false })).toBe(join(root, "db/notes.sqlite"));
+    expect(existsSync(join(root, "notes"))).toBe(false);
+    expect(existsSync(join(root, "db"))).toBe(false);
     expect(storage.path("dir")).toBe(join(root, "notes/files"));
     expect(statSync(join(root, "notes/files")).isDirectory()).toBe(true);
     expect(storage.path("db")).toBe(join(root, "db/notes.sqlite"));

@@ -45,8 +45,7 @@ try {
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
       try { await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal); }
       finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
-    } else if (command === "memory" || command === "setup") {
-      await (await import("./memory")).runMemory(parsed);
+
     }
   }
 } catch (error) {

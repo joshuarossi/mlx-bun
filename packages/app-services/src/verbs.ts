@@ -79,9 +79,10 @@ export function verbArguments(program: string, spec: CliVerbSpec, raw: Readonly<
 /** The verb's `--help`: a description, usage, and one row per option. */
 export function verbHelp(program: string, spec: CliVerbSpec): string {
   const positional = positionalUsage(spec);
+  const displayUsage = spec.helpUsage ?? `Usage: ${program} ${spec.name}${positional ? ` ${positional}` : ""} [options]`;
   const rows = spec.options.map(option => {
     const flag = (option.short ? `-${option.short}, ` : "") + `--${option.name}` + (isValue(option) ? " <value>" : "");
     return `  ${flag.padEnd(24)} ${option.summary}`;
   });
-  return `${program} ${spec.name} — ${spec.summary}\n\nUsage: ${program} ${spec.name}${positional ? ` ${positional}` : ""} [options]\n${spec.details ? `\n${spec.details}\n` : ""}\nOptions:\n${rows.join("\n")}\n  -h, --help               Show help`;
+  return `${program} ${spec.name} — ${spec.summary}\n\n${displayUsage}\n${spec.details ? `\n${spec.details}\n` : ""}\nOptions:\n${rows.join("\n")}\n  -h, --help               Show help`;
 }

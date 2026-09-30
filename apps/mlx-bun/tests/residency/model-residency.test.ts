@@ -17,7 +17,12 @@ function fixture(sizes: Record<string, number>, options: { budget: number; pinne
     closeGate: Promise<void> = Promise.resolve();
     flushed = true;
     constructor(readonly id: string, readonly size: number) {}
-    bytes() { return this.size; }
+    /** What its worker last reported measuring; the estimate (`size`) stands until one arrives. */
+    measured: number | undefined;
+    bytes() { return this.measured ?? this.size; }
+    /** What a fresh reading would say; `refresh` applies it, as a worker's health read does. */
+    fresh: number | undefined;
+    async refresh() { if (this.fresh !== undefined) this.measured = this.fresh; }
     memory() { return { weightsBytes: this.size, kvBytes: 0, prefixCacheBytes: 0 }; }
     operationsFor(): Partial<ModelOperations> { return { generate: async () => new Response(this.id) }; }
     async pause() { this.paused++; log.push(`pause ${this.id}`); return { dispose: () => { this.paused--; log.push(`unpause ${this.id}`); } }; }
@@ -184,6 +189,50 @@ test("measured memory floors the estimates, so a model whose estimate looks free
   held = 8 * GB;
   (await f.host.acquire("b")).release();
   expect(ids(f.host)).toEqual(["b"]);
+});
+
+test("a unit that reports measured bytes replaces its estimate in admission and eviction; before its first report the estimate stands", async () => {
+  const f = fixture({ a: 4 * GB, b: 3 * GB, c: 3 * GB }, { budget: 10 * GB });
+  (await f.host.acquire("a")).release();
+  (await f.host.acquire("b")).release();
+  // No report yet: by the estimates a (4) + b (3) + c (3) is exactly the budget, so c would fit beside them.
+  expect(await f.host.plan("c")).toMatchObject({ fits: true, evict: [], freeBytes: 3 * GB });
+  // a measures 6, not 4: the same three models no longer fit, so the least recently used one (a) is what must go.
+  f.units.get("a")!.measured = 6 * GB;
+  expect(f.host.resident().map(model => [model.id, model.bytes])).toEqual([["a", 6 * GB], ["b", 3 * GB]]);
+  expect(await f.host.plan("c")).toMatchObject({ fits: true, evict: ["a"], freeBytes: 1 * GB });
+  (await f.host.acquire("c")).release();
+  expect(ids(f.host)).toEqual(["b", "c"]);
+  expect(f.log.slice(-4)).toEqual(["drain a", "flush a", "release a", "load c"]);
+});
+
+test("the host asks its residents for a current reading before it decides who fits, so a reading that was not pushed still counts", async () => {
+  const f = fixture({ a: 4 * GB, b: 3 * GB, c: 4 * GB }, { budget: 10 * GB });
+  (await f.host.acquire("a")).release();
+  (await f.host.acquire("b")).release();
+  // By what a and b last reported (4 + 3), c (4) fits beside them... but b has since grown to 6 and nothing told the host.
+  f.units.get("b")!.fresh = 6 * GB;
+  expect(f.host.resident().map(model => model.bytes)).toEqual([4 * GB, 3 * GB]);
+  (await f.host.acquire("c")).release();
+  // Asked first, b reads 6: a + b + c is 14, so the least recently used a goes, and 6 + 4 fits.
+  expect(ids(f.host)).toEqual(["b", "c"]);
+  expect(f.log.slice(-4)).toEqual(["drain a", "flush a", "release a", "load c"]);
+  // makeRoom asks too: c reads 1 now, so 6 + 1 + 3 fits and nothing is drained (by the stale 6 + 4 it would drain b).
+  f.units.get("c")!.fresh = 1 * GB;
+  await f.host.makeRoom(3 * GB);
+  expect(ids(f.host)).toEqual(["b", "c"]);
+  expect(f.host.resident().find(model => model.id === "c")!.bytes).toBe(1 * GB);
+});
+
+test("a unit that measures less than its estimate frees room: nothing is evicted for a newcomer that now fits", async () => {
+  const f = fixture({ a: 6 * GB, b: 6 * GB }, { budget: 10 * GB });
+  (await f.host.acquire("a")).release();
+  expect(await f.host.plan("b")).toMatchObject({ fits: true, evict: ["a"] });
+  f.units.get("a")!.measured = 3 * GB;
+  expect(await f.host.plan("b")).toMatchObject({ fits: true, evict: [] });
+  (await f.host.acquire("b")).release();
+  expect(ids(f.host)).toEqual(["a", "b"]);
+  expect(f.log).toEqual(["load a", "load b"]);
 });
 
 test("residents the host does not manage (a Whisper companion) count against the budget", async () => {

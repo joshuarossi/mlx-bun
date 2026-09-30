@@ -13,13 +13,13 @@ import { mlxBunHome } from "./home";
  * creates nor moves it. */
 export function createStorage(root: (moduleId: string) => string = () => mlxBunHome(), explicit: Readonly<Record<string, string>> = {}): (scope: ModuleScope) => StorageService {
   return scope => ({
-    path(key) {
+    path(key, options) {
       const entry = scope.manifest.storage?.find(item => item.key === key);
       if (!entry) throw new Error(`module ${scope.moduleId} declared no storage entry "${key}"`);
       const chosen = explicit[`${scope.moduleId}.${key}`];
       if (chosen !== undefined) return chosen;
       const path = join(root(scope.moduleId), entry.path);
-      mkdirSync(entry.kind === "directory" ? path : dirname(path), { recursive: true });
+      if (options?.create !== false) mkdirSync(entry.kind === "directory" ? path : dirname(path), { recursive: true });
       return path;
     },
   });

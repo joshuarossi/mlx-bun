@@ -2,9 +2,10 @@
 // the model the attached serving host runs, reached over its own HTTP surface.
 // The serving host owns residency (it is loaded before it serves and released
 // when it closes), so this host reports that one model as resident and pinned,
-// never evicts it, and leases it for `generate`: a wire request (OpenAI,
-// Anthropic or Responses) sent to the host's listener, over its Unix socket
-// when it has one. Whisper and other companions are the model composition's.
+// never evicts it, and leases it for `generate`: a wire request (OpenAI, Anthropic or
+// Responses) sent to the host's listener, over its Unix socket when it has one. A serving
+// host whose residency can evict supplies `hold`, and each lease holds the model resident
+// through it until released. Whisper and other companions are the model composition's.
 import type { AcquireOptions, AdapterOperation, ModelHost, ModelId, ModelLease, ModelOperation, ModelOperations, ModelStats, ResidentModel } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "@mlx-bun/app-services/portable";
 
@@ -14,6 +15,8 @@ const OPERATIONS: readonly ModelOperation[] = ["generate"];
 export interface ServedHostLink {
   /** The served model: what modules lease for `generate` (its id and weight bytes). */
   readonly model: { readonly id: string; readonly bytes: number };
+  /** Holds the model resident until released; a leased model is never evicted under its holder. Absent on a host that never evicts it. */
+  hold?(model: string, signal?: AbortSignal): Promise<{ release(): void }>;
   /** The public port modules leasing the served model target. */
   readonly port: number;
   /** Internal (worker app form): the Unix socket the host listens on instead of TCP; the URL's port is then a placeholder. */
@@ -49,6 +52,8 @@ export function createServedModelHost<Link extends ServedHostLink>(options: Serv
       if (id !== link.model.id) throw new ModelHostFailure("does-not-fit", `model ${id} is not the served model (${link.model.id})`);
       const missing = (acquire.need ?? []).filter(operation => !OPERATIONS.includes(operation));
       if (missing.length) throw new ModelHostFailure("does-not-fit", `model ${id} does not declare ${missing.join(", ")}`);
+      // The host's own lease pins the model for as long as this one is held (it may load it again if it was evicted since).
+      const held = await link.hold?.(id, acquire.signal);
       leases++; lastUsedAt = Date.now();
       let released = false;
       const operations: Partial<ModelOperations> = { generate: request => {
@@ -56,7 +61,7 @@ export function createServedModelHost<Link extends ServedHostLink>(options: Serv
         return options.fetch(new Request(`http://127.0.0.1:${link.port}${url.pathname}${url.search}`, request), link);
       }, ...(link.adapters ? { adapters: link.adapters } : {}) };
       return { model: resident(link), loadMs: 0, operations,
-        release() { if (!released) { released = true; leases--; lastUsedAt = Date.now(); } } };
+        release() { if (!released) { released = true; leases--; lastUsedAt = Date.now(); held?.release(); } } };
     },
     async defaultFor(operation) { const link = options.link(); return link && OPERATIONS.includes(operation) ? link.model.id : undefined; },
     async plan(id) { return { fits: id === options.link()?.model.id, requiredBytes: 0, freeBytes: 0, evict: [] }; },

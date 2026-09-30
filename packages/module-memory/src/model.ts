@@ -142,19 +142,8 @@ export function memoryPromptIds(
 // The client seam — implemented by composition, never by this domain
 // ---------------------------------------------------------------------------
 
-export interface MemoryCompletionRequest {
-  readonly stage: string;
-  readonly input: LocalInput;
-  readonly maxTokens: number;
-}
-
-/** Application-facing calls. The implementation owns tokenization, numerical
- *  method and transport; callers provide request data and consume results. */
-export interface MemoryCompletionClient {
-  complete(request: MemoryCompletionRequest): Promise<string>;
-  /** Results preserve input order; the implementation chooses execution groups. */
-  completeBatch(requests: readonly MemoryCompletionRequest[]): Promise<string[]>;
-}
+export type { TaskCompletionRequest as MemoryCompletionRequest, TaskCompletionClient as MemoryCompletionClient } from "@mlx-bun/app-core";
+import type { TaskCompletionRequest as MemoryCompletionRequest, TaskCompletionClient as MemoryCompletionClient } from "@mlx-bun/app-core";
 
 /** Max rows in flight for a memory batch. 1 disables batching (callLocalBatch
  *  then runs its rows one after another).

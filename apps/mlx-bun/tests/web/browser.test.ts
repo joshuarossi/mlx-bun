@@ -9,7 +9,7 @@ import "./dom-setup";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "@mlx-bun/module-memory/tools";
 import { describe, expect, it, beforeEach } from "bun:test";
 import { api } from "../../src/web/browser/api";
-import { MEMORY_CHIP_TOOL_NAMES, isMemoryToolName, memoryToolChip } from "../../src/web/browser/memory-panel";
+import { MEMORY_CHIP_TOOL_NAMES, isMemoryToolName, memoryToolChip } from "../../../../packages/module-memory/src/panel/memory";
 
 /* ────────────────────────────────────────────────────────────────────
    (c) api() error-envelope unwrapping (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #4): an

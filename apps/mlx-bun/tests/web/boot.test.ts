@@ -81,8 +81,9 @@ const shown = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].fi
 const activePages = () => [...document.querySelectorAll<HTMLElement>("section[data-route].active")].map(section => section.dataset.route);
 
 test("the browser build takes the panels of the host's installed modules that export one, and no others", () => {
-  expect(panelModules()).toEqual(["@mlx-bun/module-benchmarks", "@mlx-bun/module-chat", "@mlx-bun/module-metrics", "@mlx-bun/module-models"]);
+  expect(panelModules()).toEqual(["@mlx-bun/module-benchmarks", "@mlx-bun/module-chat", "@mlx-bun/module-memory", "@mlx-bun/module-metrics", "@mlx-bun/module-models"]);
   const source = installedPanelsSource();
+  expect(source).toContain('import "@mlx-bun/module-memory/panel";');
   expect(source).toContain('import "@mlx-bun/module-benchmarks/panel";');
   expect(source).toContain('import "@mlx-bun/module-chat/panel";');
   expect(source).toContain('import "@mlx-bun/module-metrics/panel";');
@@ -100,6 +101,8 @@ test("the bundle boots app.html: the chat workspace panel leads, the legacy page
   expect(document.querySelector('#tabs .tab[data-tab="chat"]')!.classList.contains("active")).toBe(true);
   expect(document.getElementById("bloom")!.style.opacity).toBe("0.55");
   expect(document.getElementById("chat-hamburger")!.style.display).toBe("");
+  expect(document.querySelector("mlx-memory-panel #mem-overlay")).not.toBeNull();
+  expect(document.querySelector('#tabs [data-tab="memory"]')).toBeNull();
   expect(FakeWebSocket.opened).toBe(1); // the chat page initialized on first entry, as before
   expect(document.getElementById("st-metrics-host")).toBeNull(); // the status page no longer hosts the panel
 });

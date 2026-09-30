@@ -127,8 +127,8 @@ try {
     const { mkdtemp, mkdir, readFile, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { memoryChatTools } = await import("./node_modules/mlx-bun/src/memory/chat.ts");
-    const { materializeMemorySkill } = await import("./node_modules/mlx-bun/src/memory/skills.ts");
+    const { memoryChatTools } = await import("@mlx-bun/module-memory/chat");
+    const { materializeMemorySkill } = await import("@mlx-bun/module-memory/skills");
     const vault = await mkdtemp(join(tmpdir(), "mlx-packed-memory-"));
     try {
       await mkdir(join(vault, "articles"));

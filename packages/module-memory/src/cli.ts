@@ -25,6 +25,7 @@ import {
 } from "./vault";
 
 export interface MemoryDependencies {
+  dbPath?(): string;
   log(line: string): void;
   banner(): void;
   box(lines: string[]): void;
@@ -232,7 +233,7 @@ export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Pr
     const limit = opt("limit") ? parseInt(opt("limit")!, 10) : undefined;
     const convsRaw = opt("convs");
     const convIds = convsRaw ? convsRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-    const store = new MemoryStore();
+    const store = new MemoryStore(deps.dbPath?.());
     deps.log("");
     try {
       await withClient(async (client) => {
@@ -263,7 +264,7 @@ export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Pr
     const { runLinkStage } = await import("./crosslink");
     const { MemoryStore } = await import("./db");
     const limit = opt("limit") ? parseInt(opt("limit")!, 10) : undefined;
-    const store = new MemoryStore();
+    const store = new MemoryStore(deps.dbPath?.());
     deps.log("");
     try {
       const r = await runLinkStage(store, { root, limit, onEvent });
@@ -279,7 +280,7 @@ export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Pr
     const dryRun = flag("dry-run");
     deps.log("");
     const summary = await withClient((client) => runSynthesis(
-      { since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun, root, client },
+      { dbPath: dryRun ? undefined : deps.dbPath?.(), since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun, root, client },
       onEvent,
     ));
     deps.log(style.dim(`\n  ${summary.note}`));

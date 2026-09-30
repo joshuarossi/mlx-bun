@@ -127,7 +127,9 @@ prefix by token match in the saved state (a swap-back follow-up reports the
 prior conversation as `cached_tokens`). A request for a model that cannot fit
 while every other model is busy waits, and never evicts one mid-request. A model
 bigger than the whole budget is still served alone. The budget is `--model-budget`
-(decimal GB; default 70% of the GPU's recommended working set); a model's need is
+(decimal GB; default 70% of the device's recommended working set, one rule for both
+compositions: `defaultBudgetBytes` in `residency/resident-estimate.ts`, or of the RAM the
+GPU can wire, as `/fit` does, when the device does not say); a model that is not loaded needs
 its weights plus the KV and prefill working set of an 8k context (`residency/resident-estimate.ts`,
 the `/fit` model) and, once loaded, what it
 reports it holds (weights, projected KV, RAM prefix cache), floored by the process's measured
@@ -262,10 +264,26 @@ budget (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s, for the drain and again fo
 the stop) and is never killed before its flush is durable; it exits 0 when the flush
 was durable and 3 when it was not, which the `model.unload` event reports as
 `flushed`. Naming an evicted model again spawns a worker that resumes from
-`MLX_BUN_HOME/kv` (`cached_tokens` on the next turn). The default budget is derived
-here from the machine's RAM (70% of the memory the GPU can wire, as `/fit` does)
-because this process cannot ask Metal; a model's need is the `/fit` estimate until
-its worker reports its weights. Whisper is a worker of its own (the
+`MLX_BUN_HOME/kv` (`cached_tokens` on the next turn). Each worker measures its own MLX
+memory (active, cache and peak bytes, and the device's recommended working set), since
+this process loads no native module: it reports them on `/health` (`memory`) and as a
+`worker.memory` line in its `/admin/events` stream at connect, on each second it changed,
+and after every finished request (the line is consumed here, never republished on the
+bus). A worker counts as active plus cache bytes from its first report (never below the
+weights it reported (the checkpoint size for a transcription companion): MLX maps weights
+lazily, so a worker that has not run yet reads low),
+in place of the `/fit` estimate, which stands only before that report (a model that has not
+loaded yet needs its estimate) and again while the worker is down. Before it decides who
+fits, the residency manager asks every resident worker for a current reading (`GET /health`),
+so a reading the stream has not delivered yet still counts; `/engine` and `/health` list each
+worker's `memory` (`active_bytes`, `cache_bytes`, `peak_bytes`, or `null`), and
+`GET /stats` `models` counts the measured bytes. The default budget is 70% of the working
+set the startup model's worker reports, the in-process rule (`--model-budget` overrides it).
+A consumer that runs long on a worker holds that model's residency lease for as long as
+it runs, so the worker is never drained under it: memory synthesis (a run holds the current
+model's lease from its first stage call to its last; in-process it runs on its own task model and
+holds none) and, in either composition, modules that generate through the model host (each
+`modelHost` lease on the served model holds the residency lease until it is released). Whisper is a worker of its own (the
 transcription-only server, `--whisper-resident` pins it), started on the first audio
 request and drained like a chat model when memory is short.
 
@@ -320,8 +338,9 @@ unload events are dropped), and a respawned worker's stream is resubscribed.
 
 **Crashes.** A worker's unexpected exit is respawned by its supervisor with that
 worker's model (the one that was resident, not the startup model) within main's
-budget: at most three restarts in a rolling 60-second window, and a worker that died
-within 10 seconds of its spawn waits 5 seconds before the retry. The other workers
+budget: at most three restarts in a rolling 60-second window. A worker respawns at once
+after a single crash, even one within 10 seconds of its spawn; a worker that dies within
+10 seconds of its spawn again straight after such a death waits 5 seconds before the retry. The other workers
 and the app are untouched. A managed job's execution lease is a connection-owned
 `POST /admin/lease` inside each worker, so a respawn waits until it is released and a
 reload never shares the GPU with a job. Requests in flight when a worker dies end with
@@ -353,11 +372,6 @@ the workers'. Pi's own SDK policy still retries a request refused with 502 befor
 generation started (three attempts, 2/4/8 s), which rides out a fast respawn; a
 generation that started is never replayed. A Whisper checkpoint as the main model
 serves the transcription-only server in this process, as before.
-
-**Limits.** This process has no measured-memory floor (it cannot read the GPU's
-active memory): residency uses estimates until a worker reports its weights. Memory
-synthesis runs on the current worker's task model without holding a residency lease
-on it.
 
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
@@ -791,7 +805,7 @@ listener (`createModuleSockets`) and stops it, closing every chat, before the li
 three things for it: `readOnly` (`ServeOptions.readOnly`), the working directory (`chatPaths.cwd`), and, through
 `chatPaths` (`sessionDir`, `agentDir`, `toolApprovalsFile`), where an embedder put its stores instead of the
 module's storage entries; these are composition options, not CLI switches. Memory reaches the chat through the
-registry: `memory/chat.ts` registers the vault's read-only tools (`chat.tool`) and their hint and skill
+registry: `@mlx-bun/module-memory/chat` registers the vault's read-only tools (`chat.tool`) and their hint and skill
 (`chat.guidance`), each offered only while the vault exists.
 
 The [existing-user data test](tests/existing-user-data.test.ts) opens data a
@@ -813,7 +827,7 @@ link leaving the copy.
 ## Browser app
 
 `src/web/browser/` preserves the existing model, training, quantization,
-dataset, memory, and status UI as pages of the web shell
+dataset and status UI as pages of the web shell; memory's module owns its persistent sidebar overlay alongside chat
 ([`@mlx-bun/web-shell`](../../packages/web-shell/README.md)), which owns navigation, routing, theme,
 the command palette's chrome and the mounting of module panels. `main.ts` composes the shell, the panels of the
 installed modules (`installed-panels.ts`, generated by `web/build.ts` from the host's installed modules, so the bundle
@@ -847,11 +861,11 @@ tensors. Serving with an adapter still uses the shared scheduler and reports 501
 
 ## Memory vault
 
-`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+`@mlx-bun/module-memory/article` owns Markdown article structure; `vault.ts` owns vault
 initialization, filesystem reads, search, links, and Git history. The default
 vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
-`server/memory-routes.ts` exposes the read/init HTTP surface through
-`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+`@mlx-bun/module-memory/routes` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; The app installs the memory module in persistent state and mounts its declared routes.
 Initialization is explicit and idempotent, and its path stays confined to the
 vault or temporary trees. Existing article/Talk directory links remain usable;
 initialization confines its actual write targets. Reference seeding defaults to
@@ -859,23 +873,22 @@ none; composition can pass explicit `referenceSources` without inferring old
 repository documentation paths. Merely starting the app does not create a vault.
 
 [Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
-and real local Git history; [article tests](tests/memory/article.test.ts) cover
+and real local Git history; [article tests](../../packages/module-memory/tests/article.test.ts) cover
 parsing and round trips. `query.ts` owns deterministic article navigation;
 `tools.ts` owns the read-only Pi definitions and prompt hint. CLI composition
-passes the same vault root to REST and to chat (through `memory/chat.ts`) and supplies a skill directory
+passes the same vault root to REST and to chat (through `@mlx-bun/module-memory/chat`) and supplies a skill directory
 (default `~/.mlx-bun/skills`). `ServeOptions.memoryPaths` permits isolated app
 composition without adding CLI flags. Missing vaults expose no memory tools and
-create no skill files. Bundled skills are package assets; standalone binary
-embedding remains part of the release migration.
+create no skill files. Bundled skills are module package assets and are embedded in the standalone binary.
 
-[Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
-[chat tools test](tests/memory/chat-tools.test.ts) executes a memory tool through a real
+[Tool tests](../../packages/module-memory/tests/tools.test.ts) exercise temporary vaults, and the
+[chat tools test](../../packages/module-memory/tests/chat-tools.test.ts) executes a memory tool through a real
 read-only Pi session, contributed to the chat module through the registry, with a synthetic loopback model.
 No read tool starts a synthesis run.
 
 ### Memory synthesis
 
-Main's nightly pipeline lives under `src/memory/` unchanged in prompts, stage
+Main's nightly pipeline lives under `packages/module-memory/src/` unchanged in prompts, stage
 order, database schema (`db.ts`, `~/.mlx-bun/db/memory.sqlite`), vault
 layout, Git usage, and the dedup/normalize/reconcile rules: `pipeline.ts` drives
 the four resumable, chronological stage workers in `stages.ts` (SEGMENT via
@@ -894,7 +907,7 @@ shutdown, as main did. Under `serve` each task-model completion (or batch, once
 all its rows join) holds the served engine's execution lease, taken before the
 weights load, so memory work never overlaps a managed job; chat waits while a
 memory stage call runs (main's in-server client ran beside chat under its own
-locks). `server/memory-completion-client.ts` holds the HTTP clients. Its
+locks). `server/memory-completion-client.ts` holds the private worker client; the module owns its loopback client. The
 loopback client posts each stage call to a serving mlx-bun's own
 `/v1/chat/completions` (raw greedy sampling, neutral logit processors and the
 model template's thinking defaults, the stage's system/user turns,

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMemoryRoutes } from "../src/server/memory-routes";
+import { createMemoryRoutes } from "@mlx-bun/module-memory/routes";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";

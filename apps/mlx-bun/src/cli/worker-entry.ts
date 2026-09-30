@@ -12,6 +12,7 @@
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
+import type { WorkerMemory } from "../jobs/worker-memory";
 import { ResponseStore } from "../server/responses";
 import { createWorkerRoutes } from "../server/worker-routes";
 import type { CommandArgs } from "./args";
@@ -69,12 +70,24 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     memoryPaths: options.memoryPaths ?? { vault: "", skills: "" },
     storagePaths: options.storagePaths ?? {},
     sockets: createModuleSockets([]),
-    routes: { memory: none, jobs: none, appModules: none, publishing: none },
+    routes: { jobs: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };
     },
     async close() { events.close(); },
+  };
+}
+
+/** This process's MLX memory, read where the parent cannot (it has no native module); undefined without the native runtime. */
+async function processMemory(): Promise<(() => WorkerMemory | undefined) | undefined> {
+  const mlx = await import("@mlx-bun/mlx/ffi").catch(() => undefined);
+  if (!mlx) return undefined;
+  let workingSetBytes: number | undefined;
+  const workingSet = () => workingSetBytes ??= (() => { try { return mlx.maxRecommendedWorkingSetSize(); } catch { return 0; } })();
+  return () => {
+    try { return { activeBytes: mlx.activeMemory(), cacheBytes: mlx.cacheMemory(), peakBytes: mlx.peakMemory(), workingSetBytes: workingSet() }; }
+    catch { return undefined; }
   };
 }
 
@@ -134,7 +147,8 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   const state = createWorkerState(launch.options, link);
   // The parent's models module reaches this worker's model through the host's own adapter operation.
   const adapterOf = () => { const operation = link.current?.adapters; if (!operation) throw new Error("no model host is attached"); return operation; };
-  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid,
+  const memoryNow = await processMemory();
+  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}),
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
@@ -203,10 +217,11 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
   const start = supplied.start ?? startModelServer, startTranscription = supplied.startTranscription ?? startTranscriptionServer;
   const link: { current?: ModelHostLink } = {};
   let modelId: string | undefined;
+  const memoryNow = await processMemory();
   // One admin surface for the model the app serves; the transcription-only app has no execution lease.
   const socket = (model: ModelRecord, lease: boolean) => {
     modelId = model.repoId;
-    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(lease ? {
+    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}), ...(lease ? {
       acquireExecutionLease(signal: AbortSignal) {
         if (!link.current) return Promise.reject(new Error("no model host is attached"));
         return link.current.acquireExecutionLease(signal);

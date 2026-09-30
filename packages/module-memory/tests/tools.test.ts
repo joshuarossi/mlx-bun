@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryTools, memoryIndexHint, MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/tools";
-import { memorySurface } from "../support/memory-surface";
+import { memorySurface } from "./support/memory-surface";
 import { articlesInCategory, buildMemoryIndex, neighbors, resetMemoryIndexCache, resolveName, serializeMemoryIndex } from "../src/query";
 
 const roots: string[] = [];
