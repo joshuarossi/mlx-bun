@@ -21,7 +21,7 @@ test("the manifest is valid for a host with jobs, storage and catalog, and decla
   expect(train.sockets ?? []).toEqual([]);
   expect(manifest.verbs.map(verb => verb.name)).toEqual(["train", "draft", "train-watch", "fuse"]);
   // Two modules that declare the same entries (the models and datasets other modules also write) share them.
-  const sharer = { ...train, id: "sharer", routes: [], verbs: [], jobs: [], storage: [manifest.storage[1], manifest.storage[2]] };
+  const sharer = { ...train, id: "sharer", panel: undefined, routes: [], verbs: [], jobs: [], storage: [manifest.storage[1], manifest.storage[2]] };
   expect(checkManifests([train, sharer], { provided: ["jobs", "storage", "catalog"] })).toEqual([]);
 });
 

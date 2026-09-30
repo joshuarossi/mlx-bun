@@ -1,15 +1,5 @@
-// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split. Built into apps/mlx-bun/dist/web/app.js by
-// scripts/build-web.ts.
-//
-// QUANTIZE CONTROLLER — 4-step wizard. Behavior-identical port of the
-// original controllers.quantize IIFE in app.html.
-
-import { api, jobStream } from "./api";
-import type { ApiEnvelope } from "./protocol";
-import { $, el, toast, pushToHub, controllers } from "./shell";
-import { esc, renderSteps } from "./markdown";
-
+import type { ApiEnvelope, PanelConnection } from "../protocol";
+import { panelTools, esc, num, renderSteps } from "./tools";
 const STEPS = ["Source", "Configure", "Run", "Done"];
 
 // The File System Access API's showDirectoryPicker() isn't in lib.dom yet
@@ -24,12 +14,14 @@ interface FileWithRelPath extends File {
   webkitRelativePath: string;
 }
 
-export function createQuantizeController() {
+export function createQuantizeController(root: ShadowRoot, connection: () => PanelConnection) {
+  const { $, api, jobStream, toast, pushToHub } = panelTools(root, connection);
+  let streamId: string | null = null, terminal = false, active = true;
   let step = 0, bits = 4, gs = 64, mode: "uniform" | "mixed" = "uniform", bpw = 5, jobId: string | null = null, es: EventSource | null = null, log: string[] = [];
 
   function show(n: number): void {
     step = n;
-    document.querySelectorAll<HTMLElement>("[data-qstep]").forEach((d) => d.style.display = (+d.dataset.qstep! === n) ? "" : "none");
+    root.querySelectorAll<HTMLElement>("[data-qstep]").forEach((d) => d.style.display = (+d.dataset.qstep! === n) ? "" : "none");
     renderSteps($("q-steps"), STEPS, n);
   }
   function seg(container: HTMLElement, onPick: (v: string, b: HTMLButtonElement) => void): void {
@@ -106,6 +98,8 @@ export function createQuantizeController() {
   }
 
   function attach(id: string): void {
+    streamId = id; terminal = false;
+    if (!active) return;
     if (es) es.close();
     es = jobStream(id, {
       log: (e) => { log.push(e.line); $("q-log").textContent = log.slice(-200).join("\n"); $("q-log").scrollTop = $("q-log").scrollHeight; },
@@ -115,18 +109,19 @@ export function createQuantizeController() {
         if (e.stage === "done") { if (e.output_dir) $("q-out").textContent = e.output_dir; finish(); }
       },
       done: () => finish(),
-      failed: (e) => { $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
+      failed: (e) => { terminal = true; $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
     });
   }
   function finish(): void {
+    if (terminal) return;
+    terminal = true;
     $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3);
-    // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #3: the server invalidates its /library cache the
-    // instant this job completes (apps/mlx-bun/src/cli/serve-state.ts onComplete) — pull the fresh
-    // list right away instead of waiting for Status's own 15s poll.
-    if (controllers.status && controllers.status.refreshLibrary) (controllers.status.refreshLibrary as () => void)();
+    connection().ui?.catalogChanged?.();
   }
 
   return {
+    enter() { active = true; if (streamId && !terminal) { log = [];  attach(streamId); } },
+    leave() { active = false; es?.close(); es = null; },
     init() {
       show(0);
       ($("q-inspect") as HTMLButtonElement).onclick = inspect;
@@ -159,7 +154,7 @@ export function createQuantizeController() {
       seg($("q-gs"), (v) => { gs = +v; });
       seg($("q-mode"), (v) => { mode = v as "uniform" | "mixed"; $("q-bpw-field").style.display = v === "mixed" ? "" : "none"; });
       $("q-bpw").addEventListener("input", (e) => { bpw = +(e.target as HTMLInputElement).value; $("q-bpw-val").textContent = bpw.toFixed(1); });
-      document.querySelectorAll<HTMLButtonElement>("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
+      root.querySelectorAll<HTMLButtonElement>("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
       ($("q-submit") as HTMLButtonElement).onclick = submit;
       ($("q-push") as HTMLButtonElement).onclick = () => pushToHub($("q-push-panel"), { kind: "quantize", job_id: jobId || undefined });
       ($("q-again") as HTMLButtonElement).onclick = () => { $("q-inspect-out").innerHTML = ""; $("q-push-panel").innerHTML = ""; show(0); };

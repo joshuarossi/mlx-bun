@@ -995,10 +995,10 @@ the `memory_status` tool prints its `nightly` line; the memory skill tells the
 assistant not to claim a scheduled run happened unless the last synthesis
 commit shows it.
 
-`src/memory/schedule.ts` owns the plist and takes the home directory and the
+`@mlx-bun/module-memory/schedule` owns the plist and takes the home directory and the
 `launchctl` runner as seams; `cli/memory.ts` adds the vault root, the job's
 program, and the prompt; the tool and route factories take a `schedule` probe.
-[Schedule tests](tests/memory/schedule.test.ts) and the
+[Schedule tests](../../packages/module-memory/tests/schedule.test.ts) and the
 [setup verb test](tests/setup-cli.test.ts) drive every path under a temporary
 home with a recording `launchctl`, an injected vault root, and scripted
 answers; spawned runs use a temporary HOME and a non-TTY stdin. No test
@@ -1359,3 +1359,7 @@ GitHub/npm publication and tap synchronization remain separate unfinished releas
 work. No stage invokes those operations. [Release tests](tests/release.test.ts)
 use captured mock signing/notary commands and a recording acceptance stand-in;
 they do not prove a real signature or Apple acceptance.
+
+The Quantize (`/quantize`), Fine-tune (`/finetune`) and Build Dataset (`/dataset`) pages are the installed
+modules' self-contained panels. They preserve their wizard steps, job streams and publishing controls;
+leaving a page closes its stream, while returning to an unfinished job replays its stored progress.

@@ -6,7 +6,7 @@
 // quantize/finetune/dataset controllers. Behavior-identical port of the
 // original inline <script> in app.html (api()/jobStream()).
 
-import type { ApiEnvelope, JobEvent, JobStreamHandlers } from "./protocol";
+import type { ApiEnvelope } from "./protocol";
 
 export type ApiOpts = (Omit<RequestInit, "body"> & { body?: unknown }) | undefined;
 
@@ -36,23 +36,4 @@ export async function api<T extends ApiEnvelope = ApiEnvelope>(path: string, opt
   }
   if (!r.ok && data.ok === undefined) data = { ok: false, error: (data.error as string) || data.message || ("HTTP " + r.status) };
   return data as T;
-}
-
-/**
- * Wraps an EventSource over /api/jobs/:id/stream and dispatches typed
- * events. Server -> client line protocol (JSON per `data:` line) — see
- * JobEvent in ./protocol.ts (pointer comment there to the server-side
- * source). Returns the EventSource so callers can .close().
- */
-export function jobStream(jobId: string, handlers: JobStreamHandlers): EventSource {
-  const es = new EventSource("/api/jobs/" + encodeURIComponent(jobId) + "/stream");
-  es.onmessage = (ev: MessageEvent) => {
-    let e: JobEvent;
-    try { e = JSON.parse(ev.data); } catch { return; }
-    const fn = handlers[e.type] as ((e: JobEvent) => void) | undefined;
-    if (fn) fn(e);
-  };
-  es.addEventListener("end", () => es.close());
-  es.onerror = () => { if (handlers.error) handlers.error(); };
-  return es;
 }

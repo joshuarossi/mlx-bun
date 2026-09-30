@@ -32,7 +32,7 @@ import {
 } from "./sessions";
 import { AdaptersPanelState, initAdaptersPanel, refreshAdaptersPanel } from "./adapters-panel";
 import type { Citation } from "./rag";
-import { buildAppContext, resolveSpotlightTarget, showSpotlight, type UiSnapshot } from "./assistant";
+import { buildAppContext, queryUiElements, resolveSpotlightTarget, showSpotlight, type UiSnapshot } from "./assistant";
 import { isRouteId } from "./ui-catalog";
 
 /* ────────────────────────────────────────────────────────────────────
@@ -239,16 +239,14 @@ export function createChatController(port: ChatPort) {
     send({ type: "context", context: ctx });
   }
 
-  /** MutationObserver on the three wizard step-indicator containers: their
-   *  innerHTML is fully rewritten by markdown.ts's renderSteps() on every
-   *  show(n) call in quantize.ts/finetune.ts/dataset.ts, so a childList+
-   *  subtree observer fires exactly on step change — no callback hook
-   *  needed in those three controllers (outside this wave's file scope). */
+  /** Rebind after navigation: module panels are created lazily and own their step indicators in shadow DOM. */
+  let wizardObserver: MutationObserver | undefined;
   function watchWizardSteps(): void {
-    const mo = new MutationObserver(() => pushAppContext());
+    wizardObserver ??= new MutationObserver(() => pushAppContext());
+    wizardObserver.disconnect();
     for (const id of ["q-steps", "f-steps", "d-steps"]) {
-      const el = $(id);
-      if (el) mo.observe(el, { childList: true, subtree: true });
+      const element = queryUiElements(`[id="${id}"]`)[0];
+      if (element) wizardObserver.observe(element, { childList: true, subtree: true });
     }
   }
 
@@ -846,19 +844,28 @@ export function createChatController(port: ChatPort) {
       case "ui_navigate":
         location.hash = `#/${m.route}`;
         break;
-      // spotlight_ui: navigate first if the tool asked (route present), THEN
-      // resolve+show — every route's section already lives in the DOM,
-      // toggled by CSS (shell.ts's router()), so no waitForElement polling
-      // is needed the way a client-side-routed app would require.
+      // The shell mounts non-workspace panels on hashchange. Resolve after
+      // that navigation has attached the requested page's controls.
       case "ui_spotlight": {
-        if (m.route) location.hash = `#/${m.route}`;
-        const resolved = resolveSpotlightTarget(
-          { ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message },
-          lastSnapshot,
-        );
-        if (!resolved || !showSpotlight(resolved)) {
-          toast("Couldn't find that on screen to point at.", "err");
-        }
+        const point = () => {
+          const resolved = resolveSpotlightTarget(
+            { ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message },
+            lastSnapshot,
+          );
+          if (!resolved || !showSpotlight(resolved)) toast("Couldn't find that on screen to point at.", "err");
+        };
+        if (m.route) {
+          const hash = `#/${m.route}`;
+          const afterNavigation = () => requestAnimationFrame(point);
+          // A preceding ui_navigate may already have set this hash while
+          // its navigation event is still queued. The next task follows it;
+          // a changed hash instead waits for that navigation event directly.
+          if (location.hash === hash) setTimeout(afterNavigation, 0);
+          else {
+            window.addEventListener("hashchange", afterNavigation, {once:true});
+            location.hash = hash;
+          }
+        } else point();
         break;
       }
     }
@@ -1033,7 +1040,7 @@ export function createChatController(port: ChatPort) {
       // step changes (quantize/finetune/dataset); a MutationObserver on each
       // overlay's `class` attribute covers view changes (memory/hub/adapters
       // panel open/close) without touching those three modules.
-      window.addEventListener("hashchange", pushAppContext);
+      window.addEventListener("hashchange", () => { watchWizardSteps(); pushAppContext(); });
       watchWizardSteps();
       const overlayMo = new MutationObserver(() => pushAppContext());
       for (const id of ["mem-overlay", "hub-overlay", "adapters-overlay"]) {

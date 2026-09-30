@@ -241,7 +241,11 @@ without a card, leads the tabs, stays outside the Developer switch and stays att
 `enter()` and `leave()`; the host may hand a panel more than its connection through the element's properties (the chat's
 `host`: what lives beside it on the page, such as memory's chips and the settings dialog's agent-tools section). A host's browser build imports each installed module's panel entry from
 the host's installed modules (`apps/mlx-bun/src/web/build.ts` reads the host's `package.json`, which the gate ties to `src/modules.ts`), so the bundle holds the panels the host installs and no
-others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Modules start as private workspace
+others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Panels retain their declared browser paths when a feature moves to a differently named module. A panel that supplies
+its own scroll column, heading and cards declares `framed: false`; its developer visibility and connection lifetime
+remain the ordinary panel's. Optional `PanelConnection.ui` hooks supply the host's notifications, artifact publication,
+active model identity and catalog-consumer refresh; panels do not import host implementations.
+Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
 **Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`

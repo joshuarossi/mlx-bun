@@ -32,10 +32,26 @@ const STEP_CONTAINER_BY_ROUTE: Partial<Record<RouteId, string>> = {
   dataset: "d-steps",
 };
 
+/** UI controls may live inside a mounted module's open shadow root. */
+export function queryUiElements(selector: string, root: Document | ShadowRoot = document): Element[] {
+  const elements = [...root.querySelectorAll(selector)];
+  for (const host of root.querySelectorAll("*")) {
+    if (host.shadowRoot) elements.push(...queryUiElements(selector, host.shadowRoot));
+  }
+  return elements;
+}
+
+/** Follow the rendered ancestry across a panel's shadow boundary. */
+function uiParent(element: Element): Element | null {
+  if (element.parentElement) return element.parentElement;
+  const root = element.getRootNode();
+  return "host" in root ? (root as ShadowRoot).host : null;
+}
+
 export function currentWizardStep(route: string): WizardStep | null {
   const containerId = STEP_CONTAINER_BY_ROUTE[route as RouteId];
   if (!containerId) return null;
-  const container = document.getElementById(containerId);
+  const container = queryUiElements(`[id="${containerId}"]`)[0];
   if (!container) return null;
   const spans = [...container.querySelectorAll(".s")];
   if (spans.length === 0) return null;
@@ -79,7 +95,10 @@ const MAX_ELEMENTS = 120;
  *  root is excluded regardless of nesting depth (`.closest`), matching how
  *  the "assistant" chrome exclusion already works. */
 function isAgentChrome(el: Element): boolean {
-  return !!el.closest("[data-ui-chrome]") || !!el.closest("#toasts");
+  for (let node: Element | null = el; node; node = uiParent(node)) {
+    if (node.matches("[data-ui-chrome], #toasts")) return true;
+  }
+  return false;
 }
 
 /** True when `el` itself is hidden by inline style or the `hidden`
@@ -119,7 +138,7 @@ function isVisible(el: Element): boolean {
   // Ancestor walk: catches inline/attribute hidden state on `el` itself or
   // any ancestor (a closed overlay's contents, a display:none wrapper),
   // independent of whether offsetParent resolved anything above.
-  for (let node: Element | null = el; node; node = node.parentElement) {
+  for (let node: Element | null = el; node; node = uiParent(node)) {
     if (isHiddenSelf(node)) return false;
   }
   return true;
@@ -136,7 +155,7 @@ function elementLabel(el: Element): string {
 
   const labelledBy = html.getAttribute("aria-labelledby");
   if (labelledBy) {
-    const labelEl = document.getElementById(labelledBy);
+    const labelEl = (html.getRootNode() as Document | ShadowRoot).getElementById(labelledBy);
     if (labelEl?.textContent?.trim()) return labelEl.textContent.trim();
   }
 
@@ -162,7 +181,7 @@ function elementLabel(el: Element): string {
  *  chat.ts's currentRoute()/overlay-name is at capture time — stamped onto
  *  the snapshot and used to derive stable per-route refs. */
 export function captureUiSnapshot(route: string): UiSnapshot {
-  const nodes = [...document.querySelectorAll(INTERACTIVE_SELECTOR)];
+  const nodes = queryUiElements(INTERACTIVE_SELECTOR);
   const elements: UiSnapshotElement[] = [];
   const seenRefs = new Set<string>();
   let index = 0;
@@ -255,7 +274,7 @@ function attrEscape(v: string): string {
  *  screen" toast — a SyntaxError here would escape through handle() and
  *  kill the ws frame instead (2026-07-07 review finding). */
 function safeQuery(selector: string): Element | null {
-  try { return document.querySelector(selector); } catch { return null; }
+  try { return queryUiElements(selector)[0] ?? null; } catch { return null; }
 }
 
 /** Resolve a spotlight request in PortfolioManager's exact precedence: ref
@@ -289,7 +308,7 @@ export function resolveSpotlightTarget(
 
     let bestEl: Element | null = null;
     let bestScore = 0;
-    for (const node of document.querySelectorAll("[data-ui-label]")) {
+    for (const node of queryUiElements("[data-ui-label]")) {
       const score = matchScore(node.getAttribute("data-ui-label") ?? "", request.label);
       if (score > bestScore) { bestScore = score; bestEl = node; }
     }

@@ -1,15 +1,5 @@
-// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split. Built into apps/mlx-bun/dist/web/app.js by
-// scripts/build-web.ts.
-//
-// DATASET CONTROLLER — template-driven builder. Behavior-identical port of
-// the original controllers.dataset IIFE in app.html.
-
-import { api, jobStream } from "./api";
-import type { ApiEnvelope } from "./protocol";
-import { $, toast, num, pushToHub, activeModelId } from "./shell";
-import { esc, renderSteps } from "./markdown";
-
+import type { ApiEnvelope, PanelConnection } from "../protocol";
+import { panelTools, esc, num, renderSteps } from "./tools";
 const STEPS = ["Template", "Inputs", "Generate", "Done"];
 
 interface DatasetField {
@@ -29,12 +19,14 @@ interface DatasetTemplate {
   fields?: DatasetField[];
 }
 
-export function createDatasetController() {
+export function createDatasetController(root: ShadowRoot, connection: () => PanelConnection) {
+  const { $, api, jobStream, toast, pushToHub } = panelTools(root, connection);
+  let streamId: string | null = null, terminal = false, active = true;
   let step = 0, templates: DatasetTemplate[] = [], selected: DatasetTemplate | null = null, jobId: string | null = null, es: EventSource | null = null, log: string[] = [];
 
   function show(n: number): void {
     step = n;
-    document.querySelectorAll<HTMLElement>("[data-dstep]").forEach((d) => d.style.display = (+d.dataset.dstep! === n) ? "" : "none");
+    root.querySelectorAll<HTMLElement>("[data-dstep]").forEach((d) => d.style.display = (+d.dataset.dstep! === n) ? "" : "none");
     renderSteps($("d-steps"), STEPS, n);
   }
 
@@ -84,7 +76,8 @@ export function createDatasetController() {
       inputs[i.dataset.fld!] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value;
     });
     const body: Record<string, unknown> = { template_id: selected.id, inputs };
-    if (selected.needs_llm && activeModelId) body.model_name = activeModelId;
+    const modelId = connection().ui?.modelId?.();
+    if (selected.needs_llm && modelId) body.model_name = modelId;
     const btn = $("d-submit") as HTMLButtonElement; btn.disabled = true;
     const d = await api("/api/dataset/submit", { method: "POST", body }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
@@ -99,6 +92,8 @@ export function createDatasetController() {
   }
 
   function attach(id: string): void {
+    streamId = id; terminal = false;
+    if (!active) return;
     if (es) es.close();
     es = jobStream(id, {
       log: (e) => { log.push(e.line); $("d-log").textContent = log.slice(-200).join("\n"); $("d-log").scrollTop = $("d-log").scrollHeight; },
@@ -110,10 +105,12 @@ export function createDatasetController() {
         if (e.stage === "done") { if (e.output_dir) $("d-out").textContent = e.output_dir; finish(e); }
       },
       done: (e) => finish(e),
-      failed: (e) => { $("d-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "generation failed", "err"); es && es.close(); },
+      failed: (e) => { terminal = true; $("d-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "generation failed", "err"); es && es.close(); },
     });
   }
   function finish(e?: { n_train?: number; n_valid?: number }): void {
+    if (terminal) return;
+    terminal = true;
     $("d-bar").style.width = "100%"; $("d-pct").textContent = "100%"; es && es.close();
     if (e && e.n_train != null) $("d-ntrain").textContent = num(e.n_train);
     if (e && e.n_valid != null) $("d-nvalid").textContent = num(e.n_valid);
@@ -121,10 +118,12 @@ export function createDatasetController() {
   }
 
   return {
+    enter() { active = true; if (streamId && !terminal) { log = [];  attach(streamId); } },
+    leave() { active = false; es?.close(); es = null; },
     init() {
       show(0);
       loadTemplates();
-      document.querySelectorAll<HTMLButtonElement>("#s-dataset [data-dback]").forEach((b) => b.onclick = () => show(0));
+      root.querySelectorAll<HTMLButtonElement>("#s-dataset [data-dback]").forEach((b) => b.onclick = () => show(0));
       ($("d-submit") as HTMLButtonElement).onclick = submit;
       ($("d-push") as HTMLButtonElement).onclick = () => pushToHub($("d-push-panel"), { kind: "dataset", job_id: jobId || undefined });
       ($("d-again") as HTMLButtonElement).onclick = () => { selected = null; $("d-push-panel").innerHTML = ""; show(0); };

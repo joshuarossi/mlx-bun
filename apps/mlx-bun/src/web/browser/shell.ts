@@ -5,7 +5,7 @@
 // chat panel, the connection pill and model identity polling, and the routes-map probe. The generic helpers the
 // per-page modules import from here are re-exported from the shell package. main.ts holds the boot order.
 
-import { $, createShell, toast, trapFocus, type FocusTrap, type Overlay, type Palette, type RouteController } from "@mlx-bun/web-shell";
+import { $, createShell, toast, trapFocus, type FocusTrap, type Overlay, type Palette, type RouteController, type ShellPanel } from "@mlx-bun/web-shell";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
 
@@ -39,8 +39,7 @@ export const chatPanel = (): ChatPanelApi | null => document.querySelector<ChatP
 /** The chat is the product (a workspace panel the shell mounts first); the pages below are developer tools behind the nav's Developer switch. */
 export const shell = createShell({
   routes: [
-    { id: "quantize", developer: true }, { id: "finetune", developer: true },
-    { id: "dataset", developer: true }, { id: "status", developer: true }, { id: "routes", developer: true },
+    { id: "status", developer: true }, { id: "routes", developer: true },
   ],
   home: "chat",
   onRoute(route) {
@@ -438,4 +437,31 @@ export function updateDownloadIndicator(downloads: DownloadInfo[]): void {
     pill.style.display = "none";
     if (sub && defaultHelloSub !== null) sub.textContent = defaultHelloSub;
   }
+}
+
+/** Presentation the embedding app supplies to the job panels that consume it. */
+export function connectPanels(panels: readonly ShellPanel[]): ShellPanel[] {
+  return panels.map(panel => {
+    if (!["mlx-quantize-panel", "mlx-train-panel", "mlx-datasets-panel"].includes(panel.tag)) return panel;
+    return { ...panel, connection: { ...panel.connection, ui: {
+      notify: toast,
+      publish: pushToHub,
+      ...(panel.tag === "mlx-datasets-panel" ? { modelId: () => activeModelId || undefined } : { catalogChanged: () => {
+        const status = controllers.status;
+        if (status?.refreshLibrary) (status.refreshLibrary as () => void)();
+        chatPanel()?.refreshAdapters();
+      } }),
+    } } };
+  });
+}
+
+/** Keep the app's existing navigation order while its pages move into installed panels. */
+export function mountPanels(panels: readonly ShellPanel[]): void {
+  shell.mountPanels(connectPanels(panels));
+  const order = ["chat", "quantize", "finetune", "dataset", "status", "routes", "benchmarks", "metrics", "models"];
+  const tabs = $("tabs");
+  [...tabs.querySelectorAll<HTMLElement>(".tab")].sort((a, b) => {
+    const position = (tab: HTMLElement) => { const index = order.indexOf(tab.dataset.tab || ""); return index < 0 ? order.length : index; };
+    return position(a) - position(b);
+  }).forEach(tab => tabs.append(tab));
 }

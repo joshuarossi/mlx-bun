@@ -1,15 +1,10 @@
-// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split. Built into apps/mlx-bun/dist/web/app.js by
-// scripts/build-web.ts.
-//
-// FINE-TUNE CONTROLLER — 5-step wizard with live loss chart.
-// Behavior-identical port of the original controllers.finetune IIFE.
-
-import { api, jobStream } from "./api";
-import type { ApiEnvelope } from "./protocol";
-import { $, toast, num, pushToHub, chatPanel } from "./shell";
-import { esc, renderSteps } from "./markdown";
-
+declare global {
+  interface Window {
+    showDirectoryPicker?: (opts?: { id?: string; mode?: string }) => Promise<{ name: string }>;
+  }
+}
+import type { ApiEnvelope, PanelConnection } from "../protocol";
+import { panelTools, esc, num, renderSteps } from "./tools";
 const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
 
 interface FileWithRelPath extends File {
@@ -18,14 +13,16 @@ interface FileWithRelPath extends File {
 
 interface LossPoint { step: number; loss: number | null }
 
-export function createFinetuneController() {
+export function createFinetuneController(root: ShadowRoot, connection: () => PanelConnection) {
+  const { $, api, jobStream, toast, pushToHub } = panelTools(root, connection);
+  let streamId: string | null = null, terminal = false, active = true;
   let step = 0, method: "sft" | "dpo" | "orpo" = "sft", lrTouched = false, rankTouched = false, es: EventSource | null = null, log: string[] = [];
   let datasetOk = false, adapterPath = "";
   const trainPts: LossPoint[] = [], valPts: LossPoint[] = [];
 
   function show(n: number): void {
     step = n;
-    document.querySelectorAll<HTMLElement>("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep! === n) ? "" : "none");
+    root.querySelectorAll<HTMLElement>("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep! === n) ? "" : "none");
     renderSteps($("f-steps"), STEPS, n);
   }
 
@@ -113,6 +110,8 @@ export function createFinetuneController() {
   }
 
   function attach(jobId: string): void {
+    streamId = jobId; terminal = false;
+    if (!active) return;
     if (es) es.close();
     es = jobStream(jobId, {
       log: (e) => { log.push(e.line); $("f-log").textContent = log.slice(-200).join("\n"); $("f-log").scrollTop = $("f-log").scrollHeight; },
@@ -135,10 +134,12 @@ export function createFinetuneController() {
         if (e.stage === "done") { if (e.adapter_path) { adapterPath = e.adapter_path; $("f-out").textContent = e.adapter_path; } finish(); }
       },
       done: () => finish(),
-      failed: (e) => { $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
+      failed: (e) => { terminal = true; $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
     });
   }
   function finish(): void {
+    if (terminal) return;
+    terminal = true;
     $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close();
     if (!adapterPath) adapterPath = ($("f-out").textContent || "").trim();
     const base = ($("f-model") as HTMLInputElement).value.trim();
@@ -147,11 +148,7 @@ export function createFinetuneController() {
     ($("f-exp-base") as HTMLInputElement).value = base;
     ($("f-exp-adapter") as HTMLInputElement).value = adapterPath;
     show(4);
-    // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #15 staleness half: the new adapter is on disk now —
-    // refresh the chat adapter chip immediately rather than waiting for the
-    // user to navigate to Chat (enter() also refreshes, this just removes the
-    // wait for the common case of finishing a run and going straight to try it).
-    chatPanel()?.refreshAdapters();
+    connection().ui?.catalogChanged?.();
   }
 
   async function mergeAdapters(): Promise<void> {
@@ -218,6 +215,8 @@ export function createFinetuneController() {
   }
 
   return {
+    enter() { active = true; if (streamId && !terminal) { log = []; trainPts.length = valPts.length = 0; attach(streamId); } },
+    leave() { active = false; es?.close(); es = null; },
     init() {
       show(0);
       ($("f-next0") as HTMLButtonElement).onclick = () => { if (!($("f-model") as HTMLInputElement).value.trim()) { toast("Enter a base model path.", "err"); return; } show(1); };
@@ -253,7 +252,7 @@ export function createFinetuneController() {
         $("f-orpo-scope").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)));
       $("f-lr").addEventListener("input", () => { lrTouched = true; });
       $("f-rank").addEventListener("input", () => { rankTouched = true; });
-      document.querySelectorAll<HTMLButtonElement>("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
+      root.querySelectorAll<HTMLButtonElement>("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
       ($("f-submit") as HTMLButtonElement).onclick = submit;
       ($("f-merge-go") as HTMLButtonElement).onclick = mergeAdapters;
       ($("f-exp-go") as HTMLButtonElement).onclick = exportModel;

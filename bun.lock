@@ -152,6 +152,7 @@
       },
       "devDependencies": {
         "@mlx-bun/app-host": "workspace:*",
+        "happy-dom": "20.10.6",
       },
     },
     "packages/module-memory": {
@@ -208,6 +209,7 @@
       },
       "devDependencies": {
         "@mlx-bun/app-services": "workspace:*",
+        "happy-dom": "20.10.6",
       },
     },
     "packages/module-train": {
@@ -223,6 +225,7 @@
       "devDependencies": {
         "@mlx-bun/app-host": "workspace:*",
         "@mlx-bun/app-services": "workspace:*",
+        "happy-dom": "20.10.6",
       },
     },
     "packages/module-transcription": {
