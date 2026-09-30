@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/inference",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Composable inference kernels and graphs for MLX in Bun",
   "type": "module",
   "license": "MIT",

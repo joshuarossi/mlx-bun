@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/app-services",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Core-service implementations for mlx-bun application hosts: the Whisper model host, the local model catalog, storage, verb parsing and route mounting",
   "type": "module",
   "license": "MIT",

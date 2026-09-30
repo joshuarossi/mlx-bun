@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/hub",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Local model registry and Hugging Face artifact transfers for MLX models on Apple Silicon",
   "type": "module",
   "license": "MIT",

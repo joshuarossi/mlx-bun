@@ -12,7 +12,7 @@
     },
     "apps/mlx-bun": {
       "name": "mlx-bun",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "bin": {
         "mlx-bun": "./bin/mlx-bun.mjs",
         "mlx-bun.server": "./bin/mlx-bun.server.mjs",
@@ -78,18 +78,18 @@
     },
     "packages/app-core": {
       "name": "@mlx-bun/app-core",
-      "version": "0.0.0",
+      "version": "0.6.0",
     },
     "packages/app-host": {
       "name": "@mlx-bun/app-host",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
       },
     },
     "packages/app-services": {
       "name": "@mlx-bun/app-services",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/app-host": "workspace:*",
@@ -100,11 +100,11 @@
     },
     "packages/hub": {
       "name": "@mlx-bun/hub",
-      "version": "0.0.0",
+      "version": "0.6.0",
     },
     "packages/inference": {
       "name": "@mlx-bun/inference",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@huggingface/jinja": "^0.5.9",
         "@huggingface/tokenizers": "^0.1.3",
@@ -115,11 +115,11 @@
     },
     "packages/mlx": {
       "name": "@mlx-bun/mlx",
-      "version": "0.0.0",
+      "version": "0.6.0",
     },
     "packages/module-benchmarks": {
       "name": "@mlx-bun/module-benchmarks",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
       },
@@ -131,7 +131,7 @@
     },
     "packages/module-chat": {
       "name": "@mlx-bun/module-chat",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@earendil-works/pi-ai": "0.80.3",
         "@earendil-works/pi-coding-agent": "0.80.3",
@@ -147,7 +147,7 @@
     },
     "packages/module-datasets": {
       "name": "@mlx-bun/module-datasets",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
       },
@@ -158,7 +158,7 @@
     },
     "packages/module-memory": {
       "name": "@mlx-bun/module-memory",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@earendil-works/pi-coding-agent": "0.80.3",
         "@mlx-bun/app-core": "workspace:*",
@@ -175,7 +175,7 @@
     },
     "packages/module-metrics": {
       "name": "@mlx-bun/module-metrics",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
       },
@@ -187,7 +187,7 @@
     },
     "packages/module-models": {
       "name": "@mlx-bun/module-models",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/hub": "workspace:*",
@@ -202,7 +202,7 @@
     },
     "packages/module-quantize": {
       "name": "@mlx-bun/module-quantize",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
@@ -215,7 +215,7 @@
     },
     "packages/module-train": {
       "name": "@mlx-bun/module-train",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
@@ -231,7 +231,7 @@
     },
     "packages/module-transcription": {
       "name": "@mlx-bun/module-transcription",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
@@ -243,7 +243,7 @@
     },
     "packages/quantize": {
       "name": "@mlx-bun/quantize",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
@@ -251,7 +251,7 @@
     },
     "packages/training": {
       "name": "@mlx-bun/training",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "dependencies": {
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
@@ -259,7 +259,7 @@
     },
     "packages/web-shell": {
       "name": "@mlx-bun/web-shell",
-      "version": "0.0.0",
+      "version": "0.6.0",
       "devDependencies": {
         "happy-dom": "20.10.6",
       },

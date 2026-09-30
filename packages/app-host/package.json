@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/app-host",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Host-side loader for mlx-bun application modules: manifest validation, activation and mounting",
   "type": "module",
   "license": "MIT",

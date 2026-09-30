@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/training",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Composable LoRA, preference, and diffusion training for MLX on Apple Silicon",
   "type": "module",
   "license": "MIT",

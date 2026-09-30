@@ -1,9 +1,9 @@
 {
   "name": "mlx-bun",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Local AI on Apple Silicon",
+  "license": "MIT",
   "type": "module",
-  "private": true,
   "bin": {
     "mlx-bun": "./bin/mlx-bun.mjs",
     "mlx-bun.server": "./bin/mlx-bun.server.mjs",

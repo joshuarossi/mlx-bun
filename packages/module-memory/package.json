@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-memory",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Markdown memory vault, read-only chat tools, synthesis, scheduling and memory panel",
   "type": "module",
   "license": "MIT",

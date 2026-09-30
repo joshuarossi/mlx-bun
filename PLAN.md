@@ -237,10 +237,6 @@ on main and the refactor is only useful when investigating a behavior difference
 
 ## Release acceptance
 
-- [ ] Finish GitHub/npm publication and tap synchronization with explicit package
-  versions/private decisions and clean-source checks. Verify the intended Git tag
-  and registry versions before publication, and require release notes for the
-  release body. Actual publication requires Josh's release instruction.
 - [ ] With Josh's release instruction, verify real Developer ID signing and
   notarization, including loading the signed native libraries from a relocated
   signed bundle. The native-blocked version check and mocked commands do not
@@ -256,9 +252,6 @@ on main and the refactor is only useful when investigating a behavior difference
   presence), not exact provenance. Whether the stripped WASM links LLVM compiler-rt is
   also unknown; if it does, its notice needs that Emscripten's
   `system/lib/compiler-rt/LICENSE.TXT`.
-- [ ] Make partial signing retryable without weakening bundle integrity checks
-  before the first real signed release. This is an operational improvement:
-  today a partial signing failure safely requires rebuilding a fresh preparation.
 
 ## Completion
 

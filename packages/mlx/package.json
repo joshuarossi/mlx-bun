@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/mlx",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Bun bindings for MLX on Apple Silicon",
   "type": "module",
   "license": "MIT",

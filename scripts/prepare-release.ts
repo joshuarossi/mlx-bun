@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { buildBinary } from "./build-binary";
 import { archiveCommand, BUNDLE_FILES } from "./bundle-files";
@@ -46,11 +47,14 @@ export function publicationPlan(manifests: Manifest[]) {
   ]) };
 }
 
-interface Preparation {
+export interface Preparation {
   version: string;
   stage: "unsigned" | "signed" | "accepted";
   files: Record<string, string>;
   publication: ReturnType<typeof publicationPlan>;
+  sourceHead?: string;
+  packages: { name: string; version: string; archive: string; sha256: string; integrity: string }[];
+  releaseFiles?: Record<string, string>;
   notarization?: { id: string; status: "Accepted"; zipSha256: string };
 }
 async function bundleFiles(directory: string): Promise<Record<string, string>> {
@@ -67,11 +71,12 @@ async function bundleFiles(directory: string): Promise<Record<string, string>> {
 async function save(directory: string, state: Preparation) {
   await writeFile(join(directory, "preparation.json"), JSON.stringify(state, null, 2) + "\n");
 }
-async function checked(directory: string): Promise<Preparation> {
+export async function readPreparation(directory: string): Promise<Preparation> {
   const state: Preparation = JSON.parse(await readFile(join(directory, "preparation.json"), "utf8"));
   assert.deepEqual(await bundleFiles(join(directory, "bundle")), state.files, "Bundle changed since the previous stage; prepare again");
   return state;
 }
+const checked = readPreparation;
 async function versionCheck(directory: string, version: string, execute: Run) {
   assert.equal(await execute([join(directory, "mlx-bun"), "--version"]), `mlx-bun ${version}\n`, "Binary version differs from app manifest/archive version");
 }
@@ -111,18 +116,24 @@ export async function prepareRelease(directory: string, root = workspace, execut
   await versionCheck(bundle, app.version, execute);
   const npm = join(directory, "npm"); await mkdir(npm);
   const manifests: Manifest[] = [];
+  const packages: Preparation["packages"] = [];
   for (const path of [...new Bun.Glob("{apps,packages}/*/package.json").scanSync(root)].sort()) {
     const manifest = JSON.parse(await readFile(join(root, path), "utf8"));
-    if (manifest.private && !manifest.bin) continue;
+    if (manifest.private && manifest.name !== app.name) continue;
     const archive = join(npm, `${manifest.name.replace(/^@/, "").replaceAll("/", "-")}.tgz`);
     await execute([process.execPath, "pm", "pack", "--filename", archive, "--quiet"], resolve(root, path, ".."));
     const packed: Manifest = JSON.parse(await execute(["tar", "-xOf", archive, "package/package.json"]));
     assert.equal(packed.name, manifest.name, "Packed package name changed");
     assert.equal(packed.version, manifest.version, "Packed package version changed");
     manifests.push(packed);
+    const bytes = await readFile(archive);
+    packages.push({ name: packed.name, version: packed.version, archive: archive.slice(npm.length + 1),
+      sha256: sha(bytes), integrity: "sha512-" + createHash("sha512").update(bytes).digest("base64") });
   }
   assert.equal(manifests.find(manifest => manifest.name === app.name)?.version, app.version, "App version changed during preparation");
-  const state: Preparation = { version: app.version, stage: "unsigned", files: await bundleFiles(bundle), publication: publicationPlan(manifests) };
+  const sourceHead = existsSync(join(root, ".git")) ? (await execute(["git", "rev-parse", "HEAD"], root)).trim() : undefined;
+  const state: Preparation = { version: app.version, stage: "unsigned", files: await bundleFiles(bundle),
+    publication: publicationPlan(manifests), packages, ...(sourceHead ? { sourceHead } : {}) };
   await archiveBundle(bundle, app.version, join(directory, "unsigned"), execute, state.files, "unsigned", verify);
   await save(directory, state);
   return state;
@@ -132,8 +143,11 @@ export async function prepareRelease(directory: string, root = workspace, execut
  * executable, including newly added helpers without filename special cases. */
 export async function signRelease(directory: string, identity: string, execute: Run = run) {
   assert(identity.trim(), "An explicit signing identity is required");
-  const state = await checked(directory), bundle = join(directory, "bundle");
-  state.stage = "unsigned"; delete state.notarization; await save(directory, state);
+  const state = await checked(directory), original = join(directory, "bundle");
+  const scratch = await mkdtemp(join(directory, "sign-")), bundle = join(scratch, "bundle"), backup = join(scratch, "original");
+  await cp(original, bundle, { recursive: true });
+  let replaced = false;
+  try {
   const native: string[] = [];
   for (const name of Object.keys(state.files)) {
     if (name === "mlx-bun") continue;
@@ -144,7 +158,15 @@ export async function signRelease(directory: string, identity: string, execute: 
   await execute(["codesign", "--force", "--timestamp", "--options", "runtime", "--entitlements", join(workspace, "scripts/packaging/entitlements.plist"), "--sign", identity, executable]);
   for (const file of [...native, executable]) await execute(["codesign", "--verify", "--strict", "--verbose=2", file]);
   await versionCheck(bundle, state.version, execute);
-  state.files = await bundleFiles(bundle); state.stage = "signed"; await save(directory, state);
+  const files = await bundleFiles(bundle);
+  await rename(original, backup);
+  try { await rename(bundle, original); } catch (error) { await rename(backup, original); throw error; }
+  replaced = true;
+  await save(directory, { ...state, files, stage: "signed", notarization: undefined, releaseFiles: undefined });
+  } catch (error) {
+    if (replaced) { await rm(original, { recursive: true, force: true }); await rename(backup, original); await save(directory, state); }
+    throw error;
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
 /** Apple credentials are supplied only by the caller's named notary profile.
@@ -170,6 +192,9 @@ export async function packageRelease(directory: string, execute: Run = run) {
   const state = await checked(directory);
   assert(state.stage === "accepted" && state.notarization?.status === "Accepted", "Accepted notarization is required; unsigned artifacts are local preparation only");
   await archiveBundle(join(directory, "bundle"), state.version, join(directory, "release"), execute, state.files, "release");
+  state.releaseFiles = Object.fromEntries(await Promise.all((await readdir(join(directory, "release"))).map(async name =>
+    [name, sha(await readFile(join(directory, "release", name)))])));
+  await save(directory, state);
 }
 
 if (import.meta.main) {

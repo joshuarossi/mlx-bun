@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-quantize",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Quantization module for mlx-bun applications: the quantize job, its web routes, and the convert verb",
   "type": "module",
   "license": "MIT",
