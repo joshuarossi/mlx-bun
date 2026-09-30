@@ -492,6 +492,9 @@ default 20 GiB, 0 unlimited). A live store is lent what the other stores and idl
 directories leave (never less than a quarter of the budget); a closed store's
 directory is idle, and idle directories lose their oldest files first, at start and
 after every close. A model that returns finds its directory, and its prefix, intact.
+The hub's resolved model directory supplies the identity, so startup does not hash
+weight files. Saved KV is disposable; after replacing weights in place, clear it
+when you want fresh state.
 Composition must pass the returned `continuationServices` to
 `binding.gateway.configureContinuation` and supply `promptCache`,
 `resolvedKvScheme`, `stateCodecs`, `adapterNamespace`, and checkpoint availability

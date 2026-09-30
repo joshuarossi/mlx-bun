@@ -16,6 +16,12 @@ storage, or any HTTP route. Those consume it; fit estimates live in
 which takes the registry's language-weight and expert bytes as inputs.
 The package has no workspace dependencies and never loads MLX.
 
+`modelIdentity(directory)` returns the resolved local directory. Downloaded HF
+snapshot paths already include their revision; aliases of one directory share
+the identity. Serving can use it for saved prompt state without hashing weights.
+If you replace weights inside an existing directory, clear its saved KV cache
+when you want fresh state.
+
 See the runnable [listing example](examples/list-models.ts). It scans a cache, lists
 each model's type, weight and expert bytes, and vision and audio capability, and
 closes the registry. `bun packages/hub/examples/list-models.ts [hub-directory]` runs it

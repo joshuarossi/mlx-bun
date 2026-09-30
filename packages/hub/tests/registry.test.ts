@@ -1,10 +1,25 @@
 // Registry unit tests (fast tier — synthetic hub dir, in-memory db).
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hubCacheRoot, Registry } from "@mlx-bun/hub/registry";
+import { hubCacheRoot, modelIdentity, Registry } from "@mlx-bun/hub/registry";
+
+test("model identity uses the snapshot directory even when weight bytes cannot be read", () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-hub-identity-"));
+  try {
+    const first = join(root, "snapshots", "revision-one"), second = join(root, "snapshots", "revision-two");
+    mkdirSync(first, { recursive: true }); mkdirSync(second);
+    const weights = join(first, "model.safetensors"); writeFileSync(weights, "weights"); chmodSync(weights, 0);
+    const alias = join(root, "alias"); symlinkSync(first, alias);
+    expect(modelIdentity(first)).toBe(realpathSync(first));
+    expect(modelIdentity(alias)).toBe(modelIdentity(first));
+    expect(modelIdentity(second)).not.toBe(modelIdentity(first));
+    chmodSync(weights, 0o600); writeFileSync(weights, "replaced weights");
+    expect(modelIdentity(first)).toBe(realpathSync(first));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 function makeHub(): string {
   const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));

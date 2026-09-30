@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { modelIdentity } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, supportsTurboQuantHeadDim, TURBOQUANT_HEAD_DIMS, type KvQuantOverride } from "@mlx-bun/inference/state/kv-scheme";
 import type { TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { Cache } from "@mlx-bun/inference/contracts/mlx";
@@ -39,8 +40,7 @@ export interface CacheServiceDependencies {
   createContinuationPersistence(...args: ConstructorParameters<typeof ContinuationPersistence>): ContinuationPersistence;
   costSizeRetention(): PromptCache["retention"];
   configFingerprint(config: LoadedModelContext["model"]["config"]): string;
-  /** Content digest of the model's weights and config (memoized per file revision). */
-  weightsIdentity(modelDir: string, seed: string): Promise<string>;
+  modelIdentity(modelDir: string): string;
   activeMemory(): number;
   maxWorkingSet(): number;
   scheduleDemotion(run: () => void, intervalMs: number): () => void;
@@ -58,7 +58,7 @@ async function defaultDependencies(): Promise<CacheServiceDependencies> {
     createStore: options => new state.SsdCacheStore(options),
     createContinuationPersistence: (...args) => new execution.ContinuationPersistence(...args),
     costSizeRetention: () => new state.CostSizeRetention(), configFingerprint: artifacts.configFingerprint,
-    weightsIdentity: artifacts.modelWeightsIdentity,
+    modelIdentity,
     activeMemory: memory.activeMemory, maxWorkingSet: memory.maxRecommendedWorkingSetSize,
     scheduleDemotion(run, interval) { const timer = setInterval(run, interval); timer.unref(); return () => clearInterval(timer); },
   };
@@ -95,14 +95,11 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
   let budgetMember: ReturnType<KvBudget["attach"]> | undefined, budget: KvBudget | undefined;
   if (options.ssdCacheDir) {
     const tokenizer = readFileSync(`${context.model.config.modelDir}/tokenizer.json`);
-    // The store directory is keyed by architecture, KV scheme, binding
-    // compatibility AND the weights digest: same-shape models (4-bit vs 8-bit,
-    // base vs fine-tune) and revised weights under one repo id never share
-    // entries. Saved entries from before the weights digest joined the key
-    // live under the old directory name and are ignored, not deleted.
+    // The hub owns model identity. Snapshot revisions have distinct paths;
+    // ordinary restarts reuse the same directory without reading weight bytes.
     const architecture = deps.configFingerprint(context.model.config);
-    const weights = await deps.weightsIdentity(context.model.config.modelDir, architecture);
-    const configFingerprint = `${architecture}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}-${weights.slice(0, 16)}`;
+    const artifact = deps.modelIdentity(context.model.config.modelDir);
+    const configFingerprint = `${architecture}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}-${Bun.hash(artifact).toString(16)}`;
     budget = options.ssdBudget ?? createKvBudget(options.ssdCacheDir, options.ssdCacheMaxBytes ?? Infinity);
     checkpoints = deps.createStore({ codecs: stateCodecs, dir: options.ssdCacheDir,
       maxBytes: budget.maxBytes, limit: () => budgetMember?.limit() ?? budget!.maxBytes, modelId: context.modelId,

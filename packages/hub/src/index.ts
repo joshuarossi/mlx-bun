@@ -1,7 +1,7 @@
 // Model hub entry points: discover local checkpoints and transfer artifacts through
 // Hugging Face. Nothing here chooses a model for the caller.
 export {
-  Registry, hubCacheRoot, visionCapable, audioCapable, pickCanonicalRevision,
+  Registry, hubCacheRoot, modelIdentity, visionCapable, audioCapable, pickCanonicalRevision,
   sidecarShipsAudioTower, scanSnapshot, planRepoGc, planGc, executeGc,
 } from "./registry";
 export type { ModelRecord, RegistryOptions, GcRepoPlan, GcSkippedSnapshot } from "./registry";
