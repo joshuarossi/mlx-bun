@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModuleSockets } from "@mlx-bun/app-services";
-import type { MemoryCompletionClient, MemoryCompletionRequest } from "../../src/memory/model";
+import type { MemoryCompletionClient, MemoryCompletionRequest } from "@mlx-bun/module-memory/model";
 import { startServer } from "../../src/server/start";
 import { createWorkerRoutes } from "../../src/server/worker-routes";
 

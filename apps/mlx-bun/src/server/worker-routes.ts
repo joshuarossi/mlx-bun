@@ -8,7 +8,7 @@
 // (404), as they are on a worker that lacks the capability behind one.
 import type { AdapterOperation, EventBus } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
-import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
+import type { MemoryCompletionClient, MemoryCompletionRequest } from "@mlx-bun/module-memory/model";
 
 export interface WorkerRouteGroup { handle(request: Request): Promise<Response | null> }
 

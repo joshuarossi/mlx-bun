@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { createMemorySynthesis } from "../../src/server/memory-synthesis";
-import { createMemoryRoutes } from "../../src/server/memory-routes";
-import type { MemoryCompletionClient } from "../../src/memory/model";
+import { createMemorySynthesis } from "@mlx-bun/module-memory/synthesis";
+import { createMemoryRoutes } from "@mlx-bun/module-memory/routes";
+import type { MemoryCompletionClient } from "@mlx-bun/module-memory/model";
 
 const unused: MemoryCompletionClient = {
   complete: async () => { throw new Error("unexpected completion"); },

@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
-import { locateTaskModel, MEMORY_TASK_MODEL } from "../memory/model";
+import { locateTaskModel, MEMORY_TASK_MODEL } from "@mlx-bun/module-memory/model";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createModelRoutes } from "../server/model-routes";
 import { createProxyRoutes } from "../server/proxy-routes";

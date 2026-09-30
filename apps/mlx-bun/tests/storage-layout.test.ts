@@ -16,7 +16,7 @@ import { createRegistryCatalog, createStorage, parseVerb, plainTerminal } from "
 import { createAdapterHandlers, createFolderHandler, manifest as modelsManifest } from "@mlx-bun/module-models";
 import { createQuantizeHandlers, createQuantizeRunner, manifest as quantizeManifest, runConvert } from "@mlx-bun/module-quantize";
 import { createTrainHandlers, fuseDependencies, manifest as trainManifest, runFuse, runTrain, runTrainWatch, trainDependencies } from "@mlx-bun/module-train";
-import { adapterDirFor } from "../src/memory/model";
+import { adapterDirFor } from "@mlx-bun/module-memory/model";
 import { adapterStores, legacyAdapterDirs, mlxBunHome, modelShortName, openRegistry, storagePath } from "../src/storage/paths";
 import { writeQuantizedArtifact, writeSourceModel } from "./quantized-artifact";
 

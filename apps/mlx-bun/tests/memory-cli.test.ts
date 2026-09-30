@@ -140,7 +140,7 @@ test("a stage that needs the model fails clearly when no server answers at --hos
   mkdirSync(join(paths.vault, "Meta"), { recursive: true });
   writeFileSync(join(paths.vault, "Meta", "Chunking.md"), "# Chunking\n\nOne chunk per topic.\n");
   writeFileSync(join(paths.vault, "Meta", "Topics_to_Ignore.md"), "# Topics to Ignore\n\nNothing.\n");
-  const { MemoryStore } = await import("../src/memory/db");
+  const { MemoryStore } = await import("@mlx-bun/module-memory/db");
   const store = new MemoryStore(join(paths.home, ".mlx-bun", "db", "memory.sqlite"));
   store.db.run("INSERT INTO conversations (conv, source, title, updated_at, chunked_at) VALUES (?,?,?,?,?)", ["c1", "pi", "t", 1000, null]);
   store.db.run("INSERT INTO messages (conv, position, role, uuid, text) VALUES (?,?,?,?,?)", ["c1", 0, "user", "u0", "which lens for reach?"]);

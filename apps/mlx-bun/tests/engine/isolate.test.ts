@@ -100,7 +100,7 @@ test.skipIf(!native || !modelDir)("isolated synthesis runs on the default worker
   }
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
-  const { MEMORY_TASK_MODEL, locateTaskModel } = await import("../../src/memory/model");
+  const { MEMORY_TASK_MODEL, locateTaskModel } = await import("@mlx-bun/module-memory/model");
   const model = await scanSnapshot(modelDir!, "test-model");
   if (!model) throw new Error("Model path has no loadable checkpoint");
   const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);

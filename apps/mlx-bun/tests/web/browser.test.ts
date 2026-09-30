@@ -6,7 +6,7 @@
 // exercised). happy-dom provides document/window (see ./dom-setup.ts, imported first for its side effect of installing
 // globals before any browser module runs).
 import "./dom-setup";
-import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
+import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "@mlx-bun/module-memory/tools";
 import { describe, expect, it, beforeEach } from "bun:test";
 import { api } from "../../src/web/browser/api";
 import { MEMORY_CHIP_TOOL_NAMES, isMemoryToolName, memoryToolChip } from "../../src/web/browser/memory-panel";

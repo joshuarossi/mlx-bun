@@ -3,7 +3,7 @@
 // names memory from the chat side; the two meet only in the host's registry.
 import { loadModules } from "@mlx-bun/app-host";
 import { createExtensionSurface } from "@mlx-bun/module-chat";
-import { createMemoryChatModule, type MemoryChatPaths } from "../../src/memory/chat";
+import { createMemoryChatModule, type MemoryChatPaths } from "@mlx-bun/module-memory/chat";
 
 export async function memorySurface(paths: MemoryChatPaths) {
   const loaded = await loadModules([createMemoryChatModule(paths)], { services: {} });
