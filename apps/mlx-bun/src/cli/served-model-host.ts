@@ -5,7 +5,8 @@
 // never evicts it, and leases it for `generate`: a wire request (OpenAI, Anthropic or
 // Responses) sent to the host's listener, over its Unix socket when it has one. A serving
 // host whose residency can evict supplies `hold`, and each lease holds the model resident
-// through it until released. Whisper and other companions are the model composition's.
+// through it until released. The composition may lend companion operations from its
+// existing host; consumers get the same service for both without taking over its lifecycle.
 import type { AcquireOptions, AdapterOperation, ModelHost, ModelId, ModelLease, ModelOperation, ModelOperations, ModelStats, ResidentModel } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "@mlx-bun/app-services/portable";
 
@@ -27,6 +28,8 @@ export interface ServedHostLink {
   resident?(): readonly ResidentModel[];
   /** The served model's adapter operation: each call holds the model resident and runs under its execution lease, in the process that holds it. */
   readonly adapters?: AdapterOperation;
+  /** Operations and residency owned by the composition's companion host. The forwarding service borrows it. */
+  readonly companions?: ModelHost;
 }
 
 export interface ServedModelHostOptions<Link extends ServedHostLink> {
@@ -44,11 +47,12 @@ export function createServedModelHost<Link extends ServedHostLink>(options: Serv
   return {
     get policy() {
       const link = options.link();
-      return { budgetBytes: link?.model.bytes ?? 0, pinned: link ? [link.model.id] : [], idleUnloadSec: 0 };
+      return { budgetBytes: link?.model.bytes ?? 0, pinned: link ? [...new Set([link.model.id, ...(link.companions?.policy.pinned ?? [])])] : [], idleUnloadSec: 0 };
     },
     async acquire(id: ModelId, acquire: AcquireOptions = {}): Promise<ModelLease> {
       acquire.signal?.throwIfAborted();
       const link = attached();
+      if (id !== link.model.id && link.companions) return link.companions.acquire(id, acquire);
       if (id !== link.model.id) throw new ModelHostFailure("does-not-fit", `model ${id} is not the served model (${link.model.id})`);
       const missing = (acquire.need ?? []).filter(operation => !OPERATIONS.includes(operation));
       if (missing.length) throw new ModelHostFailure("does-not-fit", `model ${id} does not declare ${missing.join(", ")}`);
@@ -63,17 +67,36 @@ export function createServedModelHost<Link extends ServedHostLink>(options: Serv
       return { model: resident(link), loadMs: 0, operations,
         release() { if (!released) { released = true; leases--; lastUsedAt = Date.now(); held?.release(); } } };
     },
-    async defaultFor(operation) { const link = options.link(); return link && OPERATIONS.includes(operation) ? link.model.id : undefined; },
-    async plan(id) { return { fits: id === options.link()?.model.id, requiredBytes: 0, freeBytes: 0, evict: [] }; },
+    async defaultFor(operation) {
+      const link = options.link();
+      return link && OPERATIONS.includes(operation) ? link.model.id : link?.companions?.defaultFor(operation);
+    },
+    async plan(id) {
+      const link = options.link();
+      if (link && id !== link.model.id && link.companions) return link.companions.plan(id);
+      return { fits: id === link?.model.id, requiredBytes: 0, freeBytes: 0, evict: [] };
+    },
     async serve(id, serveOptions = {}) {
       const link = attached();
       if (!link.serve) throw new ModelHostFailure("not-switchable", "this host serves one model; switching needs a restart");
       await link.serve(id, serveOptions.signal ?? new AbortController().signal);
     },
-    async unload() { throw new ModelHostFailure("in-use", "the serving host releases its model when it closes"); },
-    pin() {},
-    unpin() {},
-    resident() { const link = options.link(); return link ? link.resident?.() ?? [resident(link)] : []; },
-    stats(id): ModelStats { return { resident: id === options.link()?.model.id, loads: 1, unloads: 0, lastLoadMs: 0, idleUnloadSec: null }; },
+    async unload(id, unload) {
+      const link = attached();
+      if (id !== link.model.id && link.companions) return link.companions.unload(id, unload);
+      throw new ModelHostFailure("in-use", "the serving host releases its model when it closes");
+    },
+    pin(id) { const link = options.link(); if (id !== link?.model.id) link?.companions?.pin(id); },
+    unpin(id) { const link = options.link(); if (id !== link?.model.id) link?.companions?.unpin(id); },
+    resident() {
+      const link = options.link();
+      if (!link) return [];
+      return [...new Map([...(link.resident?.() ?? [resident(link)]), ...(link.companions?.resident() ?? [])].map(model => [model.id, model])).values()];
+    },
+    stats(id): ModelStats {
+      const link = options.link();
+      if (link && id !== link.model.id && link.companions) return link.companions.stats(id);
+      return { resident: id === link?.model.id, loads: 1, unloads: 0, lastLoadMs: 0, idleUnloadSec: null };
+    },
   };
 }

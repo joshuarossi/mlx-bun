@@ -485,7 +485,7 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   const notices: string[] = [], workerLog: string[] = [];
   const tmp = privateTmp(root);
   const running = await inTmp(tmp, async () => startIsolatedServer(model(root), options, { modules: client => installedModules("state", { ...stateModuleSettings(options), memory: { client } }), taskSnapshot: () => locateTaskModel(MEMORY_TASK_MODEL), entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
-    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
+    companions: () => [], notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const engine = async () => await (await fetch(new URL("/engine", base))).json() as { state: string; pid: number | null; restarts: number };
   const seen = async () => await (await fetch(new URL("/fake/seen", base))).json() as { pid: number; seen: { path: string; aborted: boolean; body?: unknown }[] };
@@ -557,7 +557,7 @@ test("each resident model has its own worker: a hub switch loads the other besid
   const launches = join(root, "launches.jsonl");
   const records = ["org/model", "org/other", "org/broken"].map(id => record(root, id));
   const running = await inTmp(tmp, async () => startIsolatedServer(records[0]!, options, { modules: client => installedModules("state", { ...stateModuleSettings(options), memory: { client } }), taskSnapshot: () => locateTaskModel(MEMORY_TASK_MODEL), entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: launches, FAKE_WORKER_MODELS: "org/model,org/other,org/broken" },
-    restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, records: () => records, notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line),
+    restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, records: () => records, companions: () => [], notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line),
     observe: bus => { bus.subscribe("*", event => { seenEvents.push(event as { type: string; model?: string }); }); } }));
   let leftover: string[] = ["not closed"];
   const base = new URL(`http://127.0.0.1:${running.port}`);

@@ -58,9 +58,12 @@ function chatLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath:
   return { version: WORKER_PROTOCOL_VERSION, socketPath, model: record, options: { ...own, inProcess: true, isolate: undefined, whisper: undefined } };
 }
 
-/** Whisper runs the transcription-only server on its socket, its weights resident for as long as its worker is. */
-function transcriptionLaunch(record: ModelRecord, socketPath: string) {
-  return { kind: "app" as const, version: WORKER_PROTOCOL_VERSION, socketPath, argv: ["--model", record.path, "--whisper-resident", "--preload"] };
+/** Whisper runs the transcription-only server on its socket, retaining the configured weight residency policy. */
+function transcriptionLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
+  const whisper = context.options.whisper;
+  return { kind: "app" as const, version: WORKER_PROTOCOL_VERSION, socketPath, argv: ["--model", record.path,
+    ...(whisper?.resident ? ["--whisper-resident"] : []),
+    ...(whisper?.idleUnloadSec !== undefined ? ["--whisper-idle-unload", String(whisper.idleUnloadSec)] : [])] };
 }
 
 /** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
@@ -105,7 +108,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
   const budget = context.graceMs ?? shutdownTimeoutMs();
   const supervisor = superviseWorker({
     entry: context.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)), socketPath,
-    launch: role === "primary" ? chatLaunch(context, record, socketPath) : transcriptionLaunch(record, socketPath),
+    launch: role === "primary" ? chatLaunch(context, record, socketPath) : transcriptionLaunch(context, record, socketPath),
     ...(context.restarts ? { restarts: context.restarts } : {}),
     ...(context.env ? { env: context.env } : {}),
     ...(context.readyTimeoutMs !== undefined ? { readyTimeoutMs: context.readyTimeoutMs } : {}),

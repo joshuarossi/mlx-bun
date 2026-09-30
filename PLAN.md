@@ -158,9 +158,11 @@ Migration gaps stay required work in the feature table.
     (`serve` runs one isolated worker per resident model by default, held by memory fit in the parent; `--in-process`
     loads them in the serving process; the two share one residency manager), the host publishes `model.load` (with
     `resumed` when saved state was found), `model.unload` (reason `evicted`, flushed) and `model.memory`, and each worker's
-    own events are relayed onto the parent's bus. Remaining: modules get one `modelHost` that leases `generate` and
-    `transcribe` (today persistent services lease the served model through `served-model-host.ts` and the model
-    composition's modules get Whisper's). Exit: a module acquires
+    own events are relayed onto the parent's bus. The in-process composition now shares one `modelHost` across
+    persistent and model-scoped modules for `generate`, `adapters` and the borrowed Whisper `transcribe` operation.
+    Isolated HTTP voice discovery and idle unloading preserve the configured companion's identity and policy.
+    Remaining: the isolated parent's typed module host also leases `transcribe` from its companion worker.
+    Exit: a module acquires
     `generate` and `transcribe` from one service (the models module already leases `adapters` and switches the served model through the state's host).
 
 ## Remaining features by layer

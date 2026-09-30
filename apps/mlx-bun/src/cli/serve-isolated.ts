@@ -166,6 +166,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
 
     const models = createModelRoutes({ host: residency, current: () => current,
       serves: async id => !!await chatModels.find(id),
+      transcription: async () => (await whisperRecord())?.repoId,
       // Audio requests belong to the Whisper worker, which loads on first use and drains a chat model when memory is short.
       companion: async pathname => (pathname.startsWith("/v1/audio/") || pathname.startsWith("/admin/transcription/")) ? (await whisperRecord())?.repoId : undefined });
     const responses = createResponsesClient(state.responses);

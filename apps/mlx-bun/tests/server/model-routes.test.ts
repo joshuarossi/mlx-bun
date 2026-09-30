@@ -174,6 +174,34 @@ test("/stats reports the host's residency (the library's serving and loaded mark
   expect(stats.models.resident.map((model: { id: string }) => model.id).sort()).toEqual(["a", "b"]);
 });
 
+test("isolated discovery lists the configured companion before loading, preserves its alias, and reports idle-unloaded weights", async () => {
+  const f = fixture({ chat: GB, "configured-whisper": GB });
+  (await f.host.acquire("chat")).release();
+  const routes = createModelRoutes({ host: f.host, current: () => "chat", serves: async id => id === "chat",
+    transcription: async () => "configured-whisper" });
+  const list = async (path = "/v1/models") => (await (await routes.handle(get(path)))!.json()).data as Record<string, unknown>[];
+  const before = await list();
+  expect(before.filter(row => row.id === "configured-whisper")).toHaveLength(1);
+  expect(before.filter(row => row.transcription === true)).toEqual([
+    expect.objectContaining({ id: "configured-whisper", resident: false }),
+  ]);
+  expect(f.host.resident().map(row => row.id)).toEqual(["chat"]);
+  const companion = await f.host.acquire("configured-whisper"); companion.release();
+  Object.defineProperty(companion.unit, "operations", { value: ["transcribe"] });
+  let loaded = true;
+  companion.unit.routes.handle = async () => Response.json({ object: "list", data: [
+    { id: "canonical-whisper", object: "model", transcription: true, resident: loaded },
+  ] });
+  expect((await list()).filter(row => row.transcription === true)).toEqual([
+    { id: "configured-whisper", object: "model", transcription: true, resident: true },
+  ]);
+  loaded = false; // The companion's CPU worker remains ready after its idle timer releases the weights.
+  expect(await list("/v1/models/configured-whisper")).toEqual([
+    { id: "configured-whisper", object: "model", transcription: true, resident: false },
+  ]);
+  await f.host.close();
+});
+
 test("everything else model-scoped belongs to the current model; a change holds it resident, and an unmatched path falls through", async () => {
   const f = fixture({ a: 2 * GB, b: 2 * GB });
   (await f.host.acquire("a")).release(); (await f.host.acquire("b")).release();

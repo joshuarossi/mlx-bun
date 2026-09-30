@@ -38,6 +38,8 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   serves(id: string): Promise<boolean>;
   /** The companion model (Whisper) that answers this path, when it is one of its own; the router leases it like any model. */
   companion?(pathname: string): Promise<string | undefined>;
+  /** The configured transcription companion, including before its worker starts. */
+  transcription?(): Promise<string | undefined>;
 }
 
 /** A response that keeps its lease until the body has ended, been cancelled, or failed. */
@@ -112,24 +114,40 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         // `/v1/models/{id}` lists that one model; `/v1/models` lists them all.
         const filter = decodeURIComponent(pathname.slice("/v1/models/".length)) || null;
         const own = filter === null ? undefined : options.host.peek(filter);
-        if (own) return own.routes.handle(request);
+        if (own && !own.operations.includes("transcribe")) return own.routes.handle(request);
         const base = await listing(request, "/v1/models");
         if (!base) return null;
         // A unit that cannot answer (a worker that is down) is the answer, not something to decorate.
         if (!base.ok) return base;
         const list = await base.json() as { object: string; data: Record<string, unknown>[] };
+        // Chat workers have no companion of their own. Discovery belongs to this host's
+        // resolved companion, not whichever Whisper snapshot a worker discovers locally.
+        if (options.transcription) {
+          const id = await options.transcription();
+          list.data = list.data.filter(entry => entry.transcription !== true && entry.id !== id);
+          for (const entry of list.data) {
+            if (entry.id === options.current() && entry.capabilities)
+              entry.capabilities = { ...(entry.capabilities as Record<string, unknown>), transcription: id !== undefined };
+          }
+          if (id !== undefined) list.data.push({ id, object: "model", owned_by: "mlx-bun", transcription: true,
+            resident: false, capabilities: { transcription: true, translation: true, chat_completions: false } });
+        }
         const resident = residentIds(), current = options.current();
         // Every resident model answers for itself; the rest are listed as the registry knows them.
         const full = await Promise.all([...resident].map(async id => {
           const unit = host.peek(id);
-          const entry = unit ? await unit.routes.handle(new Request(new URL(`/v1/models/${encodeURIComponent(id)}`, request.url))) : null;
-          return [id, entry ? ((await entry.json()) as { data?: Record<string, unknown>[] }).data?.[0] : undefined] as const;
+          const companion = unit?.operations.includes("transcribe");
+          const path = companion ? "/v1/models" : `/v1/models/${encodeURIComponent(id)}`;
+          const entry = unit ? await unit.routes.handle(new Request(new URL(path, request.url))) : null;
+          const rows = entry?.ok ? ((await entry.json()) as { data?: Record<string, unknown>[] }).data : undefined;
+          const row = companion ? rows?.find(row => row.transcription === true) : rows?.[0];
+          return [id, row ? { ...row, id } : undefined] as const;
         }));
         const bySelf = new Map(full.flatMap(([id, entry]) => entry ? [[id, entry] as const] : []));
         const data: Record<string, unknown>[] = list.data.map(entry => {
           const id = entry.id as string, row = bySelf.get(id) ?? entry;
           // A companion's own row says whether it is loaded; the host knows when it holds it resident.
-          return entry.transcription === true ? { ...row, ...(resident.has(id) ? { resident: true } : {}) } : { ...row, resident: resident.has(id), current: id === current };
+          return entry.transcription === true ? row : { ...row, resident: resident.has(id), current: id === current };
         });
         return Response.json({ ...list, data: filter === null ? data : data.filter(entry => entry.id === filter) });
       }

@@ -55,7 +55,8 @@ test("the persistent state composes and serves its routes with fakes, without th
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request =>
       new URL(request.url).pathname === "/" ? new Response("web") : null }));
     let servedLink;
-    mock.module(app + "src/cli/served-model-host.ts", () => ({ createServedModelHost(options) { servedLink = options.link; return {}; } }));
+    const moduleModelHost = {};
+    mock.module(app + "src/cli/served-model-host.ts", () => ({ createServedModelHost(options) { servedLink = options.link; return moduleModelHost; } }));
     const serverPort = () => servedLink()?.port ?? 0;
     const { createAppState } = await import(app + "src/cli/serve-state.ts");
     const memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
@@ -70,6 +71,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.deepEqual(state.memoryPaths, memoryPaths);
     assert.equal(state.storagePaths, storagePaths);
     assert.equal(state.responses.size, 0);
+    assert.equal(state.modelHost, moduleModelHost);
     const get = (path) => new Request("http://127.0.0.1" + path);
     assert.equal(await (state.web(get("/"))).text(), "web");
     assert.equal(state.web(get("/api/hub/local")), null);
@@ -153,6 +155,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
     import { createEventHub } from "@mlx-bun/app-services/portable";
+    import { createServedModelHost } from ${JSON.stringify(app + "src/cli/served-model-host.ts")};
     const app = ${JSON.stringify(app)};
     const events = [], visited = [];
     const group = name => ({ async handle() { visited.push(name); return null; } });
@@ -195,12 +198,17 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     // A hand-built persistent state: every service the host needs, nothing reachable any other way.
     const snapshot = () => [];
     const sockets = { upgrade: () => null, websocket: {} };
-    let link, detaches = 0, stateCloses = 0;
+    let link, detaches = 0, stateCloses = 0, moduleModels;
+    mock.module(app + "src/cli/module-host.ts", () => ({ loadInstalledModules: async host => {
+      moduleModels = host.bindings.modelHost();
+      return { routes: [], async stop() {} };
+    } }));
     const state = {
       web: () => null, downloads: { snapshot, active: [], start() {}, async close() {} }, responses: { size: 0 },
       memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" },
       storagePaths: { artifactRoot: "/unused/artifacts" }, sockets,
       events: createEventHub(),
+      modelHost: createServedModelHost({ link: () => link, fetch: async () => new Response() }),
       routes: Object.fromEntries(["jobs", "appModules", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
@@ -213,6 +221,9 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     const host = await startModelHost(state, { path: "/unused", repoId: "test", expertsBytes: 0 }, options,
       { beforeDrain: async () => { events.push("jobs close"); events.push("downloads close"); } });
     assert.equal(host.port, 1234);
+    assert.equal(moduleModels, state.modelHost);
+    assert.equal(await moduleModels.defaultFor("generate"), "test");
+    assert.equal(await moduleModels.defaultFor("transcribe"), "org/whisper");
     // The link is lent before the listener binds and reads the bound port afterwards.
     assert.deepEqual(events, ["allocator 8000000000", "attach", "listener"]);
     assert.equal(link.port, 1234);
