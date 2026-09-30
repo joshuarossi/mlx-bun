@@ -304,6 +304,46 @@ This covers these checkpoints and clips only: no other Whisper size, no non-WAV
 input (AudioToolbox decoding), no oracle for word timestamps or the streaming run
 (main only), no Whisper batching, and no performance. Raw references remain external.
 
+### Packed Qwen Trellis parity
+
+[`tests/parity/qwen-trellis-parity.test.ts`](tests/parity/qwen-trellis-parity.test.ts)
+compares the 11.99 GB `qwen38-trellis-global-exit5-h39-q4b-v2` and its folded
+MTP companion with pre-refactor main. Stock mlx-lm cannot read this packed
+artifact. Produce the reference with
+[`scripts/main-qwen-trellis-reference.ts`](scripts/main-qwen-trellis-reference.ts),
+passing `--main <main-checkout> --target <snapshot> --draft <companion> --out
+<external-reference.json>` and main's native library through `MLX_BUN_LIBMLXC`.
+The producer does not modify main. Its reference pins model metadata and every
+weight shard by content, the main revision, MLX version and GPU architecture.
+Set all of `MLX_BUN_TEST_QWEN_TRELLIS_TARGET`,
+`MLX_BUN_TEST_QWEN_TRELLIS_DRAFT`, `MLX_BUN_TEST_QWEN_TRELLIS_REFERENCE` and
+`MLX_BUN_TEST_QWEN_TRELLIS_REFERENCE_SHA256`, then run:
+
+```sh
+bun --no-env-file test packages/inference/tests/parity/qwen-trellis-parity.test.ts
+```
+
+On M1 Max 32 GB, MLX 0.32.2 (`applegpu_g13s`), Bun 1.4.2, the candidate
+matched main `02d723a2875153196f8c6c10bce2daf6f0044655`: 96 complete
+last-position float32 logit vectors and greedy tokens across three prompts;
+three 64-token MTP runs with every target input and speculation counter equal.
+Both MTP runs use the shared gateway with batch capacity one, depth two, plain
+KV, greedy sampling and stopping tokens disabled. The reference SHA-256 is
+`15421eb8c691fab7eabeb6e13c9a5c2a2eeed5caf5832f57e3575ef0119780f9`.
+An earlier comparison against main's single-request MTP loop kept all 192
+output tokens but differed in draft proposals and acceptance; that execution
+shape does not establish equality for the shared path and its reference is
+refused. This evidence covers the named artifact and geometry, not B>1,
+quantized KV, stochastic sampling, intelligence or performance.
+
+The existing runtime-report consumer also matches full logits, all live cache
+planes and continuation in 18 cases (contexts 0/64/512 × append lengths
+1/3/4/8/16/128, fixed prefix chunk 256, plain KV), including serialized-state
+restoration. Main's report SHA-256 is
+`8bb68cc58d3aad035111b10e48102595a2c00f91c1b640cc7577da19dae71e54`. Both trees disable compiled decode for this
+comparison; the legacy reference's omitted configuration provenance is accepted
+explicitly after checking its invocation. Captures and logs remain outside Git.
+
 ### Repeatable runtime comparison
 
 The source-checkout tool `bun packages/inference/scripts/runtime-oracle.ts --help`
@@ -320,7 +360,8 @@ bytes must match before the worker starts. Legacy reports require explicit
 verifying their environment separately. New reports record runtime overrides,
 source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
 
-The same consumer covers Qwen Trellis and Gemma; no such run is recorded yet.
+The same consumer covers Qwen Trellis and Gemma. Packed Qwen Trellis has the
+measured comparison below; Gemma still needs a recorded run with this consumer.
 Produce references outside this repository with the unchanged producers at main
 `02d723a`, sequentially on the comparison machine. Stock mlx-lm architectures
 (Gemma4 e2b/e4b/26B-A4B, Gemma2, Llama, MiniCPM5) use
