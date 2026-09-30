@@ -63,7 +63,7 @@ const prelude = (mocks = "") => `
   } }));
   // The chat module is real: its socket, its model description over the model host, and the loopback the Pi SDK talks to. Only the SDK is a stand-in:
   // it reads the served model's facts when a chat connects, as the real backend does, and asks the loopback for one completion.
-  mock.module(app + "../../packages/module-chat/src/pi-backend.ts", () => ({ createPiBackend(options) { return send => ({
+  mock.module(require("node:path").dirname(Bun.resolveSync("@mlx-bun/module-chat/manifest", app)) + "/pi-backend.ts", () => ({ createPiBackend(options) { return send => ({
     async start() {
       const served = { ...options, ...await options.model?.() };
       const reply = await fetch("http://127.0.0.1:" + options.port() + "/v1/chat/completions", { method: "POST",

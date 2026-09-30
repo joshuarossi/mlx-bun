@@ -331,7 +331,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     // The agent directory is explicit so nothing is created; the sessions directory is explicit or the chat module's default under HOME.
     const chatPaths = { toolApprovalsFile: "/unused/approvals.json", agentDir: "/unused/agent", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
     const { join } = await import("node:path");
-    const chatModule = app + "../../packages/module-chat/src/";
+    const chatModule = require("node:path").dirname(Bun.resolveSync("@mlx-bun/module-chat/manifest", app)) + "/";
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
       memoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048, totalBytes: 1e9 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
