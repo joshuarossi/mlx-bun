@@ -7,7 +7,7 @@
 //   mlx-bun's own /v1/chat/completions, so synthesis rides the
 //   continuous-batching scheduler like any other client (`memory
 //   --host`/`--port`).
-// - The worker client (the `--isolate` parent): every stage call or batch is
+// - The worker client (the isolated parent): every stage call or batch is
 //   one request to the default model worker's private `/admin/memory/complete`,
 //   where that worker's memory task model runs it.
 //
@@ -115,7 +115,7 @@ export function createLoopbackMemoryClient(apiUrl: () => string, http: MemoryCli
  * this call is the one that loads its task model. */
 export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit): Promise<Response> }; snapshot: string }
 
-/** The `--isolate` parent's client for one synthesis run: each `complete` or
+/** The isolated parent's client for one synthesis run: each `complete` or
  * `completeBatch` is one POST of the rows and the selected snapshot to the
  * private `/admin/memory/complete` of the worker `select` returns (the
  * model worker), answered with the ordered raw outputs. A failed

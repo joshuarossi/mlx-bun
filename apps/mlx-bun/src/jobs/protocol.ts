@@ -43,7 +43,7 @@ export type JobRunner = (
   signal?: AbortSignal,
 ) => Promise<{ outputPath?: string } | void>;
 
-/** Job kinds in the system: quantize, finetune, and each kind an installed module declares. */
+/** Job kinds in the system: each kind an installed module declares (quantize, finetune, dataset). */
 export type JobKind = string;
 
 export type JobStatus = "queued" | "running" | "done" | "failed" | "zombie";

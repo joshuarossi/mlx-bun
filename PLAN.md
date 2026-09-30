@@ -138,12 +138,14 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, train, chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets, quantize and benchmarks landed (benchmarks' panel is the shell's, from its manifest; datasets' and quantize's browser
-    pages, `web/browser/dataset.ts` and `web/browser/quantize.ts`, are still legacy pages that become
+  - [ ] (d) Remaining modules, one PR each: models, chat, memory
+    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks and train landed (benchmarks' panel is the shell's, from its manifest; datasets' and quantize's browser
+    pages, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, are still legacy pages that become
     panels the `@mlx-bun/web-shell` mounts; quantize's calls the app's toast, push and library-refresh
     helpers, which a panel gets through its connection or the shell instead). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
-    picker also calls it). Modules contribute to each other through the
+    picker also calls it), and so do `/v1/adapters*`. Adapter merge and export
+    (`/api/finetune/merge`, `/export`, `server/adapter-artifact-routes.ts`) are training's but run native MLX
+    under the engine's lock in the model process, so they move to the train module with (e)'s lease. Modules contribute to each other through the
     `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
     hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
     when the first module that declares them lands (they refuse them until then); job runners are served
@@ -159,7 +161,7 @@ Migration gaps stay required work in the feature table.
     `transcribe` (today persistent services lease the served model through `served-model-host.ts` and the model
     composition's modules get Whisper's); the isolated parent has no measured-memory floor (estimates until a worker
     reports its weights) and its synthesis runs on the current worker without a residency lease. Exit: a module acquires
-    `generate` and `transcribe` from one service.
+    `generate` and `transcribe` from one service, and the train module serves adapter merge and export through that service's lease.
 
 ## Remaining features by layer
 

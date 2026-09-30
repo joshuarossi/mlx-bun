@@ -27,7 +27,7 @@ export interface WorkerRoutesOptions {
   pid?: number;
   /** The model form's memory task model (Gemma-4 e4b with its chunk adapter,
    * loaded by the first call): `POST /admin/memory/complete` runs one memory
-   * `complete` or `completeBatch` on it for the `--isolate` parent's synthesis,
+   * `complete` or `completeBatch` on it for the isolated parent's synthesis,
    * under the execution lease; the call that loads it loads exactly the
    * snapshot the call carries. The composition owns it and closes it after
    * `close()` has joined the calls. Without it (or without a lease) there is

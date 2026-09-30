@@ -1059,15 +1059,17 @@ Earlier versions' job history and model index under `~/.cache/mlx-bun` are not
 carried over (the index rebuilds by scan); their adapter stores stay listed.
 
 `jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
-and managed subprocess lifetimes. `finetune/` owns dataset inspection and submitted SFT/DPO/ORPO policy; its child
-runner loads the chosen model and invokes `@mlx-bun/training`. Library defaults
-are supplied to the app mapper, which preserves main's ORPO recipe and bf16
-head fallback. The child restores its wired-memory limit and releases its model
-and weights on completion or failure. Training progress passes through unchanged
-to job events, preserving metrics, adapter paths, and stage fields; the job owner
-alone emits the terminal lifecycle event.
-`cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
-wire responses stay in `server/job-routes.ts` and `server/finetune-routes.ts`.
+and managed subprocess lifetimes. `cli/job-entry.ts` resolves the producer in the child process: the installed
+module that registered the job kind. HTTP parsing and job wire responses stay in `server/job-routes.ts`.
+
+Fine-tuning is the train module's ([`@mlx-bun/module-train`](../../packages/module-train/README.md): the
+`finetune` job, `/api/finetune/inspect-dataset` and `/submit`, the `train`, `train-watch`, `fuse` and `draft` verbs,
+`mlx-bun.lora` and `mlx-bun.fuse`, and the `adapters/` storage entry, with `models/` and `datasets/` shared with
+quantize and datasets). This app installs it (`src/modules.ts`) and supplies its core services in the
+persistent state the same way as quantize's. The verbs run through the verb table (`cli/module-verbs.ts`); a verb
+that names no model runs on the app's automatic choice (`resolveModelAuto`, the one `serve` makes), which the
+verb host supplies to the catalog. Adapter merge and export stay here (`server/adapter-artifact-routes.ts`,
+below): merge holds the engine's execution lock.
 
 Quantization and `convert` are the quantize module's ([`@mlx-bun/module-quantize`](../../packages/module-quantize/README.md):
 the `quantize` job, `/api/quantize/*`, the `convert` verb and `mlx-bun.convert`). This app installs it
@@ -1076,9 +1078,9 @@ the `quantize` job, `/api/quantize/*`, the `convert` verb and `mlx-bun.convert`)
 lease until the child's process group is gone; the child (`cli/job-entry.ts`) activates the module that
 registered the job kind and runs its runner. A one-shot `convert` (`cli/module-verbs.ts`) runs over a job
 store of its own, created on first use and removed when it ends, so its runs never appear in the job history.
-`convert`'s `--upload-repo` pushes through the module's `catalog` service (`publishing/catalog-hub.ts`);
-`fuse` and `upload` keep `cli/publish-model.ts`. `/api/model/resolve-folder`, the fine-tune wizard's
-folder picker, stays here (`server/model-folder-routes.ts`) over the same catalog.
+`convert`'s and `fuse`'s `--upload-repo` push through the modules' `catalog` service (`publishing/catalog-hub.ts`).
+`/api/model/resolve-folder`, the fine-tune wizard's folder picker, stays here (`server/model-folder-routes.ts`) over
+the same catalog.
 
 Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child's process group is gone and output streams
@@ -1098,38 +1100,10 @@ and engine. Every job row records main's `ended_at` format
 route is used. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
-`cli/train.ts` owns the `train`, `train-watch`, and `fuse` verbs as thin
-presentation over this producer and the public training library. `train`
-validates main's flags before any model resolution, preflights the dataset,
-prints the plan, and drives `createFinetuneRunner` in-process (`--dry-run` stops
-at the plan). SIGINT/SIGTERM abort at the next optimizer-step boundary, after any
-checkpoint writes already started have completed. Cancellation detaches training
-state and releases its resources; completed checkpoints remain usable. A final
-save already started is allowed to finish and is reported as success. `train-watch` (`finetune/watch.ts`) tails the trainer's
-`<adapter>/metrics.jsonl` (default: the most recently updated run in
-`~/.mlx-bun/adapters`); `train` writes `~/.mlx-bun/adapters/<method>-<model>`
-unless `--adapter` is given. `fuse` merges an adapter through `fuseAdapter` into
-`--save-path` (default `~/.mlx-bun/models/<model>-fused`, refused if it exists);
-`--dequantize` writes dense weights for every quantized module and drops the
-quantization block, and `--upload-repo` checks the write token first and pushes the
-finished model as `convert` does. GGUF export (`--export-gguf`, `--gguf-path`) is
-refused. The merge cannot be interrupted, so
-a signal arriving during it lets the output finish (without pushing) rather than
-leaving a partial directory. [Training CLI tests](tests/train-cli.test.ts) use injected
-dependencies and a spawned CLI with native MLX blocked.
-
-`cli/draft.ts` owns `draft <regen|train|calibrate|quantize>`, thin over `@mlx-bun/training/dspark`
-and `@mlx-bun/quantize/drafter`: it validates flags before resolving or loading anything, resolves
-the target model like `train`, runs one stage in the foreground and prints progress. Defaults live
-under the storage root: `regen` writes shards to `~/.mlx-bun/datasets/dspark-<model>`, `train` a
-drafter directory to `~/.mlx-bun/models/<model>-dspark` (serve it with `--draft-model <dir>`),
-`quantize` `~/.mlx-bun/models/<drafter>-affine-q<bits>-g<group>` (refused if it exists), and
-`calibrate` rewrites the drafter's `dspark.json` in place (refused when it already carries thresholds
-unless `--force`). `--tap-layers` defaults to gemma-4 e4b's `20,31,41,42`; other targets pass their own,
-identical for `regen` and `train`. SIGINT/SIGTERM stop at the next topic, step or prompt. The
-[draft CLI tests](tests/draft-cli.test.ts) use injected libraries (an opt-in native check saves a
-tiny drafter and resolves it like a model path); the acceptance gate for a drafter is `bun scripts/drafter-ab.ts`, which serves each
-drafter through `--command` and compares `usage.speculation`.
+The [training CLI tests](tests/train-cli.test.ts) spawn the CLI with native MLX blocked and drive the module's verbs through the
+verb table: help (including `draft`'s subcommand paragraph), usage errors, refusals and a dry-run plan. The
+module's own tests (`packages/module-train/tests`) use injected dependencies. An opt-in native check saves a tiny
+drafter and resolves it like a model path ([draft CLI test](tests/draft-cli.test.ts)).
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
 paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage;
@@ -1138,7 +1112,7 @@ with descendants holding the job's output.
 The [module's tests](../../packages/module-quantize/tests) verify option forwarding and output
 naming with an injected numerical operation; they do not run or establish parity for actual
 checkpoint quantization.
-[Fine-tuning policy tests](tests/finetune/policy.test.ts) cover the app recipe,
+The [train module's policy tests](../../packages/module-train/tests/policy.test.ts) cover the app recipe,
 explicit overrides, dataset inspection, HTTP submission, progress, and resource
 cleanup with a fake native runtime. These CPU checks do not extend the numerical
 claims in the [training evidence](../../packages/training/README.md). The opt-in

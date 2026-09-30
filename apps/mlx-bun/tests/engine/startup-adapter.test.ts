@@ -17,7 +17,7 @@ test.skipIf(!modelDir)("a startup adapter is mounted before serving, defaults re
   let app: RunningApp | undefined;
   try {
     // The same producer the fine-tune job runs, in-process: it loads and releases its own model.
-    const { createFinetuneRunner } = await import("../../src/finetune/job");
+    const { createFinetuneRunner } = await import("@mlx-bun/module-train");
     const steps: number[] = [];
     await createFinetuneRunner()(event => { if (event.type === "metric" && event.kind === "train") steps.push(event.step); },
       { model_dir: modelDir, data_dir: data, adapter_path: adapter, method: "sft", iters: 3, max_seq_length: 128, steps_per_report: 1 });

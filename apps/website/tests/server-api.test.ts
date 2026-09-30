@@ -78,9 +78,9 @@ test("generation writes a build-owned page with source links at the revision", a
 });
 
 test("an added unsupported routing predicate fails with its location; an unrelated path does not", () => {
-  const guard = '    if (request.method !== "POST" || !["/api/finetune/inspect-dataset", "/api/finetune/submit"].includes(path)) return null;';
-  expect(() => serverApiReference(mutate("server/finetune-routes.ts", guard, `    if (path.endsWith("/templates")) return null;\n${guard}`)))
-    .toThrow(/^server\/finetune-routes\.ts:17: unsupported routing predicate `path\.endsWith\("\/templates"\)`/);
+  const guard = '    if (request.method !== "POST" || !["/api/finetune/merge", "/api/finetune/export"].includes(path)) return null;';
+  expect(() => serverApiReference(mutate("server/adapter-artifact-routes.ts", guard, `    if (path.endsWith("/templates")) return null;\n${guard}`)))
+    .toThrow(/^server\/adapter-artifact-routes\.ts:17: unsupported routing predicate `path\.endsWith\("\/templates"\)`/);
   expect(() => serverApiReference(mutate("server/job-routes.ts", "/^\\/api\\/jobs\\/([^/]+?)(\\/stream)?$/", "/^\\/api\\/jobs\\/(.*)$/")))
     .toThrow(/^server\/job-routes\.ts:13: unsupported regex syntax/);
   // A value named `path` that is not the request's path is not a route.
@@ -91,7 +91,7 @@ test("an added unsupported routing predicate fails with its location; an unrelat
 test("string-keyed request reads route like property reads; a computed key on the request fails with its location", () => {
   // `request["method"]` and `new URL(request["url"])["pathname"]` are the same routes as their property forms.
   expect(serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'if (request["method"] !== "GET") return null;'))).toEqual(baseline);
-  expect(serverApiReference(mutate("server/finetune-routes.ts", "const path = new URL(request.url).pathname;", 'const path = new URL(request["url"])["pathname"];'))).toEqual(baseline);
+  expect(serverApiReference(mutate("server/adapter-artifact-routes.ts", "const path = new URL(request.url).pathname;", 'const path = new URL(request["url"])["pathname"];'))).toEqual(baseline);
   // The reviewer's case: a new route written only with string keys is listed, not silently omitted.
   const added = serverApiReference(mutate("server/status-routes.ts", '  return { async handle(request: Request): Promise<Response | null> {\n',
     '  return { async handle(request: Request): Promise<Response | null> {\n    if (request["method"] === "GET" && new URL(request["url"]).pathname === "/new-route") return Response.json({});\n'));
@@ -101,8 +101,8 @@ test("string-keyed request reads route like property reads; a computed key on th
   expect(cache.modes.map(mode => rows(cache, mode.id))).toEqual(baseline.modes.map(mode => rows(baseline, mode.id)));
   expect(() => serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'const key = "method"; if (request[key] !== "GET") return null;')))
     .toThrow(/^server\/status-routes\.ts:50: unsupported routing predicate `request\[key\] !== "GET"`/);
-  expect(() => serverApiReference(mutate("server/finetune-routes.ts", "const path = new URL(request.url).pathname;", 'const key = "url"; const path = new URL(request[key]).pathname;')))
-    .toThrow(/^server\/finetune-routes\.ts:\d+: unsupported routing predicate `request\[key\]`/);
+  expect(() => serverApiReference(mutate("server/adapter-artifact-routes.ts", "const path = new URL(request.url).pathname;", 'const key = "url"; const path = new URL(request[key]).pathname;')))
+    .toThrow(/^server\/adapter-artifact-routes\.ts:\d+: unsupported routing predicate `request\[key\]`/);
 });
 
 test("removing a route removes exactly its row", () => {

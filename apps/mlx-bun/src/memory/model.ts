@@ -15,7 +15,7 @@
 // {@link MemoryCompletionClient} that the app's composition roots inject: the
 // `memory` verb and `serve` load the task model in-process on first use
 // (cli/memory-engine), `memory --host/--port` uses a loopback HTTP client onto
-// a serving mlx-bun, and the `serve --isolate` parent a client for the default
+// a serving mlx-bun, and the isolated `serve` parent a client for the default
 // model worker's task model. Nothing here talks to a model directly; with no
 // client configured the seams throw a clear error.
 

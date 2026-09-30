@@ -20,7 +20,6 @@ import { vaultRoot } from "../memory/vault";
 import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
-import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
 import { createModelFolderRoutes } from "../server/model-folder-routes";
 import { createJobRoutes } from "../server/job-routes";
@@ -49,7 +48,7 @@ export interface AppStateOptions {
    * model (Gemma-4 e4b with its chunk adapter), created by the first run and
    * kept until close, each call under the attached host's execution lease. */
   memoryTaskModel?: () => InProcessMemoryClient;
-  /** Memory synthesis's model in a process that loads none (the --isolate
+  /** Memory synthesis's model in a process that loads none (the isolated
    * parent): one run's client for a task model another process owns and
    * leases itself (the default model worker's). Nothing is leased here. */
   memoryCompletions?: (signal: AbortSignal) => MemoryCompletionClient;
@@ -85,7 +84,7 @@ export interface AppState {
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
     hub: RouteGroup; sessions: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    models: RouteGroup; appModules: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
+    models: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -142,7 +141,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // load with the first completion) and kept until close, as in main. Each of
   // its completions or batches runs under the attached host's execution lease,
   // taken before the weights load and released once every started row joined,
-  // so memory work never overlaps a managed job. The --isolate parent owns no
+  // so memory work never overlaps a managed job. The isolated parent owns no
   // task model: its client reaches the default model worker's, which takes that
   // worker's lease itself, so none is taken here. Close cancels and joins the
   // runs, then closes the task model, all ahead of any engine drain.
@@ -166,8 +165,6 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     jobs: createJobRoutes(jobs),
     models: createModelFolderRoutes(catalog),
     appModules: createModuleRoutes(loaded.routes),
-    finetune: createFinetuneRoutes(jobs, storagePaths.artifactRoot
-      ? () => join(storagePath("adapters", storagePaths.artifactRoot), `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
     }) }),

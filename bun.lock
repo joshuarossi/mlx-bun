@@ -34,6 +34,7 @@
         "@mlx-bun/module-datasets": "workspace:*",
         "@mlx-bun/module-metrics": "workspace:*",
         "@mlx-bun/module-quantize": "workspace:*",
+        "@mlx-bun/module-train": "workspace:*",
         "@mlx-bun/module-transcription": "workspace:*",
         "@mlx-bun/quantize": "workspace:*",
         "@mlx-bun/training": "workspace:*",
@@ -155,6 +156,21 @@
         "@mlx-bun/quantize": "workspace:*",
       },
       "devDependencies": {
+        "@mlx-bun/app-services": "workspace:*",
+      },
+    },
+    "packages/module-train": {
+      "name": "@mlx-bun/module-train",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
+        "@mlx-bun/quantize": "workspace:*",
+        "@mlx-bun/training": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
         "@mlx-bun/app-services": "workspace:*",
       },
     },
@@ -456,6 +472,8 @@
     "@mlx-bun/module-metrics": ["@mlx-bun/module-metrics@workspace:packages/module-metrics"],
 
     "@mlx-bun/module-quantize": ["@mlx-bun/module-quantize@workspace:packages/module-quantize"],
+
+    "@mlx-bun/module-train": ["@mlx-bun/module-train@workspace:packages/module-train"],
 
     "@mlx-bun/module-transcription": ["@mlx-bun/module-transcription@workspace:packages/module-transcription"],
 

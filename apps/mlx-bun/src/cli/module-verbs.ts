@@ -26,7 +26,11 @@ export async function runInstalledVerb(name: string, input: string[] | { values:
   const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)), acquire: async () => ({ dispose() {} }),
     createStore: () => new JobStore(path.join(scratch, "jobs.db"), path.join(scratch, "logs")) });
   const jobService = createJobService(jobs);
-  const host = createHostServices({ log() {}, hub: createCatalogHub() });
+  // A verb that names no model runs on the app's automatic choice (`cli/model-selection.ts`), the same one `serve` makes.
+  const host = createHostServices({ log() {}, hub: { ...createCatalogHub(), async pickDefault(signal) {
+    const { m } = await (await import("./model-selection")).resolveModelAuto(null, {}, signal);
+    return { id: m.repoId, directory: m.path };
+  } } });
   try {
     return await runVerb({ program: PROGRAM, spec, ...(Array.isArray(input) ? { argv: input } : input), services: { ...host, bindings: { ...host.bindings, jobs: () => jobService } },
       // Only the verb's own module activates (a verb of one module never starts another's runners).

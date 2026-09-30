@@ -54,6 +54,12 @@ Options:
   -h, --help               Show help`);
 });
 
+test("a verb's details paragraph is printed between the usage line and the options", () => {
+  const help = verbHelp("prog", { ...spec, details: "Subcommands:\n  a   First\n  b   Second" });
+  expect(help).toContain("Usage: prog clip <file> [more] [options]\n\nSubcommands:\n  a   First\n  b   Second\n\nOptions:\n  --len <value>");
+  expect(verbHelp("prog", spec)).not.toContain("Subcommands");
+});
+
 test("a short spelling parses and is listed, and a flag can name its own message for a missing value", () => {
   const withShort: CliVerbSpec = { name: "cut", summary: "Cut", options: [
     { name: "quiet", type: "boolean", short: "q", summary: "Say less" },

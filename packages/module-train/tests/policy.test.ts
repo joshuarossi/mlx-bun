@@ -3,11 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TrainConfig } from "@mlx-bun/training";
-import type { JobEvent } from "../../src/jobs/protocol";
-import { parseFinetuneConfig } from "../../src/finetune/config";
-import { createFinetuneRunner, type FinetuneRuntime } from "../../src/finetune/job";
-import { inspectDataset } from "../../src/finetune/inspect";
-import { createFinetuneRoutes } from "../../src/server/finetune-routes";
+import type { JobEvent } from "@mlx-bun/app-core";
+import { createFinetuneRunner, inspectDataset, parseFinetuneConfig, type FinetuneRuntime } from "../src";
+import { trainRoutes } from "./support";
 
 // Deliberately distinctive supplied library defaults: app policy must not
 // silently replace them with a second copy of DEFAULT_TRAIN_CONFIG.
@@ -165,7 +163,7 @@ test("dataset inspection counts nonblank rows and probes training format without
   const dir = mkdtempSync(join(tmpdir(), "mlx-finetune-")); dirs.push(dir);
   writeFileSync(join(dir, "train.jsonl"), '\n{"text":"first"}\n{"text":"second"}\n');
   writeFileSync(join(dir, "valid.jsonl"), '{"text":"validation"}\n');
-  const routes = createFinetuneRoutes({ submit() { throw new Error("unexpected submit"); } });
+  const { routes } = trainRoutes({ jobs: { submit() { throw new Error("unexpected submit"); } } as never });
   expect(await (await routes.handle(post("inspect-dataset", { path: dir })))!.json())
     .toEqual({ ok: true, n_train: 2, n_valid: 1, format: "text" });
   writeFileSync(join(dir, "train.jsonl"), "broken");
@@ -174,28 +172,26 @@ test("dataset inspection counts nonblank rows and probes training format without
 });
 
 test("submit forwards caller model and all policy to the host, independently of the resident model", async () => {
-  const calls: unknown[][] = [];
-  const routes = createFinetuneRoutes({ submit(...args) { calls.push(args); return { jobId: "job_test" }; } }, () => "/default/adapter");
+  const { routes, submitted: calls } = trainRoutes({}, () => "/default/adapter");
   const body = { model_dir: paths.model_dir, data_dir: paths.data_dir, method: "orpo", rank: 16,
     orpo_flash_ce: false, sft_scope: "response", warm_start_adapter: "/previous" };
   expect(await (await routes.handle(post("submit", body)))!.json())
-    .toEqual({ ok: true, job_id: "job_test", adapter_path: "/default/adapter" });
-  expect(calls[0]).toEqual(["finetune", { ...body, adapter_path: "/default/adapter" }, "/default/adapter"]);
+    .toEqual({ ok: true, job_id: "job_1", adapter_path: "/default/adapter" });
+  expect(calls[0]).toEqual({ kind: "finetune", config: { ...body, adapter_path: "/default/adapter" }, outputPath: "/default/adapter" });
   await routes.handle(post("submit", { ...body, adapter_path: "/chosen" }));
-  expect(calls[1]?.[2]).toBe("/chosen");
+  expect(calls[1]?.outputPath).toBe("/chosen");
   expect(await routes.handle(post("push", {}))).toBeNull();
 });
 
 test("malformed HTTP inputs never submit a child or inspect arbitrary non-string paths", async () => {
-  const routes = createFinetuneRoutes({ submit() { throw new Error("unexpected submit"); } });
+  const { routes } = trainRoutes({ jobs: { submit() { throw new Error("unexpected submit"); } } as never });
   for (const body of [null, [], {}, { ...paths, model_dir: 3 }, { ...paths, adapter_path: [] }])
     expect((await routes.handle(post("submit", body)))?.status).toBe(400);
   expect((await routes.handle(post("inspect-dataset", { path: [] })))?.status).toBe(400);
 });
 
 test("default adapter outputs are distinct for two submissions in the same millisecond", async () => {
-  const calls: unknown[][] = [];
-  const routes = createFinetuneRoutes({ submit(...args) { calls.push(args); return { jobId: `job_${calls.length}` }; } });
+  const { routes, submitted: calls } = trainRoutes();
   const clock = spyOn(Date, "now").mockReturnValue(123);
   try {
     const body = { model_dir: paths.model_dir, data_dir: paths.data_dir };
@@ -204,8 +200,8 @@ test("default adapter outputs are distinct for two submissions in the same milli
     expect(first.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
     expect(second.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
     expect(first.adapter_path).not.toBe(second.adapter_path);
-    expect(calls.map(call => call[2])).toEqual([first.adapter_path, second.adapter_path]);
+    expect(calls.map(call => call.outputPath)).toEqual([first.adapter_path, second.adapter_path]);
     await routes.handle(post("submit", { ...body, adapter_path: "/chosen/output" }));
-    expect(calls[2]?.[2]).toBe("/chosen/output");
+    expect(calls[2]?.outputPath).toBe("/chosen/output");
   } finally { clock.mockRestore(); }
 });

@@ -3,7 +3,7 @@
 // first stdin line, the ready line leaves on stdout, and the end of stdin
 // means the parent is gone. No flag selects it. Two launch forms, both
 // carrying the app's package version (a record with another one exits 2):
-// - model (`--isolate`): only the model-scoped host (serve-host.ts) over the
+// - model (the isolated server's worker, one per resident model): only the model-scoped host (serve-host.ts) over the
 //   parent's Unix socket, with the persistent services stubbed because the
 //   parent owns them, plus the memory task model the parent's synthesis calls
 //   through the admin surface (only the default worker is ever asked);
@@ -71,7 +71,7 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     chatPaths: options.chatPaths, sessionDir: options.chatPaths?.sessionDir ?? defaultSessionDir(),
     storagePaths: options.storagePaths ?? {},
     memorySurface: async () => undefined,
-    routes: { hub: none, sessions: none, memory: none, jobs: none, models: none, appModules: none, finetune: none, publishing: none },
+    routes: { hub: none, sessions: none, memory: none, jobs: none, models: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };

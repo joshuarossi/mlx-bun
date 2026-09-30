@@ -69,6 +69,8 @@ export interface CliVerbSpec {
   readonly options: readonly CliOptionSpec[];
   /** The line printed when the verb is invoked wrongly; default `usage: <program> <name> <positionals>`. */
   readonly usage?: string;
+  /** A paragraph `--help` prints between the usage line and the options (subcommands, ordering rules). */
+  readonly details?: string;
 }
 
 /** One line of progress the host draws (a spinner on a terminal, plain lines elsewhere). */

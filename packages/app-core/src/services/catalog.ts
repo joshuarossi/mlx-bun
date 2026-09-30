@@ -48,6 +48,8 @@ export interface ModelCatalog {
   resolve(id: string): Promise<CatalogEntry | undefined>;
   /** What a user typed: a model directory (its path is its id), an id, or a query that names exactly one local model. Rejects when it names none or several; never downloads. */
   find(query: string): Promise<CatalogEntry>;
+  /** The model a verb runs on when the user names none: this host's automatic choice (the preferred model when it fits the machine, else the largest that leaves room for other apps; an empty cache fetches a starter first). Rejects when none fits or the host makes no such choice. */
+  pickDefault(options?: { readonly signal?: AbortSignal }): Promise<CatalogEntry>;
   /** Bytes the model needs resident, for residency plans. */
   estimate(id: string): Promise<{ readonly residentBytes: number } | undefined>;
   /** Where a picked folder lives: the hub cache snapshot, the app's own models directory, or an indexed model. Undefined when it is none of them; never downloads. */

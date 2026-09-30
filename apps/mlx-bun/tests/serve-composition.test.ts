@@ -64,7 +64,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     const { installedModules } = await import(app + "src/modules.ts");
     // The state runs the modules that need job runners; Whisper's module belongs to the model host.
     const stateModules = await installedModules("state");
-    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "benchmarks"]);
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "benchmarks", "train"]);
     assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
     const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
     assert.equal(state.sessionDir, chatPaths.sessionDir);
@@ -106,13 +106,28 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.equal(quantizing.kind, "quantize");
     assert.equal(quantizing.status, "failed");
     assert.match(quantizing.error, /no model host is attached/);
+    // The train module runs in the state as well: the shipped fine-tune paths, a default adapter directory under the artifact root, and a
+    // finetune process job that the missing model host's lease refuses.
+    assert.equal((await state.routes.appModules.handle(post("/api/finetune/submit", {}))).status, 400);
+    assert.deepEqual(await (await state.routes.appModules.handle(post("/api/finetune/inspect-dataset", { path: "/nonexistent/data" }))).json(),
+      { ok: false, n_train: 0, n_valid: 0, format: "unknown", error: "/nonexistent/data/train.jsonl not found" });
+    const trained = await (await state.routes.appModules.handle(post("/api/finetune/submit", { model_dir: "/nonexistent/model", data_dir: "/nonexistent/data" }))).json();
+    assert.ok(trained.adapter_path.startsWith(join(storagePaths.artifactRoot, "adapters", "adapter-")), trained.adapter_path);
+    let training;
+    for (let i = 0; i < 200 && training?.status !== "failed" && training?.status !== "done"; i++) {
+      training = (await (await state.routes.jobs.handle(get("/api/jobs/" + trained.job_id))).json()).job; await Bun.sleep(10);
+    }
+    assert.equal(training.kind, "finetune");
+    assert.equal(training.status, "failed");
+    assert.match(training.error, /no model host is attached/);
     const status = await (await state.routes.memory.handle(get("/api/memory/status"))).json();
     assert.deepEqual([status.ok, status.enabled, status.root], [false, false, memoryPaths.vault]);
     assert.equal(await state.memorySurface(), undefined);
     assert.ok(!existsSync(memoryPaths.vault), "reading memory status never initializes a vault");
     assert.deepEqual(await (await state.routes.sessions.handle(get("/api/sessions/search?q=hello"))).json(), { ok: true, results: [] });
     assert.deepEqual(await (await state.routes.publishing.handle(get("/api/settings/hf-token"))).json(), { ok: true, hasToken: false });
-    for (const group of ["models", "finetune"]) assert.equal(await state.routes[group].handle(get("/api/" + group + "/anything")), null);
+    for (const group of ["models"]) assert.equal(await state.routes[group].handle(get("/api/" + group + "/anything")), null);
+    assert.equal(await state.routes.appModules.handle(get("/api/finetune/anything")), null);
     // Modules leasing the served model follow the attached host's port; none is lent before one attaches and after it detaches.
     assert.equal(serverPort(), 0);
     const detach = state.attach({ model: { id: "m", bytes: 1 }, port: 4321, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} });
@@ -186,7 +201,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
       memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" }, chatPaths, sessionDir: "/unused/sessions",
       storagePaths: { artifactRoot: "/unused/artifacts" }, memorySurface: async () => surface,
       events: createEventHub(),
-      routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "models", "appModules", "finetune", "publishing"].map(name => [name, group(name)])),
+      routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "models", "appModules", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
     };
@@ -213,7 +228,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.equal(listenerInput.web, state.web);
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "adapters", "adapterArtifacts", "completions", "hub", "sessions", "management", "modules", "memory", "jobs", "models", "appModules", "finetune", "publishing"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "adapters", "adapterArtifacts", "completions", "hub", "sessions", "management", "modules", "memory", "jobs", "models", "appModules", "publishing"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
     // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
