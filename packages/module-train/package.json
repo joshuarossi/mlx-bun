@@ -9,7 +9,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./manifest": "./src/manifest.ts"
+    "./manifest": "./src/manifest.ts",
+    "./panel": "./src/panel/index.ts"
   },
   "files": [
     "src",
@@ -28,7 +29,8 @@
   },
   "devDependencies": {
     "@mlx-bun/app-host": "workspace:*",
-    "@mlx-bun/app-services": "workspace:*"
+    "@mlx-bun/app-services": "workspace:*",
+    "happy-dom": "20.10.6"
   },
   "os": [
     "darwin"

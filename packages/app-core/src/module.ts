@@ -125,7 +125,7 @@ export interface PanelSpec {
   /** Package export that defines the element when imported, e.g. `@mlx-bun/module-transcription/panel`. */
   readonly entry: string;
   readonly title: string;
-  /** Shell route, `/<module id>`. */
+  /** Declared shell route: one lowercase kebab-case segment, preserving an existing path when migrated. */
   readonly path: string;
 }
 
@@ -135,6 +135,14 @@ export interface PanelConnection {
   readonly apiBase: string;
   /** Server-sent stream of `AppEvent`s. */
   readonly eventsUrl: string;
+  /** Optional presentation supplied by the embedding host. */
+  readonly ui?: {
+    notify?(message: string, kind?: "ok" | "err"): void;
+    publish?(container: HTMLElement, source: { kind: "quantize" | "finetune" | "dataset"; job_id?: string; source_path?: string }): void | Promise<void>;
+    modelId?(): string | undefined;
+    catalogChanged?(): void;
+  };
+
 }
 
 /** Live parts of a module, created by `activate`. Each key names a declared spec. */

@@ -11,6 +11,14 @@ export interface PanelConnection {
   readonly apiBase: string;
   /** Server-sent stream the panel follows. */
   readonly eventsUrl: string;
+  /** Optional presentation supplied by the embedding host. */
+  readonly ui?: {
+    notify?(message: string, kind?: "ok" | "err"): void;
+    publish?(container: HTMLElement, source: { kind: "quantize" | "finetune" | "dataset"; job_id?: string; source_path?: string }): void | Promise<void>;
+    modelId?(): string | undefined;
+    catalogChanged?(): void;
+  };
+
 }
 
 /** One panel to mount: a module manifest's `panel` (`tag`, `title`, `path`; `@mlx-bun/app-core`'s `PanelSpec` is
@@ -19,7 +27,7 @@ export interface ShellPanel {
   /** Custom element tag, `mlx-<module id>-panel`. */
   readonly tag: string;
   readonly title: string;
-  /** Shell route, `/<module id>`. */
+  /** Declared shell route: one lowercase kebab-case segment. */
   readonly path: string;
   readonly connection: PanelConnection;
   /** Listed among the developer tools (hidden until the Developer switch is on). Default true. */

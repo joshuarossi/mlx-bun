@@ -116,6 +116,13 @@ test("the registry is always available, and contributing to it requires it", () 
   expect(checkManifests([module("alpha", { contributes: ["chat.tool"] })], options)).toEqual(['module "alpha": contributes without requiring "registry"']);
 });
 
-test("a panel's tag and path follow the module id", () => {
-  expect(checkManifests([module("alpha", { panel: { tag: "alpha-panel", entry: "x", title: "A", path: "/a" } })], options)).toHaveLength(2);
+test("a panel's tag follows the module id and its declared path is safe and unique", () => {
+  expect(checkManifests([module("alpha", { panel: { tag: "alpha-panel", entry: "x", title: "A", path: "/../a" } })], options)).toHaveLength(2);
+});
+
+test("panels preserve shipped paths while rejecting unsafe and colliding routes", () => {
+ const panel = (id: string, path: string) => module(id, { panel: { tag: `mlx-${id}-panel`, entry: "x", title: id, path } });
+ expect(checkManifests([panel("train", "/finetune"), panel("datasets", "/dataset")], options)).toEqual([]);
+ for (const path of ["/", "/a/b", "/../a", "/A", "/a?b", "/a#b", "/a%2fb"]) expect(checkManifests([panel("alpha", path)], options)).toContain('module "alpha": panel path must be one lowercase kebab-case route');
+ expect(checkManifests([panel("alpha", "/shared"), panel("beta", "/shared")], options)).toContain('module "beta": panel path "/shared" collides with module alpha');
 });

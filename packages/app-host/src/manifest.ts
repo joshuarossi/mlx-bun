@@ -39,7 +39,7 @@ function storageSegments(path: string): string[] | undefined {
  * verbs, job kinds and storage entries are well formed and unique across
  * modules (routes by method and path shape, storage case-insensitively and not
  * nested in another module's path, except that two modules may declare the same
- * entry, one path and kind, to share it); a panel's tag and path follow the id.
+ * entry, one path and kind, to share it); a panel's tag follows the id and its declared route is unique.
  */
 export function checkManifests(modules: readonly AppModule[], options: ManifestOptions): string[] {
   const problems: string[] = [];
@@ -49,6 +49,7 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
   for (const route of options.reserved ?? []) routes.set(`${route.method} ${shape(route.path)}`, "the host");
   const verbs = new Map<string, string>();
   const kinds = new Map<string, string>();
+  const panelPaths = new Map<string, string>();
   const stored: { readonly path: string; readonly kind: string; readonly segments: string[]; readonly owner: string }[] = [];
 
   for (const module of modules) {
@@ -124,7 +125,10 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
 
     if (module.panel) {
       if (module.panel.tag !== `mlx-${id}-panel`) problems.push(`${at}: panel tag must be "mlx-${id}-panel"`);
-      if (module.panel.path !== `/${id}`) problems.push(`${at}: panel path must be "/${id}"`);
+      if (!/^\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(module.panel.path)) problems.push(`${at}: panel path must be one lowercase kebab-case route`);
+      const owner = panelPaths.get(module.panel.path);
+      if (owner) problems.push(`${at}: panel path "${module.panel.path}" collides with module ${owner}`);
+      panelPaths.set(module.panel.path, id);
     }
   }
   return problems;

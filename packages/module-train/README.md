@@ -65,10 +65,17 @@ the drafter's `dspark.json` in place (refused when it already carries thresholds
   are training's by ownership but stay in the app: merge runs native MLX under the engine's execution lock in
   the process that holds the model, and this module activates in the persistent state, which under `--isolate`
   loads no native code. They move with the model host (PLAN item (e)), whose combined service lends a lease.
-- The browser's fine-tune wizard (`apps/mlx-bun/src/web/browser/finetune.ts`) stays in the app until the web
-  shell exists: it is built from the shell's DOM helpers, toast, controllers and push-to-Hub panel, so it cannot
-  yet be a self-contained `mlx-train-panel`. The adapter picker and mount routes (`/v1/adapters*`) are the
-  future models module's.
+
+## Panel
+
+`<mlx-train-panel>` (`./panel`) owns the existing five-step fine-tune wizard, its markup and styles in shadow DOM.
+The shell preserves `/finetune`. It reaches dataset inspection, training submission, metrics and adapter
+merge/export through its `PanelConnection`; optional host `ui` hooks provide notifications, publishing and
+catalog refresh. An unfinished job reconnects and replays its stream after returning to the panel; leaving
+closes the stream without cancelling the managed job. Panel tests cover ORPO defaults and submission,
+loss metrics, reconnection, merge/export and publishing over a remote backend under a URL prefix.
+The adapter mount routes (`/v1/adapters*`) belong to the models module.
+
 
 ## Tests
 
