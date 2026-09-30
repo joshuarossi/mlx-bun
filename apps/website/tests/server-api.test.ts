@@ -48,7 +48,7 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   // The admin rows are the worker's own: everything between its /health row and the first model route.
   const admin = worker.slice(1, worker.indexOf("POST /v1/chat/completions routed by model id"));
   expect(admin.length).toBeGreaterThan(8);
-  expect(admin).toContain("GET /admin/events implemented [served if options.events]");
+  expect(admin).toContain("GET /admin/events implemented [served if (options.events || options.memory)]");
   expect(admin.some(row => /\/admin\/served?\b/.test(row))).toBe(false);
   expect(appWorker).toEqual([...serve.slice(0, 13), ...admin, ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
