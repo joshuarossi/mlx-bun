@@ -43,235 +43,235 @@ synthesize-stage/link); the nightly job runs it on a schedule. These load the
 memory task model on first use; --host/--port use a serving mlx-bun instead.`;
 
 export const manifest = {
-  "id": "memory",
-  "title": "Memory",
-  "summary": "A local Markdown vault, read-only chat tools and the existing synthesis and nightly scheduling pipeline.",
-  "requires": [
+  id: "memory",
+  title: "Memory",
+  summary: "A local Markdown vault, read-only chat tools and the existing synthesis and nightly scheduling pipeline.",
+  requires: [
     "storage",
     "registry"
   ],
-  "placement": "app",
-  "contributes": [
+  placement: "app",
+  contributes: [
     "chat.tool",
     "chat.guidance"
   ],
-  "routes": [
+  routes: [
     {
-      "id": "status",
-      "method": "GET",
-      "path": "/api/memory/status",
-      "summary": "Wiki status and nightly schedule",
-      "response": "json",
-      "mount": "root"
+      id: "status",
+      method: "GET",
+      path: "/api/memory/status",
+      summary: "Wiki status and nightly schedule",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "list",
-      "method": "GET",
-      "path": "/api/memory/list",
-      "summary": "List articles and reference documents",
-      "response": "json",
-      "mount": "root"
+      id: "list",
+      method: "GET",
+      path: "/api/memory/list",
+      summary: "List articles and reference documents",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "search",
-      "method": "GET",
-      "path": "/api/memory/search",
-      "summary": "Search article and reference content",
-      "response": "json",
-      "mount": "root"
+      id: "search",
+      method: "GET",
+      path: "/api/memory/search",
+      summary: "Search article and reference content",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "article",
-      "method": "GET",
-      "path": "/api/memory/article",
-      "summary": "Read a document with its article structure",
-      "response": "json",
-      "mount": "root"
+      id: "article",
+      method: "GET",
+      path: "/api/memory/article",
+      summary: "Read a document with its article structure",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "links",
-      "method": "GET",
-      "path": "/api/memory/links",
-      "summary": "Read inbound and outbound article links",
-      "response": "json",
-      "mount": "root"
+      id: "links",
+      method: "GET",
+      path: "/api/memory/links",
+      summary: "Read inbound and outbound article links",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "history",
-      "method": "GET",
-      "path": "/api/memory/history",
-      "summary": "Read an article’s Git history",
-      "response": "json",
-      "mount": "root"
+      id: "history",
+      method: "GET",
+      path: "/api/memory/history",
+      summary: "Read an article’s Git history",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "diff",
-      "method": "GET",
-      "path": "/api/memory/diff",
-      "summary": "Read an article revision diff",
-      "response": "json",
-      "mount": "root"
+      id: "diff",
+      method: "GET",
+      path: "/api/memory/diff",
+      summary: "Read an article revision diff",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "init",
-      "method": "POST",
-      "path": "/api/memory/init",
-      "summary": "Initialize the memory wiki",
-      "response": "json",
-      "mount": "root"
+      id: "init",
+      method: "POST",
+      path: "/api/memory/init",
+      summary: "Initialize the memory wiki",
+      response: "json",
+      mount: "root"
     },
     {
-      "id": "synthesize",
-      "method": "GET",
-      "path": "/v1/memory/synthesize",
-      "summary": "Run synthesis and stream progress",
-      "response": "sse",
-      "mount": "root"
+      id: "synthesize",
+      method: "GET",
+      path: "/v1/memory/synthesize",
+      summary: "Run synthesis and stream progress",
+      response: "sse",
+      mount: "root"
     }
   ],
-  "verbs": [
+  verbs: [
     {
-      "name": "memory",
-      "summary": "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it",
-      "positional": [
+      name: "memory",
+      summary: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it",
+      positional: [
         {
-          "name": "subcommand", "summary": "Memory action"
+          name: "subcommand", summary: "Memory action"
         },
         {
-          "name": "args", "summary": "Action arguments",
-          "repeatable": true
+          name: "args", summary: "Action arguments",
+          repeatable: true
         }
       ],
-      "helpUsage": "Usage: mlx-bun memory [subcommand] [args] [options]",
-      "usage": "usage: mlx-bun memory <subcommand> [args] [options]",
-      "details": memoryDetails,
-      "options": [
+      helpUsage: "Usage: mlx-bun memory [subcommand] [args] [options]",
+      usage: "usage: mlx-bun memory <subcommand> [args] [options]",
+      details: memoryDetails,
+      options: [
         {
-          "name": "since",
-          "type": "string",
-          "summary": "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)"
+          name: "since",
+          type: "string",
+          summary: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)"
         },
         {
-          "name": "model",
-          "type": "string",
-          "summary": "synthesize: synthesis model override (parsed; reserved)"
+          name: "model",
+          type: "string",
+          summary: "synthesize: synthesis model override (parsed; reserved)"
         },
         {
-          "name": "dry-run",
-          "type": "boolean",
-          "summary": "synthesize: plan the stages only, never write the vault"
+          name: "dry-run",
+          type: "boolean",
+          summary: "synthesize: plan the stages only, never write the vault"
         },
         {
-          "name": "limit",
-          "type": "string",
-          "summary": "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)"
+          name: "limit",
+          type: "string",
+          summary: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)"
         },
         {
-          "name": "convs",
-          "type": "string",
-          "summary": "Stage workers: comma-separated conversation ids to restrict the pass to"
+          name: "convs",
+          type: "string",
+          summary: "Stage workers: comma-separated conversation ids to restrict the pass to"
         },
         {
-          "name": "at",
-          "type": "string",
-          "summary": "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]"
+          name: "at",
+          type: "string",
+          summary: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]"
         },
         {
-          "name": "host",
-          "type": "string",
-          "summary": "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)"
+          name: "host",
+          type: "string",
+          summary: "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)"
         },
         {
-          "name": "port",
-          "type": "string",
-          "summary": "Port of that server (8080 when only --host is given)"
+          name: "port",
+          type: "string",
+          summary: "Port of that server (8080 when only --host is given)"
         }
       ]
     },
     {
-      "name": "setup",
-      "summary": "Set up your local AI's memory wiki (alias of mlx-bun memory)",
-      "positional": [
+      name: "setup",
+      summary: "Set up your local AI's memory wiki (alias of mlx-bun memory)",
+      positional: [
         {
-          "name": "subcommand", "summary": "Memory action"
+          name: "subcommand", summary: "Memory action"
         },
         {
-          "name": "args", "summary": "Action arguments",
-          "repeatable": true
+          name: "args", summary: "Action arguments",
+          repeatable: true
         }
       ],
-      "helpUsage": "Usage: mlx-bun setup [subcommand] [args] [options]",
-      "usage": "usage: mlx-bun setup <subcommand> [args] [options]",
-      "details": memoryDetails,
-      "options": [
+      helpUsage: "Usage: mlx-bun setup [subcommand] [args] [options]",
+      usage: "usage: mlx-bun setup <subcommand> [args] [options]",
+      details: memoryDetails,
+      options: [
         {
-          "name": "since",
-          "type": "string",
-          "summary": "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)"
+          name: "since",
+          type: "string",
+          summary: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)"
         },
         {
-          "name": "model",
-          "type": "string",
-          "summary": "synthesize: synthesis model override (parsed; reserved)"
+          name: "model",
+          type: "string",
+          summary: "synthesize: synthesis model override (parsed; reserved)"
         },
         {
-          "name": "dry-run",
-          "type": "boolean",
-          "summary": "synthesize: plan the stages only, never write the vault"
+          name: "dry-run",
+          type: "boolean",
+          summary: "synthesize: plan the stages only, never write the vault"
         },
         {
-          "name": "limit",
-          "type": "string",
-          "summary": "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)"
+          name: "limit",
+          type: "string",
+          summary: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)"
         },
         {
-          "name": "convs",
-          "type": "string",
-          "summary": "Stage workers: comma-separated conversation ids to restrict the pass to"
+          name: "convs",
+          type: "string",
+          summary: "Stage workers: comma-separated conversation ids to restrict the pass to"
         },
         {
-          "name": "at",
-          "type": "string",
-          "summary": "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]"
+          name: "at",
+          type: "string",
+          summary: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]"
         },
         {
-          "name": "host",
-          "type": "string",
-          "summary": "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)"
+          name: "host",
+          type: "string",
+          summary: "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)"
         },
         {
-          "name": "port",
-          "type": "string",
-          "summary": "Port of that server (8080 when only --host is given)"
+          name: "port",
+          type: "string",
+          summary: "Port of that server (8080 when only --host is given)"
         }
       ]
     }
   ],
-  "storage": [
+  storage: [
     {
-      "key": "vault",
-      "path": "wiki",
-      "kind": "directory",
-      "purpose": "Markdown articles and read-only reference links"
+      key: "vault",
+      path: "wiki",
+      kind: "directory",
+      purpose: "Markdown articles and read-only reference links"
     },
     {
-      "key": "skills",
-      "path": "skills",
-      "kind": "directory",
-      "purpose": "Bundled memory skill for chat"
+      key: "skills",
+      path: "skills",
+      kind: "directory",
+      purpose: "Bundled memory skill for chat"
     },
     {
-      "key": "db",
-      "path": "db/memory.sqlite",
-      "kind": "sqlite",
-      "purpose": "Ingest and synthesis state"
+      key: "db",
+      path: "db/memory.sqlite",
+      kind: "sqlite",
+      purpose: "Ingest and synthesis state"
     }
   ],
-  "panel": {
-    "tag": "mlx-memory-panel",
-    "entry": "@mlx-bun/module-memory/panel",
-    "title": "Memory",
-    "path": "/memory",
-    "developer": false, "overlay": true
+  panel: {
+    tag: "mlx-memory-panel",
+    entry: "@mlx-bun/module-memory/panel",
+    title: "Memory",
+    path: "/memory",
+    developer: false, overlay: true
   }
 } as const satisfies Omit<AppModule<"storage" | "registry">, "activate">;

@@ -21,7 +21,7 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   const serve = rows(baseline, "serve");
   for (const row of ["GET /ws/chat WebSocket upgrade", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions routed by model id",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
-    "POST /api/hub/download implemented", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
+    "POST /api/hub/download implemented", "GET /v1/memory/synthesize implemented",
     "POST /v1/audio/sessions/{id}/finish implemented", "GET /api/dataset/templates implemented", "POST /api/dataset/submit implemented"]) expect(serve).toContain(row);
   // The datasets module needs job runners, so it runs in the persistent state: the isolated parent serves it, the transcription-only host does not.
   expect(rows(baseline, "isolate")).toContain("POST /api/dataset/submit implemented");
@@ -110,7 +110,17 @@ test("string-keyed request reads route like property reads; a computed key on th
 });
 
 test("removing a route removes exactly its row", () => {
-  const removed = serverApiReference(mutate("server/memory-routes.ts", '        case "GET /api/memory/diff": return handleMemoryDiff(url);\n', ""));
+  // The module declares the same root route; deleting it from the manifest removes exactly that public row.
+  const diff = `    {
+      id: "diff",
+      method: "GET",
+      path: "/api/memory/diff",
+      summary: "Read an article revision diff",
+      response: "json",
+      mount: "root"
+    },
+`;
+  const removed = serverApiReference(mutate("packages/module-memory/src/manifest.ts", diff, ""));
   for (const id of ["serve", "isolate"]) {
     expect(rows(baseline, id)).toContain("GET /api/memory/diff implemented");
     expect(rows(removed, id)).toEqual(rows(baseline, id).filter(row => row !== "GET /api/memory/diff implemented"));
