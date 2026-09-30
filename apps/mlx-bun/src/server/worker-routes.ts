@@ -2,10 +2,11 @@
 // ahead of the model routes: readiness for the parent, a connection-owned
 // execution lease for managed GPU jobs, a drain that stops admission and
 // waits for the work in flight, the model worker's memory task model for the
-// parent's synthesis, and the worker's event stream (`/admin/events`). It is
+// parent's synthesis, the worker's event stream (`/admin/events`), and its model's
+// adapter operation (`/admin/adapters`). It is
 // never mounted on a TCP listener, where every one of these paths is unknown
 // (404), as they are on a worker that lacks the capability behind one.
-import type { EventBus } from "@mlx-bun/app-core";
+import type { AdapterOperation, EventBus } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
 
@@ -36,6 +37,34 @@ export interface WorkerRoutesOptions {
   /** The worker's own events (its engine's request timings and samples, its model's memory): `GET /admin/events` streams them
    * as JSON lines for the parent, which publishes them on its bus. Without it there is no such route (404). */
   events?: Pick<EventBus, "subscribe">;
+  /** The worker's model's `adapters` operation (list, mount, unmount, merge under the engine's lock), which the parent's models module
+   * reaches through `POST /admin/adapters`, admitted and drained like model work. Without it there is no such route (404). */
+  adapters?: AdapterOperation;
+}
+
+/** The body of one private adapter call: `op` names the operation and the rest is its arguments. */
+export type WorkerAdapterCall =
+  | { op: "list" }
+  | { op: "mount"; id: string; path: string }
+  | { op: "unmount"; id: string }
+  | { op: "merge"; adapters: [string, string]; output: string; scales?: number[] };
+
+function parseAdapterCall(value: unknown): WorkerAdapterCall {
+  const body = value as Record<string, unknown> | null;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("expected a JSON object");
+  const text = (field: unknown, name: string) => { if (typeof field !== "string" || !field) throw new Error(`${name} expects a non-empty string`); return field; };
+  switch (body.op) {
+    case "list": return { op: "list" };
+    case "mount": return { op: "mount", id: text(body.id, "id"), path: text(body.path, "path") };
+    case "unmount": return { op: "unmount", id: text(body.id, "id") };
+    case "merge": {
+      const { adapters, scales } = body;
+      if (!Array.isArray(adapters) || adapters.length !== 2) throw new Error("adapters expects two directories");
+      if (scales !== undefined && (!Array.isArray(scales) || !scales.every(item => typeof item === "number" && Number.isFinite(item)))) throw new Error("scales expects finite numbers");
+      return { op: "merge", adapters: [text(adapters[0], "adapters[0]"), text(adapters[1], "adapters[1]")], output: text(body.output, "output"), ...(scales ? { scales: scales as number[] } : {}) };
+    }
+    default: throw new Error('op expects "list", "mount", "unmount" or "merge"');
+  }
 }
 
 /** The private memory call's body: one `complete` (a single row) or one
@@ -148,6 +177,28 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
     }
   };
 
+  // One private adapter call for the parent's models module: it runs on the model this worker holds, under its engine lock.
+  const adapters = async (request: Request): Promise<Response> => {
+    const operation = options.adapters!;
+    let call: WorkerAdapterCall;
+    try { call = parseAdapterCall(await request.json()); }
+    catch (error) {
+      if (request.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ error: { message: `invalid adapter call: ${describe(error)}`, type: "invalid_request_error" } }, { status: 400 });
+    }
+    try {
+      switch (call.op) {
+        case "list": return Response.json({ adapters: await operation.list(request.signal) });
+        case "mount": return Response.json({ adapter: await operation.mount(call.id, call.path, request.signal) });
+        case "unmount": return Response.json({ removed: await operation.unmount(call.id, request.signal) });
+        case "merge": return Response.json({ stats: await operation.merge({ adapters: call.adapters, output: call.output, ...(call.scales ? { scales: call.scales } : {}) }, request.signal) });
+      }
+    } catch (error) {
+      if (request.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ error: { message: describe(error), type: "adapter_failed" } }, { status: 400 });
+    }
+  };
+
   // The parent subscribes to what this worker's engine publishes. Each connection is one subscription, released when
   // the parent leaves or the surface closes; a held connection is not model work, so drain does not wait for it.
   const streams = new Set<() => void>();
@@ -213,8 +264,9 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
         try {
-          // Memory calls are admitted and drained like model requests.
+          // Memory and adapter calls are admitted and drained like model requests.
           if (pathname === "/admin/memory/complete" && options.memoryTaskModel && options.acquireExecutionLease) return request.method === "POST" ? await memory(request) : methodNotAllowed("POST");
+          if (pathname === "/admin/adapters" && options.adapters) return request.method === "POST" ? await adapters(request) : methodNotAllowed("POST");
           return await model.handle(request);
         } finally { if (--inFlight === 0) for (const wake of [...idleWaiters]) wake(); }
       } };

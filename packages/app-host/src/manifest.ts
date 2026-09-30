@@ -64,6 +64,7 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
       else if (!provided.has(service)) problems.push(`${at}: requires "${service}", which this host does not implement`);
     }
     if (new Set(module.requires).size !== module.requires.length) problems.push(`${at}: requires lists a service twice`);
+    if (module.placement !== undefined && module.placement !== "app" && module.placement !== "model") problems.push(`${at}: placement must be "app" or "model"`);
     if ((module.contributes?.length ?? 0) > 0 && !module.requires.includes("registry"))
       problems.push(`${at}: contributes without requiring "registry"`);
     for (const point of module.contributes ?? [])

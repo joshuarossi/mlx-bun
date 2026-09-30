@@ -1,5 +1,4 @@
 import type { PromptCache } from "@mlx-bun/inference/state";
-import type { DownloadStatus } from "@mlx-bun/hub/download";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { createPromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
@@ -50,8 +49,6 @@ export function createCompletionRoutes(engine: {
   buildPrompt?: ModelPromptBuilder;
   /** Process-local history by default; composition owns any replacement store. */
   responseHistory?: ResponseHistory;
-  /** Progress rows for `GET /downloads`; the default is the hub package's process tracker. */
-  downloads?: () => readonly DownloadStatus[];
   /** The Whisper companion `/v1/models` lists beside the chat model; absent means none is configured. */
   transcription?: () => Promise<TranscriptionInfo | null>;
 }) {
@@ -63,7 +60,7 @@ export function createCompletionRoutes(engine: {
     options.defaultAdapter, engine.preparation, options.buildPrompt);
   const text = new TextCompletionStage(ctx, prep, options.contextLimit, options.defaultGeneratedTokens, options.defaultAdapter, engine.preparation);
   const inference = new InferenceStage(new CompletionExecutor(engine.completion));
-  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription, undefined, options.downloads);
+  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription);
   const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
     const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
     const session = typeof fields.session_id === "string" ? fields.session_id :
@@ -73,7 +70,6 @@ export function createCompletionRoutes(engine: {
     else { delete body.session_id; delete body.prompt_cache_key; }
   };
   return {
-    invalidateLibrary: discovery.invalidateLibrary,
     responseStats: () => ({ entries: responseHistory.size, bytes: responseHistory.totalBytes,
       max_bytes: responseHistory.maxBytes, ttl_ms: responseHistory.ttlMs }),
     /** null means another app surface may handle this request. */

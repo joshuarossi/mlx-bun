@@ -72,6 +72,11 @@ export interface ResidencyOptions<U extends ResidentUnit> {
   pinned?: Iterable<ModelId>;
   /** The model a caller who names none is served with, per operation. */
   defaultFor?: (operation: ModelOperation) => Promise<ModelId | undefined>;
+  /** How this composition makes a model the one it serves (`ModelHost.serve`): it checks the id, loads the model through `acquire`, and
+   * records it as the default. Without it the host holds no switch and rejects with `not-switchable`. */
+  serve?: (id: ModelId, signal: AbortSignal | undefined) => Promise<void>;
+  /** The directories a resident model's unit reads (its snapshot and any it holds besides), reported as `ResidentModel.uses`. */
+  uses?: (unit: U) => readonly string[];
   events?: { publish(event: CoreEvent): void };
   log?: (line: string) => void;
   now?: () => number;
@@ -242,7 +247,8 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
   };
   const describe = (slot: Slot<U>): ResidentModel => ({ id: slot.id, role: slot.entry.role ?? "primary",
     state: slot.closing ? "draining" : slot.loading && !slot.unit ? "loading" : "ready", operations: slot.unit?.operations ?? slot.entry.operations,
-    bytes: held(slot), pinned: pinned.has(slot.id), leases: slot.leases, lastUsedAt: slot.lastUsedAt });
+    bytes: held(slot), pinned: pinned.has(slot.id), leases: slot.leases, lastUsedAt: slot.lastUsedAt,
+    ...(slot.unit && options.uses ? { uses: options.uses(slot.unit) } : {}) });
 
   const host: ResidencyHost<U> = {
     get policy(): ResidencyPolicy { return { budgetBytes: budget, pinned: [...pinned], idleUnloadSec: Number.POSITIVE_INFINITY }; },
@@ -296,6 +302,10 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
     },
     peek: id => slots.get(id)?.unit,
     defaultFor: operation => options.defaultFor?.(operation) ?? Promise.resolve(undefined),
+    async serve(id, serveOptions = {}) {
+      if (!options.serve) throw new ResidencyError("not-switchable", "this host serves one model; switching needs a restart");
+      await options.serve(id, serveOptions.signal);
+    },
 
     async plan(id) {
       const slot = await slotFor(id, []);

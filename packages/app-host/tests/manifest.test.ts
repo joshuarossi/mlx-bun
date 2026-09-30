@@ -126,3 +126,8 @@ test("panels preserve shipped paths while rejecting unsafe and colliding routes"
  for (const path of ["/", "/a/b", "/../a", "/A", "/a?b", "/a#b", "/a%2fb"]) expect(checkManifests([panel("alpha", path)], options)).toContain('module "alpha": panel path must be one lowercase kebab-case route');
  expect(checkManifests([panel("alpha", "/shared"), panel("beta", "/shared")], options)).toContain('module "beta": panel path "/shared" collides with module alpha');
 });
+
+test("a module's placement is app or model, and nothing else", () => {
+  expect(checkManifests([module("alpha", { placement: "app" }), module("beta", { placement: "model" }), module("gamma")], options)).toEqual([]);
+  expect(checkManifests([module("alpha", { placement: "everywhere" as never })], options)).toEqual(['module "alpha": placement must be "app" or "model"']);
+});

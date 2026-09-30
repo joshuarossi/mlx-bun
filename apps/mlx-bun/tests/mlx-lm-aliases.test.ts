@@ -13,7 +13,7 @@ import { generateOptions } from "../src/cli/inference";
 import { ALIASES, ALIAS_GAPS, invokedAlias, translateAlias } from "../src/cli/mlx-lm-aliases";
 import { installedVerbs, runInstalledVerb } from "../src/cli/module-verbs";
 import { parseServeOptions } from "../src/cli/serve";
-import { runUpload, type UploadDependencies } from "../src/cli/upload";
+import { runUpload } from "@mlx-bun/module-models";
 
 const app = resolve(import.meta.dir, "..");
 const manifest = JSON.parse(readFileSync(join(app, "package.json"), "utf8")) as { bin: Record<string, string> };
@@ -204,10 +204,9 @@ test("mlx-bun.upload: mlx_lm.upload's --path and --upload-repo", async () => {
   expect(command).toBe("upload");
   expect(parsed.values).toEqual({ path: "/models/fused", "upload-repo": "org/repo" });
   const calls: unknown[][] = [];
-  const deps: UploadDependencies = { credentials: { get: () => "hf_token" }, isDirectory: () => true, box() {}, log() {},
-    step: () => ({ update() {}, done() {}, fail() {} }),
-    upload: async (dir, repo) => { calls.push([dir, repo]); return { ok: true, url: `https://huggingface.co/${repo}`, commitOid: "abc" }; } };
-  await runUpload(parsed, deps);
+  const catalog = { canPublish: () => true, publish: async (directory: string, request: { repoId: string }) => { calls.push([directory, request.repoId]); return { url: `https://huggingface.co/${request.repoId}` }; } };
+  const terminal = { ...plainTerminal(() => {}), step: () => ({ update() {}, done() {}, fail() {} }), box() {} };
+  await runUpload({ ...parsed, stdout() {}, stderr() {}, terminal, signal: new AbortController().signal }, catalog, { isDirectory: () => true });
   expect(calls).toEqual([["/models/fused", "org/repo"]]);
 });
 

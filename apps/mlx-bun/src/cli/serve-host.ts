@@ -9,7 +9,8 @@
 import { totalmem } from "node:os";
 import { requireChatTemplate, releaseContext, type LoadedModelContext } from "../engine/model-host";
 import { createKvBudget, type KvBudget } from "../engine/kv-budget";
-import { createResidencyHost, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
+import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
+import { leasedAdapters } from "../residency/leased-adapters";
 import { estimateRecordBytes } from "../residency/resident-estimate";
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
@@ -20,7 +21,6 @@ import { loadInstalledModules } from "./module-host";
 import { type RunningApp, type ServeOptions } from "./serve-options";
 import type { AppState, RouteGroup } from "./serve-state";
 import { createServingUnit, type ContextHost, type ContextHostOptions, type ServedModelFacts, type ServingUnit, type UnitShared } from "./serving-unit";
-import { ServeRefused } from "../server/hub-routes";
 
 export type { ContextHost, ContextHostOptions } from "./serving-unit";
 export { resolveServingLimits, validatePagedServingOptions } from "./serve-options";
@@ -240,8 +240,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       const id = await moduleHost.whisper.defaultFor("transcribe");
       return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
     };
-    const shared: UnitShared = { responses: state.responses, events: state.events, downloads: state.downloads.snapshot, transcription: whisperInfo,
-      ...(state.storagePaths.artifactRoot ? { artifactRoot: state.storagePaths.artifactRoot } : {}),
+    const shared: UnitShared = { responses: state.responses, events: state.events, transcription: whisperInfo,
       ...(ssdBudget ? { ssdBudget } : {}), ...(allocatorLimitBytes ? { allocatorLimitBytes } : {}),
       onClosed: result => { if (closingHost) finalResults.push(result); } };
     // The unit takes the context and releases it (by ownership) on close and on its own failed start.
@@ -287,6 +286,13 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       ...(memory ? { measured: () => memory.activeMemory() } : {}),
       external: () => moduleHost.whisper.resident().reduce((sum, model) => sum + model.bytes, 0),
       defaultFor: async operation => operation === "generate" ? current : undefined,
+      // Switching: the models this host may load; a caller's own context and an expert-offload process hold one model and never switch.
+      ...(input.models ? { async serve(id: string, signal: AbortSignal | undefined) {
+        if (id !== first.id && !await known(id)) throw new ResidencyError("not-found", `${id} is not a local model; download it first`);
+        (await residency.acquire(id, { ...(signal ? { signal } : {}), need: ["generate"] })).release();
+        current = id;
+      } } : {}),
+      uses: unit => [unit.artifactPath],
       log: line => console.log(line) });
     // A context the caller supplied cannot be reloaded, so it is never evicted.
     residency.adopt(entryOf(first), first, { pin: !input.models, ...(input.loadMs !== undefined ? { loadMs: input.loadMs } : {}) });
@@ -312,13 +318,12 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
     const moduleRoutes = createModuleRoutes(modules.routes);
     const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
-    const invalidateLibrary = () => { records?.invalidate(); for (const unit of residentUnits()) unit.invalidateLibrary(); };
-    // Settings share this group with hub GC, which must protect every resident snapshot.
-    const management = createManagementRoutes({ invalidateLibrary,
-      toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => residentUnits().map(unit => unit.artifactPath) });
+    // The listing this host routes by is read again after a download, a finished job or a cleanup.
+    const invalidateLibrary = () => { records?.invalidate(); };
+    const management = createManagementRoutes({ toolApprovalsFile: state.chatPaths?.toolApprovalsFile });
     const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
+    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await persistent.sessions.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+      await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
@@ -337,13 +342,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
       acquireExecutionLease: signal => residency.pauseAll(signal),
       invalidateLibrary,
-      ...(input.models ? { async serve(id: string, signal: AbortSignal) {
-        if (id !== first.id && !await known(id)) throw new ServeRefused(404, `${id} is not a local model; download it first`);
-        try { (await residency.acquire(id, { signal, need: ["generate"] })).release(); }
-        catch (error) { throw new ServeRefused(error instanceof Error && "code" in error && error.code === "load-failed" ? 502 : 400, error instanceof Error ? error.message : String(error)); }
-        current = id;
-        return { model: id };
-      } } : {}) });
+      resident: () => residency.resident(),
+      adapters: leasedAdapters(residency, () => current),
+      ...(input.models ? { serve: (id: string, signal: AbortSignal) => residency.serve(id, { signal }) } : {}) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web: state.web, chat,

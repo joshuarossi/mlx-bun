@@ -59,12 +59,9 @@ the drafter's `dspark.json` in place (refused when it already carries thresholds
 `train`. SIGINT/SIGTERM stop at the next topic, step or prompt. The acceptance gate for a drafter is
 `bun scripts/drafter-ab.ts`, which serves each drafter through `--command` and compares `usage.speculation`.
 
-## Not in the module yet
-
-- Adapter merge and export (`POST /api/finetune/merge`, `/export`, `apps/mlx-bun/src/server/adapter-artifact-routes.ts`)
-  are training's by ownership but stay in the app: merge runs native MLX under the engine's execution lock in
-  the process that holds the model, and this module activates in the persistent state, which under `--isolate`
-  loads no native code. They move with the model host (PLAN item (e)), whose combined service lends a lease.
+Adapter merge and export (`POST /api/finetune/merge`, `/export`) belong to the
+[models module](../module-models/README.md): merge runs under the served model's execution lock,
+in the process that holds the model, through the model host's `adapters` operation.
 
 ## Panel
 
@@ -75,7 +72,6 @@ catalog refresh. An unfinished job reconnects and replays its stream after retur
 closes the stream without cancelling the managed job. Panel tests cover ORPO defaults and submission,
 loss metrics, reconnection, merge/export and publishing over a remote backend under a URL prefix.
 The adapter mount routes (`/v1/adapters*`) belong to the models module.
-
 
 ## Tests
 

@@ -3,12 +3,14 @@ import type { LoadedModelContext } from "../../src/engine/model-host";
 import { createDiscoveryRoutes, matchDiscoveryRoute } from "../../src/server/discovery-routes";
 
 test("discovery matches only its GET surfaces and leaves other requests to composition", () => {
-  for (const [path, route] of [["/library", "library"], ["/downloads", "downloads"], ["/v1", "api-index"],
+  for (const [path, route] of [["/v1", "api-index"],
     ["/health", "health"], ["/v1/models", "models"], ["/v1/models/org/model", "models"]] as const) {
     expect(matchDiscoveryRoute("GET", path)).toBe(route);
     expect(matchDiscoveryRoute("POST", path)).toBeNull();
   }
   expect(matchDiscoveryRoute("GET", "/not-discovery")).toBeNull();
+  // The library and the downloads are the models module's (over the catalog); discovery describes the served model.
+  expect(matchDiscoveryRoute("GET", "/library")).toBeNull(); expect(matchDiscoveryRoute("GET", "/downloads")).toBeNull();
 });
 
 function discovery(modelType: string, adapters: boolean, training: boolean, failScan = false) {
@@ -53,33 +55,10 @@ test("model discovery reports the native draft head only when the loaded draft i
     .toMatchObject({ mtp: true, context_window: 4096 });
 });
 
-test("library discovery closes each registry and refreshes only when its cache is invalidated", async () => {
-  const run = discovery("qwen3", true, true);
-  expect(await (await run.get("/library"))!.json()).toEqual({ models: [] });
-  await run.get("/library");
-  expect(run.scans()).toBe(1); expect(run.closes()).toBe(1);
-  run.routes.invalidateLibrary(); await run.get("/library");
-  expect(run.scans()).toBe(2); expect(run.closes()).toBe(2);
-});
-
-test("discovery releases its registry when scanning fails", async () => {
+test("model discovery lists the local models beside the served one, and a registry that fails to scan leaves the served model visible", async () => {
   const run = discovery("qwen3", true, true, true);
-  await expect(run.get("/library")).rejects.toThrow("scan failed");
-  expect(run.closes()).toBe(1);
-  // Cache discovery is optional for /models: the served model remains visible.
   expect((await (await run.get("/v1/models"))!.json()).data).toHaveLength(1);
-  expect(run.scans()).toBe(2); expect(run.closes()).toBe(2);
-});
-
-test("downloads serves the composition's progress rows when supplied", async () => {
-  const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
-    template: { supportsThinking: false }, genDefaults: {}, draft: null } as unknown as LoadedModelContext;
-  const rows = [{ repoId: "org/tiny", state: "active" as const, currentFile: null, receivedBytes: 0, totalBytes: 0,
-    filesDone: 0, filesTotal: 0, bytesPerSec: 0, startedAt: 5, finishedAt: null }];
-  const routes = createDiscoveryRoutes(context, { discovery: { adapters: false, training: false, dsa: true, embeddings: false } },
-    1, undefined, undefined, () => rows);
-  const request = new Request("http://local/downloads");
-  expect(await (await routes.handle(new URL(request.url), request))!.json()).toEqual({ downloads: rows });
+  expect(run.scans()).toBe(1); expect(run.closes()).toBe(1);
 });
 
 test("a configured Whisper companion is listed beside the chat model and the API index names the audio routes", async () => {

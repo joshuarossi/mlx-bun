@@ -71,7 +71,7 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     chatPaths: options.chatPaths, sessionDir: options.chatPaths?.sessionDir ?? defaultSessionDir(),
     storagePaths: options.storagePaths ?? {},
     memorySurface: async () => undefined,
-    routes: { hub: none, sessions: none, memory: none, jobs: none, models: none, appModules: none, publishing: none },
+    routes: { sessions: none, memory: none, jobs: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };
@@ -134,11 +134,15 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   const memory = (await import("./memory-engine")).createInProcessMemoryClient();
   // The engine's events stay in this process's bus; the parent subscribes to them over the admin surface.
   const state = createWorkerState(launch.options, link);
+  // The parent's models module reaches this worker's model through the host's own adapter operation.
+  const adapterOf = () => { const operation = link.current?.adapters; if (!operation) throw new Error("no model host is attached"); return operation; };
   const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid,
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
-    }, memoryTaskModel: memory, events: state.events });
+    }, memoryTaskModel: memory, events: state.events,
+    adapters: { list: async signal => adapterOf().list(signal), mount: async (id, path, signal) => adapterOf().mount(id, path, signal),
+      unmount: async (id, signal) => adapterOf().unmount(id, signal), merge: async (request, signal) => adapterOf().merge(request, signal) } });
   let host: Awaited<ReturnType<typeof startModelHost>>;
   try {
     // One model per worker: the parent holds the residency of the workers, so this host never loads another.
