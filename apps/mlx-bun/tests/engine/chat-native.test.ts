@@ -14,7 +14,7 @@ const modelDir = process.env.MLX_BUN_APP_TEST_MODEL, transcriptFile = process.en
 type Frame = { type: string; [key: string]: unknown };
 
 test.skipIf(!modelDir)("web chat over a real served model: a greedy prompt makes a read-only memory tool call, and the saved chat reopens with the same transcript", async () => {
-  const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
+  const { startModelServer, parseServeOptions, stateModuleSettings } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
   const model = await scanSnapshot(modelDir!, "test-model");
   if (!model) throw new Error("Model path has no loadable checkpoint");
@@ -30,7 +30,13 @@ test.skipIf(!modelDir)("web chat over a real served model: a greedy prompt makes
   let app: Awaited<ReturnType<typeof startModelServer>> | undefined;
   const budget = AbortSignal.timeout(150_000);
   try {
-    app = await startModelServer(model, options);
+    // `MLX_BUN_CHAT_ISOLATED=1`: the default `serve` composition, the model in a worker process behind this process's proxy.
+    if (process.env.MLX_BUN_CHAT_ISOLATED) {
+      const { startIsolatedServer } = await import("../../src/cli/serve-isolated");
+      const { installedModules } = await import("../../src/modules");
+      app = await startIsolatedServer(model, options, { modules: await installedModules("state", stateModuleSettings(options)) });
+    } else app = await startModelServer(model, options);
+    if (app.port === undefined) throw new Error("chat server has no listening port");
     const frames: Frame[] = [];
     const socket = new WebSocket(`ws://127.0.0.1:${app.port}/ws/chat`);
     const observers = new Set<() => void>();
