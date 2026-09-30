@@ -39,6 +39,9 @@ const GLOBALS = ["window", "document", "navigator", "location", "localStorage", 
 const saved = new Map<string, PropertyDescriptor | undefined>();
 /** The page polls on intervals of the runtime's own clock, which no window teardown stops: record them to clear them. */
 const realSetInterval = globalThis.setInterval;
+const realSetTimeout = globalThis.setTimeout;
+const timeouts: ReturnType<typeof setTimeout>[] = [];
+const stopTimeouts = () => { for (const id of timeouts.splice(0)) clearTimeout(id); };
 const intervals: ReturnType<typeof setInterval>[] = [];
 const stopIntervals = () => { for (const id of intervals.splice(0)) clearInterval(id); };
 let win: GlobalWindow;
@@ -48,6 +51,7 @@ const html = await Bun.file(new URL("../../src/web/public/app.html", import.meta
 
 /** Boots the page in a fresh window: markup first, then the bundle, as the browser's deferred script would. */
 function boot(hash: string, storage: Record<string, string> = {}): void {
+  stopTimeouts();
   // Cancel the previous page's queued navigation and browser tasks before
   // swapping the globals its bundle reads from asynchronous callbacks.
   if (win) void win.happyDOM.abort();
@@ -69,11 +73,13 @@ function boot(hash: string, storage: Record<string, string> = {}): void {
 beforeAll(async () => {
   for (const name of GLOBALS) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
   globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => { const id = realSetInterval(...args); intervals.push(id); return id; }) as typeof setInterval;
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => { const id = realSetTimeout(...args); timeouts.push(id); return id; }) as typeof setTimeout;
   bundle = await buildWebBundle();
 });
 afterAll(() => {
-  stopIntervals();
+  stopIntervals(); stopTimeouts();
   globalThis.setInterval = realSetInterval;
+  globalThis.setTimeout = realSetTimeout;
   for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete (globalThis as Record<string, unknown>)[name];
   // Timers the page started (identity polling) would keep the process alive.
   (win as unknown as { happyDOM: { abort(): Promise<void> } }).happyDOM.abort();
@@ -293,4 +299,14 @@ test("assistant spotlight navigation mounts an unvisited or detached job panel b
     location.hash = "#/chat"; win.dispatchEvent(new win.HashChangeEvent("hashchange"));
     expect(document.querySelector("mlx-quantize-panel")).toBeNull();
   }
+});
+
+test("Memory opened before the first Chat visit closes with Escape", async () => {
+  boot("#/models");
+  const memory = document.querySelector("mlx-memory-panel") as HTMLElement & { open(): Promise<void>; isOpen(): boolean };
+  expect(document.querySelector("mlx-chat-panel")).toBeNull();
+  await memory.open();
+  expect(memory.isOpen()).toBe(true);
+  document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event);
+  expect(memory.isOpen()).toBe(false);
 });

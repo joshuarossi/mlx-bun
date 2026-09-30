@@ -150,11 +150,11 @@ Browser code consumes only its own modules and the leaf job protocol.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
-`memory/` owns Markdown vault storage, initialization, and article semantics.
-Its HTTP adapter belongs to `server/`; composition supplies reference sources
+`@mlx-bun/module-memory` owns Markdown vault storage, initialization, article semantics, HTTP routes, CLI verbs and its companion overlay.
+Composition supplies reference sources
 explicitly rather than deriving them from repository layout. Read-only memory
-tools and prompt context are built by `memory/` and reach the chat through the `registry` service
-(`chat.tool` and `chat.guidance`; `memory/chat.ts` is memory's contributor until it becomes a module), with
+tools and prompt context are built by the module and reach the chat through the `registry` service
+(`chat.tool` and `chat.guidance`), with
 composition supplying the vault and bundled-skill destinations. Query navigation
 uses local article structure; scheduling and synthesis have separate lifecycles.
 
@@ -236,7 +236,7 @@ registered, so neither names the other. The web shell (navigation, routing,
 theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
 host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
 `{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
-page, creating the element on first visit. A `workspace` panel (the chat) is the product's own page: it fills the page
+page, creating the element on first visit. A companion `overlay` panel (memory) mounts immediately without a route or tab. A `workspace` panel (the chat) is the product's own page: it fills the page
 without a card, leads the tabs, stays outside the Developer switch and stays attached while another page shows, hearing
 `enter()` and `leave()`; the host may hand a panel more than its connection through the element's properties (the chat's
 `host`: what lives beside it on the page, such as memory's chips and the settings dialog's agent-tools section). A host's browser build imports each installed module's panel entry from

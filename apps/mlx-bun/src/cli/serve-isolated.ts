@@ -76,15 +76,24 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   // execution lease per call. Each call selects the task model snapshot once, here (the worker never scans the cache):
   // the call carries it, and a call that loads the task model loads exactly it.
   const state = await createAppState({ ...options, memoryCompletions: async signal => {
-    if (!residency) throw new EngineUnavailableError("starting", null);
-    const lease = await residency.acquire(current, { signal, need: ["generate"] });
+    let release: (() => void) | undefined;
+    let selected: Promise<WorkerUnit> | undefined;
+    const select = async () => {
+      if (!residency) throw new EngineUnavailableError("starting", null);
+      const lease = await residency.acquire(current, { signal, need: ["generate"] });
+      release = () => lease.release();
+      return lease.unit;
+    };
     const client = createWorkerMemoryClient(async () => {
       if (!hooks.taskSnapshot) throw new Error("memory synthesis has no task model snapshot selector in this composition");
       const snapshot = await hooks.taskSnapshot();
-      retention(lease.unit).add(snapshot);
-      return { worker: lease.unit.supervisor, snapshot };
+      // Planning and empty pipelines never acquire or reload a worker. The first real call captures one worker,
+      // whose residency stays held until the run (including every in-flight row) settles.
+      const unit = await (selected ??= select());
+      retention(unit).add(snapshot);
+      return { worker: unit.supervisor, snapshot };
     }, signal);
-    return Object.assign(client, { release: () => lease.release() });
+    return Object.assign(client, { release: () => release?.() });
   } }, options.storagePaths ?? {}, hooks.modules ?? []);
   hooks.observe?.(state.events);
   // The sockets live in a private directory (0700) this process removes, one per worker.

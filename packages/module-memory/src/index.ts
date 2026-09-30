@@ -40,8 +40,7 @@ export function createMemoryModule(options: MemoryModuleOptions = {}): AppModule
           open: async (args: string[]) => await Bun.spawn(["open", ...args], { stdout: "ignore", stderr: "ignore" }).exited,
           taskModel: () => { throw new Error("memory: this host supplied no dedicated task-model adapter"); },
         };
-        await runMemory(invocation, { ...deps, vault: vault(), dbPath: () => services.storage.path("db") });
-        return 0;
+        return (await runMemory(invocation, { ...deps, vault: vault(), dbPath: () => services.storage.path("db") })) ?? 0;
       };
       return {
         routes: Object.fromEntries(manifest.routes.map(route => [route.id, async (request: Request) => await routes.handle(request) ?? new Response("not found", { status: 404 })])),

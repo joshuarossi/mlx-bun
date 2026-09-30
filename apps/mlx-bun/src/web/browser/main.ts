@@ -11,6 +11,7 @@
 import {
   appKeys, mountPanels, initDrawer, initHfSettings, initModelLink, initRoutesProbe, pollIdentity, registerOverlays, shell,
 } from "./shell";
+import { registerMemoryOverlay } from "./memory-panel";
 import { chatHost } from "./chat-host";
 import { createStatusController } from "./status";
 import { createAppPalette } from "./palette";
@@ -22,6 +23,8 @@ initHfSettings();
 // One tab and one page per installed module panel, before the shell starts so the Developer switch sees the tabs. The
 // chat panel is handed its host side (chat-host.ts): memory's chips and sidebar entry, the agent-tools settings.
 mountPanels(panels.map(panel => panel.tag === "mlx-chat-panel" ? { ...panel, properties: { host: chatHost } } : panel));
+
+registerMemoryOverlay();
 
 // The mobile drawer delegates to chat; the model label opens the Models panel.
 initDrawer();

@@ -31,5 +31,6 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
   const deps = { ...defaults, ...supplied };
   // Injected output callbacks also capture the existing boxed presentation in the CLI tests.
   if (supplied.log && !supplied.box) deps.box = lines => { for (const line of boxLines(lines)) supplied.log!(line); };
-  await runModuleMemory(args, deps);
+  const code = await runModuleMemory(args, deps);
+  if (code) process.exitCode = code;
 }

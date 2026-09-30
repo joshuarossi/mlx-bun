@@ -61,7 +61,7 @@ function serverUrl(args: CommandArgs): string {
   return `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`;
 }
 
-export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Promise<void> {
+export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Promise<number | void> {
   const { style, step } = deps;
   const opt = (name: string): string | null => (typeof args.values[name] === "string" ? (args.values[name] as string) : null);
   const flag = (name: string): boolean => args.values[name] === true;
@@ -387,5 +387,5 @@ export async function runMemory(args: CommandArgs, deps: MemoryDependencies): Pr
   // launchd jobs must be able to detect typos.
   deps.error(`unknown: mlx-bun memory ${sub}`);
   deps.log(deps.help());
-  process.exitCode = 1;
+  return 1;
 }

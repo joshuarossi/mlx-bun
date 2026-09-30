@@ -4,7 +4,8 @@ import { setApiBase } from "./dom";
 import { STYLE, TEMPLATE } from "./template";
 export * from "./memory";
 /** The existing Memory overlay; kept attached alongside chat, without a navigation page. */
-export class MemoryPanel extends HTMLElement {
+const BaseElement = (typeof HTMLElement === "undefined" ? class {} : HTMLElement) as typeof HTMLElement;
+export class MemoryPanel extends BaseElement {
   connection?: PanelConnection;
   connectedCallback(): void {
     if (!this.querySelector("#mem-overlay")) this.innerHTML = `<style>${STYLE}</style>${TEMPLATE}`;
@@ -19,4 +20,4 @@ export class MemoryPanel extends HTMLElement {
     return isMemoryToolName(tool) ? memoryToolChip(parent, tool, args) : null;
   }
 }
-if (!customElements.get("mlx-memory-panel")) customElements.define("mlx-memory-panel", MemoryPanel);
+if (typeof customElements !== "undefined" && !customElements.get("mlx-memory-panel")) customElements.define("mlx-memory-panel", MemoryPanel);

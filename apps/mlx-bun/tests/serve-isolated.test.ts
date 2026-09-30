@@ -763,3 +763,35 @@ test("the worker is given the CLI's shutdown budget to close, so a slow flush of
     expect(events().map(item => item.event).filter(event => event !== "loading" && event !== "ready" && event !== "drain")).toEqual(["stop", "stopped"]);
   } finally { restore(); rmSync(root, { recursive: true, force: true }); }
 }, 40_000);
+
+test("planning and an empty memory run do not reacquire a drained worker", async () => {
+  const probe = `
+    let acquisitions = 0, residencyProbe;
+    const residencyModule = await import(app + "src/residency/model-residency.ts");
+    const createResidencyHost = residencyModule.createResidencyHost;
+    mock.module(app + "src/residency/model-residency.ts", () => ({ ...residencyModule, createResidencyHost(options) {
+      const owner = createResidencyHost(options), acquire = owner.acquire;
+      owner.acquire = (...args) => { acquisitions++; return acquire(...args); };
+      residencyProbe = owner; return owner;
+    } }));
+  `;
+  const script = memoryPreamble.replace('  const root = process.env.HOME;', '  const root = process.env.HOME;' + probe)
+    .replace('    const batch = await options.client.completeBatch', '    if (options.dryRun || !rows.length) return { implemented: true, stages: [], note: "no model calls" };\n    const batch = await options.client.completeBatch') + `
+    const running = await start({});
+    await residencyProbe.unload("org/model");
+    assert.deepEqual(residencyProbe.resident(), []);
+    const before = acquisitions, base = "http://127.0.0.1:" + running.port;
+    const status = await (await fetch(base + "/api/memory/status")).json();
+    assert.equal(status.enabled, false);
+    for (const path of ["/v1/memory/synthesize?dry=1", "/v1/memory/synthesize"]) {
+      assert.ok((await (await fetch(base + path)).text()).includes("[DONE]"));
+      assert.equal(acquisitions, before, "no completion means no worker lease");
+      assert.deepEqual(residencyProbe.resident(), [], "the drained worker stays drained");
+    }
+  ` + memoryCleanup;
+  const home = mkdtempSync(join(tmpdir(), "mlx-memory-lazy-"));
+  try {
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: join(home, "hub"), FAKE_WORKER: entry, TMPDIR: privateTmp(home) });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 60_000);

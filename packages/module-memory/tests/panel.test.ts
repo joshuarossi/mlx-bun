@@ -11,11 +11,16 @@ test("the persistent overlay honors its connection and reconnects without duplic
   panel.connection = { apiBase: "http://remote.test/prefix/api/memory", eventsUrl: "" };
   document.body.append(panel);
   try {
+    const wizard = document.createElement("div");
+    const input = document.createElement("input");
+    wizard.attachShadow({ mode: "open" }).append(input); document.body.append(wizard); input.focus();
     await panel.open();
     expect(requests).toEqual(["http://remote.test/prefix/api/memory/status"]);
     expect(panel.isOpen()).toBe(true);
     expect(document.querySelector("#mem-empty-init")).not.toBeNull();
     panel.close();
+    expect(wizard.shadowRoot!.activeElement).toBe(input);
+    wizard.remove();
     panel.remove(); document.body.append(panel);
     const overlay = panel.querySelector("#mem-overlay")!;
     let closes = 0;
