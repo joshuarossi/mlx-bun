@@ -7,7 +7,7 @@ import { createAppEngine } from "../../src/engine";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import type { ModelBinding } from "../../src/engine/model-binding";
 import { KVCache, SsdCacheStore, legacyCacheCodecs } from "@mlx-bun/inference/state";
-import { modelWeightsIdentity } from "@mlx-bun/inference/artifacts";
+import { modelIdentity } from "@mlx-bun/hub/registry";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { disposeResources } from "@mlx-bun/inference/runtime/resources";
 import { createRuntimeConfig } from "@mlx-bun/inference/runtime/config";
@@ -50,7 +50,7 @@ function setup(values: Record<string, string> = {}) {
     createContinuationPersistence(_store: unknown, options: { maxBytes: number }) {
       events.push(`queue ${options.maxBytes}`); return persistence;
     },
-    costSizeRetention: () => ({ name: "cost-size" }), configFingerprint: () => "config", weightsIdentity: async () => "0123456789abcdef".repeat(4),
+    costSizeRetention: () => ({ name: "cost-size" }), configFingerprint: () => "config", modelIdentity: () => "test-model",
     activeMemory: () => active, maxWorkingSet: () => 100,
     scheduleDemotion(run: () => void, ms: number) { demote = run; interval = ms; return () => events.push("timer stop"); },
   } as unknown as CacheServiceDependencies;
@@ -91,7 +91,7 @@ test("SSD defaults bind identity, codecs, restoration, checkpoints, idle demotio
     const f = setup({ MLX_BUN_CACHE_RETENTION: "cost-size" }); f.context.model.config.modelDir = directory;
     const cache = await createCacheServices(f.context, f.binding, { ssdCacheDir: directory, generationCheckpointTokens: 32 }, f.deps);
     expect(f.storeOptions).toMatchObject({ dir: directory, maxBytes: Infinity, codecs: f.context.stateCodecs,
-      configFingerprint: `config-${cache.resolvedKvScheme.cacheKey}-${Bun.hash("binding-v1").toString(16)}-0123456789abcdef`,
+      configFingerprint: `config-${cache.resolvedKvScheme.cacheKey}-${Bun.hash("binding-v1").toString(16)}-${Bun.hash("test-model").toString(16)}`,
       tokenizerHash: Bun.hash(Buffer.from("{}")).toString(16), storage: { layout: "whole", segmented: true } });
     expect(f.events).toContain(`queue ${2 * 1024 ** 3}`); expect(f.writeBehind).toBe(true);
     expect(f.cache.retention.name).toBe("cost-size"); expect(f.interval).toBe(75_000);
@@ -209,19 +209,16 @@ test("a TurboQuant scheme the codec cannot encode for this model is refused befo
   expect(cache.kvScheme.kvBits).toBe(4); await cache.close();
 });
 
-test("same-shape models and revised weights get separate saved-prefix stores that never delete each other", async () => {
+test("model directories have separate saved-prefix stores; restarts reuse them without reading weights", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-app-ssd-id-")), ssd = join(root, "ssd");
   const model = (weights: string) => {
     const dir = mkdtempSync(join(root, "model-")); writeFileSync(join(dir, "tokenizer.json"), "{}");
     writeFileSync(join(dir, "config.json"), "{}"); writeFileSync(join(dir, "model.safetensors"), weights); return dir;
   };
-  // Real store and real weights digest; only the memo is in memory.
-  const memo = new Map<string, string>();
-  const memoStore = { get: async (k: string) => memo.get(k), put: (k: string, d: string) => { memo.set(k, d); } };
   const open = async (modelDir: string) => {
     const f = setup(); f.context.model.config.modelDir = modelDir;
     f.context.stateCodecs = legacyCacheCodecs; f.deps.createStore = o => new SsdCacheStore(o);
-    f.deps.weightsIdentity = (dir, seed) => modelWeightsIdentity(dir, seed, memoStore);
+    f.deps.modelIdentity = modelIdentity;
     return createCacheServices(f.context, f.binding, { ssdCacheDir: ssd }, f.deps);
   };
   const save = (cache: Awaited<ReturnType<typeof open>>, tokens: number[]) => {
@@ -233,7 +230,7 @@ test("same-shape models and revised weights get separate saved-prefix stores tha
   try {
     const four = model("q4 weights"), eight = model("q8 weights");
     const first = await open(four); save(first, [1, 2, 3]); await first.close();
-    // Same architecture, tokenizer and repo id, different weights: no shared state.
+    // Different registered directories keep separate state.
     const second = await open(eight);
     expect(second.checkpoints!.entries).toBe(0); expect(second.checkpoints!.find([1, 2, 3, 9])).toBeNull();
     save(second, [7, 8, 9]); await second.close();
@@ -245,10 +242,10 @@ test("same-shape models and revised weights get separate saved-prefix stores tha
     const eightAgain = await open(eight);
     expect(eightAgain.checkpoints!.entries).toBe(1); expect(eightAgain.checkpoints!.find([7, 8, 9, 0])?.prefixLen).toBe(3);
     await eightAgain.close();
-    // New weights under the same directory (same repo id) miss instead of serving old KV.
+    // Replacing weights in place leaves the identity alone; the caller can clear cached state.
     writeFileSync(join(four, "model.safetensors"), "q4 weights, retrained");
     const retrained = await open(four);
-    expect(retrained.checkpoints!.entries).toBe(0); expect(retrained.checkpoints!.find([1, 2, 3, 9])).toBeNull();
+    expect(retrained.checkpoints!.entries).toBe(1); expect(retrained.checkpoints!.find([1, 2, 3, 9])?.prefixLen).toBe(3);
     await retrained.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

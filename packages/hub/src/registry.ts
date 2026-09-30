@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import {
   closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync,
-  readlinkSync, readSync, rmSync, statSync,
+  readlinkSync, readSync, realpathSync, rmSync, statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -56,6 +56,13 @@ export interface ModelRecord {
    *  Surfaces license obligations per model in `ls`/`fit` output. */
   license: string | null;
   scannedAt: number;
+}
+
+/** A local model is its resolved directory; HF snapshot paths already include
+ * their downloaded revision. Replacing weights in place does not change this
+ * identity: callers clear saved prompt state when they want a fresh run. */
+export function modelIdentity(modelDir: string): string {
+  return realpathSync(modelDir);
 }
 
 const SCHEMA = `

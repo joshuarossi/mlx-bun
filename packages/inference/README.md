@@ -1194,11 +1194,12 @@ helpers retain the existing sampler, pending-token, adapter, and cache identitie
 when saving or restoring a generation. Applications choose their own storage paths,
 capacity, scheduler settings, and shutdown lifecycle. A store's directory is
 `<dir>/<configFingerprint>/`; the app's fingerprint joins architecture, KV scheme,
-binding compatibility and a content digest of the weights (`modelWeightsIdentity`),
-so same-shape models and revised weights never share entries. `scan()` skips, and
+binding compatibility and the hub's resolved model-directory identity. HF snapshot
+revisions have separate directories; startup does not hash weights. If weights are
+replaced in place, clear saved KV for a fresh run. `scan()` skips, and
 never deletes, files whose header names another identity; only its own corrupt
-files and `.tmp` orphans are removed. Entries written under the earlier directory
-name (no weights digest) are ignored, not migrated or deleted.
+files and `.tmp` orphans are removed. Saved KV is disposable; changes to the
+store identity rebuild the cache.
 
 ## Scoring
 

@@ -3,8 +3,8 @@ import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
 //
 // Files ARE the database: no sidecar index. Layout
 //   <dir>/<configFingerprint>/<nsHash>/<uuid>.mlxkv
-// where the caller's configFingerprint includes the weights digest, so two
-// models (or two kv-quant schemes, or two weight revisions of one model)
+// where the caller's configFingerprint includes the model identity, so two
+// models (or two kv-quant schemes, or two downloaded snapshot revisions)
 // share a directory without ever colliding, and a foreign fingerprint dir is
 // simply ignored (never deleted — it may belong to the user's other model).
 // Startup recovery = a header-only scan of OUR fingerprint dir: header hash
