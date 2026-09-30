@@ -11,7 +11,7 @@ import type { KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { LoadedModelContext } from "../src/engine/model-host";
 import { CHUNK_ADAPTER, createInProcessMemoryClient, type MemoryEngine, type MemoryEngineDependencies } from "../src/cli/memory-engine";
-import { MEMORY_TASK_MODEL, locateTaskModel, memoryPromptIds, type MemoryCompletionRequest } from "../src/memory/model";
+import { MEMORY_TASK_MODEL, locateTaskModel, memoryPromptIds, type MemoryCompletionRequest } from "@mlx-bun/module-memory/model";
 
 let restoreRuntime: (() => void) | undefined;
 afterEach(() => { restoreRuntime?.(); restoreRuntime = undefined; });

@@ -154,6 +154,12 @@ export function createShell(options: ShellOptions): Shell {
   function mountPanels(panels: readonly ShellPanel[]): void {
     const outlet = $("app");
     for (const panel of panels) {
+      if (panel.overlay) {
+        const element = document.createElement(panel.tag);
+        Object.assign(element, { connection: panel.connection }, panel.properties);
+        document.body.append(element);
+        continue;
+      }
       const page = buildPanelPage(panel);
       if (hasRoute(page.id)) throw new Error(`Panel route /${page.id} is already taken`);
       routes.push({ id: page.id, developer: panel.developer ?? !panel.workspace });

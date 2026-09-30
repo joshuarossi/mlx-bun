@@ -38,6 +38,8 @@ export interface ShellPanel {
    * the Developer switch, and stays attached while another page is shown, so what it holds (a stream, a turn in
    * flight) survives a visit elsewhere. The element hears `enter()` and `leave()` as its page is shown and hidden. */
   readonly workspace?: boolean;
+  /** Companion overlay, mounted immediately without a route or tab. */
+  readonly overlay?: boolean;
   /** Further properties the host sets on the element before it attaches, for what a panel takes from its host beyond
    * its connection. */
   readonly properties?: Readonly<Record<string, unknown>>;
@@ -49,7 +51,7 @@ export type PanelElement = HTMLElement & { connection?: PanelConnection; enter?(
 /** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
 export interface PanelManifest {
   readonly id: string;
-  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly workspace?: boolean; readonly developer?: boolean; readonly framed?: boolean };
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly workspace?: boolean; readonly overlay?: boolean; readonly developer?: boolean; readonly framed?: boolean };
   readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
 }
 
@@ -59,7 +61,7 @@ export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellP
   return manifests.flatMap((module): ShellPanel[] => {
     if (!module.panel) return [];
     const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
-    return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path, ...(module.panel.workspace ? { workspace: true } : {}),
+    return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path, ...(module.panel.workspace ? { workspace: true } : {}), ...(module.panel.overlay ? { overlay: true } : {}),
       ...(module.panel.developer !== undefined ? { developer: module.panel.developer } : {}),
       ...(module.panel.framed !== undefined ? { framed: module.panel.framed } : {}),
       connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];

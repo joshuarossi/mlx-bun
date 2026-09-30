@@ -287,7 +287,7 @@ async function priorHome(root: string) {
   } finally { jobs.close(true); }
 
   // The memory database (schema unchanged from main) with one conversation.
-  const { MemoryStore } = await import("../src/memory/db");
+  const { MemoryStore } = await import("@mlx-bun/module-memory/db");
   const memory = new MemoryStore(join(home, ".cache", "mlx-bun", "memory.sqlite"));
   try { memory.db.run("INSERT INTO conversations (conv, source, updated_at) VALUES (?, ?, ?)", ["conv:1", "pi", 1]); }
   finally { memory.close(); }

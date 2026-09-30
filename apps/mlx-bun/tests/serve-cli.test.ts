@@ -363,7 +363,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
       assert.deepEqual(remembered, [[1, 2], [3, 4]]); assert.ok(options.tokenHistory);
       events.push("routes"); return { handle: async () => null, invalidateLibrary() {} };
     } }));
-    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes(options) {
+    mock.module("@mlx-bun/module-memory/routes", () => ({ createMemoryRoutes(options) {
       assert.equal(options.root(), memoryPaths.vault); return { handle: async () => null };
     } }));
     // Storage seams: the job store, credential file, and artifact root follow composition, not HOME.
@@ -746,7 +746,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     } }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
+    mock.module("@mlx-bun/module-memory/routes", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing; listenerInput = input;
       return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await drain?.(); await input.closeEngine(); })() }; } }));

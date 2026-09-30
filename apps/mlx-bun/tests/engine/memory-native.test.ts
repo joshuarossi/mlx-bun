@@ -11,13 +11,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { MemoryEngine } from "../../src/cli/memory-engine";
-import type { MemoryCompletionRequest } from "../../src/memory/model";
+import type { MemoryCompletionRequest } from "@mlx-bun/module-memory/model";
 
 const native = process.env.MLX_BUN_TEST_NATIVE === "1";
 const adapter = process.env.MLX_BUN_APP_TEST_MEMORY_ADAPTER;
 
 describe.skipIf(!native)("memory task model on the continuous gateway", () => {
-  let memory: { client: import("../../src/memory/model").MemoryCompletionClient; close(): Promise<void> };
+  let memory: { client: import("@mlx-bun/module-memory/model").MemoryCompletionClient; close(): Promise<void> };
   let engine: MemoryEngine | undefined;
   let restoreRuntime: () => void;
   let ops: typeof import("@mlx-bun/mlx/ops");
@@ -28,9 +28,9 @@ describe.skipIf(!native)("memory task model on the continuous gateway", () => {
   beforeAll(async () => {
     ops = await import("@mlx-bun/mlx/ops");
     const { configureRuntime } = await import("@mlx-bun/inference/runtime/config");
-    const { CHUNK_PROMPT, chunkInput, formatConversation } = await import("../../src/memory/chunk");
-    const { buildEntityPrompt } = await import("../../src/memory/entity");
-    const { memoryPromptIds } = await import("../../src/memory/model");
+    const { CHUNK_PROMPT, chunkInput, formatConversation } = await import("@mlx-bun/module-memory/chunk");
+    const { buildEntityPrompt } = await import("@mlx-bun/module-memory/entity");
+    const { memoryPromptIds } = await import("@mlx-bun/module-memory/model");
     const { createInProcessMemoryClient, defaultMemoryEngineDependencies: defaults } = await import("../../src/cli/memory-engine");
     restoreRuntime = configureRuntime({ MLX_BUN_MEMORY_BATCH: "3" });
     memory = createInProcessMemoryClient({
@@ -147,7 +147,7 @@ test.skipIf(!native || !servedModel)("serve's own synthesis runs on the task mod
   }
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
-  const { MEMORY_TASK_MODEL, locateTaskModel } = await import("../../src/memory/model");
+  const { MEMORY_TASK_MODEL, locateTaskModel } = await import("@mlx-bun/module-memory/model");
   const model = await scanSnapshot(servedModel!, "test-model");
   if (!model) throw new Error("MLX_BUN_APP_TEST_MODEL has no loadable checkpoint");
   const { activeMemory } = await import("@mlx-bun/mlx/ffi");

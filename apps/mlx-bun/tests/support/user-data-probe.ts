@@ -39,7 +39,7 @@ async function sessions() {
   const { createChatHandlers, createPiBackend, manifest: chatManifest, sessionEntries } = await import("@mlx-bun/module-chat");
   const { createStorage } = await import("@mlx-bun/app-services");
   const { memorySurface } = await import("./memory-surface");
-  const { vaultRoot } = await import("../../src/memory/vault");
+  const { vaultRoot } = await import("@mlx-bun/module-memory/vault");
   // The chat's default stores are the module's storage entries under the home the clone stands in for.
   const storage = createStorage()({ moduleId: chatManifest.id, manifest: chatManifest as never });
   const dir = storage.path("sessions");
@@ -119,9 +119,9 @@ async function jobs() {
 
 // ---- memory vault, its Reference links, and the memory database -------------
 async function vault() {
-  const { vaultRoot } = await import("../../src/memory/vault");
-  const { createMemoryRoutes } = await import("../../src/server/memory-routes");
-  const { scheduleStatus } = await import("../../src/memory/schedule");
+  const { vaultRoot } = await import("@mlx-bun/module-memory/vault");
+  const { createMemoryRoutes } = await import("@mlx-bun/module-memory/routes");
+  const { scheduleStatus } = await import("@mlx-bun/module-memory/schedule");
   const root = vaultRoot();
   // launchd is the real system's: the probe answers "not loaded" rather than asking it.
   const routes = createMemoryRoutes({ root: () => root, schedule: () => scheduleStatus({ home, launchctl: async () => false }) });
@@ -152,7 +152,7 @@ async function vault() {
   for (const name of list.articles) if ((await get(`/api/memory/links?name=${encodeURIComponent(name)}`)).status !== 200) linkFailures++;
   // The app's memory database; an earlier version's ~/.cache/mlx-bun/memory.sqlite is not carried over.
   const { storagePath } = await import("../../src/storage/paths");
-  const { MemoryStore } = await import("../../src/memory/db");
+  const { MemoryStore } = await import("@mlx-bun/module-memory/db");
   const memoryDb = storagePath("memoryDb");
   const dbBefore = tableCounts(memoryDb);
   new MemoryStore().close();
@@ -166,7 +166,7 @@ async function vault() {
 async function settings() {
   const { createHfCredentials } = await import("../../src/publishing/credentials");
   const { loadToolApprovals } = await import("@mlx-bun/module-chat");
-  const { scheduleStatus, plistPath } = await import("../../src/memory/schedule");
+  const { scheduleStatus, plistPath } = await import("@mlx-bun/module-memory/schedule");
   const tokenFile = join(home, ".mlx-bun", "hf.json");
   // Presence only: the token itself never leaves this process.
   const saved = existsSync(tokenFile) &&

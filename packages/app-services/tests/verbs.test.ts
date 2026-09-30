@@ -58,6 +58,7 @@ test("a verb's details paragraph is printed between the usage line and the optio
   const help = verbHelp("prog", { ...spec, details: "Subcommands:\n  a   First\n  b   Second" });
   expect(help).toContain("Usage: prog clip <file> [more] [options]\n\nSubcommands:\n  a   First\n  b   Second\n\nOptions:\n  --len <value>");
   expect(verbHelp("prog", spec)).not.toContain("Subcommands");
+  expect(verbHelp("prog", { ...spec, helpUsage: "Usage: prog clip [files] [options]" })).toContain("Usage: prog clip [files] [options]");
 });
 
 test("a short spelling parses and is listed, and a flag can name its own message for a missing value", () => {

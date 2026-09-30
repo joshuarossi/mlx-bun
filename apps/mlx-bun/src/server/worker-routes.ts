@@ -9,7 +9,7 @@
 import type { AdapterOperation, EventBus } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { memoryHealth, memoryLine, type WorkerMemory } from "../jobs/worker-memory";
-import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
+import type { TaskCompletionClient as MemoryCompletionClient, TaskCompletionRequest as MemoryCompletionRequest } from "@mlx-bun/app-core";
 
 export interface WorkerRouteGroup { handle(request: Request): Promise<Response | null> }
 

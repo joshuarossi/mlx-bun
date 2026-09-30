@@ -18,7 +18,6 @@ import { join } from "node:path";
 import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
-import { locateTaskModel, MEMORY_TASK_MODEL } from "../memory/model";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createModelRoutes } from "../server/model-routes";
 import { createProxyRoutes } from "../server/proxy-routes";
@@ -36,7 +35,9 @@ import { spawnWorkerUnit, type WorkerUnit, type WorkerUnitContext } from "./work
 /** What the composition root supplies (`modules`: the installed modules that run in the persistent state)
  * and, internally for tests, stand-ins for the worker entry, the restart policy, and the model listing. */
 export interface IsolatedServeHooks {
-  modules?: readonly AppModule[];
+  modules?: Parameters<typeof createAppState>[2];
+  /** Selects the dedicated task-model snapshot, without loading it in the parent. */
+  taskSnapshot?(): Promise<string>;
   entry?: string;
   restarts?: Partial<WorkerRestartBudget>;
   env?: Record<string, string | undefined>;
@@ -75,15 +76,25 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   // execution lease per call. Each call selects the task model snapshot once, here (the worker never scans the cache):
   // the call carries it, and a call that loads the task model loads exactly it.
   const state = await createAppState({ ...options, memoryCompletions: async signal => {
-    if (!residency) throw new EngineUnavailableError("starting", null);
-    const lease = await residency.acquire(current, { signal, need: ["generate"] });
+    let release: (() => void) | undefined;
+    let selected: Promise<WorkerUnit> | undefined;
+    const select = async () => {
+      if (!residency) throw new EngineUnavailableError("starting", null);
+      const lease = await residency.acquire(current, { signal, need: ["generate"] });
+      release = () => lease.release();
+      return lease.unit;
+    };
     const client = createWorkerMemoryClient(async () => {
-      const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
-      retention(lease.unit).add(snapshot);
-      return { worker: lease.unit.supervisor, snapshot };
+      if (!hooks.taskSnapshot) throw new Error("memory synthesis has no task model snapshot selector in this composition");
+      const snapshot = await hooks.taskSnapshot();
+      // Planning and empty pipelines never acquire or reload a worker. The first real call captures one worker,
+      // whose residency stays held until the run (including every in-flight row) settles.
+      const unit = await (selected ??= select());
+      retention(unit).add(snapshot);
+      return { worker: unit.supervisor, snapshot };
     }, signal);
-    return Object.assign(client, { release: () => lease.release() });
-  } }, options.storagePaths ?? {}, hooks.modules);
+    return Object.assign(client, { release: () => release?.() });
+  } }, options.storagePaths ?? {}, hooks.modules ?? []);
   hooks.observe?.(state.events);
   // The sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
@@ -163,7 +174,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const invalidateLibrary = () => { chatModels.invalidate(); };
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among themselves; the proxy takes every remaining path.
-    const routes: RouteGroup = { handle: async request => await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const routes: RouteGroup = { handle: async request => await persistent.jobs.handle(request) ??
       await persistent.appModules.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;

@@ -4,6 +4,7 @@
 // options) always win over these defaults. Nothing is resolved at module load:
 // MLX_BUN_HOME comes from the runtime configuration and HOME from the
 // environment on each call (Bun's os.homedir() keeps the startup HOME).
+import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { basename, join } from "node:path";
 import { MODEL_LAYOUT, mlxBunHome, openModelRegistry, userHome } from "@mlx-bun/app-services/home";
 
@@ -52,3 +53,9 @@ export function modelShortName(model: string): string {
 
 /** The model index over the hub cache and the app's own model directory. */
 export const openRegistry = openModelRegistry;
+
+/** The app's explicit vault override, resolved without creating it. */
+export function memoryVaultPath(): string {
+  const override = runtimeValue("MLX_BUN_WIKI")?.trim();
+  return override ? override.replace(/^~(?=$|[/\\])/, userHome()) : storagePath("wiki");
+}

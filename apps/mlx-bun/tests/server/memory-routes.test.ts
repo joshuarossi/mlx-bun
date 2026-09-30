@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { access, mkdtemp, mkdir, readdir, writeFile, rm, symlink, readlink, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryRoutes } from "../../src/server/memory-routes";
+import { createMemoryRoutes } from "@mlx-bun/module-memory/routes";
 
 let routeRoot = "";
 /** Nightly launchd state injected through the seam; the real launchctl is never consulted. */

@@ -36,6 +36,8 @@
     "prepack": "bun run build:web"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.80.3",
+    "@earendil-works/pi-coding-agent": "0.80.3",
     "@mlx-bun/app-core": "workspace:*",
     "@mlx-bun/app-host": "workspace:*",
     "@mlx-bun/app-services": "workspace:*",
@@ -45,17 +47,16 @@
     "@mlx-bun/module-benchmarks": "workspace:*",
     "@mlx-bun/module-chat": "workspace:*",
     "@mlx-bun/module-datasets": "workspace:*",
+    "@mlx-bun/module-memory": "workspace:*",
     "@mlx-bun/module-metrics": "workspace:*",
     "@mlx-bun/module-models": "workspace:*",
     "@mlx-bun/module-quantize": "workspace:*",
     "@mlx-bun/module-train": "workspace:*",
     "@mlx-bun/module-transcription": "workspace:*",
-    "@mlx-bun/web-shell": "workspace:*",
-    "@earendil-works/pi-ai": "0.80.3",
-    "@earendil-works/pi-coding-agent": "0.80.3",
-    "typebox": "1.1.38",
     "@mlx-bun/quantize": "workspace:*",
-    "@mlx-bun/training": "workspace:*"
+    "@mlx-bun/training": "workspace:*",
+    "@mlx-bun/web-shell": "workspace:*",
+    "typebox": "1.1.38"
   },
   "os": [
     "darwin"

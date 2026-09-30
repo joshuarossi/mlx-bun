@@ -2,9 +2,11 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseCommand } from "../src/cli/args";
+import { parseVerb } from "@mlx-bun/app-services";
+import { installedVerbs } from "../src/cli/module-verbs";
+const parseCommand = (verb: string, args: string[]) => parseVerb("mlx-bun", installedVerbs().get(verb)!, args);
 import { runMemory } from "../src/cli/memory";
-import { LAUNCHD_LABEL, SCHEDULE_NOTE } from "../src/memory/schedule";
+import { LAUNCHD_LABEL, SCHEDULE_NOTE } from "@mlx-bun/module-memory/schedule";
 
 // `mlx-bun setup` / `mlx-bun memory {init,setup,schedule,unschedule,status}`:
 // main's onboarding wizard and launchd schedule. In-process runs inject a

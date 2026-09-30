@@ -81,6 +81,8 @@ export interface CliVerbSpec {
   readonly options: readonly CliOptionSpec[];
   /** The line printed when the verb is invoked wrongly; default `usage: <program> <name> <positionals>`. */
   readonly usage?: string;
+  /** Display usage when the existing help spelling differs from the parser's error usage. */
+  readonly helpUsage?: string;
   /** A paragraph `--help` prints between the usage line and the options (subcommands, ordering rules). */
   readonly details?: string;
 }
@@ -153,6 +155,8 @@ export interface PanelSpec {
   /** A workspace panel is the product's own page: it fills the shell's page instead of sitting in a titled card, is listed
    * first and stays outside the Developer switch. Default false. */
   readonly workspace?: boolean;
+  /** Persistent companion overlay, mounted without a route or navigation tab. */
+  readonly overlay?: boolean;
   /** Listed among developer tools by default; false for a panel every user needs. */
   readonly developer?: boolean;
   /** False when the panel supplies its own scroll column, heading and cards. Default true. */

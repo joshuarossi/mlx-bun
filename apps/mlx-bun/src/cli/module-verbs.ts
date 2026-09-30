@@ -31,10 +31,15 @@ export async function runInstalledVerb(name: string, input: string[] | { values:
     const { m } = await (await import("./model-selection")).resolveModelAuto(null, {}, signal);
     return { id: m.repoId, directory: m.path };
   } } });
+  const memoryDependencies = name === "memory" || name === "setup" ? (await import("./memory")).defaultMemoryDependencies() : undefined;
   try {
-    return await runVerb({ program: PROGRAM, spec, ...(Array.isArray(input) ? { argv: input } : input), services: { ...host, bindings: { ...host.bindings, jobs: () => jobService } },
+    return await runVerb({ program: PROGRAM, spec, ...(Array.isArray(input) ? { argv: input } : input), services: { ...host, bindings: { ...host.bindings, jobs: () => jobService, ...(memoryDependencies ? { storage: (scope) => {
+        const storage = host.bindings.storage!(scope);
+        return { path: (key, options) => key === "vault" ? memoryDependencies.vault : storage.path(key, options) };
+      } } : {}) } },
       // Only the verb's own module activates (a verb of one module never starts another's runners).
-      modules: () => installedModules(manifest => manifest.verbs?.some(verb => verb.name === name) ?? false),
+      modules: async () => installedModules(manifest => manifest.verbs?.some(verb => verb.name === name) ?? false,
+        name === "memory" || name === "setup" ? { memory: { cli: () => (memoryDependencies!) } } : {}),
       activated: loaded => jobService.serve(loaded.jobs),
       terminal: { step: terminal.step, box: lines => terminal.box([...lines]), heading: terminal.h1,
         table: (columns, rows) => terminal.table(columns.map(column => ({ ...column })), rows.map(row => [...row])),

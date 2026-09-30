@@ -44,6 +44,10 @@ route (empty when it has none), and `developer` is the manifest panel's own (`de
 user needs, such as Models, out of the Developer switch). The app's build (`apps/mlx-bun/src/web/build.ts`) imports the panel entry and manifest of
 each module its `package.json` lists that exports `./panel`, and hands the manifests to it.
 
+A manifest's `overlay: true` mounts its element immediately with its connection and host properties,
+without a page, route or tab. The host wires its existing companion-overlay controls (such as
+memory's sidebar entry and Escape handler); it stays attached while routes change.
+
 ## Palette
 
 `createPalette({ sections })` is the overlay: sections of rows, each computed per keystroke, with an optional

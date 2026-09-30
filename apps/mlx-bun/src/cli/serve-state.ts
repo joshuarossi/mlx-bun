@@ -14,17 +14,15 @@ import { catalogTransfers, createDownloadOwner, type DownloadOwner } from "../hu
 import { JobStore } from "../jobs/db";
 import { createJobHost } from "../jobs/host";
 import { createJobService } from "../jobs/service";
-import { createMemoryChatModule } from "../memory/chat";
-import { vaultRoot } from "../memory/vault";
+import { memoryVaultPath } from "../storage/paths";
 import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
 import { createJobRoutes } from "../server/job-routes";
 import type { InProcessMemoryClient } from "./memory-engine";
 import { createServedModelHost, type ServedHostLink } from "./served-model-host";
-import type { MemoryCompletionClient } from "../memory/model";
-import { createMemoryRoutes } from "../server/memory-routes";
-import { createMemorySynthesis, type SynthesisClient } from "../server/memory-synthesis";
+import type { MemoryCompletionClient } from "../modules";
+import type { SynthesisClient } from "../modules";
 import { createPublishingRoutes } from "../server/publishing-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
 import { createWebHandler } from "../web/assets";
@@ -82,7 +80,7 @@ export interface AppState {
   readonly sockets: ModuleSockets;
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
-    memory: RouteGroup; jobs: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
+    jobs: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -94,7 +92,7 @@ export interface AppState {
  * only borrows what it mounts. `modules` are the installed modules that run
  * here (`installedModules("state")`, supplied by the composition root so this
  * file never reaches module packages that load the engine). */
-export async function createAppState(options: AppStateOptions, storagePaths: AppStoragePaths = {}, modules: readonly AppModule[] = []): Promise<AppState> {
+export async function createAppState(options: AppStateOptions, storagePaths: AppStoragePaths = {}, modules: readonly AppModule[] | ((client: (signal: AbortSignal) => SynthesisClient | Promise<SynthesisClient>) => Promise<readonly AppModule[]>) = []): Promise<AppState> {
   const web = await createWebHandler();
   let host: ModelHostLink | undefined;
   const requireHost = () => { if (!host) throw new Error("no model host is attached"); return host; };
@@ -122,7 +120,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
         storagePaths.jobsLogs ?? (storagePaths.jobsDb !== undefined ? join(dirname(storagePaths.jobsDb), "jobs") : undefined)),
     } : {}),
   });
-  const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
+  const memoryPaths = options.memoryPaths ?? { vault: memoryVaultPath(), skills: storagePath("skills") };
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
   // The model catalog the state's modules share: the hub cache, the models directory and the adapter stores, with the app's token behind
   // pushes and its download owner behind the downloads that outlive a request.
@@ -139,10 +137,6 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const chatStores = { ...(options.chatPaths?.sessionDir !== undefined ? { "chat.sessions": options.chatPaths.sessionDir } : {}),
     ...(options.chatPaths?.agentDir !== undefined ? { "chat.agent": options.chatPaths.agentDir } : {}),
     ...(options.chatPaths?.toolApprovalsFile !== undefined ? { "chat.approvals": options.chatPaths.toolApprovalsFile } : {}) };
-  const loaded = await activateModules([...modules, createMemoryChatModule(memoryPaths)], { sockets: true, bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
-    // Produced artifacts follow `artifactRoot`; the chat's saved sessions and approvals are the user's data, which it never moved.
-    storage: createStorage(moduleId => moduleId === "chat" ? mlxBunHome() : storagePaths.artifactRoot ?? mlxBunHome(), chatStores) } });
-  jobService.serve(loaded.jobs);
   // Memory synthesis runs on the task model, created on first use (its weights
   // load with the first completion) and kept until close, as in main. Each of
   // its completions or batches runs under the attached host's execution lease,
@@ -160,13 +154,16 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     };
     return { complete: request => hold(() => client.complete(request)), completeBatch: requests => hold(() => client.completeBatch(requests)) };
   };
-  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, client: signal => {
+  const memoryClient = (signal: AbortSignal): SynthesisClient | Promise<SynthesisClient> => {
     if (options.memoryTaskModel) return leased((taskModel ??= options.memoryTaskModel()).clientFor(signal), signal);
     if (options.memoryCompletions) return options.memoryCompletions(signal);
     throw new Error("memory synthesis has no task model in this composition");
-  } });
+  };
+  const loaded = await activateModules(typeof modules === "function" ? await modules(memoryClient) : modules, { sockets: true, bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
+    // Produced artifacts follow `artifactRoot`; the chat's saved sessions and approvals are the user's data, which it never moved.
+    storage: createStorage(moduleId => ["chat", "memory"].includes(moduleId) ? mlxBunHome() : storagePaths.artifactRoot ?? mlxBunHome(), { ...chatStores, "memory.vault": memoryPaths.vault, "memory.skills": memoryPaths.skills }) } });
+  jobService.serve(loaded.jobs);
   const routes: AppState["routes"] = {
-    memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
     appModules: createModuleRoutes(loaded.routes),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
@@ -194,7 +191,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
         if (failures.length === 1) throw failures[0];
         if (failures.length) throw new AggregateError(failures, "job shutdown failed");
       };
-      for (const result of await Promise.allSettled([synthesis.close(), stopJobs(), downloads.close()]))
+      for (const result of await Promise.allSettled([stopJobs(), downloads.close()]))
         if (result.status === "rejected") errors.push(result.reason);
       try { await taskModel?.close(); } catch (error) { errors.push(error); }
       events.close();

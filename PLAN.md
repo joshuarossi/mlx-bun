@@ -141,11 +141,11 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining module: memory (last, moved as is; the memory feature stays deferred).
+  - [ ] (d) Memory module migration under validation (moved as is; the memory feature stays deferred).
     Datasets, quantize, benchmarks, train, models and chat landed. Datasets', quantize's and train's
     browser pages are still legacy pages that become panels the web shell mounts. Memory reaches chat
-    through `registry` (`chat.tool`, `chat.guidance`); the app owns its memory entry, consent card and
-    provenance chips through the chat panel's `host` until memory moves. The chat panel owns its markdown
+    through `registry` (`chat.tool`, `chat.guidance`); its panel owns the memory entry, consent card and
+    provenance chips, wired through the chat panel's `host`. The chat panel owns its markdown
     renderer, hold-to-talk mic (calling transcription over HTTP), and the assistant's app catalog, which
     should come from contributions once the shell lists them. Models owns hub, library, cleanup, adapter
     administration and its panel; chat owns selection of adapters for a turn. Exit per module: its domain

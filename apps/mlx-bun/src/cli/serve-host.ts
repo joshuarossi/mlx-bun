@@ -314,7 +314,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
     const invalidateLibrary = () => { records?.invalidate(); };
     const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP

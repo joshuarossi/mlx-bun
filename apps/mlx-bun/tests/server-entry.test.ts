@@ -109,6 +109,7 @@ const prelude = (mocks = "") => `
   // The app's modules load before any count: the Pi SDK's proper-lockfile installs
   // signal-exit's re-raising listeners at module load, as under mlx-bun serve.
   await Promise.all([import(app + "src/cli/serve.ts"), import(app + "src/cli/serve-host.ts"), import(app + "src/cli/memory-engine.ts")]);
+  await (await import(app + "src/modules.ts")).installedModules("state");
   let opens = 0;
   const implementations = { select(resolved) {
     assert.equal(resolved.modelType, "qwen3");
