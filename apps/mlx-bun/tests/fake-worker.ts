@@ -24,6 +24,10 @@
 // file exists, like rows joining; SIGTERM waits for those joins, as the real
 // worker's close does.
 // `GET /admin/events` streams the worker's bus as JSON lines (a scheduler sample per `/fake/emit`).
+// FAKE_WORKER_MEMORY={"<model id or *>":[active,cache,peak,workingSet]} plays a worker that measures its MLX memory: `/health` reports it,
+// and the event stream carries it as a `worker.memory` line at connect and whenever `/fake/measure?active=&cache=&peak=` changes it
+// (`&quiet=1` changes what `/health` reports without a line, like a reading the stream has not delivered yet).
+// FAKE_WORKER_WEIGHTS={"<model id or *>":bytes} is the weights `/stats` reports (`admission.weights_bytes`).
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -57,6 +61,14 @@ let draining = false, inFlight = 0, responseCount = 0;
 /** The model the worker answers as: the one it was launched with. */
 let current = modelId;
 const emitters = new Set<() => void>();
+const measuring = new Set<() => void>();
+const memoryFor = (): number[] | undefined => {
+  const raw = process.env.FAKE_WORKER_MEMORY;
+  if (!raw) return undefined;
+  const byModel = JSON.parse(raw) as Record<string, number[]>;
+  return byModel[modelId] ?? byModel["*"];
+};
+let memory = memoryFor();
 const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
   id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: current, choices: [{ index: 0, delta, finish_reason: finish }],
 });
@@ -90,7 +102,8 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   const entry: Seen = { path, method: request.method, aborted: false, headers: Object.fromEntries(request.headers) };
   seen.push(entry);
   request.signal.addEventListener("abort", () => { entry.aborted = true; }, { once: true });
-  if (path === "/health") return Response.json({ status: "ok", state: draining ? "draining" : "ready", model: current, pid: process.pid, in_flight: inFlight, leases: leases.size });
+  if (path === "/health") return Response.json({ status: "ok", state: draining ? "draining" : "ready", model: current, pid: process.pid, in_flight: inFlight, leases: leases.size,
+    ...(memory ? { memory: { active_bytes: memory[0], cache_bytes: memory[1], peak_bytes: memory[2], working_set_bytes: memory[3] ?? 0 } } : {}) });
   if (path === "/admin/lease") {
     const lease = {};
     leases.add(lease);
@@ -105,8 +118,16 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       controller.enqueue(encoder.encode("\n"));
       const emit = () => { try { controller.enqueue(encoder.encode(JSON.stringify({ type: "scheduler.sample", at: Date.now(), model: current, active: 0, capacity: 8, queued: 0, tokensPerSecond: 0 }) + "\n")); } catch { /* closed */ } };
       emitters.add(emit);
-      request.signal.addEventListener("abort", () => emitters.delete(emit), { once: true });
+      const measure = () => { if (memory) try { controller.enqueue(encoder.encode(JSON.stringify({ type: "worker.memory", at: Date.now(), activeBytes: memory[0], cacheBytes: memory[1], peakBytes: memory[2], workingSetBytes: memory[3] ?? 0 }) + "\n")); } catch { /* closed */ } };
+      measuring.add(measure); measure();
+      request.signal.addEventListener("abort", () => { emitters.delete(emit); measuring.delete(measure); }, { once: true });
     } }), { headers: { "content-type": "application/x-ndjson" } });
+  }
+  if (path === "/fake/measure") {
+    const at = (name: string, index: number) => url.searchParams.has(name) ? Number(url.searchParams.get(name)) : memory?.[index] ?? 0;
+    memory = [at("active", 0), at("cache", 1), at("peak", 2), memory?.[3] ?? 0];
+    if (!url.searchParams.has("quiet")) for (const measure of measuring) measure();
+    return Response.json({ memory });
   }
   if (path === "/fake/emit") { for (const emit of emitters) emit(); return Response.json({ emitted: emitters.size }); }
   if (path === "/admin/drain") {
@@ -161,7 +182,8 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     ...(process.env.FAKE_WORKER_MODELS ?? "").split(",").filter(id => id && id !== current).map(id => ({ id, object: "model", created: 1, tier: "targeted" }))] });
   if (path === "/stats") return Response.json({ server: { owner: "serve", model: current, started_at: 1 },
     prompt_cache: { entries: 1, bytes: 2, max_bytes: 3 }, response_store: { entries: 99, bytes: 99, max_bytes: 99, ttl_ms: 99 },
-    admission: { enforced_context_tokens: 2048, max_safe_context: 8192 }, batch: { configured: 8, active_rows: 0 } });
+    admission: { enforced_context_tokens: 2048, max_safe_context: 8192,
+      ...(process.env.FAKE_WORKER_WEIGHTS ? { weights_bytes: (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)[modelId] ?? (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)["*"] } : {}) }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
   if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
   if (path === "/v1/chat/completions" && request.method === "POST") {

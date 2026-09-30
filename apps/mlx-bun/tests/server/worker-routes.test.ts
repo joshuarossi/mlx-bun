@@ -490,3 +490,73 @@ test("the adapter route runs the model's operation for the parent's models modul
     expect((await call(thirdSocket.unix, { method: "POST", body: '{"op":"list"}' })).status).toBe(404);
   } finally { await Promise.all([secondApp.close(), thirdApp.close()]); second.remove(); thirdSocket.remove(); }
 });
+
+test("the worker reports the MLX memory it measures: on /health, and on its event stream at connect, after each finished request, and on the interval only when it changed", async () => {
+  const socket = socketDir();
+  const listeners = new Set<(event: unknown) => void>();
+  const bus = { subscribe(_types: "*" | readonly string[], handler: (event: never) => void) { listeners.add(handler as (event: unknown) => void); return () => { listeners.delete(handler as (event: unknown) => void); }; } };
+  let reading: { activeBytes: number; cacheBytes: number; peakBytes: number; workingSetBytes: number } | undefined = { activeBytes: 600, cacheBytes: 50, peakBytes: 700, workingSetBytes: 26_000 };
+  const admin = createWorkerRoutes({ modelId: "org/model", pid: 42, events: bus as never, memory: () => reading, memoryIntervalMs: 20 });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const call = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
+  try {
+    expect((await (await call("/health")).json()).memory).toEqual({ active_bytes: 600, cache_bytes: 50, peak_bytes: 700, working_set_bytes: 26_000 });
+    const holder = new AbortController();
+    const stream = await call("/admin/events", { signal: holder.signal });
+    const reader = stream.body!.getReader(), decoder = new TextDecoder();
+    let text = "";
+    const lines = () => text.split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+    const until_ = async (count: number) => { while (lines().length < count) text += decoder.decode((await reader.read()).value); };
+    // At connect, one reading; an unchanged one is not repeated on the interval.
+    await until_(1);
+    expect(lines()).toEqual([{ type: "worker.memory", at: expect.any(Number), activeBytes: 600, cacheBytes: 50, peakBytes: 700, workingSetBytes: 26_000 }]);
+    await Bun.sleep(80);
+    expect(lines()).toHaveLength(1);
+    // A change is reported by the next interval.
+    reading = { ...reading!, activeBytes: 900, peakBytes: 900 };
+    await until_(2);
+    expect(lines()[1]).toMatchObject({ type: "worker.memory", activeBytes: 900, peakBytes: 900 });
+    // A finished request reports at once, whatever the interval (a long one here).
+    holder.abort();
+    const slow = createWorkerRoutes({ modelId: "org/model", events: bus as never, memory: () => reading, memoryIntervalMs: 60_000 });
+    const second = socketDir();
+    const other = await startServer({ routes: slow.wrap(model()), web: () => null, chat: idle, beforeDrain: () => slow.close(), async closeEngine() {} }, { unix: second.unix });
+    try {
+      const events = await fetch("http://worker/admin/events", { unix: second.unix } as RequestInit);
+      const tail = events.body!.getReader();
+      let seen = "";
+      const next = async (count: number) => { while (seen.split("\n").filter(Boolean).length < count) seen += decoder.decode((await tail.read()).value); };
+      await next(1);
+      reading = { ...reading!, activeBytes: 1_200 };
+      for (const listener of [...listeners]) listener({ type: "request.finished", model: "org/model", totalMs: 3 });
+      await next(3);
+      expect(seen.split("\n").filter(Boolean).map(line => JSON.parse(line).type)).toEqual(["worker.memory", "request.finished", "worker.memory"]);
+      expect(JSON.parse(seen.split("\n").filter(Boolean)[2]!).activeBytes).toBe(1_200);
+    } finally { await other.close(); second.remove(); }
+    // A worker that cannot measure (no native runtime) reports no memory member and streams no readings.
+    reading = undefined;
+    expect((await (await call("/health")).json()).memory).toBeUndefined();
+  } finally { await app.close(); }
+  socket.remove();
+});
+
+test("a companion with no engine event bus still streams its memory readings", async () => {
+  const socket = socketDir();
+  let activeBytes = 600;
+  const admin = createWorkerRoutes({ modelId: "org/whisper", memory: () => ({ activeBytes, cacheBytes: 50, peakBytes: 900, workingSetBytes: 26_000 }), memoryIntervalMs: 20 });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  try {
+    const response = await fetch("http://worker/admin/events", { unix: socket.unix } as RequestInit);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader(), decoder = new TextDecoder();
+    let text = "";
+    const next = async (count: number) => {
+      while (text.split("\n").filter(Boolean).length < count) text += decoder.decode((await reader.read()).value);
+      return text.split("\n").filter(Boolean).map(line => JSON.parse(line));
+    };
+    expect((await next(1))[0]).toMatchObject({ type: "worker.memory", activeBytes: 600 });
+    activeBytes = 800;
+    expect((await next(2))[1]).toMatchObject({ type: "worker.memory", activeBytes: 800 });
+    await reader.cancel();
+  } finally { await app.close(); socket.remove(); }
+});

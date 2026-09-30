@@ -6,6 +6,7 @@
 // abort aborting the proxied fetch so the worker sees the disconnect). The
 // parent answers `/engine`, `/health` and `/stats` (with the workers'
 // contribution) and `/v1/responses` through the history client. The workers' private admin paths never forward.
+import type { WorkerMemory } from "../jobs/worker-memory";
 import { describeExit, EngineUnavailableError, type WorkerSupervisor, type WorkerSupervisorState } from "../jobs/worker-supervisor";
 import type { createResponsesClient } from "./responses-client";
 
@@ -58,6 +59,8 @@ export interface WorkerEngine {
   readonly id: string;
   readonly role: "primary" | "companion";
   readonly supervisor: WorkerSupervisor;
+  /** The MLX memory the worker last reported; undefined before its first report and while it is down. */
+  measured?(): WorkerMemory | undefined;
 }
 
 export interface ProxyRoutesOptions {
@@ -72,7 +75,9 @@ export interface ProxyRoutesOptions {
   startedAt: number;
 }
 
-export interface WorkerReport { id: string; role: "primary" | "companion"; pid: number | null; state: WorkerSupervisorState; restarts: number; socket: string }
+/** `memory` is the worker's own MLX reading (`active_bytes` and `cache_bytes` are what residency counts), null until it reports. */
+export interface WorkerReport { id: string; role: "primary" | "companion"; pid: number | null; state: WorkerSupervisorState; restarts: number; socket: string;
+  memory: { active_bytes: number; cache_bytes: number; peak_bytes: number } | null }
 
 /** The current model's worker fields, then every resident worker. `state` is `none` while no worker is resident. */
 export interface EngineReport {
@@ -130,7 +135,11 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
     return {
       isolated: true, state: engine?.state ?? "none", pid: engine?.pid ?? null, restarts: engine?.restarts ?? null,
       socket: engine?.socketPath ?? null, model: options.current(), last_exit: engine?.lastExit ?? null, response_store: responses.stats,
-      workers: options.workers().map(({ id, role, supervisor }) => ({ id, role, pid: supervisor.pid, state: supervisor.state, restarts: supervisor.restarts, socket: supervisor.socketPath })),
+      workers: options.workers().map(({ id, role, supervisor, measured }) => {
+        const memory = measured?.();
+        return { id, role, pid: supervisor.pid, state: supervisor.state, restarts: supervisor.restarts, socket: supervisor.socketPath,
+          memory: memory ? { active_bytes: memory.activeBytes, cache_bytes: memory.cacheBytes, peak_bytes: memory.peakBytes } : null };
+      }),
     };
   };
   const health = async (): Promise<Response> => {

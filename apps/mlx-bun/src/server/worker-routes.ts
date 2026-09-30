@@ -8,6 +8,7 @@
 // (404), as they are on a worker that lacks the capability behind one.
 import type { AdapterOperation, EventBus } from "@mlx-bun/app-core";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import { memoryHealth, memoryLine, type WorkerMemory } from "../jobs/worker-memory";
 import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
 
 export interface WorkerRouteGroup { handle(request: Request): Promise<Response | null> }
@@ -35,8 +36,13 @@ export interface WorkerRoutesOptions {
    * no such route (404). */
   memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
   /** The worker's own events (its engine's request timings and samples, its model's memory): `GET /admin/events` streams them
-   * as JSON lines for the parent, which publishes them on its bus. Without it there is no such route (404). */
+   * as JSON lines for the parent, which publishes them on its bus. A worker with only `memory` streams readings alone. */
   events?: Pick<EventBus, "subscribe">;
+  /** The MLX memory this process holds now (jobs/worker-memory.ts). `/health` reports it, and the event stream carries it as a
+   * `worker.memory` line at connect, when it changed at each interval, and after every `request.finished`. */
+  memory?: () => WorkerMemory | undefined;
+  /** Milliseconds between the stream's memory readings. Default 1000. */
+  memoryIntervalMs?: number;
   /** The worker's model's `adapters` operation (list, mount, unmount, merge under the engine's lock), which the parent's models module
    * reaches through `POST /admin/adapters`, admitted and drained like model work. Without it there is no such route (404). */
   adapters?: AdapterOperation;
@@ -108,8 +114,11 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   };
   const held = new Set<{ release(): void; controller: ReadableStreamDefaultController<Uint8Array> }>();
   const state = (): WorkerState => draining ? "draining" : "ready";
-  const health = () => Response.json({ status: "ok", state: state(), model: options.modelId,
-    pid: options.pid ?? process.pid, in_flight: inFlight, leases: held.size });
+  const health = () => {
+    const memory = options.memory?.();
+    return Response.json({ status: "ok", state: state(), model: options.modelId,
+      pid: options.pid ?? process.pid, in_flight: inFlight, leases: held.size, ...(memory ? { memory: memoryHealth(memory) } : {}) });
+  };
   const closing = () => Response.json({ error: { message: "worker is closing", type: "unavailable" } }, { status: 503 });
 
   // A parent-managed GPU job holds this response open. The connection owns
@@ -203,14 +212,27 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   // the parent leaves or the surface closes; a held connection is not model work, so drain does not wait for it.
   const streams = new Set<() => void>();
   const events = (request: Request): Response => {
-    let unsubscribe = () => {}, stop = () => {};
+    let unsubscribe = () => {}, stop = () => {}, timer: ReturnType<typeof setInterval> | undefined;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        unsubscribe = options.events!.subscribe("*", event => { try { controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); } catch { stop(); } });
-        stop = () => { streams.delete(stop); unsubscribe(); try { controller.close(); } catch { /* already ended */ } };
+        // The MLX memory reading follows the stream's own events: once at connect, after each finished request, and on the interval when it changed.
+        let last = "";
+        const reading = () => {
+          const memory = options.memory?.();
+          const key = memory ? JSON.stringify(memory) : "";
+          if (!memory || key === last) return;
+          last = key;
+          try { controller.enqueue(encoder.encode(memoryLine(memory))); } catch { stop(); }
+        };
+        unsubscribe = options.events?.subscribe("*", event => {
+          try { controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); } catch { stop(); return; }
+          if (event.type === "request.finished") reading();
+        }) ?? (() => {});
+        stop = () => { streams.delete(stop); unsubscribe(); clearInterval(timer); try { controller.close(); } catch { /* already ended */ } };
         streams.add(stop);
         request.signal.addEventListener("abort", stop, { once: true });
         controller.enqueue(encoder.encode("\n"));
+        if (options.memory) { reading(); timer = setInterval(reading, options.memoryIntervalMs ?? 1_000); timer.unref?.(); }
       },
       cancel() { stop(); },
     });
@@ -260,7 +282,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         if (pathname === "/health") return request.method === "GET" ? health() : methodNotAllowed("GET");
         if (pathname === "/admin/lease" && options.acquireExecutionLease) return request.method === "POST" ? lease(request) : methodNotAllowed("POST");
         if (pathname === "/admin/drain") return request.method === "POST" ? drain(request) : methodNotAllowed("POST");
-        if (pathname === "/admin/events" && options.events) return request.method === "GET" ? events(request) : methodNotAllowed("GET");
+        if (pathname === "/admin/events" && (options.events || options.memory)) return request.method === "GET" ? events(request) : methodNotAllowed("GET");
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
         try {

@@ -6,12 +6,11 @@
 // router (server/model-routes.ts), the chat backend, and the listener that
 // serves them. Both borrow persistent services from the AppState they are
 // given, and one close releases everything they created in the app's order.
-import { totalmem } from "node:os";
 import { requireChatTemplate, releaseContext, type LoadedModelContext } from "../engine/model-host";
 import { createKvBudget, type KvBudget } from "../engine/kv-budget";
 import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
 import { leasedAdapters } from "../residency/leased-adapters";
-import { estimateRecordBytes } from "../residency/resident-estimate";
+import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-estimate";
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
@@ -64,9 +63,6 @@ export interface ModelSource {
   /** The model the host starts with, when it is not one `records` lists (a path given to `--model`). */
   startup?: ModelRecord;
 }
-
-/** Fraction of the GPU's recommended working set all resident models may use together by default. */
-const DEFAULT_BUDGET_FRACTION = 0.7;
 
 /** Internal: process-wide settings the loader applied, restored once with the
  * host's own after the model is released, on close and on startup failure. */
@@ -256,7 +252,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const memory = input.models ? await import("@mlx-bun/mlx/ffi") : undefined;
     // Every resident model together may use this much: by default a share of what the GPU can wire.
     const budgetBytes = !input.models ? Infinity
-      : options.modelBudgetBytes ?? Math.floor((memory!.maxRecommendedWorkingSetSize() || totalmem() * 0.75) * DEFAULT_BUDGET_FRACTION);
+      : options.modelBudgetBytes ?? defaultBudgetBytes(memory!.maxRecommendedWorkingSetSize());
     const estimate = (record: ModelRecord) => estimateRecordBytes(record, { budgetBytes, cache: options.cache, ...(machine ? { machine } : {}) });
     const entryOf = (unit: ServingUnit): ResidencyEntry => ({ id: unit.id, bytes: unit.bytes(), operations: unit.operations });
     const source: ResidencySource<ServingUnit> = {
@@ -341,6 +337,8 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     detachLink = state.attach({ get model() { return { id: current, bytes: (residency.peek(current) ?? first).context.model.weightsBytes }; },
       get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
       acquireExecutionLease: signal => residency.pauseAll(signal),
+      // Modules that generate through the model host (a dataset job) hold the model's residency lease until they release it.
+      hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }),
       invalidateLibrary,
       resident: () => residency.resident(),
       adapters: leasedAdapters(residency, () => current),

@@ -159,8 +159,7 @@ Migration gaps stay required work in the feature table.
     `resumed` when saved state was found), `model.unload` (reason `evicted`, flushed) and `model.memory`, and each worker's
     own events are relayed onto the parent's bus. Remaining: modules get one `modelHost` that leases `generate` and
     `transcribe` (today persistent services lease the served model through `served-model-host.ts` and the model
-    composition's modules get Whisper's); the isolated parent has no measured-memory floor (estimates until a worker
-    reports its weights) and its synthesis runs on the current worker without a residency lease. Exit: a module acquires
+    composition's modules get Whisper's). Exit: a module acquires
     `generate` and `transcribe` from one service (the models module already leases `adapters` and switches the served model through the state's host).
 
 ## Remaining features by layer
