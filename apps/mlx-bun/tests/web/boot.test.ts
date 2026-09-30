@@ -48,6 +48,9 @@ const html = await Bun.file(new URL("../../src/web/public/app.html", import.meta
 
 /** Boots the page in a fresh window: markup first, then the bundle, as the browser's deferred script would. */
 function boot(hash: string, storage: Record<string, string> = {}): void {
+  // Cancel the previous page's queued navigation and browser tasks before
+  // swapping the globals its bundle reads from asynchronous callbacks.
+  if (win) void win.happyDOM.abort();
   win = new GlobalWindow({ url: `http://localhost/${hash}`, settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true, disableIframePageLoading: true } });
   win.document.documentElement.innerHTML = html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/^[\s\S]*?<html[^>]*>/, "");
   for (const [key, value] of Object.entries(storage)) win.localStorage.setItem(key, value);
@@ -81,13 +84,13 @@ const shown = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].fi
 const activePages = () => [...document.querySelectorAll<HTMLElement>("section[data-route].active")].map(section => section.dataset.route);
 
 test("the browser build takes the panels of the host's installed modules that export one, and no others", () => {
-  expect(panelModules()).toEqual(["@mlx-bun/module-benchmarks", "@mlx-bun/module-chat", "@mlx-bun/module-metrics", "@mlx-bun/module-models"]);
+  expect(panelModules()).toEqual(["@mlx-bun/module-benchmarks", "@mlx-bun/module-chat", "@mlx-bun/module-datasets", "@mlx-bun/module-metrics", "@mlx-bun/module-models", "@mlx-bun/module-quantize", "@mlx-bun/module-train"]);
   const source = installedPanelsSource();
   expect(source).toContain('import "@mlx-bun/module-benchmarks/panel";');
   expect(source).toContain('import "@mlx-bun/module-chat/panel";');
   expect(source).toContain('import "@mlx-bun/module-metrics/panel";');
   expect(source).toContain('import "@mlx-bun/module-models/panel";');
-  expect(source).not.toContain("datasets");
+  for (const id of ["datasets", "quantize", "train"]) expect(source).toContain(`import "@mlx-bun/module-${id}/panel";`);
   expect(installedPanelsSource([])).toBe('import { panelsFromManifests } from "@mlx-bun/web-shell";\nexport const panels = panelsFromManifests([]);\n');
 });
 
@@ -162,7 +165,7 @@ test("Cmd+K opens the palette with the commands, the panel's among them, and Esc
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }) as unknown as Event);
   const labels = () => [...document.querySelectorAll("#palette-overlay .prow-label")].map(node => node.textContent);
   expect(labels()).toEqual(["New chat", "Toggle thinking", "Toggle theme", "Toggle Developer mode", "Open Memory panel", "Browse models (Hub)",
-    "Open shortcut sheet", "Export this chat", "Open Benchmarks", "Open Metrics", "Open Models"]);
+    "Open shortcut sheet", "Export this chat", "Open Benchmarks", "Open Build Dataset", "Open Metrics", "Open Models", "Open Quantize", "Open Fine-tune"]);
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event);
   expect(document.getElementById("palette-overlay")!.classList.contains("open")).toBe(false);
 });
@@ -258,4 +261,33 @@ test("the hamburger in the nav opens the panel's drawer, and Escape closes the d
   hamburger.click();
   document.getElementById("chat-drawer-backdrop")!.click();
   expect(sidebar.classList.contains("drawer-open")).toBe(false);
+});
+
+test("the migrated wizards are lazy module panels with preserved routes, host hooks and their own layout", () => {
+ boot("#/chat");
+ for (const [route, tag, apiBase] of [["quantize","mlx-quantize-panel","/api/quantize"],["finetune","mlx-train-panel","/api/train"],["dataset","mlx-datasets-panel","/api/datasets"]]) {
+   expect(document.querySelector(tag!)).toBeNull();location.hash = "#/"+route;win.dispatchEvent(new win.HashChangeEvent("hashchange"));
+   const panel=document.querySelector(tag!) as HTMLElement & {connection: {apiBase:string;ui?:{notify?:unknown;publish?:unknown}}};
+   expect(activePages()).toEqual([route!]);expect(panel).not.toBeNull();expect(panel.connection.apiBase).toBe(apiBase!);
+   expect(typeof panel.connection.ui?.notify).toBe("function");expect(typeof panel.connection.ui?.publish).toBe("function");
+   expect(panel.parentElement!.id).toBe("s-"+route);expect(panel.shadowRoot!.querySelector(".steps")).not.toBeNull();
+   location.hash = "#/chat";win.dispatchEvent(new win.HashChangeEvent("hashchange"));expect(panel.isConnected).toBe(false);
+ }
+});
+
+test("assistant spotlight navigation mounts an unvisited or detached job panel before resolving its shadow control", async () => {
+  boot("#/chat");
+  expect(document.querySelector("mlx-quantize-panel")).toBeNull();
+  const socket = FakeWebSocket.last!;
+  for (const navigateFirst of [false, true]) {
+    if (navigateFirst) socket.emit({type:"ui_navigate", route:"quantize"});
+    socket.emit({ type: "ui_spotlight", route: "quantize", target: "quantize-source", message: "Start here" });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(activePages()).toEqual(["quantize"]);
+    expect(document.querySelector("mlx-quantize-panel")!.shadowRoot!.getElementById("q-model")).not.toBeNull();
+    expect(document.getElementById("assistant-spotlight")!.classList.contains("show")).toBe(true);
+    expect(document.getElementById("toasts")!.textContent).not.toContain("Couldn't find");
+    location.hash = "#/chat"; win.dispatchEvent(new win.HashChangeEvent("hashchange"));
+    expect(document.querySelector("mlx-quantize-panel")).toBeNull();
+  }
 });

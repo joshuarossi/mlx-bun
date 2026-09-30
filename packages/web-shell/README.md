@@ -55,3 +55,12 @@ each module its `package.json` lists that exports `./panel`, and hands the manif
 Model-free under happy-dom: the router and Developer switch, two fake panels mounted, the Escape sweep, theme, and the
 palette's sections and remote lookups ([shell tests](tests/shell.test.ts)). The app's
 [boot tests](../../apps/mlx-bun/tests/web/boot.test.ts) run its built bundle against `app.html`.
+
+Panel connections may carry optional host `ui` hooks for notifications, inline artifact publishing,
+the current model id and refreshing catalog consumers. The shell passes these through unchanged; a host
+implements only the presentation its installed panels consume. Panel routes are declared paths and stay
+stable when their feature moves into a differently named module.
+
+A panel may declare `framed: false` to supply its own scroll column, heading and cards. It remains a developer
+panel by default and detaches on navigation; the host's presentation callbacks pass through unchanged.
+Closing a shell overlay restores focus to the original control, including inputs inside a panel's open shadow root.

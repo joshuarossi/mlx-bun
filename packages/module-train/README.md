@@ -59,15 +59,19 @@ the drafter's `dspark.json` in place (refused when it already carries thresholds
 `train`. SIGINT/SIGTERM stop at the next topic, step or prompt. The acceptance gate for a drafter is
 `bun scripts/drafter-ab.ts`, which serves each drafter through `--command` and compares `usage.speculation`.
 
-## Not in the module yet
+Adapter merge and export (`POST /api/finetune/merge`, `/export`) belong to the
+[models module](../module-models/README.md): merge runs under the served model's execution lock,
+in the process that holds the model, through the model host's `adapters` operation.
 
-- Adapter merge and export (`POST /api/finetune/merge`, `/export`) are the models module's
-  ([`@mlx-bun/module-models`](../module-models/README.md)): merge runs native MLX under the served model's execution
-  lock in the process that holds the model, which the models module reaches through the model host's `adapters`
-  operation, while this module activates in the persistent state, which loads no native code.
-- The browser's fine-tune wizard (`apps/mlx-bun/src/web/browser/finetune.ts`) stays in the app until the web
-  shell exists: it is built from the shell's DOM helpers, toast, controllers and push-to-Hub panel, so it cannot
-  yet be a self-contained `mlx-train-panel`. The adapter mount routes (`/v1/adapters*`) are the models module's.
+## Panel
+
+`<mlx-train-panel>` (`./panel`) owns the existing five-step fine-tune wizard, its markup and styles in shadow DOM.
+The shell preserves `/finetune`. It reaches dataset inspection, training submission, metrics and adapter
+merge/export through its `PanelConnection`; optional host `ui` hooks provide notifications, publishing and
+catalog refresh. An unfinished job reconnects and replays its stream after returning to the panel; leaving
+closes the stream without cancelling the managed job. Panel tests cover ORPO defaults and submission,
+loss metrics, reconnection, merge/export and publishing over a remote backend under a URL prefix.
+The adapter mount routes (`/v1/adapters*`) belong to the models module.
 
 ## Tests
 

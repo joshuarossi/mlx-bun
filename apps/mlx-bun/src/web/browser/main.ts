@@ -9,12 +9,9 @@
 // overflows on load gets its mask immediately.
 
 import {
-  appKeys, initDrawer, initHfSettings, initModelLink, initRoutesProbe, pollIdentity, registerOverlays, shell,
+  appKeys, mountPanels, initDrawer, initHfSettings, initModelLink, initRoutesProbe, pollIdentity, registerOverlays, shell,
 } from "./shell";
 import { chatHost } from "./chat-host";
-import { createQuantizeController } from "./quantize";
-import { createFinetuneController } from "./finetune";
-import { createDatasetController } from "./dataset";
 import { createStatusController } from "./status";
 import { createAppPalette } from "./palette";
 import { panels } from "./installed-panels";
@@ -24,7 +21,7 @@ initHfSettings();
 
 // One tab and one page per installed module panel, before the shell starts so the Developer switch sees the tabs. The
 // chat panel is handed its host side (chat-host.ts): memory's chips and sidebar entry, the agent-tools settings.
-shell.mountPanels(panels.map(panel => panel.tag === "mlx-chat-panel" ? { ...panel, properties: { host: chatHost } } : panel));
+mountPanels(panels.map(panel => panel.tag === "mlx-chat-panel" ? { ...panel, properties: { host: chatHost } } : panel));
 
 // The mobile drawer delegates to chat; the model label opens the Models panel.
 initDrawer();
@@ -40,9 +37,6 @@ shell.start({ palette, keys: appKeys });
 
 // Page controllers, in the original declaration order. Each init() is lazy (run on first visit to that route); only
 // the factory call happens here. The chat is not one: its panel initializes itself when the shell first shows it.
-shell.controllers.quantize = createQuantizeController();
-shell.controllers.finetune = createFinetuneController();
-shell.controllers.dataset = createDatasetController();
 shell.controllers.status = createStatusController();
 
 /* ════════════════════════════════════════════════════════════════════

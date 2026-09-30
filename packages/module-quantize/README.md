@@ -74,8 +74,11 @@ real weights. The spawned CLI (native MLX blocked) and the real job child are ex
 (`apps/mlx-bun/tests/convert-cli.test.ts`); the opt-in `managed-jobs.test.ts` runs a real quantize job and a
 `convert` on cached weights.
 
-## Not in the module yet
+## Panel
 
-The browser's quantize wizard (`apps/mlx-bun/src/web/browser/quantize.ts`) stays in the app until the web
-shell exists: it is built from the shell's DOM helpers, toast, push-to-Hub panel and library refresh, so it
-cannot yet be a self-contained `mlx-quantize-panel`.
+`<mlx-quantize-panel>` (`./panel`) owns the existing four-step wizard, its markup and styles in shadow DOM.
+The shell mounts it at `/quantize`. It reaches inspection, submission and the job stream through its
+`PanelConnection`; optional host `ui` hooks provide notifications, publishing and catalog refresh.
+An unfinished job reconnects and replays its stream after returning to the panel; leaving closes the stream
+without cancelling the managed job. Panel tests cover inspection, mixed-precision submission, progress,
+reconnection and publishing over a remote backend under a URL prefix.

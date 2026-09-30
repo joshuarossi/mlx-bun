@@ -11,6 +11,14 @@ export interface PanelConnection {
   readonly apiBase: string;
   /** Server-sent stream the panel follows. */
   readonly eventsUrl: string;
+  /** Optional presentation supplied by the embedding host. */
+  readonly ui?: {
+    notify?(message: string, kind?: "ok" | "err"): void;
+    publish?(container: HTMLElement, source: { kind: "quantize" | "finetune" | "dataset"; job_id?: string; source_path?: string }): void | Promise<void>;
+    modelId?(): string | undefined;
+    catalogChanged?(): void;
+  };
+
 }
 
 /** One panel to mount: a module manifest's `panel` (`tag`, `title`, `path`; `@mlx-bun/app-core`'s `PanelSpec` is
@@ -19,11 +27,13 @@ export interface ShellPanel {
   /** Custom element tag, `mlx-<module id>-panel`. */
   readonly tag: string;
   readonly title: string;
-  /** Shell route, `/<module id>`. */
+  /** Declared shell route: one lowercase kebab-case segment. */
   readonly path: string;
   readonly connection: PanelConnection;
   /** Listed among the developer tools (hidden until the Developer switch is on). Default true, false for a workspace. */
   readonly developer?: boolean;
+  /** False when the panel supplies its own scroll column, heading and cards. Default true. */
+  readonly framed?: boolean;
   /** The product's own page rather than a tool: it fills the page (no title or card), is listed first, sits outside
    * the Developer switch, and stays attached while another page is shown, so what it holds (a stream, a turn in
    * flight) survives a visit elsewhere. The element hears `enter()` and `leave()` as its page is shown and hidden. */
@@ -39,7 +49,7 @@ export type PanelElement = HTMLElement & { connection?: PanelConnection; enter?(
 /** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
 export interface PanelManifest {
   readonly id: string;
-  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly workspace?: boolean; readonly developer?: boolean };
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly workspace?: boolean; readonly developer?: boolean; readonly framed?: boolean };
   readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
 }
 
@@ -51,6 +61,7 @@ export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellP
     const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
     return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path, ...(module.panel.workspace ? { workspace: true } : {}),
       ...(module.panel.developer !== undefined ? { developer: module.panel.developer } : {}),
+      ...(module.panel.framed !== undefined ? { framed: module.panel.framed } : {}),
       connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];
   });
 }
@@ -90,7 +101,7 @@ export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchor
   section.id = "s-" + id;
   // A workspace fills the page itself; any other panel sits in a titled card.
   let body: HTMLElement = section;
-  if (!panel.workspace) {
+  if (!panel.workspace && panel.framed !== false) {
     const scroll = el("div", "shell-panel-scroll", section);
     const page = el("div", "shell-panel", scroll);
     const title = el("h2", "shell-panel-title", page);

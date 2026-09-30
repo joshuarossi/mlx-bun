@@ -148,13 +148,15 @@ export interface PanelSpec {
   /** Package export that defines the element when imported, e.g. `@mlx-bun/module-transcription/panel`. */
   readonly entry: string;
   readonly title: string;
-  /** Shell route, `/<module id>`. */
+  /** Declared shell route: one lowercase kebab-case segment, preserving an existing path when migrated. */
   readonly path: string;
   /** A workspace panel is the product's own page: it fills the shell's page instead of sitting in a titled card, is listed
    * first and stays outside the Developer switch. Default false. */
   readonly workspace?: boolean;
   /** Listed among developer tools by default; false for a panel every user needs. */
   readonly developer?: boolean;
+  /** False when the panel supplies its own scroll column, heading and cards. Default true. */
+  readonly framed?: boolean;
 }
 
 /** Set on the element's `connection` property before it connects. */
@@ -163,6 +165,14 @@ export interface PanelConnection {
   readonly apiBase: string;
   /** Server-sent stream of `AppEvent`s. */
   readonly eventsUrl: string;
+  /** Optional presentation supplied by the embedding host. */
+  readonly ui?: {
+    notify?(message: string, kind?: "ok" | "err"): void;
+    publish?(container: HTMLElement, source: { kind: "quantize" | "finetune" | "dataset"; job_id?: string; source_path?: string }): void | Promise<void>;
+    modelId?(): string | undefined;
+    catalogChanged?(): void;
+  };
+
 }
 
 /** Live parts of a module, created by `activate`. Each key names a declared spec. */

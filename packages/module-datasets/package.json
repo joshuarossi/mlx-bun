@@ -10,7 +10,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./manifest": "./src/manifest.ts",
-    "./python-verifier": "./src/python-verifier.ts"
+    "./python-verifier": "./src/python-verifier.ts",
+    "./panel": "./src/panel/index.ts"
   },
   "files": [
     "src",
@@ -25,7 +26,8 @@
     "@mlx-bun/app-core": "workspace:*"
   },
   "devDependencies": {
-    "@mlx-bun/app-host": "workspace:*"
+    "@mlx-bun/app-host": "workspace:*",
+    "happy-dom": "20.10.6"
   },
   "os": [
     "darwin"

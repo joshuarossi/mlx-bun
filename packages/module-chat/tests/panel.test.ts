@@ -1261,3 +1261,26 @@ describe("the panel entry outside a browser", () => {
     expect(child.exitCode).toBe(0);
   });
 });
+
+describe("assistant controls inside module shadow roots", () => {
+  beforeEach(() => { document.body.replaceChildren(); });
+  it("captures the visible wizard step and controls and resolves their spotlight targets", () => {
+    const panel = document.createElement("div");document.body.append(panel);
+    const root = panel.attachShadow({mode:"open"});
+    root.innerHTML = '<div class="steps" id="q-steps"><span class="s done"><span class="n">1</span>Source</span><span class="s cur"><span class="n">2</span>Configure</span></div><label id="source-label">Source checkpoint</label><input id="q-model" data-spotlight="quantize-source" aria-labelledby="source-label"><div style="display:none"><button>Hidden step</button></div><button>Continue</button>';
+    const snapshot=captureUiSnapshot("quantize");
+    expect(snapshot.elements.map(element => element.label)).toEqual(["Source checkpoint","Continue"]);
+    expect(buildAppContext("quantize",null).step).toEqual({index:1,count:2,label:"Configure"});
+    const input=snapshot.elements[0]!;
+    expect(resolveSpotlightTarget({ref:input.ref},snapshot)?.selector).toBe(input.selector);
+    expect(resolveSpotlightTarget({target:"quantize-source"},null)).toMatchObject({selector:"#q-model"});
+    expect(resolveSpotlightTarget({selector:"#q-model"},null)).not.toBeNull();
+  });
+  it("keeps hidden hosts and content/assistant chrome excluded across shadow boundaries", () => {
+    for (const attributes of ['style="display:none"','hidden','data-ui-chrome="content"','data-ui-chrome="assistant"','id="toasts"']) {
+      const wrapper=document.createElement("div");wrapper.innerHTML=`<div ${attributes}></div>`;const host=wrapper.firstElementChild!;document.body.append(host);
+      const root=host.attachShadow({mode:"open"});root.innerHTML='<button>Untrusted or hidden content</button>';
+    }
+    expect(captureUiSnapshot("quantize").elements).toEqual([]);
+  });
+});

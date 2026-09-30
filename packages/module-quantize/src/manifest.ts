@@ -46,4 +46,5 @@ export const manifest = {
   ],
   jobs: [{ kind: "quantize", isolation: "process", gpu: "exclusive" }],
   storage: [{ key: "models", path: "models", kind: "directory", purpose: "Quantized and converted models: plain model directories, indexed beside the hub cache" }],
+  panel: { tag: "mlx-quantize-panel", entry: "@mlx-bun/module-quantize/panel", title: "Quantize", framed: false, path: "/quantize" },
 } as const satisfies Omit<AppModule<"jobs" | "storage" | "catalog">, "activate">;

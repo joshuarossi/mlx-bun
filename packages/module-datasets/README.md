@@ -5,7 +5,7 @@ Template-driven dataset generation, as an application module
 It declares two routes at their shipped root paths (`GET /api/dataset/templates`,
 `POST /api/dataset/submit`), one `dataset` job kind (`task` isolation, `gpu:
 "shared"`), one storage entry (`datasets/` under `MLX_BUN_HOME`, one directory per
-job) and no verbs, sockets or panel. The mlx-bun app installs it; nothing here
+job) and no verbs or sockets. It ships the `mlx-datasets-panel` web component. The mlx-bun app installs it; nothing here
 imports an app or another module. The manifest (`src/manifest.ts`) is data.
 
 ## Templates and jobs
@@ -85,10 +85,12 @@ environment, privilege and network isolation, flooding, timeout, cancellation, O
 the runner's SIGTERM, and leftover removal, and checks that each container is removed.
 It passes on Docker Desktop 29.8.0 (linux/arm64, M1 Max) with the pinned image.
 
-## Not in the module yet
+## Panel
 
-The browser panel (`apps/mlx-bun/src/web/browser/dataset.ts`) stays in the app: it is
-written against the app shell's helpers (`api`, `jobStream`, `toast`, `pushToHub`,
-the active model) and the static markup in `app.html`, so it does not load without
-them. It moves as a `mlx-datasets-panel` custom element that `@mlx-bun/web-shell` mounts.
+`<mlx-datasets-panel>` (`./panel`) owns the existing template-driven wizard, its markup and styles in shadow DOM.
+The shell preserves `/dataset`. It reaches templates, submission and job streams through its `PanelConnection`;
+optional host `ui` hooks provide notifications, publishing and the active model id used to name LLM datasets.
+An unfinished job reconnects and replays its stream after returning to the panel; leaving closes the stream
+without cancelling the managed job. Panel tests cover template escaping, typed inputs, model naming,
+row counts, reconnection and publishing over a remote backend under a URL prefix.
 Pushing a dataset to Hugging Face (`POST /api/dataset/push`) belongs to publishing.
