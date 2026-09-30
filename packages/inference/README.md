@@ -1042,6 +1042,8 @@ expert I/O in `dist/native`. It needs no runtime download or compilation.
 `MLX_BUN_FRAME_EXTRACT` remains an explicit override. AudioToolbox and `afconvert`
 use macOS system facilities. Optional encoder caching lives in `state/encoder-cache`;
 media fetching keeps the existing destination, size, and timeout controls.
+`MediaFetchPolicy.allowPrivate` permits LAN destinations; callers may supply
+`privateDestinationHint` when their UI needs a specific configuration instruction.
 
 ## Speculative generation
 

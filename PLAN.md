@@ -62,7 +62,7 @@ candidate before saving main to a reference branch and merging
 performance workloads rather than substituting a smaller smoke suite. Pin both
 source revisions and retain reproducible commands and results outside Git;
 reusable verification code stays in Git. Focused PR checks do not close these
-gates. Benchmark execution remains stopped until Josh resumes it.
+gates. Josh has resumed the gates and quant-publication work.
 
 - [ ] **Numerical parity.** Run the full applicable numerical suites on the assembled
   candidate against pre-refactor main and the applicable pinned oracle. Match model
@@ -122,10 +122,8 @@ Migration gaps stay required work in the feature table.
 
 ## Migrate the application
 
-- [ ] Migrate the server, engine host, web app, and job orchestration into `apps/mlx-bun`,
-  keeping their interfaces in the consuming domains. Exit: app consumers use public library
-  APIs; application contracts and policy stay out of the inference library. Remaining:
-  `input/media-fetch.ts` names the app's `--allow-private-media`.
+The application migration now uses public library APIs, including native packaging;
+media-fetch configuration hints describe the library policy instead of the app's CLI.
 - [ ] Support the shapes under [Unsupported request shapes](#unsupported-request-shapes) as
   capabilities of the graphs that lack them. Exit: each runs on the shared scheduler, verified
   with real weights and cancellation/streaming coverage.
