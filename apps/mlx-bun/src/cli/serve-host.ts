@@ -308,18 +308,11 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
     cleanup = closeApp;
-    modules = await loadInstalledModules(moduleHost);
-    const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
-    const moduleRoutes = createModuleRoutes(modules.routes);
-    const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
-    const invalidateLibrary = () => { records?.invalidate(); };
-    const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
-    const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
+    // Attach before activation, so modules can resolve either operation while they start.
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
     let boundPort = options.port;
+    const invalidateLibrary = () => { records?.invalidate(); };
     // Jobs and loopback clients reach this host from the first served request. A job pauses every resident model.
     // Modules leasing the served model reach it as the current one: the id and weights follow a switch.
     detachLink = state.attach({ get model() { return { id: current, bytes: (residency.peek(current) ?? first).context.model.weightsBytes }; },
@@ -329,8 +322,17 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }),
       invalidateLibrary,
       resident: () => residency.resident(),
+      companions: moduleHost.whisper,
       adapters: leasedAdapters(residency, () => current),
       ...(input.models ? { serve: (id: string, signal: AbortSignal) => residency.serve(id, { signal }) } : {}) });
+    modules = await loadInstalledModules({ bindings: { ...moduleHost.bindings, modelHost: () => state.modelHost } });
+    const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
+    const moduleRoutes = createModuleRoutes(modules.routes);
+    const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
+    const persistent = state.routes;
+    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.jobs.handle(request) ??
+      await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
+    const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web: state.web, sockets: state.sockets,

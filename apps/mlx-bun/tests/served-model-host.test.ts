@@ -3,6 +3,7 @@ import type { ModelHostError } from "@mlx-bun/app-core";
 import { createServedModelHost } from "../src/cli/served-model-host";
 import type { ServedHostLink } from "../src/cli/served-model-host";
 import { createResidencyHost, type ResidentUnit } from "../src/residency/model-residency";
+import { createWhisperModelHost } from "@mlx-bun/app-services";
 
 const link = (extra: Partial<ServedHostLink> = {}): ServedHostLink => ({ model: { id: "org/model", bytes: 123 }, port: 4321,
   ...extra });
@@ -114,4 +115,53 @@ test("a lease that cannot be held (the model does not fit or the host is closing
   const host = createServedModelHost({ link: () => link({ hold: async () => { throw Object.assign(new Error("closed"), { code: "closed" }); } }), fetch: async () => new Response() });
   expect(await code(host.acquire("org/model"))).toBe("closed");
   expect(host.resident()[0]!.leases).toBe(0);
+});
+
+test("one service leases generation and companion transcription while the companion keeps its lifecycle and execution lock", async () => {
+  const seen: string[] = [];
+  let decoding = 0;
+  const companions = createWhisperModelHost({
+    catalog: { list: async () => [{ id: "org/audio", kind: "model", directory: "/audio", bytes: 100, operations: ["transcribe"] }],
+      find: async () => { throw new Error("not found"); } },
+    log() {},
+    exclusive: async work => { decoding++; try { return await work(); } finally { decoding--; } },
+    backend: { async load() {
+      seen.push("load");
+      return { promptTokenBudget: 7, encode: text => [text.length],
+        async transcribe() { expect(decoding).toBe(1); return { text: "hello", segments: [], language: "en" }; },
+        start() { return { segments: [], feedSilent() {}, async feed() {}, async finish() { return { text: "", segments: [], language: "en" }; } }; },
+        dispose() { seen.push("dispose"); } };
+    } },
+  });
+  let attached: ServedHostLink | undefined = link({ companions, hold: async () => { seen.push("hold generation"); return { release() { seen.push("release generation"); } }; } });
+  const host = createServedModelHost({ link: () => attached, fetch: async () => new Response("generated") });
+  try {
+    expect(await host.defaultFor("generate")).toBe("org/model");
+    expect(await host.defaultFor("transcribe")).toBe("org/audio");
+    const generation = await host.acquire("org/model", { need: ["generate"] });
+    const audio = await host.acquire("org/audio", { need: ["transcribe"], role: "companion", keepAliveSec: 0 });
+    expect(audio.operations.transcribe!.encode("hint")).toEqual([4]);
+    expect(await audio.operations.transcribe!.transcribe(new Float32Array(4))).toMatchObject({ text: "hello" });
+    expect(await (await generation.operations.generate!(new Request("http://local/v1/completions"))).text()).toBe("generated");
+    expect(host.resident().map(model => model.id)).toEqual(["org/model", "org/audio"]);
+    expect(host.stats("org/audio").resident).toBe(true);
+    await expect(host.unload("org/audio")).rejects.toMatchObject({ code: "in-use" });
+    audio.release(); audio.release();
+    expect(host.stats("org/audio")).toMatchObject({ resident: false, loads: 1, unloads: 1 });
+    generation.release();
+    expect(seen).toEqual(["hold generation", "load", "dispose", "release generation"]);
+    // Pinning and explicit unload still belong to the companion host.
+    host.pin("org/audio");
+    (await host.acquire("org/audio", { need: ["transcribe"] })).release();
+    expect(host.policy.pinned).toContain("org/audio");
+    expect(host.stats("org/audio").resident).toBe(true);
+    host.unpin("org/audio");
+    await host.unload("org/audio");
+    expect(host.stats("org/audio").resident).toBe(false);
+    expect((await host.plan("org/audio")).requiredBytes).toBe(100);
+    attached = undefined;
+    expect(await host.defaultFor("transcribe")).toBeUndefined();
+    expect(host.resident()).toEqual([]);
+    await expect(host.acquire("org/audio", { need: ["transcribe"] })).rejects.toMatchObject({ code: "closed" });
+  } finally { await companions.close(); }
 });

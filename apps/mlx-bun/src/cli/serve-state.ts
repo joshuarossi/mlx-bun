@@ -7,7 +7,7 @@
 // serves is attached explicitly; no service reaches a model through globals.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppModule, ModelCatalog } from "@mlx-bun/app-core";
+import type { AppModule, ModelCatalog, ModelHost } from "@mlx-bun/app-core";
 import { activateModules, createEventHub, createModuleRoutes, createModuleSockets, createRegistryCatalog, createStorage, mlxBunHome, type EventHub, type ModuleSockets } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { catalogTransfers, createDownloadOwner, type DownloadOwner } from "../hub/downloads";
@@ -72,6 +72,8 @@ export interface AppState {
   readonly downloads: DownloadOwner;
   /** The `events` core service's bus: the model loader and the engine adapter publish, modules subscribe. It lives as long as the state. */
   readonly events: EventHub;
+  /** One service shared by persistent and model-scoped modules; the attached host lends its operations and residency. */
+  readonly modelHost: ModelHost;
   /** Responses API conversation history, shared by every host this state serves. */
   readonly responses: ResponseHistory;
   readonly memoryPaths: { vault: string; skills: string };
@@ -172,7 +174,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   };
   let closing: Promise<void> | undefined;
   return {
-    web, downloads, events, responses: new ResponseStore(), memoryPaths, storagePaths,
+    web, downloads, events, modelHost: served, responses: new ResponseStore(), memoryPaths, storagePaths,
     sockets: createModuleSockets(loaded.sockets),
     routes,
     attach(link) {

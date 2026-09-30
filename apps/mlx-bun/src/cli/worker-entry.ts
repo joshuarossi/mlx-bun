@@ -19,6 +19,7 @@ import type { CommandArgs } from "./args";
 // The app form's composition loads only when a launch asks for it.
 import type { ServeDependencies, ServedApp, SignalPort, startModelServer, startTranscriptionServer } from "./serve";
 import { startModelHost } from "./serve-host";
+import { createServedModelHost } from "./served-model-host";
 import type { ServeOptions } from "./serve-options";
 import type { AppState, ModelHostLink, RouteGroup } from "./serve-state";
 
@@ -65,6 +66,8 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     downloads: { active: [], snapshot: () => [], start() { throw new Error("a worker owns no downloads"); }, async close() {} },
     // A worker publishes its own engine's events for the modules it hosts; it runs no jobs.
     events,
+    modelHost: createServedModelHost({ link: () => link.current,
+      fetch: (request, supplied) => fetch(request, supplied.unix ? { unix: supplied.unix } as RequestInit : undefined) }),
     responses: new ResponseStore(),
     // Chat and its memory tools are the parent's: the worker never opens a vault, so the paths are placeholders.
     memoryPaths: options.memoryPaths ?? { vault: "", skills: "" },

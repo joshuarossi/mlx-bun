@@ -286,6 +286,9 @@ holds none) and, in either composition, modules that generate through the model 
 `modelHost` lease on the served model holds the residency lease until it is released). Whisper is a worker of its own (the
 transcription-only server, `--whisper-resident` pins it), started on the first audio
 request and drained like a chat model when memory is short.
+Its worker preserves `--whisper-idle-unload` and `--whisper-resident`; a ready
+worker can release idle Whisper weights. `/v1/models` lists the configured companion
+before it starts, keeps its resolved id, and reports its weights' actual residency.
 
 **Readiness.** The listener binds after the startup model's worker reports ready (up
 to 15 minutes for large models, as main), so startup succeeds or fails the way the
@@ -1210,6 +1213,10 @@ cannot load). A host that serves one model answers `restart_required` with the
 Speech-to-text is the transcription module's ([`@mlx-bun/module-transcription`](../../packages/module-transcription/README.md):
 the service, `/v1/audio/*`, `/admin/transcription/unload`, `transcribe`, `dictate`).
 This app installs it (`src/modules.ts`) and supplies its core services:
+The in-process composition shares the state's `modelHost` with persistent and
+model-scoped modules. It forwards generation to the serving host and borrows
+Whisper's transcription operations and residency; the Whisper host still owns
+its weights and shutdown. Model-scoped modules activate after this link is attached.
 `serve-host.ts` builds the Whisper model host from `--whisper-model`,
 `--whisper-idle-unload` and `--whisper-resident`, gives it the generation
 gateway's exclusive lock so decoding never overlaps chat, mounts the module's
