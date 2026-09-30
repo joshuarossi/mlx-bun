@@ -684,12 +684,13 @@ test("workers report their measured MLX memory and the host's residency counts i
   const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_MEMORY: memory,
       // The third worker's weights (1500) are more than the 1000 it reads while its arrays are still lazily mapped.
       FAKE_WORKER_WEIGHTS: JSON.stringify({ "org/third": 1_500 }) },
+    restarts: { max: 1, windowMs: 60_000, delayMs: 500 },
     records: () => records, notice() {}, log() {}, error() {}, observe: bus => { bus.subscribe(["model.unload"], event => { unloads.push(event as never); }); } }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
   const answer = async (name: string) => ((await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: name, messages: [{ role: "user", content: "hi" }] }) })).json()) as { model: string }).model;
   const usage = async () => ((await (await get("/stats")).json()) as { models: { budget_bytes: number; resident_bytes: number; resident: { id: string; bytes: number }[] } }).models;
-  const workers = async () => ((await (await get("/engine")).json()) as { workers: { id: string; socket: string; memory: { active_bytes: number; cache_bytes: number; peak_bytes: number } | null }[] }).workers;
+  const workers = async () => ((await (await get("/engine")).json()) as { workers: { id: string; socket: string; state: string; memory: { active_bytes: number; cache_bytes: number; peak_bytes: number } | null }[] }).workers;
   try {
     // The first worker's report sets the budget (70% of its working set) and its bytes are the measured ones, not the 1-byte estimate.
     expect(await usage()).toMatchObject({ budget_bytes: 7_000, resident_bytes: 4_000, resident: [{ id: "org/model", bytes: 4_000 }] });
@@ -715,6 +716,13 @@ test("workers report their measured MLX memory and the host's residency counts i
     expect(unloads.map(event => [event.model, event.reason, event.flushed]).sort()).toEqual([["org/model", "evicted", true], ["org/other", "evicted", true]]);
     // The third worker reads 1000 but reported 1500 bytes of weights: the host never counts it below those.
     expect(await usage()).toMatchObject({ resident_bytes: 1_500, resident: [{ id: "org/third", bytes: 1_500 }] });
+    // While its worker is down, the last reading describes a dead process. Reserve the reload estimate instead.
+    const third = (await workers())[0]!;
+    await fetch("http://worker/fake/crash", { unix: third.socket } as RequestInit);
+    await until(async () => (await workers())[0]!.state === "restarting", "the worker to restart");
+    expect((await workers())[0]!.memory).toBeNull();
+    await until(async () => (await workers())[0]!.state === "ready", "the worker to recover");
+    await until(async () => (await usage()).resident_bytes === 1_500, "the replacement's reading");
   } finally { await running.close(); rmSync(root, { recursive: true, force: true }); }
 }, 40_000);
 

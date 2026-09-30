@@ -270,7 +270,8 @@ this process loads no native module: it reports them on `/health` (`memory`) and
 `worker.memory` line in its `/admin/events` stream at connect, on each second it changed,
 and after every finished request (the line is consumed here, never republished on the
 bus). A worker counts as active plus cache bytes from its first report (never below the
-weights it reported: MLX maps weights lazily, so a worker that has not run yet reads low),
+weights it reported (the checkpoint size for a transcription companion): MLX maps weights
+lazily, so a worker that has not run yet reads low),
 in place of the `/fit` estimate, which stands only before that report (a model that has not
 loaded yet needs its estimate) and again while the worker is down. Before it decides who
 fits, the residency manager asks every resident worker for a current reading (`GET /health`),

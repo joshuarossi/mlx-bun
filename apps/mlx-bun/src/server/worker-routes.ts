@@ -36,7 +36,7 @@ export interface WorkerRoutesOptions {
    * no such route (404). */
   memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
   /** The worker's own events (its engine's request timings and samples, its model's memory): `GET /admin/events` streams them
-   * as JSON lines for the parent, which publishes them on its bus. Without it there is no such route (404). */
+   * as JSON lines for the parent, which publishes them on its bus. A worker with only `memory` streams readings alone. */
   events?: Pick<EventBus, "subscribe">;
   /** The MLX memory this process holds now (jobs/worker-memory.ts). `/health` reports it, and the event stream carries it as a
    * `worker.memory` line at connect, when it changed at each interval, and after every `request.finished`. */
@@ -224,10 +224,10 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
           last = key;
           try { controller.enqueue(encoder.encode(memoryLine(memory))); } catch { stop(); }
         };
-        unsubscribe = options.events!.subscribe("*", event => {
+        unsubscribe = options.events?.subscribe("*", event => {
           try { controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); } catch { stop(); return; }
           if (event.type === "request.finished") reading();
-        });
+        }) ?? (() => {});
         stop = () => { streams.delete(stop); unsubscribe(); clearInterval(timer); try { controller.close(); } catch { /* already ended */ } };
         streams.add(stop);
         request.signal.addEventListener("abort", stop, { once: true });
@@ -282,7 +282,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         if (pathname === "/health") return request.method === "GET" ? health() : methodNotAllowed("GET");
         if (pathname === "/admin/lease" && options.acquireExecutionLease) return request.method === "POST" ? lease(request) : methodNotAllowed("POST");
         if (pathname === "/admin/drain") return request.method === "POST" ? drain(request) : methodNotAllowed("POST");
-        if (pathname === "/admin/events" && options.events) return request.method === "GET" ? events(request) : methodNotAllowed("GET");
+        if (pathname === "/admin/events" && (options.events || options.memory)) return request.method === "GET" ? events(request) : methodNotAllowed("GET");
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
         try {

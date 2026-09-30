@@ -109,7 +109,9 @@ async function scenario(isolated: boolean) {
     await app.close(); app = undefined;
 
     // Phase 2: a budget that fits one of them: the other's request drains it, its state is saved, and returning resumes it.
-    const budget = Math.max(bytes.get(a.repoId)!, bytes.get(b.repoId)!) * 1.3 / 1e9;
+    // Isolated workers report allocator buffers as well as live arrays. Leave 5% over the larger reading:
+    // a 30% margin can also fit the smaller worker after its transient buffers have been released.
+    const budget = Math.max(bytes.get(a.repoId)!, bytes.get(b.repoId)!) * (isolated ? 1.05 : 1.3) / 1e9;
     app = await serve(["--model-budget", String(budget)]);
     const oneA = talk("a", 2), oneB = talk("b", 2);
     const firstA = await chat(app, a.repoId, oneA);

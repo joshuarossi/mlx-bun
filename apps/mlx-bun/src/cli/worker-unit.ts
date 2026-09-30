@@ -123,7 +123,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
 
   // What the worker reports of the model it loaded: its weights, whether saved state was found for it, and (both roles) the
   // MLX memory its process holds, which residency counts from now on in place of the estimate.
-  let weightsBytes = 0, resumed = false, measured: WorkerMemory | undefined;
+  let weightsBytes = role === "companion" ? record.sizeBytes : 0, resumed = false, measured: WorkerMemory | undefined;
   try {
     const response = await supervisor.fetch("http://engine/health", { signal: AbortSignal.timeout(5_000) });
     measured = parseMemoryHealth(await response.json());
@@ -137,16 +137,20 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     } catch { /* the estimate stands */ }
   }
   const stopEvents = new AbortController();
-  if (role === "primary") relayEvents(supervisor, context.publish, memory => { measured = memory; }, stopEvents.signal);
+  relayEvents(supervisor, context.publish, memory => { measured = memory; }, stopEvents.signal);
   const operations: readonly ModelOperation[] = role === "primary" ? ["generate"] : ["transcribe"];
+  const currentMemory = () => supervisor.state === "ready" ? measured : undefined;
   let closing: Promise<UnitClosed> | undefined;
   return {
     id: record.repoId, record, role, supervisor, readyMs, operations, resumed,
     routes: { handle: request => forwardToWorker(supervisor, request) },
-    measured: () => measured,
+    measured: currentMemory,
     // The estimate stands only until the worker's first report; after it, the process's own active and cache memory, never
     // below the weights it reported (MLX maps weights lazily, so a worker that has not run yet can read low).
-    bytes: () => measured ? Math.max(heldBytes(measured), weightsBytes) : Math.max(estimate, weightsBytes),
+    bytes: () => {
+      const memory = currentMemory();
+      return memory ? Math.max(heldBytes(memory), weightsBytes) : Math.max(estimate, weightsBytes);
+    },
     // A decision about who fits reads each worker's memory now rather than trusting the last pushed line.
     refresh: async () => {
       if (supervisor.state !== "ready") return;

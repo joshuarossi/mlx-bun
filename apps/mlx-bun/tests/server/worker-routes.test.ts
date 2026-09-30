@@ -539,3 +539,24 @@ test("the worker reports the MLX memory it measures: on /health, and on its even
   } finally { await app.close(); }
   socket.remove();
 });
+
+test("a companion with no engine event bus still streams its memory readings", async () => {
+  const socket = socketDir();
+  let activeBytes = 600;
+  const admin = createWorkerRoutes({ modelId: "org/whisper", memory: () => ({ activeBytes, cacheBytes: 50, peakBytes: 900, workingSetBytes: 26_000 }), memoryIntervalMs: 20 });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  try {
+    const response = await fetch("http://worker/admin/events", { unix: socket.unix } as RequestInit);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader(), decoder = new TextDecoder();
+    let text = "";
+    const next = async (count: number) => {
+      while (text.split("\n").filter(Boolean).length < count) text += decoder.decode((await reader.read()).value);
+      return text.split("\n").filter(Boolean).map(line => JSON.parse(line));
+    };
+    expect((await next(1))[0]).toMatchObject({ type: "worker.memory", activeBytes: 600 });
+    activeBytes = 800;
+    expect((await next(2))[1]).toMatchObject({ type: "worker.memory", activeBytes: 800 });
+    await reader.cancel();
+  } finally { await app.close(); socket.remove(); }
+});
