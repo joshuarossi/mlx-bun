@@ -49,7 +49,7 @@ import { mapPackedTokens } from "../../input/token-groups";
 import { type TokenGroup } from "../../contracts/mlx/token-work";
 import { flashAttention,flashSupported,getTrainingAttn } from "../../kernels/attention/flash";
 import { unrotateValues as tqUnrotateValues } from "../../kernels/turboquant/ops";
-import { compiledGeglu,compiledGegluActive } from "../../layers/geglu";
+import { compiledGegluActive,geglu,GegluMLP } from "../../layers/geglu";
 import { disposing } from "../../layers/helpers";
 import { bidirMask } from "../../kernels/attention/masks";
 import { RMSNorm } from "../../layers/normalization";
@@ -283,40 +283,6 @@ class Attention {
   }
 }
 
-class MLP {
-  readonly gate: QuantizedLinear;
-  readonly up: QuantizedLinear;
-  readonly down: QuantizedLinear;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
-    this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);
-    this.up = QuantizedLinear.load(weights, `${prefix}.up_proj`, config);
-    this.down = QuantizedLinear.load(weights, `${prefix}.down_proj`, config);
-  }
-
-  forward(x: MlxArray): MlxArray {
-    const g = this.gate.forward(x);
-    const u = this.up.forward(x);
-    let h: MlxArray;
-    if (compiledGegluActive() && !isCompiledTrace()) {
-      // Oracle geglu(gate_proj(x), up_proj(x)): @mx.compile'd gelu_approx·mul in
-      // one kernel set (the default; = mlx-lm). Autograd-safe → covers training.
-      h = compiledGeglu(g, u);
-      g.dispose();
-      u.dispose();
-    } else {
-      const act = ops.geluApprox(g);
-      g.dispose();
-      h = ops.mul(act, u);
-      act.dispose();
-      u.dispose();
-    }
-    const out = this.down.forward(h);
-    h.dispose();
-    return out;
-  }
-}
-
 // --- MoE block (26B-A4B) — port of reference Router/Experts/SwitchGLU ----
 // (gemma4_text.py + switch_layers.py in the oracle venv). The checkpoint
 // ships pre-stacked switch_glu tensors [experts, out, in/packed]; only the
@@ -424,21 +390,9 @@ class SwitchGLU {
     const xUp = this.up.forward(h, idx, doSort);
     const xGate = this.gate.forward(h, idx, doSort);
     h.dispose();
-    // GeGLU activation: gelu_approx(gate) · up (same composition as MLP). The
-    // oracle SwitchGLU uses the SAME @mx.compile'd geglu (activation=GeGLU(),
-    // switch_layers.py) → the compiled path routes through the shared closure.
-    let mid: MlxArray;
-    if (compiledGegluActive() && !isCompiledTrace()) {
-      mid = compiledGeglu(xGate, xUp);
-      xGate.dispose();
-      xUp.dispose();
-    } else {
-      const act = ops.geluApprox(xGate);
-      xGate.dispose();
-      mid = ops.mul(act, xUp);
-      act.dispose();
-      xUp.dispose();
-    }
+    // GeGLU activation: gelu_approx(gate) · up. The oracle SwitchGLU uses the SAME
+    // @mx.compile'd geglu as the dense MLP (activation=GeGLU(), switch_layers.py).
+    const mid = geglu(xGate, xUp);
     let y = this.down.forward(mid, idx, doSort);
     mid.dispose();
     if (idx !== indices) idx.dispose();
@@ -480,7 +434,7 @@ class Experts {
 
 export class DecoderLayer {
   readonly attn: Attention;
-  readonly mlp: MLP;
+  readonly mlp: GegluMLP;
   readonly inputNorm: RMSNorm;
   readonly postAttnNorm: RMSNorm;
   readonly preFfNorm: RMSNorm;
@@ -503,7 +457,7 @@ export class DecoderLayer {
     const t = config.text;
     this.layerType = t.layerTypes[idx]!;
     this.attn = new Attention(weights, config, `${prefix}.self_attn`, this.layerType, hasKv);
-    this.mlp = new MLP(weights, config, `${prefix}.mlp`);
+    this.mlp = new GegluMLP(weights, config, `${prefix}.mlp`);
     const norm = (n: string) => new RMSNorm(weights.tensor(`${prefix}.${n}.weight`), t.rmsNormEps);
     this.inputNorm = norm("input_layernorm");
     this.postAttnNorm = norm("post_attention_layernorm");

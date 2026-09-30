@@ -1,32 +1,16 @@
-// Gemma 4 text model — line-for-line port of mlx-lm's gemma4_text.py
-// (oracle venv site-packages), covering the paths our target models
-// exercise: 12B (dense), e4b (per-layer-input embeddings + KV-shared
-// layers), 26B-A4B (MoE block: router + gather_qmm experts).
-//
-// Parity notes:
-// - SDPA scale is 1.0 (Gemma4 normalizes q/k instead).
-// - Full-attention layers: global_head_dim 512, 1 global KV head,
-//   attention_k_eq_v (V = same projection as K, with un-scaled RMS norm);
-//   ProportionalRoPE rotates only partial_rotary_factor·dims dims.
-// - Python-float scalars promote weakly to the array dtype.
-// - Replicate mlx python helper implementations exactly (x**3 is
-//   mx.power, not x·x·x — they round differently in bf16).
-//
-// Masks: ports base.py create_attention_mask/create_causal_mask. Sliding
-// layers use a plain (non-rotating) cache + window masks — numerically
-// identical to mlx-lm's RotatingKVCache, at the cost of unbounded cache
-// growth past the window (memory optimization deferred).
+// GeGLU activation and feed-forward shared by the Gemma family: the compiled
+// geglu closure (mlx-lm's @mx.compile geglu), the flag/trace rule that selects it,
+// and the dense quantized MLP built on it.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 
-// The shared, config-independent machinery lives in packages/inference/src/layers/,
-// packages/inference/src/contracts/mlx/cache.ts and packages/inference/src/state/;
-// this file keeps the architecture-specific assembly that is generated per model.
-// Re-export the base so existing importers keep one entry point.
-
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
+import type { ModelConfig } from "../artifacts/config";
+import type { Weights } from "../artifacts/weights";
+import { isCompiledTrace } from "../runtime/compiled-trace";
 import { runtimeFlag } from "../runtime/config";
+import { QuantizedLinear } from "./quantized-linear";
 
 /** Verbatim port of mlx_lm/models/gemma4_text.py:
  *    `@partial(mx.compile, shapeless=True) def geglu(gate, x): return nn.gelu_approx(gate) * x`
@@ -61,4 +45,41 @@ export function compiledGeglu(gate: MlxArray, up: MlxArray): MlxArray {
     });
   }
   return _gegluClosure.apply([gate, up])[0]!;
+}
+
+/** gelu_approx(gate) * up, consuming both inputs. Compiled by default (the
+ *  oracle's @mx.compile'd geglu, one kernel set) and spelled out under
+ *  MLX_BUN_COMPILED_GEGLU=0 or inside a compiled-decode trace. */
+export function geglu(gate: MlxArray, up: MlxArray): MlxArray {
+  let out: MlxArray;
+  if (compiledGegluActive() && !isCompiledTrace()) {
+    out = compiledGeglu(gate, up);
+  } else {
+    const act = ops.geluApprox(gate);
+    out = ops.mul(act, up);
+    act.dispose();
+  }
+  gate.dispose();
+  up.dispose();
+  return out;
+}
+
+/** Dense GeGLU feed-forward: down(geglu(gate(x), up(x))) over quantized linears. */
+export class GegluMLP {
+  readonly gate: QuantizedLinear;
+  readonly up: QuantizedLinear;
+  readonly down: QuantizedLinear;
+
+  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+    this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);
+    this.up = QuantizedLinear.load(weights, `${prefix}.up_proj`, config);
+    this.down = QuantizedLinear.load(weights, `${prefix}.down_proj`, config);
+  }
+
+  forward(x: MlxArray): MlxArray {
+    const m = geglu(this.gate.forward(x), this.up.forward(x));
+    const out = this.down.forward(m);
+    m.dispose();
+    return out;
+  }
 }
