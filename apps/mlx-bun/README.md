@@ -1368,16 +1368,19 @@ tarballs, matching checksum sidecars, and formula under `release/`.
 
 Run `--help` for usage. Signing/notarization and publishing require Josh's release
 instruction; preparation and tests do not access identities or Apple services.
-`bun scripts/publish-release.ts inspect <directory> <release-notes>` checks the
-accepted bundle, package archives, checksum sidecars and formula without publishing.
-`publish` additionally requires that the preparation's source is clean `main` at
-`origin/main`, and checks npm and GitHub authentication. It uploads a draft release,
-publishes public npm packages in dependency order, makes the release public, then
-updates `joshuarossi/homebrew-tap` to the matching formula. It reads back all three.
-An existing npm version must have identical archive integrity; an existing tag
-must point to the prepared revision. An already public release stops further
-publication; inspect and repair a failed tap update separately. No preparation
-stage invokes publication. [Release tests](tests/release.test.ts)
+The release entrypoints are ported from main: `scripts/release-binary.sh` builds,
+signs, notarizes and packages; `scripts/publish-release.sh` publishes GitHub assets,
+updates the tap, then publishes npm. `PUBLISH=1 ./scripts/release-binary.sh` runs
+that single flow. `BUILD_DIR` names the preparation directory, `OUT_DIR` holds
+the distributable archives, and `RELEASE_NOTES` names the reviewed release body.
+The publisher requires a clean checkout at `origin/main` matching the prepared
+source. Its npm step extends main's idempotent publication to all public workspace
+packages in dependency order, requiring matching archive integrity for an existing
+version. The formula is generated from the accepted archive, so no checked-in
+version/hash mirror needs another commit. `bun scripts/release-inputs.ts inspect
+<directory> <release-notes>` inspects artifacts without publishing. Parity and
+performance qualification belong to refactor acceptance; this flow does not run
+them. No preparation stage invokes publication. [Release tests](tests/release.test.ts)
 use captured mock signing/notary commands and a recording acceptance stand-in;
 they do not prove a real signature or Apple acceptance.
 
