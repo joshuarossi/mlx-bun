@@ -14,9 +14,12 @@
 //   closure is compiled shapeless=true: dim sizes may vary per step,
 //   ndim/dtype may not.
 //
-// The trace runs the UNMODIFIED Gemma4Model.forwardHidden against trace
-// adapters that subclass the real cache classes — so the compiled graph
-// is the production op sequence by construction, not a reimplementation.
+// The trace runs the UNMODIFIED Gemma4Model.forwardHidden against the stand-in
+// each cache supplies for its slot (CompiledDecodeCache in
+// packages/inference/src/contracts/mlx/cache.ts; the stand-ins live beside their
+// cache classes in packages/inference/src/state/) — so the compiled graph
+// is the production op sequence by construction, not a reimplementation, and this
+// module names no cache class.
 // Per-cache fetch strategy (see DecodeStepPlan in
 // packages/inference/src/contracts/mlx/cache.ts):
 // - "concat": graph returns this step's (quantized) KV row; the buffer
@@ -29,20 +32,19 @@
 // Anything this module can't express falls back to the uncompiled path
 // (generate.ts catches and disables for the generation): active LoRA
 // adapters (their weights would bake into the trace as constants),
-// unknown cache classes, diverged cache offsets.
+// caches without the compiled-decode capability, diverged cache offsets.
 
 import { disposeResources } from "../../runtime/resources";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import * as ops from "@mlx-bun/mlx/ops";
 import { runtimeValue } from "../../runtime/config";
-import { isRowBatchCache } from "../../state/capabilities";
-import { KVCache } from "../../state/kv";
-import { QuantizedKVCache } from "../../state/quantized-kv";
-import { RotatingKVCache } from "../../state/rotating-kv";
-import { RotatingQuantizedKVCache } from "../../state/rotating-quantized-kv";
+import { isCompiledDecodeCache, isRowBatchCache } from "../../state/capabilities";
+import { decodeStepInputs } from "../../state/decode-step-inputs";
 import { setCompiledTrace } from "../../runtime/compiled-trace";
-import { type Cache, type DecodeStepPlan, type Mask, type SharedKv } from "../../contracts/mlx/cache";
+import type {
+  Cache, CompiledDecodeCache, DecodeSlot, DecodeTrace, Mask, SharedKv,
+} from "../../contracts/mlx/cache";
 import type { MlxCompiledDecodeStep } from "../../contracts/mlx/graph";
 
 /** What the runner reads of the Gemma graph it compiles (the graph passes
@@ -64,204 +66,33 @@ export interface CompiledGemmaTarget {
   logitsFromHidden(hidden: MlxArray): MlxArray;
 }
 
-type AnyCache = KVCache | QuantizedKVCache | RotatingKVCache | RotatingQuantizedKVCache;
-
-const fullSlice = (a: MlxArray): MlxArray => {
-  const stop = a.shape;
-  return a.slice(stop.map(() => 0), stop);
-};
-
-const catAxis2 = (a: ops.QuantizedTensor, b: ops.QuantizedTensor): ops.QuantizedTensor => ({
-  packed: ops.concatAxis([a.packed, b.packed], 2),
-  scales: ops.concatAxis([a.scales, b.scales], 2),
-  biases: ops.concatAxis([a.biases, b.biases], 2),
-});
-
-// --- trace adapters ---------------------------------------------------------
-// Subclasses so Attention.forward's instanceof dispatch (quantized vs
-// plain) routes exactly as it does for the real cache. `offset` is set
-// for completeness only: at L=1 every makeMask returns mode "" and the
-// RoPE offset rides the ropeOffsetArr input, so the baked value cannot
-// leak into the graph. Adapters live only for the duration of one trace.
-
-/** Growing plain cache (KVCache, or RotatingKVCache before the window
- *  fills): fetch = concat(active prefix, new row); new row is a closure
- *  output for the outside write. */
-class TraceConcatPlain extends KVCache {
-  override readonly ropeOffsetArr: MlxArray;
-  outs: MlxArray[] = [];
-  constructor(
-    offset: number,
-    readonly activeK: MlxArray,
-    readonly activeV: MlxArray,
-    ropeOffsetArr: MlxArray,
-  ) {
-    super();
-    this.offset = offset;
-    this.ropeOffsetArr = ropeOffsetArr;
-  }
-
-  override updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    // same-shape reshape: an owned alias that survives the caller's
-    // dispose of k/v, so the row can be a closure output
-    this.outs = [ops.reshape(k, k.shape), ops.reshape(v, v.shape)];
-    return [
-      ops.concatAxis([this.activeK, k], 2),
-      ops.concatAxis([this.activeV, v], 2),
-    ];
-  }
-}
-
-/** Growing quantized cache: quantize in-graph, fetch = per-component
- *  concat, the six quantized row components are closure outputs. */
-class TraceConcatQuant extends QuantizedKVCache {
-  override readonly ropeOffsetArr: MlxArray;
-  outs: MlxArray[] = [];
-  constructor(
-    offset: number, groupSize: number, bits: number,
-    readonly activeKq: ops.QuantizedTensor,
-    readonly activeVq: ops.QuantizedTensor,
-    ropeOffsetArr: MlxArray,
-  ) {
-    super(groupSize, bits);
-    this.offset = offset;
-    this.ropeOffsetArr = ropeOffsetArr;
-  }
-
-  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
-    const kq = ops.quantize(k, this.groupSize, this.bits);
-    const vq = ops.quantize(v, this.groupSize, this.bits);
-    this.outs = [kq.packed, kq.scales, kq.biases, vq.packed, vq.scales, vq.biases];
-    return [catAxis2(this.activeKq, kq), catAxis2(this.activeVq, vq)];
-  }
-}
-
-/** Rotating plain cache at steady state: write in-graph at the dynamic
- *  ring position, fetch the full updated buffer (mirrors #updateInPlace →
- *  #fetchAll); updated buffers are closure outputs. */
-class TraceRingPlain extends RotatingKVCache {
-  override readonly ropeOffsetArr: MlxArray;
-  outs: MlxArray[] = [];
-  constructor(
-    offset: number, maxSize: number,
-    readonly bufK: MlxArray,
-    readonly bufV: MlxArray,
-    readonly writePosArr: MlxArray,
-    ropeOffsetArr: MlxArray,
-  ) {
-    super(maxSize);
-    this.offset = offset;
-    this.ropeOffsetArr = ropeOffsetArr;
-  }
-
-  override updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    const updK = ops.sliceUpdateDynamic(this.bufK, k, this.writePosArr, [2]);
-    const updV = ops.sliceUpdateDynamic(this.bufV, v, this.writePosArr, [2]);
-    this.outs = [updK, updV];
-    return [fullSlice(updK), fullSlice(updV)];
-  }
-}
-
-/** Rotating quantized cache at steady state: quantize + six dynamic
- *  writes in-graph, fetch full updated buffers (mirrors the oracle's
- *  _update_in_place → _active_slices). */
-class TraceRingQuant extends RotatingQuantizedKVCache {
-  override readonly ropeOffsetArr: MlxArray;
-  outs: MlxArray[] = [];
-  constructor(
-    offset: number, maxSize: number, groupSize: number, bits: number,
-    readonly bufKq: ops.QuantizedTensor,
-    readonly bufVq: ops.QuantizedTensor,
-    readonly writePosArr: MlxArray,
-    ropeOffsetArr: MlxArray,
-  ) {
-    super(maxSize, groupSize, bits);
-    this.offset = offset;
-    this.ropeOffsetArr = ropeOffsetArr;
-  }
-
-  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
-    const kq = ops.quantize(k, this.groupSize, this.bits);
-    const vq = ops.quantize(v, this.groupSize, this.bits);
-    const upd = (buf: ops.QuantizedTensor, row: ops.QuantizedTensor): ops.QuantizedTensor => ({
-      packed: ops.sliceUpdateDynamic(buf.packed, row.packed, this.writePosArr, [2]),
-      scales: ops.sliceUpdateDynamic(buf.scales, row.scales, this.writePosArr, [2]),
-      biases: ops.sliceUpdateDynamic(buf.biases, row.biases, this.writePosArr, [2]),
-    });
-    const updK = upd(this.bufKq, kq);
-    const updV = upd(this.bufVq, vq);
-    for (const t of [kq, vq])
-      for (const a of [t.packed, t.scales, t.biases]) a.dispose();
-    this.outs = [updK.packed, updK.scales, updK.biases, updV.packed, updV.scales, updV.biases];
-    return [
-      { packed: fullSlice(updK.packed), scales: fullSlice(updK.scales), biases: fullSlice(updK.biases) },
-      { packed: fullSlice(updV.packed), scales: fullSlice(updV.scales), biases: fullSlice(updV.biases) },
-    ];
-  }
-}
-
-// --- slot layout ------------------------------------------------------------
-
-interface SlotDesc {
-  kind: "p-cat" | "q-cat" | "p-ring" | "q-ring";
-  offset: number;
-  maxSize: number;
-  groupSize: number;
-  bits: number;
-}
-
-function slotDesc(c: AnyCache, plan: DecodeStepPlan): SlotDesc {
-  const cat = plan.fetch === "concat";
-  if (c instanceof QuantizedKVCache)
-    return { kind: "q-cat", offset: c.offset, maxSize: 0, groupSize: c.groupSize, bits: c.bits };
-  if (c instanceof RotatingQuantizedKVCache)
-    return { kind: cat ? "q-cat" : "q-ring", offset: c.offset, maxSize: c.maxSize, groupSize: c.groupSize, bits: c.bits };
-  if (c instanceof RotatingKVCache)
-    return { kind: cat ? "p-cat" : "p-ring", offset: c.offset, maxSize: c.maxSize, groupSize: 0, bits: 0 };
-  return { kind: "p-cat", offset: c.offset, maxSize: 0, groupSize: 0, bits: 0 };
-}
-
 /** Graph-shape signature: anything that changes the traced op sequence
- *  must appear here (cache kinds/quant params and the env flags read
+ *  must appear here (the slots' cache kinds/quant params and the env flags read
  *  inside quantizedSdpa's dispatch). Offsets/capacities don't — they're
  *  array values or shapeless dims. */
-function closureKey(descs: SlotDesc[]): string {
-  const flags = `nf=${runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1" ? 1 : 0}`;
-  return descs.map((d) => `${d.kind}:${d.groupSize}:${d.bits}`).join(",") + "|" + flags;
+function closureKey(slots: DecodeSlot[]): string {
+  return slots.map((d) => d.key).join(",") + "|" + flagKey();
+}
+const flagKey = (): string => `nf=${runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1" ? 1 : 0}`;
+
+/** The stand-ins for `slots` over the closure inputs that follow the token and
+ *  RoPE offset, in slot order. */
+function traceCaches(slots: readonly DecodeSlot[], inputs: readonly MlxArray[], ropeOff: MlxArray): DecodeTrace[] {
+  let pos = 2;
+  return slots.map((slot) => {
+    const trace = slot.trace(inputs.slice(pos, pos + slot.inputs), ropeOff);
+    pos += slot.inputs;
+    return trace;
+  });
 }
 
-function makeTraceFn(model: CompiledGemmaTarget, descs: SlotDesc[]) {
+function makeTraceFn(model: CompiledGemmaTarget, slots: DecodeSlot[]) {
   return (inputs: MlxArray[]): MlxArray[] => {
-    const ropeOff = inputs[1]!;
-    let pos = 2;
-    const triple = (at: number): ops.QuantizedTensor => ({
-      packed: inputs[at]!, scales: inputs[at + 1]!, biases: inputs[at + 2]!,
-    });
-    const adapters: (TraceConcatPlain | TraceConcatQuant | TraceRingPlain | TraceRingQuant)[] = [];
-    for (const d of descs) {
-      switch (d.kind) {
-        case "p-cat":
-          adapters.push(new TraceConcatPlain(d.offset, inputs[pos]!, inputs[pos + 1]!, ropeOff));
-          pos += 2;
-          break;
-        case "q-cat":
-          adapters.push(new TraceConcatQuant(d.offset, d.groupSize, d.bits, triple(pos), triple(pos + 3), ropeOff));
-          pos += 6;
-          break;
-        case "p-ring":
-          adapters.push(new TraceRingPlain(d.offset, d.maxSize, inputs[pos]!, inputs[pos + 1]!, inputs[pos + 2]!, ropeOff));
-          pos += 3;
-          break;
-        case "q-ring":
-          adapters.push(new TraceRingQuant(d.offset, d.maxSize, d.groupSize, d.bits, triple(pos), triple(pos + 3), inputs[pos + 6]!, ropeOff));
-          pos += 7;
-          break;
-      }
-    }
+    const adapters = traceCaches(slots, inputs, inputs[1]!);
     setCompiledTrace(true);
     try {
       const ids = ops.reshape(inputs[0]!, [1, 1]);
-      const h = model.forwardHidden(ids, adapters as unknown as Cache[]);
+      const h = model.forwardHidden(ids, adapters);
       ids.dispose();
       const logits = model.logitsFromHidden(h);
       h.dispose();
@@ -284,16 +115,6 @@ function makeTraceFn(model: CompiledGemmaTarget, descs: SlotDesc[]) {
 // replays compiled. At steady state on the 12B that is 6 JS layers and
 // 7 compiled segments per step.
 
-/** Non-mutating phase check (segmented mode decides layer placement
- *  BEFORE any cache bookkeeping runs). Mirrors prepareDecodeStep's
- *  outcome: rotating caches go ring once the next write lands at or past
- *  the window; everything else grows. */
-function decodePhase(c: AnyCache): "concat" | "ring" {
-  if (c instanceof RotatingKVCache || c instanceof RotatingQuantizedKVCache)
-    return c.offset + 1 < c.maxSize ? "concat" : "ring";
-  return "concat";
-}
-
 function disposeShared(s: SharedKv): void {
   if (s.kind === "view") {
     s.attention.dispose();
@@ -307,32 +128,18 @@ function disposeShared(s: SharedKv): void {
   }
 }
 
-/** Trace one compiled segment: layers [from, to) — all ring caches —
+/** Trace one compiled segment: layers [from, to) — all ring caches, one slot each —
  *  with embed before (first) and finalNorm+logits after (last).
  *  Input layout: [idsOrH, ropeOffset, ...ring slots in layer order].
  *  Output layout: [hOrLogits, ...ring buffer updates]. */
 function makeSegmentTraceFn(
-  model: CompiledGemmaTarget, descs: SlotDesc[], from: number, to: number,
+  model: CompiledGemmaTarget, slots: DecodeSlot[], from: number, to: number,
   first: boolean, last: boolean,
 ) {
   return (inputs: MlxArray[]): MlxArray[] => {
     setCompiledTrace(true);
     try {
-      const ropeOff = inputs[1]!;
-      let pos = 2;
-      const triple = (at: number): ops.QuantizedTensor => ({
-        packed: inputs[at]!, scales: inputs[at + 1]!, biases: inputs[at + 2]!,
-      });
-      const adapters: (TraceRingPlain | TraceRingQuant)[] = [];
-      for (const d of descs) {
-        if (d.kind === "p-ring") {
-          adapters.push(new TraceRingPlain(d.offset, d.maxSize, inputs[pos]!, inputs[pos + 1]!, inputs[pos + 2]!, ropeOff));
-          pos += 3;
-        } else {
-          adapters.push(new TraceRingQuant(d.offset, d.maxSize, d.groupSize, d.bits, triple(pos), triple(pos + 3), inputs[pos + 6]!, ropeOff));
-          pos += 7;
-        }
-      }
+      const adapters = traceCaches(slots, inputs, inputs[1]!);
 
       let h: MlxArray;
       if (first) {
@@ -351,7 +158,7 @@ function makeSegmentTraceFn(
         const adapter = adapters[i - from]!;
         const window = layer.layerType === "sliding_attention" ? model.windowSize : null;
         const mask = adapter.makeMask(1, window); // N=1 → mode ""
-        const { h: next, shared } = layer.forward(h, mask, adapter as unknown as Cache, null, null);
+        const { h: next, shared } = layer.forward(h, mask, adapter, null, null);
         h.dispose();
         h = next;
         disposeShared(shared);
@@ -429,19 +236,12 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     if (runner) runner.dispose();
   }
 
-  /** Compilable this step? (Cheap; checked per decode step.) Only the serial
-   *  classes: a batched layout, even one that subclasses a serial class
-   *  (a filtered-to-one rotating quantized ring), carries per-row state the
-   *  trace does not express. */
+  /** Compilable this step? (Cheap; checked per decode step.) Only caches that
+   *  declare the compiled-decode capability, and not a batched layout: even one that
+   *  inherits it (a filtered-to-one rotating quantized ring) carries per-row state
+   *  the trace does not express. */
   accepts(caches: readonly Cache[]): boolean {
-    return caches.every(
-      (c) =>
-        !isRowBatchCache(c) &&
-        (c instanceof KVCache ||
-          c instanceof QuantizedKVCache ||
-          c instanceof RotatingKVCache ||
-          c instanceof RotatingQuantizedKVCache),
-    );
+    return caches.every((c) => !isRowBatchCache(c) && isCompiledDecodeCache(c));
   }
 
   /** One decode step: consumes the pending token array (uint32 [1],
@@ -455,15 +255,17 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     for (const c of caches)
       if (c.offset !== offset0)
         throw new Error("compiled decode: cache offsets diverged");
+    if (!this.accepts(caches)) throw new Error("compiled decode: a cache does not declare the compiled-decode capability");
+    const decodable = caches as CompiledDecodeCache[];
     return this.#segmented
-      ? this.#stepSegmented(cur, caches as AnyCache[], offset0)
-      : this.#stepWhole(cur, caches as AnyCache[], offset0);
+      ? this.#stepSegmented(cur, decodable, offset0)
+      : this.#stepWhole(cur, decodable, offset0);
   }
 
-  #stepWhole(cur: MlxArray, anyCaches: AnyCache[], offset0: number): { logits: MlxArray; evalWith: MlxArray[] } {
-    const plans = anyCaches.map((c) => c.prepareDecodeStep());
-    const descs = anyCaches.map((c, i) => slotDesc(c, plans[i]!));
-    const key = closureKey(descs);
+  #stepWhole(cur: MlxArray, decodable: CompiledDecodeCache[], offset0: number): { logits: MlxArray; evalWith: MlxArray[] } {
+    const plans = decodable.map((c) => c.prepareDecodeStep());
+    const slots = decodable.map((c, i) => c.decodeSlot(plans[i]!));
+    const key = closureKey(slots);
     if (this.#broken.has(key)) throw new Error(`compiled decode: known-broken closure ${key}`);
 
     // gather inputs — [cur, ropeOffset, ...per-cache slots]
@@ -472,54 +274,13 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     const ropeOff = ops.fromInt32([offset0], []);
     temps.push(ropeOff);
     inputs.push(ropeOff);
-    const writePosCache = new Map<number, MlxArray>();
-    const writePos = (v: number): MlxArray => {
-      let a = writePosCache.get(v);
-      if (!a) {
-        a = ops.fromInt32([v], [1]);
-        writePosCache.set(v, a);
-        temps.push(a);
-      }
-      return a;
-    };
-    const activeView = (a: MlxArray, len: number): MlxArray => {
-      const stop = [...a.shape];
-      stop[2] = len;
-      const view = a.slice(stop.map(() => 0), stop);
-      temps.push(view);
-      return view;
-    };
-    for (let i = 0; i < anyCaches.length; i++) {
-      const c = anyCaches[i]!;
-      const p = plans[i]!;
-      const d = descs[i]!;
-      if (d.kind === "p-cat") {
-        const pc = c as KVCache | RotatingKVCache;
-        inputs.push(activeView(pc.keys!, p.activeLen), activeView(pc.values!, p.activeLen));
-      } else if (d.kind === "q-cat") {
-        const qc = c as QuantizedKVCache | RotatingQuantizedKVCache;
-        for (const t of [qc.keys!, qc.values!])
-          inputs.push(
-            activeView(t.packed, p.activeLen),
-            activeView(t.scales, p.activeLen),
-            activeView(t.biases, p.activeLen),
-          );
-      } else if (d.kind === "p-ring") {
-        const rc = c as RotatingKVCache;
-        inputs.push(rc.keys!, rc.values!, writePos(p.writePos));
-      } else {
-        const rq = c as RotatingQuantizedKVCache;
-        inputs.push(
-          rq.keys!.packed, rq.keys!.scales, rq.keys!.biases,
-          rq.values!.packed, rq.values!.scales, rq.values!.biases,
-          writePos(p.writePos),
-        );
-      }
-    }
+    const step = decodeStepInputs(temps);
+    for (let i = 0; i < decodable.length; i++)
+      inputs.push(...decodable[i]!.decodeInputs(plans[i]!, step));
 
     let closure = this.#closures.get(key);
     if (!closure) {
-      closure = new CompiledFunction(makeTraceFn(this.model, descs), true);
+      closure = new CompiledFunction(makeTraceFn(this.model, slots), true);
       this.#closures.set(key, closure);
     }
 
@@ -543,59 +304,41 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     const logits = outs[0]!;
     const evalWith: MlxArray[] = [];
     let oi = 1;
-    for (let i = 0; i < anyCaches.length; i++) {
-      const c = anyCaches[i]!;
-      const d = descs[i]!;
-      if (d.kind === "p-cat") {
-        evalWith.push(...(c as KVCache | RotatingKVCache).writeDecodeStep(outs[oi]!, outs[oi + 1]!));
-        oi += 2;
-      } else if (d.kind === "q-cat") {
-        evalWith.push(...(c as QuantizedKVCache | RotatingQuantizedKVCache).writeDecodeStep(outs.slice(oi, oi + 6)));
-        oi += 6;
-      } else if (d.kind === "p-ring") {
-        // ring updates are ancestors of the logits (the in-graph fetch
-        // reads the updated buffer) — no explicit eval root needed
-        (c as RotatingKVCache).adoptDecodeStep(outs[oi]!, outs[oi + 1]!);
-        oi += 2;
-      } else {
-        (c as RotatingQuantizedKVCache).adoptDecodeStep(outs.slice(oi, oi + 6));
-        oi += 6;
-      }
+    for (let i = 0; i < decodable.length; i++) {
+      const slot = slots[i]!;
+      evalWith.push(...decodable[i]!.commitDecodeStep(slot, outs.slice(oi, oi + slot.outputs)));
+      oi += slot.outputs;
     }
     CompiledDecode.stepsExecuted++;
     return { logits, evalWith };
   }
 
-  #stepSegmented(cur: MlxArray, anyCaches: AnyCache[], offset0: number): { logits: MlxArray; evalWith: MlxArray[] } {
-    const phases = anyCaches.map(decodePhase);
+  #stepSegmented(cur: MlxArray, caches: CompiledDecodeCache[], offset0: number): { logits: MlxArray; evalWith: MlxArray[] } {
+    const phases = caches.map((c) => c.decodePhase());
     // ring caches need their host bookkeeping (growth/trim/rotation) now;
     // growing caches keep it inside their layer's real updateAndFetch
-    const plans = anyCaches.map((c, i) =>
+    const plans = caches.map((c, i) =>
       phases[i] === "ring" ? c.prepareDecodeStep() : null,
     );
+    const slots = caches.map((c, i) => (plans[i] ? c.decodeSlot(plans[i]!) : null));
 
     // layout: consecutive ring layers form compiled segments, each
     // growing-cache layer runs uncompiled between them
     const segs: { from: number; to: number }[] = [];
     const jsLayers: number[] = [];
     let runStart = 0;
-    for (let i = 0; i < anyCaches.length; i++) {
+    for (let i = 0; i < caches.length; i++) {
       if (phases[i] === "concat") {
         segs.push({ from: runStart, to: i });
         jsLayers.push(i);
         runStart = i + 1;
       }
     }
-    segs.push({ from: runStart, to: anyCaches.length });
+    segs.push({ from: runStart, to: caches.length });
 
     // layout key: ring slot tags at their positions; js layers only by
     // position (their quant params live outside the closures)
-    const key =
-      "seg|" +
-      anyCaches
-        .map((c, i) => (phases[i] === "ring" ? `${slotDesc(c, plans[i]!).kind}:${slotDesc(c, plans[i]!).groupSize}:${slotDesc(c, plans[i]!).bits}` : "js"))
-        .join(",") +
-      `|nf=${runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1" ? 1 : 0}`;
+    const key = "seg|" + slots.map((slot) => slot?.key ?? "js").join(",") + "|" + flagKey();
     if (this.#broken.has(key)) throw new Error(`compiled decode: known-broken closure ${key}`);
 
     let closures = this.#segClosures.get(key);
@@ -605,17 +348,8 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     }
 
     const ropeOff = ops.fromInt32([offset0], []);
-    const writePosCache = new Map<number, MlxArray>();
     const stepTemps: MlxArray[] = [ropeOff];
-    const writePos = (v: number): MlxArray => {
-      let a = writePosCache.get(v);
-      if (!a) {
-        a = ops.fromInt32([v], [1]);
-        writePosCache.set(v, a);
-        stepTemps.push(a);
-      }
-      return a;
-    };
+    const step = decodeStepInputs(stepTemps);
 
     const evalWith: MlxArray[] = [];
     let carried = cur; // seg 0 consumes the token array; later, hidden state
@@ -625,7 +359,7 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     // TRANSACTIONAL, or the caller's uncompiled re-forward of the same token
     // double-writes the committed layers (+1 offset skew forever, silently
     // corrupted attention). Two mechanisms, chosen by what each phase allows:
-    //  - ring segments: adoptDecodeStep is a pure host-side handle swap with
+    //  - ring segments: the ring commit is a pure host-side handle swap with
     //    no reader between here and step end (each cache is read only by its
     //    own layer, inside the closure that produced the update), so the
     //    adopts are STAGED and committed only once every segment and js layer
@@ -640,35 +374,24 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
     //    overwrites at the same position (updateAndFetch writes at offset/
     //    ringIdx), so post-recovery state equals a single clean write; the
     //    in-place S=1 write slot is re-derived from the reverted ringIdx.
-    const stagedAdopts: { c: AnyCache; bufs: MlxArray[] }[] = [];
-    const committedJs: { c: AnyCache; offsetBefore: number }[] = [];
+    const stagedAdopts: { c: CompiledDecodeCache; slot: DecodeSlot; bufs: MlxArray[] }[] = [];
+    const committedJs: { c: CompiledDecodeCache; offsetBefore: number }[] = [];
     try {
       for (let s = 0; s < segs.length; s++) {
         const { from, to } = segs[s]!;
         const firstSeg = s === 0;
         const lastSeg = s === segs.length - 1;
         if (firstSeg || lastSeg || from < to) {
-          const descs = [];
+          const ringSlots: DecodeSlot[] = [];
           const inputs: MlxArray[] = [carried, ropeOff];
           for (let i = from; i < to; i++) {
-            const c = anyCaches[i]!;
-            const p = plans[i]!;
-            descs.push(slotDesc(c, p));
-            if (c instanceof RotatingQuantizedKVCache) {
-              inputs.push(
-                c.keys!.packed, c.keys!.scales, c.keys!.biases,
-                c.values!.packed, c.values!.scales, c.values!.biases,
-                writePos(p.writePos),
-              );
-            } else {
-              const rc = c as RotatingKVCache;
-              inputs.push(rc.keys!, rc.values!, writePos(p.writePos));
-            }
+            ringSlots.push(slots[i]!);
+            inputs.push(...caches[i]!.decodeInputs(plans[i]!, step));
           }
           let closure = closures[s];
           if (!closure) {
             closure = new CompiledFunction(
-              makeSegmentTraceFn(this.model, descs, from, to, firstSeg, lastSeg),
+              makeSegmentTraceFn(this.model, ringSlots, from, to, firstSeg, lastSeg),
               true,
             );
             closures[s] = closure;
@@ -692,16 +415,15 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
           // host-side adoption is deferred to the end of the step (see above).
           let oi = 1;
           for (let i = from; i < to; i++) {
-            const c = anyCaches[i]!;
-            const width = c instanceof RotatingQuantizedKVCache ? 6 : 2;
-            stagedAdopts.push({ c, bufs: outs.slice(oi, oi + width) });
-            oi += width;
+            const slot = slots[i]!;
+            stagedAdopts.push({ c: caches[i]!, slot, bufs: outs.slice(oi, oi + slot.outputs) });
+            oi += slot.outputs;
           }
         }
         if (s < jsLayers.length) {
           const li = jsLayers[s]!;
           const layer = this.model.layers[li]!;
-          const c = anyCaches[li]!;
+          const c = caches[li]!;
           const window = layer.layerType === "sliding_attention" ? this.model.windowSize : null;
           const mask = c.makeMask(1, window); // N=1 → mode ""
           committedJs.push({ c, offsetBefore: c.offset });
@@ -714,10 +436,7 @@ export class CompiledDecode implements MlxCompiledDecodeStep {
         }
       }
       // every segment and js layer succeeded — commit the staged ring adopts
-      for (const { c, bufs } of stagedAdopts) {
-        if (c instanceof RotatingQuantizedKVCache) c.adoptDecodeStep(bufs);
-        else (c as RotatingKVCache).adoptDecodeStep(bufs[0]!, bufs[1]!);
-      }
+      for (const { c, slot, bufs } of stagedAdopts) c.commitDecodeStep(slot, bufs);
     } catch (e) {
       // unwind: free staged (never-adopted) ring buffers and the owned hidden
       // state, and revert the js layers' committed writes, so the caller's

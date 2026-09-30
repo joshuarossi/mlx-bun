@@ -40,7 +40,9 @@ means declaring and implementing; `execution/` and the app engine need no edit.
 The batch group and the autoregressive binding take the structural `MlxTokenGraph`
 (`models/graph`: config, caches, forward and projection, and the declared ports), not
 the registry's `RuntimeModel` union. A graph's compiled decode step lives with that
-graph (`models/gemma4/compiled-decode`) and reaches them through `compiledDecodeStep`.
+graph (`models/gemma4/compiled-decode`) and reaches them through `compiledDecodeStep`;
+it drives caches through the `CompiledDecodeCache` protocol (`contracts/mlx/cache`,
+implemented by the KV caches in `state/`) and names no cache class.
 The architecture gate rejects concrete model imports, model-class `instanceof`,
 model-type and `architectures` checks, family predicates and model-scoped flags there,
 in the app's engine, server and CLI, and in `@mlx-bun/training`. What those need to

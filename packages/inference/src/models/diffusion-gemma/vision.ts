@@ -30,6 +30,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { disposing } from "../../layers/helpers";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
+import { applyRope2d, rope2dTables, type Rope2dTables } from "../../layers/rope-2d";
 import { parseSiglipConfig, type SiglipVisionConfig } from "../vision/siglip";
 import { decodeImage, resizeBicubic } from "../../input/vision/preprocess";
 
@@ -132,82 +133,6 @@ function padLastDim(x: MlxArray, target: number): MlxArray {
   return out;
 }
 
-/** rotate_half: [-x2, x1]. */
-function rotateHalf(x: MlxArray): MlxArray {
-  const sh = x.shape;
-  const H = sh[sh.length - 1]!;
-  const half = H / 2;
-  const x1 = x.slice(sh.map((_, i) => (i === sh.length - 1 ? 0 : 0)), sh.map((s, i) => (i === sh.length - 1 ? half : s)));
-  const x2 = x.slice(sh.map((s, i) => (i === sh.length - 1 ? half : 0)), [...sh]);
-  const negX2 = ops.mulScalar(x2, -1);
-  x2.dispose();
-  const out = ops.concatAxis([negX2, x1], -1);
-  negX2.dispose();
-  x1.dispose();
-  return out;
-}
-
-/** apply_multidimensional_rope: split head_dim into `ndim` parts, rope each
- *  independently with its own spatial position. x: [B, L, N, headDim],
- *  positions: [B, L, 2] (int32). */
-function apply2dRope(x: MlxArray, positions: MlxArray, theta: number): MlxArray {
-  const sh = x.shape;
-  const headDim = sh[sh.length - 1]!;
-  const ndim = 2;
-  const channelsPerDim = 2 * Math.floor(headDim / (2 * ndim));
-  const halfPerDim = Math.floor(channelsPerDim / 2);
-  const [B, L] = sh as [number, number, number, number];
-
-  const parts: MlxArray[] = [];
-  for (let d = 0; d < ndim; d++) {
-    // x_part = x[..., d*cpd : (d+1)*cpd]
-    const start = sh.map((_, i) => (i === sh.length - 1 ? d * channelsPerDim : 0));
-    const stop = sh.map((s, i) => (i === sh.length - 1 ? (d + 1) * channelsPerDim : s));
-    const xPart = x.slice(start, stop);
-
-    const ar = ops.arange(0, halfPerDim, 1, Dtype.float32);
-    const freq = ops.mulScalar(ar, 2 / channelsPerDim);
-    ar.dispose();
-    const base = ops.scalarLike(theta, freq);
-    const timescale = ops.pow(base, freq); // [half]
-    base.dispose();
-    freq.dispose();
-
-    // positions[..., d:d+1] → [B, L, 1] → f32
-    const posD = positions.slice([0, 0, d], [B, L, d + 1]);
-    const posF = posD.astype(Dtype.float32);
-    posD.dispose();
-    // sinusoid = posF / timescale → [B, L, half]
-    const sinus = ops.div(posF, timescale);
-    posF.dispose();
-    timescale.dispose();
-    const cosd = ops.cos(sinus);
-    const sind = ops.sin(sinus);
-    sinus.dispose();
-    let cosD = ops.concatAxis([cosd, cosd], -1).astype(x.dtype); // [B,L,cpd]
-    let sinD = ops.concatAxis([sind, sind], -1).astype(x.dtype);
-    cosd.dispose();
-    sind.dispose();
-    cosD = disposing(cosD, ops.expandDims(cosD, 2)); // [B,L,1,cpd]
-    sinD = disposing(sinD, ops.expandDims(sinD, 2));
-
-    const xc = ops.mul(xPart, cosD);
-    const rh = rotateHalf(xPart);
-    xPart.dispose();
-    const rs = ops.mul(rh, sinD);
-    rh.dispose();
-    cosD.dispose();
-    sinD.dispose();
-    const yPart = ops.add(xc, rs);
-    xc.dispose();
-    rs.dispose();
-    parts.push(yPart);
-  }
-  const out = ops.concatAxis(parts, -1);
-  for (const p of parts) p.dispose();
-  return out;
-}
-
 class DiffVisionAttention {
   readonly qProj: VisionLinear;
   readonly kProj: VisionLinear;
@@ -218,7 +143,6 @@ class DiffVisionAttention {
   readonly nHeads: number;
   readonly nKvHeads: number;
   readonly headDim: number;
-  readonly theta: number;
   readonly eps: number;
   constructor(w: Weights, config: ModelConfig, cfg: SiglipVisionConfig, prefix: string) {
     this.qProj = VisionLinear.load(w, config, `${prefix}.q_proj.linear`);
@@ -230,10 +154,9 @@ class DiffVisionAttention {
     this.nHeads = cfg.numHeads;
     this.nKvHeads = cfg.numKvHeads;
     this.headDim = cfg.headDim;
-    this.theta = cfg.ropeTheta;
     this.eps = cfg.rmsNormEps;
   }
-  forward(x: MlxArray, positions: MlxArray, mask: MlxArray): MlxArray {
+  forward(x: MlxArray, rope: Rope2dTables, mask: MlxArray): MlxArray {
     const [B, L] = x.shape as [number, number, number];
     const qf = this.qProj.forward(x);
     let q = ops.reshape(qf, [B, L, this.nHeads, this.headDim]);
@@ -249,8 +172,8 @@ class DiffVisionAttention {
     k = disposing(k, manualRms(k, this.kNorm, this.eps));
     v = disposing(v, manualRms(v, null, this.eps));
 
-    q = disposing(q, apply2dRope(q, positions, this.theta));
-    k = disposing(k, apply2dRope(k, positions, this.theta));
+    q = disposing(q, applyRope2d(q, rope));
+    k = disposing(k, applyRope2d(k, rope));
 
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
     k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
@@ -284,6 +207,8 @@ class DiffVisionAttention {
   }
 }
 
+/** GeGLU stays uncompiled here: the reference vision MLP is plain
+ *  `nn.gelu_approx(gate) * up`, not the language model's @mx.compile'd geglu. */
 class DiffVisionMLP {
   readonly gate: VisionLinear;
   readonly up: VisionLinear;
@@ -323,9 +248,9 @@ class DiffVisionBlock {
     this.preFfNorm = norm("pre_feedforward_layernorm");
     this.postFfNorm = norm("post_feedforward_layernorm");
   }
-  forward(x: MlxArray, positions: MlxArray, mask: MlxArray): MlxArray {
+  forward(x: MlxArray, rope: Rope2dTables, mask: MlxArray): MlxArray {
     const normed = this.inputNorm.forward(x);
-    let attnOut = this.attn.forward(normed, positions, mask);
+    let attnOut = this.attn.forward(normed, rope, mask);
     normed.dispose();
     attnOut = disposing(attnOut, this.postAttnNorm.forward(attnOut));
     const h = ops.add(x, attnOut);
@@ -514,6 +439,8 @@ export class DiffusionVisionTower {
     const posInts = new Int32Array(this.maxPatches * 2).fill(-1);
     posInts.set(real, 0);
     const positions = MlxArray.fromInt32(posInts, [1, this.maxPatches, 2]);
+    const rope = rope2dTables(positions, this.cfg.headDim, this.cfg.ropeTheta, embeds.dtype);
+    positions.dispose();
 
     // --- bidirectional -1e4 mask [1,1,maxPatches,maxPatches] ---
     // valid_i AND valid_j → 0 else -1e4. valid = patch index < numReal.
@@ -536,12 +463,12 @@ export class DiffusionVisionTower {
     // --- transformer ---
     let h = embeds;
     for (let li = 0; li < this.layers.length; li++) {
-      const next = this.layers[li]!.forward(h, positions, mask);
+      const next = this.layers[li]!.forward(h, rope, mask);
       h.dispose();
       h = next;
       if (li < 3) dbg?.(`vlayer${li}`, h);
     }
-    positions.dispose();
+    rope.dispose();
     mask.dispose();
     dbg?.("transformer", h);
 

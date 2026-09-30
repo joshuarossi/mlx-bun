@@ -247,3 +247,48 @@ export interface DecodeStepPlan {
   /** Valid prefix length for "concat" fetches (== offset). */
   activeLen: number;
 }
+
+/** What a compiled decode step hands a cache to assemble its closure inputs. The
+ *  arrays it returns live for one step; the runner releases them afterwards. */
+export interface DecodeStepInputs {
+  /** `array[.., 0:length, ..]` along the sequence axis (axis 2). */
+  activeView(array: MlxArray, length: number): MlxArray;
+  /** The int32 `[1]` write position (shared between caches at the same position). */
+  writePosition(position: number): MlxArray;
+}
+
+/** The stand-in a cache places in the traced graph for one step: attention
+ *  appends to it exactly as it would to the real cache, and the arrays it appends
+ *  become closure outputs (`outs`) instead of a buffer write. */
+export interface DecodeTrace extends Cache {
+  outs: MlxArray[];
+}
+
+/** One cache's slot in a compiled decode closure. Plain data: it captures no
+ *  cache, so a closure built once serves every later step and generation. */
+export interface DecodeSlot {
+  /** Graph-shape signature (cache kind, quantization); offsets and capacities
+   *  are array values or shapeless dimensions and stay out of it. */
+  readonly key: string;
+  /** The write happens in the graph (ring) or outside it after the step (concat). */
+  readonly fetch: DecodeStepPlan["fetch"];
+  /** Closure inputs this cache feeds, and closure outputs it returns. */
+  readonly inputs: number;
+  readonly outputs: number;
+  /** The traced stand-in over this slot's `inputs`; `ropeOffset` is the int32 RoPE position input. */
+  trace(inputs: readonly MlxArray[], ropeOffset: MlxArray): DecodeTrace;
+}
+
+/** A cache the compiled decode step can drive: it declares the slot it occupies
+ *  in the closure for the coming step and applies the closure's outputs back. */
+export interface CompiledDecodeCache extends Cache {
+  /** Host-side bookkeeping for a 1-token step (growth, rotation), without the write. */
+  prepareDecodeStep(): DecodeStepPlan;
+  /** Non-mutating: the fetch `prepareDecodeStep` will choose. */
+  decodePhase(): DecodeStepPlan["fetch"];
+  decodeSlot(plan: DecodeStepPlan): DecodeSlot;
+  /** The closure inputs of `slot`, in order. */
+  decodeInputs(plan: DecodeStepPlan, step: DecodeStepInputs): MlxArray[];
+  /** Apply the closure's outputs (takes ownership); returns arrays to evaluate with the step. */
+  commitDecodeStep(slot: DecodeSlot, outputs: MlxArray[]): MlxArray[];
+}
