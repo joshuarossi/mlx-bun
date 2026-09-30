@@ -249,6 +249,8 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       return { fits: true, requiredBytes: slot.bytes, freeBytes: Number.POSITIVE_INFINITY, evict: [] } satisfies ResidencyPlan;
     },
 
+    async serve() { throw new ModelHostFailure("not-switchable", "the transcription host serves audio only; it has no model to switch"); },
+
     async unload(id, unloadOptions = {}) {
       const slot = slots.get(id);
       if (!slot) return;

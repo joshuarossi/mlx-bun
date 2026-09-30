@@ -436,3 +436,57 @@ test("the worker streams its own events to the parent as JSON lines, one subscri
   finally { await second.close(); }
   socket.remove(); bare.remove();
 });
+
+test("the adapter route runs the model's operation for the parent's models module, answers bad calls with 400, is drained like model work, and is absent without an operation", async () => {
+  const { workerAdapters } = await import("../../src/cli/worker-adapters");
+  const socket = socketDir(), calls: string[] = [], gate = Promise.withResolvers<void>();
+  const stats = { layersMerged: 2 };
+  const operation = {
+    async list() { calls.push("list"); return [{ id: "tuned", path: "/adapter", rank: 2, scale: 1, sizeBytes: 100, mountedLayers: 2, ramBytes: 80 }]; },
+    async mount(id: string, path: string) { calls.push(`mount ${id} ${path}`); if (id === "bad") throw new Error("layers do not match"); return { id, path, rank: 2, scale: 1, sizeBytes: 100, mountedLayers: 2, ramBytes: 80 }; },
+    async unmount(id: string) { calls.push(`unmount ${id}`); return id === "gone" ? 0 : 2; },
+    async merge(request: { adapters: readonly string[]; output: string; scales?: readonly number[] }) { calls.push(`merge ${request.adapters} ${request.output} ${request.scales}`); await gate.promise; return stats; },
+  };
+  const admin = createWorkerRoutes({ modelId: "org/model", adapters: operation });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
+  const parent = workerAdapters({ fetch: (url, init) => get(new URL(url).pathname, init) });
+  try {
+    // The parent's side of the wire is the operation the models module leases.
+    expect(await parent.list()).toEqual([{ id: "tuned", path: "/adapter", rank: 2, scale: 1, sizeBytes: 100, mountedLayers: 2, ramBytes: 80 }]);
+    expect(await parent.mount("new", "/new")).toMatchObject({ id: "new", path: "/new", mountedLayers: 2 });
+    await expect(parent.mount("bad", "/bad")).rejects.toThrow("layers do not match");
+    expect(await parent.unmount("x")).toBe(2);
+    expect(await parent.unmount("gone")).toBe(0);
+    const merging = parent.merge({ adapters: ["/a", "/b"], output: "/out", scales: [1, -0.5] });
+    await until(() => calls.some(call => call.startsWith("merge")), "the merge to start");
+    // A merge in flight is admitted work: a drain waits for it.
+    const draining = get("/admin/drain", { method: "POST", body: JSON.stringify({ timeout_ms: 5000 }) });
+    await Bun.sleep(20);
+    expect(await (await get("/health")).json()).toMatchObject({ in_flight: 1 });
+    gate.resolve();
+    expect(await merging).toEqual(stats);
+    expect(await (await draining).json()).toMatchObject({ drained: true });
+    expect(calls).toEqual(["list", "mount new /new", "mount bad /bad", "unmount x", "unmount gone", "merge /a,/b /out 1,-0.5"]);
+  } finally { gate.resolve(); await app.close(); }
+  socket.remove();
+  // A worker that cannot be reached is the model host being unavailable.
+  const unreachable = workerAdapters({ fetch: async () => { throw new Error("inference engine unavailable: the engine worker is restarting"); } });
+  await expect(unreachable.list()).rejects.toMatchObject({ code: "closed", message: "inference engine unavailable: the engine worker is restarting" });
+
+  // Bad calls answer 400 without reaching the operation; a worker with no operation has no such route.
+  const second = socketDir();
+  const checked = createWorkerRoutes({ modelId: "org/model", adapters: operation });
+  const bare = createWorkerRoutes({ modelId: "org/model" });
+  const secondApp = await startServer({ routes: checked.wrap(model()), web: () => null, chat: idle, beforeDrain: () => checked.close(), async closeEngine() {} }, { unix: second.unix });
+  const thirdSocket = socketDir();
+  const thirdApp = await startServer({ routes: bare.wrap(model()), web: () => null, chat: idle, beforeDrain: () => bare.close(), async closeEngine() {} }, { unix: thirdSocket.unix });
+  try {
+    const call = (unix: string, init: RequestInit) => fetch("http://worker/admin/adapters", { ...init, unix } as RequestInit);
+    for (const body of ['not json', "null", "[]", '{"op":"nope"}', '{"op":"mount","id":"x"}', '{"op":"unmount"}', '{"op":"merge","adapters":["/a"],"output":"/o"}',
+      '{"op":"merge","adapters":["/a","/b"],"output":"/o","scales":["1"]}'])
+      expect((await call(second.unix, { method: "POST", body })).status).toBe(400);
+    expect((await call(second.unix, { method: "GET" })).status).toBe(405);
+    expect((await call(thirdSocket.unix, { method: "POST", body: '{"op":"list"}' })).status).toBe(404);
+  } finally { await Promise.all([secondApp.close(), thirdApp.close()]); second.remove(); thirdSocket.remove(); }
+});

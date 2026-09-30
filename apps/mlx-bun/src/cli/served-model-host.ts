@@ -5,7 +5,7 @@
 // never evicts it, and leases it for `generate`: a wire request (OpenAI,
 // Anthropic or Responses) sent to the host's listener, over its Unix socket
 // when it has one. Whisper and other companions are the model composition's.
-import type { AcquireOptions, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats, ResidentModel } from "@mlx-bun/app-core";
+import type { AcquireOptions, AdapterOperation, ModelHost, ModelId, ModelLease, ModelOperation, ModelOperations, ModelStats, ResidentModel } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "@mlx-bun/app-services/portable";
 
 const OPERATIONS: readonly ModelOperation[] = ["generate"];
@@ -18,6 +18,12 @@ export interface ServedHostLink {
   readonly port: number;
   /** Internal (worker app form): the Unix socket the host listens on instead of TCP; the URL's port is then a placeholder. */
   readonly unix?: string;
+  /** Makes a local model the served one (`POST /api/hub/serve`): loaded beside the resident ones when it fits, else in place of the least recently used. Rejects with a coded `ModelHostError`; absent on a host that serves one model. */
+  serve?(model: string, signal: AbortSignal): Promise<void>;
+  /** Every model the host holds resident, for the library's "loaded" marks and cache cleanup's protection; absent on a host that holds only its served model. */
+  resident?(): readonly ResidentModel[];
+  /** The served model's adapter operation: each call holds the model resident and runs under its execution lease, in the process that holds it. */
+  readonly adapters?: AdapterOperation;
 }
 
 export interface ServedModelHostOptions<Link extends ServedHostLink> {
@@ -45,19 +51,24 @@ export function createServedModelHost<Link extends ServedHostLink>(options: Serv
       if (missing.length) throw new ModelHostFailure("does-not-fit", `model ${id} does not declare ${missing.join(", ")}`);
       leases++; lastUsedAt = Date.now();
       let released = false;
-      return { model: resident(link), loadMs: 0,
-        operations: { generate: request => {
-          const url = new URL(request.url);
-          return options.fetch(new Request(`http://127.0.0.1:${link.port}${url.pathname}${url.search}`, request), link);
-        } },
+      const operations: Partial<ModelOperations> = { generate: request => {
+        const url = new URL(request.url);
+        return options.fetch(new Request(`http://127.0.0.1:${link.port}${url.pathname}${url.search}`, request), link);
+      }, ...(link.adapters ? { adapters: link.adapters } : {}) };
+      return { model: resident(link), loadMs: 0, operations,
         release() { if (!released) { released = true; leases--; lastUsedAt = Date.now(); } } };
     },
     async defaultFor(operation) { const link = options.link(); return link && OPERATIONS.includes(operation) ? link.model.id : undefined; },
     async plan(id) { return { fits: id === options.link()?.model.id, requiredBytes: 0, freeBytes: 0, evict: [] }; },
+    async serve(id, serveOptions = {}) {
+      const link = attached();
+      if (!link.serve) throw new ModelHostFailure("not-switchable", "this host serves one model; switching needs a restart");
+      await link.serve(id, serveOptions.signal ?? new AbortController().signal);
+    },
     async unload() { throw new ModelHostFailure("in-use", "the serving host releases its model when it closes"); },
     pin() {},
     unpin() {},
-    resident() { const link = options.link(); return link ? [resident(link)] : []; },
+    resident() { const link = options.link(); return link ? link.resident?.() ?? [resident(link)] : []; },
     stats(id): ModelStats { return { resident: id === options.link()?.model.id, loads: 1, unloads: 0, lastLoadMs: 0, idleUnloadSec: null }; },
   };
 }

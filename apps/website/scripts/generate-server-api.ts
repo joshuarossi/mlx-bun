@@ -26,13 +26,12 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
   { file: "server/proxy-routes.ts", fn: "unavailableFrame", why: "chooses the SSE error frame", code: 'pathname === "/v1/responses"' },
   { file: "server/model-routes.ts", fn: "createModelRoutes", why: "a read of the current model's own routes is answered as it is; a change holds the model resident meanwhile",
     code: '["GET", "HEAD"].includes(request.method)' },
-  { file: "server/adapter-artifact-routes.ts", fn: "createAdapterArtifactRoutes", why: "sub-dispatch after the route guard", code: 'path.endsWith("/merge")' },
   { file: "server/discovery-routes.ts", fn: "createDiscoveryRoutes", why: "reads the optional model id", code: 'url.pathname.length > "/v1/models/".length - 1' },
 ];
 
 type Kind = "req" | "url" | "method" | "path" | "route" | "segments" | "tainted";
 /** A route factory, or the installed modules' routes (`MODULE_ROUTES`), which come from their manifests:
- * `state-modules` in the persistent app state (modules that require `jobs`), `modules` with the model host (the rest). */
+ * `state-modules` in the persistent app state (modules placed in the `app`, by default those that require `jobs`), `modules` with the model host (the rest). */
 type Group = ts.FunctionDeclaration | "modules" | "state-modules";
 type Groups = ReadonlyMap<string, Group | undefined>;
 interface Frame { from: ts.Node; stop: ts.Node; params: Set<ts.Node> }
@@ -421,7 +420,7 @@ class Inventory {
   }
 
   /** The routes of the installed modules that run in a scope, in manifest order: each `routes` entry of a `manifest` literal, at its mounted path.
-   * A module runs in the persistent app state when it requires `jobs`, else with the model host (the app's `installedModules(scope)`). */
+   * A module runs in the persistent app state when its manifest places it in the `app` (by default, when it requires `jobs`), else with the model host (the app's `installedModules(scope)`). */
   private moduleFacts(scope: "state" | "model"): Fact[] {
     const string = (e: ts.Expression | undefined, what: string, at: ts.Node): string => { const x = e && skip(e); return x && ts.isStringLiteralLike(x) ? x.text : this.fail(at, `${what} must be a string literal`); };
     return [...this.files.keys()].filter(path => MANIFEST.test(path)).flatMap(path => {
@@ -429,7 +428,8 @@ class Inventory {
       if (!manifest) return this.fail(file, "the module manifest was not found");
       const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get("routes") && skip(fields.get("routes")!);
       const requires = stringList(fields.get("requires")) ?? this.fail(manifest, "the module's requires must be a literal list of strings");
-      if (requires.some(([name]) => name === "jobs") !== (scope === "state")) return [];
+      const placement = fields.get("placement") ? string(fields.get("placement"), "the module's placement", manifest) : requires.some(([name]) => name === "jobs") ? "app" : "model";
+      if ((placement === "app") !== (scope === "state")) return [];
       if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, "manifest routes must be a literal array");
       return (list?.elements ?? []).map(route => {
         const parts = props(route), method = string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), "a route path", route);

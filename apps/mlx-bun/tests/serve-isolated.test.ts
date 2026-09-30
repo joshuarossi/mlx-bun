@@ -7,6 +7,7 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { ClientMessage, ServerMessage } from "../src/chat/protocol";
 import { parseCommand } from "../src/cli/args";
 import { startIsolatedServer } from "../src/cli/serve-isolated";
+import { installedModules } from "../src/modules";
 import { parseServeOptions } from "../src/cli/serve";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 
@@ -17,6 +18,8 @@ import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 // the in-process test drives real Pi over a real listener and WebSocket.
 const app = new URL("../", import.meta.url).pathname;
 const entry = join(app, "tests/fake-worker.ts");
+// The models module runs in the parent's persistent state: the hub, library and cache-cleanup routes are its.
+const models = await installedModules(item => item.id === "models");
 const workerEnv = { MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
 const model = (root: string) => ({ repoId: "org/model", path: join(root, "model"), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }) as ModelRecord;
 // Worker socket directories are made under os.tmpdir(), which the whole machine shares
@@ -36,8 +39,8 @@ test("the isolated composition and the serve entry never reach the engine or the
   // Static gate over import closures (type-only imports elided), following
   // workspace package exports; the child script below is the runtime proof.
   // serve.ts loads the model half only inside the direct composition, so its
-  // static closure is the isolated parent's; the only engine file reached is
-  // the contract edge through server/http.ts, as for serve-state.ts.
+  // static closure is the isolated parent's; the isolated composition reaches only the
+  // contract edge through server/http.ts (management routes), and serve.ts's static closure none.
   const root = realpathSync(app), workspace = resolve(root, "../..");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const closure = (start: string, staticOnly: boolean) => {
@@ -64,7 +67,7 @@ test("the isolated composition and the serve entry never reach the engine or the
   expect(isolated.size).toBeGreaterThan(40);
   const serve = closure("src/cli/serve.ts", true);
   expect(serve.native).toEqual([]);
-  expect(serve.engine).toEqual(["src/engine/completion.ts"]);
+  expect(serve.engine).toEqual([]);
   expect(closure("src/cli/main.ts", true).engine).toEqual([]);
 });
 
@@ -130,7 +133,7 @@ test("the parent composes the persistent state and the proxy without the engine 
     const record = join(root, "launches.jsonl");
     const notices = [];
     const env = { FAKE_WORKER_RECORD: record, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
-    const running = await startIsolatedServer(model, options, { entry: process.env.FAKE_WORKER, env, restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice: line => notices.push(line) });
+    const running = await startIsolatedServer(model, options, { modules: await (await import(app + "src/modules.ts")).installedModules(item => item.id === "models"), entry: process.env.FAKE_WORKER, env, restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice: line => notices.push(line) });
     // A failed assertion still closes the server, stopping its workers and removing their sockets.
     try {
       // The spawn: the captured executable, the entry, and the launch record with the model pinned and the options serialized (Infinity intact, the flag the parent's).
@@ -245,7 +248,7 @@ const memoryPreamble = `
   const eventsFile = join(root, "events.jsonl"), lines = [];
   const started = [];
   const start = async env => {
-    const running = await startIsolatedServer(records[0], options, { entry: process.env.FAKE_WORKER,
+    const running = await startIsolatedServer(records[0], options, { modules: await (await import(app + "src/modules.ts")).installedModules(item => item.id === "models"), entry: process.env.FAKE_WORKER,
       env: { FAKE_WORKER_EVENTS: eventsFile, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", ...env },
       restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
       notice: line => lines.push(line), log: line => lines.push(line), error: line => lines.push(line) });
@@ -441,7 +444,7 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
   const notices: string[] = [], workerLog: string[] = [];
   const tmp = privateTmp(root);
-  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
+  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { modules: models, entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
     notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const engine = async () => await (await fetch(new URL("/engine", base))).json() as { state: string; pid: number | null; restarts: number };
@@ -513,7 +516,7 @@ test("each resident model has its own worker: a hub switch loads the other besid
   const tmp = privateTmp(root);
   const launches = join(root, "launches.jsonl");
   const records = ["org/model", "org/other", "org/broken"].map(id => record(root, id));
-  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: launches, FAKE_WORKER_MODELS: "org/model,org/other,org/broken" },
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { modules: models, entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: launches, FAKE_WORKER_MODELS: "org/model,org/other,org/broken" },
     restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, records: () => records, notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line),
     observe: bus => { bus.subscribe("*", event => { seenEvents.push(event as { type: string; model?: string }); }); } }));
   let leftover: string[] = ["not closed"];

@@ -36,7 +36,6 @@ function fixture(sizes: Record<string, number>, options: { budget?: number; curr
         const data = [full, ...others, { id: "org/whisper", object: "model", transcription: true, resident: false }];
         return Response.json({ object: "list", data: filter ? data.filter(entry => entry.id === filter) : data });
       }
-      if (url.pathname === "/library") return Response.json({ models: Object.keys(sizes).map(repo_id => ({ repo_id, serving: repo_id === this.id })) });
       if (url.pathname === "/stats") return Response.json({ server: { model: this.id } });
       if (url.pathname === "/v1/adapters/load") return Response.json({ mounted: this.id });
       if (url.pathname === "/health") return Response.json({ status: "ok", from: this.id });
@@ -164,12 +163,11 @@ test("/v1/models lists every local model: resident ones as they describe themsel
   expect(bare.data).toEqual([{ id: "c", object: "model", tier: "supported", resident: false, current: false }]);
 });
 
-test("/library marks the current model as serving and which are resident, and /stats reports the host's residency", async () => {
+test("/stats reports the host's residency (the library's serving and loaded marks are the models module's)", async () => {
   const f = fixture({ a: 2 * GB, b: 3 * GB }, { budget: 20 * GB });
   (await f.host.acquire("a")).release(); (await f.host.acquire("b")).release();
   f.setCurrent("b");
-  const library = await (await f.routes.handle(get("/library")))!.json();
-  expect(library.models).toEqual([{ repo_id: "a", serving: false, resident: true }, { repo_id: "b", serving: true, resident: true }]);
+  expect(await f.routes.handle(get("/library"))).toBeNull();
   const stats = await (await f.routes.handle(get("/stats")))!.json();
   expect(stats.server).toEqual({ model: "b" });
   expect(stats.models).toMatchObject({ current: "b", budget_bytes: 20 * GB, resident_bytes: 5 * GB });
@@ -194,7 +192,7 @@ test("a current model that cannot answer a listing (its worker is down) is the a
   const unit = (await f.host.acquire("a")); unit.release();
   const down = () => Response.json({ error: { message: "the engine worker stopped", type: "engine_unavailable" } }, { status: 502 });
   unit.unit.routes.handle = async () => down();
-  for (const path of ["/v1/models", "/library", "/stats"]) {
+  for (const path of ["/v1/models", "/stats"]) {
     const response = (await f.routes.handle(get(path)))!;
     expect(response.status).toBe(502);
     expect(((await response.json()) as { error: { type: string } }).error.type).toBe("engine_unavailable");

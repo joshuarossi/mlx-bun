@@ -20,6 +20,8 @@ export interface ResidentModel {
   /** Leases currently held; a leased model is never evicted. */
   readonly leases: number;
   readonly lastUsedAt: number;
+  /** Directories the model reads: the one its id names and any it holds besides (a snapshot another feature loaded into it). Cache cleanup keeps them. */
+  readonly uses?: readonly string[];
 }
 
 export interface ResidencyPolicy {
@@ -122,12 +124,42 @@ export interface TranscriptionOperation {
   start(options?: TranscribeOptions): TranscriptionRun;
 }
 
-/** The operations a lease may expose, keyed by `ModelOperation`. */
+/** An adapter mounted on a loaded model. */
+export interface MountedAdapter {
+  readonly id: string;
+  /** The adapter directory it was mounted from. */
+  readonly path: string;
+  /** Null when its config states none. */
+  readonly rank: number | null;
+  readonly scale: number;
+  /** Bytes of its weights on disk. */
+  readonly sizeBytes: number;
+  readonly mountedLayers: number;
+  /** Bytes it holds in memory while mounted. */
+  readonly ramBytes: number;
+}
+
+/** What merging two adapters wrote and how many tensors it combined; the fields are the merge's own report. */
+export type AdapterMergeStats = Readonly<Record<string, unknown>>;
+
+/** The `adapters` operation: LoRA adapters mounted on the model's own weights. Every call runs under the model's execution lease, in the process that holds the model (a worker, when the host isolates its models), never in the host's. */
+export interface AdapterOperation {
+  list(signal?: AbortSignal): Promise<readonly MountedAdapter[]>;
+  /** Mounts the adapter directory under `id`; rejects with the reason when the model cannot take it. */
+  mount(id: string, directory: string, signal?: AbortSignal): Promise<MountedAdapter>;
+  /** Removes a mounted adapter; resolves to the layers it was mounted on, 0 when `id` was not mounted. */
+  unmount(id: string, signal?: AbortSignal): Promise<number>;
+  /** Combines two adapter directories, each scaled, into a new adapter directory. */
+  merge(request: { readonly adapters: readonly [string, string]; readonly output: string; readonly scales?: readonly number[] }, signal?: AbortSignal): Promise<AdapterMergeStats>;
+}
+
+/** The operations a lease may expose, keyed by `ModelOperation` (`adapters` is offered on a model that mounts adapters). */
 export interface ModelOperations {
   /** An OpenAI, Anthropic or Responses wire request already bound to this model. */
   generate(request: Request): Promise<Response>;
   embed(inputs: readonly string[], instruction?: string): Promise<readonly { readonly vector: Float32Array; readonly tokens: number }[]>;
   transcribe: TranscriptionOperation;
+  adapters: AdapterOperation;
 }
 
 /** Holding a lease keeps the model resident; the holder must release it. */
@@ -151,7 +183,7 @@ export interface ModelStats {
   readonly idleUnloadSec: number | null;
 }
 
-export type ResidencyFailure = "does-not-fit" | "no-evictable-model" | "load-failed" | "aborted" | "in-use" | "closed";
+export type ResidencyFailure = "does-not-fit" | "no-evictable-model" | "load-failed" | "aborted" | "in-use" | "closed" | "not-switchable" | "not-found";
 export interface ModelHostError extends Error { readonly code: ResidencyFailure }
 
 /**
@@ -170,6 +202,8 @@ export interface ModelHost {
   /** The model the host serves an operation with when the caller names none: the one the user configured, else the first local model that declares it. */
   defaultFor(operation: ModelOperation): Promise<ModelId | undefined>;
   plan(id: ModelId): Promise<ResidencyPlan>;
+  /** Makes `id` the model `defaultFor("generate")` answers, loading it beside the resident ones when it fits, else in place of the least recently used unpinned one (its state is saved and resumes on return). Rejects with `not-found` for an id that is not a local model, `not-switchable` on a host that holds one model, and otherwise as `acquire` does. */
+  serve(id: ModelId, options?: { readonly signal?: AbortSignal }): Promise<void>;
   /** Drains, optionally flushes state (default true), then releases. Rejects with `in-use` while a lease is held unless `force`; a model that is not resident resolves. */
   unload(id: ModelId, options?: { readonly flush?: boolean; readonly force?: boolean }): Promise<void>;
   pin(id: ModelId): void;

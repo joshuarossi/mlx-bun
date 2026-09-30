@@ -32,7 +32,7 @@ export type PanelElement = HTMLElement & { connection?: PanelConnection };
 /** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
 export interface PanelManifest {
   readonly id: string;
-  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string };
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly developer?: boolean };
   readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
 }
 
@@ -43,6 +43,7 @@ export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellP
     if (!module.panel) return [];
     const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
     return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path,
+      ...(module.panel.developer !== undefined ? { developer: module.panel.developer } : {}),
       connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];
   });
 }

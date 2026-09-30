@@ -60,7 +60,7 @@ export const SPOTLIGHT_TARGETS: Record<string, SpotlightTarget> = {
   "memory-entry": { selector: "#chat-memory-entry", label: "Memory", route: "chat" },
   "developer-toggle": { selector: "#nav-developer", label: "Developer toggle" },
   "model-picker": { selector: "#nav-model", label: "Active model" },
-  "hub-browse": { selector: "#model-pop-browse", label: "Browse models", view: "hub-panel" },
+  "hub-browse": { selector: "#nav-model", label: "Browse models" },
   "quantize-source": { selector: "#q-model", label: "Source model", route: "quantize" },
   "finetune-base": { selector: "#f-model", label: "Base model", route: "finetune" },
 };

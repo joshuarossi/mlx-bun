@@ -54,3 +54,31 @@ test("generate sends the wire request to the host's own listener, keeping method
   abort.abort(new Error("stop"));
   expect(request.signal.aborted).toBe(true);
 });
+
+test("switching goes to the host's own switch with the caller's signal; a host that serves one model says it cannot switch", async () => {
+  const seen: { model: string; signal: AbortSignal }[] = [];
+  const switching = createServedModelHost({ link: () => link({ async serve(model, signal) { seen.push({ model, signal }); } }), fetch: async () => new Response() });
+  const abort = new AbortController();
+  await switching.serve("org/other", { signal: abort.signal });
+  await switching.serve("org/third");
+  expect(seen.map(entry => entry.model)).toEqual(["org/other", "org/third"]);
+  expect(seen[0]!.signal).toBe(abort.signal);
+  expect(seen[1]!.signal.aborted).toBe(false);
+  const single = createServedModelHost({ link: () => link(), fetch: async () => new Response() });
+  expect(await code(single.serve("org/other"))).toBe("not-switchable");
+  const detached = createServedModelHost({ link: () => undefined, fetch: async () => new Response() });
+  expect(await code(detached.serve("org/other"))).toBe("closed");
+});
+
+test("the host reports every resident model the serving host lends, else the served one; a lease carries the served model's adapter operation when the host has one", async () => {
+  const held = [{ id: "org/model", role: "primary" as const, state: "ready" as const, operations: ["generate" as const], bytes: 1, pinned: false, leases: 0, lastUsedAt: 0, uses: ["/snap"] },
+    { id: "org/other", role: "primary" as const, state: "ready" as const, operations: ["generate" as const], bytes: 2, pinned: false, leases: 0, lastUsedAt: 0 }];
+  const adapters = { list: async () => [], mount: async () => { throw new Error("unused"); }, unmount: async () => 0, merge: async () => ({}) };
+  const rich = createServedModelHost({ link: () => link({ resident: () => held, adapters }), fetch: async () => new Response() });
+  expect(rich.resident().map(model => model.id)).toEqual(["org/model", "org/other"]);
+  expect(Object.keys((await rich.acquire("org/model")).operations).sort()).toEqual(["adapters", "generate"]);
+  expect((await rich.acquire("org/model")).operations.adapters).toBe(adapters);
+  const plain = createServedModelHost({ link: () => link(), fetch: async () => new Response() });
+  expect(plain.resident().map(model => model.id)).toEqual(["org/model"]);
+  expect(Object.keys((await plain.acquire("org/model")).operations)).toEqual(["generate"]);
+});

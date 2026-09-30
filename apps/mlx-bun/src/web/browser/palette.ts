@@ -1,6 +1,6 @@
 // The app's command palette (Cmd/Ctrl+K): the shell's palette chrome (`@mlx-bun/web-shell`) over the app's
 // searchable things. Commands call exported functions of the modules that own the behavior (newChat and
-// copyLastResponse through the controllers registry, openMemPanel/openHubPanel, the shell's theme, developer and
+// copyLastResponse through the controllers registry, openMemPanel, the shell's theme, developer and
 // shortcut controls; thinking-toggle reuses the real button's click handler). "Chats" lists the sidebar's rows and
 // "In messages" delegates to the same GET /api/sessions/search endpoint the sidebar's search uses
 // (apps/mlx-bun/src/chat/session-search.ts): one server-side implementation, two presentations.
@@ -8,7 +8,6 @@ import { actionSection, createPalette, cycleTheme, fuzzyMatch, type Palette, typ
 import { controllers, currentRoute, isDeveloperMode, setDeveloperMode, shell } from "./shell";
 import { openSessionRowByPath, exportSession } from "./sessions";
 import { openMemPanel } from "./memory-panel";
-import { openHubPanel } from "./hub";
 import { api } from "./api";
 
 /** The command list, independent of any live session data. Session rows and message-search hits are their own
@@ -27,7 +26,7 @@ export function commands(): PaletteAction[] {
     { label: "Toggle theme", run() { cycleTheme(); } },
     { label: "Toggle Developer mode", run() { setDeveloperMode(!isDeveloperMode()); } },
     { label: "Open Memory panel", run() { openMemPanel(); } },
-    { label: "Browse models (Hub)", run() { openHubPanel(); } },
+    { label: "Browse models (Hub)", run() { location.hash = "#/models"; } },
     { label: "Open shortcut sheet", run() { shell.shortcuts.toggle(); } },
     {
       label: "Export this chat", when: onChat,

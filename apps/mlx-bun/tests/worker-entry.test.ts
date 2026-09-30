@@ -62,9 +62,7 @@ const preamble = `
   const group = () => ({ handle: async () => null });
   mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: group }));
   mock.module(app + "src/server/cache-routes.ts", () => ({ createCacheRoutes: group }));
-  mock.module(app + "src/server/adapter-routes.ts", () => ({ createAdapterRoutes: group }));
   mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: group }));
-  mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes: group }));
   mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
   mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
   mock.module(app + "src/chat/session-files.ts", () => ({ defaultSessionDir: () => "/unused/sessions" }));
@@ -147,7 +145,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal(await state.memorySurface(), undefined);
     assert.equal(state.responses.size, 0);
     assert.equal(state.sessionDir, "/unused/sessions");
-    for (const name of ["hub", "sessions", "memory", "jobs", "models", "appModules", "publishing"])
+    for (const name of ["sessions", "memory", "jobs", "appModules", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);
@@ -538,8 +536,7 @@ test("the app form composes the real app over the socket with private storage: p
         return new Response([frame("Hello"), frame(" world"), "data: [DONE]\\n\\n"].join(""), { headers: { "content-type": "text/event-stream" } });
       }, invalidateLibrary() {}, responseStats: () => ({}) }; } }));
     const group = () => ({ handle: async () => null });
-    for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"], ["adapter-routes", "createAdapterRoutes"],
-      ["adapter-artifact-routes", "createAdapterArtifactRoutes"]])
+    for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"]])
       mock.module(app + "src/server/" + module + ".ts", () => ({ [name]: group }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));

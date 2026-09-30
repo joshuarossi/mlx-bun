@@ -24,10 +24,10 @@ import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createModelRoutes } from "../server/model-routes";
 import { createProxyRoutes } from "../server/proxy-routes";
 import { createResponsesClient } from "../server/responses-client";
-import { ServeRefused } from "../server/hub-routes";
 import { startServer } from "../server/start";
 import { listLocalRecords } from "../residency/local-records";
-import { createResidencyHost, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
+import { leasedAdapters } from "../residency/leased-adapters";
+import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
 import { createRecordIndex } from "../residency/record-index";
 import { estimateRecordBytes } from "../residency/resident-estimate";
 import type { RunningApp, ServeOptions } from "./serve-options";
@@ -163,6 +163,13 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     };
     residency = createResidencyHost<WorkerUnit>({ source, budgetBytes, events: state.events,
       defaultFor: async operation => operation === "generate" ? current : operation === "transcribe" ? (await whisperRecord())?.repoId : undefined,
+      async serve(id, signal) {
+        if (!await chatModels.find(id)) throw new ResidencyError("not-found", `${id} is not a local model; download it first`);
+        (await residency.acquire(id, { ...(signal ? { signal } : {}), need: ["generate"] })).release();
+        current = id;
+      },
+      // Hub cleanup keeps the snapshot of every resident worker's model, and the task model's on the worker that read it.
+      uses: unit => [unit.record.path, ...retention(unit)],
       log: line => notice(line) });
     // Startup fails fast, as the in-process composition does: the first model's worker serves before the listener binds.
     const first = await spawnWorkerUnit(context, model, "primary", (await source.resolve(model.repoId))?.bytes ?? model.sizeBytes);
@@ -188,17 +195,16 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       companion: async pathname => (pathname.startsWith("/v1/audio/") || pathname.startsWith("/admin/transcription/")) ? (await whisperRecord())?.repoId : undefined });
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,
-      downloads: () => state.downloads.snapshot(), modelId: model.repoId, startedAt: Date.now() });
-    const invalidateLibrary = () => { chatModels.invalidate(); proxy.invalidateLibrary(); };
-    // Hub GC keeps the snapshot of every resident worker's model, and the task model's on the worker that read it.
-    const servedPaths = () => workers().flatMap(unit => [unit.record.path, ...retention(unit)]);
-    // Tool-approval settings and hub GC are CPU work over the parent's own files.
-    const management = createManagementRoutes({ invalidateLibrary, toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: servedPaths });
+      modelId: model.repoId, startedAt: Date.now() });
+    // The listing the router reads models from is read again after a download, a finished job or a cleanup.
+    const invalidateLibrary = () => { chatModels.invalidate(); };
+    // Tool-approval settings are CPU work over the parent's own files.
+    const management = createManagementRoutes({ toolApprovalsFile: state.chatPaths?.toolApprovalsFile });
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among themselves; the proxy takes every remaining path.
-    const routes: RouteGroup = { handle: async request => await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ??
+    const routes: RouteGroup = { handle: async request => await persistent.sessions.handle(request) ??
       await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ??
+      await persistent.appModules.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;
     // Pi lives here and reaches the model over loopback through the proxy, so web chat survives a worker restart and
@@ -223,13 +229,9 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     detachLink = state.attach({ get model() { return { id: current, bytes: currentUnit()?.bytes() ?? model.sizeBytes }; }, get port() { return boundPort; },
       acquireExecutionLease: signal => residency.pauseAll(signal),
       invalidateLibrary,
-      async serve(id, signal) {
-        if (!await chatModels.find(id)) throw new ServeRefused(404, `${id} is not a local model; download it first`);
-        try { (await residency.acquire(id, { signal, need: ["generate"] })).release(); }
-        catch (error) { throw new ServeRefused(error instanceof Error && "code" in error && error.code === "load-failed" ? 502 : 400, error instanceof Error ? error.message : String(error)); }
-        current = id;
-        return { model: id };
-      } });
+      resident: () => residency.resident(),
+      adapters: leasedAdapters(residency, () => current),
+      serve: (id, signal) => residency.serve(id, { signal }) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web: state.web, chat,

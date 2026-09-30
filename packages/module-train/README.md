@@ -61,14 +61,13 @@ the drafter's `dspark.json` in place (refused when it already carries thresholds
 
 ## Not in the module yet
 
-- Adapter merge and export (`POST /api/finetune/merge`, `/export`, `apps/mlx-bun/src/server/adapter-artifact-routes.ts`)
-  are training's by ownership but stay in the app: merge runs native MLX under the engine's execution lock in
-  the process that holds the model, and this module activates in the persistent state, which under `--isolate`
-  loads no native code. They move with the model host (PLAN item (e)), whose combined service lends a lease.
+- Adapter merge and export (`POST /api/finetune/merge`, `/export`) are the models module's
+  ([`@mlx-bun/module-models`](../module-models/README.md)): merge runs native MLX under the served model's execution
+  lock in the process that holds the model, which the models module reaches through the model host's `adapters`
+  operation, while this module activates in the persistent state, which loads no native code.
 - The browser's fine-tune wizard (`apps/mlx-bun/src/web/browser/finetune.ts`) stays in the app until the web
   shell exists: it is built from the shell's DOM helpers, toast, controllers and push-to-Hub panel, so it cannot
-  yet be a self-contained `mlx-train-panel`. The adapter picker and mount routes (`/v1/adapters*`) are the
-  future models module's.
+  yet be a self-contained `mlx-train-panel`. The adapter mount routes (`/v1/adapters*`) are the models module's.
 
 ## Tests
 
