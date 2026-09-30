@@ -52,7 +52,7 @@ test("a manifest activates against only its required services and serves its dec
   expect(Object.keys(runtime.verbs!)).toEqual(manifest.verbs.map(verb => verb.name));
   let output = "";
   const invocation: CliInvocation = { values: {}, positionals: [], stdout: text => { output += text; }, stderr: () => {},
-    terminal: { step: () => ({ update() {}, done() {}, fail() {} }), box() {}, style: { dim: t => t, bold: t => t, green: t => t, accent: t => t, url: t => t } }, signal: context.signal };
+    terminal: { step: () => ({ update() {}, done() {}, fail() {} }), box() {}, heading() {}, table() {}, style: { dim: t => t, bold: t => t, green: t => t, accent: t => t, url: t => t, gradient: t => t } }, signal: context.signal };
   expect(await runtime.verbs!["echo-ping"]!(invocation)).toBe(0);
   expect(output).toBe("pinged\n");
   const response = await runtime.routes!.count!(new Request("http://host/api/echo/count"));
