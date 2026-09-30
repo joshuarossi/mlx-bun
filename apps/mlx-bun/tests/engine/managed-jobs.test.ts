@@ -295,14 +295,19 @@ test.skipIf(!bf16Dir)("a spawned convert is interrupted during the synchronous s
   const io = isolated();
   try {
     const mixed = join(io.home, "mixed");
-    const sweep = cli(["convert", bf16Dir!, "--target-bpw", "4.5", "--n-calibration", "2", "--mlx-path", mixed], io.env);
+    const convertTmp = join(io.home, "convert-tmp");
+    mkdirSync(convertTmp);
+    const convertEnv = { ...io.env, TMPDIR: convertTmp };
+    const sweep = cli(["convert", bf16Dir!, "--target-bpw", "4.5", "--n-calibration", "2", "--mlx-path", mixed], convertEnv);
     try {
       // Non-TTY output omits intermediate spinner updates. The child's durable
       // job log records the real numerical stage, unlike the initial CLI banner.
       await sweep.waitUntil(() => {
-        const root = readdirSync(io.home).find(name => name.startsWith(".mixed.convert-"));
+        // One-shot verbs own an ephemeral job store under TMPDIR. Conversion's
+        // staging root holds output/scratch, while progress is in that verb store.
+        const root = readdirSync(convertTmp).find(name => name.startsWith("mlx-bun-verb-"));
         if (!root) return false;
-        const logs = join(io.home, root, "jobs", "logs");
+        const logs = join(convertTmp, root, "logs");
         return existsSync(logs) && readdirSync(logs).some(name => name.endsWith(".log") &&
           /"message":"(?:Sensitivity \d+\/\d+|Probing \d+ layers)/.test(readFileSync(join(logs, name), "utf8")));
       }, "the quantizer's Sensitivity or Probing stage", 300_000);
@@ -314,8 +319,9 @@ test.skipIf(!bf16Dir)("a spawned convert is interrupted during the synchronous s
     } finally { await sweep.stop(); }
     expect(existsSync(mixed)).toBe(false);
     expect(readdirSync(io.home).filter(name => name.startsWith(".mixed.convert-"))).toEqual([]);
+    expect(readdirSync(convertTmp)).toEqual([]);
     const uniform = join(io.home, "uniform");
-    const convert = cli(["convert", bf16Dir!, "-q", "--mlx-path", uniform], io.env);
+    const convert = cli(["convert", bf16Dir!, "-q", "--mlx-path", uniform], convertEnv);
     try {
       expect(await convert.exited(900_000, 0)).toBe(0);
       expect(convert.out()).toContain("convert complete");
@@ -323,6 +329,7 @@ test.skipIf(!bf16Dir)("a spawned convert is interrupted during the synchronous s
     expect(JSON.parse(readFileSync(join(uniform, "config.json"), "utf8")).quantization).toBeDefined();
     expect(readdirSync(uniform).some(name => name.endsWith(".safetensors"))).toBe(true);
     expect(readdirSync(io.home).filter(name => name.startsWith(".uniform.convert-"))).toEqual([]);
+    expect(readdirSync(convertTmp)).toEqual([]);
     await generateFromArtifact(uniform, io.env);
   } finally { io.dispose(); }
 }, 1_200_000);
