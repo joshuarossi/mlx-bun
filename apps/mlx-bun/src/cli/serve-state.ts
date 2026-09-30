@@ -24,7 +24,7 @@ import type { InProcessMemoryClient } from "./memory-engine";
 import { createServedModelHost, type ServedHostLink } from "./served-model-host";
 import type { MemoryCompletionClient } from "../memory/model";
 import { createMemoryRoutes } from "../server/memory-routes";
-import { createMemorySynthesis } from "../server/memory-synthesis";
+import { createMemorySynthesis, type SynthesisClient } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
 import { createWebHandler } from "../web/assets";
@@ -51,9 +51,10 @@ export interface AppStateOptions {
    * kept until close, each call under the attached host's execution lease. */
   memoryTaskModel?: () => InProcessMemoryClient;
   /** Memory synthesis's model in a process that loads none (the isolated
-   * parent): one run's client for a task model another process owns and
-   * leases itself (the default model worker's). Nothing is leased here. */
-  memoryCompletions?: (signal: AbortSignal) => MemoryCompletionClient;
+   * parent): one run's client for a task model another process owns (the
+   * current model worker's). The client holds that model's residency lease
+   * for the run and returns it through `release` when the run settles. */
+  memoryCompletions?: (signal: AbortSignal) => SynthesisClient | Promise<SynthesisClient>;
 }
 
 /** What a live model host lends the persistent services while it serves: its model and listener
@@ -147,8 +148,9 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // its completions or batches runs under the attached host's execution lease,
   // taken before the weights load and released once every started row joined,
   // so memory work never overlaps a managed job. The isolated parent owns no
-  // task model: its client reaches the default model worker's, which takes that
-  // worker's lease itself, so none is taken here. Close cancels and joins the
+  // task model: its client reaches the current model worker's, which takes its
+  // own execution lease per call, and holds that model's residency lease for the
+  // run (see serve-isolated.ts). Close cancels and joins the
   // runs, then closes the task model, all ahead of any engine drain.
   let taskModel: InProcessMemoryClient | undefined;
   const leased = (client: MemoryCompletionClient, signal: AbortSignal): MemoryCompletionClient => {

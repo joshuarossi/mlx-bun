@@ -127,7 +127,9 @@ prefix by token match in the saved state (a swap-back follow-up reports the
 prior conversation as `cached_tokens`). A request for a model that cannot fit
 while every other model is busy waits, and never evicts one mid-request. A model
 bigger than the whole budget is still served alone. The budget is `--model-budget`
-(decimal GB; default 70% of the GPU's recommended working set); a model's need is
+(decimal GB; default 70% of the device's recommended working set, one rule for both
+compositions: `defaultBudgetBytes` in `residency/resident-estimate.ts`, or of the RAM the
+GPU can wire, as `/fit` does, when the device does not say); a model that is not loaded needs
 its weights plus the KV and prefill working set of an 8k context (`residency/resident-estimate.ts`,
 the `/fit` model) and, once loaded, what it
 reports it holds (weights, projected KV, RAM prefix cache), floored by the process's measured
@@ -262,10 +264,26 @@ budget (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s, for the drain and again fo
 the stop) and is never killed before its flush is durable; it exits 0 when the flush
 was durable and 3 when it was not, which the `model.unload` event reports as
 `flushed`. Naming an evicted model again spawns a worker that resumes from
-`MLX_BUN_HOME/kv` (`cached_tokens` on the next turn). The default budget is derived
-here from the machine's RAM (70% of the memory the GPU can wire, as `/fit` does)
-because this process cannot ask Metal; a model's need is the `/fit` estimate until
-its worker reports its weights. Whisper is a worker of its own (the
+`MLX_BUN_HOME/kv` (`cached_tokens` on the next turn). Each worker measures its own MLX
+memory (active, cache and peak bytes, and the device's recommended working set), since
+this process loads no native module: it reports them on `/health` (`memory`) and as a
+`worker.memory` line in its `/admin/events` stream at connect, on each second it changed,
+and after every finished request (the line is consumed here, never republished on the
+bus). A worker counts as active plus cache bytes from its first report (never below the
+weights it reported (the checkpoint size for a transcription companion): MLX maps weights
+lazily, so a worker that has not run yet reads low),
+in place of the `/fit` estimate, which stands only before that report (a model that has not
+loaded yet needs its estimate) and again while the worker is down. Before it decides who
+fits, the residency manager asks every resident worker for a current reading (`GET /health`),
+so a reading the stream has not delivered yet still counts; `/engine` and `/health` list each
+worker's `memory` (`active_bytes`, `cache_bytes`, `peak_bytes`, or `null`), and
+`GET /stats` `models` counts the measured bytes. The default budget is 70% of the working
+set the startup model's worker reports, the in-process rule (`--model-budget` overrides it).
+A consumer that runs long on a worker holds that model's residency lease for as long as
+it runs, so the worker is never drained under it: memory synthesis (a run holds the current
+model's lease from its first stage call to its last; in-process it runs on its own task model and
+holds none) and, in either composition, modules that generate through the model host (each
+`modelHost` lease on the served model holds the residency lease until it is released). Whisper is a worker of its own (the
 transcription-only server, `--whisper-resident` pins it), started on the first audio
 request and drained like a chat model when memory is short.
 
@@ -320,8 +338,9 @@ unload events are dropped), and a respawned worker's stream is resubscribed.
 
 **Crashes.** A worker's unexpected exit is respawned by its supervisor with that
 worker's model (the one that was resident, not the startup model) within main's
-budget: at most three restarts in a rolling 60-second window, and a worker that died
-within 10 seconds of its spawn waits 5 seconds before the retry. The other workers
+budget: at most three restarts in a rolling 60-second window. A worker respawns at once
+after a single crash, even one within 10 seconds of its spawn; a worker that dies within
+10 seconds of its spawn again straight after such a death waits 5 seconds before the retry. The other workers
 and the app are untouched. A managed job's execution lease is a connection-owned
 `POST /admin/lease` inside each worker, so a respawn waits until it is released and a
 reload never shares the GPU with a job. Requests in flight when a worker dies end with
@@ -353,11 +372,6 @@ the workers'. Pi's own SDK policy still retries a request refused with 502 befor
 generation started (three attempts, 2/4/8 s), which rides out a fast respawn; a
 generation that started is never replayed. A Whisper checkpoint as the main model
 serves the transcription-only server in this process, as before.
-
-**Limits.** This process has no measured-memory floor (it cannot read the GPU's
-active memory): residency uses estimates until a worker reports its weights. Memory
-synthesis runs on the current worker's task model without holding a residency lease
-on it.
 
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.

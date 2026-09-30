@@ -24,7 +24,7 @@ async function scenario(isolated: boolean) {
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { parseCommand } = await import("../../src/cli/args");
   const { openRegistry } = await import("../../src/storage/paths");
-  const { activeMemory, peakMemory, resetPeakMemory } = await import("@mlx-bun/mlx/ffi");
+  const { activeMemory, peakMemory, resetPeakMemory, maxRecommendedWorkingSetSize } = await import("@mlx-bun/mlx/ffi");
   const root = mkdtempSync(join(tmpdir(), "mlx-model-host-"));
   const restore = configureRuntime({ MLX_BUN_HOME: join(root, "home") });
   // A worker is another process: it inherits the environment, not this process's runtime overrides.
@@ -76,10 +76,42 @@ async function scenario(isolated: boolean) {
     expect(listed.data.find(entry => entry.id === a.repoId)).toMatchObject({ resident: true, current: true });
     expect(listed.data.find(entry => entry.id === b.repoId)).toMatchObject({ resident: true, current: false });
     log.push(`phase 1: ${a.repoId} + ${b.repoId} resident together (${((bytes.get(a.repoId)! + bytes.get(b.repoId)!) / 2 ** 30).toFixed(2)} GiB of a ${(together.models.budget_bytes / 2 ** 30).toFixed(1)} GiB budget)`);
+    // One rule for the default budget in both compositions: 70% of the device's recommended working set.
+    expect(together.models.budget_bytes).toBe(Math.floor(maxRecommendedWorkingSetSize() * 0.7));
+    if (isolated) {
+      // Each worker measures its own MLX memory and the host counts it: what the host reports for a worker is that worker's
+      // active + cache bytes (read here straight from the worker's socket), within what a report a moment old can differ by.
+      const report = await (await fetch(`http://127.0.0.1:${app.port}/engine`)).json() as
+        { workers: { id: string; role: string; socket: string; memory: { active_bytes: number; cache_bytes: number; peak_bytes: number } | null }[] };
+      const lines: string[] = [];
+      for (const worker of report.workers.filter(entry => entry.role === "primary")) {
+        const health = await (await fetch("http://worker/health", { unix: worker.socket } as RequestInit)).json() as
+          { memory: { active_bytes: number; cache_bytes: number; peak_bytes: number; working_set_bytes: number } };
+        const own = health.memory.active_bytes + health.memory.cache_bytes, reported = bytes.get(worker.id)!;
+        expect(Math.abs(reported - own)).toBeLessThanOrEqual(Math.max(own * 0.02, 32 * 2 ** 20));
+        expect(health.memory.peak_bytes).toBeGreaterThanOrEqual(health.memory.active_bytes);
+        expect(health.memory.working_set_bytes).toBe(maxRecommendedWorkingSetSize());
+        expect(worker.memory).not.toBeNull();
+        expect(Math.abs(worker.memory!.active_bytes - health.memory.active_bytes)).toBeLessThanOrEqual(Math.max(own * 0.02, 32 * 2 ** 20));
+        lines.push(`${worker.id}: host reports ${(reported / 2 ** 20).toFixed(1)} MiB, worker MLX active ${(health.memory.active_bytes / 2 ** 20).toFixed(1)} + cache ${(health.memory.cache_bytes / 2 ** 20).toFixed(1)} MiB, peak ${(health.memory.peak_bytes / 2 ** 20).toFixed(1)} MiB`);
+      }
+      log.push(`phase 1 measured memory (${report.workers.length} workers): ${lines.join("; ")}`);
+      await app.close(); app = undefined;
+      // A budget just below the two workers' measured sum cannot hold both: the second model's request drains the first.
+      const sum = bytes.get(a.repoId)! + bytes.get(b.repoId)!;
+      app = await serve(["--model-budget", String(sum * 0.97 / 1e9)]);
+      await chat(app, a.repoId, talk("a", 1));
+      expect(ids(await stats(app))).toEqual([a.repoId]);
+      await chat(app, b.repoId, talk("b", 1));
+      expect(ids(await stats(app))).toEqual([b.repoId]);
+      log.push(`phase 1 tight budget (${(sum * 0.97 / 2 ** 30).toFixed(2)} GiB, 97% of the measured sum ${(sum / 2 ** 30).toFixed(2)} GiB): B drained A`);
+    }
     await app.close(); app = undefined;
 
     // Phase 2: a budget that fits one of them: the other's request drains it, its state is saved, and returning resumes it.
-    const budget = Math.max(bytes.get(a.repoId)!, bytes.get(b.repoId)!) * 1.3 / 1e9;
+    // Isolated workers report allocator buffers as well as live arrays. Leave 5% over the larger reading:
+    // a 30% margin can also fit the smaller worker after its transient buffers have been released.
+    const budget = Math.max(bytes.get(a.repoId)!, bytes.get(b.repoId)!) * (isolated ? 1.05 : 1.3) / 1e9;
     app = await serve(["--model-budget", String(budget)]);
     const oneA = talk("a", 2), oneB = talk("b", 2);
     const firstA = await chat(app, a.repoId, oneA);

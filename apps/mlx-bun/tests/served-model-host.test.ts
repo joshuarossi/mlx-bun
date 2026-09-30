@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ModelHostError } from "@mlx-bun/app-core";
 import { createServedModelHost } from "../src/cli/served-model-host";
 import type { ServedHostLink } from "../src/cli/served-model-host";
+import { createResidencyHost, type ResidentUnit } from "../src/residency/model-residency";
 
 const link = (extra: Partial<ServedHostLink> = {}): ServedHostLink => ({ model: { id: "org/model", bytes: 123 }, port: 4321,
   ...extra });
@@ -81,4 +82,36 @@ test("the host reports every resident model the serving host lends, else the ser
   const plain = createServedModelHost({ link: () => link(), fetch: async () => new Response() });
   expect(plain.resident().map(model => model.id)).toEqual(["org/model"]);
   expect(Object.keys((await plain.acquire("org/model")).operations)).toEqual(["generate"]);
+});
+
+test("a lease on a host whose residency evicts holds the model through the host's hold: a competing acquire waits for the long lease, then swaps", async () => {
+  // Two 6-unit models in a 10-unit budget: only one is resident at a time.
+  const closed: string[] = [];
+  const unit = (id: string): ResidentUnit => ({ id, operations: ["generate"], bytes: () => 6, memory: () => ({ weightsBytes: 6, kvBytes: 0, prefixCacheBytes: 0 }),
+    operationsFor: () => ({}), pause: async () => ({ dispose() {} }), close: async () => { closed.push(id); return { flushed: true }; } });
+  const residency = createResidencyHost({ budgetBytes: 10, source: {
+    resolve: async id => ({ id, bytes: 6, operations: ["generate"] }), load: async entry => unit(entry.id) } });
+  (await residency.acquire("org/model")).release();
+  const host = createServedModelHost({ link: () => link({ hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }) }),
+    fetch: async () => new Response() });
+  // A job's lease on the served model is a long lease: while it is held another model that needs the room waits.
+  const lease = await host.acquire("org/model", { need: ["generate"] });
+  expect(residency.resident().find(model => model.id === "org/model")!.leases).toBe(1);
+  let acquired = false;
+  const competing = residency.acquire("org/other").then(held => { acquired = true; return held; });
+  await Bun.sleep(30);
+  expect([acquired, closed]).toEqual([false, []]);
+  lease.release(); lease.release();
+  (await competing).release();
+  expect(closed).toEqual(["org/model"]);
+  expect(residency.resident().map(model => model.id)).toEqual(["org/other"]);
+  // A host with no hold (it never evicts) leases as before.
+  const plain = createServedModelHost({ link: () => link(), fetch: async () => new Response() });
+  (await plain.acquire("org/model")).release();
+});
+
+test("a lease that cannot be held (the model does not fit or the host is closing) is refused, and holds nothing", async () => {
+  const host = createServedModelHost({ link: () => link({ hold: async () => { throw Object.assign(new Error("closed"), { code: "closed" }); } }), fetch: async () => new Response() });
+  expect(await code(host.acquire("org/model"))).toBe("closed");
+  expect(host.resident()[0]!.leases).toBe(0);
 });

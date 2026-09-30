@@ -22,9 +22,12 @@ Decisions that govern all work:
   golden revisions recording source revisions and oracle versions; synthetic tests
   alone do not close this. Done so far: the
   [generated Gemma4 graph test](packages/inference/tests/parity/gemma4-generated.test.ts)
-  passed on e4b and 12B (identity within this tree; 26B-A4B not run). Open: no
-  [runtime-oracle](packages/inference/tests/parity/runtime-oracle.test.ts) reference
-  exists yet for Trellis, Gemma or MiniCPM (MiniCPM mixed KV waits on the next item);
+  passed on e4b and 12B (identity within this tree; 26B-A4B not run). Packed Trellis now matches main in 96 full greedy logit vectors, three shared
+  B1/depth-two MTP runs, and the 18-case plain-KV runtime grid with restored
+  continuation ([evidence](packages/inference/README.md#packed-qwen-trellis-parity)).
+  Open: published references and broader Trellis shapes;
+  [runtime-oracle](packages/inference/tests/parity/runtime-oracle.test.ts) references
+  for Gemma and extended MiniCPM (MiniCPM mixed KV waits on the next item);
   real Gemma2 B2 rows and a different prefill chunk geometry differ from main's B1 in
   logits and valid KV, which needs same-shaped oracle or main comparisons, not a tolerance.
 - [ ] Extend speech and embedding evidence. Whisper large-v3-turbo, Silero VAD and
@@ -154,8 +157,7 @@ Migration gaps stay required work in the feature table.
     `resumed` when saved state was found), `model.unload` (reason `evicted`, flushed) and `model.memory`, and each worker's
     own events are relayed onto the parent's bus. Remaining: modules get one `modelHost` that leases `generate` and
     `transcribe` (today persistent services lease the served model through `served-model-host.ts` and the model
-    composition's modules get Whisper's); the isolated parent has no measured-memory floor (estimates until a worker
-    reports its weights) and its synthesis runs on the current worker without a residency lease. Exit: a module acquires
+    composition's modules get Whisper's). Exit: a module acquires
     `generate` and `transcribe` from one service (the models module already leases `adapters` and switches the served model through the state's host).
 
 ## Remaining features by layer
