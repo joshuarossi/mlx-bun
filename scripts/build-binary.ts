@@ -1,7 +1,7 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
+import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "@mlx-bun/mlx/native";
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
 import { buildWeb, OUTFILE } from "../apps/mlx-bun/src/web/build";
 import { BUNDLE_FILES } from "./bundle-files";

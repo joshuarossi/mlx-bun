@@ -1,4 +1,4 @@
-import { NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
+import { NATIVE_FILES as MLX_FILES } from "@mlx-bun/mlx/native";
 import { NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
 import { MIC_CAPTURE_BINARY } from "../packages/module-transcription/src/mic-capture";
 

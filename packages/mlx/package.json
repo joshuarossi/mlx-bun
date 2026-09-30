@@ -18,6 +18,7 @@
     "./array": "./src/array.ts",
     "./ops": "./src/ops.ts",
     "./ffi": "./src/ffi.ts",
+    "./native": "./src/native.ts",
     "./compile": "./src/compile.ts",
     "./metal-kernel": "./src/metal-kernel.ts",
     "./autograd": "./src/autograd.ts",

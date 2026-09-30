@@ -28,7 +28,7 @@ buffer lifetime contracts documented on their methods.
 | `src/materialize.ts` | Independent tensor storage copies |
 | `src/index.ts` | Convenient public imports |
 
-Each source module except `native.ts` also has an explicit package subpath, such
+Each source module has an explicit package subpath, such
 as `@mlx-bun/mlx/ops` or `@mlx-bun/mlx/autograd`. `@mlx-bun/mlx/ffi` exposes raw
 bindings for code that needs them. Model graphs, artifact loading, tokenizers, and generation belong to
 [`@mlx-bun/inference`](../inference/README.md).
@@ -56,6 +56,10 @@ Consumers do not download them on first use. For local native development,
 
 From this package directory, `bun pm pack --destination /tmp` validates the
 native files and creates an archive. This package has not been published yet.
+
+`@mlx-bun/mlx/native` exposes the pinned MLX version, bundle filenames, staged
+native directory and library resolver without loading MLX. Packaging tools use
+this public subpath instead of importing package internals.
 
 Standalone Bun executables resolve `MLX_BUN_LIBMLXC` first, then `libmlxc.dylib`
 beside the executable, then this package's `dist/native`. Source/package execution
