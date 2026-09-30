@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildBinary, bundleNotices, compileApp, compileBundle } from "./build-binary";
 import { archiveCommand } from "./bundle-files";
-import { NATIVE_DIR as MLX_DIR, resolveLibmlxc } from "../packages/mlx/src/native";
+import { NATIVE_DIR as MLX_DIR, resolveLibmlxc } from "@mlx-bun/mlx/native";
 import { NATIVE_DIR as INFERENCE_DIR, resolveInferenceNative } from "../packages/inference/src/runtime/native";
 import { ALIASES } from "../apps/mlx-bun/src/cli/mlx-lm-aliases";
 

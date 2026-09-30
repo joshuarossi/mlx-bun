@@ -125,9 +125,7 @@ Migration gaps stay required work in the feature table.
 - [ ] Migrate the server, engine host, web app, and job orchestration into `apps/mlx-bun`,
   keeping their interfaces in the consuming domains. Exit: app consumers use public library
   APIs; application contracts and policy stay out of the inference library. Remaining:
-  `input/media-fetch.ts` names the app's `--allow-private-media`, and
-  `scripts/{bundle-files,build-binary,verify-binary}.ts` and
-  `apps/mlx-bun/tests/compiled-consumer.ts` import non-exported `packages/mlx/src/native`.
+  `input/media-fetch.ts` names the app's `--allow-private-media`.
 - [ ] Support the shapes under [Unsupported request shapes](#unsupported-request-shapes) as
   capabilities of the graphs that lack them. Exit: each runs on the shared scheduler, verified
   with real weights and cancellation/streaming coverage.
