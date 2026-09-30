@@ -48,6 +48,9 @@ const html = await Bun.file(new URL("../../src/web/public/app.html", import.meta
 
 /** Boots the page in a fresh window: markup first, then the bundle, as the browser's deferred script would. */
 function boot(hash: string, storage: Record<string, string> = {}): void {
+  // Cancel the previous page's queued navigation and browser tasks before
+  // swapping the globals its bundle reads from asynchronous callbacks.
+  if (win) void win.happyDOM.abort();
   win = new GlobalWindow({ url: `http://localhost/${hash}`, settings: { disableCSSFileLoading: true, disableJavaScriptFileLoading: true, disableIframePageLoading: true } });
   win.document.documentElement.innerHTML = html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/^[\s\S]*?<html[^>]*>/, "");
   for (const [key, value] of Object.entries(storage)) win.localStorage.setItem(key, value);
@@ -270,4 +273,21 @@ test("the migrated wizards are lazy module panels with preserved routes, host ho
    expect(panel.parentElement!.id).toBe("s-"+route);expect(panel.shadowRoot!.querySelector(".steps")).not.toBeNull();
    location.hash = "#/chat";win.dispatchEvent(new win.HashChangeEvent("hashchange"));expect(panel.isConnected).toBe(false);
  }
+});
+
+test("assistant spotlight navigation mounts an unvisited or detached job panel before resolving its shadow control", async () => {
+  boot("#/chat");
+  expect(document.querySelector("mlx-quantize-panel")).toBeNull();
+  const socket = FakeWebSocket.last!;
+  for (const navigateFirst of [false, true]) {
+    if (navigateFirst) socket.emit({type:"ui_navigate", route:"quantize"});
+    socket.emit({ type: "ui_spotlight", route: "quantize", target: "quantize-source", message: "Start here" });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(activePages()).toEqual(["quantize"]);
+    expect(document.querySelector("mlx-quantize-panel")!.shadowRoot!.getElementById("q-model")).not.toBeNull();
+    expect(document.getElementById("assistant-spotlight")!.classList.contains("show")).toBe(true);
+    expect(document.getElementById("toasts")!.textContent).not.toContain("Couldn't find");
+    location.hash = "#/chat"; win.dispatchEvent(new win.HashChangeEvent("hashchange"));
+    expect(document.querySelector("mlx-quantize-panel")).toBeNull();
+  }
 });

@@ -337,3 +337,20 @@ test("an unframed panel owns its layout and still disconnects when its route is 
  expect(element.parentElement!.id).toBe("s-alpha");expect(document.querySelector("#s-alpha .shell-panel-title")).toBeNull();
  expect("dev" in tab("alpha").dataset).toBe(true);go("#/home");expect(element.isConnected).toBe(false);
 });
+
+test("closing a shell overlay restores focus to the input inside a module panel's shadow root", () => {
+  customElements.define("mlx-focus-panel", class extends window.HTMLElement {
+    constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<input id="source">'; }
+  } as unknown as CustomElementConstructor);
+  shell.mountPanels([{...alpha, tag:"mlx-focus-panel", framed:false}]);
+  shell.start(); go("#/alpha");
+  const root = document.querySelector("mlx-focus-panel")!.shadowRoot!;
+  const input = root.getElementById("source") as HTMLInputElement;
+  input.focus();
+  expect(root.activeElement).toBe(input);
+  press({key:"/",metaKey:true});
+  document.getElementById("sk-close")!.focus();
+  expect(root.activeElement).toBeNull();
+  press({key:"Escape"});
+  expect(root.activeElement).toBe(input);
+});

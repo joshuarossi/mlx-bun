@@ -63,3 +63,4 @@ stable when their feature moves into a differently named module.
 
 A panel may declare `framed: false` to supply its own scroll column, heading and cards. It remains a developer
 panel by default and detaches on navigation; the host's presentation callbacks pass through unchanged.
+Closing a shell overlay restores focus to the original control, including inputs inside a panel's open shadow root.

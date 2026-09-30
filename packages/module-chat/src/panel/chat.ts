@@ -844,19 +844,28 @@ export function createChatController(port: ChatPort) {
       case "ui_navigate":
         location.hash = `#/${m.route}`;
         break;
-      // spotlight_ui: navigate first if the tool asked (route present), THEN
-      // resolve+show — every route's section already lives in the DOM,
-      // toggled by CSS (shell.ts's router()), so no waitForElement polling
-      // is needed the way a client-side-routed app would require.
+      // The shell mounts non-workspace panels on hashchange. Resolve after
+      // that navigation has attached the requested page's controls.
       case "ui_spotlight": {
-        if (m.route) location.hash = `#/${m.route}`;
-        const resolved = resolveSpotlightTarget(
-          { ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message },
-          lastSnapshot,
-        );
-        if (!resolved || !showSpotlight(resolved)) {
-          toast("Couldn't find that on screen to point at.", "err");
-        }
+        const point = () => {
+          const resolved = resolveSpotlightTarget(
+            { ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message },
+            lastSnapshot,
+          );
+          if (!resolved || !showSpotlight(resolved)) toast("Couldn't find that on screen to point at.", "err");
+        };
+        if (m.route) {
+          const hash = `#/${m.route}`;
+          const afterNavigation = () => requestAnimationFrame(point);
+          // A preceding ui_navigate may already have set this hash while
+          // its navigation event is still queued. The next task follows it;
+          // a changed hash instead waits for that navigation event directly.
+          if (location.hash === hash) setTimeout(afterNavigation, 0);
+          else {
+            window.addEventListener("hashchange", afterNavigation, {once:true});
+            location.hash = hash;
+          }
+        } else point();
         break;
       }
     }
