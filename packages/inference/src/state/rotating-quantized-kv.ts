@@ -1,9 +1,10 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
+import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { quantizedSdpa } from "../layers/quantized-attention";
+import { activeQuantViews,quantConcatDecodeSlot } from "./quantized-kv";
 import { disposeTriple,mapTriple } from "./quantized-tensor";
 
 
@@ -16,7 +17,7 @@ import { disposeTriple,mapTriple } from "./quantized-tensor";
  *  (port follows the code). optiq's producer-registry
  *  + SDPA patches are unnecessary here: our SharedKv carries
  *  groupSize/bits through the donor→sharer plumbing explicitly. */
-export class RotatingQuantizedKVCache implements Cache {
+export class RotatingQuantizedKVCache implements CompiledDecodeCache {
   get quantizedAttention(): QuantizedAttentionState { return this; }
   declare minimumReusableOffset?: number;
   static readonly STEP = 256;
@@ -356,6 +357,28 @@ export class RotatingQuantizedKVCache implements Cache {
     return { fetch, writePos: this.ringIdx, activeLen: prev };
   }
 
+  /** Non-mutating twin of prepareDecodeStep's fetch choice (see RotatingKVCache). */
+  decodePhase(): DecodeStepPlan["fetch"] {
+    return this.offset + 1 < this.maxSize ? "concat" : "ring";
+  }
+
+  decodeSlot(plan: DecodeStepPlan): DecodeSlot {
+    return plan.fetch === "concat"
+      ? quantConcatDecodeSlot(this.offset, this.groupSize, this.bits)
+      : quantRingDecodeSlot(this.offset, this.maxSize, this.groupSize, this.bits);
+  }
+
+  decodeInputs(plan: DecodeStepPlan, step: DecodeStepInputs): MlxArray[] {
+    if (plan.fetch === "concat") return activeQuantViews(this.keys!, this.values!, plan.activeLen, step);
+    return [...this.state(), step.writePosition(plan.writePos)];
+  }
+
+  commitDecodeStep(slot: DecodeSlot, outputs: MlxArray[]): MlxArray[] {
+    // see RotatingKVCache.commitDecodeStep
+    if (slot.fetch === "ring") { this.adoptDecodeStep(outputs); return []; }
+    return this.writeDecodeStep(outputs);
+  }
+
   /** Compiled decode, concat fetch: six sliceUpdates of the in-graph-
    *  quantized step row. Takes ownership; returns updated buffers. */
   writeDecodeStep(rows: MlxArray[]): MlxArray[] {
@@ -400,4 +423,53 @@ export class RotatingQuantizedKVCache implements Cache {
     this.offset = 0;
     this.ringIdx = 0;
   }
+}
+
+/** The rotating quantized cache at steady state inside a compiled decode trace:
+ *  quantize plus six dynamic writes in graph, fetch the full updated buffers
+ *  (mirrors the oracle's _update_in_place -> _active_slices). */
+class TracedRingQuantizedKVCache extends RotatingQuantizedKVCache implements DecodeTrace {
+  override readonly ropeOffsetArr: MlxArray;
+  outs: MlxArray[] = [];
+  constructor(
+    offset: number, maxSize: number, groupSize: number, bits: number,
+    readonly bufKq: ops.QuantizedTensor,
+    readonly bufVq: ops.QuantizedTensor,
+    readonly writePosArr: MlxArray,
+    ropeOffsetArr: MlxArray,
+  ) {
+    super(maxSize, groupSize, bits);
+    this.offset = offset;
+    this.ropeOffsetArr = ropeOffsetArr;
+  }
+
+  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    const kq = ops.quantize(k, this.groupSize, this.bits);
+    const vq = ops.quantize(v, this.groupSize, this.bits);
+    const upd = (buf: ops.QuantizedTensor, row: ops.QuantizedTensor): ops.QuantizedTensor => ({
+      packed: ops.sliceUpdateDynamic(buf.packed, row.packed, this.writePosArr, [2]),
+      scales: ops.sliceUpdateDynamic(buf.scales, row.scales, this.writePosArr, [2]),
+      biases: ops.sliceUpdateDynamic(buf.biases, row.biases, this.writePosArr, [2]),
+    });
+    const updK = upd(this.bufKq, kq);
+    const updV = upd(this.bufVq, vq);
+    for (const t of [kq, vq])
+      for (const a of [t.packed, t.scales, t.biases]) a.dispose();
+    this.outs = [updK.packed, updK.scales, updK.biases, updV.packed, updV.scales, updV.biases];
+    const whole = (a: MlxArray): MlxArray => a.slice(a.shape.map(() => 0), a.shape);
+    return [
+      { packed: whole(updK.packed), scales: whole(updK.scales), biases: whole(updK.biases) },
+      { packed: whole(updV.packed), scales: whole(updV.scales), biases: whole(updV.biases) },
+    ];
+  }
+}
+
+function quantRingDecodeSlot(offset: number, maxSize: number, groupSize: number, bits: number): DecodeSlot {
+  const triple = (inputs: readonly MlxArray[], at: number): ops.QuantizedTensor =>
+    ({ packed: inputs[at]!, scales: inputs[at + 1]!, biases: inputs[at + 2]! });
+  return {
+    key: `q-ring:${groupSize}:${bits}`, fetch: "ring", inputs: 7, outputs: 6,
+    trace: (inputs, ropeOffset) =>
+      new TracedRingQuantizedKVCache(offset, maxSize, groupSize, bits, triple(inputs, 0), triple(inputs, 3), inputs[6]!, ropeOffset),
+  };
 }

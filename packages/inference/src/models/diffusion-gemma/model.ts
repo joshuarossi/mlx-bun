@@ -38,6 +38,9 @@ import type { MlxDeclaredGraph, MlxDenoisingOperations } from "../../contracts/m
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { declareGraph } from "../capabilities";
 import type { PixelInput } from "../../contracts/mlx/media";
+import { compiledGegluActive,geglu,GegluMLP } from "../../layers/geglu";
+import { logitSoftcap } from "../../kernels/logits";
+import { compiledLogitSoftcap } from "../../kernels/softcap";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
@@ -61,53 +64,11 @@ const NO_MASK: SdpaMask = { mode: "", arr: null };
  *  does not declare it; the decoder only ever uses those two concrete caches. */
 type TemporalCache = Cache & { temporalView(): [MlxArray, MlxArray] };
 
-/** geglu(gate, x) = gelu_approx(gate) * x  (reference language.py:geglu). */
-function geglu(gate: MlxArray, x: MlxArray): MlxArray {
-  const act = ops.geluApprox(gate);
-  const out = ops.mul(act, x);
-  act.dispose();
-  return out;
-}
-
-/** Fused fp32-upcast tanh softcap: tanh(x_fp32 / cap) * cap. Stays f32 (the
- *  reference make_compiled_softcap returns f32; the golden is dumped f32). */
-function softcapFp32(logits: MlxArray, cap: number): MlxArray {
-  const xf = logits.astype(Dtype.float32);
-  const capArr = ops.scalarLike(cap, xf);
-  const scaled = ops.div(xf, capArr);
-  xf.dispose();
-  const t = ops.tanh(scaled);
-  scaled.dispose();
-  const out = ops.mul(t, capArr);
-  t.dispose();
-  capArr.dispose();
-  return out;
-}
-
-/** Dense MLP: down(geglu(gate(x), up(x))). */
-class DiffMLP {
-  readonly gate: QuantizedLinear;
-  readonly up: QuantizedLinear;
-  readonly down: QuantizedLinear;
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
-    this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);
-    this.up = QuantizedLinear.load(weights, `${prefix}.up_proj`, config);
-    this.down = QuantizedLinear.load(weights, `${prefix}.down_proj`, config);
-  }
-  forward(x: MlxArray): MlxArray {
-    const g = this.gate.forward(x);
-    const u = this.up.forward(x);
-    const m = geglu(g, u);
-    g.dispose();
-    u.dispose();
-    const out = this.down.forward(m);
-    m.dispose();
-    return out;
-  }
-}
-
 /** Router: pre-projection RMSNorm (no-scale) * scale * hidden**-0.5, top-8
- *  argpartition, softmax(precise) * per_expert_scale[idx]. */
+ *  argpartition, softmax(precise) * per_expert_scale[idx]. Local, not gemma4's Router:
+ *  the reference applies scale and hidden**-0.5 as separate bf16 ops after a no-scale
+ *  norm (gemma4's folds them into the norm weight, which rounds differently), softmaxes
+ *  in precise mode, and this one stops gradient on the indices. */
 class DiffRouter {
   readonly proj: QuantizedLinear;
   readonly scale: MlxArray; // per-hidden-dim scale (applied AFTER the no-scale norm)
@@ -159,7 +120,8 @@ class DiffRouter {
 }
 
 /** 128-expert top-8 MoE with a FUSED gate_up SwitchLinear (split at
- *  moe_intermediate_size) + a down SwitchLinear. _gather_sort / _scatter_unsort
+ *  moe_intermediate_size) + a down SwitchLinear (gemma4's SwitchGLU holds separate
+ *  gate and up projections; the geglu between them is the shared one). _gather_sort / _scatter_unsort
  *  exactly as mlx_lm.models.switch_layers (sort threshold idx.size >= 64). */
 class DiffExperts {
   readonly gateUp: QuantizedSwitchLinear;
@@ -203,8 +165,6 @@ class DiffExperts {
     const gate = parts[0]!;
     const up = parts[1]!;
     const mid = geglu(gate, up);
-    gate.dispose();
-    up.dispose();
     let y = this.down.forward(mid, idx, doSort);
     mid.dispose();
     if (idx !== indices) idx.dispose();
@@ -249,12 +209,8 @@ class SelfConditioning {
   }
   forward(inputsEmbeds: MlxArray, signal: MlxArray): MlxArray {
     const normed = this.preNorm.forward(signal);
-    const g = this.gate.forward(normed);
-    const u = this.up.forward(normed);
+    const m = geglu(this.gate.forward(normed), this.up.forward(normed));
     normed.dispose();
-    const m = geglu(g, u);
-    g.dispose();
-    u.dispose();
     const s = this.down.forward(m);
     m.dispose();
     const sum = ops.add(inputsEmbeds, s);
@@ -452,7 +408,7 @@ class DiffAttention {
 class DiffDecoderLayer {
   readonly layerType: string;
   readonly attn: DiffAttention;
-  readonly mlp: DiffMLP;
+  readonly mlp: GegluMLP;
   readonly router: DiffRouter;
   readonly experts: DiffExperts;
   readonly inputNorm: RMSNorm;
@@ -470,7 +426,7 @@ class DiffDecoderLayer {
     this.layerType = t.layerTypes[idx]!;
     const norm = (n: string) => new RMSNorm(weights.tensor(`${prefix}.${n}.weight`), t.rmsNormEps);
     this.attn = new DiffAttention(weights, config, `${prefix}.self_attn`, this.layerType);
-    this.mlp = new DiffMLP(weights, config, `${prefix}.mlp`);
+    this.mlp = new GegluMLP(weights, config, `${prefix}.mlp`);
     this.router = new DiffRouter(weights, config, `${prefix}.router`);
     this.experts = new DiffExperts(weights, config, `${prefix}.experts`);
     this.inputNorm = norm("input_layernorm");
@@ -988,8 +944,12 @@ export class DiffusionGemmaModel implements MlxDeclaredGraph, MlxDenoisingOperat
   /** Tied quantized head + fp32 softcap. hidden [1, L, hidden] -> [1, L, vocab]. */
   logitsFromHidden(h: MlxArray): MlxArray {
     const logits = this.embed.asLinear(h);
-    const capped = softcapFp32(logits, this.softcap);
+    // fp32-upcast tanh softcap, fused like the reference's mx.compile'd make_compiled_softcap
+    // (stays f32; the golden is dumped f32). The flag-off arm spells out the same math.
+    const wide = logits.astype(Dtype.float32);
     logits.dispose();
+    const capped = compiledGegluActive() ? compiledLogitSoftcap(wide, this.softcap) : logitSoftcap(wide, this.softcap);
+    wide.dispose();
     return capped;
   }
 

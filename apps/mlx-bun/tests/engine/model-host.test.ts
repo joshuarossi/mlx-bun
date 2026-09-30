@@ -171,8 +171,6 @@ test("compiled runner retirement is idempotent and never allocates an absent run
   const script = `
     import { mock } from "bun:test";
     import assert from "node:assert/strict";
-    import { dirname, join } from "node:path";
-    const source = dirname(import.meta.resolve("@mlx-bun/inference"));
     let allocations = 0, releases = 0, materializations = 0;
     class ArrayValue {
       shape = [1, 1, 1, 1];
@@ -188,18 +186,19 @@ test("compiled runner retirement is idempotent and never allocates an absent run
     mock.module("@mlx-bun/mlx/compile", () => ({ CompiledFunction: NativeClosure }));
     mock.module("@mlx-bun/mlx/ops", () => ({ fromInt32: () => new ArrayValue() }));
     mock.module("@mlx-bun/mlx/ffi", () => ({ Dtype: {} }));
-    for (const [file, name] of [["kv", "KVCache"], ["quantized-kv", "QuantizedKVCache"],
-      ["rotating-kv", "RotatingKVCache"], ["rotating-quantized-kv", "RotatingQuantizedKVCache"]]) {
-      mock.module(join(source, "state", file + ".ts"), () => ({ [name]: class {} }));
-    }
     const { CompiledDecode } = await import("@mlx-bun/inference/models/gemma4/compiled-decode");
     const model = { config: { text: { numKvSharedLayers: 1, enableMoeBlock: false } }, perLayerWidth: 0,
       materializeGraphConstants() { materializations++; } };
     CompiledDecode.release(model);
     assert.equal(materializations, 0); assert.equal(allocations, 0);
     const runner = CompiledDecode.for(model);
-    const cache = { offset: 1, keys: new ArrayValue(), values: new ArrayValue(),
-      prepareDecodeStep: () => ({ fetch: "concat", activeLen: 1 }) };
+    // A cache that declares the compiled-decode capability; the fake closure never traces its stand-in.
+    const keys = new ArrayValue(), values = new ArrayValue();
+    const slot = { key: "fake", fetch: "concat", inputs: 2, outputs: 2, trace() { throw new Error("never traced"); } };
+    const cache = { offset: 1, prepareDecodeStep: () => ({ fetch: "concat", activeLen: 1 }),
+      decodePhase: () => "concat", decodeSlot: () => slot,
+      decodeInputs: (plan, step) => [step.activeView(keys, plan.activeLen), step.activeView(values, plan.activeLen)],
+      commitDecodeStep: () => [] };
     assert.throws(() => runner.step(new ArrayValue(), [cache]), /fake native application/);
     assert.equal(allocations, 1);
     CompiledDecode.release(model); CompiledDecode.release(model); runner.dispose();

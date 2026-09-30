@@ -1,6 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache,Cache,RowBatchCache } from "../contracts/mlx/cache";
+import type { BatchableCache,Cache,CompiledDecodeCache,RowBatchCache } from "../contracts/mlx/cache";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { RotatingKVCache } from "./rotating-kv";
@@ -47,6 +47,17 @@ export function isRotatingQuantizedCache(
   cache: Cache | undefined,
 ): cache is RotatingQuantizedKVCache {
   return cacheSignature(cache).startsWith("kv:rotating-quant:");
+}
+
+/** A cache the compiled decode step can drive (see CompiledDecodeCache). A batched
+ * layout that inherits it is a row cache too: callers exclude those separately. */
+export function isCompiledDecodeCache(cache: Cache): cache is CompiledDecodeCache {
+  const candidate = cache as Partial<CompiledDecodeCache>;
+  return typeof candidate.prepareDecodeStep === "function" &&
+    typeof candidate.decodePhase === "function" &&
+    typeof candidate.decodeSlot === "function" &&
+    typeof candidate.decodeInputs === "function" &&
+    typeof candidate.commitDecodeStep === "function";
 }
 
 export function isBatchableCache(cache: Cache): cache is BatchableCache {

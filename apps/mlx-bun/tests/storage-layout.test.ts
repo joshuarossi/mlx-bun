@@ -10,16 +10,14 @@ import { join, resolve } from "node:path";
 import { loadModelConfig, quantFor } from "@mlx-bun/inference/artifacts/config";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
-import { parseCommand } from "../src/cli/args";
 import { resolveModelAuto } from "../src/cli/model-selection";
-import { runFuse, runTrain, runTrainWatch } from "../src/cli/train";
 import type { AppModule, CatalogEntry, JobEvent, JobRecord } from "@mlx-bun/app-core";
 import { createRegistryCatalog, createStorage, parseVerb, plainTerminal } from "@mlx-bun/app-services";
 import { createQuantizeHandlers, createQuantizeRunner, manifest as quantizeManifest, runConvert } from "@mlx-bun/module-quantize";
+import { createTrainHandlers, fuseDependencies, manifest as trainManifest, runFuse, runTrain, runTrainWatch, trainDependencies } from "@mlx-bun/module-train";
 import { adapterDirFor } from "../src/memory/model";
 import { createAdapterArtifactRoutes } from "../src/server/adapter-artifact-routes";
 import { createAdapterRoutes } from "../src/server/adapter-routes";
-import { createFinetuneRoutes } from "../src/server/finetune-routes";
 import { createModelFolderRoutes } from "../src/server/model-folder-routes";
 import { legacyAdapterDirs, mlxBunHome, modelShortName, openRegistry, storagePath } from "../src/storage/paths";
 import { writeQuantizedArtifact, writeSourceModel } from "./quantized-artifact";
@@ -51,6 +49,13 @@ async function availableAdapters(): Promise<{ id: string; path: string }[]> {
   return (await (await routes.handle(new Request("http://app/v1/adapters/available")))!.json()).adapters;
 }
 
+/** The train module's own view of the storage service: the entries its manifest declares, under MLX_BUN_HOME. */
+const trainStorage = () => createStorage()({ moduleId: trainManifest.id, manifest: trainManifest } as never);
+const trainVerb = (name: string, ...argv: string[]) => parseVerb("mlx-bun", trainManifest.verbs.find(verb => verb.name === name) as never, argv);
+/** What the host hands a verb: a terminal that records the boxes and steps it draws. */
+const recordingInvocation = (printed: string[]) => ({ stdout: (text: string) => { printed.push(...text.split("\n").filter(Boolean).map(plain)); },
+  terminal: { ...plainTerminal(() => {}), step: () => ({ update() {}, done() {}, fail() {} }), box: (rows: readonly string[]) => { printed.push(...rows.map(plain)); } } });
+
 test("the storage root follows MLX_BUN_HOME, else HOME, at call time", () => {
   expect(mlxBunHome("/h")).toBe(store);
   expect(storagePath("adapters")).toBe(join(store, "adapters"));
@@ -67,8 +72,9 @@ test("the storage root follows MLX_BUN_HOME, else HOME, at call time", () => {
 test("every producer's default adapter directory is offered by /v1/adapters/available, with the legacy stores", async () => {
   const outputs: string[] = [];
   // Web fine-tune (default adapter_path).
-  const finetune = createFinetuneRoutes({ submit(_kind, _config, output) { outputs.push(output); return { jobId: "job_1" }; } });
-  await finetune.handle(new Request("http://app/api/finetune/submit", { method: "POST", body: JSON.stringify({ model_dir: "/m", data_dir: "/d" }) }));
+  const finetune = createTrainHandlers({ storage: trainStorage(),
+    jobs: { async submit(submission) { outputs.push(submission.outputPath!); return { id: "job_1" } as JobRecord; } } });
+  await finetune.submit(new Request("http://app/api/finetune/submit", { method: "POST", body: JSON.stringify({ model_dir: "/m", data_dir: "/d" }) }));
   // Web merge (default output root).
   const artifacts = createAdapterArtifactRoutes({ runExclusive: (work: () => Promise<unknown>) => work() } as never,
     { merge: (async (_adapters: string[], output: string) => { outputs.push(output); return { tensors: 0 }; }) as never });
@@ -76,7 +82,8 @@ test("every producer's default adapter directory is offered by /v1/adapters/avai
   // `mlx-bun train` with its real defaults (dry run: plan only).
   const data = join(root, "data"); mkdirSync(data); writeFileSync(join(data, "train.jsonl"), "");
   const logs: string[] = [];
-  await runTrain(parseCommand("train", ["--data", data, "--method", "sft", "--dry-run"]), {
+  await runTrain(trainVerb("train", "--data", data, "--method", "sft", "--dry-run"), {
+    ...trainDependencies({ catalog: createRegistryCatalog(), adaptersDir: () => trainStorage().path("adapters") }, recordingInvocation(logs)),
     resolve: async () => ({ m: { path: "/m", repoId: "org/Tiny-Model" }, picked: false }), trainingDefaults: async () => ({ maxSeqLength: 4096 }),
     inspect: async () => ({ ok: true, n_train: 1, n_valid: 0, format: "chat" }) as never, log: line => logs.push(plain(line)) });
   const train = logs.map(line => /^.*adapter\s+(\S+)/.exec(line)?.[1]).find(Boolean)!;
@@ -197,10 +204,10 @@ test("`fuse` defaults into the models directory and never overwrites that defaul
   const base = join(root, "sources", "Base-Model"); writeSourceModel(base);
   const adapter = join(root, "adapter"); writeAdapter(adapter);
   const written: string[] = [], logs: string[] = [];
-  const fuse = () => runFuse(parseCommand("fuse", [base, "--adapter", adapter]), {
+  const fuse = () => runFuse(trainVerb("fuse", base, "--adapter", adapter), {
+    ...fuseDependencies({ catalog: createRegistryCatalog(), modelsDir: () => trainStorage().path("models") }, recordingInvocation(logs)),
     fuse: (async (_model: string, _adapter: string, out: string) => { written.push(out); writeSourceModel(out);
-      return { outDir: out, fusedModules: 1, totalTensors: 3, skippedAdapterTensors: 0 }; }) as never,
-    step: (() => ({ update() {}, done() {}, fail() {} })) as never, log: line => logs.push(plain(line)) });
+      return { outDir: out, fusedModules: 1, totalTensors: 3, skippedAdapterTensors: 0 }; }) as never });
   await fuse();
   const output = join(store, "models", "Base-Model-fused");
   expect(written).toEqual([output]);
@@ -218,8 +225,9 @@ test("`train-watch` without a directory follows the latest run in the adapter st
     const { utimesSync } = await import("node:fs"); utimesSync(join(dir, "metrics.jsonl"), at, at);
   }
   const watched: string[] = [];
-  await runTrainWatch(parseCommand("train-watch", []), { watch: async dir => { watched.push(dir); } });
+  const adaptersDir = () => trainStorage().path("adapters");
+  await runTrainWatch(trainVerb("train-watch"), { watch: async dir => { watched.push(dir); }, adaptersDir });
   expect(watched).toEqual([newer]);
   rmSync(join(store, "adapters"), { recursive: true });
-  await expect(runTrainWatch(parseCommand("train-watch", []), { watch: async () => {} })).rejects.toThrow("no training run found");
+  await expect(runTrainWatch(trainVerb("train-watch"), { watch: async () => {}, adaptersDir })).rejects.toThrow("no training run found");
 });

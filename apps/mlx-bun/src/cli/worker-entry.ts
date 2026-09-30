@@ -69,7 +69,7 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     memoryPaths: options.memoryPaths ?? { vault: "", skills: "" },
     storagePaths: options.storagePaths ?? {},
     sockets: createModuleSockets([]),
-    routes: { hub: none, memory: none, jobs: none, models: none, appModules: none, finetune: none, publishing: none },
+    routes: { hub: none, memory: none, jobs: none, models: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };

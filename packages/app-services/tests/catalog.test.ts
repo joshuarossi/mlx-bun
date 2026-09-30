@@ -81,6 +81,20 @@ test("a download fetches through the host's hub, re-indexes, and answers with th
   expect(await catalog.publish("/out", { repoId: "org/quant" })).toEqual({ url: "https://hub/org/quant#/out" });
 });
 
+test("the host's automatic model choice is answered with the indexed entry; without one the catalog makes none", async () => {
+  const chosen = record("org/tiny", "qwen3", { path: "/hub/snapshot" });
+  const signals: (AbortSignal | undefined)[] = [];
+  const catalog = createRegistryCatalog({ registry: registry([chosen]), hub: {
+    pickDefault: async signal => { signals.push(signal); return { id: "org/tiny", directory: "/hub/snapshot" }; } } });
+  const controller = new AbortController();
+  expect(await catalog.pickDefault({ signal: controller.signal })).toMatchObject({ id: "org/tiny", directory: "/hub/snapshot", modelType: "qwen3", operations: ["generate", "embed"] });
+  expect(signals).toEqual([controller.signal]);
+  // A choice the index does not list yet still names its directory.
+  const unindexed = createRegistryCatalog({ registry: registry([]), hub: { pickDefault: async () => ({ id: "org/new", directory: "/hub/new" }) } });
+  expect(await unindexed.pickDefault()).toEqual({ id: "org/new", kind: "model", directory: "/hub/new", bytes: 0, operations: [] });
+  await expect(createRegistryCatalog({ registry: registry([]) }).pickDefault()).rejects.toThrow("does not choose a default model");
+});
+
 test("a picked folder is located in the hub cache, the app's models directory, or the index, and never elsewhere", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mlx-locate-")), previous = process.env.HF_HUB_CACHE;
   try {

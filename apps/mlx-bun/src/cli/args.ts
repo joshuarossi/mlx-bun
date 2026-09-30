@@ -45,29 +45,7 @@ page. Synthesis (conversations -> articles) runs the full local pipeline via
 \`mlx-bun memory synthesize\` (or per-stage: segment/extract/route/
 synthesize-stage/link); the nightly job runs it on a schedule. These load the
 memory task model on first use; --host/--port use a serving mlx-bun instead.`;
-const draftDetails = `Produce the drafters \`mlx-bun serve --draft-model\` mounts. A DSpark drafter is
-trained against ONE frozen target, in three stages, each a subcommand:
 
-  regen <model> --topics <file>          The target answers each topic with its own
-                                         greedy generation; one tapped forward per
-                                         sequence records the drafter's context
-                                         hiddens (shards under ~/.mlx-bun/datasets)
-  train <model> --data <shards>          Train the drafter on the shards; the best
-                                         held-out τ is saved as a directory in
-                                         ~/.mlx-bun/models that serve mounts
-  calibrate <model> --drafter <dir> --data <prompts.jsonl>
-                                         Fit per-position confidence thresholds by
-                                         speculative runs; written into dspark.json
-                                         so serving prunes positions the head cannot call
-  quantize <drafter-dir>                 Affine-quantize a released DeepSpec
-                                         (Gemma4DSparkModel) drafter; its
-                                         confidence_head stays bf16
-
-The target and \`--tap-layers\` MUST be the same for regen and train. Drafter
-numerics only move acceptance, never correctness (the target verifies every
-draft): gate a drafter, or a quantized one, with \`bun scripts/drafter-ab.ts\`.
-Stages run in the foreground on the GPU; do not run one while a server or
-another training run holds it.`;
 const commands = {
   serve: { description: "Serve a local model with continuous batching and the web app", positional: "[query]", options: {
     model: { type: "string", description: "Model directory or cached registry query (overrides positional query)" },
@@ -176,83 +154,6 @@ const commands = {
     "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
     private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
   } },
-  train: { description: "Fine-tune a LoRA adapter on your data (sft | dpo | orpo)", positional: "[model]", options: {
-    query: { type: "string", description: "Model to fine-tune when no positional query is supplied (auto-picks the default model if omitted)" },
-    data: { type: "string", description: "Dataset dir with train.jsonl (+ optional valid.jsonl); rows are {prompt, chosen, rejected} for dpo/orpo, {messages|text} for sft  (required)" },
-    method: { type: "string", description: "sft | dpo | orpo  [default: orpo]" },
-    adapter: { type: "string", description: "Output adapter dir  [default: ~/.mlx-bun/adapters/<method>-<model>]" },
-    iters: { type: "string", description: "Training iterations  [default: 100]" },
-    lr: { type: "string", description: "Learning rate  [default: orpo 1e-5 · dpo 5e-5 · sft 2e-4]" },
-    rank: { type: "string", description: "LoRA rank  [default: orpo 16 · else 8]" },
-    scale: { type: "string", description: "LoRA scale  [default: orpo 2.0 · else 1.0]" },
-    seq: { type: "string", description: "Max sequence length  [default: the model's own; 4096 when it declares none]" },
-    batch: { type: "string", description: "Batch size  [default: 1]" },
-    "grad-accum": { type: "string", description: "Gradient accumulation steps (effective batch = batch × grad-accum at batch-size-1 memory)  [default: 1]" },
-    "grad-clip": { type: "string", description: "Gradient-norm clip (0 = off)  [default: 1.0]" },
-    seed: { type: "string", description: "Data-shuffle / init seed  [default: 0]" },
-    "val-size": { type: "string", description: "Max validation examples per eval  [default: 256]" },
-    lambda: { type: "string", description: "ORPO odds-ratio weight  [default: 0.1]" },
-    "sft-scope": { type: "string", description: "ORPO chosen-NLL scope: full (paper/TRL-faithful, prompt+response) | response (pre-2026-07 runs, bit-exact)  [default: full]" },
-    seg: { type: "string", description: "Layers per segment (segmented backward; orpo default 2)" },
-    "save-every": { type: "string", description: "Crash-safe mountable checkpoint every n steps" },
-    resume: { type: "string", description: "Warm-start LoRA weights from a checkpoint/adapter dir" },
-    "no-flash": { type: "boolean", description: "Disable the flash-CCE Metal head (use the MLX fused head)" },
-    "no-prefix": { type: "boolean", description: "Disable prefix-sharing (two-forward branches)" },
-    "no-segment": { type: "boolean", description: "Disable the segmented backward (hold all activations)" },
-    "num-layers": { type: "string", description: "Layers to adapt, counted from the last; -1 = all  [default: -1]" },
-    "steps-per-report": { type: "string", description: "Steps between loss reports  [default: 1]" },
-    "steps-per-eval": { type: "string", description: "Steps between validations  [default: every --save-every steps, else never]" },
-    dropout: { type: "string", description: "LoRA dropout  [default: 0]" },
-    "weight-decay": { type: "string", description: "AdamW weight decay  [default: 0.01]" },
-    "grad-checkpoint": { type: "boolean", description: "Recompute activations in the backward pass to save memory" },
-    "dry-run": { type: "boolean", description: "Inspect the dataset + print the resolved plan, don't train" },
-  } },
-  draft: { description: "Produce a speculative-decoding drafter: regen | train | calibrate | quantize", positional: "<action> <model>", usage: "usage: mlx-bun draft <regen|train|calibrate|quantize> <model|drafter-dir> [options]", details: draftDetails, options: {
-    model: { type: "string", description: "Target model (regen, train, calibrate) or DeepSpec drafter directory (quantize); the option spelling of the second positional" },
-    topics: { type: "string", description: "regen: text file with one topic per line the target writes an article about  (required)" },
-    data: { type: "string", description: "train: shard directory from regen  (required) · calibrate: JSONL of {prompt} rows, a string or chat messages  (required)" },
-    out: { type: "string", description: "Output directory  [default: regen ~/.mlx-bun/datasets/dspark-<model> · train ~/.mlx-bun/models/<model>-dspark · quantize ~/.mlx-bun/models/<drafter>-affine-q<bits>-g<group> · calibrate: in place]" },
-    "tap-layers": { type: "string", description: "regen/train: target layers the drafter reads, comma separated, the last normally the layer count (post-final-norm). MUST match between regen and train  [default: 20,31,41,42 (gemma-4 e4b)]" },
-    "max-resp": { type: "string", description: "regen: generated tokens per topic  [default: 320]" },
-    "seqs-per-shard": { type: "string", description: "regen: sequences per shard file  [default: 32]" },
-    "min-resp": { type: "string", description: "regen: drop responses shorter than this  [default: 6]" },
-    iters: { type: "string", description: "train: optimizer steps  [default: 6000]" },
-    batch: { type: "string", description: "train: anchors per step  [default: 8]" },
-    gamma: { type: "string", description: "train: draft block length  [default: 5]" },
-    "max-ctx": { type: "string", description: "train: cap on the prefix context each anchor attends  [default: 512]" },
-    lr: { type: "string", description: "train: peak learning rate  [default: 1.5e-3]" },
-    warmup: { type: "string", description: "train: warmup steps  [default: 150]" },
-    "eval-every": { type: "string", description: "train: steps between held-out evaluations; the best held-out τ is what is saved  [default: 500]" },
-    "eval-anchors": { type: "string", description: "train: anchors per held-out evaluation  [default: 256]" },
-    seed: { type: "string", description: "train: init and sampling seed  [default: 0]" },
-    "d-draft": { type: "string", description: "train: drafter width  [default: 1024]" },
-    "n-heads": { type: "string", description: "train: drafter attention heads  [default: 8]" },
-    layers: { type: "string", description: "train: drafter backbone depth  [default: 5]" },
-    "markov-rank": { type: "string", description: "train: sequential-head rank  [default: 256]" },
-    "seq-head": { type: "string", description: "train: sequential head, markov (Eq 5) | rnn (Eq 6)  [default: markov]" },
-    resume: { type: "boolean", description: "train: warm-start weights from an existing checkpoint in --out (the optimizer and schedule restart)" },
-    drafter: { type: "string", description: "calibrate: the trained drafter directory whose dspark.json receives the thresholds  (required)" },
-    n: { type: "string", description: "calibrate: prompts to run  [default: 32]" },
-    "max-tokens": { type: "string", description: "calibrate: generated tokens per prompt  [default: 128]" },
-    precision: { type: "string", description: "calibrate: acceptance precision each kept position must reach, in (0, 1]  [default: 0.5]" },
-    "min-samples": { type: "string", description: "calibrate: positions with fewer observations are never pruned  [default: 50]" },
-    force: { type: "boolean", description: "calibrate: recalibrate a drafter that already carries thresholds" },
-    bits: { type: "string", description: "quantize: 4 | 8  [default: 4]" },
-    "group-size": { type: "string", description: "quantize: 32 | 64  [default: 64]" },
-  } },
-  "train-watch": { description: "Live dashboard for a training run (tails <adapter-dir>/metrics.jsonl)", positional: "[adapter-dir]", options: {
-    adapter: { type: "string", description: "Adapter directory to watch; accepted for the positional  [default: the latest run in ~/.mlx-bun/adapters]" },
-  } },
-  fuse: { description: "Merge a LoRA adapter into the base weights (writes a standalone snapshot)", positional: "[model]", options: {
-    model: { type: "string", description: "Base model (registry query or a snapshot path); the mlx_lm.fuse spelling of the positional" },
-    adapter: { type: "string", description: "Adapter directory (adapters.safetensors + adapter_config.json)  [default: adapters]" },
-    "adapter-path": { type: "string", description: "mlx_lm.fuse alias for --adapter" },
-    "save-path": { type: "string", description: "Output model directory  [default: ~/.mlx-bun/models/<model>-fused]" },
-    dequantize: { type: "boolean", description: "Write dense weights instead of the base's quantized layout (drops the config's quantization block)" },
-    "export-gguf": { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
-    "gguf-path": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
-    "upload-repo": { type: "string", description: "Push the fused model to this Hugging Face repo afterwards (write token checked first)" },
-  } },
   memory: { description: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it", positional: "[subcommand] [args]",
     usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: {
     since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
@@ -303,7 +204,7 @@ export function commandOptions(command: string): Record<string, { type: "string"
 
 /** The positional-count and required-positional rules shared by every way of building a verb's arguments. */
 export function checkPositionals(command: Command, parsed: CommandArgs): void {
-  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" || command === "draft" ? 2 : commands[command].positional ? 1 : 0;
+  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
 }

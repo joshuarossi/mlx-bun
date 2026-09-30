@@ -1,7 +1,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
+import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { disposeTriple } from "./quantized-tensor";
@@ -12,7 +12,7 @@ import { disposeTriple } from "./quantized-tensor";
  *  head_dim. Only full-attention layers convert (mlx-lm's rotating-cache
  *  quantization is NYI upstream; sliding layers are window-capped
  *  anyway). Attention dispatches to quantizedSdpa for these. */
-export class QuantizedKVCache implements Cache {
+export class QuantizedKVCache implements CompiledDecodeCache {
   minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
@@ -158,6 +158,18 @@ export class QuantizedKVCache implements Cache {
     return { fetch: "concat", writePos: prev, activeLen: prev };
   }
 
+  decodePhase(): DecodeStepPlan["fetch"] { return "concat"; }
+
+  decodeSlot(_plan: DecodeStepPlan): DecodeSlot { return quantConcatDecodeSlot(this.offset, this.groupSize, this.bits); }
+
+  decodeInputs(plan: DecodeStepPlan, step: DecodeStepInputs): MlxArray[] {
+    return activeQuantViews(this.keys!, this.values!, plan.activeLen, step);
+  }
+
+  commitDecodeStep(_slot: DecodeSlot, outputs: MlxArray[]): MlxArray[] {
+    return this.writeDecodeStep(outputs);
+  }
+
   /** Compiled decode: the write half — six sliceUpdates of the already-
    *  quantized step row (quantize ran in-graph). Takes ownership of the
    *  rows; returns the updated buffers to async-eval with the step. */
@@ -239,4 +251,55 @@ export class QuantizedKVCache implements Cache {
     this.keys = this.values = null;
     this.offset = 0;
   }
+}
+
+/** The six active-prefix planes (keys then values) a concat fetch feeds a compiled decode step. */
+export function activeQuantViews(
+  keys: ops.QuantizedTensor, values: ops.QuantizedTensor, length: number, step: DecodeStepInputs,
+): MlxArray[] {
+  return [keys, values].flatMap((t) => [
+    step.activeView(t.packed, length), step.activeView(t.scales, length), step.activeView(t.biases, length),
+  ]);
+}
+
+const catAxis2 = (a: ops.QuantizedTensor, b: ops.QuantizedTensor): ops.QuantizedTensor => ({
+  packed: ops.concatAxis([a.packed, b.packed], 2),
+  scales: ops.concatAxis([a.scales, b.scales], 2),
+  biases: ops.concatAxis([a.biases, b.biases], 2),
+});
+
+/** The growing quantized cache inside a compiled decode trace: quantize in
+ *  graph, fetch = per-component concat, the six quantized row components are
+ *  closure outputs (see TracedConcatKVCache). */
+class TracedConcatQuantizedKVCache extends QuantizedKVCache implements DecodeTrace {
+  override readonly ropeOffsetArr: MlxArray;
+  outs: MlxArray[] = [];
+  constructor(
+    offset: number, groupSize: number, bits: number,
+    readonly activeKq: ops.QuantizedTensor,
+    readonly activeVq: ops.QuantizedTensor,
+    ropeOffsetArr: MlxArray,
+  ) {
+    super(groupSize, bits);
+    this.offset = offset;
+    this.ropeOffsetArr = ropeOffsetArr;
+  }
+
+  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    const kq = ops.quantize(k, this.groupSize, this.bits);
+    const vq = ops.quantize(v, this.groupSize, this.bits);
+    this.outs = [kq.packed, kq.scales, kq.biases, vq.packed, vq.scales, vq.biases];
+    return [catAxis2(this.activeKq, kq), catAxis2(this.activeVq, vq)];
+  }
+}
+
+/** The concat-fetch slot of a quantized cache at `offset` (QuantizedKVCache, and RotatingQuantizedKVCache before the window fills). */
+export function quantConcatDecodeSlot(offset: number, groupSize: number, bits: number): DecodeSlot {
+  const triple = (inputs: readonly MlxArray[], at: number): ops.QuantizedTensor =>
+    ({ packed: inputs[at]!, scales: inputs[at + 1]!, biases: inputs[at + 2]! });
+  return {
+    key: `q-cat:${groupSize}:${bits}`, fetch: "concat", inputs: 6, outputs: 6,
+    trace: (inputs, ropeOffset) =>
+      new TracedConcatQuantizedKVCache(offset, groupSize, bits, triple(inputs, 0), triple(inputs, 3), ropeOffset),
+  };
 }

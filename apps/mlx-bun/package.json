@@ -47,6 +47,7 @@
     "@mlx-bun/module-datasets": "workspace:*",
     "@mlx-bun/module-metrics": "workspace:*",
     "@mlx-bun/module-quantize": "workspace:*",
+    "@mlx-bun/module-train": "workspace:*",
     "@mlx-bun/module-transcription": "workspace:*",
     "@mlx-bun/web-shell": "workspace:*",
     "@earendil-works/pi-ai": "0.80.3",

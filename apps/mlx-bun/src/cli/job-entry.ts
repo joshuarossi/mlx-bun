@@ -3,9 +3,8 @@ import { makeEmit } from "../jobs/events";
 import { runtimeFlag, runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { JobRunner } from "../jobs/protocol";
 
-/** A job's runner and what to release after it: this app's own kinds, else the installed module that registered the kind. */
+/** A job's runner and what to release after it: the installed module that registered the kind. */
 async function resolveRunner(kind: string): Promise<{ runner: JobRunner; release?(): Promise<void> }> {
-  if (kind === "finetune") return { runner: (await import("../finetune/job")).createFinetuneRunner() };
   const [{ installedModules }, { loadModules }, { createHostServices }] = await Promise.all([
     import("../modules"), import("@mlx-bun/app-host"), import("@mlx-bun/app-services") ]);
   const [owner] = await installedModules(manifest => manifest.jobs?.some(job => job.kind === kind) ?? false);

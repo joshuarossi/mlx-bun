@@ -169,7 +169,8 @@ inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
 
 `jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes. Quantization
-job policy and the `convert` verb are the quantize module's (`@mlx-bun/module-quantize`), which
+job policy and the `convert` verb are the quantize module's (`@mlx-bun/module-quantize`), and fine-tuning
+(the `finetune` job, `train`, `fuse`, `draft`) the train module's (`@mlx-bun/module-train`); each
 consumes the `jobs`, `storage` and `catalog` services and the public libraries. The CLI composes
 child entry paths (a job child activates the module that registered its kind), so jobs
 infrastructure imports neither producer implementations nor engine internals. HTTP adapters consume
@@ -271,8 +272,8 @@ runner that declares `gpu: "exclusive"` holds the engine's execution lease for i
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
 { services })` validates the manifests before activating anything (unique ids,
-routes, verbs, job kinds and storage paths; every `requires` implemented by the
-host), activates the modules in order with only the services they required, built
+routes, verbs, job kinds and storage paths, where two modules that declare the same entry, one path
+and kind, share it; every `requires` implemented by the host), activates the modules in order with only the services they required, built
 per module by the host's bindings, and returns what they declared: routes at
 `/api/<id>/...` or at their declared root paths (collisions with each other and
 the host's own routes are rejected), sockets, verbs, job runners and storage
@@ -282,7 +283,7 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets, metrics, quantize, benchmarks) or declare sockets (chat) activate in the persistent state, beside the job store, with
+require `jobs` (datasets, metrics, quantize, benchmarks, train) or declare sockets (chat) activate in the persistent state, beside the job store, with
 `jobs` (the job host's `task` runners in this process, and `process` runners as a child that
 stops with its parent under the execution lease, which activates the owning module itself),
 `storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
@@ -291,9 +292,10 @@ others activate with the model host. The chat talks to the model only through th
 current model's description from its wire (`GET /v1/models`, `/stats`), and the Pi SDK, which takes no transport of ours,
 reaches the model through a private loopback (a per-run bearer token, started with the first chat) that leases
 the current model's `generate` per request; the request's own `local` model id is the host's to route. The state also serves the
-modules' sockets on the app's listener and stops the modules (closing the sockets) before the listener drains. A one-shot CLI verb (`convert`) activates only its own
-module over a private, throwaway job store, and a translated spelling of a verb (`mlx-bun.convert`)
-reaches it through the same verb table.
+modules' sockets on the app's listener and stops the modules (closing the sockets) before the listener drains. A one-shot CLI verb (`convert`, `train`) activates only its own
+module over a private, throwaway job store, and a translated spelling of a verb (`mlx-bun.convert`,
+`mlx-bun.lora`) reaches it through the same verb table. A verb that names no model asks the catalog for
+the host's automatic choice (`pickDefault`), which the app supplies from the selection `serve` makes.
 
 **Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 
@@ -318,7 +320,8 @@ reaches it through the same verb table.
 - `web-shell` is browser code with no workspace dependencies and no imports beyond its own files; no module imports
   it (a panel is handed its connection, not the shell), and an app's browser code may import it.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
-  kinds and storage paths; every `requires` satisfied.
+  kinds and storage paths (an identical entry in two modules is one shared entry);
+  every `requires` satisfied.
 
 ## Changing or replacing a piece
 

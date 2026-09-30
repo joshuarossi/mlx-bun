@@ -141,7 +141,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.deepEqual([state.downloads.active, state.downloads.snapshot()], [[], []]);
     assert.equal(state.sockets.upgrade(new Request("http://worker/ws/chat"), { upgrade: () => false }), null, "the worker's state serves no module socket");
     assert.equal(state.responses.size, 0);
-    for (const name of ["hub", "memory", "jobs", "models", "appModules", "finetune", "publishing"])
+    for (const name of ["hub", "memory", "jobs", "models", "appModules", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);

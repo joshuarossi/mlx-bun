@@ -4,6 +4,7 @@ import { manifest as chat } from "@mlx-bun/module-chat/manifest";
 import { manifest as datasets } from "@mlx-bun/module-datasets/manifest";
 import { manifest as metrics } from "@mlx-bun/module-metrics/manifest";
 import { manifest as quantize } from "@mlx-bun/module-quantize/manifest";
+import { manifest as train } from "@mlx-bun/module-train/manifest";
 import { manifest as transcription } from "@mlx-bun/module-transcription/manifest";
 
 // The one file that names module packages: import each `@mlx-bun/module-<id>`
@@ -11,7 +12,7 @@ import { manifest as transcription } from "@mlx-bun/module-transcription/manifes
 // activation order. The manifests are plain data, so the command list, `--help`
 // and argument parsing read them without loading a module; a module's code
 // loads only when a host activates it.
-export const manifests: readonly Omit<AppModule, "activate">[] = [transcription, datasets, metrics, quantize, benchmarks, chat];
+export const manifests: readonly Omit<AppModule, "activate">[] = [transcription, datasets, metrics, quantize, benchmarks, train, chat];
 
 /** Where a module activates: `state` is the app's persistent services (job runners, sockets, storage, the served
  * model's wire: modules that require `jobs` or declare sockets), `model` the model host's (Whisper leases, the
@@ -30,6 +31,7 @@ const loaders: Record<string, (settings: ModuleSettings) => Promise<AppModule>> 
   metrics: async () => (await import("@mlx-bun/module-metrics")).default,
   quantize: async () => (await import("@mlx-bun/module-quantize")).default,
   benchmarks: async () => (await import("@mlx-bun/module-benchmarks")).default,
+  train: async () => (await import("@mlx-bun/module-train")).default,
   chat: async settings => (await import("@mlx-bun/module-chat")).createChatModule(settings.chat),
 };
 

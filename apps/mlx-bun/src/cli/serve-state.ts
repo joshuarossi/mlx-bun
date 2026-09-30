@@ -19,7 +19,6 @@ import { vaultRoot } from "../memory/vault";
 import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
-import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
 import { createModelFolderRoutes } from "../server/model-folder-routes";
 import { createJobRoutes } from "../server/job-routes";
@@ -87,7 +86,7 @@ export interface AppState {
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
     hub: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    models: RouteGroup; appModules: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
+    models: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -171,8 +170,6 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     jobs: createJobRoutes(jobs),
     models: createModelFolderRoutes(catalog),
     appModules: createModuleRoutes(loaded.routes),
-    finetune: createFinetuneRoutes(jobs, storagePaths.artifactRoot
-      ? () => join(storagePath("adapters", storagePaths.artifactRoot), `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
     }) }),

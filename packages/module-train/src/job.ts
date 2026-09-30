@@ -3,7 +3,7 @@ import type { Weights, loadModelConfig } from "@mlx-bun/inference/artifacts";
 import type { createModel } from "@mlx-bun/inference/models";
 import type { loadTokenizer, ChatTemplate } from "@mlx-bun/inference/input";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
-import type { JobRunner } from "../jobs/protocol";
+import type { JobEmit } from "@mlx-bun/app-core";
 import { parseFinetuneConfig } from "./config";
 
 /** Child-local native resources. The parent job host owns the execution lease. */
@@ -35,8 +35,9 @@ async function loadRuntime(): Promise<FinetuneRuntime> {
   };
 }
 
-export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = loadRuntime): JobRunner {
-  return async (emit, config, signal) => {
+/** The `finetune` job's producer. `signal` is optional: the `train` verb and the job child run it as given. */
+export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = loadRuntime) {
+  return async (emit: JobEmit, config: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<{ outputPath: string }> => {
     // Reject incomplete jobs without loading MLX or creating any resources.
     for (const name of ["model_dir", "data_dir", "adapter_path"])
       if (typeof config[name] !== "string" || !config[name]) throw new Error(`finetune job: missing ${name}`);

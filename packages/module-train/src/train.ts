@@ -1,35 +1,29 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Registry } from "@mlx-bun/hub/registry";
+import type { CliInvocation, CliTerminal, JobEmit, ModelCatalog } from "@mlx-bun/app-core";
 import type { TrainingDefaults } from "@mlx-bun/inference/models/profile";
-import type { fuseAdapter } from "@mlx-bun/training";
-import { createFinetuneRunner } from "../finetune/job";
-import { inspectDataset } from "../finetune/inspect";
-import { runWatch } from "../finetune/watch";
-import type { JobEvent, JobRunner } from "../jobs/protocol";
-import type { CommandArgs } from "./args";
-import { publishModel, requireWriteToken, uploadDefaults, type UploadDependencies } from "./publish-model";
-import { resolveModelAuto } from "./model-selection";
-import { boxLines, step, style } from "./terminal";
-import { mlxBunHome, modelShortName, openRegistry, storagePath } from "../storage/paths";
+import { createFinetuneRunner } from "./job";
+import { inspectDataset } from "./inspect";
+import { runWatch } from "./watch";
+import { modelShortName, selectModel, type SelectedModel } from "./model";
 
-// Thin verbs over the app's fine-tuning producer and the public training
+// Thin verbs over the module's fine-tuning producer and the public training
 // library: argument policy, main's plan/summary presentation, and process
-// cancellation live here; training numerics and adapter fusion do not.
+// cancellation live here; training numerics do not.
 
-interface SelectedModel { path: string; repoId: string }
-type ModelRegistry = Pick<Registry, "resolve" | "list" | "scan" | "close">;
+/** What a verb run was given: the host's parsed options and positionals (`CliInvocation`'s). */
+export type VerbArgs = Pick<CliInvocation, "values" | "positionals">;
 /** Allocator counters read through the native binding while training runs. */
 export interface PeakMemory { peak(): number; reset(): void }
 export type TrainMethod = "sft" | "dpo" | "orpo";
 
 const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GB`;
 /** Main's `opt()`: an absent or empty value falls back to the default. */
-function opt(args: CommandArgs, name: string): string | undefined {
+export function opt(args: VerbArgs, name: string): string | undefined {
   const value = args.values[name];
   return typeof value === "string" && value ? value : undefined;
 }
-const flag = (args: CommandArgs, name: string): boolean => args.values[name] === true;
+export const flag = (args: VerbArgs, name: string): boolean => args.values[name] === true;
 
 export interface TrainArgs {
   query: string | null; dataDir: string; method: TrainMethod; sftScope: "full" | "response" | null;
@@ -41,7 +35,7 @@ export interface TrainArgs {
 /** Main's checks in main's order, all before any model resolution: usage,
  * train.jsonl, method, sft-scope, then each numeric flag main would read
  * (seg unless --no-segment; lambda only for ORPO). */
-export function parseTrainArgs(args: CommandArgs, exists: (path: string) => boolean = existsSync): TrainArgs {
+export function parseTrainArgs(args: VerbArgs, exists: (path: string) => boolean = existsSync): TrainArgs {
   const query = args.positionals[0] ?? opt(args, "query") ?? null;
   const dataDir = opt(args, "data");
   if (!dataDir) throw new Error("usage: mlx-bun train <model> --data <dir>   (see: mlx-bun help train)");
@@ -69,17 +63,17 @@ export function parseTrainArgs(args: CommandArgs, exists: (path: string) => bool
 export interface TrainPlan {
   method: TrainMethod; isOrpo: boolean; adapter: string; iters: number; seq: number; seg: number;
   saveEvery: number; flashOn: boolean; prefixOn: boolean; resume: string;
-  /** The snake_case submit record the finetune runner parses (finetune/config.ts). */
+  /** The snake_case submit record the finetune runner parses (`config.ts`). */
   cfg: Record<string, unknown>;
 }
 
 /** Method-dependent defaults over the validated flags; model-dependent ones
  * (`defaults`) are declared by the model's profile. The adapter defaults to
- * `<root>/adapters/<method>-<model>` (root: MLX_BUN_HOME). */
-export function trainPlan(parsed: TrainArgs, model: SelectedModel, defaults: TrainingDefaults, root: string = mlxBunHome()): TrainPlan {
+ * `<adapters>/<method>-<model>` (the `adapters` storage entry, resolved only when no `--adapter` names one). */
+export function trainPlan(parsed: TrainArgs, model: SelectedModel, defaults: TrainingDefaults, adaptersDir: () => string): TrainPlan {
   const num = (name: string, fallback: number) => parsed.numbers.get(name) ?? fallback;
   const { method } = parsed, isOrpo = method === "orpo";
-  const adapter = parsed.adapter ?? join(storagePath("adapters", root), `${method}-${modelShortName(model.repoId)}`);
+  const adapter = parsed.adapter ?? join(adaptersDir(), `${method}-${modelShortName(model.repoId)}`);
   const iters = num("iters", 100);
   const seq = num("seq", defaults.maxSeqLength);
   const seg = parsed.noSegment ? 0 : num("seg", isOrpo ? 2 : 0);
@@ -125,7 +119,7 @@ export function trainPlan(parsed: TrainArgs, model: SelectedModel, defaults: Tra
 }
 
 function planLines(plan: TrainPlan, model: SelectedModel, picked: boolean,
-  ds: { n_train: number; n_valid: number; format: string }): string[] {
+  ds: { n_train: number; n_valid: number; format: string }, style: CliTerminal["style"]): string[] {
   const { cfg } = plan;
   const lines = [
     `${style.green("●")} ${style.bold(`train ${plan.method}`)} ${style.dim(`· ${model.repoId}${picked ? " (auto-picked)" : ""}`)}`,
@@ -147,19 +141,23 @@ function planLines(plan: TrainPlan, model: SelectedModel, picked: boolean,
   return lines;
 }
 
+/** A fine-tune run: what the job child runs, driven in this process by `train`. */
+export type TrainRunner = (emit: JobEmit, config: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
+
 export interface TrainDependencies {
   /** Model selection; the signal cancels a starter download it may start. */
   resolve(query: string | null, signal?: AbortSignal): Promise<{ m: SelectedModel; picked: boolean }>;
   inspect: typeof inspectDataset;
-  runner(): JobRunner;
+  runner(): TrainRunner;
   /** Peak-memory reader; null when the native binding is unavailable. */
   memory(): Promise<PeakMemory | null>;
   exists(path: string): boolean;
   /** The fine-tuning defaults the model at `modelDir` declares through its resolved profile. */
   trainingDefaults(modelDir: string): Promise<TrainingDefaults>;
   log(line: string): void;
-  /** Storage root for default outputs (MLX_BUN_HOME). */
-  root(): string;
+  terminal: CliTerminal;
+  /** The `adapters` storage entry: where an adapter goes when `--adapter` names none. */
+  adaptersDir(): string;
   now(): number;
 }
 /** Resolve the model's profile from its config alone (no weights, no native
@@ -169,39 +167,46 @@ export async function modelTrainingDefaults(modelDir: string): Promise<TrainingD
   const { resolveModelProfile, trainingDefaultsFor } = await import("@mlx-bun/inference/models/profile");
   return trainingDefaultsFor(resolveModelProfile(await loadModelConfig(modelDir)));
 }
-const trainDefaults: TrainDependencies = {
-  resolve: (query, signal) => resolveModelAuto(query, {}, signal),
-  inspect: inspectDataset,
-  runner: () => createFinetuneRunner(),
-  async memory() {
-    // The binding dlopens at import; stay behind the training path and report
-    // no peak when MLX cannot load rather than failing the run.
-    try {
-      const ffi = await import("@mlx-bun/mlx/ffi");
-      return { peak: ffi.peakMemory, reset: ffi.resetPeakMemory };
-    } catch { return null; }
-  },
-  exists: existsSync,
-  trainingDefaults: modelTrainingDefaults,
-  log: line => console.log(line), root: () => mlxBunHome(), now: Date.now,
-};
+/** The dependencies a `train` run has in a host: the catalog picks the model, the host draws the terminal. */
+export function trainDependencies(services: { catalog: Pick<ModelCatalog, "find" | "pickDefault">; adaptersDir(): string },
+  invocation: Pick<CliInvocation, "terminal" | "stdout">): TrainDependencies {
+  return {
+    resolve: (query, signal) => selectModel(services.catalog, query, signal),
+    inspect: inspectDataset,
+    runner: () => createFinetuneRunner(),
+    async memory() {
+      // The binding dlopens at import; stay behind the training path and report
+      // no peak when MLX cannot load rather than failing the run.
+      try {
+        const ffi = await import("@mlx-bun/mlx/ffi");
+        return { peak: ffi.peakMemory, reset: ffi.resetPeakMemory };
+      } catch { return null; }
+    },
+    exists: existsSync,
+    trainingDefaults: modelTrainingDefaults,
+    log: (line = "") => { invocation.stdout(line + "\n"); },
+    terminal: invocation.terminal,
+    adaptersDir: services.adaptersDir,
+    now: Date.now,
+  };
+}
 
 /** `train`: validate, resolve the model, preflight the dataset, print the plan,
  * then drive the finetune runner in-process. Cancellation reaches the runner
  * through `signal`; a cancelled run exits with the signal's reason and no adapter. */
-export async function runTrain(args: CommandArgs, supplied: Partial<TrainDependencies> = {}, signal?: AbortSignal): Promise<void> {
-  const deps = { ...trainDefaults, ...supplied };
+export async function runTrain(args: VerbArgs, deps: TrainDependencies, signal?: AbortSignal): Promise<void> {
+  const { terminal } = deps, { style } = terminal;
   const parsed = parseTrainArgs(args, deps.exists);
   signal?.throwIfAborted();
   const { m, picked } = await deps.resolve(parsed.query, signal);
-  const plan = trainPlan(parsed, m, await deps.trainingDefaults(m.path), deps.root());
+  const plan = trainPlan(parsed, m, await deps.trainingDefaults(m.path), deps.adaptersDir);
 
   // Pre-flight: dataset counts + detected format (bail before loading the model).
   const ds = await deps.inspect(parsed.dataDir);
   if (!ds.ok) throw new Error(`dataset: ${ds.error}`);
 
   deps.log("");
-  for (const line of boxLines(planLines(plan, m, picked, ds))) deps.log(line);
+  terminal.box(planLines(plan, m, picked, ds, style));
   deps.log("");
   deps.log(`  ${style.dim("watch live (other tab):")} ${style.accent(`mlx-bun train-watch ${plan.adapter}`)}`);
   deps.log("");
@@ -215,14 +220,15 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   const peak = () => (memory ? ` · peak ${gb(memory.peak())}` : "");
   const losses: number[] = [], stepMs: number[] = [];
   let lastStepT = deps.now();
-  const emit = (e: JobEvent) => {
+  const emit: JobEmit = e => {
     if (e.type === "stage" && e.message) deps.log(`  ${style.dim("·")} ${e.message}`);
     else if (e.type === "metric" && e.kind === "train") {
       const now = deps.now(); stepMs.push(now - lastStepT); lastStepT = now;
-      losses.push(e.loss);
+      const loss = e.loss as number;
+      losses.push(loss);
       const n = losses.length;
       if (n <= 3 || n % 10 === 0)
-        deps.log(`  step ${n}/${plan.iters}: loss ${style.bold(e.loss.toFixed(4))} ${style.dim(`(${(stepMs[stepMs.length - 1]! / 1000).toFixed(1)}s/step${peak()})`)}`);
+        deps.log(`  step ${n}/${plan.iters}: loss ${style.bold(loss.toFixed(4))} ${style.dim(`(${(stepMs[stepMs.length - 1]! / 1000).toFixed(1)}s/step${peak()})`)}`);
     }
   };
   try {
@@ -235,7 +241,7 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   const sorted = stepMs.slice(1).sort((a, b) => a - b);
   const med = sorted[Math.floor(sorted.length / 2)] ?? stepMs[0] ?? 0;
   deps.log("");
-  for (const line of boxLines([
+  terminal.box([
     `${style.green("●")} ${style.bold("training complete")} ${style.dim(`· ${losses.length} steps`)}`,
     "",
     `loss       ${style.bold(`${losses[0]?.toFixed(4) ?? "—"} → ${losses[losses.length - 1]?.toFixed(4) ?? "—"}`)}${finite ? "" : "  (NON-FINITE!)"}`,
@@ -243,102 +249,13 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
     "",
     `adapter    ${style.bold(plan.adapter)}`,
     `serve it   ${style.accent(`mlx-bun serve ${m.repoId} --adapter ${plan.adapter}`)}`,
-  ])) deps.log(line);
+  ]);
 }
 
-export interface FuseDependencies {
-  registry(): ModelRegistry;
-  /** The Hub write token and push behind `--upload-repo`, as convert's. */
-  credentials: UploadDependencies["credentials"];
-  publish: UploadDependencies["publish"];
-  /** Storage root for the default output (MLX_BUN_HOME). */
-  root(): string;
-  fuse: typeof fuseAdapter;
-  exists(path: string): boolean;
-  log(line: string): void;
-  step: typeof step;
-}
-const fuseDefaults: FuseDependencies = {
-  registry: () => openRegistry(), root: () => mlxBunHome(), ...uploadDefaults,
-  fuse: async (...call) => (await import("@mlx-bun/training")).fuseAdapter(...call),
-  exists: existsSync, log: line => console.log(line), step,
-};
-const REFUSED_FUSE_FLAGS = ["export-gguf", "gguf-path"];
+export interface WatchDependencies { watch: typeof runWatch; adaptersDir(): string }
 
-/** `fuse`: mlx_lm.fuse counterpart over the public training library
- * (`--dequantize` writes dense weights; `--upload-repo` pushes the result like
- * convert's). GGUF export is refused. The merge
- * itself has no cancellation seam: a signal is honored before it starts; one
- * arriving during the merge lets it finish so the output is never half-written. */
-export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependencies> = {}, signal?: AbortSignal): Promise<void> {
-  const deps = { ...fuseDefaults, ...supplied };
-  const unsupported = REFUSED_FUSE_FLAGS.filter(name => args.values[name] !== undefined).map(name => `--${name}`);
-  if (unsupported.length > 0) throw new Error(`${unsupported.join(", ")}: not supported (GGUF export is not implemented; fuse writes safetensors; see: mlx-bun help fuse)`);
-  // The write token is resolved before any fuse work, as convert does.
-  const uploadRepo = opt(args, "upload-repo");
-  if (uploadRepo !== undefined) requireWriteToken(deps.credentials());
-  const modelArg = args.positionals[0] ?? opt(args, "model");
-  if (!modelArg) throw new Error("usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]");
-  const adapterDir = opt(args, "adapter") ?? opt(args, "adapter-path") ?? "adapters";
-  if (!deps.exists(adapterDir)) throw new Error(`adapter dir not found: ${adapterDir}`);
-  let modelDir = modelArg, modelId = modelArg;
-  if (!deps.exists(`${modelArg}/config.json`)) {
-    const reg = deps.registry();
-    try {
-      if (reg.list().length === 0) await reg.scan();
-      ({ path: modelDir, repoId: modelId } = reg.resolve(modelArg));
-    } finally { reg.close(); }
-  }
-  // An explicit --save-path keeps mlx_lm.fuse's semantics; the default is a
-  // fresh directory in the app's models, never overwritten.
-  let savePath = opt(args, "save-path");
-  if (savePath === undefined) {
-    savePath = join(storagePath("models", deps.root()), `${modelShortName(modelId)}-fused`);
-    if (deps.exists(savePath)) throw new Error(`${savePath} already exists — delete it or pass --save-path <dir>`);
-  }
-  signal?.throwIfAborted();
-  const s = deps.step(`fusing ${adapterDir} into ${modelDir}`);
-  let interrupted = false;
-  const onAbort = () => {
-    interrupted = true;
-    s.update(`fusing ${adapterDir} into ${modelDir} ${style.dim(`· cancellation requested; the merge cannot be interrupted, finishing so ${savePath} is not left half-written`)}`);
-  };
-  signal?.addEventListener("abort", onAbort, { once: true });
-  let fusedDir: string | undefined;
-  try {
-    const dequantize = flag(args, "dequantize");
-    const stats = await deps.fuse(modelDir, adapterDir, savePath, e => s.update(e.message), { dequantize });
-    s.done(`fused ${stats.fusedModules} module(s) ${style.dim(`· ${stats.totalTensors} tensors written`)}`);
-    deps.log("");
-    for (const line of boxLines([
-      `${style.green("●")} ${style.bold("fuse complete")}`,
-      "",
-      `base      ${style.dim(modelDir)}`,
-      `adapter   ${style.dim(adapterDir)}`,
-      `model     ${style.bold(stats.outDir)}`,
-      ...(dequantize ? [`weights   ${style.dim("dequantized to dense")}`] : []),
-      ...(stats.skippedAdapterTensors > 0
-        ? [`skipped   ${style.dim(`${stats.skippedAdapterTensors} adapter tensor(s) with no matching base weight`)}`] : []),
-      "",
-      `serve it   ${style.accent(`mlx-bun serve ${stats.outDir}`)}`,
-    ])) deps.log(line);
-    if (interrupted) deps.log(`  ${style.dim("cancellation arrived during the merge; it cannot be interrupted, so the output was completed.")}`);
-    fusedDir = stats.outDir;
-  } catch (error) {
-    s.fail(`fuse failed: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  } finally { signal?.removeEventListener("abort", onAbort); }
-  // The push starts only for an uninterrupted run; a cancel that arrived mid-merge only completes the output.
-  if (uploadRepo !== undefined && fusedDir !== undefined && !interrupted)
-    await publishModel(deps, { kind: "finetune", repoId: uploadRepo, dir: fusedDir, what: "fused" }, signal);
-}
-
-export interface WatchDependencies { watch: typeof runWatch; root(): string }
-const watchDefaults: WatchDependencies = { watch: runWatch, root: () => mlxBunHome() };
-
-/** The adapter directory under `<root>/adapters` whose metrics.jsonl changed last. */
-function latestRun(root: string): string | undefined {
-  const adapters = storagePath("adapters", root);
+/** The adapter directory under `adapters` whose metrics.jsonl changed last. */
+function latestRun(adapters: string): string | undefined {
   let latest: { dir: string; at: number } | undefined;
   try {
     for (const name of readdirSync(adapters)) {
@@ -354,9 +271,9 @@ function latestRun(root: string): string | undefined {
 
 /** `train-watch`: live dashboard over `<adapter>/metrics.jsonl`; without a
  * directory, the most recently updated run in the app's adapter store. */
-export async function runTrainWatch(args: CommandArgs, supplied: Partial<WatchDependencies> = {}, signal?: AbortSignal): Promise<void> {
-  const deps = { ...watchDefaults, ...supplied };
-  const dir = args.positionals[0] ?? opt(args, "adapter") ?? latestRun(deps.root());
-  if (!dir) throw new Error(`no training run found in ${storagePath("adapters", deps.root())} — usage: mlx-bun train-watch <adapter-dir>`);
+export async function runTrainWatch(args: VerbArgs, deps: WatchDependencies, signal?: AbortSignal): Promise<void> {
+  const explicit = args.positionals[0] ?? opt(args, "adapter");
+  const dir = explicit ?? latestRun(deps.adaptersDir());
+  if (!dir) throw new Error(`no training run found in ${deps.adaptersDir()} — usage: mlx-bun train-watch <adapter-dir>`);
   await deps.watch(dir, { signal });
 }

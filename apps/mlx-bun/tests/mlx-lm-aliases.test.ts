@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { plainTerminal } from "@mlx-bun/app-services";
 import { runConvert, type ConvertDependencies } from "@mlx-bun/module-quantize";
+import { parseTrainArgs, runFuse, trainPlan, type FuseDependencies } from "@mlx-bun/module-train";
 import { isCommand } from "../src/cli/args";
 import { generateOptions } from "../src/cli/inference";
 import { ALIASES, ALIAS_GAPS, invokedAlias, translateAlias } from "../src/cli/mlx-lm-aliases";
 import { installedVerbs, runInstalledVerb } from "../src/cli/module-verbs";
 import { parseServeOptions } from "../src/cli/serve";
-import { parseTrainArgs, runFuse, trainPlan, type FuseDependencies } from "../src/cli/train";
 import { runUpload, type UploadDependencies } from "../src/cli/upload";
 
 const app = resolve(import.meta.dir, "..");
@@ -174,10 +174,10 @@ test("mlx-bun.convert reaches the module's verb through the host's verb table wi
 function fuseHarness(token: string | null = "hf_token") {
   const calls: unknown[][] = [], published: unknown[] = [];
   const deps: FuseDependencies = {
-    root: () => "/store", registry: () => { throw new Error("no registry"); }, exists: path => !path.startsWith("/store/"), log() {},
-    step: () => ({ update() {}, done() {}, fail() {} }),
-    credentials: () => ({ get: () => token }),
-    publish: async request => { published.push(request); return { url: "https://huggingface.co/org/r" }; },
+    modelsDir: () => "/store/models", exists: path => !path.startsWith("/store/"), log() {},
+    terminal: { ...plainTerminal(() => {}), step: () => ({ update() {}, done() {}, fail() {} }), box() {} },
+    catalog: { find: async () => { throw new Error("no model"); }, canPublish: () => token !== null,
+      publish: async (directory, request) => { published.push({ ...request, sourcePath: directory }); return { url: "https://huggingface.co/org/r" }; } },
     fuse: async (...call) => { calls.push(call.slice(0, 3), [call[4]]); return { outDir: call[2], fusedModules: 1, skippedAdapterTensors: 0, totalTensors: 2 }; },
   };
   return { deps, calls, published };
@@ -190,7 +190,7 @@ test("mlx-bun.fuse: mlx_lm.fuse's flags, including --dequantize and --upload-rep
   const run = fuseHarness();
   await runFuse(parsed, run.deps);
   expect(run.calls).toEqual([["m", "/ad", "/out"], [{ dequantize: true }]]);
-  expect(run.published).toEqual([{ kind: "finetune", repoId: "org/r", sourcePath: "/out", signal: undefined }]);
+  expect(run.published).toEqual([{ repoId: "org/r", sourcePath: "/out" }]);
   // The default output is the storage root's, not `fused_model` in the working directory.
   const plain = fuseHarness();
   await runFuse(translate("fuse", "--model", "m", "--adapter-path", "/ad").parsed, plain.deps);
@@ -220,13 +220,13 @@ test("mlx-bun.lora: mlx_lm.lora's flags resolve to an SFT train run over the sam
   expect(parsed.values).toEqual({ query: "/m", data: "/d", "num-layers": "8", batch: "2", iters: "50", "val-size": "20", lr: "1e-4", "steps-per-report": "5",
     "steps-per-eval": "20", "grad-accum": "4", resume: "/prev", adapter: "/out", "save-every": "10", seq: "512", "grad-checkpoint": true, seed: "9",
     method: "sft", "weight-decay": "0" });
-  const plan = trainPlan(parseTrainArgs(parsed, () => true), { path: "/m", repoId: "m" }, { maxSeqLength: 4096 }, "/store");
+  const plan = trainPlan(parseTrainArgs(parsed, () => true), { path: "/m", repoId: "m" }, { maxSeqLength: 4096 }, () => "/store/adapters");
   expect(plan.method).toBe("sft");
   expect(plan.cfg).toMatchObject({ model_dir: "/m", data_dir: "/d", adapter_path: "/out", method: "sft", num_layers: 8, batch_size: 2, iters: 50,
     val_max_examples: 20, learning_rate: 1e-4, steps_per_report: 5, steps_per_eval: 20, grad_accumulation_steps: 4, warm_start_adapter: "/prev",
     save_checkpoints: true, max_seq_length: 512, grad_checkpoint: true, seed: 9, weight_decay: 0 });
   // Output stays under the storage root unless --adapter-path names one.
-  expect(trainPlan(parseTrainArgs(translate("lora", "--model", "/m", "--train", "--data", "/d").parsed, () => true), { path: "/m", repoId: "org/m" }, { maxSeqLength: 4096 }, "/store").adapter)
+  expect(trainPlan(parseTrainArgs(translate("lora", "--model", "/m", "--train", "--data", "/d").parsed, () => true), { path: "/m", repoId: "org/m" }, { maxSeqLength: 4096 }, () => "/store/adapters").adapter)
     .toBe("/store/adapters/sft-m");
   // adamw keeps mlx-bun's weight decay; the verb's own --method stays available.
   expect(values("lora", "--train", "--optimizer", "adamw")).not.toHaveProperty("weight-decay");

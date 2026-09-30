@@ -573,7 +573,7 @@ async function sftLoop(
   // (>=2K, reproduced in segmented-grad-test-e4b.ts (deleted 2026-08-23; git
   // history); `02d723a:docs/reference/training.md`) and has NOT been
   // re-validated at that scale since the two kernel fixes — the regression tests
-  // stop at T<=256. apps/mlx-bun/src/cli/train.ts even defaults e4b seq to 8192,
+  // stop at T<=256. The train verb (packages/module-train/src/train.ts) even defaults e4b seq to 8192,
   // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from another model's experiment
   // would otherwise ride silently into a crash mid-run. Gemma 4 declares the
   // refusal until the >=2K re-validation lands; a graph that declares nothing

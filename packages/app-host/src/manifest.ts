@@ -38,7 +38,8 @@ function storageSegments(path: string): string[] | undefined {
  * `requires` names a core service the host implements; routes, sockets, CLI
  * verbs, job kinds and storage entries are well formed and unique across
  * modules (routes by method and path shape, storage case-insensitively and not
- * nested in another module's path); a panel's tag and path follow the id.
+ * nested in another module's path, except that two modules may declare the same
+ * entry, one path and kind, to share it); a panel's tag and path follow the id.
  */
 export function checkManifests(modules: readonly AppModule[], options: ManifestOptions): string[] {
   const problems: string[] = [];
@@ -48,7 +49,7 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
   for (const route of options.reserved ?? []) routes.set(`${route.method} ${shape(route.path)}`, "the host");
   const verbs = new Map<string, string>();
   const kinds = new Map<string, string>();
-  const stored: { readonly path: string; readonly segments: string[]; readonly owner: string }[] = [];
+  const stored: { readonly path: string; readonly kind: string; readonly segments: string[]; readonly owner: string }[] = [];
 
   for (const module of modules) {
     const id = module.id;
@@ -113,10 +114,12 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
       for (const other of stored) {
         const shared = Math.min(lowered.length, other.segments.length);
         const nested = lowered.slice(0, shared).join("/") === other.segments.slice(0, shared).join("/");
+        // The same declaration (path and kind) in two modules is one shared entry, as models produced by quantize and by train.
+        if (other.owner !== id && other.path === entry.path && other.kind === entry.kind) continue;
         if (nested && (other.owner !== id || lowered.length === other.segments.length))
           problems.push(`${at}: storage path "${entry.path}" collides with "${other.path}" of module ${other.owner}`);
       }
-      stored.push({ path: entry.path, segments: lowered, owner: id });
+      stored.push({ path: entry.path, kind: entry.kind, segments: lowered, owner: id });
     }
 
     if (module.panel) {

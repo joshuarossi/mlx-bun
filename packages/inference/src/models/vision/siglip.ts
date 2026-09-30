@@ -61,6 +61,7 @@ import { MlxArray, cpuStream } from "@mlx-bun/mlx/array";
 import { C, Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { decodeImage, resizeBicubic, targetSize } from "../../input/vision/preprocess";
+import { applyRope2d, rope2dTables, type Rope2dTables } from "../../layers/rope-2d";
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 const dispose = (old: MlxArray, next: MlxArray): MlxArray => {
@@ -341,109 +342,21 @@ export class SiglipVisionTower {
     return out;
   }
 
-  /** Build the 2D-RoPE cos/sin tables ON DEVICE, matching optiq's
-   *  apply_multidimensional_rope op-for-op (arange → power → div → cos/sin →
-   *  concat) so they're bit-identical to the reference — a host-computed
-   *  table rounds to bf16 differently and, applied to q&k every layer,
-   *  compounds. Returns cosA/sinA [1, numReal, 1, headDim] (bf16). */
-  #ropeTables(pre: SiglipPreprocessed): { cosA: MlxArray; sinA: MlxArray } {
-    const { headDim, ropeTheta } = this.cfg;
-    const { numReal } = pre;
-    const channelsPerDim = 2 * Math.floor(headDim / 4); // ndim=2 → 32
-    const half = Math.floor(channelsPerDim / 2); // 16
-
-    // freq_exponents = (2/channelsPerDim) * arange(0, half); timescale = θ^freq
-    const ar = ops.arange(0, half, 1, Dtype.float32);
-    const freq = dispose(ar, ops.mulScalar(ar, 2 / channelsPerDim));
-    const base = ops.scalarLike(ropeTheta, freq);
-    const timescale = ops.pow(base, freq); // [half]
-    base.dispose();
-    freq.dispose();
-
-    const perDim = (pos: Float32Array): { c: MlxArray; s: MlxArray } => {
-      const p = MlxArray.fromFloat32(pos, [numReal, 1]);
-      const sinusoid = ops.div(p, timescale); // [numReal, half]
-      p.dispose();
-      const cd = ops.cos(sinusoid);
-      const sd = ops.sin(sinusoid);
-      sinusoid.dispose();
-      const c = ops.concatAxis([cd, cd], 1); // duplicate → [numReal, 32]
-      const s = ops.concatAxis([sd, sd], 1);
-      cd.dispose();
-      sd.dispose();
-      return { c, s };
-    };
-    const x = perDim(pre.posX);
-    const y = perDim(pre.posY);
-    timescale.dispose();
-
-    const bf = this.#wdtype;
-    const finish = (cx: MlxArray, cy: MlxArray): MlxArray => {
-      const full = ops.concatAxis([cx, cy], 1); // [numReal, headDim]
-      const r = ops.reshape(full, [1, numReal, 1, headDim]);
-      full.dispose();
-      const bfr = r.astype(bf);
-      r.dispose();
-      return bfr;
-    };
-    const cosA = finish(x.c, y.c);
-    const sinA = finish(x.s, y.s);
-    x.c.dispose();
-    x.s.dispose();
-    y.c.dispose();
-    y.s.dispose();
-    return { cosA, sinA };
-  }
-
-  /** rotate_half applied independently within each spatial-dim partition of
-   *  the head (NOT across the whole head). x: [..., headDim]. */
-  #partitionedRotateHalf(x: MlxArray): MlxArray {
-    const sh = x.shape;
-    const last = sh.length - 1;
-    const headDim = sh[last]!;
-    const channelsPerDim = 2 * Math.floor(headDim / 4); // ndim=2
-    const half = Math.floor(channelsPerDim / 2);
-    const ndim = Math.floor(headDim / channelsPerDim);
-    const sliceLast = (a: number, b: number): MlxArray => {
-      const start = sh.map(() => 0);
-      const stop = [...sh];
-      start[last] = a;
-      stop[last] = b;
-      return x.slice(start, stop);
-    };
-    const parts: MlxArray[] = [];
-    const scratch: MlxArray[] = [];
-    for (let d = 0; d < ndim; d++) {
-      const o = d * channelsPerDim;
-      const x1 = sliceLast(o, o + half);
-      const x2 = sliceLast(o + half, o + channelsPerDim);
-      const nx2 = ops.neg(x2);
-      const r = ops.concatAxis([nx2, x1], last); // [-x2, x1]
-      scratch.push(x1, x2, nx2);
-      parts.push(r);
+  /** The 2D-RoPE tables for this image's patch grid (x, then y per patch). */
+  #ropeTables(pre: SiglipPreprocessed): Rope2dTables {
+    const grid = new Float32Array(pre.numReal * 2);
+    for (let i = 0; i < pre.numReal; i++) {
+      grid[i * 2] = pre.posX[i]!;
+      grid[i * 2 + 1] = pre.posY[i]!;
     }
-    const out = ops.concatAxis(parts, last);
-    for (const a of scratch) a.dispose();
-    for (const a of parts) a.dispose();
-    return out;
-  }
-
-  /** Apply 2D RoPE: x*cos + rotate_half(x)*sin. x: [1, L, H, headDim],
-   *  cosA/sinA: [1, L, 1, headDim] (broadcast over heads). */
-  #rope(x: MlxArray, cosA: MlxArray, sinA: MlxArray): MlxArray {
-    const rotated = this.#partitionedRotateHalf(x);
-    const a = ops.mul(x, cosA);
-    const b = ops.mul(rotated, sinA);
-    rotated.dispose();
-    const out = ops.add(a, b);
-    a.dispose();
-    b.dispose();
-    return out;
+    const positions = MlxArray.fromFloat32(grid, [1, pre.numReal, 2]);
+    try { return rope2dTables(positions, this.cfg.headDim, this.cfg.ropeTheta, this.#wdtype); }
+    finally { positions.dispose(); }
   }
 
   /** Self-attention. x: [1, L, hidden]. Single image, unpadded → full
    *  bidirectional attention (no mask). Consumes nothing, returns new. */
-  #attention(x: MlxArray, cosA: MlxArray, sinA: MlxArray, prefix: string): MlxArray {
+  #attention(x: MlxArray, rope: Rope2dTables, prefix: string): MlxArray {
     const L = x.shape[1]!;
     const { numHeads, numKvHeads, headDim, rmsNormEps } = this.cfg;
 
@@ -457,8 +370,8 @@ export class SiglipVisionTower {
     let k = proj("k_proj", numKvHeads, "k_norm.weight");
     let v = proj("v_proj", numKvHeads, null); // VisionRMSNormNoScale
 
-    q = dispose(q, this.#rope(q, cosA, sinA));
-    k = dispose(k, this.#rope(k, cosA, sinA));
+    q = dispose(q, applyRope2d(q, rope));
+    k = dispose(k, applyRope2d(k, rope));
 
     // [1, L, H, D] → [1, H, L, D]
     const qT = ops.transposeAxes(q, [0, 2, 1, 3]);
@@ -488,7 +401,7 @@ export class SiglipVisionTower {
     return out;
   }
 
-  /** GeGLU MLP. x: [1, L, hidden]. */
+  /** GeGLU MLP (uncompiled: the reference vision MLP is plain `nn.gelu_approx(gate) * up`). x: [1, L, hidden]. */
   #mlp(x: MlxArray, prefix: string): MlxArray {
     let g = this.#clipLinear(x, `${prefix}.gate_proj`);
     g = dispose(g, ops.geluApprox(g));
@@ -502,12 +415,12 @@ export class SiglipVisionTower {
   }
 
   /** One transformer block. Returns a new hidden; caller disposes the input. */
-  #block(h: MlxArray, cosA: MlxArray, sinA: MlxArray, i: number): MlxArray {
+  #block(h: MlxArray, rope: Rope2dTables, i: number): MlxArray {
     const eps = this.cfg.rmsNormEps;
     const p = `vision_tower.encoder.layers.${i}`;
 
     const normed = ops.rmsNorm(h, this.#w(`${p}.input_layernorm.weight`), eps);
-    let attn = this.#attention(normed, cosA, sinA, `${p}.self_attn`);
+    let attn = this.#attention(normed, rope, `${p}.self_attn`);
     normed.dispose();
     attn = dispose(attn, ops.rmsNorm(attn, this.#w(`${p}.post_attention_layernorm.weight`), eps));
     const h1 = ops.add(h, attn);
@@ -562,14 +475,13 @@ export class SiglipVisionTower {
     pos.dispose();
 
     // --- transformer (device-built RoPE tables, full bidirectional attn) ---
-    const { cosA, sinA } = this.#ropeTables(pre);
+    const rope = this.#ropeTables(pre);
     for (let i = 0; i < this.cfg.numLayers; i++) {
-      const next = this.#block(h, cosA, sinA, i);
+      const next = this.#block(h, rope, i);
       h.dispose();
       h = next;
     }
-    cosA.dispose();
-    sinA.dispose();
+    rope.dispose();
 
     // --- 3×3 avg-pool over the patch grid (×√hidden) ---
     // optiq computes the pool in f32 then casts back to bf16; match that.

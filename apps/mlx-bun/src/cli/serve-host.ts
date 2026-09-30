@@ -341,7 +341,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const management = createManagementRoutes({ invalidateLibrary, servedModelPaths: () => residentUnits().map(unit => unit.artifactPath) });
     const persistent = state.routes;
     const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await persistent.hub.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ?? await persistent.publishing.handle(request) };
+      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
