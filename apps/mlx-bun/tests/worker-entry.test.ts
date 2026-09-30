@@ -63,9 +63,6 @@ const preamble = `
   const group = () => ({ handle: async () => null });
   mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: group }));
   mock.module(app + "src/server/cache-routes.ts", () => ({ createCacheRoutes: group }));
-  mock.module(app + "src/server/adapter-routes.ts", () => ({ createAdapterRoutes: group }));
-  mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: group }));
-  mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes: group }));
   mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
   // The memory task model the admin surface runs the parent's synthesis calls on; each call records the gateway's lease count.
   mock.module(app + "src/cli/memory-engine.ts", () => ({ createInProcessMemoryClient: () => ({ client: undefined,
@@ -145,7 +142,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.deepEqual([state.downloads.active, state.downloads.snapshot()], [[], []]);
     assert.equal(state.sockets.upgrade(new Request("http://worker/ws/chat"), { upgrade: () => false }), null, "the worker's state serves no module socket");
     assert.equal(state.responses.size, 0);
-    for (const name of ["hub", "memory", "jobs", "models", "appModules", "publishing"])
+    for (const name of ["memory", "jobs", "appModules", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);
@@ -536,8 +533,7 @@ test("the app form composes the real app over the socket with private storage: p
         return new Response([frame("Hello"), frame(" world"), "data: [DONE]\\n\\n"].join(""), { headers: { "content-type": "text/event-stream" } });
       }, invalidateLibrary() {}, responseStats: () => ({}) }; } }));
     const group = () => ({ handle: async () => null });
-    for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"], ["adapter-routes", "createAdapterRoutes"],
-      ["adapter-artifact-routes", "createAdapterArtifactRoutes"]])
+    for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"]])
       mock.module(app + "src/server/" + module + ".ts", () => ({ [name]: group }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
       mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request => new URL(request.url).pathname === "/" ? new Response("web") : null }));

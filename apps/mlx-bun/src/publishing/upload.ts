@@ -7,6 +7,9 @@ export interface PublishRequest {
   private?: boolean;
   sourcePath?: string;
   jobId?: string;
+  commitMessage?: string;
+  /** Bytes of `file` sent so far out of `total`. */
+  onProgress?: (file: string, sent: number, total: number) => void;
   /** Cancels the upload; see `@mlx-bun/hub/upload` for what an abort can and cannot undo. */
   signal?: AbortSignal;
 }
@@ -27,6 +30,8 @@ export function createPublisher(options: {
     return (options.upload ?? uploadFolder)(source, request.repoId, {
       repoType: request.kind === "dataset" ? "dataset" : "model",
       private: !!request.private, token, ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.commitMessage !== undefined ? { commitMessage: request.commitMessage } : {}),
+      ...(request.onProgress ? { onProgress: request.onProgress } : {}),
     });
   };
 }

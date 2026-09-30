@@ -1,3 +1,4 @@
+import { CatalogFailure, type CatalogHub } from "@mlx-bun/app-services/portable";
 import { downloadModel, downloadsSnapshot, type DownloadOptions, type DownloadStatus } from "@mlx-bun/hub/download";
 
 export class DuplicateDownloadError extends Error {
@@ -100,5 +101,16 @@ export function createDownloadOwner(options: DownloadOwnerOptions = {}): Downloa
         await Promise.all(pending.map(({ settled }) => settled));
       })();
     },
+  };
+}
+
+/** The owner as the catalog's transfers: a repo already downloading is the catalog's `duplicate-download` failure. */
+export function catalogTransfers(owner: Pick<DownloadOwner, "start" | "snapshot">): NonNullable<CatalogHub["transfers"]> {
+  return {
+    start(id) {
+      try { owner.start(id); }
+      catch (error) { throw error instanceof DuplicateDownloadError ? new CatalogFailure("duplicate-download", error.message) : error; }
+    },
+    snapshot: () => owner.snapshot(),
   };
 }

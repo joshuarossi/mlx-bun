@@ -129,31 +129,6 @@ const commands = {
     instruct: { type: "string", description: "Query instruction; omit for document embeddings" },
     json: { type: "boolean", description: "Print one OpenAI-style embedding list instead of one vector per line" },
   } },
-  get: { description: "Download a model from Hugging Face (resumable, verified)", positional: "<org/repo | substring>", options: {
-    revision: { type: "string", description: "Git revision [default: main]" },
-  } },
-  ls: { description: "List downloaded models (one canonical revision per repo)", positional: "[query]", options: {
-    vision: { type: "boolean", description: "Only vision-capable models" },
-    "max-size": { type: "string", description: "Filter by weight size, e.g. 10GB or 800MB" },
-    "all-revisions": { type: "boolean", description: "Show each snapshot; canonical revision marked *" },
-  } },
-  scan: { description: "Re-index the Hugging Face cache without reading tensor bytes", positional: "", options: {} },
-  fit: { description: "Estimate model memory and decode speed on this machine", positional: "<query>", options: {
-    ctx: { type: "string", description: "Context tokens [default: 8192; a memory-planning runtime defaults to its own preset]" },
-    "kv-quant": { type: "string", description: "KV estimate: 4 | 8 | config | off [default: off]" },
-    skus: { type: "boolean", description: "Print the Apple Silicon SKU matrix" },
-  } },
-  gc: { description: "Reclaim superseded snapshots and dead blobs (preview by default)", positional: "", options: {
-    yes: { type: "boolean", description: "Actually delete the planned snapshots and blobs" },
-    "dry-run": { type: "boolean", description: "Never delete, even with --yes" },
-    force: { type: "boolean", description: "Also prune superseded snapshots with otherwise unique files" },
-  } },
-  upload: { description: "Push a local model directory to the Hugging Face Hub (mlx_lm.upload counterpart)", positional: "",
-    usage: "usage: mlx-bun upload --path <model-dir> --upload-repo <org/repo> [--private]", options: {
-    path: { type: "string", description: "Local model directory to upload (required)" },
-    "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
-    private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
-  } },
   memory: { description: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it", positional: "[subcommand] [args]",
     usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: {
     since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },

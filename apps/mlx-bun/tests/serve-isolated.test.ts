@@ -18,6 +18,8 @@ import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 // the in-process test drives real Pi over a real listener and WebSocket.
 const app = new URL("../", import.meta.url).pathname;
 const entry = join(app, "tests/fake-worker.ts");
+// The models module runs in the parent's persistent state: the hub, library and cache-cleanup routes are its.
+const models = await installedModules(item => item.id === "models");
 const workerEnv = { MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
 const model = (root: string) => ({ repoId: "org/model", path: join(root, "model"), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }) as ModelRecord;
 // Worker socket directories are made under os.tmpdir(), which the whole machine shares
@@ -37,8 +39,8 @@ test("the isolated composition and the serve entry never reach the engine or the
   // Static gate over import closures (type-only imports elided), following
   // workspace package exports; the child script below is the runtime proof.
   // serve.ts loads the model half only inside the direct composition, so its
-  // static closure is the isolated parent's; the only engine file reached is
-  // the contract edge through server/http.ts, as for serve-state.ts.
+  // static closure is the isolated parent's; the isolated composition reaches only the
+  // contract edge through server/http.ts (management routes), and serve.ts's static closure none.
   const root = realpathSync(app), workspace = resolve(root, "../..");
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const closure = (start: string, staticOnly: boolean) => {
@@ -65,7 +67,7 @@ test("the isolated composition and the serve entry never reach the engine or the
   expect(isolated.size).toBeGreaterThan(40);
   const serve = closure("src/cli/serve.ts", true);
   expect(serve.native).toEqual([]);
-  expect(serve.engine).toEqual(["src/engine/completion.ts"]);
+  expect(serve.engine).toEqual([]);
   expect(closure("src/cli/main.ts", true).engine).toEqual([]);
 });
 

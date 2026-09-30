@@ -91,7 +91,7 @@ loaded runtime memory plan; this draft adds no serving context or read-only CLI 
 Programmatic composition still accepts explicit context and read-only policy.
 
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
-`hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
+the model-management verbs (`get`, `ls`, `scan`, `fit`, `gc`, `upload`) are the models module's; `terminal.ts` owns formatting.
 `model-selection.ts` owns automatic selection policy; its pure choices live in
 `model-choice.ts` ([`mlx-bun/selection`](#selection-entry-mlx-bunselection)).
 `serve.ts` parses the serve flags and owns the process; its composition is
@@ -140,9 +140,9 @@ counts against the budget and, when it loads, drains a chat model to make room;
 it ends, so a model is never released under a stream. Anything else (no id, Pi's `local`,
 a name another server would know) is the current model's, as is every other model-scoped
 path (`/stats`, `/fit`, cache administration, adapters). The current model is the one the
-server started with until `POST /api/hub/serve` (the hub panel and model picker) or another
+server started with until `POST /api/hub/serve` (the Models panel) or another
 switch makes a different one current; naming a model in a request never changes it. `GET /v1/models`
-and `/library` list every local model with `resident` and `current`/`serving`; `GET /stats`
+lists every local model with `resident` and `current` (the models module's `/library` marks `serving` and `resident` from the host's own residency); `GET /stats`
 adds `models` (budget, resident bytes, each resident model's bytes, leases and last use).
 Managed jobs and Whisper decoding pause every resident model (`pauseAll`) and hold back new
 loads meanwhile. The host publishes `model.load` (with `resumed` when saved state was found),
@@ -280,10 +280,8 @@ generation defaults, and enforced context window from its worker's `/v1/models` 
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
 downloads, sessions, memory (the vault and the synthesis pipeline; its task
-model is the current worker's), tool-approval settings, and hub GC (which
-protects the snapshot of every resident worker's model, and the task model snapshot
-selected for a worker, kept for that worker's lifetime) live here and survive worker
-restarts. The chat module runs in this process and reaches the model through the served model host over this listener's
+model is the current worker's), the chat module's tool approvals, and the models module (library, hub, adapters
+and cache cleanup, which protects each resident model's reported snapshot uses) live here and survive worker restarts. The chat module runs in this process and reaches the model through the served model host over this listener's
 proxy, so web chat works under isolation (main answered 501 on `/ws/chat`); its
 `local` model is the current one. Managed jobs pause every resident worker through
 each worker's execution lease.
@@ -291,7 +289,7 @@ each worker's execution lease.
 **Routing and proxying.** `server/model-routes.ts` is the same router as in-process,
 over worker units: a model-scoped POST is leased to the worker of the model its body
 names (the lease lasts until the response ends, so a stream is never cut by an
-eviction), anything else is the current model's, `GET /v1/models`, `/library` and
+eviction), anything else is the current model's, `GET /v1/models` and
 `/stats` add residency, and `/v1/audio/*` and `/admin/transcription/*` go to Whisper's
 worker. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
 the hop-by-hop headers are stripped, bodies stream through unchanged, a client abort
@@ -308,9 +306,8 @@ the current model's worker first and `workers` listing every resident one with i
 `GET /health` (`{ status: "ok", isolated, engine, workers }`), `GET /stats` (the current
 worker's body with the residency block, this process's `response_store` and an `engine`
 report; with no worker, 200 with only this process's part and an `unavailable` message),
-and `GET /downloads`. `/admin/lease`, `/admin/drain`, `/admin/memory/complete`,
-`/admin/events` and `/v1/memory/synthesize` stay socket-only or this process's own
-and are not forwarded. The hub's `POST /api/hub/serve` is answered here: it acquires the
+and `/admin/lease`, `/admin/drain`, `/admin/memory/complete`, `/admin/events`, `/admin/adapters` and
+`/v1/memory/synthesize` stay socket-only or this process's own and are not forwarded. The hub's `POST /api/hub/serve` is answered here: it acquires the
 model (spawning its worker, draining another when memory is short) and makes it current;
 `404` for an id that is not local, `502` for a failed spawn.
 
@@ -504,14 +501,8 @@ handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
 
-`server/management-routes.ts` owns confirmed cache cleanup over the hub library
-(the tool-approval settings are the chat module's). GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
-its registry after rescanning, and invalidates discovery even if a rescan fails
-after deletion. Execution returns 409 if the plan would remove the active model
-snapshot, including a model reached through a symlink. Planning/execution errors
-use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
-use isolated approval files and synthetic caches with native MLX blocked.
-Hugging Face credential and upload routes are described under publishing below.
+Tool-approval settings are the chat module's. Confirmed cache cleanup (`/api/gc/*`) is the models module's,
+over the hub library and the model host's resident models.
 
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
@@ -849,10 +840,10 @@ escaping, attachments, panels, and interactions without a live server.
 module panel mounted through the shell). [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
 
-`server/adapter-routes.ts` presents available and resident adapters and mounts or
-unmounts through the engine execution lock. It borrows the engine; no HTTP
-handler owns tensors. Serving with an adapter still uses the shared scheduler
-and reports 501 for unsupported batched capabilities.
+Adapters are the models module's (`/v1/adapters*`, [module README](../../packages/module-models/README.md)): the routes
+reach the served model through its `adapters` operation, which `engine/adapter-operation.ts` builds over the loaded context
+(mount, unmount and merge run under the engine execution lock in the process that holds the model); no HTTP handler owns
+tensors. Serving with an adapter still uses the shared scheduler and reports 501 for unsupported batched capabilities.
 
 ## Memory vault
 
@@ -1024,8 +1015,8 @@ Fine-tuning is the train module's ([`@mlx-bun/module-train`](../../packages/modu
 quantize and datasets). This app installs it (`src/modules.ts`) and supplies its core services in the
 persistent state the same way as quantize's. The verbs run through the verb table (`cli/module-verbs.ts`); a verb
 that names no model runs on the app's automatic choice (`resolveModelAuto`, the one `serve` makes), which the
-verb host supplies to the catalog. Adapter merge and export stay here (`server/adapter-artifact-routes.ts`,
-below): merge holds the engine's execution lock.
+verb host supplies to the catalog. Adapter merge and export are the models module's, on the served model's `adapters`
+operation (below).
 
 Quantization and `convert` are the quantize module's ([`@mlx-bun/module-quantize`](../../packages/module-quantize/README.md):
 the `quantize` job, `/api/quantize/*`, the `convert` verb and `mlx-bun.convert`). This app installs it
@@ -1035,8 +1026,7 @@ lease until the child's process group is gone; the child (`cli/job-entry.ts`) ac
 registered the job kind and runs its runner. A one-shot `convert` (`cli/module-verbs.ts`) runs over a job
 store of its own, created on first use and removed when it ends, so its runs never appear in the job history.
 `convert`'s and `fuse`'s `--upload-repo` push through the modules' `catalog` service (`publishing/catalog-hub.ts`).
-`/api/model/resolve-folder`, the fine-tune wizard's folder picker, stays here (`server/model-folder-routes.ts`) over
-the same catalog.
+`/api/model/resolve-folder`, the fine-tune wizard's folder picker, is the models module's over the same catalog.
 
 Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child's process group is gone and output streams
@@ -1132,20 +1122,23 @@ job host, so its rows, logs and `/api/jobs` streams are the same as any job's;
 model for `generate`, sending the request to its own HTTP listener (its Unix socket in
 the worker app form; through the proxy in the default isolated mode), so jobs call the same app.
 
-Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
-Merge uses the public training library while holding the engine execution lock;
-export writes a CPU-only manifest without taking that lock. Merges land in
+Adapter merge/export requests are the models module's. Merge is the served model's `adapters` operation: it runs the
+public training library under that model's engine execution lock, in the process that holds the model. The default isolated
+parent loads no MLX, so `cli/worker-unit.ts` reaches the worker through `cli/worker-adapters.ts` (one JSON call on the
+worker's private `POST /admin/adapters`, served by `server/worker-routes.ts` on the worker's own operation), and
+`residency/leased-adapters.ts` holds the model resident for each call; `--in-process` calls the unit directly. Export writes
+a CPU-only manifest without taking any lease. Merges land in
 `~/.mlx-bun/adapters/merged-…` and exports in `~/.mlx-bun/exports/export-…`,
 with unique suffixes so simultaneous requests cannot overwrite each other's
 artifacts.
 
-`GET /v1/adapters/available` lists `adapterCatalogDirs()` in
-`server/adapter-routes.ts`: `~/.mlx-bun/adapters`, then, read-only, the stores
+`GET /v1/adapters/available` lists the catalog's adapters (`adapterStores()` in
+`storage/paths.ts`): `~/.mlx-bun/adapters`, then, read-only, the stores
 earlier versions wrote (`~/.cache/mlx-bun/adapters`,
 `~/.cache/mlx-bun/mlx-bun-finetunes`, `~/.cache/mlx-bun-finetunes`), each
 directory once. Nothing is moved. The [storage layout tests](tests/storage-layout.test.ts)
 drive each producer's real default (web fine-tune, merge, a `train` dry run,
-the memory stage reader) and require the route's own catalog to list it; they
+the memory stage reader) and require the app's catalog to list it; they
 check that a quantize job's and a default `convert` run's directories under
 `models/` are what the index, `serve <path|name>` and the folder picker read,
 that nothing lands in the hub cache, and that earlier `models--local--…`
@@ -1166,31 +1159,31 @@ datasets publish as dataset repos. Uploads need no model execution lease.
 storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
 
-`cli/upload.ts` is the `upload` verb, main's `mlx_lm.upload` counterpart:
+The `upload` verb, main's `mlx_lm.upload` counterpart, is the models module's:
 `mlx-bun upload --path <dir> --upload-repo <org/repo> [--private]` (`--path`
-is required; there is no working-directory default). It resolves the token through
-`publishing/credentials.ts`, fails before any request when the repo id,
+is required; there is no working-directory default). It publishes through the catalog
+(`publishing/catalog-hub.ts`, which resolves the token through
+`publishing/credentials.ts`), fails before any request when the repo id,
 directory, or write token is missing, and pushes a model repo through the same
 public hub uploader with the commit message "Upload with mlx-bun". SIGINT or
 SIGTERM aborts the transfer; nothing is committed after an abort. The
-[upload CLI tests](tests/upload-cli.test.ts) drive the verb with injected
-dependencies and spawn the real CLI against a local mock Hub with an isolated
-home directory and an invented token.
+[upload CLI tests](tests/upload-cli.test.ts) spawn the real CLI against a local mock Hub with an isolated
+home directory and an invented token; the module's own tests inject the catalog.
 
 ## Web hub
 
-`server/hub-routes.ts` owns the web hub list/search and the serve action.
-Local rows consume registry and fit APIs; search remains request-owned and
-cancels with its caller. `hub/downloads.ts` owns web-started transfers: admission
+The hub routes, the library and the Models panel are the models module's ([`@mlx-bun/module-models`](../../packages/module-models/README.md)),
+which this app installs in the persistent state (`placement: "app"`). `hub/downloads.ts` stays here: it owns web-started
+transfers, and `catalogTransfers` gives the catalog's `startDownload` and `downloads()` that owner. Admission
 is synchronous before the metadata request, so a duplicate submit answers 409;
 `GET /downloads` serves the owner's rows, one per transfer from admission (the
-browser shows "preparing…" until the listing and preflight finish) through the
+panel shows "preparing…" until the listing and preflight finish) through the
 hub tracker's live row to done, or to an error when the listing fails or
-shutdown cancels it; completion rescans the registry and
-invalidates discovery; shutdown aborts and joins every transfer before the engine
+shutdown cancels it; completion re-indexes the catalog, which announces `catalog.changed` (the module's library rows and the
+host's model listing follow it); shutdown aborts and joins every transfer before the engine
 closes, leaving resumable partials and publishing nothing. Selecting a model
-(`POST /api/hub/serve`, the hub panel's and model picker's Serve button) asks the
-attached host to make it current: it loads beside the running models when it fits,
+(`POST /api/hub/serve`, the panel's Serve button) asks the model host to serve it (`ModelHost.serve`, which the serving host
+lends through its link): it loads beside the running models when it fits,
 otherwise the least recently used one is drained first (see the model host), and the
 answer is `{ ok: true, model }` (404 for an id that is not a local model, 502 when it
 cannot load). A host that serves one model answers `restart_required` with the

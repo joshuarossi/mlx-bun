@@ -209,10 +209,10 @@ dependencies). A host implements them once and every module depends only on them
 
 | Service | Owns |
 | --- | --- |
-| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. `serve` holds each model in its own worker process (the parent runs this same manager over workers and loads nothing; `--in-process` loads them in the serving process). Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`), never for a model family. |
+| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. `serve` holds each model in its own worker process (the parent runs this same manager over workers and loads nothing; `--in-process` loads them in the serving process). Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`, and `adapters` on a model that mounts LoRA adapters: list, mount, unmount, merge under the model's execution lease, in the process that holds the model), never for a model family. A host that holds several models can switch which one answers requests that name none (`serve`). |
 | `jobs` | Persisted job state, task and child-process lifetimes, the GPU lease (`exclusive` jobs drain models first). |
 | `storage` | A module's declared entries under `MLX_BUN_HOME`; nothing else is written by default. |
-| `catalog` | Local models and adapters, fit estimates, downloads, registering outputs. |
+| `catalog` | Local models and adapters (with what the index knows of each: capabilities, quantization, sizes, support tier, snapshot), fit estimates, downloads (awaited, or started to outlive the caller), re-indexing, publishing, registering outputs. It announces `catalog.changed`. |
 | `events` | Publish/subscribe: the model host and a scheduler adapter publish loads, unloads, per-model memory, request timings, batch occupancy, queue depth and KV/prefix usage and hit rate; modules subscribe. Publishing appends to each subscriber's bounded queue and never waits for it; handlers run later, in order, and the oldest events of a subscriber that falls behind are dropped and counted. Libraries below the app never import it. |
 
 **Module contract.** A module is a workspace package `@mlx-bun/module-<id>` in
@@ -267,7 +267,8 @@ The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app sta
 model loader, the Whisper host and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
 request from the run's own stats and samples the gateway and caches) publish into the bus the modules subscribe to.
 A module's scoped bus publishes only its own `<id>.*` events, never a core type. A module that requires `jobs`
-(datasets, metrics, benchmarks) activates in the app's persistent state and gets the job service over the app's job host; a
+(datasets, metrics, benchmarks) or declares `placement: "app"` (models: it drives the serving host's residency and reaches a model only through
+its lease) activates in the app's persistent state, and one that requires `jobs` gets the job service over the app's job host; a
 runner that declares `gpu: "exclusive"` holds the engine's execution lease for its run.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,

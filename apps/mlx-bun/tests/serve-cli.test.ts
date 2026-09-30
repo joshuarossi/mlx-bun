@@ -363,10 +363,6 @@ for (const [sessionDir, jobPaths, expectedStore] of [
       assert.deepEqual(remembered, [[1, 2], [3, 4]]); assert.ok(options.tokenHistory);
       events.push("routes"); return { handle: async () => null, invalidateLibrary() {} };
     } }));
-    mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) {
-      assert.deepEqual(options.servedModelPaths(), ["/unused"]); assert.equal(typeof options.invalidateLibrary, "function");
-      return { handle: async () => null };
-    } }));
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes(options) {
       assert.equal(options.root(), memoryPaths.vault); return { handle: async () => null };
     } }));
@@ -380,8 +376,6 @@ for (const [sessionDir, jobPaths, expectedStore] of [
         close() { return closing ??= (async () => { events.push("jobs close"); })(); } }; } }));
     mock.module(app + "src/publishing/credentials.ts", () => ({ createHfCredentials(options) {
       assert.equal(options.tokenFile, storagePaths.credentialsFile); return { get: () => null, save() {} }; } }));
-    mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) {
-      assert.equal(options.outputRoot, storagePaths.artifactRoot); return { handle: async () => null }; } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     // The chat module runs in the persistent state and builds its Pi backend when a socket connects: read-only policy from the options,
     // its stores from the explicit paths or its storage entries, tools from the registry, the model through the model host.
@@ -509,12 +503,6 @@ test("startup wires the memory budget, runtime context, allocator limit, expert 
       return { handle: async () => null, invalidateLibrary() {} };
     } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes(input) { statusBudget = input.memoryBudgetBytes; return { handle: async () => null }; } }));
-    mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
-    // Like the real listener, close is idempotent: one drain and one engine release.
-    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
-      return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
@@ -758,7 +746,6 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     } }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing; listenerInput = input;

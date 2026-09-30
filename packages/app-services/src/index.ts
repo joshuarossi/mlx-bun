@@ -6,7 +6,7 @@ export { MODEL_LAYOUT, mlxBunHome, openModelRegistry, userHome } from "./home";
 export { activateModules, runVerb } from "./activation";
 export { createEventHub } from "./events";
 export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
-export { ModelHostFailure } from "./failure";
+export { CatalogFailure, ModelHostFailure } from "./failure";
 export { createHostServices } from "./host";
 export type { HostServices, HostServicesOptions, WhisperServing } from "./host";
 export { createModuleRoutes } from "./routes";

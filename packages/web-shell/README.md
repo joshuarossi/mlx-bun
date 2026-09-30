@@ -40,7 +40,8 @@ switch, and attached for good once created, so a stream or a turn survives a vis
 `enter()` and `leave()` as its page is shown and hidden. A panel entry's `properties` are set on the element before it
 attaches, for what a panel takes from its host beyond its connection. A tag that is not defined shows a note instead of failing. `panelsFromManifests`
 builds the list from module manifests: `apiBase` is `/api/<id>`, `eventsUrl` the module's first server-sent `GET`
-route (empty when it has none). The app's build (`apps/mlx-bun/src/web/build.ts`) imports the panel entry and manifest of
+route (empty when it has none), and `developer` is the manifest panel's own (`developer: false` keeps a panel every
+user needs, such as Models, out of the Developer switch). The app's build (`apps/mlx-bun/src/web/build.ts`) imports the panel entry and manifest of
 each module its `package.json` lists that exports `./panel`, and hands the manifests to it.
 
 ## Palette

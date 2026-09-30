@@ -34,6 +34,7 @@
         "@mlx-bun/module-chat": "workspace:*",
         "@mlx-bun/module-datasets": "workspace:*",
         "@mlx-bun/module-metrics": "workspace:*",
+        "@mlx-bun/module-models": "workspace:*",
         "@mlx-bun/module-quantize": "workspace:*",
         "@mlx-bun/module-train": "workspace:*",
         "@mlx-bun/module-transcription": "workspace:*",
@@ -157,6 +158,21 @@
       "version": "0.0.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
+        "happy-dom": "20.10.6",
+      },
+    },
+    "packages/module-models": {
+      "name": "@mlx-bun/module-models",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/hub": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/training": "workspace:*",
       },
       "devDependencies": {
         "@mlx-bun/app-host": "workspace:*",
@@ -489,6 +505,8 @@
     "@mlx-bun/module-datasets": ["@mlx-bun/module-datasets@workspace:packages/module-datasets"],
 
     "@mlx-bun/module-metrics": ["@mlx-bun/module-metrics@workspace:packages/module-metrics"],
+
+    "@mlx-bun/module-models": ["@mlx-bun/module-models@workspace:packages/module-models"],
 
     "@mlx-bun/module-quantize": ["@mlx-bun/module-quantize@workspace:packages/module-quantize"],
 

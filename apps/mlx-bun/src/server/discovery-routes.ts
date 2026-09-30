@@ -1,16 +1,12 @@
+import type { Registry } from "@mlx-bun/hub/registry";
+import { openRegistry } from "../storage/paths";
 import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
-import { fit } from "@mlx-bun/inference/execution/fit";
-import type { Registry } from "@mlx-bun/hub/registry";
-import type { DownloadStatus } from "@mlx-bun/hub/download";
-import { openRegistry } from "../storage/paths";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
 export type DiscoveryRoute =
-  | "library"
-  | "downloads"
   | "api-index"
   | "health"
   | "models";
@@ -18,8 +14,6 @@ export type DiscoveryRoute =
 export function matchDiscoveryRoute(method: string, pathname: string): DiscoveryRoute | null {
   if (method !== "GET") return null;
   switch (pathname) {
-    case "/library": return "library";
-    case "/downloads": return "downloads";
     case "/v1": return "api-index";
     case "/health": return "health";
     case "/v1/models": return "models";
@@ -29,7 +23,6 @@ export function matchDiscoveryRoute(method: string, pathname: string): Discovery
 
 export interface DiscoveryRoutes {
   handle(url: URL, request: Request): Promise<Response | null>;
-  invalidateLibrary(): void;
 }
 
 export interface TranscriptionInfo {
@@ -43,73 +36,12 @@ export function createDiscoveryRoutes(
   startedAt: number,
   transcription: () => Promise<TranscriptionInfo | null> = async () => null,
   createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => openRegistry(),
-  /** Progress rows for `/downloads`; the default is the hub package's process tracker. */
-  downloads?: () => readonly DownloadStatus[],
   /** The server's own sampling defaults (`--temperature`, `--top-p`, `--top-k`): they win over the model's, as they do for a request that names none. */
   serverDefaults: { temperature?: number; topP?: number; topK?: number } = {},
 ): DiscoveryRoutes {
-  let libraryCache: { at: number; rows: unknown[] } | null = null;
-
   return {
-    invalidateLibrary() {
-      libraryCache = null;
-    },
-
     async handle(url, request) {
       switch (matchDiscoveryRoute(request.method, url.pathname)) {
-        case "library": {
-          if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
-            const { visionCapable, audioCapable } = await import("@mlx-bun/hub/registry");
-            const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
-            const { listedSupportTier } = await import("@mlx-bun/inference/models/support");
-            const registry = createRegistry();
-            try {
-            await registry.scan();
-            const rows = [];
-            for (const model of registry.listCanonical()) {
-              const tier = listedSupportTier(model);
-              const supported = tier !== null;
-              let assessment = null;
-              try {
-                const config = await loadModelConfig(model.path);
-                const result = fit(
-                  config,
-                  model.sizeBytes,
-                  8192,
-                  undefined,
-                  undefined,
-                  model.expertsBytes,
-                );
-                assessment = {
-                  fits: result.fits,
-                  max_safe_context: result.maxSafeContext,
-                  predicted_decode_tps: result.predictedDecodeTps,
-                };
-              } catch {}
-              rows.push({
-                repo_id: model.repoId,
-                model_type: model.modelType,
-                size_bytes: model.sizeBytes,
-                quant_bits: model.quantBits,
-                vision: visionCapable(model),
-                audio: audioCapable(model),
-                supported,
-                support_tier: tier,
-                serving: model.repoId === ctx.modelId,
-                assessment,
-              });
-            }
-            libraryCache = { at: Date.now(), rows };
-            } finally { registry.close(); }
-          }
-          return Response.json({ models: libraryCache.rows });
-        }
-
-        case "downloads": {
-          const rows = downloads ? downloads() : (await import("@mlx-bun/hub/download")).downloadsSnapshot();
-          return Response.json({ downloads: rows });
-        }
-
         case "api-index":
           return Response.json({
             name: "mlx-bun",

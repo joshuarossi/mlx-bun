@@ -7,7 +7,7 @@ export { createEventHub } from "./events";
 export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
 export { createRegistryCatalog } from "./catalog";
 export type { CatalogHub, RegistryCatalogOptions } from "./catalog";
-export { ModelHostFailure } from "./failure";
+export { CatalogFailure, ModelHostFailure } from "./failure";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";
 export { createModuleSockets } from "./sockets";

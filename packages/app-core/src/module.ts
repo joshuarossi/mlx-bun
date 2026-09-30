@@ -92,17 +92,28 @@ export interface CliStep {
   fail(text?: string): void;
 }
 
+export interface CliColumn {
+  readonly header: string;
+  readonly align?: "left" | "right";
+  readonly paint?: (cell: string, row: number) => string;
+}
+
 /** How a verb presents itself: the host owns the look, so a verb stays the same in a terminal, a script or a native app's console. */
 export interface CliTerminal {
   step(text: string): CliStep;
   /** A bordered block, one output line per entry. */
   box(lines: readonly string[]): void;
+  /** A section header on its own lines. */
+  heading(text: string): void;
+  /** An aligned table with headers; `paint` styles a padded cell. */
+  table(columns: readonly CliColumn[], rows: readonly (readonly string[])[]): void;
   readonly style: {
     dim(text: string): string;
     bold(text: string): string;
     green(text: string): string;
     accent(text: string): string;
     url(text: string): string;
+    gradient(text: string): string;
   };
 }
 
@@ -142,6 +153,8 @@ export interface PanelSpec {
   /** A workspace panel is the product's own page: it fills the shell's page instead of sitting in a titled card, is listed
    * first and stays outside the Developer switch. Default false. */
   readonly workspace?: boolean;
+  /** Listed among developer tools by default; false for a panel every user needs. */
+  readonly developer?: boolean;
 }
 
 /** Set on the element's `connection` property before it connects. */
@@ -177,6 +190,9 @@ export interface AppModule<R extends CoreServiceName = CoreServiceName> {
   readonly title: string;
   readonly summary: string;
   readonly requires: readonly R[];
+  /** Where a host that keeps its persistent services apart from its model host activates the module: `app` beside the jobs, the
+   * served model's wire and the serving host's residency, `model` with the model host. Default `app` for a module that requires `jobs`, else `model`. */
+  readonly placement?: "app" | "model";
   readonly routes?: readonly RouteSpec[];
   readonly sockets?: readonly SocketSpec[];
   readonly verbs?: readonly CliVerbSpec[];

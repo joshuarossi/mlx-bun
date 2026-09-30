@@ -7,10 +7,10 @@
 // serves is attached explicitly; no service reaches a model through globals.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppModule } from "@mlx-bun/app-core";
+import type { AppModule, ModelCatalog } from "@mlx-bun/app-core";
 import { activateModules, createEventHub, createModuleRoutes, createModuleSockets, createRegistryCatalog, createStorage, mlxBunHome, type EventHub, type ModuleSockets } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
-import { createDownloadOwner, type DownloadOwner } from "../hub/downloads";
+import { catalogTransfers, createDownloadOwner, type DownloadOwner } from "../hub/downloads";
 import { JobStore } from "../jobs/db";
 import { createJobHost } from "../jobs/host";
 import { createJobService } from "../jobs/service";
@@ -19,8 +19,6 @@ import { vaultRoot } from "../memory/vault";
 import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
-import { createHubRoutes } from "../server/hub-routes";
-import { createModelFolderRoutes } from "../server/model-folder-routes";
 import { createJobRoutes } from "../server/job-routes";
 import type { InProcessMemoryClient } from "./memory-engine";
 import { createServedModelHost, type ServedHostLink } from "./served-model-host";
@@ -30,7 +28,7 @@ import { createMemorySynthesis } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
 import { createWebHandler } from "../web/assets";
-import { openRegistry, storagePath } from "../storage/paths";
+import { adapterStores, openRegistry, storagePath } from "../storage/paths";
 
 /** Where an embedder or a test put the chat's stores instead of the module's storage entries (`sessions/`, `pi-sessions/`,
  * `tool-approvals.json` under MLX_BUN_HOME); an explicit path always wins. `cwd` is the directory Pi's tools work in. */
@@ -65,8 +63,6 @@ export interface ModelHostLink extends ServedHostLink {
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   /** A finished download or job changes the model library the host lists. */
   invalidateLibrary(): void;
-  /** Make the named local model the one served (`POST /api/hub/serve`): loaded beside the others when it fits, else in place of the least recently used one. Absent on a host that serves one model. */
-  serve?(model: string, signal: AbortSignal): Promise<{ model: string }>;
 }
 
 export interface RouteGroup { handle(request: Request): Promise<Response | null> }
@@ -85,8 +81,7 @@ export interface AppState {
   readonly sockets: ModuleSockets;
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
-    hub: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    models: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
+    memory: RouteGroup; jobs: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -102,22 +97,25 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const web = await createWebHandler();
   let host: ModelHostLink | undefined;
   const requireHost = () => { if (!host) throw new Error("no model host is attached"); return host; };
+  const events = createEventHub();
   const invalidateLibrary = () => { host?.invalidateLibrary(); };
+  // A change to the catalog (a download, a finished job, a cleanup) makes the host forget the model listing it routes by.
+  events.subscribe(["catalog.changed"], invalidateLibrary);
+  const libraryChanged = () => { events.publish({ type: "catalog.changed", at: Date.now() }); };
+  let catalog!: ModelCatalog;
   // Web-started transfers outlive their request. The owner's rows feed
-  // discovery and chat; completion refreshes the registry and discovery, and
+  // the catalog and chat; completion re-indexes the cache, and
   // shutdown joins every transfer before the engine closes.
   const downloads = createDownloadOwner({
     onComplete: async repoId => {
-      const registry = openRegistry();
-      try { await registry.scan(); } finally { registry.close(); }
-      invalidateLibrary();
+      await catalog.rescan();
       console.log(`[hub] download complete: ${repoId}`);
     },
     onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
   });
   const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
     acquire: signal => requireHost().acquireExecutionLease(signal),
-    onComplete: () => invalidateLibrary(),
+    onComplete: libraryChanged,
     ...(storagePaths.jobsDb !== undefined || storagePaths.jobsLogs !== undefined ? {
       createStore: () => new JobStore(storagePaths.jobsDb,
         storagePaths.jobsLogs ?? (storagePaths.jobsDb !== undefined ? join(dirname(storagePaths.jobsDb), "jobs") : undefined)),
@@ -125,13 +123,14 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   });
   const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
-  // The model catalog the state's modules and the folder picker share: the hub cache and the models directory, with the app's token behind downloads and pushes.
-  const catalog = createRegistryCatalog({ hub: createCatalogHub(credentials),
+  // The model catalog the state's modules share: the hub cache, the models directory and the adapter stores, with the app's token behind
+  // pushes and its download owner behind the downloads that outlive a request.
+  catalog = createRegistryCatalog({ events, adapterDirs: () => adapterStores(storagePaths.artifactRoot),
+    hub: createCatalogHub(credentials, { transfers: catalogTransfers(downloads) }),
     ...(storagePaths.artifactRoot ? { registry: () => openRegistry(storagePaths.artifactRoot), modelsRoot: () => storagePath("models", storagePaths.artifactRoot) } : {}) });
   // The installed modules that need job runners (datasets) run here, beside
   // the job store. They reach the served model through the attached host's own
   // API: over its Unix socket when it listens on one, else over TCP to its port.
-  const events = createEventHub();
   const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
   const served = createServedModelHost({ link: () => host,
     fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
@@ -165,10 +164,8 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     throw new Error("memory synthesis has no task model in this composition");
   } });
   const routes: AppState["routes"] = {
-    hub: createHubRoutes({ downloads, serve: async (model, signal) => host?.serve ? await host.serve(model, signal) : undefined }),
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
-    models: createModelFolderRoutes(catalog),
     appModules: createModuleRoutes(loaded.routes),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),

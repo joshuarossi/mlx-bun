@@ -16,7 +16,6 @@ import { createEngineTelemetry } from "../engine/telemetry";
 import type { TranscriptionInfo } from "../server/discovery-routes";
 import type { ModelPromptBuilder } from "../server/prompt-contracts";
 import type { ResponseHistory } from "../server/responses";
-import type { DownloadStatus } from "@mlx-bun/hub/download";
 import { resolveServingLimits, validatePagedServingOptions, type ServeOptions } from "./serve-options";
 import type { RouteGroup } from "./serve-state";
 
@@ -53,8 +52,6 @@ export interface UnitShared {
   readonly responses: ResponseHistory;
   /** The `events` bus: each unit's engine publishes its request timings and samples through it. */
   readonly events: Pick<EventBus, "publish">;
-  readonly downloads: () => readonly DownloadStatus[];
-  readonly artifactRoot?: string;
   readonly toolApprovalsFile?: string;
   readonly transcription: () => Promise<TranscriptionInfo | null>;
   /** One saved-state budget across every unit's store. */
@@ -68,9 +65,8 @@ export interface UnitShared {
 export interface ServingUnit extends ResidentUnit {
   readonly context: LoadedModelContext;
   readonly artifactPath: string;
-  /** Everything model-scoped: status, cache administration, adapters, adapter artifacts, and the wire routes. */
+  /** Everything model-scoped: status, cache administration and the wire routes. */
   readonly routes: RouteGroup;
-  invalidateLibrary(): void;
   /** Stop background work (idle demotion) ahead of a drain. */
   stopBackground(): void;
   flush(): Promise<DurabilityFlushResult>;
@@ -88,10 +84,9 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
   let cleanup: (() => void | Promise<unknown>) | undefined = () => releaseContext(context, input.ownership);
   try {
     const [{ modelServingBinding, createCacheServices, createAppEngine },
-      { createCompletionRoutes }, { GeneratedTokenHistory }, { createStatusRoutes }, { createAdapterRoutes }, { createCacheRoutes },
-      { createAdapterArtifactRoutes }] = await Promise.all([
+      { createCompletionRoutes }, { GeneratedTokenHistory }, { createStatusRoutes }, { createCacheRoutes }, { createAdapterOperation }] = await Promise.all([
       import("../engine"), import("../server/routes"), import("../server/generated-token-history"), import("../server/status-routes"),
-      import("../server/adapter-routes"), import("../server/cache-routes"), import("../server/adapter-artifact-routes"),
+      import("../server/cache-routes"), import("../engine/adapter-operation"),
     ]);
     // The default prompt path renders the context's template; a supplied builder replaces it.
     if (!input.buildPrompt) requireChatTemplate(context);
@@ -130,7 +125,7 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
       undefined, undefined, 0, options.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
     const limits = resolveServingLimits(options, context.memoryPlan, admission);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, ...limits, tokenHistory, responseHistory: shared.responses, downloads: shared.downloads,
+      kvScheme: caches.kvScheme, ...limits, tokenHistory, responseHistory: shared.responses,
       transcription: shared.transcription,
       ...(input.buildPrompt ? { buildPrompt: input.buildPrompt } : {}),
       ...(input.defaultAdapter ? { defaultAdapter: input.defaultAdapter } : {}) });
@@ -140,10 +135,8 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
       ssdCacheDir: options.cache.ssdCacheDir, memoryBudgetBytes: options.memoryBudgetBytes });
     const cacheAdmin = createCacheRoutes(caches);
-    const adapters = createAdapterRoutes(context, engine.gateway);
-    const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: shared.artifactRoot });
-    const routes: RouteGroup = { handle: async request => await status.handle(request) ?? await cacheAdmin.handle(request) ??
-      await adapters.handle(request) ?? await adapterArtifacts.handle(request) ?? await completions.handle(request) };
+    const adapters = createAdapterOperation(context, engine.gateway);
+    const routes: RouteGroup = { handle: async request => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await completions.handle(request) };
     const artifactPath = input.artifact?.path ?? context.model.config.modelDir;
     // Weights plus the KV and working set of a typical context, plus the RAM prefix cache it holds now.
     const reserve = context.memoryPlan ? 0 : servingReserveBytes(context.model.config, context.model.weightsBytes,
@@ -158,9 +151,9 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
       memory: () => ({ weightsBytes: context.model.weightsBytes, kvBytes: engine.gateway.kvBytes.projected, prefixCacheBytes: caches.promptCache.totalBytes }),
       operationsFor: () => ({
         generate: async request => await completions.handle(request) ?? Response.json({ error: { message: "Not found" } }, { status: 404 }),
+        adapters,
       }),
       pause: signal => engine.gateway.acquireExecutionLease(signal),
-      invalidateLibrary: () => completions.invalidateLibrary(),
       stopBackground: () => { telemetry.stop(); caches.stopIdleDemotion(); },
       flush: () => caches.flush(),
       stats: () => caches.stats(),

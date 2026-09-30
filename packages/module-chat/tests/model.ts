@@ -77,6 +77,7 @@ export function scriptedModel(id = "org/scripted"): ScriptedModel {
       return lease;
     },
     async plan() { return { fits: true, requiredBytes: 0, freeBytes: 0, evict: [] }; },
+    async serve(id) { model.current = id; },
     async unload() {}, pin() {}, unpin() {}, resident: () => [],
     stats: () => ({ resident: true, loads: 1, unloads: 0, lastLoadMs: 0, idleUnloadSec: null }),
   };

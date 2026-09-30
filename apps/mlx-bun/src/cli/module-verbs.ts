@@ -36,7 +36,9 @@ export async function runInstalledVerb(name: string, input: string[] | { values:
       // Only the verb's own module activates (a verb of one module never starts another's runners).
       modules: () => installedModules(manifest => manifest.verbs?.some(verb => verb.name === name) ?? false),
       activated: loaded => jobService.serve(loaded.jobs),
-      terminal: { step: terminal.step, box: lines => terminal.box([...lines]), style: terminal.style } });
+      terminal: { step: terminal.step, box: lines => terminal.box([...lines]), heading: terminal.h1,
+        table: (columns, rows) => terminal.table(columns.map(column => ({ ...column })), rows.map(row => [...row])),
+        style: { ...terminal.style, gradient: terminal.gradient } } });
   } finally {
     try { await jobs.close(); } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
   }

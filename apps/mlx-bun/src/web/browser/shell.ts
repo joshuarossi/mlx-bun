@@ -301,23 +301,6 @@ export function initDrawer(): void {
 export let memPanelClose: (() => void) | null = null;
 export function setMemPanelClose(fn: (() => void) | null): void { memPanelClose = fn; }
 
-/** Same pattern, for the model picker popover (model-picker.ts). */
-export let modelPopClose: (() => void) | null = null;
-export function setModelPopClose(fn: (() => void) | null): void { modelPopClose = fn; }
-
-/** Same pattern, for the Model Hub panel (hub.ts) —
- *  opened from the model picker's "Browse models…" action. */
-export let hubPanelClose: (() => void) | null = null;
-export function setHubPanelClose(fn: (() => void) | null): void { hubPanelClose = fn; }
-
-/** Registered by hub.ts's initHubPanel(); called by model-picker.ts's
- *  "Browse models…" button. Its own body is re-rendered via innerHTML on
- *  every popover open (see refreshModelPop()), so the button can't hold a
- *  handler bound once at boot the way the overlay-close callbacks above
- *  do — model-picker.ts re-wires the click to this registered function
- *  each time it re-renders instead. */
-export let openHubFromModelPicker: (() => void) | null = null;
-export function setOpenHubFromModelPicker(fn: (() => void) | null): void { openHubFromModelPicker = fn; }
 
 /** The overlays Escape closes, in priority order (the shell adds its shortcut sheet first): each is open when its
  *  element carries `.open` and its page registered a close callback. */
@@ -331,8 +314,6 @@ export function registerOverlays(palette: Palette): void {
   // The chat panel's popovers (sampling, system prompt, adapter table) close themselves.
   add({ isOpen: () => !!chatPanel()?.popoverOpen(), close: () => { chatPanel()?.closePopover(); } });
   add(byId("mem-overlay", () => memPanelClose));
-  add(byId("model-pop", () => modelPopClose));
-  add(byId("hub-overlay", () => hubPanelClose));
   add(palette);
   add({ isOpen: () => !!chatPanel()?.drawerOpen(), close: () => chatPanel()?.closeDrawer() });
 }
@@ -423,6 +404,13 @@ export async function pollIdentity(): Promise<void> {
     $("nav-model").textContent = "server unreachable";
     setConn("bad", "unreachable — retrying");
   }
+}
+
+/** The nav's model label opens the Models panel (a page the shell mounts from the models module); a switch or an adapter change made
+ * there re-reads the served model's identity at once instead of at the next poll. */
+export function initModelLink(): void {
+  $("nav-model").onclick = () => { location.hash = "#/models"; };
+  document.addEventListener("mlx-models-changed", () => { void pollIdentity(); });
 }
 
 interface DownloadInfo {

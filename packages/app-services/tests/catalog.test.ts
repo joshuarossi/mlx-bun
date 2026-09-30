@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -116,4 +116,83 @@ test("a picked folder is located in the hub cache, the app's models directory, o
     expect(await catalog.locate({ name: "nothing-here" })).toBeUndefined();
     expect(await catalog.locate({})).toBeUndefined();
   } finally { if (previous === undefined) delete process.env.HF_HUB_CACHE; else process.env.HF_HUB_CACHE = previous; rmSync(dir, { recursive: true, force: true }); }
+});
+
+const indexed = (repoId: string, path: string, extra: Partial<ModelRecord> = {}) => record(repoId, "gemma4", { path, paramCount: 4e9, quantBits: 4, quantGroupSize: 64, license: "gemma",
+  expertsBytes: 10, sidecarBytes: 20, hasVisionSidecar: true, visionConfigType: "gemma4_vision", hasAudioConfig: true, hasAudioTower: false, hasToolTemplate: true, hasKvConfig: false, ...extra });
+
+test("an entry carries what the index knows of the model: capabilities, quantization, sizes, support tier and the snapshot it is", async () => {
+  const rows = [indexed("org/gemma", "/hub/models--org--gemma/snapshots/abc123")];
+  const [entry] = await createRegistryCatalog({ registry: registry(rows) }).list();
+  expect(entry!.details).toEqual({ parameters: 4e9, quantBits: 4, quantGroupSize: 64, license: "gemma", vision: true, audio: false, tools: true, kvQuant: false,
+    expertsBytes: 10, sidecarBytes: 20, supportTier: "targeted", revision: "abc123", canonical: true });
+  const plain = (await createRegistryCatalog({ registry: registry([record("org/plain", "qwen3", { path: "/models/plain" })]) }).list())[0]!;
+  expect(plain.details).toMatchObject({ vision: false, audio: false, quantBits: null, license: null, expertsBytes: 0 });
+  expect("revision" in plain.details!).toBe(false);
+});
+
+test("listing filters reach the index, companions are hidden unless asked for, every snapshot can be listed with the canonical one marked, and a refresh re-indexes first", async () => {
+  const events: string[] = [];
+  const filters: unknown[] = [];
+  const canonical = indexed("org/gemma", "/hub/models--org--gemma/snapshots/new"), old = indexed("org/gemma", "/hub/models--org--gemma/snapshots/old");
+  const drafter = record("org/drafter", "gemma4_assistant", { path: "/hub/drafter" });
+  const catalog = createRegistryCatalog({ registry: () => ({
+    list: (filter?: unknown) => { filters.push(["list", filter]); return [canonical, old, drafter]; },
+    listCanonical: (filter?: unknown) => { filters.push(["canonical", filter]); return [canonical, drafter]; },
+    resolve: () => { throw new Error("unused"); }, scan: async () => { events.push("scan"); return 0; }, close: () => {} }) });
+  expect((await catalog.list()).map(entry => entry.id)).toEqual(["org/gemma"]);
+  expect((await catalog.list({ companions: true })).map(entry => entry.id)).toEqual(["org/gemma", "org/drafter"]);
+  const snapshots = await catalog.list({ revisions: "snapshots", vision: true, maxBytes: 5000, query: "gem" });
+  expect(snapshots.map(entry => [entry.details!.revision, entry.details!.canonical])).toEqual([["new", true], ["old", false]]);
+  expect(filters.at(-2)).toEqual(["canonical", { vision: true, maxBytes: 5000, query: "gem" }]);
+  expect(filters.at(-1)).toEqual(["list", { vision: true, maxBytes: 5000, query: "gem" }]);
+  expect(events).toEqual([]);
+  await catalog.list({ refresh: true });
+  expect(events).toEqual(["scan"]);
+});
+
+test("a re-index and a download announce that the catalog changed; a download passes its revision through; downloads that outlive the caller belong to the host's transfers", async () => {
+  const published: unknown[] = [], fetched: unknown[] = [];
+  const rows = [indexed("org/tiny", "/hub/snapshot")];
+  const transfers: string[] = [];
+  const withScan = () => ({ ...registry(rows)(), scan: async () => 3 });
+  const catalog = createRegistryCatalog({ registry: withScan as never, events: { publish: event => { published.push(event); } },
+    hub: { download: async (id, options) => { fetched.push([id, options.revision]); return "/hub/snapshot"; },
+      transfers: { start: id => { transfers.push(id); }, snapshot: () => [{ repoId: "org/tiny", state: "active", currentFile: null, receivedBytes: 1, totalBytes: 2 }] } } });
+  expect(await catalog.rescan()).toBe(3);
+  await catalog.download("org/tiny", { revision: "abc" });
+  expect(fetched).toEqual([["org/tiny", "abc"]]);
+  expect(published.map(event => (event as { type: string }).type)).toEqual(["catalog.changed", "catalog.changed"]);
+  catalog.startDownload("org/tiny");
+  expect(transfers).toEqual(["org/tiny"]);
+  expect(catalog.downloads()).toEqual([{ repoId: "org/tiny", state: "active", currentFile: null, receivedBytes: 1, totalBytes: 2 }]);
+  const bare = createRegistryCatalog({ registry: registry([]) });
+  expect(() => bare.startDownload("org/x")).toThrow("this host does not download models");
+  try { bare.startDownload("org/x"); } catch (error) { expect((error as { code: string }).code).toBe("not-supported"); }
+  // Without a host's transfers the rows are the hub library's own tracker.
+  expect(Array.isArray(bare.downloads())).toBe(true);
+});
+
+test("adapters are listed from the stores in order, once per directory, with their rank, scale, base model and weights size", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-catalog-adapters-"));
+  try {
+    const store = join(dir, "adapters"), legacy = join(dir, "legacy");
+    const adapter = (root: string, id: string, config: object, bytes: number) => {
+      mkdirSync(join(root, id), { recursive: true });
+      writeFileSync(join(root, id, "adapters.safetensors"), new Uint8Array(bytes));
+      writeFileSync(join(root, id, "adapter_config.json"), JSON.stringify(config));
+    };
+    adapter(store, "sft", { lora_parameters: { scale: 2, rank: 8 }, base_model_name_or_path: "/x/models--org--Base/snapshots/abc" }, 64);
+    adapter(legacy, "old", { r: 4, lora_alpha: 8 }, 32);
+    mkdirSync(join(store, "not-an-adapter"));
+    symlinkSync(store, join(dir, "alias"));
+    const catalog = createRegistryCatalog({ adapterDirs: () => [store, join(dir, "alias"), legacy, join(dir, "missing")] });
+    const adapters = await catalog.list({ kind: "adapter" });
+    expect(adapters.map(entry => ({ id: entry.id, kind: entry.kind, bytes: entry.bytes, base: entry.base, adapter: entry.adapter, operations: entry.operations }))).toEqual([
+      { id: "sft", kind: "adapter", bytes: 64, base: "org/Base", adapter: { rank: 8, scale: 2 }, operations: [] },
+      { id: "old", kind: "adapter", bytes: 32, base: undefined, adapter: { rank: 4, scale: 2 }, operations: [] },
+    ]);
+    expect(adapters[0]!.directory).toBe(join(store, "sft"));
+    expect(await createRegistryCatalog().list({ kind: "adapter" })).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

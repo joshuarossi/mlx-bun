@@ -46,6 +46,7 @@
     "@mlx-bun/module-chat": "workspace:*",
     "@mlx-bun/module-datasets": "workspace:*",
     "@mlx-bun/module-metrics": "workspace:*",
+    "@mlx-bun/module-models": "workspace:*",
     "@mlx-bun/module-quantize": "workspace:*",
     "@mlx-bun/module-train": "workspace:*",
     "@mlx-bun/module-transcription": "workspace:*",

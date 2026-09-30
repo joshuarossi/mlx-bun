@@ -5,8 +5,7 @@
 // socket with the body streaming through (hop-by-hop headers stripped, a client
 // abort aborting the proxied fetch so the worker sees the disconnect). The
 // parent answers `/engine`, `/health` and `/stats` (with the workers'
-// contribution), `/downloads` from its own transfer owner, and `/v1/responses`
-// through the history client. The workers' private admin paths never forward.
+// contribution) and `/v1/responses` through the history client. The workers' private admin paths never forward.
 import { describeExit, EngineUnavailableError, type WorkerSupervisor, type WorkerSupervisorState } from "../jobs/worker-supervisor";
 import type { createResponsesClient } from "./responses-client";
 
@@ -17,7 +16,7 @@ const HOP_BY_HOP = new Set([
 /** Never forwarded to a worker: its private socket surface (which only the
  * parent itself calls; unmatched here, the listener answers 404) and the
  * parent's own synthesis route (served by its earlier group). */
-const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/admin/memory/complete", "/admin/events", "/v1/memory/synthesize"]);
+const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/admin/memory/complete", "/admin/events", "/admin/adapters", "/v1/memory/synthesize"]);
 
 const encoder = new TextEncoder();
 /** A copy without the hop-by-hop headers and the ones `Connection` names
@@ -68,8 +67,6 @@ export interface ProxyRoutesOptions {
   /** The model router: it leases the worker a request belongs to and forwards to it. */
   models: { handle(request: Request): Promise<Response | null> };
   responses: ReturnType<typeof createResponsesClient>;
-  /** Progress rows for `GET /downloads`; the parent owns transfers. */
-  downloads(): readonly unknown[];
   /** The model the server started with. */
   modelId: string;
   startedAt: number;
@@ -125,12 +122,6 @@ export async function forwardToWorker(worker: WorkerSupervisor, request: Request
   }
 }
 
-/** A finished download or job changes the library every ready worker lists. */
-export function refreshLibraries(workers: readonly WorkerEngine[]): void {
-  for (const { supervisor } of workers)
-    if (supervisor.state === "ready") void supervisor.fetch("http://engine/library?refresh=1").then(response => response.arrayBuffer()).catch(() => {});
-}
-
 export function createProxyRoutes(options: ProxyRoutesOptions) {
   const { responses } = options;
   const currentWorker = () => options.workers().find(worker => worker.id === options.current() && worker.role === "primary")?.supervisor;
@@ -171,8 +162,6 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
 
   return {
     report,
-    /** A finished download or job changes the library the workers list. */
-    invalidateLibrary: () => refreshLibraries(options.workers()),
     async handle(request: Request): Promise<Response | null> {
       const { pathname } = new URL(request.url);
       if (PARENT_ONLY.has(pathname)) return null;
@@ -180,7 +169,6 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
       if (request.method === "GET") {
         if (pathname === "/health") return health();
         if (pathname === "/stats") return stats(request);
-        if (pathname === "/downloads") return Response.json({ downloads: options.downloads() });
       }
       if (pathname === "/v1/responses" && request.method === "POST")
         return responses.forward(request, async inner => await options.models.handle(inner) ?? Response.json({ error: { message: "Not found" } }, { status: 404 }));

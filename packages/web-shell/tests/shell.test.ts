@@ -204,6 +204,18 @@ test("panelsFromManifests connects each panel to its module's routes and skips m
   ]);
 });
 
+test("a manifest panel that declares itself not a developer tool keeps its tab and stays a developer tool by default", () => {
+  const listed = api.panelsFromManifests([
+    { id: "open", panel: { tag: "mlx-open-panel", title: "Open", path: "/open", developer: false } },
+    { id: "tool", panel: { tag: "mlx-tool-panel", title: "Tool", path: "/tool" } },
+  ]);
+  expect(listed.map(panel => panel.developer)).toEqual([false, undefined]);
+  shell.mountPanels(listed);
+  shell.start();
+  expect(document.querySelector<HTMLElement>('nav .tab[data-tab="open"]')!.hasAttribute("data-dev")).toBe(false);
+  expect(document.querySelector<HTMLElement>('nav .tab[data-tab="tool"]')!.hasAttribute("data-dev")).toBe(true);
+});
+
 test("a panel whose element is not defined shows a note instead of failing, and a taken route is refused", () => {
   const missing: ShellPanel = { tag: "mlx-missing-panel", title: "Missing", path: "/missing", connection: { apiBase: "/api/missing", eventsUrl: "" } };
   shell.mountPanels([missing]);

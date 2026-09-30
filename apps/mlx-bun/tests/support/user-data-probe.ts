@@ -183,9 +183,9 @@ async function settings() {
   try { models = registry.list().length; } finally { registry.close(); }
   // The stores the chat picker catalogs: the app's adapter store, then earlier
   // versions' stores, read-only. (Its reader loads MLX, which the probe blocks.)
-  const { adapterCatalogDirs } = await import("../../src/server/adapter-routes");
+  const { adapterStores } = await import("../../src/storage/paths");
   const adapters: { store: string; id: string; config: "ok" | "missing" | "unreadable"; baseModel: string | null }[] = [];
-  for (const root of adapterCatalogDirs()) {
+  for (const root of adapterStores()) {
     if (!existsSync(root)) continue;
     for (const entry of readdirSync(root, { withFileTypes: true }).sort((x, y) => x.name < y.name ? -1 : 1)) {
       const dir = join(root, entry.name);

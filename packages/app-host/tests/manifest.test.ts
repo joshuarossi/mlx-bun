@@ -119,3 +119,8 @@ test("the registry is always available, and contributing to it requires it", () 
 test("a panel's tag and path follow the module id", () => {
   expect(checkManifests([module("alpha", { panel: { tag: "alpha-panel", entry: "x", title: "A", path: "/a" } })], options)).toHaveLength(2);
 });
+
+test("a module's placement is app or model, and nothing else", () => {
+  expect(checkManifests([module("alpha", { placement: "app" }), module("beta", { placement: "model" }), module("gamma")], options)).toEqual([]);
+  expect(checkManifests([module("alpha", { placement: "everywhere" as never })], options)).toEqual(['module "alpha": placement must be "app" or "model"']);
+});

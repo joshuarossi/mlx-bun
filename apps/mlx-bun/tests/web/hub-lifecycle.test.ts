@@ -1,20 +1,20 @@
-// The real Download button through the real listener, hub routes, download
-// owner, hub downloader, and discovery `/downloads` against a local fake Hub.
+import { createModuleSockets } from "@mlx-bun/app-services";
+// The real Download button of the models panel through the real listener, the models module's routes, the catalog over the
+// app's download owner, the hub downloader, and `/downloads` against a local fake Hub.
 // Covers the transitions a row-injection test cannot: a slow listing (no
 // tracker row yet), progress, completion, and a listing failure.
-import "./dom-setup";
+import { testWindow } from "./dom-setup";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadModules } from "@mlx-bun/app-host";
+import { createEventHub, createModuleRoutes, createRegistryCatalog, createStorage } from "@mlx-bun/app-services";
 import { downloadsSnapshot, gitBlobSha1 } from "@mlx-bun/hub/download";
-import { createModuleSockets } from "@mlx-bun/app-services";
-import type { LoadedModelContext } from "../../src/engine/model-host";
-import { createDownloadOwner } from "../../src/hub/downloads";
-import { createDiscoveryRoutes } from "../../src/server/discovery-routes";
-import { createHubRoutes } from "../../src/server/hub-routes";
+import { Registry } from "@mlx-bun/hub/registry";
+import { createModelsModule } from "@mlx-bun/module-models";
+import { catalogTransfers, createDownloadOwner } from "../../src/hub/downloads";
 import { startServer } from "../../src/server/start";
-import { pollDownloads, runSearch, stopDownloadPolling } from "../../src/web/browser/hub";
 
 const COMMIT = "beef".padEnd(40, "0");
 const cleanups: (() => Promise<void> | void)[] = [];
@@ -63,49 +63,60 @@ test("Download button: slow listing shows preparing, then progress, then done; a
   // covered by the owner's unit tests.
   const owner = createDownloadOwner({ transfer: { cacheDir, endpoint: hub.endpoint, token: null },
     tracker: () => downloadsSnapshot().filter(row => row.repoId.startsWith("lifecycle/")) });
-  const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
-    template: { supportsThinking: false }, genDefaults: {}, draft: null } as unknown as LoadedModelContext;
-  const discovery = createDiscoveryRoutes(context, { discovery: { adapters: false, training: false, dsa: true, embeddings: false } },
-    Date.now(), undefined, undefined, owner.snapshot);
-  const routes = createHubRoutes({ downloads: owner, endpoint: hub.endpoint, token: () => null });
+  // The panel loads the downloaded models when it connects: an index of its own over this test's cache, never the user's.
+  const previous = process.env.HF_HUB_CACHE;
+  process.env.HF_HUB_CACHE = cacheDir;
+  cleanups.push(() => { if (previous === undefined) delete process.env.HF_HUB_CACHE; else process.env.HF_HUB_CACHE = previous; });
+  const catalog = createRegistryCatalog({ registry: () => new Registry(":memory:"), hub: { transfers: catalogTransfers(owner) } });
+  const events = createEventHub();
+  const modelHost = { defaultFor: async () => undefined, resident: () => [], serve: async () => { throw new Error("unused"); } };
+  const loaded = await loadModules([createModelsModule({ hub: { endpoint: hub.endpoint, token: () => null } })], { services: { catalog: () => catalog,
+    modelHost: () => modelHost as never, storage: createStorage(() => cacheDir), events: scope => events.scoped(scope) } });
+  cleanups.push(() => loaded.stop());
+  const routes = createModuleRoutes(loaded.routes);
   const app = await startServer({ web: () => null, sockets: createModuleSockets([]),
-    routes: { handle: async request => await routes.handle(request) ?? await discovery.handle(new URL(request.url), request) },
-    beforeDrain: () => owner.close(), async closeEngine() {} }, { port: 0 });
+    routes, beforeDrain: () => owner.close(), async closeEngine() {} }, { port: 0 });
   cleanups.push(() => app.close());
   const base = app.server.url;
   const browserFetch = globalThis.fetch;
-  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) =>
-    browserFetch(new URL(String(input), base).href, init)) as typeof fetch;
-  cleanups.push(() => { globalThis.fetch = browserFetch; stopDownloadPolling(); });
-  document.body.innerHTML = '<div id="hub-search-body"></div><div id="toasts"></div>';
-  const actions = (repo: string) => document.querySelector(`.hub-row[data-search-repo="${repo}"] .hub-row-actions`)!.textContent;
-  const button = (repo: string) => document.querySelector<HTMLButtonElement>(`.hub-download-btn[data-repo="${repo}"]`)!;
+  // The panel is a custom element: it reaches the routes at the origin its connection names, here the listener; the fake
+  // Hub answers the download's own requests, so the panel's fetch is the real one.
+  Object.assign(globalThis, { customElements: testWindow.customElements });
+  await import("@mlx-bun/module-models/panel");
+  document.body.innerHTML = "";
+  const panel = document.createElement("mlx-models-panel") as HTMLElement & { connection?: { apiBase: string; eventsUrl: string }; search(query: string): Promise<void>; pollDownloads(): Promise<void> };
+  panel.connection = { apiBase: new URL("/api/models", base).href, eventsUrl: "" };
+  document.body.append(panel);
+  cleanups.push(() => panel.remove());
+  const shadow = panel.shadowRoot!;
+  const actions = (repo: string) => shadow.querySelector(`.hub-row[data-search-repo="${repo}"] .hub-row-actions`)!.textContent;
+  const button = (repo: string) => shadow.querySelector<HTMLButtonElement>(`.hub-download-btn[data-repo="${repo}"]`)!;
   const served = async () => (await (await browserFetch(new URL("/downloads", base))).json()).downloads as { repoId: string; state: string; totalBytes: number; error?: string }[];
 
-  await runSearch("tiny");
+  await panel.search("tiny");
   expect(button("lifecycle/tiny").textContent).toBe("Download");
   button("lifecycle/tiny").click();
   await until(() => actions("lifecycle/tiny") === "downloading…", "download admission");
   expect(owner.active).toEqual(["lifecycle/tiny"]);
   // The listing is still pending: the tracker has no row, the owner's does.
   expect(await served()).toEqual([expect.objectContaining({ repoId: "lifecycle/tiny", state: "active", totalBytes: 0 })]);
-  await pollDownloads();
+  await panel.pollDownloads();
   expect(actions("lifecycle/tiny")).toBe("preparing…");
 
   hub.releaseMetadata();
   await until(() => owner.snapshot().some(row => row.repoId === "lifecycle/tiny" && row.totalBytes > 0 && row.receivedBytes > 0), "tracker progress");
-  await pollDownloads();
+  await panel.pollDownloads();
   expect(actions("lifecycle/tiny")).toMatch(/^\d+%$/);
   hub.releasePause();
   await until(() => owner.active.length === 0, "transfer completion");
-  await pollDownloads();
+  await panel.pollDownloads();
   expect(actions("lifecycle/tiny")).toBe("done — reload to serve");
   expect(await served()).toEqual([expect.objectContaining({ repoId: "lifecycle/tiny", state: "done" })]);
 
   button("lifecycle/missing").click();
   await until(() => actions("lifecycle/missing") === "downloading…", "second admission");
   await until(() => owner.active.length === 0, "listing failure");
-  await pollDownloads();
+  await panel.pollDownloads();
   expect(actions("lifecycle/missing")).toContain("HF API 404");
   expect(await served()).toEqual([
     expect.objectContaining({ repoId: "lifecycle/tiny", state: "done" }),

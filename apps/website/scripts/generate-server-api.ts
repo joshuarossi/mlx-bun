@@ -26,13 +26,12 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
   { file: "server/proxy-routes.ts", fn: "unavailableFrame", why: "chooses the SSE error frame", code: 'pathname === "/v1/responses"' },
   { file: "server/model-routes.ts", fn: "createModelRoutes", why: "a read of the current model's own routes is answered as it is; a change holds the model resident meanwhile",
     code: '["GET", "HEAD"].includes(request.method)' },
-  { file: "server/adapter-artifact-routes.ts", fn: "createAdapterArtifactRoutes", why: "sub-dispatch after the route guard", code: 'path.endsWith("/merge")' },
   { file: "server/discovery-routes.ts", fn: "createDiscoveryRoutes", why: "reads the optional model id", code: 'url.pathname.length > "/v1/models/".length - 1' },
 ];
 
 type Kind = "req" | "url" | "method" | "path" | "route" | "segments" | "tainted";
 /** A route factory, or the installed modules' routes (`MODULE_ROUTES`), which come from their manifests:
- * `state-modules` in the persistent app state (modules that require `jobs`), `modules` with the model host (the rest). */
+ * `state-modules` in the persistent app state (modules placed in the `app`, by default those that require `jobs`), `modules` with the model host (the rest). */
 type Group = ts.FunctionDeclaration | "modules" | "state-modules";
 type Groups = ReadonlyMap<string, Group | undefined>;
 interface Frame { from: ts.Node; stop: ts.Node; params: Set<ts.Node> }
@@ -428,7 +427,8 @@ class Inventory {
       const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get(kind) && skip(fields.get(kind)!);
       const requires = stringList(fields.get("requires")) ?? this.fail(manifest, "the module's requires must be a literal list of strings");
       const sockets = fields.get("sockets") && skip(fields.get("sockets")!);
-      if ((requires.some(([name]) => name === "jobs") || (!!sockets && ts.isArrayLiteralExpression(sockets) && sockets.elements.length > 0)) !== (scope === "state")) return [];
+      const placement = fields.get("placement") ? string(fields.get("placement"), "the module's placement", manifest) : requires.some(([name]) => name === "jobs") || (!!sockets && ts.isArrayLiteralExpression(sockets) && sockets.elements.length > 0) ? "app" : "model";
+      if ((placement === "app") !== (scope === "state")) return [];
       if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, `manifest ${kind} must be a literal array`);
       return (list?.elements ?? []).map(route => {
         const parts = props(route), method = kind === "sockets" ? "GET" : string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), `a ${kind === "sockets" ? "socket" : "route"} path`, route);

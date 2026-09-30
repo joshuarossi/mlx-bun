@@ -1,11 +1,12 @@
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { downloadsSnapshot, gitBlobSha1 } from "@mlx-bun/hub/download";
-import { createModuleSockets } from "@mlx-bun/app-services";
-import { createDownloadOwner, DuplicateDownloadError } from "../../src/hub/downloads";
-import { createHubRoutes } from "../../src/server/hub-routes";
+import { createRegistryCatalog } from "@mlx-bun/app-services";
+import { createHubHandlers } from "@mlx-bun/module-models";
+import { catalogTransfers, createDownloadOwner, DuplicateDownloadError } from "../../src/hub/downloads";
 import { startServer } from "../../src/server/start";
 
 const noSockets = createModuleSockets([]);
@@ -72,8 +73,11 @@ test("the listener joins a web-started transfer through beforeDrain before relea
   const owner = createDownloadOwner({ download: (repo, options) => new Promise<string>((_, reject) => {
     options.signal!.addEventListener("abort", () => { events.push("aborted"); setTimeout(() => { events.push("settled"); reject(options.signal!.reason); }, 10); });
   }) });
-  const hub = createHubRoutes({ downloads: owner });
-  const app = await startServer({ web: () => null, sockets: noSockets, routes: hub,
+  // The module's download route over the catalog the app builds around its owner.
+  const download = createHubHandlers({ catalog: createRegistryCatalog({ hub: { transfers: catalogTransfers(owner) } }),
+    modelHost: { serve: async () => { throw new Error("unused"); } } })["hub-download"]!;
+  const hub = { handle: async (request: Request) => new URL(request.url).pathname === "/api/hub/download" ? download(request) : null };
+  const app = await startServer({ web: () => null, sockets: createModuleSockets([]), routes: hub,
     beforeDrain: () => owner.close(), async closeEngine() { events.push("engine-close"); } }, { port: 0 });
   try {
     const started = await fetch(new URL("/api/hub/download", app.server.url), { method: "POST",

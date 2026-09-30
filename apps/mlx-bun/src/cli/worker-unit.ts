@@ -16,6 +16,7 @@ import type { UnitClosed } from "../residency/model-residency";
 import { forwardToWorker } from "../server/proxy-routes";
 import type { RoutedUnit } from "../server/model-routes";
 import { shutdownTimeoutMs, type ServeOptions } from "./serve-options";
+import { workerAdapters } from "./worker-adapters";
 
 export interface WorkerUnit extends RoutedUnit {
   readonly record: ModelRecord;
@@ -132,7 +133,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     routes: { handle: request => forwardToWorker(supervisor, request) },
     bytes: () => Math.max(estimate, weightsBytes),
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
-    operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request) } : {}) as Partial<ModelOperations>,
+    operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",
     // A job needs the GPU to itself: the worker's own execution lease. Whisper's decode is brief and holds its own lock.
     pause: signal => role === "primary" ? supervisor.acquireExecutionLease(signal ?? new AbortController().signal) : Promise.resolve({ dispose() {} } as DisposableResource),

@@ -5,7 +5,7 @@ import { activateModules, createHostServices, runVerb } from "../src";
 const entry: CatalogEntry = { id: "org/whisper", kind: "model", directory: "/w", bytes: 1, operations: ["transcribe"] };
 const catalog: ModelCatalog = { list: async () => [entry], resolve: async () => entry, find: async () => entry, estimate: async () => undefined,
   locate: async () => undefined, register: async () => { throw new Error("unused"); }, download: async () => { throw new Error("unused"); },
-  pickDefault: async () => { throw new Error("unused"); }, canPublish: () => false, publish: async () => { throw new Error("unused"); } };
+  pickDefault: async () => { throw new Error("unused"); }, rescan: async () => 0, startDownload() { throw new Error("unused"); }, downloads: () => [], canPublish: () => false, publish: async () => { throw new Error("unused"); } };
 
 const module = (parts: Partial<AppModule>, events: string[] = []): AppModule => ({ id: "echo", title: "Echo", summary: "", requires: ["modelHost", "catalog"],
   activate: () => ({ dispose() { events.push("module stop"); } }), ...parts });
@@ -69,7 +69,7 @@ test("running a verb parses it against the manifest, hands over the streams, and
 test("a verb reached through another spelling of it gets the parsed values checked, the host's terminal, and the loaded modules before it runs", async () => {
   const services = createHostServices({ catalog }), seen: unknown[] = [], events: string[] = [];
   const verb = { name: "echo", summary: "Echo", options: [{ name: "times", type: "number" as const, summary: "" }] };
-  const terminal = { step: () => ({ update() {}, done() {}, fail() {} }), box() {}, style: { dim: (t: string) => t, bold: (t: string) => t, green: (t: string) => t, accent: (t: string) => t, url: (t: string) => t } };
+  const terminal = { step: () => ({ update() {}, done() {}, fail() {} }), box() {}, heading() {}, table() {}, style: { dim: (t: string) => t, bold: (t: string) => t, green: (t: string) => t, accent: (t: string) => t, url: (t: string) => t, gradient: (t: string) => t } };
   const code = await runVerb({ program: "prog", spec: verb, values: { times: "3" }, positionals: [], services, terminal,
     activated: loaded => { events.push(`activated ${[...loaded.verbs.keys()]}`); },
     modules: async () => [module({ verbs: [verb], activate: () => ({ verbs: { echo: async invocation => { seen.push(invocation.values, invocation.terminal === terminal); return 0; } } }) })] });
