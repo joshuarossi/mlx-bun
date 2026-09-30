@@ -3,8 +3,9 @@
 // the modules that run beside them, and loads no model. Each resident model runs in its own
 // worker process (worker-unit.ts; worker-entry.ts composes the model host over a Unix socket).
 // This process holds their residency by memory fit with the same manager the in-process host
-// uses (residency/model-residency.ts): a model that fits the budget gets its own worker beside
-// the others; otherwise the least recently used unpinned, unleased model is drained, its worker
+// uses (residency/model-residency.ts), counting each worker at the MLX memory it measures and reports
+// (cli/worker-unit.ts; the estimate stands only before its first report): a model that fits the budget
+// gets its own worker beside the others; otherwise the least recently used unpinned, unleased model is drained, its worker
 // flushes its saved state durably and exits (the worker gets the CLI's shutdown budget, never a
 // kill first), and naming it again spawns a worker that resumes from that state. Requests route
 // by their `model` (server/model-routes.ts) and forward over the worker's socket; a crash
@@ -29,7 +30,7 @@ import { listLocalRecords } from "../residency/local-records";
 import { leasedAdapters } from "../residency/leased-adapters";
 import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
 import { createRecordIndex } from "../residency/record-index";
-import { estimateRecordBytes } from "../residency/resident-estimate";
+import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-estimate";
 import type { RunningApp, ServeOptions } from "./serve-options";
 import { createAppState, type RouteGroup } from "./serve-state";
 import { spawnWorkerUnit, type WorkerUnit, type WorkerUnitContext } from "./worker-unit";
@@ -106,35 +107,46 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     return held.paths;
   };
   // The parent loads no model: each synthesis stage call or batch runs on the current model's worker (its memory task
-  // model, over its private route). That worker takes its own execution lease. Each call selects the task model
-  // snapshot once, here (the worker never scans the cache): the call carries it, and a call that loads the task
-  // model loads exactly it.
-  const state = await createAppState({ ...options, memoryCompletions: signal => createWorkerMemoryClient(async () => {
-    const unit = currentUnit();
-    if (!unit) throw new EngineUnavailableError("starting", null);
-    const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
-    retention(unit).add(snapshot);
-    return { worker: unit.supervisor, snapshot };
-  }, signal) }, options.storagePaths ?? {}, hooks.modules);
+  // model, over its private route). A run holds that model's residency lease from its first call to its last (the same
+  // `acquire` every consumer takes), so the worker it depends on is never drained under it; the worker takes its own
+  // execution lease per call. Each call selects the task model snapshot once, here (the worker never scans the cache):
+  // the call carries it, and a call that loads the task model loads exactly it.
+  const state = await createAppState({ ...options, memoryCompletions: async signal => {
+    if (!residency) throw new EngineUnavailableError("starting", null);
+    const lease = await residency.acquire(current, { signal, need: ["generate"] });
+    const client = createWorkerMemoryClient(async () => {
+      const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
+      retention(lease.unit).add(snapshot);
+      return { worker: lease.unit.supervisor, snapshot };
+    }, signal);
+    return Object.assign(client, { release: () => lease.release() });
+  } }, options.storagePaths ?? {}, hooks.modules);
   hooks.observe?.(state.events);
   // The sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
   const removeSocketDir = () => rmSync(socketDir, { recursive: true, force: true });
   const notice = hooks.notice ?? (line => console.log(`[isolate] ${line}`));
-  const closeEngine = async () => { try { await residency?.close(); } finally { removeSocketDir(); } };
+  // The startup worker until residency adopts it: a failure in between still stops it.
+  let unadopted: WorkerUnit | undefined;
+  const closeEngine = async () => {
+    try { await unadopted?.close({ flush: false }); } finally { try { await residency?.close(); } finally { removeSocketDir(); } }
+  };
   let detachLink = () => {};
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   let cleanup: (() => Promise<void>) | undefined = closeEngine;
   try {
-    const { thisMachine, WIRED_FRACTION } = await import("@mlx-bun/inference/execution/fit");
+    const { thisMachine } = await import("@mlx-bun/inference/execution/fit");
     const machine = thisMachine();
-    // What all resident workers may use together: a share of the memory the GPU can wire (this process cannot ask Metal, so
-    // it is derived from the machine's RAM the way `/fit` does).
-    const budgetBytes = options.modelBudgetBytes ?? Math.floor(machine.ramBytes * WIRED_FRACTION * 0.7);
     const context: WorkerUnitContext = { options, startup: model, socketDir, publish: event => state.events.publish(event), notice,
       ...(hooks.entry ? { entry: hooks.entry } : {}), ...(hooks.restarts ? { restarts: hooks.restarts } : {}), ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}), ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}),
       ...(hooks.log ? { log: hooks.log } : {}), ...(hooks.error ? { error: hooks.error } : {}) };
+    // Startup fails fast, as the in-process composition does: the first model's worker serves before the listener binds. Its
+    // report is also how this process, which asks no Metal device itself, learns the device working set.
+    const first = unadopted = await spawnWorkerUnit(context, model, "primary", model.sizeBytes);
+    // What all resident workers may use together: `--model-budget`, else the share of the device working set the in-process
+    // host uses (residency/resident-estimate.ts), as the first worker reported it.
+    const budgetBytes = options.modelBudgetBytes ?? defaultBudgetBytes(first.measured()?.workingSetBytes);
     const chatModels = createRecordIndex(() => hooks.records?.() ?? listLocalRecords("generate"), model);
     const companionList = () => hooks.companions?.() ?? listLocalRecords("transcribe");
     // Whisper: the checkpoint `--whisper-model` resolved to, else the first downloaded one, looked up once.
@@ -171,10 +183,9 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       // Hub cleanup keeps the snapshot of every resident worker's model, and the task model's on the worker that read it.
       uses: unit => [unit.record.path, ...retention(unit)],
       log: line => notice(line) });
-    // Startup fails fast, as the in-process composition does: the first model's worker serves before the listener binds.
-    const first = await spawnWorkerUnit(context, model, "primary", (await source.resolve(model.repoId))?.bytes ?? model.sizeBytes);
     const entryOf = (unit: WorkerUnit): ResidencyEntry => ({ id: unit.id, bytes: unit.bytes(), role: unit.role, operations: unit.operations });
     residency.adopt(entryOf(first), first, { loadMs: first.readyMs });
+    unadopted = undefined;
     // Whisper stays resident when asked to (`--whisper-resident`); otherwise it is the first to go when memory is short.
     const companion = options.whisper?.resident ? await whisperRecord() : undefined;
     if (companion) residency.pin(companion.repoId);
@@ -228,6 +239,8 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     // Jobs pause every resident worker; loopback clients reach the workers through the proxy; a hub switch is this host's to make.
     detachLink = state.attach({ get model() { return { id: current, bytes: currentUnit()?.bytes() ?? model.sizeBytes }; }, get port() { return boundPort; },
       acquireExecutionLease: signal => residency.pauseAll(signal),
+      // Modules that generate through the model host (a dataset job) hold the model's residency lease until they release it.
+      hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }),
       invalidateLibrary,
       resident: () => residency.resident(),
       adapters: leasedAdapters(residency, () => current),

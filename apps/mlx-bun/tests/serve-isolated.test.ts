@@ -157,7 +157,7 @@ test("the parent composes the persistent state and the proxy without the engine 
       assert.ok(dirname(engine.socket).startsWith(join(process.env.TMPDIR_PROBE, "mlx-worker-")) && existsSync(engine.socket));
       assert.equal(notices.length, 1);
       assert.ok(notices[0].startsWith("engine worker pid " + launches[0].pid + " ready for org/model in ") && notices[0].endsWith(" ms (socket " + engine.socket + ")"), notices[0]);
-      assert.deepEqual(engine.workers, [{ id: "org/model", role: "primary", pid: launches[0].pid, state: "ready", restarts: 0, socket: engine.socket }]);
+      assert.deepEqual(engine.workers, [{ id: "org/model", role: "primary", pid: launches[0].pid, state: "ready", restarts: 0, socket: engine.socket, memory: null }]);
       assert.deepEqual(await (await get("/api/hub/local")).json(), { ok: true, models: [] });
       assert.deepEqual(await (await get("/api/jobs")).json(), { ok: true, jobs: [] });
       assert.deepEqual(await (await get("/downloads")).json(), { downloads: [] });
@@ -247,8 +247,8 @@ const memoryPreamble = `
   const records = ["org/model", "org/other"].map(id => ({ repoId: id, path: join(root, id.split("/")[1]), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }));
   const eventsFile = join(root, "events.jsonl"), lines = [];
   const started = [];
-  const start = async env => {
-    const running = await startIsolatedServer(records[0], options, { modules: await (await import(app + "src/modules.ts")).installedModules(item => item.id === "models"), entry: process.env.FAKE_WORKER,
+  const start = async (env, extra = {}) => {
+    const running = await startIsolatedServer(records[0], options, { ...extra, modules: await (await import(app + "src/modules.ts")).installedModules(item => item.id === "models"), entry: process.env.FAKE_WORKER,
       env: { FAKE_WORKER_EVENTS: eventsFile, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", ...env },
       restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
       notice: line => lines.push(line), log: line => lines.push(line), error: line => lines.push(line) });
@@ -338,6 +338,44 @@ test("memory synthesis under isolation: the parent keeps the pipeline and SSE, e
     assert.ok(lines.some(line => line.includes("exited with code 137 — respawning (restart 1/1)")), lines.join("\\n"));
   ` + memoryCleanup;
   const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-"));
+  const tmp = privateTmp(home);
+  try {
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR: tmp });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(workerDirs(tmp)).toEqual([]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 60_000);
+
+test("a synthesis run holds its model worker's residency lease for the whole run: a model that needs the room waits, then evicts it once the run ends", async () => {
+  const script = memoryPreamble + `
+    revision("first");
+    // The budget holds one worker: each measures (and is estimated at) 600 of 1000, so the second model can only load by draining the first.
+    options.modelBudgetBytes = 1000;
+    const running = await start({ FAKE_WORKER_MEMORY: JSON.stringify({ "*": [600, 0, 600, 0] }) }, { records: () => records.map(entry => ({ ...entry, sizeBytes: 600 })) });
+  ` + memoryRequest(`"http://127.0.0.1:" + running.port`) + `
+    const residents = async () => (await engine()).workers.map(worker => worker.id);
+    rows = ["hold the run"];
+    const synthesis = get("/v1/memory/synthesize").then(response => response.text());
+    await until(async () => (await memoryCalls()).length === 1, "the held call");
+    const first = (await engine()).pid;
+    // Another model needs the room. The run's lease pins the current model, so the request waits: nothing is drained, nothing starts.
+    let answered = false;
+    const other = get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "org/other", messages: [{ role: "user", content: "hi" }] }) })
+      .then(async response => { const body = await response.json(); answered = true; return body; });
+    await Bun.sleep(400);
+    assert.equal(answered, false);
+    assert.deepEqual(await residents(), ["org/model"]);
+    assert.equal((await engine()).pid, first);
+    assert.ok(events().every(item => item.event !== "stop"), "the worker was drained under the run");
+    // The run ends: its lease is released, the waiting request evicts the model (drain, flush, exit) and is served by the newcomer.
+    assert.deepEqual(await (await get("/fake/memory/release")).json(), { released: 1 });
+    assert.match(await synthesis, /\\[DONE\\]/);
+    assert.equal((await other).model, "org/other");
+    assert.deepEqual(await residents(), ["org/other"]);
+    assert.ok(!alive(first), "the drained worker exited");
+    assert.ok(events().some(item => item.pid === first && item.event === "stopped"));
+  ` + memoryCleanup;
+  const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-lease-"));
   const tmp = privateTmp(home);
   try {
     const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR: tmp });
@@ -630,6 +668,46 @@ test("a model that does not fit the budget drains the least recently used worker
   }
   expect(leftover).toEqual([]);
 }, 60_000);
+
+test("workers report their measured MLX memory and the host's residency counts it in place of the estimate: the default budget comes from the device working set the first worker reports, and admission and eviction follow the measured bytes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-measured-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  // Every estimate is one byte, so only the workers' own numbers can make these models compete: the device working set is
+  // 10000 (a 7000 budget), and each worker holds active + cache = 4000, 2000 and 1000.
+  const records = ["org/model", "org/other", "org/third"].map(id => record(root, id));
+  const memory = JSON.stringify({ "org/model": [3_500, 500, 4_200, 10_000], "org/other": [1_500, 500, 2_100, 10_000], "org/third": [800, 200, 900, 10_000] });
+  const unloads: { model?: string; reason?: string; flushed?: boolean }[] = [];
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_MEMORY: memory },
+    records: () => records, notice() {}, log() {}, error() {}, observe: bus => { bus.subscribe(["model.unload"], event => { unloads.push(event as never); }); } }));
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
+  const answer = async (name: string) => ((await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: name, messages: [{ role: "user", content: "hi" }] }) })).json()) as { model: string }).model;
+  const usage = async () => ((await (await get("/stats")).json()) as { models: { budget_bytes: number; resident_bytes: number; resident: { id: string; bytes: number }[] } }).models;
+  const workers = async () => ((await (await get("/engine")).json()) as { workers: { id: string; socket: string; memory: { active_bytes: number; cache_bytes: number; peak_bytes: number } | null }[] }).workers;
+  try {
+    // The first worker's report sets the budget (70% of its working set) and its bytes are the measured ones, not the 1-byte estimate.
+    expect(await usage()).toMatchObject({ budget_bytes: 7_000, resident_bytes: 4_000, resident: [{ id: "org/model", bytes: 4_000 }] });
+    expect((await workers())[0]!.memory).toEqual({ active_bytes: 3_500, cache_bytes: 500, peak_bytes: 4_200 });
+    // 4000 + 2000 fits in 7000: the second model loads beside the first and nothing is evicted.
+    expect(await answer("org/other")).toBe("org/other");
+    expect(await usage()).toMatchObject({ resident_bytes: 6_000 });
+    expect(unloads).toEqual([]);
+    // The other worker's process grows to 4500 (and reports it): 8500 is over the budget, though no estimate changed.
+    const other = (await workers()).find(worker => worker.id === "org/other")!;
+    const measure = await fetch("http://worker/fake/measure?active=4000&cache=500&peak=4600", { unix: other.socket } as RequestInit);
+    expect(measure.status).toBe(200);
+    await until(async () => (await usage()).resident_bytes === 8_500, "the host to count the worker's new reading");
+    expect((await workers()).find(worker => worker.id === "org/other")!.memory).toEqual({ active_bytes: 4_000, cache_bytes: 500, peak_bytes: 4_600 });
+    // A third model needing 1000 no longer fits without freeing room: the least recently used worker (org/model, 4000) is drained.
+    expect(await answer("org/third")).toBe("org/third");
+    expect(unloads).toEqual([expect.objectContaining({ model: "org/model", reason: "evicted", flushed: true })]);
+    expect(await usage()).toMatchObject({ resident_bytes: 5_500, resident: [{ id: "org/other", bytes: 4_500 }, { id: "org/third", bytes: 1_000 }] });
+  } finally { await running.close(); rmSync(root, { recursive: true, force: true }); }
+}, 40_000);
 
 test("a worker that exits with its saved state not durable is still released, and the host reports the eviction as not flushed", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-flush-"));

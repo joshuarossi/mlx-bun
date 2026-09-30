@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { AppEvent, ModelOperation, ModelOperations, ModelRole } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import { heldBytes, parseMemoryHealth, parseMemoryLine, type WorkerMemory } from "../jobs/worker-memory";
 import { WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import { superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
 import type { UnitClosed } from "../residency/model-residency";
@@ -24,6 +25,8 @@ export interface WorkerUnit extends RoutedUnit {
   readonly supervisor: WorkerSupervisor;
   /** Milliseconds from spawning the worker to its ready line (process start, native runtime, weights). */
   readonly readyMs: number;
+  /** The MLX memory the worker last reported (active, cache, peak, the device working set); undefined until its first report and while it is down. */
+  measured(): WorkerMemory | undefined;
 }
 
 /** What the host supplies for every worker it spawns. */
@@ -60,8 +63,9 @@ function transcriptionLaunch(record: ModelRecord, socketPath: string) {
   return { kind: "app" as const, version: WORKER_PROTOCOL_VERSION, socketPath, argv: ["--model", record.path, "--whisper-resident", "--preload"] };
 }
 
-/** Publish what the worker's engine publishes on its own bus. The worker's load and unload are the host's to report. */
-function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) => void, signal: AbortSignal): void {
+/** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
+ * its memory readings to `measure`. A worker that is gone measures nothing: its replacement will need what it did. */
+function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) => void, measure: (memory: WorkerMemory | undefined) => void, signal: AbortSignal): void {
   void (async () => {
     while (!signal.aborted) {
       try {
@@ -79,12 +83,15 @@ function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) =>
             buffered = buffered.slice(newline + 1);
             if (!line) continue;
             try {
-              const event = JSON.parse(line) as AppEvent;
-              if (event.type !== "model.load" && event.type !== "model.unload") publish(event);
+              const parsed = JSON.parse(line) as AppEvent;
+              const memory = parseMemoryLine(parsed);
+              if (memory) measure(memory);
+              else if (parsed.type !== "model.load" && parsed.type !== "model.unload") publish(parsed);
             } catch { /* a torn line is dropped */ }
           }
         }
       } catch { /* the worker went away or is not ready: wait for its respawn */ }
+      if (!signal.aborted) measure(undefined);
       if (signal.aborted || supervisor.state === "exhausted" || supervisor.state === "closed") return;
       await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -114,8 +121,13 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
   const readyMs = performance.now() - started;
   context.notice(`${role === "primary" ? "engine" : "companion"} worker pid ${supervisor.pid} ready for ${record.repoId} in ${readyMs.toFixed(0)} ms (socket ${supervisor.socketPath})`);
 
-  // What the worker reports of the model it loaded: its weights, and whether saved state was found for it.
-  let weightsBytes = 0, resumed = false;
+  // What the worker reports of the model it loaded: its weights, whether saved state was found for it, and (both roles) the
+  // MLX memory its process holds, which residency counts from now on in place of the estimate.
+  let weightsBytes = 0, resumed = false, measured: WorkerMemory | undefined;
+  try {
+    const response = await supervisor.fetch("http://engine/health", { signal: AbortSignal.timeout(5_000) });
+    measured = parseMemoryHealth(await response.json());
+  } catch { /* the estimate stands until a report arrives */ }
   if (role === "primary") {
     try {
       const response = await supervisor.fetch("http://engine/stats", { signal: AbortSignal.timeout(5_000) });
@@ -125,13 +137,15 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     } catch { /* the estimate stands */ }
   }
   const stopEvents = new AbortController();
-  if (role === "primary") relayEvents(supervisor, context.publish, stopEvents.signal);
+  if (role === "primary") relayEvents(supervisor, context.publish, memory => { measured = memory; }, stopEvents.signal);
   const operations: readonly ModelOperation[] = role === "primary" ? ["generate"] : ["transcribe"];
   let closing: Promise<UnitClosed> | undefined;
   return {
     id: record.repoId, record, role, supervisor, readyMs, operations, resumed,
     routes: { handle: request => forwardToWorker(supervisor, request) },
-    bytes: () => Math.max(estimate, weightsBytes),
+    measured: () => measured,
+    // The estimate stands only until the worker's first report; after it, the process's own active and cache memory.
+    bytes: () => measured ? heldBytes(measured) : Math.max(estimate, weightsBytes),
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",

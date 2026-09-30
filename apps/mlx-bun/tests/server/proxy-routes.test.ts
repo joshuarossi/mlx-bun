@@ -134,14 +134,14 @@ test("the parent answers /engine, /health and /stats itself with the worker's co
     // Before the first worker is ready: the parent already reports.
     expect(await (await request("/engine")).json()).toEqual({ isolated: true, state: "starting", pid: engine.pid, restarts: 0, socket: fake.socketPath,
       model: "org/model", last_exit: null, response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
-      workers: [{ id: "org/model", role: "primary", pid: engine.pid, state: "starting", restarts: 0, socket: fake.socketPath }] });
+      workers: [{ id: "org/model", role: "primary", pid: engine.pid, state: "starting", restarts: 0, socket: fake.socketPath, memory: null }] });
     expect((await request("/v1/models")).status).toBe(502);
     await fake.engine.ready;
     const pid = engine.pid!;
     expect(await (await request("/engine")).json()).toMatchObject({ isolated: true, state: "ready", pid, restarts: 0, model: "org/model", last_exit: null });
     expect(await (await request("/health")).json()).toEqual({ status: "ok", isolated: true,
       engine: { state: "ready", pid, restarts: 0, socket: fake.socketPath, model: "org/model", last_exit: null, in_flight: 0, leases: 0 },
-      workers: [{ id: "org/model", role: "primary", pid, state: "ready", restarts: 0, socket: fake.socketPath }] });
+      workers: [{ id: "org/model", role: "primary", pid, state: "ready", restarts: 0, socket: fake.socketPath, memory: null }] });
     // /stats is the worker's, with the parent's Responses history and engine report on top.
     const stats = await (await request("/stats")).json() as Record<string, unknown>;
     expect(stats.server).toEqual({ owner: "serve", model: "org/model", started_at: 1 });
@@ -160,14 +160,14 @@ test("the parent answers /engine, /health and /stats itself with the worker's co
     await until(() => engine.state === "restarting", "the exit");
     expect(await (await request("/health")).json()).toEqual({ status: "ok", isolated: true,
       engine: { state: "restarting", pid: null, restarts: 1, socket: fake.socketPath, model: "org/model", last_exit: { code: null, signal: "SIGKILL" } },
-      workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath }] });
+      workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath, memory: null }] });
     const partial = await request("/stats");
     expect(partial.status).toBe(200);
     expect(await partial.json()).toEqual({ server: { owner: "serve", model: "org/model", started_at: 42 },
       response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
       engine: { isolated: true, state: "restarting", pid: null, restarts: 1, socket: fake.socketPath, model: "org/model", last_exit: { code: null, signal: "SIGKILL" },
         response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
-        workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath }] },
+        workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath, memory: null }] },
       unavailable: "inference engine unavailable: the worker was killed by SIGKILL; respawning — retry shortly" });
     await until(() => engine.state === "ready", "the respawn");
     expect(await (await request("/engine")).json()).toMatchObject({ state: "ready", restarts: 1, last_exit: { code: null, signal: "SIGKILL" } });
