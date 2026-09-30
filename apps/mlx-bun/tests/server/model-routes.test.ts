@@ -189,6 +189,18 @@ test("everything else model-scoped belongs to the current model; a change holds 
   expect(await (await f.routes.handle(get("/health")))!.json()).toEqual({ status: "ok", from: "a" });
 });
 
+test("a current model that cannot answer a listing (its worker is down) is the answer, not something the router decorates", async () => {
+  const f = fixture({ a: 2 * GB });
+  const unit = (await f.host.acquire("a")); unit.release();
+  const down = () => Response.json({ error: { message: "the engine worker stopped", type: "engine_unavailable" } }, { status: 502 });
+  unit.unit.routes.handle = async () => down();
+  for (const path of ["/v1/models", "/library", "/stats"]) {
+    const response = (await f.routes.handle(get(path)))!;
+    expect(response.status).toBe(502);
+    expect(((await response.json()) as { error: { type: string } }).error.type).toBe("engine_unavailable");
+  }
+});
+
 test("with no model resident, reads fall through and health still answers", async () => {
   const f = fixture({ a: 2 * GB });
   expect(await f.routes.handle(get("/stats"))).toBeNull();

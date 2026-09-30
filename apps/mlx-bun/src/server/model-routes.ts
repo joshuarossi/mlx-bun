@@ -115,6 +115,8 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         if (own) return own.routes.handle(request);
         const base = await listing(request, "/v1/models");
         if (!base) return null;
+        // A unit that cannot answer (a worker that is down) is the answer, not something to decorate.
+        if (!base.ok) return base;
         const list = await base.json() as { object: string; data: Record<string, unknown>[] };
         const resident = residentIds(), current = options.current();
         // Every resident model answers for itself; the rest are listed as the registry knows them.
@@ -134,6 +136,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       if (request.method === "GET" && pathname === "/library") {
         const base = await listing(request, `/library${url.search}`);
         if (!base) return null;
+        if (!base.ok) return base;
         const { models } = await base.json() as { models: Record<string, unknown>[] };
         const resident = residentIds(), current = options.current();
         return Response.json({ models: models.map(row => ({ ...row, serving: row.repo_id === current, resident: resident.has(row.repo_id as string) })) });
@@ -142,6 +145,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         const unit = active();
         const base = unit ? await unit.routes.handle(request) : null;
         if (!base) return null;
+        if (!base.ok) return base;
         const stats = await base.json() as Record<string, unknown>;
         const models = host.resident();
         return Response.json({ ...stats, models: { current: options.current(), budget_bytes: host.policy.budgetBytes,
