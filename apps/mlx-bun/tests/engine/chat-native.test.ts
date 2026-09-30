@@ -23,7 +23,7 @@ test.skipIf(!modelDir)("web chat over a real served model: a greedy prompt makes
   mkdirSync(cwd); mkdirSync(join(vault, "articles"), { recursive: true });
   writeFileSync(join(vault, "articles", "Travel.md"), "# Travel\n\nTravel preferences.\n\n## Preference\n\nTake the early train.\n");
   const options = parseServeOptions({ values: { port: "0", "prompt-cache": "0.125", "no-open": true, thinking: "off", "ssd-cache": join(root, "ssd"), "memory-budget": "12" }, positionals: [] });
-  options.contextLimit = 6_000;
+  options.contextLimit = 16_384;
   options.readOnly = true;
   options.chatPaths = { cwd, agentDir: join(root, "agent"), sessionDir: sessions, toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault, skills: join(root, "skills") };
@@ -36,7 +36,7 @@ test.skipIf(!modelDir)("web chat over a real served model: a greedy prompt makes
     const observers = new Set<() => void>();
     socket.addEventListener("message", event => { frames.push(JSON.parse(String(event.data)) as Frame); for (const observer of [...observers]) observer(); });
     const waitFor = (predicate: () => boolean, what: string) => new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), 120_000);
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}; frames: ${JSON.stringify(frames.map(frame => frame.type === "text_delta" ? frame.delta : frame.type === "tool_start" ? `${frame.type}:${frame.tool}` : frame.type)).slice(0, 1500)}`)), Number(process.env.MLX_BUN_CHAT_WAIT_MS ?? 90_000));
       const check = () => { if (frames.some(frame => frame.type === "error")) { clearTimeout(timer); reject(new Error(`chat error: ${JSON.stringify(frames.find(frame => frame.type === "error"))}`)); }
         else if (predicate()) { clearTimeout(timer); observers.delete(check); resolve(); } };
       observers.add(check); budget.addEventListener("abort", () => reject(new Error("budget exhausted")), { once: true }); check();
@@ -45,10 +45,10 @@ test.skipIf(!modelDir)("web chat over a real served model: a greedy prompt makes
     await waitFor(() => frames.some(frame => frame.type === "ready"), "ready");
     send({ type: "set_thinking", enabled: false });
     send({ type: "set_sampling", temperature: 0 });
-    const prompt = 'Use the memory_section tool with stem "Travel" and anchor "Preference", then tell me in one sentence what it says.';
+    const prompt = process.env.MLX_BUN_CHAT_PROMPT ?? 'Use the memory_section tool with stem "Travel" and anchor "preference", then tell me in one sentence what it says.';
     send({ type: "prompt", text: prompt });
-    // The tool round trip: a turn calls the tool, and a later turn answers with its result.
-    await waitFor(() => { const end = frames.findIndex(frame => frame.type === "tool_end"); return end >= 0 && frames.slice(end).some(frame => frame.type === "turn_end"); }, "the answer after the tool call");
+    // The tool round trip: a turn calls the tool (and ends), and the next turn answers with its result.
+    await waitFor(() => { const end = frames.findIndex(frame => frame.type === "tool_end"); return end >= 0 && frames.slice(end).filter(frame => frame.type === "turn_end").length >= 2; }, "the answer after the tool call");
     const listing = frames.findLast(frame => frame.type === "sessions" && frame.activePath) as Frame | undefined;
     if (!listing?.activePath) throw new Error("no persisted chat path");
     const before = frames.length;
