@@ -1,6 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/mlx/cache";
+import type { Cache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { QuantizedKVCache } from "./quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
@@ -8,7 +8,7 @@ import { plainKvStorage } from "./dense-kv-reads";
 
 /** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
  *  256 along the sequence axis, updated in place via slice_update. */
-export class KVCache implements Cache {
+export class KVCache implements CompiledDecodeCache {
   readonly denseKvReads = plainKvStorage;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
@@ -141,6 +141,18 @@ export class KVCache implements Cache {
     return { fetch: "concat", writePos: prev, activeLen: prev };
   }
 
+  decodePhase(): DecodeStepPlan["fetch"] { return "concat"; }
+
+  decodeSlot(_plan: DecodeStepPlan): DecodeSlot { return concatDecodeSlot(this.offset); }
+
+  decodeInputs(plan: DecodeStepPlan, step: DecodeStepInputs): MlxArray[] {
+    return [step.activeView(this.keys!, plan.activeLen), step.activeView(this.values!, plan.activeLen)];
+  }
+
+  commitDecodeStep(_slot: DecodeSlot, outputs: MlxArray[]): MlxArray[] {
+    return this.writeDecodeStep(outputs[0]!, outputs[1]!);
+  }
+
   /** Compiled decode: the write half (same sliceUpdate as updateAndFetch).
    *  Takes ownership of kNew/vNew; returns the arrays to async-eval with
    *  the step (the updated buffers). */
@@ -187,4 +199,42 @@ export class KVCache implements Cache {
     this.keys = this.values = null;
     this.offset = 0;
   }
+}
+
+/** The growing plain cache inside a compiled decode trace (also a rotating
+ *  cache before its window fills): fetch = concat(active prefix, new row); the
+ *  new row is a closure output for the write after the step. `offset` is set for
+ *  completeness only: at L=1 every makeMask returns mode "" and the RoPE offset
+ *  rides `ropeOffsetArr`, so the baked value cannot leak into the graph. */
+class TracedConcatKVCache extends KVCache implements DecodeTrace {
+  override readonly ropeOffsetArr: MlxArray;
+  outs: MlxArray[] = [];
+  constructor(
+    offset: number,
+    readonly activeK: MlxArray,
+    readonly activeV: MlxArray,
+    ropeOffsetArr: MlxArray,
+  ) {
+    super();
+    this.offset = offset;
+    this.ropeOffsetArr = ropeOffsetArr;
+  }
+
+  override updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    // same-shape reshape: an owned alias that survives the caller's
+    // dispose of k/v, so the row can be a closure output
+    this.outs = [ops.reshape(k, k.shape), ops.reshape(v, v.shape)];
+    return [
+      ops.concatAxis([this.activeK, k], 2),
+      ops.concatAxis([this.activeV, v], 2),
+    ];
+  }
+}
+
+/** The concat-fetch slot of a plain cache at `offset` (KVCache, and RotatingKVCache before the window fills). */
+export function concatDecodeSlot(offset: number): DecodeSlot {
+  return {
+    key: "p-cat:0:0", fetch: "concat", inputs: 2, outputs: 2,
+    trace: (inputs, ropeOffset) => new TracedConcatKVCache(offset, inputs[0]!, inputs[1]!, ropeOffset),
+  };
 }

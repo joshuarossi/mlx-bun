@@ -1,7 +1,8 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/mlx/cache";
+import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
+import { concatDecodeSlot } from "./kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
 
@@ -10,7 +11,7 @@ import { plainKvStorage } from "./dense-kv-reads";
  *  with keep=0 (gemma4's configuration): a ring buffer of max_size
  *  entries, so decode attends over at most the window. RoPE offsets use
  *  the true position; masks use the buffer-clamped offset. */
-export class RotatingKVCache implements Cache {
+export class RotatingKVCache implements CompiledDecodeCache {
   readonly denseKvReads = plainKvStorage;
   declare minimumReusableOffset?: number;
   static readonly STEP = 256;
@@ -248,6 +249,29 @@ export class RotatingKVCache implements Cache {
     return { fetch, writePos: this.#idx, activeLen: prev };
   }
 
+  /** Non-mutating twin of prepareDecodeStep's fetch choice: the ring runs once
+   *  the next write lands at or past the window. */
+  decodePhase(): DecodeStepPlan["fetch"] {
+    return this.offset + 1 < this.maxSize ? "concat" : "ring";
+  }
+
+  decodeSlot(plan: DecodeStepPlan): DecodeSlot {
+    return plan.fetch === "concat" ? concatDecodeSlot(this.offset) : ringDecodeSlot(this.offset, this.maxSize);
+  }
+
+  decodeInputs(plan: DecodeStepPlan, step: DecodeStepInputs): MlxArray[] {
+    return plan.fetch === "concat"
+      ? [step.activeView(this.keys!, plan.activeLen), step.activeView(this.values!, plan.activeLen)]
+      : [this.keys!, this.values!, step.writePosition(plan.writePos)];
+  }
+
+  commitDecodeStep(slot: DecodeSlot, outputs: MlxArray[]): MlxArray[] {
+    // a ring's updates are ancestors of the logits (the in-graph fetch reads the
+    // updated buffer): no explicit eval roots
+    if (slot.fetch === "ring") { this.adoptDecodeStep(outputs[0]!, outputs[1]!); return []; }
+    return this.writeDecodeStep(outputs[0]!, outputs[1]!);
+  }
+
   /** Compiled decode, concat fetch: the write half. Takes ownership of
    *  kNew/vNew; returns the updated buffers to async-eval. */
   writeDecodeStep(kNew: MlxArray, vNew: MlxArray): MlxArray[] {
@@ -339,4 +363,39 @@ export class RotatingKVCache implements Cache {
     this.offset = 0;
     this.#idx = 0;
   }
+}
+
+/** The rotating plain cache at steady state inside a compiled decode trace:
+ *  write in graph at the dynamic ring position, fetch the full updated buffer
+ *  (mirrors #updateInPlace -> #fetchAll); the updated buffers are closure outputs. */
+class TracedRingKVCache extends RotatingKVCache implements DecodeTrace {
+  override readonly ropeOffsetArr: MlxArray;
+  outs: MlxArray[] = [];
+  constructor(
+    offset: number, maxSize: number,
+    readonly bufK: MlxArray,
+    readonly bufV: MlxArray,
+    readonly writePosArr: MlxArray,
+    ropeOffsetArr: MlxArray,
+  ) {
+    super(maxSize);
+    this.offset = offset;
+    this.ropeOffsetArr = ropeOffsetArr;
+  }
+
+  override updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const updK = ops.sliceUpdateDynamic(this.bufK, k, this.writePosArr, [2]);
+    const updV = ops.sliceUpdateDynamic(this.bufV, v, this.writePosArr, [2]);
+    this.outs = [updK, updV];
+    const whole = (a: MlxArray): MlxArray => a.slice(a.shape.map(() => 0), a.shape);
+    return [whole(updK), whole(updV)];
+  }
+}
+
+function ringDecodeSlot(offset: number, maxSize: number): DecodeSlot {
+  return {
+    key: "p-ring:0:0", fetch: "ring", inputs: 3, outputs: 2,
+    trace: (inputs, ropeOffset) =>
+      new TracedRingKVCache(offset, maxSize, inputs[0]!, inputs[1]!, inputs[2]!, ropeOffset),
+  };
 }
