@@ -24,8 +24,6 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
     code: 'url.pathname === "/v1/messages" ? anthropicError : url.pathname === "/v1/responses" ? responsesError : undefined' },
   { file: "server/proxy-routes.ts", fn: "unavailableFrame", why: "chooses the SSE error frame", code: 'pathname === "/v1/messages"' },
   { file: "server/proxy-routes.ts", fn: "unavailableFrame", why: "chooses the SSE error frame", code: 'pathname === "/v1/responses"' },
-  { file: "server/proxy-routes.ts", fn: "createProxyRoutes", why: "picks the worker named by the body's model (the routed-by-model-id rows)",
-    code: 'request.method === "POST" && MODEL_ROUTED.has(pathname)' },
   { file: "server/model-routes.ts", fn: "createModelRoutes", why: "a read of the current model's own routes is answered as it is; a change holds the model resident meanwhile",
     code: '["GET", "HEAD"].includes(request.method)' },
   { file: "server/adapter-artifact-routes.ts", fn: "createAdapterArtifactRoutes", why: "sub-dispatch after the route guard", code: 'path.endsWith("/merge")' },
@@ -384,23 +382,25 @@ class Inventory {
     const declined = facts.find(f => f.declined);
     return declined ? this.fail(declined.node, "a route test that declines is supported only in the isolated proxy") : facts;
   }
-  /** The isolated proxy: MODEL_ROUTED POSTs pick a worker by the body's model; the final forward takes the rest. */
+  /** The isolated proxy: the paths the parent owns, then the model router takes the rest to the workers, each POST routed by model id. */
   private proxy(decl: ts.FunctionDeclaration, facts: Fact[]): Fact[] {
-    const has = [...this.allowed].find((n): n is ts.CallExpression => within(n, decl) && ts.isCallExpression(n) && code(n.expression).endsWith(".has"));
     const handle = find(decl, ts.isMethodDeclaration).find(m => m.name.getText() === "handle"), last = handle?.body?.statements.at(-1);
-    if (!has || !last || !ts.isReturnStatement(last) || !last.expression || !called(last.expression, "forward").length)
-      return this.fail(handle ?? decl, "unrecognized proxy shape: expected MODEL_ROUTED routing and a final forward in handle");
-    const routed = this.classify(has).routes!;
-    for (const f of facts) if (f.method === "POST" && routed.some(r => r.path === f.path)) f.status = "routed by model id";
-    return [...merge([...facts, ...routed.map(({ path, node }) => ({ method: "POST", path, node, status: "routed by model id", conds: [] }))]),
-      { method: "*", path: ANY, status: "forwarded to the worker", conds: [], node: last, except: new Set(facts.map(f => f.path)) }];
+    if (!last || !ts.isReturnStatement(last) || !last.expression || code(last.expression) !== "options.models.handle(request)")
+      return this.fail(handle ?? decl, "unrecognized proxy shape: expected the model router to answer every remaining path in handle");
+    const router = this.factories.get("createModelRoutes");
+    if (!router) return this.fail(decl, "unrecognized proxy shape: createModelRoutes was not found");
+    const routed = this.routedPaths(router).map(({ path, node }) => ({ method: "POST", path, node, status: "routed by model id", conds: [] }) satisfies Fact);
+    return [...facts, ...routed, { method: "*", path: ANY, status: "forwarded to the worker", conds: [], node: last, except: new Set(facts.map(f => f.path)) }];
+  }
+  private routedPaths(decl: ts.FunctionDeclaration) {
+    const has = find(decl, ts.isCallExpression).find(call => code(call.expression) === "MODEL_ROUTED.has");
+    if (!has) return this.fail(decl, "unrecognized router shape: expected MODEL_ROUTED routing in handle");
+    return this.classify(has).routes!;
   }
   /** The model router: MODEL_ROUTED POSTs lease the model the body names (else the current one); every other path it does not
    * answer itself is answered by the current model's own route chain (`createServingUnit`'s `routes`), read from its literal composition. */
   private router(decl: ts.FunctionDeclaration, facts: Fact[]): Fact[] {
-    const has = find(decl, ts.isCallExpression).find(call => code(call.expression) === "MODEL_ROUTED.has");
-    if (!has) return this.fail(decl, "unrecognized router shape: expected MODEL_ROUTED routing in handle");
-    const routed = this.classify(has).routes!;
+    const routed = this.routedPaths(decl);
     for (const f of facts) if (f.method === "POST" && routed.some(r => r.path === f.path)) f.status = "routed by model id";
     const unit = this.fn(cli("serving-unit.ts"), "createServingUnit"), routes = find(unit, ts.isVariableDeclaration).find(d => d.name.getText() === "routes")?.initializer;
     if (!routes) return this.fail(unit, "unrecognized composition shape; expected `const routes = { handle: … }` in createServingUnit");
@@ -488,7 +488,7 @@ class Inventory {
     const stubs = props(fields.get("routes")), worker: Groups = new Map([...stubs.keys()].map(key => [key, undefined]));
     if (!none(fields.get("web")) || !stubs.size || [...stubs.values()].some(e => !none(props(this.local(e)).get("handle"))))
       this.fail(workerState, "unrecognized composition shape; createWorkerState must serve nothing in place of the app state's groups");
-    const entry = this.fn(cli("worker-entry.ts"), "runWorkerEntry"), hosts = called(entry, "startModelHost"), first = hosts[0]?.arguments[0] && skip(hosts[0].arguments[0]);
+    const entry = this.fn(cli("worker-entry.ts"), "runWorkerEntry"), hosts = called(entry, "startModelHost"), first = hosts[0]?.arguments[0] && this.local(hosts[0].arguments[0]);
     if (hosts.length !== 1 || !first || !ts.isCallExpression(first) || first.expression.getText() !== "createWorkerState")
       return this.fail(hosts[0] ?? entry, "unrecognized composition shape; expected startModelHost(createWorkerState(…), …)");
     const admin = this.wrapper(props(hosts[0]!.arguments[3]).get("routes"), hosts[0]!), host = this.mode("serve-host.ts", "startContextHost", worker);
@@ -508,11 +508,11 @@ class Inventory {
     if (!host.wrapped || !transcription.wrapped) this.fail(host.wrapped ? transcription.node : host.node, "the host must let the worker's admin routes wrap its routes");
     const lease = (leased: boolean) => leased ? "with" : "without";
     return [
-      { id: "serve", title: "Server", ...serve, intro: "`mlx-bun serve`, and `createServer` from `mlx-bun/server` over a caller's loaded context: one process owns the loaded models (residency by memory fit; a caller's context is the only model), the browser app, chat, and jobs. Model-scoped paths belong to the current model." },
-      { id: "isolate", title: "Isolated server (`--isolate`)", ...this.mode("serve-isolated.ts", "startIsolatedServer", app, web),
-        intro: "`mlx-bun serve --isolate`: this process keeps the browser app, chat, jobs, and Responses history; models run in worker processes (one per model under `--model-pool`)." },
+      { id: "serve", title: "In-process server (`--in-process`)", ...serve, intro: "`mlx-bun serve --in-process`, and `createServer` from `mlx-bun/server` over a caller's loaded context: one process owns the loaded models (residency by memory fit; a caller's context is the only model), the browser app, chat, and jobs. Model-scoped paths belong to the current model." },
+      { id: "isolate", title: "Isolated server (the default)", ...this.mode("serve-isolated.ts", "startIsolatedServer", app, web),
+        intro: "`mlx-bun serve`: this process keeps the browser app, chat, jobs, and Responses history and loads no model; one worker process per resident model (residency by memory fit, held by this process) answers the model-scoped paths, routed by the request's `model`. A Whisper checkpoint runs in a worker of its own." },
       { id: "worker", title: "Isolation worker socket", ...host, node: hosts[0]! as ts.Node, groups: [admin, ...host.groups],
-        intro: "What an `--isolate` worker answers on its private Unix socket; only its parent connects. The worker admin routes answer ahead of the model routes." },
+        intro: "What a model worker answers on its private Unix socket; only its parent connects. The worker admin routes answer ahead of the model routes." },
       { id: "app-worker", title: "App worker socket (`openIsolatedHost`)", ...serve, node: runs[0]! as ts.Node, groups: [admin, ...serve.groups],
         intro: `The \`app\` worker launch form (\`mlx-bun/engine\`'s \`openIsolatedHost\`): the Server app composed by \`runServe\` on a private Unix socket, the worker admin routes ahead of its route groups, ${lease(leases[0]!)} the execution lease. ` +
           `A Whisper checkpoint gets the transcription-only routes behind the same admin routes, ${lease(leases[1]!)} the execution lease.` },
@@ -591,8 +591,7 @@ export function renderServerApi(api: ServerApi, revision: string): string {
     `- **conditional**: the row depends on the quoted composition input; when it does not apply, the request falls through to later rows.\n` +
     `- **WebSocket upgrade**: \`GET /ws/chat\` opens the browser's chat session with the Pi agent; without a chat model the session fails to start and closes.\n` +
     `- **routed by model id**: the request goes to the local model the JSON body's \`model\` names (loaded on demand, another drained first when it does not fit), else to the current model.\n` +
-    `- Under \`--isolate\`: **served by parent** paths are never forwarded; **routed by model id** requests go to the worker serving the JSON body's \`model\`, else the default worker; ` +
-    `**forwarded to the worker** requests stream to the default worker unchanged.\n\n` +
+    `- In the isolated server: **served by parent** paths are never forwarded; **forwarded to the worker** requests stream unchanged to the current model's worker, and **routed by model id** requests to the worker of the model the body names.\n\n` +
     api.modes.map(mode => `## ${mode.title}\n\n${mode.intro} Composed at ${link(mode.composed.file, mode.composed.line)}.\n\n` +
       `| Method | Path | Status | Source |\n| --- | --- | --- | --- |\n${table(mode.routes)}\n`).join("\n");
 }

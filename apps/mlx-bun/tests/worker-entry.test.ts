@@ -111,6 +111,10 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal((await (await get("/health")).json()).leases, 1);
     holder.abort();
     await until(() => gateway.held === 0, "the lease release");
+    // The parent subscribes to the worker's engine events over the admin surface (the host's telemetry publishes on the worker's bus).
+    const stream = await get("/admin/events");
+    assert.equal(stream.status, 200);
+    await stream.body.cancel();
     // The parent's synthesis calls run on the worker's task model under the same execution lease.
     events.length = 0;
     const memory = await get("/admin/memory/complete", { method: "POST", body: JSON.stringify({ call: "completeBatch", snapshot: "/hub/task/selected",
@@ -209,8 +213,8 @@ test("the real entry, spawned through the parent-side helper with the native lib
       [join(app, "src/cli/worker-entry.ts"), 2, { version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath }, "worker launch needs model.repoId and model.path"],
       [join(app, "src/cli/worker-entry.ts"), 2, { kind: "app", version: other, socketPath: socket.socketPath, argv: ["--model", "org/model"] },
         `worker protocol version mismatch: the launch record is ${other}, this worker is ${WORKER_PROTOCOL_VERSION}`],
-      [join(app, "src/cli/worker-entry.ts"), 2, { kind: "app", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, argv: ["--model", "org/model", "--isolate"] },
-        "--isolate is not supported in a worker app launch"],
+      [join(app, "src/cli/worker-entry.ts"), 2, { kind: "app", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, argv: ["--model", "org/model", "--no-such-flag"] },
+        "Unknown option '--no-such-flag'"],
       [join(app, "src/cli/worker-entry.ts"), 1, { version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: { repoId: "org/missing", path: join(socket.dir, "missing-model"), expertsBytes: 0 },
         options: { query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null, readOnly: false, noOpen: true, request: {}, cache: { kvQuant: "off" } } }, "worker startup failed: "],
     ] as const) {
@@ -313,7 +317,7 @@ test("the app form runs serve arguments through runServe on the parent's socket:
     expect(queries).toEqual(["org/model"]);
     // The CLI's parse, with the transport flags accepted and the socket hooks handed to the composition.
     const { options, hooks } = host.calls[0]!;
-    expect(options).toMatchObject({ query: "org/model", hostname: "0.0.0.0", port: 0, noOpen: true, isolate: false, capacity: 2 });
+    expect(options).toMatchObject({ query: "org/model", hostname: "0.0.0.0", port: 0, noOpen: true, capacity: 2 });
     expect([hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain, typeof hooks.link]).toEqual([run.socketPath, "function", "function", "object"]);
     expect(run.logs).toEqual(["Loading org/model", "Serving org/model with continuous batching (capacity 2) over the Unix socket"]);
     expect(statSync(run.socketPath).mode & 0o777).toBe(0o600);
@@ -437,8 +441,7 @@ test("the app form announces nothing when startup fails or is stopped, closes an
 test("the app form refuses nested isolation, a missing model, arguments the CLI refuses, and another package version's launch record with exit 2 before composing", async () => {
   const version = `${WORKER_PROTOCOL_VERSION}-other`;
   for (const [argv, launch, message] of [
-    [["--model", "org/model", "--isolate"], {}, "--isolate is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket"],
-    [["--model", "org/model", "--model-pool", "2"], {}, "--model-pool is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket"],
+        [["--model", "org/model", "--model-pool", "2"], {}, "Unknown option '--model-pool'"],
     [["--model", ""], {}, "a worker app launch needs a non-empty --model: automatic selection may download the starter model"],
     [["--port", "0"], {}, "a worker app launch needs a non-empty --model: automatic selection may download the starter model"],
     [["--model", "org/model", "--bogus"], {}, "Unknown option '--bogus'"],
@@ -459,8 +462,8 @@ test("the app form refuses nested isolation, a missing model, arguments the CLI 
   // The helper a parent calls to fail fast: transport flags pass and do not steer the socket.
   expect(validateAppLaunchArgv(["--model", "org/model", "--host", "0.0.0.0", "--port", "9", "--no-open"]).values)
     .toMatchObject({ model: "org/model", host: "0.0.0.0", port: "9", "no-open": true });
-  // And composition itself never nests an isolated app behind a socket.
-  await expect(startModelServer(chatModel, { isolate: true } as ServeOptions, { unix: "/unused.sock" })).rejects.toThrow("--isolate is not supported in a worker app launch");
+  // A worker's app loads its models in its own process whatever the default is, and ignores the deprecated flag.
+  expect(() => validateAppLaunchArgv(["--model", "org/model", "--isolate"])).not.toThrow();
 });
 
 test("a Whisper checkpoint in the app form hands the socket hooks to the transcription-only host, whose admin surface has no lease", async () => {

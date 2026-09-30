@@ -5,6 +5,7 @@
 import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { fit, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
+import type { ModelRecord } from "@mlx-bun/hub/registry";
 
 /** The context the estimate reserves KV for; longer contexts grow into the budget's headroom or evict others. */
 export const SERVING_CONTEXT_TOKENS = 8192;
@@ -17,4 +18,20 @@ export function servingReserveBytes(config: ModelConfig, weightsBytes: number,
   const reserve = report.kvBytes + report.transientBytes;
   // A config the fit model cannot size adds nothing: residency then counts the weights alone.
   return Number.isFinite(reserve) && reserve > 0 ? reserve : 0;
+}
+
+/** What loading `record` would take: its weights and a typical context's KV and working set. A runtime that plans its
+ * own memory is served alone, so it needs the whole budget. Reads the model's config only; loads nothing. */
+export async function estimateRecordBytes(record: ModelRecord, input: {
+  budgetBytes: number; machine?: MachineSpec;
+  cache: { kvQuant?: "off" | "config" | number; turboQuant?: import("@mlx-bun/inference/artifacts/config").TurboQuantScheme; quantizedKvStart?: number };
+}): Promise<number> {
+  const [{ loadModelConfig }, { resolveModelProfile }, { plansMemory }, { resolveKvScheme }] = await Promise.all([
+    import("@mlx-bun/inference/artifacts/config"), import("@mlx-bun/inference/models/profile"), import("@mlx-bun/inference/models/memory-plan"),
+    import("@mlx-bun/inference/state/kv-scheme")]);
+  const config = await loadModelConfig(record.path);
+  if (plansMemory(resolveModelProfile(config))) return input.budgetBytes;
+  const kvScheme = resolveKvScheme({ override: input.cache.kvQuant, turboQuant: input.cache.turboQuant,
+    quantizedKvStart: input.cache.quantizedKvStart, config: config.kvQuant }).fitOptions;
+  return record.sizeBytes + servingReserveBytes(config, record.sizeBytes, { expertsBytes: record.expertsBytes, kvScheme, ...(input.machine ? { machine: input.machine } : {}) });
 }

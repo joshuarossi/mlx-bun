@@ -5,14 +5,14 @@
 // model surface on the socket. Behavior is driven by request content and `/fake/*` control
 // routes, so a test reaches everything through the parent's proxy. Env:
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
-// FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop (pool timing);
+// FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop, and stopped (the exit after a slow close);
 // FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load;
-// FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a pool's failed cold start);
+// FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a worker that cannot load it);
 // FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
 // FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 // FAKE_WORKER_VERSION=<v> plays a worker of that package version: a launch record
 // with another one is refused as the real entry refuses it (exit 2, the reason on stderr).
-// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing;
+// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing; FAKE_WORKER_STOP_CODE is its exit code (3: the saved state was not durable);
 // FAKE_WORKER_STOP_GATE=<path> holds it until that file exists (no clock involved).
 // `POST /admin/memory/complete` plays the memory task model: each row answers
 // `task <stage>: <user>` in order; a row whose user text contains `hold` waits
@@ -23,6 +23,7 @@
 // FAKE_WORKER_MEMORY_JOIN_GATE=<path> holds an aborted call's settling until that
 // file exists, like rows joining; SIGTERM waits for those joins, as the real
 // worker's close does.
+// `GET /admin/events` streams the worker's bus as JSON lines (a scheduler sample per `/fake/emit`).
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -53,8 +54,11 @@ const gateOpen = async (path: string | undefined) => { while (path && !existsSyn
 const heldMemory = new Set<() => void>(), memoryJoins = new Set<Promise<void>>();
 let taskSnapshot: string | undefined;
 let draining = false, inFlight = 0, responseCount = 0;
+/** The model the worker answers as: the one it was launched with. */
+let current = modelId;
+const emitters = new Set<() => void>();
 const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
-  id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: modelId, choices: [{ index: 0, delta, finish_reason: finish }],
+  id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: current, choices: [{ index: 0, delta, finish_reason: finish }],
 });
 const sse = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
 const frame = (name: string, value: unknown) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
@@ -86,7 +90,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   const entry: Seen = { path, method: request.method, aborted: false, headers: Object.fromEntries(request.headers) };
   seen.push(entry);
   request.signal.addEventListener("abort", () => { entry.aborted = true; }, { once: true });
-  if (path === "/health") return Response.json({ status: "ok", state: draining ? "draining" : "ready", model: modelId, pid: process.pid, in_flight: inFlight, leases: leases.size });
+  if (path === "/health") return Response.json({ status: "ok", state: draining ? "draining" : "ready", model: current, pid: process.pid, in_flight: inFlight, leases: leases.size });
   if (path === "/admin/lease") {
     const lease = {};
     leases.add(lease);
@@ -95,14 +99,24 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode("leased\n")); }, cancel: release }),
       { headers: { "content-type": "application/octet-stream" } });
   }
+  if (path === "/admin/events") {
+    // The worker's own bus: a sample now and then, like the engine's telemetry; a test asks for one through /fake/emit.
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(encoder.encode("\n"));
+      const emit = () => { try { controller.enqueue(encoder.encode(JSON.stringify({ type: "scheduler.sample", at: Date.now(), model: current, active: 0, capacity: 8, queued: 0, tokensPerSecond: 0 }) + "\n")); } catch { /* closed */ } };
+      emitters.add(emit);
+      request.signal.addEventListener("abort", () => emitters.delete(emit), { once: true });
+    } }), { headers: { "content-type": "application/x-ndjson" } });
+  }
+  if (path === "/fake/emit") { for (const emit of emitters) emit(); return Response.json({ emitted: emitters.size }); }
   if (path === "/admin/drain") {
     entry.raw = await request.text();
     draining = true;
     console.error("drain requested");
     event("drain");
-    return Response.json({ drained: true, state: "draining", model: modelId, in_flight: inFlight, leases: leases.size, waited_ms: 0, timed_out: false });
+    return Response.json({ drained: true, state: "draining", model: current, in_flight: inFlight, leases: leases.size, waited_ms: 0, timed_out: false });
   }
-  if (path === "/fake/seen") return Response.json({ pid: process.pid, model: modelId, seen, task_snapshot: taskSnapshot ?? null });
+  if (path === "/fake/seen") return Response.json({ pid: process.pid, model: current, seen, task_snapshot: taskSnapshot ?? null });
   if (path === "/fake/crash") { crash(Number(url.searchParams.get("code") ?? "137")); return Response.json({ crashing: true }); }
   // Until the marker file lists `times` pids (default 1), a worker appends its pid and exits without
   // answering (a transport failure for the caller); later requests are answered.
@@ -140,20 +154,23 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     event("memory answered");
     return Response.json({ outputs: body.requests.map(row => `task ${row.stage}: ${row.input.user}`) });
   }
-  if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: modelId, object: "model", created: 1, owned_by: "mlx-bun",
+  if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: current, object: "model", created: 1, owned_by: "mlx-bun",
     context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
-    capabilities: { chat_completions: true, transcription: false } }] });
-  if (path === "/stats") return Response.json({ server: { owner: "serve", model: modelId, started_at: 1 },
+    capabilities: { chat_completions: true, transcription: false }, resident: true, current: true },
+    // Like the real worker, the other local models follow as the registry knows them (FAKE_WORKER_MODELS, comma separated).
+    ...(process.env.FAKE_WORKER_MODELS ?? "").split(",").filter(id => id && id !== current).map(id => ({ id, object: "model", created: 1, tier: "targeted" }))] });
+  if (path === "/stats") return Response.json({ server: { owner: "serve", model: current, started_at: 1 },
     prompt_cache: { entries: 1, bytes: 2, max_bytes: 3 }, response_store: { entries: 99, bytes: 99, max_bytes: 99, ttl_ms: 99 },
     admission: { enforced_context_tokens: 2048, max_safe_context: 8192 }, batch: { configured: 8, active_rows: 0 } });
-  if (path === "/library") return Response.json({ models: [{ repo_id: modelId, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
+  if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
+  if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
   if (path === "/v1/chat/completions" && request.method === "POST") {
     entry.raw = await request.text();
     let body: { stream?: boolean; messages?: { role: string; content: unknown }[] };
     try { body = JSON.parse(entry.raw) as typeof body; } catch { return Response.json({ error: { message: "invalid JSON body", type: "invalid_request_error" } }, { status: 400 }); }
     entry.body = body;
     const prompt = userText(body);
-    if (!body.stream) return Response.json({ id: "chatcmpl-fake", object: "chat.completion", created: 1, model: modelId,
+    if (!body.stream) return Response.json({ id: "chatcmpl-fake", object: "chat.completion", created: 1, model: current,
       choices: [{ index: 0, message: { role: "assistant", content: `echo: ${prompt}` }, finish_reason: "stop" }],
       usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } });
     inFlight++;
@@ -171,7 +188,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     const body = await request.json() as { stream?: boolean; input?: unknown; instructions?: string | null; previous_response_id?: unknown };
     entry.body = body;
     const prompt = userText(body);
-    const response = { id: `resp_${++responseCount}`, object: "response", model: modelId, previous_response_id: null,
+    const response = { id: `resp_${++responseCount}`, object: "response", model: current, previous_response_id: null,
       output: [{ type: "message", id: `msg_${responseCount}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: `echo: ${prompt}`, annotations: [] }] }],
       instructions: body.instructions ?? null };
     if (!body.stream) return Response.json(response);
@@ -188,7 +205,9 @@ const stop = async () => {
   console.error("stopping"); event("stop");
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
   await gateOpen(process.env.FAKE_WORKER_STOP_GATE);
-  void server.stop(true); process.exit(0);
+  event("stopped");
+  // FAKE_WORKER_STOP_CODE=3 plays a close whose saved state was not durable.
+  void server.stop(true); process.exit(Number(process.env.FAKE_WORKER_STOP_CODE ?? "0"));
 };
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();

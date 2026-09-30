@@ -33,6 +33,8 @@ export interface ResidentUnit {
   readonly operations: readonly ModelOperation[];
   /** Saved state from an earlier run was found when it loaded, so a request can resume from it. */
   readonly resumed?: boolean;
+  /** It can no longer serve (a worker whose restarts are spent): the host releases it and loads the model again on the next request. */
+  broken?(): boolean;
   /** Bytes it holds now: weights plus the state it carries. */
   bytes(): number;
   memory(): { readonly weightsBytes: number; readonly kvBytes: number; readonly prefixCacheBytes: number };
@@ -255,6 +257,7 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
         signal?.throwIfAborted();
         if (closed) throw closedError();
         if (slot.closing) { await slot.closing.catch(() => {}); continue; }
+        if (slot.unit?.broken?.() && !slot.leases) { await evict(slot, "evicted"); continue; }
         // Reserve before anything suspends: a leased model is never evicted.
         const reserve = () => { slot.leases++; slot.lastUsedAt = now(); };
         if (slot.unit) { reserve(); return lease(slot, slot.unit, 0); }

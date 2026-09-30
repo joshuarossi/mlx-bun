@@ -5,7 +5,7 @@ import type { createCompletionRoutes } from "./routes";
 
 // A path no mounted handler owns answers 404. That includes the worker's
 // private admin routes (`/admin/lease`, `/admin/drain`, `/admin/memory/complete`)
-// and `/engine` outside `--isolate`, which exist only on the surface that
+// and `/engine` under `--in-process`, which exist only on the surface that
 // mounts them, and main's lab pages (/generate, /signal, /curves,
 // /curve-terrain, /dag), which are not product surface.
 

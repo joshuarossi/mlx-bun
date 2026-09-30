@@ -148,38 +148,34 @@ function runtime(interactive = true) {
   return { dependencies, signals, opens, exits, errors, starts, transcriptionStarts, downloads, logs, closes: () => closes };
 }
 
-test("--isolate is a parent-only boolean that selects the isolated composition and refuses the transcription-only server", async () => {
-  expect(parse().isolate).toBe(false);
-  expect(parse("--isolate").isolate).toBe(true);
-  expect(() => parse("--isolate=1")).toThrow();
-  const run = runtime(false);
-  const app = await runServe(parseCommand("serve", ["--isolate", "--port", "0", "--max-tokens", "16"]), run.dependencies);
-  expect(run.starts).toHaveLength(1);
-  expect(run.starts[0]).toMatchObject({ isolate: true, port: 0, defaultGeneratedTokens: 16 });
-  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker");
-  await app.close();
-  expect(run.closes()).toBe(1);
-  const whisper = { repoId: "mlx-community/whisper-large-v3-turbo", path: "/whisper", modelType: "whisper" } as ModelRecord;
-  await expect(runServe(parseCommand("serve", ["whisper", "--isolate"]), { ...run.dependencies, resolve: async () => ({ m: whisper, picked: false }) }))
-    .rejects.toThrow("--isolate is not supported for the transcription-only server");
-  expect(run.transcriptionStarts).toEqual([]);
-  expect(run.starts).toHaveLength(1);
-});
-
-test("--model-pool is a parent-only integer >= 1 that applies with --isolate; without it the flag warns and is ignored, as main", async () => {
-  expect(parse("--isolate")).not.toHaveProperty("modelPool");
-  expect(parse("--isolate", "--model-pool", "2").modelPool).toBe(2);
-  for (const value of ["0", "1.5", "x"]) expect(() => parse("--isolate", "--model-pool", value)).toThrow("--model-pool expects an integer in [1, 9007199254740991]");
+test("isolated model workers are the default; --in-process opts out, --isolate is a deprecated no-op, and --model-budget is a positive number of GB", async () => {
+  expect(parse()).not.toHaveProperty("inProcess");
+  expect(parse("--in-process")).toMatchObject({ inProcess: true });
+  expect(() => parse("--in-process=1")).toThrow();
   const warnings: string[] = [], warn = console.warn;
   console.warn = (message: string) => { warnings.push(message); };
-  try { expect(parse("--model-pool", "2")).not.toHaveProperty("modelPool"); }
-  finally { console.warn = warn; }
-  expect(warnings).toEqual(["--model-pool has no effect without --isolate (child-per-model pool) — ignored"]);
+  try { expect(parse("--isolate")).not.toHaveProperty("inProcess"); } finally { console.warn = warn; }
+  expect(warnings).toEqual(["--isolate is the default now and is ignored; use --in-process to load the models in this process"]);
+  expect(() => parse("--model-pool", "2")).toThrow();
+  expect(parse("--model-budget", "12").modelBudgetBytes).toBe(12e9);
+  expect(parse("--model-budget", "0.5").modelBudgetBytes).toBe(0.5e9);
+  expect(parse()).not.toHaveProperty("modelBudgetBytes");
+  for (const value of ["0", "-1", "x"]) expect(() => parse("--model-budget", value)).toThrow("--model-budget");
   const run = runtime(false);
-  const app = await runServe(parseCommand("serve", ["--isolate", "--model-pool", "3", "--port", "0"]), run.dependencies);
-  expect(run.starts[0]).toMatchObject({ isolate: true, modelPool: 3 });
-  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker (model pool 3)");
-  await app.close();
+  const isolated = await runServe(parseCommand("serve", ["--model-budget", "9", "--port", "0", "--max-tokens", "16"]), run.dependencies);
+  expect(run.starts[0]).toMatchObject({ modelBudgetBytes: 9e9, port: 0, defaultGeneratedTokens: 16 });
+  expect(run.starts[0]).not.toHaveProperty("inProcess");
+  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in isolated model workers\n");
+  await isolated.close();
+  expect(run.closes()).toBe(1);
+  const inProcess = await runServe(parseCommand("serve", ["--in-process", "--port", "0"]), run.dependencies);
+  expect(run.starts[1]).toMatchObject({ inProcess: true });
+  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in this process\n");
+  await inProcess.close();
+  // A Whisper checkpoint as the main model is the transcription-only server, whichever way the models are otherwise held.
+  const whisper = { repoId: "mlx-community/whisper-large-v3-turbo", path: "/whisper", modelType: "whisper" } as ModelRecord;
+  await runServe(parseCommand("serve", ["whisper"]), { ...run.dependencies, resolve: async () => ({ m: whisper, picked: false }) });
+  expect(run.transcriptionStarts).toHaveLength(1);
 });
 
 test("the Whisper companion flags keep main's spelling, units, and validation", () => {
@@ -404,7 +400,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {
       query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null,
-      readOnly: true, noOpen: true, chatPaths, memoryPaths, storagePaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
+      readOnly: true, noOpen: true, inProcess: true, chatPaths, memoryPaths, storagePaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
     assert.equal(typeof running.downloads.start, "function");
@@ -525,7 +521,7 @@ test("startup wires the memory budget, runtime context, allocator limit, expert 
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
       "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/",
       "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off",
-      "--paged-kv", "--paged-kv-block-size", "128", "--l2", "--kv-quant", "off", "--fused-sdpa", "on", "--no-open"]));
+      "--paged-kv", "--paged-kv-block-size", "128", "--l2", "--kv-quant", "off", "--fused-sdpa", "on", "--no-open", "--in-process"]));
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
     // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
@@ -713,7 +709,7 @@ test("incompatible paged startup closes caches and the loaded model before engin
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend() { throw new Error("must not construct chat"); } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer() { events.push("listener"); throw new Error("must not bind"); } }));
     const { parseServeOptions, startModelServer } = await import(app + "src/cli/serve.ts");
-    const options = parseServeOptions({ values: { "paged-kv": true, "force-wire": true }, positionals: [] });
+    const options = parseServeOptions({ values: { "paged-kv": true, "force-wire": true, "in-process": true }, positionals: [] });
     const beforeWire = runtimeValue("MLX_BUN_FORCE_WIRE");
     for (const [input, draft, message] of [
       [{ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }, null, /per-layer and TurboQuant/],
@@ -779,7 +775,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
       return await listenerInput.routes.handle(new Request("http://127.0.0.1/v1/audio/transcriptions", { method: "POST", body: form }));
     };
     const unload = async () => await (await listenerInput.routes.handle(new Request("http://127.0.0.1/admin/transcription/unload", { method: "POST" }))).json();
-    const options = parseServeOptions(parseCommand("serve", ["--whisper-model", "large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--no-open"]));
+    const options = parseServeOptions(parseCommand("serve", ["--whisper-model", "large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--no-open", "--in-process"]));
     // runServe resolves the query into the directory before composition.
     options.whisper = { ...options.whisper, modelDir: "/unused/whisper", modelId: "mlx-community/whisper-large-v3-turbo" };
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
@@ -802,7 +798,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     assert.deepEqual(events, ["engine close", "model close"]);
     // The idle policy without --whisper-resident: the weights stay for that long and the route reports it.
     events.length = 0;
-    const idle = parseServeOptions(parseCommand("serve", ["--whisper-idle-unload", "30", "--no-open"]));
+    const idle = parseServeOptions(parseCommand("serve", ["--whisper-idle-unload", "30", "--no-open", "--in-process"]));
     idle.whisper = { ...idle.whisper, modelDir: "/unused/whisper", modelId: "org/whisper" };
     idle.chatPaths = options.chatPaths; idle.memoryPaths = options.memoryPaths;
     const timed = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, idle);

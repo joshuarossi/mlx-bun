@@ -8,8 +8,8 @@
 // body holds the lease until it ends, so a model is never released under a
 // stream. `/v1/models` and `/library` list every local model with which are
 // resident and which is current; `/stats` adds the host's residency.
-import type { ResidencyHost, ResidentUnit } from "../engine/model-residency";
-import { ResidencyError } from "../engine/model-residency";
+import type { ResidencyHost, ResidentUnit } from "../residency/model-residency";
+import { ResidencyError } from "../residency/model-residency";
 import { errorResponse } from "./http";
 import { RequestError } from "./pipeline";
 
@@ -36,6 +36,8 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   current(): string;
   /** Whether `id` is an exact id this host can serve (the ids `/v1/models` lists), resident or not. */
   serves(id: string): Promise<boolean>;
+  /** The companion model (Whisper) that answers this path, when it is one of its own; the router leases it like any model. */
+  companion?(pathname: string): Promise<string | undefined>;
 }
 
 /** A response that keeps its lease until the body has ended, been cancelled, or failed. */
@@ -72,7 +74,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
   const active = (): U | undefined => {
     const current = host.peek(options.current());
     if (current) return current;
-    const latest = host.resident().filter(model => model.state === "ready").sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0];
+    const latest = host.resident().filter(model => model.state === "ready" && model.role === "primary").sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0];
     return latest ? host.peek(latest.id) : undefined;
   };
   const listing = async (request: Request, path: string): Promise<Response | null> => {
@@ -113,6 +115,8 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         if (own) return own.routes.handle(request);
         const base = await listing(request, "/v1/models");
         if (!base) return null;
+        // A unit that cannot answer (a worker that is down) is the answer, not something to decorate.
+        if (!base.ok) return base;
         const list = await base.json() as { object: string; data: Record<string, unknown>[] };
         const resident = residentIds(), current = options.current();
         // Every resident model answers for itself; the rest are listed as the registry knows them.
@@ -122,15 +126,17 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
           return [id, entry ? ((await entry.json()) as { data?: Record<string, unknown>[] }).data?.[0] : undefined] as const;
         }));
         const bySelf = new Map(full.flatMap(([id, entry]) => entry ? [[id, entry] as const] : []));
-        const data = list.data.map(entry => {
+        const data: Record<string, unknown>[] = list.data.map(entry => {
           const id = entry.id as string, row = bySelf.get(id) ?? entry;
-          return entry.transcription === true ? row : { ...row, resident: resident.has(id), current: id === current };
+          // A companion's own row says whether it is loaded; the host knows when it holds it resident.
+          return entry.transcription === true ? { ...row, ...(resident.has(id) ? { resident: true } : {}) } : { ...row, resident: resident.has(id), current: id === current };
         });
         return Response.json({ ...list, data: filter === null ? data : data.filter(entry => entry.id === filter) });
       }
       if (request.method === "GET" && pathname === "/library") {
         const base = await listing(request, `/library${url.search}`);
         if (!base) return null;
+        if (!base.ok) return base;
         const { models } = await base.json() as { models: Record<string, unknown>[] };
         const resident = residentIds(), current = options.current();
         return Response.json({ models: models.map(row => ({ ...row, serving: row.repo_id === current, resident: resident.has(row.repo_id as string) })) });
@@ -139,6 +145,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         const unit = active();
         const base = unit ? await unit.routes.handle(request) : null;
         if (!base) return null;
+        if (!base.ok) return base;
         const stats = await base.json() as Record<string, unknown>;
         const models = host.resident();
         return Response.json({ ...stats, models: { current: options.current(), budget_bytes: host.policy.budgetBytes,
@@ -148,6 +155,8 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       }
       if (request.method === "GET" && pathname === "/health")
         return await active()?.routes.handle(request) ?? Response.json({ status: "ok" });
+      const companion = await options.companion?.(pathname);
+      if (companion !== undefined) return leased(companion, request, served => served.routes.handle(request));
       // Everything else model-scoped is the current model's, when one is resident: a read answers as it is, and
       // a change (mounting an adapter, flushing a cache) holds the model resident until it is done.
       const unit = active();

@@ -9,6 +9,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./catalog": "./src/catalog.ts",
     "./home": "./src/home.ts",
     "./portable": "./src/portable.ts",
     "./verbs": "./src/verbs.ts"

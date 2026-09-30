@@ -47,7 +47,7 @@ export async function openLibraryHost(model: string, options: IsolatedHostOption
   const argv = ["--model", model, ...(options.arguments ?? [])];
   validateAppLaunchArgv(argv);
   const command = workerCommand(options.command, seams.modulePath ?? fileURLToPath(import.meta.url));
-  // A private 0700 directory, as under --isolate: a short path within the
+  // A private 0700 directory, as in the isolated server: a short path within the
   // 104-byte socket limit, removed after the worker has exited.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
   const removeSocketDir = () => rmSync(socketDir, { recursive: true, force: true });

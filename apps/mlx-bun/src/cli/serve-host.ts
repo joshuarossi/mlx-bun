@@ -1,7 +1,7 @@
 // The model-scoped half of the serve composition. startModelHost is the CLI's
 // loader: runtime switches, expert offload, the model context and its startup
 // adapter. startContextHost serves one or more models from the model host
-// (engine/model-residency.ts): each loaded model is a serving unit (binding,
+// (residency/model-residency.ts): each loaded model is a serving unit (binding,
 // caches, engine, routes: serving-unit.ts), the Whisper companion, the model
 // router (server/model-routes.ts), the chat backend, and the listener that
 // serves them. Both borrow persistent services from the AppState they are
@@ -9,8 +9,10 @@
 import { totalmem } from "node:os";
 import { requireChatTemplate, releaseContext, type LoadedModelContext } from "../engine/model-host";
 import { createKvBudget, type KvBudget } from "../engine/kv-budget";
-import { createResidencyHost, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../engine/model-residency";
-import { servingReserveBytes } from "../engine/resident-estimate";
+import { createResidencyHost, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
+import { estimateRecordBytes } from "../residency/resident-estimate";
+import { createRecordIndex } from "../residency/record-index";
+import { listLocalRecords } from "../residency/local-records";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import pkgJson from "../../package.json" with { type: "json" };
@@ -19,7 +21,6 @@ import { type RunningApp, type ServeOptions } from "./serve-options";
 import type { AppState, RouteGroup } from "./serve-state";
 import { createServingUnit, type ContextHost, type ContextHostOptions, type ServedModelFacts, type ServingUnit, type UnitShared } from "./serving-unit";
 import { ServeRefused } from "../server/hub-routes";
-import { openRegistry } from "../storage/paths";
 
 export type { ContextHost, ContextHostOptions } from "./serving-unit";
 export { resolveServingLimits, validatePagedServingOptions } from "./serve-options";
@@ -36,6 +37,8 @@ export interface ModelHostHooks {
   /** Internal (worker mode): the worker's admin surface wraps the model routes
    * and answers ahead of them (health, lease, the drain gate). */
   routes?(model: RouteGroup): RouteGroup;
+  /** Internal (worker mode): serve only the model this host was started with; another is the parent's to load in another worker. */
+  oneModel?: true;
 }
 
 /** Worker mode: the listener is a Unix socket, so there is no port to report. */
@@ -155,7 +158,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
     const restore = restoreLoader;
     cleanup = undefined; restoreLoader = undefined;
     // Expert offload routes the process's loads through one file: that model is all this process serves.
-    const models: ModelSource | undefined = options.expertOffload ? undefined : { startup: model, load: loadServed, records: localRecords };
+    const models: ModelSource | undefined = options.expertOffload || hooks.oneModel ? undefined : { startup: model, load: loadServed, records: localRecords };
     return await startContextHost(state, first.context, options,
       { ownership: "owned", artifact: model, owner: "serve", loadMs: first.loadMs, ...(first.defaultAdapter ? { defaultAdapter: first.defaultAdapter } : {}),
         ...(models ? { models } : {}) },
@@ -169,15 +172,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
 }
 
 /** The models `/v1/models` may list and the host may load: supported generation checkpoints the registry knows. */
-async function localRecords(): Promise<readonly ModelRecord[]> {
-  const { declaredOperations } = await import("@mlx-bun/app-services");
-  const registry = openRegistry();
-  try {
-    // A fresh machine's index is empty until its first scan.
-    if (registry.list().length === 0) await registry.scan();
-    return registry.listCanonical().filter(record => declaredOperations(record.modelType).includes("generate"));
-  } finally { registry.close(); }
-}
+const localRecords = () => listLocalRecords("generate");
 
 /** Serve one or more models with the app's routes, chat, and listener. The
  * first context is resident from the start; it is released by
@@ -256,35 +251,14 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const facts = new Map<string, ServedModelFacts>([[first.id, first.facts]]);
     const rememberFacts = (unit: ServingUnit) => { facts.set(unit.id, unit.facts); return unit; };
     // The other local models, as the registry knows them: refreshed after a download or job, and at most every few seconds on a miss.
-    let index: { at: number; byId: Map<string, ModelRecord> } | undefined;
-    const known = async (id: string): Promise<ModelRecord | undefined> => {
-      if (!input.models) return undefined;
-      if (id === first.id && input.models.startup) return input.models.startup;
-      for (const fresh of [false, true]) {
-        if (!index || fresh && Date.now() - index.at > 5_000) {
-          index = { at: Date.now(), byId: new Map((await input.models.records()).map(record => [record.repoId, record])) };
-        }
-        const record = index.byId.get(id);
-        if (record) return record;
-      }
-      return undefined;
-    };
+    const records = input.models ? createRecordIndex(() => input.models!.records(), input.models.startup) : undefined;
+    const known = async (id: string): Promise<ModelRecord | undefined> => records?.find(id);
     const machine = input.models ? (await import("@mlx-bun/inference/execution/fit")).thisMachine() : undefined;
     const memory = input.models ? await import("@mlx-bun/mlx/ffi") : undefined;
     // Every resident model together may use this much: by default a share of what the GPU can wire.
     const budgetBytes = !input.models ? Infinity
       : options.modelBudgetBytes ?? Math.floor((memory!.maxRecommendedWorkingSetSize() || totalmem() * 0.75) * DEFAULT_BUDGET_FRACTION);
-    /** What loading `record` would take: its weights and a typical context's KV and working set; a runtime that plans its own memory is served alone. */
-    const estimate = async (record: ModelRecord): Promise<number> => {
-      const [{ loadModelConfig }, { resolveModelProfile }, { plansMemory }, { resolveKvScheme }] = await Promise.all([
-        import("@mlx-bun/inference/artifacts/config"), import("@mlx-bun/inference/models/profile"), import("@mlx-bun/inference/models"),
-        import("@mlx-bun/inference/state/kv-scheme")]);
-      const config = await loadModelConfig(record.path);
-      if (plansMemory(resolveModelProfile(config))) return budgetBytes;
-      const kvScheme = resolveKvScheme({ override: options.cache.kvQuant, turboQuant: options.cache.turboQuant,
-        quantizedKvStart: options.cache.quantizedKvStart, config: config.kvQuant }).fitOptions;
-      return record.sizeBytes + servingReserveBytes(config, record.sizeBytes, { expertsBytes: record.expertsBytes, kvScheme, ...(machine ? { machine } : {}) });
-    };
+    const estimate = (record: ModelRecord) => estimateRecordBytes(record, { budgetBytes, cache: options.cache, ...(machine ? { machine } : {}) });
     const entryOf = (unit: ServingUnit): ResidencyEntry => ({ id: unit.id, bytes: unit.bytes(), operations: unit.operations });
     const source: ResidencySource<ServingUnit> = {
       async resolve(id) {
@@ -338,7 +312,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
     const moduleRoutes = createModuleRoutes(modules.routes);
     const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
-    const invalidateLibrary = () => { index = undefined; for (const unit of residentUnits()) unit.invalidateLibrary(); };
+    const invalidateLibrary = () => { records?.invalidate(); for (const unit of residentUnits()) unit.invalidateLibrary(); };
     // Settings share this group with hub GC, which must protect every resident snapshot.
     const management = createManagementRoutes({ invalidateLibrary,
       toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => residentUnits().map(unit => unit.artifactPath) });

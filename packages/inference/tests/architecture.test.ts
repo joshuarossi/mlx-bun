@@ -45,7 +45,7 @@ function layer(path: string, owner: Library): Layer | undefined {
 }
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
-const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "publishing", "memory", "hub", "storage", "modules.ts"], "modules.ts": [], engine: [], chat: ["storage"], server: ["engine", "chat", "memory", "jobs", "publishing", "hub", "storage"], memory: ["storage"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["chat", "jobs"] };
+const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "publishing", "memory", "hub", "storage", "residency", "modules.ts"], "modules.ts": [], engine: [], chat: ["storage"], server: ["engine", "chat", "memory", "jobs", "publishing", "hub", "storage", "residency"], residency: ["storage"], memory: ["storage"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["chat", "jobs"] };
 const siteDomains: Record<string, string[]> = { "content.config.ts": [], content: [], styles: [] };
 function domains(owner: Library): Record<string, string[]> {
   return owner.name === "mlx-bun-website" ? siteDomains : appDomains;

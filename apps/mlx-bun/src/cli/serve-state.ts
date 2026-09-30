@@ -48,7 +48,7 @@ export interface AppStateOptions {
    * model (Gemma-4 e4b with its chunk adapter), created by the first run and
    * kept until close, each call under the attached host's execution lease. */
   memoryTaskModel?: () => InProcessMemoryClient;
-  /** Memory synthesis's model in a process that loads none (the --isolate
+  /** Memory synthesis's model in a process that loads none (the isolated
    * parent): one run's client for a task model another process owns and
    * leases itself (the default model worker's). Nothing is leased here. */
   memoryCompletions?: (signal: AbortSignal) => MemoryCompletionClient;
@@ -141,7 +141,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // load with the first completion) and kept until close, as in main. Each of
   // its completions or batches runs under the attached host's execution lease,
   // taken before the weights load and released once every started row joined,
-  // so memory work never overlaps a managed job. The --isolate parent owns no
+  // so memory work never overlaps a managed job. The isolated parent owns no
   // task model: its client reaches the default model worker's, which takes that
   // worker's lease itself, so none is taken here. Close cancels and joins the
   // runs, then closes the task model, all ahead of any engine drain.
