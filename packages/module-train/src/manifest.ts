@@ -134,5 +134,5 @@ another training run holds it.`,
     // Shared with the datasets module.
     { key: "datasets", path: "datasets", kind: "directory", purpose: "Drafter regeneration shards, one directory per target model" },
   ],
-  panel: { tag: "mlx-train-panel", entry: "@mlx-bun/module-train/panel", title: "Fine-tune", path: "/finetune" },
+  panel: { tag: "mlx-train-panel", entry: "@mlx-bun/module-train/panel", title: "Fine-tune", framed: false, path: "/finetune" },
 } as const satisfies Omit<AppModule<"jobs" | "storage" | "catalog">, "activate">;

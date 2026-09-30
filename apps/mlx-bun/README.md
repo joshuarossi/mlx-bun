@@ -1394,3 +1394,7 @@ GitHub/npm publication and tap synchronization remain separate unfinished releas
 work. No stage invokes those operations. [Release tests](tests/release.test.ts)
 use captured mock signing/notary commands and a recording acceptance stand-in;
 they do not prove a real signature or Apple acceptance.
+
+The Quantize (`/quantize`), Fine-tune (`/finetune`) and Build Dataset (`/dataset`) pages are the installed
+modules' self-contained panels. They preserve their wizard steps, job streams and publishing controls;
+leaving a page closes its stream, while returning to an unfinished job replays its stored progress.

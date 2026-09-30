@@ -1,4 +1,4 @@
-export const HTML = `<div id="s-finetune"><div class="eyebrow">Workflow · fine-tune</div>
+export const HTML = `<div class="wrap narrow lit" id="s-finetune"><div class="eyebrow">Workflow · fine-tune</div>
       <h1 class="title">Fine-tune <span class="grad g-green">a LoRA.</span></h1>
       <p class="lead">Train a low-rank adapter on top of any local model — SFT or DPO — and watch the loss curve land
       live. Hot-swappable onto the quantized base, <strong>no full reload.</strong></p>
@@ -153,7 +153,7 @@ export const HTML = `<div id="s-finetune"><div class="eyebrow">Workflow · fine-
         <div class="btnrow"><button class="btn ghost" id="f-again">Train another</button></div>
       </div>
 <p id="panel-message" role="status"></p></div>`;
-export const STYLE = `:host{display:block;color:var(--ink,CanvasText)}*{box-sizing:border-box}h1,h2,h3,p,pre{margin:0}button,input,textarea,select{font-family:inherit}
+export const STYLE = `:host{display:block;height:100%;overflow-y:auto;color:var(--ink,CanvasText)}.wrap{max-width:860px;margin:0 auto;padding:46px 28px 120px}@media(max-width:760px){.wrap{padding:34px 18px 100px}}*{box-sizing:border-box}h1,h2,h3,p,pre{margin:0}button,input,textarea,select{font-family:inherit}
   /* ─── shared typographic bits ─── */
   .eyebrow{font-size:12.5px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
   h1.title{font-size:clamp(38px,5.4vw,68px);font-weight:700;letter-spacing:-.032em;line-height:1.02}

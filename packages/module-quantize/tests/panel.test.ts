@@ -22,7 +22,8 @@ beforeAll(async () => {
   fetch: async (url: string, init?: RequestInit) => {
    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
    requests.push({ url, body });
-   return Response.json(answers.get(new URL(url).pathname) ?? {});
+   const answer = answers.get(new URL(url).pathname);
+   return Response.json(typeof answer === "function" ? await answer() : answer ?? {});
   } });
  await import("../src/panel");
 });
@@ -59,4 +60,19 @@ test("quantize panel owns inspect, mixed configuration, stream progress and publ
 test("quantize inspection failure preserves the wizard and displays the server error", async () => {
  answers.set("/tenant/api/quantize/inspect", { ok:false, error:"bad checkpoint" }); const panel=await mount();value(panel,"q-model","bad");await click(part(panel,"q-inspect"));
  expect(part(panel,"q-inspect-out").textContent).toContain("bad checkpoint");expect(part(panel,"q-inspect").hasAttribute("disabled")).toBe(false);
+});
+
+test("leaving while submit is pending defers its job stream until the panel returns", async () => {
+ answers.set("/tenant/api/quantize/inspect", {ok:true,support:true});
+ let submitted!: (result: unknown) => void;
+ answers.set("/tenant/api/quantize/submit", () => new Promise(resolve => { submitted = resolve; }));
+ const panel = await mount();value(panel,"q-model","org/model");await click(part(panel,"q-inspect"));await click(part(panel,"q-continue"));
+ part(panel,"q-submit").click();await settle();panel.remove();submitted({ok:true,job_id:"pending",output_dir:"/models/output"});await settle();
+ expect(Stream.all).toHaveLength(0);document.body.append(panel);expect(Stream.all).toHaveLength(1);
+ expect(Stream.all[0]!.url).toBe("https://backend/tenant/api/jobs/pending/stream");
+});
+test("a backend-only embedding can show errors without a host toast", async () => {
+ const panel = document.createElement("mlx-quantize-panel") as HTMLElement & {connection:unknown};
+ panel.connection = {apiBase:"https://backend/tenant/api/quantize",eventsUrl:""};document.body.append(panel);
+ await click(part(panel,"q-inspect"));expect(part(panel,"panel-message").textContent).toBe("Enter a model id or path first.");
 });

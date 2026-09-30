@@ -298,3 +298,12 @@ test("a remote result for a superseded query is dropped, and an empty result ren
   expect(asked).toEqual(["ab", "abc"]);
   expect(rows()).toEqual(["No matching commands or chats."]); // "ab" arrived late and was dropped; "abc" found nothing
 });
+
+test("an unframed panel owns its layout and still disconnects when its route is left", () => {
+ defineFake(alpha.tag);
+ const listed = api.panelsFromManifests([{id:"alpha",panel:{...alpha,framed:false}}]);
+ expect(listed[0]!.framed).toBe(false);shell.mountPanels(listed);shell.start();go("#/alpha");
+ const element=document.querySelector("#s-alpha mlx-alpha-panel")!;
+ expect(element.parentElement!.id).toBe("s-alpha");expect(document.querySelector("#s-alpha .shell-panel-title")).toBeNull();
+ expect("dev" in tab("alpha").dataset).toBe(true);go("#/home");expect(element.isConnected).toBe(false);
+});

@@ -139,10 +139,7 @@ Migration gaps stay required work in the feature table.
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
   - [ ] (d) Remaining modules, one PR each: chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks, train and models landed (benchmarks' and models' panels are the shell's, from their manifests; datasets' and quantize's browser
-    pages, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, are still legacy pages that become
-    panels the `@mlx-bun/web-shell` mounts; quantize's calls the app's toast, push and library-refresh
-    helpers, which a panel gets through its connection or the shell instead). The models module owns the hub, library, cache cleanup, `/v1/adapters*`,
+    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks, train and models landed; their browser panels are declared by their manifests and mounted by `@mlx-bun/web-shell`. The models module owns the hub, library, cache cleanup, `/v1/adapters*`,
     `/api/model/resolve-folder`, adapter merge and export (merge is the served model's `adapters` operation, run in the process that holds
     the model), the `get`, `ls`, `scan`, `fit`, `gc` and `upload` verbs and the Models panel; the chat's adapter selector
     (which mounted adapter a turn uses) stays with the chat. Modules contribute to each other through the

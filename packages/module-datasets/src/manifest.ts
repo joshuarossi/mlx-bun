@@ -16,5 +16,5 @@ export const manifest = {
   // request joins the scheduler; the job itself holds no exclusive GPU lease.
   jobs: [{ kind: "dataset", isolation: "task", gpu: "shared" }],
   storage: [{ key: "datasets", path: "datasets", kind: "directory", purpose: "Generated train.jsonl and valid.jsonl, one directory per job" }],
-  panel: { tag: "mlx-datasets-panel", entry: "@mlx-bun/module-datasets/panel", title: "Build Dataset", path: "/dataset" },
+  panel: { tag: "mlx-datasets-panel", entry: "@mlx-bun/module-datasets/panel", title: "Build Dataset", framed: false, path: "/dataset" },
 } as const satisfies Omit<AppModule<"jobs" | "storage" | "modelHost">, "activate">;

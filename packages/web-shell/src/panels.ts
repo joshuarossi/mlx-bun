@@ -32,6 +32,8 @@ export interface ShellPanel {
   readonly connection: PanelConnection;
   /** Listed among the developer tools (hidden until the Developer switch is on). Default true. */
   readonly developer?: boolean;
+  /** False when the panel supplies its own scroll column, heading and cards. Default true. */
+  readonly framed?: boolean;
 }
 
 /** The element as the shell sees it. */
@@ -40,7 +42,7 @@ export type PanelElement = HTMLElement & { connection?: PanelConnection };
 /** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
 export interface PanelManifest {
   readonly id: string;
-  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly developer?: boolean };
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly developer?: boolean; readonly framed?: boolean };
   readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
 }
 
@@ -52,6 +54,7 @@ export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellP
     const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
     return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path,
       ...(module.panel.developer !== undefined ? { developer: module.panel.developer } : {}),
+      ...(module.panel.framed !== undefined ? { framed: module.panel.framed } : {}),
       connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];
   });
 }
@@ -89,11 +92,15 @@ export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchor
   const section = document.createElement("section");
   section.dataset.route = id;
   section.id = "s-" + id;
-  const scroll = el("div", "shell-panel-scroll", section);
-  const page = el("div", "shell-panel", scroll);
-  const title = el("h2", "shell-panel-title", page);
-  title.textContent = panel.title;
-  const body = el("div", "shell-panel-body", page);
+  let body: HTMLElement;
+  if (panel.framed === false) body = section;
+  else {
+    const scroll = el("div", "shell-panel-scroll", section);
+    const page = el("div", "shell-panel", scroll);
+    const title = el("h2", "shell-panel-title", page);
+    title.textContent = panel.title;
+    body = el("div", "shell-panel-body", page);
+  }
 
   let element: PanelElement | undefined;
   return {

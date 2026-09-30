@@ -140,6 +140,8 @@ export interface PanelSpec {
   readonly path: string;
   /** Listed among the developer tools (hidden until the Developer switch is on). Default true; a panel every user needs sets `false`. */
   readonly developer?: boolean;
+  /** False when the panel supplies its own scroll column, heading and cards. Default true. */
+  readonly framed?: boolean;
 }
 
 /** Set on the element's `connection` property before it connects. */

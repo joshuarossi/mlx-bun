@@ -1,4 +1,4 @@
-export const HTML = `<div id="s-quantize"><div class="eyebrow">Workflow · quantize</div>
+export const HTML = `<div class="wrap narrow lit" id="s-quantize"><div class="eyebrow">Workflow · quantize</div>
       <h1 class="title">Quantize <span class="grad g-blue">a model.</span></h1>
       <p class="lead">Shrink any supported model to 4 or 8-bit with OptiQ-grade group quantization — smaller on disk,
       faster to decode, and serveable the moment it's scanned. <strong>No Python in the path.</strong></p>
@@ -87,7 +87,7 @@ export const HTML = `<div id="s-quantize"><div class="eyebrow">Workflow · quant
         <div class="btnrow"><button class="btn ghost" id="q-again">Quantize another</button></div>
       </div>
 <p id="panel-message" role="status"></p></div>`;
-export const STYLE = `:host{display:block;color:var(--ink,CanvasText)}*{box-sizing:border-box}h1,h2,h3,p,pre{margin:0}button,input,textarea,select{font-family:inherit}
+export const STYLE = `:host{display:block;height:100%;overflow-y:auto;color:var(--ink,CanvasText)}.wrap{max-width:860px;margin:0 auto;padding:46px 28px 120px}@media(max-width:760px){.wrap{padding:34px 18px 100px}}*{box-sizing:border-box}h1,h2,h3,p,pre{margin:0}button,input,textarea,select{font-family:inherit}
   /* ─── shared typographic bits ─── */
   .eyebrow{font-size:12.5px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
   h1.title{font-size:clamp(38px,5.4vw,68px);font-weight:700;letter-spacing:-.032em;line-height:1.02}

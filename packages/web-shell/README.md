@@ -57,3 +57,6 @@ Panel connections may carry optional host `ui` hooks for notifications, inline a
 the current model id and refreshing catalog consumers. The shell passes these through unchanged; a host
 implements only the presentation its installed panels consume. Panel routes are declared paths and stay
 stable when their feature moves into a differently named module.
+
+A panel may declare `framed: false` to supply its own scroll column, heading and cards. It remains a developer
+panel by default and detaches on navigation; the host's presentation callbacks pass through unchanged.
