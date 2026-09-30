@@ -9,6 +9,9 @@ Decisions that govern all work:
 - Main is reference-only, not an oracle to reproduce: an improvement over main is fine when bit parity (where the numerical contract requires it), performance and test gates hold.
 - mlx-bun is a drop-in superset of mlx-lm: the `mlx-bun.<cmd>` aliases accept mlx-lm arguments (landed in #241; the flags they refuse are listed in the
   [app README](apps/mlx-bun/README.md#mlx-lm-compatibility-mlx-buncmd)).
+- Refactor acceptance requires numerical parity, preserved functionality and no
+  performance regressions. Knowledge benchmark scores characterize the candidate
+  quant for its Hugging Face model card; that publication work has its own criteria.
 
 ## Verify the migrated library
 
@@ -55,25 +58,20 @@ Decisions that govern all work:
 
 Finish the remaining implementation first, then run these on the assembled
 candidate before saving main to a reference branch and merging
-`refactor/monorepo` into main. Inventory main's existing benchmark and
-evaluation suites rather than substituting a smaller smoke suite. Pin both source
-revisions and retain reproducible commands and results outside Git; reusable
-verification code stays in Git. Focused PR checks do not close these gates, and the
-full applicable numerical parity suites remain required too.
+`refactor/monorepo` into main. Inventory main's existing parity suites and
+performance workloads rather than substituting a smaller smoke suite. Pin both
+source revisions and retain reproducible commands and results outside Git;
+reusable verification code stays in Git. Focused PR checks do not close these
+gates. Benchmark execution remains stopped until Josh resumes it.
 
-- [ ] **Intelligence benchmarks.** Run the full existing evaluation suite, including
-  GSM8K and the other benchmarks main provides, against main and the candidate with
-  matched artifacts, dataset revisions and splits, prompts/templates, scoring, sampling,
-  seeds and limits. Report per-benchmark scores and failed or skipped evaluations;
-  resolve regressions before accepting. A smoke run or subset does not close the gate.
-  Runner: `bun scripts/eval-serve.ts --help` (the gate has not run against real servers).
-  Open: main's `*_optiq_frozen` datasets exist only on one machine and need
-  publishing as an external dataset revision; HumanEval needs #223's Docker image.
-- [ ] **Head-to-head performance.** Run the full H2H suite (`bun scripts/bench-serve.ts`)
-  on one quiet machine with the same artifacts, inputs, configuration and execution
-  shapes, single-request and batched. Exit: decode, prefill, complete-request time and
-  memory match main in paired measurements; regressions are traced and fixed, with
-  affected parity and benchmarks rerun.
+- [ ] **Numerical parity.** Run the full applicable numerical suites on the assembled
+  candidate against pre-refactor main and the applicable pinned oracle. Match model
+  artifacts, inputs, settings, execution shapes and state transitions. Verify logits,
+  generated tokens and continued state under the existing numerical contracts,
+  including single-request and batched execution, cache restore and supported MTP.
+  Exit: required comparisons pass; failures and skips are reported, and uncovered
+  paths are resolved or carry Josh's explicit decision. Answer-quality scores do
+  not replace numerical comparisons.
 - [ ] **Full capability gap analysis and acceptance.** Inventory what main exposes
   (library APIs, CLI verbs/options, HTTP protocols and streaming, web workflows, jobs,
   model/cache/generation capabilities, isolation/pooling, install/build artifacts,
@@ -82,6 +80,13 @@ full applicable numerical parity suites remain required too.
   route's presence, synthetic test, skipped test or 501 placeholder is not proof.
   Resolve unapproved gaps and rerun affected flows without reproducing main's bugs
   or accidental composition restrictions.
+- [ ] **Head-to-head performance.** Run the full established H2H suite
+  (`bun scripts/bench-serve.ts all`) on one quiet, named machine with the same
+  artifacts, inputs, configuration and execution shapes, single-request and batched.
+  Include MTP off, depth 2 and depth 3; cold startup and warm cache reuse; prefill,
+  decode, complete-request time and memory. Exit: performance matches main in paired
+  measurements; regressions are traced and fixed, with affected parity and benchmarks
+  rerun. Unqualified measurements cannot close the gate or supply model-card speed claims.
 
 ## Improvements identified during migration
 
@@ -206,6 +211,31 @@ Decided: adapter rows whose draft cannot serve adapters decode ordinarily and ke
 checkpoints on every graph; on rotating-cache graphs a grammar jump keeps verified proposals and
 supplied fill is applied; sliding graphs speculate for adapter+n-gram, encoded KV+draft and
 logprobs+draft rows.
+
+## Candidate quant and Hugging Face model card
+
+This work characterizes the first quant published under the `mlx-bun` organization.
+Use a validated engine to evaluate the artifact; duplicating quality evaluations
+on main and the refactor is only useful when investigating a behavior difference.
+
+- [ ] Audit the completed M4 Pro campaign for reusable scores: exact artifact and
+  source revisions, dataset splits, prompts/templates, thinking mode, sampling,
+  token budget, answer extraction, scoring and truncations. Retain scores whose
+  protocol can be reproduced and accurately named; identify missing evidence.
+- [ ] Select established benchmark protocols that support comparison with the base
+  model or popular quants. Use the upstream runners, task definitions and scorers;
+  record versions and full dataset coverage. Compare matching protocols, including
+  thinking mode and generation budget. Label externally reported results and their
+  settings; unresolved protocol differences cannot establish relative quant quality.
+  Frozen subsets and different MMLU task variants must be named explicitly.
+- [ ] Prepare model-card performance numbers from qualified measurements on M4 Pro,
+  M1 Max or both. Record machine, engine/build, context, batch, KV configuration,
+  cache state and MTP alongside prefill/decode, request latency and memory as measured.
+- [ ] Document the quant's creation from the actual manifests: base model revision,
+  quantizer revision and commands, rotation/folding, calibration and mixed-precision
+  allocation, packing, final size and runtime requirements. Replace the inherited
+  base-model card with the candidate's own measured results and reproduction details.
+  Exit: the artifact and model card are ready to review and publish under `mlx-bun`.
 
 ## Release acceptance
 
