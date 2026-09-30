@@ -103,6 +103,29 @@ test("the first worker's failure rejects ready and is never retried; a waiter's 
   } finally { await fake.engine.close(); fake.remove(); }
 });
 
+test("a single early crash respawns at once; only an early crash right after another waits out the crash-loop backoff", async () => {
+  // The default delay policy: no `delayMs`, so the crash-loop rule decides.
+  const fake = fixture({ restarts: { max: 3, windowMs: 60_000 } });
+  const { engine } = fake;
+  try {
+    await engine.ready;
+    // The worker is seconds old: this is an early death, and the first one, so the respawn is not delayed (well under the 5 s backoff).
+    const killedAt = Date.now();
+    process.kill(engine.pid!, "SIGKILL");
+    await until(() => engine.state === "restarting", "the exit");
+    await until(() => engine.state === "ready", "the immediate respawn", 3_000);
+    expect(Date.now() - killedAt).toBeLessThan(3_000);
+    expect(fake.notices).toContain("the worker was killed by SIGKILL — respawning (restart 1/3)");
+    // An early death right after an early death is a crash loop: the retry waits, so nothing has respawned a second later.
+    process.kill(engine.pid!, "SIGKILL");
+    await until(() => engine.state === "restarting", "the second exit");
+    expect(fake.notices.at(-1)).toBe("the worker was killed by SIGKILL — respawning (restart 2/3, after 5000 ms)");
+    await Bun.sleep(1_000);
+    expect([engine.state, engine.pid]).toEqual(["restarting", null]);
+    expect(engine.restarts).toBe(2);
+  } finally { await engine.close(); fake.remove(); }
+});
+
 test("a managed job's lease is owned by its worker connection, waits for a serving worker, and delays a respawn until released", async () => {
   const fake = fixture({ restarts: { max: 3, windowMs: 60_000, delayMs: 100 } });
   const { engine } = fake;

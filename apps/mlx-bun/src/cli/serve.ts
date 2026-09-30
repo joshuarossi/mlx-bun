@@ -9,7 +9,7 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { DraftKind } from "../engine/model-host";
-import { installedModules } from "../modules";
+import { installedModules, type ModuleSettings } from "../modules";
 import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
 import type { ModelHostHooks } from "./serve-host";
 import { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
@@ -23,6 +23,11 @@ export { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, t
 
 /** The saved-state root's default byte budget, across every model's directory (`--ssd-cache-max` overrides). */
 export const DEFAULT_SAVED_STATE_BYTES = 20 * 2 ** 30;
+
+/** What the app decides for the modules that run in the persistent state: the chat's read-only policy and working directory. */
+export function stateModuleSettings(options: Pick<AppStateOptions, "readOnly" | "chatPaths">): ModuleSettings {
+  return { chat: { ...(options.readOnly ? { readOnly: true } : {}), ...(options.chatPaths?.cwd ? { cwd: options.chatPaths.cwd } : {}) } };
+}
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
 export function parseServeOptions(args: CommandArgs): ServeOptions {
@@ -196,7 +201,7 @@ function observeLink(state: AppState, holder: { current?: ModelHostLink }): AppS
  * resolves with the host's own result once the state has closed too. */
 export async function startApp<Host extends { close(): Promise<unknown> }>(options: AppStateOptions, storagePaths: AppStoragePaths,
   start: (state: AppState) => Promise<Host>) {
-  const state = await createAppState(options, storagePaths, await installedModules("state"));
+  const state = await createAppState(options, storagePaths, await installedModules("state", stateModuleSettings(options)));
   let host: Host;
   try {
     host = await start(state);
@@ -222,7 +227,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   // The default: the same persistent state, with each model's host in a worker process behind a proxy. A worker's own app
   // (the launch socket) and `--in-process` load the models in this process.
   if (!options.inProcess && !hooks.unix) {
-    return (await import("./serve-isolated")).startIsolatedServer(model, options, { modules: await installedModules("state") });
+    return (await import("./serve-isolated")).startIsolatedServer(model, options, { modules: await installedModules("state", stateModuleSettings(options)) });
   }
   const [{ startModelHost }, { createInProcessMemoryClient }] = await Promise.all([import("./serve-host"), import("./memory-engine")]);
   // Memory synthesis gets main's own task model, loaded by the first run (the isolated parent has none).

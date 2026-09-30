@@ -8,8 +8,9 @@ import { spawnWorker, type WorkerExit, type WorkerProcess, type WorkerProcessOpt
 
 export type WorkerSupervisorState = "starting" | "ready" | "restarting" | "exhausted" | "closed";
 
-/** Main's numbers: at most three restarts in a rolling minute; a worker that
- * died within ten seconds of its spawn waits five seconds before the retry. */
+/** At most three restarts in a rolling minute. One early death (within ten seconds of its
+ * spawn) respawns at once, as any crash does; a worker that dies early again straight after
+ * an early death is a crash loop, and its retry waits five seconds. */
 export interface WorkerRestartBudget { max: number; windowMs: number; delayMs?: number }
 export const DEFAULT_RESTART_BUDGET: Readonly<WorkerRestartBudget> = Object.freeze({ max: 3, windowMs: 60_000 });
 const CRASH_LOOP_WINDOW_MS = 10_000, CRASH_LOOP_DELAY_MS = 5_000;
@@ -85,7 +86,7 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
   const lifetime = new AbortController();
   let state: WorkerSupervisorState = "starting";
   let worker: WorkerProcess | undefined, live = false, started = false;
-  let restarts = 0, lastExit: WorkerExit | null = null, spawnedAt = 0;
+  let restarts = 0, lastExit: WorkerExit | null = null, spawnedAt = 0, earlyDeaths = 0;
   const exits: number[] = [];
   let backoff: ReturnType<typeof setTimeout> | undefined, wakeBackoff: (() => void) | undefined;
   const respawns = new Set<Promise<void>>();
@@ -130,9 +131,10 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
       return;
     }
     exits.push(now); restarts++;
-    // Crash-loop backoff: a worker that died soon after spawning (bad flags,
-    // OOM on load) waits before the retry instead of spinning.
-    const delay = budget.delayMs ?? (now - spawnedAt < CRASH_LOOP_WINDOW_MS ? CRASH_LOOP_DELAY_MS : 0);
+    // Crash-loop backoff: only repeated early deaths (bad flags, OOM on load) wait before the retry instead of
+    // spinning; a single early crash, or one after a worker that served for a while, respawns at once.
+    earlyDeaths = now - spawnedAt < CRASH_LOOP_WINDOW_MS ? earlyDeaths + 1 : 0;
+    const delay = budget.delayMs ?? (earlyDeaths >= 2 ? CRASH_LOOP_DELAY_MS : 0);
     setState("restarting");
     notice(`${describeExit(exit)} — respawning (restart ${exits.length}/${budget.max}${delay ? `, after ${delay} ms` : ""})`);
     const respawn = (async () => {

@@ -34,9 +34,12 @@ export async function verifyArtifact(model: string, pins: { files: Record<string
     assert(isSha256(pin), `${name}: invalid SHA-256`);
     assert.equal(await fileSha256(join(model, name)), pin, `model file ${name} differs from its pin`);
   }
-  const index = JSON.parse(readFileSync(join(model, "model.safetensors.index.json"), "utf8")) as { weight_map?: Record<string, string> };
-  assert.deepEqual([...new Set(Object.values(index.weight_map ?? {}))].sort(), Object.keys(pins.weights ?? {}).sort(),
-    "index shards differ from the pinned shards");
+  // A single-file artifact has no index: its one model.safetensors is the shard set.
+  const indexPath = join(model, "model.safetensors.index.json");
+  const shards = existsSync(indexPath)
+    ? [...new Set(Object.values((JSON.parse(readFileSync(indexPath, "utf8")) as { weight_map?: Record<string, string> }).weight_map ?? {}))]
+    : ["model.safetensors"];
+  assert.deepEqual(shards.sort(), Object.keys(pins.weights ?? {}).sort(), "index shards differ from the pinned shards");
   for (const [name, pin] of Object.entries(pins.weights)) {
     assert(isSha256(pin), `${name}: invalid SHA-256`);
     assert.equal(await fileSha256(join(model, name)), pin, `weights ${name} differ from their pin`);

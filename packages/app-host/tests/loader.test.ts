@@ -24,6 +24,17 @@ test("routes mount under /api/<id>, or at the root when declared, with handlers 
   expect(await (await loaded.routes[1]!.handler(new Request("http://host/v1/things"))).text()).toBe("wire");
 });
 
+test("sockets mount under /api/<id>, or at the root when declared, and collide with routes like any path", async () => {
+  const socket = { message() {} };
+  const loaded = await loadModules([
+    module("alpha", { sockets: [{ id: "live", path: "/live", summary: "" }, { id: "legacy", path: "/ws/alpha", summary: "", mount: "root" }] },
+      { sockets: { live: socket, legacy: socket } }),
+  ], { services: {} });
+  expect(loaded.sockets.map(mounted => [mounted.moduleId, mounted.spec.id, mounted.path])).toEqual([["alpha", "live", "/api/alpha/live"], ["alpha", "legacy", "/ws/alpha"]]);
+  await expect(loadModules([module("alpha", { sockets: [{ id: "s", path: "/health", summary: "", mount: "root" }] }, { sockets: { s: socket } })],
+    { services: {}, reservedRoutes: [{ method: "GET", path: "/health" }] })).rejects.toMatchObject({ problems: ['module "alpha": socket "s" GET /health collides with the host'] });
+});
+
 test("verbs, job runners and storage entries are registered by name, kind and path", async () => {
   const verb = async (_: CliInvocation) => 0;
   const runner = async () => {};
@@ -104,7 +115,7 @@ test("a contributor's registration is listed by a consumer and removed when the 
   const notes: AppModule<"registry"> = {
     id: "notes", title: "", summary: "", requires: ["registry"], contributes: ["chat.tool"],
     activate: context => {
-      context.services.registry.register("chat.tool", { name: "note", description: "", parameters: {}, run: async () => "saved" });
+      context.services.registry.register("chat.tool", { name: "note", description: "", parameters: {}, readOnly: true, run: async () => "saved" });
       return {};
     },
   };
@@ -124,7 +135,7 @@ test("a contributor's registration is listed by a consumer and removed when the 
 test("registering to a point the manifest did not declare throws", async () => {
   const module: AppModule<"registry"> = {
     id: "alpha", title: "", summary: "", requires: ["registry"], contributes: ["shell.nav"],
-    activate: context => { context.services.registry.register("chat.tool", { name: "x", description: "", parameters: {}, run: async () => "" }); return {}; },
+    activate: context => { context.services.registry.register("chat.tool", { name: "x", description: "", parameters: {}, readOnly: true, run: async () => "" }); return {}; },
   };
   await expect(loadModules([module], { services: {} })).rejects.toThrow('module alpha did not declare "chat.tool" in contributes');
 });

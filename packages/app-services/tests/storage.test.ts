@@ -20,5 +20,12 @@ test("a module resolves only the entries it declared, and each is created under 
     expect(statSync(join(root, "db")).isDirectory()).toBe(true);
     expect(existsSync(join(root, "db/notes.sqlite"))).toBe(false);
     expect(() => storage.path("other")).toThrow('module notes declared no storage entry "other"');
+    // An explicit path wins and is neither created nor moved.
+    const elsewhere = join(root, "elsewhere/files");
+    const explicit = createStorage(() => root, { "notes.dir": elsewhere })({ moduleId: "notes", manifest });
+    expect(explicit.path("dir")).toBe(elsewhere);
+    expect(existsSync(elsewhere)).toBe(false);
+    expect(explicit.path("db")).toBe(join(root, "db/notes.sqlite"));
+    expect(() => explicit.path("other")).toThrow("declared no storage entry");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

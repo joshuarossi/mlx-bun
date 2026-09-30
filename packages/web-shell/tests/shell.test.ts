@@ -161,6 +161,34 @@ test("two fake panels mount through their manifests: a tab and a page each, crea
   expect(shell.panelTargets()).toEqual([{ id: "alpha", title: "Alpha" }, { id: "beta", title: "Beta" }]);
 });
 
+test("a workspace panel leads the tabs, has no frame or developer tab, takes its properties, hears enter and leave, and stays attached while another page shows", () => {
+  const seen: string[] = [];
+  customElements.define("mlx-work-panel", class extends window.HTMLElement {
+    connection: unknown; host: unknown;
+    connectedCallback() { seen.push(`connect host=${JSON.stringify(this.host)}`); }
+    disconnectedCallback() { seen.push("disconnect"); }
+    enter() { seen.push("enter"); }
+    leave() { seen.push("leave"); }
+  } as unknown as CustomElementConstructor);
+  const work: ShellPanel = { tag: "mlx-work-panel", title: "Work", path: "/work", workspace: true, properties: { host: { name: "app" } }, connection: { apiBase: "/api/work", eventsUrl: "" } };
+  defineFake(alpha.tag);
+  shell.mountPanels([alpha, work]);
+  expect([...document.querySelectorAll("#tabs .tab")].map(t => (t as HTMLElement).dataset.tab)).toEqual(["work", "home", "tools", "map", "alpha"]);
+  expect("dev" in tab("work").dataset).toBe(false);
+  expect(document.querySelector("#s-work .shell-panel-title")).toBeNull();
+  expect(shell.panelTargets()).toEqual([{ id: "alpha", title: "Alpha" }]); // a workspace is a page, not a tool to open
+  shell.start();
+  go("#/work");
+  expect(seen).toEqual(['connect host={"name":"app"}', "enter"]);
+  expect(document.querySelector("#s-work")!.firstElementChild!.tagName.toLowerCase()).toBe("mlx-work-panel");
+  go("#/home");
+  expect(seen).toEqual(['connect host={"name":"app"}', "enter", "leave"]); // not detached: its work goes on
+  expect(document.querySelector("#s-work mlx-work-panel")!.isConnected).toBe(true);
+  go("#/work");
+  expect(seen.slice(3)).toEqual(["enter"]);
+  expect(shell.isDeveloperMode()).toBe(false); // opening a workspace never turns the Developer switch on
+});
+
 test("panelsFromManifests connects each panel to its module's routes and skips modules without one", () => {
   const route = (method: string, path: string, response: string, mount?: string) => ({ method, path, response, ...(mount ? { mount } : {}) });
   const panel = { tag: "mlx-x-panel", title: "X", path: "/x" };
@@ -168,9 +196,11 @@ test("panelsFromManifests connects each panel to its module's routes and skips m
     { id: "x", panel, routes: [route("GET", "/snapshot", "json"), route("POST", "/feed", "sse"), route("GET", "/root-feed", "sse", "root"), route("GET", "/feed", "sse")] },
     { id: "plain" },
     { id: "quiet", panel: { tag: "mlx-quiet-panel", title: "Quiet", path: "/quiet" }, routes: [route("GET", "/snapshot", "json")] },
+    { id: "work", panel: { tag: "mlx-work-panel", title: "Work", path: "/work", workspace: true } },
   ])).toEqual([
     { ...panel, connection: { apiBase: "/api/x", eventsUrl: "/api/x/feed" } },
     { tag: "mlx-quiet-panel", title: "Quiet", path: "/quiet", connection: { apiBase: "/api/quiet", eventsUrl: "" } },
+    { tag: "mlx-work-panel", title: "Work", path: "/work", workspace: true, connection: { apiBase: "/api/work", eventsUrl: "" } },
   ]);
 });
 

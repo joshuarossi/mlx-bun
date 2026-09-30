@@ -98,3 +98,33 @@ test("cancelling the synthesis response body aborts the run and waits for its cl
     expect(joined).toBe(true);
   } finally { cleanup.resolve(); await owner.close(); }
 });
+
+test("a run's client gives back what it holds (its model's residency lease) when the run settles, however it settles", async () => {
+  const released: string[] = [];
+  const client = (name: string) => ({ ...unused, release: () => { released.push(name); } });
+  let next = "ok";
+  const owner = createMemorySynthesis({ root: "/unused-test-vault", client: () => client(next),
+    run: async options => {
+      // Still held while the pipeline runs.
+      expect(released).not.toContain(next);
+      if (next === "fails") throw new Error("stage failed");
+      if (next === "cancelled") await new Promise<void>(resolve => options!.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      options!.signal!.throwIfAborted();
+      return { implemented: true, stages: [], note: "ok" };
+    } });
+  await owner.run({}, () => {});
+  next = "fails";
+  await expect(owner.run({}, () => {})).rejects.toThrow("stage failed");
+  next = "cancelled";
+  const abort = new AbortController();
+  const running = owner.run({ signal: abort.signal }, () => {});
+  abort.abort(new Error("client left"));
+  await expect(running).rejects.toThrow("client left");
+  expect(released).toEqual(["ok", "fails", "cancelled"]);
+  // A run cancelled before its client exists holds nothing to give back.
+  const early = new AbortController();
+  early.abort(new Error("gone"));
+  await expect(owner.run({ signal: early.signal }, () => {})).rejects.toThrow("gone");
+  expect(released).toHaveLength(3);
+  await owner.close();
+});

@@ -143,6 +143,6 @@ transcription while a reply streams, a voice session, unload, and `dictate
 
 ## Not in the module yet
 
-The browser's hold-to-talk mic (`apps/mlx-bun/src/web/browser/voice.ts`, used by the
-chat composer) stays with chat until the chat module lands; the module has no panel.
+The browser's hold-to-talk mic belongs to the chat composer (`@mlx-bun/module-chat`'s `panel/voice.ts`), which calls
+this module's `/v1/audio/sessions` routes over HTTP; the module has no panel.
 It declares no storage entries: nothing it does writes under `MLX_BUN_HOME`.

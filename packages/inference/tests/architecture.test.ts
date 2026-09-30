@@ -45,7 +45,7 @@ function layer(path: string, owner: Library): Layer | undefined {
 }
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
-const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "publishing", "memory", "hub", "storage", "residency", "modules.ts"], "modules.ts": [], engine: [], chat: ["storage"], server: ["engine", "chat", "memory", "jobs", "publishing", "hub", "storage", "residency"], residency: ["storage"], memory: ["storage"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["chat", "jobs"] };
+const appDomains: Record<string, string[]> = { cli: ["engine", "server", "web", "jobs", "publishing", "memory", "hub", "storage", "residency", "modules.ts"], "modules.ts": [], engine: [], server: ["engine", "memory", "jobs", "publishing", "hub", "storage", "residency"], residency: ["storage"], memory: ["storage"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["jobs"] };
 const siteDomains: Record<string, string[]> = { "content.config.ts": [], content: [], styles: [] };
 function domains(owner: Library): Record<string, string[]> {
   return owner.name === "mlx-bun-website" ? siteDomains : appDomains;
@@ -354,7 +354,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
         violations.push(`${relative(root, file)}:${line}: app-core has no runtime exports (${text})`);
     if (isModuleProtocol(file, owner) && references(source).length)
       violations.push(`${relative(root, file)}: a module's data protocol imports nothing`);
-    if (owner.app && ["chat/protocol.ts", "jobs/protocol.ts"].includes(relative(owner.source, file)) && references(source).length)
+    if (owner.app && relative(owner.source, file) === "jobs/protocol.ts" && references(source).length)
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
@@ -398,7 +398,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (!actual || !sources.has(actual)) { violations.push(`${at}: unresolved or unclassified import ${specifier}`); continue; }
       const targetOwner = ownerOf(actual)!;
       if (browser && !(actual.startsWith(resolve(owner.source, "web/browser") + "/") || targetOwner.name === webShellName ||
-          actual === resolve(owner.source, "chat/protocol.ts") || actual === resolve(owner.source, "jobs/protocol.ts")))
+          actual === resolve(owner.source, "jobs/protocol.ts")))
         violations.push(`${at}: browser may import only browser modules, the web shell and data protocols (${specifier})`);
       if (owner.name === webShellName && targetOwner !== owner)
         violations.push(`${at}: the web shell is browser code and imports only its own files (${specifier})`);
@@ -726,9 +726,9 @@ test("the website has explicit source domains and rejects undeclared app depende
     write("apps/website/package.json", JSON.stringify({ name: "mlx-bun-website", type: "module", dependencies: { astro: "6", "@astrojs/starlight": "0.40" } }));
     write("apps/website/src/content.config.ts", 'import { defineCollection } from "astro:content"; import { docsLoader } from "@astrojs/starlight/loaders";');
     write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module" }));
-    write("apps/mlx-bun/src/chat/backend.ts", "export const backend = true;");
+    write("apps/mlx-bun/src/hub/backend.ts", "export const backend = true;");
     expect(await inspectWorkspaces(root)).toEqual([]);
-    write("apps/website/src/content.config.ts", 'import { backend } from "../../mlx-bun/src/chat/backend";');
+    write("apps/website/src/content.config.ts", 'import { backend } from "../../mlx-bun/src/hub/backend";');
     expect((await inspectWorkspaces(root)).some(message => message.includes("undeclared workspace dependency mlx-bun"))).toBe(true);
     write("apps/website/src/content.config.ts", "export const collections = {};");
     write("apps/website/src/cli/hidden.ts", "export const hidden = true;");
@@ -834,19 +834,18 @@ test("browser code can consume data protocols but cannot reach backend modules o
   };
   try {
     write("apps/example/package.json", JSON.stringify({ name: "browser-example", type: "module" }));
-    write("apps/example/src/chat/protocol.ts", "export type Message = string;");
     write("apps/example/src/jobs/protocol.ts", "export type Job = string;");
-    write("apps/example/src/chat/backend.ts", "export const backend = true;");
+    write("apps/example/src/hub/backend.ts", "export const backend = true;");
     write("apps/example/src/web/assets.ts", "export const assets = true;");
     const entry = "apps/example/src/web/browser/main.ts";
-    write(entry, 'import type { Message } from "../../chat/protocol"; import type { Job } from "../../jobs/protocol";');
+    write(entry, 'import type { Job } from "../../jobs/protocol";');
     expect(await inspectWorkspaces(root)).toEqual([]);
-    for (const specifier of ["node:fs", "bun", "../../chat/backend", "../assets"]) {
+    for (const specifier of ["node:fs", "bun", "../../hub/backend", "../assets"]) {
       write(entry, `import * as backend from ${JSON.stringify(specifier)};`);
       expect((await inspectWorkspaces(root)).some(item => item.includes("browser"))).toBe(true);
     }
-    write(entry, 'import type { Message } from "../../chat/protocol";');
-    write("apps/example/src/chat/protocol.ts", 'export type Message = string; import "./backend";');
+    write(entry, 'import type { Job } from "../../jobs/protocol";');
+    write("apps/example/src/jobs/protocol.ts", 'export type Job = string; import "../hub/backend";');
     expect((await inspectWorkspaces(root)).some(item => item.includes("data protocols cannot import"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -1187,7 +1186,7 @@ test("module, host-library and host code cannot branch on model identity or impo
       ["packages/module-a/src/index.ts", { "@mlx-bun/app-core": "", "@mlx-bun/inference": "" }],
       ["packages/app-host/src/index.ts", { "@mlx-bun/app-core": "", "@mlx-bun/inference": "" }],
       ["apps/example/src/modules.ts", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/inference": "" }],
-      ["apps/example/src/chat/anything.ts", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/inference": "" }],
+      ["apps/example/src/hub/anything.ts", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/inference": "" }],
     ] as const) {
       const [path] = file.split("/src/");
       const name = path!.startsWith("apps/") ? "example-host" : path!.endsWith("app-host") ? "@mlx-bun/app-host" : "@mlx-bun/module-a";

@@ -8,7 +8,8 @@ import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { resolveLibmlxc } from "../../../packages/mlx/src/native";
 import { EXPERT_IO_LIBRARY, FRAME_EXTRACT_BINARY, resolveInferenceNative } from "../../../packages/inference/src/runtime/native";
 import { createWebHandler } from "../src/web/assets";
-import { createMemorySurface } from "../src/memory/surface";
+import { memoryChatTools } from "../src/memory/chat";
+import { materializeMemorySkill } from "../src/memory/skills";
 import { JobStore } from "../src/jobs/db";
 import { createJobHost } from "../src/jobs/host";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
@@ -37,9 +38,8 @@ for (const path of ["/", "/assets/app.js", "/assets/hljs.js", "/assets/hljs.css"
   assert((await response!.text()).length > 0, path);
 }
 const vault = join(temporary, "vault"); await mkdir(join(vault, "articles"), { recursive: true });
-const memory = await createMemorySurface(vault, join(temporary, "skills"));
-assert(memory); assert(memory.toolNames.includes("memory_section"));
-assert((await readFile(join(memory.skillPaths[0]!, "SKILL.md"), "utf8")).includes("name: memory"));
+assert(memoryChatTools({ vault, skills: join(temporary, "skills") }).some(tool => tool.name === "memory_section"));
+assert((await readFile(join(materializeMemorySkill(join(temporary, "skills")), "SKILL.md"), "utf8")).includes("name: memory"));
 
 const snapshot = join(temporary, "hub/models--test--tiny/snapshots/test");
 await mkdir(snapshot, { recursive: true });

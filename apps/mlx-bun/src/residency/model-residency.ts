@@ -37,6 +37,8 @@ export interface ResidentUnit {
   broken?(): boolean;
   /** Bytes it holds now: weights plus the state it carries. */
   bytes(): number;
+  /** Re-read what it holds (a worker's measured memory) so the next `bytes()` is current; the host awaits it before it decides who fits. It never rejects the decision: a failure leaves the last reading. */
+  refresh?(): Promise<void>;
   memory(): { readonly weightsBytes: number; readonly kvBytes: number; readonly prefixCacheBytes: number };
   /** What a lease exposes; only what the model declared. */
   operationsFor(): Partial<ModelOperations>;
@@ -142,6 +144,10 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
     let sum = external();
     for (const slot of slots.values()) if (slot !== except) sum += held(slot);
     return Math.max(sum, measured() - (except ? held(except) : 0));
+  };
+  /** Ask every resident unit for a current reading before a decision that depends on what they hold. */
+  const refreshed = async () => {
+    await Promise.all([...slots.values()].map(slot => slot.unit && !slot.closing ? slot.unit.refresh?.().catch(() => {}) : undefined));
   };
   const busy = (slot: Slot<U>) => slot.leases > 0 || !!slot.loading || !!slot.closing;
   const evictable = (slot: Slot<U>) => !!slot.unit && !busy(slot) && !pinned.has(slot.id);
@@ -274,6 +280,8 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
         }
         // Not resident. A managed job or a companion's decode holds the GPU: no loads or evictions meanwhile.
         if (paused > 0) { await changed(signal); continue; }
+        await refreshed();
+        if (slot.unit || slot.loading || slot.closing || closed || paused > 0) continue;
         const plan = decide(slot.entry.bytes, slot);
         if (!plan.fits && plan.wait) { await changed(signal); continue; }
         if (plan.victims.length) {
@@ -309,6 +317,7 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
 
     async plan(id) {
       const slot = await slotFor(id, []);
+      await refreshed();
       if (slot.unit || slot.loading) return { fits: true, requiredBytes: 0, freeBytes: Math.max(0, budget - used()), evict: [] } satisfies ResidencyPlan;
       const plan = decide(slot.entry.bytes, slot);
       return { fits: plan.fits, requiredBytes: slot.entry.bytes, freeBytes: Math.max(0, budget - used(slot)), evict: plan.victims.map(victim => victim.id) };
@@ -330,6 +339,8 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
         signal?.throwIfAborted();
         if (closed) throw closedError();
         if (paused > 0) { await changed(signal); continue; }
+        await refreshed();
+        if (closed || paused > 0) continue;
         const plan = decide(bytes);
         if (plan.fits && !plan.victims.length) return;
         if (!plan.fits && plan.wait) { await changed(signal); continue; }

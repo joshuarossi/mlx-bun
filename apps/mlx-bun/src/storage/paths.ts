@@ -20,12 +20,9 @@ const LAYOUT = {
   memoryDb: "db/memory.sqlite",
   jobLogs: "jobs",
   wiki: "wiki",
-  sessions: "sessions",
-  piSessions: "pi-sessions",
   skills: "skills",
   logs: "logs",
   credentials: "hf.json",
-  toolApprovals: "tool-approvals.json",
 } as const;
 export type StorageEntry = keyof typeof LAYOUT;
 

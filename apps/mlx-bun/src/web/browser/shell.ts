@@ -1,9 +1,9 @@
 // The app's shell glue: what the page needs around the generic web shell (`@mlx-bun/web-shell`, which owns
 // navigation, hash routing, theme, the Developer switch, the shortcut sheet, the Escape overlay sweep, panel mounting
 // and the palette chrome). Here: the app's routes and chrome hooks, the Hugging Face token settings and the shared
-// push-to-hub flow, the agent-tools settings, the mobile chat drawer, the overlays and key bindings the chat needs,
-// the connection pill and model identity polling, and the routes-map probe. The generic helpers the per-page modules
-// import from here are re-exported from the shell package. main.ts holds the boot order.
+// push-to-hub flow, the agent-tools settings (the chat panel's host side), the overlays and key bindings that reach the
+// chat panel, the connection pill and model identity polling, and the routes-map probe. The generic helpers the
+// per-page modules import from here are re-exported from the shell package. main.ts holds the boot order.
 
 import { $, createShell, toast, trapFocus, type FocusTrap, type Overlay, type Palette, type RouteController, type ShellPanel } from "@mlx-bun/web-shell";
 import { api } from "./api";
@@ -15,10 +15,31 @@ export type Controller = RouteController;
 /* ════════════════════════════════════════════════════════════════════
    THE SHELL — the app's pages and the chrome that depends on the page
    ════════════════════════════════════════════════════════════════════ */
-/** Chat is the product; the other pages are developer tools behind the nav's Developer switch. */
+/** The chat panel element's public methods, as the app calls them (the panel is `@mlx-bun/module-chat`'s: the shell mounts
+ * it as the first page, and the app reaches it through the element, never through an import). */
+export interface ChatPanelApi extends HTMLElement {
+  newChat(): void;
+  copyLastResponse(): void;
+  setCodingTools(enabled: boolean): void;
+  refreshAdapters(): void;
+  focusComposer(): void;
+  toggleThinking(): void;
+  recentChats(): { title: string; path: string }[];
+  openSession(path: string): boolean;
+  exportActiveChat(format?: "md" | "json"): Promise<void>;
+  toggleDrawer(): void;
+  closeDrawer(): void;
+  drawerOpen(): boolean;
+  popoverOpen(): boolean;
+  closePopover(): boolean;
+}
+/** The mounted chat panel, once the shell has created it (it does on the first visit, which is the home page's). */
+export const chatPanel = (): ChatPanelApi | null => document.querySelector<ChatPanelApi>("mlx-chat-panel");
+
+/** The chat is the product (a workspace panel the shell mounts first); the pages below are developer tools behind the nav's Developer switch. */
 export const shell = createShell({
   routes: [
-    { id: "chat" }, { id: "status", developer: true }, { id: "routes", developer: true },
+    { id: "status", developer: true }, { id: "routes", developer: true },
   ],
   home: "chat",
   onRoute(route) {
@@ -27,7 +48,7 @@ export const shell = createShell({
     // The mobile drawer hamburger only makes sense on /chat (it opens the recent-chats sidebar, which only exists
     // there): CSS hides it >=760px; this hides it off-route regardless of viewport width.
     $("chat-hamburger").style.display = route === "chat" ? "" : "none";
-    if (route !== "chat") closeDrawer();
+    if (route !== "chat") chatPanel()?.closeDrawer();
   },
 });
 /** Page controllers by route id, populated by main.ts; pages reach each other through it. */
@@ -250,15 +271,9 @@ export function renderToolApprovals(tools: readonly string[], onForget: (tool: s
   });
 }
 
-/** Wire the checkbox; the actual set_coding_tools WS send is delegated to
- *  controllers.chat.setCodingTools (registered by chat.ts's init — same
- *  cross-controller-call pattern as newChat/copyLastResponse above), since
- *  shell.ts owns no WebSocket. controllers.chat is always populated by the
- *  time a user can reach this modal (main.ts's boot order registers it
- *  before any UI is interactive); the guard below is defensive only — if
- *  it's ever missing, localStorage still records the preference (it's
- *  re-sent on the next `ready` frame regardless), it just silently skips
- *  the immediate WS send rather than throwing. */
+/** Wire the checkbox; the actual set_coding_tools WS send is the chat panel's (`setCodingTools`), since this file owns no
+ *  WebSocket. Until the panel exists, localStorage still records the preference (the panel re-sends it on every `ready`
+ *  frame), so nothing is lost. */
 function initCodingToolsToggle(): void {
   const cb = $("settings-coding-tools") as HTMLInputElement | null;
   if (!cb) return;
@@ -266,62 +281,25 @@ function initCodingToolsToggle(): void {
   cb.onchange = () => {
     const on = cb.checked;
     setStoredCodingToolsPreference(on);
-    const setCodingTools = controllers.chat && controllers.chat.setCodingTools as ((enabled: boolean) => void) | undefined;
-    if (setCodingTools) setCodingTools(on);
+    chatPanel()?.setCodingTools(on);
   };
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   MOBILE DRAWER — chat sidebar becomes a
-   slide-over on narrow viewports instead of vanishing outright. Chat-route
-   only: the hamburger button is CSS-hidden >=760px and JS-hidden off /chat
-   (router() below), so open/close are only ever reachable when relevant.
+   MOBILE DRAWER — the chat's recent-chats sidebar is a slide-over on narrow viewports. The sidebar, its backdrop and
+   its focus trap belong to the chat panel; this is the hamburger in the nav, which is app chrome (shown on the chat
+   route only, see the shell's onRoute).
    ════════════════════════════════════════════════════════════════════ */
-let drawerTrap: FocusTrap;
-
-export function openDrawer(): void {
-  drawerTrap.capture();
-  $("chat-sidebar").classList.add("drawer-open");
-  $("chat-drawer-backdrop").classList.add("open");
-  $("chat-hamburger").setAttribute("aria-expanded", "true");
-  setTimeout(() => { const s = $("chat-sess-search"); if (s) s.focus(); }, 30);
-}
-export function closeDrawer(): void {
-  $("chat-sidebar").classList.remove("drawer-open");
-  $("chat-drawer-backdrop").classList.remove("open");
-  $("chat-hamburger").setAttribute("aria-expanded", "false");
-  drawerTrap.restore();
-}
 export function initDrawer(): void {
-  drawerTrap = trapFocus($("chat-sidebar"), () => $("chat-sidebar").classList.contains("drawer-open"));
-  $("chat-hamburger").onclick = () => {
-    $("chat-sidebar").classList.contains("drawer-open") ? closeDrawer() : openDrawer();
-  };
-  $("chat-drawer-backdrop").addEventListener("click", closeDrawer);
+  $("chat-hamburger").onclick = () => chatPanel()?.toggleDrawer();
 }
 
-/** Set by controllers.chat's initSampling() once the popover exists; let
- *  the shell's Escape sweep close it without a second,
- *  divergent Escape listener living inside the controller. */
-export let samplingPopoverClose: (() => void) | null = null;
-export function setSamplingPopoverClose(fn: (() => void) | null): void { samplingPopoverClose = fn; }
-
-/** Same registered-callback pattern as samplingPopoverClose above, used by
- *  memory-panel.ts's initMemoryPanel() — avoids a circular import (shell.ts
+/** A registered close callback for the memory overlay (memory-panel.ts's initMemoryPanel()) — avoids a circular import (shell.ts
  *  is imported BY memory-panel.ts for $/trapFocus/etc., so shell.ts can't
  *  import memory-panel.ts's closeMemPanel back). */
 export let memPanelClose: (() => void) | null = null;
 export function setMemPanelClose(fn: (() => void) | null): void { memPanelClose = fn; }
 
-/** Same pattern, for the adapter routing table overlay (adapters-panel.ts)
- *  — same circular-import reason as memPanelClose. */
-export let adaptersPanelClose: (() => void) | null = null;
-export function setAdaptersPanelClose(fn: (() => void) | null): void { adaptersPanelClose = fn; }
-
-/** Same pattern, for the system-prompt popover (composer.ts's
- *  initSystemPrompt() — presets v1). */
-export let sysPromptPopoverClose: (() => void) | null = null;
-export function setSysPromptPopoverClose(fn: (() => void) | null): void { sysPromptPopoverClose = fn; }
 
 /** The overlays Escape closes, in priority order (the shell adds its shortcut sheet first): each is open when its
  *  element carries `.open` and its page registered a close callback. */
@@ -332,12 +310,11 @@ export function registerOverlays(palette: Palette): void {
   });
   const add = (overlay: Overlay) => shell.overlays.add(overlay);
   add({ isOpen: () => $("hf-overlay").classList.contains("open"), close: closeHfSettings });
-  add(byId("chat-sampling-pop", () => samplingPopoverClose));
-  add(byId("chat-sysprompt-pop", () => sysPromptPopoverClose));
+  // The chat panel's popovers (sampling, system prompt, adapter table) close themselves.
+  add({ isOpen: () => !!chatPanel()?.popoverOpen(), close: () => { chatPanel()?.closePopover(); } });
   add(byId("mem-overlay", () => memPanelClose));
-  add(byId("adapters-overlay", () => adaptersPanelClose));
   add(palette);
-  add({ isOpen: () => $("chat-sidebar").classList.contains("drawer-open"), close: closeDrawer });
+  add({ isOpen: () => !!chatPanel()?.drawerOpen(), close: () => chatPanel()?.closeDrawer() });
 }
 
 /** The chat's keyboard bindings, consulted after the shell's own. */
@@ -347,23 +324,21 @@ export function appKeys(e: KeyboardEvent): boolean {
   if (mod && e.shiftKey && (e.key === "O" || e.key === "o")) {
     if (currentRoute() !== "chat") return true; // no-op off the chat route
     e.preventDefault();
-    const newChat = controllers.chat && controllers.chat.newChat as (() => void) | undefined;
-    newChat && newChat();
+    chatPanel()?.newChat();
     return true;
   }
   // Cmd/Ctrl+Shift+C: copy last response.
   if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
     if (currentRoute() !== "chat") return true;
     e.preventDefault();
-    const copyLastResponse = controllers.chat && controllers.chat.copyLastResponse as (() => void) | undefined;
-    copyLastResponse && copyLastResponse();
+    chatPanel()?.copyLastResponse();
     return true;
   }
   // Shift+Escape: focus the composer.
   if (e.shiftKey && e.key === "Escape") {
     if (currentRoute() !== "chat") return true;
     e.preventDefault();
-    $("chat-box").focus();
+    chatPanel()?.focusComposer();
     return true;
   }
   return false;
@@ -474,8 +449,7 @@ export function connectPanels(panels: readonly ShellPanel[]): ShellPanel[] {
       ...(panel.tag === "mlx-datasets-panel" ? { modelId: () => activeModelId || undefined } : { catalogChanged: () => {
         const status = controllers.status;
         if (status?.refreshLibrary) (status.refreshLibrary as () => void)();
-        const chat = controllers.chat;
-        if (chat?.refreshAdapters) (chat.refreshAdapters as () => void)();
+        chatPanel()?.refreshAdapters();
       } }),
     } } };
   });

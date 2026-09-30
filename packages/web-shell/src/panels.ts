@@ -30,19 +30,26 @@ export interface ShellPanel {
   /** Declared shell route: one lowercase kebab-case segment. */
   readonly path: string;
   readonly connection: PanelConnection;
-  /** Listed among the developer tools (hidden until the Developer switch is on). Default true. */
+  /** Listed among the developer tools (hidden until the Developer switch is on). Default true, false for a workspace. */
   readonly developer?: boolean;
   /** False when the panel supplies its own scroll column, heading and cards. Default true. */
   readonly framed?: boolean;
+  /** The product's own page rather than a tool: it fills the page (no title or card), is listed first, sits outside
+   * the Developer switch, and stays attached while another page is shown, so what it holds (a stream, a turn in
+   * flight) survives a visit elsewhere. The element hears `enter()` and `leave()` as its page is shown and hidden. */
+  readonly workspace?: boolean;
+  /** Further properties the host sets on the element before it attaches, for what a panel takes from its host beyond
+   * its connection. */
+  readonly properties?: Readonly<Record<string, unknown>>;
 }
 
 /** The element as the shell sees it. */
-export type PanelElement = HTMLElement & { connection?: PanelConnection };
+export type PanelElement = HTMLElement & { connection?: PanelConnection; enter?(): void; leave?(): void };
 
 /** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
 export interface PanelManifest {
   readonly id: string;
-  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly developer?: boolean; readonly framed?: boolean };
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string; readonly workspace?: boolean; readonly developer?: boolean; readonly framed?: boolean };
   readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
 }
 
@@ -52,7 +59,7 @@ export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellP
   return manifests.flatMap((module): ShellPanel[] => {
     if (!module.panel) return [];
     const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
-    return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path,
+    return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path, ...(module.panel.workspace ? { workspace: true } : {}),
       ...(module.panel.developer !== undefined ? { developer: module.panel.developer } : {}),
       ...(module.panel.framed !== undefined ? { framed: module.panel.framed } : {}),
       connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];
@@ -86,15 +93,15 @@ export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchor
   tab.className = "tab";
   tab.href = "#/" + id;
   tab.dataset.tab = id;
-  if (panel.developer !== false) tab.dataset.dev = "";
+  if (panel.developer ?? !panel.workspace) tab.dataset.dev = "";
   tab.textContent = panel.title;
 
   const section = document.createElement("section");
   section.dataset.route = id;
   section.id = "s-" + id;
-  let body: HTMLElement;
-  if (panel.framed === false) body = section;
-  else {
+  // A workspace fills the page itself; any other panel sits in a titled card.
+  let body: HTMLElement = section;
+  if (!panel.workspace && panel.framed !== false) {
     const scroll = el("div", "shell-panel-scroll", section);
     const page = el("div", "shell-panel", scroll);
     const title = el("h2", "shell-panel-title", page);
@@ -115,10 +122,15 @@ export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchor
           }
           element = document.createElement(panel.tag) as PanelElement;
           element.connection = panel.connection;
+          if (panel.properties) Object.assign(element, panel.properties);
         }
-        body.append(element);
+        if (!element.isConnected) body.append(element);
+        element.enter?.();
       },
-      leave() { element?.remove(); },
+      leave() {
+        element?.leave?.();
+        if (!panel.workspace) element?.remove();
+      },
     },
   };
 }

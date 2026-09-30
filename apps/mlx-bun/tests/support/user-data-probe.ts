@@ -36,12 +36,13 @@ const ndjson = (text: string) => text.split("\n").filter(line => line.trim()).ma
 // ---- chat sessions (Pi SDK files) and the web chat backend ----------------
 async function sessions() {
   const { SessionManager } = await import("@earendil-works/pi-coding-agent");
-  const { defaultSessionDir, sessionEntries } = await import("../../src/chat/session-files");
-  const { createSessionRoutes } = await import("../../src/server/session-routes");
-  const { createPiBackend } = await import("../../src/chat/pi-backend");
-  const { createMemorySurface } = await import("../../src/memory/surface");
+  const { createChatHandlers, createPiBackend, manifest: chatManifest, sessionEntries } = await import("@mlx-bun/module-chat");
+  const { createStorage } = await import("@mlx-bun/app-services");
+  const { memorySurface } = await import("./memory-surface");
   const { vaultRoot } = await import("../../src/memory/vault");
-  const dir = defaultSessionDir();
+  // The chat's default stores are the module's storage entries under the home the clone stands in for.
+  const storage = createStorage()({ moduleId: chatManifest.id, manifest: chatManifest as never });
+  const dir = storage.path("sessions");
   const files = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith(".jsonl")).sort() : [];
   const versions = Object.fromEntries(files.map(name => {
     const header = sessionEntries(readFileSync(join(dir, name), "utf8")).find(entry => (entry as { type?: string }).type === "session") as { version?: number; cwd?: string } | undefined;
@@ -52,11 +53,11 @@ async function sessions() {
   for (const cwd of new Set(listed.map(info => info.cwd)))
     byCwd[cwd] = (await SessionManager.list(cwd || home, dir)).length;
   // The read-only HTTP export reads the raw file before any SDK migration rewrites it.
-  const routes = createSessionRoutes(dir);
+  const routes = createChatHandlers({ sessionDir: () => dir, approvalsFile: () => storage.path("approvals") });
   const exported: Record<string, number> = {};
   for (const name of files) {
-    const response = await routes.handle(new Request(`http://local/api/sessions/export?path=${encodeURIComponent(join(dir, name))}`));
-    exported[name] = response?.status === 200 ? ((await response.json()) as { entries: unknown[] }).entries.length : -1;
+    const response = await routes["sessions-export"](new Request(`http://local/api/sessions/export?path=${encodeURIComponent(join(dir, name))}`));
+    exported[name] = response.status === 200 ? ((await response.json()) as { entries: unknown[] }).entries.length : -1;
   }
   const opened: Record<string, { messages: number; entries: number }> = {}, failures: Record<string, string> = {};
   for (const name of files) {
@@ -70,8 +71,9 @@ async function sessions() {
   const cwd = join(home, ".probe-cwd");
   mkdirSync(cwd, { recursive: true });
   const vault = vaultRoot(), skills = join(home, ".mlx-bun", "skills");
-  const backend = createPiBackend({ port: 1, readOnly: true, paths: { cwd, sessionDir: dir },
-    memory: async () => existsSync(vault) ? createMemorySurface(vault, skills) : undefined })(frame => { frames.push(frame as typeof frames[number]); });
+  const memory = await memorySurface({ vault, skills });
+  const backend = createPiBackend({ port: 1, readOnly: true, paths: { cwd, sessionDir: dir, agentDir: storage.path("agent"), toolApprovalsFile: storage.path("approvals") },
+    memory: memory.surface })(frame => { frames.push(frame as typeof frames[number]); });
   const history: Record<string, number> = {};
   try {
     await backend.start();
@@ -85,7 +87,7 @@ async function sessions() {
       if (error) failures[name] = `web chat: ${String(error.message)}`;
       history[name] = (reply.find(frame => frame.type === "history")?.items as unknown[] | undefined)?.length ?? -1;
     }
-  } finally { await backend.dispose(); }
+  } finally { try { await backend.dispose(); } finally { await memory.stop(); } }
   const ready = frames.find(frame => frame.type === "ready");
   // The sidebar the web chat sent last: recorded chats it lists, from any directory.
   const sidebar = (frames.filter(frame => frame.type === "sessions").at(-1)?.items as { path: string }[] | undefined ?? [])
@@ -163,7 +165,7 @@ async function vault() {
 // ---- settings, credentials, registry, adapters, schedule -------------------
 async function settings() {
   const { createHfCredentials } = await import("../../src/publishing/credentials");
-  const { loadToolApprovals } = await import("../../src/chat/tool-approvals");
+  const { loadToolApprovals } = await import("@mlx-bun/module-chat");
   const { scheduleStatus, plistPath } = await import("../../src/memory/schedule");
   const tokenFile = join(home, ".mlx-bun", "hf.json");
   // Presence only: the token itself never leaves this process.

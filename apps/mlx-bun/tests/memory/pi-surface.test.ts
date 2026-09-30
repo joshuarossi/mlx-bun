@@ -2,17 +2,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
-import { createMemorySurface } from "../../src/memory/surface";
+import { memorySurface } from "../support/memory-surface";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
 import { searchArticles } from "../../src/memory/vault";
 
 // Main built the shared pi surface from a process-global memory switch
-// (`buildPiAgentSurface({ memory })`); here composition binds one vault root and
-// the surface is absent when that root holds no vault.
+// (`buildPiAgentSurface({ memory })`); here memory registers its tools and guidance for one vault root and the
+// chat module's surface is absent when that root holds no vault.
 
 const hasAny = (haystack: readonly string[], needles: readonly string[]) => needles.some((n) => haystack.includes(n));
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const stops: (() => Promise<void>)[] = [];
+afterEach(async () => { for (const stop of stops.splice(0)) await stop(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+/** The surface a chat session gets from memory's registered contributions (see `support/memory-surface.ts`). */
+async function createMemorySurface(vault: string, skills: string) {
+  const { surface, stop } = await memorySurface({ vault, skills });
+  stops.push(stop);
+  return surface();
+}
 function temporary(): string { const root = mkdtempSync(join(tmpdir(), "mlx-bun-memory-surface-")); roots.push(root); return root; }
 
 describe("pi shared memory surface", () => {

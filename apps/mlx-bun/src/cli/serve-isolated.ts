@@ -1,10 +1,11 @@
 // The isolated serve composition, the default for `serve`: this process keeps the persistent
-// CPU state (serve-state.ts), the web app, Pi chat, the Responses history, the managed jobs and
+// CPU state (serve-state.ts), the web app, the chat module, the Responses history, the managed jobs and
 // the modules that run beside them, and loads no model. Each resident model runs in its own
 // worker process (worker-unit.ts; worker-entry.ts composes the model host over a Unix socket).
 // This process holds their residency by memory fit with the same manager the in-process host
-// uses (residency/model-residency.ts): a model that fits the budget gets its own worker beside
-// the others; otherwise the least recently used unpinned, unleased model is drained, its worker
+// uses (residency/model-residency.ts), counting each worker at the MLX memory it measures and reports
+// (cli/worker-unit.ts; the estimate stands only before its first report): a model that fits the budget
+// gets its own worker beside the others; otherwise the least recently used unpinned, unleased model is drained, its worker
 // flushes its saved state durably and exits (the worker gets the CLI's shutdown budget, never a
 // kill first), and naming it again spawns a worker that resumes from that state. Requests route
 // by their `model` (server/model-routes.ts) and forward over the worker's socket; a crash
@@ -16,10 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import { createPiBackend } from "../chat/pi-backend";
-import { EngineUnavailableError, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
+import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
 import { locateTaskModel, MEMORY_TASK_MODEL } from "../memory/model";
-import { createManagementRoutes } from "../server/management-routes";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createModelRoutes } from "../server/model-routes";
 import { createProxyRoutes } from "../server/proxy-routes";
@@ -29,7 +28,7 @@ import { listLocalRecords } from "../residency/local-records";
 import { leasedAdapters } from "../residency/leased-adapters";
 import { createResidencyHost, ResidencyError, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../residency/model-residency";
 import { createRecordIndex } from "../residency/record-index";
-import { estimateRecordBytes } from "../residency/resident-estimate";
+import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-estimate";
 import type { RunningApp, ServeOptions } from "./serve-options";
 import { createAppState, type RouteGroup } from "./serve-state";
 import { spawnWorkerUnit, type WorkerUnit, type WorkerUnitContext } from "./worker-unit";
@@ -54,41 +53,6 @@ export interface IsolatedServeHooks {
   companions?(): readonly ModelRecord[];
 }
 
-interface ServedModel {
-  contextWindow: number | undefined;
-  vision: boolean; audio: boolean; thinking: boolean; transcription: boolean;
-  genDefaults: { temperature: number | null; topP: number | null; topK: number | null };
-}
-
-/** What the direct host reads from the loaded context, over the worker's own
- * discovery surface: `/v1/models` for capabilities and generation defaults,
- * `/stats` for the enforced context window. Read at startup and again after
- * each switch, for the model the worker then serves. */
-async function describeServedModel(engine: WorkerSupervisor, modelId: string, options: ServeOptions): Promise<ServedModel> {
-  const json = async (path: string) => {
-    const response = await engine.fetch(`http://engine${path}`);
-    if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`worker answered ${response.status} on ${path}`); }
-    return await response.json() as Record<string, unknown>;
-  };
-  const [models, stats] = await Promise.all([json("/v1/models"), json("/stats")]);
-  const rows = Array.isArray(models.data) ? models.data as Record<string, unknown>[] : [];
-  const served = rows.find(row => row.id === modelId) ?? rows[0] ?? {};
-  const defaults = (served.gen_defaults ?? {}) as Record<string, unknown>;
-  const capabilities = (served.capabilities ?? {}) as Record<string, unknown>;
-  const admission = (stats.admission ?? {}) as Record<string, unknown>;
-  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  return {
-    contextWindow: number(admission.enforced_context_tokens) ?? number(served.context_window),
-    vision: served.vision === true, audio: served.audio === true, thinking: served.reasoning === true,
-    transcription: capabilities.transcription === true,
-    genDefaults: {
-      temperature: options.request.defaultTemperature ?? number(defaults.temperature) ?? null,
-      topP: options.request.defaultTopP ?? number(defaults.top_p) ?? null,
-      topK: options.request.defaultTopK ?? number(defaults.top_k) ?? null,
-    },
-  };
-}
-
 /** Isolated composition: the persistent state and the startup model's worker first, the listener
  * once that worker serves, so startup fails the way the in-process composition does when the model cannot load. */
 export async function startIsolatedServer(model: ModelRecord, options: ServeOptions, hooks: IsolatedServeHooks = {}): Promise<RunningApp> {
@@ -106,35 +70,46 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     return held.paths;
   };
   // The parent loads no model: each synthesis stage call or batch runs on the current model's worker (its memory task
-  // model, over its private route). That worker takes its own execution lease. Each call selects the task model
-  // snapshot once, here (the worker never scans the cache): the call carries it, and a call that loads the task
-  // model loads exactly it.
-  const state = await createAppState({ ...options, memoryCompletions: signal => createWorkerMemoryClient(async () => {
-    const unit = currentUnit();
-    if (!unit) throw new EngineUnavailableError("starting", null);
-    const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
-    retention(unit).add(snapshot);
-    return { worker: unit.supervisor, snapshot };
-  }, signal) }, options.storagePaths ?? {}, hooks.modules);
+  // model, over its private route). A run holds that model's residency lease from its first call to its last (the same
+  // `acquire` every consumer takes), so the worker it depends on is never drained under it; the worker takes its own
+  // execution lease per call. Each call selects the task model snapshot once, here (the worker never scans the cache):
+  // the call carries it, and a call that loads the task model loads exactly it.
+  const state = await createAppState({ ...options, memoryCompletions: async signal => {
+    if (!residency) throw new EngineUnavailableError("starting", null);
+    const lease = await residency.acquire(current, { signal, need: ["generate"] });
+    const client = createWorkerMemoryClient(async () => {
+      const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
+      retention(lease.unit).add(snapshot);
+      return { worker: lease.unit.supervisor, snapshot };
+    }, signal);
+    return Object.assign(client, { release: () => lease.release() });
+  } }, options.storagePaths ?? {}, hooks.modules);
   hooks.observe?.(state.events);
   // The sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
   const removeSocketDir = () => rmSync(socketDir, { recursive: true, force: true });
   const notice = hooks.notice ?? (line => console.log(`[isolate] ${line}`));
-  const closeEngine = async () => { try { await residency?.close(); } finally { removeSocketDir(); } };
+  // The startup worker until residency adopts it: a failure in between still stops it.
+  let unadopted: WorkerUnit | undefined;
+  const closeEngine = async () => {
+    try { await unadopted?.close({ flush: false }); } finally { try { await residency?.close(); } finally { removeSocketDir(); } }
+  };
   let detachLink = () => {};
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   let cleanup: (() => Promise<void>) | undefined = closeEngine;
   try {
-    const { thisMachine, WIRED_FRACTION } = await import("@mlx-bun/inference/execution/fit");
+    const { thisMachine } = await import("@mlx-bun/inference/execution/fit");
     const machine = thisMachine();
-    // What all resident workers may use together: a share of the memory the GPU can wire (this process cannot ask Metal, so
-    // it is derived from the machine's RAM the way `/fit` does).
-    const budgetBytes = options.modelBudgetBytes ?? Math.floor(machine.ramBytes * WIRED_FRACTION * 0.7);
     const context: WorkerUnitContext = { options, startup: model, socketDir, publish: event => state.events.publish(event), notice,
       ...(hooks.entry ? { entry: hooks.entry } : {}), ...(hooks.restarts ? { restarts: hooks.restarts } : {}), ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}), ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}),
       ...(hooks.log ? { log: hooks.log } : {}), ...(hooks.error ? { error: hooks.error } : {}) };
+    // Startup fails fast, as the in-process composition does: the first model's worker serves before the listener binds. Its
+    // report is also how this process, which asks no Metal device itself, learns the device working set.
+    const first = unadopted = await spawnWorkerUnit(context, model, "primary", model.sizeBytes);
+    // What all resident workers may use together: `--model-budget`, else the share of the device working set the in-process
+    // host uses (residency/resident-estimate.ts), as the first worker reported it.
+    const budgetBytes = options.modelBudgetBytes ?? defaultBudgetBytes(first.measured()?.workingSetBytes);
     const chatModels = createRecordIndex(() => hooks.records?.() ?? listLocalRecords("generate"), model);
     const companionList = () => hooks.companions?.() ?? listLocalRecords("transcribe");
     // Whisper: the checkpoint `--whisper-model` resolved to, else the first downloaded one, looked up once.
@@ -171,24 +146,13 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       // Hub cleanup keeps the snapshot of every resident worker's model, and the task model's on the worker that read it.
       uses: unit => [unit.record.path, ...retention(unit)],
       log: line => notice(line) });
-    // Startup fails fast, as the in-process composition does: the first model's worker serves before the listener binds.
-    const first = await spawnWorkerUnit(context, model, "primary", (await source.resolve(model.repoId))?.bytes ?? model.sizeBytes);
     const entryOf = (unit: WorkerUnit): ResidencyEntry => ({ id: unit.id, bytes: unit.bytes(), role: unit.role, operations: unit.operations });
     residency.adopt(entryOf(first), first, { loadMs: first.readyMs });
+    unadopted = undefined;
     // Whisper stays resident when asked to (`--whisper-resident`); otherwise it is the first to go when memory is short.
     const companion = options.whisper?.resident ? await whisperRecord() : undefined;
     if (companion) residency.pin(companion.repoId);
 
-    /** What Pi and the hub describe: capabilities and defaults from the worker's own discovery. Re-read after a respawn. */
-    const facts = new Map<string, { at: number; served: ServedModel }>();
-    const describe = async (unit: WorkerUnit) => {
-      const known = facts.get(unit.id);
-      if (known && known.at === unit.supervisor.restarts) return known.served;
-      const served = await describeServedModel(unit.supervisor, unit.id, options);
-      facts.set(unit.id, { at: unit.supervisor.restarts, served });
-      return served;
-    };
-    let startupFacts = await describe(first);
     const models = createModelRoutes({ host: residency, current: () => current,
       serves: async id => !!await chatModels.find(id),
       // Audio requests belong to the Whisper worker, which loads on first use and drains a chat model when memory is short.
@@ -196,45 +160,27 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,
       modelId: model.repoId, startedAt: Date.now() });
-    // The listing the router reads models from is read again after a download, a finished job or a cleanup.
     const invalidateLibrary = () => { chatModels.invalidate(); };
-    // Tool-approval settings are CPU work over the parent's own files.
-    const management = createManagementRoutes({ toolApprovalsFile: state.chatPaths?.toolApprovalsFile });
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among themselves; the proxy takes every remaining path.
-    const routes: RouteGroup = { handle: async request => await persistent.sessions.handle(request) ??
-      await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const routes: RouteGroup = { handle: async request => await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.appModules.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;
-    // Pi lives here and reaches the model over loopback through the proxy, so web chat survives a worker restart and
-    // reports its failures as errors. Its `local` model id is whatever is current; each chat reads what that model is
-    // when it connects.
-    const chat = createPiBackend({ port: () => boundPort, modelId: model.repoId,
-      model: async () => {
-        const unit = currentUnit();
-        let served = startupFacts;
-        try { if (unit) served = await describe(unit); } catch { /* still restarting: the last description stands */ }
-        return { modelId: current, ...(served.contextWindow !== undefined ? { contextWindow: served.contextWindow } : {}),
-          vision: served.vision, audio: served.audio, thinking: served.thinking, genDefaults: served.genDefaults };
-      },
-      memory: state.memorySurface,
-      paths: { ...state.chatPaths, sessionDir: state.sessionDir },
-      ...(startupFacts.contextWindow !== undefined ? { contextWindow: startupFacts.contextWindow } : {}),
-      readOnly: options.readOnly, vision: startupFacts.vision, audio: startupFacts.audio, thinking: startupFacts.thinking,
-      transcription: async () => (currentUnit() ? (await describe(currentUnit()!).catch(() => startupFacts)).transcription : startupFacts.transcription),
-      genDefaults: startupFacts.genDefaults, downloadsSnapshot: state.downloads.snapshot,
-    });
+    // The chat module lives in the state and reaches the model through the served model host (over this listener's proxy;
+    // its `local` model id is whatever is current), so web chat survives a worker restart and reports its failures as errors.
     // Jobs pause every resident worker; loopback clients reach the workers through the proxy; a hub switch is this host's to make.
     detachLink = state.attach({ get model() { return { id: current, bytes: currentUnit()?.bytes() ?? model.sizeBytes }; }, get port() { return boundPort; },
       acquireExecutionLease: signal => residency.pauseAll(signal),
+      // Modules that generate through the model host (a dataset job) hold the model's residency lease until they release it.
+      hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }),
       invalidateLibrary,
       resident: () => residency.resident(),
       adapters: leasedAdapters(residency, () => current),
       serve: (id, signal) => residency.serve(id, { signal }) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web: state.web, chat,
+    const listener = await startServer({ routes, web: state.web, sockets: state.sockets,
       // The app stops its producers (jobs, downloads) while the workers are alive, then chat and HTTP drain, then every
       // worker is drained, flushes its saved state, and exits.
       beforeDrain: () => state.close(),

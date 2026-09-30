@@ -22,9 +22,12 @@ Decisions that govern all work:
   golden revisions recording source revisions and oracle versions; synthetic tests
   alone do not close this. Done so far: the
   [generated Gemma4 graph test](packages/inference/tests/parity/gemma4-generated.test.ts)
-  passed on e4b and 12B (identity within this tree; 26B-A4B not run). Open: no
-  [runtime-oracle](packages/inference/tests/parity/runtime-oracle.test.ts) reference
-  exists yet for Trellis, Gemma or MiniCPM (MiniCPM mixed KV waits on the next item);
+  passed on e4b and 12B (identity within this tree; 26B-A4B not run). Packed Trellis now matches main in 96 full greedy logit vectors, three shared
+  B1/depth-two MTP runs, and the 18-case plain-KV runtime grid with restored
+  continuation ([evidence](packages/inference/README.md#packed-qwen-trellis-parity)).
+  Open: published references and broader Trellis shapes;
+  [runtime-oracle](packages/inference/tests/parity/runtime-oracle.test.ts) references
+  for Gemma and extended MiniCPM (MiniCPM mixed KV waits on the next item);
   real Gemma2 B2 rows and a different prefill chunk geometry differ from main's B1 in
   logits and valid KV, which needs same-shaped oracle or main comparisons, not a tolerance.
 - [ ] Extend speech and embedding evidence. Whisper large-v3-turbo, Silero VAD and
@@ -138,17 +141,15 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks, train and models landed; their browser panels are declared by their manifests and mounted by `@mlx-bun/web-shell`. The models module owns the hub, library, cache cleanup, `/v1/adapters*`,
-    `/api/model/resolve-folder`, adapter merge and export (merge is the served model's `adapters` operation, run in the process that holds
-    the model), the `get`, `ls`, `scan`, `fit`, `gc` and `upload` verbs and the Models panel; the chat's adapter selector
-    (which mounted adapter a turn uses) stays with the chat. Modules contribute to each other through the
-    `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
-    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
-    when the first module that declares them lands (they refuse them until then); job runners are served
-    by any host that binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners).
-    Exit per module: its domain leaves `apps/mlx-bun/src`, its browser page becomes its panel (the shell
-    mounts it; the app's legacy pages shrink), the app's domain map shrinks accordingly, and
+  - [ ] (d) Remaining module: memory (last, moved as is; the memory feature stays deferred).
+    Datasets, quantize, benchmarks, train, models and chat landed. Datasets', quantize's and train's
+    browser pages are still legacy pages that become panels the web shell mounts. Memory reaches chat
+    through `registry` (`chat.tool`, `chat.guidance`); the app owns its memory entry, consent card and
+    provenance chips through the chat panel's `host` until memory moves. The chat panel owns its markdown
+    renderer, hold-to-talk mic (calling transcription over HTTP), and the assistant's app catalog, which
+    should come from contributions once the shell lists them. Models owns hub, library, cleanup, adapter
+    administration and its panel; chat owns selection of adapters for a turn. Exit per module: its domain
+    leaves `apps/mlx-bun/src`, its browser page becomes its panel, the app domain map shrinks, and
     served-surface inventories are unchanged.
   - [ ] (e) Model host events reach every consumer. Residency, live switching, saved state and the model router landed
     (`serve` runs one isolated worker per resident model by default, held by memory fit in the parent; `--in-process`
@@ -156,8 +157,7 @@ Migration gaps stay required work in the feature table.
     `resumed` when saved state was found), `model.unload` (reason `evicted`, flushed) and `model.memory`, and each worker's
     own events are relayed onto the parent's bus. Remaining: modules get one `modelHost` that leases `generate` and
     `transcribe` (today persistent services lease the served model through `served-model-host.ts` and the model
-    composition's modules get Whisper's); the isolated parent has no measured-memory floor (estimates until a worker
-    reports its weights) and its synthesis runs on the current worker without a residency lease. Exit: a module acquires
+    composition's modules get Whisper's). Exit: a module acquires
     `generate` and `transcribe` from one service (the models module already leases `adapters` and switches the served model through the state's host).
 
 ## Remaining features by layer

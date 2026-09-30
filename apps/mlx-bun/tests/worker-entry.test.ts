@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -62,10 +63,7 @@ const preamble = `
   const group = () => ({ handle: async () => null });
   mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: group }));
   mock.module(app + "src/server/cache-routes.ts", () => ({ createCacheRoutes: group }));
-  mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: group }));
   mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
-  mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
-  mock.module(app + "src/chat/session-files.ts", () => ({ defaultSessionDir: () => "/unused/sessions" }));
   // The memory task model the admin surface runs the parent's synthesis calls on; each call records the gateway's lease count.
   mock.module(app + "src/cli/memory-engine.ts", () => ({ createInProcessMemoryClient: () => ({ client: undefined,
     clientFor: (signal, snapshot) => ({ async complete(request) { events.push("task " + request.input.user + " held=" + gateway.held); return "task " + request.input.user; },
@@ -94,7 +92,10 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.deepEqual(JSON.parse(written[0].slice(WORKER_MESSAGE_PREFIX.length)), { type: "ready", socketPath, modelId: "org/model", pid: process.pid, version });
     assert.deepEqual(events, ["load", "routes 0"], "only the model half composes; the Responses history is the worker's own, empty store");
     assert.equal(statSync(socketPath).mode & 0o777, 0o600);
-    assert.deepEqual(await (await get("/health")).json(), { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    const { memory: reported, ...health } = await (await get("/health")).json();
+    assert.deepEqual(health, { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    // Where the native runtime loads, the worker also reports its MLX memory (a private test runtime has none).
+    if (reported) assert.deepEqual(Object.keys(reported).sort(), ["active_bytes", "cache_bytes", "peak_bytes", "working_set_bytes"]);
     assert.deepEqual(await (await get("/v1/models")).json(), { object: "list", data: [{ id: "org/model", resident: true, current: true }] });
     // Persistent surfaces are the parent's: no web app, no hub, jobs, sessions, memory, or publishing routes.
     for (const path of ["/", "/index.html", "/api/hub/local", "/api/jobs", "/api/sessions/search?q=x", "/api/memory/status", "/api/settings/hf-token", "/api/quantize/anything"])
@@ -142,10 +143,9 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal(state.web(new Request("http://worker/")), null);
     assert.throws(() => state.downloads.start("org/x"), /owns no downloads/);
     assert.deepEqual([state.downloads.active, state.downloads.snapshot()], [[], []]);
-    assert.equal(await state.memorySurface(), undefined);
+    assert.equal(state.sockets.upgrade(new Request("http://worker/ws/chat"), { upgrade: () => false }), null, "the worker's state serves no module socket");
     assert.equal(state.responses.size, 0);
-    assert.equal(state.sessionDir, "/unused/sessions");
-    for (const name of ["sessions", "memory", "jobs", "appModules", "publishing"])
+    for (const name of ["memory", "jobs", "appModules", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);
@@ -263,7 +263,7 @@ function fakeHost(events: string[], beforeBind?: () => void | Promise<void>, clo
       return null;
     } };
     const listener = await startServer({ routes: hooks.routes!(group), web: () => null,
-      chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
+      sockets: createModuleSockets([]),
       beforeDrain: async () => { await hooks.beforeDrain?.(); events.push("producers close"); },
       closeEngine: async () => { events.push("engine close"); } }, { unix: hooks.unix! });
     // What the model host lends the app state; the admin lease reaches the gateway through it.
@@ -319,7 +319,10 @@ test("the app form runs serve arguments through runServe on the parent's socket:
     expect([hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain, typeof hooks.link]).toEqual([run.socketPath, "function", "function", "object"]);
     expect(run.logs).toEqual(["Loading org/model", "Serving org/model with continuous batching (capacity 2) over the Unix socket"]);
     expect(statSync(run.socketPath).mode & 0o777).toBe(0o600);
-    expect(await (await run.get("/health")).json()).toEqual({ status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    const { memory: reported, ...health } = await (await run.get("/health")).json() as { memory?: Record<string, number> };
+    expect(health).toEqual({ status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    // Where the native runtime loads, the worker also reports its MLX memory.
+    if (reported) expect(Object.keys(reported).sort()).toEqual(["active_bytes", "cache_bytes", "peak_bytes", "working_set_bytes"]);
     expect(await (await run.get("/v1/models")).json()).toEqual({ data: [{ id: "org/model" }] });
     // The lease reaches the attached host's gateway and is owned by the connection.
     const holder = new AbortController();
@@ -539,8 +542,7 @@ test("the app form composes the real app over the socket with private storage: p
     for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"]])
       mock.module(app + "src/server/" + module + ".ts", () => ({ [name]: group }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
-    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request => new URL(request.url).pathname === "/" ? new Response("web") : null }));
+      mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request => new URL(request.url).pathname === "/" ? new Response("web") : null }));
     // The app form is the direct composition: synthesis runs on the memory task model, not over loopback.
     mock.module(app + "src/cli/memory-engine.ts", () => ({ createInProcessMemoryClient: () => {
       const client = { complete: async request => "task model reply to " + request.input.user, completeBatch: async () => [] };
@@ -578,7 +580,9 @@ test("the app form composes the real app over the socket with private storage: p
     const json = async (path, init) => { const response = await run.get(path, init); assert.equal(response.status, 200, path); return response.json(); };
     // The whole app answers on the socket, over private storage.
     assert.equal(await (await run.get("/")).text(), "web");
-    assert.deepEqual(await json("/health"), { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    const { memory: reported, ...health } = await json("/health");
+    assert.deepEqual(health, { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
+    if (reported) assert.deepEqual(Object.keys(reported).sort(), ["active_bytes", "cache_bytes", "peak_bytes", "working_set_bytes"]);
     assert.deepEqual(await json("/library"), { models: [{ repo_id: "org/model", serving: true, resident: true }] });
     assert.deepEqual(await json("/api/hub/local"), { ok: true, models: [] });
     assert.deepEqual(await json("/api/jobs"), { ok: true, jobs: [] });
