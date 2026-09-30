@@ -15,3 +15,4 @@ export * from "./geglu";
 export * from "./swiglu";
 export * from "./qwen-mrope";
 export * from "./rope";
+export * from "./rope-2d";
