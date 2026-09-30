@@ -32,7 +32,7 @@ import {
 } from "./sessions";
 import { AdaptersPanelState, initAdaptersPanel, refreshAdaptersPanel } from "./adapters-panel";
 import type { Citation } from "./rag";
-import { buildAppContext, resolveSpotlightTarget, showSpotlight, type UiSnapshot } from "./assistant";
+import { buildAppContext, queryUiElements, resolveSpotlightTarget, showSpotlight, type UiSnapshot } from "./assistant";
 import { isRouteId } from "./ui-catalog";
 
 /* ────────────────────────────────────────────────────────────────────
@@ -239,16 +239,14 @@ export function createChatController(port: ChatPort) {
     send({ type: "context", context: ctx });
   }
 
-  /** MutationObserver on the three wizard step-indicator containers: their
-   *  innerHTML is fully rewritten by markdown.ts's renderSteps() on every
-   *  show(n) call in quantize.ts/finetune.ts/dataset.ts, so a childList+
-   *  subtree observer fires exactly on step change — no callback hook
-   *  needed in those three controllers (outside this wave's file scope). */
+  /** Rebind after navigation: module panels are created lazily and own their step indicators in shadow DOM. */
+  let wizardObserver: MutationObserver | undefined;
   function watchWizardSteps(): void {
-    const mo = new MutationObserver(() => pushAppContext());
+    wizardObserver ??= new MutationObserver(() => pushAppContext());
+    wizardObserver.disconnect();
     for (const id of ["q-steps", "f-steps", "d-steps"]) {
-      const el = $(id);
-      if (el) mo.observe(el, { childList: true, subtree: true });
+      const element = queryUiElements(`[id="${id}"]`)[0];
+      if (element) wizardObserver.observe(element, { childList: true, subtree: true });
     }
   }
 
@@ -1033,7 +1031,7 @@ export function createChatController(port: ChatPort) {
       // step changes (quantize/finetune/dataset); a MutationObserver on each
       // overlay's `class` attribute covers view changes (memory/hub/adapters
       // panel open/close) without touching those three modules.
-      window.addEventListener("hashchange", pushAppContext);
+      window.addEventListener("hashchange", () => { watchWizardSteps(); pushAppContext(); });
       watchWizardSteps();
       const overlayMo = new MutationObserver(() => pushAppContext());
       for (const id of ["mem-overlay", "hub-overlay", "adapters-overlay"]) {

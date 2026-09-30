@@ -263,11 +263,11 @@ test("the hamburger in the nav opens the panel's drawer, and Escape closes the d
 test("the migrated wizards are lazy module panels with preserved routes, host hooks and their own layout", () => {
  boot("#/chat");
  for (const [route, tag, apiBase] of [["quantize","mlx-quantize-panel","/api/quantize"],["finetune","mlx-train-panel","/api/train"],["dataset","mlx-datasets-panel","/api/datasets"]]) {
-   expect(document.querySelector(tag!)).toBeNull();location.hash = "#/"+route;win.dispatchEvent(new win.HashChangeEvent("hashchange") as unknown as Event);
+   expect(document.querySelector(tag!)).toBeNull();location.hash = "#/"+route;win.dispatchEvent(new win.HashChangeEvent("hashchange"));
    const panel=document.querySelector(tag!) as HTMLElement & {connection: {apiBase:string;ui?:{notify?:unknown;publish?:unknown}}};
    expect(activePages()).toEqual([route!]);expect(panel).not.toBeNull();expect(panel.connection.apiBase).toBe(apiBase!);
    expect(typeof panel.connection.ui?.notify).toBe("function");expect(typeof panel.connection.ui?.publish).toBe("function");
    expect(panel.parentElement!.id).toBe("s-"+route);expect(panel.shadowRoot!.querySelector(".steps")).not.toBeNull();
-   location.hash = "#/chat";win.dispatchEvent(new win.HashChangeEvent("hashchange") as unknown as Event);expect(panel.isConnected).toBe(false);
+   location.hash = "#/chat";win.dispatchEvent(new win.HashChangeEvent("hashchange"));expect(panel.isConnected).toBe(false);
  }
 });

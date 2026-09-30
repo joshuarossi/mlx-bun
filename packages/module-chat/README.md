@@ -61,6 +61,10 @@ sweep (`popoverOpen`, `closePopover`). The host page also supplies a `#toasts` c
 routes, overlays and spotlight targets (`panel/ui-catalog.ts` names them: the chat's knowledge of this app, which should
 move to contributions once the shell lists them).
 
+The assistant follows open shadow roots when it captures visible controls or resolves spotlight targets, so the job
+modules' encapsulated forms remain available in its page context. Its wizard-step observer rebinds on navigation as
+the shell mounts those panels, and skips controls inside hidden pages or assistant chrome.
+
 ## Tests
 
 Model-free. [module](tests/module.test.ts) loads the module in a host with a scripted model host and drives a real chat on a
