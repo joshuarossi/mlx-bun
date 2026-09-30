@@ -269,9 +269,12 @@ memory (active, cache and peak bytes, and the device's recommended working set),
 this process loads no native module: it reports them on `/health` (`memory`) and as a
 `worker.memory` line in its `/admin/events` stream at connect, on each second it changed,
 and after every finished request (the line is consumed here, never republished on the
-bus). A worker counts as active plus cache bytes from its first report, in place of the
-`/fit` estimate, which stands only before that report (a model that has not loaded yet
-needs its estimate) and again while the worker is down; `/engine` and `/health` list each
+bus). A worker counts as active plus cache bytes from its first report (never below the
+weights it reported: MLX maps weights lazily, so a worker that has not run yet reads low),
+in place of the `/fit` estimate, which stands only before that report (a model that has not
+loaded yet needs its estimate) and again while the worker is down. Before it decides who
+fits, the residency manager asks every resident worker for a current reading (`GET /health`),
+so a reading the stream has not delivered yet still counts; `/engine` and `/health` list each
 worker's `memory` (`active_bytes`, `cache_bytes`, `peak_bytes`, or `null`), and
 `GET /stats` `models` counts the measured bytes. The default budget is 70% of the working
 set the startup model's worker reports, the in-process rule (`--model-budget` overrides it).

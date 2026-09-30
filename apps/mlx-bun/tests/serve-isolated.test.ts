@@ -675,13 +675,15 @@ test("workers report their measured MLX memory and the host's residency counts i
   options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
-  // Every estimate is one byte, so only the workers' own numbers can make these models compete: the device working set is
-  // 10000 (a 7000 budget), and each worker holds active + cache = 4000, 2000 and 1000.
-  const records = ["org/model", "org/other", "org/third"].map(id => record(root, id));
+  // The estimates are one byte (the third's is 2000), so the workers' own numbers make these models compete: the device
+  // working set is 10000 (a 7000 budget), and each worker holds active + cache = 4000, 2000 and 1000.
+  const records = ["org/model", "org/other", "org/third"].map(id => record(root, id, id === "org/third" ? 2_000 : 1));
   const memory = JSON.stringify({ "org/model": [3_500, 500, 4_200, 10_000], "org/other": [1_500, 500, 2_100, 10_000], "org/third": [800, 200, 900, 10_000] });
   const unloads: { model?: string; reason?: string; flushed?: boolean }[] = [];
   const tmp = privateTmp(root);
-  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_MEMORY: memory },
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_MEMORY: memory,
+      // The third worker's weights (1500) are more than the 1000 it reads while its arrays are still lazily mapped.
+      FAKE_WORKER_WEIGHTS: JSON.stringify({ "org/third": 1_500 }) },
     records: () => records, notice() {}, log() {}, error() {}, observe: bus => { bus.subscribe(["model.unload"], event => { unloads.push(event as never); }); } }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
@@ -696,16 +698,23 @@ test("workers report their measured MLX memory and the host's residency counts i
     expect(await answer("org/other")).toBe("org/other");
     expect(await usage()).toMatchObject({ resident_bytes: 6_000 });
     expect(unloads).toEqual([]);
-    // The other worker's process grows to 4500 (and reports it): 8500 is over the budget, though no estimate changed.
+    // The other worker's process grows to 4500 and streams the reading: 8500 is over the budget, though no estimate changed.
     const other = (await workers()).find(worker => worker.id === "org/other")!;
-    const measure = await fetch("http://worker/fake/measure?active=4000&cache=500&peak=4600", { unix: other.socket } as RequestInit);
-    expect(measure.status).toBe(200);
+    const measure = (worker: { socket: string }, query: string) => fetch(`http://worker/fake/measure?${query}`, { unix: worker.socket } as RequestInit);
+    expect((await measure(other, "active=4000&cache=500&peak=4600")).status).toBe(200);
     await until(async () => (await usage()).resident_bytes === 8_500, "the host to count the worker's new reading");
     expect((await workers()).find(worker => worker.id === "org/other")!.memory).toEqual({ active_bytes: 4_000, cache_bytes: 500, peak_bytes: 4_600 });
-    // A third model needing 1000 no longer fits without freeing room: the least recently used worker (org/model, 4000) is drained.
+    // It grows again to 6000, but that reading never reaches the host's stream: only the worker's /health knows.
+    expect((await measure(other, "active=5500&cache=500&peak=6000&quiet=1")).status).toBe(200);
+    expect((await usage()).resident_bytes).toBe(8_500);
+    // A third model (estimated at 2000) is admitted by asking each worker for a current reading first. By the stale 8500,
+    // draining org/model (4000) would leave 4500 + 2000 inside the budget; by the current 10000 it leaves 6000 + 2000, so
+    // org/other has to go as well.
     expect(await answer("org/third")).toBe("org/third");
-    expect(unloads).toEqual([expect.objectContaining({ model: "org/model", reason: "evicted", flushed: true })]);
-    expect(await usage()).toMatchObject({ resident_bytes: 5_500, resident: [{ id: "org/other", bytes: 4_500 }, { id: "org/third", bytes: 1_000 }] });
+    // (Both drain at once, so the order of their events is not fixed.)
+    expect(unloads.map(event => [event.model, event.reason, event.flushed]).sort()).toEqual([["org/model", "evicted", true], ["org/other", "evicted", true]]);
+    // The third worker reads 1000 but reported 1500 bytes of weights: the host never counts it below those.
+    expect(await usage()).toMatchObject({ resident_bytes: 1_500, resident: [{ id: "org/third", bytes: 1_500 }] });
   } finally { await running.close(); rmSync(root, { recursive: true, force: true }); }
 }, 40_000);
 

@@ -144,8 +144,18 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     id: record.repoId, record, role, supervisor, readyMs, operations, resumed,
     routes: { handle: request => forwardToWorker(supervisor, request) },
     measured: () => measured,
-    // The estimate stands only until the worker's first report; after it, the process's own active and cache memory.
-    bytes: () => measured ? heldBytes(measured) : Math.max(estimate, weightsBytes),
+    // The estimate stands only until the worker's first report; after it, the process's own active and cache memory, never
+    // below the weights it reported (MLX maps weights lazily, so a worker that has not run yet can read low).
+    bytes: () => measured ? Math.max(heldBytes(measured), weightsBytes) : Math.max(estimate, weightsBytes),
+    // A decision about who fits reads each worker's memory now rather than trusting the last pushed line.
+    refresh: async () => {
+      if (supervisor.state !== "ready") return;
+      try {
+        const response = await supervisor.fetch("http://engine/health", { signal: AbortSignal.timeout(2_000) });
+        const reading = parseMemoryHealth(await response.json());
+        if (reading) measured = reading;
+      } catch { /* the last reading stands */ }
+    },
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",

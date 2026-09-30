@@ -25,7 +25,9 @@
 // worker's close does.
 // `GET /admin/events` streams the worker's bus as JSON lines (a scheduler sample per `/fake/emit`).
 // FAKE_WORKER_MEMORY={"<model id or *>":[active,cache,peak,workingSet]} plays a worker that measures its MLX memory: `/health` reports it,
-// and the event stream carries it as a `worker.memory` line at connect and whenever `/fake/measure?active=&cache=&peak=` changes it.
+// and the event stream carries it as a `worker.memory` line at connect and whenever `/fake/measure?active=&cache=&peak=` changes it
+// (`&quiet=1` changes what `/health` reports without a line, like a reading the stream has not delivered yet).
+// FAKE_WORKER_WEIGHTS={"<model id or *>":bytes} is the weights `/stats` reports (`admission.weights_bytes`).
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -124,7 +126,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   if (path === "/fake/measure") {
     const at = (name: string, index: number) => url.searchParams.has(name) ? Number(url.searchParams.get(name)) : memory?.[index] ?? 0;
     memory = [at("active", 0), at("cache", 1), at("peak", 2), memory?.[3] ?? 0];
-    for (const measure of measuring) measure();
+    if (!url.searchParams.has("quiet")) for (const measure of measuring) measure();
     return Response.json({ memory });
   }
   if (path === "/fake/emit") { for (const emit of emitters) emit(); return Response.json({ emitted: emitters.size }); }
@@ -180,7 +182,8 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     ...(process.env.FAKE_WORKER_MODELS ?? "").split(",").filter(id => id && id !== current).map(id => ({ id, object: "model", created: 1, tier: "targeted" }))] });
   if (path === "/stats") return Response.json({ server: { owner: "serve", model: current, started_at: 1 },
     prompt_cache: { entries: 1, bytes: 2, max_bytes: 3 }, response_store: { entries: 99, bytes: 99, max_bytes: 99, ttl_ms: 99 },
-    admission: { enforced_context_tokens: 2048, max_safe_context: 8192 }, batch: { configured: 8, active_rows: 0 } });
+    admission: { enforced_context_tokens: 2048, max_safe_context: 8192,
+      ...(process.env.FAKE_WORKER_WEIGHTS ? { weights_bytes: (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)[modelId] ?? (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)["*"] } : {}) }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
   if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
   if (path === "/v1/chat/completions" && request.method === "POST") {
