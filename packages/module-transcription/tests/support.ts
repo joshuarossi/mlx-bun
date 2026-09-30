@@ -27,7 +27,7 @@ export function fakeCatalog(models: Record<string, string> = { [MODEL_ID]: MODEL
     locate: async () => undefined,
     register: async () => { throw new Error("unused"); },
     download: async () => { throw new Error("unused"); },
-    canPublish: () => false,
+    pickDefault: async () => { throw new Error("unused"); }, canPublish: () => false,
     publish: async () => { throw new Error("unused"); },
   };
 }

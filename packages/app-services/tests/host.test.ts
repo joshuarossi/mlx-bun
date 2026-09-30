@@ -5,7 +5,7 @@ import { activateModules, createHostServices, runVerb } from "../src";
 const entry: CatalogEntry = { id: "org/whisper", kind: "model", directory: "/w", bytes: 1, operations: ["transcribe"] };
 const catalog: ModelCatalog = { list: async () => [entry], resolve: async () => entry, find: async () => entry, estimate: async () => undefined,
   locate: async () => undefined, register: async () => { throw new Error("unused"); }, download: async () => { throw new Error("unused"); },
-  canPublish: () => false, publish: async () => { throw new Error("unused"); } };
+  pickDefault: async () => { throw new Error("unused"); }, canPublish: () => false, publish: async () => { throw new Error("unused"); } };
 
 const module = (parts: Partial<AppModule>, events: string[] = []): AppModule => ({ id: "echo", title: "Echo", summary: "", requires: ["modelHost", "catalog"],
   activate: () => ({ dispose() { events.push("module stop"); } }), ...parts });

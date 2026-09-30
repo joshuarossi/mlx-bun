@@ -87,6 +87,15 @@ test("storage paths are unique across modules regardless of case and never neste
   expect(checkManifests([module("alpha", { storage: [entry("a", "alpha/x"), entry("b", "alpha/x")] })], options)).toHaveLength(1);
 });
 
+test("two modules may share an entry by declaring the same path and kind; anything else on that path still collides", () => {
+  const directory = (key: string, path: string) => ({ key, path, kind: "directory" as const, purpose: key });
+  expect(checkManifests([module("alpha", { storage: [directory("models", "models")] }), module("beta", { storage: [directory("out", "models")] })], options)).toEqual([]);
+  // A different kind on the same path, or a path nested in the shared one, is a collision.
+  expect(checkManifests([module("alpha", { storage: [directory("models", "models")] }), module("beta", { storage: [entry("out", "models")] })], options)).toHaveLength(1);
+  expect(checkManifests([module("alpha", { storage: [directory("models", "models")] }), module("beta", { storage: [directory("out", "models/fused")] })], options)).toHaveLength(1);
+  expect(checkManifests([module("alpha", { storage: [directory("models", "models")] }), module("beta", { storage: [directory("out", "Models")] })], options)).toHaveLength(1);
+});
+
 test("storage paths cannot escape the storage root and keys are unique within a module", () => {
   for (const path of ["/etc/passwd", "../out", "a/../../out", "a//b", "./a", "a\\b", ""])
     expect(checkManifests([module("alpha", { storage: [entry("a", path)] })], options)).toHaveLength(1);

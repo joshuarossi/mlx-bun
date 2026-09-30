@@ -14,6 +14,8 @@ type CatalogRegistry = Pick<Registry, "list" | "listCanonical" | "resolve" | "sc
 export interface CatalogHub {
   /** Fetches `id` into the hub cache; resolves to its snapshot directory. */
   download?(id: string, options: { signal?: AbortSignal; onProgress?: DownloadProgress }): Promise<string>;
+  /** The host's automatic model choice (`CatalogEntry`'s directory and id); without it the catalog makes none. */
+  pickDefault?(signal?: AbortSignal): Promise<{ id: string; directory: string }>;
   /** Whether a write token is available. */
   canPublish?(): boolean;
   publish?(directory: string, request: PublishRequest): Promise<{ url: string }>;
@@ -76,6 +78,14 @@ export function createRegistryCatalog(options: RegistryCatalogOptions = {}): Mod
       const directory = await hub.download(id, downloadOptions);
       return withRegistry(async registry => {
         await registry.scan();
+        const record = registry.listCanonical().find(item => item.path === directory || item.repoId === id);
+        return record ? entryOf(record) : { id, kind: "model" as const, directory, bytes: 0, operations: [] };
+      });
+    },
+    async pickDefault(pickOptions = {}) {
+      if (!hub.pickDefault) return notSupported("choose a default model");
+      const { id, directory } = await hub.pickDefault(pickOptions.signal);
+      return withRegistry(registry => {
         const record = registry.listCanonical().find(item => item.path === directory || item.repoId === id);
         return record ? entryOf(record) : { id, kind: "model" as const, directory, bytes: 0, operations: [] };
       });

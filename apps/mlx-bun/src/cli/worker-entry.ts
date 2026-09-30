@@ -71,7 +71,7 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     chatPaths: options.chatPaths, sessionDir: options.chatPaths?.sessionDir ?? defaultSessionDir(),
     storagePaths: options.storagePaths ?? {},
     memorySurface: async () => undefined,
-    routes: { hub: none, sessions: none, memory: none, jobs: none, models: none, appModules: none, finetune: none, publishing: none },
+    routes: { hub: none, sessions: none, memory: none, jobs: none, models: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };
