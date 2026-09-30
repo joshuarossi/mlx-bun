@@ -1,3 +1,4 @@
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +9,7 @@ import { createHubHandlers } from "@mlx-bun/module-models";
 import { catalogTransfers, createDownloadOwner, DuplicateDownloadError } from "../../src/hub/downloads";
 import { startServer } from "../../src/server/start";
 
-const idleChat = () => ({ async start() {}, async handle() {}, dispose() {} });
+const noSockets = createModuleSockets([]);
 /** Completion hooks run inside the transfer's settlement; wait for it to leave the map. */
 async function drained(owner: { readonly active: readonly string[] }) { while (owner.active.length) await Bun.sleep(1); }
 
@@ -76,7 +77,7 @@ test("the listener joins a web-started transfer through beforeDrain before relea
   const download = createHubHandlers({ catalog: createRegistryCatalog({ hub: { transfers: catalogTransfers(owner) } }),
     modelHost: { serve: async () => { throw new Error("unused"); } } })["hub-download"]!;
   const hub = { handle: async (request: Request) => new URL(request.url).pathname === "/api/hub/download" ? download(request) : null };
-  const app = await startServer({ web: () => null, chat: idleChat, routes: hub,
+  const app = await startServer({ web: () => null, sockets: createModuleSockets([]), routes: hub,
     beforeDrain: () => owner.close(), async closeEngine() { events.push("engine-close"); } }, { port: 0 });
   try {
     const started = await fetch(new URL("/api/hub/download", app.server.url), { method: "POST",

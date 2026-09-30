@@ -31,6 +31,7 @@
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
         "@mlx-bun/module-benchmarks": "workspace:*",
+        "@mlx-bun/module-chat": "workspace:*",
         "@mlx-bun/module-datasets": "workspace:*",
         "@mlx-bun/module-metrics": "workspace:*",
         "@mlx-bun/module-models": "workspace:*",
@@ -119,6 +120,22 @@
       "version": "0.0.0",
       "dependencies": {
         "@mlx-bun/app-core": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
+        "happy-dom": "20.10.6",
+      },
+    },
+    "packages/module-chat": {
+      "name": "@mlx-bun/module-chat",
+      "version": "0.0.0",
+      "dependencies": {
+        "@earendil-works/pi-ai": "0.80.3",
+        "@earendil-works/pi-coding-agent": "0.80.3",
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+        "typebox": "1.1.38",
       },
       "devDependencies": {
         "@mlx-bun/app-host": "workspace:*",
@@ -482,6 +499,8 @@
     "@mlx-bun/mlx": ["@mlx-bun/mlx@workspace:packages/mlx"],
 
     "@mlx-bun/module-benchmarks": ["@mlx-bun/module-benchmarks@workspace:packages/module-benchmarks"],
+
+    "@mlx-bun/module-chat": ["@mlx-bun/module-chat@workspace:packages/module-chat"],
 
     "@mlx-bun/module-datasets": ["@mlx-bun/module-datasets@workspace:packages/module-datasets"],
 

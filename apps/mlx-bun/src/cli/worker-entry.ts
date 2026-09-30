@@ -10,8 +10,7 @@
 // - app: the whole app, composed by `runServe` from serve arguments exactly as
 //   the CLI composes it, listening on the parent's socket instead of TCP.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import { createEventHub } from "@mlx-bun/app-services/portable";
-import { defaultSessionDir } from "../chat/session-files";
+import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import type { WorkerMemory } from "../jobs/worker-memory";
 import { ResponseStore } from "../server/responses";
@@ -67,12 +66,11 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
     // A worker publishes its own engine's events for the modules it hosts; it runs no jobs.
     events,
     responses: new ResponseStore(),
-    // Pi's memory is the parent's: the worker never opens a vault, so the paths are placeholders.
+    // Chat and its memory tools are the parent's: the worker never opens a vault, so the paths are placeholders.
     memoryPaths: options.memoryPaths ?? { vault: "", skills: "" },
-    chatPaths: options.chatPaths, sessionDir: options.chatPaths?.sessionDir ?? defaultSessionDir(),
     storagePaths: options.storagePaths ?? {},
-    memorySurface: async () => undefined,
-    routes: { sessions: none, memory: none, jobs: none, appModules: none, publishing: none },
+    sockets: createModuleSockets([]),
+    routes: { memory: none, jobs: none, appModules: none, publishing: none },
     attach(supplied) {
       link.current = supplied;
       return () => { if (link.current === supplied) link.current = undefined; };

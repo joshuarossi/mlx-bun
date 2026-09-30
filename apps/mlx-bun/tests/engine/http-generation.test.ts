@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunningApp } from "../../src/cli/serve";
-import type { ClientMessage, ServerMessage } from "../../src/chat/protocol";
+import type { ClientMessage, ServerMessage } from "@mlx-bun/module-chat";
 
 const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
 

@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { JobStore } from "../../src/jobs/db";
 import { createJobHost } from "../../src/jobs/host";
 import { submitSubprocess, closeSubprocessJobs } from "../../src/jobs/runner";
@@ -120,7 +121,7 @@ test("listener shutdown cancels a live job stream and joins its child before rel
   const { jobId } = host.submit("quantize", {}, "unused");
   stores.splice(stores.indexOf(store), 1);
   const app = await startServer({ routes: createJobRoutes(host), web: () => null,
-    chat: () => { throw new Error("no chat expected"); }, beforeDrain: () => host.close(),
+    sockets: createModuleSockets([]), beforeDrain: () => host.close(),
     closeEngine: async () => { expect(events).toEqual(["kill", "release"]); events.push("engine"); },
   }, { port: 0 });
   try {

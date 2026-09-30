@@ -52,8 +52,6 @@ test("a source checkout builds a missing browser bundle without writing installa
   const root = await mkdtemp(join(tmpdir(), "mlx-web-source-"));
   try {
     await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
-    await mkdir(join(root, "src/chat"), { recursive: true });
-    await cp(new URL("../../src/chat/protocol.ts", import.meta.url), join(root, "src/chat/protocol.ts"));
     // The browser entry builds from the host's package.json and the workspace packages it installs.
     await cp(new URL("../../package.json", import.meta.url), join(root, "package.json"));
     await symlink(new URL("../../node_modules", import.meta.url).pathname, join(root, "node_modules"));
@@ -73,8 +71,6 @@ test("a packaged browser bundle is served directly without invoking the source c
   const root = await mkdtemp(join(tmpdir(), "mlx-web-packed-"));
   try {
     await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
-    await mkdir(join(root, "src/chat"), { recursive: true });
-    await cp(new URL("../../src/chat/protocol.ts", import.meta.url), join(root, "src/chat/protocol.ts"));
     await mkdir(join(root, "dist/web"), { recursive: true });
     const packed = "globalThis.packedBrowser = true;";
     await writeFile(join(root, "dist/web/app.js"), packed);

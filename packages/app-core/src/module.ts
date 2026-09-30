@@ -40,8 +40,20 @@ export interface RouteSpec {
 
 export type RouteHandler = (request: Request) => Response | Promise<Response>;
 
-export interface SocketSpec { readonly id: string; readonly path: string; readonly summary: string }
-export interface SocketPeer { send(data: string): void; close(): void }
+export interface SocketSpec {
+  readonly id: string;
+  /** Starts with `/`; a WebSocket upgrade is a `GET`, mounted under `/api/<module id>`, or at the root for `mount: "root"`. */
+  readonly path: string;
+  readonly summary: string;
+  /** `root` is for previously shipped paths (`/ws/chat`); the host rejects collisions, as for routes. */
+  readonly mount?: "module" | "root";
+}
+/** One open connection. The host hands the handler the same peer for every call about that connection. */
+export interface SocketPeer {
+  send(data: string): void;
+  /** Closes the connection; the code and reason are the WebSocket close frame's (default 1000). */
+  close(code?: number, reason?: string): void;
+}
 export interface SocketHandler {
   open?(peer: SocketPeer, request: Request): void | Promise<void>;
   message(peer: SocketPeer, data: string): void | Promise<void>;
@@ -138,7 +150,10 @@ export interface PanelSpec {
   readonly title: string;
   /** Shell route, `/<module id>`. */
   readonly path: string;
-  /** Listed among the developer tools (hidden until the Developer switch is on). Default true; a panel every user needs sets `false`. */
+  /** A workspace panel is the product's own page: it fills the shell's page instead of sitting in a titled card, is listed
+   * first and stays outside the Developer switch. Default false. */
+  readonly workspace?: boolean;
+  /** Listed among developer tools by default; false for a panel every user needs. */
   readonly developer?: boolean;
 }
 

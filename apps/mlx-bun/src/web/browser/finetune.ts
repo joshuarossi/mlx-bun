@@ -7,7 +7,7 @@
 
 import { api, jobStream } from "./api";
 import type { ApiEnvelope } from "./protocol";
-import { $, toast, num, pushToHub, controllers } from "./shell";
+import { $, toast, num, pushToHub, chatPanel } from "./shell";
 import { esc, renderSteps } from "./markdown";
 
 const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
@@ -151,7 +151,7 @@ export function createFinetuneController() {
     // refresh the chat adapter chip immediately rather than waiting for the
     // user to navigate to Chat (enter() also refreshes, this just removes the
     // wait for the common case of finishing a run and going straight to try it).
-    if (controllers.chat && controllers.chat.refreshAdapters) (controllers.chat.refreshAdapters as () => void)();
+    chatPanel()?.refreshAdapters();
   }
 
   async function mergeAdapters(): Promise<void> {

@@ -76,7 +76,7 @@ function fakeRegistry(source: string): Registry {
 const contributor = {
   id: "notes", title: "Notes", summary: "Offers a chat tool.", requires: ["registry"], contributes: ["chat.tool"],
   activate(context) {
-    context.services.registry.register("chat.tool", { name: "note", description: "Save a note", parameters: { type: "object" }, run: async () => "saved" });
+    context.services.registry.register("chat.tool", { name: "note", description: "Save a note", parameters: { type: "object" }, readOnly: true, run: async () => "saved" });
     return {};
   },
 } satisfies AppModule<"registry">;

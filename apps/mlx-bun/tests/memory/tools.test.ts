@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryTools, memoryIndexHint, MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
-import { createMemorySurface } from "../../src/memory/surface";
+import { memorySurface } from "../support/memory-surface";
 import { articlesInCategory, buildMemoryIndex, neighbors, resetMemoryIndexCache, resolveName, serializeMemoryIndex } from "../../src/memory/query";
 
 const roots: string[] = [];
@@ -94,16 +94,21 @@ test("memory status advertises on-demand synthesis and reports the injected nigh
 
 test("missing memory exposes nothing and enabled memory materializes only into each injected skill directory", async () => {
   const root = temporary(), missing = join(root, "missing"), skills = join(root, "skills");
-  expect(await createMemorySurface(missing, skills)).toBeUndefined();
+  const absent = await memorySurface({ vault: missing, skills });
+  expect(await absent.surface()).toBeUndefined();
   expect(existsSync(missing)).toBe(false); expect(existsSync(skills)).toBe(false);
+  await absent.stop();
   const actual = vault();
-  const surface = (await createMemorySurface(actual, skills))!;
-  expect(surface.customTools.map(tool => tool.name)).toEqual(surface.toolNames);
+  const present = await memorySurface({ vault: actual, skills });
+  const surface = (await present.surface())!;
+  expect(surface.customTools.map(tool => tool.name)).toEqual([...surface.toolNames]);
   expect(surface.skillPaths).toEqual([join(skills, "memory")]);
   const content = readFileSync(join(skills, "memory", "SKILL.md"), "utf8");
   expect(content).toContain("name: memory"); expect(content).not.toContain("mlx-bun memory init");
   const other = join(root, "other-skills");
-  expect((await createMemorySurface(actual, other))!.skillPaths).toEqual([join(other, "memory")]);
+  const elsewhere = await memorySurface({ vault: actual, skills: other });
+  expect((await elsewhere.surface())!.skillPaths).toEqual([join(other, "memory")]);
+  await present.stop(); await elsewhere.stop();
   expect(readFileSync(join(other, "memory", "SKILL.md"), "utf8")).toBe(content);
 });
 

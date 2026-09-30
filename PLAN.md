@@ -141,20 +141,15 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets, quantize, benchmarks, train and models landed (benchmarks' and models' panels are the shell's, from their manifests; datasets' and quantize's browser
-    pages, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, are still legacy pages that become
-    panels the `@mlx-bun/web-shell` mounts; quantize's calls the app's toast, push and library-refresh
-    helpers, which a panel gets through its connection or the shell instead). The models module owns the hub, library, cache cleanup, `/v1/adapters*`,
-    `/api/model/resolve-folder`, adapter merge and export (merge is the served model's `adapters` operation, run in the process that holds
-    the model), the `get`, `ls`, `scan`, `fit`, `gc` and `upload` verbs and the Models panel; the chat's adapter selector
-    (which mounted adapter a turn uses) stays with the chat. Modules contribute to each other through the
-    `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
-    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
-    when the first module that declares them lands (they refuse them until then); job runners are served
-    by any host that binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners).
-    Exit per module: its domain leaves `apps/mlx-bun/src`, its browser page becomes its panel (the shell
-    mounts it; the app's legacy pages shrink), the app's domain map shrinks accordingly, and
+  - [ ] (d) Remaining module: memory (last, moved as is; the memory feature stays deferred).
+    Datasets, quantize, benchmarks, train, models and chat landed. Datasets', quantize's and train's
+    browser pages are still legacy pages that become panels the web shell mounts. Memory reaches chat
+    through `registry` (`chat.tool`, `chat.guidance`); the app owns its memory entry, consent card and
+    provenance chips through the chat panel's `host` until memory moves. The chat panel owns its markdown
+    renderer, hold-to-talk mic (calling transcription over HTTP), and the assistant's app catalog, which
+    should come from contributions once the shell lists them. Models owns hub, library, cleanup, adapter
+    administration and its panel; chat owns selection of adapters for a turn. Exit per module: its domain
+    leaves `apps/mlx-bun/src`, its browser page becomes its panel, the app domain map shrinks, and
     served-surface inventories are unchanged.
   - [ ] (e) Model host events reach every consumer. Residency, live switching, saved state and the model router landed
     (`serve` runs one isolated worker per resident model by default, held by memory fit in the parent; `--in-process`

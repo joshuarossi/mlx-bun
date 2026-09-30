@@ -1,8 +1,8 @@
+import type { Registry } from "@mlx-bun/hub/registry";
+import { openRegistry } from "../storage/paths";
 import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
-import type { Registry } from "@mlx-bun/hub/registry";
-import { openRegistry } from "../storage/paths";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
@@ -36,6 +36,8 @@ export function createDiscoveryRoutes(
   startedAt: number,
   transcription: () => Promise<TranscriptionInfo | null> = async () => null,
   createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => openRegistry(),
+  /** The server's own sampling defaults (`--temperature`, `--top-p`, `--top-k`): they win over the model's, as they do for a request that names none. */
+  serverDefaults: { temperature?: number; topP?: number; topK?: number } = {},
 ): DiscoveryRoutes {
   return {
     async handle(url, request) {
@@ -73,9 +75,9 @@ export function createDiscoveryRoutes(
             : null;
           const created = Math.floor(startedAt / 1000);
           const genDefaults = {
-            temperature: ctx.genDefaults.temperature ?? null,
-            top_p: ctx.genDefaults.topP ?? null,
-            top_k: ctx.genDefaults.topK ?? null,
+            temperature: serverDefaults.temperature ?? ctx.genDefaults.temperature ?? null,
+            top_p: serverDefaults.topP ?? ctx.genDefaults.topP ?? null,
+            top_k: serverDefaults.topK ?? ctx.genDefaults.topK ?? null,
           };
           const capabilities = binding.discovery;
           const stt = await transcription();

@@ -3,10 +3,27 @@ import type { Unsubscribe } from "./events";
 /** A chat tool a module offers the chat module. */
 export interface ChatToolContribution {
   readonly name: string;
+  /** A short title for the tool; default its name. */
+  readonly label?: string;
   readonly description: string;
   /** JSON Schema of the arguments object. */
   readonly parameters: Readonly<Record<string, unknown>>;
+  /** The contributor attests that the tool only reads state. Chat runs it without an approval prompt, and offers
+   * only tools that attest this (a tool that changes state would need an approval flow chat does not have yet). */
+  readonly readOnly: true;
+  /** Checked when each chat session is built: a tool that is not available is not offered to that session. Default available. */
+  available?(): boolean | Promise<boolean>;
   run(args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<string>;
+}
+
+/** Guidance a module adds to the chat's system prompt and skill set, for its own tools. */
+export interface ChatGuidanceContribution {
+  /** Checked when each chat session is built, like a tool's; guidance that is not available is left out. Default available. */
+  available?(): boolean | Promise<boolean>;
+  /** Appended to the system prompt. */
+  hint?(): string | Promise<string>;
+  /** A directory holding a `SKILL.md` the session loads; the contributor makes sure it exists when this is called. */
+  skillPath?(): string | Promise<string>;
 }
 
 /** A setting a module adds to the shell's settings page. */
@@ -33,6 +50,7 @@ export interface NavContribution {
  */
 export interface ExtensionPoints {
   "chat.tool": ChatToolContribution;
+  "chat.guidance": ChatGuidanceContribution;
   "shell.setting": SettingContribution;
   "shell.nav": NavContribution;
 }

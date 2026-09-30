@@ -175,8 +175,10 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     event("memory answered");
     return Response.json({ outputs: body.requests.map(row => `task ${row.stage}: ${row.input.user}`) });
   }
+  // The real discovery reports the server's own sampling defaults (the launch options') over the model's.
+  const served = (launch.options?.request ?? {}) as Record<string, number | undefined>;
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: current, object: "model", created: 1, owned_by: "mlx-bun",
-    context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
+    context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: served.defaultTemperature ?? 0.6, top_p: served.defaultTopP ?? 0.9, top_k: served.defaultTopK ?? null },
     capabilities: { chat_completions: true, transcription: false }, resident: true, current: true },
     // Like the real worker, the other local models follow as the registry knows them (FAKE_WORKER_MODELS, comma separated).
     ...(process.env.FAKE_WORKER_MODELS ?? "").split(",").filter(id => id && id !== current).map(id => ({ id, object: "model", created: 1, tier: "targeted" }))] });

@@ -1,5 +1,5 @@
 // The isolated serve composition, the default for `serve`: this process keeps the persistent
-// CPU state (serve-state.ts), the web app, Pi chat, the Responses history, the managed jobs and
+// CPU state (serve-state.ts), the web app, the chat module, the Responses history, the managed jobs and
 // the modules that run beside them, and loads no model. Each resident model runs in its own
 // worker process (worker-unit.ts; worker-entry.ts composes the model host over a Unix socket).
 // This process holds their residency by memory fit with the same manager the in-process host
@@ -17,10 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import { createPiBackend } from "../chat/pi-backend";
-import { EngineUnavailableError, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
+import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
 import { locateTaskModel, MEMORY_TASK_MODEL } from "../memory/model";
-import { createManagementRoutes } from "../server/management-routes";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createModelRoutes } from "../server/model-routes";
 import { createProxyRoutes } from "../server/proxy-routes";
@@ -53,41 +51,6 @@ export interface IsolatedServeHooks {
   records?(): readonly ModelRecord[];
   /** The Whisper checkpoints it may load, instead of the registry's. */
   companions?(): readonly ModelRecord[];
-}
-
-interface ServedModel {
-  contextWindow: number | undefined;
-  vision: boolean; audio: boolean; thinking: boolean; transcription: boolean;
-  genDefaults: { temperature: number | null; topP: number | null; topK: number | null };
-}
-
-/** What the direct host reads from the loaded context, over the worker's own
- * discovery surface: `/v1/models` for capabilities and generation defaults,
- * `/stats` for the enforced context window. Read at startup and again after
- * each switch, for the model the worker then serves. */
-async function describeServedModel(engine: WorkerSupervisor, modelId: string, options: ServeOptions): Promise<ServedModel> {
-  const json = async (path: string) => {
-    const response = await engine.fetch(`http://engine${path}`);
-    if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`worker answered ${response.status} on ${path}`); }
-    return await response.json() as Record<string, unknown>;
-  };
-  const [models, stats] = await Promise.all([json("/v1/models"), json("/stats")]);
-  const rows = Array.isArray(models.data) ? models.data as Record<string, unknown>[] : [];
-  const served = rows.find(row => row.id === modelId) ?? rows[0] ?? {};
-  const defaults = (served.gen_defaults ?? {}) as Record<string, unknown>;
-  const capabilities = (served.capabilities ?? {}) as Record<string, unknown>;
-  const admission = (stats.admission ?? {}) as Record<string, unknown>;
-  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  return {
-    contextWindow: number(admission.enforced_context_tokens) ?? number(served.context_window),
-    vision: served.vision === true, audio: served.audio === true, thinking: served.reasoning === true,
-    transcription: capabilities.transcription === true,
-    genDefaults: {
-      temperature: options.request.defaultTemperature ?? number(defaults.temperature) ?? null,
-      topP: options.request.defaultTopP ?? number(defaults.top_p) ?? null,
-      topK: options.request.defaultTopK ?? number(defaults.top_k) ?? null,
-    },
-  };
 }
 
 /** Isolated composition: the persistent state and the startup model's worker first, the listener
@@ -190,16 +153,6 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const companion = options.whisper?.resident ? await whisperRecord() : undefined;
     if (companion) residency.pin(companion.repoId);
 
-    /** What Pi and the hub describe: capabilities and defaults from the worker's own discovery. Re-read after a respawn. */
-    const facts = new Map<string, { at: number; served: ServedModel }>();
-    const describe = async (unit: WorkerUnit) => {
-      const known = facts.get(unit.id);
-      if (known && known.at === unit.supervisor.restarts) return known.served;
-      const served = await describeServedModel(unit.supervisor, unit.id, options);
-      facts.set(unit.id, { at: unit.supervisor.restarts, served });
-      return served;
-    };
-    let startupFacts = await describe(first);
     const models = createModelRoutes({ host: residency, current: () => current,
       serves: async id => !!await chatModels.find(id),
       // Audio requests belong to the Whisper worker, which loads on first use and drains a chat model when memory is short.
@@ -207,35 +160,15 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,
       modelId: model.repoId, startedAt: Date.now() });
-    // The listing the router reads models from is read again after a download, a finished job or a cleanup.
     const invalidateLibrary = () => { chatModels.invalidate(); };
-    // Tool-approval settings are CPU work over the parent's own files.
-    const management = createManagementRoutes({ toolApprovalsFile: state.chatPaths?.toolApprovalsFile });
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among themselves; the proxy takes every remaining path.
-    const routes: RouteGroup = { handle: async request => await persistent.sessions.handle(request) ??
-      await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const routes: RouteGroup = { handle: async request => await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.appModules.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;
-    // Pi lives here and reaches the model over loopback through the proxy, so web chat survives a worker restart and
-    // reports its failures as errors. Its `local` model id is whatever is current; each chat reads what that model is
-    // when it connects.
-    const chat = createPiBackend({ port: () => boundPort, modelId: model.repoId,
-      model: async () => {
-        const unit = currentUnit();
-        let served = startupFacts;
-        try { if (unit) served = await describe(unit); } catch { /* still restarting: the last description stands */ }
-        return { modelId: current, ...(served.contextWindow !== undefined ? { contextWindow: served.contextWindow } : {}),
-          vision: served.vision, audio: served.audio, thinking: served.thinking, genDefaults: served.genDefaults };
-      },
-      memory: state.memorySurface,
-      paths: { ...state.chatPaths, sessionDir: state.sessionDir },
-      ...(startupFacts.contextWindow !== undefined ? { contextWindow: startupFacts.contextWindow } : {}),
-      readOnly: options.readOnly, vision: startupFacts.vision, audio: startupFacts.audio, thinking: startupFacts.thinking,
-      transcription: async () => (currentUnit() ? (await describe(currentUnit()!).catch(() => startupFacts)).transcription : startupFacts.transcription),
-      genDefaults: startupFacts.genDefaults, downloadsSnapshot: state.downloads.snapshot,
-    });
+    // The chat module lives in the state and reaches the model through the served model host (over this listener's proxy;
+    // its `local` model id is whatever is current), so web chat survives a worker restart and reports its failures as errors.
     // Jobs pause every resident worker; loopback clients reach the workers through the proxy; a hub switch is this host's to make.
     detachLink = state.attach({ get model() { return { id: current, bytes: currentUnit()?.bytes() ?? model.sizeBytes }; }, get port() { return boundPort; },
       acquireExecutionLease: signal => residency.pauseAll(signal),
@@ -247,7 +180,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       serve: (id, signal) => residency.serve(id, { signal }) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web: state.web, chat,
+    const listener = await startServer({ routes, web: state.web, sockets: state.sockets,
       // The app stops its producers (jobs, downloads) while the workers are alive, then chat and HTTP drain, then every
       // worker is drained, flushes its saved state, and exits.
       beforeDrain: () => state.close(),

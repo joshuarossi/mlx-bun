@@ -1,21 +1,20 @@
 // The persistent half of the serve composition: CPU-only services that outlive
 // any loaded model (web assets, download owner, Responses history, memory,
-// jobs, sessions, credentials, and their routes). Nothing here imports the
+// jobs, the modules that run here (chat among them), credentials, and their
+// routes and sockets). Nothing here imports the
 // engine or a native module at runtime, so a process without the MLX library
 // can own this state while a model host runs elsewhere. The model host it
 // serves is attached explicitly; no service reaches a model through globals.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppModule, ModelCatalog } from "@mlx-bun/app-core";
-import { activateModules, createEventHub, createModuleRoutes, createRegistryCatalog, createStorage, mlxBunHome, type EventHub } from "@mlx-bun/app-services/portable";
+import { activateModules, createEventHub, createModuleRoutes, createModuleSockets, createRegistryCatalog, createStorage, mlxBunHome, type EventHub, type ModuleSockets } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
-import type { PiBackendPaths } from "../chat/pi-backend";
-import { defaultSessionDir } from "../chat/session-files";
 import { catalogTransfers, createDownloadOwner, type DownloadOwner } from "../hub/downloads";
 import { JobStore } from "../jobs/db";
 import { createJobHost } from "../jobs/host";
 import { createJobService } from "../jobs/service";
-import { createMemorySurface } from "../memory/surface";
+import { createMemoryChatModule } from "../memory/chat";
 import { vaultRoot } from "../memory/vault";
 import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
@@ -28,9 +27,12 @@ import { createMemoryRoutes } from "../server/memory-routes";
 import { createMemorySynthesis, type SynthesisClient } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
-import { createSessionRoutes } from "../server/session-routes";
 import { createWebHandler } from "../web/assets";
 import { adapterStores, openRegistry, storagePath } from "../storage/paths";
+
+/** Where an embedder or a test put the chat's stores instead of the module's storage entries (`sessions/`, `pi-sessions/`,
+ * `tool-approvals.json` under MLX_BUN_HOME); an explicit path always wins. `cwd` is the directory Pi's tools work in. */
+export interface ChatPaths { cwd?: string; agentDir?: string; sessionDir?: string; toolApprovalsFile?: string }
 
 /** Overrides for the app's default storage (storage/paths.ts). `artifactRoot`
  * replaces MLX_BUN_HOME for produced artifacts: its models/, adapters/,
@@ -41,7 +43,9 @@ export interface AppStateOptions {
   /** The requested listener port; an attached host's bound port replaces it. */
   port: number;
   memoryPaths?: { vault: string; skills: string };
-  chatPaths?: PiBackendPaths;
+  chatPaths?: ChatPaths;
+  /** A read-only server (`ServeOptions.readOnly`): the chat gets no file-changing tool and denies every gated call. */
+  readOnly?: boolean;
   /** Memory synthesis's model in the direct composition: main's memory task
    * model (Gemma-4 e4b with its chunk adapter), created by the first run and
    * kept until close, each call under the attached host's execution lease. */
@@ -73,15 +77,12 @@ export interface AppState {
   /** Responses API conversation history, shared by every host this state serves. */
   readonly responses: ResponseHistory;
   readonly memoryPaths: { vault: string; skills: string };
-  readonly chatPaths: PiBackendPaths | undefined;
-  readonly sessionDir: string;
   readonly storagePaths: AppStoragePaths;
-  /** The chat memory surface over the vault; undefined while memory is disabled. */
-  memorySurface(): ReturnType<typeof createMemorySurface>;
+  /** The sockets the modules that run here declare (chat's `/ws/chat`); the listener upgrades them and the modules own each connection. */
+  readonly sockets: ModuleSockets;
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
-    sessions: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    appModules: RouteGroup; publishing: RouteGroup;
+    memory: RouteGroup; jobs: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -122,7 +123,6 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     } : {}),
   });
   const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
-  const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
   // The model catalog the state's modules share: the hub cache, the models directory and the adapter stores, with the app's token behind
   // pushes and its download owner behind the downloads that outlive a request.
@@ -135,8 +135,13 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
   const served = createServedModelHost({ link: () => host,
     fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
-  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
-    storage: createStorage(() => storagePaths.artifactRoot ?? mlxBunHome()) } });
+  // Memory's tools reach chat through the registry, so they activate beside it. The chat's stores an embedder placed elsewhere win over its storage entries.
+  const chatStores = { ...(options.chatPaths?.sessionDir !== undefined ? { "chat.sessions": options.chatPaths.sessionDir } : {}),
+    ...(options.chatPaths?.agentDir !== undefined ? { "chat.agent": options.chatPaths.agentDir } : {}),
+    ...(options.chatPaths?.toolApprovalsFile !== undefined ? { "chat.approvals": options.chatPaths.toolApprovalsFile } : {}) };
+  const loaded = await activateModules([...modules, createMemoryChatModule(memoryPaths)], { sockets: true, bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
+    // Produced artifacts follow `artifactRoot`; the chat's saved sessions and approvals are the user's data, which it never moved.
+    storage: createStorage(moduleId => moduleId === "chat" ? mlxBunHome() : storagePaths.artifactRoot ?? mlxBunHome(), chatStores) } });
   jobService.serve(loaded.jobs);
   // Memory synthesis runs on the task model, created on first use (its weights
   // load with the first completion) and kept until close, as in main. Each of
@@ -161,7 +166,6 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     throw new Error("memory synthesis has no task model in this composition");
   } });
   const routes: AppState["routes"] = {
-    sessions: createSessionRoutes(sessionDir),
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
     appModules: createModuleRoutes(loaded.routes),
@@ -171,8 +175,8 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   };
   let closing: Promise<void> | undefined;
   return {
-    web, downloads, events, responses: new ResponseStore(), memoryPaths, chatPaths: options.chatPaths, sessionDir, storagePaths,
-    memorySurface: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),
+    web, downloads, events, responses: new ResponseStore(), memoryPaths, storagePaths,
+    sockets: createModuleSockets(loaded.sockets),
     routes,
     attach(link) {
       host = link;

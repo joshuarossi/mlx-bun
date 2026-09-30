@@ -24,7 +24,7 @@ import { esc, mdToHtml, wireCanvasToggle } from "./markdown";
 /* ────────────────────────────────────────────────────────────────────
    REST response shapes (mirrors apps/mlx-bun/src/server/memory-routes.ts's
    jsonOk() bodies — frontend-only types since these are HTTP JSON envelopes,
-   not part of the typed WS contract in apps/mlx-bun/src/chat/protocol.ts). Each extends ApiEnvelope (api()'s
+   not part of the typed WS contract in packages/module-chat/src/protocol.ts). Each extends ApiEnvelope (api()'s
    generic constraint, api.ts) via intersection, per that file's own
    doc-comment convention.
    ──────────────────────────────────────────────────────────────────── */

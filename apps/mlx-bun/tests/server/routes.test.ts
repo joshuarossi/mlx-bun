@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import type { ModelContext } from "../../src/engine/model-host";
 import type { CompletionEngine } from "../../src/engine/completion";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
@@ -298,7 +299,7 @@ test("Messages listener disconnect cancels execution and permits the next reques
     return { promptTokens: 3, cachedTokens: 0, generatedTokens: 1, prefillTps: 0, decodeTps: 0, prefillMs: 0, decodeMs: 0, cacheTokens: [7, 8, 9, 1] };
   });
   const listener = await startServer({ routes: run.routes, web: () => null,
-    chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
+    sockets: createModuleSockets([]),
     closeEngine: async () => { closed++; },
   }, { port: 0 });
   const abort = new AbortController();
@@ -452,7 +453,7 @@ test("Responses listener disconnect cancels execution without making partial out
     return { promptTokens: 3, cachedTokens: 0, generatedTokens: 1, prefillTps: 0, decodeTps: 0, prefillMs: 0, decodeMs: 0, cacheTokens: [7, 8, 9, 2] };
   }, { responseHistory: history });
   const listener = await startServer({ routes: run.routes, web: () => null,
-    chat: () => ({ async start() {}, async handle() {}, dispose() {} }), closeEngine: async () => { closed++; },
+    sockets: createModuleSockets([]), closeEngine: async () => { closed++; },
   }, { port: 0 });
   const abort = new AbortController();
   try {

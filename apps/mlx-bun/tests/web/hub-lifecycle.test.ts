@@ -1,3 +1,4 @@
+import { createModuleSockets } from "@mlx-bun/app-services";
 // The real Download button of the models panel through the real listener, the models module's routes, the catalog over the
 // app's download owner, the hub downloader, and `/downloads` against a local fake Hub.
 // Covers the transitions a row-injection test cannot: a slow listing (no
@@ -73,7 +74,7 @@ test("Download button: slow listing shows preparing, then progress, then done; a
     modelHost: () => modelHost as never, storage: createStorage(() => cacheDir), events: scope => events.scoped(scope) } });
   cleanups.push(() => loaded.stop());
   const routes = createModuleRoutes(loaded.routes);
-  const app = await startServer({ web: () => null, chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
+  const app = await startServer({ web: () => null, sockets: createModuleSockets([]),
     routes, beforeDrain: () => owner.close(), async closeEngine() {} }, { port: 0 });
   cleanups.push(() => app.close());
   const base = app.server.url;

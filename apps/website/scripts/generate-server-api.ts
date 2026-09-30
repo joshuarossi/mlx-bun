@@ -13,7 +13,7 @@ export const COMPOSITION_SOURCES = ["serve-host.ts", "serving-unit.ts", "serve-i
 /** The transcription-only discovery routes live in the host library both hosts share. */
 export const COMPANION_SOURCE = "packages/app-services/src/companion-info-routes.ts";
 const ROUTE_GLOB = `${APP}server/*.ts`, WEB_SOURCE = `${APP}web/assets.ts`, FACTORY = /^create\w*Routes$|^createWebHandler$/;
-/** `createModuleRoutes(loaded.routes)`: the installed modules' routes, read from their manifests. */
+/** `createModuleRoutes(loaded.routes)`: the installed modules' routes, read from their manifests; the sockets the state serves come from the same manifests. */
 const MODULE_ROUTES = "createModuleRoutes", MANIFEST = /^packages\/module-[^/]+\/src\/manifest\.ts$/;
 
 /** Real comparisons on the request path or method that pick behavior after a
@@ -406,35 +406,34 @@ class Inventory {
     return [...merge([...facts, ...routed.map(({ path, node }) => ({ method: "POST", path, node, status: "routed by model id", conds: [] }))]),
       ...this.chain(routes, new Map()).groups.flatMap(group => typeof group === "string" ? [] : this.groupFacts(group))];
   }
-  /** start.ts's fixed dispatch: the WebSocket, web assets, route groups, then 404. */
-  private listener(): { ws: Fact[] } {
+  /** start.ts's fixed dispatch: the modules' sockets, web assets, route groups, then 404. The listener names no path itself. */
+  private listener(): void {
     const start = this.fn(server("start.ts"), "startServer"), fetch = find(start, ts.isMethodDeclaration).find(m => m.name.getText() === "fetch");
     const order = (fetch?.body?.statements ?? []).map(s => {
       const text = code(s);
-      return text.includes("input.web(") ? "web" : text.includes("input.routes.handle(") ? "routes"
-        : this.sitesIn(s).length ? "ws" : ts.isReturnStatement(s) && s.expression && statusOf(s.expression) === 404 ? "404" : "";
+      return text.includes("input.sockets.upgrade(") ? "sockets" : text.includes("input.web(") ? "web" : text.includes("input.routes.handle(") ? "routes"
+        : ts.isReturnStatement(s) && s.expression && statusOf(s.expression) === 404 ? "404" : "";
     }).filter(Boolean);
-    const facts = this.groupFacts(start), ws = facts.filter(f => f.path === "/ws/chat");
-    if (order.join() !== "ws,web,routes,404" || ws.length !== 1 || facts.length !== 1) this.fail(fetch ?? start, `the listener's dispatch changed (${order.join(", ")}); update the server API generator`);
-    return { ws };
+    if (order.join() !== "sockets,web,routes,404" || this.groupFacts(start).length !== 0) this.fail(fetch ?? start, `the listener's dispatch changed (${order.join(", ")}); update the server API generator`);
   }
 
-  /** The routes of the installed modules that run in a scope, in manifest order: each `routes` entry of a `manifest` literal, at its mounted path.
-   * A module runs in the persistent app state when its manifest places it in the `app` (by default, when it requires `jobs`), else with the model host (the app's `installedModules(scope)`). */
-  private moduleFacts(scope: "state" | "model"): Fact[] {
+  /** The routes (`route: "routes"`) or sockets (`"sockets"`) of the installed modules that run in a scope, in manifest order: each entry of a `manifest` literal, at its mounted path.
+   * A module runs in the persistent app state when it requires `jobs` or declares sockets, else with the model host (the app's `installedModules(scope)`). */
+  private moduleFacts(scope: "state" | "model", kind: "routes" | "sockets" = "routes"): Fact[] {
     const string = (e: ts.Expression | undefined, what: string, at: ts.Node): string => { const x = e && skip(e); return x && ts.isStringLiteralLike(x) ? x.text : this.fail(at, `${what} must be a string literal`); };
     return [...this.files.keys()].filter(path => MANIFEST.test(path)).flatMap(path => {
       const file = this.file(path), manifest = find(file, ts.isVariableDeclaration).find(d => d.name.getText() === "manifest")?.initializer;
       if (!manifest) return this.fail(file, "the module manifest was not found");
-      const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get("routes") && skip(fields.get("routes")!);
+      const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get(kind) && skip(fields.get(kind)!);
       const requires = stringList(fields.get("requires")) ?? this.fail(manifest, "the module's requires must be a literal list of strings");
-      const placement = fields.get("placement") ? string(fields.get("placement"), "the module's placement", manifest) : requires.some(([name]) => name === "jobs") ? "app" : "model";
+      const sockets = fields.get("sockets") && skip(fields.get("sockets")!);
+      const placement = fields.get("placement") ? string(fields.get("placement"), "the module's placement", manifest) : requires.some(([name]) => name === "jobs") || (!!sockets && ts.isArrayLiteralExpression(sockets) && sockets.elements.length > 0) ? "app" : "model";
       if ((placement === "app") !== (scope === "state")) return [];
-      if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, "manifest routes must be a literal array");
+      if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, `manifest ${kind} must be a literal array`);
       return (list?.elements ?? []).map(route => {
-        const parts = props(route), method = string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), "a route path", route);
+        const parts = props(route), method = kind === "sockets" ? "GET" : string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), `a ${kind === "sockets" ? "socket" : "route"} path`, route);
         const path = parts.has("mount") && string(parts.get("mount"), "a route mount", route) === "root" ? declared : `/api/${id}${declared === "/" ? "" : declared}`;
-        return { method, path: path.replace(/:(\w+)/g, "{id}"), status: "implemented", conds: [], node: route } satisfies Fact;
+        return { method, path: path.replace(/:(\w+)/g, "{id}"), status: kind === "sockets" ? "WebSocket upgrade" : "implemented", conds: [], node: route } satisfies Fact;
       });
     });
   }
@@ -469,13 +468,17 @@ class Inventory {
     });
     return { groups, node: e as ts.Node, wrapped };
   }
-  private mode(file: string, name: string, state: Groups, web?: ts.FunctionDeclaration) {
+  /** `stateSockets`: whether the state this mode composes serves its modules' sockets (the app's does; the worker's stub does not). */
+  private mode(file: string, name: string, state: Groups, stateSockets: boolean, web?: ts.FunctionDeclaration) {
     const scope = this.fn(cli(file), name), starts = called(scope, "startServer"), input = props(starts[0]?.arguments[0]);
-    if (starts.length !== 1 || !input.has("routes") || !input.has("web") || !input.has("chat")) return this.fail(scope, "unrecognized composition shape; expected one startServer({ routes, web, chat, … })");
-    const page = skip(input.get("web")!), chat = this.local(input.get("chat")!);
+    if (starts.length !== 1 || !input.has("routes") || !input.has("web") || !input.has("sockets")) return this.fail(scope, "unrecognized composition shape; expected one startServer({ routes, web, sockets, … })");
+    const page = skip(input.get("web")!), sockets = this.local(input.get("sockets")!);
     if (!none(page) && code(page) !== "state.web") this.fail(page, "unrecognized web handler in the composition");
-    const backend = ts.isCallExpression(chat) && code(chat.expression) === "createPiBackend" ? "Pi chat" : ts.isArrowFunction(chat) ? "no chat model" : this.fail(chat, "unrecognized chat backend in the composition");
-    return { ...this.chain(input.get("routes")!, state), web: none(page) ? undefined : web, chat: backend };
+    // The listener serves either the state's sockets (the installed modules that run in the state) or none.
+    const served = code(sockets) === "state.sockets" ? stateSockets : ts.isCallExpression(sockets) && code(sockets.expression) === "createModuleSockets" &&
+      sockets.arguments.length === 1 && ts.isArrayLiteralExpression(sockets.arguments[0]!) && sockets.arguments[0].elements.length === 0 ? false
+      : this.fail(sockets, "unrecognized sockets in the composition");
+    return { ...this.chain(input.get("routes")!, state), web: none(page) ? undefined : web, sockets: served };
   }
   private modes() {
     const appState = this.fn(cli("serve-state.ts"), "createAppState"), state = props(appState.body!.statements.find(ts.isReturnStatement)?.expression);
@@ -491,7 +494,7 @@ class Inventory {
     const entry = this.fn(cli("worker-entry.ts"), "runWorkerEntry"), hosts = called(entry, "startModelHost"), first = hosts[0]?.arguments[0] && this.local(hosts[0].arguments[0]);
     if (hosts.length !== 1 || !first || !ts.isCallExpression(first) || first.expression.getText() !== "createWorkerState")
       return this.fail(hosts[0] ?? entry, "unrecognized composition shape; expected startModelHost(createWorkerState(…), …)");
-    const admin = this.wrapper(props(hosts[0]!.arguments[3]).get("routes"), hosts[0]!), host = this.mode("serve-host.ts", "startContextHost", worker);
+    const admin = this.wrapper(props(hosts[0]!.arguments[3]).get("routes"), hosts[0]!), host = this.mode("serve-host.ts", "startContextHost", worker, false);
     // The `app` launch form: runServe's own compositions on the socket, each passed `socket(model, lease)`, whose routes hook is the admin wrap.
     const runner = this.fn(cli("worker-entry.ts"), "runAppWorker"), runs = called(runner, "runServe"), callbacks = props(runs[0]?.arguments[1]);
     const leases = [["start", "startModelServer"], ["startTranscription", "startTranscriptionServer"]].map(([key, composition]) => {
@@ -504,12 +507,12 @@ class Inventory {
       this.wrapper(props(returned).get("routes"), helper);
       return made.arguments[1]?.getText() !== "false";
     });
-    const serve = this.mode("serve-host.ts", "startContextHost", app, web), transcription = this.mode("serve-host.ts", "startTranscriptionHost", new Map());
+    const serve = this.mode("serve-host.ts", "startContextHost", app, true, web), transcription = this.mode("serve-host.ts", "startTranscriptionHost", new Map(), false);
     if (!host.wrapped || !transcription.wrapped) this.fail(host.wrapped ? transcription.node : host.node, "the host must let the worker's admin routes wrap its routes");
     const lease = (leased: boolean) => leased ? "with" : "without";
     return [
       { id: "serve", title: "In-process server (`--in-process`)", ...serve, intro: "`mlx-bun serve --in-process`, and `createServer` from `mlx-bun/server` over a caller's loaded context: one process owns the loaded models (residency by memory fit; a caller's context is the only model), the browser app, chat, and jobs. Model-scoped paths belong to the current model." },
-      { id: "isolate", title: "Isolated server (the default)", ...this.mode("serve-isolated.ts", "startIsolatedServer", app, web),
+      { id: "isolate", title: "Isolated server (the default)", ...this.mode("serve-isolated.ts", "startIsolatedServer", app, true, web),
         intro: "`mlx-bun serve`: this process keeps the browser app, chat, jobs, and Responses history and loads no model; one worker process per resident model (residency by memory fit, held by this process) answers the model-scoped paths, routed by the request's `model`. A Whisper checkpoint runs in a worker of its own." },
       { id: "worker", title: "Isolation worker socket", ...host, node: hosts[0]! as ts.Node, groups: [admin, ...host.groups],
         intro: "What a model worker answers on its private Unix socket; only its parent connects. The worker admin routes answer ahead of the model routes." },
@@ -529,9 +532,9 @@ class Inventory {
   }
 
   evaluate(): ServerApi {
-    const { ws } = this.listener();
+    this.listener();
     const modes = this.modes().map(spec => {
-      const facts = [...ws.map(f => ({ ...f, status: `WebSocket upgrade (${spec.chat})` })), ...(spec.web ? this.groupFacts(spec.web) : []),
+      const facts = [...(spec.sockets ? this.moduleFacts("state", "sockets") : []), ...(spec.web ? this.groupFacts(spec.web) : []),
         ...spec.groups.flatMap(group => group === "modules" ? this.moduleFacts("model") : group === "state-modules" ? this.moduleFacts("state") : this.groupFacts(group))];
       // The first unconditional match answers; the proxy's forward takes every path it did not name.
       const kept: Fact[] = [];
@@ -589,7 +592,7 @@ export function renderServerApi(api: ServerApi, revision: string): string {
     `\`*\` means every method not listed in an earlier row for the same path; path parameters appear as \`{id}\`. The source link is the check that selects the route.\n\n` +
     `- **implemented**: the handler answers.\n` +
     `- **conditional**: the row depends on the quoted composition input; when it does not apply, the request falls through to later rows.\n` +
-    `- **WebSocket upgrade**: \`GET /ws/chat\` opens the browser's chat session with the Pi agent; without a chat model the session fails to start and closes.\n` +
+    `- **WebSocket upgrade**: a socket an installed module declares in its manifest (\`GET /ws/chat\` opens the browser's chat session with the Pi agent, served by \`@mlx-bun/module-chat\`); the listener upgrades it before any other row, and a server whose state runs no such module answers the path like any other.\n` +
     `- **routed by model id**: the request goes to the local model the JSON body's \`model\` names (loaded on demand, another drained first when it does not fit), else to the current model.\n` +
     `- In the isolated server: **served by parent** paths are never forwarded; **forwarded to the worker** requests stream unchanged to the current model's worker, and **routed by model id** requests to the worker of the model the body names.\n\n` +
     api.modes.map(mode => `## ${mode.title}\n\n${mode.intro} Composed at ${link(mode.composed.file, mode.composed.line)}.\n\n` +

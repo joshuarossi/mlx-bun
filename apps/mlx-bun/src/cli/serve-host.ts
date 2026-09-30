@@ -3,8 +3,8 @@
 // adapter. startContextHost serves one or more models from the model host
 // (residency/model-residency.ts): each loaded model is a serving unit (binding,
 // caches, engine, routes: serving-unit.ts), the Whisper companion, the model
-// router (server/model-routes.ts), the chat backend, and the listener that
-// serves them. Both borrow persistent services from the AppState they are
+// router (server/model-routes.ts), and the listener that serves them with the
+// state's routes and the modules' sockets. Both borrow persistent services from the AppState they are
 // given, and one close releases everything they created in the app's order.
 import { requireChatTemplate, releaseContext, type LoadedModelContext } from "../engine/model-host";
 import { createKvBudget, type KvBudget } from "../engine/kv-budget";
@@ -19,7 +19,7 @@ import pkgJson from "../../package.json" with { type: "json" };
 import { loadInstalledModules } from "./module-host";
 import { type RunningApp, type ServeOptions } from "./serve-options";
 import type { AppState, RouteGroup } from "./serve-state";
-import { createServingUnit, type ContextHost, type ContextHostOptions, type ServedModelFacts, type ServingUnit, type UnitShared } from "./serving-unit";
+import { createServingUnit, type ContextHost, type ContextHostOptions, type ServingUnit, type UnitShared } from "./serving-unit";
 
 export type { ContextHost, ContextHostOptions } from "./serving-unit";
 export { resolveServingLimits, validatePagedServingOptions } from "./serve-options";
@@ -203,9 +203,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
   let detachLink = () => {};
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   try {
-    const [{ startServer }, { createPiBackend }, { createManagementRoutes }, { createModelRoutes },
+    const [{ startServer }, { createModelRoutes },
       { createHostServices, createModuleRoutes, declaredOperations }] = await Promise.all([
-      import("../server/start"), import("../chat/pi-backend"), import("../server/management-routes"), import("../server/model-routes"),
+      import("../server/start"), import("../server/model-routes"),
       import("@mlx-bun/app-services"),
     ]);
     // Main: the plan's allocator limit, else the explicit budget, caps the
@@ -243,8 +243,6 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     cleanup = undefined;
     const first = await createServingUnit(context, options, input, shared);
     cleanup = () => first.close({ flush: true });
-    const facts = new Map<string, ServedModelFacts>([[first.id, first.facts]]);
-    const rememberFacts = (unit: ServingUnit) => { facts.set(unit.id, unit.facts); return unit; };
     // The other local models, as the registry knows them: refreshed after a download or job, and at most every few seconds on a miss.
     const records = input.models ? createRecordIndex(() => input.models!.records(), input.models.startup) : undefined;
     const known = async (id: string): Promise<ModelRecord | undefined> => records?.find(id);
@@ -270,11 +268,11 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
         const unit = await createServingUnit(loaded.context, options,
           { ownership: "owned", artifact: record, ...(input.owner ? { owner: input.owner } : {}), ...(loaded.defaultAdapter ? { defaultAdapter: loaded.defaultAdapter } : {}) },
           { ...shared, ...(limit ? { allocatorLimitBytes: limit } : {}) });
-        if (previous === undefined) return rememberFacts(unit);
+        if (previous === undefined) return unit;
         const close = unit.close.bind(unit);
-        return rememberFacts(Object.assign(unit, { close: async (options: { readonly flush: boolean }) => {
+        return Object.assign(unit, { close: async (options: { readonly flush: boolean }) => {
           try { return await close(options); } finally { (await import("@mlx-bun/mlx/ffi")).setMemoryLimit(previous); }
-        } }));
+        } });
       },
     };
     let current = first.id;
@@ -314,24 +312,14 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
     const moduleRoutes = createModuleRoutes(modules.routes);
     const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
-    // The listing this host routes by is read again after a download, a finished job or a cleanup.
     const invalidateLibrary = () => { records?.invalidate(); };
-    const management = createManagementRoutes({ toolApprovalsFile: state.chatPaths?.toolApprovalsFile });
     const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await persistent.sessions.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.appModules.handle(request) ?? await persistent.publishing.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
     let boundPort = options.port;
-    // Chat describes the current model when a session connects; its `local` model id is whatever the host serves then.
-    const chat = createPiBackend({ port: () => boundPort, modelId: first.id, model: () => facts.get(current) ?? first.facts,
-      memory: state.memorySurface,
-      paths: { ...state.chatPaths, sessionDir: state.sessionDir },
-      readOnly: options.readOnly,
-      transcription: async () => (await moduleHost.whisper.defaultFor("transcribe")) !== undefined,
-      downloadsSnapshot: state.downloads.snapshot,
-    });
     // Jobs and loopback clients reach this host from the first served request. A job pauses every resident model.
     // Modules leasing the served model reach it as the current one: the id and weights follow a switch.
     detachLink = state.attach({ get model() { return { id: current, bytes: (residency.peek(current) ?? first).context.model.weightsBytes }; },
@@ -345,7 +333,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       ...(input.models ? { serve: (id: string, signal: AbortSignal) => residency.serve(id, { signal }) } : {}) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web: state.web, chat,
+    const listener = await startServer({ routes, web: state.web, sockets: state.sockets,
       beforeDrain: async () => {
         const errors: unknown[] = [];
         try { for (const unit of residentUnits()) unit.stopBackground(); } catch (error) { errors.push(error); }
@@ -383,7 +371,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
  * wrapper, and a step ahead of the Whisper close (the worker app form). */
 export async function startTranscriptionHost(model: ModelRecord, options: ServeOptions,
   hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
-  const [{ createCompanionInfoRoutes, createHostServices, createModuleRoutes }, { startServer }] = await Promise.all([
+  const [{ createCompanionInfoRoutes, createHostServices, createModuleRoutes, createModuleSockets }, { startServer }] = await Promise.all([
     import("@mlx-bun/app-services"), import("../server/start"),
   ]);
   const whisper = options.whisper ?? {};
@@ -412,8 +400,8 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
     const listener = await startServer({
       routes: hooks.routes?.(routes) ?? routes,
       web: () => null,
-      // No chat model: a WebSocket session fails to start and its transport closes.
-      chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
+      // No chat: a transcription-only server declares no sockets.
+      sockets: createModuleSockets([]),
       // Whisper closes before drain: admission stops, in-flight takes are joined, weights release.
       beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await close(); } },
       closeEngine: async () => {},

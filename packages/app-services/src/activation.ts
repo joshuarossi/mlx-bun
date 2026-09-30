@@ -7,10 +7,11 @@ import type { HostServices } from "./host";
 import { plainTerminal } from "./terminal";
 import { parseVerb, verbArguments } from "./verbs";
 
-/** Activate modules over a host's services. Fails on what the host does not serve: sockets, and job runners unless it binds the `jobs` service (which then runs them). */
-export async function activateModules(modules: readonly AppModule[], services: { readonly bindings: ServiceBindings }): Promise<LoadedModules> {
+/** Activate modules over a host's services. Fails on what the host does not serve: sockets unless it says it does (`sockets`, served with `createModuleSockets`),
+ * and job runners unless it binds the `jobs` service (which then runs them). */
+export async function activateModules(modules: readonly AppModule[], services: { readonly bindings: ServiceBindings; readonly sockets?: boolean }): Promise<LoadedModules> {
   const loaded = await loadModules(modules, { services: services.bindings });
-  const unserved = [...loaded.sockets.map(socket => `socket ${socket.path}`),
+  const unserved = [...(services.sockets ? [] : loaded.sockets.map(socket => `socket ${socket.path}`)),
     ...(services.bindings.jobs ? [] : [...loaded.jobs.keys()].map(kind => `job kind ${kind}`))];
   if (unserved.length) {
     await loaded.stop();

@@ -98,7 +98,7 @@ the model-management verbs (`get`, `ls`, `scan`, `fit`, `gc`, `upload`) are the 
 split in two halves:
 `serve-state.ts` creates the persistent, CPU-only state that outlives a loaded
 model (web assets, the download owner, Responses history, memory, jobs,
-sessions, credentials, and their routes) and never imports the engine or a
+the modules that need job runners or sockets (chat among them), credentials, and their routes) and never imports the engine or a
 native module at runtime; `serve-host.ts` creates the model-scoped host,
 borrowing that state by parameter and lending it an execution lease, library
 invalidation, and the bound port through an attached link. Its
@@ -215,11 +215,11 @@ record) puts the worker's last stderr line into the rejection.
 In the app form, memory synthesis runs on the app's own task model, as in
 `serve`, and dataset jobs reach the model through the attached host's own
 `/v1/chat/completions` over its socket (the request's
-`127.0.0.1:<--port>` is a placeholder), so they call the same app. Pi web chat
-does not: its SDK takes a base URL rather than a fetch, so it targets TCP
-`127.0.0.1:<--port>`, as in the model form and main. An embedding host that
-forwards Request/Response pairs cannot carry `/ws/chat` either, because it is a
-WebSocket upgrade.
+`127.0.0.1:<--port>` is a placeholder), so they call the same app, and so does the
+chat module (its Pi SDK takes a base URL rather than a fetch, so it talks to the module's
+private loopback, which leases the model host's `generate` per request, over the socket
+here). An embedding host that forwards Request/Response pairs cannot carry `/ws/chat`,
+because it is a WebSocket upgrade.
 
 The app form opens the CLI's user stores under HOME. Its first jobs request
 opens the jobs database and marks every queued or running job as a zombie,
@@ -298,11 +298,9 @@ generation defaults, and enforced context window from its worker's `/v1/models` 
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
 downloads, sessions, memory (the vault and the synthesis pipeline; its task
-model is the current worker's), tool-approval settings, and the models module (library, hub, adapters and cache cleanup,
-which protects the snapshot of every resident worker's model and the task model snapshot
-selected for a worker, kept for that worker's lifetime: each resident model reports its `uses`) live here and survive worker
-restarts. Pi runs in this process and reaches the models over loopback HTTP through
-the proxy, so web chat works under isolation (main answered 501 on `/ws/chat`); its
+model is the current worker's), the chat module's tool approvals, and the models module (library, hub, adapters
+and cache cleanup, which protects each resident model's reported snapshot uses) live here and survive worker restarts. The chat module runs in this process and reaches the model through the served model host over this listener's
+proxy, so web chat works under isolation (main answered 501 on `/ws/chat`); its
 `local` model is the current one. Managed jobs pause every resident worker through
 each worker's execution lease.
 
@@ -517,11 +515,8 @@ handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
 
-`server/management-routes.ts` owns tool-approval settings over the chat approval store; startup shares
-`ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes. Confirmed cache
-cleanup (`/api/gc/*`) is the models module's, over the hub library and the model host's resident models.
-The [management tests](tests/server/management-routes.test.ts) use isolated approval files.
-Hugging Face credential and upload routes are described under publishing below.
+Tool-approval settings are the chat module's. Confirmed cache cleanup (`/api/gc/*`) is the models module's,
+over the hub library and the model host's resident models.
 
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
@@ -556,9 +551,9 @@ The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
 including cancellation and ownership cleanup. Real-weight media and generation
 verification remains separate; these tests prove the HTTP/engine boundary.
-`server/start.ts` mounts HTTP, browser, and WebSocket handlers. Shutdown cancels
-chat, closes connections, drains execution, flushes caches, and releases the
-model. Its [listener tests](tests/server-start.test.ts) exercise real loopback
+`server/start.ts` mounts HTTP, browser, and the modules' WebSocket handlers. Shutdown
+stops the modules (the chat's sockets and turns), then closes connections, drains
+execution, flushes caches, and releases the model. Its [listener tests](tests/server-start.test.ts) exercise real loopback
 sockets without native MLX. The opt-in [model test](tests/engine/http-generation.test.ts)
 uses `MLX_BUN_APP_TEST_MODEL=<cached-directory>` to exercise actual app startup,
 lone/concurrent deterministic completion, live cache counters, stream cancellation,
@@ -669,8 +664,7 @@ retry, and close rules.
   same version.
 - The host forwards to the whole app, so the app form's limitations above
   apply: the user stores under HOME are shared with other mlx-bun processes
-  without locks, Pi web chat targets TCP `127.0.0.1:<--port>`, and `/ws/chat`
-  cannot pass through `forward`. These predate this entry.
+  without locks, and `/ws/chat` cannot pass through `forward`. These predate this entry.
 
 The [engine tests](tests/engine-entry.test.ts) import the entry through the
 export map with native MLX blocked and drive the host over a fake worker;
@@ -802,59 +796,17 @@ with `MLX_BUN_APP_TEST_MODEL`) serves a real loaded context through a caller
 binding under a temporary HOME, aborts a live stream during close, and reuses
 the borrowed context for a second server.
 
-## Web chat backend
+## Web chat
 
-`src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server
-WebSocket lifecycle behind the `ChatBackend` interface and a send-frame callback.
-The Pi implementation in `pi-backend.ts` calls the application's loopback HTTP
-API; it imports no server, engine, or native numerical implementation.
-`history.ts`, `events.ts`, and `policy.ts` own transcript operations, event
-translation, and chat policy; the tool modules own app navigation, web retrieval,
-and durable approval choices. Pi dependencies stay in this app workspace.
-
-Composition supplies the backend factory to `makeChatWebSocketHandler`, mounts
-its `websocket` handler, and awaits its `dispose()` on shutdown. Each connection
-gets an independent agent session. Abort and approval messages remain available
-while a prompt is running. Shutdown cancels each backend, waits for pending
-startup and message cleanup, then reports any peer disposal failures. Pi waits
-for the agent to become idle and for an in-flight session replacement before
-releasing its runtime. The [lifecycle examples](tests/chat-backend.test.ts)
-exercise startup failure, disconnects, cancellation, and shutdown without a
-server or native libraries; [chat behavior tests](tests/chat-policy.test.ts)
-cover history, sampling scopes, thinking events, tool-loop policy, and UI tools.
-
-Memory is disabled until its app owner supplies tool definitions, names, skill
-paths, and its prompt hint through `PiBackendOptions.memory`. Download context
-is an optional callback from app composition. Standalone Pi integration remains
-deferred. The protocol exposes no serial-serving lane selection.
-
-`chat/session-search.ts` reads Pi JSONL transcripts for body search; the sibling
-`session-files.ts` owns confined reads and the shared default directory.
-`server/session-routes.ts` owns search/export HTTP responses. Startup passes the
-same resolved session directory to Pi and these routes. Searches retain main's
-case-insensitive Unicode snippets and limits; export returns valid raw JSONL
-entries while skipping partial lines. Lexical and resolved paths must stay in
-the configured directory, including symlink targets. No index or background
-lifecycle is created. [Session tests](tests/session-search.test.ts) use temporary
-trees, and the [Pi smoke test](tests/chat-runtime.test.ts) searches and exports a
-transcript written by the real SDK in app-supplied paths.
-
-App composition can supply `PiBackendOptions.paths` (`cwd`, `agentDir`,
-`sessionDir`, `toolApprovalsFile`) to isolate runtime settings and transcripts.
-Omitting them preserves the installed app locations. These are composition
-options, not CLI switches. The [SDK smoke test](tests/chat-runtime.test.ts)
-uses temporary paths and a fixed loopback SSE response to exercise real Pi
-startup, provider hooks, streaming, cancellation, and transcript persistence
-without a model or access to the installed app's chat storage.
-
-The sidebar lists every chat in the session directory, whatever working
-directory it recorded; main listed only chats recorded under the server's
-working directory, which a server started by brew or launchd does not
-meaningfully have. Opening a chat whose recorded directory no longer exists (a moved
-or deleted checkout) continues it in the server's directory, the SDK's
-"continue in current cwd" choice; main, and the SDK without that choice, refuse
-to open it. The file keeps its recorded header, and opening a chat appends the
-SDK's session entries, as before.
+The chat is [`@mlx-bun/module-chat`](../../packages/module-chat/README.md): the Pi backend, policy,
+transcripts, tool approvals, `/ws/chat`, the session routes, and the browser panel. This app installs it
+(`src/modules.ts`) and runs it in the persistent state (`cli/serve-state.ts`), which serves its socket on the
+listener (`createModuleSockets`) and stops it, closing every chat, before the listener drains. The app decides
+three things for it: `readOnly` (`ServeOptions.readOnly`), the working directory (`chatPaths.cwd`), and, through
+`chatPaths` (`sessionDir`, `agentDir`, `toolApprovalsFile`), where an embedder put its stores instead of the
+module's storage entries; these are composition options, not CLI switches. Memory reaches the chat through the
+registry: `memory/chat.ts` registers the vault's read-only tools (`chat.tool`) and their hint and skill
+(`chat.guidance`), each offered only while the vault exists.
 
 The [existing-user data test](tests/existing-user-data.test.ts) opens data a
 prior version left under HOME (sessions, Pi settings, approvals, the saved
@@ -874,15 +826,16 @@ link leaving the copy.
 
 ## Browser app
 
-`src/web/browser/` preserves the existing chat, model, training, quantization,
+`src/web/browser/` preserves the existing model, training, quantization,
 dataset, memory, and status UI as pages of the web shell
 ([`@mlx-bun/web-shell`](../../packages/web-shell/README.md)), which owns navigation, routing, theme,
 the command palette's chrome and the mounting of module panels. `main.ts` composes the shell, the panels of the
 installed modules (`installed-panels.ts`, generated by `web/build.ts` from the host's installed modules, so the bundle
-carries every panel the host installs and nothing else) and the pages that have not moved into modules yet;
-`shell.ts` is the app's glue around the shell (its routes, the Hugging Face and agent-tools settings, the chat
-drawer, overlays and key bindings, the connection pill). Browser code imports only local browser modules, the
-shell package and the data-only chat/job protocols. Unported backend features may return 501;
+carries every panel the host installs and nothing else; the chat is the first, a workspace panel) and the pages that
+have not moved into modules yet; `chat-host.ts` is the app's side of the chat panel (memory's provenance chips and
+sidebar entry, the agent-tools settings) and `shell.ts` the app's glue around the shell (its routes, the Hugging Face
+and agent-tools settings, the hamburger, overlays and key bindings that reach the chat panel, the connection pill).
+Browser code imports only local browser modules, the shell package and the data-only job protocol. Unported backend features may return 501;
 preserving their UI does not claim their backend is ready.
 
 `src/web/assets.ts` provides `createWebHandler()`, which loads the static payloads
@@ -923,16 +876,16 @@ repository documentation paths. Merely starting the app does not create a vault.
 and real local Git history; [article tests](tests/memory/article.test.ts) cover
 parsing and round trips. `query.ts` owns deterministic article navigation;
 `tools.ts` owns the read-only Pi definitions and prompt hint. CLI composition
-passes the same vault root to REST and chat and supplies a skill directory
+passes the same vault root to REST and to chat (through `memory/chat.ts`) and supplies a skill directory
 (default `~/.mlx-bun/skills`). `ServeOptions.memoryPaths` permits isolated app
 composition without adding CLI flags. Missing vaults expose no memory tools and
 create no skill files. Bundled skills are package assets; standalone binary
 embedding remains part of the release migration.
 
 [Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
-[SDK test](tests/chat-runtime.test.ts) executes a memory tool through a real
-read-only Pi session with a synthetic loopback model. No read tool starts a
-synthesis run.
+[chat tools test](tests/memory/chat-tools.test.ts) executes a memory tool through a real
+read-only Pi session, contributed to the chat module through the registry, with a synthetic loopback model.
+No read tool starts a synthesis run.
 
 ### Memory synthesis
 
@@ -1059,7 +1012,7 @@ reaches the real launchd, `~/Library/LaunchAgents`, or `~/.mlx-bun`.
 `models/` (convert, web quantize and fuse outputs, plain model directories),
 `adapters/` (train, web fine-tune, merge, memory stages), `exports/`,
 `datasets/`, `db/` (jobs, model index, memory), `jobs/` (job logs), and the
-existing chat, wiki, skill, log and credential files. The Hugging Face cache
+wiki, skill, log and credential files, and the chat module's `sessions/`, `pi-sessions/` and `tool-approvals.json`. The Hugging Face cache
 holds downloads only; the model index (`openRegistry()`) scans it and
 `models/`, so `ls`, `/library`, `serve <name>` and the folder picker find both.
 Explicit paths (`--mlx-path`, `--save-path`, `--adapter`, request fields) win.
@@ -1261,9 +1214,8 @@ gateway's exclusive lock so decoding never overlaps chat, mounts the module's
 routes where the audio routes were, and stops the module and then releases the
 weights ahead of the chat model. `--preload` and serving a Whisper checkpoint as
 the main model start the transcription-only server (the audio routes plus
-`/v1`, `/v1/models`, `/health` and `/stats`). `GET /v1/models` and the web
-chat's `ready.transcription` probe (the hold-to-talk mic, still the chat
-composer's) read the model host's default Whisper. The [serve
+`/v1`, `/v1/models`, `/health` and `/stats`). `GET /v1/models` (which the web chat's
+`ready.transcription` flag, for the hold-to-talk mic in the chat composer, reads) reports the model host's default Whisper. The [serve
 tests](tests/serve-cli.test.ts) cover the flags, both `runServe` branches and
 both compositions over a fake Whisper backend; the [voice
 test](tests/engine/voice.test.ts) and the opt-in [transcription
