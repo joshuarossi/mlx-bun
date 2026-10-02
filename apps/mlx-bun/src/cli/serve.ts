@@ -292,11 +292,27 @@ export function browserUrl(hostname: string, port: number): string {
   return `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}/#/chat`;
 }
 
+/** Main's collision check: the models a server already on `port` answers for
+ * (GET /v1/models, the served row first), or null when nothing serves there. */
+export async function probeServer(port: number, timeoutMs = 1500): Promise<string[] | null> {
+  try {
+    const res = await fetch(`http://localhost:${port}/v1/models`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return null;
+    const rows = ((await res.json()) as { data?: Array<{ id: string; context_window?: number }> }).data ?? [];
+    const served = rows.find(m => m.context_window !== undefined) ?? rows[0];
+    return served ? [served.id] : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ServeDependencies {
   resolve: typeof resolveModelAuto;
   start: typeof startModelServer;
   startTranscription: typeof startTranscriptionServer;
   interactive: boolean;
+  /** The models already served on the TCP port, checked before selection loads any weights (null: free). */
+  probe(port: number): Promise<string[] | null>;
   open(url: string): void | Promise<void>;
   log(message: string): void;
   signals: SignalPort;
@@ -305,6 +321,7 @@ export interface ServeDependencies {
 }
 const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, startTranscription: startTranscriptionServer, interactive: !!process.stdout.isTTY,
+  probe: port => probeServer(port),
   async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
   error: error => console.error(error instanceof Error ? error.message : String(error)),
@@ -324,6 +341,13 @@ export class StartupCancelledError extends Error {
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<ServedApp> {
   let options = parseServeOptions(args);
   const deps = { ...defaults, ...supplied };
+  // Main's friendly collision check before loading gigabytes of weights (port 0 always binds a free port).
+  if (options.port !== 0) {
+    const running = await deps.probe(options.port);
+    if (running) throw new Error([`port ${options.port} is already serving ${running.join(", ")}.`,
+      "reuse it, stop it, or pick --port <other>.",
+      "NOTE: a second server is a second model in memory — check `mlx-bun fit` first."].join("\n"));
+  }
   // A signal before the app exists cancels selection (a starter download stays
   // resumable) and, once the model has loaded, closes the app right away; the
   // shutdown handlers take over as soon as the listener is up.

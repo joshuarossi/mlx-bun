@@ -238,7 +238,8 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
         ...(supplied.resolve ? { resolve: supplied.resolve } : {}), ...(supplied.log ? { log: supplied.log } : {}),
         start: (model, options) => start(model, options, { ...socket(model, true), link }),
         startTranscription: (model, options) => startTranscription(model, options, socket(model, false)),
-        interactive: false, open() {}, signals, exit: code => exit.resolve(code),
+        // The app listens on the socket, so `--port` names no listener to check (the parent may serve it).
+        interactive: false, probe: async () => null, open() {}, signals, exit: code => exit.resolve(code),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

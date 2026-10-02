@@ -11,7 +11,9 @@ or use `mlx-bun` after the root's `bun run link-cli` step. The launcher checks
 the app manifest's Bun minimum and Apple Silicon macOS before loading app code.
 Help and version work before native setup; inference requires the staged natives.
 Use `serve --help` for accepted options. A terminal session opens the browser
-unless `--no-open` is supplied. Startup without a model selects a cached model;
+unless `--no-open` is supplied. Before selecting a model, startup refuses a TCP
+port that already serves one and names its model (exit 1); port 0 is never
+checked. Startup without a model selects a cached model;
 if none is supported, it downloads the starter, then hands the recommended model
 to the app's download owner as a background transfer, visible on `GET /downloads`
 and joined at shutdown. A signal before the app exists cancels selection (a

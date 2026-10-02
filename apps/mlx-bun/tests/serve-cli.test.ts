@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, installShutdownHandlers, parseServeOptions, probeServer, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 import { decodeLaunch, encodeLaunch } from "../src/jobs/worker-process";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
@@ -145,7 +145,7 @@ function runtime(interactive = true) {
       downloads: { start: repo => { downloads.push(repo); }, active: [] }, close: async () => { closes++; } }; },
     startTranscription: async (m, options) => { transcriptionStarts.push([m, options]); return { port: 4321,
       downloads: { start() { throw new Error("no downloads"); }, active: [] }, close: async () => { closes++; } }; },
-    interactive, open: url => { opens.push(url); }, log: message => { logs.push(message); }, signals,
+    interactive, probe: async () => null, open: url => { opens.push(url); }, log: message => { logs.push(message); }, signals,
     exit: code => { exits.push(code); }, error: error => { errors.push(error); },
   };
   return { dependencies, signals, opens, exits, errors, starts, transcriptionStarts, downloads, logs, closes: () => closes };
@@ -281,6 +281,37 @@ test("browser addresses support IPv6 and wildcard listeners", () => {
   expect(browserUrl("::1", 8080)).toBe("http://[::1]:8080/#/chat");
 });
 
+// Stub of the /v1/models surface: the served model is the row with the capability extras, after a registry row.
+const modelsStub = () => Bun.serve({ port: 0, fetch: request => new URL(request.url).pathname === "/v1/models"
+  ? Response.json({ data: [{ id: "other/registry-row" }, { id: "test/model-4bit", context_window: 131072 }] })
+  : new Response("not found", { status: 404 }) });
+
+test("the collision probe names the model a server on the port serves, and null when nothing serves there", async () => {
+  const stub = modelsStub();
+  try { expect(await probeServer(stub.port!)).toEqual(["test/model-4bit"]); } finally { await stub.stop(true); }
+  const other = Bun.serve({ port: 0, fetch: () => new Response("not found", { status: 404 }) });
+  try { expect(await probeServer(other.port!)).toBeNull(); } finally { await other.stop(true); }
+  expect(await probeServer(1, 300)).toBeNull();
+});
+
+test("a busy port fails startup before model selection, isolated or in-process; port 0 is never probed", async () => {
+  const stub = modelsStub();
+  try {
+    for (const extra of [[], ["--in-process"]]) {
+      const run = runtime();
+      const { probe: _, ...dependencies } = run.dependencies;
+      let selected = false;
+      await expect(runServe(parseCommand("serve", ["--port", String(stub.port), ...extra]), { ...dependencies,
+        resolve: async () => { selected = true; throw new Error("must not select"); } }))
+        .rejects.toThrow(`port ${stub.port} is already serving test/model-4bit.\nreuse it, stop it, or pick --port <other>.\n`);
+      expect(selected).toBe(false); expect(run.starts).toEqual([]);
+      expect(run.signals.listenerCount("SIGINT")).toBe(0);
+    }
+  } finally { await stub.stop(true); }
+  const run = runtime(false), probed: number[] = [];
+  const app = await runServe(parseCommand("serve", ["--port", "0"]), { ...run.dependencies, probe: async port => { probed.push(port); return ["busy"]; } });
+  expect(probed).toEqual([]); await app.close();
+});
 
 test("the process owner bounds shutdown without releasing live resources or exiting twice", async () => {
   const run = runtime();
