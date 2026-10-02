@@ -87,6 +87,17 @@ const commands = {
     instruct: { type: "string", description: "Query instruction; omit for document embeddings" },
     json: { type: "boolean", description: "Print one OpenAI-style embedding list instead of one vector per line" },
   } },
+  perplexity: { description: "Perplexity of a model over a local text/JSONL dataset", positional: "[query]",
+    usage: "usage: mlx-bun perplexity <model-query-or-path> --data-path <file.txt|file.jsonl> [--sequence-length 512] [--num-samples 256] [--batch-size 8] [--seed 123]",
+    details: "mlx_lm.perplexity methodology, exactly: samples are visited in a seeded random order, tokenized,\nconcatenated, and cut into NON-OVERLAPPING rows of --sequence-length tokens; per batch the model\nscores rows[:, :-1] against rows[:, 1:] in f32 (every position counts); reported as\nppl = exp(mean CE) ± the delta-method standard error. The one deliberate difference: the data\nsource is a LOCAL file (never a Hugging Face dataset download).", options: {
+    model: { type: "string", description: "Model directory or cached registry query (mlx_lm spelling of the positional)" },
+    query: { type: "string", description: "Cached model query when no positional is supplied" },
+    "data-path": { type: "string", description: ".jsonl ({\"text\": …} rows) or plain .txt (required)" },
+    "sequence-length": { type: "string", description: "Tokens per row [default: 512]" },
+    "num-samples": { type: "string", description: "Rows to score; -1 = all available [default: 256]" },
+    "batch-size": { type: "string", description: "Rows per forward [default: 8]" },
+    seed: { type: "string", description: "Sample-shuffle seed [default: 123]" },
+  } },
 
 } satisfies Record<string, { description: string; positional: string; usage?: string; details?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;
@@ -121,8 +132,20 @@ export function checkPositionals(command: Command, parsed: CommandArgs): void {
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
 }
 
+function joinDashValues(args: string[], options: Record<string, { type: "string" | "boolean" }>): string[] {
+  const joined: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!, next = args[i + 1];
+    if (arg.startsWith("--") && options[arg.slice(2)]?.type === "string" && next !== undefined && /^-\d/.test(next)) joined.push(`${arg}=${next}`), i++;
+    else joined.push(arg);
+  }
+  return joined;
+}
+
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean"; short?: string }> = commands[command].options;
+  // Main's parser took a dash-led value (`--num-samples -1`); node's reads one only as `--num-samples=-1`.
+  if (command === "perplexity") args = joinDashValues(args, options);
   let parsed: CommandArgs;
   try { parsed = parseArgs({ args, options, allowPositionals: true, strict: true }); }
   catch (error) {

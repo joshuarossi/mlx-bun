@@ -458,7 +458,7 @@ accepted because mlx-bun never runs code from a model repository.
 
 mlx-lm's other console scripts have no counterpart and get no alias: `chat` (no
 terminal chat; use the web app), `benchmark`, `cache_prompt`, `evaluate`,
-`perplexity`, `manage`, `share`, and the quantizers `awq`, `dwq`, `dynamic_quant`
+`perplexity` (use `mlx-bun perplexity` with a local data file), `manage`, `share`, and the quantizers `awq`, `dwq`, `dynamic_quant`
 and `gptq` (`convert --target-bpw` is the mixed-precision path).
 
 Delivery: the package's `bin` links `mlx-bun.<cmd>` to `bin/mlx-bun.<cmd>.mjs`, a

@@ -45,6 +45,8 @@ try {
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
       try { await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal); }
       finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    } else if (command === "perplexity") {
+      await (await import("./perplexity")).runPerplexity(parsed);
 
     }
   }
