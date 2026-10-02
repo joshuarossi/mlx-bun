@@ -6,12 +6,11 @@ and short user explanations. App behavior and library interfaces remain in
 
 From the repository root, run `bun run --cwd apps/website build` or `dev`.
 The Bun workspace lockfile is the only dependency lock. `dist/` is the deployable
-GitHub Pages artifact; this migration adds build checks, not deployment.
+GitHub Pages artifact; CI builds and checks it but does not deploy it.
 Deploy the site and its installer only after a compatible application release
 exists; the installer validates the complete new bundle, including its notices.
-Source links currently target `refactor/monorepo` in the authored pages and CLI
-generator. Before deployment, update them to the published release's source ref
-and verify their targets; the static build check covers only local links.
+Source links in the authored pages and CLI generator target `main`; the static
+build check covers only local links.
 
 The build generates the CLI inventory from the application's command table.
 It also copies the canonical app installer to `public/install.sh`. Neither output
@@ -27,7 +26,7 @@ symbol, including aliases and star re-exports. It is not a standalone command.
 Current manifests use string `.ts` export targets; conditional exports and
 wildcards fail loudly until the coverage implementation supports them.
 Source links use a valid `GITHUB_SHA` in CI or the local Git commit; only source
-trees outside Git fall back to the refactor branch.
+trees outside Git fall back to `main`.
 HTML and reflection JSON are build output, never committed. Generation parses
 source without importing library code or loading native libraries. TypeDoc can
 warn about references to non-exported types; their owning source remains linked.

@@ -190,7 +190,7 @@ export function renderServerConfig(inventory: ConfigInventory, revision: string)
   const packages = [...new Set(inventory.reads.filter(r => !inApp(r.file)).map(r => r.file.split("/")[1]!))].sort();
   const page = `---\ntitle: Configuration reference\ndescription: Serve option checks and MLX_BUN_* runtime keys, generated from the application and library sources.\n---\n\n` +
     `Generated at build time from \`apps/mlx-bun/src\` and \`packages/*/src\` without running them; tests and scripts are not scanned. ` +
-    `These are the refactor's current settings; released versions can differ.\n\n` +
+    `These are the current settings on main; released versions can differ.\n\n` +
     `**Read**: \`value\` is the raw string; \`flag\` treats \`1\` as on, \`0\` as off, and anything else as the default; \`number\` takes a finite number, else the fallback; ` +
     `\`process.env\` is read directly rather than through the runtime configuration. **Default** is the fallback at each read site, so a key read at several sites lists each; ` +
     `**computed** means the code at the source link decides.\n\n` +

@@ -74,7 +74,7 @@ test("API source links use a valid CI SHA or local commit and only unpacked tree
   expect(sourceRevision(repository, "")).toBe(head.stdout.toString().trim());
   const unpacked = await mkdtemp(resolve(tmpdir(), "mlx-api-source-"));
   try {
-    expect(sourceRevision(unpacked, "")).toBe("refactor/monorepo");
+    expect(sourceRevision(unpacked, "")).toBe("main");
     expect(Bun.spawnSync(["git", "init", "--quiet", unpacked]).exitCode).toBe(0);
     expect(() => sourceRevision(unpacked, "")).toThrow("Cannot resolve the documentation source commit");
   } finally { await rm(unpacked, { recursive: true, force: true }); }

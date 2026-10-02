@@ -158,8 +158,8 @@ const cell = (value: string) => value.replaceAll("|", "\\|").replaceAll("\n", " 
 const helpRow = (option: HelpOption) => `| ${option.flags.map(flag => `\`${flag}\``).join(", ")} | ${cell(option.description)} |`;
 export function renderCommandReference(commands: CommandReference[], help: HelpReference): string {
   return `---\ntitle: CLI reference\ndescription: Commands and options generated from the application's parser table and help.\n---\n\n` +
-    `Generated at build time from [the CLI command table and help](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/${CLI_SOURCE}). ` +
-    `These are the refactor's current commands. Released versions can differ; use the installed command's \`--help\`.\n\n` +
+    `Generated at build time from [the CLI command table and help](https://github.com/joshuarossi/mlx-bun/blob/main/${CLI_SOURCE}). ` +
+    `These are the current commands on main. Released versions can differ; use the installed command's \`--help\`.\n\n` +
     `## Global options\n\nUsage: \`mlx-bun [options]\`\n\nAn option-first invocation starts the server; use the serve options below.\n\n| Option | Description |\n| --- | --- |\n${help.global.map(helpRow).join("\n")}\n\n` +
     commands.map(command => `## ${command.name}\n\n${command.description}\n\n` +
       `Usage: \`mlx-bun ${command.name}${command.positional ? ` ${command.positional}` : ""} [options]\`\n\n` +
