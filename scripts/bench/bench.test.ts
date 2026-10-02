@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { completionProbe, decodeStable, measureChatRequest, probeVerdict, runCell, scaledBudgetMs, ServerProcess, waitReady,
   workloadNonce, type CellResult, type ReqResult } from "./measure";
-import { CANONICAL, checkOutputDirectory, describeModel, nativeFiles, planCells, profileProblems, sourceSnapshot, validatePlan,
+import { artifactFiles, CANONICAL, cellArgs, checkOutputDirectory, describeModel, nativeFiles, planCells, profileProblems, sourceSnapshot, validatePlan,
   WORKLOAD, type Plan } from "./plan";
 import { comparePair, qualification, type CellRecord, type RunRecord } from "./report";
 import { run } from "../bench-serve";
@@ -84,6 +84,21 @@ test("applicability follows main: mixed needs kv_config, the stock reference can
   const kv = plan.cells.filter(cell => cell.model === "kv" && cell.kind === "tree");
   expect(kv.map(cell => cell.tree)).toEqual(["candidate", "baseline", "baseline", "candidate", "candidate", "baseline"]);
   expect(profileProblems({ ...plan, profile: "all" }).join("; ")).toContain("mlx-lm has no register command for unified");
+});
+
+test("mtp configurations need a pinned companion and pass it at their depth", () => {
+  const companion = artifact();
+  const withDraft = { ...describeModel("trellis", artifact({ trellis: true })), draft: { path: companion, files: artifactFiles(companion) } };
+  const plan = testPlan({}, { configurations: ["default", "mtp2", "mtp3"], models: [withDraft, describeModel("plain", artifact())] });
+  const na = plan.cells.filter(cell => cell.skipped).map(cell => cell.key).sort();
+  expect(na).toEqual(["plain/mtp2/baseline", "plain/mtp2/candidate", "plain/mtp3/baseline", "plain/mtp3/candidate"]);
+  const cell = plan.cells.find(c => c.key === "trellis/mtp3/candidate")!;
+  expect(cellArgs(plan, cell, 1, "/ssd").slice(-6)).toEqual(["--draft-kind", "mtp", "--draft-model", companion, "--num-draft-tokens", "3"]);
+  const plainArgs = cellArgs(plan, plan.cells.find(c => c.key === "trellis/default/candidate")!, 1, "/ssd");
+  expect(plainArgs).not.toContain("--draft-model");
+  expect(validatePlan(plan).configurations).toEqual(["default", "mtp2", "mtp3"]);
+  expect(() => validatePlan({ ...plan, models: [{ ...withDraft, draft: { path: companion, files: [] } }, plan.models[1]!] }))
+    .toThrow("draft is not pinned");
 });
 
 test("the pinned native library is the exact resolved file supplied plus its bundled runtime", () => {
