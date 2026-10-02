@@ -129,7 +129,7 @@ test("changed CLI table syntax fails instead of publishing an incomplete invento
 
 test("site links to executable examples and owns no second installer source", async () => {
   const guide = await readFile(resolve(root, "apps/website/src/content/docs/guides/library.md"), "utf8");
-  const examples = [...guide.matchAll(/blob\/refactor\/monorepo\/(packages\/[^)]+\/examples\/[^)]+\.ts)/g)].map(match => match[1]!);
+  const examples = [...guide.matchAll(/blob\/main\/(packages\/[^)]+\/examples\/[^)]+\.ts)/g)].map(match => match[1]!);
   expect(examples.length).toBeGreaterThan(0);
   for (const example of examples) expect((await readFile(resolve(root, example), "utf8")).length).toBeGreaterThan(0);
   expect(await readFile(resolve(root, "apps/website/.gitignore"), "utf8")).toContain("public/install.sh");

@@ -587,7 +587,7 @@ export function renderServerApi(api: ServerApi, revision: string): string {
   };
   return `---\ntitle: HTTP API reference\ndescription: Routes each server mode answers, generated from the application's route handlers.\n---\n\n` +
     `Generated at build time from the route handlers in \`apps/mlx-bun/src/server\` and their composition in \`apps/mlx-bun/src/cli\`, and from the manifests of the modules the app installs, without running the app. ` +
-    `These are the refactor's current routes; released versions can differ.\n\n` +
+    `These are the current routes on main; released versions can differ.\n\n` +
     `Each table lists what one kind of server process answers, in dispatch order: the first matching row answers, and a request no row matches gets 404. ` +
     `\`*\` means every method not listed in an earlier row for the same path; path parameters appear as \`{id}\`. The source link is the check that selects the route.\n\n` +
     `- **implemented**: the handler answers.\n` +

@@ -776,8 +776,7 @@ weights after generation completes.
 
 Use the graph matching your checkpoint, or compose your own operations and supply
 an explicit binding. The root export contains common loading and generation
-helpers; the subpaths below expose individual components. These workspace packages
-are version `0.0.0` during the refactor and have not been published to npm.
+helpers; the subpaths below expose individual components.
 
 ## Trellis weight expansion
 
