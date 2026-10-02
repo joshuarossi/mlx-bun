@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TrainConfig } from "@mlx-bun/training";
@@ -178,8 +178,8 @@ test("submit forwards caller model and all policy to the host, independently of 
   expect(await (await routes.handle(post("submit", body)))!.json())
     .toEqual({ ok: true, job_id: "job_1", adapter_path: "/default/adapter" });
   expect(calls[0]).toEqual({ kind: "finetune", config: { ...body, adapter_path: "/default/adapter" }, outputPath: "/default/adapter" });
-  await routes.handle(post("submit", { ...body, adapter_path: "/chosen" }));
-  expect(calls[1]?.outputPath).toBe("/chosen");
+  await routes.handle(post("submit", { ...body, adapter_path: "/store/adapters/chosen" }));
+  expect(calls[1]?.outputPath).toBe("/store/adapters/chosen");
   expect(await routes.handle(post("push", {}))).toBeNull();
 });
 
@@ -201,7 +201,31 @@ test("default adapter outputs are distinct for two submissions in the same milli
     expect(second.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
     expect(first.adapter_path).not.toBe(second.adapter_path);
     expect(calls.map(call => call.outputPath)).toEqual([first.adapter_path, second.adapter_path]);
-    await routes.handle(post("submit", { ...body, adapter_path: "/chosen/output" }));
-    expect(calls[2]?.outputPath).toBe("/chosen/output");
+    await routes.handle(post("submit", { ...body, adapter_path: "/store/adapters/chosen/output" }));
+    expect(calls[2]?.outputPath).toBe("/store/adapters/chosen/output");
   } finally { clock.mockRestore(); }
+});
+
+test("an HTTP adapter_path stays inside the adapters store, through relative segments and links", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-finetune-store-")); dirs.push(dir);
+  const store = join(dir, "adapters"), outside = join(dir, "outside");
+  mkdirSync(join(store, "existing"), { recursive: true }); mkdirSync(outside);
+  symlinkSync(outside, join(store, "escape"));
+  symlinkSync(join(dir, "missing"), join(store, "dangling"));
+  const { routes, submitted } = trainRoutes({ storage: { path: key => join(dir, key) } });
+  const body = { model_dir: paths.model_dir, data_dir: paths.data_dir };
+  const submit = async (adapter_path: string) => (await routes.handle(post("submit", { ...body, adapter_path })))!;
+  for (const refused of [outside, join(dir, ".ssh"), "/tmp/elsewhere", "../outside", join(store, "..", "outside"), store, ".",
+    join(store, "escape"), join(store, "escape", "run"), join(store, "dangling", "run")]) {
+    const response = await submit(refused);
+    expect([refused, response.status]).toEqual([refused, 400]);
+    expect((await response.json()).error).toContain("adapter_path must be inside the adapters directory");
+  }
+  expect(submitted).toHaveLength(0);
+  for (const [requested, expected] of [[join(store, "existing", "run"), join(store, "existing", "run")], ["fresh/run", join(store, "fresh", "run")],
+    [join(store, "existing"), join(store, "existing")]] as const)
+    expect((await (await submit(requested)).json()).adapter_path).toBe(expected);
+  // A store that does not exist yet: the trainer creates the whole path.
+  const fresh = trainRoutes({ storage: { path: key => join(dir, "new-home", key) } });
+  expect((await (await fresh.routes.handle(post("submit", { ...body, adapter_path: "run" })))!.json()).adapter_path).toBe(join(dir, "new-home", "adapters", "run"));
 });

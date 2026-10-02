@@ -15,7 +15,9 @@ orchestrates. Nothing here imports an app or another module. `apps/mlx-bun` inst
 - `POST /api/finetune/inspect-dataset`: counts a dataset directory's train and validation rows and detects
   its format (`src/inspect.ts`), without loading MLX.
 - `POST /api/finetune/submit`: queues a `finetune` job. HTTP owns the request and output-path policy: an
-  explicit `adapter_path` wins, else a fresh `adapter-<time>-<uuid>` directory in the `adapters` entry.
+  explicit `adapter_path` must lie inside the `adapters` entry (a relative one is taken under it; a link out of
+  the store is refused with 400), else a fresh `adapter-<time>-<uuid>` directory there. The `train` verb's
+  `--adapter-path` is not limited.
 
 `src/job.ts` is the job's runner and `src/config.ts` maps the submit record onto the library's `TrainConfig`
 (library defaults are supplied by the trainer, not copied here). It preserves main's ORPO recipe (flash-CCE
