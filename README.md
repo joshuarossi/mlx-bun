@@ -2,8 +2,9 @@
 
 Local AI on Apple Silicon. mlx-bun 1.0 is an MLX inference engine, an
 OpenAI/Anthropic/Responses-compatible server, a browser app, and TypeScript
-libraries you can embed in your own Bun applications. Numerics are bit-exact
-with mlx-lm by contract for validated configurations; inference needs no Python.
+libraries you can embed in your own Bun applications. Validated configurations
+are bit-exact with their reference implementation (mlx-lm, or mlx-optiq for
+mixed-precision KV); inference needs no Python.
 
 Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
 
