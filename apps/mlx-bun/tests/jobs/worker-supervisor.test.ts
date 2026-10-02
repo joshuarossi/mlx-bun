@@ -255,3 +255,20 @@ test("a respawn with an invalid readiness handshake is stopped and joined before
     expect(fake.errors.filter(line => line === "stopping")).toHaveLength(2);
   } finally { await fake.engine.close(); fake.remove(); }
 });
+
+test("requests to the worker lift Bun's fetch idle timer, so a response silent past ~300 s is not dropped", async () => {
+  const fake = fixture();
+  const seen: (RequestInit & { timeout?: unknown; unix?: string })[] = [];
+  const realFetch = globalThis.fetch;
+  try {
+    await fake.engine.whenReady();
+    globalThis.fetch = Object.assign((input: RequestInfo | URL, init?: RequestInit) => { seen.push(init ?? {}); return realFetch(input, init); }, realFetch);
+    expect((await health(fake.engine)).state).toBeDefined();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ timeout: false, unix: fake.socketPath });
+  } finally {
+    globalThis.fetch = realFetch;
+    await fake.engine.close();
+    fake.remove();
+  }
+});

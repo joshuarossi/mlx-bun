@@ -189,7 +189,9 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
   const fetchWorker = (url: string, init: RequestInit & { duplex?: "half" } = {}) => {
     if (state !== "ready" || !worker) return Promise.reject(unavailable());
     const signal = init.signal ? AbortSignal.any([init.signal, lifetime.signal]) : lifetime.signal;
-    return fetch(url, { ...init, signal, unix: worker.socketPath } as RequestInit);
+    // Bun's fetch has its own idle timer (about 300 s): a long non-streaming generation or a
+    // held lease is silent that long, and the parent then drops a response the worker finished.
+    return fetch(url, { ...init, signal, unix: worker.socketPath, timeout: false } as RequestInit);
   };
 
   const acquireExecutionLease = async (signal: AbortSignal): Promise<DisposableResource> => {
@@ -224,7 +226,7 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
     if (!current || !live) return;
     try {
       const response = await fetch("http://engine/admin/drain", { method: "POST", body: JSON.stringify({ timeout_ms: timeoutMs }),
-        signal: AbortSignal.timeout(timeoutMs + 1_000), unix: current.socketPath } as RequestInit);
+        signal: AbortSignal.timeout(timeoutMs + 1_000), unix: current.socketPath, timeout: false } as RequestInit);
       await response.arrayBuffer();
     } catch { /* best effort: the worker is stopped next */ }
   };
