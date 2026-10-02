@@ -17,7 +17,8 @@ execution lease so no model generates meanwhile), three HTTP routes under `/api/
   `/api/model/resolve-folder` is the same question asked by the fine-tune wizard; the app answers it.
 - `POST /api/quantize/submit`: names a plain model directory under the `models/` storage entry
   (`<name>-<bits>bit`, `-mixed-<bpw>bpw`, `-rot<seed>`; the same request names the same directory, which the
-  producer refuses to overwrite) and submits the `quantize` job.
+  producer refuses to overwrite) and submits the `quantize` job. `bits`, `target_bpw` and `rotation_seed`
+  must be finite numbers (400 otherwise), since they name the directory.
 
 `src/job.ts` is the job's runner: uniform affine, mixed precision (OptiQ sensitivity sweep and knapsack),
 rotation, `--dtype` casts, dequantization and packed Trellis, with the source resolved through the catalog

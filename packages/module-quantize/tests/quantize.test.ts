@@ -112,6 +112,22 @@ test("submit names a plain model directory under the storage root and forwards q
   expect(submitted).toHaveLength(1);
 });
 
+test("submit refuses a non-numeric bits, target_bpw or rotation_seed, which would name a directory outside the models store", async () => {
+  const store = join(root, "store");
+  const { post, submitted } = handlers(store);
+  for (const body of [{ target_bpw: "1/../../../escape" }, { bits: "4/../../x" }, { rotate_weights: true, rotation_seed: "1/../../x" },
+    { bits: "4" }, { target_bpw: { toString: null } }, { target_bpw: [5] }]) {
+    const response = await post("submit", { model_id: "example/model", ...body });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/must be a finite number/);
+  }
+  // JSON has no Infinity or NaN; a huge exponent overflows to Infinity.
+  expect((await post("submit", '{"model_id":"example/model","target_bpw":1e999}')).status).toBe(400);
+  expect(submitted).toHaveLength(0);
+  const plain = await (await post("submit", { model_id: "example/model", target_bpw: null })).json();
+  expect(plain.output_dir).toBe(join(store, "models", "model-4bit"));
+});
+
 test("inspect answers from the catalog's entry: its model type and size, without reading tensors", async () => {
   const path = join(root, "model"); model(path);
   const { post } = handlers(join(root, "store"), [], catalogOf([{ id: "example/model", directory: path, bytes: 3 * (1 << 30), modelType: "qwen3-catalog" }]));

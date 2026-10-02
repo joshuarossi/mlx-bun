@@ -31,12 +31,16 @@ export function createQuantizeHandlers(services: QuantizeRouteServices): Record<
     async submit(request) {
       const body = await readBody(request);
       if (!body.model_id) return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
+      // These name the output directory: anything but a finite number could steer it out of the models store.
+      for (const key of ["bits", "target_bpw", "rotation_seed"] as const)
+        if (body[key] != null && (typeof body[key] !== "number" || !Number.isFinite(body[key])))
+          return Response.json({ ok: false, error: `${key} must be a finite number` }, { status: 400 });
       const bits = body.bits ?? 4;
       const groupSize = body.group_size ?? 64;
       // A plain model directory; the same model and settings name the same
       // directory, which the producer refuses to overwrite.
       const outDir = join(services.storage.path("models"), quantizedModelName(body.model_id, {
-        bits, targetBpw: body.target_bpw, rotationSeed: body.rotate_weights ? body.rotation_seed ?? 42 : undefined }));
+        bits, targetBpw: body.target_bpw ?? undefined, rotationSeed: body.rotate_weights ? body.rotation_seed ?? 42 : undefined }));
       const job = await services.jobs.submit({ kind: "quantize", outputPath: outDir, config: {
         model_id: body.model_id,
         out_dir: outDir,
