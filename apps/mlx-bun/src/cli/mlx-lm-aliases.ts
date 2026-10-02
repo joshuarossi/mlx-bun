@@ -154,7 +154,7 @@ export const ALIAS_GAPS: Record<string, string> = {
   benchmark: "no benchmark verb; the repository's scripts/bench-serve.ts measures a running server",
   cache_prompt: "no saved prompt-cache files; `serve` keeps its own prompt cache",
   evaluate: "no lm-evaluation-harness runner; the repository's scripts/eval-serve.ts scores a running server",
-  perplexity: "no perplexity verb",
+  perplexity: "no perplexity verb; the repository's scripts/perplexity.ts scores a model directory over a local dataset",
   manage: "no cache-management verb with mlx_lm.manage's semantics; see `mlx-bun ls` and `mlx-bun gc`",
   share: "no distributed file sharing",
   awq: "no AWQ quantization; `mlx-bun convert --target-bpw` is the mixed-precision path",

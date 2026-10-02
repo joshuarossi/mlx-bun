@@ -13,7 +13,8 @@
 //   bun scripts/eval-serve.ts compare /abs/baseline/result.json /abs/candidate/result.json
 //
 // Not ported: main's KL gate and perplexity read in-process logits, which no
-// HTTP surface exposes; the numerical parity suites cover numerics. See --help.
+// HTTP surface exposes (perplexity is scripts/perplexity.ts); the numerical
+// parity suites cover numerics. See --help.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -40,10 +41,11 @@ const USAGE = `Capability evaluation of an OpenAI-compatible server with main's 
 
 Tasks (main's scripts/eval.ts): capability = gsm8k mmlu ifeval bfcl humaneval hashhop, main's
 default frozen sets in full; smoketest = gsm8k-50 (main's GSM8K-50 draw of the full export);
-all = both. KL and perplexity need in-process logits and are not part of this runner; the
-numerical parity suites cover numerics. Requests are greedy (temperature 0, repetition penalty
-disabled), non-streaming, one at a time; thinking is off unless --enable-thinking (main's
-MLX_BUN_EVAL_THINK). Main's --n caps were ignored by its default frozen sets and are not offered.
+all = both. KL and perplexity need in-process logits and are not part of this runner (perplexity
+is scripts/perplexity.ts); the numerical parity suites cover numerics. Requests are greedy
+(temperature 0, repetition penalty disabled), non-streaming, one at a time; thinking is off unless
+--enable-thinking (main's MLX_BUN_EVAL_THINK). Main's --n caps were ignored by its default frozen
+sets and are not offered.
 
 Datasets are read from --data, never downloaded, and must match the sha256 pins in
 scripts/eval/plan.ts. gsm8k.jsonl comes from main's exporter, run natively in the oracle venv:
