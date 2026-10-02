@@ -368,11 +368,11 @@ export async function openChatUi(url: string, run: CommandRunner = runCommand): 
   if ((await run(["open", url])).code !== 0) throw new Error("Browser could not be opened");
 }
 
-/** Main's collision check: the models a server already on `port` answers for
- * (GET /v1/models, the served row first), or null when nothing serves there. */
-export async function probeServer(port: number, timeoutMs = 1500): Promise<string[] | null> {
+/** Main's collision check: the models a server already on the bind address answers
+ * for (GET /v1/models, the served row first), or null when nothing serves there. */
+export async function probeServer(hostname: string, port: number, timeoutMs = 1500): Promise<string[] | null> {
   try {
-    const res = await fetch(`http://localhost:${port}/v1/models`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(new URL("/v1/models", browserUrl(hostname, port)), { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     const rows = ((await res.json()) as { data?: Array<{ id: string; context_window?: number }> }).data ?? [];
     const served = rows.find(m => m.context_window !== undefined) ?? rows[0];
@@ -388,7 +388,7 @@ export interface ServeDependencies {
   startTranscription: typeof startTranscriptionServer;
   interactive: boolean;
   /** The models already served on the TCP port, checked before selection loads any weights (null: free). */
-  probe(port: number): Promise<string[] | null>;
+  probe(hostname: string, port: number): Promise<string[] | null>;
   open(url: string): void | Promise<void>;
   log(message: string): void;
   signals: SignalPort;
@@ -397,7 +397,7 @@ export interface ServeDependencies {
 }
 const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, startTranscription: startTranscriptionServer, interactive: !!process.stdout.isTTY,
-  probe: port => probeServer(port), open: url => openChatUi(url),
+  probe: (hostname, port) => probeServer(hostname, port), open: url => openChatUi(url),
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
   error: error => console.error(error instanceof Error ? error.message : String(error)),
 };
@@ -418,7 +418,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
   const deps = { ...defaults, ...supplied };
   // Main's friendly collision check before loading gigabytes of weights (port 0 always binds a free port).
   if (options.port !== 0) {
-    const running = await deps.probe(options.port);
+    const running = await deps.probe(options.hostname, options.port);
     if (running) throw new Error([`port ${options.port} is already serving ${running.join(", ")}.`,
       "reuse it, stop it, or pick --port <other>.",
       "NOTE: a second server is a second model in memory — check `mlx-bun fit` first."].join("\n"));

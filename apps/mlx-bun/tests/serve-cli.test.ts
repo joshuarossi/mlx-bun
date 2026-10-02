@@ -288,10 +288,17 @@ const modelsStub = () => Bun.serve({ port: 0, fetch: request => new URL(request.
 
 test("the collision probe names the model a server on the port serves, and null when nothing serves there", async () => {
   const stub = modelsStub();
-  try { expect(await probeServer(stub.port!)).toEqual(["test/model-4bit"]); } finally { await stub.stop(true); }
+  try { expect(await probeServer("127.0.0.1", stub.port!)).toEqual(["test/model-4bit"]); } finally { await stub.stop(true); }
   const other = Bun.serve({ port: 0, fetch: () => new Response("not found", { status: 404 }) });
-  try { expect(await probeServer(other.port!)).toBeNull(); } finally { await other.stop(true); }
-  expect(await probeServer(1, 300)).toBeNull();
+  try { expect(await probeServer("127.0.0.1", other.port!)).toBeNull(); } finally { await other.stop(true); }
+  expect(await probeServer("127.0.0.1", 1, 300)).toBeNull();
+});
+
+test("the collision probe checks the configured bind address", async () => {
+  const run = runtime(false), probed: string[] = [];
+  await expect(runServe(parseCommand("serve", ["--host", "10.1.2.3", "--port", "8123"]), { ...run.dependencies,
+    probe: async (host, port) => { probed.push(`${host}:${port}`); return ["busy"]; } })).rejects.toThrow("port 8123 is already serving busy.");
+  expect(probed).toEqual(["10.1.2.3:8123"]);
 });
 
 test("a busy port fails startup before model selection, isolated or in-process; port 0 is never probed", async () => {
@@ -309,7 +316,7 @@ test("a busy port fails startup before model selection, isolated or in-process; 
     }
   } finally { await stub.stop(true); }
   const run = runtime(false), probed: number[] = [];
-  const app = await runServe(parseCommand("serve", ["--port", "0"]), { ...run.dependencies, probe: async port => { probed.push(port); return ["busy"]; } });
+  const app = await runServe(parseCommand("serve", ["--port", "0"]), { ...run.dependencies, probe: async (_host, port) => { probed.push(port); return ["busy"]; } });
   expect(probed).toEqual([]); await app.close();
 });
 
