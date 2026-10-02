@@ -27,6 +27,8 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
   { file: "server/model-routes.ts", fn: "createModelRoutes", why: "a read of the current model's own routes is answered as it is; a change holds the model resident meanwhile",
     code: '["GET", "HEAD"].includes(request.method)' },
   { file: "server/discovery-routes.ts", fn: "createDiscoveryRoutes", why: "reads the optional model id", code: 'url.pathname.length > "/v1/models/".length - 1' },
+  { file: "server/local-access.ts", fn: "createLocalAccess", why: "admits another site's navigation to a page of the web app; refuses, never routes",
+    code: '["GET", "HEAD"].includes(request.method)' },
 ];
 
 type Kind = "req" | "url" | "method" | "path" | "route" | "segments" | "tainted";

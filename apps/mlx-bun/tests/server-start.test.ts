@@ -13,8 +13,8 @@ function chatSocket(factory: ChatBackendFactory) {
   return { sockets: createModuleSockets([{ path: "/ws/chat", handler: chat }]), dispose: () => chat.dispose() };
 }
 const idle = chatSocket(() => ({ async start() {}, async handle() {}, dispose() {} })).sockets;
-function connection(url: URL) {
-  const socket = new WebSocket(new URL("/ws/chat", url).href.replace("http:", "ws:"));
+function connection(url: URL, headers?: Record<string, string>) {
+  const socket = new WebSocket(new URL("/ws/chat", url).href.replace("http:", "ws:"), headers ? { headers } as never : undefined);
   const opened = new Promise<void>((resolve, reject) => {
     socket.addEventListener("open", () => resolve(), { once: true });
     socket.addEventListener("error", () => reject(new Error("socket failed")), { once: true });
@@ -213,10 +213,48 @@ test("a Unix listener replaces a stale socket file, narrows it to its owner, ign
     expect([stat.isSocket(), stat.mode & 0o777]).toEqual([true, 0o600]);
     const get = (path: string) => fetch(`http://worker${path}`, { unix } as RequestInit);
     expect(await (await get("/ping")).json()).toEqual({ pong: true });
+    // Only the parent connects to a worker's socket; its Host is a placeholder and no browser policy applies.
+    expect((await fetch("http://engine/ping", { unix, headers: { origin: "http://elsewhere" } } as RequestInit)).status).toBe(200);
     // The socket answers only what its route group mounts: lease and drain are the worker group's.
     expect((await get("/admin/lease")).status).toBe(404);
     expect((await get("/missing")).status).toBe(404);
   } finally { await app.close(); }
   expect([existsSync(unix), disposals]).toEqual([false, 1]);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("the TCP listener refuses foreign Hosts and cross-site browser requests before any route, and keeps serving the app and non-browser clients", async () => {
+  const handled: string[] = [];
+  const app = await startServer({ web: request => new URL(request.url).pathname === "/" ? new Response("web") : null, sockets: idle, async closeEngine() {},
+    routes: { async handle(request) { handled.push(`${request.method} ${new URL(request.url).pathname}`); return Response.json({ ok: true }); } },
+  }, { port: 0 });
+  const origin = app.server.url.origin, host = app.server.url.host;
+  const send = (path: string, init: RequestInit = {}) => fetch(new URL(path, app.server.url), init);
+  try {
+    // curl, SDKs and the app's own pages.
+    expect((await send("/api/quantize/push", { method: "POST", body: "{}" })).status).toBe(200);
+    expect((await send("/api/quantize/push", { method: "POST", body: "{}", headers: { origin, "content-type": "application/json", "sec-fetch-site": "same-origin" } })).status).toBe(200);
+    expect(await (await send("/", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" } })).text()).toBe("web");
+    const before = handled.length;
+    for (const [path, init] of [
+      ["/api/settings/hf-token", { method: "POST", body: '{"token":"attacker"}', headers: { origin: "http://evil.example", "content-type": "text/plain" } }],
+      ["/api/quantize/push", { method: "POST", body: "{}", headers: { origin: "null" } }],
+      ["/v1/memory/synthesize", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors" } }],
+      ["/v1/memory/synthesize", { headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" } }],
+      ["/v1/models", { headers: { host: "rebound.evil.example:" + app.server.port } }],
+      ["/", { headers: { host: "rebound.evil.example:" + app.server.port } }],
+    ] as const) {
+      const response = await send(path, init as RequestInit);
+      expect([path, response.status]).toEqual([path, 403]);
+      expect(await response.json()).toMatchObject({ error: { type: "forbidden", message: expect.any(String), code: expect.any(String) } });
+    }
+    expect(handled.length).toBe(before);
+    // The WebSocket handshake: a foreign page is refused before the upgrade, the app's own page connects.
+    expect((await send("/ws/chat", { headers: { origin: "http://evil.example", upgrade: "websocket" } })).status).toBe(403);
+    const foreign = connection(app.server.url, { origin: "http://evil.example" });
+    await expect(foreign.opened).rejects.toThrow();
+    const own = connection(app.server.url, { origin, host });
+    await own.opened;
+    own.socket.close();
+  } finally { await app.close(); }
 });

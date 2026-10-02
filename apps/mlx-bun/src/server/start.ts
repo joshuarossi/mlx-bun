@@ -1,5 +1,6 @@
 import { chmodSync, rmSync } from "node:fs";
 import type { ModuleSocketData, ModuleSockets } from "@mlx-bun/app-services/portable";
+import { createLocalAccess } from "./local-access";
 import type { createCompletionRoutes } from "./routes";
 
 // A path no mounted handler owns answers 404. That includes the worker's
@@ -11,7 +12,9 @@ import type { createCompletionRoutes } from "./routes";
 /** Bind the app's HTTP/WebSocket surfaces. Ownership transfers on entry: a
  * failed bind or close releases the caller's engine resources. The modules own
  * their sockets (`sockets`) and close them when they stop, in `beforeDrain`.
- * The web handler serves already-built assets and never loads a model. */
+ * The web handler serves already-built assets and never loads a model. A TCP
+ * listener refuses foreign Hosts and cross-site browser requests, WebSocket
+ * upgrades included (`local-access.ts`), and warns when bound beyond loopback. */
 export async function startServer(input: {
   routes: Pick<ReturnType<typeof createCompletionRoutes>, "handle">;
   web(request: Request): Response | null;
@@ -42,11 +45,15 @@ export async function startServer(input: {
   })();
   try {
     if (options.unix) rmSync(options.unix, { force: true });
+    const access = options.unix ? undefined : createLocalAccess(options.hostname);
+    const servesPage = (request: Request) => input.web(request) !== null;
     const handlers = {
       idleTimeout: 0,
       websocket: input.sockets.websocket,
       async fetch(request: Request, listener: ReturnType<typeof Bun.serve<ModuleSocketData>>) {
         if (stopped) return Response.json({ error: { message: "server is shutting down" } }, { status: 503 });
+        const refused = access?.check(request, servesPage);
+        if (refused) return refused;
         const socket = input.sockets.upgrade(request, listener);
         if (socket !== null) return socket;
         const page = input.web(request);
@@ -64,6 +71,8 @@ export async function startServer(input: {
       : Bun.serve<ModuleSocketData>({ port: options.port ?? 8080,
         ...(options.hostname === null ? {} : { hostname: options.hostname ?? "127.0.0.1" }), ...handlers });
     if (options.unix) chmodSync(options.unix, 0o600);
+    if (access?.exposed) console.warn(`[serve] listening on ${options.hostname ?? "every interface"} port ${server.port}: the API, web app, `
+      + "chat tools and jobs are unauthenticated; anyone who can reach this address can use them");
     return { server, close };
   } catch (error) {
     try { await close(); } catch (cleanup) { throw new AggregateError([error, cleanup], "server startup and cleanup failed"); }

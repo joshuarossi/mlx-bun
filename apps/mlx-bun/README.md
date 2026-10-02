@@ -23,6 +23,23 @@ product surface. A request shape the engine cannot run returns a typed 501
 (`UnsupportedExecutionError`); remaining work is tracked in
 [PLAN](../../PLAN.md).
 
+The API is unauthenticated, so the TCP listener (`server/local-access.ts`, applied
+in `server/start.ts` before any route or WebSocket upgrade) keeps browsers on other
+sites from using it. It answers 403 (`{ error: { message, type: "forbidden", code } }`)
+to a Host that is neither loopback (or `host.docker.internal`, for a containerized
+client) nor the bound `--host` (DNS rebinding; a bind to every interface also accepts
+IP literals and the machine's name), to any request
+whose Origin is not the origin it was sent to (cross-site form or `text/plain`
+posts, WebSocket handshakes such as `/ws/chat`), and to a request whose
+Sec-Fetch-Site is neither `same-origin` nor `none`, except another site's navigation
+to a page of the web app. GETs with side effects (`/v1/memory/synthesize`, the
+benchmark runner's `/tasks` and `/compare`) are therefore not cross-site triggerable
+from browsers that send Sec-Fetch-Site (every current one, for loopback URLs).
+Clients that are not browsers send neither header and are unaffected; the server
+sends no CORS headers, so no other origin could read a response before either. A
+bind beyond loopback prints a warning that the app is open to anyone who can reach
+it. The per-model workers' Unix sockets are not checked: only their parent connects.
+
 Main's admission and runtime flags keep their units and semantics: `--memory-budget`
 (decimal GB) is the usable envelope for model load, request admission, the process
 allocator limit, optional cache residency, and `/stats.admission.memory_budget_bytes`;
