@@ -1209,8 +1209,8 @@ store identity rebuild the cache.
 logits and hidden states, including the existing padded-batch masks. The original
 `trainForward` names remain aliases for compatibility. `evalPpl` computes
 perplexity over caller-provided token rows; `klPerToken` compares supplied logits.
-Neither requires an evaluation dataset registry or runner; the repository's
-`scripts/perplexity.ts` drives `evalPpl` over a local text/JSONL file. Tool-call
+Neither requires an evaluation dataset registry or runner; the app's
+`mlx-bun perplexity` drives `evalPpl` over a local text/JSONL file. Tool-call
 parsing is available from `input`; template/schema fill compilation lives in
 `generation/fill`.
 

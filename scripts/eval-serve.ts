@@ -13,7 +13,7 @@
 //   bun scripts/eval-serve.ts compare /abs/baseline/result.json /abs/candidate/result.json
 //
 // Not ported: main's KL gate and perplexity read in-process logits, which no
-// HTTP surface exposes (perplexity is scripts/perplexity.ts); the numerical
+// HTTP surface exposes (perplexity is `mlx-bun perplexity`); the numerical
 // parity suites cover numerics. See --help.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -42,7 +42,7 @@ const USAGE = `Capability evaluation of an OpenAI-compatible server with main's 
 Tasks (main's scripts/eval.ts): capability = gsm8k mmlu ifeval bfcl humaneval hashhop, main's
 default frozen sets in full; smoketest = gsm8k-50 (main's GSM8K-50 draw of the full export);
 all = both. KL and perplexity need in-process logits and are not part of this runner (perplexity
-is scripts/perplexity.ts); the numerical parity suites cover numerics. Requests are greedy
+is the mlx-bun perplexity verb); the numerical parity suites cover numerics. Requests are greedy
 (temperature 0, repetition penalty disabled), non-streaming, one at a time; thinking is off unless
 --enable-thinking (main's MLX_BUN_EVAL_THINK). Main's --n caps were ignored by its default frozen
 sets and are not offered.
