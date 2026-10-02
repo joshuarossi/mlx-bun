@@ -63,7 +63,7 @@ export interface MicCaptureOptions {
 
 export async function startMicCapture(options: MicCaptureOptions = {}): Promise<MicCapture> {
   const bin = await (options.resolve ?? resolveMicCapture)();
-  if (!bin) throw new Error(`microphone capture needs the ${MIC_CAPTURE_BINARY} sidecar (reinstall the app, or in a source checkout run: bun run --filter mlx-bun build:native)`);
+  if (!bin) throw new Error(`microphone capture needs the ${MIC_CAPTURE_BINARY} sidecar (reinstall the app, or in a source checkout run: bun run --filter @mlx-bun/module-transcription build:native)`);
   const args = [bin, "--rate", "16000"];
   if (options.hotkey != null) args.push("--hotkey", String(options.hotkey));
   const proc = Bun.spawn(args, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
