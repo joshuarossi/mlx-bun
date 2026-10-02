@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Dtype, MlxArray } from "@mlx-bun/mlx";
@@ -107,5 +107,14 @@ test("a store enforces the live limit its owner lends, evicting the oldest entry
     // An entry larger than the limit is not stored at all.
     lent = 1;
     expect(save([20, 21, 22, 23])).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a scan narrows a fingerprint dir an earlier version created world-readable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-ssd-mode-")), root = join(dir, "earlier");
+  try {
+    mkdirSync(root); chmodSync(root, 0o755);
+    expect(new SsdCacheStore({ dir, maxBytes: Infinity, configFingerprint: "earlier", tokenizerHash: "vocab", modelId: "m" }).scan()).toBe(0);
+    expect(statSync(root).mode & 0o777).toBe(0o700);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

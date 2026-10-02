@@ -56,9 +56,9 @@ function writeSnapshot({ path, header, tensors }) {
   const slots = [...header.caches, ...(header.attachments ?? [])].flatMap(entry => entry.tensors);
   const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
   const dataStart = alignUp(PREFIX_LEN + headerLen);
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, "w");
+  const fd = openSync(tmp, "w", 0o600);
   try {
     for (let i = 0; i < slots.length; i++) {
       const bytes = bytesOf(tensors[i]);
@@ -135,7 +135,7 @@ function writeHeader(path, header) {
   view.setUint32(MAGIC.length + 4, prefix.length, true);
   view.setBigUint64(MAGIC.length + 8, BigInt(Bun.hash(json)), true);
   prefix.set(json, PREFIX_LEN);
-  const tmp = path + ".tmp", fd = openSync(tmp, "w");
+  const tmp = path + ".tmp", fd = openSync(tmp, "w", 0o600);
   try { writeAll(fd, prefix, 0); fsyncSync(fd); }
   finally { closeSync(fd); }
   renameSync(tmp, path);
@@ -145,7 +145,7 @@ function writeHeader(path, header) {
 function writeBlocks({ path, header, tensors, blockBytes = 1024 * 1024, segmented = true }) {
   const metrics = { writtenBytes: 0, reusedBytes: 0, copiedBytes: 0, scratchPeak: 0 };
   const root = join(dirname(path), "blocks");
-  mkdirSync(root, { recursive: true });
+  mkdirSync(root, { recursive: true, mode: 0o700 });
   const slots = [...header.caches, ...(header.attachments ?? [])].flatMap(entry => entry.tensors);
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i]; slot.blocks = [];
@@ -169,7 +169,7 @@ function writeBlocks({ path, header, tensors, blockBytes = 1024 * 1024, segmente
       slot.blocks.push({ hash, bytes: chunk.length });
       const destination = join(root, hash);
       if (existsSync(destination)) { metrics.reusedBytes += chunk.length; continue; }
-      const tmp = destination + ".tmp", fd = openSync(tmp, "w");
+      const tmp = destination + ".tmp", fd = openSync(tmp, "w", 0o600);
       try { writeAll(fd, chunk, 0); fsyncSync(fd); }
       finally { closeSync(fd); }
       renameSync(tmp, destination);

@@ -548,7 +548,7 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
     const dataStart = alignUp(PREFIX_LEN + headerLen);
 
     const tmp = `${path}.tmp`;
-    const fd = openSync(tmp, "w");
+    const fd = openSync(tmp, "w", 0o600);
     try {
       // Data pass: materialize → hash → write → drop, ONE tensor at a time.
       // The hash+write read a ZERO-COPY view of the contiguous mlx buffer

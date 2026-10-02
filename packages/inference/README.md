@@ -1195,7 +1195,9 @@ runnable [fit example](examples/fit-model.ts):
 helpers retain the existing sampler, pending-token, adapter, and cache identities
 when saving or restoring a generation. Applications choose their own storage paths,
 capacity, scheduler settings, and shutdown lifecycle. A store's directory is
-`<dir>/<configFingerprint>/`; the app's fingerprint joins architecture, KV scheme,
+`<dir>/<configFingerprint>/`, created owner-only (directories 0700, `.mlxkv` and block
+files 0600, since saved state holds conversation contents; a scan narrows an existing
+fingerprint directory to 0700); the app's fingerprint joins architecture, KV scheme,
 binding compatibility and the hub's resolved model-directory identity. HF snapshot
 revisions have separate directories; startup does not hash weights. If weights are
 replaced in place, clear saved KV for a fresh run. `scan()` skips, and

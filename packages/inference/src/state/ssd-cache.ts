@@ -14,10 +14,12 @@ import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
 // droppable: every failure path degrades to "no hit" or "not stored" — the
 // tier must never take serving down (oMLX paged_ssd_cache lesson, Apache-2.0
 // idea port; ours spills whole prefix entries, not content-hashed blocks —
-// see the design doc's D1 for why).
+// see the design doc's D1 for why). Saved state holds conversation contents:
+// directories are created owner-only (0700) and files 0600, and a scan narrows
+// an existing fingerprint dir an earlier version created world-readable.
 
 import {
-  existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync,
+  chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync,
 } from "node:fs";
 import { kvWriter, type KvWriteRequest } from "./persistence-worker";
 import { join, dirname } from "node:path";
@@ -141,6 +143,7 @@ export class SsdCacheStore {
   scan(): number {
     this.#index = []; this.#exact.clear();
     if (!existsSync(this.#root)) return 0;
+    try { chmodSync(this.#root, 0o700); } catch { /* not ours to narrow; the entries remain usable */ }
     for (const nsDir of readdirSync(this.#root)) {
       const nsPath = join(this.#root, nsDir);
       let files: string[];
@@ -263,7 +266,7 @@ export class SsdCacheStore {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
       saveKvCache(path, tokens, caches, { ...this.#meta(ns), attachments }, this.#codecs);
       return this.#indexStored(path, tokens, caches, ns, undefined, attachments);
     } catch (err) {
@@ -323,8 +326,8 @@ export class SsdCacheStore {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
-      if (runStep) await runStep(() => mkdirSync(dir, { recursive: true }));
-      else mkdirSync(dir, { recursive: true });
+      if (runStep) await runStep(() => mkdirSync(dir, { recursive: true, mode: 0o700 }));
+      else mkdirSync(dir, { recursive: true, mode: 0o700 });
       await saveKvCacheAsync(path, tokens, caches, {
         ...this.#meta(ns), generationCheckpoint: checkpoint,
       }, runStep, this.#codecs, this.#opts.storage);

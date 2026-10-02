@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ptr } from "bun:ffi";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KvWriter, type StoredTensorView } from "../../src/state/persistence-worker";
@@ -98,3 +98,21 @@ test("compiled executables embed the CPU writer without an external worker file"
     expect([...saved(output).bytes]).toEqual([11, 22, 33]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 30_000);
+
+test("saved state is owner-only: new directories 0700 and files 0600", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kv-modes-")), writer = new KvWriter(), source = new Uint8Array(64).fill(7);
+  const tensor = { pointer: Number(ptr(source)), shape: [source.length], strides: [1], itemSize: 1 };
+  const mode = (path: string) => statSync(path).mode & 0o777;
+  try {
+    const whole = join(dir, "kv", "fingerprint", "base", "whole.mlxkv");
+    await writer.write({ path: whole, header: header(tensor.shape, source.length), tensors: [tensor] });
+    const blocked = join(dir, "kv", "fingerprint", "ns", "blocked.mlxkv");
+    await writer.write({ path: blocked, layout: "blocks", header: { ...header(tensor.shape, source.length), formatVersion: 5 }, tensors: [tensor] });
+    for (const path of [join(dir, "kv"), join(dir, "kv", "fingerprint"), join(dir, "kv", "fingerprint", "base"), join(dir, "kv", "fingerprint", "ns", "blocks")])
+      expect([path, mode(path)]).toEqual([path, 0o700]);
+    const blocks = readdirSync(join(dir, "kv", "fingerprint", "ns", "blocks"));
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const path of [whole, blocked, ...blocks.map(name => join(dir, "kv", "fingerprint", "ns", "blocks", name))])
+      expect([path, mode(path)]).toEqual([path, 0o600]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
