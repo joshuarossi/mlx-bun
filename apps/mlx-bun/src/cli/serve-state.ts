@@ -170,6 +170,9 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     appModules: createModuleRoutes(loaded.routes),
     publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
+      // A push names a directory over HTTP: only the app's outputs and local models, never the rest of the disk or the app's own state.
+      sources: async () => [...(["models", "datasets"] as const).map(entry => storagePath(entry, storagePaths.artifactRoot)),
+        ...adapterStores(storagePaths.artifactRoot), ...(await catalog.list().catch(() => [])).map(entry => entry.directory)],
     }) }),
   };
   let closing: Promise<void> | undefined;

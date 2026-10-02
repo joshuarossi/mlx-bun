@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHfCredentials } from "../../src/publishing/credentials";
@@ -154,4 +154,27 @@ test("malformed and cancelled HTTP inputs never read credentials, jobs or start 
   expect(accessed).toBe(false);
   expect(await routes.handle(new Request("http://local/api/dataset/push"))).toBeNull();
   expect(await routes.handle(post("/api/unknown/push", {}))).toBeNull();
+});
+
+test("with sources, a push reads only those directories, whether named or a job's output, through links", async () => {
+  const { root, credentials } = storage(); credentials.save("write-secret");
+  const home = join(root, ".mlx-bun"), models = join(home, "models"), adapters = join(home, "adapters"), hub = join(root, "hub", "snapshot");
+  for (const dir of [join(models, "quantized"), join(adapters, "run"), hub, join(root, ".ssh")]) mkdirSync(dir, { recursive: true });
+  symlinkSync(join(root, ".ssh"), join(adapters, "escape"));
+  const uploads: string[] = [];
+  const routes = createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
+    getJob: id => ({ output_path: id === "outside" ? join(root, ".ssh") : join(adapters, "run") }),
+    sources: async () => [models, adapters, hub],
+    upload: async source => { uploads.push(source); return { ok: true, url: "https://huggingface.co/org/result" }; } }) });
+  const push = async (body: Record<string, unknown>) => (await routes.handle(post("/api/quantize/push", { repo_id: "org/result", ...body })))!;
+  for (const body of [{ source_path: join(root, ".ssh") }, { source_path: "~/.ssh" }, { source_path: home }, { source_path: join(home, "hf.json") },
+    { source_path: join(models, "..", "..", ".ssh") }, { source_path: join(adapters, "escape") }, { source_path: join(models, "absent") },
+    { source_path: join(root, "hub") }, { job_id: "outside" }]) {
+    const response = await push(body);
+    expect([body, response.status]).toEqual([body, 400]);
+  }
+  expect(uploads).toEqual([]);
+  for (const source_path of [join(models, "quantized"), join(adapters, "run"), hub, adapters]) expect((await push({ source_path })).status).toBe(200);
+  expect((await push({ job_id: "inside" })).status).toBe(200);
+  expect(uploads).toEqual([join(models, "quantized"), join(adapters, "run"), hub, adapters, join(adapters, "run")]);
 });

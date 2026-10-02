@@ -1063,6 +1063,9 @@ lease until the child's process group is gone; the child (`cli/job-entry.ts`) ac
 registered the job kind and runs its runner. A one-shot `convert` (`cli/module-verbs.ts`) runs over a job
 store of its own, created on first use and removed when it ends, so its runs never appear in the job history.
 `convert`'s and `fuse`'s `--upload-repo` push through the modules' `catalog` service (`publishing/catalog-hub.ts`).
+`POST /api/{quantize,finetune,dataset}/push` pushes only a directory that resolves, through links, to one inside the
+app's `models/`, `adapters/` (and the earlier adapter stores) or `datasets/`, or to a local model the catalog lists,
+whether the request names it (`source_path`) or a job's output (`job_id`); anything else is a 400.
 `/api/model/resolve-folder`, the fine-tune wizard's folder picker, is the models module's over the same catalog.
 
 Composition injects the engine execution lease. A job drains active inference
