@@ -1,0 +1,6 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": { "types": ["bun"], "skipLibCheck": true },
+  "include": [".astro/types.d.ts", "src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["dist"]
+}

@@ -1,0 +1,30 @@
+import { projectedDraftGroups } from "./projected-draft-rows";
+import type { GroupedDraftProvider, TargetView } from "../source";
+import { targetLacks } from "../source";
+import type { DeepspecDrafterModel } from "../../../contracts/mlx/drafter";
+
+/** Existing pairing requirements are checked once when the provider opens. */
+export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDrafterModel, "cfg">): void {
+  if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
+  const layers = drafter.cfg.num_target_layers;
+  if (target.hiddenLayerTaps.layerCount !== layers) throw new Error(
+    `DeepSpec drafter was trained for a ${layers}-layer target; ` +
+    `this model has ${target.hiddenLayerTaps.layerCount} layers — wrong (target, drafter) pairing`);
+}
+
+export function deepspecGroups(drafter: DeepspecDrafterModel, namespace: string): GroupedDraftProvider {
+  return projectedDraftGroups(namespace, drafter.tapLayers, target => {
+    bindDeepspecTarget(target, drafter);
+    return {
+      namespace, schema: "deepspec-context-v1",
+      layers: drafter.cfg.num_hidden_layers,
+      project(hidden, positions) {
+        using projected = drafter.projectContext(hidden);
+        return drafter.projectContextKVRows(projected, positions);
+      },
+      draft(context, pending, positions, depth) {
+        return drafter.draftRows(context, pending, positions).tokens.map(row => row.slice(0, depth));
+      },
+    };
+  });
+}

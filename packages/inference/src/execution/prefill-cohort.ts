@@ -1,0 +1,104 @@
+import type { Cache } from "../contracts/mlx/cache";
+import type { MlxTokenGraph } from "../models/graph";
+import type { MlxArray } from "@mlx-bun/mlx/array";
+import { nextPrefillStep } from "../contracts/portable/prefill";
+import type { CacheCodecProvider } from "../state/persistence-types";
+import { disposeResources, cleanupFailure } from "../runtime/resources";
+import type { Row, RowPromptCache } from "./batch-types";
+import type { KvMaintenance } from "../state/kv-maintenance";
+import { MlxPrefillRows, type MlxPrefillState } from "./prefill-rows";
+
+export interface PrefillState extends MlxPrefillState {
+  snapAt: number | null;
+  continuation?: import("./continuation-types").OrdinaryContinuationState;
+  closePrefill?: () => void;
+}
+
+interface PrefillHost {
+  model: Pick<MlxTokenGraph, "makeCache">;
+  chunkSize: number;
+  tailSplit: boolean;
+  promptCache?: RowPromptCache;
+  stateCodecs?: CacheCodecProvider;
+  maintain?: KvMaintenance;
+  denseKvReads?: readonly number[];
+  forward(ids: MlxArray, caches: Cache[]): Promise<MlxArray>;
+  /** Target projection preserves the forward batch geometry before sampling. */
+  project(hidden: MlxArray, caches: Cache[], completed: readonly PrefillState[]): MlxArray;
+  /** Borrows [1,1,V] logits; takes ownership of the completed request caches. */
+  complete(state: PrefillState, logits: MlxArray): Promise<void>;
+  resume?(state: PrefillState): Promise<void>;
+  reject(row: Row, error: unknown): void;
+}
+
+/** Ordinary sampling/cache policy over the shared target preparation driver. */
+export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
+  override get canAdmit(): boolean {
+    return super.canAdmit && this.supportsMixedWork;
+  }
+  get supportsMixedWork(): boolean { return !this.rows.some(row => row.req.promptInput); }
+  constructor(readonly host: PrefillHost) {
+    super({
+      stateCodecs: host.stateCodecs, maintain: host.maintain, denseKvReads: host.denseKvReads,
+      open(row) {
+        let owned: { caches: Cache[]; retain?: () => void } | undefined;
+        let closeCache: (() => void) | undefined;
+        let closePrefill: (() => void) | undefined;
+        try {
+          closeCache = row.req.trace?.begin("cache.lookup_restore", { mechanism: "continuous" });
+          const continuation = row.req.continuation?.restore(row.cacheNamespace ?? "");
+          if (continuation) {
+            owned = { caches: continuation.caches };
+            return { row, solo: continuation.caches, pos: row.req.promptIds.length,
+              snapAt: null, continuation };
+          }
+          const hit = host.promptCache?.take(row.req.promptIds, row.cacheNamespace, row.req.cacheSessionId) ?? null;
+          if (hit) owned = hit;
+          closeCache?.(); closeCache = undefined;
+          if (hit) row.cachedTokens = hit.tokens.length;
+          const length = row.req.promptIds.length;
+          const boundary = Math.min(row.req.snapshotAt ?? length, length - 1);
+          const snapAt = host.promptCache && boundary >= 256 && boundary > (hit?.tokens.length ?? 0) ? boundary : null;
+          closePrefill = row.req.trace?.begin("prefill.total", {
+            mechanism: "continuous", promptTokens: row.promptTokens, cachedTokens: row.cachedTokens,
+          });
+          const closeSetup = row.req.trace?.begin("prefill.batch_setup", { mechanism: "continuous" });
+          owned ??= { caches: row.req.statePolicy?.create() ?? host.model.makeCache() }; closeSetup?.();
+          // The first forward must read maintained state. A stored prefix can
+          // still owe the conversion its final append reached, so maintain
+          // every opened cache here.
+          host.maintain?.(owned.caches);
+          return { row, solo: owned.caches, pos: hit?.tokens.length ?? 0, retain: owned.retain, snapAt, closePrefill };
+        } catch (error) {
+          return cleanupFailure(error, () => disposeResources([...(owned?.caches ?? []),
+            { dispose: () => owned?.retain?.() }, { dispose: () => closePrefill?.() }]));
+        } finally { closeCache?.(); }
+      },
+      ready: state => !!state.continuation,
+      plan(state) {
+        if (state.row.req.promptInput) return { kind: "final", start: state.pos,
+          end: state.row.promptTokens, snapshot: false, batchYield: false, atomic: true };
+        return nextPrefillStep({ length: state.row.promptTokens, position: state.pos,
+        chunkSize: state.row.req.prefillChunkSize ?? host.chunkSize,
+        tailSplit: host.tailSplit, snapshotAt: state.snapAt }); },
+      forward: (ids, caches, states, work) => states[0]?.row.req.promptInput
+        ? Promise.resolve(states[0].row.req.promptInput.forward(ids, caches, states[0].pos))
+        : work ? work(ids, caches) : host.forward(ids, caches),
+      project: host.project.bind(host),
+      complete: (state, logits) => state.continuation ? host.resume!(state) : host.complete(state, logits!), reject: host.reject.bind(host),
+      checkpoint(state, capture) {
+        let snapshot: Cache[] | undefined;
+        try {
+          snapshot = capture();
+          host.promptCache!.put(state.row.req.promptIds.slice(0, state.pos), snapshot, state.row.cacheNamespace, undefined, undefined, state.row.req.cacheSessionId);
+          snapshot = undefined;
+        } catch (error) {
+          if (snapshot) disposeResources(snapshot);
+          console.warn(`batch-lane boundary snapshot skipped: ${(error as Error).message}`);
+        }
+        state.snapAt = null;
+      },
+      close(state) { const close = state.closePrefill; state.closePrefill = undefined; close?.(); },
+    });
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "name": "@mlx-bun/module-memory",
+  "version": "0.6.0",
+  "description": "Markdown memory vault, read-only chat tools, synthesis, scheduling and memory panel",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./panel": "./src/panel/index.ts",
+    "./synthesis": "./src/synthesis.ts",
+    "./history": "./src/history.ts",
+    "./routes": "./src/routes.ts",
+    "./article": "./src/article.ts",
+    "./reconcile": "./src/reconcile.ts",
+    "./wikify": "./src/wikify.ts",
+    "./reindex": "./src/reindex.ts",
+    "./parse": "./src/parse.ts",
+    "./schedule": "./src/schedule.ts",
+    "./entity": "./src/entity.ts",
+    "./gate": "./src/gate.ts",
+    "./pipeline": "./src/pipeline.ts",
+    "./cli": "./src/cli.ts",
+    "./cluster": "./src/cluster.ts",
+    "./vault": "./src/vault.ts",
+    "./chat": "./src/chat.ts",
+    "./model": "./src/model.ts",
+    "./synthesize": "./src/synthesize.ts",
+    "./stages": "./src/stages.ts",
+    "./prompts": "./src/prompts.ts",
+    "./chunk": "./src/chunk.ts",
+    "./coverage": "./src/coverage.ts",
+    "./route": "./src/route.ts",
+    "./normalize": "./src/normalize.ts",
+    "./crosslink": "./src/crosslink.ts",
+    "./tools": "./src/tools.ts",
+    "./completion-client": "./src/completion-client.ts",
+    "./events": "./src/events.ts",
+    "./redirect": "./src/redirect.ts",
+    "./query": "./src/query.ts",
+    "./skills": "./src/skills.ts",
+    "./paths": "./src/paths.ts",
+    "./resolve": "./src/resolve.ts",
+    "./chunk-validation": "./src/chunk-validation.ts",
+    "./db": "./src/db.ts",
+    "./ingest": "./src/ingest.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/hub": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "@mlx-bun/module-chat": "workspace:*",
+    "happy-dom": "20.10.6"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

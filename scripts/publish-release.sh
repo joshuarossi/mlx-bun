@@ -8,8 +8,7 @@
 # Does three things, idempotently:
 #   1. creates (or updates) the GitHub release v<ver> with the tarball asset
 #   2. rewrites version/url/sha256 in the TAP's Formula/mlx-bun.rb and pushes
-#   3. mirrors the same three fields into the in-repo source-of-truth formula
-#      (scripts/packaging/homebrew/mlx-bun.rb) — left staged for you to commit
+#   3. publishes the workspace npm archives in dependency order
 #
 # Releases are inherently local (signing/notarization need the Developer ID
 # cert + Apple creds on this Mac), so this local step is the single source
@@ -18,9 +17,12 @@
 # Overridable via env: OUT_DIR, REPO, TAP_REPO.
 set -eu
 
-VERSION="${1:-$(bun -e 'console.log(require("./package.json").version)')}"
+cd "$(dirname "$0")/.."
+VERSION="${1:-$(bun --no-env-file -e 'console.log(require("./apps/mlx-bun/package.json").version)')}"
 ARCH="$(uname -m)"
 OUT_DIR="${OUT_DIR:-dist-release}"
+BUILD_DIR="${BUILD_DIR:-$OUT_DIR/prepared-v$VERSION}"
+NOTES_FILE="${RELEASE_NOTES:-docs/planning/release-notes-v$VERSION.md}"
 REPO="${REPO:-joshuarossi/mlx-bun}"
 TAP_REPO="${TAP_REPO:-joshuarossi/homebrew-tap}"
 
@@ -30,6 +32,10 @@ TARPATH="$OUT_DIR/$TARBALL"
   echo "missing $TARPATH — run ./scripts/release-binary.sh $VERSION first" >&2
   exit 1
 }
+[ -f "$NOTES_FILE" ] || { echo "missing release notes: set RELEASE_NOTES to the reviewed file" >&2; exit 1; }
+bun --no-env-file scripts/release-inputs.ts inspect "$BUILD_DIR" "$NOTES_FILE" >/dev/null
+cmp "$TARPATH" "$BUILD_DIR/release/$TARBALL" || { echo "release archive differs from accepted preparation" >&2; exit 1; }
+PREPARED_HEAD="$(bun --no-env-file -e 'console.log((await Bun.file(process.argv[1]+"/preparation.json").json()).sourceHead)' "$BUILD_DIR")"
 
 SHA="$(shasum -a 256 "$TARPATH" | awk '{print $1}')"
 URL="https://github.com/$REPO/releases/download/v$VERSION/$TARBALL"
@@ -39,7 +45,7 @@ echo "==> version $VERSION  sha $SHA"
 # are built from the LOCAL tree — releasing unpushed code splits the story.
 # (Skip with RELEASE_SKIP_GIT_CHECK=1 for a re-run/hotfix of assets only.)
 if [ "${RELEASE_SKIP_GIT_CHECK:-0}" != "1" ]; then
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
     echo "working tree is dirty — commit (or stash) before releasing," >&2
     echo "or RELEASE_SKIP_GIT_CHECK=1 to override" >&2
     exit 1
@@ -50,6 +56,17 @@ if [ "${RELEASE_SKIP_GIT_CHECK:-0}" != "1" ]; then
     echo "from the push; binaries must match), or RELEASE_SKIP_GIT_CHECK=1" >&2
     exit 1
   fi
+  [ "$(git rev-parse HEAD)" = "$PREPARED_HEAD" ] || { echo "prepared source differs from origin/main" >&2; exit 1; }
+fi
+npm whoami >/dev/null
+gh auth status >/dev/null
+
+# --target creates a missing tag; an existing tag must identify these artifacts.
+REMOTE_TAG="$(git ls-remote --tags "https://github.com/$REPO.git" "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}")"
+TAG_HEAD="$(printf '%s\n' "$REMOTE_TAG" | awk '$2 ~ /\^\{\}$/ {peeled=$1} $2 !~ /\^\{\}$/ {raw=$1} END {print peeled ? peeled : raw}')"
+if [ -n "$TAG_HEAD" ] && [ "$TAG_HEAD" != "$PREPARED_HEAD" ]; then
+  echo "existing release tag v$VERSION differs from prepared source" >&2
+  exit 1
 fi
 
 # A versionless copy of the same tarball, so the direct-download one-liner
@@ -57,25 +74,18 @@ fi
 # (the versioned asset name changes every release and can't be used there).
 LATEST="mlx-bun-${ARCH}.tar.gz"
 cp -f "$TARPATH" "$OUT_DIR/$LATEST"
+printf '%s  %s\n' "$SHA" "$TARBALL" > "$TARPATH.sha256"
+printf '%s  %s\n' "$SHA" "$LATEST" > "$OUT_DIR/$LATEST.sha256"
 
 # 1. GitHub release: create if absent, else clobber the assets in place.
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
   echo "==> release v$VERSION exists; uploading assets (--clobber)"
-  gh release upload "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" --clobber
+  gh release upload "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" "$TARPATH.sha256" "$OUT_DIR/$LATEST.sha256" -R "$REPO" --clobber
 else
   echo "==> creating release v$VERSION"
-  # Release notes: use docs/planning/release-notes-v<ver>.md when it exists
-  # (write/edit it BEFORE releasing); fall back to the bare title otherwise.
-  NOTES_FILE="docs/planning/release-notes-v$VERSION.md"
-  if [ -f "$NOTES_FILE" ]; then
-    echo "    notes from $NOTES_FILE"
-    gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
-      --title "mlx-bun v$VERSION" --notes-file "$NOTES_FILE"
-  else
-    echo "    (no $NOTES_FILE — using bare notes; add the file next time)"
-    gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
-      --title "mlx-bun v$VERSION" --notes "mlx-bun v$VERSION"
-  fi
+  echo "    notes from $NOTES_FILE"
+  gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" "$TARPATH.sha256" "$OUT_DIR/$LATEST.sha256" -R "$REPO" \
+    --title "mlx-bun v$VERSION" --notes-file "$NOTES_FILE" --target "$PREPARED_HEAD"
 fi
 
 # Helper: surgically rewrite the three release-specific fields of a formula.
@@ -104,20 +114,10 @@ else
   echo "==> tap pushed: $VERSION"
 fi
 
-# 3. Mirror into the in-repo source of truth (left for you to commit).
-rewrite_formula scripts/packaging/homebrew/mlx-bun.rb
-
-# 4. npm — same version, same one-shot (idempotent: skip if already live).
-if [ "$(npm view mlx-bun@"$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
-  echo "==> npm already at $VERSION"
-else
-  echo "==> publishing mlx-bun@$VERSION to npm"
-  bun publish || {
-    echo "npm publish failed — check the auth token (.npmrc / \`npm whoami\`)," >&2
-    echo "then finish with: bun run publish:npm" >&2
-    exit 1
-  }
-fi
+# The formula is generated from the accepted archive by prepare-homebrew.ts;
+# no checked-in version/hash mirror needs another commit.
+# 3. npm — same idempotent step, extended to the public workspace packages.
+bun --no-env-file scripts/release-inputs.ts npm "$BUILD_DIR" "$NOTES_FILE"
 
 echo
 echo "==> done — all channels:"
@@ -125,5 +125,3 @@ echo "    GitHub release  https://github.com/$REPO/releases/tag/v$VERSION"
 echo "    Homebrew tap    brew upgrade joshuarossi/tap/mlx-bun"
 echo "    npm             mlx-bun@$VERSION"
 echo "    site            deploys from the git push (GitHub Pages)"
-echo "    scripts/packaging/homebrew/mlx-bun.rb updated — commit it:"
-echo "      git commit -am \"chore(dist): mlx-bun $VERSION\""

@@ -1,0 +1,41 @@
+{
+  "name": "@mlx-bun/module-train",
+  "version": "0.6.0",
+  "description": "Training module for mlx-bun applications: LoRA fine-tuning (SFT, DPO, ORPO), adapter fusion and drafter training, as the finetune job, its web routes, and the train, train-watch, fuse and draft verbs",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./panel": "./src/panel/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/mlx": "workspace:*",
+    "@mlx-bun/quantize": "workspace:*",
+    "@mlx-bun/training": "workspace:*"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "happy-dom": "20.10.6"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}
