@@ -961,7 +961,7 @@ pointer to `mlx-bun serve` when none answers. The entity gold main read from
 `goldens/dreaming-entities-gold.json` is a published dataset: without that
 file the resolver runs unseeded (store aliases still fold).
 
-[Pipeline tests](tests/memory/) port main's model-free suites with fake stage
+[Pipeline tests](../../packages/module-memory/tests/) port main's model-free suites with fake stage
 calls, in-test vaults, and an in-test entity gold; the
 [client test](tests/server/memory-completion-client.test.ts) and
 [verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.

@@ -12,8 +12,8 @@ chat. For developers, the `@mlx-bun/` libraries offer both convenient loading
 and generation and lower-level components you can compose yourself. An
 inference library does not select a global model or run a server for you.
 
-The new repository uses Bun workspaces: applications live in `apps/`, libraries
-in `packages/`. See the [architecture](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/ARCHITECTURE.md)
+The repository uses Bun workspaces: applications live in `apps/`, libraries
+in `packages/`. See the [architecture](https://github.com/joshuarossi/mlx-bun/blob/main/ARCHITECTURE.md)
 for ownership and dependency direction.
 
 Start with [installation](/getting-started/installation/) or the

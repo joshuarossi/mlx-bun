@@ -9,8 +9,8 @@ behavior or packaging. [PLAN](PLAN.md) holds open refactor work; history is Git.
 - Josh approves new documentation files and migration scope. Implementation and
   test files needed for the approved refactor are authorized. Do not carry material
   over just because it exists on main. YAGNI and KISS govern the rebuild.
-- During this refactor, main is reference-only. Create reviewable chunk PRs
-  targeting `refactor/monorepo`; do not merge them without Josh's instruction.
+- Create reviewable PRs targeting `main`; do not merge them without Josh's
+  instruction.
 - Preserve numerical behavior during migration. Optimization is separate work;
   follow the evidence requirements in CONTRIBUTING.
 - Never use the GPU while training is active. Check before numerical runs.

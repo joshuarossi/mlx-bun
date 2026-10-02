@@ -55,7 +55,7 @@ Consumers do not download them on first use. For local native development,
 `MLX_BUN_LIBMLXC` can point to a compatible `libmlxc.dylib` explicitly.
 
 From this package directory, `bun pm pack --destination /tmp` validates the
-native files and creates an archive. This package has not been published yet.
+native files and creates an archive.
 
 `@mlx-bun/mlx/native` exposes the pinned MLX version, bundle filenames, staged
 native directory and library resolver without loading MLX. Packaging tools use
