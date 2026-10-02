@@ -45,7 +45,7 @@ echo "==> version $VERSION  sha $SHA"
 # are built from the LOCAL tree — releasing unpushed code splits the story.
 # (Skip with RELEASE_SKIP_GIT_CHECK=1 for a re-run/hotfix of assets only.)
 if [ "${RELEASE_SKIP_GIT_CHECK:-0}" != "1" ]; then
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
     echo "working tree is dirty — commit (or stash) before releasing," >&2
     echo "or RELEASE_SKIP_GIT_CHECK=1 to override" >&2
     exit 1
@@ -61,11 +61,21 @@ fi
 npm whoami >/dev/null
 gh auth status >/dev/null
 
+# --target creates a missing tag; an existing tag must identify these artifacts.
+REMOTE_TAG="$(git ls-remote --tags "https://github.com/$REPO.git" "refs/tags/v$VERSION" "refs/tags/v$VERSION^{}")"
+TAG_HEAD="$(printf '%s\n' "$REMOTE_TAG" | awk '$2 ~ /\^\{\}$/ {peeled=$1} $2 !~ /\^\{\}$/ {raw=$1} END {print peeled ? peeled : raw}')"
+if [ -n "$TAG_HEAD" ] && [ "$TAG_HEAD" != "$PREPARED_HEAD" ]; then
+  echo "existing release tag v$VERSION differs from prepared source" >&2
+  exit 1
+fi
+
 # A versionless copy of the same tarball, so the direct-download one-liner
 # can target a STABLE url: releases/latest/download/mlx-bun-<arch>.tar.gz
 # (the versioned asset name changes every release and can't be used there).
 LATEST="mlx-bun-${ARCH}.tar.gz"
 cp -f "$TARPATH" "$OUT_DIR/$LATEST"
+printf '%s  %s\n' "$SHA" "$TARBALL" > "$TARPATH.sha256"
+printf '%s  %s\n' "$SHA" "$LATEST" > "$OUT_DIR/$LATEST.sha256"
 
 # 1. GitHub release: create if absent, else clobber the assets in place.
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
