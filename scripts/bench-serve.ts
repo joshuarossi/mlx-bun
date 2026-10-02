@@ -38,7 +38,8 @@ const USAGE = `Paired serve benchmark: baseline tree versus candidate tree over 
   bun scripts/bench-serve.ts compare /abs/run-dir/run.json
 
 Profile all must be main's full matrix (cpm5, e4b, 12B, qwen27b × default, serial, mixed, plus the
-mlx-lm reference); anything narrower is scoped and never full qualification. Outputs must lie outside
+mlx-lm reference), optionally followed by mtp2,mtp3 for models given a --draft companion; anything
+narrower is scoped and never full qualification. Outputs must lie outside
 every tree. run exits 0 only when every applicable cell measured every required phase with stable
 decode, verified library provenance and matching probes; performance acceptance stays unreviewed.`;
 

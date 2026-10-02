@@ -15,7 +15,7 @@ export const CONFIGURATIONS = {
    * continuous scheduler at capacity 1. Not a candidate serial lane. */
   serial: { args: ["--batch", "1"], note: "capacity-1 control (baseline serial, candidate continuous at capacity 1)" },
   mixed: { args: ["--kv-quant", "config"], note: "artifact kv_config.json", requiresKvConfig: true },
-  /** Native MTP companion (`--draft ID=PATH`) at a fixed verify depth; scoped plans only. */
+  /** Native MTP companion (`--draft ID=PATH`) at a fixed verify depth; models without one are not applicable. */
   mtp2: { args: [] as string[], note: "MTP companion, depth 2", draftDepth: 2 },
   mtp3: { args: [] as string[], note: "MTP companion, depth 3", draftDepth: 3 },
 } as const;
@@ -25,6 +25,8 @@ export type Configuration = keyof typeof CONFIGURATIONS;
 export const CANONICAL = {
   models: ["cpm5", "e4b", "12B", "qwen27b"],
   configurations: ["default", "serial", "mixed"] as Configuration[],
+  /** The refactor gate's MTP depths, which a qualifying matrix may add after main's configurations. */
+  optionalConfigurations: ["mtp2", "mtp3"] as Configuration[],
   references: ["mlx-lm"],
   withContext: true,
 } as const;
@@ -154,8 +156,10 @@ export function profileProblems(plan: Plan): string[] {
   const problems: string[] = [];
   const ids = plan.models.map(model => model.id);
   if (JSON.stringify(ids) !== JSON.stringify(CANONICAL.models)) problems.push(`models ${ids} are not ${CANONICAL.models}`);
-  if (JSON.stringify(plan.configurations) !== JSON.stringify(CANONICAL.configurations))
-    problems.push(`configurations ${plan.configurations} are not ${CANONICAL.configurations}`);
+  const base = plan.configurations.slice(0, CANONICAL.configurations.length), extra = plan.configurations.slice(base.length);
+  if (JSON.stringify(base) !== JSON.stringify(CANONICAL.configurations) ||
+      JSON.stringify(extra) !== JSON.stringify(CANONICAL.optionalConfigurations.filter(name => extra.includes(name))))
+    problems.push(`configurations ${plan.configurations} are not ${CANONICAL.configurations} optionally followed by ${CANONICAL.optionalConfigurations}`);
   if (JSON.stringify(plan.references.map(ref => ref.label)) !== JSON.stringify(CANONICAL.references))
     problems.push(`references ${plan.references.map(ref => ref.label)} are not ${CANONICAL.references}`);
   if (!plan.workload.withContext) problems.push("long-context, restart phases are skipped");

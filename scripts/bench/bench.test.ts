@@ -101,6 +101,17 @@ test("mtp configurations need a pinned companion and pass it at their depth", ()
     .toThrow("draft is not pinned");
 });
 
+test("a qualifying matrix may add the MTP depths after main's configurations, never replace them", () => {
+  const plan = testPlan();
+  const configured = (configurations: string[]) => profileProblems({ ...plan, profile: "all", configurations: configurations as Plan["configurations"] })
+    .filter(problem => problem.startsWith("configurations"));
+  expect(configured(["default", "serial", "mixed"])).toEqual([]);
+  expect(configured(["default", "serial", "mixed", "mtp2", "mtp3"])).toEqual([]);
+  expect(configured(["default", "serial", "mixed", "mtp3"])).toEqual([]);
+  expect(configured(["default", "serial", "mixed", "mtp3", "mtp2"])).toHaveLength(1);
+  expect(configured(["default", "mtp2"])).toHaveLength(1);
+});
+
 test("the pinned native library is the exact resolved file supplied plus its bundled runtime", () => {
   const lib = library(), link = join(fresh("link"), "chosen.dylib");
   symlinkSync(lib, link);
