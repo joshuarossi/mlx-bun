@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-train",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Training module for mlx-bun applications: LoRA fine-tuning (SFT, DPO, ORPO), adapter fusion and drafter training, as the finetune job, its web routes, and the train, train-watch, fuse and draft verbs",
   "type": "module",
   "license": "MIT",

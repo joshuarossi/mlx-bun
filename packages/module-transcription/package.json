@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-transcription",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Speech-to-text module for mlx-bun applications: Whisper transcription over HTTP and the transcribe and dictate verbs",
   "type": "module",
   "license": "MIT",

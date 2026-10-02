@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-benchmarks",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Answer-quality benchmarks module for mlx-bun applications: launches the capability evaluation runner (scripts/eval-serve.ts) as a job and keeps its results history",
   "type": "module",
   "license": "MIT",

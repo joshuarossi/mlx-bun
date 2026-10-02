@@ -125,7 +125,8 @@ test("setup init accepts the nightly job: main's prompts verbatim, plist at the 
   const paths = home();
   const result = await drive(paths, ["setup", "init"], { answers: ["", "y", "02:15"], program: ["/opt/mlx-bun/bin/mlx-bun"] });
   expect(result.questions).toEqual([SEED_PROMPT(paths.home), INSTALL_PROMPT, AT_PROMPT]);
-  expect(result.out).toContain("mlx-bun 0.0.0 — local AI · apple silicon · one binary");
+  const appPackage = await Bun.file(Bun.resolveSync("mlx-bun/package.json", import.meta.dir)).json();
+  expect(result.out).toContain(`mlx-bun ${appPackage.version} — local AI · apple silicon · one binary`);
   expect(result.out).toContain("● Personal memory for your local AI");
   expect(result.out).toContain(`git-tracked at ${paths.vault}, editable in any tool, and it`);
   expect(result.out).toContain(`  ✓ wiki ready · ${paths.vault}`);
@@ -186,7 +187,8 @@ test("a non-interactive setup creates the wiki, never prompts, and installs noth
   const result = await cli(paths, "setup", "init");
   expect(result.code).toBe(0);
   expect(result.err).toBe("");
-  expect(result.out).toContain("mlx-bun 0.0.0 — local AI · apple silicon · one binary");
+  const appPackage = await Bun.file(Bun.resolveSync("mlx-bun/package.json", import.meta.dir)).json();
+  expect(result.out).toContain(`mlx-bun ${appPackage.version} — local AI · apple silicon · one binary`);
   expect(result.out).toContain("  - creating your wiki\n");
   expect(result.out).toContain(`  ✓ wiki ready · ${paths.vault}\n`);
   expect(result.out).not.toContain("Seed from an existing wiki?");

@@ -384,9 +384,9 @@ test("signing handles every Mach-O before main, verifies each, and uses the pres
     await prepareRelease(f.output, f.root, f.execute, f.build, f.verify);
     await signRelease(f.output, "MOCK Developer ID", f.execute);
     const signing = f.commands.filter(command => command[0] === "codesign" && command.includes("--sign"));
-    expect(signing.at(-1)?.at(-1)).toBe(join(f.output, "bundle/mlx-bun"));
+    expect(signing.at(-1)?.at(-1)?.endsWith("/bundle/mlx-bun")).toBe(true);
     expect(signing.some(command => command.at(-1)?.endsWith("future-microphone-helper"))).toBe(true);
-    expect(signing.some(command => command.at(-1) === join(f.output, "bundle", MIC_CAPTURE_BINARY))).toBe(true);
+    expect(signing.some(command => command.at(-1)?.endsWith(`/bundle/${MIC_CAPTURE_BINARY}`))).toBe(true);
     expect(signing.some(command => command.at(-1)?.endsWith("photon_rs_bg.wasm"))).toBe(false);
     for (const command of signing) {
       expect(command).toContain("--timestamp"); expect(command).toContain("runtime");
@@ -396,7 +396,8 @@ test("signing handles every Mach-O before main, verifies each, and uses the pres
     const entitlements = await readFile(main[main.indexOf("--entitlements") + 1]!, "utf8");
     for (const key of ["allow-jit", "allow-unsigned-executable-memory", "disable-library-validation"]) expect(entitlements).toContain(key);
     expect(JSON.parse(await readFile(join(f.output, "preparation.json"), "utf8")).stage).toBe("signed");
-    expect(f.commands.at(-1)).toEqual([join(f.output, "bundle/mlx-bun"), "--version"]);
+    expect(f.commands.at(-1)?.at(-1)).toBe("--version");
+    expect(f.commands.at(-1)?.[0]?.endsWith("/bundle/mlx-bun")).toBe(true);
   } finally { await f.close(); }
 });
 
@@ -410,6 +411,28 @@ test("a zero-exit Invalid notary result cannot unlock release packaging", async 
     expect(await readdir(f.output)).not.toContain("notarize.zip");
     const submission = f.commands.find(command => command[0] === "xcrun")!;
     expect(submission.slice(-2)).toEqual(["--output-format", "json"]);
+  } finally { await f.close(); }
+});
+
+test("a partial signing failure preserves the original bytes and can be retried", async () => {
+  const f = await fixture();
+  try {
+    const prepared = await prepareRelease(f.output, f.root, f.execute, f.build, f.verify);
+    let signed = 0;
+    const partial: Run = async (command, cwd) => {
+      if (command[0] === "codesign" && command.includes("--sign")) {
+        await writeFile(command.at(-1)!, "partially signed bytes");
+        if (++signed === 2) throw Error("signing interrupted");
+      }
+      return f.execute(command, cwd);
+    };
+    await expect(signRelease(f.output, "MOCK ID", partial)).rejects.toThrow("interrupted");
+    for (const [name, hash] of Object.entries(prepared.files))
+      expect(createHash("sha256").update(await readFile(join(f.output, "bundle", name))).digest("hex")).toBe(hash);
+    expect(JSON.parse(await readFile(join(f.output, "preparation.json"), "utf8")).stage).toBe("unsigned");
+    expect((await readdir(f.output)).some(name => name.startsWith("sign-"))).toBe(false);
+    await signRelease(f.output, "MOCK ID", f.execute);
+    expect(JSON.parse(await readFile(join(f.output, "preparation.json"), "utf8")).stage).toBe("signed");
   } finally { await f.close(); }
 });
 

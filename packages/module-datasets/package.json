@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-datasets",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Dataset-building module for mlx-bun applications: thirteen JSONL templates, an in-process generation job that calls the served model, and a Docker verifier for generated Python",
   "type": "module",
   "license": "MIT",

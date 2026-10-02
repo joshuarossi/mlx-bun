@@ -389,8 +389,9 @@ loading MLX or accessing audio.
 
 `gc` previews changes unless `--yes` is supplied; `--dry-run` always prevents
 deletion. Cache location and Hugging Face credentials follow the
-[hub library](../../packages/hub/README.md). This workspace remains private
-while app licensing and release packaging are decided.
+[hub library](../../packages/hub/README.md). The app and public libraries use MIT
+licensing and version 0.6.0 for the first workspace release. The root workspace,
+website and transcription example app remain private.
 
 ## One-shot inference
 
@@ -1351,22 +1352,35 @@ It then runs the `verify:binary` acceptance (CPU only) on the unsigned archive
 and requires unchanged bundle hashes afterwards; a failure removes `unsigned/`
 and writes no `preparation.json`.
 `preparation.json` records bundle hashes, dependency-first package publication
-order, and pending private/version decisions. Nothing changes those decisions or
+order, package archive hashes, source revision, and pending private/version decisions. Private
+example apps are excluded; an unpublished private main app still requires a decision. Nothing changes those decisions or
 publishes. The `unsigned/` output is for local verification only.
 
 The same script has explicit `sign <directory> <Developer-ID-identity>`,
 `notarize <directory> <keychain-profile>`, and `package <directory>` stages.
 Signing handles every nested Mach-O before the executable, applies the preserved
 Bun JIT/library-validation entitlements, verifies each signature, and checks
-launch/version. Notarization submits to Apple and requires JSON status `Accepted`;
+launch/version. It signs a temporary bundle copy and only replaces the original
+after every check succeeds, so a partial failure can be retried. Notarization submits to Apple and requires JSON status `Accepted`;
 an exit code of zero alone is insufficient. Packaging rejects changed bundle
 bytes and missing accepted evidence, then writes the versioned and stable arm64
 tarballs, matching checksum sidecars, and formula under `release/`.
 
 Run `--help` for usage. Signing/notarization and publishing require Josh's release
 instruction; preparation and tests do not access identities or Apple services.
-GitHub/npm publication and tap synchronization remain separate unfinished release
-work. No stage invokes those operations. [Release tests](tests/release.test.ts)
+The release entrypoints are ported from main: `scripts/release-binary.sh` builds,
+signs, notarizes and packages; `scripts/publish-release.sh` publishes GitHub assets,
+updates the tap, then publishes npm. `PUBLISH=1 ./scripts/release-binary.sh` runs
+that single flow. `BUILD_DIR` names the preparation directory, `OUT_DIR` holds
+the distributable archives, and `RELEASE_NOTES` names the reviewed release body.
+The publisher requires a clean checkout at `origin/main` matching the prepared
+source. Its npm step extends main's idempotent publication to all public workspace
+packages in dependency order, requiring matching archive integrity for an existing
+version. The formula is generated from the accepted archive, so no checked-in
+version/hash mirror needs another commit. `bun scripts/release-inputs.ts inspect
+<directory> <release-notes>` inspects artifacts without publishing. Parity and
+performance qualification belong to refactor acceptance; this flow does not run
+them. No preparation stage invokes publication. [Release tests](tests/release.test.ts)
 use captured mock signing/notary commands and a recording acceptance stand-in;
 they do not prove a real signature or Apple acceptance.
 

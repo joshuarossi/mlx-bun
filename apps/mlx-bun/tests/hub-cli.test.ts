@@ -74,7 +74,8 @@ test("help and invalid input do not open a registry or fetch a model", async () 
     for (const args of [["get"], ["get", "org/repo", "--unknown"], ["fit"], ["fit", "x", "--ctx", "-1"], ["ls", "--max-size"], ["unknown"], ["serve", "--batch", "0"], ["serve", "--serial"], ["serve", "--compiled-decode", "on"], ["generate"], ["generate", "--prompt", "x", "--max-tokens", "0"], ["generate", "--compiled-decode", "on"], ["embed", "--unknown"]]) {
       expect((await cli(home, hub, ...args)).code).toBe(1);
     }
-    expect((await cli(home, hub, "--version")).out).toBe("mlx-bun 0.0.0\n");
+    const appPackage = await Bun.file(Bun.resolveSync("mlx-bun/package.json", import.meta.dir)).json();
+    expect((await cli(home, hub, "--version")).out).toBe(`mlx-bun ${appPackage.version}\n`);
     expect(existsSync(join(home, ".mlx-bun/db/registry.sqlite"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

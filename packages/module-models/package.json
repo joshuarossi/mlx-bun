@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-models",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Model management module for mlx-bun applications: the hub and library routes, model switching, downloads and cache cleanup, adapter mounting, merge and export, the ls, get, scan, fit, gc and upload verbs, and the Models panel",
   "type": "module",
   "license": "MIT",

@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-chat",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Chat module for mlx-bun applications: the default assistant, a Pi agent over the served model on a WebSocket, saved chats, tool approvals and the browser panel",
   "type": "module",
   "license": "MIT",

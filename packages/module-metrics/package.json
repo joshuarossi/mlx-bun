@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/module-metrics",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Metrics and performance module for mlx-bun applications: live serving metrics from the host's events, and bench-serve run history",
   "type": "module",
   "license": "MIT",

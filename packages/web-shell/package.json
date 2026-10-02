@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/web-shell",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "The web shell of mlx-bun applications: navigation, routing, theme, command palette and mounting of module panels, for the app's browser UI and native webviews",
   "type": "module",
   "license": "MIT",

@@ -34,8 +34,10 @@ command. `bunx mlx-bun` also runs the app without a permanent installation.
 
 These installation paths will be preserved during the migration. This branch
 now runs the [terminal app and web chat](apps/mlx-bun/README.md) from source.
-Some API surfaces still return 501 while their owners migrate; release
-installation tooling remains open work.
+Unsupported execution shapes return typed 501 responses. Release preparation,
+signing, notarization and publication are documented in the app's
+[release instructions](apps/mlx-bun/README.md#release-preparation); final parity,
+functionality and performance gates remain in PLAN.
 
 ## Development
 

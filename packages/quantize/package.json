@@ -1,6 +1,6 @@
 {
   "name": "@mlx-bun/quantize",
-  "version": "0.0.0",
+  "version": "0.6.0",
   "description": "Quantization for MLX checkpoints on Apple Silicon: calibration, sensitivity, mixed-precision allocation, rotation, Trellis packing, and safetensors output",
   "type": "module",
   "license": "MIT",
