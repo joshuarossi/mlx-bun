@@ -134,7 +134,8 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // API: over its Unix socket when it listens on one, else over TCP to its port.
   const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
   const served = createServedModelHost({ link: () => host,
-    fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
+    // timeout: false lifts Bun's ~300 s idle timer: a long non-streaming generation is silent that long.
+    fetch: (request, link) => fetch(request, { ...(link.unix ? { unix: link.unix } : {}), timeout: false } as RequestInit) });
   // Memory's tools reach chat through the registry, so they activate beside it. The chat's stores an embedder placed elsewhere win over its storage entries.
   const chatStores = { ...(options.chatPaths?.sessionDir !== undefined ? { "chat.sessions": options.chatPaths.sessionDir } : {}),
     ...(options.chatPaths?.agentDir !== undefined ? { "chat.agent": options.chatPaths.agentDir } : {}),
