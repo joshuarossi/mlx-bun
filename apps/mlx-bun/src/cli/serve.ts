@@ -292,6 +292,82 @@ export function browserUrl(hostname: string, port: number): string {
   return `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}/#/chat`;
 }
 
+/** Main's AppleScript that focuses the first tab whose URL contains `match` in a
+ * literal-named browser, returning "ok"/"miss". The app name MUST be a literal
+ * (not a variable): AppleScript loads an app's scripting dictionary by literal
+ * name at COMPILE time, so `tell application someVar` can't resolve app-specific
+ * terms like `active tab index` (fails with -2740). Referencing an uninstalled
+ * app by literal name is also a compile error a `try` can't catch — hence we
+ * only ever run a browser's script when pgrep says it's running (= installed). */
+export function focusTabScript(app: string, kind: "chromium" | "safari", match: string): string {
+  const m = JSON.stringify(match); // safe AppleScript string literal
+  if (kind === "safari") {
+    return `tell application "${app}"
+      repeat with w in windows
+        repeat with t in tabs of w
+          if URL of t contains ${m} then
+            set current tab of w to t
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end tell
+    return "miss"`;
+  }
+  return `tell application "${app}"
+    repeat with w in windows
+      set k to 0
+      repeat with t in tabs of w
+        set k to k + 1
+        if URL of t contains ${m} then
+          set active tab index of w to k
+          set index of w to 1
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "miss"`;
+}
+
+/** Runs a command to completion: its exit code and stdout. */
+export type CommandRunner = (argv: string[], timeoutMs?: number) => Promise<{ code: number; stdout: string }>;
+const runCommand: CommandRunner = async (argv, timeoutMs) => {
+  const child = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore", ...(timeoutMs ? { timeout: timeoutMs } : {}) });
+  const stdout = await new Response(child.stdout).text();
+  return { code: await child.exited, stdout };
+};
+
+/** Main's browsers whose tabs serve can focus, each scripted by its own literal name. */
+const TAB_BROWSERS: Array<{ proc: string; kind: "chromium" | "safari" }> = [
+  { proc: "Google Chrome", kind: "chromium" },
+  { proc: "Arc", kind: "chromium" },
+  { proc: "Brave Browser", kind: "chromium" },
+  { proc: "Microsoft Edge", kind: "chromium" },
+  { proc: "Safari", kind: "safari" },
+];
+
+/** Main's chat opener: reuse an already-open tab on this host:port instead of
+ * spawning a duplicate. Each browser's literal-named AppleScript runs ONLY when
+ * pgrep confirms it's running (so the literal `tell` always compiles). Falls back
+ * to a plain `open` (new tab) when no running browser has the tab, for browsers
+ * we don't script (e.g. Firefox), or if AppleScript is blocked. The first focus
+ * may trigger a one-time macOS "control your browser" permission prompt;
+ * declining it just falls back to opening a new tab. */
+export async function openChatUi(url: string, run: CommandRunner = runCommand): Promise<void> {
+  const hostPort = new URL(url).host;
+  for (const b of TAB_BROWSERS) {
+    try {
+      if ((await run(["pgrep", "-x", b.proc])).code !== 0) continue; // not running → skip (and don't compile its tell)
+      const focused = await run(["osascript", "-e", focusTabScript(b.proc, b.kind, hostPort)], 8000);
+      if (focused.code === 0 && focused.stdout.trim() === "ok") return; // focused an existing tab
+    } catch { /* try the next browser */ }
+  }
+  if ((await run(["open", url])).code !== 0) throw new Error("Browser could not be opened");
+}
+
 /** Main's collision check: the models a server already on `port` answers for
  * (GET /v1/models, the served row first), or null when nothing serves there. */
 export async function probeServer(port: number, timeoutMs = 1500): Promise<string[] | null> {
@@ -321,8 +397,7 @@ export interface ServeDependencies {
 }
 const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, startTranscription: startTranscriptionServer, interactive: !!process.stdout.isTTY,
-  probe: port => probeServer(port),
-  async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
+  probe: port => probeServer(port), open: url => openChatUi(url),
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
   error: error => console.error(error instanceof Error ? error.message : String(error)),
 };

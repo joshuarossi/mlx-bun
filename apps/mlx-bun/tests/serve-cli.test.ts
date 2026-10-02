@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { browserUrl, installShutdownHandlers, parseServeOptions, probeServer, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, focusTabScript, installShutdownHandlers, openChatUi, parseServeOptions, probeServer, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 import { decodeLaunch, encodeLaunch } from "../src/jobs/worker-process";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
@@ -312,6 +312,49 @@ test("a busy port fails startup before model selection, isolated or in-process; 
   const app = await runServe(parseCommand("serve", ["--port", "0"]), { ...run.dependencies, probe: async port => { probed.push(port); return ["busy"]; } });
   expect(probed).toEqual([]); await app.close();
 });
+
+test("the chat opener's AppleScript focuses a matching tab in a literal-named browser", () => {
+  const chromium = focusTabScript("Google Chrome", "chromium", "localhost:8080");
+  expect(chromium).toStartWith('tell application "Google Chrome"');
+  expect(chromium).toContain('if URL of t contains "localhost:8080" then');
+  expect(chromium).toContain("set active tab index of w to k");
+  expect(chromium).toEndWith('return "miss"');
+  const safari = focusTabScript("Safari", "safari", "localhost:8080");
+  expect(safari).toStartWith('tell application "Safari"');
+  expect(safari).toContain("set current tab of w to t");
+  expect(safari).not.toContain("active tab index");
+  // The match is a quoted AppleScript literal, never script text.
+  expect(focusTabScript("Arc", "chromium", 'a"b\\c')).toContain('contains "a\\"b\\\\c" then');
+});
+
+test("the chat opener reuses a running browser's tab and otherwise opens a new one", async () => {
+  const runner = (running: string[], focused: string | null, openCode = 0) => {
+    const calls: string[][] = [];
+    const run = async (argv: string[]) => {
+      calls.push(argv);
+      if (argv[0] === "pgrep") return { code: running.includes(argv[2]!) ? 0 : 1, stdout: "" };
+      if (argv[0] === "osascript") return { code: 0, stdout: argv[2]!.startsWith(`tell application "${focused}"`) ? "ok\n" : "miss\n" };
+      return { code: openCode, stdout: "" };
+    };
+    return { calls, run };
+  };
+  const url = "http://localhost:8080/#/chat";
+  // Arc and Safari run; Safari has the tab: Arc's script misses, Safari's focuses, and nothing opens.
+  const reuse = runner(["Arc", "Safari"], "Safari");
+  await openChatUi(url, reuse.run);
+  expect(reuse.calls.filter(argv => argv[0] === "osascript").map(argv => argv[2]!.split("\n")[0])).toEqual(['tell application "Arc"', 'tell application "Safari"']);
+  expect(reuse.calls.at(-1)![2]).toContain('contains "localhost:8080"');
+  expect(reuse.calls.some(argv => argv[0] === "open")).toBe(false);
+  // No running browser has it: no script compiles for a browser that is not running, and a plain open follows.
+  const fresh = runner(["Google Chrome"], null);
+  await openChatUi(url, fresh.run);
+  expect(fresh.calls.filter(argv => argv[0] === "osascript")).toHaveLength(1);
+  expect(fresh.calls.at(-1)).toEqual(["open", url]);
+  // A failing runner only skips that browser; a failed open is still reported.
+  await expect(openChatUi(url, async argv => { if (argv[0] !== "open") throw new Error("blocked"); return { code: 1, stdout: "" }; }))
+    .rejects.toThrow("Browser could not be opened");
+});
+
 
 test("the process owner bounds shutdown without releasing live resources or exiting twice", async () => {
   const run = runtime();
