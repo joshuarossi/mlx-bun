@@ -83,8 +83,14 @@ async function main(argv: string[]): Promise<number> {
   const { LIBMLXC_PATH, MLX_VERSION, peakMemory, resetPeakMemory } = await import("@mlx-bun/mlx/ffi");
   const log = (line: string) => console.error(line);
 
+  const config = await loadModelConfig(o.model);
+  const { resolveModelProfile } = await import("@mlx-bun/inference/models/profile");
+  // Colibri-container checkpoints (GLM-5.2) need the streamed runtime; scoring runs the
+  // synchronous forward over createModel, as main's verb did, so refuse them before loading.
+  if (resolveModelProfile(config).profile.execution.loader === "colibri")
+    throw new Error(`${o.model} is a Colibri-container checkpoint (GLM-5.2); perplexity scores createModel graphs only`);
   log(`loading ${o.model}`);
-  const model = createModel(await Weights.open(o.model), await loadModelConfig(o.model));
+  const model = createModel(await Weights.open(o.model), config);
   const tok = await loadTokenizer(o.model);
   const samples = parseSamples(await Bun.file(o.dataPath).text(), o.dataPath);
   const rows = packRows(samples.map(t => tok.encode(t)), { sequenceLength: o.sequenceLength, numSamples: o.numSamples, seed: o.seed });
