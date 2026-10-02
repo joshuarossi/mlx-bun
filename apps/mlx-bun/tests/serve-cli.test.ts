@@ -350,13 +350,17 @@ test("the chat opener reuses a running browser's tab and otherwise opens a new o
   const reuse = runner(["Arc", "Safari"], "Safari");
   await openChatUi(url, reuse.run);
   expect(reuse.calls.filter(argv => argv[0] === "osascript").map(argv => argv[2]!.split("\n")[0])).toEqual(['tell application "Arc"', 'tell application "Safari"']);
-  expect(reuse.calls.at(-1)![2]).toContain('contains "localhost:8080"');
+  expect(reuse.calls.at(-1)![2]).toContain('contains "localhost:8080/"');
   expect(reuse.calls.some(argv => argv[0] === "open")).toBe(false);
   // No running browser has it: no script compiles for a browser that is not running, and a plain open follows.
   const fresh = runner(["Google Chrome"], null);
   await openChatUi(url, fresh.run);
   expect(fresh.calls.filter(argv => argv[0] === "osascript")).toHaveLength(1);
   expect(fresh.calls.at(-1)).toEqual(["open", url]);
+  // Port 80 keeps its explicit port, so a tab on localhost:8080 is not a match for it.
+  const port80 = runner(["Safari"], null);
+  await openChatUi("http://localhost:80/#/chat", port80.run);
+  expect(port80.calls.find(argv => argv[0] === "osascript")![2]).toContain('contains "localhost:80/"');
   // A failing runner only skips that browser; a failed open is still reported.
   await expect(openChatUi(url, async argv => { if (argv[0] !== "open") throw new Error("blocked"); return { code: 1, stdout: "" }; }))
     .rejects.toThrow("Browser could not be opened");

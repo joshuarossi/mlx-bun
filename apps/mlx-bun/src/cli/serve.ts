@@ -357,7 +357,10 @@ const TAB_BROWSERS: Array<{ proc: string; kind: "chromium" | "safari" }> = [
  * may trigger a one-time macOS "control your browser" permission prompt;
  * declining it just falls back to opening a new tab. */
 export async function openChatUi(url: string, run: CommandRunner = runCommand): Promise<void> {
-  const hostPort = new URL(url).host;
+  // `host:port/` with the port always explicit: URL drops a default :80, and without
+  // the slash localhost:80 would match a tab on localhost:8080.
+  const { hostname, port, protocol } = new URL(url);
+  const hostPort = `${hostname}:${port || (protocol === "https:" ? "443" : "80")}/`;
   for (const b of TAB_BROWSERS) {
     try {
       if ((await run(["pgrep", "-x", b.proc])).code !== 0) continue; // not running → skip (and don't compile its tell)
