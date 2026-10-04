@@ -274,10 +274,37 @@ export class ServerProcess {
   }
 }
 
-/** MLX libraries a running process actually mapped (lsof), each with its hash.
+export interface ProcessRow { pid: number; parentPid: number; groupId: number; rssKiB: number }
+/** Include worker descendants and surviving members of the supervised group. */
+export function processFamily(pid: number, listing: string): ProcessRow[] {
+  const rows = listing.trim().split("\n").flatMap(line => {
+    const [id, parentPid, groupId, rssKiB] = line.trim().split(/\s+/).map(Number);
+    return [id, parentPid, groupId, rssKiB].every(Number.isFinite) && id! > 0
+      ? [{ pid: id!, parentPid: parentPid!, groupId: groupId!, rssKiB: rssKiB! }] : [];
+  });
+  const owned = new Set([pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) if (!owned.has(row.pid) && (row.groupId === pid || owned.has(row.parentPid))) {
+      owned.add(row.pid); changed = true;
+    }
+  }
+  return rows.filter(row => owned.has(row.pid));
+}
+const PROCESS_LIST_ARGS = ["ps", "-axo", "pid=,ppid=,pgid=,rss="];
+export function familyRssMB(pid: number, listing: string): number {
+  return processFamily(pid, listing).reduce((sum, row) => sum + row.rssKiB, 0) / 1024;
+}
+
+/** MLX libraries the server and its inference workers mapped (lsof), each with its hash.
  * Null when the loaded set cannot be observed: provenance is then incomplete. */
 export function loadedMlxLibraries(pid: number, pinnedNames: readonly string[] = []): { path: string; sha256: string }[] | null {
-  const listed = Bun.spawnSync(["lsof", "-p", String(pid), "-Fn"]);
+  const processes = Bun.spawnSync(PROCESS_LIST_ARGS);
+  if (processes.exitCode !== 0) return null;
+  const family = processFamily(pid, processes.stdout.toString());
+  if (!family.length) return null;
+  const listed = Bun.spawnSync(["lsof", "-p", family.map(row => row.pid).join(","), "-Fn"]);
   if (listed.exitCode !== 0) return null;
   const names = new Set(pinnedNames);
   const paths = [...new Set(listed.stdout.toString().split("\n").filter(line => line.startsWith("n"))
@@ -370,15 +397,15 @@ export async function runCell(spec: CellSpec, workload: Workload, raw: RawReques
     if (!proc.running) throw new Error(`server exited before ready: code=${proc.exitCode} signal=${proc.signalCode}; ${stderrTail.join("\n").slice(-2000)}`);
   };
   const sampleRss = (): number => {
-    const r = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(proc.pid)]);
-    return r.exitCode === 0 ? Number(r.stdout.toString().trim()) / 1024 : 0;
+    const r = Bun.spawnSync(PROCESS_LIST_ARGS);
+    return r.exitCode === 0 ? familyRssMB(proc.pid, r.stdout.toString()) : 0;
   };
   // The periodic sampler never blocks the event loop that timestamps the streams
   // (a synchronous ps call would delay observed token times by tens of ms).
   const sampleRssAsync = async (): Promise<number> => {
-    const ps = Bun.spawn(["ps", "-o", "rss=", "-p", String(proc.pid)], { stdout: "pipe", stderr: "ignore" });
+    const ps = Bun.spawn(PROCESS_LIST_ARGS, { stdout: "pipe", stderr: "ignore" });
     const [text, code] = await Promise.all([new Response(ps.stdout).text(), ps.exited]);
-    return code === 0 ? Number(text.trim()) / 1024 : 0;
+    return code === 0 ? familyRssMB(proc.pid, text) : 0;
   };
   let peakRssMB = 0, legPeakMB = 0, sampling = false;
   const rssByLeg: Array<[string, number]> = [];

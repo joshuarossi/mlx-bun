@@ -308,6 +308,7 @@ export function markdown(run: RunRecord): string {
     ...run.plan.references.map(ref => `reference ${ref.label}${ref.version ? ` ${ref.version}` : ""}: \`${ref.command.join(" ")}\`` +
       (ref.registerCommand ? ` (register: \`${ref.registerCommand.join(" ")}\`)` : "")),
     `pinned native library: ${run.plan.native.library}`,
+    "memory: RSS summed across the server process family, including inference workers; shared pages may be counted more than once.",
     `workload seed ${run.plan.seed}; ${run.plan.workload.decodeRuns} decode samples of ${run.plan.workload.decodeTokens} tokens, ` +
       `${run.plan.workload.ttftRuns} cold TTFT samples (nominal 1k-token prompt), ` +
       `${run.plan.workload.withContext ? `nominal context target ${run.plan.workload.contextTokens}` : "context skipped"}, ` +
