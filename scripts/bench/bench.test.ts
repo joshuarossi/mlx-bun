@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { completionProbe, decodeStable, measureChatRequest, probeVerdict, runCell, scaledBudgetMs, ServerProcess, waitReady,
-  workloadNonce, type CellResult, type ReqResult } from "./measure";
+  workloadNonce, processFamily, familyRssMB, loadedMlxLibraries, type CellResult, type ReqResult } from "./measure";
 import { artifactFiles, CANONICAL, cellArgs, checkOutputDirectory, describeModel, nativeFiles, planCells, profileProblems, sourceSnapshot, validatePlan,
   WORKLOAD, type Plan } from "./plan";
 import { comparePair, qualification, type CellRecord, type RunRecord } from "./report";
@@ -14,6 +14,33 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), "bench-serve-test-")));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 let counter = 0;
 const fresh = (name: string) => { const dir = join(scratch, `${name}-${counter++}`); mkdirSync(dir, { recursive: true }); return dir; };
+
+test("memory observation includes workers, grandchildren and orphaned group members but excludes unrelated servers", () => {
+  const listing = "12 11 12 1024\n14 13 999 3072\n13 12 13 2048\n15 1 12 4096\n16 1 16 8192\n";
+  expect(processFamily(12, listing).map(row => row.pid)).toEqual([12, 14, 13, 15]);
+  expect(familyRssMB(12, listing)).toBe(10);
+  expect(processFamily(99, listing)).toEqual([]);
+  expect(familyRssMB(12, "")).toBe(0);
+});
+
+test("native provenance observes a library opened only by a worker", async () => {
+  const dir = fresh("worker-library"), library = join(dir, "libmlxc.dylib");
+  writeFileSync(library, "worker provenance fixture");
+  const worker = `const fd = require('node:fs').openSync(${JSON.stringify(library)}, 'r'); console.log('ready'); await Bun.sleep(60000);`;
+  const child = Bun.spawn([process.execPath, "-e", `const w=Bun.spawn([process.execPath,'-e',${JSON.stringify(worker)}],{stdout:'pipe'}); for await(const data of w.stdout){ console.log('ready'); break; } await Bun.sleep(60000);`], { stdout: "pipe", stderr: "ignore" });
+  try {
+    const reader = child.stdout.getReader();
+    await reader.read();
+    const loaded = loadedMlxLibraries(child.pid);
+    expect(loaded?.some(file => file.path === realpathSync(library))).toBe(true);
+  } finally {
+    const ps = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,rss="]);
+    for (const row of processFamily(child.pid, ps.stdout.toString()).reverse()) {
+      try { process.kill(row.pid, "SIGTERM"); } catch { /* exited */ }
+    }
+    await child.exited;
+  }
+});
 
 function repo(): string {
   const dir = fresh("tree");
