@@ -29,6 +29,8 @@ export interface MlxDraftRows<Context = MlxArray> {
   draftDevice?(pending: readonly number[], depth: number, steps: readonly number[]):
     { tokens: MlxArray; resolve(read: readonly number[]): number[][] } | null;
   commit(accepted: readonly number[], context: Context): void | Promise<void>;
+  /** Diagnostic barrier for retained lazy state; never called by normal rounds. */
+  materialize?(): void;
 }
 
 /** A bound graph transfers both tensors on success and releases partial
@@ -36,6 +38,8 @@ export interface MlxDraftRows<Context = MlxArray> {
 export interface MlxRowVerification<Context extends DisposableResource = MlxArray> {
   readonly transaction: SpeculativeTransaction<readonly number[]>;
   forward(ids: MlxArray): Promise<{ logits: MlxArray; context: Context }>;
+  /** Diagnostic barrier for retained target state after verification/rollback. */
+  materialize?(): void;
 }
 
 export interface MlxSpeculativeRow {
@@ -163,6 +167,7 @@ export async function prepareSpeculativeRows<Context extends DisposableResource 
       // Force the verify forward to completion so its time is not attributed
       // to the sampling readback. Production leaves it lazy on purpose.
       ops.evalAll([verification.logits]);
+      target.materialize?.();
       phaseMs.verify = lap();
     }
     const results = await sampleSpeculativeRows(rows, proposals, verification.logits);
@@ -173,7 +178,11 @@ export async function prepareSpeculativeRows<Context extends DisposableResource 
         if (phaseMs) lap();
         target.transaction.resolve(accepted);
         await draft.commit(accepted, verification.context);
-        if (phaseMs) phaseMs.commit = lap();
+        if (phaseMs) {
+          target.materialize?.();
+          draft.materialize?.();
+          phaseMs.commit = lap();
+        }
       },
       dispose,
       ...(phaseMs ? { phaseMs } : {}),

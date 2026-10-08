@@ -4,6 +4,31 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { makeStepSampler } from "../../src/sampling/index";
 import { advanceSpeculativeOutputs, advanceSpeculativeRows, prepareSpeculativeRows } from "../../src/generation/speculative/round";
+import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
+
+test("phase diagnostics settle retained state; ordinary rounds add no barriers", async () => {
+  for (const enabled of [false, true]) {
+    const events: string[] = [];
+    const sampling = makeStepSampler({ temperature: 0 }, {
+      tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",
+    });
+    try {
+      await withRuntimeConfig(createRuntimeConfig({ MLX_BUN_SPEC_PHASE_TIMING: enabled ? "1" : "0" }), async () => {
+        const round = await prepareSpeculativeRows([{ pending: 0, step: 0, remaining: 4, eosTokenIds: [], sampling }], 1, {
+          draft: () => [[1]], commit: () => { events.push("commit"); }, materialize: () => { events.push("draft-state"); },
+        }, {
+          transaction: { canBegin: () => true, begin() {}, resolve() {} },
+          materialize: () => { events.push("target-state"); },
+          async forward() { return { logits: MlxArray.fromFloat32(new Float32Array([0, 1, 0, 1]), [1, 2, 2]),
+            context: ops.zeros([1, 2, 2], Dtype.float32) }; },
+        });
+        try { await round.commit(); expect(Boolean(round.phaseMs)).toBe(enabled); }
+        finally { round.dispose(); }
+      });
+      expect(events).toEqual(enabled ? ["target-state", "commit", "target-state", "draft-state"] : ["commit"]);
+    } finally { sampling.dispose(); }
+  }
+});
 
 test("one verify graph serves independent acceptance, EOS, budgets and logprobs", async () => {
   const proposals = [[2, 3, 4], [5, 6, 7], [8, 9, 10]];

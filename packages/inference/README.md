@@ -1046,6 +1046,41 @@ media fetching keeps the existing destination, size, and timeout controls.
 
 ## Speculative generation
 
+`bun --no-env-file scripts/bench-mtp.ts --help` describes the paired MTP
+performance runner. It consumes this package's production batch-one grouped
+method with local target and companion artifacts, pins their content, warms
+each proposal depth, and reverses variant order on alternating repetitions.
+Reports stay outside the checkout. It records accepted draft proposals and
+delivered tokens separately: depth two permits at most two accepted drafts,
+while a fully accepted round can deliver three tokens including its bonus.
+The optimization score is total delivered tokens divided by total step time;
+accepted drafts per step time, request/first-token/decode time, per-position
+acceptance, peak MLX memory and output token identity are also recorded.
+
+Separate diagnostic runs report draft, verification, sampling and commit wall
+time. They disable device-first overlap and evaluate retained state through
+the target and Qwen MTP materialization hooks, including commit work that would
+otherwise execute in the next round. Their throughput is not a production
+performance estimate. These checks cover plain KV, greedy sampling and B1;
+kernel candidates still need their numerical/state gates and serving checks.
+
+The standalone `scripts/bench/build-q4-native.sh` probe builds an offline Metal
+library and a native MLX `Primitive` with `output_shapes`, bypassing
+`fast.metal_kernel`'s shapeless limitation. It reads packed affine Q4 directly
+and shares decoded weights across verification rows. This is a lab experiment,
+not a runtime dispatch choice or a Trellis decoder. Its exact Q4-to-half and
+BF16-to-FP32 conversions do not establish reduction-order parity; the executable
+reports equality and error against MLX separately from projection timings.
+Build inputs must match the installed MLX version. The script's usage lists
+the required MLX source, Metal C++ headers, native libraries and external output
+directory. Offline compilation needs Xcode's Metal Toolchain component;
+`--runtime-compile` instead uses macOS's compiler through the native Metal
+backend, still without `fast.metal_kernel`. The probe checks all 16 Q4 codes
+and all 65,280 finite BF16 bit patterns before measuring projections. Append
+`mma` to the executable's arguments to measure its register-only matrix-product
+candidate instead of its shared-weight scalar reduction. Both are experiments;
+the current runtime dispatch is unchanged.
+
 `generation/speculative` exposes `generateSpeculative`, `specRun`, and the existing
 assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal providers.
 Supply the target graph, draft provider, token budget, and token callback yourself.
