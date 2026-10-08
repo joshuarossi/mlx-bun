@@ -755,6 +755,18 @@ M=1–5/8/9/16, M=32 for variants 11–13, and M=128/512 for variant 13.
 These are exact within-artifact specialization checks, not a Python oracle
 or timing claim.
 
+For variant 13, the `applegpu_g13s` single-row bf16 gate/up kernel at
+5120 → 17408, matching 2/3/4-bit widths, T=256 and L=12 shares a 16 KiB
+threadgroup codebook across sixteen output rows. Its values retain the unrefined
+float32 decoder contract, scale multiplication, accumulation order and activation
+tail. `MLX_BUN_TRELLIS_GATEUP_CODEBOOK=0` selects inline decoding for A/B runs.
+The [kernel test](tests/kernels/trellis-gateup-codebook.test.ts) checks all 4096
+codebook values and fused outputs; the [artifact test](tests/parity/trellis-gateup-codebook.test.ts)
+uses `MLX_BUN_TEST_TRELLIS_MODEL` to compare complete logits, live cache state
+and greedy continuation. The [standard-request benchmark](../../apps/mlx-bun/scripts/bench-trellis-gateup.ts)
+provides `--help`, requires local weights and an external output path, and runs
+one fixed prompt with 256 greedy tokens and MTP off.
+
 Run each file with `bun --no-env-file test <file>` and exclusive GPU access.
 Unset required paths skip before native imports; supplied invalid model paths
 or a partial padded-prefill opt-in fail. Open acceptance work lives in
