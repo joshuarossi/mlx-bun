@@ -768,6 +768,11 @@ scale multiplication and reduction order. These defaults are also limited to
 `MLX_BUN_TRELLIS_SCATTER_BITS=0` (balanced 3-bit down) and
 `MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS=0` (2/4-bit down) select their original
 conversions. Other shapes and shared multi-row kernels keep their existing paths.
+The qualified down kernels also generate a 16 KiB float32 threadgroup codebook,
+using 128/512/256 threads for 2/3/4-bit weights respectively. All 128 partial sums
+and their reduction order remain unchanged.
+`MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK=0` selects the per-value decoder;
+disable this table as well when comparing the down representation controls.
 The [kernel test](tests/kernels/trellis-gateup-codebook.test.ts) checks all 4096
 codebook values, all 1021 possible integer decoder values and fused outputs;
 the [artifact test](tests/parity/trellis-gateup-codebook.test.ts)

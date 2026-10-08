@@ -3,6 +3,7 @@ import { Dtype, MlxArray, MetalKernel } from "@mlx-bun/mlx";
 import { deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import { HEADER } from "../../src/kernels/trellis/codebook";
 import { fusedGateUpSwiglu, gateUpCodebookEligible } from "../../src/kernels/trellis/gate-up";
+import { scatterFloatCodebookEligible } from "../../src/kernels/trellis/scatter";
 import type { TrellisGeometry } from "../../src/kernels/trellis/geometry";
 import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 
@@ -28,7 +29,7 @@ test("threadgroup codebook preserves all 4096 unrefined float32 decoded values",
     outputNames: ["baseline", "cached"], header: HEADER, source: String.raw`
       threadgroup float table[4096];
       for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 512u)
-        table[i] = trellis_unrefined_y(trellis_y(i));
+        table[i] = trellis_unrefined_bits_y(trellis_y(i));
       threadgroup_barrier(metal::mem_flags::mem_threadgroup);
       const uint i = thread_position_in_grid.x;
       baseline[i] = trellis_unrefined_y(trellis_y(i));
@@ -42,6 +43,19 @@ test("threadgroup codebook preserves all 4096 unrefined float32 decoded values",
     try { expect(Buffer.from(cached!.rawBytes()).equals(Buffer.from(inline!.rawBytes()))).toBe(true); }
     finally { inline!.dispose(); cached!.dispose(); }
   } finally { kernel.dispose(); }
+});
+
+test("down float codebook qualifies ordinary K2/K4 and interleaved K3 only on M1", () => {
+  const down: TrellisGeometry = { ...geometry, axis: 0, inFeatures: 17408, outFeatures: 5120 };
+  for (const k of [2, 3, 4]) {
+    const g: TrellisGeometry = { ...down, k, blockInterleave: k === 3 ? 2 : undefined };
+    expect(scatterFloatCodebookEligible(g, 1, Dtype.bfloat16, 13, "applegpu_g13s")).toBe(true);
+    expect(scatterFloatCodebookEligible(g, 1, Dtype.bfloat16, 13, "applegpu_g16s")).toBe(false);
+    expect(scatterFloatCodebookEligible(g, 2, Dtype.bfloat16, 13, "applegpu_g13s")).toBe(false);
+    expect(scatterFloatCodebookEligible(g, 1, Dtype.float32, 13, "applegpu_g13s")).toBe(false);
+    expect(scatterFloatCodebookEligible(g, 1, Dtype.bfloat16, 12, "applegpu_g13s")).toBe(false);
+  }
+  expect(scatterFloatCodebookEligible({ ...down, k: 3 }, 1, Dtype.bfloat16, 13, "applegpu_g13s")).toBe(false);
 });
 
 test("bit representation matches unrefined conversion for every possible Trellis y", () => {

@@ -8,7 +8,7 @@ const { values } = parseArgs({ options: { model: { type: "string" }, out: { type
 if (values.help) {
   console.log("usage: bun apps/mlx-bun/scripts/bench-trellis-gateup.ts --model <local snapshot> --out <external.json>\n" +
     "One fixed prompt, 256 greedy tokens, plain KV, MTP off. For alternating A/B runs on an idle GPU, set each qualified control to 0 or 1:\n" +
-    "MLX_BUN_TRELLIS_GATEUP_CODEBOOK, MLX_BUN_TRELLIS_MIXED_BITS, MLX_BUN_TRELLIS_SCATTER_BITS, MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS.");
+    "MLX_BUN_TRELLIS_GATEUP_CODEBOOK, MLX_BUN_TRELLIS_MIXED_BITS, MLX_BUN_TRELLIS_SCATTER_BITS, MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS, MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK.");
   process.exit(0);
 }
 if (!values.model || !values.out) throw new Error("usage: bun bench-trellis-gateup.ts --model <local snapshot> --out <external.json>");
@@ -56,6 +56,7 @@ const report = { model: values.model, prompt, argv, bun: Bun.version,
   mixedBits: process.env.MLX_BUN_TRELLIS_MIXED_BITS ?? "default",
   scatterBits: process.env.MLX_BUN_TRELLIS_SCATTER_BITS ?? "default",
   genericScatterBits: process.env.MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS ?? "default",
+  scatterFloatCodebook: process.env.MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK ?? "default",
   configuration: { capacity: 1, mtp: false, kv: "off", temperature: 0, maxTokens: 256, promptCache: "none" },
   loadMs, engineMs, totalMs: performance.now() - start,
   firstTokenMs: tokens[0]?.ms, decodeMs: tokens.at(-1)!.ms - tokens[0]!.ms,

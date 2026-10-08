@@ -5,7 +5,7 @@ import { Weights, loadModelConfig } from "@mlx-bun/inference/artifacts";
 import { Qwen35Model } from "@mlx-bun/inference/models/qwen3_5";
 import { TrellisLinear } from "@mlx-bun/inference/layers";
 import { gateUpCodebookEligible } from "../../src/kernels/trellis/gate-up";
-import { scatterBitsEligible } from "../../src/kernels/trellis/scatter";
+import { scatterBitsEligible, scatterFloatCodebookEligible } from "../../src/kernels/trellis/scatter";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { createRuntimeConfig, runtimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 import { deviceArchitecture, clearCache } from "@mlx-bun/mlx/ffi";
@@ -28,12 +28,15 @@ test.skipIf(!artifact || deviceArchitecture() !== "applegpu_g13s")(
       scatterBitsEligible(layer.mlp.down.geometry, 1, Dtype.bfloat16, 13) ? [layer.mlp.down.geometry.k] : []);
     expect(eligibleDown.filter(k => k === 3).length).toBe(40);
     expect(eligibleDown.filter(k => k === 2 || k === 4).length).toBe(24);
-    const run = (mode: "inline" | "codebook" | "combined" | "generic", prompt: number[]) => withRuntimeConfig(createRuntimeConfig({
+    expect(model.layers.filter(layer => layer.mlp.down instanceof TrellisLinear &&
+      scatterFloatCodebookEligible(layer.mlp.down.geometry, 1, Dtype.bfloat16, 13)).length).toBe(64);
+    const run = (mode: "inline" | "codebook" | "combined" | "generic" | "scatter-codebook", prompt: number[]) => withRuntimeConfig(createRuntimeConfig({
       ...runtimeConfig().values, MLX_BUN_NO_FUSED_SDPA: "1", MLX_BUN_TRELLIS_VARIANT: "13",
       MLX_BUN_TRELLIS_GATEUP_CODEBOOK: mode === "inline" ? "0" : "1",
-      MLX_BUN_TRELLIS_MIXED_BITS: mode === "combined" || mode === "generic" ? "1" : "0",
-      MLX_BUN_TRELLIS_SCATTER_BITS: mode === "combined" || mode === "generic" ? "1" : "0",
-      MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS: mode === "generic" ? "1" : "0",
+      MLX_BUN_TRELLIS_MIXED_BITS: ["combined", "generic", "scatter-codebook"].includes(mode) ? "1" : "0",
+      MLX_BUN_TRELLIS_SCATTER_BITS: ["combined", "generic", "scatter-codebook"].includes(mode) ? "1" : "0",
+      MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS: mode === "generic" || mode === "scatter-codebook" ? "1" : "0",
+      MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK: mode === "scatter-codebook" ? "1" : "0",
     }), () => {
       const caches = model.makeCache();
       const output: { logits: string; tokens: number[]; state: unknown[] }[] = [];
@@ -74,10 +77,12 @@ test.skipIf(!artifact || deviceArchitecture() !== "applegpu_g13s")(
         const prompt = Array.from({ length }, (_, i) => 100 + i * 7);
         const baseline = run("inline", prompt), codebook = run("codebook", prompt), combined = run("combined", prompt);
         const generic = run("generic", prompt);
+        const scatterCodebook = run("scatter-codebook", prompt);
         expect(codebook).toEqual(baseline);
         expect(combined).toEqual(baseline);
         expect(generic).toEqual(baseline);
-        console.log(`[trellis-codebook+bits] prefix=${length}: 17 full logit tensors, all live state and tokens match across four modes`);
+        expect(scatterCodebook).toEqual(baseline);
+        console.log(`[trellis-codebook+bits] prefix=${length}: 17 full logit tensors, all live state and tokens match across five modes`);
       }
     } finally { weights.dispose(); clearCache(); }
   }, 180_000);
