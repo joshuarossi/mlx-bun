@@ -198,7 +198,8 @@ export interface SpecPhaseMs {
   verify: number;
   /** Window sampling and its readback, plus the host accept walk. */
   sample: number;
-  /** Target transaction resolve plus draft commit. */
+  /** Target transaction resolve plus draft commit. Includes retained-state
+   * evaluation when the target/drafter supply diagnostic materialize hooks. */
   commit: number;
   rounds: number;
   /** Target-forward component wall ms (`MLX_BUN_SPEC_LAYER_PROFILE=1`): per-op

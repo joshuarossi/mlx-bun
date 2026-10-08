@@ -15,6 +15,7 @@ import { cloneKvCaches } from "../state/persistence";
 import type { Cache } from "../contracts/mlx/cache";
 import { targetCacheLayout } from "../state/layout";
 import { MlxStateRows } from "../state/rows";
+import { leaseCacheStates } from "../state/leases";
 import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "../generation/speculative/bindings/binding";
 import { bindLegacyDraftTarget } from "../generation/speculative/bindings/draft-target";
 import { bindRowCacheRollback } from "../state/rollback";
@@ -369,6 +370,11 @@ class SpeculativeGroup implements MlxGroupedMethod {
         draft: () => proposals,
         commit: (accepted, context) => this.#draft!.consume!(externalTokens!, context, accepted.map(n => n + 1)),
       } : this.#draft!, {
+        materialize: () => {
+          const state = leaseCacheStates(this.#target!.caches);
+          try { ops.evalAll([...state.borrow()]); }
+          finally { state.close(); }
+        },
         transaction: !echoDepth ? rollback : { ...rollback,
           begin(depth) {
             const start = performance.now(); rollback.begin(depth);
