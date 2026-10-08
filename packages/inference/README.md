@@ -776,8 +776,7 @@ weights after generation completes.
 
 Use the graph matching your checkpoint, or compose your own operations and supply
 an explicit binding. The root export contains common loading and generation
-helpers; the subpaths below expose individual components. These workspace packages
-are version `0.0.0` during the refactor and have not been published to npm.
+helpers; the subpaths below expose individual components.
 
 ## Trellis weight expansion
 
@@ -1209,8 +1208,10 @@ store identity rebuild the cache.
 logits and hidden states, including the existing padded-batch masks. The original
 `trainForward` names remain aliases for compatibility. `evalPpl` computes
 perplexity over caller-provided token rows; `klPerToken` compares supplied logits.
-Neither requires an evaluation dataset registry or runner. Tool-call parsing is
-available from `input`; template/schema fill compilation lives in `generation/fill`.
+Neither requires an evaluation dataset registry or runner; the app's
+`mlx-bun perplexity` drives `evalPpl` over a local text/JSONL file. Tool-call
+parsing is available from `input`; template/schema fill compilation lives in
+`generation/fill`.
 
 Standalone app bundles keep the expert-I/O library and frame extractor beside
 the executable. Explicit `MLX_BUN_EXPERT_IO_DYLIB` / `MLX_BUN_FRAME_EXTRACT`

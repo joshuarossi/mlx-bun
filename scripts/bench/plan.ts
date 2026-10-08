@@ -15,6 +15,9 @@ export const CONFIGURATIONS = {
    * continuous scheduler at capacity 1. Not a candidate serial lane. */
   serial: { args: ["--batch", "1"], note: "capacity-1 control (baseline serial, candidate continuous at capacity 1)" },
   mixed: { args: ["--kv-quant", "config"], note: "artifact kv_config.json", requiresKvConfig: true },
+  /** Native MTP companion (`--draft ID=PATH`) at a fixed verify depth; models without one are not applicable. */
+  mtp2: { args: [] as string[], note: "MTP companion, depth 2", draftDepth: 2 },
+  mtp3: { args: [] as string[], note: "MTP companion, depth 3", draftDepth: 3 },
 } as const;
 export type Configuration = keyof typeof CONFIGURATIONS;
 
@@ -22,6 +25,8 @@ export type Configuration = keyof typeof CONFIGURATIONS;
 export const CANONICAL = {
   models: ["cpm5", "e4b", "12B", "qwen27b"],
   configurations: ["default", "serial", "mixed"] as Configuration[],
+  /** The refactor gate's MTP depths, which a qualifying matrix may add after main's configurations. */
+  optionalConfigurations: ["mtp2", "mtp3"] as Configuration[],
   references: ["mlx-lm"],
   withContext: true,
 } as const;
@@ -62,6 +67,8 @@ export interface ModelSpec {
   kvConfig: boolean;
   packedTrellis: boolean;
   files: FileRecord[];
+  /** MTP companion for the mtp configurations, pinned like the model. */
+  draft?: { path: string; files: FileRecord[] };
 }
 export interface Plan {
   schema: 1;
@@ -149,8 +156,10 @@ export function profileProblems(plan: Plan): string[] {
   const problems: string[] = [];
   const ids = plan.models.map(model => model.id);
   if (JSON.stringify(ids) !== JSON.stringify(CANONICAL.models)) problems.push(`models ${ids} are not ${CANONICAL.models}`);
-  if (JSON.stringify(plan.configurations) !== JSON.stringify(CANONICAL.configurations))
-    problems.push(`configurations ${plan.configurations} are not ${CANONICAL.configurations}`);
+  const base = plan.configurations.slice(0, CANONICAL.configurations.length), extra = plan.configurations.slice(base.length);
+  if (JSON.stringify(base) !== JSON.stringify(CANONICAL.configurations) ||
+      JSON.stringify(extra) !== JSON.stringify(CANONICAL.optionalConfigurations.filter(name => extra.includes(name))))
+    problems.push(`configurations ${plan.configurations} are not ${CANONICAL.configurations} optionally followed by ${CANONICAL.optionalConfigurations}`);
   if (JSON.stringify(plan.references.map(ref => ref.label)) !== JSON.stringify(CANONICAL.references))
     problems.push(`references ${plan.references.map(ref => ref.label)} are not ${CANONICAL.references}`);
   if (!plan.workload.withContext) problems.push("long-context, restart phases are skipped");
@@ -179,8 +188,11 @@ export function validatePlan(value: unknown): Plan {
   if (!Array.isArray(plan.configurations) || !plan.configurations.length ||
       plan.configurations.some(name => !(name in CONFIGURATIONS))) fail("unknown configuration");
   if (!Array.isArray(plan.models) || !plan.models.length) fail("at least one model is required");
-  for (const model of plan.models)
+  for (const model of plan.models) {
     if (!model.id || !isAbsolute(model.path) || !Array.isArray(model.files) || !model.files.length) fail(`model ${model.id} is not pinned`);
+    if (model.draft && (!isAbsolute(model.draft.path) || !Array.isArray(model.draft.files) || !model.draft.files.length))
+      fail(`model ${model.id} draft is not pinned`);
+  }
   if (!plan.native?.library || !isAbsolute(plan.native.library) || !plan.native.files?.length) fail("native library is not pinned");
   const problems = profileProblems(plan);
   if (problems.length) fail(`profile all is not main's full matrix: ${problems.join("; ")}`);
@@ -213,6 +225,8 @@ export function pinProblems(plan: Plan): string[] {
   for (const model of plan.models) {
     const actual = artifactFiles(model.path);
     if (JSON.stringify(actual) !== JSON.stringify(model.files)) problems.push(`model ${model.id} files changed`);
+    if (model.draft && JSON.stringify(artifactFiles(model.draft.path)) !== JSON.stringify(model.draft.files))
+      problems.push(`model ${model.id} draft files changed`);
   }
   if (JSON.stringify(nativeFiles(plan.native.library)) !== JSON.stringify(plan.native.files)) problems.push("native library files changed");
   return problems;
@@ -233,7 +247,9 @@ export function planCells(plan: Plan): PlannedCell[] {
   plan.models.forEach((model, m) => {
     plan.configurations.forEach((configuration, c) => {
       const trees = (m + c) % 2 ? [...TREES].reverse() : TREES;
-      const skipped = "requiresKvConfig" in CONFIGURATIONS[configuration] && !model.kvConfig ? "no kv_config.json in the artifact" : undefined;
+      const spec = CONFIGURATIONS[configuration];
+      const skipped = "requiresKvConfig" in spec && !model.kvConfig ? "no kv_config.json in the artifact"
+        : "draftDepth" in spec && !model.draft ? "no MTP companion (--draft) for this model" : undefined;
       for (const tree of trees) cells.push({ key: `${model.id}/${configuration}/${tree}`, model: model.id, kind: "tree", tree,
         configuration, order: cells.length, ...(skipped ? { skipped } : {}) });
     });
@@ -250,9 +266,13 @@ export function planCells(plan: Plan): PlannedCell[] {
 /** The exact argv for one cell: the explicit command, then serve arguments. */
 export function cellArgs(plan: Plan, cell: PlannedCell, port: number, ssdDir: string): string[] {
   const model = plan.models.find(m => m.id === cell.model)!;
-  if (cell.kind === "tree")
+  if (cell.kind === "tree") {
+    const spec = CONFIGURATIONS[cell.configuration!];
+    const draft = "draftDepth" in spec
+      ? ["--draft-kind", "mtp", "--draft-model", model.draft!.path, "--num-draft-tokens", String(spec.draftDepth)] : [];
     return [...plan.trees[cell.tree!].command, "--model", model.path, "--port", String(port), "--no-open",
-      "--ssd-cache", ssdDir, ...CONFIGURATIONS[cell.configuration!].args];
+      "--ssd-cache", ssdDir, ...spec.args, ...draft];
+  }
   const ref = plan.references.find(r => r.label === cell.reference)!;
   return [...(needsRegister(model) ? ref.registerCommand! : ref.command), "--model", model.path, "--port", String(port)];
 }

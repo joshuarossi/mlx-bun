@@ -16,7 +16,7 @@ export async function libraryPackages(repository = root): Promise<string[]> {
 }
 
 /** CI links to the checked-out build commit; local builds use their checkout.
- * An unpacked source tree has no commit, so only that case uses the branch. */
+ * An unpacked source tree has no commit, so only that case uses main. */
 export function sourceRevision(repository: string, githubSha = process.env.GITHUB_SHA): string {
   const valid = (value: string | undefined): value is string => !!value && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
   if (valid(githubSha)) return githubSha;
@@ -26,7 +26,7 @@ export function sourceRevision(repository: string, githubSha = process.env.GITHU
   if (head.status === 0 && valid(revision)) return revision;
   const inside = spawnSync("git", ["-C", repository, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
   if (inside.error) throw inside.error;
-  if (inside.status !== 0 && inside.stderr.includes("not a git repository")) return "refactor/monorepo";
+  if (inside.status !== 0 && inside.stderr.includes("not a git repository")) return "main";
   throw new Error("Cannot resolve the documentation source commit in this Git checkout");
 }
 

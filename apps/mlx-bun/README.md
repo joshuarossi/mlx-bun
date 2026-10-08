@@ -11,8 +11,11 @@ or use `mlx-bun` after the root's `bun run link-cli` step. The launcher checks
 the app manifest's Bun minimum and Apple Silicon macOS before loading app code.
 Help and version work before native setup; inference requires the staged natives.
 Use `serve --help` for accepted options. A terminal session opens the browser
-unless `--no-open` is supplied. Startup without a model selects a cached model;
-if none is supported, it downloads the starter, then hands the recommended model
+unless `--no-open` is supplied, focusing an already-open app tab in a running
+Chrome, Arc, Brave, Edge, or Safari (AppleScript) before opening a new one.
+Before selecting a model, startup refuses a TCP port that already serves one
+and names its model (exit 1); port 0 is never checked. Startup without a model
+selects a cached model; if none is supported, it downloads the starter, then hands the recommended model
 to the app's download owner as a background transfer, visible on `GET /downloads`
 and joined at shutdown. A signal before the app exists cancels selection (a
 starter download stays resumable); a signal during model load closes the app as
@@ -455,7 +458,7 @@ accepted because mlx-bun never runs code from a model repository.
 
 mlx-lm's other console scripts have no counterpart and get no alias: `chat` (no
 terminal chat; use the web app), `benchmark`, `cache_prompt`, `evaluate`,
-`perplexity`, `manage`, `share`, and the quantizers `awq`, `dwq`, `dynamic_quant`
+`perplexity` (use `mlx-bun perplexity` with a local data file), `manage`, `share`, and the quantizers `awq`, `dwq`, `dynamic_quant`
 and `gptq` (`convert --target-bpw` is the mixed-precision path).
 
 Delivery: the package's `bin` links `mlx-bun.<cmd>` to `bin/mlx-bun.<cmd>.mjs`, a
@@ -961,7 +964,7 @@ pointer to `mlx-bun serve` when none answers. The entity gold main read from
 `goldens/dreaming-entities-gold.json` is a published dataset: without that
 file the resolver runs unseeded (store aliases still fold).
 
-[Pipeline tests](tests/memory/) port main's model-free suites with fake stage
+[Pipeline tests](../../packages/module-memory/tests/) port main's model-free suites with fake stage
 calls, in-test vaults, and an in-test entity gold; the
 [client test](tests/server/memory-completion-client.test.ts) and
 [verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.

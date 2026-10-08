@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, focusTabScript, installShutdownHandlers, openChatUi, parseServeOptions, probeServer, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 import { decodeLaunch, encodeLaunch } from "../src/jobs/worker-process";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
@@ -145,7 +145,7 @@ function runtime(interactive = true) {
       downloads: { start: repo => { downloads.push(repo); }, active: [] }, close: async () => { closes++; } }; },
     startTranscription: async (m, options) => { transcriptionStarts.push([m, options]); return { port: 4321,
       downloads: { start() { throw new Error("no downloads"); }, active: [] }, close: async () => { closes++; } }; },
-    interactive, open: url => { opens.push(url); }, log: message => { logs.push(message); }, signals,
+    interactive, probe: async () => null, open: url => { opens.push(url); }, log: message => { logs.push(message); }, signals,
     exit: code => { exits.push(code); }, error: error => { errors.push(error); },
   };
   return { dependencies, signals, opens, exits, errors, starts, transcriptionStarts, downloads, logs, closes: () => closes };
@@ -279,6 +279,91 @@ test("signals wait for teardown and report cleanup failures with a nonzero exit"
 test("browser addresses support IPv6 and wildcard listeners", () => {
   expect(browserUrl("::", 8080)).toBe("http://localhost:8080/#/chat");
   expect(browserUrl("::1", 8080)).toBe("http://[::1]:8080/#/chat");
+});
+
+// Stub of the /v1/models surface: the served model is the row with the capability extras, after a registry row.
+const modelsStub = () => Bun.serve({ port: 0, fetch: request => new URL(request.url).pathname === "/v1/models"
+  ? Response.json({ data: [{ id: "other/registry-row" }, { id: "test/model-4bit", context_window: 131072 }] })
+  : new Response("not found", { status: 404 }) });
+
+test("the collision probe names the model a server on the port serves, and null when nothing serves there", async () => {
+  const stub = modelsStub();
+  try { expect(await probeServer("127.0.0.1", stub.port!)).toEqual(["test/model-4bit"]); } finally { await stub.stop(true); }
+  const other = Bun.serve({ port: 0, fetch: () => new Response("not found", { status: 404 }) });
+  try { expect(await probeServer("127.0.0.1", other.port!)).toBeNull(); } finally { await other.stop(true); }
+  expect(await probeServer("127.0.0.1", 1, 300)).toBeNull();
+});
+
+test("the collision probe checks the configured bind address", async () => {
+  const run = runtime(false), probed: string[] = [];
+  await expect(runServe(parseCommand("serve", ["--host", "10.1.2.3", "--port", "8123"]), { ...run.dependencies,
+    probe: async (host, port) => { probed.push(`${host}:${port}`); return ["busy"]; } })).rejects.toThrow("port 8123 is already serving busy.");
+  expect(probed).toEqual(["10.1.2.3:8123"]);
+});
+
+test("a busy port fails startup before model selection, isolated or in-process; port 0 is never probed", async () => {
+  const stub = modelsStub();
+  try {
+    for (const extra of [[], ["--in-process"]]) {
+      const run = runtime();
+      const { probe: _, ...dependencies } = run.dependencies;
+      let selected = false;
+      await expect(runServe(parseCommand("serve", ["--port", String(stub.port), ...extra]), { ...dependencies,
+        resolve: async () => { selected = true; throw new Error("must not select"); } }))
+        .rejects.toThrow(`port ${stub.port} is already serving test/model-4bit.\nreuse it, stop it, or pick --port <other>.\n`);
+      expect(selected).toBe(false); expect(run.starts).toEqual([]);
+      expect(run.signals.listenerCount("SIGINT")).toBe(0);
+    }
+  } finally { await stub.stop(true); }
+  const run = runtime(false), probed: number[] = [];
+  const app = await runServe(parseCommand("serve", ["--port", "0"]), { ...run.dependencies, probe: async (_host, port) => { probed.push(port); return ["busy"]; } });
+  expect(probed).toEqual([]); await app.close();
+});
+
+test("the chat opener's AppleScript focuses a matching tab in a literal-named browser", () => {
+  const chromium = focusTabScript("Google Chrome", "chromium", "localhost:8080");
+  expect(chromium).toStartWith('tell application "Google Chrome"');
+  expect(chromium).toContain('if URL of t contains "localhost:8080" then');
+  expect(chromium).toContain("set active tab index of w to k");
+  expect(chromium).toEndWith('return "miss"');
+  const safari = focusTabScript("Safari", "safari", "localhost:8080");
+  expect(safari).toStartWith('tell application "Safari"');
+  expect(safari).toContain("set current tab of w to t");
+  expect(safari).not.toContain("active tab index");
+  // The match is a quoted AppleScript literal, never script text.
+  expect(focusTabScript("Arc", "chromium", 'a"b\\c')).toContain('contains "a\\"b\\\\c" then');
+});
+
+test("the chat opener reuses a running browser's tab and otherwise opens a new one", async () => {
+  const runner = (running: string[], focused: string | null, openCode = 0) => {
+    const calls: string[][] = [];
+    const run = async (argv: string[]) => {
+      calls.push(argv);
+      if (argv[0] === "pgrep") return { code: running.includes(argv[2]!) ? 0 : 1, stdout: "" };
+      if (argv[0] === "osascript") return { code: 0, stdout: argv[2]!.startsWith(`tell application "${focused}"`) ? "ok\n" : "miss\n" };
+      return { code: openCode, stdout: "" };
+    };
+    return { calls, run };
+  };
+  const url = "http://localhost:8080/#/chat";
+  // Arc and Safari run; Safari has the tab: Arc's script misses, Safari's focuses, and nothing opens.
+  const reuse = runner(["Arc", "Safari"], "Safari");
+  await openChatUi(url, reuse.run);
+  expect(reuse.calls.filter(argv => argv[0] === "osascript").map(argv => argv[2]!.split("\n")[0])).toEqual(['tell application "Arc"', 'tell application "Safari"']);
+  expect(reuse.calls.at(-1)![2]).toContain('contains "localhost:8080/"');
+  expect(reuse.calls.some(argv => argv[0] === "open")).toBe(false);
+  // No running browser has it: no script compiles for a browser that is not running, and a plain open follows.
+  const fresh = runner(["Google Chrome"], null);
+  await openChatUi(url, fresh.run);
+  expect(fresh.calls.filter(argv => argv[0] === "osascript")).toHaveLength(1);
+  expect(fresh.calls.at(-1)).toEqual(["open", url]);
+  // Port 80 keeps its explicit port, so a tab on localhost:8080 is not a match for it.
+  const port80 = runner(["Safari"], null);
+  await openChatUi("http://localhost:80/#/chat", port80.run);
+  expect(port80.calls.find(argv => argv[0] === "osascript")![2]).toContain('contains "localhost:80/"');
+  // A failing runner only skips that browser; a failed open is still reported.
+  await expect(openChatUi(url, async argv => { if (argv[0] !== "open") throw new Error("blocked"); return { code: 1, stdout: "" }; }))
+    .rejects.toThrow("Browser could not be opened");
 });
 
 

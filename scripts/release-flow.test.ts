@@ -77,4 +77,6 @@ else if(name==="bun"){
       expect(recorded.some(command => command.name === "gh" && command.args[1] === "upload")).toBe(true);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
-});
+  // Runs several release-script subprocesses: about 4 s on an idle M1 Max, past
+  // bun's 5 s default under load.
+}, 30_000);

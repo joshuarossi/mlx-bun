@@ -8,7 +8,7 @@
 //     --candidate-root DIR --candidate-command '["bun","DIR/apps/mlx-bun/bin/mlx-bun.mjs","serve"]'
 //     --native /abs/libmlxc.dylib --model ID=PATH[=LABEL] ...
 //     [--reference 'LABEL={"command":[...],"registerCommand":[...],"version":"..."}' ...]
-//     [--configurations default,serial,mixed] [--skip-context]
+//     [--configurations default,serial,mixed,mtp2,mtp3] [--draft ID=/abs/mtp-companion] [--skip-context]
 //   bun scripts/bench-serve.ts run --plan /abs/plan.json --out /abs/empty-dir
 //   bun scripts/bench-serve.ts compare /abs/run/run.json
 //
@@ -16,12 +16,12 @@
 // phase with stable decode, verified provenance and equal probe prompts.
 // Performance acceptance stays unreviewed: the report flags every slower or
 // higher-memory observation and never applies a tolerance.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, release } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { runCell, stopAll, type Workload } from "./bench/measure";
-import { cellArgs, checkOutputDirectory, CONFIGURATIONS, describeModel, nativeFiles, outsideTrees, pinProblems, planCells,
+import { artifactFiles, cellArgs, checkOutputDirectory, CONFIGURATIONS, describeModel, nativeFiles, outsideTrees, pinProblems, planCells,
   sourceSnapshot, validatePlan, WORKLOAD, type Configuration, type Plan, type ReferenceSpec, type Tree } from "./bench/plan";
 import { markdown, qualification, type CellRecord, type RunRecord } from "./bench/report";
 
@@ -33,12 +33,13 @@ const USAGE = `Paired serve benchmark: baseline tree versus candidate tree over 
       --candidate-root DIR --candidate-command '["bun","DIR/apps/mlx-bun/bin/mlx-bun.mjs","serve"]'
       --native /abs/libmlxc.dylib --model ID=/abs/snapshot[=LABEL] ...
       [--reference 'LABEL={"command":["PY","-m","mlx_lm.server"],"registerCommand":[...],"version":"..."}' ...]
-      [--configurations default,serial,mixed] [--skip-context]
+      [--configurations default,serial,mixed,mtp2,mtp3] [--draft ID=/abs/mtp-companion] [--skip-context]
   bun scripts/bench-serve.ts run --plan /abs/plan.json --out /abs/empty-dir [--ready-timeout-ms N]
   bun scripts/bench-serve.ts compare /abs/run-dir/run.json
 
 Profile all must be main's full matrix (cpm5, e4b, 12B, qwen27b × default, serial, mixed, plus the
-mlx-lm reference); anything narrower is scoped and never full qualification. Outputs must lie outside
+mlx-lm reference), optionally followed by mtp2,mtp3 for models given a --draft companion; anything
+narrower is scoped and never full qualification. Outputs must lie outside
 every tree. run exits 0 only when every applicable cell measured every required phase with stable
 decode, verified library provenance and matching probes; performance acceptance stays unreviewed.`;
 
@@ -156,7 +157,8 @@ export function makePlan(args: string[]): Plan {
     out: { type: "string" }, profile: { type: "string" }, seed: { type: "string", default: "bench-serve-v2" },
     "baseline-root": { type: "string" }, "baseline-command": { type: "string" },
     "candidate-root": { type: "string" }, "candidate-command": { type: "string" },
-    native: { type: "string" }, model: { type: "string", multiple: true }, reference: { type: "string", multiple: true },
+    native: { type: "string" }, model: { type: "string", multiple: true }, draft: { type: "string", multiple: true },
+    reference: { type: "string", multiple: true },
     configurations: { type: "string", default: "default,serial,mixed" }, "skip-context": { type: "boolean", default: false },
   } });
   const trees = Object.fromEntries((["baseline", "candidate"] as Tree[]).map(tree => {
@@ -176,6 +178,13 @@ export function makePlan(args: string[]): Plan {
   });
   if (!values.native) throw new Error("--native is required");
   const models = (values.model ?? []).map(spec => { const [id, path, label] = spec.split("="); return describeModel(id!, path!, label); });
+  for (const spec of values.draft ?? []) {
+    const [id, path] = spec.split("=");
+    const model = models.find(m => m.id === id);
+    if (!model || !path || !isAbsolute(path)) throw new Error(`--draft ${spec} must be ID=/abs/companion for a planned model`);
+    const resolved = realpathSync(path);
+    model.draft = { path: resolved, files: artifactFiles(resolved) };
+  }
   const partial = { schema: 1 as const, profile: values.profile as Plan["profile"], seed: values.seed!,
     workload: { ...WORKLOAD, withContext: !values["skip-context"] }, trees, references,
     configurations: values.configurations!.split(",") as Configuration[], models,
