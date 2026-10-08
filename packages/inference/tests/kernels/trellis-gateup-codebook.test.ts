@@ -44,6 +44,24 @@ test("threadgroup codebook preserves all 4096 unrefined float32 decoded values",
   } finally { kernel.dispose(); }
 });
 
+test("bit representation matches unrefined conversion for every possible Trellis y", () => {
+  const kernel = new MetalKernel({ name: "test_trellis_bits_y", inputNames: ["dummy"],
+    outputNames: ["baseline", "represented"], header: HEADER, source: String.raw`
+      const uint i = thread_position_in_grid.x;
+      const int y = int(i) - 510;
+      baseline[i] = trellis_unrefined_y(y);
+      represented[i] = trellis_unrefined_bits_y(y);
+    ` });
+  using dummy = MlxArray.fromFloat32(new Float32Array([0]), [1]);
+  try {
+    const [baseline, represented] = kernel.apply([dummy], { outputs: [
+      { shape: [1021], dtype: Dtype.float32 }, { shape: [1021], dtype: Dtype.float32 }],
+      grid: [1021, 1, 1], threadGroup: [128, 1, 1] });
+    try { expect(Buffer.from(represented!.rawBytes()).equals(Buffer.from(baseline!.rawBytes()))).toBe(true); }
+    finally { baseline!.dispose(); represented!.dispose(); }
+  } finally { kernel.dispose(); }
+});
+
 test.skipIf(deviceArchitecture() !== "applegpu_g13s")("qualified fused gate/up preserves output bits with independent codes and varied scales", () => {
   for (const k of [2, 3, 4]) {
     const g = { ...geometry, k };

@@ -1,5 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
+import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
+import { runtimeFlag } from "../../runtime/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
@@ -66,7 +67,8 @@ const SCATTER_SOURCE = String.raw`
       uint win = word >> offs[i];
       if (spill[i]) win |= nxt << (32u - offs[i]);
       win &= mask;
-      acc[i] = metal::fma(TRELLIS_ROUND(TRELLIS_DECODE(win, lutTG, lut) * sr), xr, acc[i]);
+      const float value = BITS_Y ? trellis_unrefined_bits_y(trellis_y(win)) : TRELLIS_DECODE(win, lutTG, lut);
+      acc[i] = metal::fma(TRELLIS_ROUND(value * sr), xr, acc[i]);
     }
   }
   const ulong outBase = ((ulong)sample * (ulong)SPLITS + split) * (ulong)C;
@@ -112,7 +114,8 @@ const BALANCED_SCATTER_SOURCE = String.raw`
       uint win = lo >> shift;
       if (shift + (uint)L > 32u) win |= hi << (32u - shift);
       win &= (1u << (uint)L) - 1u;
-      const float value = trellis_unrefined_y(trellis_y(win));
+      const int y = trellis_y(win);
+      const float value = BITS_Y ? trellis_unrefined_bits_y(y) : trellis_unrefined_y(y);
       acc[i] = metal::fma(value * sr, xr, acc[i]);
     }
   }
@@ -288,6 +291,13 @@ function scatterKernel(): MetalKernel {
     source: SCATTER_SOURCE, header: HEADER, ensureRowContiguous: true });
 }
 
+/** Geometry qualified for the single-row exact-representation kernels. */
+export function scatterBitsEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number): boolean {
+  return selected === 13 && m === 1 && dtype === Dtype.bfloat16 && g.axis === 0 &&
+    g.T === 256 && g.L === 12 && g.rows === 17408 && g.cols === 5120 &&
+    (g.k === 3 ? g.blockInterleave === 2 : (g.k === 2 || g.k === 4) && !g.blockInterleave);
+}
+
 /** Borrow [M, inFeatures] and axis-0 weights; return owned lazy [M, outFeatures].
  * The caller selects a supported variant and limits M to 1..4. */
 export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, g: TrellisGeometry, selected: number, useSharedScatterCodebook = false): MlxArray {
@@ -299,6 +309,9 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
   const NP = Math.ceil(32 / g.k);
   const balanced = selected >= 8 && selected <= 13 && g.k === 3 && g.T === 256 && g.L <= 12;
   const shared = selected >= 10 && selected <= 13 && M > 1;
+  const bitsY = scatterBitsEligible(g, M, x2.dtype, selected) && (balanced
+    ? runtimeFlag("MLX_BUN_TRELLIS_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s")
+    : (g.k === 2 || g.k === 4) && runtimeFlag("MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s"));
   const codebook = useSharedScatterCodebook && selected === 13 &&
     (M === 3 || M === 4) && x2.dtype === Dtype.bfloat16 &&
     g.k === 3 && g.L === 12 && g.T === 256 && g.blockInterleave === 2;
@@ -311,7 +324,7 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
     threadGroup: [TRELLIS_THREADS, 1, 1],
     templateDtypes: { T: x2.dtype },
     templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: TRELLIS_SG_PER_TG,
-      SPLITS: SCATTER_SPLITS, NP, VARIANT: decoderVariant(selected), INTERLEAVE: g.blockInterleave ?? 0, CODEBOOK: Number(codebook) },
+      SPLITS: SCATTER_SPLITS, NP, VARIANT: decoderVariant(selected), INTERLEAVE: g.blockInterleave ?? 0, CODEBOOK: Number(codebook), BITS_Y: Number(bitsY) },
   });
   const sum = ops.sumAxis(partial!, 1, false);
   partial!.dispose();

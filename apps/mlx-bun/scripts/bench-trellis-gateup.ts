@@ -1,5 +1,5 @@
-// One standard CLI request, MTP off, with a control for the qualified gate/up
-// codebook. Run fresh processes in alternating order on an idle GPU. Write
+// One standard CLI request, MTP off, with controls for qualified Trellis MLP
+// kernels. Run fresh processes in alternating order on an idle GPU. Write
 // generated reports outside the checkout; --out is required.
 import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
@@ -7,7 +7,8 @@ import { execFileSync } from "node:child_process";
 const { values } = parseArgs({ options: { model: { type: "string" }, out: { type: "string" }, help: { type: "boolean" } }, strict: true });
 if (values.help) {
   console.log("usage: bun apps/mlx-bun/scripts/bench-trellis-gateup.ts --model <local snapshot> --out <external.json>\n" +
-    "One fixed prompt, 256 greedy tokens, plain KV, MTP off. Set MLX_BUN_TRELLIS_GATEUP_CODEBOOK=0 or 1 for alternating A/B runs on an idle GPU.");
+    "One fixed prompt, 256 greedy tokens, plain KV, MTP off. For alternating A/B runs on an idle GPU, set each qualified control to 0 or 1:\n" +
+    "MLX_BUN_TRELLIS_GATEUP_CODEBOOK, MLX_BUN_TRELLIS_MIXED_BITS, MLX_BUN_TRELLIS_SCATTER_BITS, MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS.");
   process.exit(0);
 }
 if (!values.model || !values.out) throw new Error("usage: bun bench-trellis-gateup.ts --model <local snapshot> --out <external.json>");
@@ -52,6 +53,9 @@ await runInference("generate", parseCommand("generate", argv), {
 const report = { model: values.model, prompt, argv, bun: Bun.version,
   source: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   architecture: deviceArchitecture(), codebook: process.env.MLX_BUN_TRELLIS_GATEUP_CODEBOOK ?? "default",
+  mixedBits: process.env.MLX_BUN_TRELLIS_MIXED_BITS ?? "default",
+  scatterBits: process.env.MLX_BUN_TRELLIS_SCATTER_BITS ?? "default",
+  genericScatterBits: process.env.MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS ?? "default",
   configuration: { capacity: 1, mtp: false, kv: "off", temperature: 0, maxTokens: 256, promptCache: "none" },
   loadMs, engineMs, totalMs: performance.now() - start,
   firstTokenMs: tokens[0]?.ms, decodeMs: tokens.at(-1)!.ms - tokens[0]!.ms,
