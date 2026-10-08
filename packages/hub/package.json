@@ -1,0 +1,31 @@
+{
+  "name": "@mlx-bun/hub",
+  "version": "0.6.0",
+  "description": "Local model registry and Hugging Face artifact transfers for MLX models on Apple Silicon",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./registry": "./src/registry.ts",
+    "./download": "./src/download.ts",
+    "./upload": "./src/upload.ts"
+  },
+  "files": [
+    "src",
+    "examples",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

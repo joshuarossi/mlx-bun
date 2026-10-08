@@ -1,0 +1,42 @@
+{
+  "name": "@mlx-bun/module-transcription",
+  "version": "0.6.0",
+  "description": "Speech-to-text module for mlx-bun applications: Whisper transcription over HTTP and the transcribe and dictate verbs",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./mic-capture": "./src/mic-capture.ts"
+  },
+  "files": [
+    "src",
+    "native",
+    "scripts",
+    "dist/native",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build:native": "sh scripts/build-native.sh",
+    "prepack": "bun run build:native"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/inference": "workspace:*"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

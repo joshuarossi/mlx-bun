@@ -1,0 +1,70 @@
+{
+  "name": "mlx-bun",
+  "version": "0.6.0",
+  "description": "Local AI on Apple Silicon",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mlx-bun": "./bin/mlx-bun.mjs",
+    "mlx-bun.server": "./bin/mlx-bun.server.mjs",
+    "mlx-bun.generate": "./bin/mlx-bun.generate.mjs",
+    "mlx-bun.convert": "./bin/mlx-bun.convert.mjs",
+    "mlx-bun.fuse": "./bin/mlx-bun.fuse.mjs",
+    "mlx-bun.lora": "./bin/mlx-bun.lora.mjs",
+    "mlx-bun.upload": "./bin/mlx-bun.upload.mjs"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    "./client": "./src/server/client.ts",
+    "./engine": "./src/cli/engine-entry.ts",
+    "./selection": "./src/cli/model-choice.ts",
+    "./server": "./src/cli/server-entry.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "files": [
+    "bin",
+    "src",
+    "dist/web",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.browser.json",
+    "test": "bun test",
+    "build:web": "bun scripts/build-web.ts",
+    "prepack": "bun run build:web"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.3",
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "@mlx-bun/hub": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/mlx": "workspace:*",
+    "@mlx-bun/module-benchmarks": "workspace:*",
+    "@mlx-bun/module-chat": "workspace:*",
+    "@mlx-bun/module-datasets": "workspace:*",
+    "@mlx-bun/module-memory": "workspace:*",
+    "@mlx-bun/module-metrics": "workspace:*",
+    "@mlx-bun/module-models": "workspace:*",
+    "@mlx-bun/module-quantize": "workspace:*",
+    "@mlx-bun/module-train": "workspace:*",
+    "@mlx-bun/module-transcription": "workspace:*",
+    "@mlx-bun/quantize": "workspace:*",
+    "@mlx-bun/training": "workspace:*",
+    "@mlx-bun/web-shell": "workspace:*",
+    "typebox": "1.1.38"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "devDependencies": {
+    "happy-dom": "20.10.6"
+  }
+}

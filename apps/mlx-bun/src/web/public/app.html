@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-bun</title>
+<style>
+  /* ════════════════════════════════════════════════════════════════════
+     mlx-bun · unified app
+     One product, five sections (Chat · Quantize · Fine-tune · Dataset · Status).
+     Apple keynote grammar: black stage, SF Pro, gradient hero type,
+     hairline cards, ambient color blooms, numbers that land.
+     Fully self-contained — no external fonts, CDNs, or scripts.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /* ─── design tokens (shared across every section) ─── */
+  :root{
+    --bg:#000;
+    --ink:#f5f5f7;
+    --dim:#86868b;
+    --dimmer:#515154;
+    --hairline:rgba(255,255,255,.14);
+    --hairline-soft:rgba(255,255,255,.07);
+    --hairline-strong:rgba(255,255,255,.28);
+    --card:rgba(255,255,255,.045);
+    --card-hover:rgba(255,255,255,.08);
+    --card-2:rgba(255,255,255,.025);
+    --blue:#0a84ff; --cyan:#64d2ff; --indigo:#5e5ce6; --purple:#bf5af2;
+    --pink:#ff375f; --orange:#ff9f0a; --yellow:#ffd60a; --green:#30d158;
+    --red:#ff453a;
+    --ease:cubic-bezier(.22,.61,.21,1);
+    --nav-h:60px;
+    --mono:"SF Mono",ui-monospace,Menlo,Monaco,monospace;
+    /* bloom radial-gradient stop opacities — separate tokens so the light
+       theme can dial them down (the gradient identity/positions/colors stay
+       identical, only intensity changes) */
+    --bloom-a:.13; --bloom-b:.16; --bloom-c:.10;
+    --overlay-scrim:rgba(0,0,0,.55);
+    --overlay-panel:rgba(22,22,24,.96);
+    --popover-panel:rgba(30,30,34,.98);
+    /* Code/log/tool-output surfaces (pre blocks, .logbox, edit textarea)
+       deliberately stay dark-chrome in BOTH themes — the conventional
+       "code block keeps its own dark surface" pattern (GitHub, VS Code
+       light themes, etc.), so monospace content keeps consistent contrast
+       regardless of the surrounding chat theme.
+       These MUST be opaque: the original rgba(0,0,0,.45) composited to
+       mid-GRAY over the light theme's white page, washing out the
+       near-white code ink + #86868b hljs comments (2026-07-06 visual QA).
+       Opaque values render identically over any page background. */
+    --code-bg:#121214; --code-bg-soft:#1a1a1d; --code-ink:#f5f5f7;
+    --nav-bg:rgba(0,0,0,.62);
+    --scrollbar-thumb:rgba(255,255,255,.12); --scrollbar-thumb-hover:rgba(255,255,255,.22);
+  }
+  /* ─── light theme: tasteful equivalents, same gradient identity ───
+     Applied via [data-theme="light"] on <html> (explicit user choice,
+     persisted to localStorage) OR by prefers-color-scheme:light when the
+     user's choice is "auto" (default — see initTheme()). */
+  [data-theme="light"]{
+    --bg:#f4f4f6;
+    --ink:#1d1d1f;
+    --dim:#6e6e73;
+    --dimmer:#a1a1a6;
+    --hairline:rgba(0,0,0,.12);
+    --hairline-soft:rgba(0,0,0,.06);
+    --hairline-strong:rgba(0,0,0,.28);
+    --card:rgba(0,0,0,.035);
+    --card-hover:rgba(0,0,0,.065);
+    --card-2:rgba(0,0,0,.02);
+    --bloom-a:.09; --bloom-b:.10; --bloom-c:.07;
+    --overlay-scrim:rgba(0,0,0,.28);
+    --overlay-panel:rgba(255,255,255,.97);
+    --popover-panel:rgba(255,255,255,.98);
+    --nav-bg:rgba(255,255,255,.72);
+    --scrollbar-thumb:rgba(0,0,0,.14); --scrollbar-thumb-hover:rgba(0,0,0,.26);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:"SF Pro Display","SF Pro Text",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden; /* app shell owns its own scroll regions */
+  }
+  ::selection{background:rgba(10,132,255,.4)}
+  .num{font-variant-numeric:tabular-nums}
+  code,.mono{font-family:var(--mono)}
+  code{font-size:.86em;background:rgba(127,127,127,.16);padding:2px 8px;border-radius:6px}
+  a{color:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* gradient text helpers (lifted from status/chat pages) */
+  .grad{background-clip:text;-webkit-background-clip:text;color:transparent}
+  .g-hero{background-image:linear-gradient(96deg,var(--orange) 0%,var(--pink) 30%,var(--purple) 62%,var(--blue) 100%)}
+  .g-blue{background-image:linear-gradient(94deg,var(--cyan),var(--blue) 55%,var(--indigo))}
+  .g-green{background-image:linear-gradient(94deg,#a8ff9e,var(--green) 45%,var(--cyan))}
+  .g-pink{background-image:linear-gradient(94deg,var(--orange),var(--pink) 55%,var(--purple))}
+  .g-purple{background-image:linear-gradient(94deg,var(--purple),var(--indigo) 55%,var(--blue))}
+
+  /* ─── ambient blooms behind everything ─── */
+  .bloom{position:fixed;inset:-25%;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(55vw 42vh at 12% 6%, rgba(255,159,10,var(--bloom-a)), transparent 68%),
+      radial-gradient(60vw 48vh at 88% 24%, rgba(94,92,230,var(--bloom-b)), transparent 68%),
+      radial-gradient(50vw 40vh at 30% 96%, rgba(10,132,255,var(--bloom-c)), transparent 68%);
+    filter:blur(74px);
+    transition:opacity 1.2s var(--ease);
+  }
+  /* Ambient bloom is a slow continuous drift, gated behind
+     prefers-reduced-motion: with no explicit opacity set inline
+     by the route dimmer, it just sits static — no keyframe loop to begin
+     with, so the only "animation" to guard is the opacity transition
+     above, which is a one-shot per-route dim, not a decorative loop. The
+     shimmer/pulse/blink loops below are the actual ambient animations. */
+  @media (prefers-reduced-motion:reduce){
+    .bloom{transition:none}
+  }
+
+  /* ═══════════════════ top navigation ═══════════════════ */
+  nav{
+    position:fixed;top:0;left:0;right:0;height:var(--nav-h);z-index:50;
+    display:flex;align-items:center;gap:18px;padding:0 22px;
+    border-bottom:1px solid var(--hairline);
+    background:var(--nav-bg);backdrop-filter:saturate(180%) blur(22px);
+    -webkit-backdrop-filter:saturate(180%) blur(22px);
+  }
+  nav .brand{font-size:18px;font-weight:700;letter-spacing:-.02em;text-decoration:none;
+    white-space:nowrap;flex:0 0 auto}
+  nav .tabs{display:flex;gap:2px;flex:1 1 auto;overflow-x:auto;scrollbar-width:none}
+  nav .tabs::-webkit-scrollbar{display:none}
+  /* Scroll-edge fades (2026-07-06 jank fix): the tab row scrolls with its
+     scrollbar hidden, so a clipped "Build Datase" read as broken/overlapped.
+     JS (updateTabFades) toggles .fade-r/.fade-l per scroll position so a
+     soft fade signals "more tabs this way" only when actually clipped. */
+  nav .tabs.fade-r{-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent);
+    mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent)}
+  nav .tabs.fade-l{-webkit-mask-image:linear-gradient(90deg,transparent,#000 34px,#000);
+    mask-image:linear-gradient(90deg,transparent,#000 34px,#000)}
+  nav .tabs.fade-l.fade-r{-webkit-mask-image:linear-gradient(90deg,transparent,#000 34px,#000 calc(100% - 34px),transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 34px,#000 calc(100% - 34px),transparent)}
+  nav .tab{
+    appearance:none;background:none;border:none;cursor:pointer;
+    color:var(--dim);font:600 14px/1 inherit;letter-spacing:-.01em;
+    padding:8px 14px;border-radius:10px;text-decoration:none;white-space:nowrap;
+    transition:color .22s var(--ease),background .22s var(--ease)}
+  nav .tab:hover{color:var(--ink)}
+  nav .tab.active{color:var(--ink);background:rgba(255,255,255,.08)}
+  nav .right{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  nav .model{font:12px var(--mono);color:var(--dim);
+    background:var(--card);border:1px solid var(--hairline);border-radius:8px;padding:5px 10px;
+    max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    appearance:none;-webkit-appearance:none;cursor:pointer;transition:color .18s var(--ease),border-color .18s var(--ease)}
+  nav .model:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  .pill{display:inline-flex;align-items:center;gap:8px;
+    border:1px solid var(--hairline);border-radius:999px;padding:6px 13px;
+    font-size:12.5px;font-weight:600;color:var(--dim);letter-spacing:.01em;white-space:nowrap}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);
+    box-shadow:0 0 0 transparent;transition:all .4s}
+  .pill.ok .dot{background:var(--green);box-shadow:0 0 11px var(--green)}
+  .pill.ok{color:var(--ink)}
+
+  
+
+  .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
+  .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
+
+  
+
+  
+
+  
+
+  .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:300px;
+    max-height:min(70vh,560px);overflow-y:auto;
+    background:var(--popover-panel);border:1px solid var(--hairline);border-radius:13px;padding:13px 14px;
+    backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
+    box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;
+    transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
+  .samplepop.open{display:block;transform:translateY(0);opacity:1}
+  .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
+    text-transform:uppercase;margin:0}
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+  #nav-download{color:var(--ink);font-family:var(--mono);font-size:11.5px;font-weight:500}
+  #nav-download .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:dlpulse 1.4s ease-in-out infinite}
+  @keyframes dlpulse{0%,100%{opacity:.4}50%{opacity:1}}
+  .hf-gear,.icon-btn{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+    width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);flex:0 0 auto;transition:color .22s var(--ease),background .22s var(--ease),border-color .22s var(--ease)}
+  .hf-gear:hover,.icon-btn:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
+  .hf-gear.saved{color:var(--green);border-color:rgba(48,209,88,.4)}
+
+  /* mobile drawer hamburger — chat route only, hidden ≥760px via the
+     media query beside #chat-sidebar above */
+  #chat-hamburger{align-items:center;justify-content:center;gap:3px}
+
+  /* theme toggle: 3-way auto/dark/light segmented control, nav-pill sized */
+  #theme-toggle{display:inline-flex;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;flex:0 0 auto}
+  #theme-toggle button{appearance:none;cursor:pointer;background:transparent;border:none;color:var(--dim);
+    padding:0 9px;height:34px;font-size:13px;line-height:1;transition:color .18s var(--ease),background .18s var(--ease)}
+  #theme-toggle button:not(:last-child){border-right:1px solid var(--hairline)}
+  #theme-toggle button:hover{color:var(--ink);background:var(--card-hover)}
+  #theme-toggle button.active{color:var(--ink);background:var(--card-hover)}
+  #theme-toggle button:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  /* Auto's ◐ icon only appears when the text label hides at narrow widths
+     (see the 900px media block) — never both, never neither. */
+  #theme-toggle .tt-icon{display:none}
+
+  /* Developer toggle: a small switch, same nav-pill
+     sizing language as #theme-toggle, showing/hiding the Quantize/Fine-tune/
+     Build Dataset/Status/Curves/Routes tabs. aria-pressed reflects state
+     (kept in sync by shell.ts's applyDeveloperMode). */
+  #nav-developer{appearance:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+    border:1px solid var(--hairline);border-radius:10px;background:transparent;color:var(--dim);
+    padding:0 10px;height:34px;font-size:12.5px;font-weight:600;letter-spacing:.01em;flex:0 0 auto;
+    transition:color .18s var(--ease),background .18s var(--ease),border-color .18s var(--ease)}
+  #nav-developer:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
+  #nav-developer:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  #nav-developer .nd-dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);flex:0 0 auto;
+    transition:background .18s var(--ease)}
+  #nav-developer .nd-dot.on{background:var(--green)}
+  #nav-developer[aria-checked="true"]{color:var(--ink)}
+
+  /* ─── keyboard shortcut sheet (Cmd/Ctrl+/) ─── */
+  #shortcut-overlay{position:fixed;inset:0;z-index:210;display:none;align-items:flex-start;justify-content:center;
+    background:var(--overlay-scrim);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+  #shortcut-overlay.open{display:flex;animation:fade .2s var(--ease)}
+  #shortcut-modal{width:min(480px,100%);max-height:min(76vh,620px);overflow-y:auto;background:var(--overlay-panel);
+    border:1px solid var(--hairline);border-radius:20px;padding:22px 26px;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+  .sk-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .sk-title{font-size:18px;font-weight:700;letter-spacing:-.02em}
+  .sk-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:16px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
+  .sk-close:hover{color:var(--ink);background:var(--card-hover)}
+  .sk-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 0;
+    border-bottom:1px solid var(--hairline-soft)}
+  .sk-row:last-child{border-bottom:none}
+  .sk-desc{font-size:13.5px;color:var(--ink)}
+  .sk-keys{display:flex;gap:5px;flex:0 0 auto}
+  .sk-key{font:600 11.5px var(--mono);color:var(--ink);background:var(--card);border:1px solid var(--hairline);
+    border-radius:6px;padding:3px 8px;min-width:20px;text-align:center}
+
+  /* ─── HF settings overlay ─── */
+  #hf-overlay{position:fixed;inset:0;z-index:200;display:none;align-items:flex-start;justify-content:center;
+    background:var(--overlay-scrim);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+  #hf-overlay.open{display:flex;animation:fade .3s var(--ease)}
+  #hf-modal{width:min(460px,100%);background:var(--overlay-panel);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+  .hf-modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+  .hf-modal-title{font-size:20px;font-weight:700;letter-spacing:-.02em}
+  .hf-modal-sub{font-size:13.5px;color:var(--dim);margin-bottom:20px;line-height:1.5}
+  .hf-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:16px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
+  .hf-close:hover{color:var(--ink);background:var(--card-hover)}
+
+  /* ─── Settings modal sections ─── */
+  .settings-section{margin:0 0 20px;padding:0 0 20px;border-bottom:1px solid var(--hairline-soft)}
+  .settings-section:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
+  .settings-h{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  .settings-toggle-row{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--ink);
+    cursor:pointer;font-weight:500;margin-bottom:8px}
+  .settings-toggle-row input{width:auto;margin:0;accent-color:var(--blue)}
+  .settings-note{font-size:12px;color:var(--orange);margin:8px 0 0;line-height:1.5}
+  #settings-approvals-list{margin-top:12px}
+  .settings-approvals-empty{font-size:12.5px;color:var(--dimmer)}
+  .settings-approval-row{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13px;
+    border-top:1px solid var(--hairline-soft)}
+  .settings-approval-row:first-child{border-top:none}
+  .settings-approval-row .satool{font:600 12.5px var(--mono);color:var(--ink);flex:1 1 auto}
+  .settings-approval-row .saforget{appearance:none;cursor:pointer;background:none;border:1px solid var(--hairline);
+    color:var(--dim);border-radius:7px;padding:3px 9px;font-size:11.5px;font-weight:600;flex:0 0 auto;
+    transition:color .18s var(--ease),border-color .18s var(--ease)}
+  .settings-approval-row .saforget:hover{color:var(--red);border-color:rgba(255,69,58,.4)}
+
+  /* ─── inline push-to-hub panel (in done-step cards) ─── */
+  .pushpanel{margin-top:14px;border-top:1px solid var(--hairline-soft);padding-top:14px}
+  .pushpanel .field{margin-bottom:12px}
+  .pushpanel label.chk{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:500}
+  .pushpanel label.chk input{width:auto;margin:0;accent-color:var(--blue)}
+
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  /* ═══════════════════ app shell / routing ═══════════════════ */
+  #app{position:fixed;inset:var(--nav-h) 0 0 0;z-index:1}
+  section[data-route]{display:none;position:absolute;inset:0}
+  section[data-route].active{display:block;animation:fade .5s var(--ease)}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* a scrolling content column used by the doc-style sections */
+  .scroller{height:100%;overflow-y:auto}
+  .wrap{max-width:1180px;margin:0 auto;padding:46px 28px 120px}
+  .wrap.narrow{max-width:860px}
+
+  /* ─── shared typographic bits ─── */
+  .eyebrow{font-size:12.5px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  h1.title{font-size:clamp(38px,5.4vw,68px);font-weight:700;letter-spacing:-.032em;line-height:1.02}
+  .lead{font-size:clamp(15px,1.4vw,19px);line-height:1.55;color:var(--dim);max-width:66ch;margin-top:18px}
+  .lead strong{color:var(--ink);font-weight:600}
+  h2{font-size:clamp(26px,3.6vw,46px);font-weight:700;letter-spacing:-.026em;line-height:1.06}
+  h2 .soft{color:var(--dimmer)}
+  h3.kicker{font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+
+  /* ─── reveals ─── */
+  [data-reveal]{opacity:0;transform:translateY(22px);
+    transition:opacity .8s var(--ease),transform .8s var(--ease);transition-delay:calc(var(--d,0)*1ms)}
+  .lit [data-reveal]{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){
+    [data-reveal]{transition:none;opacity:1;transform:none}
+    *{scroll-behavior:auto}
+    /* Ambient/decorative infinite-loop animations: shimmer
+       skeleton sweep, download-pulse dot, streaming cursor blink, running-
+       tool status dot. These loop forever by design and carry no state —
+       freezing them (not hiding) keeps the element visible+legible without
+       motion. One-shot transitions (fade-in on route change, toast slide-in,
+       popover open) are left alone; they're brief and convey state change,
+       not ambient decoration. */
+    #nav-download .dot,.shimmer,.cursor,.tool.running .sdot{animation:none!important}
+    .shimmer{color:inherit!important;background:var(--card)}
+  }
+
+  /* ─── cards ─── */
+  .grid{display:grid;gap:14px}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .card{background:var(--card);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;transition:background .3s var(--ease),border-color .3s var(--ease)}
+  .card:hover{background:var(--card-hover)}
+  .card h3{font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  .stat{font-size:clamp(28px,3.2vw,42px);font-weight:700;letter-spacing:-.025em;line-height:1.05}
+  .stat small{font-size:.42em;font-weight:600;color:var(--dim);letter-spacing:0;margin-left:6px}
+  .card .cap{margin-top:8px;font-size:13.5px;color:var(--dim);line-height:1.5}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:14.5px;border-bottom:1px solid var(--hairline-soft)}
+  .kv:last-child{border-bottom:none}
+  .kv b{font-weight:500;color:var(--dim)}
+  .kv span{font-weight:600}
+  .meter{height:5px;border-radius:3px;background:rgba(255,255,255,.09);margin-top:16px;overflow:hidden}
+  .meter i{display:block;height:100%;border-radius:3px;width:0%;
+    background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .8s var(--ease)}
+  .meter.warm i{background:linear-gradient(90deg,var(--orange),var(--pink))}
+  .meter.green i{background:linear-gradient(90deg,#a8ff9e,var(--green))}
+
+  /* ─── tables ─── */
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:right;padding:13px 16px;border-bottom:1px solid var(--hairline-soft)}
+  th:first-child,td:first-child{text-align:left}
+  td:not(:first-child),th:not(:first-child){white-space:nowrap}
+  th{font-size:11.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .2s}
+  tbody tr:hover{background:rgba(255,255,255,.04)}
+  td.fit-yes{color:var(--green);font-weight:600}
+  td.fit-no{color:var(--dimmer)}
+  tr.you td{background:rgba(10,132,255,.10)}
+  tr.you td:first-child{border-left:3px solid var(--blue);border-radius:2px}
+  .tablecard{padding:8px 6px}
+
+  /* ─── forms (used by all three wizards) ─── */
+  .field{margin-bottom:18px}
+  .field>label{display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px;letter-spacing:-.01em}
+  .field .hint{font-size:12.5px;color:var(--dim);margin-top:7px;line-height:1.5}
+  input[type=text],input[type=number],input[type=password],textarea,select{
+    width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:12px;
+    color:var(--ink);font:14.5px/1.5 inherit;padding:11px 14px;outline:none;
+    transition:border-color .22s var(--ease),background .22s var(--ease)}
+  input::placeholder,textarea::placeholder{color:var(--dimmer)}
+  input:focus,textarea:focus,select:focus{border-color:rgba(10,132,255,.55);background:var(--card-hover)}
+  textarea{resize:vertical;min-height:96px;font-family:var(--mono);font-size:13px}
+  select{appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2386868b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 14px center;padding-right:34px}
+  .hpgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .hpgrid .field{margin-bottom:0}
+  input[type=range]{width:100%;accent-color:var(--blue);background:transparent;cursor:pointer;height:24px}
+
+  /* segmented control */
+  .seg{display:inline-flex;background:var(--card);border:1px solid var(--hairline);border-radius:12px;padding:3px;gap:3px}
+  .seg button{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);
+    font:600 13.5px/1 inherit;padding:9px 18px;border-radius:9px;transition:all .22s var(--ease)}
+  .seg button.on{background:rgba(255,255,255,.12);color:var(--ink)}
+  .seg button:hover:not(.on){color:var(--ink)}
+
+  /* buttons */
+  .btn{appearance:none;border:none;cursor:pointer;font:600 14px/1 inherit;border-radius:13px;
+    padding:0 22px;height:46px;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    transition:filter .2s,opacity .2s,background .22s var(--ease)}
+  .btn.primary{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff}
+  .btn.primary:hover{filter:brightness(1.13)}
+  .btn.ghost{background:var(--card);border:1px solid var(--hairline);color:var(--ink)}
+  .btn.ghost:hover{background:var(--card-hover)}
+  .btn:disabled{filter:grayscale(.7) brightness(.55);cursor:default;opacity:.7}
+  .btn.sm{height:38px;padding:0 16px;font-size:13px;border-radius:11px}
+  .btnrow{display:flex;gap:10px;margin-top:24px;flex-wrap:wrap;align-items:center}
+
+  /* flash / status banners */
+  .flash{border-radius:14px;padding:13px 16px;font-size:14px;line-height:1.5;border:1px solid;margin-top:14px}
+  .flash.ok{background:rgba(48,209,88,.10);border-color:rgba(48,209,88,.35);color:#b8f5c4}
+  .flash.warn{background:rgba(255,159,10,.10);border-color:rgba(255,159,10,.35);color:#ffe0a8}
+  .flash.err{background:rgba(255,69,58,.10);border-color:rgba(255,69,58,.35);color:#ffb8b3}
+  .flash code{background:rgba(0,0,0,.3)}
+  .flash strong{color:var(--ink)}
+
+  .soon{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--dimmer);border:1px solid var(--hairline-soft);border-radius:999px;padding:3px 10px}
+
+  /* step indicator */
+  .steps{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 30px;font:600 12px var(--mono);
+    text-transform:uppercase;letter-spacing:.05em;color:var(--dimmer)}
+  .steps .s{display:inline-flex;align-items:center;gap:8px}
+  .steps .s .n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
+    border:1px solid var(--hairline);font-size:11px;color:var(--dim);transition:all .3s var(--ease)}
+  .steps .s.done .n{background:rgba(255,255,255,.10);color:var(--ink);border-color:transparent}
+  .steps .s.cur .n{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff;border-color:transparent}
+  .steps .s.cur{color:var(--ink)}
+  .steps .s.done{color:var(--dim)}
+  .steps .arrow{color:var(--dimmer);margin:0 2px}
+
+  /* progress + log shared by every job stream */
+  .progressbar{height:8px;background:rgba(255,255,255,.09);border-radius:5px;overflow:hidden}
+  .progressbar i{display:block;height:100%;width:0%;border-radius:5px;
+    background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .5s var(--ease)}
+  .progressbar.green i{background:linear-gradient(90deg,#a8ff9e,var(--green))}
+  .progmeta{display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim);margin-top:8px}
+  .logbox{margin-top:18px;background:var(--code-bg-soft);border:1px solid var(--hairline-soft);border-radius:14px;
+    padding:14px 16px;max-height:340px;overflow-y:auto;font:11.5px/1.55 var(--mono);color:rgba(245,245,247,.7);white-space:pre-wrap;word-break:break-word}
+  .logbox:empty::before{content:"waiting for output…";color:var(--dimmer)}
+
+  /* shimmer skeletons */
+  .shimmer{background:linear-gradient(100deg,rgba(255,255,255,.04) 30%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 70%);
+    background-size:200% 100%;animation:sh 1.4s ease-in-out infinite;border-radius:8px;color:transparent!important}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  /* toasts */
+  #toasts{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;
+    display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:none}
+  .toast{background:var(--overlay-panel);backdrop-filter:blur(20px);border:1px solid var(--hairline);
+    border-radius:13px;padding:12px 18px;font-size:14px;font-weight:500;box-shadow:0 16px 50px rgba(0,0,0,.35);
+    animation:toastIn .4s var(--ease);max-width:min(560px,90vw)}
+  .toast.err{border-color:rgba(255,69,58,.5)}
+  .toast.ok{border-color:rgba(48,209,88,.5)}
+  @keyframes toastIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+  
+
+  
+
+  /* empty state */
+  .empty{text-align:center;color:var(--dim);padding:60px 20px}
+  .empty h3{font-size:18px;font-weight:600;color:var(--ink);margin-bottom:8px;letter-spacing:-.01em}
+  .empty p{font-size:14px;max-width:46ch;margin:0 auto}
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  #chat-hamburger{display:none}
+  @media (max-width:760px){
+    #chat-hamburger{display:inline-flex}
+  }
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+  /* markdown-ish rendering — shared by chat bubbles AND the memory panel's
+     article view (.mem-article-render renders vault/Reference docs through
+     the same mdToHtml; without this scope the panel's code fences lost
+     their header chrome — "shCopy" mash, 2026-07-07 visual QA). */
+  :is(.bubble,.mem-article-render) p{margin:0 0 10px}:is(.bubble,.mem-article-render) p:last-child{margin-bottom:0}
+  :is(.bubble,.mem-article-render) ul,:is(.bubble,.mem-article-render) ol{margin:0 0 10px;padding-left:22px}
+  :is(.bubble,.mem-article-render) li{margin:3px 0}
+  :is(.bubble,.mem-article-render) strong{font-weight:700;color:var(--ink)}
+  :is(.bubble,.mem-article-render) em{font-style:italic}
+  :is(.bubble,.mem-article-render) code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
+  :is(.bubble,.mem-article-render) pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
+    padding:13px 15px;overflow-x:auto;margin:10px 0;font:12.5px/1.6 var(--mono)}
+  :is(.bubble,.mem-article-render) pre code{background:none;padding:0;font-size:inherit;color:inherit}
+  :is(.bubble,.mem-article-render) h1,:is(.bubble,.mem-article-render) h2,:is(.bubble,.mem-article-render) h3,:is(.bubble,.mem-article-render) h4,:is(.bubble,.mem-article-render) h5,:is(.bubble,.mem-article-render) h6{font-weight:700;margin:14px 0 7px;letter-spacing:-.01em;line-height:1.3}
+  :is(.bubble,.mem-article-render) h1{font-size:1.28em}:is(.bubble,.mem-article-render) h2{font-size:1.16em}:is(.bubble,.mem-article-render) h3{font-size:1.06em}
+  :is(.bubble,.mem-article-render) h4,:is(.bubble,.mem-article-render) h5,:is(.bubble,.mem-article-render) h6{font-size:1em;color:var(--dim)}
+  :is(.bubble,.mem-article-render) h1:first-child,:is(.bubble,.mem-article-render) h2:first-child,:is(.bubble,.mem-article-render) h3:first-child{margin-top:0}
+  :is(.bubble,.mem-article-render) a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(100,210,255,.34)}
+  :is(.bubble,.mem-article-render) a:hover{border-bottom-color:var(--cyan)}
+  :is(.bubble,.mem-article-render) del{opacity:.55}
+  :is(.bubble,.mem-article-render) blockquote{margin:9px 0;padding:3px 14px;border-left:3px solid var(--hairline);color:var(--dim)}
+  :is(.bubble,.mem-article-render) blockquote p:last-child{margin-bottom:0}
+  :is(.bubble,.mem-article-render) hr{border:none;border-top:1px solid var(--hairline);margin:15px 0}
+  :is(.bubble,.mem-article-render) li.task{list-style:none;margin-left:-18px}
+  :is(.bubble,.mem-article-render) li.task input{margin-right:7px;accent-color:var(--blue);vertical-align:-1px}
+  :is(.bubble,.mem-article-render) .md-tablewrap{overflow-x:auto;margin:11px 0}
+  :is(.bubble,.mem-article-render) table.md-table{width:100%;border-collapse:collapse;font-size:.92em}
+  :is(.bubble,.mem-article-render) table.md-table th,:is(.bubble,.mem-article-render) table.md-table td{border:1px solid var(--hairline-soft);padding:6px 11px;text-align:left}
+  :is(.bubble,.mem-article-render) table.md-table th{background:rgba(255,255,255,.05);font-weight:600;color:var(--ink)}
+  :is(.bubble,.mem-article-render) .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:var(--code-bg);color:var(--code-ink)}
+  :is(.bubble,.mem-article-render) .cbhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 9px 5px 13px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--hairline-soft)}
+  :is(.bubble,.mem-article-render) .cblang{font:11px/1 var(--mono);color:rgba(245,245,247,.65);letter-spacing:.02em}
+  :is(.bubble,.mem-article-render) .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
+  :is(.bubble,.mem-article-render) .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
+  :is(.bubble,.mem-article-render) .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
+  /* Canvas v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+     beat-matrix Axis 2): Preview|Source toggle
+     for html/svg fences, sharing .cbhead with the existing lang tag + Copy
+     button. .cbhead keeps lang pinned left; the toggle+copy group sits
+     right via margin-left:auto on the first right-side element instead of
+     space-between, since space-between with 3 children would push the
+     toggle to the dead center of the bar. */
+  :is(.bubble,.mem-article-render) .cbhead{justify-content:flex-start}
+  :is(.bubble,.mem-article-render) .cbtoggle{display:inline-flex;gap:2px;margin-left:auto;padding:2px;border-radius:7px;background:rgba(255,255,255,.05)}
+  :is(.bubble,.mem-article-render) .cbview{font:11px/1 var(--mono);color:rgba(245,245,247,.55);background:transparent;border:none;
+    border-radius:5px;padding:4px 9px;cursor:pointer;transition:color .15s,background .15s}
+  :is(.bubble,.mem-article-render) .cbview:hover{color:var(--code-ink)}
+  :is(.bubble,.mem-article-render) .cbview.active{color:var(--code-ink);background:rgba(255,255,255,.14)}
+  /* has-canvas keeps Copy visually last, right after the toggle group. */
+  :is(.bubble,.mem-article-render) .codeblock.has-canvas .cbcopy{margin-left:2px}
+  :is(.bubble,.mem-article-render) .cbcanvas{position:relative;background:#fff}
+  :is(.bubble,.mem-article-render) .cbframe{display:block;width:100%;height:420px;min-height:160px;max-height:80vh;
+    border:none;resize:vertical;overflow:auto;background:#fff}
+  /* No layout shift on toggle: pre and cbcanvas are simply swapped via
+     [hidden] — the codeblock's own border/rounding stays put, and the
+     iframe's own default height (420px) plus resize:vertical means the
+     block doesn't jump when Preview first opens vs. later re-opens. */
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  /* loss chart */
+  .chartcard{margin-top:20px}
+  /* the chart's SVG gridlines are hardcoded white-on-dark (drawChart()), so
+     the wrap keeps the always-dark code-panel surface for contrast rather
+     than following the chat theme — same rationale as .bubble pre above. */
+  .chart-wrap{position:relative;background:var(--code-bg-soft);border:1px solid var(--hairline-soft);border-radius:14px;padding:14px;margin-top:6px}
+  .chart-legend{display:flex;gap:18px;font-size:12px;color:var(--dim);margin-bottom:8px}
+  .chart-legend .lg{display:inline-flex;align-items:center;gap:7px}
+  .chart-legend .sw{width:14px;height:3px;border-radius:2px}
+  .chart-stats{display:flex;gap:22px;flex-wrap:wrap;margin-top:12px;font-size:13px}
+  .chart-stats .cs b{display:block;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+  .chart-stats .cs span{font-size:20px;font-weight:700;letter-spacing:-.02em}
+
+  /* Tablet band (2026-07-06 jank fix): with up to 7 tabs (fewer once the
+     Developer toggle is off — see nav .tab[data-dev] above) +
+     hamburger + shortcuts + theme toggle + gear + conn pill, the tab row
+     can overflow well above the 900px cutoff — tighten tab padding first
+     so fewer widths need the scroll-fade at all. */
+  @media (max-width:1160px){
+    nav{gap:12px}
+    nav .tab{padding:8px 9px;font-size:13px}
+  }
+  @media (max-width:900px){
+    .hpgrid{grid-template-columns:1fr}
+    nav .model{display:none}
+    .wrap{padding:34px 18px 100px}
+    nav{gap:12px;padding:0 16px}
+    /* Icon-only theme toggle a bit earlier than 560px — the nav is already
+       tight here (hamburger + shortcuts + toggle + hf-gear + conn pill) and
+       "Auto" as a text label isn't worth the horizontal cost at this width.
+       The ◐ tt-icon stands in so the Auto button never renders as an empty
+       sliver (2026-07-06 QA finding). */
+    #theme-toggle button{padding:0 7px;font-size:15px}
+    #theme-toggle .tt-label{display:none}
+    #theme-toggle .tt-icon{display:inline}
+    /* Developer toggle: dot-only past this width, same reasoning as the
+       theme toggle above — "Developer" as a text label costs more than
+       the dot alone conveys once the row is already tight. */
+    #nav-developer span:not(.nd-dot){display:none}
+    #nav-developer{padding:0;width:34px;justify-content:center}
+  }
+  @media (max-width:760px){
+    /* Touch band (2026-07-06 QA): a keyboard-shortcut sheet button is dead
+       weight on touch viewports, and the nav needs its width back. */
+    #nav-shortcuts{display:none}
+    /* The conn pill collapses to its status dot (title keeps the text for
+       long-press/hover); "live · localhost" was clipping at the viewport
+       edge at 375px. */
+    #nav-conn #nav-conn-text{display:none}
+    #nav-conn{padding:6px 9px}
+    /* Keep a scrollable strip of tabs alive — flex shrank them to 0 width
+       at phone sizes, silently removing Quantize/Status navigation. The
+       scroll-fade masks signal the rest. With the Developer toggle off
+       (the fresh-browser default) this row can be just the single Chat
+       tab — min-width still holds so the fade-mask math in
+       updateTabFades() never divides against a zero-width strip. */
+    nav .tabs{min-width:96px}
+  }
+  @media (max-width:560px){
+    nav .brand{font-size:16px}
+    nav .tab{padding:8px 10px;font-size:13px}
+    nav .right{gap:6px}
+    .icon-btn,.hf-gear{width:30px;height:30px}
+    /* Phones follow the system theme (Auto is the default); the explicit
+       3-way toggle returns ≥560px. Freeing its ~110px is what keeps the
+       tab strip + status dot inside a 375px viewport (2026-07-06 QA). */
+    #theme-toggle{display:none}
+  }
+</style>
+<!-- Vendored syntax-highlighting theme (apps/mlx-bun/src/web/public/vendor/hljs-theme.css,
+     hand-derived from the design tokens above — see that file's header). No CDN;
+     served by apps/mlx-bun/src/web/assets.ts alongside this page. -->
+<link rel="stylesheet" href="/assets/hljs.css">
+<!-- PWA installability (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+     beat-matrix Axis 10): manifest +
+     inline SVG icon (apps/mlx-bun/src/web/public/manifest.webmanifest,
+     apps/mlx-bun/src/web/public/icon.svg — no binary PNGs, per the hygiene gate;
+     some browsers won't render an SVG app icon and that's an accepted tradeoff).
+     theme-color matches the app's --bg token so the OS chrome doesn't
+     flash a mismatched color on launch. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon.svg">
+<meta name="theme-color" content="#000000">
+</head>
+<body>
+<div class="bloom" id="bloom"></div>
+
+<!-- ═══════════════════ TOP NAV ═══════════════════ -->
+<nav>
+  <!-- Mobile drawer trigger — chat route only (CSS keeps it hidden ≥760px
+       and JS keeps it hidden off the chat route, since there is no
+       sidebar to open elsewhere). aria-controls/expanded kept in sync by
+       the drawer open/close functions. -->
+  <button class="icon-btn" id="chat-hamburger" title="Open recent chats" aria-label="Open recent chats"
+          aria-controls="chat-sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+  </button>
+  <a class="brand grad g-hero" href="#/chat">mlx-bun</a>
+  <div class="tabs" id="tabs">
+    <a class="tab" href="#/status" data-tab="status" data-dev>Status</a>
+    <a class="tab" href="#/routes" data-tab="routes" data-dev>Routes</a>
+  </div>
+  <div class="right">
+    <!-- Developer toggle: collapses Quantize/Fine-tune/
+         Build Dataset/Status/Curves/Routes behind one switch. State + the
+         one-time existing-user default live in shell.ts's
+         initDeveloperToggle/isDeveloperMode. -->
+    <button id="nav-developer" data-spotlight="developer-toggle" type="button" role="switch" aria-checked="false"
+            title="Show developer tools (Quantize, Fine-tune, Build Dataset, Status, Curves, Routes)"
+            aria-label="Toggle developer tools">
+      <span class="nd-dot" id="nav-developer-dot" aria-hidden="true"></span><span>Developer</span>
+    </button>
+    <button class="icon-btn" id="nav-shortcuts" title="Keyboard shortcuts (Cmd/Ctrl+/)" aria-label="Keyboard shortcuts"
+            aria-haspopup="dialog" aria-controls="shortcut-overlay" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"></path></svg>
+    </button>
+    <!-- 3-way theme toggle: auto follows prefers-color-scheme,
+         dark/light are explicit user overrides — all persisted to
+         localStorage by setTheme() below. -->
+    <div id="theme-toggle" role="group" aria-label="Theme">
+      <button type="button" data-theme-choice="auto" title="Match system theme" aria-label="Auto theme"><span class="tt-icon" aria-hidden="true">◐</span><span class="tt-label">Auto</span></button>
+      <button type="button" data-theme-choice="dark" title="Dark theme" aria-label="Dark theme">🌙</button>
+      <button type="button" data-theme-choice="light" title="Light theme" aria-label="Light theme">☀️</button>
+    </div>
+    <button class="hf-gear" id="nav-hf" title="Hugging Face token settings" aria-label="Hugging Face settings">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
+    <!-- The active model; clicking it opens the Models page (the models module's panel). -->
+    <button class="model" id="nav-model" data-spotlight="model-picker" type="button" title="active model — click to manage models">connecting…</button>
+    <span class="pill" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></span>
+    <span class="pill" id="nav-download" style="display:none" title="A more capable model is downloading in the background"><span class="dot"></span><span id="nav-download-text"></span></span>
+  </div>
+</nav>
+
+<!-- ═══════════════════ SETTINGS OVERLAY ═══════════════════
+     (was "HF settings" — widened in place for the Agent tools section.
+     Same ids/behavior for the HF piece; nothing
+     about push-to-hub or the hf-* wiring changed.) -->
+<div id="hf-overlay">
+  <div id="hf-modal" role="dialog" aria-modal="true" aria-labelledby="hf-modal-title-el">
+    <div class="hf-modal-head">
+      <div class="hf-modal-title" id="hf-modal-title-el">Settings</div>
+      <button class="hf-close" id="hf-close" aria-label="Close">✕</button>
+    </div>
+
+    <!-- Agent tools: the codingTools opt-in + the durable
+         always-allow list. Lives above Hugging Face since it's the more
+         chat-relevant setting. -->
+    <div class="settings-section">
+      <h3 class="settings-h">Agent tools</h3>
+      <label class="chk settings-toggle-row" for="settings-coding-tools">
+        <input type="checkbox" id="settings-coding-tools">
+        <span>Let the agent touch files on this machine</span>
+      </label>
+      <div class="hint">
+        Off by default. When on, the chat assistant can run shell commands and
+        edit or create files — each one asks first, in the chat, unless you
+        choose "always allow" for that action. Nothing runs without your
+        review the first time.
+      </div>
+      <p class="settings-note" id="settings-coding-tools-note" style="display:none"></p>
+      <div id="settings-approvals-list"></div>
+    </div>
+
+    <div class="settings-section">
+      <h3 class="settings-h">Hugging Face</h3>
+      <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
+      <div class="field" style="margin-bottom:10px">
+        <label>Write token</label>
+        <input type="password" id="hf-token-input" placeholder="hf_…" autocomplete="off" spellcheck="false">
+        <div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code> — never sent anywhere but your own Hub pushes.</div>
+      </div>
+      <div id="hf-settings-msg"></div>
+      <div class="btnrow" style="margin-top:14px">
+        <button class="btn primary sm" id="hf-save">Save token</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ KEYBOARD SHORTCUT SHEET ═══════════════════ -->
+<div id="shortcut-overlay">
+  <div id="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="sk-modal-title">
+    <div class="sk-head">
+      <div class="sk-title" id="sk-modal-title">Keyboard shortcuts</div>
+      <button class="sk-close" id="sk-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sk-row"><span class="sk-desc">Show this shortcut sheet</span><span class="sk-keys"><span class="sk-key" id="sk-mod-label">⌘</span><span class="sk-key">/</span></span></div>
+    <div class="sk-row"><span class="sk-desc">New chat</span><span class="sk-keys"><span class="sk-key sk-mod"></span><span class="sk-key">Shift</span><span class="sk-key">O</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Focus the composer</span><span class="sk-keys"><span class="sk-key">Shift</span><span class="sk-key">Esc</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Copy last response</span><span class="sk-keys"><span class="sk-key sk-mod"></span><span class="sk-key">Shift</span><span class="sk-key">C</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Send message</span><span class="sk-keys"><span class="sk-key">Enter</span></span></div>
+    <div class="sk-row"><span class="sk-desc">New line in composer</span><span class="sk-keys"><span class="sk-key">Shift</span><span class="sk-key">Enter</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Close popover / drawer / sheet</span><span class="sk-keys"><span class="sk-key">Esc</span></span></div>
+  </div>
+</div>
+
+<!-- The chat is the module panel (`@mlx-bun/module-chat`): the shell mounts it as the first page. -->
+
+<div id="app">
+
+  <!-- The chat workspace panel is mounted by the shell. -->
+
+  <!-- ═══════════════════ QUANTIZE ═══════════════════ -->
+
+  <!-- ═══════════════════ FINE-TUNE ═══════════════════ -->
+
+  <!-- ═══════════════════ DATASET ═══════════════════ -->
+
+  <!-- ═══════════════════ STATUS ═══════════════════ -->
+  <section data-route="status" id="s-status">
+    <div class="scroller"><div class="wrap" id="status-page">
+
+      <div style="text-align:center;margin-bottom:18px" data-reveal>
+        <div class="eyebrow" style="margin-bottom:18px">local ai · apple silicon · one binary</div>
+        <h1 class="title grad g-hero" style="font-size:clamp(48px,8vw,110px)">mlx-bun</h1>
+        <p class="lead" style="margin:18px auto 0;text-align:center">The Python-free local AI engine. <strong>Bun + MLX, nothing else.</strong></p>
+      </div>
+
+      <section style="margin-top:56px" data-reveal>
+        <h2>Now serving<span class="soft">.</span></h2>
+        <div class="grid g4" style="margin-top:24px">
+          <div class="card" id="st-model-card" style="grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:14px 26px">
+            <div><h3>Model</h3><div id="st-model-id" style="font-size:clamp(20px,2.6vw,32px);font-weight:700;letter-spacing:-.02em;word-break:break-all">—</div></div>
+            <div id="st-model-meta" style="font-size:14.5px;color:var(--dim);font-weight:500">—</div>
+          </div>
+          <div class="card">
+            <h3>Decode · predicted</h3>
+            <div class="stat num grad g-green"><span id="st-tps">—</span><small>tok/s</small></div>
+            <div class="cap" id="st-tps-cap">from weights ÷ bandwidth on this machine</div>
+          </div>
+          <div class="card">
+            <h3>Max safe context</h3>
+            <div class="stat num grad g-blue"><span id="st-safe-ctx">—</span><small>tokens</small></div>
+            <div class="cap">solved from KV growth + prefill transient, never guessed</div>
+          </div>
+          <div class="card">
+            <h3>Memory</h3>
+            <div class="kv"><b>weights</b><span class="num" id="st-weights">—</span></div>
+            <div class="kv"><b>usable</b><span class="num" id="st-usable">—</span></div>
+            <div class="kv"><b>budget</b><span class="num" id="st-budget">—</span></div>
+            <div class="meter warm"><i id="st-mem-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>Prompt cache</h3>
+            <div class="kv"><b>hit rate</b><span class="num" id="st-pc-hits">—</span></div>
+            <div class="kv"><b>entries</b><span class="num" id="st-pc-entries">—</span></div>
+            <div class="kv"><b>bytes</b><span class="num" id="st-pc-bytes">—</span></div>
+            <div class="meter"><i id="st-pc-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>Response store</h3>
+            <div class="kv"><b>entries</b><span class="num" id="st-rs-entries">—</span></div>
+            <div class="kv"><b>bytes</b><span class="num" id="st-rs-bytes">—</span></div>
+            <div class="kv"><b>ttl</b><span class="num" id="st-rs-ttl">—</span></div>
+            <div class="meter"><i id="st-rs-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>KV quantization</h3>
+            <div class="kv"><b>mode</b><span id="st-kv-mode">—</span></div>
+            <div id="st-kv-layers"></div>
+          </div>
+          <div class="card" id="st-expert-card" style="display:none">
+            <h3>Expert tiers · last turn</h3>
+            <div class="kv"><b>main cache hit</b><span class="num" id="st-expert-main-hit">—</span></div>
+            <div class="kv"><b>main SSD read</b><span class="num" id="st-expert-main-read">—</span></div>
+            <div class="kv"><b>MTP cache hit</b><span class="num" id="st-expert-mtp-hit">—</span></div>
+            <div class="kv"><b>MTP SSD read</b><span class="num" id="st-expert-mtp-read">—</span></div>
+            <div class="cap" id="st-expert-residency">waiting for the first completed turn</div>
+          </div>
+          <div class="card" id="st-dl-card" style="grid-column:1 / -1;display:none">
+            <h3>Downloads</h3>
+            <div id="st-dl-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section style="margin-top:80px" data-reveal>
+        <h2>Library<span class="soft">.</span> <span class="grad g-green">Every model, assessed.</span></h2>
+        <p class="lead">Everything in the local cache, each judged by the fit solver for <strong>this machine</strong>.</p>
+        <div class="card tablecard" style="margin-top:26px">
+          <table>
+            <thead><tr><th>Model</th><th>Size</th><th>Status</th><th>Max context</th><th>Decode</th></tr></thead>
+            <tbody id="st-lib-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style="margin-top:80px" data-reveal>
+        <h2>Will it fit<span class="soft">?</span> <span class="grad g-blue">Solved, not guessed.</span></h2>
+        <p class="lead">Weights + KV growth + prefill transient against wired memory — the same assessment that gates every request.</p>
+        <div class="grid g4" style="margin:26px 0 14px">
+          <div class="card">
+            <h3>This machine</h3>
+            <div class="kv"><b>RAM</b><span class="num" id="st-m-ram">—</span></div>
+            <div class="kv"><b>bandwidth</b><span class="num" id="st-m-bw">—</span></div>
+            <div class="kv"><b>verdict</b><span id="st-m-fits">—</span></div>
+          </div>
+          <div class="card">
+            <h3>At max context · <span class="num" id="st-fit-ctx">—</span> tokens</h3>
+            <div class="kv" data-plan-fit style="display:none"><b>artifact on disk</b><span class="num" id="st-f-artifact">—</span></div>
+            <div class="kv"><b id="st-f-weights-label">weights</b><span class="num" id="st-f-weights">—</span></div>
+            <div id="st-f-streamed"></div>
+            <div class="kv"><b>kv cache</b><span class="num" id="st-f-kv">—</span></div>
+            <div class="kv"><b id="st-f-transient-label">transient</b><span class="num" id="st-f-transient">—</span></div>
+            <div class="kv"><b>total / usable</b><span class="num" id="st-f-total">—</span></div>
+            <div class="meter"><i id="st-fit-bar"></i></div>
+          </div>
+        </div>
+        <div class="card tablecard">
+          <table>
+            <thead><tr><th>Apple silicon · this model @ <span class="num" id="st-sku-ctx">32,768</span> ctx</th>
+              <th>RAM</th><th>Fits</th><th>Max context</th><th>Decode</th></tr></thead>
+            <tbody id="st-sku-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer style="margin-top:90px;border-top:1px solid var(--hairline);padding-top:26px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;font-size:13px;color:var(--dimmer)">
+        <span>mlx-bun · M-series Macs · no Python anywhere in the serving path</span>
+        <span>server up <span id="st-uptime">—</span> · updated <span id="st-updated">never</span></span>
+      </footer>
+    </div></div>
+  </section>
+
+  <!-- ═══════════════════ ROUTES ═══════════════════ -->
+  <!-- `02d723a:docs/archive/planning/web-ui-pass-plan.md` #17: /dag 404s outside a repo checkout (readFileSync
+       on a repo-relative doc, absent from compiled binaries/npm installs).
+       shell.ts's initRoutesProbe() HEAD-checks /dag at boot: on success this
+       iframe renders as-is; on 404 it hides the Routes tab and swaps this
+       section's innerHTML for a graceful note instead of a raw 404 iframe.
+       Could instead embed the artifact server-side like /curves' fallback
+       does. -->
+  <section data-route="routes" id="s-routes">
+    <iframe src="/dag" title="Training · inference route map"
+            style="width:100%;height:100%;border:0;display:block"></iframe>
+  </section>
+
+</div>
+
+<div id="toasts"></div>
+
+<!-- Vendored syntax highlighter (apps/mlx-bun/src/web/public/vendor/hljs.js — highlight.js core +
+     a curated language set, BSD-3-Clause, see that file's header). `defer`
+     means this loads/executes at DOMContentLoaded, which happens well before
+     any real highlighting call (those only fire later, on streamed content
+     or history replay) — app.js (below) only *calls* highlightIn() from
+     async event handlers, so load order here is safe in practice.
+     highlightIn() still guards with `typeof hljs !== "undefined"` for the
+     case this tag is ever stripped or the asset 404s. No CDN; served by
+     apps/mlx-bun/src/web/assets.ts at /assets/hljs.js. -->
+<script defer src="/assets/hljs.js"></script>
+<!-- The app itself: GENERATED bundle of the src/web/browser/*.ts
+     module split, built by `bun run --filter mlx-bun build:web` into dist/web/app.js
+     and served by apps/mlx-bun/src/web/assets.ts at /assets/app.js — see that file's header
+     comment. `defer` (like hljs.js above) means both scripts run in document
+     order at DOMContentLoaded, after the DOM this script queries with $()
+     is fully parsed. Edit src/web/browser/*.ts, never this bundle or this tag. -->
+<script defer src="/assets/app.js"></script>
+</body>
+</html>

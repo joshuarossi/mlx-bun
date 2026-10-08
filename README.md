@@ -1,65 +1,43 @@
 # mlx-bun
 
-MLX inference as a TypeScript/Bun library, with a signed executable serving
-OpenAI/Anthropic-compatible APIs on Apple Silicon. Embed generation in a Bun
-application or run the local server and browser chat app. The numerical tests
-compare logits bit-for-bit with mlx-lm for validated configurations.
+Local AI on Apple Silicon. mlx-bun 1.0 is an MLX inference engine, an
+OpenAI/Anthropic/Responses-compatible server, a browser app, and TypeScript
+libraries you can embed in your own Bun applications. Validated configurations
+are bit-exact with their reference implementation (mlx-lm, or mlx-optiq for
+mixed-precision KV); inference needs no Python.
 
 Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
 
-## Scope
-
-The engine requires an **Apple Silicon Mac running macOS 14 or later**.
-The standalone executable includes its runtime; npm and source usage require
-Bun. Node.js, Linux, and Windows cannot run the native engine.
-
-The server uses continuous batching by default. Eligible requests share the
-execution engine, including when only one request is active. Supported
-combinations and the explicit serial option are documented in
-[server configuration](./docs/reference/server-config.md).
-
-Use the [supported model roster](./docs/reference/models.md) to choose an
-artifact. Model architecture, weight format, and cache scheme determine
-compatibility. Arbitrary Hugging Face repositories and GGUF files are not
-automatically supported.
+Requires an Apple Silicon Mac running macOS 14 or later. The standalone installation
+includes its runtime; npm and source usage require Bun 1.4.2 or later.
 
 ## Install
 
-Four ways in; all need an Apple Silicon Mac running macOS.
-
 ```sh
-# Direct download — signed, notarized, no toolchain
+# Signed, notarized standalone bundle
 curl -fsSL https://mlx-bun.dev/install.sh | sh
 
 # Homebrew
 brew install joshuarossi/tap/mlx-bun
 
-# bunx — no install, needs Bun >= 1.4.0
-bunx mlx-bun
-
-# From source
-git clone https://github.com/joshuarossi/mlx-bun.git && cd mlx-bun
-bun install && bun run link-cli
+# npm package, run with Bun
+bun install -g mlx-bun   # or run once: bunx mlx-bun
 ```
 
-Homebrew and direct download install the same self-contained bundle. npm
-ships a launcher and TypeScript source, then fetches the native runtime pack
-on first use. See [distribution](./docs/reference/distribution.md) for details.
+Each provides the `mlx-bun` command. The installer and npm package also provide
+`mlx-bun.server`, `mlx-bun.generate`, `mlx-bun.convert`, `mlx-bun.fuse`,
+`mlx-bun.lora` and `mlx-bun.upload`, which accept mlx-lm's arguments. See
+[installation](https://mlx-bun.dev/getting-started/installation/) for options.
 
 ## Quickstart
 
-Start the server and open the chat UI. With no model selected, the first run
-downloads a starter model:
-
 ```sh
-mlx-bun serve --port 8080
+mlx-bun get mlx-community/gemma-4-e4b-it-OptiQ-4bit   # download a model
+mlx-bun serve e4b                                     # server + web app on port 8080
 ```
 
-Use `mlx-bun ls` to see downloaded models. For example, after downloading a
-matching model, `mlx-bun serve e4b` selects it by name. Model selection and
-downloads are documented in the [CLI reference](./docs/reference/cli.md).
-
-Send a request from the terminal:
+`mlx-bun` with no command serves a cached model, downloading a starter model on
+first run. Send a request from another terminal:
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
@@ -67,69 +45,73 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 128}'
 ```
 
-```ts
-import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "local" });
-const res = await client.chat.completions.create({
-  model: "local",
-  messages: [{ role: "user", content: "Hello!" }],
-});
+Or generate once without a server:
+
+```sh
+mlx-bun generate e4b "Write a haiku about Apple Silicon."
 ```
 
-Longer walkthroughs on the site:
-[Installation](https://mlx-bun.dev/getting-started/installation/) and
-[Quickstart](https://mlx-bun.dev/getting-started/quickstart/).
+The server also answers `/v1/completions`, `/v1/messages`, `/v1/responses` and
+`/v1/embeddings` when the loaded model supports them. `mlx-bun --help` and
+`mlx-bun <command> --help` list every command and option; the
+[CLI](https://mlx-bun.dev/reference/cli/), [HTTP API](https://mlx-bun.dev/reference/server-api/)
+and [configuration](https://mlx-bun.dev/reference/server-config/) references
+are generated from the source.
 
-## Find your way around
+## Libraries
 
-- **Use the app or server:** start above, then consult the
-  [CLI](./docs/reference/cli.md), [models](./docs/reference/models.md), or
-  [troubleshooting](./docs/reference/troubleshooting.md).
-- **Build an application:** the [library API](./docs/reference/library-api.md)
-  documents in-process Bun integration and isolated hosts for desktop apps.
-  The [HTTP API](./docs/reference/server-api.md) works with other runtimes.
-- **Evaluate or contribute:** read the [benchmark evidence](./docs/reference/benchmarks.md)
-  and [contribution guide](./CONTRIBUTING.md). The [docs index](./docs/README.md)
-  separates reference material, active design, and history.
+The `@mlx-bun/` packages expose loading and generation alongside the lower-level
+kernels, layers, graphs, state, sampling, quantization and training they compose.
+Start with `bun add @mlx-bun/inference` and the
+[library guide](https://mlx-bun.dev/guides/library/); the
+[library API](https://mlx-bun.dev/api/) covers every public export.
 
-Each reference topic has one home:
+## Repository layout
 
-| Topic | Doc |
-|---|---|
-| Benchmark numbers (parity / performance / quality) | [docs/reference/benchmarks.md](./docs/reference/benchmarks.md) |
-| Supported models roster | [docs/reference/models.md](./docs/reference/models.md) |
-| Server start flags, `MLX_BUN_*` env, defaults | [docs/reference/server-config.md](./docs/reference/server-config.md) |
-| HTTP API routes and request/response schemas | [docs/reference/server-api.md](./docs/reference/server-api.md) |
-| CLI verbs | [docs/reference/cli.md](./docs/reference/cli.md) |
-| TypeScript library API | [docs/reference/library-api.md](./docs/reference/library-api.md) |
-| LoRA fine-tuning (SFT / DPO / ORPO) | [docs/reference/training.md](./docs/reference/training.md) |
-| Build, sign, notarize, publish | [docs/reference/distribution.md](./docs/reference/distribution.md) |
-| Troubleshooting | [docs/reference/troubleshooting.md](./docs/reference/troubleshooting.md) |
-| Personal memory (local wiki) | [docs/reference/memory.md](./docs/reference/memory.md) |
-| Reference environment / oracle setup | [docs/reference/environment.md](./docs/reference/environment.md) |
-| Active engineering design docs | [docs/design/](./docs/README.md) |
-| Contributing / repo rules | [CONTRIBUTING.md](./CONTRIBUTING.md) |
+- `apps/` — applications you run.
+- `packages/` — libraries you import, published under `@mlx-bun/`.
 
-The numerical contract distinguishes stock mlx-lm parity, mlx-optiq parity
-for supported extensions, and experimental methods. Tests compare logits
-against pinned oracles under matching conditions; batching and sampling can
-change generated trajectories. See the evidence and limits in
-[benchmarks.md](./docs/reference/benchmarks.md#1-parity-porting-correctness--bit-exact-vs-the-oracle).
-Server policy defaults are documented separately in
-[server configuration](./docs/reference/server-config.md).
+[`@mlx-bun/mlx`](packages/mlx/README.md) owns the native MLX bindings.
+[`@mlx-bun/inference`](packages/inference/README.md) owns inference graphs, kernels, layers, input processing, state, and memory fit estimates.
+[`@mlx-bun/quantize`](packages/quantize/README.md) owns checkpoint quantization: calibration, sensitivity, mixed-precision allocation, rotation, and Trellis packing.
+[`@mlx-bun/training`](packages/training/README.md) owns LoRA and preference training, optimizers, losses, and adapter production.
+[`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry and Hugging Face downloads and uploads.
+`@mlx-bun/app-core` holds the core-service interfaces and module manifest contract, `@mlx-bun/app-host` the host-side module loader, and [`@mlx-bun/web-shell`](packages/web-shell/README.md) the web shell that mounts module panels, for the [modular app](ARCHITECTURE.md#modular-application).
+[`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces.
+The [public website](apps/website/README.md) owns user guides and build-only reference pages.
 
-## Why
+## Contributing
 
-mlx-bun brings MLX inference into a TypeScript application without a Python
-service. Bun's FFI calls `mlx-c` directly. Model implementations, scheduling,
-sampling, and reusable cache state live in the same process.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for ownership, contracts, and dependency
+rules, [CONTRIBUTING.md](CONTRIBUTING.md) for verification and evidence
+requirements, and [PLAN.md](PLAN.md) for open work. Agents start at
+[AGENTS.md](AGENTS.md).
 
-Performance depends on both native kernels and how the engine uses them.
-The project develops specialized kernels, avoids repeated computation, and
-measures complete requests as well as decode throughput. The
-[benchmark ledger](./docs/reference/benchmarks.md) records the machines,
-settings, comparisons, and remaining regressions.
+## Development
+
+Use Bun 1.4.2. From the repository root:
+
+```sh
+bun install
+```
+
+Follow the [MLX package setup](packages/mlx/README.md#development) to build or
+stage its native libraries. Build the inference package's native expert I/O and video helper with
+`bun run --filter @mlx-bun/inference build:native` and the app microphone helper
+with `bun run --filter @mlx-bun/module-transcription build:native` (swiftc). Run `bun run link-cli` to link
+this checkout's `mlx-bun` command into `${BUN_INSTALL:-$HOME/.bun}/bin`;
+keep that directory on PATH. The link follows changes in this checkout.
+Then run `bun run typecheck`
+and `bun run test`.
+Run `bun run verify:packages` to pack the libraries and app, install them into a clean
+temporary Bun project, and exercise the CLI, public imports, examples, and bundled natives.
+Use `bun scripts/verify-packages.ts --help` for options.
+Release preparation, signing, notarization and publication are documented in the
+app's [release instructions](apps/mlx-bun/README.md#release-preparation).
+
+Mac CI runs typechecking, the model-free tests, and this consumer check.
+Component source, tests, examples, and build configuration live together.
 
 ## License
 
-MIT. Third-party attributions: [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md).
+The libraries and app are MIT; see [LICENSE](LICENSE).

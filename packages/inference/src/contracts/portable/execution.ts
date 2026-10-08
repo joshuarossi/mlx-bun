@@ -1,0 +1,92 @@
+/** Request facts only. Native resources remain with the preparation owner. */
+export interface ExecutionRequirements {
+  /** Prepared autoregressive media (embeddings for a media input binding).
+   * Denoising image pixels are that method's own prefill input, not media. */
+  readonly hasVision: boolean;
+  readonly hasPreparedPrefixIdentity?: boolean;
+  readonly hasAdapters: boolean;
+  readonly hasRepetitionPenalty: boolean;
+  readonly userSeed: boolean;
+  readonly kvQuant: boolean;
+  readonly turboQuant: boolean;
+  readonly hasLogitsExtras: boolean;
+  readonly hasGrammar: boolean;
+  readonly wantsLogprobs: boolean;
+  readonly hasDraft: boolean;
+}
+
+export interface ExecutionCapabilities {
+  readonly method: "autoregressive" | "denoising";
+  readonly continuous: boolean;
+  readonly quantizedBatch: boolean;
+  /** Executor coordination, not a model capability: the shared group drives
+   * each row's own grammar state (wait for its mask, advance it with the
+   * emitted token, stop the row when it terminates). The shared sampler masks
+   * any model's logits; grammar jump and speculation are qualified separately. */
+  readonly grammarBatch: boolean;
+  readonly adapterBatch?: boolean;
+  /** Prepared media can enter the ordinary shared execution group. */
+  readonly mediaBatch?: boolean;
+  readonly mediaPrefixCache?: boolean;
+  readonly pagedBatch?: boolean;
+  readonly checkpoints: boolean;
+  /** Bound ordinary driver can restore/capture this request configuration. */
+  readonly sharedCheckpoints?: boolean;
+  /** Model-qualified speculative execution can retain this request's KV codec. */
+  readonly speculativeKvQuant?: boolean;
+  readonly speculativeTurboQuant?: boolean;
+  readonly turboQuantBatch?: boolean;
+  readonly speculativeLogprobs?: boolean;
+  /** The grouped provider supports the target's mounted adapter context. */
+  readonly sharedSpeculativeAdapters?: boolean;
+  /** Methods supplied by the model's shared execution binding. */
+  readonly groupedMethods?: readonly string[];
+  /** A shared method accepts request-owned grammar continuation proposals. */
+  readonly sharedGrammarProposals?: boolean;
+  /** An AR method appends grammar-accepted spans without speculative verification. */
+  readonly sharedGrammarJump?: boolean;
+  /** A grouped method can consume this request's strict known continuations. */
+  readonly sharedFill?: boolean;
+  /** A mounted provider can consume verified external continuations. */
+  readonly sharedSpeculativeEcho?: boolean;
+  /** A graph-owned compiled step exists; cache geometry can still decline it. */
+  readonly compiledDecode?: boolean;
+}
+
+export interface ExecutionFeatures {
+  readonly pagedKv: boolean;
+  readonly fill: boolean;
+  readonly compiledDecode?: boolean;
+  readonly grammarJump?: boolean;
+}
+
+/** Why a request is refused or not served as asked. Refusals
+ * (`mechanism: "unsupported"`) name the capability the executor or graph lacks;
+ * the rest name a requested feature the request's other choices make incompatible. */
+export type ExecutionReason =
+  | "continuous-unavailable" | "media-batch-unsupported" | "adapter-batch-unsupported"
+  | "kv-scheme-batch-unsupported" | "turbo-kv-batch-unsupported" | "grammar-batch-unsupported"
+  | "paged-kv-batch-unsupported" | "method-batch-unsupported"
+  | "draft-method-unsupported" | "logprobs-method-unsupported" | "repetition-penalty-method-unsupported"
+  | "logits-extras-method-unsupported" | "fill-method-unsupported"
+  | "draft-incompatible-with-request" | "paged-kv-bypassed-for-media-or-adapters"
+  | "fill-incompatible-with-request" | "compiled-decode-unavailable-for-request"
+  | "grammar-jump-incompatible-with-request";
+
+/** Selected once; consumers execute/report these values without reselecting. */
+export interface ResolvedExecution {
+  /** Implementation-owned method ID. The built-in planner retains its known
+   * methods; another model may register a different set without editing this contract. */
+  readonly method: string;
+  /** `unsupported`: no shared executor serves this request; `reasons` names why. */
+  readonly mechanism: "continuous" | "unsupported";
+  readonly pagedKv: boolean;
+  readonly promptCache: boolean;
+  readonly checkpoint: boolean;
+  readonly fill: boolean;
+  /** Permission to attempt the bound compiled step, never a promise that
+   * every dynamic row/state shape supports replay. */
+  readonly compiledDecode: boolean;
+  readonly grammarJump: boolean;
+  readonly reasons: readonly ExecutionReason[];
+}

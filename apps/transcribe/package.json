@@ -1,0 +1,33 @@
+{
+  "name": "mlx-bun-transcribe",
+  "version": "0.0.0",
+  "description": "Speech-to-text on Apple Silicon: the transcription module as its own host, with a Whisper server and the transcribe and dictate verbs",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "mlx-bun-transcribe": "./bin/mlx-bun-transcribe.mjs"
+  },
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "@mlx-bun/module-transcription": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

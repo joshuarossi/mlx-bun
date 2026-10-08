@@ -1,0 +1,38 @@
+{
+  "name": "@mlx-bun/app-services",
+  "version": "0.6.0",
+  "description": "Core-service implementations for mlx-bun application hosts: the Whisper model host, the local model catalog, storage, verb parsing and route mounting",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./catalog": "./src/catalog.ts",
+    "./home": "./src/home.ts",
+    "./portable": "./src/portable.ts",
+    "./verbs": "./src/verbs.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/hub": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/mlx": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

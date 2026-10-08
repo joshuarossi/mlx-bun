@@ -1,0 +1,205 @@
+// The persistent half of the serve composition: CPU-only services that outlive
+// any loaded model (web assets, download owner, Responses history, memory,
+// jobs, the modules that run here (chat among them), credentials, and their
+// routes and sockets). Nothing here imports the
+// engine or a native module at runtime, so a process without the MLX library
+// can own this state while a model host runs elsewhere. The model host it
+// serves is attached explicitly; no service reaches a model through globals.
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { AppModule, ModelCatalog, ModelHost } from "@mlx-bun/app-core";
+import { activateModules, createEventHub, createModuleRoutes, createModuleSockets, createRegistryCatalog, createStorage, mlxBunHome, type EventHub, type ModuleSockets } from "@mlx-bun/app-services/portable";
+import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import { catalogTransfers, createDownloadOwner, type DownloadOwner } from "../hub/downloads";
+import { JobStore } from "../jobs/db";
+import { createJobHost } from "../jobs/host";
+import { createJobService } from "../jobs/service";
+import { memoryVaultPath } from "../storage/paths";
+import { createCatalogHub } from "../publishing/catalog-hub";
+import { createHfCredentials } from "../publishing/credentials";
+import { createPublisher } from "../publishing/upload";
+import { createJobRoutes } from "../server/job-routes";
+import type { InProcessMemoryClient } from "./memory-engine";
+import { createServedModelHost, type ServedHostLink } from "./served-model-host";
+import type { MemoryCompletionClient } from "../modules";
+import type { SynthesisClient } from "../modules";
+import { createPublishingRoutes } from "../server/publishing-routes";
+import { ResponseStore, type ResponseHistory } from "../server/responses";
+import { createWebHandler } from "../web/assets";
+import { adapterStores, openRegistry, storagePath } from "../storage/paths";
+
+/** Where an embedder or a test put the chat's stores instead of the module's storage entries (`sessions/`, `pi-sessions/`,
+ * `tool-approvals.json` under MLX_BUN_HOME); an explicit path always wins. `cwd` is the directory Pi's tools work in. */
+export interface ChatPaths { cwd?: string; agentDir?: string; sessionDir?: string; toolApprovalsFile?: string }
+
+/** Overrides for the app's default storage (storage/paths.ts). `artifactRoot`
+ * replaces MLX_BUN_HOME for produced artifacts: its models/, adapters/,
+ * exports/ and datasets/ receive quantize, fine-tune, merge and dataset outputs. */
+export interface AppStoragePaths { jobsDb?: string; jobsLogs?: string; credentialsFile?: string; artifactRoot?: string }
+
+export interface AppStateOptions {
+  /** The requested listener port; an attached host's bound port replaces it. */
+  port: number;
+  memoryPaths?: { vault: string; skills: string };
+  chatPaths?: ChatPaths;
+  /** A read-only server (`ServeOptions.readOnly`): the chat gets no file-changing tool and denies every gated call. */
+  readOnly?: boolean;
+  /** Memory synthesis's model in the direct composition: main's memory task
+   * model (Gemma-4 e4b with its chunk adapter), created by the first run and
+   * kept until close, each call under the attached host's execution lease. */
+  memoryTaskModel?: () => InProcessMemoryClient;
+  /** Memory synthesis's model in a process that loads none (the isolated
+   * parent): one run's client for a task model another process owns (the
+   * current model worker's). The client holds that model's residency lease
+   * for the run and returns it through `release` when the run settles. */
+  memoryCompletions?: (signal: AbortSignal) => SynthesisClient | Promise<SynthesisClient>;
+}
+
+/** What a live model host lends the persistent services while it serves: its model and listener
+ * (`ServedHostLink`), the execution lease and the library refresh. */
+export interface ModelHostLink extends ServedHostLink {
+  /** Managed GPU jobs hold this lease until their child exits and logs drain. */
+  acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
+  /** A finished download or job changes the model library the host lists. */
+  invalidateLibrary(): void;
+}
+
+export interface RouteGroup { handle(request: Request): Promise<Response | null> }
+
+export interface AppState {
+  /** Serves already-built browser assets; never loads a model. */
+  web(request: Request): Response | null;
+  readonly downloads: DownloadOwner;
+  /** The `events` core service's bus: the model loader and the engine adapter publish, modules subscribe. It lives as long as the state. */
+  readonly events: EventHub;
+  /** One service shared by persistent and model-scoped modules; the attached host lends its operations and residency. */
+  readonly modelHost: ModelHost;
+  /** Responses API conversation history, shared by every host this state serves. */
+  readonly responses: ResponseHistory;
+  readonly memoryPaths: { vault: string; skills: string };
+  readonly storagePaths: AppStoragePaths;
+  /** The sockets the modules that run here declare (chat's `/ws/chat`); the listener upgrades them and the modules own each connection. */
+  readonly sockets: ModuleSockets;
+  /** Persistent route groups; the host mounts them in the app's route order. */
+  readonly routes: {
+    jobs: RouteGroup; appModules: RouteGroup; publishing: RouteGroup;
+  };
+  /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
+  attach(link: ModelHostLink): () => void;
+  /** Cancel and join background producers (jobs, downloads). Idempotent. */
+  close(): Promise<void>;
+}
+
+/** CPU composition owns its services until the app closes them; the model host
+ * only borrows what it mounts. `modules` are the installed modules that run
+ * here (`installedModules("state")`, supplied by the composition root so this
+ * file never reaches module packages that load the engine). */
+export async function createAppState(options: AppStateOptions, storagePaths: AppStoragePaths = {}, modules: readonly AppModule[] | ((client: (signal: AbortSignal) => SynthesisClient | Promise<SynthesisClient>) => Promise<readonly AppModule[]>) = []): Promise<AppState> {
+  const web = await createWebHandler();
+  let host: ModelHostLink | undefined;
+  const requireHost = () => { if (!host) throw new Error("no model host is attached"); return host; };
+  const events = createEventHub();
+  const invalidateLibrary = () => { host?.invalidateLibrary(); };
+  // A change to the catalog (a download, a finished job, a cleanup) makes the host forget the model listing it routes by.
+  events.subscribe(["catalog.changed"], invalidateLibrary);
+  const libraryChanged = () => { events.publish({ type: "catalog.changed", at: Date.now() }); };
+  let catalog!: ModelCatalog;
+  // Web-started transfers outlive their request. The owner's rows feed
+  // the catalog and chat; completion re-indexes the cache, and
+  // shutdown joins every transfer before the engine closes.
+  const downloads = createDownloadOwner({
+    onComplete: async repoId => {
+      await catalog.rescan();
+      console.log(`[hub] download complete: ${repoId}`);
+    },
+    onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
+  });
+  const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
+    acquire: signal => requireHost().acquireExecutionLease(signal),
+    onComplete: libraryChanged,
+    ...(storagePaths.jobsDb !== undefined || storagePaths.jobsLogs !== undefined ? {
+      createStore: () => new JobStore(storagePaths.jobsDb,
+        storagePaths.jobsLogs ?? (storagePaths.jobsDb !== undefined ? join(dirname(storagePaths.jobsDb), "jobs") : undefined)),
+    } : {}),
+  });
+  const memoryPaths = options.memoryPaths ?? { vault: memoryVaultPath(), skills: storagePath("skills") };
+  const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
+  // The model catalog the state's modules share: the hub cache, the models directory and the adapter stores, with the app's token behind
+  // pushes and its download owner behind the downloads that outlive a request.
+  catalog = createRegistryCatalog({ events, adapterDirs: () => adapterStores(storagePaths.artifactRoot),
+    hub: createCatalogHub(credentials, { transfers: catalogTransfers(downloads) }),
+    ...(storagePaths.artifactRoot ? { registry: () => openRegistry(storagePaths.artifactRoot), modelsRoot: () => storagePath("models", storagePaths.artifactRoot) } : {}) });
+  // The installed modules that need job runners (datasets) run here, beside
+  // the job store. They reach the served model through the attached host's own
+  // API: over its Unix socket when it listens on one, else over TCP to its port.
+  const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
+  const served = createServedModelHost({ link: () => host,
+    // timeout: false lifts Bun's ~300 s idle timer: a long non-streaming generation is silent that long.
+    fetch: (request, link) => fetch(request, { ...(link.unix ? { unix: link.unix } : {}), timeout: false } as RequestInit) });
+  // Memory's tools reach chat through the registry, so they activate beside it. The chat's stores an embedder placed elsewhere win over its storage entries.
+  const chatStores = { ...(options.chatPaths?.sessionDir !== undefined ? { "chat.sessions": options.chatPaths.sessionDir } : {}),
+    ...(options.chatPaths?.agentDir !== undefined ? { "chat.agent": options.chatPaths.agentDir } : {}),
+    ...(options.chatPaths?.toolApprovalsFile !== undefined ? { "chat.approvals": options.chatPaths.toolApprovalsFile } : {}) };
+  // Memory synthesis runs on the task model, created on first use (its weights
+  // load with the first completion) and kept until close, as in main. Each of
+  // its completions or batches runs under the attached host's execution lease,
+  // taken before the weights load and released once every started row joined,
+  // so memory work never overlaps a managed job. The isolated parent owns no
+  // task model: its client reaches the current model worker's, which takes its
+  // own execution lease per call, and holds that model's residency lease for the
+  // run (see serve-isolated.ts). Close cancels and joins the
+  // runs, then closes the task model, all ahead of any engine drain.
+  let taskModel: InProcessMemoryClient | undefined;
+  const leased = (client: MemoryCompletionClient, signal: AbortSignal): MemoryCompletionClient => {
+    const hold = async <T>(work: () => Promise<T>) => {
+      const lease = await requireHost().acquireExecutionLease(signal);
+      try { return await work(); } finally { lease.dispose(); }
+    };
+    return { complete: request => hold(() => client.complete(request)), completeBatch: requests => hold(() => client.completeBatch(requests)) };
+  };
+  const memoryClient = (signal: AbortSignal): SynthesisClient | Promise<SynthesisClient> => {
+    if (options.memoryTaskModel) return leased((taskModel ??= options.memoryTaskModel()).clientFor(signal), signal);
+    if (options.memoryCompletions) return options.memoryCompletions(signal);
+    throw new Error("memory synthesis has no task model in this composition");
+  };
+  const loaded = await activateModules(typeof modules === "function" ? await modules(memoryClient) : modules, { sockets: true, bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
+    // Produced artifacts follow `artifactRoot`; the chat's saved sessions and approvals are the user's data, which it never moved.
+    storage: createStorage(moduleId => ["chat", "memory"].includes(moduleId) ? mlxBunHome() : storagePaths.artifactRoot ?? mlxBunHome(), { ...chatStores, "memory.vault": memoryPaths.vault, "memory.skills": memoryPaths.skills }) } });
+  jobService.serve(loaded.jobs);
+  const routes: AppState["routes"] = {
+    jobs: createJobRoutes(jobs),
+    appModules: createModuleRoutes(loaded.routes),
+    publishing: createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
+      getJob: id => jobs.ensureStore().get(id),
+    }) }),
+  };
+  let closing: Promise<void> | undefined;
+  return {
+    web, downloads, events, modelHost: served, responses: new ResponseStore(), memoryPaths, storagePaths,
+    sockets: createModuleSockets(loaded.sockets),
+    routes,
+    attach(link) {
+      host = link;
+      return () => { if (host === link) host = undefined; };
+    },
+    close: () => closing ??= (async () => {
+      const errors: unknown[] = [];
+      // Synthesis rows, managed children and transfers are cancelled and joined
+      // before the task model's weights are released; no lease is taken here.
+      // Modules stop before the job host, which joins their running tasks.
+      const stopJobs = async () => {
+        const failures: unknown[] = [];
+        try { await loaded.stop(); } catch (error) { failures.push(error); }
+        try { await jobs.close(); } catch (error) { failures.push(error); }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, "job shutdown failed");
+      };
+      for (const result of await Promise.allSettled([stopJobs(), downloads.close()]))
+        if (result.status === "rejected") errors.push(result.reason);
+      try { await taskModel?.close(); } catch (error) { errors.push(error); }
+      events.close();
+      if (errors.length === 1) throw errors[0];
+      if (errors.length) throw new AggregateError(errors, "background shutdown failed");
+    })(),
+  };
+}

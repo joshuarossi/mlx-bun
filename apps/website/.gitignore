@@ -1,0 +1,6 @@
+.astro/
+src/content/docs/reference/cli.md
+src/content/docs/reference/server-api.md
+src/content/docs/reference/server-config.md
+public/install.sh
+public/api/

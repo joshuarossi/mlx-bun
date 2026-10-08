@@ -1,0 +1,67 @@
+// The module's static manifest: plain data, read by hosts and documentation
+// generators without loading a model or native code (this file imports only
+// types). `index.ts` adds `activate`.
+import type { AppModule } from "@mlx-bun/app-core";
+
+export const manifest = {
+  id: "transcription",
+  title: "Transcription",
+  summary: "Speech-to-text with a local Whisper model: OpenAI-compatible audio routes, streaming dictation sessions, and the transcribe and dictate verbs.",
+  requires: ["modelHost", "catalog"],
+  routes: [
+    { id: "transcriptions", method: "POST", path: "/v1/audio/transcriptions", summary: "Transcribe an uploaded clip (multipart or JSON body); text, json, verbose_json, srt or vtt, or an SSE stream", response: "json", mount: "root" },
+    { id: "translations", method: "POST", path: "/v1/audio/translations", summary: "Translate an uploaded clip to English", response: "json", mount: "root" },
+    { id: "unload", method: "POST", path: "/admin/transcription/unload", summary: "Page the Whisper weights out now; reports the residency counters", response: "json", mount: "root" },
+    { id: "session-create", method: "POST", path: "/v1/audio/sessions", summary: "Open a streaming dictation session", response: "json", mount: "root" },
+    { id: "session-audio", method: "POST", path: "/v1/audio/sessions/:id/audio", summary: "Append a chunk of 16 kHz float32 PCM (or an encoded clip) to a session", response: "json", mount: "root" },
+    { id: "session-finish", method: "POST", path: "/v1/audio/sessions/:id/finish", summary: "Transcribe the remainder and close the session", response: "json", mount: "root" },
+    { id: "session-delete", method: "DELETE", path: "/v1/audio/sessions/:id", summary: "Close a session that was abandoned", response: "json", mount: "root" },
+  ],
+  verbs: [
+    { name: "transcribe", summary: "Speech-to-text from an audio file with a local Whisper model (no server)",
+      positional: [
+        { name: "audio-file", summary: "The clip to transcribe", required: true },
+        { name: "query", summary: "The Whisper checkpoint (a directory or a cached query)" },
+      ],
+      usage: "usage: mlx-bun transcribe <audio-file> [query] [--language en] [--format text|json|verbose_json|srt|vtt]",
+      options: [
+        { name: "model", type: "string", summary: "Whisper model directory or cached query (overrides the positional query) [default: the first downloaded whisper checkpoint]" },
+        { name: "query", type: "string", summary: "Cached Whisper query when no positional/model override is supplied" },
+        { name: "language", type: "string", summary: "ISO code or name (en, japanese); auto or omitted detects from the first 30 s" },
+        { name: "task", type: "string", summary: "transcribe | translate (to English) [default: transcribe]" },
+        { name: "beam-size", type: "number", summary: "Beam search width [default: greedy]" },
+        { name: "temperature", type: "number", summary: "One sampling temperature; omitted runs the (0, 0.2, …, 1.0) fallback ladder like mlx-whisper" },
+        { name: "no-fallback", type: "boolean", summary: "Temperature 0 only, no retry ladder" },
+        { name: "prompt", type: "string", summary: "Initial prompt (vocabulary hints / style)" },
+        { name: "no-timestamps", type: "boolean", summary: "Decode text only (<|notimestamps|>)" },
+        { name: "no-condition", type: "boolean", summary: "Do not condition each window on the previous text" },
+        { name: "vad", type: "boolean", summary: "Silero VAD gate: no detected speech prints an empty result and Whisper never runs (weights: ggml-org/whisper-vad in the HF cache)" },
+        { name: "vad-threshold", type: "number", summary: "Speech probability threshold for --vad [default: 0.5]" },
+        { name: "vad-model", type: "string", summary: "Explicit Silero ggml path for --vad" },
+        { name: "vad-trim", type: "boolean", summary: "Accepted with --vad; the clip is still transcribed whole, as in main" },
+        { name: "word-timestamps", type: "boolean", summary: "Word-level timestamps (verbose_json words)" },
+        { name: "faithful", type: "boolean", summary: "Run the oracle-parity graph instead of the fast path" },
+        { name: "audio-ctx", type: "number", summary: "Lab: encode only n of the 1500 encoder positions (whisper.cpp -ac); degrades below ~1024" },
+        { name: "format", type: "string", summary: "text | json | verbose_json | srt | vtt [default: text]" },
+        { name: "verbose", type: "boolean", summary: "Print each segment with its time range as it decodes, then a realtime-factor summary (stderr)" },
+      ] },
+    { name: "dictate", summary: "Push-to-talk: stream your microphone into Whisper, print/copy/type the text",
+      positional: [{ name: "query", summary: "The Whisper checkpoint (a directory or a cached query)" }],
+      options: [
+        { name: "model", type: "string", summary: "Whisper model directory or cached query for in-process transcription (overrides the positional query) [default: the first downloaded whisper checkpoint]" },
+        { name: "query", type: "string", summary: "Cached Whisper query when no positional/model override is supplied" },
+        { name: "server", type: "string", summary: "Use a running mlx-bun server's /v1/audio/sessions instead of loading the model here" },
+        { name: "hotkey", type: "number", optionalValue: true, default: 61, summary: "Hold a key to talk instead of Enter toggling: macOS virtual keycode, value optional [default: 61 = Right Option]; needs Input Monitoring for your terminal" },
+        { name: "language", type: "string", summary: "Language code; auto detects [default: en]" },
+        { name: "beam-size", type: "number", summary: "Beam search width [default: greedy]" },
+        { name: "prompt", type: "string", summary: "Initial prompt" },
+        { name: "vocabulary", type: "string", summary: "Comma-separated hint terms, fitted into the prompt budget" },
+        { name: "no-vad", type: "boolean", summary: "Skip the Silero gate (by default silence never runs Whisper)" },
+        { name: "idle-unload", type: "number", summary: "Release the weights after this many idle seconds; 0 = right after each take [default: 30]" },
+        { name: "resident", type: "boolean", summary: "Keep the weights loaded" },
+        { name: "copy", type: "boolean", summary: "Copy the transcript to the clipboard (pbcopy)" },
+        { name: "type", type: "boolean", summary: "Type it into the frontmost app via System Events keystrokes (needs Accessibility for your terminal)" },
+        { name: "type-delay", type: "number", summary: "Seconds to wait before typing so you can Cmd-Tab [default: 1 in Enter mode, 0 with --hotkey]" },
+      ] },
+  ],
+} as const satisfies Omit<AppModule<"modelHost" | "catalog">, "activate">;
