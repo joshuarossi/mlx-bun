@@ -1,13 +1,14 @@
 // ANE prefill channel splits (layers/ane-prefill-split) on small synthetic
 // layers against the GPU-only result: the ANE computes its channels in fp16
 // from weights the GPU writes into its buffers, so the outputs agree to fp16
-// precision. Requires the ANE bridge (dist/native/libmlx_bun_ane.dylib) and an
-// Apple Neural Engine; skipped otherwise, which is not evidence of a pass.
+// precision. Opt-in: set MLX_BUN_TEST_ANE=1 on a real Apple Silicon machine (every
+// M-series chip has a Neural Engine; a virtual machine such as a hosted CI runner
+// loads the framework but cannot compile). Unset skips, which is not evidence of a pass.
 import { expect, test } from "bun:test";
 import { Dtype, MlxArray, ops } from "@mlx-bun/mlx";
 import { QuantizedLinear } from "../../src/layers/quantized-linear";
 import { TrellisLinear } from "../../src/layers/trellis-linear";
-import { AneAffineSplit, AneTrellisMlpSplit, AneTrellisMlpSplitK3i, aneAvailable } from "../../src/layers/ane-prefill-split";
+import { AneAffineSplit, AneTrellisMlpSplit, AneTrellisMlpSplitK3i } from "../../src/layers/ane-prefill-split";
 import { compiledSwiglu } from "../../src/layers/swiglu";
 
 const D = 512, R = 1024, M = 96, SEQ = 512;
@@ -39,7 +40,7 @@ function trellis(rows: number, cols: number, axis: 0 | 1, k: number, seedBase: n
     { bits: k, groupSize: 256, mode: "trellis", trellis: { L: 12, code: "1mad", axis } });
 }
 
-test.skipIf(!aneAvailable())("affine projection split matches the GPU projection", () => {
+test.skipIf(!process.env.MLX_BUN_TEST_ANE)("affine projection split matches the GPU projection", () => {
   const lin = affine(256, D, 1);
   using x = hidden();
   using expected = lin.forward(x);
@@ -49,7 +50,7 @@ test.skipIf(!aneAvailable())("affine projection split matches the GPU projection
 }, 120_000);
 
 for (const interleave of [false, true])
-  test.skipIf(!aneAvailable())(`Trellis whole-MLP split matches the GPU MLP (${interleave ? "3-bit interleaved" : "row-major"} down)`, () => {
+  test.skipIf(!process.env.MLX_BUN_TEST_ANE)(`Trellis whole-MLP split matches the GPU MLP (${interleave ? "3-bit interleaved" : "row-major"} down)`, () => {
     const gate = trellis(R, D, 1, 3, 11), up = trellis(R, D, 1, 3, 23), down = trellis(R, D, 0, interleave ? 3 : 2, 37, interleave);
     using x = hidden();
     using g = gate.forward(x, true), u = up.forward(x, true);

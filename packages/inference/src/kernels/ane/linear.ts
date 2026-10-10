@@ -31,20 +31,7 @@ function native(): Lib | null {
   return lib;
 }
 
-/** The bridge loaded and this machine compiles ANE programs. Loading proves
- *  only that the private framework is present; a VM or a CI runner can load it
- *  and still fail every compile, so the first call compiles one small streamed
- *  matmul and remembers the answer. Any failure is "no ANE". */
-let usable: boolean | undefined;
-export function aneAvailable(): boolean {
-  if (usable === undefined) {
-    usable = false;
-    if (native() !== null) {
-      try { AneStreamedMatmul.create(64, 64, 64).dispose(); usable = true; } catch { usable = false; }
-    }
-  }
-  return usable;
-}
+export function aneAvailable(): boolean { return native() !== null; }
 
 const errorBuffer = new Uint8Array(512);
 const errorText = () => new TextDecoder().decode(errorBuffer.subarray(0, errorBuffer.indexOf(0)));
