@@ -1,4 +1,5 @@
 import type { ModelConfig } from "../artifacts/config";
+import type { Composition } from "../contracts/portable/composition";
 import {
   assertResolvedModelProfile,
   type GenerationLoop,
@@ -10,19 +11,22 @@ import {
 
 /** Engine code implements this port. Source and Model remain backend-specific;
  * selection introduces no tensor conversion or dispatch in the token loop.
- * create borrows source; a failed construction must release its own resources. */
-export interface ModelImplementation<Source, Model> {
+ * create borrows source; a failed construction must release its own resources.
+ * `composition` is the record the loader resolved; a graph registry receives a
+ * {@link Composition}. A complete implementation that owns its loader takes
+ * `void` and composes itself from its source. */
+export interface ModelImplementation<Source, Model, Composed = Composition> {
   readonly id: string;
   readonly graph: ModelGraph;
   readonly loader: ModelLoader;
   readonly loop: GenerationLoop;
-  create(source: Source, config: ModelConfig, profile: ResolvedModelProfile): Model;
+  create(source: Source, config: ModelConfig, profile: ResolvedModelProfile, composition: Composed): Model;
 }
 
-export interface ModelImplementationProvider<Source, Model> {
+export interface ModelImplementationProvider<Source, Model, Composed = Composition> {
   /** Validate identity and composition, then return one compatible binding.
    * A declared implementation must never silently fall back to another. */
-  select(config: ModelConfig, profile: ResolvedModelProfile): ModelImplementation<Source, Model>;
+  select(config: ModelConfig, profile: ResolvedModelProfile): ModelImplementation<Source, Model, Composed>;
 }
 
 /** The implementation a composition runs: the one it names, else the graph's own

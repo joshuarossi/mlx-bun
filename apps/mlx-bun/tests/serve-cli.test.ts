@@ -600,7 +600,7 @@ test("startup wires the memory budget, runtime context, allocator limit, expert 
     assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
     assert.equal(defaultAdapter, "my-lora");
     assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, runtime: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096, nativeDraft: false },
-      draftKind: "ngram", numDraftTokens: 4, ngramMax: 5, ngramMin: 2 });
+      kv: { override: "off" }, adapters: true, maxRows: 2, draftKind: "ngram", numDraftTokens: 4, ngramMax: 5, ngramMin: 2 });
     assert.equal(cacheOptions.allocatorLimitBytes, 8e9);
     assert.equal(statusBudget, 8e9);
     assert.equal(contextLimit, expected);

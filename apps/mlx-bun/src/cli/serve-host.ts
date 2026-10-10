@@ -79,6 +79,11 @@ function mergeDurability(all: readonly DurabilityFlushResult[]): DurabilityFlush
     missingSnapshots: all.reduce((n, item) => n + item.missingSnapshots, 0), elapsedMs: all.reduce((n, item) => Math.max(n, item.elapsedMs), 0) };
 }
 
+/** Serve's KV flags as the composition request names them. */
+const kvFlags = ({ kvQuant, turboQuant, quantizedKvStart }: ServeOptions["cache"]) => ({
+  ...(kvQuant !== undefined ? { override: kvQuant } : {}), ...(turboQuant ? { turboQuant } : {}),
+  ...(quantizedKvStart !== undefined ? { quantizedKvStart } : {}) });
+
 /** Model composition owns resources until each explicit ownership transfer. */
 export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks?: ModelHostHooks & { unix?: undefined }): Promise<RunningModelHost>;
 export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks & { unix: string }): Promise<RunningWorkerHost>;
@@ -111,6 +116,8 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
       const loadStarted = performance.now();
       const context = await loadContext(record.path, record.repoId, {
         ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
+        // The composition's facts: the KV flags, the startup adapter and the batch cap.
+        kv: kvFlags(options.cache), adapters: startup && options.adapterDir !== undefined, maxRows: options.capacity,
         // Resource plan inputs for runtimes that plan memory up front; other models ignore this block.
         runtime: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
           ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),

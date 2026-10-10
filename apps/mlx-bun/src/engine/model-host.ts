@@ -2,7 +2,8 @@
 // points supply the artifact and options; no HTTP or scheduling lives here.
 import type { KvQuantSpec, ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import type { Weights } from "@mlx-bun/inference/artifacts";
-import type { RuntimeModel, RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider, GenerationDefaults } from "@mlx-bun/inference/models";
+import type { RuntimeModel, RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider, GenerationDefaults,
+  CompositionRequest } from "@mlx-bun/inference/models";
 import type { ChatTemplate, LoadedTokenizer, SentinelTokens } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
@@ -14,7 +15,7 @@ export type LoadedAudioEncoder = AudioEncoder & { dispose?(): void };
 import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
-import type { DisposableResource, MemoryPlan } from "@mlx-bun/inference/contracts/portable";
+import type { Composition, DisposableResource, MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import type { DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
 import type { DraftProviderRegistry, LoadedDraft } from "@mlx-bun/inference/generation/speculative/draft-registry";
 
@@ -81,6 +82,11 @@ export interface ModelContext<Model = RuntimeModel> {
     /** The provider is the checkpoint's own draft head, not a configured drafter. */
     native?: true;
   } | null;
+  /** The composition this load resolved before building the graph: device,
+   * Neural Engine bridge, KV scheme, draft depth, prefill chunk, adapters and
+   * rows per forward. Absent for a context an engine-owned implementation or a
+   * caller built. */
+  readonly composition?: Composition;
   /** Present only for a runtime that plans its memory before opening weights:
    * the exact header-derived process equation it runs under. */
   memoryPlan?: MemoryPlan | null;
@@ -100,10 +106,18 @@ export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel
   /** Raw generation and embeddings do not require a chat template. Default true. */
   requireChatTemplate?: boolean;
   /** Engine-owned complete implementations may own their loader and methods.
-   * Selection happens before opening the default resident or streamed weights. */
-  implementations?: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>>;
+   * Selection happens before opening the default resident or streamed weights.
+   * They receive these options in their source and resolve no composition here. */
+  implementations?: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>, void>;
   profiles?: import("@mlx-bun/inference/models").ResolveModelProfileOptions;
   memoryBudgetBytes?: number;
+  /** The KV flags the composition's scheme resolves from (`--kv-quant`, its
+   * TurboQuant spelling, `--quantized-kv-start`); absent means bf16. */
+  kv?: CompositionRequest["kv"];
+  /** Adapters are mounted at load (`--adapter`). Default false. */
+  adapters?: boolean;
+  /** Most rows one forward carries (`--batch`). Default 8. */
+  maxRows?: number;
   /** Resource overrides for runtimes that plan memory up front; models
    * without one ignore them. */
   runtime?: RuntimeOpenOptions;
@@ -168,7 +182,7 @@ async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDef
 export function loadContext<Model extends ServedModelInfo>(
   modelDir: string, modelId: string | undefined,
   opts: LoadContextOptions<Model> & {
-    implementations: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>>;
+    implementations: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>, void>;
   },
 ): Promise<ModelContext<Model>>;
 export function loadContext(modelDir: string, modelId?: string, opts?: LoadContextOptions): Promise<ModelContext>;
@@ -189,7 +203,7 @@ export async function loadContext(
     return implementation.create({ modelDir, modelId, options }, config, profile);
   }
   const [{ Weights }, { createModel, declaredGraph, openPlannedRuntime, plansMemory, loadModelChatTemplate,
-      sentinelDeclarationFor, mediaTokenDeclarationFor, generationDefaultsFor },
+      sentinelDeclarationFor, mediaTokenDeclarationFor, generationDefaultsFor, resolveComposition },
     { loadTokenizer, resolveSentinelTokens, resolveVisionTokenIds, resolveAudioTokenIds },
     { AdapterManager }, { bindLegacyDraftTarget }, { defaultDraftProviders }] = await Promise.all([
     import("@mlx-bun/inference/artifacts"), import("@mlx-bun/inference/models"),
@@ -262,25 +276,15 @@ export async function loadContext(
           `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
         );
     }
-    if (!planned) {
-      model = createModel(weights!, config, profile);
-      if ("dispose" in model && typeof model.dispose === "function") owned.add(model);
-    }
     const tokenizer = await loadTokenizer(modelDir);
-    // Generation must stop on the tokenizer's eos_token — the chat turn
-    // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
-    // declare a different eos_token_id in config.json than the chat format
-    // emits, so without this a turn never ends and generation runs away,
-    // hallucinating both sides of the dialogue until max_tokens. mlx-lm stops on
-    // the tokenizer eos; union it in. No-op when already present (Gemma, 27B).
-    if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
-      config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
 
     // Speculative decoding: load the draft (mlx_lm.server --draft-model). The
     // draft artifact's KIND selects the provider, each of which recognizes and
     // loads its own artifact; all share ONE serve loop
     // (packages/inference/src/generation/speculative/run.ts). `--draft-kind`
-    // overrides the detect.
+    // overrides the detect. The loaded drafter settles the composition's draft
+    // depth, so it loads before the target graph is built; the pairing probe
+    // below needs that graph.
     let draft: ModelContext["draft"] = null;
     let validateDraft = true;
     if (opts.draftProvider) {
@@ -302,6 +306,34 @@ export async function loadContext(
       // A model-free provider has no pairing to probe and no weights to budget.
       validateDraft = kind!.artifact;
     }
+    // A checkpoint-native draft head (a planned runtime's is the production
+    // default) comes from the graph's own declaration: it uses the
+    // already-planned bounded auxiliary tier and the same tokenizer, so there is
+    // no second artifact or compatibility probe to load. A planned runtime has
+    // opened its graph above, so its head settles the depth here; a resident
+    // graph declares one only once it is built, below.
+    const declaredDraftHead = async (): Promise<ModelContext["draft"]> => {
+      const declared = await draftRegistry.native(model);
+      return declared ? { ...declared, native: true } : null;
+    };
+    if (!draft && planned) draft = await declaredDraftHead();
+    // Resolved once, before the resident graph is built, which receives it. A
+    // planned runtime built its graph from its own memory plan above.
+    const composition = resolveComposition(config, { kv: opts.kv, adapters: opts.adapters, maxRows: opts.maxRows,
+      draft: draft && { numDraftTokens: draft.numDraftTokens, adaptive: opts.adaptiveDraftDepth } });
+    if (!planned) {
+      model = createModel(weights!, config, composition, profile);
+      if ("dispose" in model && typeof model.dispose === "function") owned.add(model);
+    }
+    // Generation must stop on the tokenizer's eos_token — the chat turn
+    // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
+    // declare a different eos_token_id in config.json than the chat format
+    // emits, so without this a turn never ends and generation runs away,
+    // hallucinating both sides of the dialogue until max_tokens. mlx-lm stops on
+    // the tokenizer eos; union it in. No-op when already present (Gemma, 27B).
+    if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
+      config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
+
     if (draft && validateDraft) {
       const { provider } = draft;
       // Fail-fast pairing validation (2026-07-07 review): a source validates the
@@ -352,14 +384,7 @@ export async function loadContext(
       }
     }
 
-    // A checkpoint-native draft head (a planned runtime's is the production
-    // default) comes from the graph's own declaration: it uses the
-    // already-planned bounded auxiliary tier and the same tokenizer, so there is
-    // no second artifact or compatibility probe to load.
-    if (!draft) {
-      const declared = await draftRegistry.native(model);
-      if (declared) draft = { ...declared, native: true };
-    }
+    if (!draft && !planned) draft = await declaredDraftHead();
 
     if (draft) owned.add(draft.provider);
     if (opts.adaptiveDraftDepth) {
@@ -391,6 +416,7 @@ export async function loadContext(
       profile,
       sentinels: sentinelTexts ? resolveSentinelTokens(tokenizer, sentinelTexts) : null,
       generationDefaults: generationDefaultsFor(profile),
+      composition,
       memoryPlan: runtime?.memoryPlan ?? null,
       ...(runtime ? { runtimeDiagnostics: runtime.diagnostics } : {}),
       adapters,

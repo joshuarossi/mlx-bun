@@ -1,3 +1,4 @@
+export * from "./composition";
 export * from "./denoising";
 export * from "./execution";
 export * from "./generation";

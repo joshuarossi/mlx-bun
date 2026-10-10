@@ -28,6 +28,8 @@ import { UniversalDenseModel } from "./universal/dense";
 import { WhisperModel } from "./whisper/model";
 import { genericArgsFor } from "./universal/archs";
 import { familyForGraph } from "./families";
+import { resolveComposition } from "./composition";
+import type { Composition } from "../contracts/portable/composition";
 import {
   ModelImplementationRegistry,
   type ModelImplementation,
@@ -83,6 +85,10 @@ export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights
 export interface ModelOpenOptions<Model = RuntimeModel> extends Glm52RuntimeOpenOptions {
   readonly profiles?: ResolveModelProfileOptions;
   readonly implementations?: ModelImplementationProvider<Weights, Model>;
+  /** The composition the graph is built for; absent resolves the default record
+   * (`resolveComposition(config)`). The direct Colibri runtime plans its own
+   * resources from the options above and takes none. */
+  readonly composition?: Composition;
 }
 
 export interface Glm52RuntimeOpenOptions {
@@ -195,25 +201,29 @@ export async function openModel<Model>(
     );
   // Resolve before opening weights; missing or incompatible code allocates nothing.
   const implementation = (options.implementations ?? MLX_MODEL_IMPLEMENTATIONS).select(config, profile);
+  const composition = options.composition ?? resolveComposition(config);
   const weights = await Weights.open(modelDir);
-  try { return implementation.create(weights, config, profile); }
+  try { return implementation.create(weights, config, profile, composition); }
   catch (error) { weights.dispose(); throw error; }
 }
 
-/** Construct the binding named by a validated profile. A supplied registry can
- * return any backend-owned interface; the compatibility default returns the
- * legacy model union. The caller retains ownership of the supplied weights. */
+/** Construct the binding named by a validated profile for `composition`, which
+ * the implementation receives (absent: the default record,
+ * `resolveComposition(config)`). A supplied registry can return any
+ * backend-owned interface; the compatibility default returns the legacy model
+ * union. The caller retains ownership of the supplied weights. */
 export function createModel<Model>(
-  weights: Weights, config: ModelConfig, resolved: ResolvedModelProfile | undefined,
-  implementations: ModelImplementationProvider<Weights, Model>,
+  weights: Weights, config: ModelConfig, composition: Composition | undefined,
+  resolved: ResolvedModelProfile | undefined, implementations: ModelImplementationProvider<Weights, Model>,
 ): Model;
 export function createModel(
-  weights: Weights, config: ModelConfig, resolved?: ResolvedModelProfile,
+  weights: Weights, config: ModelConfig, composition?: Composition, resolved?: ResolvedModelProfile,
   implementations?: ModelImplementationProvider<Weights, RuntimeModel>,
 ): RuntimeModel;
 export function createModel<Model>(
   weights: Weights,
   config: ModelConfig,
+  composition: Composition = resolveComposition(config),
   resolved: ResolvedModelProfile = resolveModelProfile(config),
   implementations: ModelImplementationProvider<Weights, Model> | ModelImplementationProvider<Weights, RuntimeModel> = MLX_MODEL_IMPLEMENTATIONS,
 ): Model | RuntimeModel {
@@ -223,5 +233,5 @@ export function createModel<Model>(
       `${resolved.profile.id} uses the direct Colibri container; construct it with ` +
       "openModel(modelDir) or Glm52Model.open(modelDir)",
     );
-  return implementations.select(config, resolved).create(weights, config, resolved);
+  return implementations.select(config, resolved).create(weights, config, resolved, composition);
 }

@@ -12,6 +12,7 @@ export * from "./checkpoint";
 export * from "./kv-maintenance";
 export * from "./dense-kv-reads";
 export * from "./kv-scheme";
+export * from "./kv-storage";
 export * from "./persistence";
 export * from "./batched-kv";
 export * from "./batched-quantized-kv";

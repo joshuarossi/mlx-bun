@@ -5,7 +5,7 @@ import { resolveKvScheme, type KvQuantOverride, type KvScheme } from "@mlx-bun/i
 import { createRuntimeConfig, runtimeConfig, runtimeValue, withRuntimeConfig } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme, type TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
-import type { LoadedModelContext } from "../engine/model-host";
+import type { LoadContextOptions, LoadedModelContext } from "../engine/model-host";
 import type { CompletionEngine } from "../engine/completion";
 import type { ModelBinding } from "../engine/model-binding";
 import type { GenerationGateway } from "../engine/generation-gateway";
@@ -48,7 +48,8 @@ export interface OneShotEngine {
 }
 export interface InferenceDependencies {
   resolve: typeof resolveInferenceModel;
-  load(model: SelectedModel, maxTokens?: number): Promise<LoadedModelContext>;
+  /** `composition`: the command's KV flags and adapter, which the loaded composition records. */
+  load(model: SelectedModel, maxTokens?: number, composition?: Pick<LoadContextOptions, "kv" | "adapters">): Promise<LoadedModelContext>;
   /** Takes ownership of the context even if construction rejects. */
   engine(context: LoadedModelContext, scheme: KvScheme): Promise<OneShotEngine>;
   write(text: string): void;
@@ -57,10 +58,11 @@ export interface InferenceDependencies {
 }
 const defaults: InferenceDependencies = {
   resolve: resolveInferenceModel,
-  async load(model, maxTokens) {
+  async load(model, maxTokens, composition) {
     const { loadContext } = await import("../engine/model-host");
+    // One-shot commands run one row (the engine below has capacity 1).
     return loadContext(model.path, model.repoId, { requireChatTemplate: false,
-      runtime: { nativeDraft: false, maxGenerationTokens: maxTokens } });
+      runtime: { nativeDraft: false, maxGenerationTokens: maxTokens }, ...composition, maxRows: 1 });
   },
   async engine(context, scheme) {
     const { createAppEngine } = await import("../engine");
@@ -152,16 +154,18 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
     : withRuntimeConfig(createRuntimeConfig({ ...runtimeConfig().values,
       MLX_BUN_NO_FUSED_SDPA: generation.fusedSdpa ? "0" : "1" }), run);
   return scoped(async () => {
-    const context = await deps.load(model, generation?.options.maxTokens);
+    // The command's KV flags: the loaded composition records them, and this
+    // command's engine resolves them against the artifact's kv_config below.
+    const kv = { ...(generation?.turboQuant ? { turboQuant: generation.turboQuant } : {}), override: generation?.kvQuant ??
+      (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" as const : "off" as const),
+      ...(generation?.quantizedKvStart !== undefined ? { quantizedKvStart: generation.quantizedKvStart }
+        : generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}) };
+    const context = await deps.load(model, generation?.options.maxTokens, { kv, adapters: generation?.adapter !== undefined });
     let close: (() => void | Promise<void>) | undefined = () => context.dispose();
     let failure: unknown, failed = false;
     try {
       signal?.throwIfAborted();
-      const scheme = resolveKvScheme({ turboQuant: generation?.turboQuant, override: generation?.kvQuant ??
-        (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" : "off"), config: context.kvConfig,
-        ...(generation?.quantizedKvStart !== undefined ? { quantizedKvStart: generation.quantizedKvStart }
-          : generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
-      });
+      const scheme = resolveKvScheme({ ...kv, config: context.kvConfig });
       close = undefined; // engine construction owns failure cleanup from here
       const engine = await deps.engine(context, scheme);
       close = () => engine.close();
