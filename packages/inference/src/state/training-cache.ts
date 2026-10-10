@@ -2,7 +2,8 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../kernels/attention/masks";
-import type { Cache, Mask } from "../contracts/mlx/cache";
+import { gatedDeltaUpdate } from "../kernels/delta/gated";
+import type { Cache, GatedDeltaCache, GatedDeltaParameters, Mask } from "../contracts/mlx/cache";
 import type { PrefixLayout } from "../contracts/mlx/trainable";
 
 /** Stateless cache for the training forward. Training is always a single
@@ -51,11 +52,12 @@ export class TrainingCache implements Cache {
  *  threw on the missing conv/recurrent/advance surface (the recorded
  *  "mlx-bun perplexity cannot score qwen3_5" gap).
  *
- *  It also marks the forward as a training forward: a DeltaNet layer reading it
- *  runs its recurrence with a backward attached (`gatedDeltaUpdate`'s
- *  `differentiable`), since the
- *  inference kernel has no gradient. */
-export class TrainingSSMCache implements Cache {
+ *  Its `recurDecode` and `recurWindow` run the recurrence with a backward
+ *  attached (`gatedDeltaUpdate`'s `differentiable`), since the inference
+ *  kernel has no gradient. Until C1 moves the block onto those calls,
+ *  GatedDeltaNet.forward still reads the slots below and detects this class to
+ *  choose the differentiable recurrence. */
+export class TrainingSSMCache implements GatedDeltaCache {
   /** Training-only adapter; never admitted, merged, or persisted. */
   signature(): string { return "train:training-ssm"; }
   offset = 0;
@@ -64,6 +66,31 @@ export class TrainingSSMCache implements Cache {
   set conv(v: MlxArray | null) { v?.dispose(); }
   get recurrent(): MlxArray | null { return null; }
   set recurrent(v: MlxArray | null) { v?.dispose(); }
+  recurDecode(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
+    return this.#recur(qkv, a, b, layer);
+  }
+  recurWindow(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
+    return this.#recur(qkv, a, b, layer);
+  }
+  /** GatedDeltaNet.forward's training case, copied: a zero conv state, the
+   *  causal convolution, the block's glue, and the differentiable recurrence
+   *  from a zero recurrent state. Nothing is stored, so the new recurrent
+   *  state is disposed at once and the conv tail the block builds for its
+   *  setter to dispose is not built here. */
+  #recur(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
+    const [B, , D] = qkv.shape as [number, number, number];
+    const convState = ops.zeros([B, layer.convWeight.shape[1]! - 1, D], qkv.dtype);
+    const input = ops.concatAxis([convState, qkv], 1);
+    convState.dispose();
+    qkv.dispose();
+    const conv = ops.conv1d(input, layer.convWeight, 1, 0, 1, D);
+    input.dispose();
+    const { q, k, v } = layer.heads(conv);
+    conv.dispose();
+    const [out, state] = gatedDeltaUpdate(q, k, v, a, b, layer.aLog, layer.dtBias, null, null, true);
+    for (const array of [q, k, v, a, b, state]) array.dispose();
+    return out;
+  }
   advance(_n: number): void { /* offset pinned at 0 */ }
   rowOffset(_i: number): number { return 0; }
   updateAndFetch(): [MlxArray, MlxArray] {
