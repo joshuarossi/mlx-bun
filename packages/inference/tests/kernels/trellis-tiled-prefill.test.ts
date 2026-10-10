@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
+import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { expandTrellis } from "@mlx-bun/inference/kernels/trellis";
 import { tiledTrellisPrefill, tiledTrellisPrefillEligible } from "@mlx-bun/inference/kernels/trellis";
-import { nativeTrellisWidePrefill } from "@mlx-bun/inference/kernels/trellis";
+import { nativeTrellisWidePrefill, qualifiedRepresentations } from "@mlx-bun/inference/kernels/trellis";
+
+const { widePrefill } = qualifiedRepresentations(deviceArchitecture());
 
 test("tiled trellis prefill preserves precise expansion on other matrix shapes", () => {
   {
@@ -30,7 +32,7 @@ test("tiled trellis prefill preserves precise expansion on other matrix shapes",
       try {
         expect(actual.shape).toEqual([m!, rows!]);
         expect(Buffer.from(actual.rawBytes()).equals(Buffer.from(expected.rawBytes()))).toBe(true);
-        expect(tiledTrellisPrefillEligible(g, m!, Dtype.bfloat16)).toBe(false);
+        expect(tiledTrellisPrefillEligible(g, m!, Dtype.bfloat16, widePrefill)).toBe(false);
       } finally {
         for (const a of [actual, expected, transposed, expanded, x, storage, codes, scales]) a.dispose();
       }
@@ -40,10 +42,11 @@ test("tiled trellis prefill preserves precise expansion on other matrix shapes",
 
 test("tiled trellis dispatch requires the measured shape and numerical contract", () => {
   const g = { k: 3, L: 12, T: 256, axis: 1 as const, rows: 17408, cols: 5120, inFeatures: 5120, outFeatures: 17408 };
-  for (const m of [5, 8, 16, 17, 32])
-    expect(tiledTrellisPrefillEligible(g, m, Dtype.bfloat16)).toBe(!nativeTrellisWidePrefill(m));
-  for (const m of [1, 4, 33, 128]) expect(tiledTrellisPrefillEligible(g, m, Dtype.bfloat16)).toBe(false);
-  for (const dtype of [Dtype.float16, Dtype.float32]) expect(tiledTrellisPrefillEligible(g, 8, dtype)).toBe(false);
+  for (const wide of [false, true]) for (const m of [5, 8, 16, 17, 32])
+    expect(tiledTrellisPrefillEligible(g, m, Dtype.bfloat16, wide)).toBe(!nativeTrellisWidePrefill(m, wide));
+  // With wide prefill off, tiled would otherwise take M=8; each refusal below is its own.
+  for (const m of [1, 4, 33, 128]) expect(tiledTrellisPrefillEligible(g, m, Dtype.bfloat16, false)).toBe(false);
+  for (const dtype of [Dtype.float16, Dtype.float32]) expect(tiledTrellisPrefillEligible(g, 8, dtype, false)).toBe(false);
   for (const changed of [{ axis: 0 as const }, { T: 128 }, { L: 10 }, { k: 1 }, { inFeatures: 4096 }])
-    expect(tiledTrellisPrefillEligible({ ...g, ...changed }, 8, Dtype.bfloat16)).toBe(false);
+    expect(tiledTrellisPrefillEligible({ ...g, ...changed }, 8, Dtype.bfloat16, false)).toBe(false);
 });

@@ -1,11 +1,11 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
-import { runtimeFlag } from "../../runtime/config";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
 import { HEADER, lutFor, decoderVariant, wordsPerBlock } from "./codebook";
 import { TRELLIS_THREADS } from "./launch";
+import { qualifiedRepresentations, type ScatterRepresentation } from "./qualified";
 
 const SCATTER_SPLITS = 128;
 
@@ -307,13 +307,16 @@ export function scatterBitsEligible(g: TrellisGeometry, m: number, dtype: Dtype,
 
 /** Keep the generated float table behind the measured M1 geometry. */
 export function scatterFloatCodebookEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number,
-  architecture = deviceArchitecture()): boolean {
-  return architecture === "applegpu_g13s" && scatterBitsEligible(g, m, dtype, selected);
+  architecture: string): boolean {
+  return qualifiedRepresentations(architecture).scatter.floatCodebook && scatterBitsEligible(g, m, dtype, selected);
 }
 
 /** Borrow [M, inFeatures] and axis-0 weights; return owned lazy [M, outFeatures].
- * The caller selects a supported variant and limits M to 1..4. */
-export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, g: TrellisGeometry, selected: number, useSharedScatterCodebook = false): MlxArray {
+ * The caller selects a supported variant and limits M to 1..4. `representation`
+ * applies where `scatterBitsEligible` holds; layers pass the one they resolved
+ * at construction (`qualifiedRepresentations`), benches and tests the one they compare. */
+export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, g: TrellisGeometry, selected: number,
+  useSharedScatterCodebook: boolean, representation: ScatterRepresentation): MlxArray {
   const M = x2.shape[0]!;
   const wpb = wordsPerBlock(g.T, g.k);
   const nb = Math.floor(32 / wpb);
@@ -322,11 +325,10 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
   const NP = Math.ceil(32 / g.k);
   const balanced = selected >= 8 && selected <= 13 && g.k === 3 && g.T === 256 && g.L <= 12;
   const shared = selected >= 10 && selected <= 13 && M > 1;
-  const bitsY = scatterBitsEligible(g, M, x2.dtype, selected) && (balanced
-    ? runtimeFlag("MLX_BUN_TRELLIS_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s")
-    : (g.k === 2 || g.k === 4) && runtimeFlag("MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s"));
-  const floatCodebook = scatterFloatCodebookEligible(g, M, x2.dtype, selected) &&
-    runtimeFlag("MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK", true);
+  const qualifiedShape = scatterBitsEligible(g, M, x2.dtype, selected);
+  const bitsY = qualifiedShape && (balanced ? representation.bits
+    : (g.k === 2 || g.k === 4) && representation.genericBits);
+  const floatCodebook = qualifiedShape && representation.floatCodebook;
   const threads = floatCodebook ? (g.k === 3 ? 512 : g.k === 4 ? 256 : 128) : TRELLIS_THREADS;
   const groupsPerThreadgroup = threads / 32;
   const codebook = useSharedScatterCodebook && selected === 13 &&

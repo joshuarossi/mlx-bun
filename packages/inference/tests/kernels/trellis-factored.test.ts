@@ -11,6 +11,9 @@ import {
   gateUpMma, mixedGateUpFactoredRows, trellisScatter, type TrellisGeometry,
 } from "@mlx-bun/inference/kernels/trellis";
 
+// The #311 representations apply only to variant 13; main's variant 6 reference takes none.
+const noScatterRepresentation = { bits: false, genericBits: false, floatCodebook: false };
+
 function weights(k: number, axis: 0 | 1 = 1, interleave = false, seedBase = 31) {
   const rows = 64, cols = 512, words = cols * k / 32;
   let seed = seedBase + k;
@@ -44,8 +47,8 @@ function gateUpReference(x: MlxArray, gate: ReturnType<typeof weights>, up: Retu
   const m = x.shape[1]!, pieces = [] as MlxArray[];
   for (let lo = 0; lo < m; lo += 4) {
     using part = x.slice([0, lo, 0], [1, Math.min(m, lo + 4), x.shape[2]!]);
-    pieces.push(gate.geometry.k === up.geometry.k ? fusedGateUpSwiglu(part, gate, up, 6)
-      : fusedGateUpSwigluMixed(part, gate, up, 6, "split"));
+    pieces.push(gate.geometry.k === up.geometry.k ? fusedGateUpSwiglu(part, gate, up, 6, false)
+      : fusedGateUpSwigluMixed(part, gate, up, 6, "split", false));
   }
   try { return ops.concatAxis(pieces, 1); } finally { for (const p of pieces) p.dispose(); }
 }
@@ -55,7 +58,7 @@ function downReference(x: MlxArray, w: ReturnType<typeof weights>): MlxArray {
   const m = x.shape[0]!, pieces = [] as MlxArray[];
   for (let lo = 0; lo < m; lo += 4) {
     using part = x.slice([lo, 0], [Math.min(m, lo + 4), x.shape[1]!]);
-    pieces.push(trellisScatter(part, w.codes, w.scales, w.geometry, 6));
+    pieces.push(trellisScatter(part, w.codes, w.scales, w.geometry, 6, false, noScatterRepresentation));
   }
   try { return ops.concatAxis(pieces, 0); } finally { for (const p of pieces) p.dispose(); }
 }

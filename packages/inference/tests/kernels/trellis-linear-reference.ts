@@ -1,10 +1,22 @@
+// NOT A PATTERN TO FOLLOW. This is the frozen pre-C2 TrellisLinear
+// (layers/trellis-linear.ts at fa737cbc), kept only as the bit-identity oracle
+// for the C2 PR in trellis-linear-identity.test.ts. It reads runtime flags and
+// chooses kernels per call, which this codebase no longer allows. It is deleted
+// together with that identity test once the PR has merged and the paired serve
+// benchmark has passed.
+//
+// Changes from fa737cbc: import paths, and the kernels' former device reads (the
+// five PR #311 representations and wide-prefill eligibility), which are now
+// required kernel arguments, passed explicitly below as KERNEL_DEFAULTS. The test
+// runs this file under an empty runtime configuration.
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
+import { Dtype, activeMemory, deviceArchitecture, maxRecommendedWorkingSetSize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { quantFor, type ModelConfig, type QuantSpec } from "../artifacts/config";
-import type { Weights } from "../artifacts/weights";
-import { QuantizedLinear } from "./quantized-linear";
-import { wordsPerBlock } from "../kernels/trellis/codebook";
+import { quantFor, type ModelConfig, type QuantSpec } from "../../src/artifacts/config";
+import type { Weights } from "../../src/artifacts/weights";
+import { runtimeFlag, runtimeNumber, runtimeValue } from "../../src/runtime/config";
+import { QuantizedLinear } from "../../src/layers/quantized-linear";
+import { wordsPerBlock } from "../../src/kernels/trellis/codebook";
 import {
   TRELLIS_MATVEC_MAX_M as MATVEC_MAX_M, type TrellisGeometry,
   expandTrellis, trellisReduce, trellisScatter,
@@ -12,14 +24,27 @@ import {
   tiledTrellisPrefill, tiledTrellisPrefillEligible,
   splitKTrellisPrefill, splitKTrellisPrefillEligible,
   wideTrellisPrefill, wideTrellisPrefillEligible, type MixedGateUpTail,
-  qualifiedRepresentations, type TrellisRepresentations,
-} from "../kernels/trellis/index";
-export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from "../kernels/trellis/index";
+} from "../../src/kernels/trellis/index";
+export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from "../../src/kernels/trellis/index";
 
-/** The decode variant these layers pass the kernels (semantics in
- *  kernels/trellis/index.ts): 13, which passed the M4 Pro closeout matrix.
- *  Benches and tests that compare variants call the kernels directly. */
-const VARIANT = 13;
+// What the kernels computed for themselves at fa737cbc with no flags set: every
+// #311 representation on `applegpu_g13s` (the float and gate/up codebooks through
+// their eligibility checks), none elsewhere; wide prefill from GPU family 15.
+const M1 = deviceArchitecture() === "applegpu_g13s";
+const KERNEL_DEFAULTS = { gateUpCodebook: M1, mixedExactBits: M1, scatter: { bits: M1, genericBits: M1, floatCodebook: M1 },
+  widePrefill: Number(/^applegpu_[a-z](\d{2})/.exec(deviceArchitecture())?.[1] ?? 0) >= 15 };
+
+/** Decode variant (semantics in kernels/trellis/index.ts). Default passed the M4 Pro closeout matrix;
+ *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
+let variantOverride: number | null = null;
+/** Explicit override (benches); otherwise the runtime flag — read per call so
+ *  the self-flag KL gate (`02d723a:scripts/eval.ts`
+ *  `kl --decode --self MLX_BUN_TRELLIS_VARIANT`)
+ *  can A/B two decodes on one loaded model. */
+export function setTrellisVariant(v: number | null): void { variantOverride = v; }
+function variant(): number {
+  return variantOverride ?? runtimeNumber("MLX_BUN_TRELLIS_VARIANT", 13);
+}
 
 export function trellisGeometry(codes: MlxArray, spec: QuantSpec): TrellisGeometry {
   const tr = spec.trellis;
@@ -47,10 +72,19 @@ export function trellisGeometry(codes: MlxArray, spec: QuantSpec): TrellisGeomet
   };
 }
 
-/** Can gate and up be served by the fused kernel? Same axis-1 geometry and k. */
+export type TrellisMode = "kernel" | "expand";
+
+export function trellisModeFromEnv(): TrellisMode {
+  const v = runtimeValue("MLX_BUN_TRELLIS");
+  if (v === "expand") return "expand";
+  return "kernel";
+}
+
+/** Can gate and up be served by the fused kernel? Same axis-1 geometry and k,
+ *  neither in the expand fallback. */
 export function fusedGateUpEligible(gate: TrellisLinear, up: TrellisLinear): boolean {
   const a = gate.geometry, b = up.geometry;
-  return a.axis === 1 && b.axis === 1 &&
+  return !gate.fallback && !up.fallback && a.axis === 1 && b.axis === 1 &&
     a.k === b.k && a.rows === b.rows && a.cols === b.cols && a.T === b.T && a.L === b.L;
 }
 
@@ -59,16 +93,16 @@ export function fusedGateUpEligible(gate: TrellisLinear, up: TrellisLinear): boo
  *  Geometry only; whether to use it is the owning graph's decision. */
 export function mixedGateUpEligible(gate: TrellisLinear, up: TrellisLinear): boolean {
   const a = gate.geometry, b = up.geometry;
-  return a.axis === 1 && b.axis === 1 && a.k !== b.k &&
+  return !gate.fallback && !up.fallback && a.axis === 1 && b.axis === 1 && a.k !== b.k &&
     a.rows === b.rows && a.cols === b.cols && a.T === b.T && a.L === b.L;
 }
 
-/** Borrow the layers' weights; the gate's stored representations choose the decode. */
+/** Borrow the layers' weights and preserve the active execution's variant. */
 export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisLinear, up: TrellisLinear): MlxArray {
-  return gateUpKernel(x, gate, up, VARIANT, gate.representations.gateUpCodebook);
+  return gateUpKernel(x, gate, up, variant(), KERNEL_DEFAULTS.gateUpCodebook);
 }
 export function fusedGateUpSwigluMixed(x: MlxArray, gate: TrellisLinear, up: TrellisLinear, tail: MixedGateUpTail = "fused"): MlxArray {
-  return mixedGateUpKernel(x, gate, up, VARIANT, tail, gate.representations.mixedExactBits);
+  return mixedGateUpKernel(x, gate, up, variant(), tail, KERNEL_DEFAULTS.mixedExactBits);
 }
 
 /** Output rows [start, stop) of an axis-1 (row-coded) Trellis projection as an
@@ -101,21 +135,22 @@ export function trellisStoredRows(lin: TrellisLinear, start: number, stop: numbe
 export class TrellisLinear {
   readonly geometry: TrellisGeometry;
   readonly spec: QuantSpec;
-  /** What the kernels take from this machine's GPU family (single-row
-   *  representations, wide prefill), fixed here and passed on every call. */
-  readonly representations: TrellisRepresentations;
+  #expansionCeiling: number | undefined;
+  /** `MLX_BUN_TRELLIS=expand`: the load-time 8-bit affine carrier. */
+  readonly fallback: QuantizedLinear | null;
 
   constructor(
     readonly codes: MlxArray,
     readonly scales: MlxArray,
     spec: QuantSpec,
+    mode: TrellisMode = trellisModeFromEnv(),
     readonly useSharedScatterCodebook = false,
   ) {
     this.spec = spec;
     this.geometry = trellisGeometry(codes, spec);
     if (this.geometry.blockInterleave && (scales.ndim !== 1 || scales.size !== this.geometry.rows))
       throw new Error("trellis: interleaved codes require one scale per stored row");
-    this.representations = qualifiedRepresentations(deviceArchitecture());
+    this.fallback = mode === "expand" ? this.#expandToAffine() : null;
   }
 
   static load(weights: Weights, path: string, config: ModelConfig, useSharedScatterCodebook = false): TrellisLinear {
@@ -123,7 +158,7 @@ export class TrellisLinear {
     if (!spec || spec.mode !== "trellis")
       throw new Error(`${path}: expected a trellis quant spec`);
     if (!weights.has(`${path}.scales`)) throw new Error(`${path}: trellis tensor has no .scales`);
-    return new TrellisLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.scales`), spec, useSharedScatterCodebook);
+    return new TrellisLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.scales`), spec, undefined, useSharedScatterCodebook);
   }
 
   static isTrellis(config: ModelConfig, path: string): boolean {
@@ -136,7 +171,7 @@ export class TrellisLinear {
   /** The weight as [out, in] bf16 (decoded; transposed for axis=0). */
   expandWeight(dtype: Dtype = Dtype.bfloat16): MlxArray {
     const g = this.geometry;
-    const stored = expandTrellis(this.codes, this.scales, g, dtype, VARIANT);
+    const stored = expandTrellis(this.codes, this.scales, g, dtype, variant());
     if (g.axis === 1) return stored;
     const t = ops.transposeAxes(stored, [1, 0]);
     const w = ops.contiguous(t);
@@ -144,10 +179,20 @@ export class TrellisLinear {
     return w;
   }
 
+  #expandToAffine(): QuantizedLinear {
+    const w = this.expandWeight(Dtype.bfloat16);
+    const q = ops.quantize(w, 64, 8, "affine");
+    ops.evalAll([q.packed, q.scales, ...(q.biases ? [q.biases] : [])]);
+    w.dispose();
+    return new QuantizedLinear(q.packed, q.scales, q.biases, { bits: 8, groupSize: 64, mode: "affine" });
+  }
+
   /** A caller may prove row-contiguous, aligned input from an allocating op
    * such as RMSNorm. Lazy array strides cannot establish that before eval. */
   forward(x: MlxArray, inputRowContiguous = false): MlxArray {
+    if (this.fallback) return this.fallback.forward(x);
     const g = this.geometry;
+    const selected = variant();
     const lead = x.shape.slice(0, -1);
     const M = lead.reduce((a, b) => a * b, 1);
     if (x.shape[x.shape.length - 1] !== g.inFeatures)
@@ -155,16 +200,16 @@ export class TrellisLinear {
     const x2 = ops.reshape(x, [M, g.inFeatures]);
     let y: MlxArray;
     let expandedWeights = false;
-    if (M <= MATVEC_MAX_M) y = g.axis === 1 ? trellisReduce(x2, this.codes, this.scales, g, VARIANT) : trellisScatter(x2, this.codes, this.scales, g, VARIANT, this.useSharedScatterCodebook, this.representations.scatter);
-    else if (inputRowContiguous && wideTrellisPrefillEligible(g, M, x.dtype, this.representations.widePrefill))
+    if (M <= MATVEC_MAX_M) y = g.axis === 1 ? trellisReduce(x2, this.codes, this.scales, g, selected) : trellisScatter(x2, this.codes, this.scales, g, selected, this.useSharedScatterCodebook, KERNEL_DEFAULTS.scatter);
+    else if (selected >= 11 && selected <= 13 && inputRowContiguous && wideTrellisPrefillEligible(g, M, x.dtype, KERNEL_DEFAULTS.widePrefill))
       y = wideTrellisPrefill(x2, this.codes, this.scales, g);
-    else if (tiledTrellisPrefillEligible(g, M, x.dtype, this.representations.widePrefill))
+    else if (selected >= 11 && selected <= 13 && tiledTrellisPrefillEligible(g, M, x.dtype, KERNEL_DEFAULTS.widePrefill))
       y = tiledTrellisPrefill(x2, this.codes, this.scales, g);
-    else if (splitKTrellisPrefillEligible(g, M, x.dtype))
+    else if ((selected === 12 || selected === 13) && splitKTrellisPrefillEligible(g, M, x.dtype))
       y = splitKTrellisPrefill(x2, this.codes, this.scales, g);
     else {
       expandedWeights = true;
-      const stored = expandTrellis(this.codes, this.scales, g, x.dtype, VARIANT);
+      const stored = expandTrellis(this.codes, this.scales, g, x.dtype, selected);
       if (g.axis === 1) {
         const wt = ops.transposeAxes(stored, [1, 0]);
         y = ops.matmul(x2, wt);
@@ -179,28 +224,21 @@ export class TrellisLinear {
     // Disposing `stored` above releases only its JS handle, not the lazy
     // matmul's reference. Direct tiles and packed matvecs stay lazy: they
     // hold activations and bounded partials, without a dense weight matrix.
-    if (expandedWeights) out.eval();
+    // Experimental v9 retains Qwen35Model's layer-end state/output barrier,
+    // but permits the three MLP expansions within that layer to overlap.
+    // Standalone callers must bound their own live graph. Default v6 and
+    // variants 7/8 retain the tighter per-projection memory bound.
+    if (expandedWeights && selected !== 9) {
+      // Opt-in v13 scheduling keeps the caller's layer barrier and submits
+      // early only below the tested working-set ceiling. This is a scheduling
+      // threshold, not a cap on total allocation. Read policy from the current
+      // execution snapshot; cache only the device's fixed hardware budget.
+      if (selected === 13 && runtimeFlag("MLX_BUN_TRELLIS_ASYNC_EXPAND", false) &&
+          activeMemory() < (this.#expansionCeiling ??= 0.75 * maxRecommendedWorkingSetSize())) {
+        ops.asyncEvalAll([out]);
+      } else out.eval();
+    }
     return out;
   }
-}
 
-/** Packed Trellis weights decoded once, at construction, into 8-bit g64 affine
- *  and served through the stock QuantizedLinear (the eval-carrier numerics,
- *  about -45 dB against the packed kernels): for a machine where the packed
- *  kernels lose. Built explicitly by whoever selects it; holds no packed codes. */
-export class ExpandedTrellisLinear {
-  readonly carrier: QuantizedLinear;
-
-  constructor(packed: TrellisLinear) {
-    const w = packed.expandWeight(Dtype.bfloat16);
-    const q = ops.quantize(w, 64, 8, "affine");
-    ops.evalAll([q.packed, q.scales, ...(q.biases ? [q.biases] : [])]);
-    w.dispose();
-    this.carrier = new QuantizedLinear(q.packed, q.scales, q.biases, { bits: 8, groupSize: 64, mode: "affine" });
-  }
-
-  get inFeatures(): number { return this.carrier.inFeatures; }
-  get outFeatures(): number { return this.carrier.outFeatures; }
-
-  forward(x: MlxArray): MlxArray { return this.carrier.forward(x); }
 }

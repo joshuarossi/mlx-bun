@@ -1,8 +1,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
-import { runtimeFlag } from "../../runtime/config";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import type { TrellisWeights } from "./geometry";
 import { HEADER, lutFor, decoderVariant } from "./codebook";
 import { TRELLIS_THREADS, TRELLIS_SG_PER_TG } from "./launch";
@@ -118,17 +117,19 @@ export type MixedGateUpTail = "split" | "fused";
 
 /** silu(gate(x)) * up(x) for M <= 4 rows in one kernel when gate and up are coded
  *  at different k. Same lanes, accumulation order and bf16 SwiGLU boundaries as
- *  fusedGateUpSwiglu; each projection keeps its own word layout. */
+ *  fusedGateUpSwiglu; each projection keeps its own word layout. `exactBits`
+ *  applies at the qualified single-row bf16 geometry, where the decoder builds
+ *  its value from exact float32 bits: layers pass the choice they resolved at
+ *  construction (`qualifiedRepresentations`), benches and tests the one they compare. */
 export function fusedGateUpSwigluMixed(x: MlxArray, gate: TrellisWeights, up: TrellisWeights, selected: number,
-  tail: MixedGateUpTail = "fused"): MlxArray {
+  tail: MixedGateUpTail, exactBits: boolean): MlxArray {
   const g = gate.geometry, u = up.geometry;
   const lead = x.shape.slice(0, -1);
   const M = lead.reduce((a, b) => a * b, 1);
   if (M > MATVEC_MAX_M) throw new Error(`fusedGateUpSwigluMixed: M=${M} > ${MATVEC_MAX_M}`);
   const bitsY = selected === 13 && M === 1 && x.dtype === Dtype.bfloat16 &&
     g.T === 256 && g.L === 12 && g.rows === 17408 && g.cols === 5120 &&
-    [2, 3, 4].includes(g.k) && [2, 3, 4].includes(u.k) &&
-    runtimeFlag("MLX_BUN_TRELLIS_MIXED_BITS", deviceArchitecture() === "applegpu_g13s");
+    [2, 3, 4].includes(g.k) && [2, 3, 4].includes(u.k) && exactBits;
   const x2 = ops.reshape(x, [M, g.inFeatures]);
   const [mid] = mixedGateUpKernel().apply([x2, gate.codes, gate.scales, up.codes, up.scales, lutFor(g.L)], {
     outputs: [{ shape: [M, g.rows], dtype: x.dtype }],

@@ -4,18 +4,18 @@
 // share each decoded row across every input vector in this narrow regime.
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import { type MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import { type TrellisGeometry } from "./geometry";
 import { HEADER } from "./codebook";
 
-/** Matches the bundled runtime's native reduction on M3 and newer GPUs. */
-export function nativeTrellisWidePrefill(m: number): boolean {
-  return m >= 5 && m <= 15 &&
-    Number(/^applegpu_[a-z](\d{2})/.exec(deviceArchitecture())?.[1] ?? 0) >= 15;
+/** Matches the bundled runtime's native reduction where the GPU family has it
+ *  (`widePrefill` from `qualifiedRepresentations`, resolved by the caller). */
+export function nativeTrellisWidePrefill(m: number, widePrefill: boolean): boolean {
+  return m >= 5 && m <= 15 && widePrefill;
 }
 
-export function wideTrellisPrefillEligible(g: TrellisGeometry, m: number, dtype: Dtype): boolean {
-  return dtype === Dtype.bfloat16 && nativeTrellisWidePrefill(m) &&
+export function wideTrellisPrefillEligible(g: TrellisGeometry, m: number, dtype: Dtype, widePrefill: boolean): boolean {
+  return dtype === Dtype.bfloat16 && nativeTrellisWidePrefill(m, widePrefill) &&
     g.axis === 1 && g.T === 256 && g.L === 12 && [2, 3, 4].includes(g.k) &&
     g.inFeatures === 5120 && g.outFeatures === 17408 && !g.blockInterleave;
 }
