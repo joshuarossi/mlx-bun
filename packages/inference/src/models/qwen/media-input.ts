@@ -68,10 +68,13 @@ export async function qwenMediaEncoders(model: QwenMediaGraph, modelDir: string)
   return { vision: () => Qwen3VLVisionTower.load(modelDir) as unknown as VisionEncoder, audio: null };
 }
 
-/** Ports draft sources read from this graph: its embedding, head, and the MTP
- * geometry a checkpoint-native draft head needs. */
+/** Ports draft sources read from this graph: its embedding, head, layer taps,
+ * and the MTP geometry a checkpoint-native draft head needs. */
 export function qwenDraftTarget(model: QwenMediaGraph): TargetView {
-  return Object.freeze({ identity: model, recurrentMtp: Object.freeze({
+  return Object.freeze({ identity: model, hiddenLayerTaps: Object.freeze({
+    layerCount: model.config.text.numHiddenLayers,
+    projection: Object.freeze({ embed: model.embed, logitsFromHidden: model.logitsFromHidden.bind(model) }),
+  }), recurrentMtp: Object.freeze({
     hiddenSize: model.config.text.hiddenSize, layerCount: model.config.text.numHiddenLayers,
     embed: model.embed.encode.bind(model.embed), logitsFromHidden: model.logitsFromHidden.bind(model),
     vocabularyHead: model.lmHead ? Object.freeze({ w: model.lmHead.w, scales: model.lmHead.scales,

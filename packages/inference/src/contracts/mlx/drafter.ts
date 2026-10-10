@@ -107,3 +107,27 @@ export interface NativeMtpHead {
   /** Logits [B, positions, V] of the head's output. */
   project(hidden: MlxArray): MlxArray;
 }
+
+/** DFlash 2's projected-context attention: block keys follow the context rows. */
+export interface Dflash2ContextAttention {
+  attend(layer: number, query: MlxArray, blockKeys: MlxArray, blockValues: MlxArray, scale?: number): MlxArray;
+}
+
+/** Signs of a target's TurboQuant R1 rotation and its folded final-norm gain (effective, 1+w). */
+export interface Dflash2TargetBasis { seed: number; signs: Float32Array; finalGain: Float32Array }
+
+/** The DFlash 2 block drafter: target taps → projected context K/V; one greedy block per anchor. */
+export interface Dflash2DrafterModel {
+  readonly cfg: { readonly layers: number; readonly numTargetLayers: number };
+  readonly tapLayers: number[];
+  /** Draft tokens per block (block size minus the anchor). */
+  readonly gamma: number;
+  projectContext(taps: MlxArray): MlxArray;
+  projectContextKVRows(context: MlxArray, position: number | MlxArray): { k: MlxArray; v: MlxArray }[];
+  draftRows(context: Dflash2ContextAttention, projection: DraftProjection, anchors: readonly number[],
+    position: number | MlxArray, depth: number): number[][];
+  /** The same proposals left on the device: [B, steps] row-major. */
+  draftRowsDevice(context: Dflash2ContextAttention, projection: DraftProjection, anchors: readonly number[],
+    position: number | MlxArray, depth: number): MlxArray;
+  dispose(): void;
+}

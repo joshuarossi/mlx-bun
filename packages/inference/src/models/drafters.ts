@@ -4,11 +4,17 @@
 // themselves load through `drafter-loaders`).
 
 import { isDeepspecArchitecture } from "./speculative/deepspec-artifact";
+import { isDflash2Architecture } from "./speculative/dflash2-artifact";
 
 /** A DeepSpec drafter (DeepSeek's released DSpark checkpoints): a plain HF config stamped with its
  *  architecture. */
 export function isDeepspecDrafterConfig(config: Record<string, unknown> | null): boolean {
   return isDeepspecArchitecture(config?.architectures);
+}
+
+/** A DFlash 2 block drafter (incoai/Qwen3.8-27B-DFlash2): a plain HF config stamped with its architecture. */
+export function isDflash2DrafterConfig(config: Record<string, unknown> | null): boolean {
+  return isDflash2Architecture(config?.architectures);
 }
 
 /** A drafter whose weights are Q-only and have no standalone LM head
