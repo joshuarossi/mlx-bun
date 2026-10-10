@@ -930,7 +930,7 @@ that carries its own draft head declares it (`GraphCapabilities.nativeDraft`), a
 `mlx-bun/Qwen3.8-27B-Trellis-3.2bpw` on M4 Pro GPUs (`applegpu_g16s`); the model
 factory selects it for that artifact on that device and the TQ graph elsewhere.
 It resolves one plan per request shape at load: one row, 2..3, 4 and 5..8 rows
-(speculative verify), prompt chunks, and 640..2048-row chunks split between the
+(speculative verify), prompt chunks, and 2048-row chunks split between the
 Neural Engine and the GPU when the ANE bridge loads. Requests outside those plans
 (several sequences, independent-row appends, vision positions, array masks,
 mounted adapters, KV caches other than BF16 or 4-bit group-64) take the generic
