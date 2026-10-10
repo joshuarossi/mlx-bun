@@ -87,6 +87,33 @@ export function fusedGateUpSwigluMixed(x: MlxArray, gate: TrellisLinear, up: Tre
   return mixedGateUpKernel(x, gate, up, variant(), tail);
 }
 
+/** Output rows [start, stop) of an axis-1 (row-coded) Trellis projection as an
+ *  owned projection: each output row has its own code row and scale, so the
+ *  slice decodes exactly the same values. A leading-axis range of row-major
+ *  codes is already row-contiguous, so these are views of the parent's memory. */
+export function trellisRows(lin: TrellisLinear, start: number, stop: number): TrellisLinear {
+  const g = lin.geometry;
+  if (g.axis !== 1 || g.blockInterleave || lin.codes.ndim !== 2) throw new Error("trellisRows: needs row-coded (axis 1) codes");
+  const codes = lin.codes.slice([start, 0], [stop, lin.codes.shape[1]!]);
+  const scales = lin.scales.slice([start], [stop]);
+  ops.evalAll([codes, scales]);
+  return new TrellisLinear(codes, scales, lin.spec);
+}
+
+/** Stored rows [start, stop) of an axis-0 Trellis projection (input features of
+ *  a down projection): 2D codes slice to a view; block-interleaved 3D codes
+ *  [groups, rows, words] slice their middle axis (kernels copy that view). */
+export function trellisStoredRows(lin: TrellisLinear, start: number, stop: number): TrellisLinear {
+  const g = lin.geometry;
+  if (g.axis !== 0) throw new Error("trellisStoredRows: needs axis-0 codes");
+  const codes = lin.codes.ndim === 3
+    ? lin.codes.slice([0, start, 0], [lin.codes.shape[0]!, stop, lin.codes.shape[2]!])
+    : lin.codes.slice([start, 0], [stop, lin.codes.shape[1]!]);
+  const scales = lin.scales.slice([start], [stop]);
+  ops.evalAll([codes, scales]);
+  return new TrellisLinear(codes, scales, lin.spec);
+}
+
 export class TrellisLinear {
   readonly geometry: TrellisGeometry;
   readonly spec: QuantSpec;

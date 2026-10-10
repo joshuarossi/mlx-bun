@@ -875,7 +875,10 @@ over a 4-bit group-64 KV cache with head dim 256, reading each packed row once
 for all query heads of its KV head; `kernels/attention/multi-query` is causal
 flash decoding for 2..8 query rows over a BF16 cache. `kernels/ane` holds the
 Neural Engine programs (`linear`) and the GPU kernels that fill their buffers
-(`fill`).
+(`fill`). The layers in `layers/trellis-gate-up`, `layers/trellis-down`,
+`layers/affine-verify-linear`, `layers/kv4-decode-attention` and
+`layers/ane-prefill-split` bind loaded weights to these kernels, one kernel per
+layer.
 
 ## Artifact, input, and layer APIs
 
