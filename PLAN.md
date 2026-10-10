@@ -12,6 +12,350 @@ Decisions that govern all work:
 - Refactor acceptance requires numerical parity, preserved functionality and no
   performance regressions. Knowledge benchmark scores characterize the candidate
   quant for its Hugging Face model card; that publication work has its own criteria.
+- Legos compose at load. A graph never contains a fallback to another graph, the cache owns its read, and the
+  scheduler calls named phases. The composition refactor below is the current structural work.
+
+## Composition refactor
+
+Status: draft, 2026-10-10; Josh approved this plan. One PR per numbered item, targeting `main`,
+not merged without Josh's instruction. Delete a block when its exit criteria are met.
+
+### Target
+
+Every served configuration is one composition, built once at load from the user's model choice,
+their flags and the machine. The loader builds the graph, the cache and the drafter for exactly
+that configuration. The scheduler decides what work runs and calls the phase it is in. The graph
+runs the layers it was built with and never inspects its input or its cache. The cache owns
+storage, the read, prefix reuse, paging, SSD offload and eviction behind one interface. Each piece
+implements its contract and never checks what another piece is doing, because nothing below the
+scheduler decides anything at run time. Vision, adapters and KV scheme are compositions, never
+refusals. A generic graph for a family is a complete structure the loader may select when no
+specialized one matches; a specialized graph never contains a path back to it.
+
+Batching is not a mode. The scheduler is the one engine and a single request is a batch of one,
+as the first refactor established. One request or four requests run the same composition: the
+scheduler batches the rows it has, up to `--batch-size`, and calls the phase operation for that
+row count. The graph builds one operation per phase per width class its kernels define (one row,
+2 to 4, 5 to 8, wider) and the scheduler picks by the rows it is loading, never the graph by
+inspecting its input. Row-wise layers take M rows and do not know whether they are one sequence
+or M sequences. Only `attend` and the recurrence see the row layout.
+
+Why: the pairing of storage and read kernel, of row count and MLP kernel, of device and graph, is
+known before a request exists. Re-checking it on every forward costs CPU on decode's critical path,
+multiplies the numerical paths a parity test has to cover, and is how batching came to drop the
+optimized kernels: the M4 Pro graph is organized as whole-forward plans keyed on one sequence, so
+any batch fails the plan and the whole forward goes generic, MLP included. Row-wise layers do not
+care whether M rows are one sequence or M sequences; only attention and the recurrence do, and
+those read per-sequence state the cache owns.
+
+### Rules the gate holds when this plan closes
+
+- A graph extends nothing and never calls another graph's forward.
+- No runtime flag, env var, `deviceArchitecture()` call, `globalThis` read or `instanceof` of a
+  layer or cache class inside a forward, attend or kernel-dispatch body. Constructors, `build`,
+  `load`, graph acceptance functions and the loader may read them. Development profiling hooks
+  (`__deltaProf`, `MLX_BUN_SPEC_*` diagnostics) are exempt and listed by name.
+- The cache contract has no representation-specific escape hatch (`updateAndFetch`,
+  `quantizedAttention`, `rotatedValueAttention`, `affineConversion`, `turboConversion`).
+- The graph contract names its phases; the scheduler calls them by name.
+- Existing violators ride the seam ratchet in `packages/inference/tests/architecture.test.ts`:
+  counts only fall. The ratchet is a transition device, not a resting state: every entry is
+  owned by a numbered item in this plan, and when the plan closes no example of a banned pattern
+  remains in the tree. Agents copy what they read, so a catalogued bad example is still a bad
+  example.
+- Every gate failure message names the paved road: what to do instead and where it lives (the
+  generator script, the contract method, the layer directory), so the mistake teaches its fix at
+  the moment it is made.
+- One supported way per pattern, written down in ARCHITECTURE: add a model by generating its
+  graph; add a kernel as one file in `kernels/` bound by one layer; read a cache through
+  `attend`; add a phase through the graph contract. A second way to do any of these is a gate
+  failure, not a style note.
+
+### Decisions
+
+Closed by Josh, 2026-10-10:
+
+- **Off-composition requests** keep the existing typed refusal from declared capabilities for
+  now. This applies to the graph only; legos still compose at load, and a composition that lacks
+  a lego is a different composition, not a refusal.
+- **Draft depth.** `--num-draft-tokens N` is fixed depth; `adaptive` means the scheduler chooses
+  each round among the verify widths the composition built. The drafter is chosen by
+  `--draft-kind` (`dflash2`, `mtp`, ...).
+- **Delayed KV quantization** (`--quantized-kv-start N`, mlx-lm's `quantized_kv_start`) is its
+  own cache lego: bf16 until the sequence reaches N tokens, then converted in place, with both
+  reads inside its `attend`. The loader builds it only when N is nonzero; the default 0 loads
+  the plain quantized cache and the delayed lego is not present.
+- **KV scheme is a serve flag.** `--kv-quant` composes the cache lego at load. The per-request
+  `kvBits`, `kvConfig` and `quantizedKvStart` options are removed; mlx-lm's server takes these as
+  server flags too.
+- **The TQ graph** is broken into its pieces, which join the lego box where they are reusable,
+  and the file is deleted when the M1 Max composition is generated.
+- **`--batch-size`** is the cap on rows per forward the scheduler may batch. Nothing else.
+
+Open:
+
+- [ ] **Bit-stability across batch width.** The factored row kernels (1 row, 2 to 4) and the
+      matrix-unit kernels (5 to 8) reassociate differently, so a request's last bits can depend on
+      how many rows were batched with it. Either require every width class of a phase to be
+      bit-identical per row (one kernel family across widths), or accept bf16-level variation by
+      batch width, documented and gated by KL. "One request or four, it works" is true either way;
+      "identical to the bit either way" needs the first.
+
+### Phase A: contracts (no behavior change)
+
+#### A1. The cache owns the read
+
+`contracts/mlx/cache.ts` has four read shapes today: `updateAndFetch` (bf16 hands tensors back),
+`quantizedAttention.updateAndFetchQuantized` (affine hands packed tensors back),
+`rotatedValueAttention` (TurboQuant), and `attentionState.appendAndFetch(k, v)` returning a view
+with `attend(q)` (paged, already owns its read). Make the paged shape the only one.
+
+- [ ] Define the single attention interface: append k and v, then named reads. One operation for
+      the single-row decode read and one for the window read, so the calling phase picks and
+      nothing branches. The cache builds its own mask from the offsets and row layout it owns;
+      `makeMask` becomes internal.
+- [ ] Define the SSM cache's recurrence operation the same way: the cache owns conv state and the
+      gated-delta state update; the DeltaNet block hands it the projected inputs.
+- [ ] Mark `updateAndFetch`, `quantizedAttention`, `rotatedValueAttention`, `affineConversion` and
+      `turboConversion` deprecated on the contract, removed in B1.
+- [ ] Keep `RowBatchCache` and `BatchableCache` (`rowOffsets`, `filterRows`, `extractRow`): the row
+      layout is the one thing the scheduler passes through to the stateful layers.
+
+Exit: the new interface compiles beside the old members; no caller moved yet; `bun run typecheck`
+and `bun run test` pass.
+
+#### A2. The graph names its phases
+
+- [ ] Add `prefillChunk`, `prefillTail`, `decode` and `verify` to `contracts/mlx/graph.ts`, with
+      the capture callback a parameter of `verify`. Vision prefill is prefill with embeddings and
+      positions, which `forwardEmbeddingsAtPositions` already is.
+- [ ] `decode` and `verify` exist per width class (one row, 2 to 4, 5 to 8, wider), declared by
+      the graph as a table of operations the scheduler indexes by the rows it is loading. The
+      graph never derives the class from its input.
+- [ ] Keep `forwardHidden` and `forwardHiddenMixed` until E2 moves every caller, then delete.
+- [ ] `verifyRoundCosts` stays as declared data; the scheduler's adaptive gate reads it.
+
+Exit: every existing graph implements the four by delegating to its one forward, one line each;
+no scheduler call site changed yet; tests pass.
+
+#### A3. Composition facts reach the loader
+
+- [ ] `createModel` takes the composition: device, ANE bridge present, KV scheme, draft depth,
+      prefill chunk size, adapters, max rows per forward (`--batch-size`, default 8, which bounds
+      the width classes the graph builds). The app's `loadContext` in
+      `apps/mlx-bun/src/engine/model-host.ts` already holds all of these when it creates the model.
+- [ ] `resolveKvScheme` in `apps/mlx-bun/src/engine/cache-services.ts` runs before model creation
+      and feeds the composition instead of becoming per-request options afterward.
+- [ ] `makeCache()` returns the composed cache lego; no bf16-then-convert.
+
+Exit: a loaded graph can print its composition; behavior unchanged; tests pass.
+
+### Phase B: state
+
+#### B1. Every cache implements the one read
+
+`state/` may import `layers/` and `kernels/`, so the attention kernels move under the caches
+without a gate change.
+
+- [ ] bf16: `kv.ts`, `batched-kv.ts`, `rotating-kv.ts` and their row storage implement append plus
+      the two reads over the stock SDPA kernels.
+- [ ] Affine: `quantized-kv.ts`, `batched-quantized-kv.ts`, `rotating-quantized-kv.ts` over
+      `layers/quantized-attention.ts` kernels. The M4 Pro composition's 4-bit group-64 head-dim-256
+      cache is its own class: KV4 decode kernel for the row read, folded GQA for the window read.
+- [ ] TurboQuant: `turboquant-kv.ts`, `batched-turboquant-kv.ts` over their codec.
+- [ ] Delayed: the three `delayed-*-kv.ts` caches switch inside `attend`, or are deleted per the
+      reusable pieces and deleted.
+- [ ] Paged: `state/paged/cache.ts` already conforms; align names.
+- [ ] Delete the device check (`applegpu_g16s` head-shape case) in `quantized-attention.ts` and
+      the env flag in `fusedSdpaSupported`: each cache has one kernel per read, chosen at
+      construction.
+- [ ] Remove the deprecated members from the contract.
+
+Exit: `quantizedSdpaUnfused` and `kv4DecodeAttention` have no callers outside `state/`; the
+kernel each cache dispatches per read is fixed at construction; bit-identical logits for every
+cache class against its pre-refactor read on the existing parity inputs; `grep` for
+`quantizedAttention` in `models/` and `layers/` is empty.
+
+#### B2. Eviction, prefix reuse and SSD inside the cache
+
+- [ ] Compose `prefix-cache.ts`, `tiered-prefix-cache.ts`, `ssd-cache.ts`, `persistence.ts` and
+      the budget (`execution/kv-budget.ts`) into one cache service constructed with its budget.
+- [ ] The scheduler's surface is acquire(request) returning state plus reused-token count, or a
+      miss, and release(request). The scheduler never learns what is resident or when it was
+      evicted.
+- [ ] Delete `state/kv-maintenance.ts`; its batch preparation moves to `state/layout.ts`.
+
+Exit: saved KV under `MLX_BUN_HOME/kv` round-trips as before; prefix hit rate on the existing
+warm-reuse test is unchanged; no `toQuantized` caller outside `state/`.
+
+### Phase C: layers
+
+#### C1. Qwen blocks become legos
+
+- [ ] Move `GatedDeltaNet`, `Qwen3Attention`, `Qwen3MLP` and `Qwen3Layer` from
+      `models/qwen/qwen3_5.ts` to `models/qwen/blocks.ts`. The projection loader injection stays.
+- [ ] The attention block calls `cache.attend`; its three-way branch on cache representation and
+      `independentRows` goes.
+- [ ] Follow-up, after the DeltaNet block takes the SSM cache contract instead of the concrete
+      class: move the blocks to `layers/`.
+
+Exit: `Qwen35Model` and the M4 Pro graph both import from `blocks.ts`; no `extends` between
+them; bit-identical generic forward.
+
+#### C2. `TrellisLinear` stops choosing
+
+- [ ] Remove the per-call variant read and the five-way kernel dispatch from `forward`. The layer
+      keeps the one prefill kernel the default variant selects; row-count kernels already have
+      their own layers (`trellis-gate-up.ts`, `trellis-down.ts`).
+- [ ] `setTrellisVariant` survives only as explicit bench scaffolding; `MLX_BUN_TRELLIS_VARIANT`,
+      `MLX_BUN_TRELLIS`, `MLX_BUN_TRELLIS_ASYNC_EXPAND` are not read on the hot path.
+- [ ] PR #311's five `MLX_BUN_TRELLIS_*` flags in `kernels/trellis/scatter.ts` and
+      `mixed-gate-up.ts` become separate kernels or bench-only scaffolding.
+
+Exit: `grep runtimeFlag\|runtimeValue\|runtimeNumber packages/inference/src/layers/trellis-linear.ts`
+is empty outside `setTrellisVariant`; bit-identical prefill against the default variant; paired
+serve benchmark shows no regression.
+
+#### C3. The ANE split owns its programs
+
+- [ ] `layers/ane-prefill-split.ts`: programs are instance-owned and disposed with the layer; no
+      module-level maps.
+- [ ] Programs are built for exactly the chunk size; no buckets, no minimum-row floor. The
+      leftover chunk is `prefillTail` on the GPU.
+
+Exit: two graphs can coexist in one process without evicting each other's programs; KL gate on
+ANE prefill unchanged.
+
+### Phase D: graphs
+
+#### D1. `Qwen38TrellisM4Pro` as an entire graph
+
+- [ ] `implements MlxDeclaredGraph`, extends nothing. Constructor takes the composition and builds
+      embedding, norms, head, and per layer the block set each phase needs: decode blocks, one
+      verify block set at width depth+1 (or the set the adaptive decision names), chunk blocks with
+      the ANE split when the bridge is present, tail blocks.
+- [ ] Vision prefill phase included because the model has vision; mRoPE in the attention block.
+- [ ] Adapters: the LoRA-applying linear in the composition that serves adapter rows.
+- [ ] The 40 interleaved and 24 row-major down projections are read from the quant table once at
+      construction.
+- [ ] `draftTarget` declares the hidden-layer taps and the residual basis (R1 seed, final-norm
+      gain).
+- [ ] Removed: the plan table (`#planFor`), the guard in `forwardLayers`, every `super` call, the
+      capture hook, the `instanceof TrellisLinear` checks, the head's row switch, the KV bits read.
+
+Exit: `grep "extends\|super\.\|instanceof\|globalThis" qwen38-27b-trellis-m4pro.ts` is empty
+except the listed profiling hook; bit-identical logits per phase against the stack's graph on the
+same phase; the Qwen generator (D2) produces it.
+
+#### D2. Generators are the asset
+
+- [ ] Fix the template in `packages/inference/scripts/gen-gemma4.ts`: no `extends`, no
+      `#matches`, named phases. Regenerate `gemma4-e4b.ts`, `gemma4-12b.ts`, `gemma4-26b.ts`.
+- [ ] Write `packages/inference/scripts/gen-qwen38.ts` taking the composition as input; the M4 Pro
+      graph and the M1 Max graph are its outputs. The hand-written TQ graph is broken into its
+      reusable pieces and deleted.
+
+Exit: `git diff` of a regenerated file against its committed version is empty; the generated Gemma
+parity test passes on e4b and 12B; no generated graph extends a graph; no hand-written
+specialized graph remains, so the only example of a specialized graph an agent can read is a
+generated one.
+
+#### D3. Generic graphs
+
+- [ ] `Qwen35Model`, `Gemma4Model`, `MiniCPM5Model`, `Qwen3Model`, `Qwen3MoeModel`, GLM and the
+      universal graph implement the four phases by delegation and take their cache through
+      `attend`. Their other internal branches are out of scope here.
+- [ ] `createAppend` in `Qwen35Model` no longer checks the device; the loader composed it.
+
+Exit: no graph reads `quantizedAttention`; bit-identical generic forwards.
+
+### Phase E: loader, scheduler, app, drafter
+
+#### E1. Loader selection table
+
+- [ ] The `qwen3.5` entry in `models/factory.ts` becomes a table keyed by fingerprint, device,
+      bridge, KV scheme, depth, chunk size, adapters and max rows. The generic graph is the entry
+      yielded when nothing specialized matches. The same shape for Gemma's `GENERATED` map.
+
+Exit: selection is data; `qwen38TrellisM4ProAccepts` and the nested ternary are gone.
+
+#### E2. Scheduler calls phases
+
+- [ ] `execution/batch-group.ts` (decode and verify call sites), `prefill-rows.ts`,
+      `speculative-group.ts`, `grammar-group.ts` and `fill-group.ts` call the named operation for
+      their phase.
+- [ ] `AdaptiveDraftGate` stays in the scheduler and chooses among the verify widths the
+      composition built when `adaptive` was requested.
+- [ ] The scheduler indexes the graph's operation table by the rows it batched: one request is
+      one row and calls the one-row decode; four requests call the 2-to-4 decode; verify width is
+      rows times depth+1. No flag and no mode; `--batch-size` is only the cap.
+- [ ] Batching sends M rows through the row-wise layers; only `attend` and the recurrence see
+      `rowOffsets`.
+- [ ] Delete `forwardHiddenMixed` and `forwardHidden` from the contract.
+
+Exit: one request and four concurrent requests on the M4 Pro composition both dispatch the
+Trellis row kernels for their width, shown by the op inventory diagnostic, with no generic path
+entered; a request's output across batch widths satisfies the bit-stability decision above;
+paired batched-lane benchmark records the gain at one and four rows.
+
+#### E3. App
+
+- [ ] `--kv-quant` composes the cache lego before the model loads.
+- [ ] The per-request `kvBits`, `kvConfig` and `quantizedKvStart` options leave `generation/types.ts` and the server request plan; the cache lego is composed at load from `--kv-quant` and `--quantized-kv-start`.
+- [ ] `--num-draft-tokens adaptive` is served by the scheduler choosing among the built widths; a number is fixed depth.
+
+Exit: `serve-cli.test.ts` and the draft-flags test pass; the CLI inventory regenerates with no
+new flag.
+
+#### E4. DFlash 2
+
+- [ ] `Dflash2Provider` loads the drafter unrotated and folds `fc` when it binds, from the
+      target's declared basis. `MLX_BUN_DFLASH2_TARGET_BASIS` is deleted.
+- [ ] The drafter builds its matrix-unit layer for its fixed block width at construction and uses
+      the ordinary quantized matmul for context projection; no per-call row switch in `matmulW`.
+
+Exit: acceptance rate on the paired MTP bench unchanged; no env read in `dflash2-source.ts`.
+
+### Phase F: gate and documentation
+
+- [ ] Add the rules from the top of this file to `architecture.test.ts`, each proven on the
+      synthetic workspace, with a ratchet table for files that still break them on landing, each
+      entry naming the plan item that removes it.
+- [ ] Each new rule's failure message names the paved road, in the style of the existing
+      "scheduling reaches storage through the row-layout port" message.
+- [ ] Make the library checks a required status check on `main`, so a PR with a failing gate is
+      not mergeable (#312 merged with its checks still pending).
+- [ ] Automatic performance-regression check. GitHub's runners have no Apple GPU, so this needs
+      a self-hosted runner on a quiet named Mac (the M4 Pro, or the M1 Max over SSH). For a PR
+      that touches `kernels/`, `layers/` or `models/`, run the existing paired serve benchmark
+      against `main` with the preflight gate, and fail on a regression outside the paired noise
+      band. Unqualified numbers never gate; the check reports the paired delta and its interval.
+- [ ] Agent briefs for this plan point at the generator and the contract, never at an example
+      file to copy; copying the nearest example is how the M4 Pro graph inherited the fallback.
+- [ ] ARCHITECTURE.md: the cache owns the read; phases are named; a specialized graph extends
+      nothing; the exemplar sentence points at the regenerated graphs; the loader-level generic
+      fallback is stated and the in-graph one forbidden; the one-way-per-pattern list above.
+- [ ] PLAN.md: first decision updated per the off-composition decision; this file's closed phases
+      deleted.
+- [ ] `packages/inference/README.md`: the M4 Pro graph paragraph describes phases, not plans.
+
+Exit: `bun test packages/inference/tests/architecture.test.ts` passes with the ratchet table
+empty; documentation generators run clean.
+
+### Verification, every phase
+
+- Kernels and their order do not change in any step, so each graph and cache step is gated by
+  bit-identical logits per phase against the implementation it replaces, on the existing parity
+  inputs. Folded attention and ANE keep their KL gates.
+- `bun run typecheck`, `bun run test`, and the architecture gate on every PR.
+- Speed only through `mlx-bun serve` in the batched lane with the paired benchmarks, ms per round
+  for MTP, on a quiet named machine.
+- One PR per numbered item, targeting `main`, not merged without Josh's instruction.
+
+### Untouched
+
+The 13 single-purpose kernels from PR #312, the four one-kernel layers, the ANE native bridge,
+the DFlash 2 numerics, the bench scripts, modules, web, training.
 
 ## Verify the migrated library
 
@@ -54,55 +398,12 @@ Decisions that govern all work:
   Open: other model families and main-only paths (by_bits/by_kl, warm start); synthetic
   native tests do not close this.
 
-## Three gates before replacing main
-
-Finish the remaining implementation first, then run these on the assembled
-candidate before saving main to a reference branch and merging
-`refactor/monorepo` into main. Inventory main's existing parity suites and
-performance workloads rather than substituting a smaller smoke suite. Pin both
-source revisions and retain reproducible commands and results outside Git;
-reusable verification code stays in Git. Focused PR checks do not close these
-gates. Josh has resumed the gates and quant-publication work.
-
-- [ ] **Numerical parity.** Run the full applicable numerical suites on the assembled
-  candidate against pre-refactor main and the applicable pinned oracle. Match model
-  artifacts, inputs, settings, execution shapes and state transitions. Verify logits,
-  generated tokens and continued state under the existing numerical contracts,
-  including single-request and batched execution, cache restore and supported MTP.
-  Exit: required comparisons pass; failures and skips are reported, and uncovered
-  paths are resolved or carry Josh's explicit decision. Answer-quality scores do
-  not replace numerical comparisons.
-- [ ] **Full capability gap analysis and acceptance.** Inventory what main exposes
-  (library APIs, CLI verbs/options, HTTP protocols and streaming, web workflows, jobs,
-  model/cache/generation capabilities, isolation/pooling, install/build artifacts,
-  existing user data) and exercise its equivalent in the candidate. Trace each to
-  passing acceptance evidence or Josh's explicit decision to change or defer it; a
-  route's presence, synthetic test, skipped test or 501 placeholder is not proof.
-  Resolve unapproved gaps and rerun affected flows without reproducing main's bugs
-  or accidental composition restrictions.
-- [ ] **Head-to-head performance.** Run the full established H2H suite
-  (`bun scripts/bench-serve.ts all`) on one quiet, named machine with the same
-  artifacts, inputs, configuration and execution shapes, single-request and batched.
-  Include MTP off, depth 2 and depth 3; cold startup and warm cache reuse; prefill,
-  decode, complete-request time and memory. Exit: performance matches main in paired
-  measurements; regressions are traced and fixed, with affected parity and benchmarks
-  rerun. Unqualified measurements cannot close the gate or supply model-card speed claims.
-
 ## Improvements identified during migration
 
 Concrete improvements with the current limitation and the owning domain. Preserve
 shipped behavior first; an improvement is not permission to redesign during migration.
 Migration gaps stay required work in the feature table.
 
-- [ ] Generalize paged KV across supported models that use KV attention (Josh's target).
-  Main's app restricted paging to Gemma4 and the shared execution binding has the same
-  family restriction (other families get the typed error). Cache storage, allocation,
-  row operations, snapshots and lifecycle belong to `packages/inference/src/state/`
-  (`state/paged/`); graphs supply attention/cache bindings through lower-level contracts,
-  kernels stay in `kernels/`, execution owns scheduling; extend those seams, no model
-  switches in the cache. Check mixed recurrent/KV models explicitly. Exit: supported KV
-  attention paths use the cache contract with real-model numerical, continuation,
-  cancellation and batched-execution coverage. No new package now.
 - [ ] (audio) `transcribe --vad-trim` is accepted but not applied, as in main, though the
   service implements `vad.trim`.
 - [ ] (memory) The entity seed gold is personal data read from a repository path; seed from
@@ -119,18 +420,6 @@ Migration gaps stay required work in the feature table.
   status for load balancers is a policy decision.
 - [ ] (capability reporting) `/v1/models` reports DiffusionGemma with `vision: false` (as main)
   though image requests succeed.
-
-## Migrate the application
-
-The application migration now uses public library APIs, including native packaging;
-media-fetch configuration hints describe the library policy instead of the app's CLI.
-- [ ] Support the shapes under [Unsupported request shapes](#unsupported-request-shapes) as
-  capabilities of the graphs that lack them. Exit: each runs on the shared scheduler, verified
-  with real weights and cancellation/streaming coverage.
-- [ ] Preserve continuous batching as the serving default, including single requests. Keep
-  compilation choices inside graph layers, without compilation switches on the app surface.
-  Exit: the full draft preserves the cancellation/streaming contracts and, where the contract
-  requires it, main's behavior, before the performance pass.
 
 ## Split the app into modules
 
@@ -178,8 +467,8 @@ experiments and benchmarks live outside it. Package READMEs hold the evidence de
 | Memory synthesis (nightly pipeline) | n/a (app-owned; pipeline ported op-for-op) | done (task model on the continuous gateway under the engine's execution lease; isolated: the current worker's `/admin/memory/complete`) | done (`GET /v1/memory/synthesize`, `schedule` in `/api/memory/status`) | done (`memory` verbs incl. `init`/`setup`, `schedule`) | read panel done; no synthesize control (as main) | partial: stages match main token for token and in full logits, width-3 batch, isolated synthesis; [details](apps/mlx-bun/README.md#memory-synthesis) | Decision: the memory feature is incomplete and deferred; the ingest source is unchanged (Pi's global sessions directory, as main) |
 | Live model switching, residency, isolation | n/a | done (one crash-isolated worker per resident model by default, held by the parent by memory fit; `--in-process` loads them in the serving process; either way the LRU model is drained with its saved state) | done (`POST /api/hub/serve`, routing by request `model`, `/v1/models` and `/library` with residency; worker socket: `/health`, `/admin/lease`, `/admin/drain`, `/admin/memory/complete`, `/admin/events`, `/admin/adapters`; isolated parent: `/engine`, `/health`, `/stats`) | done (`--model-budget`, `--ssd-cache`, `--in-process`; `--isolate` is accepted and ignored) | the Models panel switches live | partial: two small models resident and serving concurrently, a swap through saved state that resumes the prior conversation, and a pinned Whisper, in the default isolated mode and with `--in-process` (Qwen2.5-0.5B, MiniCPM5-1B, Whisper large-v3-turbo), and a worker killed mid-request answers 502 and reloads and resumes; no oracle parity; [details](apps/mlx-bun/README.md#model-host-residency-by-memory-fit) | Decisions (Josh): residency is by memory fit, saved state makes a swap feel like two models running, isolation is the default (one worker per resident model; `--in-process` opts out), and web chat works under isolation. Internal worker routes on TCP (`/admin/lease`, `/admin/drain`, `/admin/memory/complete`, `/admin/events`, `/admin/adapters`) and `/engine` under `--in-process` answer 404, not 501. Small items: Improvements |
 | Speculative decoding: draft models, n-gram, MTP, DSpark/DFlash | done | partial (grouped draft required; ungrouped shapes get the typed error) | rides completions | done (`--draft-model`, `--draft-kind`, `--num-draft-tokens`, `--ngram-*`, `--mtp`; `draft regen|train|calibrate|quantize` produce drafters) | n/a | partial: B1 main preservation for n-gram (MiniCPM), Gemma4 two-model and Qwen3.8 Trellis MTP; [grouped consumer](packages/inference/README.md#speculative-generation) ran for n-gram, two-model and assistant | Open: the grouped consumer for MTP, DSpark, DeepSpec (no local drafts fit 32 GB) and GLM-5.2 native MTP (no local weights); other main-supported provider/target/cache combinations; equality with main or an oracle; HTTP; performance |
-| Paged KV | done | partial (Gemma4 only; others get the typed error; media and adapter rows bypass paging) | rides completions | done (`--paged-kv`, `--paged-kv-block-size`) | n/a | done for Gemma4 E4B/12B: gathered pages equal plain KV bit for bit, direct reader within tolerance, KV4/KV8 pages, HTTP cancellation per reader, cold prefill; [details](packages/inference/README.md#state-and-attention) | Open: warm-prefix (prompt cache on) identity over HTTP (main's `paged-cache-http` test is not ported); broader model support under Improvements |
-| Unsupported request shapes (typed error) | done | typed `UnsupportedExecutionError` per shape | typed 501 envelope | `generate` prints it, exit 1 | n/a | per shape once supported | Shapes to support and their decisions: [list below](#unsupported-request-shapes) |
+| Paged KV | done | partial (Gemma4 only; others get the typed error; media and adapter rows bypass paging) | rides completions | done (`--paged-kv`, `--paged-kv-block-size`) | n/a | done for Gemma4 E4B/12B: gathered pages equal plain KV bit for bit, direct reader within tolerance, KV4/KV8 pages, HTTP cancellation per reader, cold prefill; [details](packages/inference/README.md#state-and-attention) | Open: warm-prefix (prompt cache on) identity over HTTP (main's `paged-cache-http` test is not ported); broader model support is the cache lego in the Composition refactor (B1) |
+| Unsupported request shapes (typed error) | done | typed `UnsupportedExecutionError` per shape | typed 501 envelope | `generate` prints it, exit 1 | n/a | per shape once supported | Shapes become compositions under the Composition refactor (Phase E); the typed error stays for a request the composition was not built for |
 | DiffusionGemma denoising (shared execution) | done (interleaved rows, B=1 graph calls) | done (placed continuously; grammar, draft, logprobs, logits processors, fill, encoded and paged KV refused with typed reasons) | rides completions | rides `generate` | n/a | partial: text and one-image requests match main's measured trajectories (direct, grouped, B2/B4 join and cancel, HTTP), image cancellation and disconnect recovery pass; [details](packages/inference/README.md#optional-execution-and-persistence) | Open: stacked (B>1) canvases and token-chunked prefill (separate optimizations); concurrent HTTP rows, full logits and KV planes, external-oracle parity, performance. Main's `goldens/diffusion/gen*.json` no longer match main on MLX 0.32.2, so references are measured |
 | Evaluation and benchmarking: `bench`, `evals`, `perplexity`, EvalDB, eval tasks | n/a (experiments; the in-package bench harness moves out) | n/a | `/fit` measured fields stay null | not app verbs | status page shows dashes | n/a | Runs consume the published packages and drive the app through its public HTTP and CLI surface; results are published as datasets or quoted as text in docs. The benchmarks and metrics modules ([split](#split-the-app-into-modules)) launch these runners and show history; they add no second runner |
 | Pi terminal: `pi`, `harness pi` | n/a | chat backend reusable | n/a | held (`pi-terminal`, `harness-pi` not ported) | n/a | n/a | Held by Josh |
@@ -187,28 +476,6 @@ experiments and benchmarks live outside it. Package READMEs hold the evidence de
 | Existing-user data compatibility: prior-format sessions, jobs, settings, vault, caches; memory Reference symlinks into the main checkout | n/a | partial (Pi sessions, browser preferences and active-job prior schemas read across versions; the web chat sidebar lists every recorded chat; old `~/.cache/mlx-bun*` job history, memory and registry data are left in place, not migrated; adapter stores are listed read-only) | n/a | n/a | n/a | partial: synthetic old/new round trips (Pi sessions, preferences, jobs) and an acceptance on an isolated copy of real data pass (53 sessions, 10 adapters); the credential and schedule paths only synthetically (no saved token or nightly plist in the real data) | Decisions: everything mlx-bun writes by default lives under `MLX_BUN_HOME` (`~/.mlx-bun`); the HF hub cache holds downloads only; explicit paths win (#224); the opt-in `--expert-offload` still builds inside the model directory. Before deleting the old checkout Josh selects what to preserve outside it: the memory Reference symlink targets (7 point into it; 2 already dangle) and ignored adapters, checkpoints and other local artifacts that Git cannot recover. No automatic retargeting. Open: opening a chat appends SDK entries and opening a v1/v2 chat rewrites it, as in main |
 | Docs surface and gates | n/a | n/a | HTTP and configuration inventories generated from source | CLI inventory generated from source | site and legacy redirects implemented | `apps/website/tests/server-api.test.ts`, `apps/website/tests/server-config.test.ts` | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate, and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
 | Installation and release | n/a | n/a | n/a | bundle, launchers, safe installer, formula and staged release preparation implemented | n/a | n/a | Complete the release acceptance checks below; public installer delivery must follow a compatible bundle release. Decision: the installer links only `~/.local/bin` (accepted). No actual release. |
-
-### Unsupported request shapes
-
-Refused with a typed error today (`execution/plan.ts`):
-
-- Delayed affine KV with a draft that would speculate.
-- Draft providers that tap target hidden layers on Gemma2 (softcap) graphs: the graph has no tap
-  operation.
-- Paged KV on graphs other than Gemma4 (as in main; broader paging is under Improvements).
-- A KV scheme the model's cache cannot read (refused at startup).
-
-Runs, not yet verified on real weights (evidence so far is in the
-[inference README](packages/inference/README.md#scheduler-continuation-and-specialized-path-checks)):
-multi-row adapter/draft requests; B>1 adapter-free draft or fill requests and stacked-B2 grammar
-over encoded KV on Gemma2; a published sliding-window model (evidence is a custom window-8
-Llama-3.2-3B graph), including speculation and encoded paths there; Qwen3-MoE affine KV; Gemma4
-TurboQuant beyond the Gemma2 scope.
-
-Decided: adapter rows whose draft cannot serve adapters decode ordinarily and keep generation
-checkpoints on every graph; on rotating-cache graphs a grammar jump keeps verified proposals and
-supplied fill is applied; sliding graphs speculate for adapter+n-gram, encoded KV+draft and
-logprobs+draft rows.
 
 ## Candidate quant and Hugging Face model card
 
@@ -255,13 +522,7 @@ on main and the refactor is only useful when investigating a behavior difference
 
 ## Completion
 
-- [ ] Clear all three transition gates above and review their results with
-  Josh before transitioning. Preserve main's exact final commit in a pushed
-  reference branch (`pre-monorepo`), merge `refactor/monorepo` into main with
-  a merge commit preserving both histories, verify the merged result, then
-  remove the redundant refactor branch and worktrees. Main remains reference-only
-  until this transition; publishing is a separate authorization.
-- [ ] Josh could delete main without losing a capability it shipped.
+- [ ] Josh could delete the pre-refactor reference branch (`origin/pre-monorepo`, main at `02d723a`) without losing a capability it shipped.
   Exit: every row above is all-done or carries a recorded decision and is deleted;
   the verify items above close against pinned published goldens or are recorded
   decisions; main's user flows (CLI verbs, HTTP protocols, web chat, jobs,
