@@ -4,6 +4,8 @@
 // filterRows, extractRow. The oracle is the solo replay: every row's updates
 // applied to its own serial cache; an extracted row must equal it byte for byte,
 // and a step's mask and RoPE positions must be what each row's padding implies.
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -176,7 +178,7 @@ describe("padded full-attention rows (affine quantized)", () => {
     const rows = (ids: number[]) => ids.map(id => ({ solo: solos[id]!, id, f: qval }));
     let ids = [0, 1];
     stepAll(layout, rows(ids), QD, true); stepAll(layout, rows(ids), QD, true);
-    const third = quant(2, lens[2]!), next = new PaddedQuantKVRows(GS, BITS);
+    const third = quant(2, lens[2]!), next = new PaddedQuantKVRows(GS, BITS, unfusedAffineKernels(BITS, GS, Dtype.bfloat16));
     next.mergeRows([layout, third]); layout.dispose(); third.dispose(); ids = [0, 1, 2];
     stepAll(next, rows(ids), QD, true);
     ids.forEach((id, b) => same(next.extractRow(b), solos[id]!));
@@ -281,8 +283,8 @@ describe("recurrent state", () => {
 describe("which layout a cache's rows are kept in", () => {
   test("every storage family has one; caches that own their layout make it; foreign state has none", () => {
     const layouts: [Cache, Function][] = [
-      [new KVCache(), PaddedKVRows], [new QuantizedKVCache(GS, BITS), PaddedQuantKVRows], [new RotatingKVCache(W_), BatchedRotatingCache],
-      [new RotatingQuantizedKVCache(W_, GS, BITS), BatchedRotatingQuantCache], [new SSMCache(), BatchedSSMCache],
+      [new KVCache(), PaddedKVRows], [new QuantizedKVCache(GS, BITS, unfusedAffineKernels(BITS, GS, Dtype.bfloat16)), PaddedQuantKVRows], [new RotatingKVCache(W_), BatchedRotatingCache],
+      [new RotatingQuantizedKVCache(W_, GS, BITS, unfusedAffineKernels(BITS, GS, Dtype.bfloat16)), BatchedRotatingQuantCache], [new SSMCache(), BatchedSSMCache],
     ];
     for (const [cache, kind] of layouts) {
       const layout = ownedCacheLayout(cache) as BatchableCache;

@@ -30,8 +30,10 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionRead, type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { buildBatchedRotatingMask } from "./batched-rotating";
+import { AttentionMasks, withLease, type MaskLease } from "./attention-read";
+import { affineRead, unfusedAffineKernels, type AffineKernel } from "./affine-attention";
 import { isRotatingQuantizedCache } from "./capabilities";
 import type { QuantRow } from "./batched-quant";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
@@ -57,7 +59,19 @@ const mapTriple = (
 /** Batched ring over quantized triples — mlx-lm BatchRotatingKVCache
  *  mechanics (see batched-rotating.ts) with RotatingQuantizedKVCache
  *  storage. Scalar ring state (`ringIdx`/`offset` reuse the base fields);
- *  per-row `offsetArr` (absolute positions → RoPE) and `leftPad`. */
+ *  per-row `offsetArr` (absolute positions → RoPE) and `leftPad`.
+ *
+ *  Reads: the sliding window is `maxSize`. Decode, which runs with no prefill
+ *  padding pending (finalize first), writes one position in place at the ring
+ *  head; a window writes by concatenation, which also serves padded prefill
+ *  chunks. Each attends under mlx-lm's batched rotating mask
+ *  (`buildBatchedRotatingMask`) for its write, built once per forward through
+ *  `masks`, with the unfused kernel for both reads: that mask is always an
+ *  array, which `quantizedSdpa` never tiles, so the unfused kernel is what every
+ *  configuration computes today. The deprecated `updateAndFetchQuantized` picks
+ *  the write from the length instead, so a one-row window without pending
+ *  padding wrote in place there and concatenates here: the same bits until the
+ *  ring wraps, a different key order after. */
 export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implements BatchableCache, PaddedPrefillCache {
   #rows: BatchedRotatingState;
   /** Per-row RoPE positions. STABLE ACROSS A STEP — refreshed only at
@@ -73,14 +87,51 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
 
   private constructor(
     maxSize: number, groupSize: number, bits: number, leftPad: number[], offsets: number[],
+    masks: AttentionMasks,
   ) {
-    super(maxSize, groupSize, bits);
+    super(maxSize, groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16), masks);
     this.#rows = new BatchedRotatingState(maxSize, leftPad, offsets);
     this.ropeOffsetArr = offsets.length ? MlxArray.fromInt32(Int32Array.from(offsets), [offsets.length]) : ops.zeros([0], Dtype.int32);
   }
 
-  static empty(maxSize: number, groupSize: number, bits: number, leftPad: readonly number[]): BatchedRotatingQuantCache {
-    return new BatchedRotatingQuantCache(maxSize, groupSize, bits, [...leftPad], leftPad.map(pad => -pad));
+  /** `masks`: the per-forward masks of the model this layout serves. */
+  static empty(maxSize: number, groupSize: number, bits: number, leftPad: readonly number[],
+    masks = new AttentionMasks()): BatchedRotatingQuantCache {
+    return new BatchedRotatingQuantCache(maxSize, groupSize, bits, [...leftPad], leftPad.map(pad => -pad), masks);
+  }
+
+  override appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    return withLease(this.#ringMask(1, false), mask => {
+      const [keys, values] = this.#updateInPlace(k, v);
+      return affineRead(keys, values, mask, this.kernels.decode);
+    });
+  }
+
+  override appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.appendWindowUnder(k, v, this.#ringMask(k.shape[2]!, true), this.kernels.maskedWindow);
+  }
+
+  /** The window write (concatenation) attended with `kernel` under `mask`,
+   * for the layout that owns this ring and knows its mask is plain causal
+   * (`SpeculativeRotatingAffineLayout`). Takes ownership of `mask`. */
+  appendWindowUnder(k: MlxArray, v: MlxArray, mask: MaskLease, kernel: AffineKernel): AttentionRead {
+    return withLease(mask, held => {
+      const [keys, values] = this.#updateConcat(k, v);
+      return affineRead(keys, values, held, kernel);
+    });
+  }
+
+  /** The mask of an `N`-position write before it: `block` for concatenation,
+   * not for an in-place write. The bf16 ring's family and builder
+   * (`BatchedRotatingCache`). */
+  #ringMask(N: number, block: boolean): MaskLease {
+    const rows = this.#rows;
+    const key = `${N}|${block}|${rows.leftPad.join(",")}|${rows.ringIndex}|${rows.totalOffset}|${rows.rotated}`;
+    return this.masks.lease(`batched-rotating:${this.maxSize}`, key, () => ({
+      mode: "array",
+      arr: buildBatchedRotatingMask(rows.batchSize, N, rows.leftPad, this.maxSize, this.maxSize,
+        rows.ringIndex, rows.totalOffset, rows.rotated, block),
+    }));
   }
 
   get positionSnapshot(): RotatingPositionSnapshot { return this.#rows.snapshot(); }
@@ -99,8 +150,9 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
     this.#rows.finalizePrefill(); this.releaseRopeArr();
   }
   /** Adopt owned tensors without changing their physical ring columns. */
-  static adoptPhysical(keys: ops.QuantizedTensor | null, values: ops.QuantizedTensor | null, groupSize: number, bits: number, position: RotatingPositionSnapshot): BatchedRotatingQuantCache {
-    const cache = new BatchedRotatingQuantCache(position.maxSize, groupSize, bits, [...position.leftPad], [...position.offsets]);
+  static adoptPhysical(keys: ops.QuantizedTensor | null, values: ops.QuantizedTensor | null, groupSize: number, bits: number,
+    position: RotatingPositionSnapshot, masks = new AttentionMasks()): BatchedRotatingQuantCache {
+    const cache = new BatchedRotatingQuantCache(position.maxSize, groupSize, bits, [...position.leftPad], [...position.offsets], masks);
     cache.#rows.restore(position); cache.keys = keys; cache.values = values;
     cache.offset = position.totalOffset; cache.ringIdx = position.ringIndex;
     return cache;
@@ -111,7 +163,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
   get leftPad(): number[] { return this.#rows.leftPad; }
   get batchSize(): number { return this.#rows.batchSize; }
   makeEmptyBatch(): BatchedRotatingQuantCache {
-    return BatchedRotatingQuantCache.empty(this.maxSize, this.groupSize, this.bits, []);
+    return BatchedRotatingQuantCache.empty(this.maxSize, this.groupSize, this.bits, [], this.masks);
   }
   /** Bytes one row holds for `tokens` more positions, capped at the window. */
   projectedBytes(tokens: number): number {
@@ -158,13 +210,17 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
     };
   }
 
+  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    if (k.shape[2] !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
+    return this.#updateInPlace(k, v);
+  }
+
   /** N=1 decode update — the bf16 twin's updateAndFetch (mlx-lm
    *  _update_in_place) over triples, with quantize-on-write from the
    *  serial oracle. */
-  override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+  #updateInPlace(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
     const [B, H, S, D] = k.shape as [number, number, number, number];
     const vD = v.shape[3]!;
-    if (S !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
     const prev = this.#rows.totalOffset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
@@ -298,9 +354,9 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
    *  (packages/inference/tests/state/batched-rotating-quant.test.ts), extraction
    *  is a pure slice+copy. */
   extractRow(i: number, limit = Infinity): RotatingQuantizedKVCache {
-    if (!this.keys || !this.values) return new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
+    if (!this.keys || !this.values) return new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.kernels);
     const pad = Math.max(0, this.leftPad[i]!, this.#rows.activeLength - limit);
-    const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
+    const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.kernels);
     const k = temporalStorageView(quantizedRowStorage, this.keys, this.#rows, {
       row: i, from: pad, to: this.#rows.activeLength, copy: true,
     });
@@ -382,11 +438,12 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
    *  (rotated=false, ringIdx=offset=width). */
   static merge(
     rows: QuantRow[], offsets: number[], maxSize: number, groupSize: number, bits: number,
+    masks = new AttentionMasks(),
   ): BatchedRotatingQuantCache {
     const lens = rows.map((r) => r.keys.packed.shape[2]!);
     const width = Math.max(...lens, 0);
     const leftPad = lens.map((l) => width - l);
-    const cache = new BatchedRotatingQuantCache(maxSize, groupSize, bits, leftPad, offsets);
+    const cache = new BatchedRotatingQuantCache(maxSize, groupSize, bits, leftPad, offsets, masks);
     cache.#rows.restoreMerged(width, offsets);
     cache.offset = cache.#rows.totalOffset;
     cache.ringIdx = cache.#rows.ringIndex;

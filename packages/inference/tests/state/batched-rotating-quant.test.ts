@@ -15,6 +15,7 @@
 // divergence is a ring-mechanics bug, not noise. Real-model coverage:
 // `02d723a:tests/parity/batched-kv-quant-parity.test.ts` (gemma gate).
 
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -73,7 +74,7 @@ describe("BatchedRotatingQuantCache (milestone 2, model-free)", () => {
     const PREFILL = 5, STEPS = 18; // wraps MAX=8 twice over
 
     // Serial oracle: prefill (concat path) then merge the twin from its view.
-    const serial = new RotatingQuantizedKVCache(MAX, GROUP, BITS);
+    const serial = new RotatingQuantizedKVCache(MAX, GROUP, BITS, unfusedAffineKernels(BITS, GROUP, Dtype.bfloat16));
     {
       const k = bf16Row(rngQ, PREFILL), v = bf16Row(rngQ, PREFILL);
       const [fk, fv] = serial.updateAndFetchQuantized(k, v);
@@ -137,7 +138,7 @@ describe("BatchedRotatingQuantCache (milestone 2, model-free)", () => {
   test("B=2 uneven rows: each row byte-identical to its serial oracle through wrap; filter() drops a row", () => {
     const mk = (seed: number, prefill: number) => {
       const rng = lcg(seed);
-      const c = new RotatingQuantizedKVCache(MAX, GROUP, BITS);
+      const c = new RotatingQuantizedKVCache(MAX, GROUP, BITS, unfusedAffineKernels(BITS, GROUP, Dtype.bfloat16));
       const k = bf16Row(rng, prefill), v = bf16Row(rng, prefill);
       const [fk, fv] = c.updateAndFetchQuantized(k, v);
       disposeTriple(fk); disposeTriple(fv);

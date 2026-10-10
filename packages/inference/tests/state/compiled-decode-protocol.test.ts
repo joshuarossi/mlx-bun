@@ -5,6 +5,7 @@
 // exactly the state the real append leaves, in both fetch phases (growing concat,
 // then the rotating ring at steady state). Every plane is compared byte for byte
 // against a twin cache that took the ordinary append.
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
@@ -23,9 +24,9 @@ const W = 8, H = 2, D = 64, GROUP = 32, BITS = 4;
 type Kind = { name: string; make: () => CompiledDecodeCache & Cache; quantized: boolean; ring: boolean };
 const KINDS: Kind[] = [
   { name: "KVCache", make: () => new KVCache(), quantized: false, ring: false },
-  { name: "QuantizedKVCache", make: () => new QuantizedKVCache(GROUP, BITS), quantized: true, ring: false },
+  { name: "QuantizedKVCache", make: () => new QuantizedKVCache(GROUP, BITS, unfusedAffineKernels(BITS, GROUP, Dtype.bfloat16)), quantized: true, ring: false },
   { name: "RotatingKVCache", make: () => new RotatingKVCache(W), quantized: false, ring: true },
-  { name: "RotatingQuantizedKVCache", make: () => new RotatingQuantizedKVCache(W, GROUP, BITS), quantized: true, ring: true },
+  { name: "RotatingQuantizedKVCache", make: () => new RotatingQuantizedKVCache(W, GROUP, BITS, unfusedAffineKernels(BITS, GROUP, Dtype.bfloat16)), quantized: true, ring: true },
 ];
 
 /** [1, H, n, D] rows whose values depend on the position tag, head and lane. */

@@ -1,3 +1,5 @@
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { MlxArray } from "@mlx-bun/mlx/array";
@@ -18,9 +20,9 @@ const hash = (array: MlxArray) => {
 test("affine ring rollback preserves encoded bytes across unequal acceptance, wrap and retirement", () => {
   for (const bits of [4, 8]) for (const initial of [[0, 0, 0], [0, 5, 7], [9, 15, 21]]) {
     const history = initial.map((n, row) => Array.from({ length: n }, (_, i) => row * 1000 + i));
-    const cache = new RotatingAffineLayout(window, 64, bits);
+    const cache = new RotatingAffineLayout(window, 64, bits, unfusedAffineKernels(bits, 64, Dtype.bfloat16));
     const sources = history.map(tokens => {
-      const source = new RotatingQuantizedKVCache(window, 64, bits);
+      const source = new RotatingQuantizedKVCache(window, 64, bits, unfusedAffineKernels(bits, 64, Dtype.bfloat16));
       if (tokens.length) {
         using input = data([tokens]);
         for (const plane of source.updateAndFetchQuantized(input, input)) disposeTriple(plane);
@@ -57,7 +59,7 @@ test("affine ring rollback preserves encoded bytes across unequal acceptance, wr
         cache.specRoundRollback(counts);
         for (let row = 0; row < history.length; row++) history[row]!.push(...block[row]!.slice(0, counts[row]!));
         verify(cache);
-        const clone = new RotatingAffineLayout(window, 64, bits);
+        const clone = new RotatingAffineLayout(window, 64, bits, unfusedAffineKernels(bits, 64, Dtype.bfloat16));
         try { clone.mergeRows([cache]); verify(clone); } finally { clone.dispose(); }
       }
       cache.filterRows([2, 0]); history.splice(0, 3, history[2]!, history[0]!); verify(cache);

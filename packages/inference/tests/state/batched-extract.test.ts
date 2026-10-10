@@ -13,6 +13,7 @@
 // the REAL MlxBatchExecutionGroup with a stub model and asserts finished rows'
 // caches land in the prompt cache keyed by exactly [promptIds + fed].
 
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { afterEach, describe, expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -125,7 +126,7 @@ describe("per-row extraction from batched caches (model-free)", () => {
     });
     const m = mergeQuantRows(rows);
     for (const r of rows) dispose3(r);
-    const batched = new QuantizedKVCache(GS, BITS);
+    const batched = new QuantizedKVCache(GS, BITS, unfusedAffineKernels(BITS, GS, Dtype.bfloat16));
     batched.restoreState(m.keys, m.values, m.width);
 
     for (let s = 0; s < 3; s++) {
