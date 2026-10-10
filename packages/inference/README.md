@@ -852,6 +852,29 @@ to preserve the existing dispatch profile. Wide prefill additionally requires
 caller-proven aligned, row-contiguous input. These profiles and numerical
 contracts are unchanged; they are not universal dispatch rules for every shape.
 
+Single-purpose kernels from the same entry point: each runs one algorithm for
+one row form and one code layout, takes no options, and checks its inputs. The
+factored kernels decode each weight's code value y and apply the row scale
+(with 1/147.8) once per output, or fold it into each input row's activation;
+the matrix kernels run on the simdgroup matrix unit. Both reassociate relative
+to variant 6 and agree with it to bf16 precision, not bit for bit.
+
+| Operation | Input and purpose |
+| --- | --- |
+| `gateUpFactoredRow(x, gate, up)` / `gateUpFactoredRows(x, gate, up)` | Same-width axis-1 gate/up/SwiGLU; one row / 2..4 rows sharing each decoded weight |
+| `mixedGateUpFactoredRows(x, gate, up)` | Different-width gate/up, 1..4 rows; MLX's compiled-swiglu tail |
+| `downFactoredRow` / `downFactoredRows(x2, codes, scales, geometry)` | Axis-0 projection over row-major codes; one row / 2..4 rows |
+| `downK3InterleavedFactoredRow` / `downK3InterleavedFactoredRows(...)` | The same over 3-bit block-interleaved codes (T 256, L 12) |
+| `gateUpMma(x, gate, up)` | Gate/up/SwiGLU for 1..8 rows; widths may differ |
+| `downMma` / `downK3InterleavedMma(x2, codes, scales, geometry)` | Axis-0 projection for 1..8 rows, row-major / 3-bit interleaved codes |
+
+Outside the Trellis family, `kernels/quantization/affine{3,4}-{rows,mma}` run
+3- and 4-bit group-64 affine projections for 2..8 rows (shared decode) and
+1..8 rows (matrix unit); `kernels/attention/kvq4-decode` is one-row attention
+over a 4-bit group-64 KV cache with head dim 256, reading each packed row once
+for all query heads of its KV head; `kernels/attention/multi-query` is causal
+flash decoding for 2..8 query rows over a BF16 cache.
+
 ## Artifact, input, and layer APIs
 
 - `@mlx-bun/inference/artifacts`: model configuration, safetensors metadata,

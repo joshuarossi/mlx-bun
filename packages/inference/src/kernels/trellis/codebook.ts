@@ -36,6 +36,14 @@ static inline float trellis_val_rcp(uint s) { return trellis_refined_y(trellis_y
 static inline float trellis_unrefined_y(int y) {
   return (float)y * (1.0f / 147.800537109375f);
 }
+// The code value y as f32 without an integer-to-float conversion: y + 510
+// (0..1020) ORed into the mantissa of 2^23, whose ULP is one, minus 2^23 + 510.
+// Equal to (float)trellis_y(s). Factored kernels accumulate y·x and apply
+// scale·TRELLIS_RCP once per output (or fold it into each input row).
+static inline float trellis_y_f32(uint s) {
+  return as_type<float>(0x4b000000u | uint(trellis_y(s) + 510)) - 8389118.0f;
+}
+#define TRELLIS_RCP (1.0f / 147.800537109375f)
 // For y in [-510, 510], 2^23 has unit f32 spacing, so setting its low
 // mantissa bits constructs 2^23+y+510 exactly. Subtracting 2^23+510
 // recovers the same f32 y as the integer conversion; the reciprocal is unchanged.
