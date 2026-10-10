@@ -222,9 +222,18 @@ serve benchmark shows no regression.
       module-level maps.
 - [ ] Programs are built for exactly the chunk size; no buckets, no minimum-row floor. The
       leftover chunk is `prefillTail` on the GPU.
+- [ ] ANE programs are compiled at build time and shipped as artifacts (Josh, 2026-10-10: "run it
+      once AT BUILD TIME, and then ship THAT ARTIFACT"). The build compiles each program the
+      composition needs on a build host of each supported Neural Engine generation and places the
+      compiled program (the framework's own compiled form, which its cache already loads from
+      disk) in the bundle under the generation it was built for; the installer and the loader pick
+      by chip. The bridge gains a load-from-artifact entry beside `mbane_program_create`, and the
+      run-time compile from MIL leaves the product. A generation without a build host is out of
+      scope for ANE prefill, which is the GPU-only composition, not a check.
 
 Exit: two graphs can coexist in one process without evicting each other's programs; KL gate on
-ANE prefill unchanged.
+ANE prefill unchanged; a fresh machine's first ANE prefill loads a shipped artifact and compiles
+nothing; `grep compileWithQoS packages/inference/native` is empty outside the build tool.
 
 ### Phase D: graphs
 
