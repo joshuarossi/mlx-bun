@@ -309,12 +309,17 @@ export async function loadContext(
       {
         const probeCaches = model.makeCache();
         try {
-          provider
-            .open({
-              sampler: () => { throw new Error("probe sampler never samples"); },
-              target: bindLegacyDraftTarget(model, probeCaches),
-            })
-            .dispose();
+          const target = bindLegacyDraftTarget(model, probeCaches);
+          try {
+            provider
+              .open({ sampler: () => { throw new Error("probe sampler never samples"); }, target })
+              .dispose();
+          } catch (err) {
+            // A batched-lane-only provider (DFlash 2) has no per-request source;
+            // its grouped binding validates the pairing instead (no rows, no tensors).
+            if (!provider.grouped) throw err;
+            provider.grouped.openPrefill({ target, checkpoints: [] }).dispose();
+          }
         } catch (err) {
           release(provider);
           throw new Error(
