@@ -20,24 +20,59 @@
 // GQA is handled inside the kernel (hk_idx = hv_idx / (Hv/Hk)); q/k stay at Hk.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,Mask } from "../contracts/mlx/cache";
+import type { GatedDeltaCache, GatedDeltaParameters, Mask } from "../contracts/mlx/cache";
+import { gatedDeltaUpdate } from "../kernels/delta/gated";
+import { gatedDeltaState } from "../kernels/delta/state";
+import { disposing } from "../layers/helpers";
 import type { SsmPrefillPadding } from "./ssm-prefill-padding";
+
+/** The causal convolution of `qkv` [B, S, convDim] over the stored `state`
+ *  [B, K-1, convDim], copied from GatedDeltaNet's `#convolve` without the
+ *  activation, which belongs to the block's glue (`layer.heads`). Returns the
+ *  raw conv1d output and the next state: each row's last K-1 input columns,
+ *  ending at `rowLengths[row]` when given, else at the window's end. Borrows
+ *  its inputs. */
+function convolve(qkv: MlxArray, state: MlxArray, weight: MlxArray, rowLengths?: readonly number[]): [MlxArray, MlxArray] {
+  const [, S, D] = qkv.shape as [number, number, number];
+  const input = ops.concatAxis([state, qkv], 1);
+  // MLX copy and contiguous can both alias the whole prefill buffer.
+  // Materialize only the tail so cache residency follows its logical size.
+  const tail = convTail(input, S, weight.shape[1]! - 1, rowLengths);
+  const conv = ops.conv1d(input, weight, 1, 0, 1, D);
+  input.dispose();
+  return [conv, tail];
+}
+
+function convTail(input: MlxArray, processed: number, nKeep: number, rowLengths?: readonly number[]): MlxArray {
+  const [B, , D] = input.shape as [number, number, number];
+  if (rowLengths) {
+    using indices = ops.fromInt32(rowLengths.flatMap(length =>
+      Array.from({ length: nKeep }, (_, position) => length + position)), [B, nKeep, 1]);
+    return ops.takeAlongAxis(input, indices, 1);
+  }
+  using view = input.slice([0, processed, 0], [B, processed + nKeep, D]);
+  return materializeCopy(view);
+}
 
 /** Recurrent cache for a gated-DeltaNet layer — port of mlx-lm
  *  cache.ArraysCache(size=2): slot 0 = causal-conv state [B, K-1, conv_dim],
- *  slot 1 = recurrent state [B, Hv, Dv, Dk] f32. The linear-attn layer reads
- *  and writes these slots directly; `advance(N)` only tracks token count for
- *  B=1 single-stream (lengths / left_padding are batched-decode concerns).
- *  Not a KVCache, so maybeQuantizeKv skips it. */
+ *  slot 1 = recurrent state [B, Hv, Dv, Dk] f32. `recurDecode` and
+ *  `recurWindow` own both slots and the kernels that update them
+ *  (GatedDeltaCache); GatedDeltaNet.forward still reads and writes the slots
+ *  directly until C1 moves the block onto those calls. `advance(N)` only
+ *  tracks token count for B=1 single-stream (lengths / left_padding are
+ *  batched-decode concerns). Not a KVCache, so maybeQuantizeKv skips it. */
 /** One armed speculative verify round on an SSMCache: the pre-round state
  *  snapshot (retained refs — MLX arrays are immutable, so this is free) plus
- *  the layer's recorded position-local kernel inputs, which make a partial
- *  reject bit-exactly replayable: state after the first `keep` window tokens
- *  is the same arithmetic prefix whether or not the rejected tail was ever
- *  processed. The replay is installed by the OWNING layer (it needs the conv
- *  weight / A_log / dt_bias); the cache only stores and frees. */
+ *  the recorded position-local kernel inputs, which make a partial reject
+ *  bit-exactly replayable: state after the first `keep` window tokens is the
+ *  same arithmetic prefix whether or not the rejected tail was ever
+ *  processed. `recurDecode`/`recurWindow` record and install the cache's own
+ *  replay over the borrowed layer; GatedDeltaNet.forward installs the block's
+ *  replay until C1. */
 export interface SsmSpecRound {
   /** True from specRoundBegin() until the layer's forward records. */
   armed: boolean;
@@ -57,7 +92,7 @@ export interface SsmSpecRound {
   replay: ((cache: SSMCache, keep: number | readonly number[]) => void) | null;
 }
 
-export class SSMCache implements Cache {
+export class SSMCache implements GatedDeltaCache {
   conv: MlxArray | null = null;
   recurrent: MlxArray | null = null;
   offset = 0;
@@ -90,6 +125,127 @@ export class SSMCache implements Cache {
   makeMask(N: number, _windowSize: number | null): Mask {
     const arr = this.prefillPadding?.makeMask(N) ?? null;
     return { mode: arr ? "array" : "", arr };
+  }
+
+  recurDecode(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
+    return this.#recur(qkv, a, b, layer, null);
+  }
+
+  recurWindow(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
+    return this.#recur(qkv, a, b, layer, this.prefillPadding);
+  }
+
+  /** GatedDeltaNet.forward from its projections to the recurrence output,
+   *  copied: zero the padded positions, convolve over the stored conv state,
+   *  run the block's glue, run the gated-delta kernel over the stored
+   *  recurrent state, replace both states and advance. Inside an armed round
+   *  the replaced states and the inputs go to the round instead of being
+   *  disposed, and the round replays through `layer`. */
+  #recur(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters,
+    padding: SsmPrefillPadding | null): MlxArray {
+    const [B, S, convDim] = qkv.shape as [number, number, number];
+    const nKeep = layer.convWeight.shape[1]! - 1;
+
+    const spec = this.specRound;
+    if (spec) {
+      if (!spec.armed)
+        throw new Error("SSMCache: spec round already recorded this round");
+      spec.armed = false;
+      spec.S = S;
+      spec.replay = (_cache, keep) => this.#replayPrefix(spec, keep, layer);
+    }
+
+    using mask = padding?.makeMask(S) ?? null;
+    if (mask) {
+      using expanded = ops.reshape(mask, [B, S, 1]);
+      using zero = MlxArray.fromBytesCopy(new Uint8Array(qkv.dtype === Dtype.float32 ? 4 : 2), [], qkv.dtype);
+      qkv = disposing(qkv, ops.where(expanded, qkv, zero));
+    }
+    // Convolution keeps each row's last real-token tail, including empty rows.
+    const convState = this.conv ?? ops.zeros([B, nKeep, convDim], qkv.dtype);
+    const [conv, newConv] = convolve(qkv, convState, layer.convWeight, padding?.convolutionLengths(S));
+    if (!this.conv) convState.dispose();
+    if (spec) spec.qkv = qkv;
+    else qkv.dispose();
+    if (spec) spec.prevConv = this.conv;
+    else this.conv?.dispose();
+    this.conv = newConv;
+
+    const { q, k, v } = layer.heads(conv);
+    conv.dispose();
+    const [out, newState] = gatedDeltaUpdate(q, k, v, a, b, layer.aLog, layer.dtBias, this.recurrent, mask);
+    q.dispose();
+    k.dispose();
+    v.dispose();
+    if (spec) {
+      spec.a = a;
+      spec.b = b;
+      spec.prevRecurrent = this.recurrent;
+    } else {
+      a.dispose();
+      b.dispose();
+      this.recurrent?.dispose();
+    }
+    this.recurrent = newState;
+    this.advance(S);
+    return out;
+  }
+
+  /** Speculative rollback replay, copied from GatedDeltaNet's
+   *  `#replaySpecPrefix`: with the pre-round snapshot restored, re-advance the
+   *  first `keep` window positions from the round's recorded inputs. Every op
+   *  repeats the recorded call on the same values (conv windows, the glue's
+   *  per-position activation and norms, the kernel's serial prefix), and none
+   *  depends on the rejected tail, so the states are bit for bit those of a
+   *  call over only the accepted prefix. The output is not needed; unequal row
+   *  prefixes use the state-only kernel, which reads no queries. */
+  #replayPrefix(round: SsmSpecRound, keep: number | readonly number[], layer: GatedDeltaParameters): void {
+    const recorded = round.qkv!;
+    const [B, , convDim] = recorded.shape as [number, number, number];
+    const Hv = round.a!.shape[2]!;
+    const count = typeof keep === "number" ? keep : Math.max(...keep);
+    const rowLengths = typeof keep === "number" ? undefined : keep;
+    const nKeep = layer.convWeight.shape[1]! - 1;
+
+    const qkvPfxView = recorded.slice([0, 0, 0], [B, count, convDim]);
+    const qkvPfx = ops.contiguous(qkvPfxView);
+    qkvPfxView.dispose();
+    const convState = this.conv ?? ops.zeros([B, nKeep, convDim], qkvPfx.dtype);
+    const [conv, newConv] = convolve(qkvPfx, convState, layer.convWeight, rowLengths);
+    if (!this.conv) convState.dispose();
+    qkvPfx.dispose();
+    this.conv?.dispose();
+    this.conv = newConv;
+
+    const { q, k, v } = layer.heads(conv);
+    conv.dispose();
+
+    const aPfxView = round.a!.slice([0, 0, 0], [B, count, Hv]);
+    const aPfx = ops.contiguous(aPfxView);
+    aPfxView.dispose();
+    const bPfxView = round.b!.slice([0, 0, 0], [B, count, Hv]);
+    const bPfx = ops.contiguous(bPfxView);
+    bPfxView.dispose();
+
+    let newState: MlxArray;
+    if (rowLengths) {
+      // Unequal prefixes need a row-length-aware recurrence. The state-only
+      // kernel omits query/output work. Uniform replay retains its measured
+      // kernel until the separate optimization demonstrates a serving win.
+      newState = gatedDeltaState(k, v, aPfx, bPfx, layer.aLog, layer.dtBias, this.recurrent, rowLengths);
+    } else {
+      const [output, state] = gatedDeltaUpdate(q, k, v, aPfx, bPfx, layer.aLog, layer.dtBias, this.recurrent);
+      output.dispose(); newState = state;
+    }
+    q.dispose();
+    k.dispose();
+    v.dispose();
+    aPfx.dispose();
+    bPfx.dispose();
+    this.recurrent?.dispose();
+    this.recurrent = newState;
+    if (typeof keep === "number") this.advance(keep);
+    else this.advanceRows(keep);
   }
 
   advance(n: number): void {
