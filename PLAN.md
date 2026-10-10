@@ -212,8 +212,12 @@ without a gate change.
       lego). The env flag `MLX_BUN_NO_FUSED_SDPA` is a composition rule the app writes today:
       uniform `--kv-quant N` serves the unfused kernel (mlx-lm's port, parity) and
       `--kv-quant config` the tiled one (OptiQ parity). The affine lego takes its kernels
-      explicitly at construction (`unfusedAffineKernels` / `tiledAffineKernels`, the tiled one
-      refusing a configuration that cannot tile) and the loader composes by the scheme's kind;
+      explicitly at construction: `unfusedAffineKernels` (mlx-lm parity),
+      `tiledCausalAffineKernels` (OptiQ's own wrapper rule: tiled while the cache's mask is
+      plain causal, unfused once the cache's own state makes it an array, so `config` composes
+      this one), and `tiledAffineKernels` (always tiled, no oracle, KL-gated, opt-in); the
+      tiled constructors refuse a configuration that cannot tile; the loader composes by the
+      scheme's kind;
       the flag read stays in the deprecated `quantizedSdpa` path, untouched, until the graphs
       read through `attend` (D3) and the app stops writing it (E3).
 - [ ] Out of this step, each needing its own contract before its graph can move: GLM-5.2 MLA
