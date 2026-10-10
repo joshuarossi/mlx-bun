@@ -81,10 +81,17 @@ Closed by Josh, 2026-10-10:
 - **Draft depth.** `--num-draft-tokens N` is fixed depth; `adaptive` means the scheduler chooses
   each round among the verify widths the composition built. The drafter is chosen by
   `--draft-kind` (`dflash2`, `mtp`, ...).
-- **Delayed KV quantization** (`--quantized-kv-start N`, mlx-lm's `quantized_kv_start`) is its
-  own cache lego: bf16 until the sequence reaches N tokens, then converted in place, with both
-  reads inside its `attend`. The loader builds it only when N is nonzero; the default 0 loads
-  the plain quantized cache and the delayed lego is not present.
+- **Quantized KV is a cache lego whose first append is bf16.** Corrected 2026-10-10 by A3's
+  equivalence test, which overturned the premise recorded earlier: today's served path and
+  mlx-lm's loop both run the first forward against unquantized keys and convert afterwards,
+  even with `quantized_kv_start` 0. So the lego `--kv-quant N` composes keeps that behavior
+  inside itself (bf16 through its first append, quantized storage after; `--quantized-kv-start
+  M` extends the bf16 span to M tokens), which preserves today's numbers and mlx-lm parity with
+  no check outside the cache. A cache quantized from token zero is a different composition with
+  different first-chunk numbers (up to 0.125 at 4 bits on a test tensor), no mlx-lm oracle, and
+  a cheaper first chunk; it exists as its own lego, opt-in, gated by KL. Provisional until Josh
+  confirms which the default `--kv-quant N` should compose; the parity-preserving one is
+  recorded here as the default.
 - **KV scheme is a serve flag.** `--kv-quant` composes the cache lego at load. The per-request
   `kvBits`, `kvConfig` and `quantizedKvStart` options are removed; mlx-lm's server takes these as
   server flags too.
@@ -146,7 +153,11 @@ no scheduler call site changed yet; tests pass.
       `apps/mlx-bun/src/engine/model-host.ts` already holds all of these when it creates the model.
 - [ ] `resolveKvScheme` in `apps/mlx-bun/src/engine/cache-services.ts` runs before model creation
       and feeds the composition instead of becoming per-request options afterward.
-- [ ] `makeCache()` returns the composed cache lego; no bf16-then-convert.
+- [ ] `makeCache()` takes the composition's KV scheme. Building the lego it names is B1's work:
+      A3's equivalence test showed that a cache built quantized from token zero differs from the
+      convert-after path in its first forward's numbers (see Decisions) and, past the offset, in
+      the preallocated padding's scales, so the lego must reproduce the convert-after semantics
+      inside itself rather than being the plain quantized cache.
 
 Exit: a loaded graph can print its composition; behavior unchanged; tests pass.
 
@@ -163,8 +174,13 @@ without a gate change.
       `layers/quantized-attention.ts` kernels. The M4 Pro composition's 4-bit group-64 head-dim-256
       cache is its own class: KV4 decode kernel for the row read, folded GQA for the window read.
 - [ ] TurboQuant: `turboquant-kv.ts`, `batched-turboquant-kv.ts` over their codec.
-- [ ] Delayed: the three `delayed-*-kv.ts` caches switch inside `attend`, or are deleted per the
-      reusable pieces and deleted.
+- [ ] The quantized lego `--kv-quant N` composes is bf16 through its first append and quantized
+      storage after, inside its own `appendWindow`/`appendDecode` (the state transition the
+      three `delayed-*-kv.ts` caches do today, owned by one lego built at load), so the first
+      forward's numbers equal today's and mlx-lm's. A separate quantized-from-token-zero lego is
+      opt-in and KL-gated. Equivalence against the convert-after path is checked below the
+      offset bit for bit and by first-forward logits; the padding past the offset is the lego's
+      own and is not compared.
 - [ ] Paged: `state/paged/cache.ts` already conforms; align names.
 - [ ] One mask build per forward: the caches of one forward derive their mask from the row
       layout once (the scheduler's `state/layout` object), not once per layer.
