@@ -7,6 +7,7 @@ import { concatDecodeSlot } from "./kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
 import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease, type MaskLease } from "./attention-read";
+import { unfusedAffineKernels } from "./affine-attention";
 
 
 /** Rotating (sliding-window) KV cache — port of mlx-lm RotatingKVCache
@@ -461,7 +462,10 @@ export class RotatingKVCache implements CompiledDecodeCache, BidirectionalAttent
    *  because ringIdx is preserved with it) into a
    *  RotatingQuantizedKVCache. */
   toQuantized(groupSize: number, bits: number): RotatingQuantizedKVCache {
-    const q = new RotatingQuantizedKVCache(this.maxSize, groupSize, bits);
+    // Converted caches are not composed yet (B1's quantized lego): unfused, the
+    // uniform `--kv-quant N` composition.
+    const q = new RotatingQuantizedKVCache(this.maxSize, groupSize, bits,
+      unfusedAffineKernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
     if (this.keys && this.values) {
       q.keys = ops.quantize(this.keys, groupSize, bits);
       q.values = ops.quantize(this.values, groupSize, bits);

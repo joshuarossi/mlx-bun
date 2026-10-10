@@ -26,9 +26,9 @@ export function ownedCacheLayoutFactory(cache: Cache): (() => BatchableCache) | 
   if (isBatchableCache(cache)) return () => cache.makeEmptyBatch();
   if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
   if (isPlainKvCache(cache)) return () => new PaddedKVRows(cache.masks);
-  if (isQuantizedKvCache(cache)) return () => new PaddedQuantKVRows(cache.groupSize, cache.bits);
+  if (isQuantizedKvCache(cache)) return () => new PaddedQuantKVRows(cache.groupSize, cache.bits, cache.kernels, cache.masks);
   if (isRotatingPlainCache(cache)) return () => new BatchedRotatingCache(cache.maxSize, [], cache.masks);
-  if (isRotatingQuantizedCache(cache)) return () => BatchedRotatingQuantCache.empty(cache.maxSize, cache.groupSize, cache.bits, []);
+  if (isRotatingQuantizedCache(cache)) return () => BatchedRotatingQuantCache.empty(cache.maxSize, cache.groupSize, cache.bits, [], cache.masks);
   if (isRecurrentCache(cache)) return () => new BatchedSSMCache();
   return undefined;
 }
@@ -44,7 +44,7 @@ export function prefillCacheLayout(cache: Cache): BatchableCache {
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
   // Plain rotating rows never convert here; their dense reads say so.
   if (cache instanceof RotatingKVCache) return new DelayedRotatingQuantizedKVCache(cache.maxSize, 64, 4, Infinity, unchangedKv);
-  if (cache instanceof RotatingQuantizedKVCache) return new RotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits);
+  if (cache instanceof RotatingQuantizedKVCache) return new RotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits, cache.kernels, cache.masks);
   return targetCacheLayout(cache);
 }
 

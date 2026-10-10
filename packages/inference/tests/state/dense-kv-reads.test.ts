@@ -5,6 +5,7 @@
 // TurboQuant storage decodes on read, so its rows stay dense-readable through
 // conversion. A cache without the capability (or maintained by a callback that
 // cannot answer) is not certified, whatever a direct read of it would do.
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
@@ -192,8 +193,8 @@ test("plain storage and storage that decodes on read declare dense reads; affine
   // Capability presence is the storage's declaration; appendability is asked of
   // an actual row. An empty delayed layout declares, but has no row 0 to append.
   const empty = new DelayedTurboQuantKVCache(8, 3, 0, turbo);
-  const encoded: Cache[] = [new QuantizedKVCache(64, 4), new RotatingQuantizedKVCache(W, 64, 4), new BatchedQuantizedKVCache(64, 4),
-    new RotatingAffineLayout(W, 64, 4),
+  const encoded: Cache[] = [new QuantizedKVCache(64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)), new RotatingQuantizedKVCache(W, 64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)), new BatchedQuantizedKVCache(64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)),
+    new RotatingAffineLayout(W, 64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)),
     // The same TurboQuant rows under a bare callback: it cannot say what it leaves.
     new DelayedTurboQuantKVCache(8, 3, 0, () => {})];
   try {

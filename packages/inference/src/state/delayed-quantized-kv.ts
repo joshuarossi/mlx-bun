@@ -3,10 +3,12 @@ import { appendFullKvRows } from "./full-kv-row-append";
 import { fullRowPadding, fullRowPhysicalLength } from "./full-prefill-row";
 import { captureKvAttention } from "./kv-attention-view";
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
 import { BatchedQuantizedKVCache } from "./batched-quantized-kv";
 import { QuantizedKVCache } from "./quantized-kv";
+import { unfusedAffineKernels } from "./affine-attention";
 import { type Cache, type Mask, type KvAttentionState, type KvAttentionView, type DenseKvReads, type KvMaintenance } from "../contracts/mlx/cache";
 
 /** Affine storage keeps its native quantized-attention arithmetic while rows
@@ -19,7 +21,8 @@ export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuan
     readonly maintain: KvMaintenance, row?: Cache) {
     super({ signature: `kv:delayed-quant:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof QuantizedKVCache,
-      makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits) }, row);
+      // The delayed lego is not composed yet (B1): unfused, the uniform `--kv-quant N` composition.
+      makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16)) }, row);
     this.denseKvReads = this.denseKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }

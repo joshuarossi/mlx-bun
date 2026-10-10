@@ -1,3 +1,5 @@
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -16,7 +18,7 @@ function append(cache: QuantizedKVCache | BatchedQuantizedKVCache, rows: number[
   for (const triple of cache.updateAndFetchQuantized(k, v)) disposeTriple(triple);
 }
 function cache(tokens: number[], bits: number): QuantizedKVCache {
-  const result = new QuantizedKVCache(32, bits); if (tokens.length) append(result, [tokens]); return result;
+  const result = new QuantizedKVCache(32, bits, unfusedAffineKernels(bits, 32, Dtype.bfloat16)); if (tokens.length) append(result, [tokens]); return result;
 }
 function snapshot(cache: QuantizedKVCache): unknown {
   if (!cache.offset) return [];
@@ -34,7 +36,7 @@ function expectRow(batch: BatchedQuantizedKVCache, row: number, tokens: number[]
 test("affine KV retains different accepted prefixes without rewriting packed state", () => {
   for (const bits of [4, 8]) {
     const a = cache([1, 2, 3], bits), b = cache([11, 12, 13, 14, 15, 16], bits);
-    const batch = new BatchedQuantizedKVCache(32, bits);
+    const batch = new BatchedQuantizedKVCache(32, bits, unfusedAffineKernels(bits, 32, Dtype.bfloat16));
     const original = [snapshot(a), snapshot(b)];
     try {
       batch.mergeRows([a, b]);
@@ -68,7 +70,7 @@ test("affine KV retains different accepted prefixes without rewriting packed sta
 });
 
 test("singleton affine storage preserves capacity and empty rows can join and extract", () => {
-  const source = cache([1, 2], 4), empty = cache([], 4), batch = new BatchedQuantizedKVCache(32, 4);
+  const source = cache([1, 2], 4), empty = cache([], 4), batch = new BatchedQuantizedKVCache(32, 4, unfusedAffineKernels(4, 32, Dtype.bfloat16));
   try {
     batch.mergeRows([source]);
     expect(batch.state().map(array => array.shape)).toEqual(source.state().map(array => array.shape));

@@ -5,21 +5,70 @@ import { BatchedKVCache } from "./batched-kv";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { isQuantizedKvCache } from "./capabilities";
-import { type BatchableCache, type Cache, type Mask, type QuantizedAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionRead, type BatchableCache, type Cache, type CommittedAttentionCache, type Mask, type QuantizedAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 
 import { KvTensorRows } from "./kv-tensor-rows";
 import { quantizedDonorAttention } from "./kv-attention-view";
+import { AttentionMasks, unmaskedLease, withLease, type MaskLease } from "./attention-read";
+import { affineCausalLease, affineRead, committedAffineRead, type AffineKernel, type AffineKernels } from "./affine-attention";
 
 const FIELDS = ["packed", "scales", "biases"] as const;
 
 /** Affine KV uses the same row-position storage operations for its packed
  * values, scales and biases. No dequantization or requantization is needed
- * for merge, rollback, retirement or extraction. Inputs share this codec. */
-export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttentionState, PaddedPrefillCache {
+ * for merge, rollback, retirement or extraction. Inputs share this codec.
+ *
+ * Reads: append through `updateAndFetchQuantized`, then the kernel `kernels`
+ * fixed for the read at construction. While every row is unpadded and at one
+ * position, decode passes no mask and a window the bottom-right causal matrix,
+ * as `makeMask` leads the graphs to today; otherwise both pass the per-row mask
+ * (causal, past each row's left padding) for their query count, built once per
+ * forward through `masks`, and a window takes the masked-window kernel. The
+ * committed read is `quantizedAppendAttention`, for one row. */
+export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttentionState, PaddedPrefillCache, CommittedAttentionCache {
   #planes = FIELDS.map(() => new BatchedKVCache());
   #minimum: number[] = [];
   get minimumReusableOffset(): number { return Math.max(0, ...this.#minimum); }
-  constructor(readonly groupSize: number, readonly bits: number) {}
+  constructor(
+    readonly groupSize: number,
+    readonly bits: number,
+    /** The kernel of each read; empty batches and extracted rows keep them. */
+    readonly kernels: AffineKernels,
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) {}
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.#read(k, v, this.#planes[0]!.aligned ? unmaskedLease : this.#rowMask(1), this.kernels.decode);
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    const L = k.shape[2]!;
+    return this.#planes[0]!.aligned
+      ? this.#read(k, v, affineCausalLease(this.masks, L, this.offset + L), this.kernels.window)
+      : this.#read(k, v, this.#rowMask(L), this.kernels.maskedWindow);
+  }
+
+  /** Fill spans run on this layout (the target layout of a full-attention
+   * layer): the graph's independent-rows path. */
+  appendCommitted(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.updateAndFetchQuantized(k, v);
+    return committedAffineRead(keys, values, this.groupSize, this.bits);
+  }
+
+  #read(k: MlxArray, v: MlxArray, mask: MaskLease, kernel: AffineKernel): AttentionRead {
+    return withLease(mask, held => {
+      const [keys, values] = this.updateAndFetchQuantized(k, v);
+      return affineRead(keys, values, held, kernel);
+    });
+  }
+
+  /** The per-row mask of an `N`-position append, before it: the bf16 layout's
+   * (`BatchedKVCache`), whose positions every plane shares. */
+  #rowMask(N: number): MaskLease {
+    return this.masks.lease("batched-kv", `${N}|${this.rowOffsets.join(",")}|${this.leftPad.join(",")}`,
+      () => this.#planes[0]!.makeMask(N, null));
+  }
   restorePrefillEnds(ends: readonly number[] | undefined): void { for (const plane of this.#planes) plane.restorePrefillEnds(ends); }
   preparePrefill(padding: PrefillPadding): void {
     for (const plane of this.#planes) plane.preparePrefill(padding);
@@ -44,7 +93,7 @@ export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttenti
   get batchSize(): number | null { return this.#planes[0]!.batchSize; }
   get offset(): number { return this.#planes[0]!.offset; }
   get ropeOffsetArr(): MlxArray | undefined { return this.#planes[0]!.ropeOffsetArr; }
-  makeEmptyBatch(): BatchedQuantizedKVCache { return new BatchedQuantizedKVCache(this.groupSize, this.bits); }
+  makeEmptyBatch(): BatchedQuantizedKVCache { return new BatchedQuantizedKVCache(this.groupSize, this.bits, this.kernels, this.masks); }
   bytesPerToken(): number { return this.#planes.reduce((n, plane) => n + plane.bytesPerToken(), 0); }
   projectedBytes(tokens: number): number { return this.bytesPerToken() * tokens; }
   makeMask(tokens: number, window: number | null): Mask { return this.#planes[0]!.makeMask(tokens, window); }
@@ -128,7 +177,7 @@ export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttenti
 
   /** Return the existing persisted representation, owning compact arrays. */
   extractRow(row: number): QuantizedKVCache {
-    const offset = this.rowOffsets[row]!, result = new QuantizedKVCache(this.groupSize, this.bits);
+    const offset = this.rowOffsets[row]!, result = new QuantizedKVCache(this.groupSize, this.bits, this.kernels);
     if (this.#minimum[row]) result.minimumReusableOffset = this.#minimum[row];
     if (offset === 0) return result;
     const held: KVCache[] = [];
@@ -142,5 +191,5 @@ export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttenti
     } finally { disposeResources(held); }
   }
 
-  dispose(): void { disposeResources(this.#planes); this.#minimum = []; }
+  dispose(): void { disposeResources(this.#planes); this.#minimum = []; this.masks.clear(); }
 }

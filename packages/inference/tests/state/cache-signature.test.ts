@@ -1,3 +1,5 @@
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { describe, expect, test } from "bun:test";
 import { cacheSignature, isRowBatchCache } from "../../src/state/capabilities";
 import { KVCache } from "../../src/state/kv";
@@ -11,9 +13,9 @@ describe("cache signatures", () => {
   test("storage identity includes layout and affine parameters", () => {
     expect(cacheSignature(new KVCache())).toBe("kv:plain");
     expect(cacheSignature(new RotatingKVCache(1024))).toBe("kv:rotating-plain");
-    expect(cacheSignature(new QuantizedKVCache(64, 4))).toBe("kv:quant:4:64");
-    expect(cacheSignature(new QuantizedKVCache(32, 8))).toBe("kv:quant:8:32");
-    expect(cacheSignature(new RotatingQuantizedKVCache(1024, 64, 4)))
+    expect(cacheSignature(new QuantizedKVCache(64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)))).toBe("kv:quant:4:64");
+    expect(cacheSignature(new QuantizedKVCache(32, 8, unfusedAffineKernels(8, 32, Dtype.bfloat16)))).toBe("kv:quant:8:32");
+    expect(cacheSignature(new RotatingQuantizedKVCache(1024, 64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16))))
       .toBe("kv:rotating-quant:4:64");
   });
 
@@ -22,8 +24,8 @@ describe("cache signatures", () => {
     // override failing open). Only an absent cache reads as "unknown".
     expect(cacheSignature(undefined)).toBe("unknown");
     const kinds = [
-      new KVCache(), new RotatingKVCache(1024), new QuantizedKVCache(64, 4),
-      new RotatingQuantizedKVCache(1024, 64, 4), new BatchedRotatingCache(1024, [0]),
+      new KVCache(), new RotatingKVCache(1024), new QuantizedKVCache(64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)),
+      new RotatingQuantizedKVCache(1024, 64, 4, unfusedAffineKernels(4, 64, Dtype.bfloat16)), new BatchedRotatingCache(1024, [0]),
       new SSMCache(),
     ].map((c) => cacheSignature(c));
     expect(kinds.every((k) => k !== "unknown" && k.length > 0)).toBe(true);

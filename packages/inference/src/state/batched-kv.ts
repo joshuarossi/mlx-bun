@@ -121,6 +121,10 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache, Commi
     return { mode: "array", arr: this.#rowMask(N, window) };
   }
 
+  /** Every row unpadded and at one position: a windowless read needs no
+   * per-row mask. Layouts that keep their positions in this one read it. */
+  get aligned(): boolean { return this.#aligned(); }
+
   #aligned(): boolean {
     const ends = this.#ends();
     return this.leftPad.every(pad => pad === 0) && ends.every(end => end === ends[0]);
