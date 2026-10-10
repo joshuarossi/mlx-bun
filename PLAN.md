@@ -222,18 +222,17 @@ serve benchmark shows no regression.
       module-level maps.
 - [ ] Programs are built for exactly the chunk size; no buckets, no minimum-row floor. The
       leftover chunk is `prefillTail` on the GPU.
-- [ ] ANE programs are compiled at build time and shipped as artifacts (Josh, 2026-10-10: "run it
-      once AT BUILD TIME, and then ship THAT ARTIFACT"). The build compiles each program the
-      composition needs on a build host of each supported Neural Engine generation and places the
-      compiled program (the framework's own compiled form, which its cache already loads from
-      disk) in the bundle under the generation it was built for; the installer and the loader pick
-      by chip. The bridge gains a load-from-artifact entry beside `mbane_program_create`, and the
-      run-time compile from MIL leaves the product. A generation without a build host is out of
-      scope for ANE prefill, which is the GPU-only composition, not a check.
+- [ ] ANE programs compile at install, the way Apple's own pipeline compiles a model for the
+      Neural Engine on the device and caches it (Josh, 2026-10-10). The installer, or the app's
+      first launch, compiles every program the shipped compositions need and leaves them in the
+      framework's cache, so no prompt ever pays the compile and the serving process never
+      compiles. The MIL source ships in the bundle as the compiler's input. Shipping the compiled
+      form itself, one per Neural Engine generation built on a host of that generation, stays
+      possible later; it is not required.
 
 Exit: two graphs can coexist in one process without evicting each other's programs; KL gate on
-ANE prefill unchanged; a fresh machine's first ANE prefill loads a shipped artifact and compiles
-nothing; `grep compileWithQoS packages/inference/native` is empty outside the build tool.
+ANE prefill unchanged; after install, the first ANE prefill on a fresh machine loads from the
+cache and compiles nothing, measured by the bridge's own `compiledModelExists`.
 
 ### Phase D: graphs
 
