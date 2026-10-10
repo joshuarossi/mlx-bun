@@ -166,10 +166,24 @@ without a gate change.
 - [ ] Delayed: the three `delayed-*-kv.ts` caches switch inside `attend`, or are deleted per the
       reusable pieces and deleted.
 - [ ] Paged: `state/paged/cache.ts` already conforms; align names.
+- [ ] One mask build per forward: the caches of one forward derive their mask from the row
+      layout once (the scheduler's `state/layout` object), not once per layer.
+- [ ] The three reads A1 found that the two phases do not cover, each already its own named
+      interface, implemented only by the caches composed for them: `appendCommitted` (fill
+      spans, today's independent-rows path through `quantizedAppendAttention`),
+      `appendBidirectional` (Gemma 4 vision prefill, DiffusionGemma's encoder), `readBlock`
+      (DiffusionGemma's canvas pass, DFlash 2 block attention over the context).
+- [ ] `state/ssm.ts` implements `recurDecode` and `recurWindow`, and the training cache sits
+      behind the same calls, which removes the `instanceof TrainingSSMCache` branch in the block.
 - [ ] Delete the device check (`applegpu_g16s` head-shape case) in `quantized-attention.ts` and
       the env flag in `fusedSdpaSupported`: each cache has one kernel per read, chosen at
       construction.
-- [ ] Remove the deprecated members from the contract.
+- [ ] Out of this step, each needing its own contract before its graph can move: GLM-5.2 MLA
+      compressed attention (`models/glm52/mla.ts`), the Gemma assistant drafter's donor reads,
+      softcap attention in the universal dense graph and the training flash path (these become
+      the composed cache's read for those compositions), and the segmented backward's donor
+      checkpoints in `models/gemma4/trainable.ts`.
+- [ ] The deprecated members leave the contract in D3, once every graph reads through `attend`.
 
 Exit: `quantizedSdpaUnfused` and `kv4DecodeAttention` have no callers outside `state/`; the
 kernel each cache dispatches per read is fixed at construction; bit-identical logits for every
@@ -299,6 +313,27 @@ Exit: selection is data; `qwen38TrellisM4ProAccepts` and the nested ternary are 
       rows times depth+1. No flag and no mode; `--batch-size` is only the cap.
 - [ ] Batching sends M rows through the row-wise layers; only `attend` and the recurrence see
       `rowOffsets`.
+- [ ] Call sites A2 found that do not fit the four phases, each resolved explicitly, none by
+      inspecting shape:
+      - Tapped prefill: the DFlash 2 and DSpark drafters capture hidden layers during prefill.
+        `prefillChunk` and `prefillTail` take the capture the way `verify` does; no mutable
+        `hiddenTap` field survives.
+      - Two capture paths exist today (`legacyForwardWithTaps` setting `hiddenTap`, and the
+        mixed lane's callback) and they differ per graph: the TQ graph runs the generic loop
+        under the mixed path, and generated Gemma falls to the monolith under `hiddenTap`. E2
+        keeps one, gated by bit-identity against the other.
+      - Mixed iteration: `advanceMixed` packs a decode group and a prefill group into one
+        forward. Either two phase calls, or a composition that declares it serves mixed rows.
+      - The compiled decode step is chosen at run time from one row's state with a fallback to
+        the ordinary forward. The composition decides compiled or not at load; the fallback goes.
+      - Media rows: decode through `forwardHiddenAtPositions` with a positions grid, prefill
+        through `promptInput.forward`. The vision prefill phase takes embeddings and positions.
+      - Known-token appends (`createAppend`, grammar spans, fill's `verifyKnown`): a fifth named
+        phase over the committed read, `appendKnown`.
+      - The prefill planner's snapshot-boundary cuts and its last-token-alone step map onto
+        chunk and tail explicitly, or the planner changes; nothing infers "whole chunk" from a
+        length.
+      - GLM verify kernel pinning (`pinVerify`): the composition pins at load.
 - [ ] Delete `forwardHiddenMixed` and `forwardHidden` from the contract.
 
 Exit: one request and four concurrent requests on the M4 Pro composition both dispatch the
