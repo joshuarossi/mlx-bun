@@ -26,7 +26,7 @@ for (const bits of [4,8]) test(`delayed KV${bits} retains independent precision,
     for (const field of c.updateAndFetch(k,v)) field.dispose(); source.push(c);
   }
   maintain(source);
-  const group = new DelayedQuantizedKVCache(64,bits,5,maintain); group.mergeRows(source);
+  const group = new DelayedQuantizedKVCache(64,bits,5); group.mergeRows(source);
   const control = cloneKvCaches(source), held = cloneKvCaches(source);
   const original = held.map(hashes);
   const compare = () => {
@@ -86,7 +86,7 @@ for (const bits of [4, 8]) test(`captured KV${bits} attention survives multiple 
     source.push(row);
   }
   maintain(source);
-  const group = new DelayedQuantizedKVCache(64, bits, 5, maintain); group.mergeRows(source);
+  const group = new DelayedQuantizedKVCache(64, bits, 5); group.mergeRows(source);
   const mask = group.makeMask(1, null);
   using k = tensor(2, 1, 1, 70), v = tensor(2, 1, 1, 71);
   const view = group.appendAndFetch(k, v);
@@ -121,11 +121,10 @@ const zeros = (a: MlxArray) => { using z = ops.zeros(a.shape as number[], a.dtyp
 const maskDigest = (a: MlxArray) => { using bytes = a.astype(Dtype.uint8); return digest(bytes); };
 
 test("plain reads before conversion equal each row's plain cache at B1 and at B2 with unequal offsets", () => {
-  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
   for (const lengths of [[5], [2, 6]]) {
     const source = plainRows(lengths, 10), control = cloneKvCaches(source);
-    const group = new DelayedQuantizedKVCache(64, 4, 64, maintain); group.mergeRows(source);
-    const twin = new DelayedQuantizedKVCache(64, 4, 64, maintain); twin.mergeRows(source);
+    const group = new DelayedQuantizedKVCache(64, 4, 64); group.mergeRows(source);
+    const twin = new DelayedQuantizedKVCache(64, 4, 64); twin.mergeRows(source);
     const B = lengths.length;
     try {
       for (const [step, n] of [3, 1, 1, 2].entries()) {
@@ -161,9 +160,8 @@ test("plain reads before conversion equal each row's plain cache at B1 and at B2
 });
 
 test("plain reads are owned by the caller and outlive later appends", () => {
-  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
   const source = plainRows([2, 6], 30), control = cloneKvCaches(source);
-  const group = new DelayedQuantizedKVCache(64, 4, 64, maintain); group.mergeRows(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 64); group.mergeRows(source);
   try {
     using k1 = tensor(2, 1, 1, 31), v1 = tensor(2, 1, 1, 32), k2 = tensor(2, 1, 1, 33), v2 = tensor(2, 1, 1, 34);
     const [held, heldValues] = group.updateAndFetch(k1, v1);
@@ -191,7 +189,7 @@ test("a plain read appends to no row once any row is converted, before or by the
   // Mixed and fully converted rows refuse with no change at all.
   for (const lengths of [[2, 6], [6, 7]]) {
     const source = plainRows(lengths, 40); maintain(source);
-    const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+    const group = new DelayedQuantizedKVCache(64, 4, 5); group.mergeRows(source);
     try {
       const before = snapshot(group);
       expect(() => group.updateAndFetch(k, v)).toThrow("mixed precision rows use their attention state");
@@ -201,7 +199,7 @@ test("a plain read appends to no row once any row is converted, before or by the
   // Scheduled maintenance converts the second row at its offset; the first,
   // still plain, is not advanced.
   const source = plainRows([2, 4], 60), control = cloneKvCaches(source);
-  const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 5); group.mergeRows(source);
   try {
     for (const a of group.updateAndFetch(k, v)) a.dispose();
     expect(group.rowOffsets).toEqual([3, 5]);
@@ -218,9 +216,8 @@ test("a plain read appends to no row once any row is converted, before or by the
 });
 
 test("prefill defers conversion: a plain read past the offset appends while prefilling, and the next one after it refuses", () => {
-  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 5 });
   const source = plainRows([6, 3], 70), control = cloneKvCaches(source);
-  const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 5); group.mergeRows(source);
   try {
     using k = tensor(2, 1, 2, 71), v = tensor(2, 1, 2, 72);
     group.beginPrefill();
@@ -245,9 +242,8 @@ test("prefill defers conversion: a plain read past the offset appends while pref
 
 for (const side of ["left", "right"] as const)
 test(`${side}-padded full prefill reads plain, finalizes its positions and decodes as the plain view and serial rows`, () => {
-  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
   const lengths = [3, 6], L = 6, pads = lengths.map(n => L - n);
-  const group = new DelayedQuantizedKVCache(64, 4, 64, maintain), twin = new DelayedQuantizedKVCache(64, 4, 64, maintain);
+  const group = new DelayedQuantizedKVCache(64, 4, 64), twin = new DelayedQuantizedKVCache(64, 4, 64);
   const control = lengths.map(() => new KVCache());
   const attentionMatches = (q: MlxArray, k: MlxArray, v: MlxArray, keys: MlxArray, values: MlxArray, mask: ReturnType<typeof group.makeMask>, twinMask: typeof mask, at: string) => {
     expect(twinMask.mode, at).toBe(mask.mode);

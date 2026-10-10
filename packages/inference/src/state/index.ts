@@ -18,6 +18,7 @@ export * from "./batched-quantized-kv";
 export * from "./batched-turboquant-kv";
 export * from "./batched-rotating";
 export * from "./batched-rotating-quant";
+export * from "./bf16-first-kv";
 export * from "./delayed-quantized-kv";
 export * from "./delayed-turboquant-kv";
 export * from "./delayed-rotating-quantized-kv";

@@ -21,7 +21,7 @@ test("delayed ring transactions retain accepted bytes through row conversion, wr
   for (const bits of [4, 8]) for (const initial of [[0, 0, 0], [0, 5, 11], [9, 15, 21]]) {
     const history = initial.map((n, row) => Array.from({ length: n }, (_, i) => row * 1000 + i));
     const maintain = createKvMaintenance({kvBits: bits, kvGroupSize: 64, quantizedKvStart: 10});
-    const cache = new DelayedRotatingQuantizedKVCache(window,64,bits,10,maintain,undefined,true);
+    const cache = new DelayedRotatingQuantizedKVCache(window,64,bits,10,undefined,true);
     const sources = history.map(tokens => {
       const source = new RotatingKVCache(window);
       if (tokens.length) {
