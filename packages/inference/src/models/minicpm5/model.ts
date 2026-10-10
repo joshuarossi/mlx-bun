@@ -5,11 +5,12 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxPhaseForward, MlxTokenPhases, MlxVerifyForward } from "../../contracts/mlx/graph";
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { activePrefixLayout, ropeBlocks } from "../../layers/prefix-layout";
 import { miniCpmTrainable } from "./trainable";
 import { declareGraph } from "../capabilities";
+import { atEveryWidth } from "../graph";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { type Cache,type Mask } from "../../contracts/mlx/cache";
@@ -198,7 +199,7 @@ export class LlamaLayer {
   }
 }
 
-export class MiniCPM5Model implements MlxDeclaredGraph {
+export class MiniCPM5Model implements MlxDeclaredGraph, MlxTokenPhases {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly prefixBase = "model";
@@ -254,6 +255,11 @@ export class MiniCPM5Model implements MlxDeclaredGraph {
     const h = this.embed.encode(ids);
     return this.forwardLayers(h, cache);
   }
+
+  prefillChunk(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  prefillTail(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  readonly decode = atEveryWidth<MlxPhaseForward>((ids, cache) => this.forwardHidden(ids, cache));
+  readonly verify = atEveryWidth<MlxVerifyForward>((ids, cache) => this.forwardHidden(ids, cache));
 
   forwardEmbeddings(_embeds: MlxArray, _cache: Cache[], _bidir: MlxArray | null): MlxArray {
     throw new Error("llama vision/input-embedding path is not supported");

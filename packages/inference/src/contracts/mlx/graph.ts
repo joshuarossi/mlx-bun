@@ -27,6 +27,76 @@ export interface MlxTokenAppend {
   forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
 }
 
+/** A verify forward's hidden-layer capture. The graph calls it once per
+ * decoder layer, in layer order, with that layer's residual output, then once
+ * with index `layerCount` (the decoder's layer count) and the post-final-norm
+ * output, all before the forward returns. `hidden` [sequences, tokens per
+ * sequence, hidden-width] is borrowed and possibly unevaluated: it is valid
+ * only during the call. The callback copies the layers it keeps (for example
+ * with `ops.contiguous`) and owns and disposes those copies. */
+export type MlxLayerCapture = (layer: number, hidden: MlxArray) => void;
+
+/** A prefill or decode forward. `ids` is integer token ids [sequences, tokens
+ * per sequence]. The caller owns `ids` and may dispose them once the call
+ * returns (or its promise settles); the result does not depend on the caller's
+ * handle. The graph borrows `state` and appends every position of `ids` to
+ * each layer's cache (keys and values, or recurrent state), advancing each
+ * sequence by its token count; it never rolls back. The returned post-final-norm
+ * hidden [sequences, tokens per sequence, hidden-width] is owned by the caller,
+ * who disposes it, and may be unevaluated, as may the appended cache state.
+ * A forward that throws may leave a partial append, which the caller discards
+ * or rolls back. */
+export type MlxPhaseForward = (ids: MlxArray, state: Cache[]) => MlxArray | Promise<MlxArray>;
+
+/** A speculative verify forward: `MlxPhaseForward`'s ownership and append, and
+ * `capture` receives the hidden layers the drafter taps. `capture` is null when
+ * the composition's drafter reads none; only a graph that declares
+ * `hiddenLayerTaps` receives a non-null capture. */
+export type MlxVerifyForward = (ids: MlxArray, state: Cache[], capture: MlxLayerCapture | null) =>
+  MlxArray | Promise<MlxArray>;
+
+/** One operation per width class, where a forward's rows are its sequences
+ * times its tokens per sequence. The caller picks the entry by the rows it is
+ * loading and hands an entry only rows of its class; an entry never inspects
+ * its input to learn its class. A graph with one forward supplies the same
+ * operation in every entry; a specialized graph supplies the operation it built
+ * for each class. */
+export interface MlxWidthTable<Operation> {
+  /** Exactly one row. */
+  readonly one: Operation;
+  /** Two to four rows. */
+  readonly twoToFour: Operation;
+  /** Five to eight rows. */
+  readonly fiveToEight: Operation;
+  /** Nine or more rows. */
+  readonly wider: Operation;
+}
+
+/** The autoregressive phases, each named by the caller. The graph runs the
+ * operation it was asked for and never derives the phase or the width class
+ * from its input. Each operation follows `MlxPhaseForward`'s ownership. */
+export interface MlxTokenPhases {
+  /** One whole chunk of a prompt: tokens per sequence equal the composition's
+   * prefill chunk size; rows are sequences times that size. Token ids only: a
+   * prompt with prepared media enters through the `MlxPromptInput` that
+   * `bindMediaInput` returns (for `embeddings+positions`, the graph's
+   * `forwardEmbeddingsAtPositions`). */
+  prefillChunk(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
+  /** The positions left at the end of a prompt after its whole chunks, fewer
+   * than the chunk size per sequence; rows are sequences times those tokens.
+   * The same semantics as `prefillChunk`, named apart because a composition
+   * may run it on different hardware. */
+  prefillTail(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
+  /** One new token per sequence: `ids` [sequences, 1], so rows are sequences. */
+  readonly decode: MlxWidthTable<MlxPhaseForward>;
+  /** A speculative window: each sequence's last accepted token and its drafted
+   * tokens, right-padded by the caller to the round's depth, `ids`
+   * [sequences, depth + 1], so rows are sequences times (depth + 1). The graph
+   * appends all depth + 1 positions; dropping the rejected suffix is the
+   * caller's speculative transaction, begun before this call. */
+  readonly verify: MlxWidthTable<MlxVerifyForward>;
+}
+
 /** A graph's compiled single-token decode step: the whole forward replayed from
  * one recorded graph instead of rebuilt per token. The graph decides which
  * state layouts it can express; the caller falls back to the ordinary forward
