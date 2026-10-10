@@ -181,7 +181,18 @@ without a gate change.
       opt-in and KL-gated. Equivalence against the convert-after path is checked below the
       offset bit for bit and by first-forward logits; the padding past the offset is the lego's
       own and is not compared.
-- [ ] Paged: `state/paged/cache.ts` already conforms; align names.
+- [ ] Paged: `state/paged/cache.ts` already conforms; align names. B1a found its direct
+      kernel was chosen by query count (8 or fewer); the window kernel becomes a construction
+      choice of the paged lego (direct up to the composition's verify width, SDPA otherwise),
+      and the batched paged lego's window read is per row by design (the old joined-rows path
+      differed by up to 1e-3 and falls under the bit-stability decision).
+- [ ] B1a's first divergence: a single-position append on a rotating cache keeps today's
+      numbers only through the in-place write, which is `appendDecode`; a one-row window
+      concatenates and reorders the keys after the ring wraps (up to 3.9e-3). E2 maps the
+      planner's last-token-alone step to `appendDecode`, or the planner stops producing it.
+- [ ] Wire one `AttentionMasks` memo per model into every `makeCache()` (one line each) when
+      C1 and D3 move the graphs onto the new reads; until then each cache builds its own mask
+      and no graph calls the new reads.
 - [ ] One mask build per forward: the caches of one forward derive their mask from the row
       layout once (the scheduler's `state/layout` object), not once per layer.
 - [ ] The three reads A1 found that the two phases do not cover, each already its own named
