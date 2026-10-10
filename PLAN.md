@@ -173,7 +173,11 @@ without a gate change.
 - [ ] Affine: `quantized-kv.ts`, `batched-quantized-kv.ts`, `rotating-quantized-kv.ts` over
       `layers/quantized-attention.ts` kernels. The M4 Pro composition's 4-bit group-64 head-dim-256
       cache is its own class: KV4 decode kernel for the row read, folded GQA for the window read.
-- [ ] TurboQuant: `turboquant-kv.ts`, `batched-turboquant-kv.ts` over their codec.
+- [ ] TurboQuant: `turboquant-kv.ts`, `batched-turboquant-kv.ts` over their codec. B1c found the
+      codec still picks its decode kernel per call (`tryDecodePackedKv` returns null and the
+      eager decode runs): the kernel is fixed at construction with the rest of the scheme, and
+      the null path goes. `appendBidirectional` on the TurboQuant caches (Gemma 4 image prefill)
+      is still to implement.
 - [ ] The quantized lego `--kv-quant N` composes is bf16 through its first append and quantized
       storage after, inside its own `appendWindow`/`appendDecode` (the state transition the
       three `delayed-*-kv.ts` caches do today, owned by one lego built at load), so the first
