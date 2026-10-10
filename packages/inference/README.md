@@ -1151,11 +1151,12 @@ the current runtime dispatch is unchanged.
 assistant, two-model, Qwen/GLM MTP, DFlash, DFlash 2, DeepSpec, and n-gram proposal providers.
 DFlash 2 (`incoai/Qwen3.8-27B-DFlash2`) drafts a whole block in one pass from
 five tapped target layers; it runs only in the batched speculative lane, with
-its projections quantized to 4 bits at load. `bindMlxGateway(model, { provider,
+its projections quantized at load to the width the registry passes (4 bits). `bindMlxGateway(model, { provider,
 numDraftTokens, adaptiveDepth })` drafts `numDraftTokens` every round, or with
 `adaptiveDepth` chooses each round's count (up to that) from the decayed
-acceptance rate and the graph's declared `verifyRoundCosts`. A target whose residual stream
-carries a TurboQuant R1 fold names its basis file in `MLX_BUN_DFLASH2_TARGET_BASIS`.
+acceptance rate and the graph's declared `verifyRoundCosts`. A target graph whose residual stream
+carries a TurboQuant R1 fold declares it on its draft target (`residualBasis`: the R1 seed and the
+final-norm gain the fold moved into the head); the drafter loads unrotated and applies it when a draft group binds.
 Supply the target graph, draft provider, token budget, and token callback yourself.
 `specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.

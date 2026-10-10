@@ -61,7 +61,7 @@ async function worker(plan: MtpPlan, variantIndex: number, mode: MtpSample["mode
   const model = createModel(weights, await loadModelConfig(plan.target));
   const draftDir = v.draft ?? plan.draft;
   const provider = await detectDraftKind(draftDir) === "dflash2"
-    ? await Dflash2Provider.load(draftDir) : await QwenMtpProvider.load(draftDir);
+    ? await Dflash2Provider.load(draftDir, { bits: 4 }) : await QwenMtpProvider.load(draftDir);
   const tokenizer = await loadTokenizer(plan.target), template = await ChatTemplate.load(plan.target);
   const prompts = plan.prompts.map(text => {
     const ids = tokenizer.encode(template.render([{ role: "user", content: text }], { enableThinking: plan.thinking ?? false }));

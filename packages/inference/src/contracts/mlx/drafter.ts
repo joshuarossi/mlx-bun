@@ -6,6 +6,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { AssistantDonors } from "./attention";
 import type { Cache } from "./cache";
 import type { DraftProjection } from "./draft-projection";
+import type { ResidualBasis } from "./draft-target";
 
 /** One drafted step of a KV-borrowing assistant: owned token ids and the post-projected hidden. */
 export interface DrafterRowsStep { tokens: MlxArray; nextHidden: MlxArray }
@@ -113,15 +114,16 @@ export interface Dflash2ContextAttention {
   attend(layer: number, query: MlxArray, blockKeys: MlxArray, blockValues: MlxArray, scale?: number): MlxArray;
 }
 
-/** Signs of a target's TurboQuant R1 rotation and its folded final-norm gain (effective, 1+w). */
-export interface Dflash2TargetBasis { seed: number; signs: Float32Array; finalGain: Float32Array }
-
-/** The DFlash 2 block drafter: target taps → projected context K/V; one greedy block per anchor. */
+/** The DFlash 2 block drafter: target taps → projected context K/V; one greedy block per anchor.
+ *  It loads in the basis it was trained on and learns the target's when a draft group binds. */
 export interface Dflash2DrafterModel {
   readonly cfg: { readonly layers: number; readonly numTargetLayers: number };
   readonly tapLayers: number[];
   /** Draft tokens per block (block size minus the anchor). */
   readonly gamma: number;
+  /** Apply the target's declared residual basis (null: the trained basis) before any projection.
+   *  The first call applies it; every later call must pass the same declaration. */
+  bindResidualBasis(basis: ResidualBasis | null): void;
   projectContext(taps: MlxArray): MlxArray;
   projectContextKVRows(context: MlxArray, position: number | MlxArray): { k: MlxArray; v: MlxArray }[];
   draftRows(context: Dflash2ContextAttention, projection: DraftProjection, anchors: readonly number[],
