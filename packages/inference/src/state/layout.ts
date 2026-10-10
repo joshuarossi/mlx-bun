@@ -24,7 +24,7 @@ import { unchangedKv } from "./kv-maintenance";
 export function ownedCacheLayoutFactory(cache: Cache): (() => BatchableCache) | undefined {
   if (cache instanceof PagedKVCache) return () => new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return () => cache.makeEmptyBatch();
-  if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
+  if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode, cache.masks);
   if (isPlainKvCache(cache)) return () => new PaddedKVRows(cache.masks);
   if (isQuantizedKvCache(cache)) return () => new PaddedQuantKVRows(cache.groupSize, cache.bits);
   if (isRotatingPlainCache(cache)) return () => new BatchedRotatingCache(cache.maxSize, [], cache.masks);
