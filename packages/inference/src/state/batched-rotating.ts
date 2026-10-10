@@ -23,7 +23,8 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { AttentionMasks, sdpaRead, withLease, type MaskLease } from "./attention-read";
 import { isRotatingPlainCache } from "./capabilities";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import { plainKvStorage } from "./dense-kv-reads";
@@ -87,8 +88,18 @@ export function buildBatchedRotatingMask(
 }
 
 /** Port of mlx-lm BatchRotatingKVCache; padded singleton chunks use its
- * concat operation with the matching block mask until finalization. */
-export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache {
+ * concat operation with the matching block mask until finalization.
+ *
+ * Reads: the sliding window is `maxSize`. Decode, which runs with no prefill
+ * padding pending (finalize first), writes one position in place at the ring
+ * head; a window writes by concatenation, which also serves padded prefill
+ * chunks of any length. Each attends with the stock fused SDPA under mlx-lm's
+ * batched rotating mask (`buildBatchedRotatingMask`) for its write, built once
+ * per forward through `masks`. The deprecated `updateAndFetch` picks the write
+ * from the length instead, so a one-row window without pending padding wrote in
+ * place there and concatenates here: the same bits until the ring wraps, a
+ * different key order after. */
+export class BatchedRotatingCache implements AttentionCache, BatchableCache, PaddedPrefillCache {
   readonly denseKvReads = plainKvStorage;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
@@ -97,9 +108,40 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
   #ropeForOffset = -1;
   readonly maxSize: number;
 
-  constructor(maxSize: number, leftPad: number[]) {
+  constructor(
+    maxSize: number,
+    leftPad: number[],
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) {
     this.maxSize = maxSize;
     this.#rows = new BatchedRotatingState(maxSize, leftPad);
+  }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    return withLease(this.#mask(1, false), mask => {
+      const [keys, values] = this.#updateInPlace(k, v);
+      return sdpaRead(keys, values, mask);
+    });
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    return withLease(this.#mask(k.shape[2]!, true), mask => {
+      const [keys, values] = this.#updateConcat(k, v);
+      return sdpaRead(keys, values, mask);
+    });
+  }
+
+  /** The mask of an `N`-position write before it: `block` for concatenation,
+   * not for an in-place write. */
+  #mask(N: number, block: boolean): MaskLease {
+    const rows = this.#rows;
+    const key = `${N}|${block}|${rows.leftPad.join(",")}|${rows.ringIndex}|${rows.totalOffset}|${rows.rotated}`;
+    return this.masks.lease(`batched-rotating:${this.maxSize}`, key, () => ({
+      mode: "array",
+      arr: buildBatchedRotatingMask(rows.batchSize, N, rows.leftPad, this.maxSize, this.maxSize,
+        rows.ringIndex, rows.totalOffset, rows.rotated, block),
+    }));
   }
 
   /** Same signature as the serial RotatingKVCache — the scheduler's merge
@@ -127,8 +169,9 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
     this.#rows.finalizePrefill(); this.releaseRopeArr();
   }
   /** Adopt owned tensors without changing their physical ring columns. */
-  static adoptPhysical(keys: MlxArray | null, values: MlxArray | null, position: RotatingPositionSnapshot): BatchedRotatingCache {
-    const cache = new BatchedRotatingCache(position.maxSize, [...position.leftPad]);
+  static adoptPhysical(keys: MlxArray | null, values: MlxArray | null, position: RotatingPositionSnapshot,
+    masks = new AttentionMasks()): BatchedRotatingCache {
+    const cache = new BatchedRotatingCache(position.maxSize, [...position.leftPad], masks);
     cache.#rows.restore(position); cache.keys = keys; cache.values = values;
 
     return cache;
@@ -138,7 +181,7 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
   get rowOffsets(): readonly number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
   get batchSize(): number { return this.#rows.batchSize; }
-  makeEmptyBatch(): BatchedRotatingCache { return new BatchedRotatingCache(this.maxSize, []); }
+  makeEmptyBatch(): BatchedRotatingCache { return new BatchedRotatingCache(this.maxSize, [], this.masks); }
   /** Bytes one row holds for `tokens` more positions, capped at the window. */
   projectedBytes(tokens: number): number {
     if (!this.keys || !this.values || !this.batchSize) return 0;
@@ -176,11 +219,15 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
     };
   }
 
-  /** N=1 decode update — port of _update_in_place. */
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    if (k.shape[2] !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
+    return this.#updateInPlace(k, v);
+  }
+
+  /** N=1 decode update — port of _update_in_place. */
+  #updateInPlace(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     const [B, H, S, D] = k.shape as [number, number, number, number];
     const vD = v.shape[3]!;
-    if (S !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
     const prev = this.offset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
@@ -330,6 +377,7 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
     this.keys = this.values = null;
     this.#ropeArr?.dispose();
     this.#ropeArr = null;
+    this.masks.clear();
   }
 
   /** Join rows into this empty ring: sources are running rings, whose rows are
@@ -368,11 +416,12 @@ export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache 
    *  row; the result is in temporal order (rotated=false, idx=offset=width). */
   static merge(
     rows: { keys: MlxArray; values: MlxArray }[], offsets: number[], maxSize: number,
+    masks = new AttentionMasks(),
   ): BatchedRotatingCache {
     const lens = rows.map((r) => r.keys.shape[2]!);
     const width = Math.max(...lens, 0);
     const leftPad = lens.map((l) => width - l);
-    const cache = new BatchedRotatingCache(maxSize, leftPad);
+    const cache = new BatchedRotatingCache(maxSize, leftPad, masks);
     cache.#rows.restoreMerged(width, offsets);
     if (width === 0) return cache;
 

@@ -1,28 +1,37 @@
 import { rotatingSourcePosition } from "./rotating-kv-layout";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { type BatchableCache, type Cache, type Mask, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type BatchableCache, type Cache, type Mask, type PrefillPadding } from "../contracts/mlx/cache";
 import { RotatingKVCache } from "./rotating-kv";
 import { BatchedRotatingCache } from "./batched-rotating";
 import { rollbackRotatingRing } from "./rotating-row-transaction";
 import { BatchedRotatingState } from "./batched-rotating-state";
 import { plainRowStorage, temporalStorageView } from "./batched-row-storage";
 import { disposeResources } from "../runtime/resources";
+import { AttentionMasks } from "./attention-read";
 
 /** Ring transactions retain accepted KV columns, including rounds that cross
  * the window boundary. The verify block already retains the complete history
- * needed by its earliest query; no target recomputation or scheduler policy. */
-export class SpeculativeRotatingKVCache implements BatchableCache {
+ * needed by its earliest query; no target recomputation or scheduler policy.
+ * Reads are the current ring's (`BatchedRotatingCache`); every ring this layout
+ * builds shares its `masks`. */
+export class SpeculativeRotatingKVCache implements AttentionCache, BatchableCache {
   #inner: BatchedRotatingCache;
   #before?: number[];
-  constructor(readonly maxSize: number) { this.#inner = new BatchedRotatingCache(maxSize, []); }
+  constructor(
+    readonly maxSize: number,
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) { this.#inner = new BatchedRotatingCache(maxSize, [], masks); }
   signature(): string { return "kv:rotating-plain"; }
   get offset(): number { return this.#inner.offset; }
   get rowOffsets(): readonly number[] { return this.#inner.offsetArr; }
   get leftPad(): readonly number[] { return this.#inner.leftPad; }
   get batchSize(): number { return this.#inner.batchSize; }
   get ropeOffsetArr(): MlxArray { return this.#inner.ropeOffsetArr; }
-  makeEmptyBatch(): SpeculativeRotatingKVCache { return new SpeculativeRotatingKVCache(this.maxSize); }
+  makeEmptyBatch(): SpeculativeRotatingKVCache { return new SpeculativeRotatingKVCache(this.maxSize, this.masks); }
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead { return this.#inner.appendDecode(k, v); }
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead { return this.#inner.appendWindow(k, v); }
   makeMask(tokens: number, window: number | null): Mask { return this.#inner.makeMask(tokens, window); }
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] { return this.#inner.updateAndFetch(k, v); }
   preparePrefill(padding: PrefillPadding): void { this.#inner.preparePrefill(padding); }
@@ -66,7 +75,7 @@ export class SpeculativeRotatingKVCache implements BatchableCache {
       let values: MlxArray | null;
       try { values = only.#inner.values ? ops.copyOf(only.#inner.values) : null; }
       catch (error) { keys?.dispose(); throw error; }
-      const next = BatchedRotatingCache.adoptPhysical(keys, values, only.#inner.positionSnapshot);
+      const next = BatchedRotatingCache.adoptPhysical(keys, values, only.#inner.positionSnapshot, this.masks);
       this.#inner.dispose(); this.#inner = next; return;
     }
     const held: Cache[] = [], planes: { keys: MlxArray; values: MlxArray }[] = [], offsets: number[] = [];
@@ -76,7 +85,7 @@ export class SpeculativeRotatingKVCache implements BatchableCache {
         : [source]) as RotatingKVCache[];
       const prototype = rows.find(row => row.keys !== null);
       if (!prototype) {
-        this.#inner.dispose(); this.#inner = new BatchedRotatingCache(this.maxSize, rows.map(() => 0)); return;
+        this.#inner.dispose(); this.#inner = new BatchedRotatingCache(this.maxSize, rows.map(() => 0), this.masks); return;
       }
       for (const cache of rows) {
         const state = rotatingSourcePosition(cache);
@@ -88,7 +97,7 @@ export class SpeculativeRotatingKVCache implements BatchableCache {
         try { values = plane("values"); } catch (error) { keys.dispose(); throw error; }
         planes.push({ keys, values }); offsets.push(cache.offset);
       }
-      const next = BatchedRotatingCache.merge(planes, offsets, this.maxSize);
+      const next = BatchedRotatingCache.merge(planes, offsets, this.maxSize, this.masks);
       this.#inner.dispose(); this.#inner = next;
     } finally { disposeResources([...held, ...planes.flatMap(row => [row.keys, row.values])]); }
   }

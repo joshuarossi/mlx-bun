@@ -22,7 +22,8 @@ import { createCausalMask } from "../kernels/attention/masks";
 import { runtimeValue } from "../runtime/config";
 import { KVCache } from "./kv";
 import { plainKvStorage } from "./dense-kv-reads";
-import { type BatchableCache, type Cache, type Mask } from "../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type BatchableCache, type Cache, type Mask } from "../contracts/mlx/cache";
+import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease, type MaskLease } from "./attention-read";
 
 /** Padding-aware key-validity mask for batched DECODE with left-padded rows.
  *
@@ -292,13 +293,24 @@ export function filterKVRows(
  *  per-row RoPE positions (BatchedDecodeMaskCache); while none is, it is exactly
  *  the serial cache, so a batch of equal-length rows runs the serial graph.
  *  Sources of `mergeRows` are borrowed: a running layout or one serial KVCache,
- *  then one serial KVCache per joining row. */
-export class PaddedKVRows implements BatchableCache {
+ *  then one serial KVCache per joining row.
+ *
+ *  Reads: append to the shared buffer, then the stock fused SDPA. While no row
+ *  is padded, decode passes no mask and a window the fused causal mask, as the
+ *  serial cache does; while one is, both pass the padding-aware mask
+ *  (`buildBatchedDecodeMask`) for their query count, built once per forward
+ *  through `masks`. */
+export class PaddedKVRows implements AttentionCache, BatchableCache {
   readonly denseKvReads = plainKvStorage;
   #inner = new KVCache();
   #leftPad: number[] = [];
   #padded = false;
   #view: BatchedDecodeMaskCache | null = null;
+
+  constructor(
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) {}
 
   signature(): string { return "kv:padded-rows"; }
   get batchSize(): number | null { return this.#leftPad.length || null; }
@@ -307,7 +319,31 @@ export class PaddedKVRows implements BatchableCache {
   get offset(): number { return this.#inner.offset; }
   /** Present only while a row is padded: each row's own position. */
   get ropeOffsetArr(): MlxArray | undefined { return this.#padded ? this.#step().ropeOffsetArr : undefined; }
-  makeEmptyBatch(): PaddedKVRows { return new PaddedKVRows(); }
+  makeEmptyBatch(): PaddedKVRows { return new PaddedKVRows(this.masks); }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.#read(k, v, this.#mask(1, unmaskedLease));
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.#read(k, v, this.#mask(k.shape[2]!, causalLease));
+  }
+
+  #read(k: MlxArray, v: MlxArray, mask: MaskLease): AttentionRead {
+    return withLease(mask, held => {
+      const [keys, values] = this.#inner.updateAndFetch(k, v);
+      return sdpaRead(keys, values, held);
+    });
+  }
+
+  /** `unpadded` while no row is padded; otherwise the padding-aware mask of an
+   * `N`-position append, before it. */
+  #mask(N: number, unpadded: MaskLease): MaskLease {
+    if (!this.#padded) return unpadded;
+    const S = this.#inner.offset + N;
+    return this.masks.lease("padded-kv", `${N}|${S}|${this.#leftPad.join(",")}`,
+      () => ({ mode: "array", arr: buildBatchedDecodeMask(this.#leftPad.length, N, S, this.#leftPad, null) }));
+  }
 
   bytesPerToken(): number {
     return this.#leftPad.length ? this.#inner.bytesPerToken() / this.#leftPad.length : 0;
@@ -405,5 +441,6 @@ export class PaddedKVRows implements BatchableCache {
   dispose(): void {
     this.#inner.dispose();
     this.#set(new KVCache(), []);
+    this.masks.clear();
   }
 }
