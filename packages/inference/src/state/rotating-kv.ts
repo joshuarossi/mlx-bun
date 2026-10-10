@@ -3,11 +3,10 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { AttentionRead,BidirectionalAttentionCache,BlockAttentionCache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { bidirMask, createCausalMask } from "../kernels/attention/masks";
-import { concatDecodeSlot } from "./kv";
+import { concatDecodeSlot, type AffineKernelSet } from "./kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
 import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease, type MaskLease } from "./attention-read";
-import { unfusedAffineKernels } from "./affine-attention";
 
 
 /** Rotating (sliding-window) KV cache — port of mlx-lm RotatingKVCache
@@ -457,12 +456,11 @@ export class RotatingKVCache implements CompiledDecodeCache, BidirectionalAttent
   /** Port of optiq rotating.py _replay_into_quantized: quantize the
    *  whole buffer AS-LAID-OUT (ring order, not temporal order — correct
    *  because ringIdx is preserved with it) into a
-   *  RotatingQuantizedKVCache. */
-  toQuantized(groupSize: number, bits: number): RotatingQuantizedKVCache {
-    // Converted caches are not composed yet (B1's quantized lego): unfused, the
-    // uniform `--kv-quant N` composition.
+   *  RotatingQuantizedKVCache, which attends with the kernel set `kernels`
+   *  builds for its bits, group size and this cache's activation dtype. */
+  toQuantized(groupSize: number, bits: number, kernels: AffineKernelSet): RotatingQuantizedKVCache {
     const q = new RotatingQuantizedKVCache(this.maxSize, groupSize, bits,
-      unfusedAffineKernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
+      kernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
     if (this.keys && this.values) {
       q.keys = ops.quantize(this.keys, groupSize, bits);
       q.values = ops.quantize(this.values, groupSize, bits);

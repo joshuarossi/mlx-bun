@@ -150,7 +150,7 @@ describe("padded full-attention rows (plain)", () => {
 describe("padded full-attention rows (affine quantized)", () => {
   const quant = (b: number, L: number) => {
     const c = new KVCache(); using k = grid(L, QD, (t, d) => qval(b, t, d));
-    const [rk, rv] = c.updateAndFetch(k, k); rk.dispose(); rv.dispose(); return c.toQuantized(GS, BITS);
+    const [rk, rv] = c.updateAndFetch(k, k); rk.dispose(); rv.dispose(); return c.toQuantized(GS, BITS, unfusedAffineKernels);
   };
   const same = (extracted: Cache, oracle: QuantizedKVCache) => {
     const ex = extracted as QuantizedKVCache;
@@ -195,7 +195,7 @@ describe("sliding-window rings", () => {
     const c = new RotatingKVCache(W), dim = quantized ? QD : 2, f = quantized ? qval : val;
     using k = grid(L, dim, (t, d) => f(b, t, d));
     const [rk, rv] = c.updateAndFetch(k, k); rk.dispose(); rv.dispose();
-    return quantized ? c.toQuantized(GS, BITS) : c;
+    return quantized ? c.toQuantized(GS, BITS, unfusedAffineKernels) : c;
   };
 
   test("plain: an adopted ring and two joiners decode through wrap; every extracted row equals its solo replay", () => {

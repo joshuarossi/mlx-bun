@@ -14,7 +14,8 @@ import type { ModelConfig } from "../../src/artifacts/config";
 import type { Weights } from "../../src/artifacts/weights";
 import type { GatedDeltaCache, GatedDeltaParameters } from "../../src/contracts/mlx/cache";
 import { disposing } from "../../src/layers/helpers";
-import { GatedDeltaNet, compiledPreciseSwiglu, compiledSilu, type AttentionLinear } from "../../src/models/qwen/qwen3_5";
+// The old path: the frozen pre-C1 block (deleted with it after the C1 merge).
+import { GatedDeltaNet, compiledPreciseSwiglu, compiledSilu, type AttentionLinear } from "../models/qwen3_5-reference";
 import { BatchedSSMCache } from "../../src/state/batched-ssm";
 import { SSMCache } from "../../src/state/ssm";
 import { TrainingSSMCache } from "../../src/state/training-cache";

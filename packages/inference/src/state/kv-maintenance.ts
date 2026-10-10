@@ -1,7 +1,9 @@
 import { turboQuantFusedDecode } from "./turboquant-codec";
-import { runtimeConfig, withRuntimeConfig } from "../runtime/config";
+import { runtimeConfig, runtimeValue, withRuntimeConfig } from "../runtime/config";
 import type { KvSchemeOptions } from "./kv-scheme";
-import { KVCache } from "./kv";
+import { KVCache, type AffineKernelSet } from "./kv";
+import { tiledCausalAffineKernels, unfusedAffineKernels } from "./affine-attention";
+import { fusedSdpaConfigSupported } from "../layers/quantized-attention";
 import { QuantizedKVCache } from "./quantized-kv";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
@@ -102,7 +104,9 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       const conversion = conversionOf(c)!;
       const conversionOffset = conversion.offset;
       const entry = byLayer?.get(i);
-      cache[i] = entry ? conversion.toQuantized(entry.groupSize, entry.bits) : conversion.toQuantized(groupSize, kvBits!);
+      const kernels = servedAffineKernels();
+      cache[i] = entry ? conversion.toQuantized(entry.groupSize, entry.bits, kernels)
+        : conversion.toQuantized(groupSize, kvBits!, kernels);
       if (start > 0) cache[i]!.minimumReusableOffset = conversionOffset;
       // Materialize one layer before converting the next to bound the live
       // bf16 source plus quantized destination to one conversion at a time.
@@ -139,6 +143,21 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
   };
   if (start > 0) maintain.prepareBatch = maintain.preparePrefill;
   return maintain;
+}
+
+/** The kernel set a converted affine cache attends with: the numbers the
+ * graphs' deprecated `quantizedSdpa` dispatch gives today under the flag the
+ * app writes for its KV scheme. `MLX_BUN_NO_FUSED_SDPA=1` (uniform
+ * `--kv-quant N`, mlx-lm parity): unfused. Otherwise (`--kv-quant config`,
+ * OptiQ parity): tiled while the cache's own mask is causal, which needs a
+ * configuration the tiled port takes; `quantizedSdpa` runs any other
+ * configuration unfused, and so does the converted cache.
+ * E3 transition: E3 composes the set from the KV scheme at load and deletes
+ * the flag; this read of it goes then. */
+function servedAffineKernels(): AffineKernelSet {
+  if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return unfusedAffineKernels;
+  return (bits, groupSize, dtype) => fusedSdpaConfigSupported(groupSize, bits, dtype)
+    ? tiledCausalAffineKernels(bits, groupSize, dtype) : unfusedAffineKernels(bits, groupSize, dtype);
 }
 
 function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: number): void {

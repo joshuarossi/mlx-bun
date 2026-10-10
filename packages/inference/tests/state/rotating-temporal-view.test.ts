@@ -199,7 +199,7 @@ test("conversion, clone, SSD restore and donor capture keep the newest window", 
     plainView(loaded.caches[0] as RotatingKVCache, `${name}: SSD restore`, offset);
     for (const c of loaded.caches) c.dispose();
     // Conversion quantizes the ring as laid out; its view is the quantized window.
-    const quantized = cache.toQuantized(GROUP, BITS);
+    const quantized = cache.toQuantized(GROUP, BITS, unfusedAffineKernels);
     quantizedView(quantized, `${name}: converted`, offset);
     const attention = quantized.captureDonorAttention();
     expect({ name, width: attention.width }).toEqual({ name, width: Math.min(offset, W) });

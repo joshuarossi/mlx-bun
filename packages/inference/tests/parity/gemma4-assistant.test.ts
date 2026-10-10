@@ -74,6 +74,7 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
   const { readAssistantDonors } = await import("../../src/models/gemma4/assistant-target");
   const assistant = await import("../../src/models/gemma4/assistant");
   const { quantizedSdpa } = await import("../../src/layers/quantized-attention");
+  const { unfusedAffineKernels } = await import("../../src/state/affine-attention");
   type Triple = Ops.QuantizedTensor;
   type Rows = MlxArray | Triple;
   const release = (x: Rows) => { if ("packed" in x) releaseAll([() => x.packed.dispose(), () => x.scales.dispose(), () => x.biases.dispose()]); else x.dispose(); };
@@ -159,7 +160,7 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
             const clones = cloneKvCaches(pair), converted: Cache[] = [];
             owned.push(() => releaseAll(clones.map(c => () => c.dispose())));
             for (const clone of clones) {
-              const q = (clone as KVCache).toQuantized(GROUP, BITS) as unknown as Cache;
+              const q = (clone as KVCache).toQuantized(GROUP, BITS, unfusedAffineKernels) as unknown as Cache;
               converted.push(q); owned.push(() => q.dispose());
             }
             pair = converted;

@@ -23,7 +23,7 @@
 // per layer. The ANE plan exists only when the Neural Engine bridge loads.
 //
 // Requests these plans do not cover keep the generic Qwen35Model forward:
-// several sequences at once, independent-row appends, vision positions, array
+// several sequences at once, committed appends, vision positions, array
 // attention masks, mounted adapters, and KV caches other than BF16 or 4-bit
 // group-64. Measured on M4 Pro 24 GB against the same artifact on the generic
 // graph: see the PR introducing this file.
@@ -33,11 +33,10 @@ import { deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Weights } from "../../artifacts/weights";
 import type { ModelConfig } from "../../artifacts/config";
-import type { Cache, Mask } from "../../contracts/mlx/cache";
+import type { Cache, GatedDeltaCache } from "../../contracts/mlx/cache";
 import type { TokenGroup } from "../../contracts/mlx/token-work";
-import type { SSMCache } from "../../state/ssm";
 import { QuantizedLinear } from "../../layers/quantized-linear";
-import { TrellisLinear } from "../../layers/trellis-linear";
+import type { TrellisLinear } from "../../layers/trellis-linear";
 import { compiledSwiglu } from "../../layers/swiglu";
 import { FactoredGateUpRow, FactoredGateUpRows, FactoredMixedGateUp, MmaGateUp } from "../../layers/trellis-gate-up";
 import { FactoredDownK3iRow, FactoredDownK3iRows, FactoredDownRow, FactoredDownRows, MmaDown, MmaDownK3i } from "../../layers/trellis-down";
@@ -46,10 +45,11 @@ import { kv4DecodeAttention } from "../../layers/kv4-decode-attention";
 import { foldedQuantizedSdpa } from "../../layers/quantized-attention";
 import { AneAffineSplit, AneTrellisMlpSplit, AneTrellisMlpSplitK3i, aneAvailable, precompileAneAffine, precompileAneMlp }
   from "../../layers/ane-prefill-split";
+import { Qwen35Model, deprecatedPhase } from "./qwen3_5";
 import {
-  GatedDeltaNet, Qwen35Model, Qwen3Attention, type AttentionLinear, type AttentionLinearLoader, type Qwen3Layer,
-  type QuantizedAttentionCore,
-} from "./qwen3_5";
+  GatedDeltaNet, Qwen3Attention, quantizedCoreRead, type AttentionLinear, type AttentionLinearLoader, type Qwen3Layer,
+  type QuantizedAttentionCore, type ReadPhase,
+} from "./blocks";
 import { qwen38TrellisTqFingerprint } from "./qwen38-27b-trellis-tq";
 
 export const QWEN38_TRELLIS_M4PRO_GRAPH = "qwen3.8-27b-trellis-3.2bpw-m4pro";
@@ -69,14 +69,16 @@ export function qwen38TrellisM4ProAccepts(config: ModelConfig): boolean {
   return deviceArchitecture() === DEVICE && qwen38TrellisTqFingerprint(config) === FINGERPRINT;
 }
 
-type Step = (x: MlxArray, faMask: Mask, cache: Cache, independentRows: boolean, ssmMask: MlxArray | null) => MlxArray;
+type Step = (x: MlxArray, cache: Cache, phase: ReadPhase) => MlxArray;
 /** post-attention-normed hidden, residual → residual + MLP(hidden). */
-type MlpStep = (hidden: MlxArray, residual: MlxArray, independentRows: boolean) => MlxArray;
+type MlpStep = (hidden: MlxArray, residual: MlxArray, phase: ReadPhase) => MlxArray;
 type PlanKind = "row" | "rows" | "rows4" | "verify" | "prefill" | "prefillAne";
 
-const decodeCore: QuantizedAttentionCore = (q, keys, values, scale, _mask, groupSize, bits) =>
+/** @deprecated D1: the `Kv4Head256Cache` lego's decode read. */
+const decodeCore: QuantizedAttentionCore = (q, keys, values, scale, groupSize, bits) =>
   kv4DecodeAttention(q, keys, values, scale, groupSize, bits);
-const foldedCore: QuantizedAttentionCore = (q, keys, values, scale, _mask, groupSize, bits) =>
+/** @deprecated D1: the `Kv4Head256Cache` lego's window read. */
+const foldedCore: QuantizedAttentionCore = (q, keys, values, scale, groupSize, bits) =>
   foldedQuantizedSdpa(q, keys, values, scale, groupSize, bits);
 
 export class Qwen38TrellisM4Pro extends Qwen35Model {
@@ -89,8 +91,6 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   readonly #headRows: Affine4RowsLinear | null;
   readonly #headMma: Affine4MmaLinear | null;
   readonly #qkScale: { q: MlxArray; k: MlxArray };
-  /** A tapped group's capture callback while its forward runs on a plan. */
-  #captureHook: ((layer: number, hidden: MlxArray) => void) | null = null;
 
   constructor(weights: Weights, config: ModelConfig) {
     super(weights, config);
@@ -135,21 +135,21 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
           block = new GatedDeltaNet(weights, config, `${prefix}.linear_attn`, loadLinear);
           block.qkScale = this.#qkScale;
         }
-        return (x, _faMask, cache, independentRows, ssmMask) => {
+        return (x, cache, phase) => {
           using normed = inputNorm.forward(x);
-          using mixed = block.forward(normed, cache as SSMCache, independentRows, ssmMask);
+          using mixed = block.forward(normed, cache as GatedDeltaCache, phase);
           using hidden = ops.add(x, mixed);
           using post = postAttnNorm.forward(hidden);
-          return mlp(post, hidden, independentRows);
+          return mlp(post, hidden, phase);
         };
       }
-      const block = new Qwen3Attention(weights, config, `${prefix}.self_attn`, loadLinear ?? undefined, core);
-      return (x, faMask, cache, independentRows) => {
+      const block = new Qwen3Attention(weights, config, `${prefix}.self_attn`, loadLinear ?? undefined, quantizedCoreRead(core));
+      return (x, cache, phase) => {
         using normed = inputNorm.forward(x);
-        using mixed = block.forward(normed, faMask, cache, independentRows, null);
+        using mixed = block.forward(normed, cache, phase, null);
         using hidden = ops.add(x, mixed);
         using post = postAttnNorm.forward(hidden);
-        return mlp(post, hidden, independentRows);
+        return mlp(post, hidden, phase);
       };
     });
   }
@@ -182,11 +182,12 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
 
   /** The MLP of one layer in one plan. */
   #mlpStep(layer: Qwen3Layer, kind: PlanKind): MlpStep {
-    const { gate, up, down } = layer.mlp;
-    if (!(gate instanceof TrellisLinear) || !(up instanceof TrellisLinear) || !(down instanceof TrellisLinear))
+    const mlp = layer.mlp;
+    if (mlp.kind !== "trellis")
       throw new Error(`${QWEN38_TRELLIS_M4PRO_GRAPH}: expected Trellis gate/up/down in every MLP`);
-    if (kind === "prefill") return (hidden, residual, independentRows) => {
-      using out = layer.mlp.forward(hidden, true, independentRows);
+    const { gate, up, down } = mlp;
+    if (kind === "prefill") return (hidden, residual, phase) => {
+      using out = mlp.forward(hidden, phase);
       return ops.add(residual, out);
     };
     const k3i = down.geometry.blockInterleave === 2;
@@ -223,18 +224,10 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   override forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
     const only = work.length === 1 ? work[0]! : null;
     if (!only?.captureLayer) return super.forwardHiddenMixed(work);
-    const previous = this.#captureHook;
-    this.#captureHook = only.captureLayer;
-    try {
-      const out = this.forwardLayers(this.embed.encode(only.ids), only.cache);
-      only.captureLayer(this.layers.length, out);
-      return [out];
-    } finally { this.#captureHook = previous; }
-  }
-
-  protected override captureLayer(i: number, h: MlxArray): void {
-    super.captureLayer(i, h);
-    this.#captureHook?.(i, h);
+    const out = this.forwardLayers(this.embed.encode(only.ids), only.cache, deprecatedPhase(only.ids), undefined,
+      only.captureLayer);
+    only.captureLayer(this.layers.length, out);
+    return [out];
   }
 
   /** The output head for the rows it serves: the verify-width affine kernels
@@ -246,23 +239,23 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   }
 
   /** Text forward over the plan the row count matches. Consumes h0. */
-  protected override forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false, positions?: MlxArray): MlxArray {
+  protected override forwardLayers(h0: MlxArray, cache: Cache[], phase: ReadPhase, positions?: MlxArray,
+    capture: ((layer: number, hidden: MlxArray) => void) | null = null): MlxArray {
     const kv = cache[this.faIdx]!.quantizedAttention;
-    if (positions || this.mrope || independentRows || h0.shape[0] !== 1 || this.loraState.active.length ||
+    if (positions || this.mrope || phase === "committed" || h0.shape[0] !== 1 || this.loraState.active.length ||
         (kv && (kv.bits !== 4 || kv.groupSize !== 64)) || (globalThis as Record<string, unknown>).__deltaProf)
-      return super.forwardLayers(h0, cache, independentRows, positions);
+      return super.forwardLayers(h0, cache, phase, positions, capture);
     const L = h0.shape[1]!;
     const faMask = cache[this.faIdx]!.makeMask(L, null);
     if (faMask.arr) {
       faMask.arr.dispose();
-      return super.forwardLayers(h0, cache, independentRows, positions);
+      return super.forwardLayers(h0, cache, phase, positions, capture);
     }
-    using ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(L) ?? null;
     const steps = this.#planFor(L), bounded = L > 8;
     let h: MlxArray | null = h0;
     try {
       for (let i = 0; i < steps.length; i++) {
-        const next = steps[i]!(h, faMask, cache[i]!, independentRows, ssmMask);
+        const next = steps[i]!(h, cache[i]!, phase);
         h.dispose();
         h = next;
         if (!bounded && i % ASYNC_EVERY === ASYNC_EVERY - 1 && i + 1 < steps.length) ops.asyncEvalAll([h]);
@@ -274,6 +267,7 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
           finally { if (cache[i]!.stateNeedsDispose) for (const a of state) a.dispose(); }
         }
         this.captureLayer(i, h);
+        capture?.(i, h);
       }
       const out = this.finalNorm.forward(h);
       h.dispose();

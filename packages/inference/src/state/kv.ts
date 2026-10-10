@@ -6,7 +6,12 @@ import { bidirMask, createCausalMask } from "../kernels/attention/masks";
 import { QuantizedKVCache } from "./quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
 import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease } from "./attention-read";
-import { unfusedAffineKernels } from "./affine-attention";
+import type { AffineKernels } from "./affine-attention";
+
+/** A kernel set named by the composition it serves (`unfusedAffineKernels`,
+ * `tiledCausalAffineKernels`, `tiledAffineKernels`), which a conversion builds
+ * for the converted cache's bits, group size and activation dtype. */
+export type AffineKernelSet = (bits: number, groupSize: number, dtype: Dtype) => AffineKernels;
 
 
 /** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
@@ -240,11 +245,11 @@ export class KVCache implements CompiledDecodeCache, CommittedAttentionCache, Bi
   }
 
   /** Port of mlx-lm KVCache.to_quantized: quantize the whole buffer
-   *  (padding included — it's overwritten before being read). */
-  toQuantized(groupSize: number, bits: number): QuantizedKVCache {
-    // Converted caches are not composed yet (B1's quantized lego): unfused, the
-    // uniform `--kv-quant N` composition.
-    const q = new QuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
+   *  (padding included — it's overwritten before being read). The converted
+   *  cache attends with the kernel set `kernels` builds for its bits, group
+   *  size and this cache's activation dtype. */
+  toQuantized(groupSize: number, bits: number, kernels: AffineKernelSet): QuantizedKVCache {
+    const q = new QuantizedKVCache(groupSize, bits, kernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
     q.offset = this.offset;
     if (this.keys && this.values) {
       q.keys = ops.quantize(this.keys, groupSize, bits);

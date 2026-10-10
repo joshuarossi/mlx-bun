@@ -12,7 +12,8 @@ import type { AttentionCache, AttentionRead, Cache, Mask } from "../contracts/ml
 import { unrotateValues } from "../kernels/turboquant/ops";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { AttentionMasks, causalLease, unmaskedLease, withLease, type MaskLease } from "./attention-read";
-import { KVCache } from "./kv";
+import { KVCache, type AffineKernelSet } from "./kv";
+import { unfusedAffineKernels } from "./affine-attention";
 import { QuantizedKVCache } from "./quantized-kv";
 import { disposeTriple } from "./quantized-tensor";
 import { RotatingKVCache, rotatingWindowMask } from "./rotating-kv";
@@ -42,13 +43,14 @@ export function completeConversion<C extends Cache>(converted: C, offset: number
 }
 
 /** The affine conversion `kv-maintenance` performs on one entry: the source's
- * own `toQuantized` (which consumes the source), then the shared bookkeeping. */
+ * own `toQuantized` (which consumes the source) with the unfused kernels, then
+ * the shared bookkeeping. */
 export function convertToAffine<C extends Cache>(
-  source: { readonly offset: number; toQuantized(groupSize: number, bits: number): C },
+  source: { readonly offset: number; toQuantized(groupSize: number, bits: number, kernels: AffineKernelSet): C },
   groupSize: number, bits: number, start: number,
 ): C {
   const offset = source.offset;
-  return completeConversion(source.toQuantized(groupSize, bits), offset, start);
+  return completeConversion(source.toQuantized(groupSize, bits, unfusedAffineKernels), offset, start);
 }
 
 /** The TurboQuant conversion `kv-maintenance` performs on one entry: encode
@@ -105,7 +107,7 @@ function ownsItsRead(): never {
  * a `KVCache` until an append leaves it holding at least `start` positions (the
  * first append when `start` is 0). That append is read bf16 and then, before it
  * returns, the storage converts exactly as `kv-maintenance` converts it after a
- * forward (`KVCache.toQuantized(groupSize, bits)`, the reuse floor at a nonzero
+ * forward (`KVCache.toQuantized`, the reuse floor at a nonzero
  * start, materialized at once). Every later append quantizes its positions and
  * is read affine. Stored values below the offset therefore equal the
  * convert-after path's bit for bit, and so does every read. A `QuantizedKVCache`
