@@ -372,6 +372,9 @@ Exit: selection is data; `qwen38TrellisM4ProAccepts` and the nested ternary are 
         chunk and tail explicitly, or the planner changes; nothing infers "whole chunk" from a
         length.
       - GLM verify kernel pinning (`pinVerify`): the composition pins at load.
+      - The DFlash 2 drafter's draft block picks its kernel once per block from anchors × width
+        (E4): the draft operation becomes a width-classed table like the graph's `verify`, and
+        the scheduler indexes it by the rows it is drafting for.
 - [ ] Delete `forwardHiddenMixed` and `forwardHidden` from the contract.
 
 Exit: one request and four concurrent requests on the M4 Pro composition both dispatch the
@@ -391,7 +394,16 @@ new flag.
 #### E4. DFlash 2
 
 - [ ] `Dflash2Provider` loads the drafter unrotated and folds `fc` when it binds, from the
-      target's declared basis. `MLX_BUN_DFLASH2_TARGET_BASIS` is deleted.
+      target's declared basis. `MLX_BUN_DFLASH2_TARGET_BASIS` is deleted. (PR #334, draft.)
+- [ ] The basis needs a recorded source before #334 can merge: the quantizer folds the
+      final-norm gain γ into `lm_head` and writes the norm as zeros, and nothing in the artifact
+      records γ, so no graph can declare it today and the drafter would run unrotated
+      (acceptance collapses, output stays exact). Fix: `packages/quantize` records `final_gain`
+      (γ = stored + 1 of the source's final norm) in `turboquant_fold.json` beside the seed;
+      the published `mlx-bun/Qwen3.8-27B-Trellis-3.2bpw` sidecar gets the values computed
+      from the bf16 source (a one-off, where that source is available); each Trellis graph
+      reads the sidecar once at construction and declares `residualBasis` through
+      `draftTarget`. The old basis JSON the env var pointed at is not on the M4 Pro.
 - [ ] The drafter builds its matrix-unit layer for its fixed block width at construction and uses
       the ordinary quantized matmul for context projection; no per-call row switch in `matmulW`.
 
