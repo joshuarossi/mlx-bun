@@ -847,7 +847,9 @@ Outside the Trellis family, `kernels/quantization/affine{3,4}-{rows,mma}` run
 1..8 rows (matrix unit); `kernels/attention/kvq4-decode` is one-row attention
 over a 4-bit group-64 KV cache with head dim 256, reading each packed row once
 for all query heads of its KV head; `kernels/attention/multi-query` is causal
-flash decoding for 2..8 query rows over a BF16 cache.
+flash decoding for 2..8 query rows over a BF16 cache. `kernels/ane` holds the
+Neural Engine programs (`linear`) and the GPU kernels that fill their buffers
+(`fill`).
 
 ## Artifact, input, and layer APIs
 
@@ -1271,8 +1273,9 @@ Neither requires an evaluation dataset registry or runner; the app's
 parsing is available from `input`; template/schema fill compilation lives in
 `generation/fill`.
 
-Standalone app bundles keep the expert-I/O library and frame extractor beside
-the executable. Explicit `MLX_BUN_EXPERT_IO_DYLIB` / `MLX_BUN_FRAME_EXTRACT`
+Standalone app bundles keep the expert-I/O library, the Neural Engine bridge
+and the frame extractor beside the executable. Explicit
+`MLX_BUN_EXPERT_IO_DYLIB` / `MLX_BUN_ANE_DYLIB` / `MLX_BUN_FRAME_EXTRACT`
 overrides take precedence; ordinary source/package execution resolves the
 package's `dist/native` directory. The app bundle verification covers relocation
 without loading native numerical code.

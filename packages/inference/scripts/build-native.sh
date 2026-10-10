@@ -12,6 +12,10 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -dynamiclib \
   "-mmacosx-version-min=$DEPLOYMENT_TARGET" \
   "$ROOT/native/expert-io.c" -o "$OUT"
 echo "$OUT"
+ANE_OUT="$(dirname "$OUT")/libmlx_bun_ane.dylib"
+cc -O2 -Wall -Wextra -Werror -fno-objc-arc -dynamiclib "-mmacosx-version-min=$DEPLOYMENT_TARGET" \
+  -framework Foundation -framework IOSurface "$ROOT/native/ane-bridge.m" -o "$ANE_OUT"
+echo "$ANE_OUT"
 FRAME_OUT="$(dirname "$OUT")/mlx-bun-frame-extract"
 swiftc -O -target "$(uname -m)-apple-macosx$DEPLOYMENT_TARGET" \
   "$ROOT/native/frame-extract.swift" -o "$FRAME_OUT"

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const NATIVE_DIR = join(import.meta.dir, "..", "..", "dist", "native");
-export const NATIVE_FILES = ["libmlx_bun_expert_io.dylib", "mlx-bun-frame-extract"] as const;
+export const NATIVE_FILES = ["libmlx_bun_expert_io.dylib", "mlx-bun-frame-extract", "libmlx_bun_ane.dylib"] as const;
 export function resolveInferenceNative(name: typeof NATIVE_FILES[number], override?: string): string {
   if (override) return override;
   if (import.meta.filename.startsWith("/$bunfs/")) {
@@ -13,3 +13,4 @@ export function resolveInferenceNative(name: typeof NATIVE_FILES[number], overri
 }
 export const EXPERT_IO_LIBRARY = resolveInferenceNative(NATIVE_FILES[0], process.env.MLX_BUN_EXPERT_IO_DYLIB);
 export const FRAME_EXTRACT_BINARY = resolveInferenceNative(NATIVE_FILES[1], process.env.MLX_BUN_FRAME_EXTRACT);
+export const ANE_LIBRARY = resolveInferenceNative(NATIVE_FILES[2], process.env.MLX_BUN_ANE_DYLIB);
