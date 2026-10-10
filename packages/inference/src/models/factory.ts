@@ -9,6 +9,7 @@ import { Weights } from "../artifacts/weights";
 import { Gemma4Model } from "./gemma4/model";
 import { configFingerprint } from "../artifacts/fingerprint";
 import { Qwen38TrellisTQ, qwen38TrellisTqAccepts } from "./qwen/qwen38-27b-trellis-tq";
+import { Qwen38TrellisM4Pro, qwen38TrellisM4ProAccepts } from "./qwen/qwen38-27b-trellis-m4pro";
 import { GENERATED } from "./gemma4/generated/index";
 import { MiniCPM5Model } from "./minicpm5/model";
 import { Qwen35Model } from "./qwen/qwen3_5";
@@ -61,10 +62,12 @@ function residentImplementation(
 export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights, RuntimeModel>([
   residentImplementation("diffusion-gemma", "diffusion-gemma", (weights, config) => new DiffusionGemmaModel(weights, config)),
   residentImplementation("minicpm5", "minicpm5", (weights, config) => new MiniCPM5Model(weights, config)),
-  // Our published Trellis quant loads its own purpose-built graph; every other
+  // Our published Trellis quant loads its own purpose-built graph — the M4 Pro
+  // graph on that GPU family, the TQ graph elsewhere; every other
   // Qwen3.5-family artifact keeps the generic model.
   residentImplementation("qwen3.5", "qwen3.5", (weights, config) =>
-    qwen38TrellisTqAccepts(config) ? new Qwen38TrellisTQ(weights, config) : new Qwen35Model(weights, config)),
+    qwen38TrellisM4ProAccepts(config) ? new Qwen38TrellisM4Pro(weights, config)
+      : qwen38TrellisTqAccepts(config) ? new Qwen38TrellisTQ(weights, config) : new Qwen35Model(weights, config)),
   residentImplementation("qwen3-moe", "qwen3-moe", (weights, config) => new Qwen3MoeModel(weights, config)),
   residentImplementation("qwen3", "qwen3", (weights, config) => new Qwen3Model(weights, config)),
   residentImplementation("gemma4", "gemma4", (weights, config) => new Gemma4Model(weights, config)),
