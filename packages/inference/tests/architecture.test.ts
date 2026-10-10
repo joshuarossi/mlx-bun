@@ -64,8 +64,9 @@ function appDomain(path: string, owner: Library): string {
 // never branch on a model's class, type string, architecture list or family flag.
 // Drafters are models too, reached through `models/drafters.ts` (their conventions) and
 // `models/drafter-loaders.ts` (their lazy loaders, which hand the draft sources ports from `contracts/mlx/drafter`); the DSpark
-// producer (training) builds its module through `models/speculative/loader.ts`.
-const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
+// producer (training) builds its module through `models/speculative/loader.ts`. The loader's
+// composition record is resolved through `models/composition.ts`.
+const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/composition.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
   "models/chat-template.ts", "models/support.ts", "models/drafters.ts", "models/drafter-loaders.ts", "models/speculative/loader.ts"]);
 /** The family registry lists one record per family (`models/families.ts`); the role predicates of

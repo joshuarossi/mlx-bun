@@ -1,5 +1,16 @@
+import type { Composition } from "@mlx-bun/inference/contracts/portable";
 import type { ModelContext, LoadedModelContext } from "./model-host";
 import type { ModelBinding } from "./model-binding";
+
+/** The loaded composition as `/stats` reports it: the record's fields, with
+ * snake_case keys like the rest of that view. */
+function compositionWire(composition: Composition): unknown {
+  const wire = (value: unknown): unknown => Array.isArray(value) ? value.map(wire)
+    : value !== null && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).map(([key, field]) => [key.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`), wire(field)]))
+      : value;
+  return wire(composition);
+}
 /** Existing model classes enter the interface once here. New implementations
  * supply a binding explicitly and need no forward/makeCache methods. */
 export async function modelServingBinding(context: LoadedModelContext, supplied?: ModelBinding): Promise<ModelBinding> {
@@ -55,7 +66,7 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
     ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, terminator, inputs, instruction) } : {}),
     diagnostics() {
       const runtime = ctx.runtimeDiagnostics?.();
-      return runtime ? { runtime } : {};
+      return { ...(ctx.composition ? { composition: compositionWire(ctx.composition) } : {}), ...(runtime ? { runtime } : {}) };
     },
   };
 }

@@ -8,7 +8,7 @@
 // decoded text main returned.
 
 import { resolveKvScheme, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import type { LoadedModelContext } from "../engine/model-host";
+import type { LoadContextOptions, LoadedModelContext } from "../engine/model-host";
 import type { CompletionEngine } from "../engine/completion";
 import type { GenerationGateway } from "../engine/generation-gateway";
 import {
@@ -30,7 +30,8 @@ export interface MemoryEngine {
 export interface MemoryEngineDependencies {
   /** The task model's snapshot directory; never downloads. */
   locate(repoId: string): Promise<string>;
-  load(path: string, repoId: string): Promise<LoadedModelContext>;
+  /** `composition`: the batch cap and chunk adapter the loaded composition records. */
+  load(path: string, repoId: string, composition?: Pick<LoadContextOptions, "adapters" | "maxRows">): Promise<LoadedModelContext>;
   /** Takes ownership of the context even if construction rejects. */
   engine(context: LoadedModelContext, scheme: KvScheme, capacity: number): Promise<MemoryEngine>;
   adapterDir(stage: string): string | undefined;
@@ -39,9 +40,9 @@ export interface MemoryEngineDependencies {
 /** The shipped wiring: the cached task model, the app engine, main's adapter directory. */
 export const defaultMemoryEngineDependencies: MemoryEngineDependencies = {
   locate: repoId => locateTaskModel(repoId),
-  async load(path, repoId) {
+  async load(path, repoId, composition) {
     const { loadContext } = await import("../engine/model-host");
-    return loadContext(path, repoId);
+    return loadContext(path, repoId, composition);
   },
   async engine(context, scheme, capacity) {
     const { createAppEngine } = await import("../engine");
@@ -72,14 +73,14 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
   const start = async (snapshot?: string): Promise<MemoryRuntime> => {
     const path = snapshot ?? await deps.locate(MEMORY_TASK_MODEL);
     if (closed) throw closedError();
-    const context = await deps.load(path, MEMORY_TASK_MODEL);
+    const dir = deps.adapterDir("chunk");
+    const context = await deps.load(path, MEMORY_TASK_MODEL, { adapters: dir !== undefined, maxRows: memoryBatchSize() });
     if (closed) { context.dispose(); throw closedError(); }
     // Main decoded with a full-precision cache, whatever the artifact's kv_config says.
     const scheme = resolveKvScheme({ override: "off", config: context.kvConfig });
     const engine = await deps.engine(context, scheme, memoryBatchSize());
     try {
       if (closed) throw closedError();
-      const dir = deps.adapterDir("chunk");
       if (dir) await engine.gateway.runExclusive(async () => { await engine.context.adapters.mount(CHUNK_ADAPTER, dir); });
       if (closed) throw closedError();
       return { engine, scheme, chunkAdapter: dir !== undefined };
