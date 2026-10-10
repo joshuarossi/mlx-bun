@@ -226,9 +226,16 @@ them; bit-identical generic forward.
 - [ ] PR #311's five `MLX_BUN_TRELLIS_*` flags in `kernels/trellis/scatter.ts` and
       `mixed-gate-up.ts` become separate kernels or bench-only scaffolding.
 
+- [ ] Kernels take their representation choices as required arguments; the device-dependent
+      choice is made once in the layer's constructor and stored, never inside a kernel body.
+- [ ] After the C2 PR merges and the paired serve benchmark has passed on both machines (the
+      M1 Max parity test needs that host and the q4b artifact), delete the frozen pre-C2 layer
+      `tests/kernels/trellis-linear-reference.ts` and the identity test that uses it; the PR is
+      the record of the maxDiff-0 result.
+
 Exit: `grep runtimeFlag\|runtimeValue\|runtimeNumber packages/inference/src/layers/trellis-linear.ts`
-is empty outside `setTrellisVariant`; bit-identical prefill against the default variant; paired
-serve benchmark shows no regression.
+is empty; no `deviceArchitecture()` call inside a kernel function; bit-identical outputs against
+the default variant on the M4 Pro and the M1 Max; paired serve benchmark shows no regression.
 
 #### C3. The ANE split owns its programs
 
