@@ -18,8 +18,9 @@ import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxPhaseForward, MlxTokenPhases, MlxVerifyForward } from "../../contracts/mlx/graph";
 import { declareGraph } from "../capabilities";
+import { atEveryWidth } from "../graph";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
@@ -153,7 +154,7 @@ export class Qwen3Layer {
   }
 }
 
-export class Qwen3Model implements MlxDeclaredGraph {
+export class Qwen3Model implements MlxDeclaredGraph, MlxTokenPhases {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly prefixBase = "model";
@@ -208,6 +209,11 @@ export class Qwen3Model implements MlxDeclaredGraph {
     const h = this.embed.encode(ids);
     return this.forwardLayers(h, cache);
   }
+
+  prefillChunk(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  prefillTail(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  readonly decode = atEveryWidth<MlxPhaseForward>((ids, cache) => this.forwardHidden(ids, cache));
+  readonly verify = atEveryWidth<MlxVerifyForward>((ids, cache) => this.forwardHidden(ids, cache));
 
   forwardEmbeddings(_embeds: MlxArray, _cache: Cache[], _bidir: MlxArray | null): MlxArray {
     throw new Error("qwen3 input-embedding path is not supported");

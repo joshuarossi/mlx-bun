@@ -2,7 +2,7 @@ import type { AutoregressiveGraph, GraphDescriptor, LogitSelection } from "../co
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { ModelConfig } from "../artifacts/config";
 import type { Cache } from "../contracts/mlx/cache";
-import type { MlxDeclaredGraph, MlxModelMemory, MlxTokenAppend } from "../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxModelMemory, MlxTokenAppend, MlxWidthTable } from "../contracts/mlx/graph";
 import type { MixedTokenModel } from "../contracts/mlx/token-work";
 
 /** Structural input: generated and hand-written graphs need no union membership. */
@@ -33,6 +33,11 @@ export interface MlxTokenGraph extends MlxGraphOperations<Cache[]>, MlxDeclaredG
   forwardEmbeddings?(embeddings: MlxArray, state: Cache[], imageMask: MlxArray | null,
     ids: MlxArray, multimodalMask: MlxArray | null): MlxArray;
   createAppend?(policy: { hasAdapters: boolean; pagedKv: boolean }): MlxTokenAppend | null;
+}
+
+/** The width table of a graph whose one operation serves every width class. */
+export function atEveryWidth<Operation>(operation: Operation): MlxWidthTable<Operation> {
+  return Object.freeze({ one: operation, twoToFour: operation, fiveToEight: operation, wider: operation });
 }
 
 /** Bind once. No array wrapper, await, readback, or synchronization is added

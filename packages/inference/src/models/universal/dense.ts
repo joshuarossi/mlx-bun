@@ -22,8 +22,9 @@ import { FINFO_MIN } from "../../layers/quantized-attention";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxPhaseForward, MlxTokenPhases, MlxVerifyForward } from "../../contracts/mlx/graph";
 import { PLAIN_KV_VERIFICATION, declareGraph } from "../capabilities";
+import { atEveryWidth } from "../graph";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { RotatingKVCache } from "../../state/rotating-kv";
@@ -444,7 +445,7 @@ export class UniversalLayer {
   }
 }
 
-export class UniversalDenseModel implements MlxDeclaredGraph {
+export class UniversalDenseModel implements MlxDeclaredGraph, MlxTokenPhases {
   readonly config: ModelConfig;
   readonly args: UniversalArgs;
   readonly weightsBytes: number;
@@ -549,6 +550,11 @@ export class UniversalDenseModel implements MlxDeclaredGraph {
       h = disposing(h, ops.mulScalar(h, this.args.embedMultiplier));
     return this.forwardLayers(h, cache);
   }
+
+  prefillChunk(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  prefillTail(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  readonly decode = atEveryWidth<MlxPhaseForward>((ids, cache) => this.forwardHidden(ids, cache));
+  readonly verify = atEveryWidth<MlxVerifyForward>((ids, cache) => this.forwardHidden(ids, cache));
 
   forwardEmbeddings(_embeds: MlxArray, _cache: Cache[], _bidir: MlxArray | null): MlxArray {
     throw new Error("universal-dense input-embedding path is not supported");

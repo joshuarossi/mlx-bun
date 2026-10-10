@@ -35,10 +35,11 @@ import { RMSNorm } from "../../layers/normalization";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { qwen35WeightsView } from "./checkpoint";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxPhaseForward, MlxTokenPhases, MlxVerifyForward } from "../../contracts/mlx/graph";
 import type { TargetView } from "../../contracts/mlx/draft-target";
 import type { MediaEncoders, MlxPromptInput, Vision } from "../../contracts/mlx/media";
 import { declareGraph } from "../capabilities";
+import { atEveryWidth } from "../graph";
 import { bindQwenMediaInput, qwenDraftTarget, qwenMediaEncoders } from "./media-input";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { gatedDeltaUpdate } from "../../kernels/delta/gated";
@@ -610,7 +611,7 @@ export class Qwen3Layer {
   }
 }
 
-export class Qwen35Model implements MlxDeclaredGraph {
+export class Qwen35Model implements MlxDeclaredGraph, MlxTokenPhases {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   /** Base path for LoRA target keys (weights carry the language_model prefix). */
@@ -739,6 +740,12 @@ export class Qwen35Model implements MlxDeclaredGraph {
     const h = this.embed.encode(ids);
     return this.forwardLayers(h, cache);
   }
+
+  prefillChunk(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  prefillTail(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  readonly decode = atEveryWidth<MlxPhaseForward>((ids, cache) => this.forwardHidden(ids, cache));
+  readonly verify = atEveryWidth<MlxVerifyForward>((ids, cache, capture) =>
+    this.forwardHiddenMixed([{ ids, cache, captureLayer: capture ?? undefined, preserveTokenGeometry: true }])[0]!);
 
   /** Borrowed request positions, including different positions for each row. */
   forwardHiddenAtPositions(ids: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {

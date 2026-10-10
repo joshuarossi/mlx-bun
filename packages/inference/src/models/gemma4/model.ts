@@ -33,7 +33,7 @@ import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxCompiledDecodeStep, MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxCompiledDecodeStep, MlxDeclaredGraph, MlxPhaseForward, MlxTokenPhases, MlxVerifyForward } from "../../contracts/mlx/graph";
 import { CompiledDecode } from "./compiled-decode";
 import type { TargetView } from "../../contracts/mlx/draft-target";
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
@@ -41,6 +41,7 @@ import { activePrefixLayout, ropeBlocks } from "../../layers/prefix-layout";
 import { gemma4Trainable, type GradCheckpointCtx, type LayerLoras } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, Vision } from "../../contracts/mlx/media";
 import { declareGraph } from "../capabilities";
+import { atEveryWidth } from "../graph";
 import { bindGemma4MediaInput, gemma4DraftTarget, gemma4MediaEncoders } from "./media";
 import { type Cache,type Mask,type SharedKv } from "../../contracts/mlx/cache";
 import { isCompiledTrace } from "../../runtime/compiled-trace";
@@ -566,7 +567,7 @@ export class DecoderLayer {
   }
 }
 
-export class Gemma4Model implements MlxDeclaredGraph {
+export class Gemma4Model implements MlxDeclaredGraph, MlxTokenPhases {
   #disposed = false;
   readonly config: ModelConfig;
   /** Total weight-shard bytes (for the conditional wired-limit scope). */
@@ -742,6 +743,12 @@ export class Gemma4Model implements MlxDeclaredGraph {
     h = disposing(h, ops.mulScalar(h, this.embedScale));
     return this.forwardLayers(h, cache, null, ids);
   }
+
+  prefillChunk(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  prefillTail(ids: MlxArray, cache: Cache[]): MlxArray { return this.forwardHidden(ids, cache); }
+  readonly decode = atEveryWidth<MlxPhaseForward>((ids, cache) => this.forwardHidden(ids, cache));
+  readonly verify = atEveryWidth<MlxVerifyForward>((ids, cache, capture) =>
+    this.forwardHiddenMixed([{ ids, cache, captureLayer: capture ?? undefined, preserveTokenGeometry: true }])[0]!);
 
   /** Per-layer inputs (reference _get_per_layer_inputs +
    *  _project_per_layer_inputs): [1, L, nLayers, perLayerWidth]. */
