@@ -370,7 +370,21 @@ Exit: acceptance rate on the paired MTP bench unchanged; no env read in `dflash2
 
 - [ ] Add the rules from the top of this file to `architecture.test.ts`, each proven on the
       synthetic workspace, with a ratchet table for files that still break them on landing, each
-      entry naming the plan item that removes it.
+      entry naming the plan item that removes it. Entries F1 found with no owner, now assigned:
+      - `execution/batch-group.ts` hot-path reads of `MLX_BUN_BATCH_VEC_SAMPLE` (a sampling-path
+        choice: a composition fact, E2) and `MLX_BUN_GRAMMAR_DEBUG` (a diagnostic: add it to the
+        development-hook allowlist by name, F1).
+      - `models/glm52/model.ts` `instanceof MLACache`: the GLM-5.2 MLA contract item listed under
+        B1's out-of-step work owns it; until that item has a number, it rides the ratchet.
+      - `models/minicpm5/model.ts` `MLX_BUN_COMPILED_SWIGLU`: D3, where a generic graph's env
+        switches become constructor choices.
+      - `models/qwen/qwen3_5.ts` `Qwen3MLP.forward` `instanceof TrellisLinear`/`QuantizedLinear`:
+        C1, where the MLP block takes its projection type at construction.
+      - `state/layout.ts` `prefillCacheLayout` branching on the cache class: B2, where the row
+        layout reads the cache's own declaration.
+      - `models/qwen/mtp.ts` `makeMask`: D3, the MTP companion reads through `attend`.
+      - `packages/training/src/kernels/flash-cce.ts` per-dispatch `runtimeValue`: C2's rule,
+        the choice becomes a constructor argument of the training kernel's owner.
 - [ ] Each new rule's failure message names the paved road, in the style of the existing
       "scheduling reaches storage through the row-layout port" message.
 - [ ] Make the library checks a required status check on `main`, so a PR with a failing gate is
