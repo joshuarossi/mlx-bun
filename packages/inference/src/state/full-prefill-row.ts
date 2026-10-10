@@ -99,8 +99,8 @@ export class FullPrefillRow implements Cache {
     this.inner = (this.inner as KVCache).toQuantized(groupSize, bits);
     return this;
   }
-  toTurboQuantized(kBits: number, vBits: number): FullPrefillRow {
-    this.inner = TurboQuantKVCache.fromKVCache(this.inner as KVCache, kBits, vBits);
+  toTurboQuantized(kBits: number, vBits: number, fusedDecode?: boolean): FullPrefillRow {
+    this.inner = TurboQuantKVCache.fromKVCache(this.inner as KVCache, kBits, vBits, fusedDecode);
     return this;
   }
   dispose(): void { this.inner.dispose(); this.padding.clear(); }

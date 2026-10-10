@@ -1,26 +1,46 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding, type DenseKvReads, type KvMaintenance } from "../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { SpeculativeTransitioningKvRows } from "./transitioning-kv-rows";
 import { AlignedRotatingCache, alignRotatingRows, RotatingAffineLayout, SpeculativeRotatingAffineLayout, RotatingKvPositions } from "./rotating-kv-layout";
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
 import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view";
+import { convertToAffine, transitionDue } from "./bf16-first-kv";
 
-/** Precision changes preserve each row's physical columns. The model owns
- * queries and scale; the shared lifecycle owns membership and conversion. */
-export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout> implements KvAttentionState, PaddedPrefillCache {
-  /** Plain reads per row, answered by this cache's own maintenance. */
-  readonly denseKvReads: DenseKvReads | undefined;
+/** The affine transition of `Bf16FirstRotatingQuantizedKVCache` over aligned
+ * ring rows: a plain ring converts its physical columns with its own
+ * `toQuantized` once it holds `start` positions. */
+function settleAffineRings(rows: Cache[], groupSize: number, bits: number, start: number): void {
+  for (let index = 0; index < rows.length; index++) {
+    const source = (rows[index] as AlignedRotatingCache).affineConversion;
+    if (source && transitionDue(source.offset, start)) rows[index] = convertToAffine(source, groupSize, bits, start);
+  }
+}
+
+/** The rows of the rotating affine bf16-first lego
+ * (`Bf16FirstRotatingQuantizedKVCache`) for continuous batching. Precision
+ * changes preserve each row's physical columns. The model owns queries and
+ * scale; the shared lifecycle owns membership and the transition (when a row
+ * converts is described on `TransitioningKvRows`). A `start` of `Infinity`
+ * never converts: the prefill cohort's layout for plain rings. The reads are
+ * the graph's call today: this layout's mask before the append, under the
+ * ring's window, then its attention view. */
+export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout>
+  implements KvAttentionState, PaddedPrefillCache, AttentionCache {
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number, readonly start: number,
-    readonly maintain: KvMaintenance, row?: Cache, readonly speculative = false) {
-    super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
+    row?: Cache, readonly speculative = false) {
+    super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start,
+      settle: rows => settleAffineRings(rows, groupSize, bits, start),
+      keepsDenseReads: row => {
+        const source = (row as AlignedRotatingCache).affineConversion;
+        return !source || !transitionDue(source.offset, start);
+      },
       converted: row => row instanceof AlignedRotatingCache && row.inner instanceof BatchedRotatingQuantCache,
       makeLayout: () => speculative ? new SpeculativeRotatingAffineLayout(maxSize, groupSize, bits) : new RotatingAffineLayout(maxSize, groupSize, bits), prepareRows: alignRotatingRows,
       packRows: (layout, rows) => layout.adoptAlignedRows(rows as readonly AlignedRotatingCache[]),
       extractRow: row => (row as AlignedRotatingCache).extract(speculative ? maxSize : undefined),
       rollbackRow: (row, before, keep, preserve) => (row as AlignedRotatingCache).rollback(before, keep, preserve) }, row, new RotatingKvPositions(maxSize));
-    this.denseKvReads = this.denseKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
@@ -37,6 +57,18 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
       return { mode: tokens === 1 ? "" as const : "causal" as const, arr: null };
     return super.makeMask(tokens, window);
   }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead { return this.#read(k, v); }
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead { return this.#read(k, v); }
+  /** The graph's read today: the mask from this layout before the append, with
+   * the ring's window, then the attention view the append returns. */
+  #read(k: MlxArray, v: MlxArray): AttentionRead {
+    const mask = this.makeMask(k.shape[2]!, this.maxSize);
+    let view: KvAttentionView;
+    try { view = this.appendAndFetch(k, v); } catch (error) { mask.arr?.dispose(); throw error; }
+    return { attend: (q, scale) => view.attend(q, scale, mask), dispose() { view.dispose(); mask.arr?.dispose(); } };
+  }
+
   preparePrefill(padding: PrefillPadding): void {
     if (!this.batchSize) {
       const rows = padding.lengths.map(() => new RotatingKVCache(this.maxSize));
@@ -61,12 +93,12 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
   get maxTokens(): number { return this.maxSize; }
   projectedBytes(tokens: number): number { return this.bytesPerToken() * Math.min(tokens, this.maxSize); }
   makeEmptyBatch(): DelayedRotatingQuantizedKVCache {
-    return new DelayedRotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.start, this.maintain, undefined, this.speculative);
+    return new DelayedRotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.start, undefined, this.speculative);
   }
   /** Plain keys and values while every row is still plain: each row's own
    * ring answers (one row keeps its physical columns and phase; several share
    * one aligned geometry) and rows join along the batch; the caller owns them.
-   * Once a row is converted, or the scheduled maintenance converts one, reading
+   * Once a row is converted, or the transition this append runs converts one, reading
    * plain is an error raised before any row appends. */
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     this.advancePlain();

@@ -1,6 +1,6 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache, Cache, KvMaintenance, Mask, DenseKvReads } from "../contracts/mlx/cache";
+import type { BatchableCache, Cache, Mask, DenseKvReads } from "../contracts/mlx/cache";
 import { KvTensorRows } from "./kv-tensor-rows";
 import { leaseCacheStates } from "./leases";
 import { minimumReusableOffset } from "./views";
@@ -16,10 +16,17 @@ export interface SpeculativeTransitionedKvLayout extends TransitionedKvLayout {
   specRoundCommit(): void;
   specRoundRollback(keep: number | readonly number[]): void;
 }
+/** One precision transition over a row layout, built with the layout's scheme:
+ * the same conversion the single-sequence legos make (`state/bf16-first-kv`). */
 export interface KvRowTransition<Layout extends TransitionedKvLayout> {
   readonly signature: string;
   readonly conversionOffset?: number;
-  maintain(rows: Cache[]): void;
+  /** Converts, in place, every row whose stored length has reached the
+   * conversion offset. Converted rows, and rows below the offset, stay. */
+  settle(rows: Cache[]): void;
+  /** Pure: whether `row`, reading dense now, still reads dense after `settle`
+   * next runs on it. */
+  keepsDenseReads(row: Cache): boolean;
   converted(row: Cache): boolean;
   makeLayout(): Layout;
   packRows?(layout: Layout, rows: readonly Cache[]): void;
@@ -51,7 +58,13 @@ export class FullKvPositions extends KvTensorRows implements TransitioningKvPosi
 /** Owns membership, committed positions and precision transitions. Codec and
  * attention adapters own tensor access; scheduling and persistence use the
  * existing batch and checkpoint contracts. Row conversion never examines an
- * uncommitted speculative suffix. */
+ * uncommitted speculative suffix.
+ *
+ * Rows convert before an append outside prefill, and during prefill only at
+ * each row's committed chunk boundary (`prefillMaintenance.commitPrefill`), so
+ * a sibling that splits a row's planned chunk across forwards does not move
+ * that row's precision boundary. This is why the transition runs here rather
+ * than at the end of each append, as the single-sequence legos run it. */
 export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> implements BatchableCache {
   protected readonly positions: TransitioningKvPositions;
   protected rows: Cache[] = [];
@@ -64,13 +77,21 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
     if (row) { this.rows = transition.prepareRows?.([row]) ?? [row]; this.syncPositions(); }
   }
   signature(): string { return this.transition.signature; }
+  /** Plain reads per row: the row reads dense now, by its own capability or
+   * the packed layout's, and still reads dense after the transition its next
+   * append runs (deferred during prefill; a packed layout is past it). */
+  readonly denseKvReads: DenseKvReads = { appendable: row => {
+    if (this.packed) return this.packed.denseKvReads?.appendable(row) ?? false;
+    const cache = this.rows[row];
+    return !!cache?.denseKvReads?.appendable(0) && (this.#prefilling || this.transition.keepsDenseReads(cache));
+  } };
   get prefillMaintenance() { return this; }
   beginPrefill(): void { this.#prefilling = true; }
   commitPrefill(indices: readonly number[]): void {
     if (this.packed) return;
     for (const index of indices) {
       const row = [this.rows[index]!];
-      try { this.transition.maintain(row); }
+      try { this.transition.settle(row); }
       finally { this.rows[index] = row[0]!; }
     }
   }
@@ -97,24 +118,9 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
     else { for (const row of this.rows) row.trim(count); this.syncPositions(true); }
   }
   protected syncPositions(preserve = false): void { this.positions.sync(this.rows, preserve); }
-  /** Dense reads answered by `maintain`'s own statement of what it leaves,
-   * bound to that maintenance once; undefined when it cannot answer. */
-  protected denseKvReadsOf(maintain: KvMaintenance): DenseKvReads | undefined {
-    if (!maintain.keepsDenseReads) return undefined;
-    const keeps = maintain.keepsDenseReads.bind(maintain);
-    return { appendable: row => this.denseAfterNextAppend(row, keeps) };
-  }
-  /** Pure: whether `row` reads dense now, by the packed layout's or the row's
-   * own capability, and still reads dense after the maintenance its next append
-   * schedules (deferred during prefill; a packed layout is past maintenance). */
-  protected denseAfterNextAppend(row: number, keeps: (cache: Cache, index: number) => boolean): boolean {
-    if (this.packed) return this.packed.denseKvReads?.appendable(row) ?? false;
-    const cache = this.rows[row];
-    return !!cache?.denseKvReads?.appendable(0) && (this.#prefilling || keeps(cache, row));
-  }
   /** Reject incompatible storage before appending any row: rows already
-   * converted refuse with no change; otherwise the scheduled maintenance runs
-   * (deferred during prefill), then every row must still be plain. */
+   * converted refuse with no change; otherwise the transition runs (deferred
+   * during prefill), then every row must still be plain. */
   protected advancePlain(): void {
     const plain = () => !this.packed && this.rows.every(row => !this.transition.converted(row));
     if (!plain()) throw new Error("mixed precision rows use their attention state");
@@ -123,7 +129,7 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
   }
   protected advance(): void {
     if (this.packed) return;
-    if (!this.#prefilling) this.transition.maintain(this.rows);
+    if (!this.#prefilling) this.transition.settle(this.rows);
     if (this.rows.length && this.rows.every(row => this.transition.converted(row))) {
       const packed = this.transition.makeLayout();
       try {

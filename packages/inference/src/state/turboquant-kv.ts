@@ -52,7 +52,9 @@ export function rotatedValueRead(keys: MlxArray, values: MlxArray, mask: MaskLea
  *  attends with `rotatedValueRead`, so the inverse value rotation happens
  *  inside the read and no caller sees rotated values. Decode passes no mask and
  *  a window the fused causal mask; at one query the two compute the same bits.
- *  This cache is full-attention only, so neither read builds a mask array. */
+ *  This cache is full-attention only, so neither read builds a mask array.
+ *  Built empty, it encodes from token zero, unlike the served path's
+ *  `Bf16FirstTurboQuantKVCache`, so its first chunk's numbers differ. */
 export class TurboQuantKVCache implements AttentionCache {
   readonly denseKvReads = decodedKvStorage;
   minimumReusableOffset = 0;
@@ -282,9 +284,12 @@ export class TurboQuantKVCache implements AttentionCache {
   /** Convert an existing bf16 KVCache/RotatingKVCache's live window in one
    *  shot: quantize the whole [.., :offset, :] region, preserve offset,
    *  dispose the source's arrays. Mirrors KVCache.toQuantized/
-   *  RotatingKVCache.toQuantized's contract (source cache is consumed). */
-  static fromKVCache(cache: KVCache | RotatingKVCache, kBits: number, vBits: number): TurboQuantKVCache {
-    const q = new TurboQuantKVCache(kBits, vBits);
+   *  RotatingKVCache.toQuantized's contract (source cache is consumed).
+   *  `fusedDecode` is the converted cache's decode policy; a caller that has
+   *  resolved it passes it, the default reads the runtime configuration. */
+  static fromKVCache(cache: KVCache | RotatingKVCache, kBits: number, vBits: number,
+    fusedDecode = turboQuantFusedDecode()): TurboQuantKVCache {
+    const q = new TurboQuantKVCache(kBits, vBits, fusedDecode);
     const [k, v] = cache.keys && cache.values ? cache.temporalView() : [null, null];
     if (k && v) {
       const D = k.shape[3]!;
