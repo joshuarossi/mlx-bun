@@ -111,10 +111,7 @@ export class RotatingKVCache implements CompiledDecodeCache, BidirectionalAttent
 
   /** The causal mask of a `N`-position window, before its append. */
   #windowMask(N: number): MaskLease {
-    const offset = Math.min(this.maxSize - 1, this.offset);
-    if (offset + N <= this.maxSize) return causalLease;
-    return this.masks.lease(`rotating:${this.maxSize}`, `${N}:${offset}`,
-      () => ({ mode: "array", arr: createCausalMask(N, offset, this.maxSize) }));
+    return rotatingWindowMask(this.masks, this.maxSize, this.offset, N);
   }
 
   /** DiffusionGemma's sliding-layer decoder mask over `storedLength` stored
@@ -480,6 +477,18 @@ export class RotatingKVCache implements CompiledDecodeCache, BidirectionalAttent
     this.#idx = 0;
     this.masks.clear();
   }
+}
+
+/** The causal mask of an `N`-position window over a `maxSize` ring holding
+ * `offset` positions, before the window's append: the fused kernel's causal
+ * mask while the window fits, the materialized sliding-window mask once it
+ * binds (`makeMask(N, maxSize)` of the plain and the affine ring). Leased from
+ * `masks` under one family, so plain and affine rings of one model share it. */
+export function rotatingWindowMask(masks: AttentionMasks, maxSize: number, offset: number, N: number): MaskLease {
+  const clamped = Math.min(maxSize - 1, offset);
+  if (clamped + N <= maxSize) return causalLease;
+  return masks.lease(`rotating:${maxSize}`, `${N}:${clamped}`,
+    () => ({ mode: "array", arr: createCausalMask(N, clamped, maxSize) }));
 }
 
 /** The rotating plain cache at steady state inside a compiled decode trace:

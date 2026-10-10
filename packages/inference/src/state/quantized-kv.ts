@@ -11,7 +11,11 @@ import { disposeTriple } from "./quantized-tensor";
  *  stored as (packed u32, scales, biases) triples, quantized along
  *  head_dim. Only full-attention layers convert (mlx-lm's rotating-cache
  *  quantization is NYI upstream; sliding layers are window-capped
- *  anyway). Attention dispatches to quantizedSdpa for these. */
+ *  anyway). Attention dispatches to quantizedSdpa for these.
+ *
+ *  Built empty, it quantizes from token zero: the first append is read
+ *  quantized, so the first chunk's numbers differ from today's served path
+ *  and mlx-lm's, which read it bf16 (`Bf16FirstQuantizedKVCache`). */
 export class QuantizedKVCache implements CompiledDecodeCache {
   minimumReusableOffset?: number;
   static readonly STEP = 256;

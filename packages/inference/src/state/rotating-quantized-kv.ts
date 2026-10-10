@@ -16,7 +16,10 @@ import { disposeTriple,mapTriple } from "./quantized-tensor";
  *  module docstring claims dequantize-on-read, but its code does not
  *  (port follows the code). optiq's producer-registry
  *  + SDPA patches are unnecessary here: our SharedKv carries
- *  groupSize/bits through the donor→sharer plumbing explicitly. */
+ *  groupSize/bits through the donor→sharer plumbing explicitly.
+ *
+ *  Built empty, it quantizes from token zero, unlike the served path's
+ *  `Bf16FirstRotatingQuantizedKVCache`, so its first chunk's numbers differ. */
 export class RotatingQuantizedKVCache implements CompiledDecodeCache {
   get quantizedAttention(): QuantizedAttentionState { return this; }
   declare minimumReusableOffset?: number;

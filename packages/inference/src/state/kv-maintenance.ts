@@ -68,11 +68,13 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       }
       return remaining;
     };
+    // The rows layout converts its own rows with the scheme it is built with;
+    // this maintenance never converts them.
     maintain.preparePrefill = (cache) => {
       for (let layer = 0; layer < cache.length; layer++) {
         const row = cache[layer]!;
         if (row instanceof KVCache || row instanceof TurboQuantKVCache)
-          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, maintain, row, fusedDecode);
+          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, fusedDecode, row);
       }
     };
     if (start > 0) maintain.prepareBatch = maintain.preparePrefill;
@@ -122,16 +124,17 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     }
     return remaining;
   };
+  // The rows layouts convert their own rows, each with its layer's scheme;
+  // this maintenance never converts them.
   maintain.preparePrefill = (cache) => {
     for (let layer = 0; layer < cache.length; layer++) {
       const row = cache[layer]!;
       if (!(row instanceof KVCache || row instanceof QuantizedKVCache || row instanceof RotatingKVCache || row instanceof RotatingQuantizedKVCache)) continue;
       const spec = byLayer ? byLayer.get(layer) : { bits: kvBits!, groupSize };
       if (!spec) continue;
-      const rowMaintenance = createKvMaintenance({ kvBits: spec.bits, kvGroupSize: spec.groupSize, quantizedKvStart: start });
       cache[layer] = row instanceof RotatingKVCache || row instanceof RotatingQuantizedKVCache
-        ? new DelayedRotatingQuantizedKVCache(row.maxSize, spec.groupSize, spec.bits, start, rowMaintenance, row)
-        : new DelayedQuantizedKVCache(spec.groupSize, spec.bits, start, rowMaintenance, row);
+        ? new DelayedRotatingQuantizedKVCache(row.maxSize, spec.groupSize, spec.bits, start, row)
+        : new DelayedQuantizedKVCache(spec.groupSize, spec.bits, start, row);
     }
   };
   if (start > 0) maintain.prepareBatch = maintain.preparePrefill;

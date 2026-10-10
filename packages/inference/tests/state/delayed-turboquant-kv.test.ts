@@ -7,6 +7,7 @@ import { KVCache } from "../../src/state/kv";
 import { TurboQuantKVCache } from "../../src/state/turboquant-kv";
 import { type Cache } from "../../src/contracts/mlx/cache";
 import { DelayedTurboQuantKVCache } from "../../src/state/delayed-turboquant-kv";
+import { turboQuantFusedDecode } from "../../src/state/turboquant-codec";
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import { cloneKvCaches } from "../../src/state/persistence";
 import { unrotateValues } from "../../src/kernels/turboquant/ops";
@@ -40,7 +41,7 @@ for (const fused of ["0", "1"]) test(`delayed TQ preserves exact row boundaries,
   const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 });
   let reference = [plain(3), plain(6)];
   const copies = cloneKvCaches(reference);
-  let group = new DelayedTurboQuantKVCache(8, 3, 5, maintain);
+  let group = new DelayedTurboQuantKVCache(8, 3, 5, turboQuantFusedDecode());
   group.mergeRows(copies); copies.forEach(c => c.dispose());
   let sawMixed = false, sawPacked = false;
   try {
@@ -122,7 +123,7 @@ for (const fused of ["0", "1"]) test(`speculative delayed TQ converts committed 
   const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
   const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 });
   let reference = [plain(3), plain(6)];
-  let group = new DelayedTurboQuantKVCache(8, 3, 5, maintain);
+  let group = new DelayedTurboQuantKVCache(8, 3, 5, turboQuantFusedDecode());
   group.mergeRows(reference);
   try {
     for (let round = 0; round < 5; round++) {

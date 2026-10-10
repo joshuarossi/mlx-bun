@@ -29,7 +29,10 @@ import { decodedKvStorage } from "./dense-kv-reads";
  *  streaming append is the whole point of a live cache) and returns the
  *  DEQUANTIZED bf16 active window so ops.sdpa runs unmodified — v1 pays
  *  a full-window dequant every step; the deferred-InvFWHT trick is a
- *  documented non-goal until the quality gate passes. */
+ *  documented non-goal until the quality gate passes.
+ *
+ *  Built empty, it encodes from token zero, unlike the served path's
+ *  `Bf16FirstTurboQuantKVCache`, so its first chunk's numbers differ. */
 export class TurboQuantKVCache implements Cache {
   readonly denseKvReads = decodedKvStorage;
   minimumReusableOffset = 0;
@@ -246,9 +249,12 @@ export class TurboQuantKVCache implements Cache {
   /** Convert an existing bf16 KVCache/RotatingKVCache's live window in one
    *  shot: quantize the whole [.., :offset, :] region, preserve offset,
    *  dispose the source's arrays. Mirrors KVCache.toQuantized/
-   *  RotatingKVCache.toQuantized's contract (source cache is consumed). */
-  static fromKVCache(cache: KVCache | RotatingKVCache, kBits: number, vBits: number): TurboQuantKVCache {
-    const q = new TurboQuantKVCache(kBits, vBits);
+   *  RotatingKVCache.toQuantized's contract (source cache is consumed).
+   *  `fusedDecode` is the converted cache's decode policy; a caller that has
+   *  resolved it passes it, the default reads the runtime configuration. */
+  static fromKVCache(cache: KVCache | RotatingKVCache, kBits: number, vBits: number,
+    fusedDecode = turboQuantFusedDecode()): TurboQuantKVCache {
+    const q = new TurboQuantKVCache(kBits, vBits, fusedDecode);
     const [k, v] = cache.keys && cache.values ? cache.temporalView() : [null, null];
     if (k && v) {
       const D = k.shape[3]!;

@@ -83,7 +83,7 @@ test.skipIf(!artifact || !reportPath)("padded prompt batches and continuation ma
   const { createModel } = await import("@mlx-bun/inference/models");
   const { RotatingKVCache, SSMCache, BatchedSSMCache, BatchedKVCache, SpeculativeRotatingKVCache,
     BatchedRotatingCache, DelayedQuantizedKVCache, DelayedTurboQuantKVCache,
-    DelayedRotatingQuantizedKVCache, createKvMaintenance } = await import("@mlx-bun/inference/state");
+    DelayedRotatingQuantizedKVCache, turboQuantFusedDecode } = await import("@mlx-bun/inference/state");
   const { MlxArray } = await import("@mlx-bun/mlx/array");
   const { Dtype, clearCache, MLX_VERSION } = await import("@mlx-bun/mlx/ffi");
   expect(report.runtime).toBe(MLX_VERSION);
@@ -96,13 +96,10 @@ test.skipIf(!artifact || !reportPath)("padded prompt batches and continuation ma
       // conversion. Mixed-precision attention/state has its separate geometry
       // gate; the live model oracle here retains its plain KV representation.
       const caches=source.map(c=>c instanceof SSMCache ? new BatchedSSMCache() : c instanceof RotatingKVCache
-        ? speculativeRotatingLayout ? new SpeculativeRotatingKVCache(c.maxSize) : delayedRotatingLayout ? new DelayedRotatingQuantizedKVCache(c.maxSize,64,4,Infinity,
-          createKvMaintenance({kvBits:4,kvGroupSize:64,quantizedKvStart:Infinity}))
+        ? speculativeRotatingLayout ? new SpeculativeRotatingKVCache(c.maxSize) : delayedRotatingLayout ? new DelayedRotatingQuantizedKVCache(c.maxSize,64,4,Infinity)
           : new BatchedRotatingCache(c.maxSize,Array(B).fill(0))
-          : delayedFullLayout === "affine" ? new DelayedQuantizedKVCache(64,4,Infinity,
-            createKvMaintenance({kvBits:4,kvGroupSize:64,quantizedKvStart:Infinity}))
-          : delayedFullLayout === "turbo" ? new DelayedTurboQuantKVCache(8,3,Infinity,
-            createKvMaintenance({turboQuant:{kBits:8,vBits:3},quantizedKvStart:Infinity})) : new BatchedKVCache());
+          : delayedFullLayout === "affine" ? new DelayedQuantizedKVCache(64,4,Infinity)
+          : delayedFullLayout === "turbo" ? new DelayedTurboQuantKVCache(8,3,Infinity,turboQuantFusedDecode()) : new BatchedKVCache());
       for(const c of source)c.dispose();
       try {
         for(const c of caches)c.preparePrefill({lengths:expected.side==='left'?Array(B).fill(width):prompts.map(p=>p.length),
