@@ -36,6 +36,17 @@ export interface HiddenLayerTapsTarget {
   readonly projection: DraftProjection;
 }
 
+/** A residual stream in another basis than the trained model's: the TurboQuant
+ *  R1 fold (packages/quantize/src/rotate.ts) stores h·R1, R1 = diag(s)·M, with s
+ *  the seed's lane-0 sign vector and M MLX's hadamard_transform/√n, and moves
+ *  the final-norm gain into the head. */
+export interface ResidualBasis {
+  /** Seed of R1's sign vector. */
+  readonly r1Seed: number;
+  /** The final-norm gain the fold moved into the head (effective, 1+w), one per hidden channel. */
+  readonly finalGain: Float32Array;
+}
+
 /** Graph-declared ports over the target's live state, named for what they
  * provide. Sources request only the ports they consume and never inspect a
  * concrete model or cache; a source refuses a target that lacks one with
@@ -46,6 +57,9 @@ export interface TargetView {
   readonly assistantRows?: AssistantRowsTarget;
   readonly hiddenLayerTaps?: HiddenLayerTapsTarget;
   readonly recurrentMtp?: RecurrentMtpTarget;
+  /** Declared by a graph whose residual stream carries a rotation fold; absent,
+   *  the stream is in the trained model's basis. The same object on every view. */
+  readonly residualBasis?: ResidualBasis;
 }
 
 export type TargetPort = "assistantRows" | "hiddenLayerTaps" | "recurrentMtp";

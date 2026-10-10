@@ -56,13 +56,15 @@ const deepspec: DraftProviderKind = {
 };
 
 /** DFlash 2 block drafters (z-lab/incoai): a plain HF config stamped
- *  DFlash2DraftModel. The width pins to block_size − 1 (7). */
+ *  DFlash2DraftModel. The width pins to block_size − 1 (7). Projections are
+ *  quantized to 4 bits at load (1.0 GB resident instead of the 3.85 GB BF16
+ *  checkpoint). */
 const dflash2: DraftProviderKind = {
   kind: "dflash2", artifact: true,
   detect: async artifact => isDflash2DrafterConfig(await artifact.config()),
   async load(request) {
     const { Dflash2Provider } = await import("./sources/dflash2-source");
-    const provider = await Dflash2Provider.load(artifactDir(request));
+    const provider = await Dflash2Provider.load(artifactDir(request), { bits: 4 });
     return { provider, numDraftTokens: pinned(request, provider.gamma) };
   },
 };

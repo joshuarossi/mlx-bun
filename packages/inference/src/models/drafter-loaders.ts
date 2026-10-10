@@ -4,7 +4,7 @@
 
 import type { ModelConfig } from "../artifacts/config";
 import type { Weights } from "../artifacts/weights";
-import type { AssistantDrafterModel, DeepspecDrafterModel, Dflash2DrafterModel, Dflash2TargetBasis, DsparkDrafterModel, NativeMtpHead, RecurrentMtpModule }
+import type { AssistantDrafterModel, DeepspecDrafterModel, Dflash2DrafterModel, DsparkDrafterModel, NativeMtpHead, RecurrentMtpModule }
   from "../contracts/mlx/drafter";
 import type { MlxDeclaredGraph } from "../contracts/mlx/graph";
 
@@ -20,9 +20,8 @@ export async function loadDeepspecDrafter(dir: string): Promise<DeepspecDrafterM
   return DeepspecDrafter.load(dir);
 }
 
-/** A DFlash 2 drafter in `dir` (projections quantized to `bits`, 0 = BF16). */
-export async function loadDflash2Drafter(dir: string,
-  opts: { bits?: number; basis?: Dflash2TargetBasis | null } = {}): Promise<Dflash2DrafterModel> {
+/** A DFlash 2 drafter in `dir`, in its trained basis (projections quantized to `bits`, 0 = BF16). */
+export async function loadDflash2Drafter(dir: string, opts: { bits: number }): Promise<Dflash2DrafterModel> {
   const { Dflash2Drafter } = await import("./speculative/dflash2");
   return Dflash2Drafter.load(dir, opts);
 }
