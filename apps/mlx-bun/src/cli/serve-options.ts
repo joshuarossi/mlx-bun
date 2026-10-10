@@ -33,7 +33,9 @@ export interface ServeOptions {
   adapterDir?: string;
   /** Main's speculative-decoding flags. `model` is the query as typed; startup
    * resolves it like the main model into `modelDir` before loading. */
-  draft?: { model?: string; modelDir?: string; kind?: DraftKind; numTokens?: number; ngramMax?: number; ngramMin?: number };
+  draft?: { model?: string; modelDir?: string; kind?: DraftKind; numTokens?: number; ngramMax?: number; ngramMin?: number;
+    /** `--num-draft-tokens adaptive`: per-round draft count from the graph's verify costs. */
+    adaptiveDepth?: boolean };
   /** Main's `--mtp on|off`: the checkpoint-native draft head; models without one ignore it. */
   mtp?: boolean;
   /** Main's `--whisper-*` and `--preload`: the speech-to-text companion. `model`

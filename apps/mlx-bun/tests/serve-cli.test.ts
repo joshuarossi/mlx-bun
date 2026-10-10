@@ -704,9 +704,10 @@ test("speculative flags keep main's validation and messages, and only reach the 
   expect(parse("--mtp", "on").mtp).toBe(true);
   expect(parse()).not.toHaveProperty("draft"); expect(parse()).not.toHaveProperty("mtp");
   expect(parse("--draft-kind", "mtp").draft).toEqual({ kind: "mtp" });
+  expect(parse("--draft-model", "tiny", "--num-draft-tokens", "adaptive").draft).toEqual({ model: "tiny", adaptiveDepth: true });
   for (const [args, message] of [
-    [["--num-draft-tokens", "0"], '--num-draft-tokens expects an integer >= 1 (got "0")'],
-    [["--num-draft-tokens", "1.5"], '--num-draft-tokens expects an integer >= 1 (got "1.5")'],
+    [["--num-draft-tokens", "0"], '--num-draft-tokens expects an integer >= 1 or "adaptive" (got "0")'],
+    [["--num-draft-tokens", "1.5"], '--num-draft-tokens expects an integer >= 1 or "adaptive" (got "1.5")'],
     [["--draft-kind", "lookahead"], "--draft-kind expects two-model|assistant|dspark|deepspec|mtp|ngram (got \"lookahead\")"],
     [["--draft-kind", "ngram", "--ngram-max", "x"], '--ngram-max expects an integer >= 1 (got "x")'],
     [["--draft-kind", "ngram", "--ngram-min", "6", "--ngram-max", "5"], "--ngram-min (6) must be <= --ngram-max (5)"],

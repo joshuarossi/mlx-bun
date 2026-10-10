@@ -42,7 +42,7 @@ const commands = {
     "hlg-pivot-offset": { type: "string", description: "HLG pivot: nats below the top token [default: 6]" },
     "draft-model": { type: "string", description: "Speculative decoding draft: a path or cached query resolved like the main model; kind auto-detected" },
     "draft-kind": { type: "string", description: "Draft kind override: two-model | assistant | dspark | deepspec | mtp | ngram (ngram is model-free; mtp alone mounts <model>/mtp/)" },
-    "num-draft-tokens": { type: "string", description: "Drafts per verify round, integer >= 1 [default: 3; ngram: 10]" },
+    "num-draft-tokens": { type: "string", description: "Drafts per verify round: an integer >= 1, or adaptive (each round's count, up to the drafter's width, from recent acceptance and the graph's measured verify costs; needs a graph measured on this machine) [default: 3; ngram: 10]" },
     "ngram-max": { type: "string", description: "Prompt-lookup longest k-gram, integer >= 1 (ngram only) [default: 3]" },
     "ngram-min": { type: "string", description: "Prompt-lookup shortest k-gram, integer >= 1 (ngram only) [default: 1]" },
     mtp: { type: "string", description: "Checkpoint-native multi-token-prediction draft head: on | off [default: on]; models without one ignore it" },
