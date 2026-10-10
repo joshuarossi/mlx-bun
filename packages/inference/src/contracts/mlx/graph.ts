@@ -92,4 +92,8 @@ export interface MlxDeclaredGraph {
   releaseCompiledDecode?(): void;
   /** Snapshot of the streamed expert residency, for diagnostics; null when the graph streams none. */
   expertResidency?(): Record<string, unknown> | null;
+  /** Measured cost of a verify forward by its row count, relative to one
+   *  single-row decode step (rows 1 = 1). Declared only by a graph measured on
+   *  the hardware it serves; speculative depth scheduling reads it. */
+  readonly verifyRoundCosts?: ReadonlyMap<number, number>;
 }

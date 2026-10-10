@@ -887,7 +887,8 @@ selects a token, continues with the same cache, and disposes cache before weight
 
 The direct graph imports currently include `models/gemma4`,
 `models/gemma4/generated`, `models/minicpm5`, `models/qwen3`, `models/qwen3-moe`,
-`models/qwen3_5`, `models/qwen38-27b-trellis-tq`, and `models/universal`.
+`models/qwen3_5`, `models/qwen38-27b-trellis-tq`, `models/qwen38-27b-trellis-m4pro`,
+and `models/universal`.
 `models/glm52`, `models/diffusion-gemma`, and `models/whisper` provide the other
 existing graph families. These retain the dedicated and specialized implementations.
 `@mlx-bun/inference/models` exposes the existing profile/implementation registry
@@ -898,6 +899,17 @@ that plan memory before opening weights (streamed experts) are opened with
 returns the plan from artifact headers, or null for models without one. A graph
 that carries its own draft head declares it (`GraphCapabilities.nativeDraft`), and
 `DraftProviderRegistry.native(graph)` builds the provider.
+
+`models/qwen38-27b-trellis-m4pro` is the graph for
+`mlx-bun/Qwen3.8-27B-Trellis-3.2bpw` on M4 Pro GPUs (`applegpu_g16s`).
+It resolves one plan per request shape at load: one row, 2..3, 4 and 5..8 rows
+(speculative verify), prompt chunks, and 640..2048-row chunks split between the
+Neural Engine and the GPU when the ANE bridge loads. Requests outside those plans
+(several sequences, independent-row appends, vision positions, array masks,
+mounted adapters, KV caches other than BF16 or 4-bit group-64) take the generic
+Qwen 3.5 forward. It declares `verifyRoundCosts`, its measured verify cost by
+row count, which the speculative group uses to choose each round's depth for
+block drafters.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
