@@ -4,15 +4,22 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { KVCache } from "./kv";
 import { isPlainKvCache } from "./capabilities";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionRead, type BatchableCache, type Cache, type CommittedAttentionCache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { FullPrefillPadding } from "./full-prefill-padding";
 import { plainKvStorage } from "./dense-kv-reads";
+import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease, type MaskLease } from "./attention-read";
 
 /** Full-attention storage with independently advancing row positions.
  * Speculative rollback changes coverage, without moving the retained KV.
  * Subsequent appends overwrite each row's rejected suffix in place when MLX
- * can donate the buffer. Queue membership is outside this layout. */
-export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
+ * can donate the buffer. Queue membership is outside this layout.
+ *
+ * Reads: append through `updateAndFetch`, then the stock fused SDPA. While
+ * every row is unpadded and at one position, decode passes no mask and a window
+ * the fused causal mask; otherwise both pass the per-row mask (causal, past
+ * each row's left padding) for their query count, built once per forward
+ * through `masks`. */
+export class BatchedKVCache implements BatchableCache, PaddedPrefillCache, CommittedAttentionCache {
   readonly denseKvReads = plainKvStorage;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
@@ -21,6 +28,42 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
   #rope: MlxArray | undefined;
   #beforeRound: number[] | undefined;
   readonly #padding = new FullPrefillPadding();
+
+  constructor(
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) {}
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.#read(k, v, this.#mask(1, unmaskedLease));
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.#read(k, v, this.#mask(k.shape[2]!, causalLease));
+  }
+
+  /** Fill spans run on this layout (the target layout of a full-attention
+   * layer). The graph qualifies bf16 committed spans as the window read
+   * (`supportsCommittedAppendCache` admits storage without `kvBits`), so a
+   * committed span reads exactly as a window does. */
+  appendCommitted(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.appendWindow(k, v);
+  }
+
+  #read(k: MlxArray, v: MlxArray, mask: MaskLease): AttentionRead {
+    return withLease(mask, held => {
+      const [keys, values] = this.updateAndFetch(k, v);
+      return sdpaRead(keys, values, held);
+    });
+  }
+
+  /** `aligned` while every row is unpadded at one position; otherwise the
+   * per-row mask of an `N`-position append, before it. */
+  #mask(N: number, aligned: MaskLease): MaskLease {
+    if (this.#aligned()) return aligned;
+    return this.masks.lease("batched-kv", `${N}|${this.rowOffsets.join(",")}|${this.leftPad.join(",")}`,
+      () => ({ mode: "array", arr: this.#rowMask(N, null) }));
+  }
 
   restorePrefillEnds(ends: readonly number[] | undefined): void { this.#padding.restoreEnds(ends); }
   preparePrefill(padding: PrefillPadding): void {
@@ -53,7 +96,7 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
     return this.#rope ??= ops.fromInt32(this.rowOffsets, [this.rowOffsets.length]);
   }
   #positionsChanged(): void { this.#rope?.dispose(); this.#rope = undefined; }
-  makeEmptyBatch(): BatchedKVCache { return new BatchedKVCache(); }
+  makeEmptyBatch(): BatchedKVCache { return new BatchedKVCache(this.masks); }
   bytesPerToken(): number {
     if (!this.keys || !this.values) return 0;
     return (this.keys.nbytes + this.values.nbytes) / (this.rowOffsets.length * this.keys.shape[2]!);
@@ -74,9 +117,18 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
   }
 
   makeMask(N: number, window: number | null): Mask {
+    if (window === null && this.#aligned()) return { mode: N === 1 ? "" : "causal", arr: null };
+    return { mode: "array", arr: this.#rowMask(N, window) };
+  }
+
+  #aligned(): boolean {
+    const ends = this.#ends();
+    return this.leftPad.every(pad => pad === 0) && ends.every(end => end === ends[0]);
+  }
+
+  /** Causal, past each row's left padding, within `window`: [B, 1, N, S]. */
+  #rowMask(N: number, window: number | null): MlxArray {
     const B = this.rowOffsets.length, ends = this.#ends(), S = this.offset + N;
-    if (window === null && this.leftPad.every(pad => pad === 0) && ends.every(end => end === ends[0]))
-      return { mode: N === 1 ? "" : "causal", arr: null };
     using starts = ops.fromInt32(ends, [B, 1, 1, 1]);
     using relative = ops.arange(0, N, 1, Dtype.int32);
     using queries = ops.reshape(relative, [1, 1, N, 1]);
@@ -87,11 +139,11 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
     using causal = ops.lessEqual(keys, position);
     using valid = ops.greaterEqual(keys, pads);
     const mask = ops.logicalAnd(causal, valid);
-    if (window === null) return { mode: "array", arr: mask };
+    if (window === null) return mask;
     using windowSize = ops.fromInt32([window], []);
     using limit = ops.add(keys, windowSize);
     using within = ops.less(position, limit);
-    try { return { mode: "array", arr: ops.logicalAnd(mask, within) }; }
+    try { return ops.logicalAnd(mask, within); }
     finally { mask.dispose(); }
   }
 
@@ -235,5 +287,6 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
     this.keys?.dispose(); this.values?.dispose(); this.#positionsChanged();
     this.keys = this.values = null;
     this.rowOffsets = []; this.leftPad = []; this.#beforeRound = undefined; this.#padding.clear();
+    this.masks.clear();
   }
 }

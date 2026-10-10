@@ -29,7 +29,7 @@ export function rollbackRotatingRing(ring: RotatingRing, before: readonly number
     let values: import("@mlx-bun/mlx/array").MlxArray;
     try { values = plainRowStorage.rollRows(ring.values!, indices); }
     catch (error) { keys.dispose(); throw error; }
-    next = BatchedRotatingCache.adoptPhysical(keys, values, plan.position);
+    next = BatchedRotatingCache.adoptPhysical(keys, values, plan.position, ring.masks);
   }
   ring.dispose(); return next;
 }

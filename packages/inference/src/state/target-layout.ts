@@ -27,13 +27,13 @@ export function targetRowLayoutFactory(cache: Cache): (() => TargetRowLayout) | 
     return () => new DelayedRotatingQuantizedKVCache(cache.maxSize, cache.groupSize, cache.bits, cache.start, cache.maintain, undefined, true);
   if (cache instanceof RotatingAffineLayout || cache instanceof RotatingQuantizedKVCache)
     return () => new SpeculativeRotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits);
-  if (cache instanceof RotatingKVCache || cache instanceof SpeculativeRotatingKVCache) return () => new SpeculativeRotatingKVCache(cache.maxSize);
+  if (cache instanceof RotatingKVCache || cache instanceof SpeculativeRotatingKVCache) return () => new SpeculativeRotatingKVCache(cache.maxSize, cache.masks);
   if (cache instanceof DelayedTurboQuantKVCache || cache instanceof DelayedQuantizedKVCache ||
       cache instanceof BatchedTurboQuantKVCache || cache instanceof BatchedKVCache ||
       cache instanceof BatchedQuantizedKVCache || cache instanceof BatchedSSMCache) return () => cache.makeEmptyBatch();
   if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
   if (cache instanceof SSMCache) return () => new BatchedSSMCache();
   if (cache instanceof QuantizedKVCache) return () => new BatchedQuantizedKVCache(cache.groupSize, cache.bits);
-  if (cache instanceof KVCache) return () => new BatchedKVCache();
+  if (cache instanceof KVCache) return () => new BatchedKVCache(cache.masks);
   return undefined;
 }
