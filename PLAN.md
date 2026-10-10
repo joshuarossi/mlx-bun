@@ -206,9 +206,16 @@ without a gate change.
       (DiffusionGemma's canvas pass, DFlash 2 block attention over the context).
 - [ ] `state/ssm.ts` implements `recurDecode` and `recurWindow`, and the training cache sits
       behind the same calls, which removes the `instanceof TrainingSSMCache` branch in the block.
-- [ ] Delete the device check (`applegpu_g16s` head-shape case) in `quantized-attention.ts` and
-      the env flag in `fusedSdpaSupported`: each cache has one kernel per read, chosen at
-      construction.
+- [ ] Delete the device check (`applegpu_g16s` head-shape case) in `quantized-attention.ts`
+      (B1b: grouped heads give the same bits as the plain kernel on the M4 Pro at every size
+      tried, so the case is a speed choice for the depth-2 verify composition, kept as its own
+      lego). The env flag `MLX_BUN_NO_FUSED_SDPA` is a composition rule the app writes today:
+      uniform `--kv-quant N` serves the unfused kernel (mlx-lm's port, parity) and
+      `--kv-quant config` the tiled one (OptiQ parity). The affine lego takes its kernels
+      explicitly at construction (`unfusedAffineKernels` / `tiledAffineKernels`, the tiled one
+      refusing a configuration that cannot tile) and the loader composes by the scheme's kind;
+      the flag read stays in the deprecated `quantizedSdpa` path, untouched, until the graphs
+      read through `attend` (D3) and the app stops writing it (E3).
 - [ ] Out of this step, each needing its own contract before its graph can move: GLM-5.2 MLA
       compressed attention (`models/glm52/mla.ts`), the Gemma assistant drafter's donor reads,
       softcap attention in the universal dense graph and the training flash path (these become
