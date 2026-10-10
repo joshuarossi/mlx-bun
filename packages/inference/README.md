@@ -755,6 +755,32 @@ M=1–5/8/9/16, M=32 for variants 11–13, and M=128/512 for variant 13.
 These are exact within-artifact specialization checks, not a Python oracle
 or timing claim.
 
+For variant 13, the `applegpu_g13s` single-row bf16 gate/up kernel at
+5120 → 17408, matching 2/3/4-bit widths, T=256 and L=12 shares a 16 KiB
+threadgroup codebook across sixteen output rows. Its values retain the unrefined
+float32 decoder contract, scale multiplication, accumulation order and activation
+tail. `MLX_BUN_TRELLIS_GATEUP_CODEBOOK=0` selects inline decoding for A/B runs.
+At the same qualified single-row bf16 geometry, mixed-width gate/up and the
+2/3/4-bit down kernels construct the decoder's integer value through exact
+float32 mantissa bits before the unchanged reciprocal multiply. This preserves
+scale multiplication and reduction order. These defaults are also limited to
+`applegpu_g13s`; `MLX_BUN_TRELLIS_MIXED_BITS=0`,
+`MLX_BUN_TRELLIS_SCATTER_BITS=0` (balanced 3-bit down) and
+`MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS=0` (2/4-bit down) select their original
+conversions. Other shapes and shared multi-row kernels keep their existing paths.
+The qualified down kernels also generate a 16 KiB float32 threadgroup codebook,
+using 128/512/256 threads for 2/3/4-bit weights respectively. All 128 partial sums
+and their reduction order remain unchanged.
+`MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK=0` selects the per-value decoder;
+disable this table as well when comparing the down representation controls.
+The [kernel test](tests/kernels/trellis-gateup-codebook.test.ts) checks all 4096
+codebook values, all 1021 possible integer decoder values and fused outputs;
+the [artifact test](tests/parity/trellis-gateup-codebook.test.ts)
+uses `MLX_BUN_TEST_TRELLIS_MODEL` to compare complete finite logits, live cache state
+and greedy continuation. The [standard-request benchmark](../../apps/mlx-bun/scripts/bench-trellis-gateup.ts)
+provides `--help`, requires local weights and an external output path, and runs
+one fixed prompt with 256 greedy tokens and MTP off.
+
 Run each file with `bun --no-env-file test <file>` and exclusive GPU access.
 Unset required paths skip before native imports; supplied invalid model paths
 or a partial padded-prefill opt-in fail. Open acceptance work lives in

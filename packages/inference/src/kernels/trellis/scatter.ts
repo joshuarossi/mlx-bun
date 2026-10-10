@@ -1,17 +1,19 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
+import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
+import { runtimeFlag } from "../../runtime/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
 import { HEADER, lutFor, decoderVariant, wordsPerBlock } from "./codebook";
-import { TRELLIS_THREADS, TRELLIS_SG_PER_TG } from "./launch";
+import { TRELLIS_THREADS } from "./launch";
 
 const SCATTER_SPLITS = 128;
 
 const SCATTER_SOURCE = String.raw`
   threadgroup float lutTG[4096];
-  if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
+  if ((VARIANT) == 2 || FLOAT_CODEBOOK) {
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += (uint)THREADS)
+      lutTG[i] = FLOAT_CODEBOOK ? trellis_unrefined_bits_y(trellis_y(i)) : lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -66,7 +68,8 @@ const SCATTER_SOURCE = String.raw`
       uint win = word >> offs[i];
       if (spill[i]) win |= nxt << (32u - offs[i]);
       win &= mask;
-      acc[i] = metal::fma(TRELLIS_ROUND(TRELLIS_DECODE(win, lutTG, lut) * sr), xr, acc[i]);
+      const float value = FLOAT_CODEBOOK ? lutTG[win] : (BITS_Y ? trellis_unrefined_bits_y(trellis_y(win)) : TRELLIS_DECODE(win, lutTG, lut));
+      acc[i] = metal::fma(TRELLIS_ROUND(value * sr), xr, acc[i]);
     }
   }
   const ulong outBase = ((ulong)sample * (ulong)SPLITS + split) * (ulong)C;
@@ -76,6 +79,12 @@ const SCATTER_SOURCE = String.raw`
 `;
 
 const BALANCED_SCATTER_SOURCE = String.raw`
+  threadgroup float lutTG[4096];
+  if (FLOAT_CODEBOOK) {
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += (uint)THREADS)
+      lutTG[i] = trellis_unrefined_bits_y(trellis_y(i));
+    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  }
   const uint lane = thread_index_in_simdgroup;
   const uint sg = simdgroup_index_in_threadgroup;
   const uint block = thread_position_in_grid.y * (uint)SG_TG + sg;
@@ -112,7 +121,8 @@ const BALANCED_SCATTER_SOURCE = String.raw`
       uint win = lo >> shift;
       if (shift + (uint)L > 32u) win |= hi << (32u - shift);
       win &= (1u << (uint)L) - 1u;
-      const float value = trellis_unrefined_y(trellis_y(win));
+      const int y = trellis_y(win);
+      const float value = FLOAT_CODEBOOK ? lutTG[win] : (BITS_Y ? trellis_unrefined_bits_y(y) : trellis_unrefined_y(y));
       acc[i] = metal::fma(value * sr, xr, acc[i]);
     }
   }
@@ -288,6 +298,19 @@ function scatterKernel(): MetalKernel {
     source: SCATTER_SOURCE, header: HEADER, ensureRowContiguous: true });
 }
 
+/** Geometry qualified for the single-row exact-representation kernels. */
+export function scatterBitsEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number): boolean {
+  return selected === 13 && m === 1 && dtype === Dtype.bfloat16 && g.axis === 0 &&
+    g.T === 256 && g.L === 12 && g.rows === 17408 && g.cols === 5120 &&
+    (g.k === 3 ? g.blockInterleave === 2 : (g.k === 2 || g.k === 4) && !g.blockInterleave);
+}
+
+/** Keep the generated float table behind the measured M1 geometry. */
+export function scatterFloatCodebookEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number,
+  architecture = deviceArchitecture()): boolean {
+  return architecture === "applegpu_g13s" && scatterBitsEligible(g, m, dtype, selected);
+}
+
 /** Borrow [M, inFeatures] and axis-0 weights; return owned lazy [M, outFeatures].
  * The caller selects a supported variant and limits M to 1..4. */
 export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, g: TrellisGeometry, selected: number, useSharedScatterCodebook = false): MlxArray {
@@ -299,6 +322,13 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
   const NP = Math.ceil(32 / g.k);
   const balanced = selected >= 8 && selected <= 13 && g.k === 3 && g.T === 256 && g.L <= 12;
   const shared = selected >= 10 && selected <= 13 && M > 1;
+  const bitsY = scatterBitsEligible(g, M, x2.dtype, selected) && (balanced
+    ? runtimeFlag("MLX_BUN_TRELLIS_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s")
+    : (g.k === 2 || g.k === 4) && runtimeFlag("MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS", deviceArchitecture() === "applegpu_g13s"));
+  const floatCodebook = scatterFloatCodebookEligible(g, M, x2.dtype, selected) &&
+    runtimeFlag("MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK", true);
+  const threads = floatCodebook ? (g.k === 3 ? 512 : g.k === 4 ? 256 : 128) : TRELLIS_THREADS;
+  const groupsPerThreadgroup = threads / 32;
   const codebook = useSharedScatterCodebook && selected === 13 &&
     (M === 3 || M === 4) && x2.dtype === Dtype.bfloat16 &&
     g.k === 3 && g.L === 12 && g.T === 256 && g.blockInterleave === 2;
@@ -307,11 +337,12 @@ export function trellisScatter(x2: MlxArray, codes: MlxArray, scales: MlxArray, 
     : balanced ? balancedScatterKernel() : scatterKernel();
   const [partial] = kernel.apply([x2, codes, scales, lutFor(g.L)], {
     outputs: [{ shape: [M, SCATTER_SPLITS, g.cols], dtype: Dtype.float32 }],
-    grid: [TRELLIS_THREADS, Math.ceil(groups / TRELLIS_SG_PER_TG), (shared ? 1 : M) * SCATTER_SPLITS],
-    threadGroup: [TRELLIS_THREADS, 1, 1],
+    grid: [threads, Math.ceil(groups / groupsPerThreadgroup), (shared ? 1 : M) * SCATTER_SPLITS],
+    threadGroup: [threads, 1, 1],
     templateDtypes: { T: x2.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: TRELLIS_SG_PER_TG,
-      SPLITS: SCATTER_SPLITS, NP, VARIANT: decoderVariant(selected), INTERLEAVE: g.blockInterleave ?? 0, CODEBOOK: Number(codebook) },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: groupsPerThreadgroup,
+      SPLITS: SCATTER_SPLITS, NP, VARIANT: decoderVariant(selected), INTERLEAVE: g.blockInterleave ?? 0, CODEBOOK: Number(codebook), BITS_Y: Number(bitsY),
+      FLOAT_CODEBOOK: Number(floatCodebook), THREADS: threads },
   });
   const sum = ops.sumAxis(partial!, 1, false);
   partial!.dispose();

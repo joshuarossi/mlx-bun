@@ -44,6 +44,13 @@ static inline float trellis_y_f32(uint s) {
   return as_type<float>(0x4b000000u | uint(trellis_y(s) + 510)) - 8389118.0f;
 }
 #define TRELLIS_RCP (1.0f / 147.800537109375f)
+// For y in [-510, 510], 2^23 has unit f32 spacing, so setting its low
+// mantissa bits constructs 2^23+y+510 exactly. Subtracting 2^23+510
+// recovers the same f32 y as the integer conversion; the reciprocal is unchanged.
+static inline float trellis_unrefined_bits_y(int y) {
+  const float lifted = as_type<float>(0x4b000000u | uint(y + 510));
+  return (lifted - 8389118.0f) * (1.0f / 147.800537109375f);
+}
 // VARIANT: 0 = inline 1MAD + precise divide; 1 = inline 1MAD × reciprocal
 // (1 ulp risk vs the host LUT); 2 = 4096-entry f32 LUT in threadgroup memory;
 // 3 = the same LUT gathered from device memory.
