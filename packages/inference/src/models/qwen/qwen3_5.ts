@@ -100,17 +100,18 @@ export function compiledSilu(x: MlxArray): MlxArray {
 // as a standalone sigmoid + multiply in Qwen3Attention.forward so the dispatched
 // kernel set matches the reference; there is no compiled-output-gate helper.
 
-/** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). */
-export class GatedDeltaNet {
+/** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). `loadLinear`
+ *  chooses the projection layer (default QuantizedLinear); the graph is the same. */
+export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
   /** Per-model seam; null retains the oracle graph (weightless rms_norm, then a
    *  scalar multiply). When set, the scale rides in as the norm's weight: MLX's
    *  kernel writes `w * T(x * inv)`, the same bf16 product, in one kernel. bf16 only. */
   qkScale: { readonly q: MlxArray; readonly k: MlxArray } | null = null;
-  readonly inProjQkv: QuantizedLinear;
-  readonly inProjZ: QuantizedLinear;
-  readonly inProjB: QuantizedLinear;
-  readonly inProjA: QuantizedLinear;
-  readonly outProj: QuantizedLinear;
+  readonly inProjQkv: L;
+  readonly inProjZ: L;
+  readonly inProjB: L;
+  readonly inProjA: L;
+  readonly outProj: L;
   readonly convWeight: MlxArray;
   readonly aLog: MlxArray;
   readonly dtBias: MlxArray;
@@ -124,7 +125,8 @@ export class GatedDeltaNet {
   readonly valueDim: number;
   readonly convKernel: number;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+  constructor(weights: Weights, config: ModelConfig, prefix: string,
+    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>) {
     const t = config.text;
     this.numKHeads = t.linearNumKeyHeads;
     this.numVHeads = t.linearNumValueHeads;
@@ -134,11 +136,11 @@ export class GatedDeltaNet {
     this.valueDim = this.headVDim * this.numVHeads;
     this.convKernel = t.linearConvKernelDim;
     this.eps = t.rmsNormEps;
-    this.inProjQkv = QuantizedLinear.load(weights, `${prefix}.in_proj_qkv`, config);
-    this.inProjZ = QuantizedLinear.load(weights, `${prefix}.in_proj_z`, config);
-    this.inProjB = QuantizedLinear.load(weights, `${prefix}.in_proj_b`, config);
-    this.inProjA = QuantizedLinear.load(weights, `${prefix}.in_proj_a`, config);
-    this.outProj = QuantizedLinear.load(weights, `${prefix}.out_proj`, config);
+    this.inProjQkv = loadLinear(weights, `${prefix}.in_proj_qkv`, config);
+    this.inProjZ = loadLinear(weights, `${prefix}.in_proj_z`, config);
+    this.inProjB = loadLinear(weights, `${prefix}.in_proj_b`, config);
+    this.inProjA = loadLinear(weights, `${prefix}.in_proj_a`, config);
+    this.outProj = loadLinear(weights, `${prefix}.out_proj`, config);
     this.convWeight = weights.tensor(`${prefix}.conv1d.weight`);
     this.aLog = weights.tensor(`${prefix}.A_log`);
     this.dtBias = weights.tensor(`${prefix}.dt_bias`);
@@ -363,10 +365,16 @@ export class GatedDeltaNet {
  *  quantized in the MTP companion. Only QuantizedLinear reads `independentRows`. */
 export interface AttentionLinear { forward(x: MlxArray, independentRows?: boolean): MlxArray }
 export type AttentionLinearLoader<L extends AttentionLinear> = (weights: Weights, path: string, config: ModelConfig) => L;
+/** Attention over a quantized KV cache: q [B, H, L, D] against the packed
+ *  keys/values → [B, H, L, D]. */
+export type QuantizedAttentionCore = (q: MlxArray, keys: ops.QuantizedTensor, values: ops.QuantizedTensor, scale: number,
+  mask: Mask, groupSize: number, bits: number) => MlxArray;
 
 /** Full (softmax) attention with output gate + q/k norm + partial RoPE.
  *  `loadLinear` chooses the projection type (the MTP companion loads dense or
- *  quantized heads); the graph itself is the same. */
+ *  quantized heads); `quantizedCore`, when given, attends over quantized KV
+ *  caches in place of the default (append attention for independent rows,
+ *  else quantizedSdpa). The graph itself is the same. */
 export class Qwen3Attention<L extends AttentionLinear = QuantizedLinear> {
   readonly qProj: L;
   readonly kProj: L;
@@ -383,7 +391,8 @@ export class Qwen3Attention<L extends AttentionLinear = QuantizedLinear> {
 
   constructor(weights: Weights, config: ModelConfig, prefix: string,
     // The default projection type L is QuantizedLinear (the loader's own type).
-    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>) {
+    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>,
+    readonly quantizedCore: QuantizedAttentionCore | null = null) {
     const t = config.text;
     this.nHeads = t.numAttentionHeads;
     this.nKvHeads = t.numKeyValueHeads;
@@ -467,7 +476,9 @@ export class Qwen3Attention<L extends AttentionLinear = QuantizedLinear> {
       k.dispose();
       v.dispose();
       lap("attnCache", [keys.packed, keys.scales, keys.biases, values.packed, values.scales, values.biases]);
-      attn = independentRows && L > 1
+      attn = this.quantizedCore
+        ? this.quantizedCore(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits)
+        : independentRows && L > 1
         ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
         : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
