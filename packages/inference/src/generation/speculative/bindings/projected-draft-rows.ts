@@ -15,6 +15,9 @@ export interface ProjectedDraftMethod {
   layers: number;
   project(hidden: MlxArray, positions: number | MlxArray): { k: MlxArray; v: MlxArray }[];
   draft(context: ReturnType<MlxProjectedContextRows["readAttention"]>, pending: readonly number[], positions: number | MlxArray, depth: number): number[][];
+  /** Optional device-resident proposals [B, depth], row-major: the round reads
+   *  them back together with the verify samples. */
+  draftDevice?(context: ReturnType<MlxProjectedContextRows["readAttention"]>, pending: readonly number[], positions: number | MlxArray, depth: number): MlxArray;
 }
 
 /** Provider numerics compose with shared context membership and persistence. */
@@ -59,6 +62,17 @@ class ProjectedDraftRows implements DraftPrefillGroup, DraftRowGroup {
     using offsets = positions.every(position => position === positions[0]) ? null : ops.fromInt32([...positions], [pending.length]);
     try { return this.method.draft(donors, pending, offsets ?? positions[0]!, depth); }
     finally { donors.dispose(); }
+  }
+  draftDevice(pending: readonly number[], depth: number):
+    { tokens: MlxArray; resolve(read: readonly number[]): number[][] } | null {
+    if (!depth || !this.method.draftDevice) return null;
+    const positions = this.context.positions, donors = this.context.readAttention();
+    using offsets = positions.every(position => position === positions[0]) ? null : ops.fromInt32([...positions], [pending.length]);
+    try {
+      const tokens = this.method.draftDevice(donors, pending, offsets ?? positions[0]!, depth);
+      const width = tokens.shape[1]!;
+      return { tokens, resolve: read => pending.map((_, row) => read.slice(row * width, (row + 1) * width)) };
+    } finally { donors.dispose(); }
   }
   commit(accepted: readonly number[], hidden: MlxArray): void {
     this.context.append(hidden, accepted.map(count => count + 1));

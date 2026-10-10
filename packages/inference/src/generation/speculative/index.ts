@@ -13,5 +13,6 @@ export * from "./sources/qwen-mtp-source";
 export * from "./sources/glm52-mtp-source";
 export * from "./sources/deepspec-source";
 export * from "./sources/dflash-source";
+export * from "./sources/dflash2-source";
 export * from "./sources/ngram-source";
 export { specServeRun as generateSpeculative } from "./run";

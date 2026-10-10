@@ -935,8 +935,7 @@ Neural Engine and the GPU when the ANE bridge loads. Requests outside those plan
 (several sequences, independent-row appends, vision positions, array masks,
 mounted adapters, KV caches other than BF16 or 4-bit group-64) take the generic
 Qwen 3.5 forward. It declares `verifyRoundCosts`, its measured verify cost by
-row count, which the speculative group uses to choose each round's depth for
-block drafters.
+row count, which adaptive draft depth reads.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
@@ -1149,7 +1148,14 @@ candidate instead of its shared-weight scalar reduction. Both are experiments;
 the current runtime dispatch is unchanged.
 
 `generation/speculative` exposes `generateSpeculative`, `specRun`, and the existing
-assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal providers.
+assistant, two-model, Qwen/GLM MTP, DFlash, DFlash 2, DeepSpec, and n-gram proposal providers.
+DFlash 2 (`incoai/Qwen3.8-27B-DFlash2`) drafts a whole block in one pass from
+five tapped target layers; it runs only in the batched speculative lane, with
+its projections quantized to 4 bits at load. `bindMlxGateway(model, { provider,
+numDraftTokens, adaptiveDepth })` drafts `numDraftTokens` every round, or with
+`adaptiveDepth` chooses each round's count (up to that) from the decayed
+acceptance rate and the graph's declared `verifyRoundCosts`. A target whose residual stream
+carries a TurboQuant R1 fold names its basis file in `MLX_BUN_DFLASH2_TARGET_BASIS`.
 Supply the target graph, draft provider, token budget, and token callback yourself.
 `specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.

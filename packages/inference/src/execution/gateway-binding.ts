@@ -86,7 +86,11 @@ function certifiesDenseKvReads(model: MlxTokenGraph, scheme: KvScheme): boolean 
   } finally { disposeResources(caches); }
 }
 
-export function bindMlxGateway(model: MlxTokenGraph, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
+/** `adaptiveDepth`: each round drafts up to `numDraftTokens`, chosen from the
+ *  decayed acceptance rate and the graph's measured `verifyRoundCosts` (the
+ *  graph must declare them); otherwise every round drafts `numDraftTokens`. */
+export function bindMlxGateway(model: MlxTokenGraph,
+  draft?: { provider: DraftProvider; numDraftTokens: number; adaptiveDepth?: boolean }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
   // The declarations are resolved once, when the graph is bound; planning reads
@@ -142,7 +146,7 @@ export function bindMlxGateway(model: MlxTokenGraph, draft?: { provider: DraftPr
   // Any provider meeting those operations binds; one that cannot bind is refused
   // by placement rather than served ordinarily.
   const speculative = !denoising && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
-    ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
+    ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens, draft.adaptiveDepth ?? false) : undefined;
   // Committed spans serve the direct grammar jump, held to the graph's declared
   // dense-read layers, as its ordinary rows are: every layer of a graph reading
   // dense KV; none of a graph whose delayed affine rows are ordinary-only, as it
