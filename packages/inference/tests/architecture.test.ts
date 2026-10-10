@@ -464,8 +464,23 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
 //   cache-class      `instanceof <concrete cache class>` outside `state/` and the graphs in `models/`.
 //   model-env-flag   an env flag whose name holds a family name, read outside `models/`.
 //   scheduler-core   scheduler core files import only contracts, runtime and each other.
+//
+// The composition rules (PLAN.md, "Composition refactor") ride the same ratchet; each failure names the paved road:
+//
+//   graph-extends    a class in `models/` extending a graph class (one that declares `graphCapabilities`, implements
+//                    `MlxDeclaredGraph` or `MlxTokenPhases`, or extends such a class), and `super.` reads of a graph's
+//                    forward, head or capture there.
+//   hot-path-read    a runtime flag, env read, `deviceArchitecture()`, `globalThis` access or `instanceof` of a class
+//                    from `layers/`, `state/` or `models/`, inside a forward/decode/verify/prefill/attend/append/recur/
+//                    step body, any function in inference `layers/` and `kernels/` and training `kernels/`, and (in
+//                    inference `models/`, `execution/`, `generation/`, `state/`, `scoring/`) any same-file helper a hot
+//                    function calls. Construction, acceptance, the loader, `runtime/` and the app's engine load path
+//                    are exempt; profiling hooks are exempt by name.
+//   cache-escape     the representation-specific cache reads and conversions, outside `state/` and the cache contract.
+//   phase-by-shape   `forwardHidden`/`forwardHiddenMixed` reached from `execution/` and `generation/`.
 // ---------------------------------------------------------------------------------------------
-type RatchetRule = "model-class" | "family-subpath" | "family-identity" | "cache-class" | "model-env-flag" | "scheduler-core";
+type RatchetRule = "model-class" | "family-subpath" | "family-identity" | "cache-class" | "model-env-flag" | "scheduler-core" |
+  "graph-extends" | "hot-path-read" | "cache-escape" | "phase-by-shape";
 interface Finding { rule: RatchetRule; file: string; line: number; text: string }
 type RatchetTable = Partial<Record<RatchetRule, Record<string, number>>>;
 
@@ -503,6 +518,228 @@ function nameAndClassChecks(source: ts.SourceFile): { instances: { name: string;
 
 const nodeModules = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), "bun", "bun:ffi", "bun:sqlite"]);
 
+/** What to do instead, printed with a composition rule's failure. */
+const pavedRoad: Partial<Record<RatchetRule, string>> = {
+  "graph-extends": "A specialized graph is an entire graph; generate it with the family's generator under `packages/inference/scripts/` and compose shared blocks, never inherit a graph.",
+  "hot-path-read": "This fact was fixed when the composition was built; read it in the constructor or the loader and store the result, or make the alternative a separately constructed layer or kernel.",
+  "cache-escape": "The cache owns its read; append through `appendDecode`/`appendWindow` (or the named committed, bidirectional and block reads) and call `attend` on what it returns.",
+  "phase-by-shape": "The scheduler names the phase it is in: call `prefillChunk`, `prefillTail`, `decode[width]` or `verify[width]` from `MlxTokenPhases`.",
+};
+
+const lineOf = (source: ts.SourceFile, node: ts.Node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+
+/** Reads of the named members: `x.name`, `x["name"]`, `const { name } = x`, and the probe `"name" in x`. A class's
+ * own `#private` members never match. */
+function memberReads(source: ts.SourceFile, names: ReadonlySet<string>): { name: string; node: ts.Node; receiver: ts.Node | undefined }[] {
+  const found: { name: string; node: ts.Node; receiver: ts.Node | undefined }[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name) && names.has(node.name.text))
+      found.push({ name: node.name.text, node, receiver: node.expression });
+    else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && names.has(node.argumentExpression.text))
+      found.push({ name: node.argumentExpression.text, node, receiver: node.expression });
+    else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+      const key = node.propertyName ?? node.name;
+      if ((ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && names.has(key.text)) found.push({ name: key.text, node, receiver: undefined });
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+        ts.isStringLiteralLike(node.left) && names.has(node.left.text))
+      found.push({ name: node.left.text, node, receiver: node.right });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** The graph contract, structurally: a class that declares `graphCapabilities` or implements one of these. */
+const graphContract = new Set(["MlxDeclaredGraph", "MlxTokenPhases"]);
+/** A graph's forward, head and capture: what a subclass borrows through `super` from the graph it extends. */
+const graphForwards = new Set(["forwardLayers", "forwardHidden", "forwardHiddenMixed", "logitsFromHidden", "captureLayer"]);
+
+/** Every class in `models/` that extends a graph class. A graph class declares `graphCapabilities`, implements the
+ * graph contract or extends a graph class; bases resolve by name across `models/`, through import aliases. */
+function graphExtensions(sources: ReadonlyMap<string, ts.SourceFile>, modelsRoot: string): { file: string; line: number; text: string }[] {
+  const classes: { name: string; base: string | undefined; declares: boolean; file: string; line: number }[] = [];
+  const rightmost = (node: ts.Expression) => ts.isIdentifier(node) ? node.text : ts.isPropertyAccessExpression(node) ? node.name.text : undefined;
+  for (const [file, source] of sources) {
+    if (!file.startsWith(modelsRoot + "/")) continue;
+    const imported = new Map<string, string>();
+    for (const statement of source.statements) {
+      const bindings = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : undefined;
+      if (bindings && ts.isNamedImports(bindings))
+        for (const item of bindings.elements) imported.set(item.name.text, (item.propertyName ?? item.name).text);
+    }
+    const visit = (node: ts.Node) => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+        const clause = (token: ts.SyntaxKind) => node.heritageClauses?.find(item => item.token === token)?.types ?? [];
+        const extended = clause(ts.SyntaxKind.ExtendsKeyword)[0];
+        const local = extended && rightmost(extended.expression);
+        classes.push({
+          name: node.name?.text ?? (ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) ? node.parent.name.text : "(anonymous class)"),
+          base: local && ts.isIdentifier(extended.expression) ? imported.get(local) ?? local : local,
+          declares: node.members.some(member => member.name !== undefined && ts.isIdentifier(member.name) && member.name.text === "graphCapabilities") ||
+            clause(ts.SyntaxKind.ImplementsKeyword).some(type => graphContract.has(rightmost(type.expression) ?? "")),
+          file, line: lineOf(source, extended ?? node),
+        });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  const graphs = new Set(classes.filter(item => item.declares).map(item => item.name));
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const item of classes) if (item.base && graphs.has(item.base) && !graphs.has(item.name)) { graphs.add(item.name); grown = true; }
+  }
+  return classes.filter(item => item.base && graphs.has(item.base))
+    .map(item => ({ file: item.file, line: item.line, text: `${item.name} extends ${item.base}` }));
+}
+
+/** The class names declared at the top level of the files under `roots`. */
+function declaredClasses(sources: ReadonlyMap<string, ts.SourceFile>, roots: readonly string[]): string[] {
+  const names: string[] = [];
+  for (const [file, source] of sources)
+    if (roots.some(root => file.startsWith(root + "/")))
+      for (const node of source.statements) if (ts.isClassDeclaration(node) && node.name) names.push(node.name.text);
+  return names;
+}
+
+/** Functions on the hot path, by name, and the ones where composition facts are read. */
+const hotPrefix = /^(forward|decode|verify|prefill|attend|append|recur|step)/;
+const settledName = /(Accepts|Eligible)$/;
+const settledStatics = new Set(["build", "load", "create"]);
+const flagReaders = new Set(["runtimeFlag", "runtimeValue", "runtimeNumber", "runtimeConfig"]);
+/** A stored runtime snapshot read by flag name: `config.flag("MLX_BUN_X", ...)`. */
+const snapshotReaders = new Set(["flag", "value", "number"]);
+/** Development profiling hooks a hot path may still read, listed by name. */
+const profilingHooks = new Set(["__deltaProf", "__opCount", "MLX_BUN_SPEC_PHASE_TIMING", "MLX_BUN_SPEC_LAYER_PROFILE",
+  "MLX_BUN_SPEC_OP_INVENTORY", "MLX_BUN_SPEC_DEVICE_ROUND"]);
+/** Where composition facts are read: the loader (inference-relative) and the app's engine load path (app-relative). */
+const loaderFiles = new Set(["models/factory.ts", "models/implementation.ts", "models/runtime.ts"]);
+const engineLoadPath = new Set(["engine/model-host.ts", "engine/cache-services.ts"]);
+/** Inference directories where a hot function's same-file helpers are hot too. Apps keep the name-only rule. */
+const closureDirectories = ["models/", "execution/", "generation/", "state/", "scoring/"];
+
+type FunctionNode = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | ts.MethodDeclaration |
+  ts.ConstructorDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration;
+const isFunctionNode = (node: ts.Node): node is FunctionNode => ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) ||
+  ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node) ||
+  ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node);
+
+/** The name a function is called by: its own, or the variable, property or member it is assigned to. */
+function functionName(node: FunctionNode): string | undefined {
+  const text = (name: ts.Node | undefined) => name && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteralLike(name))
+    ? name.text.replace(/^#/, "") : undefined;
+  if (!ts.isConstructorDeclaration(node) && node.name) return text(node.name);
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) return text(parent.name);
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(parent.left))
+    return text(parent.left.name);
+  return undefined;
+}
+
+/** "hot" for a forward-path name, "settled" for construction and acceptance; any other function inherits its enclosing one's. */
+function pathOf(node: FunctionNode): "hot" | "settled" | undefined {
+  if (ts.isConstructorDeclaration(node)) return "settled";
+  const name = functionName(node);
+  if (name === undefined) return undefined;
+  if (settledName.test(name) || (ts.isMethodDeclaration(node) && settledStatics.has(name) &&
+      node.modifiers?.some(item => item.kind === ts.SyntaxKind.StaticKeyword))) return "settled";
+  return hotPrefix.test(name) ? "hot" : undefined;
+}
+
+/** Run-time reads of facts the composition fixed, inside hot-path functions. `everyFunction` (layers and kernels): every
+ * function is on the path unless it is a settled one. `closure`: a same-file helper a hot function calls, directly or
+ * through other same-file helpers, is hot too. `classes`: the classes `layers/`, `state/` and `models/` declare. */
+function hotPathReads(source: ts.SourceFile, scope: { everyFunction: boolean; closure: boolean }, classes: ReadonlySet<string>): { text: string; node: ts.Node }[] {
+  const found: { text: string; node: ts.Node }[] = [];
+  const promoted = new Set<ts.Node>();
+  const pathIn = (node: FunctionNode, enclosing: "hot" | "settled" | undefined) =>
+    pathOf(node) ?? (promoted.has(node) ? "hot" : undefined) ?? enclosing ?? (scope.everyFunction ? "hot" : undefined);
+  if (scope.closure) {
+    const named = new Map<string, FunctionNode[]>();
+    const collect = (node: ts.Node) => {
+      const name = isFunctionNode(node) ? functionName(node) : undefined;
+      if (name !== undefined) named.set(name, [...named.get(name) ?? [], node as FunctionNode]);
+      ts.forEachChild(node, collect);
+    };
+    collect(source);
+    // `helper()` and `this.helper()`/`this.#helper()` from a hot function promote that helper, until nothing changes.
+    let grown = true;
+    const promote = (node: ts.Node, path: "hot" | "settled" | undefined) => {
+      if (isFunctionNode(node)) path = pathIn(node, path);
+      if (path === "hot" && ts.isCallExpression(node)) {
+        const callee = ts.isIdentifier(node.expression) ? node.expression.text : ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.expression.kind === ts.SyntaxKind.ThisKeyword ? node.expression.name.text.replace(/^#/, "") : undefined;
+        for (const helper of callee === undefined ? [] : named.get(callee) ?? [])
+          if (pathOf(helper) === undefined && !promoted.has(helper)) { promoted.add(helper); grown = true; }
+      }
+      ts.forEachChild(node, child => promote(child, path));
+    };
+    while (grown) { grown = false; promote(source, undefined); }
+  }
+  const literal = (node: ts.Node | undefined) => node && ts.isStringLiteralLike(node) ? node.text : undefined;
+  const memberOf = (node: ts.Node): string | undefined => {
+    while (ts.isParenthesizedExpression(node.parent) || ts.isAsExpression(node.parent) || ts.isTypeAssertionExpression(node.parent) ||
+      ts.isNonNullExpression(node.parent) || ts.isSatisfiesExpression(node.parent)) node = node.parent;
+    const parent = node.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return parent.name.text;
+    if (ts.isElementAccessExpression(parent) && parent.expression === node) return literal(parent.argumentExpression);
+    return undefined;
+  };
+  const read = (text: string, name: string | undefined, node: ts.Node) => {
+    if (name === undefined || !profilingHooks.has(name)) found.push({ text: name === undefined ? text : `${text} ${name}`, node });
+  };
+  const visit = (node: ts.Node, path: "hot" | "settled" | undefined) => {
+    if (isFunctionNode(node)) path = pathIn(node, path);
+    if (path === "hot") {
+      if (ts.isCallExpression(node)) {
+        const callee = ts.isIdentifier(node.expression) ? node.expression.text :
+          ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
+        // runtimeConfig().flag("MLX_BUN_X") names its flag on the call it feeds.
+        const fed = ts.isPropertyAccessExpression(node.parent) && ts.isCallExpression(node.parent.parent) &&
+          node.parent.parent.expression === node.parent ? literal(node.parent.parent.arguments[0]) : undefined;
+        const receiver = ts.isPropertyAccessExpression(node.expression) ? node.expression.expression : undefined;
+        const fromReader = receiver !== undefined && ts.isCallExpression(receiver) && ts.isIdentifier(receiver.expression) &&
+          flagReaders.has(receiver.expression.text);
+        if (callee && flagReaders.has(callee)) read(`${callee}()`, callee === "runtimeConfig" ? fed : literal(node.arguments[0]), node);
+        else if (callee && snapshotReaders.has(callee) && !fromReader && literal(node.arguments[0])?.startsWith("MLX_BUN_"))
+          read(`.${callee}()`, literal(node.arguments[0]), node);
+        if (callee === "deviceArchitecture") read("deviceArchitecture()", undefined, node);
+      }
+      if (ts.isPropertyAccessExpression(node) && node.name.text === "env" && ts.isIdentifier(node.expression) &&
+          (node.expression.text === "process" || node.expression.text === "Bun"))
+        read(`${node.expression.text}.env`, memberOf(node), node);
+      if (ts.isIdentifier(node) && node.text === "globalThis" && (node.parent as { name?: ts.Node }).name !== node &&
+          !ts.isQualifiedName(node.parent) && !ts.isTypeQueryNode(node.parent) && !ts.isTypeReferenceNode(node.parent))
+        read("globalThis", memberOf(node), node);
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+        const right = ts.isIdentifier(node.right) ? node.right.text : ts.isPropertyAccessExpression(node.right) ? node.right.name.text : undefined;
+        if (right && classes.has(right)) read(`instanceof ${right}`, undefined, node);
+      }
+    }
+    ts.forEachChild(node, child => visit(child, path));
+  };
+  visit(source, undefined);
+  return found;
+}
+
+/** The cache contract's representation-specific reads and conversions, and the members that expose them. */
+const cacheReads = new Set(["updateAndFetch", "updateAndFetchQuantized", "updateAndFetchDeferredV", "toQuantized", "toTurboQuantized", "makeMask"]);
+const cacheHatches = new Set(["quantizedAttention", "rotatedValueAttention", "attentionState", "affineConversion", "turboConversion"]);
+
+function cacheEscapes(source: ts.SourceFile): { text: string; node: ts.Node }[] {
+  const found = memberReads(source, new Set([...cacheReads, ...cacheHatches])).map(({ name, node }) => ({ text: `.${name}`, node }));
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && cacheReads.has(node.expression.text))
+      found.push({ text: `${node.expression.text}()`, node });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/** The shape-inferring forwards the named phases replace. */
+const shapeForwards = new Set(["forwardHidden", "forwardHiddenMixed"]);
+
 /** Every ratchet finding in the workspace at `root`, with paths relative to it. */
 async function seamFindings(root: string): Promise<Finding[]> {
   root = realpathSync(root);
@@ -511,7 +748,10 @@ async function seamFindings(root: string): Promise<Finding[]> {
   const cache = ts.createModuleResolutionCache(root, path => path, options);
   const inference = libraries.find(item => item.name === "@mlx-bun/inference");
   const cacheNames = new Set(inference ? cacheClasses(sources, resolve(inference.source, "state")).map(item => item.name) : []);
+  const composed = new Set(inference ? declaredClasses(sources, ["layers", "state", "models"].map(directory => resolve(inference.source, directory))) : []);
   const found: Finding[] = [];
+  if (inference) for (const { file, line, text } of graphExtensions(sources, resolve(inference.source, "models")))
+    found.push({ rule: "graph-extends", file: relative(root, file), line, text });
   for (const [file, source] of sources) {
     const owner = libraries.find(item => file.startsWith(`${item.source}/`))!;
     if (owner.name === "mlx-bun-website" || owner.name === "@mlx-bun/mlx") continue;
@@ -542,6 +782,18 @@ async function seamFindings(root: string): Promise<Finding[]> {
           found.push({ rule: "scheduler-core", file: at, line, text: `imports ${specifier ?? "a non-literal module"}` });
       }
     }
+    if (inModels)
+      for (const { name: member, node, receiver } of memberReads(source, graphForwards))
+        if (receiver?.kind === ts.SyntaxKind.SuperKeyword) add("graph-extends", node, `super.${member}`);
+    const everyFunction = (inInference && (name.startsWith("layers/") || name.startsWith("kernels/"))) ||
+      (owner.name === "@mlx-bun/training" && name.startsWith("kernels/"));
+    const closure = inInference && closureDirectories.some(directory => name.startsWith(directory));
+    if (!(inInference && (name.startsWith("runtime/") || loaderFiles.has(name))) && !(owner.name === "mlx-bun" && engineLoadPath.has(name)))
+      for (const { text, node } of hotPathReads(source, { everyFunction, closure }, composed)) add("hot-path-read", node, text);
+    if (!(inInference && (name.startsWith("state/") || name === "contracts/mlx/cache.ts")))
+      for (const { text, node } of cacheEscapes(source)) add("cache-escape", node, text);
+    if (inInference && (name.startsWith("execution/") || name.startsWith("generation/")))
+      for (const { name: member, node } of memberReads(source, shapeForwards)) add("phase-by-shape", node, `.${member}`);
     if (inModels || !inference) continue;
     for (const { specifier, line } of references(source)) {
       if (!specifier || nodeModules.has(specifier)) continue;
@@ -568,7 +820,7 @@ function checkRatchet(findings: readonly Finding[], table: RatchetTable): { fail
     const allowed = table[rule]?.[file] ?? 0;
     if (items.length > allowed)
       failures.push(`${rule} ${file}: ${items.length} violations, ${allowed} allowed${allowed ? "" : " (a new file)"}: ` +
-        items.map(item => `${item.line}: ${item.text}`).join("; "));
+        items.map(item => `${item.line}: ${item.text}`).join("; ") + (pavedRoad[rule] ? `. ${pavedRoad[rule]}` : ""));
     else if (items.length < allowed) reminders.push(`${rule} ${file}: ${items.length} now, lower the allowlist from ${allowed}`);
   }
   for (const [rule, files] of Object.entries(table) as [RatchetRule, Record<string, number>][])
@@ -585,6 +837,59 @@ const seamRatchet: RatchetTable = {
   "cache-class": {},
   "model-env-flag": {},
   "scheduler-core": {},
+  // Composition rules: each entry names the PLAN.md item that removes it.
+  "graph-extends": {
+    "packages/inference/src/models/gemma4/generated/gemma4-12b.ts": 2, // D2
+    "packages/inference/src/models/gemma4/generated/gemma4-26b.ts": 2, // D2
+    "packages/inference/src/models/gemma4/generated/gemma4-e4b.ts": 2, // D2
+    "packages/inference/src/models/qwen/qwen38-27b-trellis-m4pro.ts": 6, // D1
+    "packages/inference/src/models/qwen/qwen38-27b-trellis-tq.ts": 2, // D2
+  },
+  "hot-path-read": {
+    "packages/inference/src/execution/batch-group.ts": 2, // no item yet: MLX_BUN_BATCH_VEC_SAMPLE, MLX_BUN_GRAMMAR_DEBUG
+    "packages/inference/src/generation/speculative/sources/two-model.ts": 1, // E2 (prefill tail split)
+    "packages/inference/src/kernels/trellis/gate-up.ts": 1, // C2
+    "packages/inference/src/kernels/trellis/mixed-gate-up.ts": 2, // C2
+    "packages/inference/src/kernels/trellis/scatter.ts": 5, // C2
+    "packages/inference/src/kernels/trellis/wide-prefill.ts": 1, // C2
+    "packages/inference/src/layers/geglu.ts": 1, // C2
+    "packages/inference/src/layers/quantized-attention.ts": 3, // B1
+    "packages/inference/src/layers/trellis-linear.ts": 3, // C2
+    "packages/inference/src/models/gemma4/compiled-decode.ts": 1, // D3
+    "packages/inference/src/models/gemma4/model.ts": 1, // E2 (mixed iteration)
+    "packages/inference/src/models/glm52/model.ts": 2, // no item yet: B1 defers GLM-5.2 MLA
+    "packages/inference/src/models/minicpm5/model.ts": 1, // no item yet: D3 leaves other branches out of scope
+    "packages/inference/src/models/qwen/qwen3_5.ts": 8, // B1 (TrainingSSMCache), E2 (mixed iteration); no item yet for the Qwen3MLP instanceof branches
+    "packages/inference/src/state/layout.ts": 3, // no item yet: prefillCacheLayout dispatches on cache class
+    "packages/training/src/kernels/flash-cce.ts": 9, // C2 for now
+  },
+  "cache-escape": {
+    "packages/inference/src/generation/speculative/bindings/projected-context-rows.ts": 1, // B1 (readBlock)
+    "packages/inference/src/models/diffusion-gemma/model.ts": 6, // B1 (appendBidirectional, readBlock)
+    "packages/inference/src/models/gemma4/compiled-decode.ts": 2, // D3
+    "packages/inference/src/models/gemma4/generated/gemma4-12b.ts": 5, // D2
+    "packages/inference/src/models/gemma4/generated/gemma4-26b.ts": 6, // D2
+    "packages/inference/src/models/gemma4/generated/gemma4-e4b.ts": 8, // D2
+    "packages/inference/src/models/gemma4/model.ts": 13, // D3
+    "packages/inference/src/models/minicpm5/model.ts": 11, // D3
+    "packages/inference/src/models/qwen/mtp.ts": 1, // no item yet: the Qwen MTP head's mask
+    "packages/inference/src/models/qwen/qwen3-moe.ts": 1, // D3
+    "packages/inference/src/models/qwen/qwen3.ts": 1, // D3
+    "packages/inference/src/models/qwen/qwen38-27b-trellis-m4pro.ts": 3, // D1
+    "packages/inference/src/models/qwen/qwen38-27b-trellis-tq.ts": 2, // D2
+    "packages/inference/src/models/qwen/qwen3_5.ts": 10, // C1, D3
+    "packages/inference/src/models/universal/dense.ts": 2, // D3
+    "packages/inference/src/scoring/full-sequence.ts": 1, // D3 (the deprecated members leave the contract)
+  },
+  "phase-by-shape": {
+    "packages/inference/src/execution/batch-group.ts": 4, // E2
+    "packages/inference/src/execution/fill-group.ts": 3, // E2
+    "packages/inference/src/execution/grammar-group.ts": 2, // E2
+    "packages/inference/src/generation/autoregressive.ts": 6, // E2
+    "packages/inference/src/generation/grammar-step.ts": 1, // E2
+    "packages/inference/src/generation/speculative/bindings/autoregressive-rows.ts": 1, // E2
+    "packages/inference/src/generation/speculative/bindings/binding.ts": 2, // E2
+  },
 };
 
 test("the seam ratchet: no new violation, no file above its allowlisted count", async () => {
@@ -709,6 +1014,206 @@ test("the ratchet fires for each seam rule, ignores the owners, and only ever ti
     const gone = checkRatchet([], { "cache-class": { "packages/inference/src/scoring/full.ts": 1 } });
     expect(gone.reminders).toEqual(["cache-class packages/inference/src/scoring/full.ts: 0 now, delete the allowlist entry (was 1)"]);
     expect(gone.failures).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the composition rules fire, honor their exemptions, stay silent on the paved road, and name it when they fail", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-composition-ratchet-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = (path: string) => `packages/inference/src/${path}`;
+  const found = async (file: string, rule: RatchetRule) =>
+    (await seamFindings(root)).filter(item => item.file === file && item.rule === rule).map(item => item.text);
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify({ name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts" },
+      dependencies: { "@mlx-bun/mlx": "workspace:*" } }));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("apps/mlx-bun/src/engine/telemetry.ts", "export const telemetry = 1;");
+    write("packages/training/package.json", JSON.stringify({ name: "@mlx-bun/training", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/training/src/index.ts", "export const training = 1;");
+    // The pieces: a graph that declares its capabilities, one that implements the contract, a layer and a cache.
+    write(inference("models/qwen/model.ts"), "export class Qwen35Model { get graphCapabilities() { return {}; } forwardLayers() { return 1; } }");
+    write(inference("models/gemma4/model.ts"), 'import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";\n' +
+      "export class Gemma4Model implements MlxDeclaredGraph { readonly graphCapabilities = {}; }");
+    write(inference("layers/trellis-linear.ts"), "export class TrellisLinear { forward() { return 1; } }");
+    write(inference("state/kv.ts"), "export class KVCache { signature() { return 'kv'; } }");
+    expect(await seamFindings(root)).toEqual([]);
+
+    // graph-extends: no class in models/ extends a graph class, whether the base declares its capabilities, implements
+    // the contract or is a graph by extension, and through an import alias; `super.` never borrows a graph's forward.
+    write(inference("models/qwen/m4pro.ts"), 'import { Qwen35Model as Stack } from "./model";\n' +
+      "export class M4Pro extends Stack {\n  forwardLayers() { return super.forwardLayers(); }\n  head(h: unknown) { return super.logitsFromHidden(h); }\n}\n" +
+      "export const Variant = class extends M4Pro {};");
+    expect(await found(inference("models/qwen/m4pro.ts"), "graph-extends"))
+      .toEqual(["M4Pro extends Qwen35Model", "Variant extends M4Pro", "super.forwardLayers", "super.logitsFromHidden"]);
+    write(inference("models/gemma4/generated.ts"), 'import { Gemma4Model } from "./model";\nexport class GeneratedGemma4 extends Gemma4Model {}');
+    expect(await found(inference("models/gemma4/generated.ts"), "graph-extends")).toEqual(["GeneratedGemma4 extends Gemma4Model"]);
+    rmSync(resolve(root, inference("models/gemma4/generated.ts")));
+    // The paved road: an entire graph composing blocks, where a block may extend a block. Outside models/ the rule is silent.
+    write(inference("models/qwen/m4pro.ts"), 'import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";\n' +
+      'import { TrellisLinear } from "../../layers/trellis-linear";\n' +
+      "class Down extends TrellisLinear { forward() { return super.forward(); } }\n" +
+      "export class M4Pro implements MlxDeclaredGraph {\n  readonly graphCapabilities = {};\n  readonly down = new Down();\n" +
+      "  forwardLayers() { return this.down.forward(); }\n}");
+    write(inference("layers/block.ts"), 'import { TrellisLinear } from "./trellis-linear";\n' +
+      "export class Block extends TrellisLinear { forwardLayers() { return super.forwardLayers(); } }");
+    expect(await seamFindings(root)).toEqual([]);
+
+    // hot-path-read: every way to read a fixed fact, in every way to name a hot-path function, in any package.
+    const reads: Record<string, string> = {
+      'runtimeFlag("MLX_BUN_X", true)': "runtimeFlag() MLX_BUN_X",
+      "runtimeValue(name)": "runtimeValue()",
+      'runtimeNumber("MLX_BUN_X", 1)': "runtimeNumber() MLX_BUN_X",
+      'runtimeConfig().flag("MLX_BUN_X", true)': "runtimeConfig() MLX_BUN_X",
+      'this.runtime.value("MLX_BUN_X")': ".value() MLX_BUN_X",
+      "process.env.MLX_BUN_X": "process.env MLX_BUN_X",
+      'Bun.env["MLX_BUN_X"]': "Bun.env MLX_BUN_X",
+      "deviceArchitecture()": "deviceArchitecture()",
+      "(globalThis as Record<string, unknown>).fast": "globalThis fast",
+      "x instanceof TrellisLinear": "instanceof TrellisLinear",
+      "x instanceof KVCache": "instanceof KVCache",
+      "x instanceof Qwen35Model": "instanceof Qwen35Model",
+    };
+    const hotBodies = (read: string) => "export class Layer {\n" +
+      `  forward(x: unknown) { return ${read}; }\n  #decodeRows(x: unknown) { return ${read}; }\n` +
+      `  constructor() { this.verify = (x: unknown) => ${read}; }\n}\n` +
+      `export function prefillChunk(x: unknown) { return ${read}; }\nexport const attend = (x: unknown) => ${read};\n` +
+      `export const rows = { appendDecode(x: unknown) { return ${read}; }, recurWindow: (x: unknown) => [x].map(() => ${read}) };\n` +
+      `export const step = function (x: unknown) { return ${read}; };\n`;
+    const settled = (read: string) => `export class Layer {\n  constructor() { this.fast = ${read}; const pick = () => ${read}; }\n` +
+      `  static build() { return ${read}; }\n  static load() { return ${read}; }\n  static create() { return ${read}; }\n` +
+      `  plan() { return ${read}; }\n}\n` +
+      `export function graphAccepts() { return ${read}; }\nexport function rowsEligible(a = ${read}) { return [a].some(() => ${read}); }\n` +
+      `export const fixed = ${read};\n`;
+    const loaders = ["models/factory.ts", "models/implementation.ts", "models/runtime.ts", "runtime/config.ts"].map(inference)
+      .concat(["apps/mlx-bun/src/engine/model-host.ts", "apps/mlx-bun/src/engine/cache-services.ts"]);
+    for (const [read, text] of Object.entries(reads)) {
+      write(inference("generation/hot.ts"), hotBodies(read));
+      write("apps/mlx-bun/src/engine/model-serving.ts", hotBodies(read));
+      for (const file of loaders) write(file, hotBodies(read));
+      const findings = (await seamFindings(root)).filter(item => item.rule === "hot-path-read");
+      expect(findings.filter(item => item.file === inference("generation/hot.ts")).map(item => item.text), read).toEqual(Array(8).fill(text));
+      expect(findings.filter(item => item.file === "apps/mlx-bun/src/engine/model-serving.ts").map(item => item.text), read).toEqual(Array(8).fill(text));
+      // The loader, runtime/ and the app's engine load path read composition facts; so do construction, acceptance,
+      // other names and module scope.
+      expect(findings.filter(item => loaders.includes(item.file)), read).toEqual([]);
+      write(inference("generation/hot.ts"), settled(read));
+      expect(await found(inference("generation/hot.ts"), "hot-path-read"), read).toEqual([]);
+    }
+    for (const file of [...loaders, "apps/mlx-bun/src/engine/model-serving.ts"]) rmSync(resolve(root, file));
+    // The profiling hooks are exempt by name, and only classes from layers/, state/ and models/ count.
+    write(inference("generation/hot.ts"), "export function forward(x: unknown) {\n  return [(globalThis as Record<string, unknown>).__deltaProf, " +
+      'globalThis["__opCount"], runtimeFlag("MLX_BUN_SPEC_PHASE_TIMING", false), process.env.MLX_BUN_SPEC_LAYER_PROFILE,\n' +
+      '    runtimeConfig().flag("MLX_BUN_SPEC_OP_INVENTORY", false), runtimeValue("MLX_BUN_SPEC_DEVICE_ROUND"), x instanceof Map, x instanceof Error];\n}');
+    expect(await found(inference("generation/hot.ts"), "hot-path-read")).toEqual([]);
+    // In inference kernels/ and layers/ and training kernels/, every function is on the path but construction and
+    // acceptance and their closures; module scope runs at load. Elsewhere a neutral name is not on the path.
+    const everyFunction = 'const FIXED = runtimeFlag("MLX_BUN_X", true);\n' +
+      'export function scatter(x: unknown) { return runtimeFlag("MLX_BUN_X", true); }\n' +
+      "export const launch = (x: unknown) => deviceArchitecture();\n" +
+      "export class Linear {\n  constructor() { this.fast = process.env.MLX_BUN_X; const pick = () => deviceArchitecture(); }\n" +
+      '  static build() { return runtimeValue("MLX_BUN_X"); }\n  static load() { return runtimeValue("MLX_BUN_X"); }\n' +
+      '  static create() { return runtimeValue("MLX_BUN_X"); }\n  plan() { return (globalThis as Record<string, unknown>).fast; }\n}\n' +
+      "export function linearAccepts() { return deviceArchitecture(); }\n" +
+      'export function scatterEligible(a = deviceArchitecture()) { return [a].some(() => runtimeFlag("MLX_BUN_X", true)); }';
+    for (const file of [inference("kernels/scatter.ts"), inference("layers/scatter.ts"), "packages/training/src/kernels/scatter.ts"]) {
+      write(file, everyFunction);
+      expect(await found(file, "hot-path-read"), file).toEqual(["runtimeFlag() MLX_BUN_X", "deviceArchitecture()", "globalThis fast"]);
+      rmSync(resolve(root, file));
+    }
+    for (const file of [inference("input/scatter.ts"), "packages/training/src/scatter.ts"]) {
+      write(file, everyFunction);
+      expect(await found(file, "hot-path-read"), file).toEqual([]);
+      rmSync(resolve(root, file));
+    }
+    // In inference models/, execution/, generation/, state/ and scoring/, a same-file helper that a hot function calls,
+    // directly or through other helpers, is on the path; one only construction or acceptance calls is not. Other
+    // inference directories and the apps keep the name-only rule.
+    const helpers = 'function pick() { return runtimeFlag("MLX_BUN_X", true); }\n' +
+      "function deeper() { return deviceArchitecture(); }\nfunction middle() { return deeper(); }\n" +
+      'function unused() { return runtimeFlag("MLX_BUN_X", true); }\nfunction atLoad() { return process.env.MLX_BUN_X; }\n' +
+      "function rowsEligible() { return deviceArchitecture(); }\n" +
+      "export class Graph {\n  constructor() { this.fast = atLoad(); }\n  #plan() { return (globalThis as Record<string, unknown>).fast; }\n" +
+      "  forward() { return [pick(), middle(), this.#plan(), rowsEligible()]; }\n}";
+    for (const directory of ["models/qwen", "execution", "generation", "state", "scoring"]) {
+      const file = inference(`${directory}/helpers.ts`);
+      write(file, helpers);
+      expect(await found(file, "hot-path-read"), file).toEqual(["runtimeFlag() MLX_BUN_X", "deviceArchitecture()", "globalThis fast"]);
+      rmSync(resolve(root, file));
+    }
+    for (const file of [inference("input/helpers.ts"), inference("sampling/helpers.ts"), "apps/mlx-bun/src/cli/terminal.ts"]) {
+      write(file, helpers);
+      expect(await found(file, "hot-path-read"), file).toEqual([]);
+      rmSync(resolve(root, file));
+    }
+
+    // cache-escape: the representation-specific reads, called, probed or destructured, outside state/ and the contract.
+    const escapes = "export function forwardLayers(cache: any, k: unknown, v: unknown) {\n" +
+      "  if (cache.attentionState) return cache.attentionState.appendAndFetch(k, v);\n" +
+      "  const quantized = cache.quantizedAttention; quantized.updateAndFetchQuantized(k, v);\n" +
+      '  cache["rotatedValueAttention"]?.updateAndFetchDeferredV(k, v);\n' +
+      '  const probe = "turboConversion" in cache && cache.turboConversion.toTurboQuantized(4, 4);\n' +
+      "  const { affineConversion } = cache; affineConversion?.toQuantized(64, 4);\n" +
+      "  return [cache.updateAndFetch(k, v), cache[0]!.makeMask(1, null), makeMask(1, null), probe];\n}";
+    const escaped = [".attentionState", ".attentionState", ".quantizedAttention", ".updateAndFetchQuantized", ".rotatedValueAttention",
+      ".updateAndFetchDeferredV", ".turboConversion", ".turboConversion", ".toTurboQuantized", ".affineConversion", ".toQuantized",
+      ".updateAndFetch", ".makeMask", "makeMask()"].toSorted();
+    for (const file of ["models/qwen/escape.ts", "generation/escape.ts", "scoring/escape.ts", "contracts/mlx/draft-target.ts"].map(inference)) {
+      write(file, escapes);
+      expect((await found(file, "cache-escape")).toSorted(), file).toEqual(escaped);
+      rmSync(resolve(root, file));
+    }
+    for (const file of ["state/escape.ts", "contracts/mlx/cache.ts"].map(inference)) {
+      write(file, escapes);
+      expect(await found(file, "cache-escape"), file).toEqual([]);
+      rmSync(resolve(root, file));
+    }
+    // The paved road: append, then attend on what the cache returns. Declaring the old members is not reading them.
+    write(inference("models/qwen/escape.ts"), "export function forwardLayers(cache: any, k: unknown, v: unknown, q: unknown) {\n" +
+      "  return cache.appendDecode(k, v).attend(q);\n}\nexport class Wrapper {\n  readonly quantizedAttention = undefined;\n" +
+      "  updateAndFetch(k: unknown, v: unknown) { return [k, v]; }\n  makeMask() { return null; }\n}");
+    expect(await seamFindings(root)).toEqual([]);
+
+    // phase-by-shape: execution/ and generation/ never reach the shape-inferring forwards: called, bound, probed or indexed.
+    const shapes = "export class Group {\n  async #forwardHidden(ids: unknown) { return this.graph.forwardHidden(ids, this.caches); }\n" +
+      '  mixed(work: unknown[]) { return typeof this.graph.forwardHiddenMixed === "function" ? this.graph.forwardHiddenMixed?.(work) : this.#forwardHidden(work); }\n' +
+      '  bound() { return this.graph.forwardHidden.bind(this.graph); }\n  indexed(ids: unknown) { return this.graph["forwardHidden"](ids, this.caches); }\n}';
+    for (const file of ["execution/group.ts", "generation/group.ts"].map(inference)) {
+      write(file, shapes);
+      expect((await found(file, "phase-by-shape")).toSorted(), file)
+        .toEqual([".forwardHidden", ".forwardHidden", ".forwardHidden", ".forwardHiddenMixed", ".forwardHiddenMixed"]);
+      rmSync(resolve(root, file));
+    }
+    for (const file of ["models/qwen/group.ts", "scoring/group.ts"].map(inference)) {
+      write(file, shapes);
+      expect(await found(file, "phase-by-shape"), file).toEqual([]);
+      rmSync(resolve(root, file));
+    }
+    // The paved road: the scheduler names its phase.
+    write(inference("execution/group.ts"), "export class Group {\n  prefill(ids: unknown) { return this.graph.prefillChunk(ids, this.caches); }\n" +
+      "  decodeRows(ids: unknown, rows: number) { return this.graph.decode[rows](ids, this.caches); }\n}");
+    expect(await seamFindings(root)).toEqual([]);
+
+    // Each failure names the paved road, and the ratchet holds the new rules as it holds the old ones.
+    write(inference("models/qwen/m4pro.ts"), 'import { Qwen35Model } from "./model";\nexport class M4Pro extends Qwen35Model {}');
+    write(inference("generation/hot.ts"), hotBodies('runtimeFlag("MLX_BUN_X", true)'));
+    write(inference("generation/escape.ts"), escapes);
+    write(inference("execution/group.ts"), shapes);
+    const findings = await seamFindings(root);
+    const { failures } = checkRatchet(findings, {});
+    for (const rule of ["graph-extends", "hot-path-read", "cache-escape", "phase-by-shape"] as const) {
+      const failure = failures.find(line => line.startsWith(`${rule} `));
+      expect(failure, rule).toContain(" (a new file): ");
+      expect(failure, rule).toEndWith(`. ${pavedRoad[rule]}`);
+    }
+    const shaped = findings.filter(item => item.rule === "phase-by-shape");
+    expect(checkRatchet(shaped, { "phase-by-shape": { [inference("execution/group.ts")]: 5 } })).toEqual({ failures: [], reminders: [] });
+    expect(checkRatchet(shaped, { "phase-by-shape": { [inference("execution/group.ts")]: 4 } }).failures[0]).toContain("5 violations, 4 allowed");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
