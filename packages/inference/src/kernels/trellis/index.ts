@@ -45,6 +45,15 @@
 //       expand), and the shared scatter codebook for M=3..4 bf16 on the
 //       interleaved k3 layout
 //
+// Factored-scale kernels: weights contribute their code value y and the scale
+// (with 1/147.8) applies once per output (gate/up) or per input row (down);
+// one kernel per row form and code layout:
+//   - gate-up-factored: same-width gate/up, one row / 2..4 shared rows
+//   - mixed-gate-up-factored: different-width gate/up, 1..4 rows
+//   - down-factored: row-major axis-0 codes, one row / 2..4 rows
+//   - down-k3-interleaved-factored: 3-bit block-interleaved axis-0 codes
+//   - gate-up-mma / down-mma: 1..8 rows on the simdgroup matrix unit
+//
 // `MLX_BUN_TRELLIS=expand` decodes every trellis tensor at LOAD into 8-bit g64
 // affine (the eval-carrier numerics, about -45 dB) and serves it through the
 // stock QuantizedLinear: the fallback when the kernels lose on a machine.
@@ -59,3 +68,9 @@ export { tiledTrellisPrefill, tiledTrellisPrefillEligible } from "./tiled-prefil
 export { splitKTrellisPrefill, splitKTrellisPrefillEligible } from "./splitk-prefill";
 export { wideTrellisPrefill, wideTrellisPrefillEligible, nativeTrellisWidePrefill } from "./wide-prefill";
 export { lut1mad, wordsPerBlock } from "./codebook";
+export { gateUpFactoredRow, gateUpFactoredRows } from "./gate-up-factored";
+export { mixedGateUpFactoredRows } from "./mixed-gate-up-factored";
+export { downFactoredRow, downFactoredRows } from "./down-factored";
+export { downK3InterleavedFactoredRow, downK3InterleavedFactoredRows } from "./down-k3-interleaved-factored";
+export { gateUpMma } from "./gate-up-mma";
+export { downMma, downK3InterleavedMma } from "./down-mma";
