@@ -386,6 +386,14 @@ Exit: selection is data; `qwen38TrellisM4ProAccepts` and the nested ternary are 
       - The DFlash 2 drafter's draft block picks its kernel once per block from anchors × width
         (E4): the draft operation becomes a width-classed table like the graph's `verify`, and
         the scheduler indexes it by the rows it is drafting for.
+      - Prefill cohorts split a row's planned chunk when a sibling's chunk is shorter (B1d).
+        A quantized lego converts by its own stored length, so a split chunk converts at the
+        split and reads after it change (0.24 at 4 bits measured); today's rows layouts convert
+        at the planned boundary instead. Decide: the planner never splits a row's planned
+        chunk, or conversion per forward is accepted under the bit-stability decision. Until
+        then the `delayed-*` rows caches keep the planned-boundary timing.
+      - A verify window that crosses a lego's start converts even if its tail is rejected; the
+        lego converts on commit while a speculative round is armed (the cache's own state).
 - [ ] Delete `forwardHiddenMixed` and `forwardHidden` from the contract.
 
 Exit: one request and four concurrent requests on the M4 Pro composition both dispatch the
