@@ -3,36 +3,32 @@
 // gated_delta recurrence). The architecture is a 64-layer stack where every
 // `fullAttentionInterval`-th layer is standard softmax attention and the rest
 // are gated-DeltaNet linear-attention layers. Weights carry a
-// `language_model.` prefix.
+// `language_model.` prefix. The blocks live in `blocks.ts`; this graph composes
+// them and hands every block the phase its caller names.
 //
 // Parity bars: bf16 KV → bit-exact vs mlx-lm; mixed-precision KV → bit-exact vs
 // mlx-optiq (the 16 full-attention layers quantized per kv_config.json, via the
 // shared maybeQuantizeKv path).
 
 import type { ModelConfig } from "../../artifacts/config";
-import { quantizedAppendAttention } from "../../layers/quantized-append-attention";
-import { gatedDeltaState } from "../../kernels/delta/state";
 import type { Weights } from "../../artifacts/weights";
 import { runtimeFlag } from "../../runtime/config";
 import { mapTokenGroups } from "../../input/token-groups";
 import { type TokenGroup } from "../../contracts/mlx/token-work";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
+import type { MlxArray } from "@mlx-bun/mlx/array";
+import { deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { qwenAppendChunkSize } from "../../layers/qwen-append";
-import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu, TRELLIS_MATVEC_MAX_M } from "../../layers/trellis-linear";
+import { TRELLIS_MATVEC_MAX_M } from "../../layers/trellis-linear";
 import { argmaxLastPosition } from "../../kernels/logits";
-import { disposeTriple } from "../../state/quantized-tensor";
 import { disposing } from "../../layers/helpers";
-import { compiledSwiglu } from "../../layers/swiglu";
 import { KVCache } from "../../state/kv";
+import { AttentionMasks } from "../../state/attention-read";
 import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
-import { quantizedSdpa } from "../../layers/quantized-attention";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/mlx/cache";
+import { type Cache } from "../../contracts/mlx/cache";
 import { qwen35WeightsView } from "./checkpoint";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
 import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
@@ -40,574 +36,46 @@ import type { TargetView } from "../../contracts/mlx/draft-target";
 import type { MediaEncoders, MlxPromptInput, Vision } from "../../contracts/mlx/media";
 import { declareGraph } from "../capabilities";
 import { bindQwenMediaInput, qwenDraftTarget, qwenMediaEncoders } from "./media-input";
-import { materializeCopy } from "@mlx-bun/mlx/materialize";
-import { gatedDeltaUpdate } from "../../kernels/delta/gated";
 import { SSMCache } from "../../state/ssm";
-import { TrainingSSMCache } from "../../state/training-cache";
-import { applyInterleavedRope, buildMropePositions, mropeInvFreq } from "../../layers/qwen-mrope";
-import { type MropeRequestState, type MropeForwardState } from "../../contracts/mlx/positions";
+import { buildMropePositions, mropeInvFreq } from "../../layers/qwen-mrope";
+import { type MropeRequestState } from "../../contracts/mlx/positions";
+import { Qwen3Layer, type ReadPhase } from "./blocks";
 
 const PREFIX = "language_model";
 
-// ── Compiled activations ─────────────────────────────────────────────────────
-// The oracle (mlx_lm/models/activations.py + qwen3_next.py) wraps BOTH swiglu
-// activations in `@partial(mx.compile, shapeless=True)`. We match it: every
-// activation site below (the MLP swiglu, the RMSNormGated `_precise_swiglu`, and
-// the conv `nn.silu`) runs through a compiled closure unconditionally, so the
-// dispatched kernel set matches the oracle op-for-op (= mlx-lm, bit-exact). Traced
-// once (shapeless), replayed thereafter; autograd-safe (mx.compile threads VJP
-// through the traced graph). `compiledSwiglu` lives in layers/swiglu.
-
-/** qwen3_next.py `_precise_swiglu(h, gate, x)`:
- *    gate = nn.silu(gate.astype(f32)); x = x.astype(f32); (gate*x).astype(h.dtype)
- *  Used by Qwen3NextRMSNormGated. Inputs: (h=hidden for the out dtype, gate=z,
- *  x=rms_norm(hidden)). mx.compile fuses the two casts + silu + mul + cast. */
-let _preciseSwigluClosure: CompiledFunction | null = null;
-export function compiledPreciseSwiglu(h: MlxArray, gate: MlxArray, x: MlxArray): MlxArray {
-  if (!_preciseSwigluClosure) {
-    _preciseSwigluClosure = new CompiledFunction((inputs) => {
-      const hh = inputs[0]!, g = inputs[1]!, xx = inputs[2]!;
-      const gf = g.astype(Dtype.float32);
-      const sig = ops.sigmoid(gf);
-      const silu = ops.mul(gf, sig); gf.dispose(); sig.dispose();
-      const xf = xx.astype(Dtype.float32);
-      const prod = ops.mul(silu, xf); silu.dispose(); xf.dispose();
-      const out = prod.astype(hh.dtype); prod.dispose();
-      return [out];
-    });
-  }
-  return _preciseSwigluClosure.apply([h, gate, x])[0]!;
+// A2's phase types (`contracts/mlx/graph.ts` and `atEveryWidth` in
+// `models/graph.ts` on refactor/composition-a2), copied so this graph names the
+// same phases before A2 merges. The merge replaces them with A2's imports.
+type MlxLayerCapture = (layer: number, hidden: MlxArray) => void;
+type MlxPhaseForward = (ids: MlxArray, state: Cache[]) => MlxArray | Promise<MlxArray>;
+type MlxVerifyForward = (ids: MlxArray, state: Cache[], capture: MlxLayerCapture | null) =>
+  MlxArray | Promise<MlxArray>;
+interface MlxWidthTable<Operation> {
+  readonly one: Operation;
+  readonly twoToFour: Operation;
+  readonly fiveToEight: Operation;
+  readonly wider: Operation;
+}
+function atEveryWidth<Operation>(operation: Operation): MlxWidthTable<Operation> {
+  return Object.freeze({ one: operation, twoToFour: operation, fiveToEight: operation, wider: operation });
 }
 
-/** mlx.nn.silu is `@partial(mx.compile, shapeless=True) def silu(x): x*sigmoid(x)`
- *  — a COMPILED kernel, not a standalone sigmoid+mul. Used for the conv
- *  activation `nn.silu(conv1d(...))`, matching mlx-lm's fused BV2ISigmoid…_V_. */
-let _siluClosure: CompiledFunction | null = null;
-export function compiledSilu(x: MlxArray): MlxArray {
-  if (!_siluClosure) {
-    _siluClosure = new CompiledFunction((inputs) => {
-      const xx = inputs[0]!;
-      const sig = ops.sigmoid(xx);
-      const out = ops.mul(xx, sig); sig.dispose(); // x * sigmoid(x)
-      return [out];
-    });
-  }
-  return _siluClosure.apply([x])[0]!;
-}
-
-// NOTE: the attention output gate is `self.o_proj(output * mx.sigmoid(gate))`
-// INLINE in mlx-lm (qwen3_next.py) — NOT @mx.compile. It is intentionally kept
-// as a standalone sigmoid + multiply in Qwen3Attention.forward so the dispatched
-// kernel set matches the reference; there is no compiled-output-gate helper.
-
-/** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). `loadLinear`
- *  chooses the projection layer (default QuantizedLinear); the graph is the same. */
-export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
-  /** Per-model seam; null retains the oracle graph (weightless rms_norm, then a
-   *  scalar multiply). When set, the scale rides in as the norm's weight: MLX's
-   *  kernel writes `w * T(x * inv)`, the same bf16 product, in one kernel. bf16 only. */
-  qkScale: { readonly q: MlxArray; readonly k: MlxArray } | null = null;
-  readonly inProjQkv: L;
-  readonly inProjZ: L;
-  readonly inProjB: L;
-  readonly inProjA: L;
-  readonly outProj: L;
-  readonly convWeight: MlxArray;
-  readonly aLog: MlxArray;
-  readonly dtBias: MlxArray;
-  readonly normWeight: MlxArray;
-  readonly eps: number;
-  readonly numKHeads: number;
-  readonly numVHeads: number;
-  readonly headKDim: number;
-  readonly headVDim: number;
-  readonly keyDim: number;
-  readonly valueDim: number;
-  readonly convKernel: number;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string,
-    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>) {
-    const t = config.text;
-    this.numKHeads = t.linearNumKeyHeads;
-    this.numVHeads = t.linearNumValueHeads;
-    this.headKDim = t.linearKeyHeadDim;
-    this.headVDim = t.linearValueHeadDim;
-    this.keyDim = this.headKDim * this.numKHeads;
-    this.valueDim = this.headVDim * this.numVHeads;
-    this.convKernel = t.linearConvKernelDim;
-    this.eps = t.rmsNormEps;
-    this.inProjQkv = loadLinear(weights, `${prefix}.in_proj_qkv`, config);
-    this.inProjZ = loadLinear(weights, `${prefix}.in_proj_z`, config);
-    this.inProjB = loadLinear(weights, `${prefix}.in_proj_b`, config);
-    this.inProjA = loadLinear(weights, `${prefix}.in_proj_a`, config);
-    this.outProj = loadLinear(weights, `${prefix}.out_proj`, config);
-    this.convWeight = weights.tensor(`${prefix}.conv1d.weight`);
-    this.aLog = weights.tensor(`${prefix}.A_log`);
-    this.dtBias = weights.tensor(`${prefix}.dt_bias`);
-    this.normWeight = weights.tensor(`${prefix}.norm.weight`);
-  }
-
-  #convolve(qkv: MlxArray, state: MlxArray, rowLengths?: readonly number[]): [MlxArray, MlxArray] {
-    const [, S, D] = qkv.shape as [number, number, number];
-    const input = ops.concatAxis([state, qkv], 1);
-    // MLX copy and contiguous can both alias the whole prefill buffer.
-    // Materialize only the tail so cache residency follows its logical size.
-    const tail = this.#convTail(input, S, rowLengths);
-    const conv = ops.conv1d(input, this.convWeight, 1, 0, 1, D);
-    input.dispose();
-    const out = compiledSilu(conv);
-    conv.dispose();
-    return [out, tail];
-  }
-
-  #convTail(input: MlxArray, processed: number, rowLengths?: readonly number[]): MlxArray {
-    const [B, , D] = input.shape as [number, number, number];
-    const nKeep = this.convKernel - 1;
-    if (rowLengths) {
-      using indices = ops.fromInt32(rowLengths.flatMap(length =>
-        Array.from({ length: nKeep }, (_, position) => length + position)), [B, nKeep, 1]);
-      return ops.takeAlongAxis(input, indices, 1);
-    }
-    using view = input.slice([0, processed, 0], [B, processed + nKeep, D]);
-    return materializeCopy(view);
-  }
-
-  forward(x: MlxArray, cache: SSMCache, independentRows = false, mask?: MlxArray | null): MlxArray {
-    const [B, S] = x.shape as [number, number, number];
-    const convDim = this.keyDim * 2 + this.valueDim;
-    const nKeep = this.convKernel - 1;
-    const prof = (globalThis as Record<string, unknown>).__deltaProf as
-      Record<string, number>
-      | undefined;
-
-    // Armed speculative verify round (serve loop, serial lane): this forward
-    // must be rewindable. Snapshot = hand the REPLACED state slots to the
-    // round instead of disposing (free — arrays are immutable); record the
-    // position-local kernel inputs (qkv/a/b) and install the prefix replay.
-    const spec = cache.specRound;
-    if (spec) {
-      if (!spec.armed)
-        throw new Error("GatedDeltaNet: spec round already recorded this round");
-      spec.armed = false;
-      spec.S = S;
-      spec.replay = (c, keep) => this.#replaySpecPrefix(c, keep);
-    }
-
-    const t0 = prof ? performance.now() : 0;
-    let qkv = this.inProjQkv.forward(x, independentRows); // [B,S,convDim]
-    let z = this.inProjZ.forward(x, independentRows);
-    z = disposing(z, ops.reshape(z, [B, S, this.numVHeads, this.headVDim]));
-    const b = this.inProjB.forward(x, independentRows); // [B,S,numVHeads]
-    const a = this.inProjA.forward(x, independentRows);
-    if (prof) { ops.evalAll([qkv, z, b, a]); prof.proj = (prof.proj ?? 0) + performance.now() - t0; }
-    const tc = prof ? performance.now() : 0; // [B,S,numVHeads]
-
-    // The model shares one padding mask across recurrent layers. Direct layer
-    // callers can request the same cache-owned mask without a model wrapper.
-    using localMask = mask === undefined ? cache.prefillPadding?.makeMask(S) ?? null : null;
-    const ssmMask = mask ?? localMask;
-    if (ssmMask) {
-      using expanded = ops.reshape(ssmMask, [B, S, 1]);
-      using zero = MlxArray.fromBytesCopy(new Uint8Array(qkv.dtype === Dtype.float32 ? 4 : 2), [], qkv.dtype);
-      qkv = disposing(qkv, ops.where(expanded, qkv, zero));
-    }
-    // Convolution keeps each row's last real-token tail, including empty rows.
-    const convState =
-      cache.conv ?? ops.zeros([B, nKeep, convDim], x.dtype);
-    const [convOut, newConv] = this.#convolve(qkv, convState, cache.prefillPadding?.convolutionLengths(S));
-    if (!cache.conv) convState.dispose();
-    if (spec) spec.qkv = qkv;
-    else qkv.dispose();
-    if (spec) spec.prevConv = cache.conv;
-    else cache.conv?.dispose();
-    cache.conv = newConv;
-
-    if (prof) { ops.evalAll([convOut]); prof.conv = (prof.conv ?? 0) + performance.now() - tc; }
-    const tn = prof ? performance.now() : 0;
-
-    const [qFlat, kFlat, vFlat] = ops.split(
-      convOut, [this.keyDim, 2 * this.keyDim], -1,
-    ) as [MlxArray, MlxArray, MlxArray];
-    convOut.dispose();
-    let q = ops.reshape(qFlat, [B, S, this.numKHeads, this.headKDim]);
-    qFlat.dispose();
-    let k = ops.reshape(kFlat, [B, S, this.numKHeads, this.headKDim]);
-    kFlat.dispose();
-    const v = disposing(vFlat, ops.reshape(vFlat, [B, S, this.numVHeads, this.headVDim]));
-
-    // inv_scale = head_k_dim ** -0.5; q *= inv_scale², k *= inv_scale.
-    const invScale = Math.pow(this.headKDim, -0.5);
-    const folded = this.qkScale && q.dtype === Dtype.bfloat16 ? this.qkScale : null;
-    q = disposing(q, ops.rmsNorm(q, folded?.q ?? null, 1e-6));
-    if (!folded) q = disposing(q, ops.mulScalar(q, invScale * invScale));
-    k = disposing(k, ops.rmsNorm(k, folded?.k ?? null, 1e-6));
-    if (!folded) k = disposing(k, ops.mulScalar(k, invScale));
-    if (prof) { ops.evalAll([q, k]); prof.norms = (prof.norms ?? 0) + performance.now() - tn; }
-    const tk = prof ? performance.now() : 0;
-
-    const [out, newState] = gatedDeltaUpdate(
-      q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent, ssmMask, cache instanceof TrainingSSMCache,
-    );
-    if (prof) { ops.evalAll([out]); prof.kernel = (prof.kernel ?? 0) + performance.now() - tk; }
-    const to = prof ? performance.now() : 0;
-    q.dispose();
-    k.dispose();
-    v.dispose();
-    if (spec) {
-      spec.a = a;
-      spec.b = b;
-      spec.prevRecurrent = cache.recurrent;
-    } else {
-      a.dispose();
-      b.dispose();
-      cache.recurrent?.dispose();
-    }
-    cache.recurrent = newState;
-    cache.advance(S);
-
-    // RMSNormGated: silu(z_f32) * rms_norm(out)_f32, cast back to out dtype.
-    const gated = this.rmsNormGated(out, z);
-    out.dispose();
-    z.dispose();
-    const merged = ops.reshape(gated, [B, S, this.valueDim]);
-    gated.dispose();
-    const result = this.outProj.forward(merged, independentRows);
-    merged.dispose();
-    if (prof) { ops.evalAll([result]); prof.out = (prof.out ?? 0) + performance.now() - to; }
-    return result;
-  }
-
-  /** Speculative rollback replay: with the pre-round snapshot RESTORED onto
-   *  `cache`, re-advance the first `keep` window tokens from the recorded
-   *  position-local inputs. Every op mirrors forward() on the same values —
-   *  conv windows, silu, per-position norms, and the kernel's serial prefix
-   *  are all independent of the rejected tail — so the resulting conv +
-   *  recurrent state is BIT-EXACTLY what a forward over only the accepted
-   *  prefix would have produced. Output projections (z / out_proj) are state-
-   *  free and skipped: only the states matter here. */
-  #replaySpecPrefix(cache: SSMCache, keep: number | readonly number[]): void {
-    const r = cache.specRound;
-    if (!r || !r.qkv || !r.a || !r.b)
-      throw new Error("GatedDeltaNet replay without recorded round inputs");
-    const B = r.qkv.shape[0]!;
-    const count = typeof keep === "number" ? keep : Math.max(...keep);
-    const rowLengths = typeof keep === "number" ? undefined : keep;
-    const convDim = this.keyDim * 2 + this.valueDim;
-    const nKeep = this.convKernel - 1;
-
-    const qkvPfxView = r.qkv.slice([0, 0, 0], [B, count, convDim]);
-    const qkvPfx = ops.contiguous(qkvPfxView);
-    qkvPfxView.dispose();
-    const convState = cache.conv ?? ops.zeros([B, nKeep, convDim], qkvPfx.dtype);
-    const [convOut, newConv] = this.#convolve(qkvPfx, convState, rowLengths);
-    if (!cache.conv) convState.dispose();
-    qkvPfx.dispose();
-    cache.conv?.dispose();
-    cache.conv = newConv;
-
-    const [qFlat, kFlat, vFlat] = ops.split(
-      convOut, [this.keyDim, 2 * this.keyDim], -1,
-    ) as [MlxArray, MlxArray, MlxArray];
-    convOut.dispose();
-    let q = rowLengths ? null : ops.reshape(qFlat, [B, count, this.numKHeads, this.headKDim]);
-    qFlat.dispose();
-    let k = ops.reshape(kFlat, [B, count, this.numKHeads, this.headKDim]);
-    kFlat.dispose();
-    const v = disposing(vFlat, ops.reshape(vFlat, [B, count, this.numVHeads, this.headVDim]));
-    const invScale = Math.pow(this.headKDim, -0.5);
-    const folded = this.qkScale && k.dtype === Dtype.bfloat16 ? this.qkScale : null;
-    if (q) {
-      q = disposing(q, ops.rmsNorm(q, folded?.q ?? null, 1e-6));
-      if (!folded) q = disposing(q, ops.mulScalar(q, invScale * invScale));
-    }
-    k = disposing(k, ops.rmsNorm(k, folded?.k ?? null, 1e-6));
-    if (!folded) k = disposing(k, ops.mulScalar(k, invScale));
-
-    const aPfxView = r.a.slice([0, 0, 0], [B, count, this.numVHeads]);
-    const aPfx = ops.contiguous(aPfxView);
-    aPfxView.dispose();
-    const bPfxView = r.b.slice([0, 0, 0], [B, count, this.numVHeads]);
-    const bPfx = ops.contiguous(bPfxView);
-    bPfxView.dispose();
-
-    let newState: MlxArray;
-    if (rowLengths) {
-      // Unequal prefixes need a row-length-aware recurrence. The state-only
-      // kernel omits query/output work. Uniform replay retains its measured
-      // kernel until the separate optimization demonstrates a serving win.
-      newState = gatedDeltaState(k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent, rowLengths);
-    } else {
-      const [output, state] = gatedDeltaUpdate(q!, k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent);
-      output.dispose(); newState = state;
-    }
-    q?.dispose();
-    k.dispose();
-    v.dispose();
-    aPfx.dispose();
-    bPfx.dispose();
-    cache.recurrent?.dispose();
-    cache.recurrent = newState;
-    if (typeof keep === "number") cache.advance(keep);
-    else cache.advanceRows(keep);
-  }
-
-  private rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
-    const xn = ops.rmsNorm(hidden, this.normWeight, this.eps); // bf16
-    // Oracle: _precise_swiglu(hidden, gate, xn) — ALWAYS one @mx.compile kernel
-    // (matches mlx-lm; no unfused silu+mul+cast).
-    const res = compiledPreciseSwiglu(hidden, gate, xn);
-    xn.dispose();
-    return res;
-  }
-}
-
-/** A projection the attention block can run: affine-quantized here, dense or
- *  quantized in the MTP companion. Only QuantizedLinear reads `independentRows`. */
-export interface AttentionLinear { forward(x: MlxArray, independentRows?: boolean): MlxArray }
-export type AttentionLinearLoader<L extends AttentionLinear> = (weights: Weights, path: string, config: ModelConfig) => L;
-/** Attention over a quantized KV cache: q [B, H, L, D] against the packed
- *  keys/values → [B, H, L, D]. */
-export type QuantizedAttentionCore = (q: MlxArray, keys: ops.QuantizedTensor, values: ops.QuantizedTensor, scale: number,
-  mask: Mask, groupSize: number, bits: number) => MlxArray;
-
-/** Full (softmax) attention with output gate + q/k norm + partial RoPE.
- *  `loadLinear` chooses the projection type (the MTP companion loads dense or
- *  quantized heads); `quantizedCore`, when given, attends over quantized KV
- *  caches in place of the default (append attention for independent rows,
- *  else quantizedSdpa). The graph itself is the same. */
-export class Qwen3Attention<L extends AttentionLinear = QuantizedLinear> {
-  readonly qProj: L;
-  readonly kProj: L;
-  readonly vProj: L;
-  readonly oProj: L;
-  readonly qNorm: RMSNorm;
-  readonly kNorm: RMSNorm;
-  readonly nHeads: number;
-  readonly nKvHeads: number;
-  readonly headDim: number;
-  readonly scale: number;
-  readonly ropeDims: number;
-  readonly ropeBase: number;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string,
-    // The default projection type L is QuantizedLinear (the loader's own type).
-    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>,
-    readonly quantizedCore: QuantizedAttentionCore | null = null) {
-    const t = config.text;
-    this.nHeads = t.numAttentionHeads;
-    this.nKvHeads = t.numKeyValueHeads;
-    this.headDim = t.headDim;
-    this.scale = Math.pow(this.headDim, -0.5);
-    this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
-    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    this.qProj = loadLinear(weights, `${prefix}.q_proj`, config);
-    this.kProj = loadLinear(weights, `${prefix}.k_proj`, config);
-    this.vProj = loadLinear(weights, `${prefix}.v_proj`, config);
-    this.oProj = loadLinear(weights, `${prefix}.o_proj`, config);
-    this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
-    this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
-  }
-
-  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false,
-    mrope: MropeForwardState | null = null): MlxArray {
-    const [B, L] = x.shape as [number, number, number];
-    // Diagnostic sub-phase timing (same switch as GatedDeltaNet): projections
-    // and RoPE, cache append, attention, gated output. Barriers only when set.
-    const prof = (globalThis as Record<string, unknown>).__deltaProf as Record<string, number> | undefined;
-    let tp = prof ? performance.now() : 0;
-    const lap = (key: string, arrays: MlxArray[]) => {
-      if (!prof) return;
-      ops.evalAll(arrays);
-      const now = performance.now();
-      prof[key] = (prof[key] ?? 0) + now - tp;
-      tp = now;
-    };
-
-    // q_proj emits 2× head_dim per head → split into queries + gate.
-    const qp = this.qProj.forward(x, independentRows);
-    const qpr = disposing(qp, ops.reshape(qp, [B, L, this.nHeads, this.headDim * 2]));
-    const [qHeads, gateHeads] = ops.split(qpr, [this.headDim], -1) as [MlxArray, MlxArray];
-    qpr.dispose();
-    const gate = disposing(gateHeads, ops.reshape(gateHeads, [B, L, this.nHeads * this.headDim]));
-
-    let k = this.kProj.forward(x, independentRows);
-    let v = this.vProj.forward(x, independentRows);
-
-    // q/k norm over head_dim BEFORE transpose (reference order).
-    let q = this.qNorm.forward(qHeads);
-    qHeads.dispose();
-    q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
-    k = disposing(k, this.kNorm.forward(k));
-    k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
-    v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
-    v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
-
-    // Batched decode: the scheduler's mask wrapper exposes each row's REAL
-    // position as ropeOffsetArr (rows have different prompt lengths); the
-    // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
-    // form (`02d723a:tests/unit/compile.test.ts`). Serial lane: scalar offset, unchanged.
-    // Media forwards supply their own 3D interleaved positions. The reference
-    // never uses the fused fast-rope kernel when position_ids are supplied,
-    // so this IS the oracle's own arithmetic. Text-only stays on ops.rope.
-    const mr = mrope;
-    const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
-    if (mr) {
-      q = disposing(q, applyInterleavedRope(q, mr));
-      k = disposing(k, applyInterleavedRope(k, mr));
-    } else {
-      q = disposing(q, offArr
-        ? ops.ropeDynamic(q, this.ropeDims, this.ropeBase, offArr, null)
-        : ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
-      k = disposing(k, offArr
-        ? ops.ropeDynamic(k, this.ropeDims, this.ropeBase, offArr, null)
-        : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
-    }
-
-    lap("attnProj", [q, k, v, gate]);
-    let attn: MlxArray;
-    const quantized = cache.quantizedAttention;
-    if (cache.attentionState) {
-      const view = cache.attentionState.appendAndFetch(k, v);
-      k.dispose(); v.dispose();
-      try { attn = view.attend(q, this.scale, mask, independentRows); } finally { view.dispose(); }
-    } else if (quantized) {
-      const [keys, values] = quantized.updateAndFetchQuantized(k, v);
-      k.dispose();
-      v.dispose();
-      lap("attnCache", [keys.packed, keys.scales, keys.biases, values.packed, values.scales, values.biases]);
-      attn = this.quantizedCore
-        ? this.quantizedCore(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits)
-        : independentRows && L > 1
-        ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
-        : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
-      disposeTriple(keys);
-      disposeTriple(values);
-    } else {
-      const [keys, values] = cache.updateAndFetch(k, v);
-      k.dispose();
-      v.dispose();
-      attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
-      keys.dispose();
-      values.dispose();
-    }
-    q.dispose();
-    lap("attnSdpa", [attn]);
-
-    const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
-    attn.dispose();
-    const merged = ops.reshape(attnT, [B, L, -1]);
-    attnT.dispose();
-    // qwen3_next.py:158  return self.o_proj(output * mx.sigmoid(gate))
-    // INLINE, not @mx.compile — copy the exact ops.
-    const sig = ops.sigmoid(gate);
-    gate.dispose();
-    const gated = ops.mul(merged, sig);
-    merged.dispose();
-    sig.dispose();
-    const out = this.oProj.forward(gated, independentRows);
-    gated.dispose();
-    lap("attnOut", [out]);
-    return out;
-  }
-}
-
-/** MLP projections are affine-quantized (QuantizedLinear) or, in a Q2b
- *  packed-trellis artifact, TrellisLinear — chosen per module by the config's
- *  quantization entry (`mode: "trellis"`). */
-export type MlpLinear = QuantizedLinear | TrellisLinear;
-function loadMlpLinear(weights: Weights, path: string, config: ModelConfig): MlpLinear {
-  if (!TrellisLinear.isTrellis(config, path)) return QuantizedLinear.load(weights, path, config);
-  // M4 Pro measurements support the 27B down projection at M3/4. The
-  // operation also checks variant, dtype and packed-code layout eligibility.
-  const useSharedScatterCodebook = config.text.hiddenSize === 5120 &&
-    config.text.intermediateSize === 17408 && path.endsWith(".down_proj");
-  return TrellisLinear.load(weights, path, config, useSharedScatterCodebook);
-}
-
-export class Qwen3MLP {
-  readonly gate: MlpLinear;
-  readonly up: MlpLinear;
-  readonly down: MlpLinear;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
-    this.gate = loadMlpLinear(weights, `${prefix}.gate_proj`, config);
-    this.up = loadMlpLinear(weights, `${prefix}.up_proj`, config);
-    this.down = loadMlpLinear(weights, `${prefix}.down_proj`, config);
-  }
-
-  forward(x: MlxArray, inputRowContiguous = false, independentRows = false): MlxArray {
-    // Packed-trellis decode (M ≤ 4): gate, up and the swiglu in ONE kernel —
-    // x read once, no gate/up vectors materialized. This Lab path retains
-    // the packed activation arithmetic documented in `02d723a:docs/design/turboquant.md`.
-    if (this.gate instanceof TrellisLinear && this.up instanceof TrellisLinear &&
-        fusedGateUpEligible(this.gate, this.up) &&
-        x.shape.slice(0, -1).reduce((a, b) => a * b, 1) <= TRELLIS_MATVEC_MAX_M) {
-      const hidden = fusedGateUpSwiglu(x, this.gate, this.up);
-      const out = this.down instanceof QuantizedLinear ? this.down.forward(hidden, independentRows) : this.down.forward(hidden);
-      hidden.dispose();
-      return out;
-    }
-    const g = this.gate instanceof TrellisLinear ? this.gate.forward(x, inputRowContiguous) : this.gate.forward(x, independentRows);
-    const u = this.up instanceof TrellisLinear ? this.up.forward(x, inputRowContiguous) : this.up.forward(x, independentRows);
-    // Oracle: down_proj(swiglu(gate_proj(x), up_proj(x))) — swiglu ALWAYS compiled
-    // (mlx-lm's @mx.compile swiglu; no unfused silu+mul, matches its kernel set).
-    const hidden = compiledSwiglu(g, u);
-    g.dispose();
-    u.dispose();
-    const out = this.down instanceof QuantizedLinear ? this.down.forward(hidden, independentRows) : this.down.forward(hidden);
-    hidden.dispose();
-    return out;
-  }
-}
-
-export class Qwen3Layer {
-  readonly isLinear: boolean;
-  readonly linearAttn: GatedDeltaNet | null = null;
-  readonly selfAttn: Qwen3Attention | null = null;
-  readonly mlp: Qwen3MLP;
-  readonly inputNorm: RMSNorm;
-  readonly postAttnNorm: RMSNorm;
-
-  constructor(weights: Weights, config: ModelConfig, layerIdx: number) {
-    const prefix = `${PREFIX}.model.layers.${layerIdx}`;
-    this.isLinear = (layerIdx + 1) % config.text.fullAttentionInterval !== 0;
-    if (this.isLinear)
-      this.linearAttn = new GatedDeltaNet(weights, config, `${prefix}.linear_attn`);
-    else this.selfAttn = new Qwen3Attention(weights, config, `${prefix}.self_attn`);
-    this.mlp = new Qwen3MLP(weights, config, `${prefix}.mlp`);
-    this.inputNorm = new RMSNorm(weights.tensor(`${prefix}.input_layernorm.weight`), config.text.rmsNormEps);
-    this.postAttnNorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), config.text.rmsNormEps);
-  }
-
-  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
-    mrope: MropeForwardState | null = null): MlxArray {
-    using h = this.forwardAttn(x, faMask, cache, independentRows, ssmMask, mrope);
-    return this.forwardMlp(h, independentRows);
-  }
-
-  forwardAttn(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
-    mrope: MropeForwardState | null = null): MlxArray {
-    using xn = this.inputNorm.forward(x);
-    using r = this.isLinear
-      ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows, ssmMask)
-      : this.selfAttn!.forward(xn, faMask, cache, independentRows, mrope);
-    return ops.add(x, r);
-  }
-
-  forwardMlp(h: MlxArray, independentRows = false): MlxArray {
-    using hn = this.postAttnNorm.forward(h);
-    // Diagnostic (same switch as the attention/DeltaNet sub-phases): settle the
-    // pending attention block first so the MLP is timed alone.
-    const prof = (globalThis as Record<string, unknown>).__deltaProf as Record<string, number> | undefined;
-    let t0 = 0;
-    if (prof) { ops.evalAll([hn]); t0 = performance.now(); }
-    // RMSNorm allocates an aligned row-contiguous output. Pass that layout
-    // proof so Trellis can match native small-prefill matmul without an eval.
-    using m = this.mlp.forward(hn, true, independentRows);
-    if (prof) { ops.evalAll([m]); prof.mlp = (prof.mlp ?? 0) + performance.now() - t0; }
-    return ops.add(h, m);
-  }
+/** The phase of a forward reaching one of the deprecated entry points
+ * (`forwardHidden`, `forwardHiddenMixed`, `forwardHiddenAtPositions`,
+ * `forwardEmbeddingsAtPositions`, `forwardEmbeddings`, `createAppend`'s
+ * `forwardHidden`, the MTP companion's `forward`), derived from the shape of
+ * the input it was handed, [rows, tokens, ...]. A committed-append forward
+ * (`committedAppend`) of one row is a committed span; otherwise one position
+ * per row is a decode and more is a window. A padded forward of one position
+ * per row would read as a decode, which ignores prefill padding; no caller pads
+ * a one-position forward.
+ * @deprecated E2 deletes this adapter when the scheduler calls the named phases
+ * (`prefillChunk`, `prefillTail`, `decode`, `verify` and the committed append).
+ * Nothing else in the graph or its blocks derives the phase from a shape. */
+export function deprecatedPhase(input: MlxArray, committedAppend = false): ReadPhase {
+  const [rows, tokens] = input.shape as [number, number];
+  if (committedAppend && rows === 1) return "committed";
+  return tokens === 1 ? "decode" : "window";
 }
 
 export class Qwen35Model implements MlxDeclaredGraph {
@@ -642,6 +110,9 @@ export class Qwen35Model implements MlxDeclaredGraph {
   readonly lmHead: QuantizedLinear | null;
   readonly tied: boolean;
   readonly faIdx: number;
+  /** `MLX_BUN_MIXED_PACKED_MLP`: the groups of a mixed forward share one MLP
+   *  call (on unless set to 0). Read once, when the graph is built. */
+  readonly #packMixedMlp: boolean;
 
   constructor(weights: Weights, config: ModelConfig) {
     // Checkpoint-generation normalization BEFORE the first tensor() call: the
@@ -666,6 +137,7 @@ export class Qwen35Model implements MlxDeclaredGraph {
     // embed_tokens.as_linear (mlx-lm qwen3_5 TextModel.__call__).
     this.lmHead = this.tied ? null : QuantizedLinear.load(weights, `${PREFIX}.lm_head`, config);
     this.faIdx = config.text.fullAttentionInterval - 1;
+    this.#packMixedMlp = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true);
   }
 
   loraTargets(): Map<string, QuantizedLinear> {
@@ -686,15 +158,19 @@ export class Qwen35Model implements MlxDeclaredGraph {
         out.set(`${p}.linear_attn.out_proj`, l.linearAttn.outProj);
       }
       // Trellis-coded MLP tensors are not LoRA targets (no adapter seam yet).
-      if (l.mlp.gate instanceof QuantizedLinear) out.set(`${p}.mlp.gate_proj`, l.mlp.gate);
-      if (l.mlp.up instanceof QuantizedLinear) out.set(`${p}.mlp.up_proj`, l.mlp.up);
-      if (l.mlp.down instanceof QuantizedLinear) out.set(`${p}.mlp.down_proj`, l.mlp.down);
+      if (l.mlp.kind === "affine") {
+        out.set(`${p}.mlp.gate_proj`, l.mlp.gate);
+        out.set(`${p}.mlp.up_proj`, l.mlp.up);
+        out.set(`${p}.mlp.down_proj`, l.mlp.down);
+      }
     }
     return out;
   }
 
+  /** One cache per layer, the full-attention caches sharing one mask memo. */
   makeCache(): Cache[] {
-    return this.layers.map((l) => (l.isLinear ? new SSMCache() : new KVCache()));
+    const masks = new AttentionMasks();
+    return this.layers.map((l) => (l.isLinear ? new SSMCache() : new KVCache(masks)));
   }
 
   /** The 27B append path keeps the native M1 affine arithmetic while Trellis
@@ -706,8 +182,7 @@ export class Qwen35Model implements MlxDeclaredGraph {
         t.headDim !== 256 || t.numAttentionHeads !== 24 || t.numKeyValueHeads !== 4)
       return null;
     if (deviceArchitecture() !== "applegpu_g16s") return null;
-    const qualified = (linear: QuantizedLinear | TrellisLinear) => {
-      if (linear instanceof TrellisLinear) return true;
+    const qualified = (linear: QuantizedLinear) => {
       const { mode, bits, groupSize } = linear.spec;
       return mode === "affine" && [2, 3, 4, 6, 8].includes(bits) && [32, 64, 128].includes(groupSize);
     };
@@ -715,7 +190,8 @@ export class Qwen35Model implements MlxDeclaredGraph {
       const a = layer.linearAttn, s = layer.selfAttn;
       const attention = a ? [a.inProjQkv, a.inProjZ, a.inProjB, a.inProjA, a.outProj]
         : [s!.qProj, s!.kProj, s!.vProj, s!.oProj];
-      if (!attention.every(qualified) || ![layer.mlp.gate, layer.mlp.up, layer.mlp.down].every(qualified))
+      const mlp = layer.mlp.kind === "affine" ? [layer.mlp.gate, layer.mlp.up, layer.mlp.down] : [];
+      if (!attention.every(qualified) || !mlp.every(qualified))
         return null;
     }
     return {
@@ -725,50 +201,77 @@ export class Qwen35Model implements MlxDeclaredGraph {
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
         // Wider cohorts retain their ordinary one-position numerical graph.
         // The specialized multi-position append remains qualified at B=1.
-        if (ids.shape.length === 2 && ids.shape[0]! > 1 && ids.shape[1] === 1)
-          return this.forwardHidden(ids, cache);
-        if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)
+        const [rows, tokens] = ids.shape as [number, number];
+        if (ids.shape.length !== 2 || !(rows === 1 ? tokens <= 4 : rows > 1 && tokens === 1))
           throw new Error("Qwen committed-token append supports one position per shared row or up to four positions at B=1");
-        const hidden = this.embed.encode(ids);
-        return this.forwardLayers(hidden, cache, true);
+        return this.forwardLayers(this.embed.encode(ids), cache, deprecatedPhase(ids, true));
       },
     };
   }
 
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
     const h = this.embed.encode(ids);
-    return this.forwardLayers(h, cache);
+    return this.forwardLayers(h, cache, deprecatedPhase(ids));
   }
+
+  /** One whole chunk of a prompt: tokens per sequence equal the composition's
+   * prefill chunk size; rows are sequences times that size. Token ids only: a
+   * prompt with prepared media enters through the `MlxPromptInput` that
+   * `bindMediaInput` returns (for `embeddings+positions`, the graph's
+   * `forwardEmbeddingsAtPositions`). */
+  prefillChunk(ids: MlxArray, state: Cache[]): MlxArray {
+    return this.forwardLayers(this.embed.encode(ids), state, "window");
+  }
+
+  /** The positions left at the end of a prompt after its whole chunks, fewer
+   * than the chunk size per sequence; rows are sequences times those tokens.
+   * The same semantics as `prefillChunk`, named apart because a composition
+   * may run it on different hardware. */
+  prefillTail(ids: MlxArray, state: Cache[]): MlxArray {
+    return this.forwardLayers(this.embed.encode(ids), state, "window");
+  }
+
+  /** One new token per sequence: `ids` [sequences, 1], so rows are sequences. */
+  readonly decode: MlxWidthTable<MlxPhaseForward> = atEveryWidth<MlxPhaseForward>((ids, state) =>
+    this.forwardLayers(this.embed.encode(ids), state, "decode"));
+
+  /** A speculative window: each sequence's last accepted token and its drafted
+   * tokens, right-padded by the caller to the round's depth, `ids`
+   * [sequences, depth + 1], so rows are sequences times (depth + 1). The graph
+   * appends all depth + 1 positions; dropping the rejected suffix is the
+   * caller's speculative transaction, begun before this call. */
+  readonly verify: MlxWidthTable<MlxVerifyForward> = atEveryWidth<MlxVerifyForward>((ids, state, capture) => {
+    const hidden = this.forwardLayers(this.embed.encode(ids), state, "window", undefined, capture);
+    capture?.(this.layers.length, hidden);
+    return hidden;
+  });
 
   /** Borrowed request positions, including different positions for each row. */
   forwardHiddenAtPositions(ids: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
-    return this.forwardLayers(this.embed.encode(ids), cache, false, positions);
+    return this.forwardLayers(this.embed.encode(ids), cache, deprecatedPhase(ids), positions);
   }
 
   forwardEmbeddingsAtPositions(embeds: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
-    return this.forwardLayers(ops.contiguous(embeds), cache, false, positions);
+    return this.forwardLayers(ops.contiguous(embeds), cache, deprecatedPhase(embeds), positions);
   }
 
   /** Attention and DeltaNet retain disjoint row state. Only tokenwise MLP
    * work is eligible for packing; verification can preserve its geometry. */
   forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
     if (work.length === 1 && !work[0]!.captureLayer) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
-    const groups: Array<{ h: MlxArray; mask?: Mask; ssmMask?: MlxArray | null }> = [];
+    const groups: Array<{ h: MlxArray; phase: ReadPhase }> = [];
     const results: MlxArray[] = [];
-    const pack = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true);
     const bounded = work.some(group => group.ids.shape[1]! > TRELLIS_MATVEC_MAX_M);
     try {
-      for (const { ids, cache } of work) {
-        const group: typeof groups[number] = { h: this.embed.encode(ids) }; groups.push(group);
-        group.mask = cache[this.faIdx]!.makeMask(ids.shape[1]!, null);
-        group.ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(ids.shape[1]!);
-      }
+      for (const { ids } of work) groups.push({ h: this.embed.encode(ids), phase: deprecatedPhase(ids) });
       for (const [i, layer] of this.layers.entries()) {
         const mids: MlxArray[] = [];
         try {
           for (const [row, group] of groups.entries())
-            mids.push(layer.forwardAttn(group.h, group.mask!, work[row]!.cache[i]!, false, group.ssmMask));
-          const outputs = mapTokenGroups(work, mids, hidden => layer.forwardMlp(hidden), pack);
+            mids.push(layer.forwardAttn(group.h, work[row]!.cache[i]!, group.phase));
+          // Packed rows of several groups share one MLP; no group here is a
+          // committed span, so every row takes the shared projection arithmetic.
+          const outputs = mapTokenGroups(work, mids, hidden => layer.forwardMlp(hidden, "window"), this.#packMixedMlp);
           for (const [row, group] of groups.entries()) { group.h.dispose(); group.h = outputs[row]!; }
           // Materialize every layer's recurrent tail as well as the residual.
           // It is not a dependency of h and otherwise pins prefill buffers.
@@ -788,7 +291,7 @@ export class Qwen35Model implements MlxDeclaredGraph {
       }
       return results;
     } catch (error) { for (const result of results) result.dispose(); throw error; }
-    finally { for (const group of groups) { group.h.dispose(); group.mask?.arr?.dispose(); group.ssmMask?.dispose(); } }
+    finally { for (const group of groups) group.h.dispose(); }
   }
 
   /** Active vision mRoPE request state (serial lane; set by the generation
@@ -807,7 +310,7 @@ export class Qwen35Model implements MlxDeclaredGraph {
     _ids: MlxArray | null = null, _multimodal: MlxArray | null = null,
   ): MlxArray {
     const h = ops.contiguous(embeds); // fresh handle — the layer loop consumes it
-    return this.forwardLayers(h, cache);
+    return this.forwardLayers(h, cache, deprecatedPhase(embeds));
   }
 
   /** Layer-output tap (same contract as Gemma4Model.hiddenTap): the serve
@@ -829,13 +332,12 @@ export class Qwen35Model implements MlxDeclaredGraph {
     tap.captured.set(i, copy);
   }
 
-  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false,
-    positions?: MlxArray): MlxArray {
+  /** The decoder over `h0` (consumed), every block reading its cache for
+   *  `phase`. `capture` receives each layer's residual output after the layer
+   *  runs; the caller hands it the final hidden. */
+  protected forwardLayers(h0: MlxArray, cache: Cache[], phase: ReadPhase,
+    positions?: MlxArray, capture: MlxLayerCapture | null = null): MlxArray {
     const L = h0.shape[1]!;
-    // One full-attention mask shared by all full layers (same offset); linear
-    // layers see no ssm mask at B=1.
-    const faMask = cache[this.faIdx]!.makeMask(L, null);
-    using ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(L) ?? null;
     // Vision requests: one interleaved-mRoPE cos/sin table per forward,
     // shared by all 12 full-attention layers (positions are layer-invariant).
     let mropeFwd: ReturnType<typeof buildMropePositions> | null = null;
@@ -854,7 +356,7 @@ export class Qwen35Model implements MlxDeclaredGraph {
     try {
       for (let i = 0; i < this.layers.length; i++) {
         const tl = prof ? performance.now() : 0;
-        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask, mropeFwd);
+        const next = this.layers[i]!.forward(h, cache[i]!, phase, mropeFwd);
         h.dispose();
         h = next;
         if (L > TRELLIS_MATVEC_MAX_M) {
@@ -873,15 +375,15 @@ export class Qwen35Model implements MlxDeclaredGraph {
           prof[key] = (prof[key] ?? 0) + performance.now() - tl;
         }
         this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
+        capture?.(i, h);
       }
       const out = disposing(h, this.finalNorm.forward(h));
       h = null; // consumed — the finally must not double-free
       return out;
     } finally {
       if (mropeFwd && !positions) mropeFwd.posIds.dispose();
-      // A mid-loop layer throw must not strand the mask array or the
-      // in-flight [1,L,H] residual (2026-08-18 review).
-      faMask.arr?.dispose();
+      // A mid-loop layer throw must not strand the in-flight [1,L,H]
+      // residual (2026-08-18 review).
       h?.dispose();
     }
   }

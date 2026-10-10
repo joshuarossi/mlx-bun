@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import { KVCache } from "../../src/state/kv";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { RotatingKVCache } from "../../src/state/rotating-kv";
 import { QuantizedKVCache } from "../../src/state/quantized-kv";
 import { RotatingQuantizedKVCache } from "../../src/state/rotating-quantized-kv";
@@ -42,7 +43,7 @@ test("shared KV maintenance preserves populated boundary, layer policy and conve
     expect(maintain.maxAppendTokens!(caches)).toBe(Number.POSITIVE_INFINITY);
     for (let layer = 0; layer < 2; layer++) {
       const entry = config[layer]!;
-      const expected = references[layer]!.toQuantized(entry.groupSize, entry.bits);
+      const expected = references[layer]!.toQuantized(entry.groupSize, entry.bits, unfusedAffineKernels);
       try {
         const actual = caches[layer]!.state();
         const wanted = expected.state();

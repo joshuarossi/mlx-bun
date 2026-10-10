@@ -11,7 +11,8 @@ import { type Cache } from "../../contracts/mlx/cache";
 import type { RecurrentMtpModule } from "../../contracts/mlx/drafter";
 import { DenseLinear } from "../../layers/dense-linear";
 import { compiledSwiglu } from "../../layers/swiglu";
-import { Qwen3Attention } from "./qwen3_5";
+import { Qwen3Attention } from "./blocks";
+import { deprecatedPhase } from "./qwen3_5";
 
 type MtpLinear = DenseLinear | QuantizedLinear;
 
@@ -44,7 +45,7 @@ export class MtpModule implements RecurrentMtpModule {
     this.fc = loadMtpLinear(weights, "fc", config, resources);
     this.preFcNormEmbedding = new RMSNorm(weights.tensor("pre_fc_norm_embedding.weight"), eps);
     this.preFcNormHidden = new RMSNorm(weights.tensor("pre_fc_norm_hidden.weight"), eps);
-    // The target's attention block (qwen3_5.ts) with the companion's dense or quantized heads.
+    // The target's attention block (blocks.ts) with the companion's dense or quantized heads.
     this.attn = new Qwen3Attention<MtpLinear>(weights, config, "layers.0.self_attn",
       (w, path, c) => loadMtpLinear(w, path, c, resources));
     this.mlpGate = loadMtpLinear(weights, "layers.0.mlp.gate_proj", config, resources);
@@ -70,12 +71,9 @@ export class MtpModule implements RecurrentMtpModule {
     joined.dispose();
 
     // Decoder layer (Qwen3Layer.forward shape).
-    const L = x.shape[1]!;
-    const mask = cache.makeMask(L, null);
     const xn = this.inputNorm.forward(x);
-    const r = this.attn.forward(xn, mask, cache);
+    const r = this.attn.forward(xn, cache, deprecatedPhase(x));
     xn.dispose();
-    mask.arr?.dispose();
     const h = ops.add(x, r);
     x.dispose();
     r.dispose();

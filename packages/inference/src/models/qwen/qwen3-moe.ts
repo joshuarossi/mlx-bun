@@ -43,6 +43,7 @@ const MOE_ROPE_THETA = 10000000;                                        // args.
 // ── qwen3_moe.py MLP (dense-layer FFN) ───────────────────────────────────────
 // def __call__(self, x): return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
 class MLP {
+  readonly kind = "dense";
   readonly gateProj: QuantizedLinear;
   readonly upProj: QuantizedLinear;
   readonly downProj: QuantizedLinear;
@@ -136,6 +137,7 @@ class SwitchGLU {
 
 // ── qwen3_moe.py Qwen3MoeSparseMoeBlock ──────────────────────────────────────
 class Qwen3MoeSparseMoeBlock {
+  readonly kind = "moe";
   readonly gate: QuantizedLinear;
   readonly switchMlp: SwitchGLU;
   readonly numExperts: number;
@@ -264,7 +266,7 @@ export class Qwen3MoeModel implements MlxDeclaredGraph {
       out.set(`${p}.self_attn.k_proj`, l.selfAttn.kProj);
       out.set(`${p}.self_attn.v_proj`, l.selfAttn.vProj);
       out.set(`${p}.self_attn.o_proj`, l.selfAttn.oProj);
-      if (l.mlp instanceof MLP) {
+      if (l.mlp.kind === "dense") {
         out.set(`${p}.mlp.gate_proj`, l.mlp.gateProj);
         out.set(`${p}.mlp.up_proj`, l.mlp.upProj);
         out.set(`${p}.mlp.down_proj`, l.mlp.downProj);

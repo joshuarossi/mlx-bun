@@ -195,7 +195,7 @@ const fromZeroOf = (scheme: Scheme): Cache => !scheme.bits ? new TurboQuantKVCac
 /** The conversion `kv-maintenance` performs, applied by hand. */
 const convertedOf = (scheme: Scheme, plain: Cache): Cache => !scheme.bits
   ? TurboQuantKVCache.fromKVCache(plain as KVCache, 8, 3, turboQuantFusedDecode())
-  : (plain as KVCache | RotatingKVCache).toQuantized(GROUP, scheme.bits);
+  : (plain as KVCache | RotatingKVCache).toQuantized(GROUP, scheme.bits, unfusedAffineKernels);
 
 for (const scheme of SCHEMES) {
   test(`${scheme.name}: the first read is the bf16 read, the reads after the conversion are the quantized read`, () => {

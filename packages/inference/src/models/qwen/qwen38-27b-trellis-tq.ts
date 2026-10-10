@@ -32,13 +32,12 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { Weights } from "../../artifacts/weights";
 import { quantFor, type ModelConfig } from "../../artifacts/config";
 import { runtimeFlag, runtimeValue } from "../../runtime/config";
-import { QuantizedLinear } from "../../layers/quantized-linear";
-import { type Cache, type Mask } from "../../contracts/mlx/cache";
+import { type Cache, type GatedDeltaCache } from "../../contracts/mlx/cache";
 import { compiledSwiglu } from "../../layers/swiglu";
-import { Qwen35Model, type Qwen3Layer } from "./qwen3_5";
-import type { SSMCache } from "../../state/ssm";
+import { Qwen35Model } from "./qwen3_5";
+import type { Qwen3Layer, ReadPhase } from "./blocks";
 import {
-  TrellisLinear, TRELLIS_MATVEC_MAX_M, fusedGateUpEligible, fusedGateUpSwiglu,
+  TRELLIS_MATVEC_MAX_M, fusedGateUpEligible, fusedGateUpSwiglu,
   fusedGateUpSwigluMixed, mixedGateUpEligible, type MixedGateUpTail,
 } from "../../layers/trellis-linear";
 
@@ -89,8 +88,8 @@ function mixedGateUpOption(): MixedGateUpTail | "off" {
   return value === "1" || value === "fused" ? "fused" : "split";
 }
 
-type MlpStep = (hidden: MlxArray, independentRows: boolean) => MlxArray;
-type LayerStep = (x: MlxArray, faMask: Mask, cache: Cache, independentRows: boolean, ssmMask: MlxArray | null) => MlxArray;
+type MlpStep = (hidden: MlxArray, phase: ReadPhase) => MlxArray;
+type LayerStep = (x: MlxArray, cache: Cache, phase: ReadPhase) => MlxArray;
 
 export interface Qwen38TqPlanSummary {
   readonly graph: string;
@@ -140,22 +139,22 @@ export class Qwen38TrellisTQ extends Qwen35Model {
     const { inputNorm, postAttnNorm } = layer;
     if (layer.isLinear) {
       const block = layer.linearAttn!;
-      return (x, _faMask, cache, independentRows, ssmMask) => {
+      return (x, cache, phase) => {
         using normed = inputNorm.forward(x);
-        using mixed = block.forward(normed, cache as SSMCache, independentRows, ssmMask);
+        using mixed = block.forward(normed, cache as GatedDeltaCache, phase);
         using hidden = ops.add(x, mixed);
         using post = postAttnNorm.forward(hidden);
-        using out = mlp(post, independentRows);
+        using out = mlp(post, phase);
         return ops.add(hidden, out);
       };
     }
     const block = layer.selfAttn!;
-    return (x, faMask, cache, independentRows) => {
+    return (x, cache, phase) => {
       using normed = inputNorm.forward(x);
-      using mixed = block.forward(normed, faMask, cache, independentRows, null);
+      using mixed = block.forward(normed, cache, phase, null);
       using hidden = ops.add(x, mixed);
       using post = postAttnNorm.forward(hidden);
-      using out = mlp(post, independentRows);
+      using out = mlp(post, phase);
       return ops.add(hidden, out);
     };
   }
@@ -164,17 +163,18 @@ export class Qwen38TrellisTQ extends Qwen35Model {
    *  windows (rows <= TRELLIS_MATVEC_MAX_M) take the packed kernels; wider
    *  inputs (prefill) keep the generic block, which owns tiling and expansion. */
   #mlpStep(layer: Qwen3Layer, options: { mixedGateUp: MixedGateUpTail | "off" }, counts: Record<string, number>): MlpStep {
-    const { gate, up, down } = layer.mlp;
-    const generic: MlpStep = (hidden, independentRows) => layer.mlp.forward(hidden, true, independentRows);
-    if (!(gate instanceof TrellisLinear) || !(up instanceof TrellisLinear) || down instanceof QuantizedLinear) {
+    const mlp = layer.mlp;
+    const generic: MlpStep = (hidden, phase) => mlp.forward(hidden, phase);
+    if (mlp.kind !== "trellis") {
       counts.split!++;
       return generic;
     }
+    const { gate, up, down } = mlp;
     const rows = (hidden: MlxArray) => hidden.shape.slice(0, -1).reduce((a, b) => a * b, 1);
     if (fusedGateUpEligible(gate, up)) {
       counts.fused!++;
-      return (hidden, independentRows) => {
-        if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, independentRows);
+      return (hidden, phase) => {
+        if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, phase);
         using mid = fusedGateUpSwiglu(hidden, gate, up);
         return down.forward(mid);
       };
@@ -182,15 +182,15 @@ export class Qwen38TrellisTQ extends Qwen35Model {
     const tail = options.mixedGateUp;
     if (tail !== "off" && mixedGateUpEligible(gate, up)) {
       counts.mixedFused!++;
-      return (hidden, independentRows) => {
-        if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, independentRows);
+      return (hidden, phase) => {
+        if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, phase);
         using mid = fusedGateUpSwigluMixed(hidden, gate, up, tail);
         return down.forward(mid);
       };
     }
     counts.split!++;
-    return (hidden, independentRows) => {
-      if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, independentRows);
+    return (hidden, phase) => {
+      if (rows(hidden) > TRELLIS_MATVEC_MAX_M) return generic(hidden, phase);
       using g = gate.forward(hidden, true);
       using u = up.forward(hidden, true);
       using mid = compiledSwiglu(g, u);
@@ -201,18 +201,16 @@ export class Qwen38TrellisTQ extends Qwen35Model {
   /** Text forward over the pre-resolved plan. Vision positions, the active
    *  vision mRoPE state and the diagnostic profiler keep the generic loop,
    *  which owns those concerns. Consumes h0, like the generic implementation. */
-  protected override forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false,
-    positions?: MlxArray): MlxArray {
+  protected override forwardLayers(h0: MlxArray, cache: Cache[], phase: ReadPhase,
+    positions?: MlxArray, capture: ((layer: number, hidden: MlxArray) => void) | null = null): MlxArray {
     if (positions || this.mrope || (globalThis as Record<string, unknown>).__deltaProf)
-      return super.forwardLayers(h0, cache, independentRows, positions);
+      return super.forwardLayers(h0, cache, phase, positions, capture);
     const L = h0.shape[1]!;
-    const faMask = cache[this.faIdx]!.makeMask(L, null);
-    using ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(L) ?? null;
     const bounded = L > TRELLIS_MATVEC_MAX_M;
     let h: MlxArray | null = h0;
     try {
       for (let i = 0; i < this.#steps.length; i++) {
-        const next = this.#steps[i]!(h, faMask, cache[i]!, independentRows, ssmMask);
+        const next = this.#steps[i]!(h, cache[i]!, phase);
         h.dispose();
         h = next;
         if (bounded) {
@@ -223,13 +221,13 @@ export class Qwen38TrellisTQ extends Qwen35Model {
           finally { if (cache[i]!.stateNeedsDispose) for (const a of state) a.dispose(); }
         }
         this.captureLayer(i, h);
+        capture?.(i, h);
       }
       const out = this.finalNorm.forward(h);
       h.dispose();
       h = null;
       return out;
     } finally {
-      faMask.arr?.dispose();
       h?.dispose();
     }
   }

@@ -6,6 +6,7 @@ import { FullPrefillPadding } from "./full-prefill-padding";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { TurboQuantKVCache } from "./turboquant-kv";
+import { unfusedAffineKernels } from "./affine-attention";
 import { type Cache, type Mask, type PrefillPadding } from "../contracts/mlx/cache";
 
 type FullCache = KVCache | QuantizedKVCache | TurboQuantKVCache;
@@ -96,7 +97,7 @@ export class FullPrefillRow implements Cache {
     } finally { disposeResources(planes); }
   }
   toQuantized(groupSize: number, bits: number): FullPrefillRow {
-    this.inner = (this.inner as KVCache).toQuantized(groupSize, bits);
+    this.inner = (this.inner as KVCache).toQuantized(groupSize, bits, unfusedAffineKernels);
     return this;
   }
   toTurboQuantized(kBits: number, vBits: number, fusedDecode?: boolean): FullPrefillRow {

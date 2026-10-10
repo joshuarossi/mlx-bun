@@ -113,7 +113,7 @@ describe("per-row extraction from batched caches (model-free)", () => {
       const k = grid(L, D, (t, d) => val(b, t, d));
       const [rk, rv] = c.updateAndFetch(k, k);
       rk.dispose(); rv.dispose(); k.dispose();
-      return c.toQuantized(GS, BITS);
+      return c.toQuantized(GS, BITS, unfusedAffineKernels);
     });
 
     const dispose3 = (t: QuantRow) => {
@@ -238,7 +238,7 @@ describe("per-row extraction from batched caches (model-free)", () => {
       const k = grid(L, D, (t, d) => val(b, t, d));
       const [rk, rv] = c.updateAndFetch(k, k);
       rk.dispose(); rv.dispose(); k.dispose();
-      return c.toQuantized(GS, BITS);
+      return c.toQuantized(GS, BITS, unfusedAffineKernels);
     });
     const dispose3 = (t: QuantRow) => {
       for (const x of [t.keys, t.values])
