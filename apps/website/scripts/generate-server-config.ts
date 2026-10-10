@@ -20,6 +20,7 @@ export const DIRECT_ENV_READS = [
   { file: "packages/mlx/src/native.ts", key: "MLX_BUN_LIBMLXC" },
   { file: "packages/inference/src/runtime/native.ts", key: "MLX_BUN_EXPERT_IO_DYLIB" },
   { file: "packages/inference/src/runtime/native.ts", key: "MLX_BUN_FRAME_EXTRACT" },
+  { file: "packages/inference/src/runtime/native.ts", key: "MLX_BUN_ANE_DYLIB" },
 ];
 /** Only what the code cannot say. Each named key or serve flag must still exist. */
 export const NOTES: readonly { names: string[]; text: string }[] = [
