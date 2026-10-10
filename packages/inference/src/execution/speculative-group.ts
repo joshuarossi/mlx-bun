@@ -23,6 +23,7 @@ import { createKvMaintenance } from "../state/kv-maintenance";
 import { disposeAttachments } from "../state/checkpoint";
 import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
 import { advanceSpeculativeOutputs } from "../generation/speculative/round";
+import { AdaptiveDraftGate } from "../generation/speculative/adaptive-draft-gate";
 import { MlxPrefillRows, type MlxPrefillState } from "./prefill-rows";
 import type { MlxForwardWork } from "../contracts/mlx/forward-work";
 import type { MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, MlxGroupedMethod, Row } from "./batch-types";
@@ -45,7 +46,10 @@ interface RequestState {
 /** Binding owns graph/layout selection. The executor receives only the method
  * key and lifecycle; sampling, checkpoints and numerical state remain ports.
  * Undefined when the target cannot capture the hidden layers the provider taps. */
-export function bindSpeculativeGroupRequests(model: MlxTokenGraph, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
+export function bindSpeculativeGroupRequests(model: MlxTokenGraph, provider: Pick<DraftProvider, "id" | "grouped">, depth: number,
+  adaptiveDepth = false) {
+  if (adaptiveDepth && !model.verifyRoundCosts)
+    throw new Error("adaptive draft depth needs a graph that declares its measured verify costs (verifyRoundCosts)");
   const binding = bindSpeculativeTargetModel(model);
   // Resolved once for this target into a snapshot the binding owns: the checked
   // list cannot change afterwards, and prefill and decode rows must tap exactly it.
@@ -54,11 +58,11 @@ export function bindSpeculativeGroupRequests(model: MlxTokenGraph, provider: Pic
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = captureSpeculativeOptions(input);
     return {
-      key: JSON.stringify(["speculative", provider.id, depth, options.kvBits ?? null,
+      key: JSON.stringify(["speculative", provider.id, depth, adaptiveDepth, options.kvBits ?? null,
         options.kvGroupSize ?? 64, options.quantizedKvStart ?? null, options.turboQuant ?? null,
         ...(options.kvConfig?.length ? [options.kvConfig] : [])]),
       data: options,
-      open: host => new SpeculativeGroup(host, model, provider, binding, depth, taps),
+      open: host => new SpeculativeGroup(host, model, provider, binding, depth, taps, adaptiveDepth),
     };
   };
 }
@@ -78,10 +82,15 @@ class SpeculativeGroup implements MlxGroupedMethod {
   #draft: DraftRowGroup | null = null;
   readonly #requests = new Map<Row, RequestState>();
   #steps = 0;
+  /** Adaptive draft depth: each round's depth comes from the decayed
+   *  acceptance rate and the graph's measured verify costs. */
+  readonly #gate: AdaptiveDraftGate | null;
 
   constructor(readonly host: MlxGroupMethodHost, readonly model: MlxTokenGraph,
     readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number,
-    readonly taps: readonly number[]) {}
+    readonly taps: readonly number[], adaptiveDepth: boolean) {
+    this.#gate = adaptiveDepth ? new AdaptiveDraftGate(model.verifyRoundCosts!, { maxDraftTokens: depth }) : null;
+  }
 
   get runningTokens(): number {
     const rows = this.host.rows;
@@ -341,7 +350,9 @@ class SpeculativeGroup implements MlxGroupedMethod {
     }
     const rows = [...this.host.rows];
     if (!rows.length) return;
-    const depth = Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated)));
+    const cap = Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated)));
+    // At least one draft, so the drafter's context keeps advancing every round.
+    const depth = this.#gate && cap > 0 ? Math.max(1, this.#gate.choose(cap)) : cap;
     // The ordinary MTP round already supplies samples that can establish a
     // copied prefix. Do not verify a wide span before any sample matches it.
     const proposals = rows.map(row => {
@@ -422,6 +433,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
         stats.rejected = stats.drafted - stats.accepted;
         stats.targetCalls++;
         if (!echoDepth) {
+          this.#gate?.observe(round.acceptance.accepted, round.acceptance.accepted < round.drafts.length ? 1 : 0);
           stats.rounds!++;
           stats.acceptanceLengths!.push(round.acceptance.accepted);
           for (let p = 0; p < round.drafts.length; p++) stats.draftedByPos![p] = (stats.draftedByPos![p] ?? 0) + 1;

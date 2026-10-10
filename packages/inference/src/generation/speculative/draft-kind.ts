@@ -1,8 +1,8 @@
-import { isAssistantModelType, isDeepspecDrafterConfig, isMtpModelType, NATIVE_MTP_DRAFT } from "../../models/drafters";
+import { isAssistantModelType, isDeepspecDrafterConfig, isDflash2DrafterConfig, isMtpModelType, NATIVE_MTP_DRAFT } from "../../models/drafters";
 import type { DraftProvider } from "./source";
 import { DraftProviderRegistry, type DraftLoadRequest, type DraftProviderKind, type LoadedDraft } from "./draft-registry";
 
-export const DRAFT_KINDS = ["dspark", "deepspec", "assistant", "mtp", "two-model", "ngram"] as const;
+export const DRAFT_KINDS = ["dspark", "deepspec", "dflash2", "assistant", "mtp", "two-model", "ngram"] as const;
 export type DraftKind = typeof DRAFT_KINDS[number];
 
 /** The library's draft providers. Each entry is the provider's own convention
@@ -14,7 +14,7 @@ export type DraftKind = typeof DRAFT_KINDS[number];
  *  whatever no other provider recognizes. */
 export function defaultDraftProviders(): DraftProviderRegistry {
   return new DraftProviderRegistry()
-    .register(dspark).register(deepspec).register(assistant).register(mtp).register(twoModel).register(ngram)
+    .register(dspark).register(deepspec).register(dflash2).register(assistant).register(mtp).register(twoModel).register(ngram)
     .registerNative(nativeMtp);
 }
 
@@ -51,6 +51,18 @@ const deepspec: DraftProviderKind = {
   async load(request) {
     const { DeepspecProvider } = await import("./sources/deepspec-source");
     const provider = await DeepspecProvider.load(artifactDir(request));
+    return { provider, numDraftTokens: pinned(request, provider.gamma) };
+  },
+};
+
+/** DFlash 2 block drafters (z-lab/incoai): a plain HF config stamped
+ *  DFlash2DraftModel. The width pins to block_size − 1 (7). */
+const dflash2: DraftProviderKind = {
+  kind: "dflash2", artifact: true,
+  detect: async artifact => isDflash2DrafterConfig(await artifact.config()),
+  async load(request) {
+    const { Dflash2Provider } = await import("./sources/dflash2-source");
+    const provider = await Dflash2Provider.load(artifactDir(request));
     return { provider, numDraftTokens: pinned(request, provider.gamma) };
   },
 };
