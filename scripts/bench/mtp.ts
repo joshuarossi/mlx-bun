@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 
-export interface MtpVariant { id: string; depth: number; env?: Record<string, string> }
+export interface MtpVariant { id: string; depth: number; env?: Record<string, string>; /** Draft artifact overriding the plan's. */ draft?: string;
+  /** Each round's count up to `depth` from the graph's verify costs (`--num-draft-tokens adaptive`). */ adaptiveDepth?: boolean }
 export interface MtpPlan {
   target: string;
   draft: string;
@@ -10,6 +11,12 @@ export interface MtpPlan {
   maxTokens: number;
   repetitions: number;
   warmupTokens: number;
+  /** Stateless sampled verification (keyed per position); absent = greedy. */
+  sampling?: { temperature: number; topP?: number; topK?: number; seed: number };
+  /** Affine KV-cache quantization for every variant (absent = bf16 KV). */
+  kv?: { kvBits: 4 | 8; kvGroupSize?: number; quantizedKvStart?: number };
+  /** Render prompts with the chat template's thinking mode on (absent = off). */
+  thinking?: boolean;
 }
 export function parseMtpPlan(value: unknown): MtpPlan {
   const p = value as MtpPlan;
@@ -21,10 +28,13 @@ export function parseMtpPlan(value: unknown): MtpPlan {
   assert(p.repetitions >= 2 && p.repetitions % 2 === 0, "use an even repetition count >= 2 for reversed-order pairs");
   assert(Array.isArray(p.prompts) && p.prompts.length && p.prompts.every(x => typeof x === "string" && x.length), "prompts must be nonempty strings");
   assert(Array.isArray(p.variants) && p.variants.length >= 2, "provide a baseline and at least one candidate");
+  if (p.sampling !== undefined)
+    assert(p.sampling.temperature > 0 && Number.isSafeInteger(p.sampling.seed), "sampling needs temperature > 0 and an integer seed");
   const ids = new Set<string>();
   for (const v of p.variants) {
     assert(/^[a-z0-9_-]+$/.test(v.id) && !ids.has(v.id), "variant IDs must be unique safe names"); ids.add(v.id);
     assert(Number.isSafeInteger(v.depth) && v.depth >= 1 && v.depth < p.maxTokens, "depth must be >= 1 and < maxTokens");
+    assert(v.draft === undefined || (typeof v.draft === "string" && v.draft.length), "variant draft must be a path");
     for (const [k, val] of Object.entries(v.env ?? {})) {
       assert(k.startsWith("MLX_BUN_") && typeof val === "string", "variant overrides must be MLX_BUN_* strings");
       assert(!["MLX_BUN_LIBMLXC", "MLX_BUN_SPEC_PHASE_TIMING", "MLX_BUN_SPEC_LAYER_PROFILE", "MLX_BUN_SPEC_OP_INVENTORY"].includes(k), `reserved override ${k}`);

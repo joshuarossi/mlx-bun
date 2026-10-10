@@ -20,7 +20,7 @@ Plan (local artifacts only; first variant is the baseline):
 
 Each repetition runs every variant in a fresh process; odd repetitions reverse
 the order (two arms give ABBA). Each process warms every prompt at its depth.
-Throughput runs precede separate diagnostic runs. Diagnostics force state
+Throughput runs precede separate diagnostic runs (--throughput-only skips them). Diagnostics force state
 evaluation and disable draft/verify overlap; never use them to rank candidates.
 Accepted = matched draft proposals only (0..depth). Emitted = actual delivered
 tokens, including correction/bonus, excluding the token produced by prefill.
@@ -53,23 +53,25 @@ async function worker(plan: MtpPlan, variantIndex: number, mode: MtpSample["mode
   const v = plan.variants[variantIndex]!;
   // Imports happen only after the parent has set the arm's environment.
   const { loadModelConfig, loadTokenizer, ChatTemplate, Weights, createModel } = await import("@mlx-bun/inference");
-  const { QwenMtpProvider } = await import("@mlx-bun/inference/generation/speculative");
+  const { QwenMtpProvider, Dflash2Provider, detectDraftKind } = await import("@mlx-bun/inference/generation/speculative");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { resetPeakMemory, peakMemory, clearCache, synchronize, deviceArchitecture, MLX_VERSION } = await import("@mlx-bun/mlx/ffi");
   const { gpuStream } = await import("@mlx-bun/mlx/array");
   const weights = await Weights.open(plan.target);
   const model = createModel(weights, await loadModelConfig(plan.target));
-  const provider = await QwenMtpProvider.load(plan.draft);
+  const draftDir = v.draft ?? plan.draft;
+  const provider = await detectDraftKind(draftDir) === "dflash2"
+    ? await Dflash2Provider.load(draftDir) : await QwenMtpProvider.load(draftDir);
   const tokenizer = await loadTokenizer(plan.target), template = await ChatTemplate.load(plan.target);
   const prompts = plan.prompts.map(text => {
-    const ids = tokenizer.encode(template.render([{ role: "user", content: text }], { enableThinking: false }));
+    const ids = tokenizer.encode(template.render([{ role: "user", content: text }], { enableThinking: plan.thinking ?? false }));
     return ids[0] === ids[1] && ids[0] === tokenizer.bosTokenId ? ids.slice(1) : ids;
   });
-  const binding = bindMlxGateway(model, { provider, numDraftTokens: v.depth });
+  const binding = bindMlxGateway(model, { provider, numDraftTokens: v.depth, adaptiveDepth: v.adaptiveDepth ?? false });
   const run = async (prompt: number, maxTokens: number): Promise<MtpSample> => {
-    const options = { temperature: 0, maxTokens };
-    const execution = binding.plan({ hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,
-      kvQuant: false, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true },
+    const options = { ...(plan.sampling ?? { temperature: 0 }), ...(plan.kv ?? {}), maxTokens };
+    const execution = binding.plan({ hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: !!plan.sampling,
+      kvQuant: !!plan.kv, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true },
       options, { continuous: true, quantizedBatch: false, checkpoints: false });
     assert(execution.method === "speculative", "requested MTP did not bind");
     const request = binding.methodRequest!(execution, options)!;
@@ -117,7 +119,8 @@ async function worker(plan: MtpPlan, variantIndex: number, mode: MtpSample["mode
 
 async function main() {
   const { values } = parseArgs({ options: { plan: { type: "string" }, out: { type: "string" }, help: { type: "boolean" },
-    worker: { type: "string" }, mode: { type: "string" }, repetition: { type: "string" } }, strict: true });
+    worker: { type: "string" }, mode: { type: "string" }, repetition: { type: "string" },
+    "throughput-only": { type: "boolean" } }, strict: true });
   if (values.help) { console.log(HELP); return; }
   assert(values.plan && values.out, HELP);
   const plan = parseMtpPlan(JSON.parse(readFileSync(values.plan, "utf8")));
@@ -143,7 +146,8 @@ async function main() {
   const planPath = join(out, "plan.json"), raw = join(out, "samples.jsonl");
   writeFileSync(planPath, JSON.stringify(plan, null, 2));
   try {
-    for (const mode of ["throughput", "diagnostic"] as const) {
+    const modes = values["throughput-only"] ? ["throughput"] as const : ["throughput", "diagnostic"] as const;
+    for (const mode of modes) {
       for (let rep = 0; rep < plan.repetitions; rep++) {
         const order = plan.variants.map((_, i) => i); if (rep % 2) order.reverse();
         for (const index of order) {
@@ -163,7 +167,8 @@ async function main() {
     const samples = readFileSync(raw, "utf8").trim().split("\n").map(s => JSON.parse(s)).filter(s => s.kind === "sample") as MtpSample[];
     const select = (id: string, mode: string) => samples.filter(s => s.variant === id && s.mode === mode);
     const summary = plan.variants.map(v => ({ variant: v,
-      throughput: mtpMetrics(select(v.id, "throughput")), diagnostic: mtpMetrics(select(v.id, "diagnostic")),
+      throughput: mtpMetrics(select(v.id, "throughput")),
+      diagnostic: select(v.id, "diagnostic").length ? mtpMetrics(select(v.id, "diagnostic")) : null,
       comparison: pairedMtpComparison(select(plan.variants[0]!.id, "throughput"), select(v.id, "throughput")) }));
     writeFileSync(join(out, "summary.json"), JSON.stringify(summary, null, 2));
     console.log(JSON.stringify(summary, null, 2));
