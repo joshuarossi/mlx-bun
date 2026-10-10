@@ -3,12 +3,14 @@ import { appendFullKvRows } from "./full-kv-row-append";
 import { FullPrefillRow, fullRowPadding, fullRowPhysicalLength } from "./full-prefill-row";
 import { captureKvAttention } from "./kv-attention-view";
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
 import { BatchedQuantizedKVCache } from "./batched-quantized-kv";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { convertToAffine, transitionDue } from "./bf16-first-kv";
+import { unfusedAffineKernels } from "./affine-attention";
 import { type AttentionCache, type AttentionRead, type Cache, type Mask, type KvAttentionState, type KvAttentionView } from "../contracts/mlx/cache";
 
 /** The bf16 source of a full-attention row: a `KVCache`, or a padded
@@ -41,7 +43,8 @@ export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuan
       settle: rows => settleAffineRows(rows, groupSize, bits, start),
       keepsDenseReads: row => { const source = affineSource(row); return !source || !transitionDue(source.offset, start); },
       converted: row => row instanceof QuantizedKVCache,
-      makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits) }, row);
+      // The delayed lego is not composed yet (B1): unfused, the uniform `--kv-quant N` composition.
+      makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16)) }, row);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention() {

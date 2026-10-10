@@ -1,10 +1,12 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
+import type { AttentionRead,CommittedAttentionCache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { disposeTriple } from "./quantized-tensor";
+import { AttentionMasks, unmaskedLease, withLease } from "./attention-read";
+import { affineCausalLease, affineRead, committedAffineRead, unfusedAffineKernels, type AffineKernels } from "./affine-attention";
 
 
 /** Quantized KV cache — port of mlx-lm QuantizedKVCache: keys/values
@@ -15,8 +17,19 @@ import { disposeTriple } from "./quantized-tensor";
  *
  *  Built empty, it quantizes from token zero: the first append is read
  *  quantized, so the first chunk's numbers differ from today's served path
- *  and mlx-lm's, which read it bf16 (`Bf16FirstQuantizedKVCache`). */
-export class QuantizedKVCache implements CompiledDecodeCache {
+ *  and mlx-lm's, which read it bf16 (`Bf16FirstQuantizedKVCache`).
+ *
+ *  Reads: each named read appends through `updateAndFetchQuantized` and
+ *  attends the fetched prefix with the kernel `kernels` fixed for it at
+ *  construction: decode with no mask, a window under the bottom-right causal
+ *  matrix. `tiledAffineKernels` computes what `quantizedSdpa` gives the graphs
+ *  on this cache's masks with fused SDPA on, and `unfusedAffineKernels` what it
+ *  gives with fused SDPA off, except a one-row window, which `quantizedSdpa`
+ *  sends unfused by its query count and the window read sends to the window
+ *  kernel. The committed read is
+ *  `quantizedAppendAttention`. This cache has no sliding window (graphs compose
+ *  `RotatingQuantizedKVCache` for sliding layers). */
+export class QuantizedKVCache implements CompiledDecodeCache, CommittedAttentionCache {
   minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
@@ -25,11 +38,37 @@ export class QuantizedKVCache implements CompiledDecodeCache {
   values: ops.QuantizedTensor | null = null;
   offset = 0;
 
-  constructor(readonly groupSize: number, readonly bits: number) {}
+  constructor(
+    readonly groupSize: number,
+    readonly bits: number,
+    /** The kernel of each read. Row layouts made from this cache keep them. */
+    readonly kernels: AffineKernels,
+    /** The per-forward masks of the model this cache belongs to. Row layouts
+     * made from this cache (`state/layout`) share them. */
+    readonly masks = new AttentionMasks(),
+  ) {}
 
   get quantizedAttention(): QuantizedAttentionState { return this; }
 
   signature(): string { return `kv:quant:${this.bits}:${this.groupSize}`; }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.updateAndFetchQuantized(k, v);
+    return affineRead(keys, values, unmaskedLease, this.kernels.decode);
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    const L = k.shape[2]!;
+    return withLease(affineCausalLease(this.masks, L, this.offset + L), mask => {
+      const [keys, values] = this.updateAndFetchQuantized(k, v);
+      return affineRead(keys, values, mask, this.kernels.window);
+    });
+  }
+
+  appendCommitted(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.updateAndFetchQuantized(k, v);
+    return committedAffineRead(keys, values, this.groupSize, this.bits);
+  }
 
   bytesPerToken(): number {
     const steps = this.keys?.packed.shape[2] ?? 0;
@@ -254,6 +293,7 @@ export class QuantizedKVCache implements CompiledDecodeCache {
     for (const a of this.state()) a.dispose();
     this.keys = this.values = null;
     this.offset = 0;
+    this.masks.clear();
   }
 }
 
@@ -284,7 +324,8 @@ class TracedConcatQuantizedKVCache extends QuantizedKVCache implements DecodeTra
     readonly activeVq: ops.QuantizedTensor,
     ropeOffsetArr: MlxArray,
   ) {
-    super(groupSize, bits);
+    // A compiled step is one-token decode, unfused in every composition.
+    super(groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16));
     this.offset = offset;
     this.ropeOffsetArr = ropeOffsetArr;
   }

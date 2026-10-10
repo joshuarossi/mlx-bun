@@ -1,10 +1,12 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { AttentionRead,BidirectionalAttentionCache,BlockAttentionCache,Cache,CommittedAttentionCache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { bidirMask, createCausalMask } from "../kernels/attention/masks";
 import { QuantizedKVCache } from "./quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
 import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease } from "./attention-read";
+import { unfusedAffineKernels } from "./affine-attention";
 
 
 /** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
@@ -240,7 +242,9 @@ export class KVCache implements CompiledDecodeCache, CommittedAttentionCache, Bi
   /** Port of mlx-lm KVCache.to_quantized: quantize the whole buffer
    *  (padding included — it's overwritten before being read). */
   toQuantized(groupSize: number, bits: number): QuantizedKVCache {
-    const q = new QuantizedKVCache(groupSize, bits);
+    // Converted caches are not composed yet (B1's quantized lego): unfused, the
+    // uniform `--kv-quant N` composition.
+    const q = new QuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, this.keys?.dtype ?? Dtype.bfloat16), this.masks);
     q.offset = this.offset;
     if (this.keys && this.values) {
       q.keys = ops.quantize(this.keys, groupSize, bits);

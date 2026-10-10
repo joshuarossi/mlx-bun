@@ -1,4 +1,5 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
 import { type AttentionCache, type AttentionRead, type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
@@ -7,6 +8,7 @@ import { AlignedRotatingCache, alignRotatingRows, RotatingAffineLayout, Speculat
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
 import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view";
 import { convertToAffine, transitionDue } from "./bf16-first-kv";
+import { unfusedAffineKernels } from "./affine-attention";
 
 /** The affine transition of `Bf16FirstRotatingQuantizedKVCache` over aligned
  * ring rows: a plain ring converts its physical columns with its own
@@ -37,7 +39,10 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
         return !source || !transitionDue(source.offset, start);
       },
       converted: row => row instanceof AlignedRotatingCache && row.inner instanceof BatchedRotatingQuantCache,
-      makeLayout: () => speculative ? new SpeculativeRotatingAffineLayout(maxSize, groupSize, bits) : new RotatingAffineLayout(maxSize, groupSize, bits), prepareRows: alignRotatingRows,
+      // The delayed lego is not composed yet (B1): unfused, the uniform `--kv-quant N` composition.
+      makeLayout: () => { const kernels = unfusedAffineKernels(bits, groupSize, Dtype.bfloat16);
+        return speculative ? new SpeculativeRotatingAffineLayout(maxSize, groupSize, bits, kernels) : new RotatingAffineLayout(maxSize, groupSize, bits, kernels); },
+      prepareRows: alignRotatingRows,
       packRows: (layout, rows) => layout.adoptAlignedRows(rows as readonly AlignedRotatingCache[]),
       extractRow: row => (row as AlignedRotatingCache).extract(speculative ? maxSize : undefined),
       rollbackRow: (row, before, keep, preserve) => (row as AlignedRotatingCache).rollback(before, keep, preserve) }, row, new RotatingKvPositions(maxSize));

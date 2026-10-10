@@ -1,5 +1,6 @@
 export * from "./kv";
 export * from "./quantized-kv";
+export { tiledAffineKernels, tiledCausalAffineKernels, unfusedAffineKernels, type AffineKernels } from "./affine-attention";
 export * from "./rotating-kv";
 export * from "./rotating-quantized-kv";
 export * from "./turboquant-kv";

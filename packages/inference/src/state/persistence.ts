@@ -58,6 +58,7 @@ import { KVCache } from "./kv";
 import { pagedCacheCodec } from "./paged/codec";
 import { kvReader,kvWriter,type KvWriteRequest } from "./persistence-worker";
 import { QuantizedKVCache } from "./quantized-kv";
+import { unfusedAffineKernels } from "./affine-attention";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { SSMCache } from "./ssm";
@@ -228,7 +229,7 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as QuantizedKVCache;
-      const clone = new QuantizedKVCache(c.groupSize, c.bits);
+      const clone = new QuantizedKVCache(c.groupSize, c.bits, c.kernels);
       if (!c.keys || !c.values) return clone;
       clone.restoreState(
         context.tripleView(c.keys, c.offset),
@@ -238,10 +239,12 @@ const CACHE_CODECS = {
       return clone;
     },
     load: (entry, context) => {
-      const cache = new QuantizedKVCache(entry.groupSize!, entry.bits!);
-      cache.restoreState(
-        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3), entry.offset,
-      );
+      const keys = context.triple(entry.tensors, 0), values = context.triple(entry.tensors, 3);
+      // Restored caches are not composed yet (B2): unfused, the uniform
+      // `--kv-quant N` composition.
+      const cache = new QuantizedKVCache(entry.groupSize!, entry.bits!,
+        unfusedAffineKernels(entry.bits!, entry.groupSize!, keys.scales.dtype));
+      cache.restoreState(keys, values, entry.offset);
       return cache;
     },
     headerTrimmable: () => true,
@@ -259,7 +262,7 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as RotatingQuantizedKVCache;
-      const clone = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
+      const clone = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits, c.kernels);
       if (!c.keys || !c.values) return clone;
       clone.restoreState(
         context.tripleView(c.keys, null), context.tripleView(c.values, null),
@@ -268,13 +271,14 @@ const CACHE_CODECS = {
       return clone;
     },
     load: (entry, context) => {
+      const keys = context.triple(entry.tensors, 0), values = context.triple(entry.tensors, 3);
+      // Restored caches are not composed yet (B2): unfused, the uniform
+      // `--kv-quant N` composition.
       const cache = new RotatingQuantizedKVCache(
         entry.maxSize!, entry.groupSize!, entry.bits!,
+        unfusedAffineKernels(entry.bits!, entry.groupSize!, keys.scales.dtype),
       );
-      cache.restoreState(
-        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3),
-        entry.offset, entry.idx!,
-      );
+      cache.restoreState(keys, values, entry.offset, entry.idx!);
       return cache;
     },
     headerTrimmable: (entry) => entry.offset < (entry.maxSize ?? 0),

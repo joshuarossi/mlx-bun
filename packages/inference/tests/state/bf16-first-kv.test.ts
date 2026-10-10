@@ -16,6 +16,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { AttentionCache, AttentionRead, Cache } from "../../src/contracts/mlx/cache";
 import { unrotateValues } from "../../src/kernels/turboquant/ops";
 import { quantizedSdpa } from "../../src/layers/quantized-attention";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { Bf16FirstQuantizedKVCache, Bf16FirstRotatingQuantizedKVCache, Bf16FirstTurboQuantKVCache } from "../../src/state/bf16-first-kv";
 import { DelayedQuantizedKVCache } from "../../src/state/delayed-quantized-kv";
 import { DelayedRotatingQuantizedKVCache } from "../../src/state/delayed-rotating-quantized-kv";
@@ -186,9 +187,11 @@ for (const scheme of SCHEMES) for (const start of [0, 512]) {
 }
 
 /** The quantized-from-token-zero cache a lego is not: built empty, it
- * quantizes the first append too. */
+ * quantizes the first append too. Its kernels are not composed yet (B1):
+ * unfused, the uniform `--kv-quant N` composition. */
 const fromZeroOf = (scheme: Scheme): Cache => !scheme.bits ? new TurboQuantKVCache(8, 3, turboQuantFusedDecode())
-  : scheme.rotating ? new RotatingQuantizedKVCache(W, GROUP, scheme.bits) : new QuantizedKVCache(GROUP, scheme.bits);
+  : scheme.rotating ? new RotatingQuantizedKVCache(W, GROUP, scheme.bits, unfusedAffineKernels(scheme.bits, GROUP, Dtype.bfloat16))
+  : new QuantizedKVCache(GROUP, scheme.bits, unfusedAffineKernels(scheme.bits, GROUP, Dtype.bfloat16));
 /** The conversion `kv-maintenance` performs, applied by hand. */
 const convertedOf = (scheme: Scheme, plain: Cache): Cache => !scheme.bits
   ? TurboQuantKVCache.fromKVCache(plain as KVCache, 8, 3, turboQuantFusedDecode())

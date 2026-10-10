@@ -1,3 +1,5 @@
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -23,7 +25,7 @@ function weighted(keys: number[], values: number[], query: number): number {
 
 for (const bits of [4, 8]) test(`full donor snapshots preserve mixed padded geometry and ownership (bits=${bits})`, () => {
   const plain = new FullPrefillRow(new KVCache());
-  const affine = new FullPrefillRow(new QuantizedKVCache(64, bits));
+  const affine = new FullPrefillRow(new QuantizedKVCache(64, bits, unfusedAffineKernels(bits, 64, Dtype.bfloat16)));
   const rows = [plain, affine];
   let donor: KvDonorAttention | undefined;
   try {

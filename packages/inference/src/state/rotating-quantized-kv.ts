@@ -1,11 +1,13 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
+import type { AttentionCache,AttentionRead,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { activeQuantViews,quantConcatDecodeSlot } from "./quantized-kv";
 import { disposeTriple,mapTriple } from "./quantized-tensor";
+import { AttentionMasks, unmaskedLease, withLease, type MaskLease } from "./attention-read";
+import { affineCausalLease, affineRead, unfusedAffineKernels, type AffineKernel, type AffineKernels } from "./affine-attention";
 
 
 /** Quantized rotating (sliding-window) KV cache — port of optiq
@@ -19,8 +21,19 @@ import { disposeTriple,mapTriple } from "./quantized-tensor";
  *  groupSize/bits through the donor→sharer plumbing explicitly.
  *
  *  Built empty, it quantizes from token zero, unlike the served path's
- *  `Bf16FirstRotatingQuantizedKVCache`, so its first chunk's numbers differ. */
-export class RotatingQuantizedKVCache implements CompiledDecodeCache {
+ *  `Bf16FirstRotatingQuantizedKVCache`, so its first chunk's numbers differ.
+ *
+ *  Reads: the sliding window is `maxSize`, the window every graph passes for
+ *  the layers it gives this cache. Decode writes in place at the ring head and
+ *  attends the whole ring with no mask (eviction enforces the window). A window
+ *  writes by concatenation, in temporal order, under the bottom-right causal
+ *  matrix with the window kernel, or `createCausalMask` with the sliding window
+ *  and the masked-window kernel once the window binds. The kernels are fixed at
+ *  construction. Today the graphs' `updateAndFetchQuantized` picks the in-place
+ *  write for one position and `quantizedSdpa` picks the unfused port for one
+ *  query, so a one-row window concatenates here (the same keys, in another
+ *  order once the ring wraps) and takes the window kernel. */
+export class RotatingQuantizedKVCache implements CompiledDecodeCache, AttentionCache {
   get quantizedAttention(): QuantizedAttentionState { return this; }
   declare minimumReusableOffset?: number;
   static readonly STEP = 256;
@@ -34,11 +47,42 @@ export class RotatingQuantizedKVCache implements CompiledDecodeCache {
   ringIdx = 0;
   readonly maxSize: number;
 
-  constructor(maxSize: number, readonly groupSize: number, readonly bits: number) {
+  constructor(
+    maxSize: number,
+    readonly groupSize: number,
+    readonly bits: number,
+    /** The kernel of each read. */
+    readonly kernels: AffineKernels,
+    /** The per-forward masks of the model this cache belongs to. Row layouts
+     * made from this cache (`state/layout`) share them. */
+    readonly masks = new AttentionMasks(),
+  ) {
     this.maxSize = maxSize;
   }
 
   signature(): string { return `kv:rotating-quant:${this.bits}:${this.groupSize}`; }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.#updateInPlace(k, v);
+    return affineRead(keys, values, unmaskedLease, this.kernels.decode);
+  }
+
+  /** The mask is `makeMask`'s with the window at `maxSize`, before the append:
+   * plain causal while the window has room, the window-bound array after. */
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    const N = k.shape[2]!, offset = Math.min(this.maxSize - 1, this.offset);
+    return offset + N <= this.maxSize
+      ? this.#windowRead(k, v, affineCausalLease(this.masks, N, offset + N), this.kernels.window)
+      : this.#windowRead(k, v, this.masks.lease(`rotating:${this.maxSize}`, `${N}:${offset}`,
+        () => ({ mode: "array", arr: createCausalMask(N, offset, this.maxSize) })), this.kernels.maskedWindow);
+  }
+
+  #windowRead(k: MlxArray, v: MlxArray, mask: MaskLease, kernel: AffineKernel): AttentionRead {
+    return withLease(mask, held => {
+      const [keys, values] = this.#updateConcat(k, v);
+      return affineRead(keys, values, held, kernel);
+    });
+  }
 
   bytesPerToken(): number {
     const steps = this.keys?.packed.shape[2] ?? 0;
@@ -425,6 +469,7 @@ export class RotatingQuantizedKVCache implements CompiledDecodeCache {
     this.keys = this.values = null;
     this.offset = 0;
     this.ringIdx = 0;
+    this.masks.clear();
   }
 }
 
@@ -441,7 +486,8 @@ class TracedRingQuantizedKVCache extends RotatingQuantizedKVCache implements Dec
     readonly writePosArr: MlxArray,
     ropeOffsetArr: MlxArray,
   ) {
-    super(maxSize, groupSize, bits);
+    // A compiled step is one-token decode, unfused in every composition.
+    super(maxSize, groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16));
     this.offset = offset;
     this.ropeOffsetArr = ropeOffsetArr;
   }

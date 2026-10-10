@@ -1,7 +1,9 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { cloneKvCaches } from "./persistence";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { AttentionMasks } from "./attention-read";
+import { affineCausalLease, type AffineKernels } from "./affine-attention";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { BatchedRotatingCache, buildBatchedRotatingMask } from "./batched-rotating";
@@ -52,7 +54,7 @@ export class AlignedRotatingCache implements Cache {
   dispose(): void { this.inner.dispose(); }
   extract(limit?: number): Cache {
     const row = this.inner.extractRow(0, limit) ?? (this.inner instanceof BatchedRotatingQuantCache
-      ? new RotatingQuantizedKVCache(this.inner.maxSize, this.inner.groupSize, this.inner.bits)
+      ? new RotatingQuantizedKVCache(this.inner.maxSize, this.inner.groupSize, this.inner.bits, this.inner.kernels)
       : new RotatingKVCache(this.inner.maxSize));
     row.minimumReusableOffset = this.minimumReusableOffset;
     return row;
@@ -202,14 +204,29 @@ export class RotatingKvPositions implements TransitioningKvPositions {
 }
 
 /** Once all rows use affine storage, concatenate their already-aligned planes
- * without changing ring columns or rebuilding any attention mask. */
-export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefillCache {
+ * without changing ring columns or rebuilding any attention mask.
+ * Reads are the current ring's (`BatchedRotatingQuantCache`); every ring this
+ * layout builds shares its `masks`. */
+export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefillCache, AttentionCache {
   #inner?: BatchedRotatingQuantCache;
   #before?: number[];
   #minimum: number[] = [];
-  constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number) {}
+  constructor(
+    readonly maxSize: number,
+    readonly groupSize: number,
+    readonly bits: number,
+    /** The composition's kernels: the window kernel for a plain causal window
+     * (`SpeculativeRotatingAffineLayout`); the ring reads masked windows. */
+    readonly kernels: AffineKernels,
+    /** The per-forward masks of the model this layout serves. */
+    readonly masks = new AttentionMasks(),
+  ) {}
   get minimumReusableOffset(): number { return Math.max(0, ...this.#minimum); }
   get quantizedAttention() { return this.#inner; }
+  /** The current ring. */
+  protected get ring(): BatchedRotatingQuantCache { return this.#inner!; }
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead { return this.#inner!.appendDecode(k, v); }
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead { return this.#inner!.appendWindow(k, v); }
   captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
     return captureRotatingDonorAttention(this.#inner!);
   }
@@ -220,7 +237,7 @@ export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefill
   get ropeOffsetArr(): MlxArray | undefined { return this.#inner?.ropeOffsetArr; }
   get maxTokens(): number { return this.maxSize; }
   signature(): string { return `kv:rotating-affine:${this.maxSize}:${this.groupSize}:${this.bits}`; }
-  makeEmptyBatch(): RotatingAffineLayout { return new RotatingAffineLayout(this.maxSize, this.groupSize, this.bits); }
+  makeEmptyBatch(): RotatingAffineLayout { return new RotatingAffineLayout(this.maxSize, this.groupSize, this.bits, this.kernels, this.masks); }
   makeMask(tokens: number, window: number | null): Mask { return this.#inner!.makeMask(tokens, window); }
   preparePrefill(padding: PrefillPadding): void { this.#inner!.preparePrefill(padding); }
   finalizePrefill(): void { this.#inner!.finalizePrefill(); }
@@ -258,7 +275,7 @@ export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefill
     const position = combinedPosition(rings);
     if (rings.every(row => !row.keys)) {
       const empty = BatchedRotatingQuantCache.adoptPhysical(null, null, this.groupSize, this.bits,
-        position);
+        position, this.masks);
       this.#inner?.dispose(); this.#inner = empty; this.#minimum = rows.map(row => row.minimumReusableOffset ?? 0);
       return;
     }
@@ -272,7 +289,7 @@ export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefill
     const keys = merge("keys"); let values: ops.QuantizedTensor;
     try { values = merge("values"); } catch (error) { quantizedRowStorage.dispose(keys); throw error; }
     const inner = BatchedRotatingQuantCache.adoptPhysical(keys, values, this.groupSize, this.bits,
-      position);
+      position, this.masks);
     this.#inner?.dispose(); this.#inner = inner; this.#minimum = rows.map(row => row.minimumReusableOffset ?? 0);
   }
   filterRows(keep: readonly number[]): void { this.#inner!.filterRows(keep); this.#minimum = keep.map(row => this.#minimum[row]!); }
@@ -280,14 +297,20 @@ export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefill
     return this.extract(row);
   }
   protected extract(row: number, limit?: number): Cache {
-    const result = this.#inner!.extractRow(row, limit) ?? new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
+    const result = this.#inner!.extractRow(row, limit) ?? new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.#inner!.kernels);
     result.minimumReusableOffset = this.#minimum[row] ?? 0; return result;
   }
   state(): MlxArray[] { return this.#inner?.state() ?? []; }
   dispose(): void { this.#inner?.dispose(); this.#inner = undefined; this.#minimum = []; this.#before = undefined; }
 }
 
-/** A committed speculative checkpoint contains only the newest valid window. */
+/** A committed speculative checkpoint contains only the newest valid window.
+ * While no row is padded and the window has room, the mask is plain causal
+ * (`makeMask` hands the graphs the "" and "causal" strings): a window there
+ * writes through the ring and attends under the bottom-right causal matrix with
+ * the window kernel. Otherwise reads are the ring's, under its batched rotating
+ * mask. Decode is the ring's in both states; its mask then selects every stored
+ * position, so the unfused port computes the same bits as with no mask. */
 export class SpeculativeRotatingAffineLayout extends RotatingAffineLayout {
   #ropeForOffset = -1;
   override get ropeOffsetArr(): MlxArray | undefined {
@@ -297,7 +320,12 @@ export class SpeculativeRotatingAffineLayout extends RotatingAffineLayout {
     return super.ropeOffsetArr;
   }
   override makeEmptyBatch(): SpeculativeRotatingAffineLayout {
-    return new SpeculativeRotatingAffineLayout(this.maxSize, this.groupSize, this.bits);
+    return new SpeculativeRotatingAffineLayout(this.maxSize, this.groupSize, this.bits, this.kernels, this.masks);
+  }
+  override appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    const L = k.shape[2]!;
+    if (!(this.leftPad.every(pad => pad === 0) && this.offset + L <= this.maxSize)) return super.appendWindow(k, v);
+    return this.ring.appendWindowUnder(k, v, affineCausalLease(this.masks, L, this.offset + L), this.kernels.window);
   }
   override makeMask(tokens: number, window: number | null): Mask {
     if (this.leftPad.every(pad => pad === 0) &&

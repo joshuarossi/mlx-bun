@@ -66,7 +66,7 @@ export class FullPrefillRow implements Cache {
       return result;
     }
     if (source instanceof QuantizedKVCache) {
-      const result = new QuantizedKVCache(source.groupSize, source.bits);
+      const result = new QuantizedKVCache(source.groupSize, source.bits, source.kernels);
       if (planes.length) result.restoreState({ packed: planes[0]!, scales: planes[1]!, biases: planes[2]! },
         { packed: planes[3]!, scales: planes[4]!, biases: planes[5]! }, offset);
       return result;

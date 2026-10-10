@@ -1,3 +1,4 @@
+import { unfusedAffineKernels } from "../../src/state/affine-attention";
 import { expect, test } from "bun:test";
 import { Dtype, clearCache } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -18,7 +19,7 @@ test("affine committed spans retain sequential attention at each causal prefix",
       using q = ops.randomNormal([batch, 24, length, 256], dtype, 0, 1, null);
       using k = ops.randomNormal([batch, 4, prefix + length, 256], dtype, 0, 1, null);
       using v = ops.randomNormal([batch, 4, prefix + length, 256], dtype, 0, 1, null);
-      const sequential = new QuantizedKVCache(groupSize, bits), combined = new QuantizedKVCache(groupSize, bits);
+      const sequential = new QuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16)), combined = new QuantizedKVCache(groupSize, bits, unfusedAffineKernels(bits, groupSize, Dtype.bfloat16));
       const outputs: import("@mlx-bun/mlx/array").MlxArray[] = [];
       try {
         using prefixK = slice(k, 0, prefix), prefixV = slice(v, 0, prefix);
