@@ -1,14 +1,23 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
-import { createCausalMask } from "../kernels/attention/masks";
+import type { AttentionRead,BidirectionalAttentionCache,BlockAttentionCache,Cache,CommittedAttentionCache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
+import { bidirMask, createCausalMask } from "../kernels/attention/masks";
 import { QuantizedKVCache } from "./quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
+import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease } from "./attention-read";
 
 
 /** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
- *  256 along the sequence axis, updated in place via slice_update. */
-export class KVCache implements CompiledDecodeCache {
+ *  256 along the sequence axis, updated in place via slice_update.
+ *
+ *  Reads: each named read appends through `updateAndFetch` and attends the
+ *  fetched prefix with the stock fused SDPA, the call every graph makes after
+ *  `updateAndFetch` today. Decode passes no mask and a window the fused causal
+ *  mask; at one query the two compute the same bits, so a one-row window needs
+ *  no case of its own. This cache has no sliding window (graphs compose
+ *  `RotatingKVCache` for sliding layers), so only a bidirectional read builds
+ *  a mask array. */
+export class KVCache implements CompiledDecodeCache, CommittedAttentionCache, BidirectionalAttentionCache, BlockAttentionCache {
   readonly denseKvReads = plainKvStorage;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
@@ -17,7 +26,55 @@ export class KVCache implements CompiledDecodeCache {
   values: MlxArray | null = null;
   offset = 0;
 
+  constructor(
+    /** The per-forward masks of the model this cache belongs to. Row layouts
+     * made from this cache (`state/layout`) share them. */
+    readonly masks = new AttentionMasks(),
+  ) {}
+
   signature(): string { return "kv:plain"; }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.updateAndFetch(k, v);
+    return sdpaRead(keys, values, unmaskedLease);
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.updateAndFetch(k, v);
+    return sdpaRead(keys, values, causalLease);
+  }
+
+  /** The graph qualifies bf16 committed spans as the window read
+   * (`supportsCommittedAppendCache` admits storage without `kvBits`), so a
+   * committed span reads exactly as a window does. */
+  appendCommitted(k: MlxArray, v: MlxArray): AttentionRead {
+    return this.appendWindow(k, v);
+  }
+
+  /** Gemma 4's vision prefill read: the causal mask OR'd with the image block
+   * overlay (`bidirMask`), then the fused SDPA with that array mask. One mask
+   * per forward: every layer passes the same `bidirectional` tensor. */
+  appendBidirectional(k: MlxArray, v: MlxArray, bidirectional: MlxArray): AttentionRead {
+    const L = k.shape[2]!;
+    const mask = this.masks.lease("bidirectional:none", `${L}`, () => bidirMask(L, null, bidirectional), bidirectional);
+    return withLease(mask, held => {
+      const [keys, values] = this.updateAndFetch(k, v);
+      return sdpaRead(keys, values, held);
+    });
+  }
+
+  /** DiffusionGemma's canvas read on a full-attention layer: the stored
+   * positions in order, then the block's keys and values, with no mask. */
+  readBlock(k: MlxArray, v: MlxArray): AttentionRead {
+    const [storedK, storedV] = this.temporalView();
+    let keys: MlxArray, values: MlxArray;
+    try {
+      keys = ops.concatAxis([storedK, k], 2);
+      try { values = ops.concatAxis([storedV, v], 2); }
+      catch (error) { keys.dispose(); throw error; }
+    } finally { storedK.dispose(); storedV.dispose(); }
+    return sdpaRead(keys, values, unmaskedLease);
+  }
 
   bytesPerToken(): number {
     const steps = this.keys?.shape[2] ?? 0;
@@ -198,6 +255,7 @@ export class KVCache implements CompiledDecodeCache {
     this.values?.dispose();
     this.keys = this.values = null;
     this.offset = 0;
+    this.masks.clear();
   }
 }
 

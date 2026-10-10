@@ -1,17 +1,29 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
-import { createCausalMask } from "../kernels/attention/masks";
+import type { AttentionRead,BidirectionalAttentionCache,BlockAttentionCache,CompiledDecodeCache,DecodeSlot,DecodeStepInputs,DecodeStepPlan,DecodeTrace,KvDonorRows,Mask } from "../contracts/mlx/cache";
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import { bidirMask, createCausalMask } from "../kernels/attention/masks";
 import { concatDecodeSlot } from "./kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { plainKvStorage } from "./dense-kv-reads";
+import { AttentionMasks, causalLease, sdpaRead, unmaskedLease, withLease, type MaskLease } from "./attention-read";
 
 
 /** Rotating (sliding-window) KV cache — port of mlx-lm RotatingKVCache
  *  with keep=0 (gemma4's configuration): a ring buffer of max_size
  *  entries, so decode attends over at most the window. RoPE offsets use
- *  the true position; masks use the buffer-clamped offset. */
-export class RotatingKVCache implements CompiledDecodeCache {
+ *  the true position; masks use the buffer-clamped offset.
+ *
+ *  Reads: the sliding window is `maxSize`, the window every graph passes for
+ *  the layers it gives this cache. Decode writes in place at the ring head and
+ *  attends the whole ring with no mask (eviction enforces the window). A window
+ *  writes by concatenation, in temporal order, and attends under the causal
+ *  mask, materialized with the sliding window once the window binds. Both use
+ *  the stock fused SDPA, as the graphs do after `updateAndFetch` today, which
+ *  picks the in-place write for one position and concatenation otherwise. The
+ *  method picks here, so a one-row window concatenates: the same bits until the
+ *  ring wraps, a different key order after. */
+export class RotatingKVCache implements CompiledDecodeCache, BidirectionalAttentionCache, BlockAttentionCache {
   readonly denseKvReads = plainKvStorage;
   declare minimumReusableOffset?: number;
   static readonly STEP = 256;
@@ -23,11 +35,115 @@ export class RotatingKVCache implements CompiledDecodeCache {
   #idx = 0;
   readonly maxSize: number;
 
-  constructor(maxSize: number) {
+  constructor(
+    maxSize: number,
+    /** The per-forward masks of the model this cache belongs to. Row layouts
+     * made from this cache (`state/layout`) share them. */
+    readonly masks = new AttentionMasks(),
+  ) {
     this.maxSize = maxSize;
   }
 
   signature(): string { return "kv:rotating-plain"; }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    const [keys, values] = this.#updateInPlace(k, v);
+    return sdpaRead(keys, values, unmaskedLease);
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    return withLease(this.#windowMask(k.shape[2]!), mask => {
+      const [keys, values] = this.#updateConcat(k, v);
+      return sdpaRead(keys, values, mask);
+    });
+  }
+
+  /** Gemma 4's vision prefill read on a sliding layer: `bidirMask` with this
+   * cache's window over a first window, then the fused SDPA. */
+  appendBidirectional(k: MlxArray, v: MlxArray, bidirectional: MlxArray): AttentionRead {
+    const L = k.shape[2]!;
+    const mask = this.masks.lease(`bidirectional:${this.maxSize}`, `${L}`,
+      () => bidirMask(L, this.maxSize, bidirectional), bidirectional);
+    return withLease(mask, held => {
+      const [keys, values] = this.#updateConcat(k, v);
+      return sdpaRead(keys, values, held);
+    });
+  }
+
+  /** DiffusionGemma's canvas read on a sliding layer, as its decoder computes
+   * it: the live window in temporal order, cut to the newest `maxSize - 1`
+   * positions once it is full, then the block's keys and values. The mask is
+   * the decoder's (stored positions past the window start and the whole block),
+   * sliced to the kept columns. */
+  readBlock(k: MlxArray, v: MlxArray): AttentionRead {
+    let [storedK, storedV] = this.temporalView();
+    const window = Math.max(this.maxSize - 1, 0);
+    const storedLength = storedK.shape[2]!;
+    const L = k.shape[2]!;
+    const mask = storedLength <= window ? unmaskedLease : this.#blockMask(L, storedLength);
+    let maskArr = mask.mask.arr;
+    const held: MlxArray[] = [storedK, storedV];
+    try {
+      if (window && storedLength > window && this.offset >= storedLength) {
+        storedK = storedK.slice([0, 0, storedLength - window, 0], storedK.shape); held.push(storedK);
+        storedV = storedV.slice([0, 0, storedLength - window, 0], storedV.shape); held.push(storedV);
+        if (maskArr) {
+          const columns = maskArr.shape;
+          maskArr = maskArr.slice([0, 0, 0, columns[3]! - (window + L)], columns);
+        }
+      }
+      const keys = ops.concatAxis([storedK, k], 2);
+      let values: MlxArray;
+      try { values = ops.concatAxis([storedV, v], 2); }
+      catch (error) { keys.dispose(); throw error; }
+      const sliced = maskArr !== mask.mask.arr ? maskArr : null;
+      const mode = maskArr ? "array" : mask.mask.mode;
+      return {
+        attend: (q, scale) => ops.sdpa(q, keys, values, scale, mode, maskArr),
+        dispose() { keys.dispose(); values.dispose(); sliced?.dispose(); mask.release(); },
+      };
+    } catch (error) {
+      if (maskArr !== mask.mask.arr) maskArr?.dispose();
+      mask.release();
+      throw error;
+    } finally { for (const array of held) array.dispose(); }
+  }
+
+  /** The causal mask of a `N`-position window, before its append. */
+  #windowMask(N: number): MaskLease {
+    const offset = Math.min(this.maxSize - 1, this.offset);
+    if (offset + N <= this.maxSize) return causalLease;
+    return this.masks.lease(`rotating:${this.maxSize}`, `${N}:${offset}`,
+      () => ({ mode: "array", arr: createCausalMask(N, offset, this.maxSize) }));
+  }
+
+  /** DiffusionGemma's sliding-layer decoder mask over `storedLength` stored
+   * positions and an `N`-position block (its `#makeDecoderMasks`). */
+  #blockMask(N: number, storedLength: number): MaskLease {
+    const valid = Math.min(this.offset, storedLength);
+    return this.masks.lease(`rotating-block:${this.maxSize}`, `${N}:${storedLength}:${valid}`, () => {
+      const start = Math.max(0, valid - Math.max(this.maxSize - 1, 0));
+      const positions = ops.arange(0, storedLength, 1, Dtype.int32);
+      const startArr = ops.scalarLike(start, positions);
+      const validArr = ops.scalarLike(valid, positions);
+      const geStart = ops.greaterEqual(positions, startArr);
+      const ltValid = ops.less(positions, validArr);
+      const stored = ops.logicalAnd(geStart, ltValid);
+      positions.dispose();
+      startArr.dispose();
+      validArr.dispose();
+      geStart.dispose();
+      ltValid.dispose();
+      using ones = ops.fromInt32(new Array(N).fill(1), [N]);
+      const block = ones.astype(stored.dtype);
+      const row = ops.concatAxis([stored, block], 0);
+      stored.dispose();
+      block.dispose();
+      const reshaped = ops.reshape(row, [1, 1, 1, storedLength + N]);
+      row.dispose();
+      return { mode: "array", arr: reshaped };
+    });
+  }
 
   bytesPerToken(): number {
     const steps = this.keys?.shape[2] ?? 0;
@@ -362,6 +478,7 @@ export class RotatingKVCache implements CompiledDecodeCache {
     this.keys = this.values = null;
     this.offset = 0;
     this.#idx = 0;
+    this.masks.clear();
   }
 }
 

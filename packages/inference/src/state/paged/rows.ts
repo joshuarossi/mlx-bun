@@ -1,4 +1,4 @@
-import type { BatchableCache, Cache, Mask, KvAttentionView } from "../../contracts/mlx/cache";
+import type { AttentionCache, AttentionRead, BatchableCache, Cache, Mask, KvAttentionView } from "../../contracts/mlx/cache";
 import { buildBatchedDecodeMask, mergeKVRows } from "../batched-mask";
 import * as ops from "@mlx-bun/mlx/ops";
 import { runtimeFlag } from "../../runtime/config";
@@ -7,8 +7,14 @@ import { disposeResources } from "../../runtime/resources";
 import { PagedKVCache, poolBlocksFor, type PagedQuantization } from "./cache";
 
 /** Block storage owns row membership; attention consumes the same gathered
- * K/V representation as the existing paged cache. No scheduler policy here. */
-export class PagedKvRows implements BatchableCache {
+ * K/V representation as the existing paged cache. No scheduler policy here.
+ *
+ * Reads: each row appends to its own blocks and reads with that row's
+ * `PagedKVCache` read for the phase; the outputs join along the batch. A row
+ * never sees another row's padding, so its output is what it would be alone.
+ * The deprecated `updateAndFetch` instead joins several rows' gathered keys
+ * left-padded for one fused SDPA under the padding mask. */
+export class PagedKvRows implements AttentionCache, BatchableCache {
   #rows: PagedKVCache[] = [];
   #rope?: MlxArray;
   #ropeOffset = -1;
@@ -51,6 +57,39 @@ export class PagedKvRows implements BatchableCache {
     const retained = new Set(keep);
     this.releaseRopeArr();
     disposeResources(previous.filter((_, row) => !retained.has(row)));
+  }
+
+  appendDecode(keys: MlxArray, values: MlxArray): AttentionRead {
+    return this.#rowReads(keys, values, (row, k, v) => row.appendDecode(k, v));
+  }
+
+  appendWindow(keys: MlxArray, values: MlxArray): AttentionRead {
+    return this.#rowReads(keys, values, (row, k, v) => row.appendWindow(k, v));
+  }
+
+  #rowReads(keys: MlxArray, values: MlxArray,
+    read: (row: PagedKVCache, k: MlxArray, v: MlxArray) => AttentionRead): AttentionRead {
+    const reads: AttentionRead[] = [];
+    try {
+      for (const [row, storage] of this.#rows.entries()) {
+        using k = keys.slice([row, 0, 0, 0], [row + 1, ...keys.shape.slice(1)]);
+        using v = values.slice([row, 0, 0, 0], [row + 1, ...values.shape.slice(1)]);
+        reads.push(read(storage, k, v));
+      }
+    } catch (error) { disposeResources(reads); throw error; }
+    return {
+      attend(q, scale) {
+        const outputs: MlxArray[] = [];
+        try {
+          for (const [row, rowRead] of reads.entries()) {
+            using query = q.slice([row, 0, 0, 0], [row + 1, ...q.shape.slice(1)]);
+            outputs.push(rowRead.attend(query, scale));
+          }
+          return ops.concatAxis(outputs, 0);
+        } finally { disposeResources(outputs); }
+      },
+      dispose() { disposeResources(reads); },
+    };
   }
 
   get attentionState(): this | undefined { return this.direct || this.quantization ? this : undefined; }

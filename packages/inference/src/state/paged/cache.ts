@@ -11,7 +11,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../../kernels/attention/masks";
-import { type Cache, type Mask, type KvAttentionView } from "../../contracts/mlx/cache";
+import { type AttentionCache, type AttentionRead, type Mask, type KvAttentionView } from "../../contracts/mlx/cache";
 
 /** Typed pool-exhaustion error: a generation outgrew its pool. Sizing from
  *  prompt+maxTokens at construction makes this unreachable in practice;
@@ -195,8 +195,16 @@ export class BlockPool {
  *  at every step (parity-gated); only the physical arrangement differs.
  *  The pool allocates lazily on the first write (KVCache's lazy-alloc
  *  shape): head count / head dims / dtype come from the first k/v pair,
- *  so the wiring (maybePageKv) needs no per-model shape plumbing. */
-export class PagedKVCache implements Cache {
+ *  so the wiring (maybePageKv) needs no per-model shape plumbing.
+ *
+ *  Reads: each owns an immutable view of the blocks as of its append
+ *  (`pagedAttentionView`). Decode attends its one query with the kernel `direct`
+ *  fixes at construction: the direct Metal read from the blocks, or the
+ *  gathered blocks through the stock fused SDPA with no mask. A window always
+ *  gathers and runs the fused SDPA with the causal mask, whatever its length;
+ *  the deprecated `attentionState` view still sends a direct cache's windows of
+ *  up to eight queries to the direct kernel instead. */
+export class PagedKVCache implements AttentionCache {
   /** Distinct storage kind; the row adapter preserves its block pools. */
   signature(): string { return "kv:paged"; }
   /** Matches KVCache.STEP: v1's growth granularity is a permutation of
@@ -234,6 +242,16 @@ export class PagedKVCache implements Cache {
   /** Blocks needed to hold `n` tokens. */
   #blocksFor(n: number): number {
     return Math.ceil(n / this.#blockSize);
+  }
+
+  appendDecode(k: MlxArray, v: MlxArray): AttentionRead {
+    this.append(k, v);
+    return pagedRead(pagedAttentionView(this.pool!, [...this.blockTable], this.offset, this.direct), { mode: "", arr: null });
+  }
+
+  appendWindow(k: MlxArray, v: MlxArray): AttentionRead {
+    this.append(k, v);
+    return pagedRead(pagedAttentionView(this.pool!, [...this.blockTable], this.offset, false), { mode: "causal", arr: null });
   }
 
   get attentionState(): this | undefined { return this.direct || this.quantization ? this : undefined; }
@@ -328,6 +346,12 @@ export class PagedKVCache implements Cache {
     this.blockTable = [];
     this.offset = 0;
   }
+}
+
+/** A read over one block view under a fixed string mask. Takes ownership of
+ * `view`. */
+function pagedRead(view: KvAttentionView, mask: Mask): AttentionRead {
+  return { attend: (q, scale) => view.attend(q, scale, mask), dispose: () => view.dispose() };
 }
 
 /** Size a pool for one request: capacity tokens rounded up to whole

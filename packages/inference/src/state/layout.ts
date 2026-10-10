@@ -25,9 +25,9 @@ export function ownedCacheLayoutFactory(cache: Cache): (() => BatchableCache) | 
   if (cache instanceof PagedKVCache) return () => new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return () => cache.makeEmptyBatch();
   if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
-  if (isPlainKvCache(cache)) return () => new PaddedKVRows();
+  if (isPlainKvCache(cache)) return () => new PaddedKVRows(cache.masks);
   if (isQuantizedKvCache(cache)) return () => new PaddedQuantKVRows(cache.groupSize, cache.bits);
-  if (isRotatingPlainCache(cache)) return () => new BatchedRotatingCache(cache.maxSize, []);
+  if (isRotatingPlainCache(cache)) return () => new BatchedRotatingCache(cache.maxSize, [], cache.masks);
   if (isRotatingQuantizedCache(cache)) return () => BatchedRotatingQuantCache.empty(cache.maxSize, cache.groupSize, cache.bits, []);
   if (isRecurrentCache(cache)) return () => new BatchedSSMCache();
   return undefined;
