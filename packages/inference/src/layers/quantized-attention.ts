@@ -112,6 +112,42 @@ export function quantizedSdpaUnfused(
   return out;
 }
 
+/** GQA folded into rows over a quantized cache: each KV head's rep·L query
+ *  rows share one quantized_matmul against its packed keys and one against
+ *  its values, so the cache is read once per KV head instead of once per query
+ *  head (the broadcast in quantizedSdpaUnfused). B = 1; the L queries are the
+ *  last L positions (causal), no array mask. Not bit-identical to quantizedSdpa
+ *  (bf16-level). */
+export function foldedQuantizedSdpaEligible(q: MlxArray, kq: ops.QuantizedTensor, mask: Mask): boolean {
+  const [B, H, L] = q.shape as [number, number, number, number];
+  const KVH = kq.packed.shape[1]!;
+  return B === 1 && H % KVH === 0 && !mask.arr && (L === 1 || mask.mode === "causal") && L <= kq.packed.shape[2]!;
+}
+
+export function foldedQuantizedSdpa(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, groupSize: number, bits: number,
+): MlxArray {
+  const [, H, L, D] = q.shape as [number, number, number, number];
+  const KVH = kq.packed.shape[1]!, N = kq.packed.shape[2]!, rep = H / KVH;
+  using q4 = ops.reshape(q, [1, KVH, rep * L, D]);             // rows (r, i): head KVH·rep + r, query i
+  using qs = ops.mulScalar(q4, scale);
+  using scores = ops.quantizedMatmulQT(qs, kq, true, groupSize, bits); // [1, KVH, rep·L, N]
+  let probs: MlxArray;
+  if (L > 1) {
+    using cols = ops.arange(0, N, 1, Dtype.int32);
+    using colRow = ops.reshape(cols, [1, N]);
+    using limits = ops.fromInt32(Array.from({ length: rep * L }, (_, row) => N - L + (row % L)), [rep * L, 1]);
+    using allowed = ops.lessEqual(colRow, limits);
+    using ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+    using masked = ops.where(allowed, scores, ninf);
+    probs = ops.softmaxAxis(masked, -1, true);
+  } else probs = ops.softmaxAxis(scores, -1, true);
+  using p = probs;
+  using out = ops.quantizedMatmulQT(p, vq, false, groupSize, bits);    // [1, KVH, rep·L, D]
+  return ops.reshape(out, [1, H, L, out.shape[3]!]);
+}
+
 /** Tile size for the fused quantized-SDPA prefill path (oracle default). */
 export const FUSED_N_CHUNK = 512;
 
