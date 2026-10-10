@@ -62,6 +62,9 @@ resolves like the main model (a query never downloads) and its kind is
 auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
 mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min`
 (ngram only; otherwise a warning), and `--mtp on|off` for checkpoints that carry their own draft head.
+`--num-draft-tokens adaptive` chooses each round's draft count, up to the
+drafter's own width, from recent acceptance and the graph's measured verify
+costs; startup refuses it without a drafter or on a graph that declares no costs.
 The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with
 ngram drafting and checks the speculation telemetry and exactness against a
 plain run.

@@ -92,9 +92,11 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   const draftModel = value("draft-model");
   if (draftModel !== undefined && !draftModel.trim()) throw new Error("--draft-model expects a path or query");
   const numDraftRaw = value("num-draft-tokens");
-  const numDraftTokens = numDraftRaw === undefined ? undefined : Number(numDraftRaw);
+  // `adaptive`: each round's count, up to the drafter's own width, comes from the graph's verify costs.
+  const adaptiveDepth = numDraftRaw === "adaptive";
+  const numDraftTokens = numDraftRaw === undefined || adaptiveDepth ? undefined : Number(numDraftRaw);
   if (numDraftTokens !== undefined && (!Number.isInteger(numDraftTokens) || numDraftTokens < 1))
-    throw new Error(`--num-draft-tokens expects an integer >= 1 (got "${numDraftRaw}")`);
+    throw new Error(`--num-draft-tokens expects an integer >= 1 or "adaptive" (got "${numDraftRaw}")`);
   const draftKinds: DraftKind[] = ["dspark", "deepspec", "assistant", "two-model", "ngram", "mtp"];
   const draftKindRaw = value("draft-kind");
   if (draftKindRaw !== undefined && !draftKinds.includes(draftKindRaw as DraftKind))
@@ -125,9 +127,9 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   const whisper = whisperModel !== undefined || whisperIdle !== undefined || whisperResident || preload
     ? { ...(whisperModel !== undefined ? { model: whisperModel } : {}), ...(whisperIdle !== undefined ? { idleUnloadSec: whisperIdle } : {}),
       ...(whisperResident ? { resident: true } : {}), ...(preload ? { preload: true } : {}) } : undefined;
-  const draft = draftModel !== undefined || draftKind !== undefined || numDraftTokens !== undefined || ngramMax !== undefined || ngramMin !== undefined
+  const draft =draftModel !== undefined || draftKind !== undefined || numDraftTokens !== undefined || ngramMax !== undefined || ngramMin !== undefined || adaptiveDepth
     ? { ...(draftModel !== undefined ? { model: draftModel } : {}), ...(draftKind ? { kind: draftKind } : {}),
-      ...(numDraftTokens !== undefined ? { numTokens: numDraftTokens } : {}),
+      ...(numDraftTokens !== undefined ? { numTokens: numDraftTokens } : {}), ...(adaptiveDepth ? { adaptiveDepth } : {}),
       ...(ngramMax !== undefined ? { ngramMax } : {}), ...(ngramMin !== undefined ? { ngramMin } : {}) } : undefined;
   // Main's paged KV: the flag or its env mirror; the block size only with paging.
   const pagedKv = args.values["paged-kv"] === true || runtimeValue("MLX_BUN_PAGED_KV") === "1";

@@ -116,6 +116,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
           ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
           ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
           ...(options.mtp !== undefined ? { nativeDraft: options.mtp } : {}) },
+        ...(draft.adaptiveDepth ? { adaptiveDraftDepth: true } : {}),
         // Main's gate: a draft model, or the model-free ngram kind, or mtp alone
         // (the host resolves the bundled <model>/mtp/ companion).
         ...(draft.modelDir || draft.kind === "ngram" || draft.kind === "mtp" ? {

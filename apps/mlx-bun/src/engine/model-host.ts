@@ -76,6 +76,8 @@ export interface ModelContext<Model = RuntimeModel> {
   draft?: {
     provider: import("@mlx-bun/inference/generation/speculative").DraftProvider;
     numDraftTokens: number;
+    /** Each round's draft count comes from the graph's verify costs (`--num-draft-tokens adaptive`). */
+    adaptiveDepth?: boolean;
     /** The provider is the checkpoint's own draft head, not a configured drafter. */
     native?: true;
   } | null;
@@ -111,6 +113,9 @@ export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel
   draftModelDir?: string;
   /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
   numDraftTokens?: number;
+  /** `--num-draft-tokens adaptive`: choose each round's count, up to numDraftTokens,
+   * from the graph's measured verify costs. Refused without a drafter or costs. */
+  adaptiveDraftDepth?: boolean;
   /** Draft-provider kind override (`--draft-kind`); any kind the registry knows. */
   draftKind?: DraftKind | (string & {});
   /** The draft providers this load may select and detect among; defaults to
@@ -357,6 +362,12 @@ export async function loadContext(
     }
 
     if (draft) owned.add(draft.provider);
+    if (opts.adaptiveDraftDepth) {
+      if (!draft) throw new Error("--num-draft-tokens adaptive needs a drafter (--draft-model, --draft-kind or the checkpoint's MTP head)");
+      if (!declaredGraph(model).verifyRoundCosts)
+        throw new Error("--num-draft-tokens adaptive needs a graph measured on this machine (one that declares its verify costs); this model's graph does not");
+      draft = { ...draft, adaptiveDepth: true };
+    }
     const adapters = new AdapterManager(model);
     owned.add({ dispose() { disposeResources(adapters.list().map(({ id }) => ({ dispose() { adapters.unmount(id); } }))); } });
     // A compiled decode step borrows graph constants and weights. Retire it first,
