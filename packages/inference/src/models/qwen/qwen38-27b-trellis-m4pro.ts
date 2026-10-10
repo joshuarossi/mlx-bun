@@ -13,7 +13,7 @@
 //   2..3      factored, shared rows       factored, shared rows      3/4-bit multi-row    folded GQA
 //   4         factored, shared rows       simdgroup matrix           3/4-bit multi-row    folded GQA
 //   5..8      simdgroup matrix            simdgroup matrix           3/4-bit matrix       folded GQA
-//   640..2048 ANE+GPU whole-MLP split     (in the split)             z/out/o ANE+GPU      folded GQA
+//   2048      ANE+GPU whole-MLP split     (in the split)             z/out/o ANE+GPU      folded GQA
 //   other     packed-Trellis prefill (TrellisLinear)                 MLX qmm              folded GQA
 //
 // (factored: weights contribute their Trellis code value; the scale applies once
@@ -44,7 +44,7 @@ import { FactoredDownK3iRow, FactoredDownK3iRows, FactoredDownRow, FactoredDownR
 import { Affine3MmaLinear, Affine3RowsLinear, Affine4MmaLinear, Affine4RowsLinear } from "../../layers/affine-verify-linear";
 import { kv4DecodeAttention } from "../../layers/kv4-decode-attention";
 import { foldedQuantizedSdpa } from "../../layers/quantized-attention";
-import { AneAffineSplit, AneTrellisMlpSplit, AneTrellisMlpSplitK3i, aneAvailable, precompileAneAffine, precompileAneMlp }
+import { AneAffineSplit, AneTrellisMlpSplit, AneTrellisMlpSplitK3i, aneAvailable, type AneMlpSplit }
   from "../../layers/ane-prefill-split";
 import {
   GatedDeltaNet, Qwen35Model, Qwen3Attention, type AttentionLinear, type AttentionLinearLoader, type Qwen3Layer,
@@ -59,8 +59,8 @@ const FINGERPRINT = "cfa205c8f5af046a";
 
 /** Submit the graph every four layers at verify widths (measured best on M4 Pro). */
 const ASYNC_EVERY = 4;
-/** ANE prefill: channel fraction, program sequence length, smallest chunk. */
-const ANE_FRACTION = 0.55, ANE_SEQ = 2048, ANE_MIN_ROWS = 640;
+/** ANE prefill: channel fraction and the chunk size its programs serve. */
+const ANE_FRACTION = 0.55, ANE_SEQ = 2048;
 const ANE_AFFINE = /\.(in_proj_z|out_proj|o_proj)$/;
 
 /** This artifact on this GPU family. */
@@ -91,6 +91,8 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   readonly #qkScale: { q: MlxArray; k: MlxArray };
   /** A tapped group's capture callback while its forward runs on a plan. */
   #captureHook: ((layer: number, hidden: MlxArray) => void) | null = null;
+  /** The last ANE MLP split built; the next layer's split shares its buffers (layers run one at a time). */
+  #aneMlpShare: AneMlpSplit | undefined;
 
   constructor(weights: Weights, config: ModelConfig) {
     super(weights, config);
@@ -155,23 +157,23 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   }
 
   /** The ANE prefill plan, or null without the Neural Engine bridge (or when
-   *  its programs cannot be built on this machine). Programs for every chunk
-   *  bucket compile here; the system ANE cache keeps them across processes. */
+   *  its programs cannot be built on this machine). Each layer builds its
+   *  program for the ANE chunk here; the system ANE cache keeps the compiled
+   *  programs across processes. Projections of one shape share buffers. */
   #buildAnePlan(weights: Weights, config: ModelConfig): Step[] | null {
     if (!aneAvailable()) return null;
     const started = performance.now();
     try {
-      const affineShapes = new Map<string, [number, number]>();
+      const affineShares = new Map<string, AneAffineSplit>();
       const load: AttentionLinearLoader<AttentionLinear> = (w, path, c) => {
         const lin = QuantizedLinear.load(w, path, c);
         if (!ANE_AFFINE.test(path)) return lin;
-        affineShapes.set(`${lin.inFeatures}:${lin.outFeatures}`, [lin.inFeatures, lin.outFeatures]);
-        return AneAffineSplit.build(lin, ANE_FRACTION, ANE_SEQ);
+        const shape = `${lin.inFeatures}:${lin.outFeatures}`;
+        const split = AneAffineSplit.build(lin, ANE_FRACTION, ANE_SEQ, affineShares.get(shape));
+        affineShares.set(shape, split);
+        return split;
       };
       const plan = this.#build(weights, config, "prefillAne", load, foldedCore);
-      const gate = this.layers[0]!.mlp.gate as TrellisLinear;
-      precompileAneMlp(gate.geometry.inFeatures, gate.geometry.rows, ANE_FRACTION, ANE_SEQ, ANE_MIN_ROWS);
-      for (const [K, N] of affineShapes.values()) precompileAneAffine(K, N, ANE_FRACTION, ANE_SEQ, ANE_MIN_ROWS);
       console.error(`[ane] prefill programs ready in ${Math.round(performance.now() - started)} ms`);
       return plan;
     } catch (error) {
@@ -191,7 +193,8 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
     };
     const k3i = down.geometry.blockInterleave === 2;
     if (kind === "prefillAne") {
-      const split = (k3i ? AneTrellisMlpSplitK3i : AneTrellisMlpSplit).build(gate, up, down, ANE_FRACTION, ANE_SEQ);
+      const split = this.#aneMlpShare =
+        (k3i ? AneTrellisMlpSplitK3i : AneTrellisMlpSplit).build(gate, up, down, ANE_FRACTION, ANE_SEQ, this.#aneMlpShare);
       return (hidden, residual) => {
         using out = split.forward(hidden, compiledSwiglu);
         return ops.add(residual, out);
@@ -214,7 +217,7 @@ export class Qwen38TrellisM4Pro extends Qwen35Model {
   #planFor(L: number): Step[] {
     const p = this.#plans;
     return L === 1 ? p.row : L <= 3 ? p.rows : L === 4 ? p.rows4 : L <= 8 ? p.verify
-      : p.prefillAne && L >= ANE_MIN_ROWS && L <= ANE_SEQ ? p.prefillAne : p.prefill;
+      : p.prefillAne && L === ANE_SEQ ? p.prefillAne : p.prefill;
   }
 
   /** One tapped group (speculative verify, draft-tapped prefill) runs a plan,
