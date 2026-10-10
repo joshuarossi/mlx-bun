@@ -8,9 +8,10 @@ import type { TrellisGeometry } from "./geometry";
 import { HEADER } from "./codebook";
 import { nativeTrellisWidePrefill } from "./wide-prefill";
 
-/** Dispatch profile measured on Qwen's MLP geometry. No model-name check. */
-export function tiledTrellisPrefillEligible(g: TrellisGeometry, m: number, dtype: Dtype): boolean {
-  return dtype === Dtype.bfloat16 && m >= 5 && m <= 32 && !nativeTrellisWidePrefill(m) &&
+/** Dispatch profile measured on Qwen's MLP geometry. No model-name check.
+ *  `widePrefill` as for `wideTrellisPrefillEligible`: tiled steps aside where wide applies. */
+export function tiledTrellisPrefillEligible(g: TrellisGeometry, m: number, dtype: Dtype, widePrefill: boolean): boolean {
+  return dtype === Dtype.bfloat16 && m >= 5 && m <= 32 && !nativeTrellisWidePrefill(m, widePrefill) &&
     g.axis === 1 && g.T === 256 && g.L === 12 && [2, 3, 4].includes(g.k) &&
     g.inFeatures === 5120 && g.outFeatures === 17408;
 }

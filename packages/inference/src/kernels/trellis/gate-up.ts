@@ -1,11 +1,11 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
-import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
-import { runtimeFlag } from "../../runtime/config";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import type { TrellisGeometry, TrellisWeights } from "./geometry";
 import { HEADER, lutFor, decoderVariant } from "./codebook";
 import { TRELLIS_THREADS, TRELLIS_SG_PER_TG, TRELLIS_CODEBOOK_THREADS, TRELLIS_CODEBOOK_SG_PER_TG } from "./launch";
+import { qualifiedRepresentations } from "./qualified";
 
 import { TRELLIS_MATVEC_MAX_M as MATVEC_MAX_M } from "./reduce";
 
@@ -176,28 +176,35 @@ function sharedGateUpKernel(): MetalKernel {
     source: GATEUP_SHARED_M_SOURCE, header: HEADER, ensureRowContiguous: true });
 }
 
-/** Qualification is deliberately limited to the measured artifact geometry and
- * GPU family. Other shapes, row counts, dtypes and numerical variants retain
- * inline decode. The table uses variant 6 arithmetic, not the host's rounded LUT. */
-export function gateUpCodebookEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number,
-  architecture = deviceArchitecture()): boolean {
-  return selected === 13 && m === 1 && dtype === Dtype.bfloat16 && architecture === "applegpu_g13s" &&
+/** The measured artifact geometry, row count, dtype and numerical variant of the codebook decode. */
+function codebookShape(g: TrellisGeometry, m: number, dtype: Dtype, selected: number): boolean {
+  return selected === 13 && m === 1 && dtype === Dtype.bfloat16 &&
     g.axis === 1 && g.T === 256 && g.L === 12 && [2, 3, 4].includes(g.k) &&
     g.inFeatures === 5120 && g.outFeatures === 17408 && g.cols === 5120 && g.rows === 17408 && !g.blockInterleave;
 }
 
+/** Qualification is deliberately limited to the measured artifact geometry and
+ * GPU family. Other shapes, row counts, dtypes and numerical variants retain
+ * inline decode. The table uses variant 6 arithmetic, not the host's rounded LUT. */
+export function gateUpCodebookEligible(g: TrellisGeometry, m: number, dtype: Dtype, selected: number,
+  architecture: string): boolean {
+  return qualifiedRepresentations(architecture).gateUpCodebook && codebookShape(g, m, dtype, selected);
+}
+
 /** Borrow matching axis-1 gate/up weights with the same bit width; M must be 1..4.
- * Return owned lazy SwiGLU output, retaining the input's leading dimensions. */
-export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisWeights, up: TrellisWeights, selected: number): MlxArray {
+ * Return owned lazy SwiGLU output, retaining the input's leading dimensions.
+ * `codebook` applies at the measured shape: layers pass the choice they resolved
+ * at construction (`qualifiedRepresentations`), benches and tests the one they compare. */
+export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisWeights, up: TrellisWeights, selected: number,
+  codebook: boolean): MlxArray {
   const g = gate.geometry;
   const lead = x.shape.slice(0, -1);
   const M = lead.reduce((a, b) => a * b, 1);
   if (M > MATVEC_MAX_M) throw new Error(`fusedGateUpSwiglu: M=${M} > ${MATVEC_MAX_M}`);
   const shared = selected >= 7 && selected <= 13 && M > 1;
-  const codebook = gateUpCodebookEligible(g, M, x.dtype, selected) &&
-    runtimeFlag("MLX_BUN_TRELLIS_GATEUP_CODEBOOK", true);
-  const threads = codebook ? TRELLIS_CODEBOOK_THREADS : TRELLIS_THREADS;
-  const rowsPerGroup = codebook ? TRELLIS_CODEBOOK_SG_PER_TG : TRELLIS_SG_PER_TG;
+  const useCodebook = codebook && codebookShape(g, M, x.dtype, selected);
+  const threads = useCodebook ? TRELLIS_CODEBOOK_THREADS : TRELLIS_THREADS;
+  const rowsPerGroup = useCodebook ? TRELLIS_CODEBOOK_SG_PER_TG : TRELLIS_SG_PER_TG;
   const kernel = shared ? sharedGateUpKernel() : gateUpKernel();
   const x2 = ops.reshape(x, [M, g.inFeatures]);
   const [mid] = kernel.apply([x2, gate.codes, gate.scales, up.codes, up.scales, lutFor(g.L)], {
@@ -205,7 +212,7 @@ export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisWeights, up: Trellis
     grid: [threads, Math.ceil(g.rows / rowsPerGroup), shared ? 1 : M],
     threadGroup: [threads, 1, 1],
     templateDtypes: { T: x.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: rowsPerGroup, VARIANT: decoderVariant(selected), THREADS: threads, CODEBOOK: Number(codebook) },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: rowsPerGroup, VARIANT: decoderVariant(selected), THREADS: threads, CODEBOOK: Number(useCodebook) },
   });
   x2.dispose();
   const out = ops.reshape(mid!, [...lead, g.rows]);

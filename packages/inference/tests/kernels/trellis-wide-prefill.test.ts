@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
+import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { expandTrellis } from "@mlx-bun/inference/kernels/trellis";
-import { nativeTrellisWidePrefill, wideTrellisPrefill, wideTrellisPrefillEligible } from "@mlx-bun/inference/kernels/trellis";
+import { nativeTrellisWidePrefill, qualifiedRepresentations, wideTrellisPrefill, wideTrellisPrefillEligible } from "@mlx-bun/inference/kernels/trellis";
 
 function packed(rows: number, bits: number) {
   const words = new Uint32Array(rows * 5120 * bits / 32);
@@ -23,14 +23,19 @@ function input(m: number, transposed = false) {
 
 test("wide Trellis eligibility follows native arithmetic and the measured geometry", () => {
   const g = { k: 3, L: 12, T: 256, axis: 1 as const, rows: 17408, cols: 5120, inFeatures: 5120, outFeatures: 17408 };
-  for (const m of [5, 8, 12, 15]) expect(wideTrellisPrefillEligible(g, m, Dtype.bfloat16)).toBe(nativeTrellisWidePrefill(m));
-  for (const m of [1, 4, 16, 32]) expect(wideTrellisPrefillEligible(g, m, Dtype.bfloat16)).toBe(false);
+  for (const wide of [false, true]) for (const m of [5, 8, 12, 15])
+    expect(wideTrellisPrefillEligible(g, m, Dtype.bfloat16, wide)).toBe(nativeTrellisWidePrefill(m, wide));
+  // The native reduction arrives with GPU family 15 (M3).
+  expect([qualifiedRepresentations("applegpu_g13s").widePrefill, qualifiedRepresentations("applegpu_g15s").widePrefill,
+    qualifiedRepresentations("applegpu_g16s").widePrefill]).toEqual([false, true, true]);
+  // Where the GPU family has it, each refusal below is its own.
+  for (const m of [1, 4, 16, 32]) expect(wideTrellisPrefillEligible(g, m, Dtype.bfloat16, true)).toBe(false);
   for (const changed of [{ axis: 0 as const }, { T: 128 }, { L: 10 }, { k: 1 }, { inFeatures: 4096 }, { outFeatures: 512 }, { blockInterleave: 2 as const }])
-    expect(wideTrellisPrefillEligible({ ...g, ...changed }, 8, Dtype.bfloat16)).toBe(false);
-  expect(wideTrellisPrefillEligible(g, 8, Dtype.float16)).toBe(false);
+    expect(wideTrellisPrefillEligible({ ...g, ...changed }, 8, Dtype.bfloat16, true)).toBe(false);
+  expect(wideTrellisPrefillEligible(g, 8, Dtype.float16, true)).toBe(false);
 });
 
-test.skipIf(!nativeTrellisWidePrefill(8))("wide Trellis matches complete native bf16 outputs at every affected row count", () => {
+test.skipIf(!qualifiedRepresentations(deviceArchitecture()).widePrefill)("wide Trellis matches complete native bf16 outputs at every affected row count", () => {
   {
     for (const bits of [2, 3, 4]) {
       const { codes, scales, geometry } = packed(128, bits);

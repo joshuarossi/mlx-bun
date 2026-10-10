@@ -748,7 +748,9 @@ The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
 `MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant
 comparison: `MLX_BUN_TRELLIS_AB_VARIANT` (default 7) against
 `MLX_BUN_TRELLIS_AB_BASELINE` (default 6). Use variant 13 against baseline 12
-for the optimized expansion path. M=1–5 compares complete logits, recurrent/KV
+for the optimized expansion path. `TrellisLinear` passes only variant 13, so the
+test runs the generic Qwen3.5 graph with MLPs it builds over the loaded weights,
+each passing its variant explicitly. M=1–5 compares complete logits, recurrent/KV
 state and continuation; variant 13 also checks M=16/128/512 with the last-position
 head. Six alternating-order blocks also screen the last-position head at
 M=1–5/8/9/16, M=32 for variants 11–13, and M=128/512 for variant 13.
@@ -759,25 +761,28 @@ For variant 13, the `applegpu_g13s` single-row bf16 gate/up kernel at
 5120 → 17408, matching 2/3/4-bit widths, T=256 and L=12 shares a 16 KiB
 threadgroup codebook across sixteen output rows. Its values retain the unrefined
 float32 decoder contract, scale multiplication, accumulation order and activation
-tail. `MLX_BUN_TRELLIS_GATEUP_CODEBOOK=0` selects inline decoding for A/B runs.
-At the same qualified single-row bf16 geometry, mixed-width gate/up and the
+tail. At the same qualified single-row bf16 geometry, mixed-width gate/up and the
 2/3/4-bit down kernels construct the decoder's integer value through exact
 float32 mantissa bits before the unchanged reciprocal multiply. This preserves
-scale multiplication and reduction order. These defaults are also limited to
-`applegpu_g13s`; `MLX_BUN_TRELLIS_MIXED_BITS=0`,
-`MLX_BUN_TRELLIS_SCATTER_BITS=0` (balanced 3-bit down) and
-`MLX_BUN_TRELLIS_GENERIC_SCATTER_BITS=0` (2/4-bit down) select their original
-conversions. Other shapes and shared multi-row kernels keep their existing paths.
-The qualified down kernels also generate a 16 KiB float32 threadgroup codebook,
-using 128/512/256 threads for 2/3/4-bit weights respectively. All 128 partial sums
-and their reduction order remain unchanged.
-`MLX_BUN_TRELLIS_SCATTER_FLOAT_CODEBOOK=0` selects the per-value decoder;
-disable this table as well when comparing the down representation controls.
+scale multiplication and reduction order. The qualified down kernels also
+generate a 16 KiB float32 threadgroup codebook, using 128/512/256 threads for
+2/3/4-bit weights respectively. All 128 partial sums and their reduction order
+remain unchanged. Other shapes and shared multi-row kernels keep their existing paths.
+
+These representations are required kernel arguments: `fusedGateUpSwiglu`'s
+`codebook`, `fusedGateUpSwigluMixed`'s `exactBits` and `trellisScatter`'s
+`ScatterRepresentation` (`bits` for the balanced 3-bit down, `genericBits` for
+2/4-bit down, `floatCodebook`). `qualifiedRepresentations(architecture)` turns
+them all on for `applegpu_g13s` and off elsewhere; `TrellisLinear` resolves it
+once at construction and passes the stored result. Passing `false` selects the
+original inline decoding and conversions for A/B runs; disable the float codebook
+as well when comparing the down representations.
 The [kernel test](tests/kernels/trellis-gateup-codebook.test.ts) checks all 4096
 codebook values, all 1021 possible integer decoder values and fused outputs;
 the [artifact test](tests/parity/trellis-gateup-codebook.test.ts)
 uses `MLX_BUN_TEST_TRELLIS_MODEL` to compare complete finite logits, live cache state
-and greedy continuation. The [standard-request benchmark](../../apps/mlx-bun/scripts/bench-trellis-gateup.ts)
+and greedy continuation, running the generic Qwen3.5 graph with MLPs that pass each
+representation explicitly. The [standard-request benchmark](../../apps/mlx-bun/scripts/bench-trellis-gateup.ts)
 provides `--help`, requires local weights and an external output path, and runs
 one fixed prompt with 256 greedy tokens and MTP off.
 
@@ -832,9 +837,9 @@ They borrow input arrays and return an owned, lazy output array.
 | Operation | Input and purpose |
 | --- | --- |
 | `trellisReduce(x, codes, scales, geometry, variant)` | Axis-1 projection; `x` is `[M, inFeatures]`, M=1..4 |
-| `trellisScatter(x, codes, scales, geometry, variant, useSharedScatterCodebook?)` | Axis-0 projection; same input shape and row budget |
-| `fusedGateUpSwiglu(x, gate, up, variant)` | Matching axis-1 gate/up geometry and bit width; preserves leading input dimensions, with 1..4 total rows |
-| `fusedGateUpSwigluMixed(x, gate, up, variant, tail?)` | Matching axis-1 geometry with independent bit widths; `tail` is `"fused"` or `"split"` |
+| `trellisScatter(x, codes, scales, geometry, variant, useSharedScatterCodebook, representation)` | Axis-0 projection; same input shape and row budget |
+| `fusedGateUpSwiglu(x, gate, up, variant, codebook)` | Matching axis-1 gate/up geometry and bit width; preserves leading input dimensions, with 1..4 total rows |
+| `fusedGateUpSwigluMixed(x, gate, up, variant, tail, exactBits)` | Matching axis-1 geometry with independent bit widths; `tail` is `"fused"` or `"split"` |
 | `expandTrellis(codes, scales, geometry, dtype, variant)` | Existing general expansion and variant-13 vector specialization |
 | `tiledTrellisPrefill(x, codes, scales, geometry)` | Axis-1 packed prefill, M=5..32 |
 | `splitKTrellisPrefill(x, codes, scales, geometry)` | Axis-0 packed prefill, M=5..8 |
@@ -848,8 +853,10 @@ the inherited timing-only path and does not compute decoded weights correctly.
 No application environment flags are read by these operations.
 
 For prefill, use the corresponding `*Eligible(geometry, rowCount, dtype)` helper
-to preserve the existing dispatch profile. Wide prefill additionally requires
-caller-proven aligned, row-contiguous input. These profiles and numerical
+to preserve the existing dispatch profile; the wide and tiled helpers also take
+`widePrefill` from `qualifiedRepresentations(architecture)`, which a caller
+resolves once. Wide prefill additionally requires caller-proven aligned,
+row-contiguous input. These profiles and numerical
 contracts are unchanged; they are not universal dispatch rules for every shape.
 
 Single-purpose kernels from the same entry point: each runs one algorithm for
@@ -891,8 +898,9 @@ layer.
 - `@mlx-bun/inference/input`: `loadTokenizer(directory)` consumes the existing
   Hugging Face tokenizer files; `ChatTemplate.load(directory)` loads the template.
 - `@mlx-bun/inference/layers`: quantized linear and embedding layers, RMSNorm,
-  and `TrellisLinear`, which composes the standalone Trellis kernels and retains
-  the existing dispatch and expansion fallback.
+  and `TrellisLinear`, which composes the standalone Trellis kernels at decode
+  variant 13 and retains the existing row-count dispatch and dense expansion.
+  `ExpandedTrellisLinear` is the 8-bit affine carrier a caller constructs explicitly.
 - `@mlx-bun/inference/layers/lora`: inference-time LoRA state and weights.
 - `@mlx-bun/inference/runtime/config`: immutable execution settings and scoped
   overrides. The existing `MLX_BUN_*` defaults are preserved during migration.

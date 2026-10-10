@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import { CompiledFunction, Dtype, MlxArray, ops } from "@mlx-bun/mlx";
 import {
-  expandTrellis, fusedGateUpSwiglu, fusedGateUpSwigluMixed, trellisReduce, trellisScatter,
+  expandTrellis, fusedGateUpSwiglu, fusedGateUpSwigluMixed, qualifiedRepresentations, trellisReduce, trellisScatter,
   type TrellisGeometry,
 } from "@mlx-bun/inference/kernels/trellis";
+import { deviceArchitecture } from "@mlx-bun/mlx/ffi";
+
+// What a layer on this machine passes; these shapes are outside every qualified one.
+const shipped = qualifiedRepresentations(deviceArchitecture());
 
 function weights(k: number, axis: 0 | 1 = 1, interleave = false) {
   const rows = 64, cols = 512, words = cols * k / 32;
@@ -34,7 +38,8 @@ function same(actual: MlxArray, expected: MlxArray): void {
 test("shared matvec schedules retain baseline decoded values and accumulation", () => {
   for (const k of [2, 3, 4]) for (const axis of [0, 1] as const) {
     using w = weights(k, axis);
-    const run = axis === 1 ? trellisReduce : trellisScatter;
+    const run = axis === 1 ? trellisReduce : (x: MlxArray, codes: MlxArray, scales: MlxArray, g: TrellisGeometry, variant: number) =>
+      trellisScatter(x, codes, scales, g, variant, false, shipped.scatter);
     for (const m of [1, 2, 3, 4]) for (const dtype of [Dtype.bfloat16, Dtype.float32]) {
       using x = input(m, w.geometry.inFeatures, dtype);
       using expected = run(x, w.codes, w.scales, w.geometry, 6);
@@ -55,8 +60,8 @@ test("interleaved scatter codebook retains outputs across the small row counts",
   using w = weights(3, 0, true);
   for (const m of [1, 2, 3, 4]) {
     using x = input(m, w.geometry.inFeatures, Dtype.bfloat16);
-    using expected = trellisScatter(x, w.codes, w.scales, w.geometry, 6);
-    using actual = trellisScatter(x, w.codes, w.scales, w.geometry, 13, true);
+    using expected = trellisScatter(x, w.codes, w.scales, w.geometry, 6, false, shipped.scatter);
+    using actual = trellisScatter(x, w.codes, w.scales, w.geometry, 13, true, shipped.scatter);
     same(actual, expected);
   }
 });
@@ -66,9 +71,9 @@ test("fused gate/up schedules and mixed kernel preserve the fused activation tai
     using gate = weights(k), up = weights(k);
     for (const m of [1, 2, 3, 4]) {
       using x = input(m, gate.geometry.inFeatures, Dtype.bfloat16, true);
-      using expected = fusedGateUpSwiglu(x, gate, up, 6);
-      using shared = fusedGateUpSwiglu(x, gate, up, 13);
-      using mixed = fusedGateUpSwigluMixed(x, gate, up, 13, "fused");
+      using expected = fusedGateUpSwiglu(x, gate, up, 6, shipped.gateUpCodebook);
+      using shared = fusedGateUpSwiglu(x, gate, up, 13, shipped.gateUpCodebook);
+      using mixed = fusedGateUpSwigluMixed(x, gate, up, 13, "fused", shipped.mixedExactBits);
       same(shared, expected);
       same(mixed, expected);
     }
@@ -90,7 +95,7 @@ test("different gate/up bit widths preserve the split compiled activation tail",
         using g = trellisReduce(x, gate.codes, gate.scales, gate.geometry, 13);
         using u = trellisReduce(x, up.codes, up.scales, up.geometry, 13);
         using expected = swiglu.apply([g, u])[0]!;
-        using actual = fusedGateUpSwigluMixed(x, gate, up, 13, "split");
+        using actual = fusedGateUpSwigluMixed(x, gate, up, 13, "split", shipped.mixedExactBits);
         same(actual, expected);
       }
     }

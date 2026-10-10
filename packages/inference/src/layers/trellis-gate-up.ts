@@ -10,7 +10,7 @@ import { TrellisLinear } from "./trellis-linear";
 
 function sameAxis1(name: string, gate: TrellisLinear, up: TrellisLinear, sameWidth: boolean): void {
   const a = gate.geometry, b = up.geometry;
-  if (gate.fallback || up.fallback || a.axis !== 1 || b.axis !== 1 || a.rows !== b.rows || a.cols !== b.cols ||
+  if (a.axis !== 1 || b.axis !== 1 || a.rows !== b.rows || a.cols !== b.cols ||
       a.T !== b.T || a.L !== b.L || (a.k === b.k) !== sameWidth)
     throw new Error(`${name}: gate/up need packed axis-1 codes of one geometry, ${sameWidth ? "the same" : "different"} widths`);
 }
@@ -37,7 +37,7 @@ export class FactoredMixedGateUp {
 export class MmaGateUp {
   constructor(readonly gate: TrellisLinear, readonly up: TrellisLinear) {
     const a = gate.geometry, b = up.geometry;
-    if (gate.fallback || up.fallback || a.axis !== 1 || b.axis !== 1 || a.rows !== b.rows || a.cols !== b.cols ||
+    if (a.axis !== 1 || b.axis !== 1 || a.rows !== b.rows || a.cols !== b.cols ||
         a.T !== b.T || a.L !== b.L || a.rows % 8 !== 0 || a.cols % 256 !== 0)
       throw new Error("MmaGateUp: gate/up need packed axis-1 codes of one geometry (rows % 8, cols % 256)");
   }

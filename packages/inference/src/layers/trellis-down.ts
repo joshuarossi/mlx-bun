@@ -21,11 +21,11 @@ function project(lin: TrellisLinear, kernel: Kernel, x: MlxArray): MlxArray {
 }
 function rowMajor(name: string, lin: TrellisLinear): void {
   const g = lin.geometry;
-  if (lin.fallback || g.axis !== 0 || g.blockInterleave || lin.codes.ndim !== 2) throw new Error(`${name}: needs packed row-major axis-0 codes`);
+  if (g.axis !== 0 || g.blockInterleave || lin.codes.ndim !== 2) throw new Error(`${name}: needs packed row-major axis-0 codes`);
 }
 function k3Interleaved(name: string, lin: TrellisLinear): void {
   const g = lin.geometry;
-  if (lin.fallback || g.axis !== 0 || g.blockInterleave !== 2 || g.k !== 3 || g.T !== 256 || g.L !== 12)
+  if (g.axis !== 0 || g.blockInterleave !== 2 || g.k !== 3 || g.T !== 256 || g.L !== 12)
     throw new Error(`${name}: needs 3-bit block-interleaved axis-0 codes`);
 }
 

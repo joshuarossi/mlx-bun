@@ -3,13 +3,13 @@ import { Dtype, MlxArray, MetalKernel } from "@mlx-bun/mlx";
 import { deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import { HEADER } from "../../src/kernels/trellis/codebook";
 import { fusedGateUpSwiglu, gateUpCodebookEligible } from "../../src/kernels/trellis/gate-up";
-import { scatterFloatCodebookEligible } from "../../src/kernels/trellis/scatter";
+import { fusedGateUpSwigluMixed } from "../../src/kernels/trellis/mixed-gate-up";
+import { scatterFloatCodebookEligible, trellisScatter } from "../../src/kernels/trellis/scatter";
+import { qualifiedRepresentations } from "../../src/kernels/trellis/qualified";
 import type { TrellisGeometry } from "../../src/kernels/trellis/geometry";
-import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 
 const geometry: TrellisGeometry = { k: 3, L: 12, T: 256, axis: 1,
   rows: 17408, cols: 5120, inFeatures: 5120, outFeatures: 17408 };
-const config = (enabled: boolean) => createRuntimeConfig({ MLX_BUN_TRELLIS_GATEUP_CODEBOOK: enabled ? "1" : "0" });
 
 test("gate/up codebook dispatch stays within its qualified numerical and hardware geometry", () => {
   const eligible = (g = geometry, m = 1, dtype = Dtype.bfloat16, variant = 13, architecture = "applegpu_g13s") =>
@@ -93,10 +93,59 @@ test.skipIf(deviceArchitecture() !== "applegpu_g13s")("qualified fused gate/up p
     for (const magnitude of [0.03125, 2]) {
       using raw = MlxArray.fromFloat32(Float32Array.from({ length: g.cols }, (_, i) => Math.sin(i * 0.17) * magnitude), [1, 1, g.cols]);
       using x = raw.astype(Dtype.bfloat16);
-      using baseline = withRuntimeConfig(config(false), () => fusedGateUpSwiglu(x, gate, up, 13));
-      using candidate = withRuntimeConfig(config(true), () => fusedGateUpSwiglu(x, gate, up, 13));
+      using baseline = fusedGateUpSwiglu(x, gate, up, 13, false);
+      using candidate = fusedGateUpSwiglu(x, gate, up, 13, true);
       expect(candidate.shape).toEqual(baseline.shape);
       expect(Buffer.from(candidate.rawBytes()).equals(Buffer.from(baseline.rawBytes()))).toBe(true);
+    }
+  }
+}, 60_000);
+
+test("explicit single-row representations preserve output bits on any GPU", () => {
+  // A layer on this machine passes these; the alternatives run here regardless.
+  const qualified = qualifiedRepresentations(deviceArchitecture());
+  let seed = 911;
+  const codes = (shape: number[]) => {
+    using signed = MlxArray.fromInt32(Int32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
+      () => seed = Math.imul(seed, 1664525) + 1013904223), shape);
+    return signed.astype(Dtype.uint32);
+  };
+  const same = (actual: MlxArray, expected: MlxArray) =>
+    expect(Buffer.from(actual.rawBytes()).equals(Buffer.from(expected.rawBytes()))).toBe(true);
+  using s32 = MlxArray.fromFloat32(Float32Array.from({ length: 17408 }, (_, i) => (i % 257 + 1) / 1024), [17408]);
+  using scales = s32.astype(Dtype.float16);
+  const down: TrellisGeometry = { ...geometry, axis: 0, inFeatures: 17408, outFeatures: 5120 };
+  using rawDown = MlxArray.fromFloat32(Float32Array.from({ length: 17408 }, (_, i) => Math.sin(i * 0.11)), [1, 17408]);
+  using xDown = rawDown.astype(Dtype.bfloat16);
+  for (const k of [2, 3, 4]) {
+    const g: TrellisGeometry = { ...down, k, ...(k === 3 ? { blockInterleave: 2 as const } : {}) };
+    using c = codes(k === 3 ? [g.cols / 512, g.rows, 48] : [g.rows, g.cols * k / 32]);
+    using expected = trellisScatter(xDown, c, scales, g, 13, false, { bits: false, genericBits: false, floatCodebook: false });
+    for (const representation of [{ bits: true, genericBits: true, floatCodebook: false },
+      { bits: false, genericBits: false, floatCodebook: true }, { bits: true, genericBits: true, floatCodebook: true }, qualified.scatter]) {
+      using actual = trellisScatter(xDown, c, scales, g, 13, false, representation);
+      same(actual, expected);
+    }
+  }
+  using rawUp = MlxArray.fromFloat32(Float32Array.from({ length: 5120 }, (_, i) => Math.sin(i * 0.17)), [1, 1, 5120]);
+  using xUp = rawUp.astype(Dtype.bfloat16);
+  for (const [kg, ku] of [[2, 3], [3, 4], [4, 2], [3, 3]] as const) {
+    using gc = codes([geometry.rows, geometry.cols * kg / 32]), uc = codes([geometry.rows, geometry.cols * ku / 32]);
+    const gate = { geometry: { ...geometry, k: kg }, codes: gc, scales }, up = { geometry: { ...geometry, k: ku }, codes: uc, scales };
+    if (kg === ku) {
+      using inline = fusedGateUpSwiglu(xUp, gate, up, 13, false);
+      using codebook = fusedGateUpSwiglu(xUp, gate, up, 13, true);
+      using machine = fusedGateUpSwiglu(xUp, gate, up, 13, qualified.gateUpCodebook);
+      same(codebook, inline);
+      same(machine, inline);
+      continue;
+    }
+    for (const tail of ["fused", "split"] as const) {
+      using expected = fusedGateUpSwigluMixed(xUp, gate, up, 13, tail, false);
+      using exact = fusedGateUpSwigluMixed(xUp, gate, up, 13, tail, true);
+      using machine = fusedGateUpSwigluMixed(xUp, gate, up, 13, tail, qualified.mixedExactBits);
+      same(exact, expected);
+      same(machine, expected);
     }
   }
 }, 60_000);
