@@ -1,7 +1,8 @@
 /** Run against `mlx-bun serve <model>`:
- * bun apps/mlx-bun/scripts/decision-example.ts http://127.0.0.1:8080
+ * bun apps/mlx-bun/scripts/decision-example.ts http://127.0.0.1:8080 mlx-community/gemma-4-e4b-it-OptiQ-4bit
  * Both protocols use the same question semantics and supplied answer values. */
 export const decisionExampleInput = "I was charged twice for my order. Please refund the duplicate payment.";
+export const decisionExampleModel = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const instructions = {
   refund: "Does the customer ask for a refund?",
   department: "Which team should handle this request?",
@@ -13,7 +14,7 @@ const criteria = {
   "sales inquiries": "New purchases and upgrades",
 };
 const levels = ["Minor inconvenience", "Customer payment problem", "Service completely unavailable"];
-export function decisionExampleRequests(model = "local") {
+export function decisionExampleRequests(model = decisionExampleModel) {
   return {
     openai: { model, input: decisionExampleInput, questions: [
       { name: "refund", type: "predicate", instructions: instructions.refund },
@@ -29,7 +30,7 @@ export function decisionExampleRequests(model = "local") {
   };
 }
 
-export async function runDecisionExample(base: string, model = "local", send: typeof fetch = fetch) {
+export async function runDecisionExample(base: string, model = decisionExampleModel, send: typeof fetch = fetch) {
   const bodies = decisionExampleRequests(model);
   const post = async (path: string, body: unknown) => {
     const response = await send(new URL(path, base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -48,6 +49,6 @@ export async function runDecisionExample(base: string, model = "local", send: ty
 
 if (import.meta.main) {
   if (process.argv.includes("--help")) {
-    console.log("Usage: bun apps/mlx-bun/scripts/decision-example.ts [server-url] [model-id]\nRequires an existing mlx-bun server; downloads nothing.");
+    console.log(`Usage: bun apps/mlx-bun/scripts/decision-example.ts [server-url] [model-id]\nDefault model: ${decisionExampleModel}. Use an exact local ID from GET /v1/models.\nRequires an existing mlx-bun server; downloads nothing.`);
   } else console.log(JSON.stringify(await runDecisionExample(process.argv[2] ?? "http://127.0.0.1:8080", process.argv[3]), null, 2));
 }

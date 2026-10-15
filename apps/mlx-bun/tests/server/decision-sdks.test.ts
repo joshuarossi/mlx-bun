@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { createDecisionRoutes } from "../../src/server/decision-routes";
+import { readDecisionBody } from "../../src/server/decision-body";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 
-test("published OpenAI and Jev SDK examples work with only local base URLs and keys", async () => {
-  const seen: { path: string; encoding: string | null }[] = [];
+test("OpenAI and Jev SDKs accept unchanged cloud names and explicit local model IDs", async () => {
+  const seen: { path: string; encoding: string | null; model: string }[] = [];
   let images = 0;
   const context = { modelId: "local/checkpoint", model: { config: { eosTokenIds: [0] } }, genDefaults: {},
     tokenizer: { encode: (text: string) => [...new TextEncoder().encode(text)], eosTokenId: 0 } } as unknown as LoadedModelContext;
@@ -19,7 +20,8 @@ test("published OpenAI and Jev SDK examples work with only local base URLs and k
     return { promptIds: [1, 2], vision: undefined, diffusionPixels: null, startInThinking: false, probeStableLen: false };
   } });
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async request => {
-    seen.push({ path: new URL(request.url).pathname, encoding: request.headers.get("content-encoding") });
+    const body = await readDecisionBody(request.clone()) as { model: string };
+    seen.push({ path: new URL(request.url).pathname, encoding: request.headers.get("content-encoding"), model: body.model });
     return await routes.handle(request) ?? new Response(null, { status: 404 });
   } });
   try {
@@ -34,6 +36,7 @@ test("published OpenAI and Jev SDK examples work with only local base URLs and k
       import assert from "node:assert/strict";
       import OpenAI from ${JSON.stringify(import.meta.resolve("openai"))};
       import { TypeSafeClient, noul, choice, score, image } from ${JSON.stringify(import.meta.resolve("@typesafe-ai/sdk"))};
+      import { runWebsiteExamples, decisionExampleModel } from ${JSON.stringify(new URL("../../scripts/decision-website-examples.mjs", import.meta.url).href)};
       const openai = new OpenAI({ apiKey: "local", baseURL: ${JSON.stringify(`${base}/v1`)}, maxRetries: 0 });
       const decision = await openai.decisions.create({ model: "gpt-6-luna", input: "The package arrived with a broken screen.",
         questions: [{ type: "predicate", name: "damaged", instructions: "Does the customer report a damaged item?" },
@@ -64,10 +67,17 @@ test("published OpenAI and Jev SDK examples work with only local base URLs and k
       const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jgXkAAAAASUVORK5CYII=", "base64");
       await client.systemOne({ state: { photo: image(png) }, questions: { visible: noul("Is anything visible?") } },
         { headers: { "TypeSafe-Danger-Zone-Images": "true" } });
+      const local = await runWebsiteExamples(${JSON.stringify(base)}, "local/checkpoint");
+      assert.equal(local.openai.model, "local/checkpoint"); assert.equal(local.jev.model, "local/checkpoint");
+      assert.equal(decisionExampleModel, "mlx-community/gemma-4-e4b-it-OptiQ-4bit");
+      await runWebsiteExamples(${JSON.stringify(base)});
     `], { stdout: "pipe", stderr: "pipe" });
     const [code, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(error).toBe(""); expect(code).toBe(0);
     expect(seen.some(request => request.path === "/v1/systemone" && request.encoding === "zstd")).toBe(true);
+    for (const path of ["/v1/decisions", "/v1/systemone"])
+      expect(seen.filter(request => request.path === path).slice(-2).map(request => request.model))
+        .toEqual(["local/checkpoint", "mlx-community/gemma-4-e4b-it-OptiQ-4bit"]);
     expect(images).toBe(1);
   } finally { await server.stop(true); }
 });

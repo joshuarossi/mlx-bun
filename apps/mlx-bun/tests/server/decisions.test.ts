@@ -5,7 +5,7 @@ import { createDecisionRoutes } from "../../src/server/decision-routes";
 import { readDecisionBody } from "../../src/server/decision-body";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import type { ModelBinding } from "../../src/engine/model-binding";
-import { decisionExampleRequests, runDecisionExample } from "../../scripts/decision-example";
+import { decisionExampleModel, decisionExampleRequests, runDecisionExample } from "../../scripts/decision-example";
 
 const encode = (text: string) => [...new TextEncoder().encode(text)];
 const tokenizer = { encode, eosTokenId: 0 };
@@ -127,12 +127,19 @@ test("Jev structured criteria and referenced images survive normalization, and u
 
 test("the runnable example exercises both decision APIs and generation", async () => {
   const f = fixture();
+  const models: string[] = [];
   const send = (async (url: URL | string, init: RequestInit) => {
     const request = new Request(url, init);
+    models.push((await request.clone().json() as { model: string }).model);
     if (new URL(request.url).pathname === "/v1/chat/completions") return Response.json({ model: "local/test", choices: [] });
     return (await f.routes.handle(request))!;
   }) as typeof fetch;
-  const result = await runDecisionExample("http://local", "local", send);
+  const result = await runDecisionExample("http://local", "local/test", send);
   expect(result.openai.answers).toHaveLength(3); expect(Object.keys(result.jev.answers)).toHaveLength(3);
   expect(result.generation.model).toBe("local/test");
+  expect(models).toEqual(["local/test", "local/test", "local/test"]);
+  models.length = 0;
+  await runDecisionExample("http://local", undefined, send);
+  expect(models).toEqual([decisionExampleModel, decisionExampleModel, decisionExampleModel]);
+  expect(decisionExampleModel).toBe("mlx-community/gemma-4-e4b-it-OptiQ-4bit");
 });

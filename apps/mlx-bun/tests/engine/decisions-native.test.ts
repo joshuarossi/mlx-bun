@@ -32,13 +32,13 @@ for (const isolated of [false, true]) test.skipIf(!native)(`${isolated ? "isolat
       assert.equal(response.status, 200, JSON.stringify(result)); return result;
     };
     try {
-      const result = await runDecisionExample(base);
+      const result = await runDecisionExample(base, "local-poc");
       assert.equal(result.openai.model, "local-poc"); assert.equal(result.jev.model, "local-poc");
       assert.equal(result.openai.usage.output_tokens, 0); assert.equal(result.jev.usage.output_tokens, 0);
       assert.equal(result.openai.answers[0].probability, result.jev.answers.refund.noul);
       assert.equal(result.openai.answers[1].choice, result.jev.answers.department.choice);
       assert.equal(result.openai.answers[2].score, result.jev.answers.severity.score);
-      const chat = { model: "local", messages: [{ role: "user", content: "Count from one to twenty, separated by commas." }],
+      const chat = { model: "local-poc", messages: [{ role: "user", content: "Count from one to twenty, separated by commas." }],
         max_tokens: 24, temperature: 0, chat_template_kwargs: { enable_thinking: false } };
       const solo = await post("/v1/chat/completions", chat);
       // Start generation, then queue scoring while that stream is live.
@@ -48,14 +48,14 @@ for (const isolated of [false, true]) test.skipIf(!native)(`${isolated ? "isolat
         const chunk = await reader.read(); if (chunk.done) break;
         text += new TextDecoder().decode(chunk.value); count++;
         if (!pending && text.includes('"content":')) pending = post("/v1/decisions", {
-          model: "gpt-6-luna", input: "I was charged twice.", questions: [{ type: "predicate", instructions: "Is this a payment problem?" }] });
+          model: "local-poc", input: "I was charged twice.", questions: [{ type: "predicate", instructions: "Is this a payment problem?" }] });
       }
       assert.ok(pending); const concurrent = await pending;
       assert.equal(concurrent.usage.output_tokens, 0);
       const content = text.split("\\n").filter(line => line.startsWith("data: {")).map(line => JSON.parse(line.slice(6)).choices?.[0]?.delta?.content ?? "").join("");
       assert.equal(content, solo.choices[0].message.content);
       // Run the exact SDK patterns in their upstream-supported Node runtime.
-      const command = [process.env.DECISION_NODE, "./scripts/decision-website-examples.mjs", base];
+      const command = [process.env.DECISION_NODE, "./scripts/decision-website-examples.mjs", base, "local-poc"];
       if (process.env.MLX_BUN_DECISION_IMAGE) command.push(process.env.MLX_BUN_DECISION_IMAGE);
       const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
       const [code, output, error] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);

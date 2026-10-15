@@ -539,11 +539,12 @@ accepted; OpenAI accepts text and `input_image` parts through the existing media
 preparation. Images require a graph with the corresponding media operations.
 Box questions and denoising/pixel-input decision graphs are unsupported.
 
-Keep existing client request bodies and point OpenAI's `baseURL` at
-`http://localhost:8080/v1`, or TypeSafe's `baseURL` at `http://localhost:8080`.
-Cloud model aliases select the current local model; an exact cached model ID
-leases that model through the existing residency host, loading it separately when
-memory permits. Responses identify the model that actually ran. The same loaded
+Point OpenAI's `baseURL` at `http://localhost:8080/v1`, or TypeSafe's `baseURL` at
+`http://localhost:8080`, and set `model` to the exact local ID from `GET /v1/models`,
+for example `mlx-community/gemma-4-e4b-it-OptiQ-4bit`. The residency host leases
+that model, loading it when needed and sharing its resident weights with generation.
+The existing current-model fallback also accepts cloud names for compatibility;
+the local examples use the actual model ID. Responses identify the model that actually ran. The same loaded
 model serves generation and decisions: each candidate is a scheduler task between
 generation iterations, with private caches and its own adapter scope.
 
@@ -565,9 +566,9 @@ OpenAI cache counters are zero and cache hints do not change scoring.
 With a cached vision model, for example:
 
 ```sh
-mlx-bun serve e4b
-bun apps/mlx-bun/scripts/decision-example.ts http://localhost:8080
-node apps/mlx-bun/scripts/decision-website-examples.mjs http://localhost:8080 /path/to/lane-scene.png
+mlx-bun serve mlx-community/gemma-4-e4b-it-OptiQ-4bit
+bun apps/mlx-bun/scripts/decision-example.ts http://localhost:8080 mlx-community/gemma-4-e4b-it-OptiQ-4bit
+node apps/mlx-bun/scripts/decision-website-examples.mjs http://localhost:8080 mlx-community/gemma-4-e4b-it-OptiQ-4bit /path/to/lane-scene.png
 ```
 
 The [HTTP example](scripts/decision-example.ts) covers all three question types

@@ -12,6 +12,7 @@ const get = (path: string) => new Request(`http://app${path}`);
 /** Models by id; each unit answers the wire routes with its own id and records what reached it. */
 function fixture(sizes: Record<string, number>, options: { budget?: number; current?: string; failLoad?: Set<string> } = {}) {
   const received: { unit: string; path: string; body: string }[] = [];
+  const loaded: string[] = [];
   const units = new Map<string, FakeUnit>();
   class FakeUnit implements RoutedUnit {
     readonly operations = ["generate" as const];
@@ -52,11 +53,12 @@ function fixture(sizes: Record<string, number>, options: { budget?: number; curr
       async resolve(id): Promise<ResidencyEntry | undefined> { return id in sizes ? { id, bytes: sizes[id]!, operations: ["generate"] } : undefined; },
       async load(entry) {
         if (options.failLoad?.has(entry.id)) throw new Error(`cannot load ${entry.id}`);
+        loaded.push(entry.id);
         const unit = new FakeUnit(entry.id); units.set(entry.id, unit); return unit;
       },
     } });
   const routes = createModelRoutes({ host, current: () => current, serves: async id => id in sizes });
-  return { host, routes, received, units, setCurrent(id: string) { current = id; } };
+  return { host, routes, received, loaded, units, setCurrent(id: string) { current = id; } };
 }
 
 test("a request naming an exact local model is answered by it, loading it first; anything else is the current model's", async () => {
@@ -86,10 +88,42 @@ test("both decision protocols lease their named model, including Jev's compresse
   const compressed = new Request("http://app/v1/systemone", { method: "POST", headers: { "content-encoding": "zstd" },
     body: zstdCompressSync(JSON.stringify({ model: "decisions", state: "text" })) });
   expect(await (await f.routes.handle(compressed))!.json()).toEqual({ model: "decisions" });
-  for (const model of ["gpt-6-luna", "jev-latest"])
-    expect(await (await f.routes.handle(post("/v1/decisions", { model })))!.json()).toEqual({ model: "generator" });
   expect(f.host.resident().map(model => model.id).sort()).toEqual(["decisions", "generator"]);
   expect(f.host.resident().every(model => model.leases === 0)).toBe(true);
+});
+
+test("cloud model names preserve URL-only compatibility through both decision endpoints", async () => {
+  const f = fixture({ generator: 2 * GB });
+  for (const [path, model] of [["/v1/decisions", "gpt-6-luna"], ["/v1/systemone", "jev-latest"]] as const) {
+    expect(await (await f.routes.handle(post(path, { model })))!.json()).toEqual({ model: "generator" });
+    expect(JSON.parse(f.received.at(-1)!.body).model).toBe(model);
+  }
+  expect(f.host.resident().map(model => model.id)).toEqual(["generator"]);
+  await f.host.close();
+});
+
+test("decisions and generation reuse the requested local model while another model is current", async () => {
+  const generator = "local/generator", gemma = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+  const f = fixture({ [generator]: 2 * GB, [gemma]: 2 * GB });
+  const current = await f.host.acquire(generator); current.release();
+  expect(f.units.has(gemma)).toBe(false);
+  for (const path of ["/v1/decisions", "/v1/systemone", "/v1/chat/completions"]) {
+    expect(await (await f.routes.handle(post(path, { model: gemma })))!.json()).toEqual({ model: gemma });
+    if (path === "/v1/decisions") expect(f.units.has(gemma)).toBe(true);
+  }
+  const unit = f.units.get(gemma);
+  const form = new FormData();
+  form.set("request", JSON.stringify({ model: gemma, state: "image", assets: { photo: { part: "upload" } } }));
+  form.set("upload", new File([new Uint8Array([1, 2, 3])], "x.png", { type: "image/png" }));
+  const multipart = new Request("http://app/v1/systemone", { method: "POST", body: form });
+  expect(await (await f.routes.handle(multipart))!.json()).toEqual({ model: gemma });
+  expect(f.units.get(gemma)).toBe(unit);
+  expect(f.loaded).toEqual([generator, gemma]);
+  expect(f.host.peek(generator)).toBe(current.unit);
+  expect(f.received.every(request => request.unit === gemma)).toBe(true);
+  expect(f.host.resident().map(model => model.id).sort()).toEqual([generator, gemma].sort());
+  expect(f.host.resident().every(model => model.leases === 0)).toBe(true);
+  await f.host.close();
 });
 
 test("the model stays leased until the response body ends, is cancelled, or fails, and never longer", async () => {
