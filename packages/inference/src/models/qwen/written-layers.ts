@@ -114,10 +114,11 @@ export class DeltaWeights {
   stage(weights: Weights, config: ModelConfig, Layer: typeof QwenDeltaLayer,
     Mlp: GateDownClass, GateUp: GateUpClass, Gate: TrellisProjectionClass, Down: TrellisProjectionClass,
     Qkv: AffineProjectionClass, Z: AffineProjectionClass, A: AffineProjectionClass,
-    B: AffineProjectionClass, Out: AffineProjectionClass, qkScale: { q: MlxArray; k: MlxArray }): QwenDeltaLayer {
+    B: AffineProjectionClass, Out: AffineProjectionClass, qkScale: { q: MlxArray; k: MlxArray },
+    Block: typeof QwenGatedDeltaNet = QwenGatedDeltaNet): QwenDeltaLayer {
     const down=new Down(this.trellis.down),plain=new Mlp(new GateUp(this.trellis.gate,this.trellis.up),down);
     const overlay=new TrellisUnfusedMLP(new Gate(this.trellis.gate),new Gate(this.trellis.up),down);
-    return new Layer(weights,config,this.prefix,this.bind(weights,config,Qkv,Z,A,B,Out,qkScale),this.trellis.operation(plain,overlay));
+    return new Layer(weights,config,this.prefix,this.bind(weights,config,Qkv,Z,A,B,Out,qkScale,Block),this.trellis.operation(plain,overlay));
   }
   prompt(weights: Weights, config: ModelConfig, Layer: typeof QwenDeltaLayer,
     Mlp: UnfusedClass, Gate: TrellisProjectionClass, Down: TrellisProjectionClass,
@@ -169,8 +170,8 @@ export class DeltaWeights {
   bind(weights: Weights, config: ModelConfig,
     Qkv: AffineProjectionClass, Z: AffineProjectionClass, A: AffineProjectionClass,
     B: AffineProjectionClass, Out: AffineProjectionClass,
-    qkScale: { q: MlxArray; k: MlxArray }): QwenGatedDeltaNet<RowProjection> {
-    const block = new QwenGatedDeltaNet(weights, config, `${this.prefix}.linear_attn`, {
+    qkScale: { q: MlxArray; k: MlxArray }, Block: typeof QwenGatedDeltaNet = QwenGatedDeltaNet): QwenGatedDeltaNet<RowProjection> {
+    const block = new Block(weights, config, `${this.prefix}.linear_attn`, {
       inProjQkv: new Qkv(this.inProjQkv), inProjZ: new Z(this.inProjZ),
       inProjA: new A(this.inProjA), inProjB: new B(this.inProjB), outProj: new Out(this.outProj),
     });

@@ -1,6 +1,6 @@
 # Third-party notices
 
-The Trellis prefill kernels and TurboQuant inverse kernel incorporate MLX code
+The Trellis prefill, fused normalization, and TurboQuant inverse kernels incorporate MLX code
 under MIT. DeltaNet kernels and cache/attention implementations are ported
 from mlx-lm; the owning source files identify these origins.
 Source references are recorded in the owning kernel files.

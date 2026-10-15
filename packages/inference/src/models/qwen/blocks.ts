@@ -17,6 +17,7 @@ import { disposing } from "../../layers/helpers";
 import { compiledSwiglu } from "../../layers/swiglu";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
+import { CompiledGatedRMSNorm, CompiledResidualRMSNorm } from "../../layers/compiled-normalization";
 import type { AttentionRead, Cache, CommittedAttentionCache, GatedDeltaCache, GatedDeltaHeads, GatedDeltaParameters } from "../../contracts/mlx/cache";
 import { applyInterleavedRope } from "../../layers/qwen-mrope";
 import type { MropeForwardState } from "../../contracts/mlx/positions";
@@ -226,7 +227,7 @@ export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
     return result;
   }
 
-  private rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
+  protected rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
     const xn = ops.rmsNorm(hidden, this.normWeight, this.eps); // bf16
     // Oracle: _precise_swiglu(hidden, gate, xn) — ALWAYS one @mx.compile kernel
     // (matches mlx-lm; no unfused silu+mul+cast).
@@ -401,6 +402,18 @@ export class Qwen3MediaAttention<L extends AttentionLinear = QuantizedLinear> ex
 export class QwenGatedDeltaNet<L extends AttentionLinear = QuantizedLinear> extends GatedDeltaNet<L> {
   constructor(weights: Weights, config: ModelConfig, prefix: string, projections: QwenDeltaProjections<L>) {
     super(weights, config, prefix, undefined, projections);
+  }
+}
+
+/** The same recurrence and projections with a fused normalization/gate tail. */
+export class QwenFusedGatedDeltaNet<L extends AttentionLinear = QuantizedLinear> extends QwenGatedDeltaNet<L> {
+  readonly #gatedNorm: CompiledGatedRMSNorm;
+  constructor(weights: Weights, config: ModelConfig, prefix: string, projections: QwenDeltaProjections<L>) {
+    super(weights, config, prefix, projections);
+    this.#gatedNorm = new CompiledGatedRMSNorm(this.normWeight, this.eps);
+  }
+  protected override rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
+    return this.#gatedNorm.forward(hidden, gate);
   }
 }
 
@@ -590,5 +603,41 @@ export class QwenAttentionLayer {
   forward(x: MlxArray, cache: Cache, phase: ReadPhase, positions: MropeForwardState | null = null): MlxArray {
     using hidden = this.forwardAttn(x, cache, phase, positions);
     return this.forwardMlp(hidden);
+  }
+}
+
+/** A residual/normalization kernel between the recurrent mixer and its MLP. */
+export class QwenResidualDeltaLayer extends QwenDeltaLayer {
+  readonly #residualNorm: CompiledResidualRMSNorm;
+  constructor(...args: ConstructorParameters<typeof QwenDeltaLayer>) {
+    super(...args);
+    this.#residualNorm = new CompiledResidualRMSNorm(this.postAttnNorm.weight!, this.postAttnNorm.eps);
+  }
+  override forward(x: MlxArray, cache: Cache, phase: ReadPhase): MlxArray {
+    using normed = this.inputNorm.forward(x);
+    using mixed = this.mixer.forward(normed, cache as GatedDeltaCache, phase);
+    const [residual, normalized] = this.#residualNorm.forward(x, mixed);
+    try {
+      using hidden = this.mlp.forward(normalized);
+      return ops.add(residual, hidden);
+    } finally { residual.dispose(); normalized.dispose(); }
+  }
+}
+
+/** The corresponding residual/normalization kernel after full attention. */
+export class QwenResidualAttentionLayer extends QwenAttentionLayer {
+  readonly #residualNorm: CompiledResidualRMSNorm;
+  constructor(...args: ConstructorParameters<typeof QwenAttentionLayer>) {
+    super(...args);
+    this.#residualNorm = new CompiledResidualRMSNorm(this.postAttnNorm.weight!, this.postAttnNorm.eps);
+  }
+  override forward(x: MlxArray, cache: Cache, phase: ReadPhase, positions: MropeForwardState | null = null): MlxArray {
+    using normed = this.inputNorm.forward(x);
+    using mixed = this.mixer.forward(normed, cache, phase, positions);
+    const [residual, normalized] = this.#residualNorm.forward(x, mixed);
+    try {
+      using hidden = this.mlp.forward(normalized);
+      return ops.add(residual, hidden);
+    } finally { residual.dispose(); normalized.dispose(); }
   }
 }
