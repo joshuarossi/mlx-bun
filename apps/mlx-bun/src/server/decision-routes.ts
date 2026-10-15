@@ -108,15 +108,24 @@ function decisionAnswerEnding(ctx: LoadedModelContext, prep: ReturnType<typeof c
   if (ctx.template) {
     const marker = "mlx_bun_decision_answer_9d041a";
     const messages = [{ role: "user" as const, content: "x" }, { role: "assistant" as const, content: marker }];
-    const rendered = ctx.template.render(messages, { ...prep.templateOptionsFor({ messages,
-      reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }, null), addGenerationPrompt: false });
-    const at = rendered.indexOf(marker);
-    if (at < 0 || rendered.indexOf(marker, at + marker.length) >= 0)
-      throw new RequestError(501, "decision scoring requires a chat template that preserves assistant answers");
-    const suffix = rendered.slice(at + marker.length);
-    const first = stops.map(text => ({ text, at: suffix.indexOf(text) })).filter(stop => stop.at >= 0)
-      .sort((a, b) => a.at - b.at)[0];
-    if (first) return suffix.slice(0, first.at + first.text.length);
+    const options = { ...prep.templateOptionsFor({ messages,
+      reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }, null), addGenerationPrompt: false };
+    const afterAnswer = (turns: typeof messages) => {
+      const rendered = ctx.template!.render(turns, options), at = rendered.indexOf(marker);
+      if (at < 0 || rendered.indexOf(marker, at + marker.length) >= 0)
+        throw new RequestError(501, "decision scoring requires a chat template that preserves assistant answers");
+      return rendered.slice(at + marker.length);
+    };
+    const throughStop = (suffix: string) => {
+      const first = stops.map(text => ({ text, at: suffix.indexOf(text) })).filter(stop => stop.at >= 0)
+        .sort((a, b) => a.at - b.at)[0];
+      return first ? suffix.slice(0, first.at + first.text.length) : undefined;
+    };
+    const suffix = afterAnswer(messages);
+    // GLM-style templates close an assistant answer with the next role marker.
+    // Only keep that boundary, never the synthetic next user's content.
+    const ending = throughStop(suffix) ?? throughStop(afterAnswer([...messages, { role: "user", content: "x" }]));
+    if (ending !== undefined) return ending;
     if (suffix.trim()) return suffix;
   }
   const fallback = ctx.tokenizer.eosTokenId ?? ctx.model.config.eosTokenIds[0];

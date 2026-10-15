@@ -550,7 +550,8 @@ generation iterations, with private caches and its own adapter scope.
 
 Each supplied answer is encoded as its complete JSON value (score levels use
 their label), followed by the chat template's assistant-turn ending through its
-first stop marker (the tokenizer's end token when no template ending is available). A teacher-forced forward
+first stop marker, including a next-role marker for templates that use that
+boundary (the tokenizer's end token when no template ending is available). A teacher-forced forward
 reads the prompt and supplied answer tokens. The response mask counts only
 answer-token predictions, including the terminator. DPO's existing summed log
 likelihood is divided by the answer token count, then normalized as

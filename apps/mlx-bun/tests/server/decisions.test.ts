@@ -3,7 +3,7 @@ import { gzipSync, zstdCompressSync } from "node:zlib";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChatTemplate } from "@mlx-bun/inference/input";
+import { ChatTemplate, renderGlm52Chat } from "@mlx-bun/inference/input";
 import { fetchMediaBytes } from "@mlx-bun/inference/input/media-fetch";
 import { createPreparationExecutor } from "../../src/engine/preparation";
 import type { ModelPromptBuilder } from "../../src/server/prompt-contracts";
@@ -106,6 +106,26 @@ test("answer and template ending are tokenized together at whitespace boundaries
   const q = parseJevDecision({ model: "m", state: "x", questions: { q: { type: "choice", criteria: { yes: null } } } }).questions[0]!;
   const merged = { encode: (text: string) => text === '"yes"\n<end>' ? [100, 101] : encode(text) };
   expect(decisionCandidates(merged, q, "\n<end>")).toEqual([[100, 101]]);
+});
+
+test("a next-role boundary terminates GLM assistant answers instead of the generic EOS", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "mlx-decision-glm-"));
+  try {
+    writeFileSync(join(directory, "tokenizer_config.json"), JSON.stringify({ eos_token: "<|endoftext|>" }));
+    const template = await ChatTemplate.load(directory, { fallback: { render: renderGlm52Chat, thinkingFormat: "think-tag" } });
+    const tokenizer = { encode: (text: string) => text.split(/(<\|endoftext\|>|<\|user\|>)/).flatMap(piece =>
+      piece === "<|user|>" ? [1000] : piece === "<|endoftext|>" ? [0] : encode(piece)),
+      decode: (ids: number[]) => ids.map(id => id === 1000 ? "<|user|>" : "<|endoftext|>").join(""), eosTokenId: 0 };
+    const f = fixture({ context: { ...context, template, tokenizer,
+      model: { config: { eosTokenIds: [0, 1000] } } } as unknown as LoadedModelContext,
+      buildPrompt: async (body, _, __, prep) => ({ ...emptyPrompt, promptIds: prep.promptIdsFor(body, null).ids }),
+    });
+    for (const [path, body] of [["decisions", { model: "m", input: "x", questions: [{ type: "predicate", instructions: "q" }] }],
+      ["systemone", { model: "m", state: "x", questions: { q: { type: "noul", instructions: "q" } } }]] as const) {
+      expect((await f.routes.handle(post(`/v1/${path}`, body)))!.status).toBe(200);
+      expect(f.calls.at(-1)!.candidates).toEqual([[...encode("false"), 1000], [...encode("true"), 1000]]);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("bad media returns a client error and releases prepared resources and reservations", async () => {
