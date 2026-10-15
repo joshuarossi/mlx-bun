@@ -82,7 +82,7 @@ export const repo = 'https://github.com/joshuarossi/mlx-bun/blob/main';
 <article class="lp-reason">
 <div class="lp-tile-icon"><Icon name="apple" /></div>
 <h3>Native on your Mac</h3>
-<p>Metal does the math, and the Neural Engine programs your models use are compiled at install. The standalone bundle is signed, notarized and ships its own runtime. No Python, no API key.</p>
+<p>Metal does the math, and the Neural Engine programs your models use are compiled by the installer or before the first model load that needs them. The standalone bundle is signed, notarized and ships its own runtime. No Python, no API key.</p>
 </article>
 <article class="lp-reason">
 <div class="lp-tile-icon"><Icon name="random" /></div>
@@ -126,7 +126,7 @@ Every answer is scored from the loaded model's own likelihood of that answer. No
 <li>**Keep your SDK.** Change `baseURL` in the OpenAI or TypeSafe client and the rest of your code stays.</li>
 <li>**Three question types.** Predicate (noul), choice and score, with OpenAI's ordered answers or Jev's keyed map.</li>
 <li>**Text and images.** OpenAI `input_image` parts and Jev's base64 or multipart assets, on models with vision.</li>
-<li>**Any local model.** Name the model from `GET /v1/models`; the host loads it and shares it with generation.</li>
+<li>**Any capable local model.** Name a model that `GET /v1/models` lists with `capabilities.decisions`; the host loads it and shares it with generation.</li>
 </ul>
 
 <p class="lp-tile-links"><a href={`${repo}/apps/mlx-bun/scripts/decision-example.ts`}>Runnable HTTP example</a><a href={`${repo}/apps/mlx-bun/scripts/decision-website-examples.mjs`}>SDK examples</a><a href="/reference/server-api/">HTTP API reference</a></p>

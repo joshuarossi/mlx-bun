@@ -6,8 +6,9 @@ description: What mlx-bun is, why it runs locally, and where to start.
 mlx-bun is local AI for Apple Silicon Macs: an MLX inference engine, an
 OpenAI, Anthropic and Responses compatible server, a browser app, and
 TypeScript libraries you can embed in your own Bun applications. Model
-execution runs on the Mac's GPU through MLX and Metal, with the Neural Engine
-programs a model uses compiled at install. Models download from Hugging Face;
+execution runs on the Mac's GPU through MLX and Metal; the Neural Engine
+programs a model uses are compiled by the installer, or before the first model
+load that needs them. Models download from Hugging Face;
 inference needs no Python service and no hosted-model API key.
 
 ## What you get

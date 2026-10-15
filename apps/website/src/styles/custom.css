@@ -203,11 +203,11 @@ starlight-tabs [role='tab'][aria-selected='true'] {
   font-size: 0.86em;
 }
 
-/* Tables */
+/* Tables keep Starlight's horizontal scrolling on narrow screens. */
 .sl-markdown-content table {
   border: 1px solid var(--sl-color-hairline-light);
   border-radius: 0.75rem;
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .sl-markdown-content th {
