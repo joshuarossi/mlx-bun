@@ -299,6 +299,12 @@ The MLX bindings own native memory explicitly: `using` disposes an array at the 
 </TabItem>
 <TabItem label="Embed the server">
 
+The server entry ships in the app package, not in `@mlx-bun/inference`:
+
+```sh
+bun add mlx-bun
+```
+
 ```ts wrap
 import { createServer, loadContext } from "mlx-bun/server";
 
