@@ -121,6 +121,10 @@ bundle). Pull requests to `main` that touch numerical code also run the paired
 performance check on a self-hosted Mac ([evidence](CONTRIBUTING.md#numerical-and-performance-evidence)).
 Component source, tests, examples, and build configuration live together.
 
+Run the CPU-only kernel proof with
+`uv run --locked --script proofs/trellis_y.py --self-test`.
+The [step-by-step proof guide](proofs/README.md) explains its contract and scope.
+
 ## License
 
 The libraries and app are MIT; see [LICENSE](LICENSE).
