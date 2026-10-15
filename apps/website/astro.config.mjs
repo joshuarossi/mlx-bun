@@ -30,12 +30,13 @@ export default defineConfig({
       { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/mlx-bun' },
     ],
     head: [{ tag: 'meta', attrs: { name: 'theme-color', content: '#0a0a0c' } }],
-    customCss: ['./src/styles/custom.css'],
+    // The site's one typeface, self-hosted, with its optical-size axis.
+    customCss: ['@fontsource-variable/bricolage-grotesque/opsz.css', './src/styles/custom.css'],
     // The landing page's hero and the project footer; Starlight owns the rest.
     components: { Hero: './src/components/Hero.astro', Footer: './src/components/Footer.astro' },
     expressiveCode: {
       styleOverrides: {
-        borderRadius: '0.875rem',
+        borderRadius: '0.375rem',
         codeFontSize: '0.84rem',
         codeLineHeight: '1.65',
         frames: { shadowColor: 'transparent', frameBoxShadowCssValue: 'none' },

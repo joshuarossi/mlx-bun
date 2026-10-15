@@ -20,6 +20,8 @@ including every command and flag. Examples link to executable package examples;
 this site does not keep a second copy of them.
 The landing page (`src/content/docs/index.mdx`) renders two of them from their source at
 build time (`src/snippets.ts` trims the runner), so it keeps no copy either.
+The site's typeface is self-hosted from the `@fontsource-variable/bricolage-grotesque`
+package; no page loads fonts or scripts from another origin.
 
 The library API uses TypeDoc to render exported types, overloads, members,
 JSDoc, and source links at `/api/`. Package manifests supply the entry points;

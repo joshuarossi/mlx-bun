@@ -1,40 +1,44 @@
 ---
 // The landing page's hero: Starlight's hero frontmatter (title, tagline,
-// actions) in a two-column layout with the install command and a terminal that
-// types the quickstart. Docs pages declare no hero and never render this.
+// actions) beside a floorplan of mlx-bun's parts, drawn like the regions of a
+// die. Each region links to the section that explains it. Docs pages declare
+// no hero and never render this.
 import { Icon, LinkButton } from '@astrojs/starlight/components';
+import DefaultHero from '@astrojs/starlight/components/Hero.astro';
 
-const { data } = Astro.locals.starlightRoute.entry;
+const { entry } = Astro.locals.starlightRoute;
+const { data } = entry;
 const { title = data.title, tagline, actions = [] } = data.hero || {};
+// Only the landing page gets the floorplan; Starlight's 404 page also declares
+// a hero and keeps the default one.
+const isLanding = entry.id === 'index' || Astro.url.pathname === '/';
 
 const install = 'curl -fsSL https://mlx-bun.dev/install.sh | sh';
-const model = 'mlx-community/gemma-4-e4b-it-OptiQ-4bit';
-/** The quickstart's commands and the lines `mlx-bun serve` prints, in order.
- * The install command stays in the copy column: a shell that just ran the
- * installer may not have `~/.local/bin` on PATH yet. */
-const script: { kind: 'cmd' | 'out'; text: string; url?: boolean }[] = [
-  { kind: 'cmd', text: `mlx-bun get ${model}` },
-  { kind: 'cmd', text: 'mlx-bun serve e4b' },
-  { kind: 'out', text: `Serving ${model}` },
-  { kind: 'out', text: 'App  http://127.0.0.1:8080/#/chat', url: true },
-  { kind: 'out', text: 'API  http://127.0.0.1:8080/v1', url: true },
+
+/** The parts of mlx-bun as regions of the die, in the order they power on. */
+const regions = [
+  { id: 'engine', name: 'Inference engine', note: 'MLX, Metal and the Neural Engine', href: '#what-engine' },
+  { id: 'server', name: 'Local server', note: 'OpenAI and Anthropic APIs on localhost', href: '#what-server' },
+  { id: 'decisions', name: 'Decisions API', note: 'OpenAI and Jev formats', href: '#decisions' },
+  { id: 'app', name: 'Browser app', note: 'Chat, models, training, metrics', href: '#what-app' },
+  { id: 'libraries', name: 'Libraries', note: '@mlx-bun/* on npm, for Bun', href: '#what-libraries' },
+  { id: 'models', name: 'Models', note: 'Gemma 4, Qwen 3, GLM 5.2 and more', href: '#models' },
 ];
-// A command types at a fixed pace and pauses before the next line; output
-// appears a beat after the command that produced it.
-let at = 0.5;
-const lines = script.map((line) => {
-  const chars = line.kind === 'cmd' ? line.text.length + 2 : line.text.length;
-  const start = at;
-  at += line.kind === 'cmd' ? chars * 0.026 + 0.55 : 0.14;
-  return { ...line, chars, start };
-});
 ---
 
-<div class="lp-hero">
+{!isLanding && <DefaultHero />}
+{isLanding && <div class="lp-hero">
   <div class="lp-hero-copy">
-    <p class="lp-hero-badge"><span class="lp-pulse" aria-hidden="true"></span>Apple Silicon · macOS 14+ · MIT</p>
     <h1 id="_top" data-page-title set:html={title} />
-    {tagline && <p class="lp-hero-tagline" set:html={tagline} />}
+    {tagline && <p class="lp-hero-lede" set:html={tagline} />}
+    <div class="lp-install" data-copy={install}>
+      <span class="lp-install-prompt" aria-hidden="true">$</span>
+      <code>{install}</code>
+      <button type="button" class="lp-copy" aria-label="Copy the install command">
+        <svg class="lp-copy-idle" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>
+        <Icon name="approve-check" class="lp-copy-done" size="1.1rem" />
+      </button>
+    </div>
     {
       actions.length > 0 && (
         <div class="lp-hero-actions">
@@ -47,24 +51,22 @@ const lines = script.map((line) => {
         </div>
       )
     }
-    <div class="lp-install" data-copy={install}>
-      <span class="lp-install-prompt" aria-hidden="true">$</span>
-      <code>{install}</code>
-      <button type="button" class="lp-copy" aria-label="Copy the install command">
-        <Icon name="document" class="lp-copy-idle" size="1.1rem" />
-        <Icon name="approve-check" class="lp-copy-done" size="1.1rem" />
-      </button>
-    </div>
+    <p class="lp-hero-note">Runs on Apple Silicon Macs with macOS 14 or later. MIT licensed.</p>
   </div>
   <div class="lp-hero-visual">
-    <div class="lp-terminal" aria-hidden="true">
-      <div class="lp-terminal-bar"><span></span><span></span><span></span><em>mlx-bun · zsh</em></div>
-      <pre class="lp-terminal-body"><code>{lines.map((line) => (
-        <span class={`lp-line lp-${line.kind}`} style={`--n:${line.chars};--t:${line.start.toFixed(2)}s`}>{line.kind === 'cmd' && <span class="lp-prompt">$ </span>}{line.url ? <>{line.text.slice(0, 5)}<span class="lp-url">{line.text.slice(5)}</span></> : line.text}</span>
-      ))}<span class="lp-line lp-out" style={`--n:2;--t:${at.toFixed(2)}s`}><span class="lp-prompt">$ </span><span class="lp-cursor"></span></span></code></pre>
-    </div>
+    <nav class="lp-die" aria-label="The parts of mlx-bun">
+      <div class="lp-die-grid">
+        {regions.map((region, i) => (
+          <a class={`lp-die-block lp-die-${region.id}`} href={region.href} style={`--i:${i}`}>
+            <strong>{region.name}</strong>
+            <span>{region.note}</span>
+          </a>
+        ))}
+      </div>
+      <span class="lp-die-mark" aria-hidden="true">mlx-bun</span>
+    </nav>
   </div>
-</div>
+</div>}
 
 <script>
   for (const box of document.querySelectorAll<HTMLElement>('.lp-install[data-copy]')) {
