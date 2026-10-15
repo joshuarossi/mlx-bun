@@ -57,7 +57,11 @@ mlx-bun generate e4b "Write a haiku about Apple Silicon."
 ```
 
 The server also answers `/v1/completions`, `/v1/messages`, `/v1/responses` and
-`/v1/embeddings` when the loaded model supports them. `mlx-bun --help` and
+`/v1/embeddings` when the loaded model supports them. Decisions are available at
+`/v1/decisions` (OpenAI) and `/v1/systemone` (Jev), sharing the loaded model with
+generation. See the [runnable examples](apps/mlx-bun/scripts/decision-example.ts)
+and [SDK examples](apps/mlx-bun/scripts/decision-website-examples.mjs).
+`mlx-bun --help` and
 `mlx-bun <command> --help` list every command and option; the
 [CLI](https://mlx-bun.dev/reference/cli/), [HTTP API](https://mlx-bun.dev/reference/server-api/)
 and [configuration](https://mlx-bun.dev/reference/server-config/) references

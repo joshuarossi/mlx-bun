@@ -16,7 +16,7 @@ function compositionWire(composition: Composition): unknown {
  * supply a binding explicitly and need no forward/makeCache methods. */
 export async function modelServingBinding(context: LoadedModelContext, supplied?: ModelBinding): Promise<ModelBinding> {
   if (supplied) return supplied;
-  const [{ declaredGraph, embeddingDeclarationFor }, { embedMany, embeddingTerminatorId, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }, ops, { sequenceHiddenOperation, sequenceLogitsOperation }] = await Promise.all([
+  const [{ declaredGraph, embeddingDeclarationFor }, { embedMany, embeddingTerminatorId, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }, ops, { sequenceHiddenOperation, sequenceLogitsOperation, scoreDecisionAnswers }] = await Promise.all([
     import("@mlx-bun/inference/models"), import("@mlx-bun/inference/embeddings"),
     import("@mlx-bun/inference/execution"), import("@mlx-bun/mlx/ffi"), import("@mlx-bun/mlx/ops"), import("@mlx-bun/inference/scoring"),
   ]);
@@ -72,8 +72,15 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
       } finally { for (const cache of caches) cache.dispose(); }
     },
     discovery: { adapters, training: adapters && ((hasSequence && hasHead) || typeof graph.trainable?.denoising?.canvasLogits === "function"),
-      dsa: capabilities.sparseAttention, embeddings: embedding },
+      dsa: capabilities.sparseAttention, embeddings: embedding, decisions: hasSequence && hasHead && !embedding },
     ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, terminator, inputs, instruction) } : {}),
+    ...(hasSequence && hasHead && !embedding ? { decide: async ({ prompt, candidates, vision, signal, execute }: Parameters<NonNullable<ModelBinding["decide"]>>[0]) => {
+      if (vision && !graph.bindMediaInput) throw new TypeError("graph declares no media input for decisions");
+      return (await scoreDecisionAnswers({ makeCache: () => model.makeCache(),
+        forward: (ids, cache, rows) => sequenceHiddenOperation(scoring, ids, cache, rows),
+        logits: hidden => sequenceLogitsOperation(model, hidden) }, prompt, candidates,
+        { signal, execute, ...(vision ? { input: graph.bindMediaInput!(vision) } : {}) })).probabilities;
+    } } : {}),
     diagnostics() {
       const runtime = ctx.runtimeDiagnostics?.();
       return { ...(ctx.composition ? { composition: compositionWire(ctx.composition) } : {}), ...(runtime ? { runtime } : {}) };

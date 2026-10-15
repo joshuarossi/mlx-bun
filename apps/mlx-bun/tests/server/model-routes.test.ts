@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ModelOperations } from "@mlx-bun/app-core";
 import { createResidencyHost, type ResidencyEntry } from "../../src/residency/model-residency";
 import { createModelRoutes, modelField, type RoutedUnit } from "../../src/server/model-routes";
+import { zstdCompressSync } from "node:zlib";
 
 const GB = 1000;
 const post = (path: string, body: unknown, signal?: AbortSignal) => new Request(`http://app${path}`, { method: "POST",
@@ -25,7 +26,7 @@ function fixture(sizes: Record<string, number>, options: { budget?: number; curr
       const url = new URL(request.url);
       const body = request.method === "POST" ? await request.text() : "";
       received.push({ unit: this.id, path: url.pathname, body });
-      if (url.pathname === "/v1/chat/completions") {
+      if (["/v1/chat/completions", "/v1/decisions", "/v1/systemone"].includes(url.pathname)) {
         if (this.hold) return new Response(new ReadableStream<Uint8Array>({ start: controller => { this.stream = controller; } }));
         return Response.json({ model: this.id });
       }
@@ -73,6 +74,22 @@ test("a request naming an exact local model is answered by it, loading it first;
   expect(f.received.filter(item => item.unit === "b").map(item => item.body)).toEqual([JSON.stringify({ model: "b", messages: [] })]);
   f.setCurrent("b");
   expect(await (await f.routes.handle(post("/v1/chat/completions", { model: "local" })))!.json()).toEqual({ model: "b" });
+});
+
+test("both decision protocols lease their named model, including Jev's compressed SDK bodies", async () => {
+  const f = fixture({ generator: 2 * GB, decisions: 1 * GB });
+  (await f.host.acquire("generator")).release();
+  for (const path of ["/v1/decisions", "/v1/systemone"]) {
+    const response = await f.routes.handle(post(path, { model: "decisions" }));
+    expect(await response!.json()).toEqual({ model: "decisions" });
+  }
+  const compressed = new Request("http://app/v1/systemone", { method: "POST", headers: { "content-encoding": "zstd" },
+    body: zstdCompressSync(JSON.stringify({ model: "decisions", state: "text" })) });
+  expect(await (await f.routes.handle(compressed))!.json()).toEqual({ model: "decisions" });
+  for (const model of ["gpt-6-luna", "jev-latest"])
+    expect(await (await f.routes.handle(post("/v1/decisions", { model })))!.json()).toEqual({ model: "generator" });
+  expect(f.host.resident().map(model => model.id).sort()).toEqual(["decisions", "generator"]);
+  expect(f.host.resident().every(model => model.leases === 0)).toBe(true);
 });
 
 test("the model stays leased until the response body ends, is cancelled, or fails, and never longer", async () => {

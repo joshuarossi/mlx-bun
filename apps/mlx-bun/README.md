@@ -527,6 +527,58 @@ never deletes checkpoints, and it never waits for a flush in progress).
 Cache policy tests inject storage and allocator ports; real SSD/numerical runs
 remain separate verification.
 
+## Local decisions
+
+`POST /v1/decisions` accepts the OpenAI Decisions request and returns its ordered
+answer array (`predicate`, `choice`, `score`). `POST /v1/systemone` accepts Jev's
+`state` and questions map and returns its keyed answers (`noul`, `choice`, `score`).
+Both endpoints normalize into one handler and one numerical operation. Question
+names identify responses and are excluded from the model input. Jev's structured
+instructions/criteria, gzip/zstd requests and multipart/base64 image assets are
+accepted; OpenAI accepts text and `input_image` parts through the existing media
+preparation. Images require a graph with the corresponding media operations.
+Box questions and denoising/pixel-input decision graphs are unsupported.
+
+Keep existing client request bodies and point OpenAI's `baseURL` at
+`http://localhost:8080/v1`, or TypeSafe's `baseURL` at `http://localhost:8080`.
+Cloud model aliases select the current local model; an exact cached model ID
+leases that model through the existing residency host, loading it separately when
+memory permits. Responses identify the model that actually ran. The same loaded
+model serves generation and decisions: each candidate is a scheduler task between
+generation iterations, with private caches and its own adapter scope.
+
+Each supplied answer is encoded as its complete JSON value (score levels use
+their label), followed by the tokenizer's end token. A teacher-forced forward
+reads the prompt and supplied answer tokens. The response mask counts only
+answer-token predictions, including the terminator; DPO's existing summed log
+likelihood is normalized across the supplied candidates. No token is sampled or
+generated. Long answers retain the length preference of sequence likelihood.
+Probabilities and confidence reflect the local model, rather than the cloud
+providers' calibration. Choice/score confidence uses Jev's documented formulas.
+Usage counts the tokens processed across candidate forwards and reports zero
+output tokens. These operations currently keep no reusable prompt cache;
+OpenAI cache counters are zero and cache hints do not change scoring.
+
+With a cached vision model, for example:
+
+```sh
+mlx-bun serve e4b
+bun apps/mlx-bun/scripts/decision-example.ts http://localhost:8080
+node apps/mlx-bun/scripts/decision-website-examples.mjs http://localhost:8080 /path/to/lane-scene.png
+```
+
+The [HTTP example](scripts/decision-example.ts) covers all three question types
+through both endpoints and generation through the same model. The
+[website examples](scripts/decision-website-examples.mjs) use the upstream OpenAI
+and TypeSafe SDKs with local connection settings (Node 22+); a supplied image runs
+the lane-choice scenario. OpenAI's lane widget is a scripted illustration, so use
+a scene-only capture without the widget's displayed probabilities. The opt-in
+[acceptance test](tests/engine/decisions-native.test.ts) runs these examples with
+`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_MODEL=<cached snapshot>` and optional
+`MLX_BUN_DECISION_IMAGE=<lane capture.png>`; it also compares concurrent generation
+against a solo greedy control. Tests without weights check SDK wire compatibility,
+validation, compression, complete answer preservation, cancellation and disposal.
+
 ## Server seams
 
 `server/routes.ts` composes chat/text completion, Anthropic Messages, Responses, embedding, and discovery

@@ -17,6 +17,7 @@ import type { ModelPromptBuilder } from "./prompt-contracts";
 import { admit, errorResponse, respondJson, respondStream, type ErrorFormatter } from "./http";
 import { chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream } from "./openai-wire";
 import { createDiscoveryRoutes, type TranscriptionInfo } from "./discovery-routes";
+import { createDecisionRoutes } from "./decision-routes";
 import { anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol, type AnthropicRequest } from "./anthropic";
 
 import { ResponseStore, resolveResponsesConversation, responsesToChatBody, chatJsonToResponses,
@@ -36,8 +37,8 @@ export function createCompletionRoutes(engine: {
   context: ModelContext;
   completion: CompletionEngine;
   preparation: PreparationExecutor;
-  binding: Pick<ModelBinding, "discovery" | "embed">;
-  gateway: Pick<GenerationGateway, "runExclusive">;
+  binding: Pick<ModelBinding, "discovery" | "embed" | "decide"> & Partial<Pick<ModelBinding, "gateway">>;
+  gateway: Pick<GenerationGateway, "runExclusive"> & Partial<Pick<GenerationGateway, "runPreparation">>;
 }, options: RequestPrepOptions & {
   /** The loaded model's cache service: the prefix peek and the encoder-output object cache. */
   promptCache: Pick<KvCacheService, "peekPrefixLen"> & Partial<Pick<KvCacheService, "objects">>;
@@ -52,6 +53,7 @@ export function createCompletionRoutes(engine: {
   transcription?: () => Promise<TranscriptionInfo | null>;
 }) {
   const ctx = engine.context;
+  const decisions = createDecisionRoutes(engine, options);
   const responseHistory = options.responseHistory ?? new ResponseStore();
   const prep = createRequestPrep({ ctx, serverOptions: options,
     defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory: options.tokenHistory });
@@ -78,6 +80,8 @@ export function createCompletionRoutes(engine: {
       const format = url.pathname === "/v1/messages" ? anthropicError
         : url.pathname === "/v1/responses" ? responsesError : undefined;
       try {
+        const decision = await decisions.handle(request);
+        if (decision) return decision;
         const discovered = await discovery.handle(url, request);
         if (discovered) return discovered;
         if (request.method !== "POST") return null;

@@ -1,5 +1,5 @@
-// Routes model-scoped requests to the model that should answer them. The five
-// generation endpoints carry a `model` id in the JSON body: an exact local id
+// Routes model-scoped requests to the model that should answer them. The
+// inference endpoints carry a `model` id in the JSON body: an exact local id
 // (the ones `/v1/models` lists) leases that model from the model host, loading
 // it (and draining another) when it is not resident; anything else (no id, an
 // alias such as Pi's `local`, a name another server would know) is answered by
@@ -12,9 +12,10 @@ import type { ResidencyHost, ResidentUnit } from "../residency/model-residency";
 import { ResidencyError } from "../residency/model-residency";
 import { errorResponse } from "./http";
 import { RequestError } from "./pipeline";
+import { readDecisionBody } from "./decision-body";
 
-/** Generation endpoints whose JSON body carries the routing `model` field. */
-export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"]);
+/** Inference endpoints whose JSON body carries the routing `model` field. */
+export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings", "/v1/decisions", "/v1/systemone"]);
 
 const decoder = new TextDecoder();
 /** The routing key from a buffered JSON body. A body that is not a JSON object with a string `model` names no model; the current model answers it and its own parser rejects a malformed body. */
@@ -103,11 +104,19 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       const { pathname } = url;
       if (request.method === "POST" && MODEL_ROUTED.has(pathname)) {
         // The body is read once here and handed on as bytes; the model's own parser answers a malformed one.
-        const body = await request.text();
-        const named = modelField(body);
+        const headers = new Headers(request.headers);
+        const body = new Uint8Array(await request.arrayBuffer());
+        let named = modelField(body);
+        if (pathname === "/v1/systemone" || pathname === "/v1/decisions") {
+          try {
+            const parsed = await readDecisionBody(new Request(request.url, { method: "POST", headers, body }));
+            if (parsed && typeof parsed === "object" && typeof (parsed as { model?: unknown }).model === "string")
+              named = (parsed as { model: string }).model;
+          } catch { /* The model's parser supplies the protocol's error. */ }
+        }
         const id = named !== undefined && await options.serves(named) ? named : options.current();
         return leased(id, request, unit => unit.operationsFor().generate!(new Request(request.url, {
-          method: request.method, headers: request.headers, body, signal: request.signal })));
+          method: request.method, headers, body, signal: request.signal })));
       }
       const listsModels = pathname === "/v1/models" || pathname.startsWith("/v1/models/");
       if (request.method === "GET" && listsModels) {
@@ -149,7 +158,12 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
           // A companion's own row says whether it is loaded; the host knows when it holds it resident.
           return entry.transcription === true ? row : { ...row, resident: resident.has(id), current: id === current };
         });
-        return Response.json({ ...list, data: filter === null ? data : data.filter(entry => entry.id === filter) });
+        const selected = filter === null ? data : data.filter(entry => entry.id === filter);
+        return Response.json({ ...list, data: selected,
+          // Jev clients use `models`, OpenAI clients use `data`; one discovery
+          // response can carry both views without changing either contract.
+          models: selected.filter(entry => entry.transcription !== true).map(entry => ({ name: entry.id,
+            description: "Local mlx-bun inference model", release_date: "" })) });
       }
       if (request.method === "GET" && pathname === "/stats") {
         const unit = active();

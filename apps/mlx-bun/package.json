@@ -65,6 +65,8 @@
     "arm64"
   ],
   "devDependencies": {
-    "happy-dom": "20.10.6"
+    "@typesafe-ai/sdk": "0.7.0",
+    "happy-dom": "20.10.6",
+    "openai": "7.34.0"
   }
 }

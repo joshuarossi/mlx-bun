@@ -1429,6 +1429,20 @@ store identity rebuild the cache.
 
 ## Scoring
 
+`scoreDecisionAnswers` takes a structural `DecisionScoringGraph`, prompt tokens,
+and complete candidate token sequences. It teacher-forces each candidate, applies
+the head only to answer-predicting rows, and normalizes summed response log
+likelihoods across candidates. No sampling or generation loop runs. Include the
+answer terminator in each candidate. An optional `execute` callback schedules
+each candidate separately; direct consumers can run under their own graph lease.
+Prepared media uses the graph's `MlxPromptInput` to feed the supplied tokens at
+their positions. Every candidate owns fresh caches, released before it settles.
+
+`sequenceLogProbabilities` and `logitsFromHiddenPadM` are the existing DPO
+response-mask reduction and DPO/ORPO head geometry, now owned here and consumed by
+training. The extraction preserves operation order and differentiability. API
+schemas, answer text encoding, confidence, and wire responses belong to the app.
+
 `scoring` exposes `forwardSequence` / `forwardSequenceHidden` for full-sequence
 logits and hidden states, including the existing padded-batch masks. The original
 `trainForward` names remain aliases for compatibility. `evalPpl` computes
