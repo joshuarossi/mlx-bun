@@ -8,8 +8,8 @@ const setup = `
   const hidden = { dispose() { released.push("hidden"); } };
   const logits = { shape: [1, 1, 2], dispose() { released.push("logits"); },
     slice() { return { toFloat32: () => new Float32Array([0, 0]), dispose() { released.push("last"); } }; } };
-  mock.module("@mlx-bun/inference/models", () => ({ declaredGraph: model => model, embeddingDeclarationFor: () => null }));
-  mock.module("@mlx-bun/inference/embeddings", () => ({ isEmbeddingModel: () => false, embedMany() {}, embeddingTerminatorId() {} }));
+  mock.module("@mlx-bun/inference/models", () => ({ declaredGraph: model => model, embeddingDeclarationFor: () => ({ terminator: "fixture" }) }));
+  mock.module("@mlx-bun/inference/embeddings", () => ({ isEmbeddingModel: model => model.embeddings === true, embedMany() {}, embeddingTerminatorId() {} }));
   mock.module("@mlx-bun/inference/execution", () => ({ bindMlxGateway(model) {
     bound++; return { capabilities: { sparseAttention: false, method: model.graphCapabilities.method } };
   } }));
@@ -18,6 +18,7 @@ const setup = `
     tensors++; return { dispose() { released.push("input"); } };
   } }));
   mock.module("@mlx-bun/inference/scoring", () => ({
+    scoreDecisionAnswers: async () => ({ probabilities: [0.25, 0.75] }),
     sequenceHiddenOperation(model, ids, cache) { return model.sequence?.[0].operation(ids, cache) ?? model.sequenceHidden(ids, cache); },
     sequenceLogitsOperation(model, value) { return model.sequenceLogits?.[0].operation(value) ?? model.logitsFromHidden(value); },
   }));
@@ -89,5 +90,20 @@ test("declared and legacy scoring operations remain callable and release their r
       assert.deepEqual(released, ["input", "hidden", "last", "logits", "cache"]);
     }
     assert.equal(caches, 2); assert.equal(tensors, 2);
+  `);
+});
+
+
+test("embedding capability composes with decision scoring when sequence and head operations exist", async () => {
+  await hostOnly(`
+    const binding = await bind({ ...base(), embeddings: true, sequence, sequenceLogits });
+    assert.equal(binding.discovery.embeddings, true);
+    assert.equal(binding.discovery.decisions, true);
+    assert.equal(typeof binding.embed, "function");
+    assert.deepEqual(await binding.decide({ prompt: [1], candidates: [[2], [3]] }), [0.25, 0.75]);
+    const noHead = await bind({ ...base(), embeddings: true, sequence });
+    assert.equal(noHead.discovery.embeddings, true);
+    assert.equal(noHead.discovery.decisions, false);
+    assert.equal(noHead.decide, undefined);
   `);
 });

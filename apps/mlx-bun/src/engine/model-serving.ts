@@ -72,9 +72,9 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
       } finally { for (const cache of caches) cache.dispose(); }
     },
     discovery: { adapters, training: adapters && ((hasSequence && hasHead) || typeof graph.trainable?.denoising?.canvasLogits === "function"),
-      dsa: capabilities.sparseAttention, embeddings: embedding, decisions: hasSequence && hasHead && !embedding },
+      dsa: capabilities.sparseAttention, embeddings: embedding, decisions: hasSequence && hasHead },
     ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, terminator, inputs, instruction) } : {}),
-    ...(hasSequence && hasHead && !embedding ? { decide: async ({ prompt, candidates, vision, signal, execute }: Parameters<NonNullable<ModelBinding["decide"]>>[0]) => {
+    ...(hasSequence && hasHead ? { decide: async ({ prompt, candidates, vision, signal, execute }: Parameters<NonNullable<ModelBinding["decide"]>>[0]) => {
       if (vision && !graph.bindMediaInput) throw new TypeError("graph declares no media input for decisions");
       return (await scoreDecisionAnswers({ makeCache: () => model.makeCache(),
         forward: (ids, cache, rows) => sequenceHiddenOperation(scoring, ids, cache, rows),
