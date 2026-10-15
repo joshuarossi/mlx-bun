@@ -42,8 +42,10 @@ inference needs no Python service and no hosted-model API key.
 - **Composable.** Public component subpaths let you use kernels, layers,
   graphs, state and generation independently, and `mlx-bun/server` embeds the
   whole app in your process.
-- **Private by default.** Models, adapters, chats and caches stay on your Mac
-  under `~/.mlx-bun`; nothing is sent anywhere unless you ask.
+- **Private by default.** Downloaded models stay in the Hugging Face cache on
+  your Mac; converted models, adapters, chats and KV state live under
+  `~/.mlx-bun`. Inference runs locally, and nothing leaves your Mac unless you
+  fetch or upload something yourself.
 
 The repository uses Bun workspaces: applications live in `apps/`, libraries
 in `packages/`. See the [architecture](https://github.com/joshuarossi/mlx-bun/blob/main/ARCHITECTURE.md)
