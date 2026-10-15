@@ -9,9 +9,10 @@ const { title = data.title, tagline, actions = [] } = data.hero || {};
 
 const install = 'curl -fsSL https://mlx-bun.dev/install.sh | sh';
 const model = 'mlx-community/gemma-4-e4b-it-OptiQ-4bit';
-/** The quickstart's commands and the lines `mlx-bun serve` prints, in order. */
+/** The quickstart's commands and the lines `mlx-bun serve` prints, in order.
+ * The install command stays in the copy column: a shell that just ran the
+ * installer may not have `~/.local/bin` on PATH yet. */
 const script: { kind: 'cmd' | 'out'; text: string; url?: boolean }[] = [
-  { kind: 'cmd', text: install },
   { kind: 'cmd', text: `mlx-bun get ${model}` },
   { kind: 'cmd', text: 'mlx-bun serve e4b' },
   { kind: 'out', text: `Serving ${model}` },
