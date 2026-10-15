@@ -142,7 +142,7 @@ export async function runScreen(argv: string[]): Promise<ScreenReport> {
     (_, i) => (seed * 7919 + i * 104729) % config.text.vocabSize), [1, count]);
   const model = await factory.openModel(modelPath, { composition });
   try {
-    report.graph = model.graph;
+    report.graph = "graph" in model && typeof model.graph === "string" ? model.graph : model.constructor.name;
     if (!("decode" in model) || !("verify" in model) || !("logits" in model)) throw new Error("model has no token phase tables");
     for (const count of rows) {
       const caches = model.makeCache();
