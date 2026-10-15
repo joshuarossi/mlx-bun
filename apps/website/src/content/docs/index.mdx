@@ -1,0 +1,399 @@
+---
+title: Local AI on Apple Silicon
+description: mlx-bun is an MLX inference engine, an OpenAI, Anthropic and Responses compatible server, a browser app, and TypeScript libraries for Bun. Bit-exact with mlx-lm on validated configurations, with no Python at inference time.
+template: splash
+hero:
+  title: Local AI on <span class="lp-gradient">Apple&nbsp;Silicon</span>
+  tagline: An MLX inference engine, an OpenAI, Anthropic and Responses compatible server, a browser app, and TypeScript libraries you can embed in your own Bun apps. Bit-exact with mlx-lm on validated configurations. No Python.
+  actions:
+    - text: Get started
+      link: '#install'
+      icon: right-arrow
+    - text: Read the docs
+      link: /getting-started/introduction/
+      variant: secondary
+---
+
+import { Code, Icon, LinkCard, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
+import { exampleBody } from '../../snippets';
+import arraysSource from '../../../../../packages/mlx/examples/arrays.ts?raw';
+import generateSource from '../../../../../packages/inference/examples/qwen3-generate.ts?raw';
+
+export const repo = 'https://github.com/joshuarossi/mlx-bun/blob/main';
+
+<ul class="lp-facts not-content" aria-label="Highlights">
+<li>Bit-exact with mlx-lm on validated configurations</li>
+<li>No Python at inference time</li>
+<li>OpenAI, Anthropic and Responses APIs on localhost</li>
+<li>Decisions API, OpenAI and Jev compatible</li>
+<li>Signed, notarized standalone bundle</li>
+<li>MIT licensed</li>
+</ul>
+
+<div class="lp-section" id="what">
+
+<p class="lp-eyebrow">What it is</p>
+
+## One install. Every surface.
+
+<p class="lp-lead">One command downloads models, serves them, generates, quantizes, trains and transcribes. The same install gives you a local API, a browser app, and the libraries underneath.</p>
+
+<div class="lp-bento not-content">
+<article class="lp-tile lp-tile-wide">
+<div class="lp-tile-icon"><Icon name="server" /></div>
+<h3>A local server for the SDKs you already use</h3>
+<p>Point the OpenAI or Anthropic SDK at <code>localhost:8080</code>. Every request runs on one continuous batching scheduler, with paged and quantized KV caches, speculative decoding and runtime LoRA adapters when you want them.</p>
+<ul class="lp-endpoints">
+<li>/v1/chat/completions</li><li>/v1/completions</li><li>/v1/messages</li><li>/v1/responses</li><li>/v1/embeddings</li><li>/v1/audio/transcriptions</li><li>/v1/decisions</li><li>/v1/systemone</li><li>/v1/models</li>
+</ul>
+</article>
+<article class="lp-tile">
+<div class="lp-tile-icon"><Icon name="forward-slash" /></div>
+<h3>Terminal app</h3>
+<p><code>get</code>, <code>serve</code>, <code>generate</code>, <code>embed</code>, <code>convert</code>, <code>train</code>, <code>fuse</code>, <code>transcribe</code>, <code>fit</code>. Every command and flag is in the <a href="/reference/cli/">CLI reference</a>, generated from the source.</p>
+</article>
+<article class="lp-tile">
+<div class="lp-tile-icon"><Icon name="laptop" /></div>
+<h3>Browser app</h3>
+<p>Chat with tools and saved sessions, manage models, transcribe audio, quantize checkpoints, train adapters, generate datasets, and watch metrics and benchmarks.</p>
+</article>
+<article class="lp-tile lp-tile-wide">
+<div class="lp-tile-icon"><Icon name="seti:typescript" /></div>
+<h3>TypeScript libraries, published to npm</h3>
+<p><code>@mlx-bun/mlx</code>, <code>inference</code>, <code>quantize</code>, <code>training</code> and <code>hub</code> expose loading and generation alongside the kernels, layers, graphs, state, sampling and training they compose. Use the convenience API, or build your own graph from the parts.</p>
+<p class="lp-tile-links"><a href="/guides/library/">Library guide</a><a href="/api/">Library API</a></p>
+</article>
+</div>
+
+</div>
+
+<div class="lp-section" id="why">
+
+<p class="lp-eyebrow">Why mlx-bun</p>
+
+## Built to be trusted, then embedded.
+
+<div class="lp-grid lp-grid-3 lp-reasons not-content">
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="approve-check" /></div>
+<h3>Bit-exact numerics</h3>
+<p>Validated configurations reproduce mlx-lm's logits bit for bit, and mlx-optiq's for mixed-precision KV. Correctness is a <a href="/about/correctness/">published contract</a> with evidence, not a benchmark table.</p>
+</article>
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="apple" /></div>
+<h3>Native on your Mac</h3>
+<p>Metal does the math, and the Neural Engine programs your models use are compiled at install. The standalone bundle is signed, notarized and ships its own runtime. No Python, no API key.</p>
+</article>
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="random" /></div>
+<h3>Drop-in compatible</h3>
+<p>Chat Completions, Messages, Responses, embeddings and transcription keep their wire formats, so existing SDKs, agents and tools work by changing one URL.</p>
+</article>
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="analytics" /></div>
+<h3>Decisions, locally</h3>
+<p>A drop-in for OpenAI's Decisions API and Jev's System One format: typed answers with probabilities and confidence, scored on the same resident weights that serve chat. <a href="#decisions">See how</a>.</p>
+</article>
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="puzzle" /></div>
+<h3>Composable by design</h3>
+<p>Every layer is a public subpath: kernels, layers, graphs, caches, sampling, generation. The caller owns weights and state, and <code>using</code> disposes them. Embed the whole server with <code>mlx-bun/server</code>.</p>
+</article>
+<article class="lp-reason">
+<div class="lp-tile-icon"><Icon name="database" /></div>
+<h3>Memory aware</h3>
+<p>Fit estimates before a model loads, residency by memory budget across models, paged and quantized KV, prompt caches that persist to SSD, and continuous batching for every request.</p>
+</article>
+</div>
+
+</div>
+
+<div class="lp-section lp-feature" id="decisions">
+
+<div class="lp-split">
+
+<div class="lp-split-copy">
+
+<p class="lp-eyebrow">Decisions API</p>
+
+## Decisions, scored on your Mac.
+
+`POST /v1/decisions` is a drop-in replacement for OpenAI's Decisions API, and `POST /v1/systemone` speaks Jev's System One format from TypeSafe AI. Ask predicate, choice and score questions about any text, or an image with a vision model, and get back the answer, a probability for every option, and a confidence.
+
+Every answer is scored from the loaded model's own likelihood of that answer. No token is sampled, nothing needs tuning or calibration, and the same resident weights keep serving chat.
+
+<ul class="lp-checks">
+<li>**Keep your SDK.** Change `baseURL` in the OpenAI or TypeSafe client and the rest of your code stays.</li>
+<li>**Three question types.** Predicate (noul), choice and score, with OpenAI's ordered answers or Jev's keyed map.</li>
+<li>**Text and images.** OpenAI `input_image` parts and Jev's base64 or multipart assets, on models with vision.</li>
+<li>**Any local model.** Name the model from `GET /v1/models`; the host loads it and shares it with generation.</li>
+</ul>
+
+<p class="lp-tile-links"><a href={`${repo}/apps/mlx-bun/scripts/decision-example.ts`}>Runnable HTTP example</a><a href={`${repo}/apps/mlx-bun/scripts/decision-website-examples.mjs`}>SDK examples</a><a href="/reference/server-api/">HTTP API reference</a></p>
+
+</div>
+
+<div class="lp-split-code">
+
+<Tabs>
+<TabItem label="OpenAI SDK" icon="openai">
+
+```ts
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: "local",
+  baseURL: "http://localhost:8080/v1",
+});
+
+const { answers } = await openai.decisions.create({
+  model: "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+  input: "I was charged twice for my order.",
+  questions: [{
+    type: "choice", name: "department",
+    instructions: "Which department should handle this complaint?",
+    choices: [
+      { value: "billing", description: "Payments, invoices, and refunds." },
+      { value: "technical", description: "Problems using the product." },
+      { value: "shipping", description: "Delivery and tracking." },
+    ],
+  }],
+});
+```
+
+</TabItem>
+<TabItem label="TypeSafe SDK" icon="seti:typescript">
+
+```ts
+import { TypeSafeClient, choice } from "@typesafe-ai/sdk";
+
+const jev = new TypeSafeClient({
+  apiKey: "local",
+  baseURL: "http://localhost:8080",
+});
+
+const result = await jev.systemOne({
+  model: "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+  state: { document: "I was charged twice. Please fix this ASAP." },
+  questions: {
+    category: choice("What is this ticket about?", {
+      billing: null, technical: null, other: null,
+    }),
+  },
+});
+```
+
+</TabItem>
+<TabItem label="HTTP" icon="seti:shell">
+
+```sh
+curl http://localhost:8080/v1/decisions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+    "input": "I was charged twice for my order. Please refund the duplicate payment.",
+    "questions": [
+      { "name": "refund", "type": "predicate", "instructions": "Does the customer ask for a refund?" },
+      { "name": "severity", "type": "score", "instructions": "How severe is the problem?",
+        "levels": [{ "label": "Minor inconvenience" }, { "label": "Customer payment problem" },
+                   { "label": "Service completely unavailable" }] }
+    ]
+  }'
+```
+
+```sh
+curl http://localhost:8080/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+    "state": "I was charged twice for my order. Please refund the duplicate payment.",
+    "questions": {
+      "refund": { "type": "noul", "instructions": "Does the customer ask for a refund?" },
+      "severity": { "type": "score", "instructions": "How severe is the problem?",
+        "criteria": ["Minor inconvenience", "Customer payment problem", "Service completely unavailable"] }
+    }
+  }'
+```
+
+</TabItem>
+<TabItem label="Answers" icon="list-format">
+
+```ts
+// One answer per question. OpenAI returns them in order; Jev keys them by name.
+{ type: "predicate", name, probability }
+{ type: "choice", name, choice, confidence, probabilities: [{ value, probability }] }
+{ type: "score", name, score, confidence, probabilities: [{ value, label, probability }] }
+```
+
+Probabilities are a softmax over the candidates' average answer-token log likelihood; confidence follows Jev's documented formulas. The response names the model that actually ran and counts the tokens scored.
+
+</TabItem>
+</Tabs>
+
+</div>
+
+</div>
+
+</div>
+
+<div class="lp-section" id="install">
+
+<p class="lp-eyebrow">How to install</p>
+
+## Install in one line.
+
+<p class="lp-lead">Requires an Apple Silicon Mac running macOS 14 or later. Every option provides the `mlx-bun` command; the installer and npm package also add mlx-lm's commands under mlx-bun's names.</p>
+
+<Tabs>
+<TabItem label="Installer" icon="apple">
+
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+```
+
+Downloads the signed, notarized bundle with its runtime and native libraries, then compiles the Neural Engine programs your Mac's models use so no model load or prompt has to. See the [installer options](/getting-started/installation/#standalone-bundle).
+
+</TabItem>
+<TabItem label="Homebrew" icon="homebrew">
+
+```sh
+brew install joshuarossi/tap/mlx-bun
+```
+
+Installs the same bundle and links the command. The app checks the Neural Engine programs before every model load and compiles only what the cache lacks. See the [Homebrew notes](/getting-started/installation/#homebrew).
+
+</TabItem>
+<TabItem label="npm" icon="bun">
+
+```sh
+bun install -g mlx-bun   # or run once: bunx mlx-bun
+```
+
+Requires Bun 1.4.2 or later; use Bun rather than Node's `npx`. See the [npm notes](/getting-started/installation/#npm-package).
+
+</TabItem>
+</Tabs>
+
+<Steps>
+
+1. **Serve a model.** Download one from Hugging Face and serve it, or run `mlx-bun` with no arguments to serve a cached model, downloading a starter on first run.
+
+   ```sh
+   mlx-bun get mlx-community/gemma-4-e4b-it-OptiQ-4bit
+   mlx-bun serve e4b
+   ```
+
+2. **Send a request.** The browser app opens on port 8080, and the API answers beside it.
+
+   ```sh
+   curl http://localhost:8080/v1/chat/completions \
+     -H 'Content-Type: application/json' \
+     -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 128}'
+   ```
+
+3. **Or generate once, without a server.**
+
+   ```sh
+   mlx-bun generate e4b "Write a haiku about Apple Silicon."
+   ```
+
+</Steps>
+
+<p class="lp-tile-links"><a href="/getting-started/quickstart/">Quickstart</a><a href="/getting-started/installation/">Installation guide</a><a href="/reference/cli/">CLI reference</a></p>
+
+</div>
+
+<div class="lp-section" id="import">
+
+<p class="lp-eyebrow">How to import</p>
+
+## Build with the libraries.
+
+<p class="lp-lead">The `@mlx-bun/` packages are TypeScript, published to npm, and run on Bun 1.4.2 or later with their native libraries inside the archives. The caller owns the model, the inputs, and every resource's lifetime.</p>
+
+```sh
+bun add @mlx-bun/inference
+```
+
+<Tabs>
+<TabItem label="Generate" icon="seti:typescript">
+
+<Code lang="ts" code={exampleBody(generateSource, 'packages/inference/examples/qwen3-generate.ts')} title="packages/inference/examples/qwen3-generate.ts" />
+
+This is the tested [example](https://github.com/joshuarossi/mlx-bun/blob/main/packages/inference/examples/qwen3-generate.ts) from the inference package, rendered from its source at build time.
+
+</TabItem>
+<TabItem label="Arrays" icon="seti:typescript">
+
+<Code lang="ts" code={exampleBody(arraysSource, 'packages/mlx/examples/arrays.ts')} title="packages/mlx/examples/arrays.ts" />
+
+The MLX bindings own native memory explicitly: `using` disposes an array at the end of its scope. Tested [example](https://github.com/joshuarossi/mlx-bun/blob/main/packages/mlx/examples/arrays.ts).
+
+</TabItem>
+<TabItem label="Embed the server" icon="server">
+
+```ts
+import { createServer, loadContext } from "mlx-bun/server";
+
+const context = await loadContext("/path/to/hf-snapshot", "my-model");
+const server = await createServer(context, 8080, { hostname: "127.0.0.1", memoryBudgetBytes: 12e9 });
+try {
+  console.log(`API http://127.0.0.1:${server.port}/v1`);
+} finally {
+  const { stopped, durability } = await server.close();
+  if (stopped) context.dispose();
+  if (!durability.durable) console.warn("cache persistence incomplete", durability);
+}
+```
+
+The full app in your process: every HTTP route, the browser app, chat, jobs and the hub, over a model you loaded. It parses no arguments, installs no signal handler and downloads nothing. See the [server entry](https://github.com/joshuarossi/mlx-bun/blob/main/apps/mlx-bun/README.md#server-entry-mlx-bunserver).
+
+</TabItem>
+</Tabs>
+
+<div class="lp-grid lp-grid-3">
+<LinkCard title="@mlx-bun/mlx" description="Arrays, operations and native resource ownership over MLX." href={`${repo}/packages/mlx/README.md`} />
+<LinkCard title="@mlx-bun/inference" description="Graphs, loading, preprocessing, generation, embeddings, transcription and memory fit." href={`${repo}/packages/inference/README.md`} />
+<LinkCard title="@mlx-bun/quantize" description="Calibration, sensitivity, mixed-precision allocation, rotation and Trellis packing." href={`${repo}/packages/quantize/README.md`} />
+<LinkCard title="@mlx-bun/training" description="LoRA and preference training, optimizers, losses and adapter production." href={`${repo}/packages/training/README.md`} />
+<LinkCard title="@mlx-bun/hub" description="The local model registry and Hugging Face downloads and uploads." href={`${repo}/packages/hub/README.md`} />
+<LinkCard title="mlx-bun/server" description="The app's server, engine and model selection as importable entries." href={`${repo}/apps/mlx-bun/README.md#server-entry-mlx-bunserver`} />
+</div>
+
+</div>
+
+<div class="lp-section" id="models">
+
+<p class="lp-eyebrow">Models</p>
+
+## Runs the checkpoints you already use.
+
+<p class="lp-lead">Targeted graphs serve the families below, and a generic dense graph loads the architectures mlx-lm's universal path knows. Download any of them from Hugging Face with `mlx-bun get`; compatibility claims apply to <a href="/about/correctness/">named artifacts and configurations</a>.</p>
+
+<ul class="lp-chips not-content" aria-label="Model families">
+<li>Gemma 4</li><li>GLM 5.2</li><li>Qwen 3</li><li>Qwen 3.5</li><li>Qwen 3 MoE</li><li>MiniCPM 5</li><li>DiffusionGemma</li><li>Whisper</li>
+<li class="lp-chip-generic">Llama</li><li class="lp-chip-generic">Mistral</li><li class="lp-chip-generic">SmolLM 3</li><li class="lp-chip-generic">Qwen 2</li><li class="lp-chip-generic">Gemma</li><li class="lp-chip-generic">Gemma 2</li><li class="lp-chip-generic">Phi 3</li><li class="lp-chip-generic">OLMo 2</li><li class="lp-chip-generic">GLM 4</li><li class="lp-chip-generic">Granite</li><li class="lp-chip-generic">StarCoder 2</li>
+</ul>
+
+</div>
+
+<div class="lp-section" id="docs">
+
+<p class="lp-eyebrow">Go deeper</p>
+
+## Documented from the source.
+
+<p class="lp-lead">The CLI, HTTP and configuration references are generated from the code at build time, and the library API is rendered from the public exports, so the docs cannot drift from what ships.</p>
+
+<div class="lp-grid lp-grid-4">
+<LinkCard title="Quickstart" description="Start the app, pick a model, send the first request." href="/getting-started/quickstart/" />
+<LinkCard title="Installation" description="Installer, Homebrew, npm, or a source checkout." href="/getting-started/installation/" />
+<LinkCard title="Using the libraries" description="Choose a component and start from a tested example." href="/guides/library/" />
+<LinkCard title="Library API" description="Every public package subpath, export and signature." href="/api/" />
+<LinkCard title="CLI reference" description="Every command and flag, from the command table." href="/reference/cli/" />
+<LinkCard title="HTTP API reference" description="Every route each server mode mounts." href="/reference/server-api/" />
+<LinkCard title="Configuration" description="Serve defaults, flags and every runtime key." href="/reference/server-config/" />
+<LinkCard title="Correctness" description="The numerical contract, its evidence and its limits." href="/about/correctness/" />
+</div>
+
+</div>
