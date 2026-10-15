@@ -551,10 +551,12 @@ Each supplied answer is encoded as its complete JSON value (score levels use
 their label), followed by the tokenizer's end token. A teacher-forced forward
 reads the prompt and supplied answer tokens. The response mask counts only
 answer-token predictions, including the terminator; DPO's existing summed log
-likelihood is normalized across the supplied candidates. No token is sampled or
+likelihood is the negative answer NLL, normalized as `softmax(-NLL)` across the
+supplied candidates. No token is sampled or
 generated. Long answers retain the length preference of sequence likelihood.
-Probabilities and confidence reflect the local model, rather than the cloud
-providers' calibration. Choice/score confidence uses Jev's documented formulas.
+Probabilities come directly from the loaded model's answer likelihoods; there
+is no tuning or calibration stage. Choice/score confidence is a statistic of
+that distribution, computed with Jev's documented formulas.
 Usage counts the tokens processed across candidate forwards and reports zero
 output tokens. These operations currently keep no reusable prompt cache;
 OpenAI cache counters are zero and cache hints do not change scoring.

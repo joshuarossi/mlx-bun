@@ -6,7 +6,7 @@ import type { MlxPromptInput } from "../contracts/mlx/media";
 import { logitsFromHiddenPadM, sequenceLogProbabilities } from "./response-logps";
 
 /** The operations a closed-answer decision consumes. The graph and its weights
- * are borrowed; each call owns fresh state. No sampling or decode is required. */
+ * are borrowed; each call owns fresh state. No sampling or generation is required. */
 export interface DecisionScoringGraph {
   makeCache(): Cache[];
   forward: MlxSequenceForward;
@@ -16,7 +16,7 @@ export interface DecisionScoringGraph {
 /** Teacher-forced conditional likelihoods for complete supplied answers.
  * Each forward reads [prompt; answer[:-1]]. Only hidden rows that predict answer
  * tokens reach the head: prompt targets are masked out. Sum log p(token | prefix)
- * over each answer, then softmax across candidate sums. No vocabulary restriction
+ * over each answer (the negative NLL), then softmax across candidate sums. No vocabulary restriction
  * changes a token's likelihood. Include a terminator in each answer to score
  * complete, mutually exclusive responses (especially when one prefixes another).
  *

@@ -193,7 +193,8 @@ function winner(probabilities: readonly number[]): number {
 }
 /** Jev's documented distribution-derived confidence, including ordered levels.
  * OpenAI does not publish a confidence formula; the local adapter uses this
- * same statistic. These are model scores, without provider calibration. */
+ * same statistic. This is a statistic of the likelihoods, with no learned
+ * calibration stage. */
 export function decisionConfidence(probabilities: readonly number[], ordered: boolean): number {
   const n = probabilities.length, best = winner(probabilities);
   if (n === 1) return 1;

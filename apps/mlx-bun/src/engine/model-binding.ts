@@ -14,7 +14,8 @@ export interface ModelBinding {
     readonly dsa: unknown; readonly embeddings: boolean; readonly decisions?: boolean };
   embed?(inputs: string[], instruction?: string): ReturnType<typeof embedMany>;
   /** Teacher-forced answer scoring, no generated tokens. Borrows prepared
-   * media; the caller holds the execution lease through completion and cleanup. */
+   * media. When execute is supplied, every candidate's native work and cleanup
+   * must settle inside that boundary; otherwise the caller owns graph access. */
   decide?(input: { prompt: number[]; candidates: number[][];
     vision?: import("@mlx-bun/inference/contracts/mlx").Vision; signal?: AbortSignal;
     /** Schedule one candidate at a time beside live generation rows. */
