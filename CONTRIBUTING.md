@@ -63,8 +63,9 @@ than dismissing them as framework differences. The paired serve benchmark is
 preflight and decides a saved run from its paired interval (both `--help`).
 For fast hypothesis screening, `bun scripts/bench/forward-screen.ts --help`
 describes short teacher-forced forwards, completed logits/cache timings, exact
-output hashes, and comparisons of fresh alternating sessions. Its profiler gap
-separates warmup from steady-state GPU dispatches;
+output hashes, and comparisons of fresh alternating sessions. It requires a
+clear machine preflight before loading the model. Its two profiler gaps separate
+warmup, steady-state GPU dispatches, and the final marker/state validation;
 `bun scripts/bench/profile-screen.ts --help` describes reading xctrace shader/GPU
 exports for the recorded PID, including overlap from other processes. Screening records machine
 conditions and checks artifact paths/sizes/mtimes; it does not content-hash

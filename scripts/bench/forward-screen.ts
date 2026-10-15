@@ -92,7 +92,9 @@ export async function runScreen(argv: string[]): Promise<ScreenReport> {
   const steps = integer(values.steps!), warmup = integer(values.warmup!, 0), gap = integer(values["profile-gap-ms"]!, 0);
   if (new Set(rows).size !== rows.length) throw new Error("duplicate row counts");
   if (!["bf16", "4"].includes(values.kv!)) throw new Error("--kv is bf16 or 4");
-  const preflight = checkMachine(), source = sourceSnapshot(root);
+  const preflight = checkMachine();
+  if (!preflight.ok) throw new Error(`screen preflight failed: ${preflight.problems.join("; ")}`);
+  const source = sourceSnapshot(root);
   const [factory, artifacts, compositionApi, phases, rowApi, ops, ffi] = await Promise.all([
     import(`${inf}/models/factory.ts`) as Promise<typeof import("../../packages/inference/src/models/factory")>,
     import(`${inf}/artifacts/config.ts`) as Promise<typeof import("../../packages/inference/src/artifacts/config")>,
@@ -141,6 +143,13 @@ export async function runScreen(argv: string[]): Promise<ScreenReport> {
   const ids = (count: number, seed: number) => ops.fromInt32(Array.from({ length: count },
     (_, i) => (seed * 7919 + i * 104729) % config.text.vocabSize), [1, count]);
   const model = await factory.openModel(modelPath, { composition });
+  // Always dispatch a tiny fresh GPU operation, even if the later state hashes
+  // need no copies. The final idle gap then has an observable end marker.
+  function profileMarker() {
+    using input = ops.fromInt32(Array.from({ length: 32 }, (_, i) => i), [32]);
+    using marker = ops.neg(input);
+    marker.eval();
+  }
   try {
     report.graph = "graph" in model && typeof model.graph === "string" ? model.graph : model.constructor.name;
     if (!("decode" in model) || !("verify" in model) || !("logits" in model)) throw new Error("model has no token phase tables");
@@ -159,6 +168,7 @@ export async function runScreen(argv: string[]): Promise<ScreenReport> {
           warmup: [], samples: [], state: "", memory: { activeBytes: 0, cacheBytes: 0, peakBytes: 0 } };
         const forward = rowApi.rowOperationFor(count === 1 ? model.decode : model.verify, count);
         const head = rowApi.rowOperationFor(model.logits, count);
+        if (gap) profileMarker(); // Warm its shader before the profiling window.
         ffi.resetPeakMemory();
         for (let step = 0; step < warmup + steps; step++) {
           if (step === warmup && gap) { console.error("profile gap: timed forwards follow"); await Bun.sleep(gap); }
@@ -171,6 +181,11 @@ export async function runScreen(argv: string[]): Promise<ScreenReport> {
           const completed = performance.now();
           (step < warmup ? cell.warmup : cell.samples).push({ buildMs: built - began,
             completedMs: completed - began, logits: digest(logits) });
+        }
+        if (gap) {
+          console.error("profile end gap: state validation follows");
+          await Bun.sleep(gap);
+          profileMarker();
         }
         cell.state = state(caches);
         cell.memory = { activeBytes: ffi.activeMemory(), cacheBytes: ffi.cacheMemory(), peakBytes: ffi.peakMemory() };
@@ -195,9 +210,10 @@ One sequence, teacher-forced tokens: rows=1 is plain decode; larger rows are ver
 No drafter or server is started. Timings finish logits and cache work; hashes are outside the timer.
 Use fresh processes in alternating A B B A order. Compare uses session medians and requires exact
 logits and final cache state. Artifact paths/sizes/mtimes are checked cheaply; weights are not content-hashed.
-Preflight conditions are recorded. Promote repeatable wins to bench-serve and the full applicable numerical checks.
+Preflight must be clear before the model is loaded. Promote repeatable wins to bench-serve and the full applicable numerical checks.
 For GPU attribution, launch run under xctrace (Metal System Trace or a shader-profiler template) with
-one --rows value and --profile-gap-ms 1500. The report records its PID. profile-screen.ts summarizes
+one --rows value and --profile-gap-ms 1500. Idle gaps bracket the timed forwards; a final GPU marker
+precedes state validation. The report records its PID. profile-screen.ts summarizes
 exported shader/GPU intervals for that PID and reports overlapping processes. Profiling distorts timings.`;
 
 if (import.meta.main) {

@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { compareScreens, median, type ScreenReport } from "./forward-screen";
 
 function report(ms: number): ScreenReport {
@@ -47,4 +50,35 @@ test("a lone screening session stays inconclusive; invalid timings cannot look f
   expect(compareScreens([report(50)], [report(45)])[0]!.verdict).toBe("one pair, not gated");
   expect(median([3, 1, 4, 2])).toBe(2.5);
   for (const values of [[], [0], [-1], [NaN], [Infinity]]) expect(() => median(values)).toThrow();
+});
+
+test("screen aborts an uncleared preflight before inspecting source or importing the GPU runtime", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-screen-preflight-"));
+  try {
+    const root = join(dir, "not-a-source-tree"), model = join(dir, "not-a-model"), out = join(dir, "report.json");
+    mkdirSync(root); mkdirSync(model);
+    for (const problem of ["active training process", "swap in use: 2048 MB"]) {
+      const preflight = { ...report(50).preflight, ok: false, problems: [problem] };
+      // Keep the mock in a separate process: it must not replace other tests'
+      // real preflight module or ever import an MLX binding to test this guard.
+      const script = `
+        import { mock } from "bun:test";
+        const path = ${JSON.stringify(new URL("./perf-check.ts", import.meta.url).href)};
+        const perf = await import(path);
+        mock.module(path, () => ({ ...perf, checkMachine: () => (${JSON.stringify(preflight)}) }));
+        const { runScreen } = await import(${JSON.stringify(import.meta.resolve("./forward-screen.ts"))});
+        try {
+          await runScreen(${JSON.stringify(["--root", root, "--model", model, "--out", out])});
+          process.exit(1);
+        } catch (error) {
+          console.log(JSON.stringify({ message: error.message, reportExists: await Bun.file(${JSON.stringify(out)}).exists() }));
+        }
+      `;
+      const child = Bun.spawnSync([process.execPath, "--no-env-file", "-e", script], { stdout: "pipe", stderr: "pipe" });
+      expect(child.exitCode).toBe(0);
+      const result = JSON.parse(child.stdout.toString());
+      expect(result.message).toBe(`screen preflight failed: ${problem}`);
+      expect(result.reportExists).toBe(false);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

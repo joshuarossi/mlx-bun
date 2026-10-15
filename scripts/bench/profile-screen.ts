@@ -61,13 +61,16 @@ export function summarizeProfile(shaderXml: string, gpuXml: string, pid: number,
   const shaders = table(shaderXml), gpu = table(gpuXml).filter(r => r.state === "Active");
   const own = gpu.filter(r => r.pid === pid).sort((a, b) => a.start - b.start);
   if (!own.length) throw new Error(`no active GPU intervals for PID ${pid}`);
-  let start = own[0]!.start, previousEnd = start, foundGap = false;
+  let previousEnd = own[0]!.start;
+  const gaps: Array<{ end: number; next: number }> = [];
   for (const interval of own) {
-    if (interval.start - previousEnd > gapMs) { start = interval.start; foundGap = true; }
+    if (interval.start - previousEnd > gapMs) gaps.push({ end: previousEnd, next: interval.start });
     previousEnd = Math.max(previousEnd, interval.start + interval.duration);
   }
-  if (!foundGap) throw new Error("no profiling gap for the target PID; use --profile-gap-ms 1500");
-  const end = previousEnd;
+  if (gaps.length < 2) throw new Error("two profiling gaps required for the target PID; use --profile-gap-ms 1500 with the end marker");
+  // The last gap ends at the marker before validation; the preceding gap
+  // separates warmup from forwards. Never count the marker or state-copy work.
+  const start = gaps.at(-2)!.next, end = gaps.at(-1)!.end;
   const intersects = (r: Interval) => r.start < end && r.start + r.duration > start;
   const selected = shaders.filter(r => r.pid === pid && r.start >= start && r.start < end);
   if (!selected.length) throw new Error("no shader intervals in the target window");
@@ -91,7 +94,8 @@ if (import.meta.main) {
   const { values } = parseArgs({ options: { help: { type: "boolean" }, shaders: { type: "string" }, gpu: { type: "string" },
     pid: { type: "string" }, forwards: { type: "string" } } });
   if (values.help) console.log("CPU-only xctrace summary: --shaders /abs/shaders.xml --gpu /abs/gpu.xml --pid PID --forwards N\n" +
-    "Export metal-shader-profiler-intervals and metal-gpu-intervals separately. Use the PID in forward-screen's report or xctrace's target TOC.");
+    "Export metal-shader-profiler-intervals and metal-gpu-intervals separately. Use forward-screen with --profile-gap-ms 1500 and its final marker.\n" +
+    "Use the PID in forward-screen's report or xctrace's target TOC. Captures missing either boundary are rejected.");
   else {
     if (!values.shaders || !values.gpu || !values.pid || !values.forwards) throw new Error("use --help for required arguments");
     console.log(JSON.stringify(summarizeProfile(readFileSync(values.shaders, "utf8"), readFileSync(values.gpu, "utf8"),
