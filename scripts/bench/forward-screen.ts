@@ -43,11 +43,13 @@ export function compareScreens(baselines: ScreenReport[], candidates: ScreenRepo
     if (report.schema !== 1 || JSON.stringify(report.match) !== match) throw new Error("screen workloads, artifacts, machine, or native runtime differ");
     if (JSON.stringify(report.cells.map(c => c.rows)) !== JSON.stringify(report.match.rows)) throw new Error("screen has missing or reordered cells");
     if (report.cells.some(c => c.samples.length !== report.match.steps)) throw new Error("screen has missing samples");
+    if (report.cells.some(c => c.warmup.length !== report.match.warmup)) throw new Error("screen has missing warmup samples");
   }
   return baselines[0]!.match.rows.map((rows, index) => {
     const pairs = baselines.map((base, session) => {
       const a = base.cells[index]!, b = candidates[session]!.cells[index]!;
-      if (a.state !== b.state || a.samples.some((s, i) => s.logits !== b.samples[i]!.logits))
+      if (a.state !== b.state || a.warmup.some((s, i) => s.logits !== b.warmup[i]!.logits) ||
+          a.samples.some((s, i) => s.logits !== b.samples[i]!.logits))
         throw new Error(`rows ${rows}, session ${session + 1}: logits or live state differ`);
       return { id: String(session + 1), baseline: median(a.samples.map(s => s.completedMs)),
         candidate: median(b.samples.map(s => s.completedMs)) };

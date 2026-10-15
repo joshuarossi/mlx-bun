@@ -12,7 +12,7 @@ function report(ms: number): ScreenReport {
       gpuWiredLimitMB: 0, context: 64, warmup: 1, steps: 2, rows: [1], kv: "bf16" },
     preflight: { ok: true, problems: [], at: "now", swapUsedMB: 0, freePercent: 90, cpuSpeedLimit: 100,
       gpuWiredLimitMB: 0, loadAvg1m: 1, bigProcesses: [] },
-    cells: [{ rows: 1, prefillMs: 100, warmup: [], samples: [
+    cells: [{ rows: 1, prefillMs: 100, warmup: [{ buildMs: 1, completedMs: 100, logits: "warmup" }], samples: [
       { buildMs: 1, completedMs: ms, logits: "first" }, { buildMs: 1, completedMs: ms * 1.1, logits: "last" },
     ], state: "cache", memory: { activeBytes: 100, cacheBytes: 10, peakBytes: 120 } }],
   };
@@ -21,6 +21,7 @@ function report(ms: number): ScreenReport {
 test("screen comparison pairs session medians and ignores graph build time as a speed claim", () => {
   const baseline = [report(50), report(51)], candidate = [report(45), report(45.9)];
   candidate[0]!.cells[0]!.samples.forEach(s => { s.buildMs = 100; });
+  candidate[0]!.cells[0]!.warmup[0]!.completedMs = 100000;
   const [result] = compareScreens(baseline, candidate);
   expect(result!.pairs).toBe(2);
   expect(result!.ratio).toBeCloseTo(0.9, 12);
@@ -36,6 +37,8 @@ test("screen rejects changes to workload, native runtime, artifact identity, and
     (r: ScreenReport) => { r.match.environment.MLX_MAX_OPS_PER_BUFFER = "10"; },
     (r: ScreenReport) => { r.cells[0]!.state = "changed"; },
     (r: ScreenReport) => { r.cells[0]!.samples[1]!.logits = "changed"; },
+    (r: ScreenReport) => { r.cells[0]!.warmup[0]!.logits = "changed"; },
+    (r: ScreenReport) => { r.cells[0]!.warmup.pop(); },
     (r: ScreenReport) => { r.cells[0]!.samples.pop(); },
     (r: ScreenReport) => { r.cells = []; },
   ]) {

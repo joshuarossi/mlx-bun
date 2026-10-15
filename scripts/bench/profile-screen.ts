@@ -80,9 +80,12 @@ export function summarizeProfile(shaderXml: string, gpuXml: string, pid: number,
     group.intervals++; group.ms += row.duration; byKernel.set(row.name, group);
   }
   const otherPids = [...new Set(shaders.filter(r => r.pid !== pid && intersects(r)).map(r => r.pid))];
+  const otherGpuPids = [...new Set(gpu.filter(r => r.pid !== pid && intersects(r)).map(r => r.pid))];
   return { pid, forwards, window: { startMs: start, endMs: end },
     wallMsPerForward: (end - start) / forwards, gpuActiveMsPerForward: busy(own, start, end) / forwards,
     overlappingShaderProcesses: otherPids.map(other => ({ pid: other, process: shaders.find(r => r.pid === other)!.process,
+      activeMs: busy(gpu.filter(r => r.pid === other), start, end) })),
+    overlappingGpuProcesses: otherGpuPids.map(other => ({ pid: other, process: gpu.find(r => r.pid === other)!.process,
       activeMs: busy(gpu.filter(r => r.pid === other), start, end) })),
     kernels: [...byKernel].map(([name, g]) => ({ name, intervalsPerForward: g.intervals / forwards,
       msPerForward: g.ms / forwards })).sort((a, b) => b.msPerForward - a.msPerForward),

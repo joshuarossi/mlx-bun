@@ -10,7 +10,8 @@ function xml(shader: boolean, rows: Array<[number, number, number]>) {
 }
 
 test("GPU attribution isolates the target PID even when another agent fills its warmup gap", () => {
-  const gpu = xml(false, [[0, 10, 1], [20, 3900, 2], [1500, 10, 1], [1520, 10, 1], [3030, 100, 1]]);
+  const gpu = xml(false, [[0, 10, 1], [20, 3900, 2], [1500, 10, 1], [1520, 10, 1], [3030, 100, 1],
+    [1522, 5, 3], [3040, 50, 4]]);
   const shaders = xml(true, [[0, 10, 1], [20, 3900, 2], [1500, 4, 1], [1520, 6, 1], [3030, 100, 1]]);
   const result = summarizeProfile(shaders, gpu, 1, 2);
   expect(result.window.startMs).toBe(1500);
@@ -19,6 +20,9 @@ test("GPU attribution isolates the target PID even when another agent fills its 
   expect(result.gpuActiveMsPerForward).toBe(10);
   expect(result.kernels).toEqual([{ name: "kernel", intervalsPerForward: 1, msPerForward: 5 }]);
   expect(result.overlappingShaderProcesses).toEqual([{ pid: 2, process: "bun (2)", activeMs: 30 }]);
+  expect(result.overlappingGpuProcesses).toEqual([
+    { pid: 2, process: "bun (2)", activeMs: 30 }, { pid: 3, process: "bun (3)", activeMs: 5 },
+  ]);
 });
 
 test("profile summaries reject missing target data and missing profiling gaps", () => {
