@@ -2,6 +2,7 @@ export * from "./quantized-linear";
 export * from "./quantized-embedding";
 export * from "./normalization";
 export * from "./compiled-normalization";
+export * from "./delta-heads";
 export * from "./trellis-linear";
 export * from "./quantized-switch-linear";
 export * from "./quantized-attention";

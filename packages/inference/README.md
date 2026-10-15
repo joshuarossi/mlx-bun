@@ -978,10 +978,13 @@ codebook forms at one row, codebook matrix-unit forms at two to eight rows,
 wide matrix-unit forms at nine to 256 rows, and expanded GPU forms above that.
 Its prompt projection forms also retain the measured dequantized matmuls.
 Its one-row binding fuses the attention residual addition with the MLP's
-normalization, and the recurrent normalization with its float32 SiLU gate.
-Both retain MLX's intermediate dtype rounding and reduction order. The
+normalization, the recurrent normalization with its float32 SiLU gate, and
+the convolution's SiLU with Q/K normalization and scaling. These retain MLX's
+intermediate dtype rounding and reduction order. The
 [normalization tests](tests/kernels/normalization-fusion.test.ts) compare raw
-and compiled forms bit for bit, including changing shapes and layer weights.
+and compiled forms bit for bit, including changing shapes and layer weights;
+the [DeltaNet heads tests](tests/kernels/delta-heads.test.ts) cover the fused
+activation, Q/K scales, V output, and strided convolution inputs.
 
 The files declare the Neural Engine program ranges directly: M4 Pro uses
 640..1024, 1025..1536 and 1537..2048 positions; M1 Max uses fifteen capacities

@@ -18,6 +18,7 @@ import { compiledSwiglu } from "../../layers/swiglu";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { CompiledGatedRMSNorm, CompiledResidualRMSNorm } from "../../layers/compiled-normalization";
+import { CompiledSiluRMSHeads } from "../../layers/delta-heads";
 import type { AttentionRead, Cache, CommittedAttentionCache, GatedDeltaCache, GatedDeltaHeads, GatedDeltaParameters } from "../../contracts/mlx/cache";
 import { applyInterleavedRope } from "../../layers/qwen-mrope";
 import type { MropeForwardState } from "../../contracts/mlx/positions";
@@ -163,7 +164,7 @@ export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
     this.normWeight = weights.tensor(`${prefix}.norm.weight`);
     this.recurrence = Object.freeze({
       convWeight: this.convWeight, aLog: this.aLog, dtBias: this.dtBias,
-      heads: (convolved: MlxArray) => this.#heads(convolved),
+      heads: (convolved: MlxArray) => this.heads(convolved),
     });
   }
 
@@ -171,7 +172,7 @@ export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
    *  q, k and v heads, and the q/k norms and scale (inv_scale = head_k_dim ** -0.5;
    *  q *= inv_scale², k *= inv_scale), folded into the norm weight when
    *  `qkScale` is set. Borrows `convolved`; the cache owns the heads. */
-  #heads(convolved: MlxArray): GatedDeltaHeads {
+  protected heads(convolved: MlxArray): GatedDeltaHeads {
     const [B, S] = convolved.shape as [number, number, number];
     const convOut = compiledSilu(convolved);
     const [qFlat, kFlat, vFlat] = ops.split(
@@ -414,6 +415,20 @@ export class QwenFusedGatedDeltaNet<L extends AttentionLinear = QuantizedLinear>
   }
   protected override rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
     return this.#gatedNorm.forward(hidden, gate);
+  }
+}
+
+/** Fused convolution activation/Q/K norms as well as the normalization/gate tail. */
+export class QwenFusedHeadsDeltaNet<L extends AttentionLinear = QuantizedLinear> extends QwenFusedGatedDeltaNet<L> {
+  readonly #headOperation: CompiledSiluRMSHeads;
+  constructor(weights: Weights, config: ModelConfig, prefix: string, projections: QwenDeltaProjections<L>) {
+    super(weights, config, prefix, projections);
+    this.#headOperation = new CompiledSiluRMSHeads(this.numKHeads, this.numVHeads, this.headVDim);
+  }
+  protected override heads(convolved: MlxArray): GatedDeltaHeads {
+    if (!this.qkScale) throw new Error("QwenFusedHeadsDeltaNet requires folded Q/K scales");
+    const [q, k, v] = this.#headOperation.forward(convolved, this.qkScale.q, this.qkScale.k);
+    return { q, k, v };
   }
 }
 
