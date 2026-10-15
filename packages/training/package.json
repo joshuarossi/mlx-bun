@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
     "test": "bun test tests/cpu",
     "test:native": "MLX_BUN_TEST_NATIVE=1 bun test tests/native"
   },

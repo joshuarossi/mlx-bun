@@ -30,7 +30,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit && tsc --project tsconfig.browser.json",
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit && bun ../../scripts/typecheck.ts --project tsconfig.browser.json",
     "test": "bun test",
     "build:web": "bun scripts/build-web.ts",
     "prepack": "bun run build:web"

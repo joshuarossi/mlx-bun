@@ -9,7 +9,8 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "bun run --filter '*' typecheck && tsc --project scripts/tsconfig.json",
+    "typecheck": "bun run --filter '*' typecheck && bun scripts/typecheck.ts --project scripts/tsconfig.json",
+    "typecheck:fast": "MLX_BUN_TYPECHECK_COMPILER=tsc-rs bun run typecheck",
     "test": "bun run --filter '*' test && bun test ./scripts",
     "verify:packages": "bun scripts/verify-packages.ts",
     "build:binary": "bun scripts/build-binary.ts",
@@ -20,6 +21,7 @@
     "@mlx-bun/inference": "workspace:*",
     "@mlx-bun/mlx": "workspace:*",
     "@types/bun": "1.3.14",
+    "tsc-rs": "0.7.0",
     "typescript": "6.0.3"
   }
 }

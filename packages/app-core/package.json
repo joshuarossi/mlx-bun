@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
     "test": "bun test"
   },
   "os": [

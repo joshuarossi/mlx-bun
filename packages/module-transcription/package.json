@@ -20,7 +20,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
     "test": "bun test",
     "build:native": "sh scripts/build-native.sh",
     "prepack": "bun run build:native"

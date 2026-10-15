@@ -35,7 +35,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
     "test": "bun test",
     "build:native": "sh scripts/build-native.sh",
     "stage:native": "bun scripts/stage-native.ts",

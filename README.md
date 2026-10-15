@@ -113,6 +113,12 @@ this checkout's `mlx-bun` command into `${BUN_INSTALL:-$HOME/.bun}/bin`;
 keep that directory on PATH. The link follows changes in this checkout.
 Then run `bun run typecheck`
 and `bun run test`.
+For faster local type feedback, `bun run typecheck:fast` uses the pinned experimental
+ts-rust compiler through the same workspace scripts and configurations, including
+Astro type generation, browser code, portable contracts, and repository scripts.
+The required `bun run typecheck` check and CI continue to use TypeScript 6.0.3;
+run it before submitting a change. TypeScript also remains the compiler API used
+by the architecture gates and documentation tools.
 Run `bun run verify:packages` to pack the libraries and app, install them into a clean
 temporary Bun project, and exercise the CLI, public imports, examples, and bundled natives.
 Use `bun scripts/verify-packages.ts --help` for options.
