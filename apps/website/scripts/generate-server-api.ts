@@ -26,6 +26,8 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
   { file: "server/proxy-routes.ts", fn: "unavailableFrame", why: "chooses the SSE error frame", code: 'pathname === "/v1/responses"' },
   { file: "server/model-routes.ts", fn: "createModelRoutes", why: "a read of the current model's own routes is answered as it is; a change holds the model resident meanwhile",
     code: '["GET", "HEAD"].includes(request.method)' },
+  { file: "server/model-routes.ts", fn: "createModelRoutes", why: "selects the decision body parser after the model-scoped POST matched",
+    code: 'pathname === "/v1/systemone" || pathname === "/v1/decisions"' },
   { file: "server/discovery-routes.ts", fn: "createDiscoveryRoutes", why: "reads the optional model id", code: 'url.pathname.length > "/v1/models/".length - 1' },
 ];
 

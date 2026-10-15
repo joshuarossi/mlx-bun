@@ -81,6 +81,13 @@ test("generation writes a build-owned page with source links at the revision", a
   expect(await readFile(resolve(root, "apps/website/.gitignore"), "utf8")).toContain(SERVER_API_PAGE);
 });
 
+test("decision endpoints have only POST model-routing rows in every model server", () => {
+  for (const mode of ["serve", "isolate", "worker", "app-worker"]) {
+    const decisions = rows(baseline, mode).filter(row => / \/v1\/(decisions|systemone) /.test(row));
+    expect(decisions).toEqual(["POST /v1/decisions routed by model id", "POST /v1/systemone routed by model id"]);
+  }
+});
+
 test("an added unsupported routing predicate fails with its location; an unrelated path does not", () => {
   const guard = '    if (!(settings && ["GET", "POST"].includes(request.method)) && !(push && request.method === "POST")) return null;';
   expect(() => serverApiReference(mutate("server/publishing-routes.ts", guard, `    if (path.endsWith("/templates")) return null;\n${guard}`)))

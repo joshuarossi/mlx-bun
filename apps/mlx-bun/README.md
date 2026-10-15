@@ -549,7 +549,8 @@ model serves generation and decisions: each candidate is a scheduler task betwee
 generation iterations, with private caches and its own adapter scope.
 
 Each supplied answer is encoded as its complete JSON value (score levels use
-their label), followed by the tokenizer's end token. A teacher-forced forward
+their label), followed by the chat template's assistant-turn ending through its
+first stop marker (the tokenizer's end token when no template ending is available). A teacher-forced forward
 reads the prompt and supplied answer tokens. The response mask counts only
 answer-token predictions, including the terminator. DPO's existing summed log
 likelihood is divided by the answer token count, then normalized as
@@ -562,6 +563,9 @@ that distribution, computed with Jev's documented formulas.
 Usage counts the tokens processed across candidate forwards and reports zero
 output tokens. These operations currently keep no reusable prompt cache;
 OpenAI cache counters are zero and cache hints do not change scoring.
+Decision requests use bounded engine admission, returning 429 when its wait queue
+is full. Image preparations hold the same media reservation used by chat until
+the question finishes scoring or fails.
 
 With a cached vision model, for example:
 

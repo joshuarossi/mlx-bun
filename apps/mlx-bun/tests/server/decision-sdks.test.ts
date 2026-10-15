@@ -2,18 +2,21 @@ import { expect, test } from "bun:test";
 import { createDecisionRoutes } from "../../src/server/decision-routes";
 import { readDecisionBody } from "../../src/server/decision-body";
 import type { LoadedModelContext } from "../../src/engine/model-host";
+import { createPreparationExecutor } from "../../src/engine/preparation";
 
 test("OpenAI and Jev SDKs accept unchanged cloud names and explicit local model IDs", async () => {
   const seen: { path: string; encoding: string | null; model: string }[] = [];
   let images = 0;
   const context = { modelId: "local/checkpoint", model: { config: { eosTokenIds: [0] } }, genDefaults: {},
-    tokenizer: { encode: (text: string) => [...new TextEncoder().encode(text)], eosTokenId: 0 } } as unknown as LoadedModelContext;
+    tokenizer: { encode: (text: string) => [...new TextEncoder().encode(text)],
+      decode: (ids: number[]) => new TextDecoder().decode(new Uint8Array(ids)), eosTokenId: 0 } } as unknown as LoadedModelContext;
+  const preparation = createPreparationExecutor(work => work(), 1);
   const routes = createDecisionRoutes({ context,
     binding: { decide: async input => {
       for (const _ of input.candidates) await input.execute!(async () => {});
       return input.candidates.map((_, i) => input.candidates.length === 1 ? 1 : i === 0 ? 0.8 : 0.2 / (input.candidates.length - 1));
     } },
-    gateway: { runExclusive: work => work(), runPreparation: work => work() },
+    preparation,
   }, { contextLimit: 10000, buildPrompt: async body => {
     images += body.messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
       .filter(part => part.type === "image_url").length;
@@ -79,5 +82,5 @@ test("OpenAI and Jev SDKs accept unchanged cloud names and explicit local model 
       expect(seen.filter(request => request.path === path).slice(-2).map(request => request.model))
         .toEqual(["local/checkpoint", "mlx-community/gemma-4-e4b-it-OptiQ-4bit"]);
     expect(images).toBe(1);
-  } finally { await server.stop(true); }
+  } finally { preparation.close(); await server.stop(true); }
 });

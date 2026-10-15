@@ -1,7 +1,7 @@
 /** Host-side admission before grammar/media preparation can allocate native
  * resources. The implementation shares the generation execution domain. */
 export interface PreparationExecutor {
-  reserve?(kind: "media" | "constraint", signal?: AbortSignal): Promise<import("@mlx-bun/inference/contracts/portable").DisposableResource>;
+  reserve?(kind: "media" | "constraint" | "decision", signal?: AbortSignal): Promise<import("@mlx-bun/inference/contracts/portable").DisposableResource>;
   run<T>(prepare: () => Promise<T>, signal?: AbortSignal): Promise<T>;
 }
 
@@ -24,11 +24,12 @@ export function createPreparationExecutor(
 ): PreparationExecutor & { close(): void } {
   const media = new AdmissionPool(Math.max(1, mediaCapacity));
   const constraints = new AdmissionPool(Math.max(1, grammarCapacity));
+  const decisions = new AdmissionPool(Math.max(1, grammarCapacity));
   return {
     run,
     async reserve(kind, signal) {
-      return acquireReservation(kind === "media" ? media : constraints, signal);
+      return acquireReservation(kind === "media" ? media : kind === "decision" ? decisions : constraints, signal);
     },
-    close() { media.close(); constraints.close(); },
+    close() { media.close(); constraints.close(); decisions.close(); },
   };
 }

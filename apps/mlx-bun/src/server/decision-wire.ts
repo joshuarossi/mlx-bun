@@ -176,16 +176,23 @@ function imageParts(images: { reference: string; url: string }[]): { type: strin
 /** Exact wire values encoded as JSON keep string "true" distinct from boolean
  * true, preserve whitespace and empty strings, and never shorten multi-token
  * answers. Score questions use their supplied labels as the answer text. */
-export function decisionCandidates(tokenizer: Pick<LoadedTokenizer, "encode">, question: DecisionQuestion, terminator: number): number[][] {
-  return question.options.map(option => [...tokenizer.encode(
-    JSON.stringify(question.type === "score" ? option.label : option.value), false), terminator]);
+export function decisionCandidates(tokenizer: Pick<LoadedTokenizer, "encode">, question: DecisionQuestion, ending: string): number[][] {
+  return question.options.map(option => tokenizer.encode(
+    JSON.stringify(question.type === "score" ? option.label : option.value) + ending, false));
 }
 
 export function decisionMessages(input: Messages, question: DecisionQuestion): Messages {
   const menu = question.options.map(option => `${question.type === "score" ? JSON.stringify(option.label) : JSON.stringify(option.value)}${option.description ? ` — ${option.description}` : ""}`).join("\n");
   const questionText = `Evaluate the preceding input.\nQuestion: ${question.instructions}\nAllowed answers${question.type === "score" ? " (ordered from lowest to highest)" : ""}:\n${menu}\nAnswer with exactly one of the JSON values above. Do not explain.`;
-  return [...input, { role: "user", content: question.images?.length
-    ? [{ type: "text", text: questionText }, ...imageParts(question.images)] : questionText }];
+  // Both protocols supply user input. Keep it in one turn so templates that
+  // enforce user/assistant alternation accept it, retaining media order.
+  const content = input.flatMap((message, i) => [
+    ...(i ? [{ type: "text" as const, text: "\n\n" }] : []),
+    ...(typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content ?? []),
+  ]);
+  content.push({ type: "text", text: `\n\n${questionText}` }, ...imageParts(question.images ?? []));
+  return [{ role: "user", content: content.every(part => part.type === "text")
+    ? content.map(part => (part as { text: string }).text).join("") : content }];
 }
 
 function winner(probabilities: readonly number[]): number {
