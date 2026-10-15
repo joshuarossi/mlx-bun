@@ -550,11 +550,12 @@ generation iterations, with private caches and its own adapter scope.
 Each supplied answer is encoded as its complete JSON value (score levels use
 their label), followed by the tokenizer's end token. A teacher-forced forward
 reads the prompt and supplied answer tokens. The response mask counts only
-answer-token predictions, including the terminator; DPO's existing summed log
-likelihood is the negative answer NLL, normalized as `softmax(-NLL)` across the
-supplied candidates. No token is sampled or
-generated. Long answers retain the length preference of sequence likelihood.
-Probabilities come directly from the loaded model's answer likelihoods; there
+answer-token predictions, including the terminator. DPO's existing summed log
+likelihood is divided by the answer token count, then normalized as
+`softmax(-NLL / answer_token_count)` across the supplied candidates. No token is
+sampled or generated. Scores use average token log likelihood, so longer answers
+do not receive a multiplicative length penalty from summing token losses.
+Scores come directly from the loaded model's answer likelihoods; there
 is no tuning or calibration stage. Choice/score confidence is a statistic of
 that distribution, computed with Jev's documented formulas.
 Usage counts the tokens processed across candidate forwards and reports zero

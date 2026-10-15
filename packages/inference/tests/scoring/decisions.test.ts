@@ -3,6 +3,7 @@ import type { DecisionScoringGraph } from "../../src/scoring/decisions";
 import type { Cache } from "../../src/contracts/mlx/cache";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import { scoreDecisionAnswers, sequenceLogProbabilities } from "../../src/scoring";
 
 const width = 8;
@@ -25,19 +26,28 @@ function fixture() {
   return { graph, forwards, heads, disposed: () => disposed };
 }
 
-test("teacher forcing scores every supplied token, masks prompts, and uses the DPO sum", async () => {
+test("teacher forcing scores every supplied token, masks prompts, and averages the DPO sum", async () => {
   const f = fixture(), prompt = [1, 2], answers = [[3, 4, 0], [3, 5, 0], [6, 0]];
   const result = await scoreDecisionAnswers(f.graph, prompt, answers);
   expect(f.forwards).toEqual(answers.map(answer => [...prompt, ...answer.slice(0, -1)]));
-  const expected = answers.map(answer => answer.reduce((sum, token, i) => sum + logp(i ? answer[i - 1]! : prompt.at(-1)!, token), 0));
-  for (let i = 0; i < expected.length; i++) expect(result.logLikelihoods[i]!).toBeCloseTo(expected[i]!, 5);
+  const expected = answers.map(answer => answer.reduce((sum, token, i) => sum + logp(i ? answer[i - 1]! : prompt.at(-1)!, token), 0) / answer.length);
+  for (let i = 0; i < expected.length; i++) expect(result.meanLogLikelihoods[i]!).toBeCloseTo(expected[i]!, 5);
   expect(result.probabilities.reduce((sum, p) => sum + p, 0)).toBeCloseTo(1, 12);
   expect(result.probabilities[0]).not.toBe(result.probabilities[1]); // shared first token, distinct completions
   expect(f.heads).toEqual([4, 4, 4]); // exact existing two/three-row DPO/ORPO padding
   expect(f.disposed()).toBe(3);
-  // A prompt-only token changes neither the predictions nor the masked sum.
+  // A prompt-only token changes neither the predictions nor the response average.
   const second = await scoreDecisionAnswers(f.graph, [7, ...prompt], answers);
-  expect(second.logLikelihoods).toEqual(result.logLikelihoods);
+  expect(second.meanLogLikelihoods).toEqual(result.meanLogLikelihoods);
+});
+
+test("equal per-token likelihood gives equal decision weight regardless of answer length", async () => {
+  const f = fixture();
+  f.graph.forward = ids => ops.zeros([1, ids.shape[1]!, width], Dtype.float32);
+  const result = await scoreDecisionAnswers(f.graph, [1, 2, 3], [[4, 0], [4, 5, 6, 7, 0]]);
+  for (const score of result.meanLogLikelihoods) expect(score).toBeCloseTo(-Math.log(width), 6);
+  for (const probability of result.probabilities) expect(probability).toBeCloseTo(0.5, 6);
+  expect(f.disposed()).toBe(2);
 });
 
 test("DPO's shared response mask excludes prompt and right-padding positions", () => {
@@ -69,6 +79,6 @@ test("prepared media feeds known answer tokens without sampling and preserves bo
   } });
   expect(f.forwards).toHaveLength(0);
   expect(visited).toEqual([[1, 2], [3], [4], [1, 2], [3], [5]]);
-  expect(result.logLikelihoods[0]!).toBeCloseTo(logp(2, 3) + logp(3, 4) + logp(4, 0), 5);
+  expect(result.meanLogLikelihoods[0]!).toBeCloseTo((logp(2, 3) + logp(3, 4) + logp(4, 0)) / 3, 5);
   expect(f.disposed()).toBe(2);
 });

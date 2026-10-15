@@ -1431,9 +1431,10 @@ store identity rebuild the cache.
 
 `scoreDecisionAnswers` takes a structural `DecisionScoringGraph`, prompt tokens,
 and complete candidate token sequences. It teacher-forces each candidate, applies
-the head only to answer-predicting rows, and normalizes summed response log
-likelihoods across candidates. No sampling or generation loop runs. Include the
-answer terminator in each candidate. An optional `execute` callback schedules
+the head only to answer-predicting rows, and normalizes average response token
+log likelihoods across candidates. It returns `meanLogLikelihoods` and their
+softmax `probabilities`. No sampling or generation loop runs. Include the
+answer terminator in each candidate; it counts in the average. An optional `execute` callback schedules
 each candidate separately; direct consumers can run under their own graph lease.
 Prepared media uses the graph's `MlxPromptInput` to feed the supplied tokens at
 their positions. Every candidate owns fresh caches, released before it settles.

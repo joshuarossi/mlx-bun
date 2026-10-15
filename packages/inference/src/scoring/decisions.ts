@@ -15,28 +15,28 @@ export interface DecisionScoringGraph {
 
 /** Teacher-forced conditional likelihoods for complete supplied answers.
  * Each forward reads [prompt; answer[:-1]]. Only hidden rows that predict answer
- * tokens reach the head: prompt targets are masked out. Sum log p(token | prefix)
- * over each answer (the negative NLL), then softmax across candidate sums. No vocabulary restriction
+ * tokens reach the head: prompt targets are masked out. Average log p(token | prefix)
+ * over each answer (negative mean NLL), then softmax across candidate averages. No vocabulary restriction
  * changes a token's likelihood. Include a terminator in each answer to score
  * complete, mutually exclusive responses (especially when one prefixes another).
  *
  * Inputs and graph are borrowed; every candidate gets fresh caches, released with
  * its intermediates on success, error or cancellation. The caller serializes
  * shared graph access. This is inference, with no training or reference model.
- * Sum normalization retains ordinary sequence likelihood's length preference. */
+ * The average includes the terminator and excludes every prompt token. */
 export async function scoreDecisionAnswers(graph: DecisionScoringGraph, prompt: readonly number[],
   candidates: readonly (readonly number[])[], options: { signal?: AbortSignal; input?: MlxPromptInput;
     /** Run one candidate's owned work at a scheduler boundary. Direct library
      * callers may omit this when they already own exclusive graph access. */
     execute?: <T>(work: () => Promise<T>) => Promise<T>;
   } = {}): Promise<{
-    probabilities: number[]; logLikelihoods: number[];
+    probabilities: number[]; meanLogLikelihoods: number[];
   }> {
   options.signal?.throwIfAborted();
   if (!prompt.length) throw new RangeError("a decision prompt must contain tokens");
   if (!candidates.length || candidates.some(answer => !answer.length || answer.some(id => !Number.isSafeInteger(id) || id < 0)))
     throw new RangeError("a decision requires nonempty candidate token sequences");
-  const logLikelihoods: number[] = [];
+  const meanLogLikelihoods: number[] = [];
   for (const answer of candidates) {
     options.signal?.throwIfAborted();
     const score = await (options.execute ?? (work => work()))(async () => {
@@ -58,7 +58,7 @@ export async function scoreDecisionAnswers(graph: DecisionScoringGraph, prompt: 
         // The DPO reduction sees only supervised rows; equivalent to a zero mask
         // on all earlier prompt positions, without projecting them to vocabulary.
         using logp = sequenceLogProbabilities(logits, [[prompt.at(-1)!, ...answer]], [[0, ...answer.map(() => 1)]]);
-        const score = logp.toFloat32()[0]!;
+        const score = logp.toFloat32()[0]! / answer.length;
         options.signal?.throwIfAborted();
         if (!Number.isFinite(score)) throw new Error("decision answer has a nonfinite log likelihood");
         return score;
@@ -68,13 +68,13 @@ export async function scoreDecisionAnswers(graph: DecisionScoringGraph, prompt: 
         if (errors.length) throw new AggregateError(errors, "decision cache cleanup failed");
       }
     });
-    logLikelihoods.push(score);
+    meanLogLikelihoods.push(score);
     await new Promise<void>(resolve => setImmediate(resolve));
   }
   options.signal?.throwIfAborted();
-  const maximum = Math.max(...logLikelihoods), weights = logLikelihoods.map(value => Math.exp(value - maximum));
+  const maximum = Math.max(...meanLogLikelihoods), weights = meanLogLikelihoods.map(value => Math.exp(value - maximum));
   const total = weights.reduce((sum, value) => sum + value, 0);
-  return { logLikelihoods, probabilities: weights.map(value => value / total) };
+  return { meanLogLikelihoods, probabilities: weights.map(value => value / total) };
 }
 
 /** Media ports expose the prompt tip and position-aware continuation. Feed

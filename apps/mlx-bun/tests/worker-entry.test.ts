@@ -98,7 +98,8 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.deepEqual(health, { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
     // Where the native runtime loads, the worker also reports its MLX memory (a private test runtime has none).
     if (reported) assert.deepEqual(Object.keys(reported).sort(), ["active_bytes", "cache_bytes", "peak_bytes", "working_set_bytes"]);
-    assert.deepEqual(await (await get("/v1/models")).json(), { object: "list", data: [{ id: "org/model", resident: true, current: true }] });
+    assert.deepEqual(await (await get("/v1/models")).json(), { object: "list", data: [{ id: "org/model", resident: true, current: true }],
+      models: [{ name: "org/model", description: "Local mlx-bun inference model", release_date: "" }] });
     // Persistent surfaces are the parent's: no web app, no hub, jobs, sessions, memory, or publishing routes.
     for (const path of ["/", "/index.html", "/api/hub/local", "/api/jobs", "/api/sessions/search?q=x", "/api/memory/status", "/api/settings/hf-token", "/api/quantize/anything"])
       assert.equal((await get(path)).status, 404, path);
