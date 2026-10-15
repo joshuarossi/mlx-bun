@@ -61,6 +61,15 @@ and memory as applicable. Investigate gaps against the applicable oracle rather
 than dismissing them as framework differences. The paired serve benchmark is
 `scripts/bench-serve.ts`; `scripts/bench/perf-check.ts` runs the machine
 preflight and decides a saved run from its paired interval (both `--help`).
+For fast hypothesis screening, `bun scripts/bench/forward-screen.ts --help`
+describes short teacher-forced forwards, completed logits/cache timings, exact
+output hashes, and comparisons of fresh alternating sessions. Its profiler gap
+separates warmup from steady-state GPU dispatches;
+`bun scripts/bench/profile-screen.ts --help` describes reading xctrace shader/GPU
+exports for the recorded PID, including overlap from other processes. Screening records machine
+conditions and checks artifact paths/sizes/mtimes; it does not content-hash
+weights or qualify serving performance. Run promising candidates through the
+paired serve benchmark and applicable numerical checks.
 `.github/workflows/perf.yml` runs them, with the two numerical tools as a report,
 for pull requests to `main` that touch kernels, layers, models, state, execution,
 native code, the MLX binding or the benchmark itself, on the self-hosted M1 Max runner. Paired reports live outside this
