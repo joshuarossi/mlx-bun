@@ -7,8 +7,8 @@
 /* ---------- Tokens ---------- */
 
 :root {
-  --sl-font: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Inter', 'Helvetica Neue', sans-serif;
-  --sl-font-mono: 'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, monospace;
+  --sl-font: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Inter', 'Helvetica Neue', sans-serif;
+  --sl-font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
   --lp-blue: #0a84ff;
   --lp-cyan: #64d2ff;
   --lp-violet: #bf5af2;
@@ -240,9 +240,9 @@ starlight-tabs [role='tab'][aria-selected='true'] {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(48rem 26rem at 76% 2rem, color-mix(in srgb, var(--lp-blue) calc(30% * var(--lp-glow-strength)), transparent), transparent 70%),
-    radial-gradient(34rem 20rem at 14% 14rem, color-mix(in srgb, var(--lp-violet) calc(16% * var(--lp-glow-strength)), transparent), transparent 70%),
-    radial-gradient(26rem 16rem at 52% -4rem, color-mix(in srgb, var(--lp-cyan) calc(14% * var(--lp-glow-strength)), transparent), transparent 70%),
+    radial-gradient(48rem 26rem at 76% 2rem, color-mix(in srgb, var(--lp-blue) calc(22% * var(--lp-glow-strength)), transparent), transparent 70%),
+    radial-gradient(34rem 20rem at 14% 14rem, color-mix(in srgb, var(--lp-violet) calc(9% * var(--lp-glow-strength)), transparent), transparent 70%),
+    radial-gradient(26rem 16rem at 52% -4rem, color-mix(in srgb, var(--lp-cyan) calc(10% * var(--lp-glow-strength)), transparent), transparent 70%),
     radial-gradient(color-mix(in srgb, var(--sl-color-gray-4) 55%, transparent) 1px, transparent 1.5px);
   background-size: auto, auto, auto, 24px 24px;
   -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent);
@@ -308,17 +308,10 @@ starlight-tabs [role='tab'][aria-selected='true'] {
   margin: 0;
   font-size: clamp(2.75rem, 1.4rem + 5.4vw, 5rem);
   font-weight: 700;
-  letter-spacing: -0.045em;
-  line-height: 1.0;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
   color: var(--sl-color-white);
   text-wrap: balance;
-}
-
-.lp-gradient {
-  background: linear-gradient(100deg, var(--lp-cyan) 0%, var(--lp-blue) 48%, var(--lp-violet) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
 }
 
 .lp-hero-tagline {
@@ -557,37 +550,6 @@ starlight-tabs [role='tab'][aria-selected='true'] {
 }
 
 /* ---------- Landing page: sections ---------- */
-
-.lp-facts {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.6rem;
-  margin: 0 0 1rem;
-  padding: 0;
-}
-
-.lp-facts li {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.85rem 0.4rem 0.7rem;
-  border-radius: 999rem;
-  border: 1px solid var(--sl-color-hairline-light);
-  background: var(--lp-surface);
-  font-size: var(--sl-text-sm);
-  font-weight: 500;
-  color: var(--sl-color-gray-2);
-}
-
-.lp-facts li::before {
-  content: '';
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--lp-cyan), var(--lp-blue));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lp-blue) 18%, transparent);
-}
 
 .sl-markdown-content .lp-section {
   margin-top: 0;

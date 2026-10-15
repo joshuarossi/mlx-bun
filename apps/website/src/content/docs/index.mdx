@@ -3,7 +3,7 @@ title: Local AI on Apple Silicon
 description: mlx-bun is an MLX inference engine, an OpenAI, Anthropic and Responses compatible server, a browser app, and TypeScript libraries for Bun. Bit-exact with mlx-lm on validated configurations, with no Python at inference time.
 template: splash
 hero:
-  title: Local AI on <span class="lp-gradient">Apple&nbsp;Silicon</span>
+  title: Local AI on Apple&nbsp;Silicon.
   tagline: An MLX inference engine, an OpenAI, Anthropic and Responses compatible server, a browser app, and TypeScript libraries you can embed in your own Bun apps. Bit-exact with mlx-lm on validated configurations. No Python.
   actions:
     - text: Get started
@@ -20,15 +20,6 @@ import arraysSource from '../../../../../packages/mlx/examples/arrays.ts?raw';
 import generateSource from '../../../../../packages/inference/examples/qwen3-generate.ts?raw';
 
 export const repo = 'https://github.com/joshuarossi/mlx-bun/blob/main';
-
-<ul class="lp-facts not-content" aria-label="Highlights">
-<li>Bit-exact with mlx-lm on validated configurations</li>
-<li>No Python at inference time</li>
-<li>OpenAI, Anthropic and Responses APIs on localhost</li>
-<li>Decisions API, OpenAI and Jev compatible</li>
-<li>Signed, notarized standalone bundle</li>
-<li>MIT licensed</li>
-</ul>
 
 <div class="lp-section" id="what">
 
@@ -67,6 +58,73 @@ export const repo = 'https://github.com/joshuarossi/mlx-bun/blob/main';
 
 </div>
 
+<div class="lp-section" id="install">
+
+<p class="lp-eyebrow">How to install</p>
+
+## Install in one line.
+
+<p class="lp-lead">Requires an Apple Silicon Mac running macOS 14 or later. Every option provides the `mlx-bun` command; the installer and npm package also add mlx-lm's commands under mlx-bun's names.</p>
+
+<Tabs>
+<TabItem label="Installer" icon="apple">
+
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+```
+
+Downloads the signed, notarized bundle with its runtime and native libraries, then compiles the Neural Engine programs your Mac's models use so no model load or prompt has to. See the [installer options](/getting-started/installation/#standalone-bundle).
+
+</TabItem>
+<TabItem label="Homebrew" icon="homebrew">
+
+```sh
+brew install joshuarossi/tap/mlx-bun
+```
+
+Installs the same bundle and links the command. The app checks the Neural Engine programs before every model load and compiles only what the cache lacks. See the [Homebrew notes](/getting-started/installation/#homebrew).
+
+</TabItem>
+<TabItem label="npm" icon="bun">
+
+```sh
+bun install -g mlx-bun   # or run once: bunx mlx-bun
+```
+
+Requires Bun 1.4.2 or later; use Bun rather than Node's `npx`. See the [npm notes](/getting-started/installation/#npm-package).
+
+</TabItem>
+</Tabs>
+
+<Steps>
+
+1. **Serve a model.** Download one from Hugging Face and serve it, or run `mlx-bun` with no arguments to serve a cached model, downloading a starter on first run.
+
+   ```sh
+   mlx-bun get mlx-community/gemma-4-e4b-it-OptiQ-4bit
+   mlx-bun serve e4b
+   ```
+
+2. **Send a request.** The browser app opens on port 8080, and the API answers beside it.
+
+   ```sh
+   curl http://localhost:8080/v1/chat/completions \
+     -H 'Content-Type: application/json' \
+     -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 128}'
+   ```
+
+3. **Or generate once, without a server.**
+
+   ```sh
+   mlx-bun generate e4b "Write a haiku about Apple Silicon."
+   ```
+
+</Steps>
+
+<p class="lp-tile-links"><a href="/getting-started/quickstart/">Quickstart</a><a href="/getting-started/installation/">Installation guide</a><a href="/reference/cli/">CLI reference</a></p>
+
+</div>
+
 <div class="lp-section" id="why">
 
 <p class="lp-eyebrow">Why mlx-bun</p>
@@ -82,12 +140,12 @@ export const repo = 'https://github.com/joshuarossi/mlx-bun/blob/main';
 <article class="lp-reason">
 <div class="lp-tile-icon"><Icon name="apple" /></div>
 <h3>Native on your Mac</h3>
-<p>Metal does the math, and the Neural Engine programs your models use are compiled by the installer or before the first model load that needs them. The standalone bundle is signed, notarized and ships its own runtime. No Python, no API key.</p>
+<p>Metal does the math, and the Neural Engine programs your models use are compiled by the installer or before the first model load that needs them. The standalone bundle is signed, notarized and ships its own runtime.</p>
 </article>
 <article class="lp-reason">
 <div class="lp-tile-icon"><Icon name="random" /></div>
-<h3>Drop-in compatible</h3>
-<p>Chat Completions, Messages, Responses, embeddings and transcription keep their wire formats, so existing SDKs, agents and tools work by changing one URL.</p>
+<h3>Nothing to rewrite</h3>
+<p>Chat Completions, Messages, Responses, embeddings and transcription keep their wire formats. Existing agents, tools and SDK code keep working after changing one URL.</p>
 </article>
 <article class="lp-reason">
 <div class="lp-tile-icon"><Icon name="analytics" /></div>
@@ -233,73 +291,6 @@ Probabilities are a softmax over the candidates' average answer-token log likeli
 </div>
 
 </div>
-
-</div>
-
-<div class="lp-section" id="install">
-
-<p class="lp-eyebrow">How to install</p>
-
-## Install in one line.
-
-<p class="lp-lead">Requires an Apple Silicon Mac running macOS 14 or later. Every option provides the `mlx-bun` command; the installer and npm package also add mlx-lm's commands under mlx-bun's names.</p>
-
-<Tabs>
-<TabItem label="Installer" icon="apple">
-
-```sh
-curl -fsSL https://mlx-bun.dev/install.sh | sh
-```
-
-Downloads the signed, notarized bundle with its runtime and native libraries, then compiles the Neural Engine programs your Mac's models use so no model load or prompt has to. See the [installer options](/getting-started/installation/#standalone-bundle).
-
-</TabItem>
-<TabItem label="Homebrew" icon="homebrew">
-
-```sh
-brew install joshuarossi/tap/mlx-bun
-```
-
-Installs the same bundle and links the command. The app checks the Neural Engine programs before every model load and compiles only what the cache lacks. See the [Homebrew notes](/getting-started/installation/#homebrew).
-
-</TabItem>
-<TabItem label="npm" icon="bun">
-
-```sh
-bun install -g mlx-bun   # or run once: bunx mlx-bun
-```
-
-Requires Bun 1.4.2 or later; use Bun rather than Node's `npx`. See the [npm notes](/getting-started/installation/#npm-package).
-
-</TabItem>
-</Tabs>
-
-<Steps>
-
-1. **Serve a model.** Download one from Hugging Face and serve it, or run `mlx-bun` with no arguments to serve a cached model, downloading a starter on first run.
-
-   ```sh
-   mlx-bun get mlx-community/gemma-4-e4b-it-OptiQ-4bit
-   mlx-bun serve e4b
-   ```
-
-2. **Send a request.** The browser app opens on port 8080, and the API answers beside it.
-
-   ```sh
-   curl http://localhost:8080/v1/chat/completions \
-     -H 'Content-Type: application/json' \
-     -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 128}'
-   ```
-
-3. **Or generate once, without a server.**
-
-   ```sh
-   mlx-bun generate e4b "Write a haiku about Apple Silicon."
-   ```
-
-</Steps>
-
-<p class="lp-tile-links"><a href="/getting-started/quickstart/">Quickstart</a><a href="/getting-started/installation/">Installation guide</a><a href="/reference/cli/">CLI reference</a></p>
 
 </div>
 
