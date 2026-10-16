@@ -147,3 +147,14 @@ test("scan indexes plain model directories beside the hub; an exact id wins over
     } finally { reg.close(); }
   } finally { rmSync(hub, { recursive: true, force: true }); rmSync(models, { recursive: true, force: true }); }
 });
+
+
+test("snapshot scans discover the archive named by artifact metadata", async () => {
+  const { scanSnapshot } = await import("@mlx-bun/hub/registry");
+  const dir = mkdtempSync(join(tmpdir(), "archived-model-"));
+  try {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ model_type: "example", artifact: { filename: "model.tar.zst" } }));
+    expect(await scanSnapshot(dir, "example/model")).toBeNull(); writeFileSync(join(dir, "model.tar.zst"), "archive");
+    const record = await scanSnapshot(dir, "example/model"); expect(record?.modelType).toBe("example"); expect(record?.sizeBytes).toBe(7);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

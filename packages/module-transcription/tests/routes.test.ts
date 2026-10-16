@@ -332,3 +332,21 @@ describe("streaming sessions", () => {
     await close();
   });
 });
+
+test("unsupported speech-backend options return a client error", async () => {
+  const service = fakeService();
+  service.transcribe = async () => { throw Object.assign(new Error("Selected backend supports transcription only"), { code: "unsupported_transcription_option" }); };
+  const response = await audioRoutes(service).handle(multipart({}, WAV));
+  expect(response?.status).toBe(400);
+  expect((await response!.json()).error.message).toBe("Selected backend supports transcription only");
+});
+
+test("verbose output preserves native word timing without inventing Whisper statistics", async () => {
+  const service = fakeService();
+  service.transcribe = async () => ({ result: { text: "Hello.", language: "en", segments: [{ id: 0, seek: 0, start: .08, end: .4, text: "Hello.", tokens: [1], words: [{ word: "Hello.", start: .08, end: .4 }] }] },
+    durationSeconds: 1, modelId: "test/transducer", timings: { load_ms: 0, transcribe_ms: 1, total_ms: 1 } });
+  const response = await audioRoutes(service).handle(multipart({ response_format: "verbose_json" }, WAV));
+  expect(response?.status).toBe(200); const result = await response!.json();
+  expect(result.words).toEqual([{ word: "Hello.", start: .08, end: .4 }]);
+  for (const field of ["avg_logprob", "no_speech_prob", "temperature", "compression_ratio"]) expect(field in result.segments[0]).toBe(false);
+});

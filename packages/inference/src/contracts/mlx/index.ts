@@ -13,3 +13,4 @@ export * from "./media";
 export * from "./positions";
 export * from "./trainable";
 export * from "./whisper";
+export * from "./tdt";

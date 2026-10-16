@@ -57,7 +57,7 @@ describe("family implementations", () => {
     }
     // Speech models open through the transcription engine and Colibri through its planned runtime: neither is resident.
     expect(unavailable).toEqual(["whisper"]);
-    expect(MODEL_FAMILIES.filter(family => family.loader !== "safetensors").map(family => family.graph)).toEqual(["glm5.2"]);
+    expect(MODEL_FAMILIES.filter(family => family.loader !== "safetensors").map(family => family.graph)).toEqual(["glm5.2", "phonon2"]);
   });
 
   test("written Gemma graphs retain the family profile and expose direct constructors", async () => {

@@ -310,17 +310,18 @@ const streamedLoader: ArtifactLoader = {
 
 const speechLoader: ArtifactLoader = {
   async open({ modelDir, profile }) {
-    throw new UnsupportedModelLoadError(profile, `${modelDir} is a speech model (${profile.profile.id}); open it with openWhisperModel ` +
+    throw new UnsupportedModelLoadError(profile, `${modelDir} is a speech model (${profile.profile.id}); open it with openTranscriber ` +
       "or serve it as a transcription model — it has no chat/completion loop");
   },
   create(_weights, _config, profile) {
-    throw new UnsupportedModelLoadError(profile, `${profile.profile.id} has an encoder-decoder graph; open it with openWhisperModel`);
+    throw new UnsupportedModelLoadError(profile, `${profile.profile.id} has an encoder-decoder graph; open it with openTranscriber`);
   },
 };
 
 /** Artifact loading follows declared table facts, including streamed weights
  * and the separate speech operation. It never selects by a model predicate. */
 const ARTIFACT_LOADERS: Readonly<Record<ModelLoader, Readonly<Record<GenerationLoop, ArtifactLoader>>>> = {
+  fermion: { autoregressive: speechLoader, diffusion: speechLoader, "encoder-decoder": speechLoader },
   safetensors: { autoregressive: residentLoader, diffusion: residentLoader, "encoder-decoder": speechLoader },
   colibri: { autoregressive: streamedLoader, diffusion: streamedLoader, "encoder-decoder": speechLoader },
 };
@@ -348,4 +349,23 @@ export function createModel<Model>(
   assertResolvedModelProfile(config, resolved);
   return ARTIFACT_LOADERS[resolved.profile.execution.loader][resolved.profile.execution.loop]
     .create<Model | RuntimeModel>(weights, config, resolved, composition, implementations);
+}
+
+
+/** Open a speech graph and bind its declared decoding operation. Binding lives
+ * with the consumer; model identity and weight loading stay in the registry. */
+export async function openTranscriptionGraph<T>(modelDir: string, bindings: {
+  encoderDecoder(model: WhisperModel): Promise<T>;
+  transducer(model: import("../contracts/mlx/tdt").TdtGraph): Promise<T>;
+}): Promise<T> {
+  const config = await loadModelConfig(modelDir), resolved = resolveModelProfile(config);
+  if (resolved.profile.execution.graph === "phonon2") {
+    const [{ Phonon2Weights }, { Phonon2Model }] = await Promise.all([import("../artifacts/phonon2"), import("./phonon2/model")]);
+    const weights = await Phonon2Weights.open(modelDir);
+    let model: InstanceType<typeof Phonon2Model>;
+    try { model = new Phonon2Model(weights); } catch (error) { weights.dispose(); throw error; }
+    try { return await bindings.transducer(model); } catch (error) { model.dispose(); throw error; }
+  }
+  const { model } = await openWhisperModel(modelDir);
+  try { return await bindings.encoderDecoder(model); } catch (error) { model.dispose(); throw error; }
 }

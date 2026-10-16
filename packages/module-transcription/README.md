@@ -1,12 +1,30 @@
 # @mlx-bun/module-transcription
 
-Speech-to-text with a local Whisper model, as an application module
+Speech-to-text with a local Whisper or Phonon-2 model, as an application module
 (`AppModule<"modelHost" | "catalog">`, design: [Modular application](../../ARCHITECTURE.md#modular-application)).
 It declares the audio routes, the `transcribe` and `dictate` verbs and no jobs,
 sockets, storage entries or panel. The mlx-bun app installs it beside its other
 features; `apps/transcribe` installs it alone. Nothing here imports an app or
 another module: the Whisper weights, their residency and the execution lock come
 from the host's `modelHost` service, and model names from its `catalog`.
+
+## Phonon-2
+
+The same commands and routes accept the official FermionResearch/Phonon-2
+snapshot directory, including its compressed artifact. Use that directory as
+`transcribe <audio-file> <model-directory>` or `serve <model-directory>`; a
+companion can also be selected with the existing `--whisper-model` flag.
+The [inference README](../inference/README.md#phonon-2) owns graph details,
+verification and performance reproduction.
+
+Phonon-2 is English and greedy: translation, prompts/vocabulary hints, nonzero
+temperature, beam sizes above one, `audio_ctx` and no-speech thresholds produce
+an explicit unsupported-option error (HTTP 400, or an SSE error event for a
+stream). Word timestamps come from TDT
+and have no confidence score. Whisper-only statistics are absent from verbose
+JSON. Buffered sessions finalize utterance windows rather than emitting partial
+words. Model residency, cancellation, the execution lock and response formats
+use the existing host and service.
 
 ## Audio transcription
 
@@ -21,7 +39,7 @@ them back in from the OS file cache. `mlx_bun.timings.load_ms` in every response
 is non-zero exactly when that request paged the weights in. The Whisper model
 host (lazy load, idle timer, pinning, unload, close) is
 `@mlx-bun/app-services`' `createWhisperModelHost`, over the library's public
-`openWhisperModel`, `loadWhisperTokenizer` and `WhisperTranscriber`; the
+`openTranscriber`; the
 service keeps request admission, the Silero speech gate, vocabulary hints and
 streaming sessions. The speech gate and audio decoding are `MediaRuntime`,
 which the [service tests](tests/service.test.ts) replace, over the real model
@@ -52,9 +70,9 @@ routes; a request none of them matches falls through to the host's own.
 
 The host resolves the checkpoint: the model host's default for `transcribe` is
 the `--whisper-model <path|query>` checkpoint (refused before loading if it is
-not a Whisper model), else the first downloaded `whisper` checkpoint, looked up
+not a transcription model), else the first downloaded transcription checkpoint, looked up
 once, on the first audio request (as in main, a checkpoint downloaded later
-needs a restart). The transcription-only server (`mlx-bun serve <whisper
+needs a restart). The transcription-only server (`mlx-bun serve <speech
 checkpoint>`, and `apps/transcribe`'s `serve`) is the audio routes plus `/v1`,
 `/v1/models`, `/health` and `/stats` (`createCompanionInfoRoutes`; the last two
 carry the `transcription` stats block: residency counters from the model host,

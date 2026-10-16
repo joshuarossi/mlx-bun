@@ -174,6 +174,7 @@ export function transcriptionResponse(outcome: TranscriptionOutcome, format: Tra
 }
 
 function transcriptionFailure(e: unknown): Response {
+  if (e instanceof Error && "code" in e && e.code === "unsupported_transcription_option") return errorJson(e.message, 400);
   if (e instanceof TranscriptionError) return errorJson(e.message, e.status);
   const message = (e as Error).message ?? String(e);
   if (/cancelled/.test(message)) return errorJson("request cancelled", 499);

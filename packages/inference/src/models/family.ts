@@ -22,7 +22,7 @@ export type FidelityTarget =
   | Readonly<{ tier: "l2"; oracle: "mlx-optiq"; claim: "bit-exact" }>
   | Readonly<{ tier: "l3"; oracle: null; claim: "measured" }>;
 
-export type ModelLoader = "safetensors" | "colibri";
+export type ModelLoader = "safetensors" | "colibri" | "fermion";
 export type GenerationLoop = "autoregressive" | "diffusion" | "encoder-decoder";
 /** What a profile was declared for: an exact artifact, a family's own graphs, or
  * the universal graph. Which of a family's graphs a load builds (its generic

@@ -603,14 +603,22 @@ export async function scanSnapshot(dir: string, repoId: string): Promise<ModelRe
       try { expertsBytes += expertTensorBytes(join(dir, f)); } catch {}
     }
   }
-  if (!hasWeights) return null;
-
   let config: Record<string, any>;
   try {
     config = (await Bun.file(configPath).json()) as Record<string, any>;
   } catch {
     return null;
   }
+  // Some checkpoints publish a checksummed archive rather than safetensors.
+  // Interpret only the artifact's file declaration; model support is classified
+  // by the caller, just as for safetensors.
+  if (!hasWeights && typeof config.artifact?.filename === "string") {
+    const name = config.artifact.filename;
+    if (name && !name.includes("/") && !name.includes("\\") && name !== "." && name !== "..") {
+      try { const file = statSync(join(dir, name)); if (file.isFile()) { sizeBytes = file.size; hasWeights = true; } } catch {}
+    }
+  }
+  if (!hasWeights) return null;
   const text = (config.text_config ?? config) as Record<string, any>;
   const quant = (config.quantization ?? config.quantization_config) as
     | Record<string, any> | undefined;

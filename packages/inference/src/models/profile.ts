@@ -136,7 +136,7 @@ const loopCapability: Readonly<Record<GenerationLoop, EngineCapability>> = {
 
 /** What the engine must provide to run a composition: its loader, its loop, and its graph's own capabilities. */
 function executionCapabilities(execution: ModelExecutionComposition, family: ModelFamily): EngineCapability[] {
-  const required: EngineCapability[] = [execution.loader === "colibri" ? "colibri-container" : "safetensors"];
+  const required: EngineCapability[] = [execution.loader === "colibri" ? "colibri-container" : execution.loader];
   required.push(loopCapability[execution.loop]);
   required.push(...family.capabilities);
   return required;

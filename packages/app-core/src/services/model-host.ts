@@ -51,7 +51,7 @@ export interface AcquireOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface TranscriptWord { word: string; start: number; end: number; readonly probability: number }
+export interface TranscriptWord { word: string; start: number; end: number; readonly probability?: number }
 
 export interface TranscriptSegment {
   readonly id: number;
@@ -61,10 +61,10 @@ export interface TranscriptSegment {
   end: number;
   readonly text: string;
   readonly tokens: number[];
-  readonly temperature: number;
-  readonly avgLogprob: number;
-  readonly compressionRatio: number;
-  readonly noSpeechProb: number;
+  readonly temperature?: number;
+  readonly avgLogprob?: number;
+  readonly compressionRatio?: number;
+  readonly noSpeechProb?: number;
   /** With `wordTimestamps`. */
   words?: TranscriptWord[];
 }

@@ -2,7 +2,8 @@
 
 mlx-bun runs AI models locally on Apple Silicon Macs using Apple's MLX.
 Chat in your browser, serve models through a local API, or build with TypeScript
-libraries for Bun. No Python is required for inference.
+libraries for Bun. No Python is required for inference. Speech transcription supports Whisper and
+[Phonon-2 on the GPU](packages/inference/README.md#phonon-2).
 
 **mlx-bun 1.0.0 is beta and actively developed.** APIs and behavior may change;
 breaking changes will be called out in release notes.

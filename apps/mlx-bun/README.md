@@ -1288,6 +1288,12 @@ cannot load). A host that serves one model answers `restart_required` with the
 
 ## Audio transcription
 
+Whisper and [Phonon-2](../../packages/inference/README.md#phonon-2) run through the
+same speech host. The official Phonon-2 snapshot can be selected for `transcribe`,
+`serve`, or the existing `--whisper-model` companion flag. Its GPU graph uses MLX
+and custom Metal kernels. It supports English greedy transcription and word
+timing; unsupported decoding options return HTTP 400 or an SSE error event.
+
 Speech-to-text is the transcription module's ([`@mlx-bun/module-transcription`](../../packages/module-transcription/README.md):
 the service, `/v1/audio/*`, `/admin/transcription/unload`, `transcribe`, `dictate`).
 This app installs it (`src/modules.ts`) and supplies its core services:

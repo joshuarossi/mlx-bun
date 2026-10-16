@@ -34,3 +34,9 @@ export * from "./trellis-codebook-gate-up";
 export * from "./folded-attention";
 
 export { AneTrellisExpandReduce, AneTrellisExpandScatter, AneTrellisExpandedMlpSplit, AneTrellisExpandedMlpSplitK3i, type AneGpuMlpRows } from "./ane-prefill-split";
+export * from "./five-value-linear";
+export * from "./lstm-cell";
+export * from "./phonon-conformer";
+export * from "./phonon-predictor";
+
+export { TdtGreedyStep } from "./tdt-greedy";

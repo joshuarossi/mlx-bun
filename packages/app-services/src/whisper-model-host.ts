@@ -16,7 +16,7 @@ import type {
   AcquireOptions, CatalogEntry, EventBus, ModelUnloadReason, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
   ResidencyPlan, ResidencyPolicy, ResidentModel, TranscribeOptions, TranscriptionOperation,
 } from "@mlx-bun/app-core";
-import type { WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
+import type { SpeechTranscribeOptions } from "@mlx-bun/inference/transcription";
 import { ModelHostFailure } from "./failure";
 import { nativeWhisperBackend, type LoadedWhisper, type WhisperBackend } from "./whisper-backend";
 
@@ -61,7 +61,7 @@ const realTimers: NonNullable<WhisperModelHostOptions["timers"]> = {
 };
 
 /** The library's decode options for the portable ones a consumer supplies. */
-function whisperOptions(options: TranscribeOptions | undefined): WhisperTranscribeOptions {
+function whisperOptions(options: TranscribeOptions | undefined): SpeechTranscribeOptions {
   const o = options ?? {};
   return {
     task: o.task ?? "transcribe",
@@ -99,7 +99,7 @@ function transcription(loaded: LoadedWhisper, exclusive: Exclusive): Transcripti
 interface Slot {
   readonly id: ModelId;
   readonly directory: string;
-  readonly bytes: number;
+  bytes: number;
   loaded: LoadedWhisper | null;
   loading: Promise<LoadedWhisper> | null;
   leases: number;
@@ -193,6 +193,7 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
         }
         if (closed) { loaded.dispose(); throw closedError(); }
         slot.loaded = loaded;
+        slot.bytes = loaded.residentBytes ?? slot.bytes;
         slot.loads++;
         slot.lastLoadMs = now() - t0;
         log(`[transcription] ${slot.id} loaded in ${slot.lastLoadMs.toFixed(0)} ms`);

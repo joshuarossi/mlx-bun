@@ -26,7 +26,7 @@ const allowed = {
   generation: ["portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "models", "mlx"],
   scoring: ["portable", "mlx-contracts", "kernels", "state", "models", "mlx"],
   embeddings: ["artifacts", "input", "models", "mlx"],
-  transcription: ["mlx-contracts", "input", "mlx"],
+  transcription: ["portable", "mlx-contracts", "input", "mlx"],
   execution: ["portable", "mlx-contracts", "runtime", "artifacts", "layers", "state", "input", "sampling", "models", "generation", "mlx"],
   api: ["contracts", "portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "adapters", "models", "generation", "scoring", "embeddings", "transcription", "execution", "mlx"],
 } satisfies Record<string, string[]>;

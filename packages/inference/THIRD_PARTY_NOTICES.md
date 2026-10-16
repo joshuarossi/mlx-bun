@@ -1864,6 +1864,43 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Phonon-2
+
+The Fermion container decoding in `src/artifacts/phonon2-format.ts` adapts
+`fermion_container.py` from FermionResearch/Phonon-2, revision
+`7e153e4054c0a10db6d47d6fff5c062d4c77c154`, copyright 2026 Fermion Research,
+under Apache-2.0 (full license above). The compiled TDT control and FP16
+expansion strategy also adapt `fast_decode.py` from fermion-research 0.2.11,
+copyright 2026 Fermion Research, under Apache-2.0. The model weights are separate downloads
+under CC-BY-4.0, derived from NVIDIA Parakeet TDT 0.6B v3; retain the downloaded
+artifact's NOTICE and weight license. Weights are not included in this package.
+
+The FastConformer arrangement and TDT recurrence adapt mlx-audio 0.4.6,
+`mlx_audio/stt/models/parakeet/{conformer,attention,rnnt,parakeet}.py`, under MIT:
+https://github.com/Blaizzy/mlx-audio/tree/v0.4.6
+
+MIT License
+
+Copyright (c) 2025 Prince Canuma and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## XGrammar
 
 Grammar-constrained decoding uses `@mlc-ai/web-xgrammar@0.1.27` (npm integrity

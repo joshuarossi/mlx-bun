@@ -1,8 +1,7 @@
 // Transcription output formats shared by the CLI and /v1/audio/transcriptions:
 // OpenAI `json` / `verbose_json` / `text` / `srt` / `vtt`.
 
-import type { WhisperSegment } from "./types";
-import type { WhisperTranscription } from "./transcribe";
+import type { SpeechSegment, SpeechTranscription } from "../../contracts/portable/transcription";
 
 export type TranscriptionFormat = "json" | "verbose_json" | "text" | "srt" | "vtt";
 
@@ -25,7 +24,7 @@ export function formatTimestamp(seconds: number, separator: "," | "." = ","): st
   return `${pad2(hours)}:${pad2(minutes)}:${pad2(secs)}${separator}${String(ms).padStart(3, "0")}`;
 }
 
-export function toSrt(segments: WhisperSegment[]): string {
+export function toSrt(segments: SpeechSegment[]): string {
   let out = "";
   let n = 1;
   for (const s of segments) {
@@ -35,7 +34,7 @@ export function toSrt(segments: WhisperSegment[]): string {
   return out;
 }
 
-export function toVtt(segments: WhisperSegment[]): string {
+export function toVtt(segments: SpeechSegment[]): string {
   let out = "WEBVTT\n\n";
   for (const s of segments) {
     if (!s.text.trim()) continue;
@@ -45,7 +44,7 @@ export function toVtt(segments: WhisperSegment[]): string {
 }
 
 /** OpenAI verbose_json body (segments carry the openai-whisper fields). */
-export function toVerboseJson(r: WhisperTranscription, durationSeconds: number, task: string): Record<string, unknown> {
+export function toVerboseJson(r: SpeechTranscription, durationSeconds: number, task: string): Record<string, unknown> {
   return {
     task,
     language: r.language,
@@ -62,7 +61,7 @@ export function toVerboseJson(r: WhisperTranscription, durationSeconds: number, 
 }
 
 export function formatTranscription(
-  r: WhisperTranscription, format: TranscriptionFormat, durationSeconds: number, task: string,
+  r: SpeechTranscription, format: TranscriptionFormat, durationSeconds: number, task: string,
 ): string {
   switch (format) {
     case "text": return r.text.trim() + "\n";

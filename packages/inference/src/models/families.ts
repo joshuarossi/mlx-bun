@@ -12,6 +12,7 @@ import { MINICPM5_FAMILY } from "./minicpm5/family";
 import { QWEN35_FAMILY, QWEN3_FAMILY, QWEN3_MOE_FAMILY } from "./qwen/families";
 import { GENERIC_MODEL_TYPES, remapModelType } from "./universal/archs";
 import { UNIVERSAL_FAMILY } from "./universal/family";
+import { PHONON2_FAMILY } from "./phonon2/family";
 import { WHISPER_FAMILY } from "./whisper/family";
 
 /** First match wins. Targeted families accept disjoint configs; the universal
@@ -24,6 +25,7 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = Object.freeze([
   QWEN3_FAMILY,
   QWEN3_MOE_FAMILY,
   WHISPER_FAMILY,
+  PHONON2_FAMILY,
   MINICPM5_FAMILY,
   UNIVERSAL_FAMILY,
 ]);
