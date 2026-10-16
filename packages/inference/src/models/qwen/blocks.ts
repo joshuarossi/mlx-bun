@@ -11,6 +11,7 @@ import type { Weights } from "../../artifacts/weights";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import { convDeltaDecode } from "../../kernels/delta/conv-step";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu } from "../../layers/trellis-linear";
 import { disposing } from "../../layers/helpers";
@@ -162,7 +163,11 @@ export class GatedDeltaNet<L extends AttentionLinear = QuantizedLinear> {
     this.aLog = weights.tensor(`${prefix}.A_log`);
     this.dtBias = weights.tensor(`${prefix}.dt_bias`);
     this.normWeight = weights.tensor(`${prefix}.norm.weight`);
-    this.recurrence = Object.freeze({
+    this.recurrence = this.bindRecurrence();
+  }
+
+  protected bindRecurrence(): GatedDeltaParameters {
+    return Object.freeze({
       convWeight: this.convWeight, aLog: this.aLog, dtBias: this.dtBias,
       heads: (convolved: MlxArray) => this.heads(convolved),
     });
@@ -429,6 +434,25 @@ export class QwenFusedHeadsDeltaNet<L extends AttentionLinear = QuantizedLinear>
     if (!this.qkScale) throw new Error("QwenFusedHeadsDeltaNet requires folded Q/K scales");
     const [q, k, v] = this.#headOperation.forward(convolved, this.qkScale.q, this.qkScale.k);
     return { q, k, v };
+  }
+}
+
+/** Fused single-position convolution/heads/recurrence. The cache still owns
+ * both states, padding and speculative retention; windows use the ordinary
+ * heads binding, with the same normalization/gate tail as this block's base. */
+export class QwenFusedDecodeDeltaNet<L extends AttentionLinear = QuantizedLinear> extends QwenFusedHeadsDeltaNet<L> {
+  constructor(weights: Weights, config: ModelConfig, prefix: string, projections: QwenDeltaProjections<L>) {
+    super(weights, config, prefix, projections);
+    if (this.headKDim !== 128 || this.headVDim !== 128 || this.convKernel !== 4)
+      throw new Error("QwenFusedDecodeDeltaNet requires 128-wide heads and four convolution taps");
+  }
+  protected override bindRecurrence(): GatedDeltaParameters {
+    return Object.freeze({ ...super.bindRecurrence(), decode: (qkv: MlxArray, a: MlxArray, b: MlxArray,
+      conv: MlxArray, recurrent: MlxArray | null) => {
+      if (!this.qkScale) throw new Error("QwenFusedDecodeDeltaNet requires folded Q/K scales");
+      return convDeltaDecode(qkv, a, b, conv, recurrent, this.convWeight, this.aLog, this.dtBias,
+        this.qkScale.q, this.qkScale.k, this.numKHeads, this.numVHeads);
+    } });
   }
 }
 

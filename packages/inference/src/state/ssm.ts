@@ -23,7 +23,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { GatedDeltaCache, GatedDeltaParameters, Mask } from "../contracts/mlx/cache";
+import type { GatedDeltaCache, GatedDeltaDecode, GatedDeltaParameters, Mask } from "../contracts/mlx/cache";
 import { gatedDeltaUpdate } from "../kernels/delta/gated";
 import { gatedDeltaState } from "../kernels/delta/state";
 import { disposing } from "../layers/helpers";
@@ -44,6 +44,16 @@ function convolve(qkv: MlxArray, state: MlxArray, weight: MlxArray, rowLengths?:
   const conv = ops.conv1d(input, weight, 1, 0, 1, D);
   input.dispose();
   return [conv, tail];
+}
+
+function readDelta(qkv: MlxArray, a: MlxArray, b: MlxArray, convState: MlxArray, state: MlxArray | null,
+  layer: GatedDeltaParameters, mask: MlxArray | null, lengths?: readonly number[]): ReturnType<GatedDeltaDecode> {
+  const [conv, nextConv] = convolve(qkv, convState, layer.convWeight, lengths);
+  const { q, k, v } = layer.heads(conv);
+  conv.dispose();
+  const [out, recurrent] = gatedDeltaUpdate(q, k, v, a, b, layer.aLog, layer.dtBias, state, mask);
+  q.dispose();
+  return { out, recurrent, conv: nextConv, k, v };
 }
 
 function convTail(input: MlxArray, processed: number, nKeep: number, rowLengths?: readonly number[]): MlxArray {
@@ -147,7 +157,7 @@ export class SSMCache implements GatedDeltaCache {
   }
 
   recurDecode(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
-    return this.#recur(qkv, a, b, layer, null);
+    return this.#recur(qkv, a, b, layer, null, layer.decode);
   }
 
   recurWindow(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters): MlxArray {
@@ -161,7 +171,7 @@ export class SSMCache implements GatedDeltaCache {
    *  the replaced states and the inputs go to the round instead of being
    *  disposed, and the round replays through `layer`. */
   #recur(qkv: MlxArray, a: MlxArray, b: MlxArray, layer: GatedDeltaParameters,
-    padding: SsmPrefillPadding | null): MlxArray {
+    padding: SsmPrefillPadding | null, decode?: GatedDeltaDecode): MlxArray {
     const [B, S, convDim] = qkv.shape as [number, number, number];
     const nKeep = layer.convWeight.shape[1]! - 1;
     this.#fold();
@@ -182,16 +192,14 @@ export class SSMCache implements GatedDeltaCache {
     }
     // Convolution keeps each row's last real-token tail, including empty rows.
     const convState = this.#conv ?? ops.zeros([B, nKeep, convDim], qkv.dtype);
-    const [conv, newConv] = convolve(qkv, convState, layer.convWeight, padding?.convolutionLengths(S));
+    const { out, conv: newConv, recurrent: newState, k, v } = decode
+      ? decode(qkv, a, b, convState, this.#recurrent)
+      : readDelta(qkv, a, b, convState, this.#recurrent, layer, mask, padding?.convolutionLengths(S));
     if (!this.#conv) convState.dispose();
     if (spec) spec.prevConv = this.#conv;
     else this.#conv?.dispose();
     this.#conv = newConv;
 
-    const { q, k, v } = layer.heads(conv);
-    conv.dispose();
-    const [out, newState] = gatedDeltaUpdate(q, k, v, a, b, layer.aLog, layer.dtBias, this.#recurrent, mask);
-    q.dispose();
     if (spec) {
       spec.rows = { qkv, k, v, a, b, layer };
       spec.prevRecurrent = this.#recurrent;

@@ -11,9 +11,18 @@ MLX-LM: https://github.com/ml-explore/mlx-lm
 
 MLX derived code also carries Copyright © 2024 Apple Inc.
 
+The isolated kernel screens in `scripts/strata/` explore algorithms from
+Strata (https://github.com/Niko1221/Strata), revision
+`296b59d2f73c8f04a805df29c2fa97655adace78`. The chunked recurrence and expert
+planner read source from a caller-supplied Strata checkout; the fusion, prefix
+snapshot and matrix-operand experiments adapt those ideas to mlx-bun.
+`src/kernels/delta/conv-step.ts` uses the same fusion idea for single-position
+decode, retaining mlx-lm's recurrence arithmetic and state layout.
+
 MIT License
 
 Copyright © 2023 Apple Inc.
+Copyright (c) 2026 Niko1221 and the Strata contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
