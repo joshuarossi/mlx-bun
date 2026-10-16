@@ -212,7 +212,6 @@ experiments and benchmarks live outside it. Package READMEs hold the evidence de
 | Managed jobs: quantize, fine-tune, `convert`, `fuse`, datasets | n/a | done (each job child leads its own process group; stop is SIGTERM then SIGKILL after 3 s; the child stops its group when the parent's stdin pipe closes) | done (job, dataset and adapter routes) | done (`train`, `convert`, `fuse`) | job views done | partial: finished and merged fine-tune adapters mount, unmount and reproduce in a fresh process, and `fuse` output loads and generates (MiniCPM5-1B, opt-in `managed-jobs.test.ts`); [details](apps/mlx-bun/README.md#jobs-quantization-and-fine-tuning) | Decision: a managed job keeps running when its terminal closes (quantize's synchronous sensitivity sweep cannot observe the closed pipe): accepted. Verified on M1 Max: all four managed-job cases (including BF16 sensitivity cancellation and uniform conversion), isolated memory synthesis/cancellation, base memory stages and width-3 batching, and standalone library-host build. The trained memory-chunk adapter case still skips without its artifact. Relocated compiled app, installed current/previous bundles, worker and managed-child reentry passed (`verify:binary`; #295). |
 | Existing-user data compatibility: prior-format sessions, jobs, settings, vault, caches; memory Reference symlinks into the main checkout | n/a | partial (Pi sessions, browser preferences and active-job prior schemas read across versions; the web chat sidebar lists every recorded chat; old `~/.cache/mlx-bun*` job history, memory and registry data are left in place, not migrated; adapter stores are listed read-only) | n/a | n/a | n/a | partial: synthetic old/new round trips (Pi sessions, preferences, jobs) and an acceptance on an isolated copy of real data pass (53 sessions, 10 adapters); the credential and schedule paths only synthetically (no saved token or nightly plist in the real data) | Decisions: everything mlx-bun writes by default lives under `MLX_BUN_HOME` (`~/.mlx-bun`); the HF hub cache holds downloads only; explicit paths win (#224); the opt-in `--expert-offload` still builds inside the model directory. Before deleting the old checkout Josh selects what to preserve outside it: the memory Reference symlink targets (7 point into it; 2 already dangle) and ignored adapters, checkpoints and other local artifacts that Git cannot recover. No automatic retargeting. Open: opening a chat appends SDK entries and opening a v1/v2 chat rewrites it, as in main |
 | Docs surface and gates | n/a | n/a | HTTP and configuration inventories generated from source | CLI inventory generated from source | site and legacy redirects implemented | `apps/website/tests/server-api.test.ts`, `apps/website/tests/server-config.test.ts` | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate, and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
-| Installation and release | n/a | n/a | n/a | bundle, launchers, safe installer, formula and staged release preparation implemented | n/a | n/a | Complete the release acceptance checks below; public installer delivery must follow a compatible bundle release. Decision: the installer links only `~/.local/bin` (accepted). No actual release. |
 
 ## Candidate quant and Hugging Face model card
 
@@ -238,13 +237,6 @@ on main and the refactor is only useful when investigating a behavior difference
   allocation, packing, final size and runtime requirements. Replace the inherited
   base-model card with the candidate's own measured results and reproduction details.
   Exit: the artifact and model card are ready to review and publish under `mlx-bun`.
-
-## Release acceptance
-
-- [ ] With Josh's release instruction, verify real Developer ID signing and
-  notarization, including loading the signed native libraries from a relocated
-  signed bundle. The native-blocked version check and mocked commands do not
-  establish this acceptance.
 
 ## Completion
 
