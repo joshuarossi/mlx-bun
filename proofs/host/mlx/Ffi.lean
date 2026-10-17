@@ -25,17 +25,22 @@ native objects around them.
 * `mlx_array_shape` returns native memory (region `4h`) read through
   `toArrayBuffer`.
 * Vectors of arrays hold nodes; vectors of strings their length.
-* Metal kernels and their configurations; an application's outputs are
+* Metal kernels (name, source and header, as created) and their configurations;
+  an application node names the kernel object, and its outputs are
   the configuration's output shapes and dtypes.
 * Closures: `mlx_compile` of a payload closure; the first
   `mlx_closure_apply` per input signature (dtypes and shapes, or ndims when
   shapeless) traces: the call invokes the payload's `JSCallback` with
   tracer inputs (`Ret.callback`), the trace function's outputs come back
   through `mlx_vector_array_set_data`, and the call continues (`back`) by
-  replaying the traced graph on the real inputs, as MLX's compiler does.
+  replaying the traced graph on the real inputs, as MLX's compiler does;
+  replayed nodes are tagged with the closure (`Prim.replayed`): MLX runs them
+  as the closure's compiled graph.
   Later applies replay without calling JavaScript.
 * Values the TypeScript reads back (`mlx_array_item_uint32`, the sampled
-  token) come from `tokens`, consumed in order: the trace is otherwise
+  token) come from `tokens`, consumed in order at the first read of a node
+  (numbers of the run's server, so a symbolic run reads symbolic tokens); a
+  node read again returns its value (`items`). The trace is otherwise
   independent of array values.
 * Weights: `mlx_load_safetensors` returns a map over the file's header
   (`files`, path ↦ name, shape, dtype), supplied as a literal bound to the
@@ -179,8 +184,11 @@ inductive Prim where
   | take (axis : Nat)
   | conv1d (stride padding dilation groups : Nat)
   | logsumexp (axis : Nat) (keep : Bool)
-  /-- Output `out` of a Metal kernel application. -/
-  | kernel (name : List Char) (cfg : Cfg) (out : Nat)
+  /-- Output `out` of an application of Metal kernel object `k` (its name, source and header). -/
+  | kernel (k : Nat) (cfg : Cfg) (out : Nat)
+  /-- A node a compiled closure's replay emitted (closure object `cls`): MLX runs the replayed
+  graph as the closure's compiled graph, whose fused numerics need not be the eager operations'. -/
+  | replayed (cls : Nat) (p : Prim)
 
 structure Node where
   prim : Prim
@@ -209,7 +217,8 @@ inductive Obj where
   | str (s : List Char)
   | vec (nodes : List Nat)
   | vstr (n : Nat)
-  | kernel (name : List Char) (nIn nOut : Nat)
+  /-- `mlx_fast_metal_kernel_new`: name, Metal source and header, input and output name counts. -/
+  | kernel (name source header : List Char) (nIn nOut : Nat)
   | cfg (c : Cfg)
   | clo (c : Clo)
   /-- A string-to-array map over safetensors file `file` (none: empty). -/
@@ -239,8 +248,9 @@ structure St where
   nnext : Nat
   arrs : Trie Nat
   objs : Trie Obj
-  /-- Values `mlx_array_item_uint32` returns, in order. -/
-  tokens : List Nat
+  /-- Values `mlx_array_item_uint32` returns, in order (numbers of the run's server: a
+  symbolic run reads symbolic tokens). -/
+  tokens : List NumV
   files : List (List Char × Header)
   pending : List Pending
   errh : Option Arg
@@ -248,10 +258,12 @@ structure St where
   arch : List Char
   deviceSizes : List (List Char × Nat)
   wired : Nat
+  /-- Values read back so far, by node: reading an array again returns the same value. -/
+  items : Trie NumV
 
-def init (tokens : List Nat) (files : List (List Char × Header)) (arch : List Char)
+def init (tokens : List NumV) (files : List (List Char × Header)) (arch : List Char)
     (deviceSizes : List (List Char × Nat)) : St :=
-  ⟨1, .nil, 1, .nil, .nil, tokens, files, [], none, arch, deviceSizes, 0⟩
+  ⟨1, .nil, 1, .nil, .nil, tokens, files, [], none, arch, deviceSizes, 0, .nil⟩
 
 /-! ## State access -/
 
@@ -330,7 +342,7 @@ def cstrBytes : Nat → List Byte → Option (List Char)
   | _ + 1, _ => none
 
 def cstrArg : Arg → Option (List Char)
-  | .jsPtr _ _ bs => cstrBytes 4096 bs
+  | .jsPtr _ _ bs => cstrBytes (bs.length + 1) bs
   | _ => none
 
 /-- `mlx_optional_int`: value in bits 0–31, `has_value` at bit 32. -/
@@ -423,6 +435,7 @@ def binaryDtype (op : List Char) (a b : Nat) : Nat :=
 /-- Shape inference of a primitive over its inputs' shapes and dtypes. -/
 def infer (p : Prim) (ins : List (List Dim × Nat)) : M (Option Out) :=
   match p, ins with
+  | .replayed _ q, ins => infer q ins
   | .reshape new, [(s, d)] => .bind (reshapeShape s new) fun r => .pure (r.map (.node · d))
   | .transpose axes, [(s, d)] =>
     bif Nat.beq (len axes) (len s) && (List.range (len s)).all (fun a => axes.any (Nat.beq a)) then
@@ -560,31 +573,38 @@ def topo (s : St) (stop : List Nat) : Nat → List (Nat × Bool) → List Nat �
 
 def substOf (m : List (Nat × Nat)) (n : Nat) : Nat := ((m.find? fun (a, _) => Nat.beq a n).map Prod.snd).getD n
 
-/-- Rebuild the traced nodes in order over substituted inputs, shapes re-inferred
-(constants and leaves are shared, as the compiled graph captures them). -/
-def replayOrder (s : St) : List (Nat × Nat) → List Nat → M (Option (St × List (Nat × Nat)))
+/-- A Metal kernel application, replayed or not. -/
+def isKernel : Prim → Bool
+  | .kernel _ _ _ => true
+  | .replayed _ p => isKernel p
+  | _ => false
+
+/-- Rebuild the traced nodes of closure `cls` in order over substituted inputs, shapes
+re-inferred (constants and leaves are shared, as the compiled graph captures them); every
+rebuilt node is tagged `replayed cls`. -/
+def replayOrder (s : St) (cls : Nat) : List (Nat × Nat) → List Nat → M (Option (St × List (Nat × Nat)))
   | m, [] => .pure (some (s, m))
   | m, n :: ns => match s.nodes.get n with
     | some nd => match nd.prim with
-      | .data _ | .load _ _ | .zeros | .arange _ _ _ | .tracer _ => replayOrder s m ns
-      | .kernel name c i =>
-        let (k, s) := s.addNode ⟨.kernel name c i, nd.ins.map (substOf m), nd.shape, nd.dtype⟩
-        replayOrder s ((n, k) :: m) ns
-      | p =>
+      | .data _ | .load _ _ | .zeros | .arange _ _ _ | .tracer _ => replayOrder s cls m ns
+      | p => bif isKernel p then
+          let (k, s) := s.addNode ⟨.replayed cls p, nd.ins.map (substOf m), nd.shape, nd.dtype⟩
+          replayOrder s cls ((n, k) :: m) ns
+        else
         let ins := nd.ins.map (substOf m)
-        bif decide (ins = nd.ins) then replayOrder s m ns else
+        bif decide (ins = nd.ins) then replayOrder s cls m ns else
         match shapesOf s ins with
         | some sh => .bind (infer p sh) fun
-          | some (.node shape dt) => let (k, s) := s.addNode ⟨p, ins, shape, dt⟩; replayOrder s ((n, k) :: m) ns
+          | some (.node shape dt) => let (k, s) := s.addNode ⟨.replayed cls p, ins, shape, dt⟩; replayOrder s cls ((n, k) :: m) ns
           | some (.same i) => match nth? ins i with
-            | some k => replayOrder s ((n, k) :: m) ns
+            | some k => replayOrder s cls ((n, k) :: m) ns
             | none => .pure none
           | none => .pure none
         | none => .pure none
     | none => .pure none
 
-def replay (s : St) (t : Trace) (xs : List Nat) : M (Option (St × List Nat)) :=
-  .bind (replayOrder s (t.ins.zip xs) t.order) fun
+def replay (s : St) (cls : Nat) (t : Trace) (xs : List Nat) : M (Option (St × List Nat)) :=
+  .bind (replayOrder s cls (t.ins.zip xs) t.order) fun
     | some (s, m) => .pure (some (s, t.outs.map (substOf m)))
     | none => .pure none
 /-- Inputs match a trace: dtypes, and shapes (or ndims when shapeless). -/
@@ -610,8 +630,8 @@ def setVec (s : St) (slot : Nat) (ns : List Nat) : Nat × St :=
   | _ => s.newObj (.vec ns)
 
 /-- Finish an apply: outputs replayed on the real inputs, written to the caller's slot. -/
-def applyDone (s : St) (b off slot : Nat) (t : Trace) (xs : List Nat) : R :=
-  .bind (replay s t xs) fun
+def applyDone (s : St) (cls b off slot : Nat) (t : Trace) (xs : List Nat) : R :=
+  .bind (replay s cls t xs) fun
     | some (s, outs) => let (v, s) := setVec s slot outs; okW s status0 [u64Write b off v]
     | none => stuck
 
@@ -619,7 +639,7 @@ def closureApply (s : St) (o cls inv : Arg) : R :=
   match slotOf o, (argNat cls).bind s.obj?, (argNat inv).bind s.obj?, argNat cls with
   | some (b, off, slot), some (.clo (.compiled cb payload shapeless traces)), some (.vec xs), some c =>
     .bind (findTrace s shapeless xs traces) fun
-      | some t => applyDone s b off slot t xs
+      | some t => applyDone s c b off slot t xs
       | none => match shapesOf s xs with
         | some sh =>
           -- trace: tracer inputs with the real inputs' shapes and dtypes
@@ -644,9 +664,9 @@ def traceBack (s : St) (status : Arg) : R :=
       | some order =>
         let t : Trace := ⟨p.tracers, outs, order⟩
         -- a shapeless graph re-infers shapes: custom kernels have no shape inference
-        bif shapeless && order.any (fun n => match s.nodes.get n with | some ⟨.kernel _ _ _, _, _, _⟩ => true | _ => false) then stuck else
+        bif shapeless && order.any (fun n => match s.nodes.get n with | some nd => isKernel nd.prim | none => false) then stuck else
         let s := { s.setObj p.cls (.clo (.compiled cb payload shapeless (traces ++ [t]))) with pending := rest }
-        applyDone s p.outBuf p.outOff p.outSlot t p.ins
+        applyDone s p.cls p.outBuf p.outOff p.outSlot t p.ins
       | none => stuck
     | _, _ => stuck
   | _, _ => stuck
@@ -661,11 +681,11 @@ def cfgUpdate (s : St) (cfg : Arg) (f : Cfg → Option Cfg) : R :=
   | _ => stuck
 
 def kernelApply (s : St) (o k inv cfg : Arg) : R :=
-  match slotOf o, (argNat k).bind s.obj?, (argNat inv).bind s.obj?, (argNat cfg).bind s.obj? with
-  | some (b, off, slot), some (.kernel name _ _), some (.vec xs), some (.cfg c) =>
+  match slotOf o, (argNat k).bind fun h => (s.obj? h).map (h, ·), (argNat inv).bind s.obj?, (argNat cfg).bind s.obj? with
+  | some (b, off, slot), some (kh, .kernel _ _ _ _ _), some (.vec xs), some (.cfg c) =>
     let rec outs (s : St) (i : Nat) : List (List Dim × Nat) → St × List Nat
       | [] => (s, [])
-      | (shape, dt) :: r => let (n, s) := s.addNode ⟨.kernel name c i, xs, shape, dt⟩
+      | (shape, dt) :: r => let (n, s) := s.addNode ⟨.kernel kh c i, xs, shape, dt⟩
         let (s, ns) := outs s (i + 1) r; (s, n :: ns)
     let (s, ns) := outs s 0 c.outs
     let (v, s) := setVec s slot ns
@@ -829,9 +849,12 @@ def call (s : St) (name : Name) (args : List Arg) : R :=
       | some ds => ok s (.big (ds.foldr (· * ·) 1 : Nat))
       | none => stuck
     | none => stuck
-  | .itemU32, [.jsPtr b off _, h] => match (argNat h).bind s.node?, s.tokens with
-    | some n, t :: ts => bif Nat.beq n.dtype dtUint32 then
-        okW { s with tokens := ts } status0 [(b, off, cellParts .u32 (.num (.lit (F64.ofNat t))) 4 0)]
+  | .itemU32, [.jsPtr b off _, h] => match (argNat h).bind s.nodeId?, (argNat h).bind s.node? with
+    | some k, some n => bif Nat.beq n.dtype dtUint32 then
+        match s.items.get k, s.tokens with
+        | some t, _ => okW s status0 [(b, off, cellParts .u32 (.num t) 4 0)]
+        | none, t :: ts => okW { s with tokens := ts, items := s.items.set k t } status0 [(b, off, cellParts .u32 (.num t) 4 0)]
+        | none, [] => stuck
       else stuck
     | _, _ => stuck
   -- runtime objects
@@ -920,9 +943,10 @@ def call (s : St) (name : Name) (args : List Arg) : R :=
     | _, _, _ => stuck
   | .closureApply, [o, c, v] => closureApply s o c v
   -- kernels
-  | .kernelNew, [nm, ins, outs, _, _, _, _] => match cstrArg nm, (argNat ins).bind s.obj?, (argNat outs).bind s.obj? with
-    | some n, some (.vstr a), some (.vstr b) => let (h, s) := s.newObj (.kernel n a b); ok s (.big h)
-    | _, _, _ => stuck
+  | .kernelNew, [nm, ins, outs, src, hdr, _, _] =>
+    match cstrArg nm, (argNat ins).bind s.obj?, (argNat outs).bind s.obj?, cstrArg src, cstrArg hdr with
+    | some n, some (.vstr a), some (.vstr b), some sc, some hd => let (h, s) := s.newObj (.kernel n sc hd a b); ok s (.big h)
+    | _, _, _, _, _ => stuck
   | .kernelFree, [_] => ok s .void
   | .cfgNew, [] => let (h, s) := s.newObj (.cfg .empty); ok s (.big h)
   | .cfgFree, [_] => ok s .void

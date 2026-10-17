@@ -20,12 +20,16 @@ graph with that semantics and relates it to the decode step's value trace.
 * `evalR` evaluates a resolved graph (`Nat → Option (RNode δ κ)`): each
   primitive applies the `Ops`/`Kernel` operation to its evaluated
   arguments; loads read the checkpoint environment; data nodes decode
-  their bytes; kernel nodes dispatch on the kernel name to
-  `KernelContract.apply` with the recorded configuration. The traced
-  body of the compiled `compute_g` closure (an `exp` root over
+  their bytes; a kernel node resolves only if the kernel object it was
+  applied with has the source and header `KernelSources` assigns its
+  route name, then dispatches to `KernelContract.apply` with the recorded
+  configuration. Nodes a compiled closure's replay emitted are tagged
+  (`replayed`): the replayed body of `compute_g` (an `exp` root over
   multiply/negative/exp/astype/logaddexp/add and the bf16 zero) is
-  evaluated as the compiled closure (`Ops.Closure.computeG`); its
-  intermediate nodes have no eager semantics on the route.
+  evaluated as the compiled closure (`Ops.Closure.computeG`); other
+  replayed elementwise nodes have no value (MLX fuses them; their eager
+  semantics need not be the fused numerics), replayed kernels and
+  structural operations evaluate as their primitive.
 * `Matches G E cert`: a decidable check that the expected graph `E` is
   carried by `G` at node ids `cert`. `matches_eval`: then every expected
   node and its carrier evaluate alike.
@@ -75,6 +79,8 @@ inductive RPrim (δ κ : Type) where
   | conv1d (stride padding dilation groups : Nat)
   | logsumexp (axis : Nat) (keep : Bool)
   | kernel (name : List Char) (cfg : RCfg δ) (out : Nat)
+  /-- A node the replay of compiled closure `cls` emitted. -/
+  | replayed (cls : Nat) (p : RPrim δ κ)
 deriving DecidableEq
 
 structure RNode (δ κ : Type) where
@@ -111,7 +117,9 @@ def resolveCfg {δ : Type} (N : Nums δ) (c : Cfg) : Option (RCfg δ) := do
     | some v => (N.dim v).map some
   pure ⟨outs, grid, group, ints, c.dtypes, init⟩
 
-def resolvePrim {δ κ : Type} (N : Nums δ) (shape : List Dim) (dtype : Nat) : Prim → Option (RPrim δ κ)
+/-- `kn h`: the route name of kernel object `h` if its source and header are the route's. -/
+def resolvePrim {δ κ : Type} (N : Nums δ) (kn : Nat → Option (List Char)) (shape : List Dim) (dtype : Nat) :
+    Prim → Option (RPrim δ κ)
   | .data bytes => do pure (.data (← litBytes bytes) (← shape.mapM N.d) dtype)
   | .load f k => some (.load f k)
   | .tracer _ => some .unsupported
@@ -135,24 +143,41 @@ def resolvePrim {δ κ : Type} (N : Nums δ) (shape : List Dim) (dtype : Nat) : 
   | .take a => some (.take a)
   | .conv1d a b c d => some (.conv1d a b c d)
   | .logsumexp a k => some (.logsumexp a k)
-  | .kernel name c i => (resolveCfg N c).map (.kernel name · i)
+  | .kernel k c i => do pure (.kernel (← kn k) (← resolveCfg N c) i)
+  | .replayed c p => (resolvePrim N kn shape dtype p).map (.replayed c)
 
-def resolveNode {δ κ : Type} (N : Nums δ) (nd : Node) : Option (RNode δ κ) :=
-  (resolvePrim N nd.shape nd.dtype nd.prim).map (⟨·, nd.ins⟩)
-
-/-- The FFI model's graph, resolved. -/
-def ffiGraph {δ κ : Type} (N : Nums δ) (s : Ffi.St) (i : Nat) : Option (RNode δ κ) :=
-  (s.nodes.get i).bind (resolveNode N)
+def resolveNode {δ κ : Type} (N : Nums δ) (kn : Nat → Option (List Char)) (nd : Node) : Option (RNode δ κ) :=
+  (resolvePrim N kn nd.shape nd.dtype nd.prim).map (⟨·, nd.ins⟩)
 
 /-- An expected graph as a list (node `i` is entry `i`). -/
 def listGraph {δ κ : Type} (E : List (RNode δ κ)) (i : Nat) : Option (RNode δ κ) := E[i]?
 
-/-! ## compute_g's traced body
+/-! ## compute_g's replayed body
 
-ComputeGHostSyntax.body as the FFI records it (gated.ts computeG):
-`exp(multiply(negative(exp(astype(aLog, f32))), logaddexp(add(a, dt), zero)))`
-with `zero` the bf16 scalar `MlxArray.fromBytesCopy([0,0], [], bf16)`. Each
-step reads a node of smaller id. -/
+ComputeGHostSyntax.body as the FFI records its replay (gated.ts computeG):
+`exp(multiply(negative(exp(astype(aLog, f32))), logaddexp(add(a, dt), zero)))`,
+every operation tagged with the same compiled closure, with `zero` the bf16
+scalar `MlxArray.fromBytesCopy([0,0], [], bf16)` (a constant the replay
+shares). Each step reads a node of smaller id. -/
+
+/-- The primitive under any replay tags. -/
+@[simp] def strip {δ κ : Type} : RPrim δ κ → RPrim δ κ
+  | .replayed _ p => strip p
+  | p => p
+
+theorem strip_strip {δ κ : Type} (p : RPrim δ κ) : strip (strip p) = strip p := by
+  induction p <;> simp_all
+
+/-- The closure of a replayed `exp`. -/
+def replayedExp? {δ κ : Type} : RPrim δ κ → Option Nat
+  | .replayed c (.unary op) => if op = chars!"exp" then some c else none
+  | _ => none
+
+/-- Elementwise primitives, which a compiled closure fuses. -/
+def elementwise {δ κ : Type} : RPrim δ κ → Bool
+  | .unary _ | .binary _ | .astype _ => true
+  | .replayed _ p => elementwise p
+  | _ => false
 
 def one? : List Nat → Option Nat
   | [x] => some x
@@ -165,41 +190,41 @@ def two? : List Nat → Option (Nat × Nat)
 /-- The pattern below root `r`, reading nodes through `b`. -/
 def cgAux {δ κ : Type} [DecidableEq δ] [DecidableEq κ] (r : RNode δ κ) (b : Nat → Option (RNode δ κ)) :
     Option (List Nat) := do
-  if r.prim = .unary chars!"exp" then pure () else none
+  let cls ← replayedExp? r.prim
   let m ← one? r.ins
   let mn ← b m
-  if mn.prim = .binary chars!"multiply" then pure () else none
+  if mn.prim = .replayed cls (.binary chars!"multiply") then pure () else none
   let (ng, sp) ← two? mn.ins
   let nn ← b ng
-  if nn.prim = .unary chars!"negative" then pure () else none
+  if nn.prim = .replayed cls (.unary chars!"negative") then pure () else none
   let e1 ← one? nn.ins
   let en ← b e1
-  if en.prim = .unary chars!"exp" then pure () else none
+  if en.prim = .replayed cls (.unary chars!"exp") then pure () else none
   let c ← one? en.ins
   let cn ← b c
-  if cn.prim = .astype Ffi.dtF32 then pure () else none
+  if cn.prim = .replayed cls (.astype Ffi.dtF32) then pure () else none
   let x0 ← one? cn.ins
   let sn ← b sp
-  if sn.prim = .binary chars!"logaddexp" then pure () else none
+  if sn.prim = .replayed cls (.binary chars!"logaddexp") then pure () else none
   let (sm, z) ← two? sn.ins
   let smn ← b sm
-  if smn.prim = .binary chars!"add" then pure () else none
+  if smn.prim = .replayed cls (.binary chars!"add") then pure () else none
   let (x1, x2) ← two? smn.ins
   let zn ← b z
   if zn = ⟨.data [0, 0] [] Ffi.dtBf16, []⟩ then pure [x0, x1, x2] else none
 
-/-- compute_g's leaves (aLog, a, dt) if node `i` is the root of its traced body;
+/-- compute_g's leaves (aLog, a, dt) if node `i` is the root of its replayed body;
 the pattern reads only nodes of smaller id. -/
 def cgLeaves {δ κ : Type} [DecidableEq δ] [DecidableEq κ] (g : Nat → Option (RNode δ κ)) (i : Nat) :
     Option (List Nat) :=
   (g i).bind fun r => cgAux r (fun j => if j < i then g j else none)
 
 theorem cgAux_none {δ κ : Type} [DecidableEq δ] [DecidableEq κ] (r : RNode δ κ) (b : Nat → Option (RNode δ κ))
-    (h : r.prim ≠ .unary chars!"exp") : cgAux r b = none := by
+    (h : replayedExp? r.prim = none) : cgAux r b = none := by
   simp [cgAux, h]
 
 theorem cgLeaves_none {δ κ : Type} [DecidableEq δ] [DecidableEq κ] (g : Nat → Option (RNode δ κ)) (i : Nat)
-    (r : RNode δ κ) (hg : g i = some r) (h : r.prim ≠ .unary chars!"exp") : cgLeaves g i = none := by
+    (r : RNode δ κ) (hg : g i = some r) (h : replayedExp? r.prim = none) : cgLeaves g i = none := by
   simp [cgLeaves, hg, cgAux_none r _ h]
 
 theorem cgLeaves_congr {δ κ : Type} [DecidableEq δ] [DecidableEq κ] (g g' : Nat → Option (RNode δ κ)) (i : Nat)
@@ -266,37 +291,28 @@ def kernelOf (name : List Char) : Option Kernel := (kernelNames.find? (·.1 = na
 
 /-! ### Kernel identity
 
-A kernel node carries the `name` given to `mlx_fast_metal_kernel_new`. The
-FFI model drops the call's source and header arguments; the run's trace
-keeps them (each event holds the NUL-terminated buffers). `KernelsBound S
-trace`: every kernel created under a route name has the source and header
-`S` assigns that kernel, the bodies whose parsed programs the
-`KernelContract` fields' executions are about. -/
-
-/-- A NUL-terminated buffer of any length. -/
-def cstrAll : Host.Ts.Arg → Option (List Char)
-  | .jsPtr _ _ bs => Ffi.cstrBytes (bs.length + 1) bs
-  | _ => none
-
-/-- Name, source and header of a `mlx_fast_metal_kernel_new` call. -/
-def kernelNewArgs (ev : Host.Ts.Event) : Option (List Char × List Char × List Char) :=
-  if ev.sym = chars!"mlx_fast_metal_kernel_new" then
-    match ev.args with
-    | [nm, _, _, src, hdr, _, _] => do pure ((← cstrAll nm), (← cstrAll src), (← cstrAll hdr))
-    | _ => none
-  else none
+An FFI kernel node names the kernel object it was applied with, which keeps
+the name, Metal source and header `mlx_fast_metal_kernel_new` received (the
+whole NUL-terminated buffers). It resolves to the route kernel of that name
+only if the source and header are those `KernelSources` assigns the kernel,
+the bodies whose parsed programs the `KernelContract` fields' executions are
+about; a kernel under a route name with another body has no value. -/
 
 /-- The Metal source and header of each route kernel. -/
 structure KernelSources where
   source : Kernel → List Char
   header : Kernel → List Char
 
-def KernelsBound (S : KernelSources) (trace : List Host.Ts.Event) : Bool :=
-  trace.all fun ev => match kernelNewArgs ev with
-    | some (nm, src, hdr) => match kernelOf nm with
-      | some k => decide (src = S.source k ∧ hdr = S.header k)
-      | none => true
-    | none => true
+/-- The route name of FFI kernel object `h`, if its body is `S`'s for that kernel. -/
+def kernelName? (S : KernelSources) (s : Ffi.St) (h : Nat) : Option (List Char) :=
+  match s.obj? h with
+  | some (.kernel name src hdr _ _) => (kernelOf name).bind fun k =>
+    if src = S.source k ∧ hdr = S.header k then some name else none
+  | _ => none
+
+/-- The FFI model's graph, resolved. -/
+def ffiGraph {δ κ : Type} (N : Nums δ) (S : KernelSources) (s : Ffi.St) (i : Nat) : Option (RNode δ κ) :=
+  (s.nodes.get i).bind (resolveNode N (kernelName? S s))
 
 /-- What the evaluation reads outside the graph: checkpoint tensors by
 (file, name), and the expected graph's step inputs. -/
@@ -349,11 +365,12 @@ noncomputable def primEval : RPrim Int κ → List Value → Option Value
     let cfg ← toConfig c
     let ys ← K.apply k xs cfg
     ys[out]?
+  | .replayed _ p, xs => if elementwise p then none else primEval p xs
   | _, _ => none
 
 variable [DecidableEq κ]
 
-/-- The value of node `i`: compute_g's traced body as the compiled closure,
+/-- The value of node `i`: compute_g's replayed body as the compiled closure,
 any other node by its primitive on its evaluated arguments (each of
 smaller id). -/
 noncomputable def evalR (g : Nat → Option (RNode Int κ)) (i : Nat) : Option Value :=
@@ -394,13 +411,50 @@ theorem mapM_congr' {α β : Type} (l : List α) (f h : α → Option β) (e : �
   | cons a l ih =>
     simp only [List.mapM_cons, e a (List.mem_cons_self ..), ih fun x hx => e x (List.mem_cons_of_mem _ hx)]
 
-def isExp (p : RPrim Int κ) : Bool := decide (p = .unary chars!"exp")
+def isExp (p : RPrim Int κ) : Bool := decide (strip p = .unary chars!"exp")
 def isInput : RPrim Int κ → Bool
   | .input _ => true
   | _ => false
 
-theorem not_exp {p : RPrim Int κ} (h : isExp p = false) : p ≠ .unary chars!"exp" := by
-  simpa [isExp] using h
+theorem not_exp {p : RPrim Int κ} (h : isExp p = false) : replayedExp? p = none := by
+  match p with
+  | .replayed c (.unary op) =>
+    by_cases ho : op = chars!"exp"
+    · subst ho; simp [isExp] at h
+    · simp [replayedExp?, ho]
+  | .replayed _ (.input _) | .replayed _ .computeG | .replayed _ (.data ..) | .replayed _ (.load ..)
+  | .replayed _ (.zeros ..) | .replayed _ .unsupported | .replayed _ (.reshape _) | .replayed _ (.transpose _)
+  | .replayed _ (.slice ..) | .replayed _ (.sliceUpdate ..) | .replayed _ (.sliceDynamic ..) | .replayed _ (.concat _)
+  | .replayed _ (.binary _) | .replayed _ (.astype _) | .replayed _ .contiguous | .replayed _ (.rmsNorm _)
+  | .replayed _ (.rope ..) | .replayed _ (.sdpa ..) | .replayed _ (.qmm ..) | .replayed _ (.dequantize ..)
+  | .replayed _ (.take _) | .replayed _ (.conv1d ..) | .replayed _ (.logsumexp ..) | .replayed _ (.kernel ..)
+  | .replayed _ (.replayed ..) => rfl
+  | .input _ | .computeG | .data .. | .load .. | .zeros .. | .unsupported | .reshape _ | .transpose _ | .slice ..
+  | .sliceUpdate .. | .sliceDynamic .. | .concat _ | .unary _ | .binary _ | .astype _ | .contiguous | .rmsNorm _
+  | .rope .. | .sdpa .. | .qmm .. | .dequantize .. | .take _ | .conv1d .. | .logsumexp .. | .kernel .. => rfl
+
+theorem strip_not_replayed (p : RPrim Int κ) (c : Nat) (r : RPrim Int κ) : strip p ≠ .replayed c r := by
+  induction p <;> simp_all
+
+theorem elementwise_strip (p : RPrim Int κ) : elementwise (strip p) = elementwise p := by
+  induction p <;> simp_all [elementwise]
+
+/-- A replayed node over a non-elementwise primitive evaluates as the primitive. -/
+theorem primEval_strip (p q : RPrim Int κ) (hs : strip p = q) (hq : p = q ∨ elementwise q = false) :
+    primEval M K env p = primEval M K env q := by
+  induction p generalizing q with
+  | replayed c p ih =>
+    have hs' : strip p = q := hs
+    have hq' : elementwise q = false := by
+      rcases hq with hq | hq
+      · exact absurd (hs'.trans hq.symm) (strip_not_replayed p c p)
+      · exact hq
+    have he : elementwise p = false := by rw [← elementwise_strip, hs', hq']
+    funext xs
+    rw [← ih q hs' (.inr hq')]
+    show (if elementwise p then none else primEval M K env p xs) = _
+    rw [he]; rfl
+  | _ => simp at hs; subst hs; rfl
 
 /-! ## Graph matching
 
@@ -412,7 +466,10 @@ def nodeOk (G : Nat → Option (RNode Int κ)) (cert : List Nat) (k : Nat) (e : 
   e.ins.all (· < k) && e.ins.all (fun j => certAt cert j < certAt cert k) &&
   (if isInput e.prim then e.ins.isEmpty
    else if e.prim = .computeG then decide (cgLeaves G (certAt cert k) = some (e.ins.map (certAt cert)))
-   else !isExp e.prim && decide (G (certAt cert k) = some ⟨e.prim, e.ins.map (certAt cert)⟩))
+   else !isExp e.prim && match G (certAt cert k) with
+     | some r => decide (strip r.prim = e.prim ∧ (r.prim = e.prim ∨ elementwise e.prim = false) ∧
+         r.ins = e.ins.map (certAt cert))
+     | none => false)
 
 /-- `E` is carried by `G` at `cert`: every operation node of `E` is the FFI node
 at its certificate over the certificates of its arguments, each argument of
@@ -458,7 +515,7 @@ theorem matches_eval (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ
     cases hp : e.prim with
     | input key =>
       have hnil : e.ins = [] := by simpa using hrest
-      rw [hin k e key hek hp, evalR_eq, hE, cgLeaves_none _ _ e hE (by rw [hp]; simp)]
+      rw [hin k e key hek hp, evalR_eq, hE, cgLeaves_none _ _ e hE (by rw [hp]; rfl)]
       simp [hnil, hp, primEval]
     | _ => rw [hp] at hi; simp [isInput] at hi
   · rw [if_neg hi] at hrest
@@ -468,18 +525,27 @@ theorem matches_eval (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ
       obtain ⟨r, hr, _⟩ := Option.bind_eq_some_iff.mp hrest
       rw [evalR_eq, hr, hrest]
       dsimp only
-      rw [hargsG, evalR_eq, hE, cgLeaves_none _ _ e hE (by rw [hc]; simp)]
+      rw [hargsG, evalR_eq, hE, cgLeaves_none _ _ e hE (by rw [hc]; rfl)]
       dsimp only
       rw [hargs, hc]
       rfl
     · rw [if_neg hc] at hrest
       simp only [Bool.and_eq_true, Bool.not_eq_true', decide_eq_true_eq] at hrest
       obtain ⟨hx, hG⟩ := hrest
-      rw [evalR_eq, hG, cgLeaves_none _ _ _ hG (not_exp hx)]
-      dsimp only
-      rw [hargsG, evalR_eq, hE, cgLeaves_none _ _ e hE (not_exp hx)]
-      dsimp only
-      rw [hargs]
+      match hr : G (certAt cert k), hG with
+      | none, hG => simp at hG
+      | some r, hG =>
+        simp only [decide_eq_true_eq] at hG
+        obtain ⟨hs, hor, hins⟩ := hG
+        have hrx : isExp r.prim = false := by
+          have h1 : strip e.prim = e.prim := by rw [← hs, strip_strip]
+          simp only [isExp, decide_eq_false_iff_not] at hx ⊢
+          rw [hs]; rwa [h1] at hx
+        rw [evalR_eq, hr, cgLeaves_none _ _ _ hr (not_exp hrx)]
+        dsimp only
+        rw [hins, hargsG, evalR_eq, hE, cgLeaves_none _ _ e hE (not_exp hx)]
+        dsimp only
+        rw [hargs, primEval_strip M K env r.prim e.prim hs hor]
 
 /-! ## Prefix stability -/
 
@@ -1909,24 +1975,25 @@ theorem ffi_step (weights : List Char → List Char → Option Value) (w : Pipel
 /-! ### The FFI model's state -/
 
 /-- `evalNode`: the value of FFI node `i` of state `s`, its numbers read
-through the run's number valuation `ν`. -/
-noncomputable def evalNode (ν : Host.Ts.NumV → Option Host.Ts.F64) (env : Env InKey) (s : Ffi.St) (i : Nat) :
-    Option Value :=
-  evalR M K env (ffiGraph (concrete ν) s) i
+through the run's number valuation `ν`, its kernels identified by `S`. -/
+noncomputable def evalNode (ν : Host.Ts.NumV → Option Host.Ts.F64) (S : KernelSources) (env : Env InKey) (s : Ffi.St)
+    (i : Nat) : Option Value :=
+  evalR M K env (ffiGraph (concrete ν) S s) i
 
 /-- The token `mlx_array_item_uint32` reads from array handle `h`. -/
-noncomputable def itemOf (ν : Host.Ts.NumV → Option Host.Ts.F64) (env : Env InKey) (s : Ffi.St) (h : Nat) :
-    Option Nat :=
-  ((s.nodeId? h).bind (evalNode M K ν env s)).bind itemUint32
+noncomputable def itemOf (ν : Host.Ts.NumV → Option Host.Ts.F64) (S : KernelSources) (env : Env InKey) (s : Ffi.St)
+    (h : Nat) : Option Nat :=
+  ((s.nodeId? h).bind (evalNode M K ν S env s)).bind itemUint32
 
 /-- **Compositionality.** A node an FFI call added (primitive `p` over
 argument nodes of smaller id, not compute_g's traced root) evaluates to the
 primitive's value semantics on the arguments' values. -/
-theorem evalNode_call (ν : Host.Ts.NumV → Option Host.Ts.F64) (env : Env InKey) (s : Ffi.St) (i : Nat)
-    (nd : Node) (hn : s.nodes.get i = some nd) (r : RNode Int InKey) (hr : resolveNode (concrete ν) nd = some r)
+theorem evalNode_call (ν : Host.Ts.NumV → Option Host.Ts.F64) (S : KernelSources) (env : Env InKey) (s : Ffi.St)
+    (i : Nat) (nd : Node) (hn : s.nodes.get i = some nd) (r : RNode Int InKey)
+    (hr : resolveNode (concrete ν) (kernelName? S s) nd = some r)
     (hx : isExp r.prim = false) (hlt : ∀ j ∈ r.ins, j < i) :
-    evalNode M K ν env s i = (r.ins.mapM (evalNode M K ν env s)).bind (primEval M K env r.prim) := by
-  have hg : ffiGraph (concrete ν) s i = some r := by simp [ffiGraph, hn, hr]
+    evalNode M K ν S env s i = (r.ins.mapM (evalNode M K ν S env s)).bind (primEval M K env r.prim) := by
+  have hg : ffiGraph (concrete ν) S s i = some r := by simp [ffiGraph, hn, hr]
   unfold evalNode
   rw [evalR_eq, hg, cgLeaves_none _ _ _ hg (not_exp hx)]
   dsimp only
