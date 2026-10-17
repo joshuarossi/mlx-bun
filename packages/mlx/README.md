@@ -42,8 +42,8 @@ bindings for code that needs them. Model graphs, artifact loading, tokenizers, a
 ## Development
 
 Use Bun 1.4.2 or newer on an Apple Silicon Mac running macOS 14 or newer. From
-the repository root, run `bun install`. Then build the pinned native runtime
-using the existing recipe (requires CMake and Xcode command-line tools):
+the repository root, run `bun install`. Then build the native runtime from
+pinned MLX and mlx-c sources (requires CMake, Xcode and its Metal toolchain):
 
 ```sh
 bun run --cwd packages/mlx build:native /tmp/mlx-native-build
