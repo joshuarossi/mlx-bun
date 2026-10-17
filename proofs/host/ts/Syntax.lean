@@ -19,9 +19,10 @@ inductive AsgOp where
 
 inductive UnOp where | neg | pos | not | bnot | typeof | void | delete
 
+/-- `regex` keeps a regular-expression literal's raw pattern and flags. -/
 inductive Lit where
   | num (raw : List Char) | big (raw : List Char) | str (raw : List Char)
-  | bool (b : Bool) | null
+  | bool (b : Bool) | null | regex (pattern flags : List Char)
 
 /-- `using` and `await using` are declaration kinds, as in ESTree. -/
 inductive DeclKind where | var | let_ | const | using | awaitUsing

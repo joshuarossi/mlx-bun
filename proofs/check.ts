@@ -1693,6 +1693,7 @@ const proofFiles = [
   "host/ts/tests/layers/delta/States.lean",
   "host/ts/tests/layers/DeltaLayer.lean",
   "host/mlx/FfiEval.lean",
+  "host/ts/ast/inference/models/qwen/Qwen3827bTrellisM1max.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

@@ -4,8 +4,9 @@ namespace Host.Ts
 /-! Kernel-reducible TypeScript lexer. Each character is classified by its
 code point once; the token stream is produced lazily (no `Option` wrapper),
 so the parser forces it one token at a time and a lexical error appears as
-a trailing `err` token. Regular-expression literals are not supported: `/`
-is always division. -/
+a trailing `err` token. A `/` starts a regular-expression literal where the
+previous token cannot end an expression (`reAfter`), as in JavaScript
+lexers; elsewhere it is division. -/
 
 inductive Kw where
   | break_ | case_ | catch_ | class_ | const_ | continue_ | debugger_ | default_
@@ -138,6 +139,8 @@ inductive Tok where
   | id (n : Name) (k : Option Kw)
   | priv (n : Name)
   | num (raw : List Char) | big (raw : List Char) | str (raw : List Char)
+  /-- Regular-expression literal: raw pattern (between the slashes) and flags. -/
+  | re (pattern flags : List Char)
   /-- Template pieces: whole `` `a` ``, head `` `a${ ``, middle `}b${`, tail `` }c` ``. -/
   | tFull (raw : List Char) | tHead (raw : List Char) | tMid (raw : List Char) | tTail (raw : List Char)
   | p (x : P)
@@ -152,6 +155,21 @@ inductive T where | mk (nl : Bool) (t : Tok)
 
 def T.tok : T → Tok | .mk _ t => t
 def T.nl : T → Bool | .mk n _ => n
+
+/-- Keywords that end an expression (`this`, `super`, literals). -/
+def Kw.value : Kw → Bool
+  | .this_ | .super_ | .null_ | .true_ | .false_ => true
+  | _ => false
+
+/-- Whether a `/` after token `t` starts a regular expression: after an
+operator, an opening punctuator, a template head or middle, or a keyword
+other than a value (and `yield`, `await`); not after a name, literal,
+`)`, `]`, `}`, `++` or `--`. `!` is handled by `lexPunct`. -/
+def reAfter : Tok → Bool
+  | .id _ (some k) => (k.reserved && !k.value) || (match k with | .yield_ | .await_ => true | _ => false)
+  | .p .rp | .p .rb | .p .rc | .p .inc | .p .dec => false
+  | .p _ | .bin _ | .asg _ | .log _ | .tHead _ | .tMid _ => true
+  | _ => false
 
 def isDigit (n : Nat) : Bool := Nat.ble 48 n && Nat.ble n 57
 /-- Tests ordered by frequency: lower case first. -/
@@ -343,73 +361,103 @@ def punct (n : Nat) (cs : List Char) : Option (Tok × List Char) :=
   else bif Nat.beq n 64 then some (.p .at, cs) else none
 
 
-/-- Continuation of the lexer loop: line-break flag, template depths, input. -/
-abbrev K := Bool → List Nat → List Char → List T
+/-- Continuation of the lexer loop: line-break flag, whether a regular
+expression may start, template depths, input. -/
+abbrev K := Bool → Bool → List Nat → List Char → List T
 
 def fail (nl : Bool) (cs : List Char) : List T := [.mk nl (.err cs)]
 
+/-- Token `t` and the lexer continued after it. -/
+def emit (k : K) (nl : Bool) (t : Tok) (depth : List Nat) (rest : List Char) : List T :=
+  .mk nl t :: k false (reAfter t) depth rest
+
 def lexWord (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
   let w := wordTake cs
-  .mk nl (.id w (kwOf w)) :: k false depth (wordDrop cs)
+  emit k nl (.id w (kwOf w)) depth (wordDrop cs)
 
 def isHex : List Char → Bool
   | '0' :: c :: _ => c == 'x' || c == 'X' || c == 'b' || c == 'B' || c == 'o' || c == 'O'
   | _ => false
 
-def lexNumberRest (k : K) (nl : Bool) (depth : List Nat) (raw rest : List Char) : List T :=
-  match rest with
-  | 'n' :: rest => .mk nl (.big raw) :: k false depth rest
-  | _ => .mk nl (.num raw) :: k false depth rest
+/-- A decimal number's text; a trailing `n` (taken as a number part) makes it a bigint. -/
+def decimalTok (raw : List Char) : Tok :=
+  match raw.getLast? with
+  | some 'n' => .big raw.dropLast
+  | _ => .num raw
 
 /-- Radix-prefixed numbers have no exponent or fraction. -/
 def lexNumber (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
   bif isHex cs then
     let raw := (wordTake cs).filter (· != 'n')
     match (wordTake cs).getLast? with
-    | some 'n' => .mk nl (.big raw) :: k false depth (wordDrop cs)
-    | _ => .mk nl (.num raw) :: k false depth (wordDrop cs)
-  else lexNumberRest k nl depth (numTake cs) (numDrop cs)
+    | some 'n' => emit k nl (.big raw) depth (wordDrop cs)
+    | _ => emit k nl (.num raw) depth (wordDrop cs)
+  else emit k nl (decimalTok (numTake cs)) depth (numDrop cs)
 
 def lexString (k : K) (nl : Bool) (depth : List Nat) (q : Char) (cs : List Char) : List T :=
   match strDrop q cs with
-  | some rest => .mk nl (.str (strTake q cs)) :: k false depth rest
+  | some rest => emit k nl (.str (strTake q cs)) depth rest
   | none => fail nl cs
 
-def lexPunct (k : K) (nl : Bool) (depth : List Nat) (n : Nat) (cs : List Char) : List T :=
+/-- `!` keeps the regular-expression state: prefix negation where an operand
+starts, TypeScript's non-null assertion after one. -/
+def lexPunct (k : K) (nl re : Bool) (depth : List Nat) (n : Nat) (cs : List Char) : List T :=
   match punct n cs with
-  | some (t, rest) => .mk nl t :: k false depth rest
+  | some (.p .bang, rest) => .mk nl (.p .bang) :: k false re depth rest
+  | some (t, rest) => emit k nl t depth rest
   | none => fail nl cs
 
-def lexSlash (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
+/-- Regular-expression body before its closing `/`; `cls`: inside `[...]`. -/
+def reTake : Bool → List Char → List Char
+  | cls, '\\' :: c :: cs => '\\' :: c :: reTake cls cs
+  | cls, c :: cs =>
+    bif c == '/' && !cls then [] else c :: reTake (bif c == '[' then true else bif c == ']' then false else cls) cs
+  | _, [] => []
+
+/-- Input after the closing `/`; `none` at a line break or the end of input. -/
+def reDrop : Bool → List Char → Option (List Char)
+  | cls, '\\' :: c :: cs => bif c == '\n' then none else reDrop cls cs
+  | cls, c :: cs =>
+    bif c == '/' && !cls then some cs else bif c == '\n' then none
+    else reDrop (bif c == '[' then true else bif c == ']' then false else cls) cs
+  | _, [] => none
+
+/-- After the opening `/`: pattern, closing `/` and flags. -/
+def lexRegex (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
+  match reDrop false cs with
+  | some rest => emit k nl (.re (reTake false cs) (wordTake rest)) depth (wordDrop rest)
+  | none => fail nl cs
+
+def lexSlash (k : K) (nl re : Bool) (depth : List Nat) (cs : List Char) : List T :=
   match cs with
-  | '/' :: '/' :: rest => k nl depth (lineComment rest)
+  | '/' :: '/' :: rest => k nl re depth (lineComment rest)
   | '/' :: '*' :: rest =>
     match blockDrop rest with
-    | some rest' => k (nl || blockNl rest) depth rest'
+    | some rest' => k (nl || blockNl rest) re depth rest'
     | none => fail nl cs
-  | _ :: rest => lexPunct k nl depth 47 rest
+  | _ :: rest => bif re then lexRegex k nl depth rest else lexPunct k nl re depth 47 rest
   | [] => fail nl []
 
 /-- After `` ` `` (`head`) or a substitution's closing `}`. -/
 def lexTemplate (k : K) (nl head : Bool) (ds : List Nat) (cs : List Char) : List T :=
   match tmplDrop cs with
-  | some (true, rest) => .mk nl (if head then .tFull (tmplTake cs) else .tTail (tmplTake cs)) :: k false ds rest
-  | some (false, rest) => .mk nl (if head then .tHead (tmplTake cs) else .tMid (tmplTake cs)) :: k false (0 :: ds) rest
+  | some (true, rest) => .mk nl (if head then .tFull (tmplTake cs) else .tTail (tmplTake cs)) :: k false false ds rest
+  | some (false, rest) => .mk nl (if head then .tHead (tmplTake cs) else .tMid (tmplTake cs)) :: k false true (0 :: ds) rest
   | none => fail nl cs
 
 def lexClose (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
   match depth with
   | 0 :: ds => lexTemplate k nl false ds cs
-  | (d + 1) :: ds => .mk nl (.p .rc) :: k false (d :: ds) cs
-  | [] => .mk nl (.p .rc) :: k false [] cs
+  | (d + 1) :: ds => .mk nl (.p .rc) :: k false false (d :: ds) cs
+  | [] => .mk nl (.p .rc) :: k false false [] cs
 
 def lexOpen (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
-  .mk nl (.p .lc) :: k false (match depth with | d :: ds => (d + 1) :: ds | [] => []) cs
+  .mk nl (.p .lc) :: k false true (match depth with | d :: ds => (d + 1) :: ds | [] => []) cs
 
 def lexPrivate (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
   match wordTake cs with
   | [] => fail nl cs
-  | w => .mk nl (.priv w) :: k false depth (wordDrop cs)
+  | w => .mk nl (.priv w) :: k false false depth (wordDrop cs)
 
 def startsNumber (n : Nat) : List Char → Bool
   | d :: _ => isDigit n || (Nat.beq n 46 && isDigit d.toNat)
@@ -417,30 +465,30 @@ def startsNumber (n : Nat) : List Char → Bool
 
 /-- One token after blanks. `depth` holds one open-brace count per enclosing
 template substitution; a `}` at count zero resumes the template. -/
-def lexToken (k : K) (nl : Bool) (depth : List Nat) (c : Char) (cs : List Char) : List T :=
+def lexToken (k : K) (nl re : Bool) (depth : List Nat) (c : Char) (cs : List Char) : List T :=
   let n := c.toNat
   bif isIdStart n then lexWord k nl depth (c :: cs)
   else bif startsNumber n cs then lexNumber k nl depth (c :: cs)
   else bif Nat.beq n 34 || Nat.beq n 39 then lexString k nl depth c cs
-  else bif Nat.beq n 47 then lexSlash k nl depth (c :: cs)
+  else bif Nat.beq n 47 then lexSlash k nl re depth (c :: cs)
   else bif Nat.beq n 96 then lexTemplate k nl true depth cs
   else bif Nat.beq n 123 then lexOpen k nl depth cs
   else bif Nat.beq n 125 then lexClose k nl depth cs
   else bif Nat.beq n 35 then lexPrivate k nl depth cs
-  else lexPunct k nl depth n cs
+  else lexPunct k nl re depth n cs
 
-def lexStep (k : K) (nl : Bool) (depth : List Nat) (cs : List Char) : List T :=
+def lexStep (k : K) (nl re : Bool) (depth : List Nat) (cs : List Char) : List T :=
   match blankDrop cs with
   | [] => match depth with | [] => [] | _ => fail nl []
-  | c :: rest => lexToken k (nl || blankNl cs) depth c rest
+  | c :: rest => lexToken k (nl || blankNl cs) re depth c rest
 
 /-- Kernel-friendly loop: the recursive body only passes itself to `lexStep`,
 so each step instantiates a small definition. -/
 def lexAux : Nat → K
-  | 0, nl, _, cs => fail nl cs
-  | fuel + 1, nl, depth, cs => lexStep (lexAux fuel) nl depth cs
+  | 0, nl, _, _, cs => fail nl cs
+  | fuel + 1, nl, re, depth, cs => lexStep (lexAux fuel) nl re depth cs
 
 /-- Each token consumes at least one character, so `length + 1` fuel suffices. -/
-def lex (cs : List Char) : List T := lexAux (cs.length + 1) true [] cs
+def lex (cs : List Char) : List T := lexAux (cs.length + 1) true true [] cs
 
 end Host.Ts

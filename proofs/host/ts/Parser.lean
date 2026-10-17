@@ -357,6 +357,10 @@ structure Rec where
   lhs : Ts → R Expr
   binding : Ts → R Pat
   stmt : Ts → R (Option Stmt)
+  /-- A function body's statements after its `{`, through the closing `}`. -/
+  stmts : Ts → R (List Stmt)
+  /-- A class body's members after its `{`, through the closing `}`. -/
+  members : Ts → R (List Member)
 
 /-- Comma-separated items up to `close`; a trailing comma is allowed. -/
 def listLoop {α : Type} (close : P) (p : Ts → R α) : Nat → List α → Ts → R (List α)
@@ -497,7 +501,7 @@ def block (r : Rec) : Ts → R (List Stmt)
 
 def funcBody (r : Rec) (name : Option Name) (ps : List Param) (async gen : Bool) : Ts → R (Option Func)
   | .mk _ (.p .lc) :: ts =>
-    bnd (stmtsLoop r loopFuel [] ts) fun b ts => some (some (mkFunc name ps (.block b) async gen), ts)
+    bnd (r.stmts ts) fun b ts => some (some (mkFunc name ps (.block b) async gen), ts)
   | ts => (semi ts).map fun ts => (none, ts)
 
 /-- Signature and body after a function's name. Overload signatures and
@@ -684,7 +688,7 @@ def classTail (r : Rec) (name : Option Name) (ts : Ts) : R Class :=
   | some ts => bnd (heritage r ts) fun sup ts =>
     match implementsP ts with
     | some (.mk _ (.p .lc) :: ts) =>
-      bnd (membersLoop r loopFuel [] ts) fun ms ts => some (.mk name sup ms, ts)
+      bnd (r.members ts) fun ms ts => some (.mk name sup ms, ts)
     | _ => none
   | none => none
 
@@ -732,6 +736,7 @@ def primary (r : Rec) : Ts → R Expr
   | .mk _ (.num s) :: ts => some (.lit (.num s), ts)
   | .mk _ (.str s) :: ts => some (.lit (.str s), ts)
   | .mk _ (.big s) :: ts => some (.lit (.big s), ts)
+  | .mk _ (.re p f) :: ts => some (.lit (.regex p f), ts)
   | .mk nl (.tFull s) :: ts => template r none (.mk nl (.tFull s) :: ts)
   | .mk nl (.tHead s) :: ts => template r none (.mk nl (.tHead s) :: ts)
   | .mk _ (.p .lp) :: ts => bnd (r.expr ts) fun e ts => (eat .rp ts).map fun ts => (e, ts)
@@ -1180,11 +1185,19 @@ def stmtP (r : Rec) : Ts → R (Option Stmt)
   | ts => exprStmt r ts
 
 def deadRec : Rec :=
-  ⟨fun _ => none, fun _ => none, fun _ => none, fun _ _ => none, fun _ => none, fun _ => none, fun _ => none⟩
+  ⟨fun _ => none, fun _ => none, fun _ => none, fun _ _ => none, fun _ => none, fun _ => none, fun _ => none,
+    fun _ => none, fun _ => none⟩
+
+def Rec.withStmts (r : Rec) (s : Ts → R (List Stmt)) : Rec := { r with stmts := s }
+def Rec.withMembers (r : Rec) (m : Ts → R (List Member)) : Rec := { r with members := m }
+
+/-- The grammar one nesting level above `r`. -/
+def mkRec (r : Rec) : Rec :=
+  ⟨assignP r, exprP r, unaryP r, binP r, lhsP r, bindingP r, stmtP r, stmtsLoop r loopFuel [], membersLoop r loopFuel []⟩
 
 def knot : Nat → Rec
   | 0 => deadRec
-  | n + 1 => let r := knot n; ⟨assignP r, exprP r, unaryP r, binP r, lhsP r, bindingP r, stmtP r⟩
+  | n + 1 => mkRec (knot n)
 
 /-! ## Modules -/
 
@@ -1283,5 +1296,126 @@ theorem parse_of_lex {cs : List Char} {ts : Ts} (h : lex cs = ts) :
 theorem parse_isSome {cs : List Char} {ts : Ts} (h : lex cs = ts)
     (ok : (parseTokens ts).isLeft = true) : (parse cs).isSome = true := by
   unfold parse; rw [h]; split <;> simp_all
+
+/-! ## Resumable parsing
+
+A large module is parsed in separately kernel-checked steps: one module
+item (`itemP`), class member (`memberP`) or statement (`Rec.stmt`) from a
+token suffix, returning the remaining suffix. `Run` composes such steps
+and the loop lemmas below turn a run into the loop's result, so no single
+check evaluates the whole module. -/
+
+/-- A loop's stop test: the end of input for items, `}` for members and statements. -/
+def stopNil : Ts → Bool
+  | [] => true
+  | _ => false
+
+def stopRc : Ts → Bool
+  | .mk _ (.p .rc) :: _ => true
+  | _ => false
+
+/-- `Run p stop ts xs ts' n`: `n` steps of `p`, none at a `stop` input, take
+`ts` to `ts'` and produce `xs` (erased steps produce nothing). -/
+inductive Run {α : Type} (p : Ts → R (Option α)) (stop : Ts → Bool) : Ts → List α → Ts → Nat → Prop
+  | nil (ts : Ts) : Run p stop ts [] ts 0
+  | some {ts ts₁ ts' : Ts} {x : α} {xs : List α} {n : Nat} :
+      stop ts = false → p ts = Option.some (Option.some x, ts₁) → Run p stop ts₁ xs ts' n →
+      Run p stop ts (x :: xs) ts' (n + 1)
+  | none {ts ts₁ ts' : Ts} {xs : List α} {n : Nat} :
+      stop ts = false → p ts = Option.some (Option.none, ts₁) → Run p stop ts₁ xs ts' n →
+      Run p stop ts xs ts' (n + 1)
+
+theorem Run.append {α : Type} {p : Ts → R (Option α)} {stop : Ts → Bool} {a b c : Ts} {xs ys : List α}
+    {n m : Nat} (h₁ : Run p stop a xs b n) (h₂ : Run p stop b ys c m) :
+    Run p stop a (List.append xs ys) c (Nat.add n m) := by
+  have e : ∀ k, Nat.add (k + 1) m = Nat.add k m + 1 := fun k => Nat.succ_add k m
+  induction h₁ with
+  | nil => simpa using h₂
+  | some hs hp _ ih => rw [e]; exact .some hs hp (ih h₂)
+  | none hs hp _ ih => rw [e]; exact .none hs hp (ih h₂)
+
+theorem itemsLoop_run' {r : Rec} {ts e : Ts} {xs : List Item} {n : Nat} (h : Run (itemP r) stopNil ts xs e n) :
+    e = [] → ∀ (f : Nat) (acc : List Item), n < f → itemsLoop r f acc ts = .inl (acc.reverse ++ xs) := by
+  induction h with
+  | nil => intro he f acc hf; subst he; cases f with
+    | zero => omega
+    | succ f => simp [itemsLoop]
+  | @some ts _ _ x _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      cases ts with
+      | nil => simp [stopNil] at hs
+      | cons t ts => simp only [itemsLoop, hp]; rw [ih he f (x :: acc) (by omega)]; simp
+  | @none ts _ _ _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      cases ts with
+      | nil => simp [stopNil] at hs
+      | cons t ts => simp only [itemsLoop, hp]; exact ih he f acc (by omega)
+
+/-- A run of items to the end of input is the item loop's result. -/
+theorem itemsLoop_run {r : Rec} {ts : Ts} {xs : List Item} {n f : Nat} (h : Run (itemP r) stopNil ts xs [] n)
+    (hf : n < f) : itemsLoop r f [] ts = .inl xs := by
+  simpa using itemsLoop_run' h rfl f [] hf
+
+theorem stmtsLoop_run' {r : Rec} {ts e rest : Ts} {nl : Bool} {xs : List Stmt} {n : Nat}
+    (h : Run r.stmt stopRc ts xs e n) :
+    e = .mk nl (.p .rc) :: rest → ∀ (f : Nat) (acc : List Stmt), n < f → stmtsLoop r f acc ts = some (acc.reverse ++ xs, rest) := by
+  induction h with
+  | nil => intro he f acc hf; subst he; cases f with
+    | zero => omega
+    | succ f => simp [stmtsLoop]
+  | @some ts _ _ x _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      rw [stmtsLoop.eq_def]; split
+      · omega
+      · simp_all [stopRc]
+      · simp only [hp]; rw [ih he _ _ (by omega)]; simp
+  | @none ts _ _ _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      rw [stmtsLoop.eq_def]; split
+      · omega
+      · simp_all [stopRc]
+      · simp only [hp]; exact ih he _ _ (by omega)
+
+/-- A run of statements to a `}` is the statement loop's result. -/
+theorem stmtsLoop_run {r : Rec} {ts rest : Ts} {nl : Bool} {xs : List Stmt} {n f : Nat}
+    (h : Run r.stmt stopRc ts xs (.mk nl (.p .rc) :: rest) n) (hf : n < f) : stmtsLoop r f [] ts = some (xs, rest) := by
+  simpa using stmtsLoop_run' h rfl f [] hf
+
+theorem membersLoop_run' {r : Rec} {ts e rest : Ts} {nl : Bool} {xs : List Member} {n : Nat}
+    (h : Run (memberP r) stopRc ts xs e n) :
+    e = .mk nl (.p .rc) :: rest → ∀ (f : Nat) (acc : List Member), n < f → membersLoop r f acc ts = some (acc.reverse ++ xs, rest) := by
+  induction h with
+  | nil => intro he f acc hf; subst he; cases f with
+    | zero => omega
+    | succ f => simp [membersLoop]
+  | @some ts _ _ x _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      rw [membersLoop.eq_def]; split
+      · omega
+      · simp_all [stopRc]
+      · simp only [hp]; rw [ih he _ _ (by omega)]; simp
+  | @none ts _ _ _ _ hs hp _ ih =>
+    intro he f acc hf; cases f with
+    | zero => omega
+    | succ f =>
+      rw [membersLoop.eq_def]; split
+      · omega
+      · simp_all [stopRc]
+      · simp only [hp]; exact ih he _ _ (by omega)
+
+/-- A run of class members to a `}` is the member loop's result. -/
+theorem membersLoop_run {r : Rec} {ts rest : Ts} {nl : Bool} {xs : List Member} {n f : Nat}
+    (h : Run (memberP r) stopRc ts xs (.mk nl (.p .rc) :: rest) n) (hf : n < f) : membersLoop r f [] ts = some (xs, rest) := by
+  simpa using membersLoop_run' h rfl f [] hf
 
 end Host.Ts

@@ -402,15 +402,10 @@ def evCall (s : MS F) (callee : Expr) (args : List Elem) (opt : Bool) (env : Env
 
 /-! ## Literals -/
 
-/-- The lexer keeps a decimal bigint's `n` suffix in number text (`1n`). -/
 def evLit (s : MS F) : Lit → RS F
-  | .num raw => match raw.getLast? with
-    | some 'n' => match F64.parseIntLit raw.dropLast with
-      | some n => retS F s (.big n)
-      | none => .fail "bigint literal"
-    | _ => match F64.ofLit raw with
-      | some x => retS F s (.num (.lit x))
-      | none => .fail "number literal"
+  | .num raw => match F64.ofLit raw with
+    | some x => retS F s (.num (.lit x))
+    | none => .fail "number literal"
   | .big raw => match F64.parseIntLit raw with
     | some n => retS F s (.big n)
     | none => .fail "bigint literal"
@@ -419,6 +414,7 @@ def evLit (s : MS F) : Lit → RS F
     | none => .fail "string literal escape"
   | .bool b => retS F s (.bool b)
   | .null => retS F s .null
+  | .regex _ _ => .fail "regular expression literal"
 
 def arrayNext (s : MS F) (acc : List Val) (rest : List Elem) (env : Env) : RS F :=
   match rest with

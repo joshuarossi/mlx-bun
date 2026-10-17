@@ -19,16 +19,8 @@ instead of copying source: states of a run stay small, and a kernel
 comparison of two states meets the same constants. Native evaluation uses
 `astNative`, the same module as one compiled constant (`implemented_by`). -/
 
-deriving instance Lean.ToExpr for Host.Ts.UnOp
-deriving instance Lean.ToExpr for Host.Ts.Lit
-deriving instance Lean.ToExpr for Host.Ts.DeclKind
-deriving instance Lean.ToExpr for Host.Ts.MethodKind
-deriving instance Lean.ToExpr for Host.Ts.Expr, Host.Ts.Elem, Host.Ts.Key, Host.Ts.Property, Host.Ts.Pat,
-  Host.Ts.Body, Host.Ts.Func, Host.Ts.Member, Host.Ts.Class, Host.Ts.ForHead, Host.Ts.Stmt
-deriving instance Lean.ToExpr for Host.Ts.Spec
-deriving instance Lean.ToExpr for Host.Ts.Item
-
-deriving instance BEq, Hashable for Host.Ts.Lit, Host.Ts.UnOp, Host.Ts.BinOp, Host.Ts.LogOp, Host.Ts.AsgOp,
+deriving instance Hashable for Host.Ts.BinOp, Host.Ts.LogOp, Host.Ts.AsgOp
+deriving instance BEq, Hashable for Host.Ts.Lit, Host.Ts.UnOp,
   Host.Ts.DeclKind, Host.Ts.MethodKind
 deriving instance BEq, Hashable for Host.Ts.Expr, Host.Ts.Elem, Host.Ts.Key, Host.Ts.Property, Host.Ts.Pat,
   Host.Ts.Body, Host.Ts.Func, Host.Ts.Member, Host.Ts.Class, Host.Ts.ForHead, Host.Ts.Stmt
@@ -247,8 +239,8 @@ private def addDef' (name : Lean.Name) (type value : Lean.Expr) : CoreM Unit :=
   addDecl <| .defnDecl { name, levelParams := [], type, value, hints := .regular 0, safety := .safe }
 
 /-- In a `source_parse`d namespace: `ast` over node constants `ast_n<i>`,
-`astNative` (its native implementation), `ast_tokens` (kernel-checked
-parse of the token constant) and `parse_ast`. -/
+`astNative` (its native implementation), `ast_tokens` (the token constant's
+parse, from `parse_tokens`) and `parse_ast`. -/
 elab "source_ast" : command => do
   let ns ← getCurrNamespace
   let src := ns ++ `source
@@ -271,7 +263,16 @@ elab "source_ast" : command => do
     let rhs := mkApp2 (mkConst ``Option.some [.zero]) modTy (mkConst (ns ++ `ast))
     let optTy := mkApp (mkConst ``Option [.zero]) modTy
     let ty := mkApp3 (mkConst ``Eq [.succ .zero]) optTy lhs rhs
-    let pf := mkApp2 (mkConst ``Eq.refl [.succ .zero]) optTy lhs
+    -- From `parse_tokens : parseTokens tokens = .inl parsed`; `parsed` and `ast` are
+    -- the same module, compared by unfolding.
+    let tsTy := mkApp (mkConst ``List [.zero]) (mkConst ``T)
+    let sumTy := mkApp2 (mkConst ``Sum [.zero, .zero]) modTy tsTy
+    let inl := mkApp3 (mkConst ``Sum.inl [.zero, .zero]) modTy tsTy (mkConst (ns ++ `parsed))
+    let getLeft := mkApp2 (mkConst ``Sum.getLeft? [.zero, .zero]) modTy tsTy
+    let pf := mkAppN (mkConst ``Eq.trans [.succ .zero]) #[optTy, lhs, mkApp getLeft inl, rhs,
+      mkAppN (mkConst ``congrArg [.succ .zero, .succ .zero]) #[sumTy, optTy,
+        mkApp (mkConst ``parseTokens) (mkConst (ns ++ `tokens)), inl, getLeft, mkConst (ns ++ `parse_tokens)],
+      mkApp2 (mkConst ``Eq.refl [.succ .zero]) optTy rhs]
     addDecl (.thmDecl { name := ns ++ `ast_tokens, levelParams := [], type := ty, value := pf })
   let i (n : String) : Ident := mkIdent (Name.mkSimple n)
   elabCommand (← `(theorem $(i "parse_ast") : parse ($(i "source")).toList = some $(i "ast") := by
