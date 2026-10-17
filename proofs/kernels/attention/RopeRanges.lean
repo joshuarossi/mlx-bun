@@ -76,7 +76,7 @@ theorem ranges (p : Platform) (primitive : TrigRanges p) (x : Inputs)
       have h := mul_le_mul h2.2 hs.2 (abs_nonneg _) (by norm_num : (0 : ℝ) ≤ 256)
       norm_num at h
       simpa only [productCap, (cap 9 (by decide)).2, show (2 : ℝ)^(9 : Int) = 512 from by norm_num] using h)
-  have hpf : (product p x).isFinite = true := FlushToZero.finite_flush _ hp.1
+  have hpf : (product p x).isFinite = true := FlushToZero.finite_flushExact _ _ hp.1
   have hi : ∀ i, (Rope.bind p x i).isFinite = true ∧ |real (Rope.bind p x i)| ≤ real (inputCap i) := by
     intro i
     by_cases h4 : i = 4

@@ -4,6 +4,8 @@ namespace Inference.Kernels.Delta.Softplus
 open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 open Contracts.Mlx.BFloat16Arithmetic
 open Trellis.GateUpSplitTail (zero negative negative_iff)
+open Contracts.Mlx.FlushToZero (threshold threshold_pos)
+
 
 -- Finite-input branch of MLX 0.32.2 LogAddExp(x, 0). Every arithmetic
 -- operation here has bf16 storage and the explicit flush/round model.
@@ -56,24 +58,30 @@ theorem raw_difference_finite (x : Value) (hx : Model.isFinite x = true) :
   exact ((add_le_add (flush_abs_le (bottom x)) (flush_abs_le (top x))).trans_eq hm).trans
     (Model.abs_toReal_le_posMaxFinite_of_isIEEE_of_isFinite x (by decide) hx)
 
-theorem top_real (x : Value) (hx : Model.isFinite x = true) : Model.toReal (top x) = max (Model.toReal x) 0 := by
+-- The selection compares the flushed input, so its flushed result is exact.
+theorem flush_zero : flush (Model.zero FloatFormat.bfloat16 false) = Model.zero FloatFormat.bfloat16 false := by
+  decide
+
+theorem top_real (x : Value) (hx : Model.isFinite x = true) :
+    Model.toReal (flush (top x)) = max (Model.toReal (flush x)) 0 := by
   unfold top
   by_cases hn : negative x
-  · simp only [hn, ite_true, zero, Model.toReal_zero, max_eq_right ((negative_iff x hx).mp hn).le]
+  · simp only [hn, ite_true, zero, flush_zero, Model.toReal_zero, max_eq_right ((negative_iff x hx).mp hn).le]
   · have h := le_of_not_gt (mt (negative_iff x hx).mpr hn)
     simp only [hn, ite_false, max_eq_left h]
 
-theorem bottom_real (x : Value) (hx : Model.isFinite x = true) : Model.toReal (bottom x) = min (Model.toReal x) 0 := by
+theorem bottom_real (x : Value) (hx : Model.isFinite x = true) :
+    Model.toReal (flush (bottom x)) = min (Model.toReal (flush x)) 0 := by
   unfold bottom
   by_cases hn : negative x
   · simp only [hn, ite_true, min_eq_left ((negative_iff x hx).mp hn).le]
   · have h := le_of_not_gt (mt (negative_iff x hx).mpr hn)
-    simp only [hn, ite_false, zero, Model.toReal_zero, min_eq_right h]
+    simp only [hn, ite_false, zero, flush_zero, Model.toReal_zero, min_eq_right h]
 
 theorem difference_target (x : Value) (hx : Model.isFinite x = true) :
-    Model.toReal (bottom x) - Model.toReal (top x) = -|Model.toReal x| := by
+    Model.toReal (flush (bottom x)) - Model.toReal (flush (top x)) = -|Model.toReal (flush x)| := by
   rw [top_real x hx, bottom_real x hx]
-  by_cases hn : 0 ≤ Model.toReal x
+  by_cases hn : 0 ≤ Model.toReal (flush x)
   · rw [min_eq_right hn, max_eq_left hn, abs_of_nonneg hn, zero_sub]
   · have hn' := le_of_lt (lt_of_not_ge hn)
     rw [min_eq_left hn', max_eq_right hn', abs_of_nonpos hn', neg_neg, sub_zero]
@@ -83,15 +91,27 @@ theorem difference_finite (exp log1p : Value → Value) (x : Value) (hf : Finite
 
 theorem difference_nonpositive (exp log1p : Value → Value) (x : Value) (hf : Finite exp log1p x) :
     Model.toReal (difference x) ≤ 0 := by
-  apply sub_nonpositive _ _ (bottom_finite x hf.input) (top_finite x hf.input) _ _ (raw_difference_finite x hf.input)
+  apply sub_nonpositive_flushed _ _ (bottom_finite x hf.input) (top_finite x hf.input) _ _ (raw_difference_finite x hf.input)
   · rw [bottom_real x hf.input]; exact min_le_right _ _
   · rw [top_real x hf.input]; exact le_max_right _ _
 
 theorem difference_error (exp log1p : Value → Value) (x : Value) (hf : Finite exp log1p x) :
     |Model.toReal (difference x) - (-|Model.toReal x|)| ≤ subBudget (bottom x) (top x) := by
-  have h := sub_error (bottom x) (top x) (bottom_finite x hf.input) (top_finite x hf.input) (raw_difference_finite x hf.input)
-  rw [difference_target x hf.input] at h
-  exact h
+  have h := sub_error_flushed (bottom x) (top x) (bottom_finite x hf.input) (top_finite x hf.input)
+    (raw_difference_finite x hf.input)
+  have hx : |-|Model.toReal (flush x)|-(-|Model.toReal x|)| ≤ threshold := by
+    rw [neg_sub_neg, abs_sub_comm]
+    exact (abs_abs_sub_abs_le_abs_sub _ _).trans (flush_error x)
+  unfold subBudget difference
+  rw [difference_target x hf.input] at h ⊢
+
+  calc
+    _ = |(Model.toReal (sub (bottom x) (top x))-(-|Model.toReal (flush x)|))+(-|Model.toReal (flush x)|-(-|Model.toReal x|))| := by
+
+      congr 1; ring
+    _ ≤ _ := by
+      have := (abs_add_le _ _).trans (add_le_add h hx)
+      linarith [threshold_pos]
 
 noncomputable def expBudget (expError : Value → ℝ) (x : Value) : ℝ :=
   expError (difference x) + subBudget (bottom x) (top x)
@@ -126,24 +146,33 @@ theorem log_error (exp log1p : Value → Value) (expError logError : Value → �
 theorem value_error (exp log1p : Value → Value) (expError logError : Value → ℝ)
     (he : ExpContract exp expError) (hl : Log1pContract log1p logError) (x : Value) (hf : Finite exp log1p x) :
     |Model.toReal (value exp log1p x) - Gates.softplus (Model.toReal x)| ≤ budget exp log1p expError logError x := by
-  have ha := add_error (top x) (log1p (exp (difference x))) (top_finite x hf.input) hf.logarithm hf.addition
+  have ha := add_error_flushed (top x) (log1p (exp (difference x))) (top_finite x hf.input) hf.logarithm hf.addition
   have hl' := log_error exp log1p expError logError he hl x hf
+  have ht : |max (Model.toReal (flush x)) 0-max (Model.toReal x) 0| ≤ threshold :=
+    (abs_max_sub_max_le_abs _ _ _).trans (flush_error x)
+  have hf' := flush_error (log1p (exp (difference x)))
   rw [← Gates.stable_softplus]
-  unfold Gates.stableSoftplus budget value
-  rw [← top_real x hf.input]
+  unfold Gates.stableSoftplus budget value addBudget
+  rw [top_real x hf.input] at ha ⊢
   calc
     _ = |(Model.toReal (add (top x) (log1p (exp (difference x)))) -
-      (Model.toReal (top x) + Model.toReal (log1p (exp (difference x))))) +
-      (Model.toReal (log1p (exp (difference x))) - Real.log (1 + Real.exp (-|Model.toReal x|)))| := by congr 1; ring
-    _ ≤ _ := (abs_add_le _ _).trans (add_le_add ha hl')
+      (max (Model.toReal (flush x)) 0 + Model.toReal (flush (log1p (exp (difference x)))))) +
+      ((max (Model.toReal (flush x)) 0-max (Model.toReal x) 0) +
+      ((Model.toReal (flush (log1p (exp (difference x))))-Model.toReal (log1p (exp (difference x)))) +
+      (Model.toReal (log1p (exp (difference x))) - Real.log (1 + Real.exp (-|Model.toReal x|)))))| := by congr 1; ring
+    _ ≤ _ := by
+      have := (abs_add_le _ _).trans (add_le_add ha ((abs_add_le _ _).trans (add_le_add ht
+        ((abs_add_le _ _).trans (add_le_add hf' hl')))))
+      linarith
 
 theorem value_nonnegative (exp log1p : Value → Value) (expError logError : Value → ℝ)
     (he : ExpContract exp expError) (hl : Log1pContract log1p logError) (x : Value) (hf : Finite exp log1p x) :
     0 ≤ Model.toReal (value exp log1p x) := by
-  apply add_nonnegative _ _ (top_finite x hf.input) hf.logarithm _ _ hf.addition
+  apply add_nonnegative_flushed _ _ (top_finite x hf.input) hf.logarithm _ _ hf.addition
   · rw [top_real x hf.input]; exact le_max_right _ _
-  · exact hl.nonnegative _ hf.exponential
-      (he.nonnegative _ (difference_finite exp log1p x hf) hf.exponential) hf.logarithm
+  · exact flush_nonnegative _ (hl.nonnegative _ hf.exponential
+      (he.nonnegative _ (difference_finite exp log1p x hf) hf.exponential) hf.logarithm)
+
 
 theorem value_finite (exp log1p : Value → Value) (x : Value) (hf : Finite exp log1p x) :
     Model.isFinite (value exp log1p x) = true := finite_flush _ hf.addition

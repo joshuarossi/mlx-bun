@@ -11,7 +11,7 @@ theorem activation (p : Platform) (exponential : Trellis.SigmoidRanges.Exponenti
     (bound : |Model.toReal x| ≤ Model.toReal cap) :
     ActivationFinite p x ∧ Model.isFinite (activate p x) = true ∧ |Model.toReal (activate p x)| ≤ Model.toReal cap := by
   have h := Trellis.SigmoidRanges.product p.expAbs p.expAbsError p.exponential exponential x cap hx hc bound
-  exact ⟨⟨hx, h.1, h.2.1⟩, BFloat16Arithmetic.finite_flush _ h.2.1, h.2.2⟩
+  exact ⟨⟨hx, h.1, h.2.1⟩, BFloat16Arithmetic.finite_flushExact _ _ h.2.1, h.2.2⟩
 
 private theorem input_cap : Model.isFinite (BFloat16DyadicBounds.ceiling 1 50) = true ∧
     Model.toReal (BFloat16DyadicBounds.ceiling 1 50) = (2 : ℝ)^(50 : Nat) := by

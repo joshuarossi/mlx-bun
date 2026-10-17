@@ -138,7 +138,7 @@ theorem rescale (count : Nat) (size : count < 16777216) (acc factor : Float32)
   have h := NativeMultiplication.range acc factor (cap count) ha.1 hf.1 hc.1 (by
     rw [abs_of_nonneg ha.2.1, abs_of_nonneg hf.2.1, hc.2]
     exact (mul_le_mul ha.2.2 hf.2.2 hf.2.1 (by positivity)).trans_eq (mul_one _))
-  refine ⟨h.1, FlushToZero.finite_flush _ h.1,
+  refine ⟨h.1, FlushToZero.finite_flushExact _ _ h.1,
     FlushToZero.mul_nonnegative _ _ (mul_nonneg (FlushToZero.flush_nonnegative _ ha.2.1)
       (FlushToZero.flush_nonnegative _ hf.2.1)) h.1,
     (le_abs_self _).trans (h.2.trans_eq hc.2), ?_⟩

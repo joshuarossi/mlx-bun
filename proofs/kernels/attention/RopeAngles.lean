@@ -132,7 +132,7 @@ theorem frequency_error (p : Platform) (x : Inputs) (target error : Target) (i :
     |real (frequency p x i) - targetFrequency target i| ≤ frequencyBudget p x error i := by
   have ha := argument_nonpositive p x i hf
   have ht : targetArgument target i ≤ 0 := mul_nonpos_of_nonpos_of_nonneg (neg_nonpos.mpr (by positivity)) hb
-  have hl := p.exponential.accuracy _ (FlushToZero.finite_flush _ hf.productFinite) ha hf.exponentialFinite
+  have hl := p.exponential.accuracy _ (FlushToZero.finite_flushExact _ _ hf.productFinite) ha hf.exponentialFinite
   have hp := (exp2_nonpos_lipschitz _ _ ha ht).trans
     (mul_le_mul_of_nonneg_left (argument_error p x target error i hf he) (Real.log_nonneg (by norm_num)))
   calc

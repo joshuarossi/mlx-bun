@@ -59,9 +59,9 @@ theorem tail_ranges (p : Platform) (profile : TailProfile)
   have ha := NativeMultiplication.range gate (StableSigmoid.value p.expAbs gate) profile.gateCap hg.1 hs.2.1 profile.gateFinite (by
     rw [abs_of_nonneg hs.2.2.1]
     exact (mul_le_of_le_one_right (abs_nonneg _) hs.2.2.2).trans hg.2)
-  have hp := NativeMultiplication.range (silu p gate) up profile.productCap (FlushToZero.finite_flush _ ha.1) hu.1 profile.productFinite
+  have hp := NativeMultiplication.range (silu p gate) up profile.productCap (FlushToZero.finite_flushExact _ _ ha.1) hu.1 profile.productFinite
     ((mul_le_mul ha.2 hu.2 (abs_nonneg _) ((abs_nonneg _).trans ha.2)).trans profile.productCapacity)
-  have hc := BFloat16ConversionBounds.narrow_range (product p gate up) profile.storeCap (FlushToZero.finite_flush _ hp.1)
+  have hc := BFloat16ConversionBounds.narrow_range (product p gate up) profile.storeCap (FlushToZero.finite_flushExact _ _ hp.1)
     profile.storeFinite (hp.2.trans profile.storeCapacity)
   exact ⟨⟨hg.1, hs.1, ha.1, hp.1, hc.1⟩, hc.2⟩
 

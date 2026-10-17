@@ -85,7 +85,7 @@ theorem Profile.finishExpr (p : Profile) (divide : Float32 → Float32 → Float
     ((mul_le_mul (hx i).2 inverse.2 (abs_nonneg _) (zpow_nonneg (by norm_num) _)).trans p.productCapacity)
   have hb (i : Fin n) := BFloat16ConversionBounds.narrow_range
     (normalized divide input expr (Float32.ofInt n) p.eps rsqrt i) p.normalizedCap
-    (FlushToZero.finite_flush _ (hm i).1) p.normalizedFinite ((hm i).2.trans p.normalizedCapacity)
+    (FlushToZero.finite_flushExact _ _ (hm i).1) p.normalizedFinite ((hm i).2.trans p.normalizedCapacity)
   have ho (i : Fin n) := BFloat16Bounds.mul_range (weight i)
     (BFloat16.narrow (normalized divide input expr (Float32.ofInt n) p.eps rsqrt i)) p.outputCap
     (hw i).1 (hb i).1 p.outputFinite
@@ -100,7 +100,7 @@ theorem Profile.finishExpr (p : Profile) (divide : Float32 → Float32 → Float
   unfold output
   have hf : Model.isFinite (BFloat16Arithmetic.mul (weight i)
       (BFloat16.narrow (normalized divide input expr (Float32.ofInt n) p.eps rsqrt i))) = true :=
-    BFloat16Arithmetic.finite_flush _ (ho i).1
+    BFloat16Arithmetic.mul_finite _ _ (ho i).1
   rw [BFloat16.widen_real _ hf]
   exact (ho i).2
 

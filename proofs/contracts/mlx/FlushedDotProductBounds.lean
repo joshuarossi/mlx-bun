@@ -48,7 +48,7 @@ theorem ranges_weighted (code scale input : Nat → Float32) (ec es ei : Int) (m
     have cap := DyadicBounds.ceiling_range ((count acc+1)*(weightCount*multiplicity)) (ec+es+ei) size termLo termHi
     have hout := NativeFma.range (FlushToZero.mul (code i) (scale i)) (input i)
       (FlushedDotProduct.evaluate code scale input acc) (DyadicBounds.ceiling ((count acc+1)*(weightCount*multiplicity)) (ec+es+ei))
-      (FlushToZero.finite_flush _ hw.1) (hx i).1 (FlushedDotProduct.finite_evaluate _ _ _ _ ha.1) cap.1 (by
+      (FlushToZero.finite_flushExact _ _ hw.1) (hx i).1 (FlushedDotProduct.finite_evaluate _ _ _ _ ha.1) cap.1 (by
         rw [cap.2]
         have hm := mul_le_mul (hw.2.trans_eq weightCap.2) (hx i).2 (abs_nonneg _) (by positivity)
         have hexp : ((weightCount : ℝ)*(2 : ℝ)^(ec+es)) * ((multiplicity : ℝ)*(2 : ℝ)^ei) = ((weightCount*multiplicity : Nat) : ℝ)*(2 : ℝ)^(ec+es+ei) := by

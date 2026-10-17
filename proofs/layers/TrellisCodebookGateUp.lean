@@ -195,9 +195,10 @@ theorem split_overflow_error (p : Platform) (gate up : Projection) (input : Nat 
     |real (splitOutput p gate up input row expAbs)-layerTarget gate up input row| ≤
       layerBudget p gate up input row (Model.toReal (BFloat16.narrow (raw p up input row)))
         (GateUpSplitTail.tailBudget expAbs (BFloat16.narrow (raw p gate input row)) (BFloat16.narrow (raw p up input row))
-          (1/(1+Real.exp (|Model.toReal (BFloat16.narrow (raw p gate input row))|)))) := by
+          (1/(1+Real.exp (|Model.toReal (BFloat16.narrow (raw p gate input row))|))+FlushToZero.threshold)) := by
   exact split_compose p gate up input row expAbs _ hg hu hp.hGate hp.hUp
     (GateUpSplitTail.output_finite expAbs _ _ hp) (GateUpSplitTail.tail_overflow_error expAbs _ _ hp he)
+
 
 def floatOutput (p : Platform) (gate up : Projection) (input : Nat → BitVec 16) (row : Nat)
     (expNeg : Float32 → Float32) : Float32 :=

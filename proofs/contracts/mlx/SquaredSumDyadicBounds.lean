@@ -131,14 +131,17 @@ theorem lower (input : Fin n → Float32) (hx : ∀ i, (input i).isFinite = true
   | square j =>
     have he : i = j := by simpa only [indices, List.mem_singleton] using member
     subst j
-    apply flush_lower floor _ normal
+    apply FlushToZero.flushExact_lower (FlushToZero.exact_mul _ _) _ (Numerics.mul_real _ _ finite) _ normal
     rw [Numerics.mul_real _ _ finite]
     exact round_lower floor hf _ bound
   | fmaSquare j acc ih =>
-    apply flush_lower floor _ normal
-    rw [Numerics.fma_real _ _ _ (FlushToZero.finite_flush _ (hx j))
-      (FlushToZero.finite_flush _ (hx j)) (FlushToZero.finite_flush _ (finite_evaluate _ _ finite.1)) finite.2.2]
+    have hr := Numerics.fma_real _ _ _ (FlushToZero.finite_flush _ (hx j))
+      (FlushToZero.finite_flush _ (hx j)) (FlushToZero.finite_flush _ (finite_evaluate _ _ finite.1)) finite.2.2
+    apply FlushToZero.flushExact_lower (FlushToZero.exact_fma _ _ _ (FlushToZero.finite_flush_model _ (hx j)) (FlushToZero.finite_flush_model _ (hx j))
+      (FlushToZero.finite_flush_model _ (finite_evaluate _ _ finite.1))) _ hr _ normal
+    rw [hr]
     apply round_lower floor hf
+
     rcases (show i = j ∨ i ∈ indices acc from by simpa only [indices, List.mem_cons] using member) with he | hm
     · subst j
       exact bound.trans (le_add_of_nonneg_right (FlushToZero.flush_nonnegative _ (nonnegative _ _ finite.1)))

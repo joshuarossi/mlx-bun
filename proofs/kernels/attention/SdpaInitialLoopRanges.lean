@@ -5,18 +5,20 @@ namespace Inference.Kernels.Attention.SdpaInitialLoopRanges
 open Contracts.Mlx Contracts.Mlx.Numerics SdpaUpdate SdpaVector
 open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 
--- Maximum instructions select an operand and preserve the real maximum.
+-- Maximum instructions select an operand and preserve the maximum of the
+-- flushed operands: with denormals disabled they compare flushed values.
 -- This is a scalar/SIMD primitive contract, separate from the loop proof.
 structure Maximum (p : SdpaVector.Platform) : Prop where
   pair : ∀ x y, x.isFinite = true → y.isFinite = true →
-    (p.maximum x y = x ∨ p.maximum x y = y) ∧ real (p.maximum x y) = max (real x) (real y)
+    (p.maximum x y = x ∨ p.maximum x y = y) ∧
+      real (FlushToZero.flush (p.maximum x y)) = max (real (FlushToZero.flush x)) (real (FlushToZero.flush y))
   simd : ∀ input : Fin 32 → Float32, (∀ i, (input i).isFinite = true) →
-    ∃ i, p.simdMaximum input = input i ∧ ∀ j, real (input j) ≤ real (input i)
+    ∃ i, p.simdMaximum input = input i ∧ ∀ j, real (FlushToZero.flush (input j)) ≤ real (FlushToZero.flush (input i))
 
 theorem initial_lt (score : Float32) (bound : |real score| ≤ (2 : ℝ)^(24 : Nat)) :
-    real initialShift < real score := by
-  rw [SdpaExponentRanges.initial_real, Float32OverflowMargin.maximum_value]
-  have h := (abs_le.mp bound).1
+    real (FlushToZero.flush initialShift) < real (FlushToZero.flush score) := by
+  rw [SdpaExponentRanges.initial_flush, SdpaExponentRanges.initial_real, Float32OverflowMargin.maximum_value]
+  have h := (abs_le.mp ((FlushToZero.flush_abs_le score).trans bound)).1
   norm_num at h ⊢
   linarith
 
@@ -25,10 +27,11 @@ theorem choose_initial (p : SdpaVector.Platform) (maximum : Maximum p) (score : 
     p.maximum initialShift score = score := by
   have h := maximum.pair initialShift score initial_finite hf
   rcases h.1 with hi | hs
-  · have hp := le_max_right (real initialShift) (real score)
+  · have hp := le_max_right (real (FlushToZero.flush initialShift)) (real (FlushToZero.flush score))
     rw [← h.2, hi] at hp
     exact False.elim ((not_le_of_gt (initial_lt score bound)) hp)
   · exact hs
+
 
 theorem keys_initial (group : Fin 32) : SdpaLayout.keys 1 group = if group = 0 then [0] else [] := by
   by_cases hg : group = 0

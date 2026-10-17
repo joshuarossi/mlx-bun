@@ -5,7 +5,8 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 open BFloat16Arithmetic
 open FlushToZero (threshold threshold_pos)
 
-def value (x y z : Value) : Value := flush (Model.fma (flush x) (flush y) (flush z))
+def value (x y z : Value) : Value :=
+  flushExact (FlushToZero.fmaExact (flush x) (flush y) (flush z)) (Model.fma (flush x) (flush y) (flush z))
 noncomputable def budget (x y z : Value) : ℝ :=
   2*threshold + epsilon (Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z)) +
     threshold*(|Model.toReal x|+|Model.toReal y|)
@@ -26,22 +27,30 @@ theorem product_input_error (x y : Value) :
 theorem error (x y z : Value) (hx : Model.isFinite x = true) (hy : Model.isFinite y = true) (hz : Model.isFinite z = true)
     (hf : Model.isFinite (Model.fma (flush x) (flush y) (flush z)) = true) :
     |Model.toReal (value x y z) - (Model.toReal x*Model.toReal y+Model.toReal z)| ≤ budget x y z := by
-  have eo := flush_error (Model.fma (flush x) (flush y) (flush z))
-  have er := Model.abs_toReal_fma_sub_le (flush x) (flush y) (flush z) (by decide)
-    (finite_flush x hx) (finite_flush y hy) (finite_flush z hz) hf
+  have e : |Model.toReal (value x y z)-(Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z))| ≤
+      threshold + epsilon (Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z)) :=
+    flushExact_error (FlushToZero.exact_fma _ _ _ (finite_flush x hx) (finite_flush y hy) (finite_flush z hz)) _
+      (Model.toReal_fma_eq_roundAt _ _ _ (by decide) (finite_flush x hx) (finite_flush y hy) (finite_flush z hz) hf)
   have ei := product_input_error x y
   have ez := flush_error z
-  unfold value budget
+  unfold budget
   calc
-    _ = |(Model.toReal (flush (Model.fma (flush x) (flush y) (flush z)))-Model.toReal (Model.fma (flush x) (flush y) (flush z))) +
-      ((Model.toReal (Model.fma (flush x) (flush y) (flush z))-(Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z))) +
-      ((Model.toReal (flush x)*Model.toReal (flush y)-Model.toReal x*Model.toReal y)+(Model.toReal (flush z)-Model.toReal z)))| := by congr 1; ring
+    _ = |(Model.toReal (value x y z)-(Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z))) +
+      ((Model.toReal (flush x)*Model.toReal (flush y)-Model.toReal x*Model.toReal y)+(Model.toReal (flush z)-Model.toReal z))| := by congr 1; ring
     _ ≤ _ := by
-      have h := (abs_add_le _ _).trans (add_le_add eo ((abs_add_le _ _).trans (add_le_add er
-        ((abs_add_le _ _).trans (add_le_add ei ez)))))
+      have h := (abs_add_le _ _).trans (add_le_add e ((abs_add_le _ _).trans (add_le_add ei ez)))
       linarith
 
-theorem raw_finite (x y z : Value) (hx : Model.isFinite x = true) (hy : Model.isFinite y = true) (hz : Model.isFinite z = true)
+theorem real_value (x y z : Value) (hx : Model.isFinite x = true) (hy : Model.isFinite y = true)
+    (hz : Model.isFinite z = true) (hf : Model.isFinite (Model.fma (flush x) (flush y) (flush z)) = true) :
+    Model.toReal (value x y z) =
+      if |Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z)|<threshold then 0
+      else Model.roundAt FloatFormat.bfloat16 (Model.toReal (flush x)*Model.toReal (flush y)+Model.toReal (flush z)) :=
+  real_flushExact (FlushToZero.exact_fma _ _ _ (finite_flush x hx) (finite_flush y hy) (finite_flush z hz)) _
+    (Model.toReal_fma_eq_roundAt _ _ _ (by decide) (finite_flush x hx) (finite_flush y hy) (finite_flush z hz) hf)
+
+theorem raw_finite (x y z : Value)
+ (hx : Model.isFinite x = true) (hy : Model.isFinite y = true) (hz : Model.isFinite z = true)
     (bound : |Model.toReal x| * |Model.toReal y| + |Model.toReal z| ≤ Model.toReal (Model.posMaxFinite FloatFormat.bfloat16)) :
     Model.isFinite (Model.fma (flush x) (flush y) (flush z)) = true := by
   apply Model.isFinite_fma_of_abs_mul_add_le_posMaxFinite _ _ _ (by decide)
@@ -49,6 +58,7 @@ theorem raw_finite (x y z : Value) (hx : Model.isFinite x = true) (hy : Model.is
   exact (add_le_add (mul_le_mul (flush_abs_le x) (flush_abs_le y) (abs_nonneg _) (abs_nonneg _)) (flush_abs_le z)).trans bound
 
 theorem finite (x y z : Value) (hf : Model.isFinite (Model.fma (flush x) (flush y) (flush z)) = true) :
-    Model.isFinite (value x y z) = true := finite_flush _ hf
+    Model.isFinite (value x y z) = true := finite_flushExact _ _ hf
+
 
 end Inference.Contracts.Mlx.BFloat16Fma

@@ -81,7 +81,7 @@ theorem ranges (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitiv
     change |real (Maximum.tree (fun i => (states i).maximum) maxTree)| ≤ _
     rw [selected]
     exact (hs witness).maximumBound
-  have factors i := LogSumExpExponentRanges.ordered p primitive (states i).maximum shift
+  have factors i := LogSumExpExponentRanges.ordered_flushed p primitive (states i).maximum shift
     (hs i).maximumFinite mf ((hs i).maximumBound.trans (by norm_num)) (mb.trans (by norm_num))
     (ms.2 i (maxCovered.mem_iff.mpr (List.mem_finRange i)))
   have hi : ∀ i, (bind p states shift i).isFinite = true ∧

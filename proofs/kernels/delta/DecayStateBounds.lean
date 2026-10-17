@@ -30,7 +30,7 @@ theorem contraction (state : Fin 128 → Float32) (decay : Float32)
       RecurrenceStability.magnitude (fun i => real (FlushToZero.mul (state i) decay)) ≤
         RecurrenceStability.magnitude (fun i => real (state i)) := by
   have h i := ContractiveMultiplication.range (state i) decay (hs i) hd bound
-  refine ⟨fun i => FlushToZero.finite_flush _ (h i).1, ?_⟩
+  refine ⟨fun i => FlushToZero.finite_flushExact _ _ (h i).1, ?_⟩
   have hn := RecurrenceStability.pointwise_bound _ _ (fun i => (h i).2)
   rwa [magnitude_abs] at hn
 

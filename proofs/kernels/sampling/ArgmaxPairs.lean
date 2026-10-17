@@ -1,4 +1,5 @@
 import contracts.mlx.Argmax
+import contracts.mlx.FlushToZero
 import FloatLib.Floats.Formats.BinaryInterchange.Operations.Compare.Proof
 
 namespace Inference.Kernels.Sampling.ArgmaxPairs
@@ -7,7 +8,8 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 
 -- The shader's -infinity sentinel is represented by none. Some values
 -- carry finite binary32 scores, including either sign of zero. NaN cleanup
--- and the normalized-score arithmetic are separate source operations.
+-- and the normalized-score arithmetic are separate source operations. With
+-- denormals disabled the score comparisons see flushed scores.
 structure Candidate where
   score : Option Float32
   index : Nat
@@ -18,12 +20,14 @@ def better (x y : Candidate) : Bool :=
   | none, none => decide (x.index < y.index)
   | some _, none => true
   | none, some _ => false
-  | some a, some b => decide (Model.compare (model a) (model b) = some .gt) ||
-      (decide (Model.compare (model a) (model b) = some .eq) && decide (x.index < y.index))
+  | some a, some b =>
+    decide (Model.compare (model (FlushToZero.flush a)) (model (FlushToZero.flush b)) = some .gt) ||
+      (decide (Model.compare (model (FlushToZero.flush a)) (model (FlushToZero.flush b)) = some .eq) &&
+        decide (x.index < y.index))
 def choose (x y : Candidate) : Candidate := if better x y then x else y
 
 noncomputable def semantic (x : Candidate) : Argmax.Candidate (WithBot ℝ) where
-  score := match x.score with | none => ⊥ | some value => (real value : WithBot ℝ)
+  score := match x.score with | none => ⊥ | some value => (real (FlushToZero.flush value) : WithBot ℝ)
   index := x.index
 
 theorem better_semantic (x y : Candidate) (hx : Finite x) (hy : Finite y) :
@@ -35,10 +39,13 @@ theorem better_semantic (x y : Candidate) (hx : Finite x) (hy : Finite y) :
     cases hb : y.score with
     | none => simp [better, semantic, ha, hb, Argmax.better]
     | some b =>
-      have haf : Model.isFinite (model a) = true := by rw [finite_model]; exact hx a ha
-      have hbf : Model.isFinite (model b) = true := by rw [finite_model]; exact hy b hb
-      have he := Model.compare_eq_some_eq_iff_toReal_eq_of_isFinite (model a) (model b) haf hbf
-      have hg := Model.compare_eq_some_gt_iff_toReal_gt_of_isFinite (model a) (model b) haf hbf
+      have haf : Model.isFinite (model (FlushToZero.flush a)) = true := by
+        rw [finite_model]; exact FlushToZero.finite_flush _ (hx a ha)
+      have hbf : Model.isFinite (model (FlushToZero.flush b)) = true := by
+        rw [finite_model]; exact FlushToZero.finite_flush _ (hy b hb)
+      have he := Model.compare_eq_some_eq_iff_toReal_eq_of_isFinite _ _ haf hbf
+      have hg := Model.compare_eq_some_gt_iff_toReal_gt_of_isFinite _ _ haf hbf
+
       apply Bool.eq_iff_iff.mpr
       simp only [better, ha, hb, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq,
         Argmax.better, semantic, WithBot.coe_lt_coe, WithBot.coe_eq_coe, he, hg, real]

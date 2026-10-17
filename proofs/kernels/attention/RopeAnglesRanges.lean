@@ -39,7 +39,7 @@ theorem frequency (p : Platform) (division : DivisionBounds.Contract p.divide) (
       exact (mul_le_mul hr hx.baseMagnitude (abs_nonneg _) (by norm_num : (0 : ℝ) ≤ 32)).trans (by norm_num))
   have hnonpos : real (argument p x i) ≤ 0 := FlushToZero.mul_nonpositive _ _
     (by rw [Negation.real_neg _ hrf]; exact neg_nonpos.mpr hrn) hx.baseNonnegative hp.1
-  have he := exponential (argument p x i) (FlushToZero.finite_flush _ hp.1) hnonpos
+  have he := exponential (argument p x i) (FlushToZero.mul_finite _ _ hp.1) hnonpos
   exact ⟨⟨hx.baseFinite, hx.baseNonnegative, hrf, hp.1, he.1⟩, he.2⟩
 
 theorem ranges (p : Platform) (division : DivisionBounds.Contract p.divide) (exponential : Exp2Range p)
@@ -53,7 +53,7 @@ theorem ranges (p : Platform) (division : DivisionBounds.Contract p.divide) (exp
       simpa only [one_mul, zpow_ofNat] using
         mul_le_mul hx.scaleMagnitude hx.positionMagnitude (abs_nonneg _) (by norm_num : (0 : ℝ) ≤ 1))
   have ho := NativeMultiplication.range (FlushToZero.mul x.scale x.position) (RopeAngles.frequency p x i)
-    (DyadicBounds.ceiling 1 18) (FlushToZero.finite_flush _ hp.1) he (cap 18 (by decide)).1 (by
+    (DyadicBounds.ceiling 1 18) (FlushToZero.finite_flushExact _ _ hp.1) he (cap 18 (by decide)).1 (by
       rw [abs_of_nonneg hf.2.1]
       exact (mul_le_of_le_one_right (abs_nonneg _) hf.2.2).trans hp.2)
   exact ⟨⟨hf.1, ⟨⟨hx.scaleFinite, hx.positionFinite, hp.1⟩, he, ho.1⟩⟩,
@@ -69,7 +69,7 @@ theorem zero_position (p : Platform) (division : DivisionBounds.Contract p.divid
   have hp := NativeMultiplication.range x.scale x.position 0 hx.scaleFinite hx.positionFinite (by decide)
     (by rw [zeroPosition, abs_zero, mul_zero, hz])
   have ho := NativeMultiplication.range (FlushToZero.mul x.scale x.position) (RopeAngles.frequency p x i) 0
-    (FlushToZero.finite_flush _ hp.1) hf.1.exponentialFinite (by decide) (by
+    (FlushToZero.finite_flushExact _ _ hp.1) hf.1.exponentialFinite (by decide) (by
       have he : real (FlushToZero.mul x.scale x.position) = 0 := abs_nonpos_iff.mp (hp.2.trans_eq hz)
       rw [he, abs_zero, zero_mul, hz])
   exact abs_nonpos_iff.mp (ho.2.trans_eq hz)

@@ -15,7 +15,7 @@ theorem ranges (p : Platform) (primitive : Trellis.SigmoidRanges.ExponentialRang
     change |Model.toReal attention| * |Model.toReal (Trellis.GateUpSplitTail.sigmoidValue p.expAbs gate)| ≤ _
     rw [abs_of_nonneg hs.2.2.1]
     exact (mul_le_of_le_one_right (abs_nonneg _) hs.2.2.2).trans bound)
-  exact ⟨hs.1, hp.1, BFloat16Arithmetic.finite_flush _ hp.1, hp.2⟩
+  exact ⟨hs.1, hp.1, BFloat16Arithmetic.finite_flushExact _ _ hp.1, hp.2⟩
 
 theorem accuracy (p : Platform) (primitive : Trellis.SigmoidRanges.ExponentialRange p.expAbs)
     (attention gate cap : BF) (ha : Model.isFinite attention = true) (hg : Model.isFinite gate = true)

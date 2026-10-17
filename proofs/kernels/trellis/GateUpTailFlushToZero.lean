@@ -32,7 +32,8 @@ theorem quotient_finite (expNeg : Float32 → Float32) (gate : Float32)
     (quotient expNeg gate).isFinite=true := by
   unfold quotient FlushToZero.div
   rw [FlushToZero.flush_one, FlushToZero.flush_eq_of_one_le _ hn]
-  exact FlushToZero.finite_flush _ hq
+  exact FlushToZero.finite_flushExact _ _ hq
+
 
 noncomputable def sigmoidBudget (expNeg : Float32 → Float32) (expError : Float32 → ℝ)
     (gate : Float32) : ℝ :=
@@ -89,7 +90,7 @@ theorem roundedMul_error (x y : Float32)
     (hb : Model.isFinite (BFloat16.narrow (FlushToZero.mul x y))=true) :
     |real (roundedMul x y)-real x*real y| ≤ mulBudget x y := by
   have em := FlushToZero.mul_error x y hm
-  have eb := BFloat16.cast_error (FlushToZero.mul x y) (FlushToZero.finite_flush _ hm) hb
+  have eb := BFloat16.cast_error (FlushToZero.mul x y) (FlushToZero.mul_finite _ _ hm) hb
   unfold roundedMul mulBudget FlushToZero.mulBudget
   calc
     _ = |(real (BFloat16.cast (FlushToZero.mul x y))-real (FlushToZero.mul x y)) +

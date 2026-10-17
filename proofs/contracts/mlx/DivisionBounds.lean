@@ -16,7 +16,8 @@ structure Contract (divide : Float32 → Float32 → Float32) : Prop where
 
 def raw (x y : Float32) : Float32 := Float32.ofModel (Model.toFloat32Model
   (Model.div (model (FlushToZero.flush x)) (model y)))
-def value (x y : Float32) : Float32 := FlushToZero.flush (raw x y)
+def value (x y : Float32) : Float32 :=
+  FlushToZero.flushExact (FlushToZero.divExact (model (FlushToZero.flush x)) (model y)) (raw x y)
 noncomputable def error (x y : Float32) : ℝ :=
   2 * FlushToZero.threshold + epsilon (real (FlushToZero.flush x) / real y)
 
@@ -61,34 +62,35 @@ theorem raw_real (x y : Float32) (hx : x.isFinite = true) (hy : y.isFinite = tru
 theorem referenceRange : Contract value := by
   constructor
   · intro x y hx hy hd
-    exact FlushToZero.finite_flush _ (raw_finite x y hx hy hd)
+    exact FlushToZero.finite_flushExact _ _ (raw_finite x y hx hy hd)
   · intro x y cap hx hy hd hc hb
-    apply (FlushToZero.flush_abs_le _).trans
+    apply (FlushToZero.flushExact_abs_le _ _).trans
     rw [raw_real x y hx hy hd]
     exact Float32Bounds.rounded_bound cap hc _ ((quotient_bound x y hd).trans hb)
 
 theorem referenceAccuracy : Division.Contract value error := by
   constructor
   · intro x y hx hy hd _
-    have er : |real (raw x y) - real (FlushToZero.flush x) / real y| ≤
-        epsilon (real (FlushToZero.flush x) / real y) := by
-      rw [raw_real x y hx hy hd]
-      exact Model.abs_roundAt_sub_le _ _
+    have er : |real (value x y) - real (FlushToZero.flush x) / real y| ≤
+        FlushToZero.threshold + epsilon (real (FlushToZero.flush x) / real y) :=
+      FlushToZero.flushExact_error (FlushToZero.exact_div _ _) _ (raw_real x y hx hy hd)
     have ei : |real (FlushToZero.flush x) / real y - real x / real y| ≤ FlushToZero.threshold := by
       rw [← sub_div, abs_div, abs_of_pos (by linarith [hd.1] : 0 < real y)]
       exact (div_le_self (abs_nonneg _) hd.1).trans (FlushToZero.flush_error x)
-    have eo := FlushToZero.flush_error (raw x y)
-    unfold value error
+    unfold error
     calc
-      _ = |(real (FlushToZero.flush (raw x y)) - real (raw x y)) +
-          ((real (raw x y) - real (FlushToZero.flush x) / real y) +
-          (real (FlushToZero.flush x) / real y - real x / real y))| := by congr 1; ring
+      _ = |(real (value x y) - real (FlushToZero.flush x) / real y) +
+          (real (FlushToZero.flush x) / real y - real x / real y)| := by congr 1; ring
       _ ≤ _ := by
-        have h := (abs_add_le _ _).trans (add_le_add eo ((abs_add_le _ _).trans (add_le_add er ei)))
+        have h := (abs_add_le _ _).trans (add_le_add er ei)
         linarith
   · intro x y hx hy hn hd _
-    apply FlushToZero.flush_nonnegative
-    rw [raw_real x y hx hy hd]
-    exact FlushToZero.round_nonnegative _ (div_nonneg (FlushToZero.flush_nonnegative x hn) (by linarith [hd.1]))
+    rcases FlushToZero.flushExact_cases (FlushToZero.divExact (model (FlushToZero.flush x)) (model y)) (raw x y) with h | h
+    · change 0 ≤ real (FlushToZero.flushExact _ _)
+      rw [h, raw_real x y hx hy hd]
+      exact FlushToZero.round_nonnegative _ (div_nonneg (FlushToZero.flush_nonnegative x hn) (by linarith [hd.1]))
+    · change 0 ≤ real (FlushToZero.flushExact _ _)
+      rw [h]
+
 
 end Inference.Contracts.Mlx.DivisionBounds

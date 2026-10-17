@@ -70,7 +70,7 @@ theorem multiplication (x y : Float32)
     |real (FlushToZero.mul x y)-real x*real y| ≤
       (2 : ℝ)^(-24 : Int)*(|real x| * |real y|) + (2 : ℝ)^(-150 : Int) +
       FlushToZero.threshold*(1+|real x|+|real y|) := by
-  have ho := FlushToZero.flush_error (FlushToZero.flush x*FlushToZero.flush y)
+  have ho := FlushToZero.mul_raw_error x y hf
   have hr := binary32_grid (real (FlushToZero.flush x)*real (FlushToZero.flush y))
   rw [← mul_real _ _ hf] at hr
   have hp := FlushToZero.product_input_error x y

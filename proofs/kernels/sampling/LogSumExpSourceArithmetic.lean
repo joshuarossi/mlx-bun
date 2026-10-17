@@ -5,16 +5,19 @@ open Contracts.Mlx
 open FloatLib.Floats.Formats.BinaryInterchange
 set_option maxRecDepth 10000
 
+-- `maxval < value ? value : maxval` on flushed operands (Maximum.less).
 def select (previous value : Float32) : Float32 :=
-  if Model.compare (Numerics.model previous) (Numerics.model value)=some .lt then value else previous
+  if Maximum.less previous value then value else previous
 
 theorem select_model (previous value : Float32) : select previous value=Maximum.value previous value := rfl
 
 theorem retain_tie (previous value : Float32)
-    (equal : Model.compare (Numerics.model previous) (Numerics.model value)=some .eq) :
+    (equal : Model.compare (Numerics.model (FlushToZero.flush previous))
+      (Numerics.model (FlushToZero.flush value))=some .eq) :
     select previous value=previous := by
-  rw [select,equal]
+  simp only [select,Maximum.less,equal]
   rfl
+
 
 private theorem ofFn_four {α : Type} (values : Fin 4→α) :
     List.ofFn values=[values 0,values 1,values 2,values 3] := rfl

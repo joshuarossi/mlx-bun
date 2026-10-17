@@ -16,7 +16,7 @@ structure PrimitiveRanges (exp log1p : Value → Value) : Prop where
 theorem difference (x : Value) (hx : Model.isFinite x = true) :
     Model.isFinite (Softplus.difference x) = true ∧ Model.toReal (Softplus.difference x) ≤ 0 := by
   refine ⟨finite_flush _ (Softplus.raw_difference_finite x hx), ?_⟩
-  apply sub_nonpositive _ _ (Softplus.bottom_finite x hx) (Softplus.top_finite x hx) _ _ (Softplus.raw_difference_finite x hx)
+  apply sub_nonpositive_flushed _ _ (Softplus.bottom_finite x hx) (Softplus.top_finite x hx) _ _ (Softplus.raw_difference_finite x hx)
   · rw [Softplus.bottom_real x hx]; exact min_le_right _ _
   · rw [Softplus.top_real x hx]; exact le_max_right _ _
 
@@ -43,8 +43,9 @@ theorem ranges (exp log1p : Value → Value) (primitive : PrimitiveRanges exp lo
   have ha := BFloat16Bounds.add_range (Softplus.top x) (log1p (exp (Softplus.difference x))) outputCap
     (Softplus.top_finite x hx) hl.1 ho hb
   refine ⟨⟨hx, he.1, hl.1, ha.1⟩, finite_flush _ ha.1, ?_, ha.2⟩
-  apply add_nonnegative _ _ (Softplus.top_finite x hx) hl.1 _ hl.2.1 ha.1
+  apply add_nonnegative_flushed _ _ (Softplus.top_finite x hx) hl.1 _ (flush_nonnegative _ hl.2.1) ha.1
   rw [Softplus.top_real x hx]
   exact le_max_right _ _
+
 
 end Inference.Kernels.Delta.SoftplusRanges

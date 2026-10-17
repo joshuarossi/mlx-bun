@@ -50,7 +50,7 @@ theorem ranges (p : Platform) (profile : Profile) (primitive : PrimitiveRanges p
   have hm := NativeMultiplication.range (-p.exp aLog) (BFloat16.widen (soft p a dt)) profile.argumentCap
     (Negation.finite_neg _ he.1) (BFloat16.widen_finite _ hs.2.1) profile.argumentFinite
     ((mul_le_mul hn hw (abs_nonneg _) ((abs_nonneg _).trans hn)).trans profile.argumentCapacity)
-  have argumentFinite : (argument p aLog a dt).isFinite = true := FlushToZero.finite_flush _ hm.1
+  have argumentFinite : (argument p aLog a dt).isFinite = true := FlushToZero.finite_flushExact _ _ hm.1
   have nonpositive : real (argument p aLog a dt) ≤ 0 := by
     apply FlushToZero.mul_nonpositive _ _ _ _ hm.1
     · rw [Negation.real_neg _ he.1]

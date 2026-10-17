@@ -88,7 +88,7 @@ theorem value_finite (platform : Platform) (input : Fin n → Float32) (weight :
     Model.isFinite (value platform input weight width eps scratchBefore scratchBase i) = true := by
   unfold value
   rw [inverse_correct]
-  exact BFloat16Arithmetic.finite_flush _ (hf.hOutput i)
+  exact BFloat16Arithmetic.mul_finite _ _ (hf.hOutput i)
 
 theorem output_error (platform : Platform) (input : Fin n → Float32) (weight : Fin n → BFloat16Arithmetic.Value)
     (width eps : Float32) (idealEps epsError : ℝ) (hp : 0 < idealEps) (he : |real eps - idealEps| ≤ epsError)

@@ -13,8 +13,9 @@ theorem fold_contract (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges
     (values : α → Float32) (finite : ∀ i, (values i).isFinite = true)
     (indices : List α) (initial : Float32) (hi : initial.isFinite = true) :
     (foldMaximum p values indices initial).isFinite = true ∧
-      real initial ≤ real (foldMaximum p values indices initial) ∧
-      (∀ i ∈ indices, real (values i) ≤ real (foldMaximum p values indices initial)) ∧
+      real (FlushToZero.flush initial) ≤ real (FlushToZero.flush (foldMaximum p values indices initial)) ∧
+      (∀ i ∈ indices, real (FlushToZero.flush (values i)) ≤
+        real (FlushToZero.flush (foldMaximum p values indices initial))) ∧
       (foldMaximum p values indices initial = initial ∨
         ∃ i ∈ indices, foldMaximum p values indices initial = values i) := by
   induction indices generalizing initial with
@@ -26,8 +27,10 @@ theorem fold_contract (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges
       · exact hi
       · exact finite i
     have tail := ih _ nextFinite
-    have initialNext : real initial ≤ real (p.maximum initial (values i)) := by rw [pair.2]; exact le_max_left _ _
-    have valueNext : real (values i) ≤ real (p.maximum initial (values i)) := by rw [pair.2]; exact le_max_right _ _
+    have initialNext : real (FlushToZero.flush initial) ≤ real (FlushToZero.flush (p.maximum initial (values i))) := by
+      rw [pair.2]; exact le_max_left _ _
+    have valueNext : real (FlushToZero.flush (values i)) ≤ real (FlushToZero.flush (p.maximum initial (values i))) := by
+      rw [pair.2]; exact le_max_right _ _
     refine ⟨tail.1, initialNext.trans tail.2.1, ?_, ?_⟩
     · intro j member
       rcases List.mem_cons.mp member with rfl | hj
@@ -43,7 +46,7 @@ theorem initialized (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges.M
     (values : α → Float32) (finite : ∀ i, (values i).isFinite = true)
     (bound : ∀ i, |real (values i)| ≤ (2 : ℝ)^(24 : Nat)) (indices : List α) (nonempty : indices ≠ []) :
     ∃ i ∈ indices, foldMaximum p values indices SdpaVector.initialShift = values i ∧
-      ∀ j ∈ indices, real (values j) ≤ real (values i) := by
+      ∀ j ∈ indices, real (FlushToZero.flush (values j)) ≤ real (FlushToZero.flush (values i)) := by
   have h := fold_contract p maximum values finite indices SdpaVector.initialShift SdpaVector.initial_finite
   rcases h.2.2.2 with same | ⟨i, hi, same⟩
   · cases indices with
@@ -75,7 +78,8 @@ theorem selected (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges.Maxi
     (minimum : 32 ≤ blocks) (maxima : Fin blocks → Float32)
     (finite : ∀ i, (maxima i).isFinite = true)
     (bound : ∀ i, |real (maxima i)| ≤ (2 : ℝ)^(24 : Nat)) :
-    ∃ winner : Fin blocks, common p maxima = maxima winner ∧ ∀ i, real (maxima i) ≤ real (maxima winner) := by
+    ∃ winner : Fin blocks, common p maxima = maxima winner ∧
+      ∀ i, real (FlushToZero.flush (maxima i)) ≤ real (FlushToZero.flush (maxima winner)) := by
   have lanes thread := initialized p maximum maxima finite bound (SdpaLayout.keys blocks thread) (lane_nonempty minimum thread)
   have laneFinite thread : (lane p maxima thread).isFinite = true := by
     obtain ⟨i, _, same, _⟩ := lanes thread
@@ -92,7 +96,8 @@ theorem selected (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges.Maxi
   have inside := (SdpaLayout.keys_mem blocks owner i).mpr rfl
   have localBound := laneLargest i inside
   have globalBound := largest owner
-  change real (foldMaximum p maxima _ _) ≤ real (foldMaximum p maxima _ _) at globalBound
+  change real (FlushToZero.flush (foldMaximum p maxima _ _)) ≤ real (FlushToZero.flush (foldMaximum p maxima _ _)) at globalBound
+
   rw [same, laneSame] at globalBound
   exact localBound.trans globalBound
 

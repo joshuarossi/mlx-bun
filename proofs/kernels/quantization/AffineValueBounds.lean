@@ -40,7 +40,7 @@ theorem tail_range (contracted : Bool) (scale bias : BF) (dot sum : Float32)
     hu.1 hbf cb.1 (by simpa only [cb.2, Nat.cast_ofNat] using hup)
   have hmb : |real (FlushToZero.mul sum (BFloat16.widen bias))| ≤ 16 * (2 : ℝ)^exponent := by
     simpa only [cb.2, Nat.cast_ofNat] using hm.2
-  have hmf := FlushToZero.finite_flush _ hm.1
+  have hmf := FlushToZero.mul_finite _ _ hm.1
   have ht : Arithmetic.Finite (tailBind (BFloat16.widen scale) dot sum (BFloat16.widen bias)) (tailExpr contracted) ∧
       |real (combine contracted scale dot sum bias)| ≤ ((count+16 : Nat) : ℝ) * (2 : ℝ)^exponent := by
     cases contracted
@@ -49,7 +49,7 @@ theorem tail_range (contracted : Bool) (scale bias : BF) (dot sum : Float32)
         hsf hd.1 cd.1 (by rwa [cd.2])
       have hadd := Float32Bounds.add_range (FlushToZero.mul sum (BFloat16.widen bias))
         (FlushToZero.mul (BFloat16.widen scale) dot) (DyadicBounds.ceiling (count+16) exponent)
-        hmf (FlushToZero.finite_flush _ hd'.1) co.1
+        hmf (FlushToZero.finite_flushExact _ _ hd'.1) co.1
         (by rw [co.2]; have hdv := hd'.2; rw [cd.2] at hdv; calc
             _ ≤ 16 * (2 : ℝ)^exponent + (count : ℝ) * (2 : ℝ)^exponent := add_le_add hmb hdv
             _ = _ := by push_cast; ring)

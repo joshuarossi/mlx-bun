@@ -22,4 +22,12 @@ def orderedContract : SimdContract (fun input => evaluate input Reduction.ordere
 theorem contract_satisfiable : Nonempty (SimdContract (fun input => evaluate input Reduction.orderedTree)) :=
   ⟨orderedContract⟩
 
+-- A NaN lane, quiet or signaling, makes the sum the default NaN 0x7fc00000,
+-- as the M1 Max probe observes; NaN inputs need no separate clause.
+theorem nan_witness :
+    (evaluate (fun i : Fin 32 => if i.val=7 then Float32.ofBits 0xffc00001 else Float32.ofBits 0x3f800000)
+      Reduction.orderedTree).toBits = 0x7fc00000 ∧
+    (evaluate (fun i : Fin 32 => if i.val=31 then Float32.ofBits 0x7fa00001 else Float32.ofBits 0xff7fffff)
+      Reduction.orderedTree).toBits = 0x7fc00000 := by decide +kernel
+
 end Inference.Contracts.Mlx.FlushedReduction

@@ -77,7 +77,7 @@ theorem Profile.ranges (p : Profile) (platform : RmsNorm.Platform)
       _ = _ := one_mul _)
   have hb (i : Fin n) := BFloat16ConversionBounds.narrow_range
     (normalized platform.divide input expr (Float32.ofInt n) p.eps platform.rsqrt i) p.normalizedCap
-    (FlushToZero.finite_flush _ (hm i).1) p.normalizedFinite ((hm i).2.trans p.normalizedCapacity)
+    (FlushToZero.mul_finite _ _ (hm i).1) p.normalizedFinite ((hm i).2.trans p.normalizedCapacity)
   have ho (i : Fin n) := BFloat16Bounds.mul_range (weight i)
     (BFloat16.narrow (normalized platform.divide input expr (Float32.ofInt n) p.eps platform.rsqrt i)) p.outputCap
     (hw i).1 (hb i).1 p.outputFinite
@@ -92,7 +92,7 @@ theorem Profile.ranges (p : Profile) (platform : RmsNorm.Platform)
   unfold output
   have hf : Model.isFinite (BFloat16Arithmetic.mul (weight i)
       (BFloat16.narrow (normalized platform.divide input expr (Float32.ofInt n) p.eps platform.rsqrt i))) = true :=
-    BFloat16Arithmetic.finite_flush _ (ho i).1
+    BFloat16Arithmetic.finite_flushExact _ _ (ho i).1
   rw [BFloat16.widen_real _ hf]
   exact (ho i).2
 

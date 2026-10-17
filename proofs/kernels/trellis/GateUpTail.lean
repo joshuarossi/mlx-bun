@@ -28,7 +28,24 @@ theorem stable_sigmoid (x : ℝ) :
     field_simp
     ring
 
+-- A flushed sign test sends a tiny negative input to the upper branch,
+-- whose exact value differs from the sigmoid by at most |x|.
+theorem upper_branch (x : ℝ) (hx : x<0) (small : |x| ≤ 1) :
+    |(1-1/(1+Real.exp |x|))-sigmoid x| ≤ |x| := by
+  have hs := stable_sigmoid x
+  simp only [hx, ite_true] at hs
+  rw [← hs]
+  have ht : 0 ≤ |x| := abs_nonneg x
+  have hE := Real.one_le_exp ht
+  have hb := Real.abs_exp_sub_one_le (x := |x|) (by rwa [abs_abs])
+  rw [abs_abs, abs_of_nonneg (by linarith)] at hb
+  have he : (1-1/(1+Real.exp |x|))-1/(1+Real.exp |x|) = (Real.exp |x|-1)/(Real.exp |x|+1) := by
+    field_simp; ring
+  rw [he, abs_of_nonneg (by apply div_nonneg <;> linarith), div_le_iff₀ (by linarith)]
+  nlinarith
+
 def denominator (expNeg : Float32 → Float32) (gate : Float32) : Float32 := 1 + expNeg gate
+
 def quotient (expNeg : Float32 → Float32) (gate : Float32) : Float32 := 1 / denominator expNeg gate
 def roundedSigmoid (expNeg : Float32 → Float32) (gate : Float32) : Float32 := BFloat16.cast (quotient expNeg gate)
 def roundedMul (x y : Float32) : Float32 := BFloat16.cast (x*y)

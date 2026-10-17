@@ -22,7 +22,7 @@ def forward (p : Platform) (attention gate : BF) : BF := mul attention (sigmoid 
 noncomputable def target (attention gate : ℝ) : ℝ := attention * GateUpTail.sigmoid gate
 noncomputable def sigmoidBudget (p : Platform) (gate : BF) : ℝ :=
   if Model.isFinite (p.expAbs gate) then GateUpSplitTail.sigmoidBudget p.expAbs p.expError gate
-  else 1/(1+Real.exp (|Model.toReal gate|))
+  else 1/(1+Real.exp (|Model.toReal gate|))+Contracts.Mlx.FlushToZero.threshold
 
 theorem sigmoid_finite (p : Platform) (gate : BF) (hv : Valid p gate) : Model.isFinite (sigmoid p gate) = true := by
   rcases hv with hf | hi
@@ -40,7 +40,8 @@ theorem sigmoid_error (p : Platform) (gate : BF) (hg : Model.isFinite gate = tru
       GateUpSplitTail.sigmoid_error p.expAbs p.expError p.exponential gate hf
   · have hn : Model.isFinite (p.expAbs gate) = false := by rw [hi]; decide
     simpa only [sigmoid, sigmoidBudget, hn, Bool.false_eq_true, ite_false] using
-      (GateUpSplitTail.sigmoid_overflow_error p.expAbs gate hg hi).le
+      (GateUpSplitTail.sigmoid_overflow_error p.expAbs gate hg hi)
+
 
 theorem sigmoid_target_error (p : Platform) (gate : BF) (targetGate errorGate : ℝ)
     (hg : Model.isFinite gate = true) (hv : Valid p gate)
@@ -79,6 +80,6 @@ theorem forward_error (p : Platform) (attention gate : BF) (targetAttention targ
     _ ≤ _ := (abs_add_le _ _).trans (add_le_add ((abs_add_le _ _).trans (add_le_add hm he)) hs)
 
 theorem forward_finite (p : Platform) (attention gate : BF) (hf : ProductFinite p attention gate) :
-    Model.isFinite (forward p attention gate) = true := finite_flush _ hf
+    Model.isFinite (forward p attention gate) = true := finite_flushExact _ _ hf
 
 end Inference.Kernels.Attention.OutputGate

@@ -87,16 +87,18 @@ theorem ranges (p : SdpaVector.Platform) (maximum : SdpaInitialLoopRanges.Maximu
     have zero : SdpaLayout.count steps winner = 0 := by omega
     have bad := largest 0
     rw [(hp 0 winner).empty zero] at bad
-    change real (SdpaVector.partials p query keys values 0 0).shift ≤ real initialShift at bad
+    change real (FlushToZero.flush (SdpaVector.partials p query keys values 0 0).shift) ≤
+      real (FlushToZero.flush initialShift) at bad
     exact (not_le_of_gt (SdpaInitialLoopRanges.initial_lt _ ((hp 0 0).active groupZero).1)) bad
   have common : (commonShift p query keys values).isFinite = true ∧
       |real (commonShift p query keys values)| ≤ (2 : ℝ)^(24 : Nat) := by
     unfold commonShift
     rw [selected]
     exact ⟨(hp 0 winner).shift, ((hp 0 winner).active winnerActive).1⟩
-  have order i g : real (SdpaVector.partials p query keys values i g).shift ≤ real (commonShift p query keys values) := by
+  have order i g : real (FlushToZero.flush (SdpaVector.partials p query keys values i g).shift) ≤
+      real (FlushToZero.flush (commonShift p query keys values)) := by
     rw [(partials_shared p query keys values i 0 g).1]
-    change _ ≤ real (p.simdMaximum _)
+    change _ ≤ real (FlushToZero.flush (p.simdMaximum _))
     rw [selected]
     exact largest g
   refine ⟨fun t => (scoreRange t).1, fun i g => (groups i g).1, hp, common, ?_, ?_⟩

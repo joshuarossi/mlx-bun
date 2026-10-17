@@ -100,8 +100,9 @@ theorem finite_evaluate (input : Fin n → Float32) (expr : Expr n) (hf : Finite
     (evaluate input expr).isFinite=true := by
   cases expr with
   | zero => change (0 : Float32).isFinite=true; decide
-  | square => exact FlushToZero.finite_flush _ hf
-  | fmaSquare => exact FlushToZero.finite_flush _ hf.2.2
+  | square => exact FlushToZero.mul_finite _ _ hf
+  | fmaSquare => exact FlushToZero.fma_finite _ _ _ hf.2.2
+
   | add => exact FlushToZero.finite_flush _ hf.2.2
 
 theorem nonnegative (input : Fin n → Float32) (expr : Expr n) (hf : Finite input expr) :

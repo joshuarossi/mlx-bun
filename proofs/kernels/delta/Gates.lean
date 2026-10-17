@@ -140,7 +140,7 @@ def BetaValid (expAbs : Value → Value) (x : Value) : Prop :=
 
 noncomputable def betaBudget (expAbs : Value → Value) (error : Value → ℝ) (x : Value) : ℝ :=
   if Model.isFinite (expAbs x) then GateUpSplitTail.sigmoidBudget expAbs error x
-  else 1 / (1 + Real.exp (|Model.toReal x|))
+  else 1 / (1 + Real.exp (|Model.toReal x|)) + Contracts.Mlx.FlushToZero.threshold
 
 theorem beta_finite (expAbs : Value → Value) (error : Value → ℝ)
     (exponential : GateUpSplitTail.ExpAbsContract expAbs error) (x : Value) (hv : BetaValid expAbs x) :
@@ -161,7 +161,8 @@ theorem beta_total_error (expAbs : Value → Value) (error : Value → ℝ)
   rcases hv with hf | he
   · simpa only [betaBudget, hf.hExp, Bool.true_eq, ite_true] using
       beta_error expAbs error exponential x hf ideal inputError hi
-  · have hl := (GateUpSplitTail.sigmoid_overflow_error expAbs x hx he).le
+  · have hl := GateUpSplitTail.sigmoid_overflow_error expAbs x hx he
+
     have hi' := (SwiGLUStability.sigmoid_lipschitz ideal (Model.toReal x)).trans
       (mul_le_mul_of_nonneg_left hi (by norm_num : (0 : ℝ) ≤ 1/4))
     have hn : Model.isFinite (expAbs x) = false := by rw [he]; decide

@@ -23,7 +23,7 @@ theorem madd_range (input : Nat → Float32) (contracted : Bool) (a b acc : Expr
       (finite_evaluate _ _ ha.1) (finite_evaluate _ _ hb.1) hproduct.1
       (by simpa only [hproduct.2, Nat.cast_one, one_mul] using hp)
     have hadd := Float32Bounds.add_range (evaluate input acc) (FlushToZero.mul (evaluate input a) (evaluate input b))
-      (DyadicBounds.ceiling (count+1) (ea+eb)) (finite_evaluate _ _ hc.1) (FlushToZero.finite_flush _ hm.1) hout.1
+      (DyadicBounds.ceiling (count+1) (ea+eb)) (finite_evaluate _ _ hc.1) (FlushToZero.mul_finite _ _ hm.1) hout.1
       (by rw [hout.2]; have hm' := hm.2; rw [hproduct.2, Nat.cast_one] at hm';
           calc
             _ ≤ (count : ℝ) * (2 : ℝ)^(ea+eb) + 1 * (2 : ℝ)^(ea+eb) := add_le_add hc.2 hm'

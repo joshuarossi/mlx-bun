@@ -25,7 +25,7 @@ theorem component (x inverse : Float32) (weight : BF)
   norm_num at fc bc
   have pr := NativeMultiplication.range x inverse (DyadicBounds.ceiling 1 9) hx hi fc.1
     (by rw [fc.2]; exact productBound)
-  have pf : product.isFinite = true := FlushToZero.finite_flush _ pr.1
+  have pf : product.isFinite = true := FlushToZero.finite_flushExact _ _ pr.1
   have pb : |real product| ≤ 512 := by simpa only [fc.2] using pr.2
   have cr := BFloat16ConversionBounds.narrow_range product (BFloat16DyadicBounds.ceiling 1 9) pf bc.1
     (by rw [bc.2]; exact pb)
@@ -34,7 +34,7 @@ theorem component (x inverse : Float32) (weight : BF)
   have wr := BFloat16Bounds.mul_range weight converted (BFloat16DyadicBounds.ceiling 1 9) hw cf bc.1 (by
     rw [bc.2]
     simpa only [one_mul] using mul_le_mul wb cb (abs_nonneg _) (by norm_num : (0 : ℝ) ≤ 1))
-  refine ⟨BFloat16Arithmetic.finite_flush _ wr.1, ?_⟩
+  refine ⟨BFloat16Arithmetic.finite_flushExact _ _ wr.1, ?_⟩
   have pe := RelativeRounding.multiplication x inverse pr.1
   have pt : (2 : ℝ)^(-150 : Int)+FlushToZero.threshold*(1+|real x|+|real inverse|) ≤
       (2 : ℝ)^(-68 : Int) := by

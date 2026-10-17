@@ -16,7 +16,7 @@ structure Contract (divide : Float32 → Float32 → Float32) extends DivisionBo
 theorem reference : Contract DivisionBounds.value := by
   refine ⟨DivisionBounds.referenceRange, ?_, ?_⟩
   · intro x y cap hx hy hd hc hb
-    apply (FlushToZero.flush_abs_le _).trans
+    apply (FlushToZero.flushExact_abs_le _ _).trans
     rw [DivisionBounds.raw_real x y hx hy hd]
     apply Float32Bounds.rounded_bound cap hc
     rw [abs_div, abs_of_pos (by linarith [hd.1] : 0 < real y)]
@@ -26,9 +26,7 @@ theorem reference : Contract DivisionBounds.value := by
     have he : Model.roundAt FloatFormat.binary32 (real floor) = real floor :=
       Model.roundAt_toReal_eq (model floor) (by rw [finite_model]; exact hf)
     rw [he, ← DivisionBounds.raw_real x y hx hy hd] at h
-    have hp : 0 < real (DivisionBounds.raw x y) := (FlushToZero.threshold_pos.trans normal).trans_le h
-    unfold DivisionBounds.value
-    rw [FlushToZero.flush_eq_of_threshold_lt _ (by rw [abs_of_pos hp]; exact normal.trans_le h)]
-    exact h
+    exact FlushToZero.flushExact_lower (FlushToZero.exact_div _ _) _ (DivisionBounds.raw_real x y hx hy hd) _ normal h
+
 
 end Inference.Contracts.Mlx.DivisionDirectedBounds

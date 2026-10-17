@@ -34,7 +34,7 @@ theorem range (contracted : Bool) (scale bias : BF) (b : Bounds scale bias) (q :
   cases contracted with
   | false =>
     have hm := BFloat16Bounds.mul_range scale (field q) b.productCeiling b.scaleFinite (field_checked q).1 b.productCeilingFinite hp
-    have ha := BFloat16Bounds.add_range (mul scale (field q)) bias b.outputCeiling (finite_flush _ hm.1) b.biasFinite b.outputCeilingFinite
+    have ha := BFloat16Bounds.add_range (mul scale (field q)) bias b.outputCeiling (finite_flushExact _ _ hm.1) b.biasFinite b.outputCeilingFinite
       ((add_le_add hm.2 (le_refl _)).trans b.capacity)
     exact ⟨⟨b.scaleFinite, b.biasFinite, hm.1, ha.1⟩, ha.2⟩
   | true =>

@@ -104,8 +104,9 @@ theorem finite_evaluate (input : Nat → Float32) (expr : Expr) (h : Finite inpu
   | zero => change (0 : Float32).isFinite = true; decide +kernel
   | add a b => exact FlushToZero.finite_flush _ h.2.2
   | sub a b => exact FlushToZero.finite_flush _ h.2.2
-  | mul a b => exact FlushToZero.finite_flush _ h.2.2
-  | fma a b c => exact FlushToZero.finite_flush _ h.2.2.2
+  | mul a b => exact FlushToZero.mul_finite _ _ h.2.2
+  | fma a b c => exact FlushToZero.fma_finite _ _ _ h.2.2.2
+
 
 private theorem product_error (x y X Y ex ey : ℝ) (hx : |x-X| ≤ ex) (hy : |y-Y| ≤ ey) :
     |x*y-X*Y| ≤ ex*|y| + |X| *ey := by

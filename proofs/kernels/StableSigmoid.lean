@@ -9,8 +9,11 @@ open Inference.Kernels.Trellis.GateUpTail (sigmoid inverse_difference)
 
 -- Binary32 stable sigmoid used by the fused normalization/gate tail. There
 -- is no bf16 intermediate cast between its reciprocal, branch, and products.
-def negative (x : Float32) : Prop := Model.compare (model x) (model (0 : Float32)) = some .lt
-instance (x : Float32) : Decidable (negative x) := inferInstanceAs (Decidable (Model.compare (model x) (model (0 : Float32)) = some .lt))
+-- With denormals disabled the sign test compares the flushed input.
+def negative (x : Float32) : Prop :=
+  Model.compare (model (FlushToZero.flush x)) (model (0 : Float32)) = some .lt
+instance (x : Float32) : Decidable (negative x) :=
+  inferInstanceAs (Decidable (Model.compare (model (FlushToZero.flush x)) (model (0 : Float32)) = some .lt))
 def denominator (expAbs : Float32 → Float32) (x : Float32) : Float32 := FlushToZero.add 1 (expAbs x)
 def quotient (expAbs : Float32 → Float32) (x : Float32) : Float32 := FlushToZero.div 1 (denominator expAbs x)
 def value (expAbs : Float32 → Float32) (x : Float32) : Float32 :=
@@ -20,11 +23,26 @@ theorem real_zero : real (0 : Float32) = 0 := by
   rw [real_unpack]
   exact Model.unpackedToReal_zero .positive
 
-theorem negative_iff (x : Float32) (hx : x.isFinite = true) : negative x ↔ real x < 0 := by
-  have h := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite (model x) (model (0 : Float32))
-    (by rw [finite_model]; exact hx) (by rw [finite_model]; decide)
-  change negative x ↔ real x < real (0 : Float32) at h
+theorem negative_iff (x : Float32) (hx : x.isFinite = true) : negative x ↔ real (FlushToZero.flush x) < 0 := by
+  have h := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite (model (FlushToZero.flush x)) (model (0 : Float32))
+    (by rw [finite_model]; exact FlushToZero.finite_flush x hx) (by rw [finite_model]; decide)
+  change negative x ↔ real (FlushToZero.flush x) < real (0 : Float32) at h
   rwa [real_zero] at h
+
+theorem negative_real (x : Float32) (hx : x.isFinite = true) (hn : negative x) : real x < 0 := by
+  have h := (negative_iff x hx).mp hn
+  rcases FlushToZero.flush_cases x with e | e
+  · rwa [e] at h
+  · rw [e.1] at h; exact absurd h (lt_irrefl 0)
+
+-- A nonnegative flushed input is nonnegative or tiny.
+theorem nonnegative_real (x : Float32) (hx : x.isFinite = true) (hn : ¬negative x) :
+    0 ≤ real x ∨ (real x < 0 ∧ |real x| < FlushToZero.threshold) := by
+  by_cases h : real x < 0
+  · rcases FlushToZero.flush_cases x with e | e
+    · exact absurd ((negative_iff x hx).mpr (by rwa [e])) hn
+    · exact Or.inr ⟨h, e.2.2⟩
+  · exact Or.inl (le_of_not_gt h)
 
 structure ExpContract (expAbs : Float32 → Float32) (error : Float32 → ℝ) : Prop where
   nonnegative : ∀ x, x.isFinite = true → (expAbs x).isFinite = true → 0 ≤ real (expAbs x)
@@ -52,14 +70,15 @@ theorem quotient_finite (expAbs : Float32 → Float32) (error : Float32 → ℝ)
     (he : ExpContract expAbs error) (x : Float32) (hf : Finite expAbs x) : (quotient expAbs x).isFinite = true := by
   unfold quotient FlushToZero.div
   rw [FlushToZero.flush_one, FlushToZero.flush_eq_of_one_le _ (denominator_ge_one expAbs error he x hf)]
-  exact FlushToZero.finite_flush _ hf.reciprocal
+  exact FlushToZero.finite_flushExact _ _ hf.reciprocal
 
 noncomputable def reciprocalBudget (expAbs : Float32 → Float32) (error : Float32 → ℝ) (x : Float32) : ℝ :=
   FlushToZero.threshold + epsilon (1 / real (denominator expAbs x)) +
     (FlushToZero.addBudget 1 (expAbs x) + error x) /
       (real (denominator expAbs x) * (1 + Real.exp (|real x|)))
 noncomputable def finiteBudget (expAbs : Float32 → Float32) (error : Float32 → ℝ) (x : Float32) : ℝ :=
-  reciprocalBudget expAbs error x + if negative x then 0 else Arithmetic.subBudget 1 (quotient expAbs x)
+  reciprocalBudget expAbs error x +
+    if negative x then 0 else Arithmetic.subBudget 1 (quotient expAbs x) + FlushToZero.threshold
 
 theorem quotient_error (expAbs : Float32 → Float32) (error : Float32 → ℝ)
     (he : ExpContract expAbs error) (x : Float32) (hf : Finite expAbs x) :
@@ -90,19 +109,26 @@ theorem finite_error (expAbs : Float32 → Float32) (error : Float32 → ℝ)
   have hq := quotient_error expAbs error he x hf
   have ht := Inference.Kernels.Trellis.GateUpTail.stable_sigmoid (real x)
   by_cases hn : negative x
-  · have hr := (negative_iff x hf.input).mp hn
+  · have hr := negative_real x hf.input hn
     simpa only [value, finiteBudget, hn, ite_true, add_zero, hr, ← ht] using hq
-  · have hr : ¬real x < 0 := fun h => hn ((negative_iff x hf.input).mpr h)
-    simp only [hr, ite_false] at ht
-    have hs := Arithmetic.sub_error (1 : Float32) (quotient expAbs x) (by decide)
+  · have hs := Arithmetic.sub_error (1 : Float32) (quotient expAbs x) (by decide)
       (quotient_finite expAbs error he x hf) (hf.subtraction hn)
     rw [real_one] at hs
     simp only [value, finiteBudget, hn, ite_false]
-    rw [← ht]
+    have hb : |(1-1/(1+Real.exp |real x|))-sigmoid (real x)| ≤ FlushToZero.threshold := by
+      rcases nonnegative_real x hf.input hn with h | h
+      · simp only [not_lt.mpr h, ite_false] at ht
+        rw [← ht, sub_self, abs_zero]
+        exact FlushToZero.threshold_pos.le
+      · exact (Inference.Kernels.Trellis.GateUpTail.upper_branch _ h.1
+          (h.2.le.trans FlushToZero.threshold_lt_one.le)).trans h.2.le
     calc
-      _ = |(real (Arithmetic.sub 1 (quotient expAbs x)) - (1 - real (quotient expAbs x))) -
-        (real (quotient expAbs x) - 1 / (1 + Real.exp (|real x|)))| := by congr 1; ring
-      _ ≤ _ := by have h := (abs_sub _ _).trans (add_le_add hs hq); linarith
+      _ = |((real (Arithmetic.sub 1 (quotient expAbs x)) - (1 - real (quotient expAbs x))) -
+        (real (quotient expAbs x) - 1 / (1 + Real.exp (|real x|)))) +
+        ((1-1/(1+Real.exp |real x|))-sigmoid (real x))| := by congr 1; ring
+      _ ≤ _ := by
+        have h := (abs_add_le _ _).trans (add_le_add ((abs_sub _ _).trans (add_le_add hs hq)) hb)
+        linarith
 
 theorem quotient_overflow (expAbs : Float32 → Float32) (x : Float32) (he : expAbs x = Float32.inf) : quotient expAbs x = 0 := by
   unfold quotient denominator
@@ -118,23 +144,34 @@ theorem value_overflow (expAbs : Float32 → Float32) (x : Float32) (he : expAbs
   · decide +kernel
 
 theorem overflow_error (expAbs : Float32 → Float32) (x : Float32) (hx : x.isFinite = true) (he : expAbs x = Float32.inf) :
-    |real (value expAbs x) - sigmoid (real x)| = 1 / (1 + Real.exp (|real x|)) := by
+    |real (value expAbs x) - sigmoid (real x)| ≤ 1 / (1 + Real.exp (|real x|)) + FlushToZero.threshold := by
   rw [value_overflow expAbs x he]
   have ht := Inference.Kernels.Trellis.GateUpTail.stable_sigmoid (real x)
   have hp : 0 < 1 / (1 + Real.exp (|real x|)) := by positivity
+  have h0 := FlushToZero.threshold_pos
   by_cases hn : negative x
-  · have hr := (negative_iff x hx).mp hn
+  · have hr := negative_real x hx hn
     simp only [hn, ite_true, real_zero, hr] at ht ⊢
     rw [← ht, zero_sub, abs_neg, abs_of_pos hp]
-  · have hr : ¬real x < 0 := fun h => hn ((negative_iff x hx).mpr h)
-    simp only [hn, ite_false, real_one, hr] at ht ⊢
-    rw [← ht]
-    have hh : (1 : ℝ) - (1 - 1 / (1 + Real.exp (|real x|))) = 1 / (1 + Real.exp (|real x|)) := by ring
-    rw [hh, abs_of_pos hp]
+    linarith
+  · simp only [hn, ite_false, real_one]
+    rcases nonnegative_real x hx hn with h | h
+    · simp only [not_lt.mpr h, ite_false] at ht
+      rw [← ht]
+      have hh : (1 : ℝ) - (1 - 1 / (1 + Real.exp (|real x|))) = 1 / (1 + Real.exp (|real x|)) := by ring
+      rw [hh, abs_of_pos hp]
+      linarith
+    · have hb := Inference.Kernels.Trellis.GateUpTail.upper_branch _ h.1 (h.2.le.trans FlushToZero.threshold_lt_one.le)
+      calc
+        _ = |((1-1/(1+Real.exp |real x|))-sigmoid (real x)) + 1/(1+Real.exp |real x|)| := by congr 1; ring
+        _ ≤ _ := by
+          have := (abs_add_le _ _).trans (add_le_add hb (le_of_eq (abs_of_pos hp)))
+          linarith [h.2]
 
 def Valid (expAbs : Float32 → Float32) (x : Float32) : Prop := Finite expAbs x ∨ expAbs x = Float32.inf
 noncomputable def budget (expAbs : Float32 → Float32) (error : Float32 → ℝ) (x : Float32) : ℝ :=
-  if (expAbs x).isFinite then finiteBudget expAbs error x else 1 / (1 + Real.exp (|real x|))
+  if (expAbs x).isFinite then finiteBudget expAbs error x else 1 / (1 + Real.exp (|real x|)) + FlushToZero.threshold
+
 
 theorem accuracy (expAbs : Float32 → Float32) (error : Float32 → ℝ) (he : ExpContract expAbs error)
     (x : Float32) (hx : x.isFinite = true) (hv : Valid expAbs x) :
@@ -142,6 +179,6 @@ theorem accuracy (expAbs : Float32 → Float32) (error : Float32 → ℝ) (he : 
   rcases hv with hf | hi
   · simpa only [budget, hf.exponential, Bool.true_eq, ite_true] using finite_error expAbs error he x hf
   · have hn : (expAbs x).isFinite = false := by rw [hi]; decide
-    simpa only [budget, hn, Bool.false_eq_true, ite_false] using (overflow_error expAbs x hx hi).le
+    simpa only [budget, hn, Bool.false_eq_true, ite_false] using overflow_error expAbs x hx hi
 
 end Inference.Kernels.StableSigmoid

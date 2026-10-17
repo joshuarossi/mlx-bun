@@ -48,7 +48,7 @@ theorem error_sum (input : Nat → Float32) (contracted : Bool) (a b acc : Expr)
       rw [abs_mul] at h
       linarith only [h, small]
     have hadd := RelativeRounding.addition z (FlushToZero.mul x y) (finite_evaluate _ _ hf.1)
-      (FlushToZero.finite_flush _ hf.2.1.2.2) hf.2.2
+      (FlushToZero.finite_flushExact _ _ hf.2.1.2.2) hf.2.2
     have combine : |real (FlushToZero.add z (FlushToZero.mul x y))-(real x*real y+real z)| ≤
         |real (FlushToZero.add z (FlushToZero.mul x y))-(real z+real (FlushToZero.mul x y))|+
           |real (FlushToZero.mul x y)-real x*real y| := by

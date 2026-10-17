@@ -34,9 +34,10 @@ theorem ranges (p : SdpaVector.Platform) (primitive : SdpaSequenceRanges.Primiti
     rw [selected]
     exact ⟨(finite 0 winner).1, shiftBound 0 winner⟩
   have order (i : Fin 256) (block : Fin blocks) :
-      real (partials p query keys values i block).shift ≤ real (commonShift p blocks query keys values) := by
+      real (FlushToZero.flush (partials p query keys values i block).shift) ≤
+        real (FlushToZero.flush (commonShift p blocks query keys values)) := by
     rw [(SdpaTwoPassFirstPass.shared p query keys values i 0 block).1]
-    change real (maxima block) ≤ real (SdpaTwoPassMaximum.common p maxima)
+    change real (FlushToZero.flush (maxima block)) ≤ real (FlushToZero.flush (SdpaTwoPassMaximum.common p maxima))
     rw [selected]
     exact largest block
   have exponent (i : Fin 256) (block : Fin blocks) := SdpaOrderedExponentRanges.ordered p.merge.scalar primitive.exponential

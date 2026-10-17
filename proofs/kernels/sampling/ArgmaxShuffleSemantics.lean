@@ -18,10 +18,11 @@ abbrev Env := String → Option Value
 
 def greater : Option Float32 → Option Float32 → Bool
   | none,none => false | some _,none => true | none,some _ => false
-  | some x,some y => decide (Model.compare (model x) (model y)=some .gt)
+  | some x,some y => decide (Model.compare (model (FlushToZero.flush x)) (model (FlushToZero.flush y))=some .gt)
 def equalScore : Option Float32 → Option Float32 → Bool
   | none,none => true | some _,none => false | none,some _ => false
-  | some x,some y => decide (Model.compare (model x) (model y)=some .eq)
+  | some x,some y => decide (Model.compare (model (FlushToZero.flush x)) (model (FlushToZero.flush y))=some .eq)
+
 
 def evaluate (env : Env) : Expr → Option Value
   | .variable name => env name

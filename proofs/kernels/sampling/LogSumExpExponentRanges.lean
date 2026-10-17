@@ -8,10 +8,11 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 
 -- The same scalar fast-exp contract used by attention is reused here.
 -- Maximum order and flushing are proved, rather than made extra contracts.
-theorem ordered (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive p)
+-- Flushed comparisons select the shift, so only the flushed order is known.
+theorem ordered_flushed (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive p)
     (x shift : Float32) (hx : x.isFinite = true) (hs : shift.isFinite = true)
     (bx : |real x| ≤ (2 : ℝ)^(24 : Nat)) (bs : |real shift| ≤ (2 : ℝ)^(24 : Nat))
-    (order : real x ≤ real shift) :
+    (order' : real (FlushToZero.flush x) ≤ real (FlushToZero.flush shift)) :
     ExponentFinite p x shift ∧ 0 ≤ real (exponential p x shift) ∧ real (exponential p x shift) ≤ 1 := by
   have cap := DyadicBounds.ceiling_range 1 25 (by decide) (by decide) (by decide)
   have hd := Float32Bounds.sub_range x shift (DyadicBounds.ceiling 1 25) hx hs cap.1 (by
@@ -19,7 +20,6 @@ theorem ordered (p : Platform) (primitive : Attention.SdpaExponentRanges.Primiti
     have h := add_le_add bx bs
     norm_num at h ⊢
     exact h)
-  have order' := FlushOrder.monotone x shift hx hs order
   have hn : real (difference x shift) ≤ 0 := by
     apply FlushToZero.flush_nonpositive
     rw [Attention.SdpaExponentRanges.subtraction_real x shift hx hs hd.1]
@@ -27,6 +27,14 @@ theorem ordered (p : Platform) (primitive : Attention.SdpaExponentRanges.Primiti
     simpa only [Model.roundAt_zero] using h
   have h := primitive.nonpositive _ (FlushToZero.finite_flush _ hd.1) hn
   exact ⟨⟨hx, hs, hd.1, h.1⟩, h.2⟩
+
+theorem ordered (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive p)
+    (x shift : Float32) (hx : x.isFinite = true) (hs : shift.isFinite = true)
+    (bx : |real x| ≤ (2 : ℝ)^(24 : Nat)) (bs : |real shift| ≤ (2 : ℝ)^(24 : Nat))
+    (order : real x ≤ real shift) :
+    ExponentFinite p x shift ∧ 0 ≤ real (exponential p x shift) ∧ real (exponential p x shift) ≤ 1 :=
+  ordered_flushed p primitive x shift hx hs bx bs (FlushOrder.monotone x shift hx hs order)
+
 
 theorem equal_real (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive p)
     (x shift : Float32) (hx : x.isFinite = true) (hs : shift.isFinite = true)

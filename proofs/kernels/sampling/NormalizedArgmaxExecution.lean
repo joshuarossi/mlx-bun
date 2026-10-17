@@ -96,7 +96,7 @@ theorem run_correct (input : Fin 248320 → Candidate) (hi : ∀ i, Finite (inpu
     rw [he] at h
     change (match (input ⟨0, by decide⟩).score with
       | none => (⊥ : WithBot ℝ)
-      | some value => (real value : WithBot ℝ)) ≤ ⊥ at h
+      | some value => (real (FlushToZero.flush value) : WithBot ℝ)) ≤ ⊥ at h
     rw [hv] at h
     simp at h
   · exact ⟨selected, he, run_dominates input hi⟩
@@ -109,14 +109,16 @@ theorem normalized_correct (logits : Fin 248320 → NormalizedScores.BF) (normal
       (∀ i, real (NormalizedScores.value (logits selected) normalizer) = real (NormalizedScores.value (logits i) normalizer) → selected.val ≤ i.val) := by
   obtain ⟨selected, he, h⟩ := run_correct (NormalizedScores.candidates logits normalizer)
     (NormalizedScores.candidates_finite logits normalizer hl hn) (fun i => ⟨_, rfl⟩)
+  have hfix i := NormalizedScores.value_flush (logits i) normalizer (hl i) hn
   refine ⟨selected, congrArg (fun x => x.index) he, ?_, ?_⟩
   · intro i
     have hi := (h i).1
     rw [he] at hi
-    simpa only [NormalizedScores.candidates, semantic, WithBot.coe_le_coe] using hi
+    simpa only [NormalizedScores.candidates, semantic, WithBot.coe_le_coe, hfix] using hi
   · intro i equal
     have hi := h i
     rw [he] at hi
-    exact hi.2 (by simpa only [NormalizedScores.candidates, semantic, WithBot.coe_eq_coe] using equal)
+    exact hi.2 (by simpa only [NormalizedScores.candidates, semantic, WithBot.coe_eq_coe, hfix] using equal)
+
 
 end Inference.Kernels.Sampling.NormalizedArgmaxExecution

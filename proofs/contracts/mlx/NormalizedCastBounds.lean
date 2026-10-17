@@ -39,7 +39,7 @@ theorem component (x inverse : Float32) (weight : BFloat16Arithmetic.Value)
     norm_num at h ⊢
     exact h
   have pr := NativeMultiplication.range x inverse (DyadicBounds.ceiling 1 62) hx hi fc.1 productBound
-  have pf : product.isFinite = true := FlushToZero.finite_flush _ pr.1
+  have pf : product.isFinite = true := FlushToZero.finite_flushExact _ _ pr.1
   have pb : |real product| ≤ (2 : ℝ)^(62 : Nat) := by
     calc
       _ ≤ real (DyadicBounds.ceiling 1 62) := pr.2
@@ -56,7 +56,7 @@ theorem component (x inverse : Float32) (weight : BFloat16Arithmetic.Value)
     calc
       _ ≤ 1*(2 : ℝ)^(62 : Nat) := mul_le_mul wb cb (abs_nonneg _) (by norm_num)
       _ = _ := by ring)
-  refine ⟨BFloat16Arithmetic.finite_flush _ wr.1, ?_⟩
+  refine ⟨BFloat16Arithmetic.finite_flushExact _ _ wr.1, ?_⟩
   have pe := RelativeRounding.multiplication x inverse pr.1
   have pt : (2 : ℝ)^(-150 : Int)+FlushToZero.threshold*(1+|real x|+|real inverse|) ≤
       (2 : ℝ)^(-74 : Int) := by

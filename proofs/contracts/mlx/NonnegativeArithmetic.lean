@@ -28,11 +28,8 @@ theorem nonnegative (input : Nat → Float32) (expr : Expr)
       (mul_nonneg (FlushToZero.flush_nonnegative _ (ia hf.1))
         (FlushToZero.flush_nonnegative _ (ib hf.2.1))) hf.2.2
   | fma ha hb hc ia ib ic =>
-    apply FlushToZero.flush_nonnegative
-    rw [fma_real _ _ _ (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.2.1)) hf.2.2.2]
-    exact FlushToZero.round_nonnegative _ (add_nonneg
+    exact FlushToZero.fma_nonnegative _ _ _ (finite_evaluate _ _ hf.1) (finite_evaluate _ _ hf.2.1)
+      (finite_evaluate _ _ hf.2.2.1) hf.2.2.2 (add_nonneg
       (mul_nonneg (FlushToZero.flush_nonnegative _ (ia hf.1))
         (FlushToZero.flush_nonnegative _ (ib hf.2.1)))
       (FlushToZero.flush_nonnegative _ (ic hf.2.2.1)))
@@ -77,34 +74,28 @@ theorem lower_one (input : Nat → Float32) (expr : Expr)
     exact rounded_lower_one _ ((flush_lower_one _ (ih hf.2.1)).trans
       (le_add_of_nonneg_left (FlushToZero.flush_nonnegative _ (nonnegative _ _ ha hf.1))))
   | mulRightOne ha hb ih =>
-    apply flush_lower_one
-    rw [mul_real _ _ hf.2.2, FlushedIdentities.flush_one _ hb, mul_one]
+    apply FlushToZero.mul_lower _ _ hf.2.2 1 FlushToZero.threshold_lt_one
+    rw [FlushedIdentities.flush_one _ hb, mul_one]
     exact rounded_lower_one _ (flush_lower_one _ (ih hf.1))
   | mulLeftOne ha hb ih =>
-    apply flush_lower_one
-    rw [mul_real _ _ hf.2.2, FlushedIdentities.flush_one _ ha, one_mul]
+    apply FlushToZero.mul_lower _ _ hf.2.2 1 FlushToZero.threshold_lt_one
+    rw [FlushedIdentities.flush_one _ ha, one_mul]
     exact rounded_lower_one _ (flush_lower_one _ (ih hf.2.1))
   | fmaProduct ha hb hc ih =>
-    apply flush_lower_one
-    rw [fma_real _ _ _ (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.2.1)) hf.2.2.2,
-      FlushedIdentities.flush_one _ hb, mul_one]
+    apply FlushToZero.fma_lower _ _ _ (finite_evaluate _ _ hf.1) (finite_evaluate _ _ hf.2.1)
+      (finite_evaluate _ _ hf.2.2.1) hf.2.2.2 1 FlushToZero.threshold_lt_one
+    rw [FlushedIdentities.flush_one _ hb, mul_one]
     exact rounded_lower_one _ ((flush_lower_one _ (ih hf.1)).trans
       (le_add_of_nonneg_right (FlushToZero.flush_nonnegative _ (nonnegative _ _ hc hf.2.2.1))))
   | fmaProductRight ha hb hc ih =>
-    apply flush_lower_one
-    rw [fma_real _ _ _ (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.2.1)) hf.2.2.2,
-      FlushedIdentities.flush_one _ ha, one_mul]
+    apply FlushToZero.fma_lower _ _ _ (finite_evaluate _ _ hf.1) (finite_evaluate _ _ hf.2.1)
+      (finite_evaluate _ _ hf.2.2.1) hf.2.2.2 1 FlushToZero.threshold_lt_one
+    rw [FlushedIdentities.flush_one _ ha, one_mul]
     exact rounded_lower_one _ ((flush_lower_one _ (ih hf.2.1)).trans
       (le_add_of_nonneg_right (FlushToZero.flush_nonnegative _ (nonnegative _ _ hc hf.2.2.1))))
   | fmaAddend ha hb hc ih =>
-    apply flush_lower_one
-    rw [fma_real _ _ _ (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.1))
-      (FlushToZero.finite_flush _ (finite_evaluate _ _ hf.2.2.1)) hf.2.2.2]
+    apply FlushToZero.fma_lower _ _ _ (finite_evaluate _ _ hf.1) (finite_evaluate _ _ hf.2.1)
+      (finite_evaluate _ _ hf.2.2.1) hf.2.2.2 1 FlushToZero.threshold_lt_one
     exact rounded_lower_one _ ((flush_lower_one _ (ih hf.2.2.1)).trans
       (le_add_of_nonneg_left (mul_nonneg (FlushToZero.flush_nonnegative _ (nonnegative _ _ ha hf.1))
         (FlushToZero.flush_nonnegative _ (nonnegative _ _ hb hf.2.1)))))

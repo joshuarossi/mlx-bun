@@ -1,4 +1,4 @@
-import contracts.mlx.FlushToZero
+import contracts.mlx.NativeDivisionBounds
 
 namespace Inference.Contracts.Mlx.Division
 open Numerics
@@ -15,15 +15,28 @@ structure Contract (divide : Float32 → Float32 → Float32) (error : Float32 �
   nonnegative : ∀ x y, x.isFinite = true → y.isFinite = true → 0 ≤ real x → DivisorDomain y →
     (divide x y).isFinite = true → 0 ≤ real (divide x y)
 
+-- A finite flushed quotient has a finite rounded quotient: a flushed exact
+-- quotient is far below the overflow threshold.
+theorem raw_finite (x y : Float32) (hx : x.isFinite = true) (hy : y.isFinite = true) (hn : 1 ≤ real y)
+    (ho : (FlushToZero.div x y).isFinite = true) : (FlushToZero.flush x / y).isFinite = true := by
+  unfold FlushToZero.div FlushToZero.flushExact at ho
+  rw [FlushToZero.flush_eq_of_one_le y hn] at ho
+  split at ho
+  · rename_i s hu
+    have hv := FlushToZero.underflow_some (FlushToZero.exact_div _ _) hu
+    exact NativeDivisionBounds.finite _ y (FlushToZero.finite_flush x hx) hy (by linarith)
+      (hv.trans (by norm_num [FlushToZero.threshold]))
+  · exact ho
+
 -- A consistency witness for the already proved flushed IEEE implementation.
 theorem flushedRneContract : Contract FlushToZero.div FlushToZero.divBudget := by
   constructor
-  · intro x y _ hy hd ho
-    have hraw : (FlushToZero.flush x / y).isFinite = true := by
-      simpa only [FlushToZero.div, FlushToZero.flush_eq_of_one_le y hd.1, FlushToZero.finite_flush_iff] using ho
-    exact FlushToZero.div_normal_error x y hy hd.1 hraw
-  · intro x y _ hy hx hd ho
+  · intro x y hx hy hd ho
+    exact FlushToZero.div_normal_error x y hy hd.1 (raw_finite x y hx hy hd.1 ho)
+  · intro x y hx' hy hx hd ho
     apply FlushToZero.div_nonnegative x y hy hx (by linarith [hd.1])
-    simpa only [FlushToZero.div, FlushToZero.finite_flush_iff] using ho
+    rw [FlushToZero.flush_eq_of_one_le y hd.1]
+    exact raw_finite x y hx' hy hd.1 ho
+
 
 end Inference.Contracts.Mlx.Division

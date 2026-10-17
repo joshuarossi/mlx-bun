@@ -27,7 +27,7 @@ theorem rounded_product (x y : Float32) (cap : BFloat16Arithmetic.Value)
   have hm := NativeMultiplication.range x y (BFloat16.widen cap) hx hy (BFloat16.widen_finite cap hc)
     (by rw [BFloat16.widen_real cap hc]; exact bound)
   rw [BFloat16.widen_real cap hc] at hm
-  have hn := BFloat16ConversionBounds.narrow_range (FlushToZero.mul x y) cap (FlushToZero.finite_flush _ hm.1) hc hm.2
+  have hn := BFloat16ConversionBounds.narrow_range (FlushToZero.mul x y) cap (FlushToZero.finite_flushExact _ _ hm.1) hc hm.2
   refine ⟨hm.1, hn.1, BFloat16.widen_finite _ hn.1, ?_⟩
   change |real (BFloat16.widen (BFloat16.narrow (FlushToZero.mul x y)))| ≤ _
   rw [BFloat16.widen_real _ hn.1]

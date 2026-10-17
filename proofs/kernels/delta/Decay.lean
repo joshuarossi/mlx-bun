@@ -70,7 +70,7 @@ theorem soft_error (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aL
     _ ≤ _ := (abs_add_le _ _).trans (add_le_add hl hi)
 
 theorem argument_finite (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aLog a dt) :
-    (argument p aLog a dt).isFinite = true := FlushToZero.finite_flush _ hf.productFinite
+    (argument p aLog a dt).isFinite = true := FlushToZero.finite_flushExact _ _ hf.productFinite
 
 theorem argument_nonpositive (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aLog a dt) :
     real (argument p aLog a dt) ≤ 0 := by

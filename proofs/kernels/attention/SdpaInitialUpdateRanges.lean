@@ -84,7 +84,7 @@ theorem ranges (p : Platform) (primitive : SdpaExponentRanges.Primitive p) (scor
         FlushedIdentities.mul_zero_left _ _ FlushedIdentities.zero_real fd.1.2.2
       have h := FlushedIdentities.add_zero_one
         (FlushToZero.mul s.denominator (exponential p s.shift score)) (exponential p score score)
-        (FlushToZero.finite_flush _ fd.1.2.2)
+        (FlushToZero.finite_flushExact _ _ fd.1.2.2)
         current.1.exponential prod current.2 fd.2.2
       simpa only [step, hc, Bool.false_eq_true, ite_false] using h
     · simp only [denominatorExpr, hc, ite_true, Arithmetic.Finite] at fd

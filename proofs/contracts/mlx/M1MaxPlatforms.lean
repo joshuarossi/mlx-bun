@@ -2,6 +2,7 @@ import contracts.mlx.M1MaxContract
 import contracts.mlx.RmsNorm
 import kernels.quantization.AffineRow
 import kernels.attention.SdpaVector
+import kernels.attention.SdpaInitialLoopRanges
 import kernels.attention.SdpaNormalize
 import kernels.attention.RopeAngles
 import kernels.sampling.LogSumExpRanges
@@ -114,7 +115,26 @@ noncomputable def sdpaPlatform (sumContracted : Bool) (numeratorContracted : Att
   maximum := C.fmax
   simdMaximum := C.simdMax
 
-noncomputable def logSumExpPlatform (sumContracted : Bool) (numeratorContracted : Attention.SdpaUpdate.Contraction) :
+-- The flushed maximum premise of the attention proofs holds for fmax and
+-- simd_max on this target.
+theorem sdpaMaximum (sumContracted : Bool) (numeratorContracted : Attention.SdpaUpdate.Contraction)
+    (scoreContracted : Bool) :
+    Attention.SdpaInitialLoopRanges.Maximum (C.sdpaPlatform sumContracted numeratorContracted scoreContracted) := by
+  constructor
+  · intro x y hx hy
+    show (C.fmax x y = x ∨ C.fmax x y = y) ∧ real (FlushToZero.flush (C.fmax x y)) = _
+    have he : C.fmax x y = Maximum.value y x := C.fmax_value x y hx hy
+    rw [he]
+    exact ⟨(Maximum.selected y x).symm, by rw [Maximum.real_value y x hy hx, max_comm]⟩
+  · intro input hi
+    show ∃ i, C.simdMax input = input i ∧ ∀ j, real (FlushToZero.flush (input j)) ≤ real (FlushToZero.flush (input i))
+    obtain ⟨⟨i, _, hv⟩, hle⟩ := Maximum.tree_spec input C.simdMax_tree.tree hi
+    refine ⟨i, (C.simdMax_tree.execution input).trans hv, fun j => ?_⟩
+    rw [← hv]
+    exact hle j (C.simdMax_tree.coverage.mem_iff.mpr (List.mem_finRange j))
+
+noncomputable def logSumExpPlatform
+ (sumContracted : Bool) (numeratorContracted : Attention.SdpaUpdate.Contraction) :
     Sampling.LogSumExpRanges.Platform where
   scalar := C.updatePlatform sumContracted numeratorContracted
   maximumTree := C.simdMax_tree.tree

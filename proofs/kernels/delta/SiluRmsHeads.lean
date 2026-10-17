@@ -83,7 +83,7 @@ noncomputable def activationBudget (p : Platform) (x : BF) : ℝ :=
     |Model.toReal x| * Gates.betaBudget p.expAbs p.expAbsError x
 
 theorem activate_finite (p : Platform) (x : BF) (hf : ActivationFinite p x) : Model.isFinite (activate p x) = true :=
-  BFloat16Arithmetic.finite_flush _ hf.product
+  BFloat16Arithmetic.finite_flushExact _ _ hf.product
 
 theorem activate_error (p : Platform) (x : BF) (hf : ActivationFinite p x) :
     |Model.toReal (activate p x) - silu (Model.toReal x)| ≤ activationBudget p x := by
@@ -141,7 +141,7 @@ noncomputable def normBudget (p : Platform) (input weight : Fin 128 → BF) (wid
 
 theorem normalized_finite (p : Platform) (input weight : Fin 128 → BF) (width eps : Float32)
     (hf : NormFinite p input weight width eps) (i : Fin 128) : Model.isFinite (normalized p input weight width eps i) = true :=
-  BFloat16Arithmetic.finite_flush _ (hf.hOutput i)
+  BFloat16Arithmetic.finite_flushExact _ _ (hf.hOutput i)
 
 theorem normalized_error (p : Platform) (input weight : Fin 128 → BF) (width eps : Float32)
     (idealEps epsError : ℝ) (hp : 0 < idealEps) (he : |real eps - idealEps| ≤ epsError)

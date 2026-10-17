@@ -29,8 +29,9 @@ theorem denominator_lower (divide : Float32 → Float32 → Float32)
   have raw : (FlushToZero.flush sum/width).isFinite = true := by
     have h := hf.hMean
     change mean.isFinite = true at h
-    rw [mn, FlushToZero.div, wf, FlushToZero.finite_flush_iff] at h
-    exact h
+    rw [mn] at h
+    exact Division.raw_finite sum width sf hf.hWidth (by rw [hw]; norm_num) h
+
   have mp : 0 ≤ real mean := by
     rw [mn]
     apply FlushToZero.div_nonnegative sum width hf.hWidth sn (by rw [hw]; norm_num)

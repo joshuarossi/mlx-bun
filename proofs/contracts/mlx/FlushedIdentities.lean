@@ -23,14 +23,13 @@ theorem round_one : Model.roundAt FloatFormat.binary32 (1 : ℝ) = 1 := by
 theorem mul_zero_left (x y : Float32) (hx : real x = 0)
     (hf : (FlushToZero.flush x * FlushToZero.flush y).isFinite = true) :
     real (FlushToZero.mul x y) = 0 := by
-  apply flush_zero
-  rw [mul_real _ _ hf, flush_zero x hx, zero_mul, Model.roundAt_zero]
+  rw [FlushToZero.real_mul x y hf, flush_zero x hx, zero_mul, abs_zero, if_pos FlushToZero.threshold_pos]
 
 theorem mul_one_one (x y : Float32) (hx : real x = 1) (hy : real y = 1)
     (hf : (FlushToZero.flush x * FlushToZero.flush y).isFinite = true) :
     real (FlushToZero.mul x y) = 1 := by
-  apply flush_one
-  rw [mul_real _ _ hf, flush_one x hx, flush_one y hy, one_mul, round_one]
+  rw [FlushToZero.real_mul x y hf, flush_one x hx, flush_one y hy, one_mul, abs_one,
+    if_neg (not_lt.mpr FlushToZero.threshold_lt_one.le), round_one]
 
 theorem add_zero_one (x y : Float32) (hx : x.isFinite = true) (hy : y.isFinite = true)
     (xz : real x = 0) (yo : real y = 1)
@@ -44,8 +43,8 @@ theorem fma_zero_one (x y z : Float32) (hx : x.isFinite = true) (hy : y.isFinite
     (xz : real x = 0) (zo : real z = 1)
     (hf : (Float32.fma (FlushToZero.flush x) (FlushToZero.flush y) (FlushToZero.flush z)).isFinite = true) :
     real (FlushToZero.fma x y z) = 1 := by
-  apply flush_one
-  rw [fma_real _ _ _ (FlushToZero.finite_flush x hx) (FlushToZero.finite_flush y hy)
-    (FlushToZero.finite_flush z hz) hf, flush_zero x xz, flush_one z zo, zero_mul, zero_add, round_one]
+  rw [FlushToZero.real_fma x y z hx hy hz hf, flush_zero x xz, flush_one z zo, zero_mul, zero_add, abs_one,
+    if_neg (not_lt.mpr FlushToZero.threshold_lt_one.le), round_one]
+
 
 end Inference.Contracts.Mlx.FlushedIdentities

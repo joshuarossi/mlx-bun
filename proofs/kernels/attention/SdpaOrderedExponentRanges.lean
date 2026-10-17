@@ -8,7 +8,7 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 theorem ordered (p : Platform) (primitive : SdpaExponentRanges.Primitive p) (x shift : Float32)
     (hx : x.isFinite = true ∧ |real x| ≤ (2 : ℝ)^(24 : Nat))
     (hs : shift.isFinite = true ∧ |real shift| ≤ (2 : ℝ)^(24 : Nat))
-    (order : real x ≤ real shift) :
+    (order : real (FlushToZero.flush x) ≤ real (FlushToZero.flush shift)) :
     ExponentFinite p x shift ∧ 0 ≤ real (exponential p x shift) ∧ real (exponential p x shift) ≤ 1 := by
   have finite : (FlushToZero.flush x-FlushToZero.flush shift).isFinite = true := by
     apply Float32OverflowMargin.sub_finite _ _ (FlushToZero.finite_flush _ hx.1) (FlushToZero.finite_flush _ hs.1)
@@ -19,7 +19,8 @@ theorem ordered (p : Platform) (primitive : SdpaExponentRanges.Primitive p) (x s
     apply FlushToZero.flush_nonpositive
     rw [SdpaExponentRanges.subtraction_real x shift hx.1 hs.1 finite]
     have h := Model.roundAt_mono FloatFormat.binary32
-      (sub_nonpos.mpr (FlushOrder.monotone x shift hx.1 hs.1 order))
+      (sub_nonpos.mpr order)
+
     simpa only [Model.roundAt_zero] using h
   have h := primitive.nonpositive _ (FlushToZero.finite_flush _ finite) nonpositive
   exact ⟨⟨hx.1, hs.1, finite, h.1⟩, h.2⟩

@@ -22,9 +22,9 @@ theorem ranges (p : Profile) (expAbs : Value → Value) (error : Value → ℝ)
       |Model.toReal (tail expAbs gate up)| ≤ Model.toReal p.outputCap := by
   have hs := SigmoidRanges.product expAbs error exponential expRange gate p.gateCap hg.1 p.gateFinite hg.2
   have ho := BFloat16Bounds.mul_range (mul gate (sigmoidValue expAbs gate)) up p.outputCap
-    (finite_flush _ hs.2.1) hu.1 p.outputFinite (by
+    (finite_flushExact _ _ hs.2.1) hu.1 p.outputFinite (by
       exact (mul_le_mul hs.2.2 hu.2 (abs_nonneg _) ((abs_nonneg _).trans hg.2)).trans p.capacity)
-  exact ⟨hs.1, ⟨hg.1, hu.1, hs.2.1, ho.1⟩, finite_flush _ ho.1, ho.2⟩
+  exact ⟨hs.1, ⟨hg.1, hu.1, hs.2.1, ho.1⟩, finite_flushExact _ _ ho.1, ho.2⟩
 
 -- Includes the actual +infinity exponential branch. The finite error and
 -- overflow error both come from the scalar arithmetic proofs.

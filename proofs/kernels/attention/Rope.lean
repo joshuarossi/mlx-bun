@@ -119,7 +119,7 @@ theorem bind_error (p : Platform) (x : Inputs) (target error : Target)
     exact he.second
   by_cases h5 : i = 5
   · simp only [bind, targetBind, inputBudget, ite_eq_right h4, ite_eq_left h5]
-    have hp : (product p x).isFinite = true := FlushToZero.finite_flush _ hf.product
+    have hp : (product p x).isFinite = true := FlushToZero.finite_flushExact _ _ hf.product
     rw [Negation.real_neg (product p x) hp, neg_sub_neg, abs_sub_comm]
     exact product_error p x target error hf he
   · simpa only [bind, targetBind, inputBudget, ite_eq_right h4, ite_eq_right h5] using base_error p x target error hf he i

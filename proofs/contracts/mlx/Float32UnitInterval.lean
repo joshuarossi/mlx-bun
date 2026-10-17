@@ -30,10 +30,13 @@ theorem reciprocal (x : Float32) (hx : x.isFinite = true) (lower : 1 ≤ real x)
   refine ⟨hf, ?_, ?_⟩
   · unfold FlushToZero.div
     rw [FlushToZero.flush_one, FlushToZero.flush_eq_of_one_le x lower]
-    exact FlushToZero.finite_flush _ hf
+    exact FlushToZero.finite_flushExact _ _ hf
   · unfold FlushToZero.div
     rw [FlushToZero.flush_one, FlushToZero.flush_eq_of_one_le x lower]
-    exact flush_interval _ hr
+    rcases FlushToZero.flushExact_cases (FlushToZero.divExact (model 1) (model x)) ((1 : Float32)/x) with h | h
+    · rw [h]; exact hr
+    · rw [h]; norm_num
+
 
 theorem complement (x : Float32) (hx : x.isFinite = true) (interval : 0 ≤ real x ∧ real x ≤ 1) :
     (FlushToZero.flush (1 : Float32) - FlushToZero.flush x).isFinite = true ∧

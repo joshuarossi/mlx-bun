@@ -13,8 +13,9 @@ open GateUpTail (sigmoid swiglu inverse_difference)
 -- overload choices in the installed compiler; universal conformance remains
 -- a platform premise. expAbs includes the abs operation and native exp.
 def zero : Value := Model.zero FloatFormat.bfloat16 false
-def negative (x : Value) : Prop := Model.compare x zero = some .lt
-instance (x : Value) : Decidable (negative x) := inferInstanceAs (Decidable (Model.compare x zero = some .lt))
+-- With denormals disabled the sign test compares the flushed input.
+def negative (x : Value) : Prop := Model.compare (flush x) zero = some .lt
+instance (x : Value) : Decidable (negative x) := inferInstanceAs (Decidable (Model.compare (flush x) zero = some .lt))
 def denominator (expAbs : Value → Value) (gate : Value) : Value := add one (expAbs gate)
 def sigY (expAbs : Value → Value) (gate : Value) : Value := div one (denominator expAbs gate)
 def sigmoidValue (expAbs : Value → Value) (gate : Value) : Value :=
@@ -22,9 +23,24 @@ def sigmoidValue (expAbs : Value → Value) (gate : Value) : Value :=
 def tail (expAbs : Value → Value) (gate up : Value) : Value :=
   mul (mul gate (sigmoidValue expAbs gate)) up
 
-theorem negative_iff (x : Value) (hx : Model.isFinite x=true) : negative x ↔ Model.toReal x < 0 := by
-  have h := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite x zero hx (by decide)
+theorem negative_iff (x : Value) (hx : Model.isFinite x=true) : negative x ↔ Model.toReal (flush x) < 0 := by
+  have h := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite (flush x) zero (finite_flush x hx) (by decide)
   simpa only [negative, zero, Model.toReal_zero] using h
+
+theorem negative_real (x : Value) (hx : Model.isFinite x=true) (hn : negative x) : Model.toReal x < 0 := by
+  have h := (negative_iff x hx).mp hn
+  rcases flush_cases x with e | e
+  · rwa [e] at h
+  · rw [e.1] at h; exact absurd h (lt_irrefl 0)
+
+-- A nonnegative flushed input is nonnegative or tiny.
+theorem nonnegative_real (x : Value) (hx : Model.isFinite x=true) (hn : ¬negative x) :
+    0 ≤ Model.toReal x ∨ (Model.toReal x < 0 ∧ |Model.toReal x| < threshold) := by
+  by_cases h : Model.toReal x < 0
+  · rcases flush_cases x with e | e
+    · exact absurd ((negative_iff x hx).mpr (by rwa [e])) hn
+    · exact Or.inr ⟨h, e.2.2⟩
+  · exact Or.inl (le_of_not_gt h)
 
 structure ExpAbsContract (expAbs : Value → Value) (error : Value → ℝ) : Prop where
   nonnegative : ∀ x, Model.isFinite x=true → Model.isFinite (expAbs x)=true → 0 ≤ Model.toReal (expAbs x)
@@ -54,7 +70,7 @@ theorem sigY_finite (expAbs : Value → Value) (error : Value → ℝ)
     Model.isFinite (sigY expAbs gate)=true := by
   unfold sigY div
   rw [flush_one, flush_eq_of_one_le _ (denominator_ge_one expAbs error exponential gate hf)]
-  exact finite_flush _ hf.hQuot
+  exact finite_flushExact _ _ hf.hQuot
 
 theorem sigmoid_finite (expAbs : Value → Value) (error : Value → ℝ)
     (exponential : ExpAbsContract expAbs error) (gate : Value) (hf : SigmoidFinite expAbs gate) :
@@ -99,7 +115,7 @@ theorem sigY_error (expAbs : Value → Value) (error : Value → ℝ)
     _ ≤ _ := (abs_add_le _ _).trans (add_le_add eq ei)
 
 noncomputable def sigmoidBudget (expAbs : Value → Value) (error : Value → ℝ) (gate : Value) : ℝ :=
-  reciprocalBudget expAbs error gate + if negative gate then 0 else subBudget one (sigY expAbs gate)
+  reciprocalBudget expAbs error gate + if negative gate then 0 else subBudget one (sigY expAbs gate) + threshold
 
 theorem sigmoid_error (expAbs : Value → Value) (error : Value → ℝ)
     (exponential : ExpAbsContract expAbs error) (gate : Value) (hf : SigmoidFinite expAbs gate) :
@@ -107,20 +123,24 @@ theorem sigmoid_error (expAbs : Value → Value) (error : Value → ℝ)
   have eq := sigY_error expAbs error exponential gate hf
   have target := GateUpTail.stable_sigmoid (Model.toReal gate)
   by_cases hn : negative gate
-  · have hr := (negative_iff gate hf.hGate).mp hn
+  · have hr := negative_real gate hf.hGate hn
     simp only [hr, ite_true] at target
     simpa only [sigmoidValue, sigmoidBudget, hn, ite_true, add_zero, ← target] using eq
-  · have hr : ¬Model.toReal gate < 0 := fun h => hn ((negative_iff gate hf.hGate).mpr h)
-    simp only [hr, ite_false] at target
-    have es := sub_error one (sigY expAbs gate) finite_one (sigY_finite expAbs error exponential gate hf) (hf.hSub hn)
+  · have es := sub_error one (sigY expAbs gate) finite_one (sigY_finite expAbs error exponential gate hf) (hf.hSub hn)
     rw [real_one] at es
     simp only [sigmoidValue, sigmoidBudget, hn, ite_false]
-    rw [← target]
+    have hb : |(1-1/(1+Real.exp |Model.toReal gate|))-sigmoid (Model.toReal gate)| ≤ threshold := by
+      rcases nonnegative_real gate hf.hGate hn with h | h
+      · simp only [not_lt.mpr h, ite_false] at target
+        rw [← target, sub_self, abs_zero]
+        exact Contracts.Mlx.FlushToZero.threshold_pos.le
+      · exact (GateUpTail.upper_branch _ h.1 (h.2.le.trans Contracts.Mlx.FlushToZero.threshold_lt_one.le)).trans h.2.le
     calc
-      _ = |(Model.toReal (sub one (sigY expAbs gate))-(1-Model.toReal (sigY expAbs gate))) -
-          (Model.toReal (sigY expAbs gate)-1/(1+Real.exp (|Model.toReal gate|)))| := by congr 1; ring
+      _ = |((Model.toReal (sub one (sigY expAbs gate))-(1-Model.toReal (sigY expAbs gate))) -
+          (Model.toReal (sigY expAbs gate)-1/(1+Real.exp (|Model.toReal gate|)))) +
+          ((1-1/(1+Real.exp |Model.toReal gate|))-sigmoid (Model.toReal gate))| := by congr 1; ring
       _ ≤ _ := by
-        have h := (abs_sub _ _).trans (add_le_add es eq)
+        have h := (abs_add_le _ _).trans (add_le_add ((abs_sub _ _).trans (add_le_add es eq)) hb)
         linarith
 
 -- Infinity is an actual source path: exp(abs(gate)) can overflow even though
@@ -142,20 +162,31 @@ theorem sigmoid_of_exp_inf (expAbs : Value → Value) (gate : Value)
 
 theorem sigmoid_overflow_error (expAbs : Value → Value) (gate : Value)
     (hg : Model.isFinite gate=true) (he : expAbs gate = Model.posInf FloatFormat.bfloat16) :
-    |Model.toReal (sigmoidValue expAbs gate)-sigmoid (Model.toReal gate)| =
-      1/(1+Real.exp (|Model.toReal gate|)) := by
+    |Model.toReal (sigmoidValue expAbs gate)-sigmoid (Model.toReal gate)| ≤
+      1/(1+Real.exp (|Model.toReal gate|))+threshold := by
   rw [sigmoid_of_exp_inf expAbs gate he]
   have target := GateUpTail.stable_sigmoid (Model.toReal gate)
   have hp : 0 < 1/(1+Real.exp (|Model.toReal gate|)) := by positivity
+  have h0 := Contracts.Mlx.FlushToZero.threshold_pos
   by_cases hn : negative gate
-  · have hr := (negative_iff gate hg).mp hn
+  · have hr := negative_real gate hg hn
     simp only [hn, ite_true, zero, Model.toReal_zero, hr] at target ⊢
     rw [← target, zero_sub, abs_neg, abs_of_pos hp]
-  · have hr : ¬Model.toReal gate < 0 := fun h => hn ((negative_iff gate hg).mpr h)
-    simp only [hn, ite_false, real_one, hr] at target ⊢
-    rw [← target]
-    have hs : (1 : ℝ)-(1-1/(1+Real.exp (|Model.toReal gate|))) = 1/(1+Real.exp (|Model.toReal gate|)) := by ring
-    rw [hs, abs_of_pos hp]
+    linarith
+  · simp only [hn, ite_false, real_one]
+    rcases nonnegative_real gate hg hn with h | h
+    · simp only [not_lt.mpr h, ite_false] at target
+      rw [← target]
+      have hs : (1 : ℝ)-(1-1/(1+Real.exp (|Model.toReal gate|))) = 1/(1+Real.exp (|Model.toReal gate|)) := by ring
+      rw [hs, abs_of_pos hp]
+      linarith
+    · have hb := GateUpTail.upper_branch _ h.1 (h.2.le.trans Contracts.Mlx.FlushToZero.threshold_lt_one.le)
+      calc
+        _ = |((1-1/(1+Real.exp |Model.toReal gate|))-sigmoid (Model.toReal gate)) +
+            1/(1+Real.exp |Model.toReal gate|)| := by congr 1; ring
+        _ ≤ _ := by
+          have := (abs_add_le _ _).trans (add_le_add hb (le_of_eq (abs_of_pos hp)))
+          linarith [h.2]
 
 -- This algebraic composition works for either the finite exponential theorem
 -- or the explicit overflow theorem above. The error supplied here is therefore
@@ -170,7 +201,7 @@ theorem tail_error_of_sigmoid_error (expAbs : Value → Value) (gate up : Value)
       mulBudget (mul gate (sigmoidValue expAbs gate)) up +
         (mulBudget gate (sigmoidValue expAbs gate)+|Model.toReal gate| *sigError)*|Model.toReal up| := by
   have em := mul_error gate (sigmoidValue expAbs gate) hg hs hm
-  have eo := mul_error (mul gate (sigmoidValue expAbs gate)) up (finite_flush _ hm) hu ho
+  have eo := mul_error (mul gate (sigmoidValue expAbs gate)) up (mul_finite _ _ hm) hu ho
   have ea : |Model.toReal (mul gate (sigmoidValue expAbs gate))-Model.toReal gate*sigmoid (Model.toReal gate)| ≤
       mulBudget gate (sigmoidValue expAbs gate)+|Model.toReal gate| *sigError := by
     calc
@@ -211,16 +242,18 @@ theorem tail_finite_error (expAbs : Value → Value) (error : Value → ℝ)
 theorem tail_overflow_error (expAbs : Value → Value) (gate up : Value)
     (hp : ProductsFinite expAbs gate up) (he : expAbs gate=Model.posInf FloatFormat.bfloat16) :
     |Model.toReal (tail expAbs gate up)-swiglu (Model.toReal gate) (Model.toReal up)| ≤
-      tailBudget expAbs gate up (1/(1+Real.exp (|Model.toReal gate|))) := by
+      tailBudget expAbs gate up (1/(1+Real.exp (|Model.toReal gate|))+threshold) := by
   have hs : Model.isFinite (sigmoidValue expAbs gate)=true := by
     rw [sigmoid_of_exp_inf expAbs gate he]
     split
     · decide
     · exact finite_one
   exact tail_error_of_sigmoid_error expAbs gate up _ hp.hGate hp.hUp hs hp.hSilu hp.hOutput
-    (sigmoid_overflow_error expAbs gate hp.hGate he).le
+    (sigmoid_overflow_error expAbs gate hp.hGate he)
+
 
 theorem output_finite (expAbs : Value → Value) (gate up : Value) (hp : ProductsFinite expAbs gate up) :
-    Model.isFinite (tail expAbs gate up)=true := finite_flush _ hp.hOutput
+    Model.isFinite (tail expAbs gate up)=true := mul_finite _ _ hp.hOutput
+
 
 end Inference.Kernels.Trellis.GateUpSplitTail

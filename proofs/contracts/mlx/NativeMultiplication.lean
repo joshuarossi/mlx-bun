@@ -63,8 +63,9 @@ theorem range (x y cap : Float32) (hx : x.isFinite = true) (hy : y.isFinite = tr
     apply Model.isFinite_mul_of_abs_mul_le_posMaxFinite _ _ (by decide)
       (by rw [finite_model]; exact hxf) (by rw [finite_model]; exact hyf)
     exact hp.trans (Float32Bounds.ceiling_max cap hc)
-  refine ⟨hf, (FlushToZero.flush_abs_le _).trans ?_⟩
+  refine ⟨hf, (FlushToZero.flushExact_abs_le _ _).trans ?_⟩
   rw [Numerics.mul_real _ _ hf]
+
   apply Float32Bounds.rounded_bound cap hc
   simpa only [abs_mul] using hp
 

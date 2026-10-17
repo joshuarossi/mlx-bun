@@ -31,7 +31,7 @@ theorem finite_evaluate (code scale input : Nat → Float32) (e : Expr) (h : Fin
     (evaluate code scale input e).isFinite=true := by
   cases e with
   | zero => change (0 : Float32).isFinite=true; decide
-  | fma => exact FlushToZero.finite_flush _ h.2.2.2
+  | fma => exact FlushToZero.fma_finite _ _ _ h.2.2.2
   | add => exact FlushToZero.finite_flush _ h.2.2
 
 -- The exact target is shared with the IEEE proof; every arithmetic node now

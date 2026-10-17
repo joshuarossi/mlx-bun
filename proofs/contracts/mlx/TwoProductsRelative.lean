@@ -59,7 +59,7 @@ theorem product_add (input : Nat → Float32) (a b acc : Expr)
   have product := NormalizedCastBounds.absolute_of_error _ _ _ multiply
   rw [abs_mul] at product
   have add := RelativeRounding.addition (FlushToZero.mul x y) z
-    (FlushToZero.finite_flush _ hf.1.2.2) (finite_evaluate _ _ hf.2.1) hf.2.2
+    (FlushToZero.mul_finite _ _ hf.1.2.2) (finite_evaluate _ _ hf.2.1) hf.2.2
   have triangle := abs_sub_le (real (FlushToZero.add (FlushToZero.mul x y) z))
     (real (FlushToZero.mul x y)+real z) (real x*real y+real z)
   rw [add_sub_add_right_eq_sub] at triangle

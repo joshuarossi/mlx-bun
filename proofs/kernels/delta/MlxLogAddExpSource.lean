@@ -8,18 +8,21 @@ set_option maxRecDepth 10000
 attribute [local irreducible] MlxLogAddExpSyntax.parseNan MlxLogAddExpSyntax.parseInfinity
   MlxLogAddExpSyntax.parseCall MlxLogAddExpSyntax.parseReturn
 
--- metal::max/min remain scalar compiler primitives. These flags specify
--- their equal-operand choice, including distinct signed-zero bit patterns.
--- No claim about the installed compiler's tie choices is made here.
+-- metal::max/min remain scalar compiler primitives comparing flushed
+-- operands. These flags specify their equal-operand choice, including
+-- distinct signed-zero and subnormal bit patterns. No claim about the
+-- installed compiler's tie choices is made here.
 structure Policy where
   maximumLeft : Bool
   minimumLeft : Bool
   deriving DecidableEq,Repr
 
 def maximum (leftTie : Bool) (x y : Value) : Value :=
-  if Model.compare x y=some .lt then y else if Model.compare x y=some .gt then x else if leftTie then x else y
+  if Model.compare (flush x) (flush y)=some .lt then y else
+    if Model.compare (flush x) (flush y)=some .gt then x else if leftTie then x else y
 def minimum (leftTie : Bool) (x y : Value) : Value :=
-  if Model.compare x y=some .lt then x else if Model.compare x y=some .gt then y else if leftTie then x else y
+  if Model.compare (flush x) (flush y)=some .lt then x else
+    if Model.compare (flush x) (flush y)=some .gt then y else if leftTie then x else y
 
 def legacyPolicy : Policy := ⟨true,false⟩
 
@@ -42,11 +45,14 @@ theorem minimum_finite (policy : Bool) (x y : Value) (hx : Model.isFinite x=true
     · split <;> assumption
 
 theorem maximum_zero (x : Value) : maximum true x Trellis.GateUpSplitTail.zero=Softplus.top x := by
-  simp only [maximum,Softplus.top,Trellis.GateUpSplitTail.negative,ite_true,ite_self]
+  simp only [maximum,Softplus.top,Trellis.GateUpSplitTail.negative,Trellis.GateUpSplitTail.zero,Softplus.flush_zero,
+    ite_true,ite_self]
   rfl
 theorem minimum_zero (x : Value) : minimum false x Trellis.GateUpSplitTail.zero=Softplus.bottom x := by
-  simp only [minimum,Softplus.bottom,Trellis.GateUpSplitTail.negative,Bool.false_eq_true,ite_false,ite_self]
+  simp only [minimum,Softplus.bottom,Trellis.GateUpSplitTail.negative,Trellis.GateUpSplitTail.zero,Softplus.flush_zero,
+    Bool.false_eq_true,ite_false,ite_self]
   rfl
+
 
 def input (x y : Value) (name : String) : Option Value :=
   if name="x" then some x else if name="y" then some y else none

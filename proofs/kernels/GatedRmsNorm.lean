@@ -66,7 +66,7 @@ theorem tail_error (p : Platform) (gate up : Float32) (hf : TailFinite p gate up
   have hm := FlushToZero.mul_error (silu p gate) up hf.product
   have ht := SwiGLUStability.arithmetic_composition (real gate) (real (StableSigmoid.value p.expAbs gate))
     (real (silu p gate)) (real up) (real (product p gate up)) _ _ _ hs ha hm
-  have hc := BFloat16.narrow_error (product p gate up) (FlushToZero.finite_flush _ hf.product) hf.cast
+  have hc := BFloat16.narrow_error (product p gate up) (FlushToZero.mul_finite _ _ hf.product) hf.cast
   unfold tailBudget FlushToZero.mulBudget
   calc
     _ = |(Model.toReal (tail p gate up) - real (product p gate up)) +
@@ -85,7 +85,7 @@ noncomputable def normBudget (p : Platform) (x weight : Fin 128 → BF) (width e
 
 theorem normalized_finite (p : Platform) (x weight : Fin 128 → BF) (width eps : Float32)
     (hf : NormFinite p x weight width eps) (i : Fin 128) : Model.isFinite (normalized p x weight width eps i) = true :=
-  BFloat16Arithmetic.finite_flush _ (hf.hOutput i)
+  BFloat16Arithmetic.finite_flushExact _ _ (hf.hOutput i)
 
 theorem normalized_error (p : Platform) (x weight : Fin 128 → BF) (width eps : Float32)
     (idealEps epsError : ℝ) (hp : 0 < idealEps) (he : |real eps - idealEps| ≤ epsError)

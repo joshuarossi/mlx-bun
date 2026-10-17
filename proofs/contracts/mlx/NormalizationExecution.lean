@@ -142,7 +142,7 @@ theorem normalized_error (division : Division.Contract divide divError) (input :
   have em := FlushToZero.mul_error (input i) (normalizer divide input expr width eps rsqrt) hm
   change |real (normalized divide input expr width eps rsqrt i)-real (input i)*real (normalizer divide input expr width eps rsqrt)| ≤
     FlushToZero.mulBudget (input i) (normalizer divide input expr width eps rsqrt) at em
-  have eb := BFloat16.narrow_error (normalized divide input expr width eps rsqrt i) (FlushToZero.finite_flush _ hm) hb
+  have eb := BFloat16.narrow_error (normalized divide input expr width eps rsqrt i) (FlushToZero.mul_finite _ _ hm) hb
   have ex := mul_le_mul_of_nonneg_left en (abs_nonneg (real (input i)))
   rw [← abs_mul] at ex
   unfold normalizedBudget
@@ -177,7 +177,7 @@ theorem output_error (division : Division.Contract divide divError) (input : Fin
   rw [← abs_mul] at ex
   unfold output Normalization.rmsNorm
   have hfout : Model.isFinite (BFloat16Arithmetic.mul (weight i) (BFloat16.narrow (normalized divide input expr width eps rsqrt i)))=true :=
-    BFloat16Arithmetic.finite_flush _ hout
+    BFloat16Arithmetic.mul_finite _ _ hout
   rw [BFloat16.widen_real _ hfout]
   calc
     _ = |(Model.toReal (BFloat16Arithmetic.mul (weight i) (BFloat16.narrow (normalized divide input expr width eps rsqrt i)))-

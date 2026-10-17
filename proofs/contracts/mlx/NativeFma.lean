@@ -194,8 +194,9 @@ theorem range (x y z cap : Float32)
   have hp := (add_le_add (mul_le_mul (FlushToZero.flush_abs_le x) (FlushToZero.flush_abs_le y)
     (abs_nonneg _) (abs_nonneg _)) (FlushToZero.flush_abs_le z)).trans bound
   have hf := finite _ _ _ cap hxf hyf hzf hc hp
-  refine ⟨hf, (FlushToZero.flush_abs_le _).trans ?_⟩
+  refine ⟨hf, (FlushToZero.flushExact_abs_le _ _).trans ?_⟩
   rw [Numerics.fma_real _ _ _ hxf hyf hzf hf]
+
   apply Float32Bounds.rounded_bound cap hc
   exact (abs_add_le _ _).trans (by simpa only [abs_mul] using hp)
 

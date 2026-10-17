@@ -26,7 +26,7 @@ theorem mul_range (x y cap : Value) (hx : Model.isFinite x = true) (hy : Model.i
   have hp := (mul_le_mul (flush_abs_le x) (flush_abs_le y) (abs_nonneg _) (abs_nonneg _)).trans bound
   have hf := Model.isFinite_mul_of_abs_mul_le_posMaxFinite (flush x) (flush y) (by decide)
     (finite_flush x hx) (finite_flush y hy) (hp.trans (ceiling_max cap hc))
-  refine ⟨hf, (flush_abs_le _).trans ?_⟩
+  refine ⟨hf, (flushExact_abs_le _ _).trans ?_⟩
   rw [Model.toReal_mul_eq_roundAt _ _ (by decide) (finite_flush x hx) (finite_flush y hy) hf]
   apply rounded_bound cap hc
   simpa only [abs_mul] using hp
@@ -46,7 +46,8 @@ theorem fma_range (x y z cap : Value) (hx : Model.isFinite x = true) (hy : Model
     Model.isFinite (Model.fma (flush x) (flush y) (flush z)) = true ∧ |Model.toReal (BFloat16Fma.value x y z)| ≤ Model.toReal cap := by
   have hp := (add_le_add (mul_le_mul (flush_abs_le x) (flush_abs_le y) (abs_nonneg _) (abs_nonneg _)) (flush_abs_le z)).trans bound
   have hf := BFloat16Fma.raw_finite x y z hx hy hz (bound.trans (ceiling_max cap hc))
-  refine ⟨hf, (flush_abs_le _).trans ?_⟩
+  refine ⟨hf, (flushExact_abs_le _ _).trans ?_⟩
+
   rw [Model.toReal_fma_eq_roundAt _ _ _ (by decide) (finite_flush x hx) (finite_flush y hy) (finite_flush z hz) hf]
   apply rounded_bound cap hc
   exact (abs_add_le _ _).trans (by simpa only [abs_mul] using hp)

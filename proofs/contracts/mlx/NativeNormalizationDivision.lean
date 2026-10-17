@@ -24,8 +24,8 @@ theorem real_eq_reference (x y : Float32) (hx : x.isFinite=true) (hy : y.isFinit
     real (FlushToZero.div x y)=real (DivisionBounds.value x y) := by
   unfold FlushToZero.div DivisionBounds.value
   rw [FlushToZero.flush_eq_of_one_le y domain.1]
-  exact flush_real_congr _ _ finite (DivisionBounds.raw_finite x y hx hy domain)
-    (raw_real_eq x y hx hy domain finite)
+  exact FlushToZero.real_flushExact_congr _ _ _ (raw_real_eq x y hx hy domain finite)
+
 
 -- A global native-logical finite-division proof would leave no independent
 -- numerical directed-bound premises: all other fields transfer from the
@@ -37,7 +37,7 @@ theorem directed_of_finite
   · intro x y hx hy domain
     unfold FlushToZero.div
     rw [FlushToZero.flush_eq_of_one_le y domain.1]
-    exact FlushToZero.finite_flush _ (finite x y hx hy domain)
+    exact FlushToZero.finite_flushExact _ _ (finite x y hx hy domain)
   · intro x y cap hx hy domain hc bound
     rw [real_eq_reference x y hx hy domain (finite x y hx hy domain)]
     exact DivisionDirectedBounds.reference.bounded x y cap hx hy domain hc bound
@@ -66,7 +66,7 @@ theorem finite (x y : Float32) (hx : x.isFinite=true) (hy : y.isFinite=true)
     (lower : 2≤real y) : (FlushToZero.div x y).isFinite=true := by
   unfold FlushToZero.div
   rw [FlushToZero.flush_eq_of_one_le y (by linarith)]
-  exact FlushToZero.finite_flush _ (raw_finite x y hx hy lower)
+  exact FlushToZero.finite_flushExact _ _ (raw_finite x y hx hy lower)
 
 theorem quotient_bounded (x y cap : Float32) (hx : x.isFinite=true) (hy : y.isFinite=true)
     (domain : Division.DivisorDomain y) (lower : 2≤real y) (hc : cap.isFinite=true)

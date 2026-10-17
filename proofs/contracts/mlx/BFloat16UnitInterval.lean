@@ -44,10 +44,13 @@ theorem reciprocal (x : Value) (hx : Model.isFinite x = true) (lower : 1 ≤ Mod
   refine ⟨hf, ?_, ?_⟩
   · unfold div
     rw [flush_one, flush_eq_of_one_le x lower]
-    exact finite_flush _ hf
+    exact finite_flushExact _ _ hf
   · unfold div
     rw [flush_one, flush_eq_of_one_le x lower]
-    exact flush_interval _ hi
+    rcases flushExact_cases (FlushToZero.divExact one x) (Model.div one x) with h | h
+    · rw [h]; exact hi
+    · rw [h]; norm_num
+
 
 -- The positive sigmoid branch computes 1-y. Cancellation makes the exact
 -- result stay in [0,1], so an absolute-sum overflow premise is unnecessary.

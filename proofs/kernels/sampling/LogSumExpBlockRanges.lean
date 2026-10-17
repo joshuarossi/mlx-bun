@@ -27,14 +27,16 @@ def paddingStep (p : Platform) (s : State) : State :=
 
 theorem maximum_padding (x : Float32) (hx : x.isFinite = true) :
     Maximum.value x LogSumExpExponentRanges.negativeInfinity = x := by
-  have hf : Model.isFinite (model x) = true := by rw [finite_model]; exact hx
-  have hn := Model.isNaN_eq_false_of_isFinite_eq_true (model x) hf
-  have hi := Model.isInf_eq_false_of_isFinite_eq_true (model x) hf
+  have hf : Model.isFinite (model (FlushToZero.flush x)) = true := by
+    rw [finite_model]; exact FlushToZero.finite_flush x hx
+  have hn := Model.isNaN_eq_false_of_isFinite_eq_true (model (FlushToZero.flush x)) hf
+  have hi := Model.isInf_eq_false_of_isFinite_eq_true (model (FlushToZero.flush x)) hf
   have pn : Model.isNaN (model LogSumExpExponentRanges.negativeInfinity) = false := by decide +kernel
   have pi : Model.isInf (model LogSumExpExponentRanges.negativeInfinity) = true := by decide +kernel
   have ps : Model.signBit (model LogSumExpExponentRanges.negativeInfinity) = true := by decide +kernel
-  simp only [Maximum.value, Model.compare, hn, pn, Bool.or_self, Bool.false_eq_true, dite_false,
-    Model.compareNonNaN, hi, pi, ps, dite_true, ite_true, Option.some.injEq, reduceCtorEq, ite_false]
+  simp only [Maximum.value, Maximum.less, LogSumExpExponentRanges.negative_infinity_flush, Model.compare, hn, pn,
+    Bool.or_self, Bool.false_eq_true, dite_false, Model.compareNonNaN, hi, pi, ps, dite_true, ite_true,
+    Option.some.injEq, reduceCtorEq, ite_false, beq_iff_eq]
 
 theorem fold_padding (x : Float32) (hx : x.isFinite = true) (count : Nat) :
     Maximum.fold (List.replicate count LogSumExpExponentRanges.negativeInfinity) x = x := by
@@ -62,9 +64,10 @@ structure Finite (p : Platform) (s : State) (maximum : Float32) (values : Fin 4 
     (LogSumExpAccumulator.expression p.sumContracted)
 
 private theorem sentinel_lt (x : Float32) (bound : |real x| ≤ (2 : ℝ)^(23 : Nat)) :
-    real Attention.SdpaVector.initialShift < real x := by
-  rw [Attention.SdpaExponentRanges.initial_real, Float32OverflowMargin.maximum_value]
-  have h := (abs_le.mp bound).1
+    real (FlushToZero.flush Attention.SdpaVector.initialShift) < real (FlushToZero.flush x) := by
+  rw [Attention.SdpaExponentRanges.initial_flush, Attention.SdpaExponentRanges.initial_real,
+    Float32OverflowMargin.maximum_value]
+  have h := (abs_le.mp ((FlushToZero.flush_abs_le x).trans bound)).1
   norm_num at h ⊢
   linarith
 
@@ -99,9 +102,9 @@ theorem valid (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive
     rcases state with hs | hs
     · rw [hs.1]
       exact Attention.SdpaExponentRanges.initial p primitive maximum mf mb24
-    · exact LogSumExpExponentRanges.ordered p primitive _ _ sf mf
+    · exact LogSumExpExponentRanges.ordered_flushed p primitive _ _ sf mf
         (hs.1.trans (by norm_num)) mb24 order.1
-  have exps (i : Fin 4) := LogSumExpExponentRanges.ordered p primitive (values i) maximum (hv i).1 mf
+  have exps (i : Fin 4) := LogSumExpExponentRanges.ordered_flushed p primitive (values i) maximum (hv i).1 mf
     ((hv i).2.trans (by norm_num)) mb24 (order.2 (values i) (valueMem i))
   have witness : (1 ≤ real s.normalizer ∧ real (exponential p s.maximum maximum) = 1) ∨
       ∃ i, 1 ≤ real (terms p values maximum i) := by
@@ -109,7 +112,8 @@ theorem valid (p : Platform) (primitive : Attention.SdpaExponentRanges.Primitive
     · have eq : maximum = s.maximum := old
       rcases state with hs | hs
       · have h := order.2 (values 0) (valueMem 0)
-        change real (values 0) ≤ real maximum at h
+        change real (FlushToZero.flush (values 0)) ≤ real (FlushToZero.flush maximum) at h
+
         rw [eq, hs.1] at h
         exact False.elim (not_le_of_gt (sentinel_lt _ (hv 0).2) h)
       · exact Or.inl ⟨hs.2, by rw [eq]; exact (Attention.SdpaExponentRanges.diagonal p primitive _ sf).2⟩

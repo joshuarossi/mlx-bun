@@ -1,15 +1,26 @@
 import contracts.mlx.Reduction
+import contracts.mlx.FlushToZero
 import FloatLib.Floats.Formats.BinaryInterchange.Operations.Compare.Proof
 
 namespace Inference.Contracts.Mlx.Maximum
 open Numerics
 open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
+open FlushToZero (flush)
+
+-- With denormals disabled, float comparison sees flushed operands.
+def less (left right : Float32) : Bool := Model.compare (model (flush left)) (model (flush right)) == some .lt
+
+theorem less_iff (left right : Float32) (hl : left.isFinite = true) (hr : right.isFinite = true) :
+    less left right = true ↔ real (flush left) < real (flush right) := by
+  have comparison := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite (model (flush left)) (model (flush right))
+    (by rw [finite_model]; exact FlushToZero.finite_flush _ hl) (by rw [finite_model]; exact FlushToZero.finite_flush _ hr)
+  simp only [less, beq_iff_eq]
+  exact comparison
 
 -- Strict replacement matches `maxval < value ? value : maxval`, retaining
--- the previous word on a tie (including signed zero). Scalar native IEEE
--- comparison correspondence is separate from these logical model facts.
-def value (left right : Float32) : Float32 :=
-  if Model.compare (model left) (model right) = some .lt then right else left
+-- the previous unflushed word on a flushed tie (including signed zero and
+-- subnormals).
+def value (left right : Float32) : Float32 := if less left right then right else left
 
 theorem selected (left right : Float32) : value left right = left ∨ value left right = right := by
   unfold value
@@ -19,9 +30,8 @@ theorem finite (left right : Float32) (hl : left.isFinite = true) (hr : right.is
   rcases selected left right with h | h <;> rw [h] <;> assumption
 
 theorem real_value (left right : Float32) (hl : left.isFinite = true) (hr : right.isFinite = true) :
-    real (value left right) = max (real left) (real right) := by
-  have comparison := Model.compare_eq_some_lt_iff_toReal_lt_of_isFinite (model left) (model right)
-    (by rw [finite_model]; exact hl) (by rw [finite_model]; exact hr)
+    real (flush (value left right)) = max (real (flush left)) (real (flush right)) := by
+  have comparison := less_iff left right hl hr
   unfold value
   split
   · rename_i h
@@ -55,7 +65,8 @@ theorem fold_selected (values : List Float32) (initial : Float32) : fold values 
 
 theorem fold_dominates (values : List Float32) (initial : Float32)
     (hi : initial.isFinite = true) (hv : ∀ x ∈ values, x.isFinite = true) :
-    real initial ≤ real (fold values initial) ∧ ∀ x ∈ values, real x ≤ real (fold values initial) := by
+    real (flush initial) ≤ real (flush (fold values initial)) ∧
+      ∀ x ∈ values, real (flush x) ≤ real (flush (fold values initial)) := by
   induction values generalizing initial with
   | nil => exact ⟨le_refl _, by simp⟩
   | cons x rest ih =>
@@ -73,7 +84,7 @@ theorem fold_dominates (values : List Float32) (initial : Float32)
 -- a real input word. Its bound does not have to include that sentinel.
 theorem fold_bound_after_value (values : List Float32) (initial : Float32) (cap : ℝ)
     (hi : initial.isFinite = true) (hv : ∀ x ∈ values, x.isFinite = true ∧ |real x| ≤ cap)
-    (fresh : ∃ x ∈ values, real initial < real x) : |real (fold values initial)| ≤ cap := by
+    (fresh : ∃ x ∈ values, real (flush initial) < real (flush x)) : |real (fold values initial)| ≤ cap := by
   rcases fold_selected values initial with he | hm
   · obtain ⟨x, hx, hlt⟩ := fresh
     have h := (fold_dominates values initial hi (fun x hx => (hv x hx).1)).2 x hx
@@ -92,7 +103,7 @@ theorem tree_finite (input : Fin n → Float32) (t : Reduction.Tree n) (hi : ∀
 
 theorem tree_spec (input : Fin n → Float32) (t : Reduction.Tree n) (hi : ∀ i, (input i).isFinite = true) :
     (∃ i ∈ Reduction.leaves t, tree input t = input i) ∧
-      ∀ i ∈ Reduction.leaves t, real (input i) ≤ real (tree input t) := by
+      ∀ i ∈ Reduction.leaves t, real (flush (input i)) ≤ real (flush (tree input t)) := by
   induction t with
   | leaf i =>
     refine ⟨⟨i, by simp [Reduction.leaves], rfl⟩, ?_⟩
@@ -109,7 +120,8 @@ theorem tree_spec (input : Fin n → Float32) (t : Reduction.Tree n) (hi : ∀ i
       · obtain ⟨i, hm, hv⟩ := ir.1
         exact ⟨i, List.mem_append_right _ hm, hr.trans hv⟩
     · intro i hm
-      change real (input i) ≤ real (value (tree input left) (tree input right))
+      change real (flush (input i)) ≤ real (flush (value (tree input left) (tree input right)))
+
       rw [he]
       rcases List.mem_append.mp hm with hl | hr
       · exact (il.2 i hl).trans (le_max_left _ _)

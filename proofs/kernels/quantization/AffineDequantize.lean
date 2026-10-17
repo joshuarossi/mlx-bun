@@ -60,7 +60,7 @@ theorem value_error (contracted : Bool) (scale bias : BF) (q : Fin 16) (hf : Fin
     simpa only [value, budget, ite_true, target, field_real] using h
   | false =>
     have hm := mul_error scale (field q) hf.scaleFinite (field_checked q).1 hf.arithmetic.1
-    have ha := add_error (mul scale (field q)) bias (finite_flush _ hf.arithmetic.1) hf.biasFinite hf.arithmetic.2
+    have ha := add_error (mul scale (field q)) bias (finite_flushExact _ _ hf.arithmetic.1) hf.biasFinite hf.arithmetic.2
     rw [field_real] at hm
     simp only [value, budget, Bool.false_eq_true, ite_false, target]
     calc

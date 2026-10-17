@@ -49,6 +49,20 @@ theorem ranges (logit normalizer : BF)
   rw [cap_range.2]
   linarith [hl.2, hn.2]
 
+-- Stored scores are flushed bf16 values, so flushing their widened words
+-- is the identity and flushed comparisons order the scores themselves.
+theorem value_flush (logit normalizer : BF)
+    (hl : Model.isFinite logit = true ∧ |Model.toReal logit| ≤ (2 : ℝ)^(23 : Nat))
+    (hn : Model.isFinite normalizer = true ∧ |Model.toReal normalizer| ≤ (2 : ℝ)^(24 : Nat)) :
+    FlushToZero.flush (value logit normalizer) = value logit normalizer := by
+  have hs : Model.isFinite (stored logit normalizer) = true :=
+    BFloat16Arithmetic.finite_flush _ (raw_finite logit normalizer hl hn)
+  have hr : real (value logit normalizer) = Model.toReal (stored logit normalizer) := BFloat16.widen_real _ hs
+  rcases BFloat16Arithmetic.flush_normal (Model.sub (BFloat16Arithmetic.flush logit) (BFloat16Arithmetic.flush normalizer))
+    with h | h
+  · exact FlushToZero.flush_eq_of_real_zero _ (hr.trans h)
+  · exact FlushToZero.flush_eq_of_threshold_le _ (by rw [hr]; exact h)
+
 theorem accuracy (logit normalizer : BF)
     (hl : Model.isFinite logit = true ∧ |Model.toReal logit| ≤ (2 : ℝ)^(23 : Nat))
     (hn : Model.isFinite normalizer = true ∧ |Model.toReal normalizer| ≤ (2 : ℝ)^(24 : Nat))
@@ -85,6 +99,7 @@ theorem select_correct (logits : Fin n → BF) (normalizer : BF) (t : Reduction.
       (∀ i, real (value (logits i) normalizer) ≤ real (value (logits selected) normalizer)) ∧
       (∀ i, real (value (logits selected) normalizer) = real (value (logits i) normalizer) → selected.val ≤ i.val) := by
   have hf := candidates_finite logits normalizer hl hn
+  have hfix i := value_flush (logits i) normalizer (hl i) hn
   have h := Argmax.tree_complete (fun i => ArgmaxPairs.semantic (candidates logits normalizer i)) t coverage
   rw [← ArgmaxPairs.tree_semantic _ t hf] at h
   obtain ⟨selected, he⟩ := h.1
@@ -92,10 +107,11 @@ theorem select_correct (logits : Fin n → BF) (normalizer : BF) (t : Reduction.
   · intro i
     have hi := (h.2 i).1
     rw [he] at hi
-    simpa only [candidates, ArgmaxPairs.semantic, WithBot.coe_le_coe] using hi
+    simpa only [candidates, ArgmaxPairs.semantic, WithBot.coe_le_coe, hfix] using hi
   · intro i equal
     have hi := h.2 i
     rw [he] at hi
-    exact hi.2 (by simpa only [candidates, ArgmaxPairs.semantic, WithBot.coe_eq_coe] using equal)
+    exact hi.2 (by simpa only [candidates, ArgmaxPairs.semantic, WithBot.coe_eq_coe, hfix] using equal)
+
 
 end Inference.Kernels.Sampling.NormalizedScores

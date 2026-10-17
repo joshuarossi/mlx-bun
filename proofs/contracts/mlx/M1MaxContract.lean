@@ -3,6 +3,7 @@ import contracts.mlx.Division
 import contracts.mlx.FlushedReduction
 import contracts.mlx.RsqrtEpsilonBounds
 import contracts.mlx.BFloat16Arithmetic
+import contracts.mlx.BFloat16
 import contracts.mlx.FloatMemory
 import contracts.mlx.Maximum
 
@@ -22,14 +23,17 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
    checkpoint or table. proofs/contracts/mlx/probe-m1max-contract.ts checks
    each clause on this machine (exhaustively for unary f32 clauses). This
    structure is a premise of the native theorem, not a declared axiom. -/
--- air.simd_max.f32 is one fixed tree of `if left<right then right else left`.
+-- air.simd_max.f32 is one fixed tree of `if left<right then right else left`
+-- on flushed comparisons, returning the unflushed word. Only the in-order
+-- leaf sequence 0..31 is observable; every such tree gives the same word.
 structure MaximumTree (reduce : (Fin 32 → Float32) → Float32) where
   tree : Reduction.Tree 32
   coverage : (Reduction.leaves tree).Perm (List.finRange 32)
   execution : ∀ input, reduce input=Maximum.tree input tree
 
 structure Contract where
-  -- Basic binary32 arithmetic, defined by the flushed nearest-even models.
+  -- Basic binary32 arithmetic, defined by the flushed nearest-even models
+  -- (multiply, divide and fma flush tiny exact results before rounding).
   -- Kernel models compute with these definitions directly.
   fadd : Float32 → Float32 → Float32
   fmul : Float32 → Float32 → Float32
@@ -72,7 +76,7 @@ structure Contract where
   fastCos_bounded : ∀ x, x.isFinite=true → |real x|≤(2:ℝ)^(18:Nat) → (fastCos x).isFinite=true ∧ |real (fastCos x)|≤2
   -- air.fmax.f32 / air.fast_fmax.f32 and air.simd_max.f32 on finite inputs.
   fmax : Float32 → Float32 → Float32
-  fmax_select : ∀ x y, x.isFinite=true → y.isFinite=true → (fmax x y=x ∨ fmax x y=y) ∧ real (fmax x y)=max (real x) (real y)
+  fmax_value : ∀ x y, x.isFinite=true → y.isFinite=true → fmax x y=if Maximum.less y x then x else y
   simdMax : (Fin 32 → Float32) → Float32
   simdMax_tree : MaximumTree simdMax
   -- air.fabs.f32 and air.fast_fabs.f32 clear the sign of finite inputs.
@@ -81,6 +85,7 @@ structure Contract where
   fabs_value : ∀ x, x.isFinite=true → (fabs x).isFinite=true ∧ real (fabs x)=|real x|
   fastFabs_value : ∀ x, x.isFinite=true → (fastFabs x).isFinite=true ∧ real (fastFabs x)=|real x|
   -- air.simd_sum.f32: one fixed binary tree of flushed nearest-even adds.
+  -- A NaN lane gives the default NaN on both (FlushedReduction.nan_witness).
   simdSum : (Fin 32 → Float32) → Float32
   simdSum_tree : FlushedReduction.SimdContract simdSum
   -- Threadgroup float load: the low two address bits are ignored.
@@ -90,5 +95,19 @@ structure Contract where
   vectorLoad : ByteMemory.Bytes → Nat → Fin 4 → Float32
   vectorLoad_components : ∀ bytes address, address%16=0 → address+16≤2^64 →
     ∀ component, vectorLoad bytes address component=FloatMemory.load bytes (address+4*component.val)
+  -- bfloat arithmetic, flushed like binary32, and the conversions: widening
+  -- is exact; narrowing rounds to nearest even and keeps subnormals.
+  bfadd : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
+  bfsub : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
+  bfmul : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
+  bfdiv : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
+  bfadd_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfadd x y=BFloat16Arithmetic.add x y
+  bfsub_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfsub x y=BFloat16Arithmetic.sub x y
+  bfmul_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfmul x y=BFloat16Arithmetic.mul x y
+  bfdiv_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfdiv x y=BFloat16Arithmetic.div x y
+  narrow : Float32 → BFloat16Arithmetic.Value
+  widen : BFloat16Arithmetic.Value → Float32
+  narrow_model : ∀ x, x.isFinite=true → narrow x=BFloat16.narrow x
+  widen_model : ∀ x, Model.isFinite x=true → widen x=BFloat16.widen x
 
 end Inference.Contracts.Mlx.M1Max
