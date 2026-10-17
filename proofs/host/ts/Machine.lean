@@ -1096,7 +1096,9 @@ def forOfStep (s : MS F) (src : IterSrc) (aw : Bool) (kind : Option DeclKind) (p
   | .index v i => .bind (elemAt F s v i) fun
     | some x => forOfBind s (.index v (i + 1)) x
     | none => retS F s .undef
-  | .proto it next => .pure ((s.push (.lp (.forOfNext it next aw kind p body env labels))).go (.call next it []))
+  | .proto it next =>
+    let s := s.push (.lp (.forOfNext it next aw kind p body env labels))
+    .pure ((bif aw then s.push (.k .await) else s).go (.call next it []))
 where
   forOfBind (s : MS F) (src : IterSrc) (x : Val) : RS F :=
     match kind with
@@ -1105,10 +1107,11 @@ where
       .pure (((s.push (.lp (.forOfBody src aw kind p body env labels))).push (.s (.block [body] env'))).go (.bind p x env' .init k))
     | none => .pure (((s.push (.lp (.forOfBody src aw kind p body env labels))).push (.s (.block [body] env))).go (.bind p x env .assign .let_))
 
-def closeIter (s : MS F) (src : IterSrc) (c : Comp) : RS F :=
+/-- `IteratorClose` (`AsyncIteratorClose` when `aw`: `return()`'s result is awaited). -/
+def closeIter (s : MS F) (src : IterSrc) (aw : Bool) (c : Comp) : RS F :=
   match src with
   | .proto it _ => .bind (dataOf F s it kReturn) fun
-    | some m@(.obj _) => .pure ((s.push (.lp (.close c))).go (.call m it []))
+    | some m@(.obj _) => let s := s.push (.lp (.close c)); .pure ((bif aw then s.push (.k .await) else s).go (.call m it []))
     | _ => .pure (resume s c)
   | .index _ _ => .pure (resume s c)
 
@@ -1134,7 +1137,10 @@ def retLp (s : MS F) (f : LoopF) (v : Val) : RS F :=
   | .whileBody c body env labels => .pure ((s.push (.lp (.whileTest c body env labels))).go (.ev c env))
   | .doBody body c env labels => .pure ((s.push (.lp (.whileTest c body env labels))).go (.ev c env))
   | .forOfSrc aw kind p body env labels =>
-    bif aw then .fail "for await" else
+    bif aw then (match v with
+      | .obj _ => getV F ((s.push (.lp (.forOfIt aw kind p body env labels))).push (.c (.method v [] [] false))) v
+          (.sym symAsyncIterator)
+      | _ => typeErr s (chars!"for await over a non-object")) else
     bif isIndexable F s v then forOfStep F s (.index v 0) aw kind p body env labels
     else match v with
       | .obj _ => startIter F (s.push (.lp (.forOfIt aw kind p body env labels))) v
@@ -1258,7 +1264,10 @@ def retK (s : MS F) (f : FnF) (v : Val) : RS F :=
   | .native n data => nativeRet F s n data v
   | .promiseThen p => retS F (resolveP s p v) .undef
   | .yield d => bif d then
-      bif (match nearestGen s.stack with | some (g, _) => (genOf s g).elim false Prod.snd | none => false) then .fail "yield* in an async generator" else
+      bif (match nearestGen s.stack with | some (g, _) => (genOf s g).elim false Prod.snd | none => false) then
+        (match v with
+          | .obj _ => getV F ((s.push (.k .ystarAIt)).push (.c (.method v [] [] false))) v (.sym symAsyncIterator)
+          | _ => typeErr s (chars!"yield* over a non-object")) else
       bif isIndexable F s v then
         let (it, s) := s.allocObj (.iter v 0 0) (.obj aArrayIterProto) []
         .pure ((s.push (.k .ystarIt)).ret (.obj it))
@@ -1282,12 +1291,27 @@ def retK (s : MS F) (f : FnF) (v : Val) : RS F :=
       | none => .fail "iterator value accessor"
     else yieldResult F (s.push (.k (.ystarResume it next))) v
   | .ystarResume it next => .pure ((s.push (.k (.ystarNext it next))).go (.call next it [v]))
+  -- async `yield*` (ECMA-262 YieldExpression : yield * AssignmentExpression, async case):
+  -- inner results are awaited, their values yielded without a further await
+  | .ystarAIt => .bind (dataOf F s v kNext) fun
+    | some next => .pure (((s.push (.k (.ystarAResult v next))).push (.k .await)).go (.call next v [.undef]))
+    | none => .fail "iterator next accessor"
+  | .ystarAResult it next => .bind (dataOf F s v kDone) fun d => .bind (truthy (d.getD .undef)) fun done =>
+    .bind (dataOf F s v kValue) fun
+      | some x => bif done then retS F s x else agenYield F (s.push (.k (.ystarAResume it next))) x
+      | none => .fail "iterator value accessor"
+  | .ystarAResume it next => .pure (((s.push (.k (.ystarAResult it next))).push (.k .await)).go (.call next it [v]))
+  | .ystarAReturned it next => .bind (dataOf F s v kDone) fun d => .bind (truthy (d.getD .undef)) fun done =>
+    .bind (dataOf F s v kValue) fun
+      | some x => bif done then .pure (s.go (.abr (.ret x))) else agenYield F (s.push (.k (.ystarAResume it next))) x
+      | none => .fail "iterator value accessor"
+  | .ystarAReturn => .pure (s.go (.abr (.ret v)))
   | .await => awaitVal F s v
   | .modules rest => match rest with
     | [] => retS F s v
     | (ss, env) :: r => .pure (((s.push (.k (.modules r))).push (.s (.block ss env))).ret .undef)
 
-def retStep (s : MS F) (f : Frame) (v : Val) : RS F :=
+def retStepImpl (s : MS F) (f : Frame) (v : Val) : RS F :=
   match f with
   | .e f => retE F s f v
   | .c f => retC F s f v
@@ -1297,6 +1321,14 @@ def retStep (s : MS F) (f : Frame) (v : Val) : RS F :=
   | .lp f => retLp F s f v
   | .b f => retB F s f v
   | .k f => retK F s f v
+
+/-- A frame receiving a value (kernel: `Frame.rec` with closed minors). -/
+@[implemented_by retStepImpl]
+def retStep (s : MS F) (f : Frame) (v : Val) : RS F :=
+  Frame.rec (motive := fun _ => (G : Ffi) → St G.S → Val → RS G)
+    (fun x G t w => retE G t x w) (fun x G t w => retC G t x w) (fun x G t w => retL G t x w)
+    (fun x G t w => retA G t x w) (fun x G t w => retSt G t x w) (fun x G t w => retLp G t x w)
+    (fun x G t w => retB G t x w) (fun x G t w => retK G t x w) f F s v
 
 /-! ## Frames receiving an abrupt completion -/
 
@@ -1341,9 +1373,9 @@ def abrLp (s : MS F) (f : LoopF) (a : Abrupt) : RS F :=
   | .whileBody c body env labels => loopAbr (retLp F s (.whileBody c body env labels) .undef) labels
   | .doBody body c env labels => loopAbr (retLp F s (.doBody body c env labels) .undef) labels
   | .forOfBody src aw kind p body env labels => match a with
-    | .cont l => bif matchLabel l labels then forOfStep F s src aw kind p body env labels else closeIter F s src (.abrupt a)
-    | .brk l => bif matchLabel l labels then closeIter F s src (.normal .undef) else closeIter F s src (.abrupt a)
-    | a => closeIter F s src (.abrupt a)
+    | .cont l => bif matchLabel l labels then forOfStep F s src aw kind p body env labels else closeIter F s src aw (.abrupt a)
+    | .brk l => bif matchLabel l labels then closeIter F s src aw (.normal .undef) else closeIter F s src aw (.abrupt a)
+    | a => closeIter F s src aw (.abrupt a)
   | .close c => match c with
     | .abrupt (.throw e) => .pure (s.go (.abr (.throw e)))
     | _ => .pure (s.go (.abr a))
@@ -1362,14 +1394,29 @@ def abrK (s : MS F) (f : FnF) (a : Abrupt) : RS F :=
       | some m@(.obj _) => .pure ((s.push (.lp (.close (.abrupt a)))).go (.call m it []))
       | _ => .pure (s.go (.abr a))
     | a => .pure (s.go (.abr a))
+  | .ystarAResume it next => match a with
+    | .ret v => .bind (dataOf F s it kReturn) fun
+      | some m@(.obj _) => .pure (((s.push (.k (.ystarAReturned it next))).push (.k .await)).go (.call m it [v]))
+      | _ => awaitVal F (s.push (.k .ystarAReturn)) v
+    | .throw e => .bind (dataOf F s it (.str chars!"throw")) fun
+      | some m@(.obj _) => .pure (((s.push (.k (.ystarAResult it next))).push (.k .await)).go (.call m it [e]))
+      | _ => .fail "async yield* throw into an iterator without throw"
+    | a => .pure (s.go (.abr a))
   | _ => .pure (s.go (.abr a))
 
-def abrStep (s : MS F) (f : Frame) (a : Abrupt) : RS F :=
+def abrStepImpl (s : MS F) (f : Frame) (a : Abrupt) : RS F :=
   match f with
   | .s f => abrSt F s f a
   | .lp f => abrLp F s f a
   | .k f => abrK F s f a
   | _ => .pure (s.go (.abr a))
+
+@[implemented_by abrStepImpl]
+def abrStep (s : MS F) (f : Frame) (a : Abrupt) : RS F :=
+  Frame.rec (motive := fun _ => (G : Ffi) → St G.S → Abrupt → RS G)
+    (fun _ G t b => .pure (t.go (.abr b))) (fun _ G t b => .pure (t.go (.abr b))) (fun _ G t b => .pure (t.go (.abr b)))
+    (fun _ G t b => .pure (t.go (.abr b))) (fun x G t b => abrSt G t x b) (fun x G t b => abrLp G t x b)
+    (fun _ G t b => .pure (t.go (.abr b))) (fun x G t b => abrK G t x b) f F s a
 
 /-! ## Jobs and the step -/
 
@@ -1392,23 +1439,51 @@ def shortStep (s : MS F) : RS F :=
   | _ :: fs => .pure ({ s with stack := fs }.go .short)
   | [] => .fail "optional chain outside a chain"
 
-def step (s : MS F) : RS F :=
+def stepJobs (s : MS F) (v : Val) : RS F :=
+  match s.jobs with
+  | j :: js => runJob F (s.setJobs js) j
+  | [] => .pure (s.go (.halt (.normal v)))
+
+def stepRetImpl (s : MS F) (v : Val) : RS F :=
+  match s.stack with
+  | f :: fs => retStep F { s with stack := fs } f v
+  | [] => stepJobs F s v
+
+/-- A value returns to the top frame, else to the job queue. -/
+@[implemented_by stepRetImpl]
+def stepRet (s : MS F) (v : Val) : RS F :=
+  List.rec (motive := fun _ => (G : Ffi) → St G.S → Val → RS G) (fun G t w => stepJobs G t w)
+    (fun f fs _ G t w => retStep G { t with stack := fs } f w) s.stack F s v
+
+def stepAbrImpl (s : MS F) (a : Abrupt) : RS F :=
+  match s.stack with
+  | f :: fs => abrStep F { s with stack := fs } f a
+  | [] => .pure (s.go (.halt (.abrupt a)))
+
+@[implemented_by stepAbrImpl]
+def stepAbr (s : MS F) (a : Abrupt) : RS F :=
+  List.rec (motive := fun _ => (G : Ffi) → St G.S → Abrupt → RS G) (fun _ t b => .pure (t.go (.halt (.abrupt b))))
+    (fun f fs _ G t b => abrStep G { t with stack := fs } f b) s.stack F s a
+
+def stepImpl (s : MS F) : RS F :=
   match s.ctl with
   | .ev e env => evStep F s e env
   | .ex st env => exStep F s st env
-  | .ret v => match s.stack with
-    | f :: fs => retStep F { s with stack := fs } f v
-    | [] => match s.jobs with
-      | j :: js => runJob F (s.setJobs js) j
-      | [] => .pure (s.go (.halt (.normal v)))
-  | .abr a => match s.stack with
-    | f :: fs => abrStep F { s with stack := fs } f a
-    | [] => .pure (s.go (.halt (.abrupt a)))
+  | .ret v => stepRet F s v
+  | .abr a => stepAbr F s a
   | .call f t as => callStep F s f t as
   | .construct f as nt => constructStep F s f as nt
   | .bind p v env m k => bindStep F s p v env m k
   | .short => shortStep F s
   | .halt _ => .pure s
+
+/-- One transition (kernel: `Ctl.rec` with closed minors). -/
+@[implemented_by stepImpl]
+def step (s : MS F) : RS F :=
+  Ctl.rec (motive := fun _ => (G : Ffi) → St G.S → RS G)
+    (fun e env G t => evStep G t e env) (fun x env G t => exStep G t x env) (fun v G t => stepRet G t v)
+    (fun a G t => stepAbr G t a) (fun f th as G t => callStep G t f th as) (fun f as nt G t => constructStep G t f as nt)
+    (fun p v env m k G t => bindStep G t p v env m k) (fun G t => shortStep G t) (fun _ _ t => .pure t) s.ctl F s
 
 end
 end Host.Ts

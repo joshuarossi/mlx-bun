@@ -315,15 +315,40 @@ def powInt (x : F64) (k : Int) : F64 :=
 
 def half : F64 := fin false 1 (-1)
 
-/-- `Math.pow`/`**`: integer exponents, and `±0.5` when the root is exact.
-Engines approximate `pow`; exact results are returned exactly by every
-mainstream libm, other results are not modelled. -/
+/-- Correctly rounded square root of `m·2^e`, `m > 0` (IEEE `squareRoot`): with
+`n = p·4^56` (`p` the significand made to carry an even exponent), `r = ⌊√n⌋ ≥ 2^56`
+and the exact root lies in `[r, r+1)`, which holds no rounding boundary (they are
+integers at this scale); `round` of `r` or of `r + ½` is the rounded root. -/
+def sqrtRN (m : Nat) (e : Int) : F64 :=
+  let odd := !(e % 2 == 0)
+  let p := bif odd then 2 * m else m
+  let e2 : Int := bif odd then e - 1 else e
+  let n := p * 4 ^ 56
+  let r := isqrt n
+  round b64 false (2 * r + bif Nat.beq (r * r) n then 0 else 1) 2 (e2 / 2 - 56)
+
+/-- `Math.sqrt`: IEEE square root. -/
+def sqrt : F64 → F64
+  | zero s => zero s
+  | inf false => inf false
+  | fin false m e => sqrtRN m e
+  | _ => nan
+
+/-- `Math.pow`/`**`: integer exponents exactly rounded once, and `±0.5` as Bun's
+JavaScriptCore computes them: `√x` and `1 / √x` (two roundings; measured equal on
+Bun 1.4, unlike a correctly rounded `x^-0.5`), with the specification's zeros and
+infinities. Other exponents are not modelled. -/
 def pow (x y : F64) : Option F64 :=
   match toInt? y with
   | some k => some (powInt x k)
   | none =>
     match y with
-    | fin s 1 (.negSucc 0) => (sqrtExact x).map fun r => bif s then div (fin false 1 0) r else r
+    | fin s 1 (.negSucc 0) => match x with
+      | nan => some nan
+      | zero _ => some (bif s then inf false else zero false)
+      | inf _ => some (bif s then zero false else inf false)
+      | fin true _ _ => some nan
+      | fin false m e => some (bif s then div (fin false 1 0) (sqrtRN m e) else sqrtRN m e)
     | nan => some nan
     | _ => none
 

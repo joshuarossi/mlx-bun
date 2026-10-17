@@ -244,6 +244,8 @@ inductive CtlN where
 inductive FfiN where
   | dlopen | ptr | readU64 | readU32 | readI32 | readPtr | readF32 | toArrayBuffer | symbol | jsCallback
   | cstring | close
+  /-- A native call waiting for a `JSCallback` it invoked. -/
+  | callbackRet
 
 inductive Native where
   | obj (f : ObjN) | arr (f : ArrN) | iter (f : IterN) | math (f : MathN) | num (f : NumN)
@@ -398,6 +400,16 @@ inductive FnF where
   | ystarNext (it next : Val)
   /-- `yield*`: resumed with a value for the inner `next`. -/
   | ystarResume (it next : Val)
+  /-- Async `yield*`: iterator received from `[Symbol.asyncIterator]()`. -/
+  | ystarAIt
+  /-- Async `yield*`: awaited inner `next()`/`throw()` result received. -/
+  | ystarAResult (it next : Val)
+  /-- Async `yield*`: resumed with a value for the inner `next`. -/
+  | ystarAResume (it next : Val)
+  /-- Async `yield*`: awaited inner `return()` result received. -/
+  | ystarAReturned (it next : Val)
+  /-- Async `yield*` returning: the awaited return value received. -/
+  | ystarAReturn
   | await
   /-- Module bodies still to run, with their environments. -/
   | modules (rest : List (List Stmt × Env))
@@ -513,6 +525,9 @@ inductive Ret where
   | ptr (r off : Nat)
   | null
   | cstr (s : List Char)
+  /-- The native side calls `JSCallback` `fn` (its pointer region) with these
+  arguments before the call returns; `Ffi.back` continues it with the result. -/
+  | callback (fn : Nat) (args : List Arg)
 
 /-- One FFI call: symbol, decoded arguments, result. -/
 structure Event where
@@ -529,6 +544,8 @@ structure Ffi where
   read : S → Nat → Nat → Nat → Option (List Byte)
   /-- Address of a symbol (a `.ptr` property of `dlopen` functions). -/
   addr : Name → Nat
+  /-- Continue the pending native call with its `JSCallback`'s result. -/
+  back : S → Arg → M (Option (S × Ret × List (Nat × Nat × List Byte)))
 
 /-- A microtask: a promise reaction with the settled value. -/
 structure Job where

@@ -3,9 +3,28 @@
 // checks that every embedded literal equals its repository file byte for byte.
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { pins } from "./SourceBinding.ts";
+import { pins, slices } from "./SourceBinding.ts";
 
 export const files = () => Object.keys(pins);
+
+/** The top-level `export function`/`export class` declarations `names` of `text`, verbatim, in
+ *  file order: each from its `export` line through the first column-0 `}` line. A slice embeds
+ *  the declarations a run executes from a file whose rest the Lean lexer does not take. */
+export function sliceOf(text: string, names: string[]): string {
+  const lines = text.split("\n");
+  const parts: [number, string][] = [];
+  for (const name of names) {
+    const start = lines.findIndex(l => new RegExp(`^export (async )?(function|class) ${name}\\b`).test(l));
+    if (start < 0) throw new Error(`slice: no top-level declaration ${name}`);
+    const end = lines.findIndex((l, i) => i > start && l === "}");
+    if (end < 0) throw new Error(`slice: unterminated declaration ${name}`);
+    parts.push([start, lines.slice(start, end + 1).join("\n")]);
+  }
+  return parts.sort((a, b) => a[0] - b[0]).map(p => p[1]).join("\n\n") + "\n";
+}
+
+/** The embedded text of a pinned file: the file, or its slice. */
+export const embedded = (file: string, text: string) => slices[file] ? sliceOf(text, slices[file]!) : text;
 
 const pascal = (s: string) => s.split(/[-_.]/).map(p => p[0]!.toUpperCase() + p.slice(1)).join("");
 
@@ -65,7 +84,7 @@ if (import.meta.main) {
     const text = await Bun.file(new URL(file, root)).text();
     const out = new URL(`../../${modulePath(file)}`, import.meta.url);
     await mkdir(dirname(out.pathname), { recursive: true });
-    await Bun.write(out, render(file, text));
+    await Bun.write(out, render(file, embedded(file, text)));
     console.log(modulePath(file));
   }
 }

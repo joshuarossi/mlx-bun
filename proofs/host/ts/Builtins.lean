@@ -373,7 +373,7 @@ def mathN (s : St F.S) (args : List Val) : MathN → RS F
       | some r => retS F s (.num (.lit r))
       | none => .fail "Math.pow with an inexact result"
     | _, _ => .fail "Math.pow of a symbolic number"
-  | .sqrt => lit? fun x => F64.sqrtExact x
+  | .sqrt => lit? fun x => some (F64.sqrt x)
 where
   un (op : NUn) : RS F := .bind (toNum (arg args 0)) fun
     | some x => .bind (numUn op x) fun r => retS F s (.num r)
@@ -418,6 +418,7 @@ def numN (s : St F.S) (this : Val) (args : List Val) : NumN → RS F
   | .isNaN => litTest F64.isNaN
   | .bigint => match arg args 0 with
     | .big i => retS F s (.big i)
+    | .ptr m off => retS F s (.big (ptrInt m off))
     | .num (.lit x) => match F64.toInt? x with
       | some i => retS F s (.big i)
       | none => rangeErr s (chars!"not an integer")

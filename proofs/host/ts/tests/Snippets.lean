@@ -114,3 +114,29 @@ source_ast
 kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.num 1, .num 2, .str ['b'], .num 2, .num 2, .str ['t','2']])) = some true
 end Host.Ts.Tests.Snippet.MapSet
 
+
+namespace Host.Ts.Tests.Snippet.ForAwait
+open Host.Ts
+def source : String := "const out = []; let closed = 0; async function* g() { try { yield 1; yield 2; yield 3; } finally { closed++; } } (async () => { for await (const x of g()) out.push(x); for await (const x of g()) { out.push(x * 10); break; } out.push(closed); })();"
+source_parse source
+source_ast
+kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.num 1, .num 2, .num 3, .num 10, .num 2])) = some true
+end Host.Ts.Tests.Snippet.ForAwait
+
+namespace Host.Ts.Tests.Snippet.AsyncDelegate
+open Host.Ts
+def source : String := "const out = []; async function* inner() { try { yield 1; yield 2; return 7; } finally { out.push('i'); } } async function* outer() { try { const r = yield* inner(); yield r; } finally { out.push('o'); } } (async () => { for await (const x of outer()) out.push(x); for await (const x of outer()) { out.push(x * 10); break; } })();"
+source_parse source
+source_ast
+kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.num 1, .num 2, .str ['i'], .num 7, .str ['o'], .num 10, .str ['i'], .str ['o']])) = some true
+end Host.Ts.Tests.Snippet.AsyncDelegate
+
+namespace Host.Ts.Tests.Snippet.Roots
+open Host.Ts
+/-- Bun's `Math.pow(x, -0.5)` is `1 / √x` (two roundings): 128 gives 0.08838834764831843, not the
+correctly rounded 0.08838834764831845. -/
+def source : String := "const out = [Math.pow(128, -0.5) === 0.08838834764831843, Math.pow(2, 0.5) === Math.sqrt(2), Math.sqrt(2) === 1.4142135623730951, Math.pow(-0, 0.5) === 0, 1 / Math.pow(0, -0.5)];"
+source_parse source
+source_ast
+kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.bool true, .bool true, .bool true, .bool true, .num 0])) = some true
+end Host.Ts.Tests.Snippet.Roots

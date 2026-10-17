@@ -352,6 +352,7 @@ def retVal : Ret → Val
   | .ptr r off => .ptr (.ext r) off
   | .null => .null
   | .cstr cs => .str cs
+  | .callback _ _ => .undef
 
 def applyWrites (s : St F.S) : List (Nat × Nat × List Byte) → Option (St F.S)
   | [] => some s
@@ -366,6 +367,50 @@ def readMem (s : St F.S) (p : Val) (off : Nat) (k : EltK) : M (Option Cell) :=
   | .ptr (.js b) o => .pure ((bufBytes F s b).bind fun bs => readCell k (bs.drop (o + off)))
   | .ptr (.ext r) o => .pure ((F.read s.ffi r (o + off) k.size).bind (readCell k))
   | _ => .pure none
+
+/-- `JSCallback` pointers are native regions `cbBase + a` for callback object `a`. -/
+def cbBase : Nat := 2 ^ 48
+
+def kCbFn : PKey := .str chars!"%fn"
+def kCbArgs : PKey := .str chars!"%args"
+def kCbRet : PKey := .str chars!"%returns"
+
+/-- The JS value of a native argument passed to a callback parameter of type `ty`. -/
+def argVal (ty : List Char) : Arg → Val
+  | .null => .null
+  | .num x => .num x
+  | .big i => bif nameEq ty chars!"u64" || nameEq ty chars!"i64" then .big i else .num (.lit (F64.ofInt i))
+  | .bool b => .bool b
+  | .jsPtr b off _ => .ptr (.js b) off
+  | .extPtr r off => .ptr (.ext r) off
+  | .other v => v
+
+def argVals : List Val → List Arg → List Val
+  | .str t :: ts, a :: as => argVal t a :: argVals ts as
+  | _, _ => []
+
+/-- Invoke `JSCallback` `r` for native call `name`: its frame waits for the result. -/
+def ffiCallback (s : St F.S) (name : Name) (r : Nat) (cargs : List Arg) : RS F :=
+  bif Nat.blt r cbBase then .fail "callback of a non-JSCallback pointer" else
+  match s.obj? (r - cbBase) with
+  | some o => match findProp kCbFn o.props, findProp kCbArgs o.props, findProp kCbRet o.props with
+    | some (.data fn _ _), some (.data ats _ _), some (.data rt _ _) => .bind (elemsOf F s ats) fun
+      | some tys => .pure ((s.push (.k (.native (.ffi .callbackRet) [.str name, rt]))).go (.call fn .undef (argVals tys cargs)))
+      | none => .fail "JSCallback signature"
+    | _, _, _ => .fail "JSCallback object"
+  | none => .fail "callback of an unknown JSCallback"
+
+/-- A native call's result: writes into JS buffers, the trace event, then the
+return value or a `JSCallback` invocation the call is waiting for. -/
+def ffiDone (s : St F.S) (name : Name) (as : List Arg) : Option (F.S × Ret × List (Nat × Nat × List Byte)) → RS F
+  | some (st, ret, ws) => match applyWrites F (s.setFfi st) ws with
+    | some s =>
+      let s := s.setTrace (⟨name, as, ret⟩ :: s.trace)
+      match ret with
+      | .callback r cargs => ffiCallback F s name r cargs
+      | _ => retS F s (retVal ret)
+    | none => .fail "FFI write outside a JS buffer"
+  | none => .fail ("FFI model rejected " ++ String.ofList name)
 
 def ffiN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : FfiN → RS F
   | .dlopen => match arg args 1 with
@@ -394,12 +439,7 @@ def ffiN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : FfiN �
   | .symbol => match data with
     | [.str name, ats, .str rt] => .bind (elemsOf F s ats) fun
       | some tys => .bind (decodeArgs F s tys args) fun
-        | some as => .bind (F.call s.ffi name as) fun
-          | some (st, ret, ws) => match applyWrites F (s.setFfi st) ws with
-            | some s => let s := s.setTrace (⟨name, as, ret⟩ :: s.trace)
-              let _ := rt; retS F s (retVal ret)
-            | none => .fail "FFI write outside a JS buffer"
-          | none => .fail "FFI model rejected the call"
+        | some as => let _ := rt; .bind (F.call s.ffi name as) (ffiDone F s name as)
         | none => .fail ("FFI argument decoding: " ++ String.ofList name)
       | none => .fail "FFI signature"
     | _ => .fail "FFI symbol data"
@@ -424,6 +464,7 @@ def ffiN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : FfiN �
       retS F s (.obj b)
     | _ => .fail "toArrayBuffer of a non-native pointer"
   | .jsCallback => .fail "JSCallback requires new"
+  | .callbackRet => .fail "callback continuation called"
   | .cstring => .fail "CString"
   | .close => let _ := this; retS F s .undef
 where
@@ -470,13 +511,25 @@ def constructNative (s : St F.S) (n : Native) (data : List Val) (args : List Val
     let (r, j, s) := resolveFns F s p
     .pure ((s.push (.k (.native (.ctl .promiseCtor) [.obj p]))).go (.call (arg args 0) .undef [r, j]))
   | .ffi .jsCallback =>
-    let (a, s) := s.allocObj .ordinary (.obj aJsCallbackProto) [(.str (chars!"ptr"), .data (.ptr (.ext 0) 0) false true)]
-    retS F s (.obj a)
+    -- the pointer names the object: native calls invoke it through `Ret.callback`
+    let (a, s) := s.allocObj .ordinary (.obj aJsCallbackProto) []
+    .bind (dataOf F s (arg args 1) (.str chars!"args")) fun ats => .bind (dataOf F s (arg args 1) (.str chars!"returns")) fun rt =>
+    match ats, rt with
+    | some ats, some rt =>
+      let s := defineProp F s a (.str (chars!"ptr")) (.data (.ptr (.ext (cbBase + a)) 0) false true)
+      let s := defineProp F (defineProp F (defineProp F s a kCbFn (.data (arg args 0) false false)) a kCbArgs (.data ats false false)) a kCbRet (.data rt false false)
+      retS F s (.obj a)
+    | _, _ => .fail "JSCallback signature"
   | _ => typeErr s (chars!"not a constructor")
 
 /-- A builtin frame receiving its callback's normal result. -/
 def nativeRet (s : St F.S) (n : Native) (data : List Val) (v : Val) : RS F :=
   match n, data with
+  | .ffi .callbackRet, [.str name, .str rt] =>
+    bif nameEq rt chars!"void" then .bind (F.back s.ffi .null) (ffiDone F s name [.null])
+    else .bind (decodeArg F s rt v) fun
+      | some a => .bind (F.back s.ffi a) (ffiDone F s name [a])
+      | none => .fail "JSCallback result"
   | .ctl .promiseCtor, [p] => let _ := v; retS F s p
   | .ctl .alsRun, _ => retS F (s.setStores s.stores.tail) v
   | _, _ => .fail "builtin continuation"
@@ -484,6 +537,7 @@ def nativeRet (s : St F.S) (n : Native) (data : List Val) (v : Val) : RS F :=
 /-- A builtin frame receiving an abrupt completion. -/
 def nativeAbr (s : St F.S) (n : Native) (data : List Val) (a : Abrupt) : RS F :=
   match n, data, a with
+  | .ffi .callbackRet, _, _ => .fail "exception escaping a JSCallback"
   | .ctl .promiseCtor, [.obj p], .throw e => retS F (settle s p true e) (.obj p)
   | .ctl .alsRun, _, a => .pure ((s.setStores s.stores.tail).go (.abr a))
   | _, _, a => .pure (s.go (.abr a))

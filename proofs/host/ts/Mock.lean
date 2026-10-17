@@ -165,6 +165,6 @@ def call (s : St) (name : Name) (args : List Arg) : M (Option (St × Ret × List
 def read (s : St) (r off n : Nat) : Option (List Byte) :=
   (s.arrs.get r).map fun m => ((cellBytes .i32 (m.shape.map Cell.num)).drop off).take n
 
-def ffi : Ffi := ⟨St, call, read, fun _ => 4096⟩
+def ffi : Ffi := ⟨St, call, read, fun _ => 4096, fun _ _ => .pure none⟩
 
 end Host.Ts.Mock

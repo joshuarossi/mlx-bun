@@ -2,32 +2,67 @@ import host.ts.Value
 import host.ts.Source
 namespace Host.Ts
 
-/-! # Machine primitives: names, heap, numbers, conversions, buffers -/
+/-! # Machine primitives: names, heap, numbers, conversions, buffers
+
+The lookups below are the machine's inner loops. Each has a native
+definition (`…Impl`, by `match`) and a kernel definition by recursors with
+closed minor premises (`implemented_by`, as in `Heap`). Names compare by
+their packed codes (`pack`, injective: base-2^21 digits after a leading
+`1`); the kernel caches the code of each name term, so a comparison is one
+accelerated `Nat.beq`. -/
 
 def chEq (a b : Char) : Bool := Nat.beq a.toNat b.toNat
 
-def nameEq : List Char → List Char → Bool
-  | [], [] => true
-  | a :: as, b :: bs => chEq a b && nameEq as bs
-  | _, _ => false
+def packAux : List Char → Nat → Nat
+  | [], n => n
+  | c :: cs, n => packAux cs (Nat.add (Nat.mul n 2097152) c.toNat)
 
-def lookupEnv (n : Name) : Env → Option Nat
+def packImpl (cs : List Char) : Nat := packAux cs 1
+
+/-- The code of a name. -/
+@[implemented_by packImpl]
+def pack (cs : List Char) : Nat :=
+  List.rec (motive := fun _ => Nat → Nat) (fun n => n) (fun c _ ih n => ih (Nat.add (Nat.mul n 2097152) c.toNat)) cs 1
+
+def nameEq (a b : List Char) : Bool := Nat.beq (pack a) (pack b)
+
+def lookupEnvImpl (n : Name) : Env → Option Nat
   | [] => none
-  | (m, a) :: e => bif nameEq n m then some a else lookupEnv n e
+  | (m, a) :: e => bif nameEq n m then some a else lookupEnvImpl n e
 
-def keyEq : PKey → PKey → Bool
-  | .str a, .str b => nameEq a b
-  | .sym a, .sym b => Nat.beq a b
-  | _, _ => false
+@[implemented_by lookupEnvImpl]
+def lookupEnv (n : Name) (env : Env) : Option Nat :=
+  List.rec (motive := fun _ => Nat → Option Nat) (fun _ => none)
+    (fun p _ ih k => Prod.rec (motive := fun _ => Option Nat) (fun m a => brec (Nat.beq k (pack m)) (some a) (ih k)) p)
+    env (pack n)
 
-def findProp (k : PKey) : Props → Option PropV
+/-- The code of a property key: names even, symbols odd. -/
+def PKey.code : PKey → Nat
+  | .str a => Nat.mul 2 (pack a)
+  | .sym i => Nat.succ (Nat.mul 2 i)
+
+def keyEq (a b : PKey) : Bool := Nat.beq a.code b.code
+
+def findPropImpl (k : PKey) : Props → Option PropV
   | [] => none
-  | (j, p) :: ps => bif keyEq k j then some p else findProp k ps
+  | (j, p) :: ps => bif keyEq k j then some p else findPropImpl k ps
+
+@[implemented_by findPropImpl]
+def findProp (k : PKey) (ps : Props) : Option PropV :=
+  List.rec (motive := fun _ => Nat → Option PropV) (fun _ => none)
+    (fun q _ ih c => Prod.rec (motive := fun _ => Option PropV) (fun j p => brec (Nat.beq c j.code) (some p) (ih c)) q)
+    ps k.code
+
+def setPropLImpl (k : PKey) (p : PropV) : Props → Props
+  | [] => [(k, p)]
+  | (j, q) :: ps => bif keyEq k j then (j, p) :: ps else (j, q) :: setPropLImpl k p ps
 
 /-- Replace or append (insertion order is kept). -/
-def setPropL (k : PKey) (p : PropV) : Props → Props
-  | [] => [(k, p)]
-  | (j, q) :: ps => bif keyEq k j then (j, p) :: ps else (j, q) :: setPropL k p ps
+@[implemented_by setPropLImpl]
+def setPropL (k : PKey) (p : PropV) (ps : Props) : Props :=
+  List.rec (motive := fun _ => Nat → Props) (fun _ => [(k, p)])
+    (fun q r ih c => Prod.rec (motive := fun _ => Props) (fun j x => brec (Nat.beq c j.code) ((j, p) :: r) ((j, x) :: ih c)) q)
+    ps k.code
 
 def removeProp (k : PKey) : Props → Props
   | [] => []
@@ -85,15 +120,25 @@ def aFirst : Nat := 40
 section
 variable {S : Type}
 
-def St.cell? (s : St S) (a : Nat) : Option (Option Val) :=
+def St.cellImpl (s : St S) (a : Nat) : Option (Option Val) :=
   match s.heap.get a with
   | some (.cell v) => some v
   | _ => none
 
-def St.obj? (s : St S) (a : Nat) : Option Obj :=
+@[implemented_by St.cellImpl]
+def St.cell? (s : St S) (a : Nat) : Option (Option Val) :=
+  Option.rec (motive := fun _ => Option (Option Val)) none
+    (fun h => HObj.rec (motive := fun _ => Option (Option Val)) (fun v => some v) (fun _ => none) h) (s.heap.get a)
+
+def St.objImpl (s : St S) (a : Nat) : Option Obj :=
   match s.heap.get a with
   | some (.obj o) => some o
   | _ => none
+
+@[implemented_by St.objImpl]
+def St.obj? (s : St S) (a : Nat) : Option Obj :=
+  Option.rec (motive := fun _ => Option Obj) none
+    (fun h => HObj.rec (motive := fun _ => Option Obj) (fun _ => none) (fun o => some o) h) (s.heap.get a)
 
 def St.setObj (s : St S) (a : Nat) (o : Obj) : St S := { s with heap := s.heap.set a (.obj o) }
 def St.setCell (s : St S) (a : Nat) (v : Val) : St S := { s with heap := s.heap.set a (.cell (some v)) }
@@ -413,5 +458,14 @@ def toCell (k : EltK) : Val → M (Option Cell)
     | _ => .pure (some (.num zeroN))
   | .null => numCell k zeroN
   | _ => .pure none
+
+end Host.Ts
+
+namespace Host.Ts
+
+/-- `BigInt(ptr)`: an integer naming the pointer (JS buffers below `2^62`, native memory above). -/
+def ptrInt : Mem → Nat → Int
+  | .js b, off => ((2 ^ 56 + b * 2 ^ 32 + off : Nat) : Int)
+  | .ext r, off => ((2 ^ 62 + r * 2 ^ 24 + off : Nat) : Int)
 
 end Host.Ts
