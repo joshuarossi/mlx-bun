@@ -12,14 +12,13 @@ variable {C : M1Max.Contract} (M : MlxContract C)
 
 closureApply evaluates the closure's fused semantics. For compute_g that is
 ComputeGHostSource (the parsed compute_g body with bf16 × f32 → f32 and the
-compiled LogAddExp policy); under the legacy policy it is Decay.value. -/
+compiled LogAddExp tie choice); it is Decay.value on the platform with that choice. -/
 
 def F32Row (v : Value) (n : Nat) (f : Fin n → Float32) : Prop :=
   v.dtype = .float32 ∧ v.shape = [1,1,n] ∧ ∀ i : Fin n, f32 (v.elems i.val) = f i
 
 theorem computeG_closure (aLog a dt : Value) (al av dv : Fin 48 → BF)
     (hl : GlueAttention.Vector aLog 48 al) (ha : Row a 48 av) (hd : GlueAttention.Vector dt 48 dv)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : ∀ h, Model.isFinite (Delta.Decay.biased (av h) (dv h)) = true) :
     ∃ g, closureApply M .computeG [aLog, a, dt] = some [g] ∧
       F32Row g 48 (fun h => Delta.Decay.value M.decay (BFloat16.widen (al h)) (av h) (dv h)) := by
@@ -29,7 +28,8 @@ theorem computeG_closure (aLog a dt : Value) (al av dv : Fin 48 → BF)
   refine ⟨_, op, rfl, rfl, fun h => ?_⟩
   · unfold computeGValue
     dsimp only
-    rw [hl.2.2 h, Row.elems ha h, hd.2.2 h, policy, Delta.ComputeGHostSource.execution _ _ _ _ (finite h)]
+    rw [hl.2.2 h, Row.elems ha h, hd.2.2 h]
+    rw [show M.logAddExp = M.decay.policy from rfl, Delta.ComputeGHostSource.execution _ _ _ _ (finite h)]
     exact f32_word _
 
 /-! ## Gap 6: projection route and LoRA

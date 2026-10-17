@@ -108,7 +108,7 @@ attribute [local irreducible] ComputeGHostSyntax.parse ComputeGHostSyntax.parseC
 
 theorem execution (p : Decay.Platform) (aLog a dt : BF)
     (finite : Model.isFinite (Decay.biased a dt)=true) :
-    execute MlxLogAddExpSource.legacyPolicy p aLog a dt=
+    execute p.policy p aLog a dt=
       some (.fp (Decay.value p (BFloat16.widen aLog) a dt)) := by
   rw [execute,parsed_bind]
   unfold evaluate
@@ -116,7 +116,7 @@ theorem execution (p : Decay.Platform) (aLog a dt : BF)
   simp only [inputs,operations,Bind.bind,Option.bind_some,cast,exp,neg,add,zero]
   have zeroBytes : ([0,0] : List Nat)=[0,0] := rfl
   simp only [zeroBytes,ite_true,Option.bind_some,logadd]
-  rw [MlxLogAddExpSource.legacy_execution p.expBF p.log1pBF (BFloat16Arithmetic.add a dt) finite]
+  rw [MlxLogAddExpSource.zero_execution p.policy p.expBF p.log1pBF (BFloat16Arithmetic.add a dt) finite]
   rfl
 
 end Inference.Kernels.Delta.ComputeGHostSource

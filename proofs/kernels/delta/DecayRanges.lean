@@ -18,7 +18,7 @@ structure Profile where
   softFinite : Model.isFinite softCap = true
   argumentFinite : argumentCap.isFinite = true
   biasedCapacity : Model.toReal aCap + Model.toReal dtCap ≤ Model.toReal biasedCap
-  softCapacity : Model.toReal biasedCap + 1 ≤ Model.toReal softCap
+  softCapacity : Model.toReal biasedCap + 8 ≤ Model.toReal softCap
   argumentCapacity : real scaleCap * Model.toReal softCap ≤ real argumentCap
 
 -- Each property here concerns a single scalar exp or log1p call. All
@@ -38,7 +38,7 @@ theorem ranges (p : Platform) (profile : Profile) (primitive : PrimitiveRanges p
     Decay.Finite p aLog a dt ∧ (0 ≤ real (value p aLog a dt) ∧ real (value p aLog a dt) ≤ 1) := by
   have hb := BFloat16Bounds.add_range a dt profile.biasedCap ha.1 hd.1 profile.biasedFinite
     ((add_le_add ha.2 hd.2).trans profile.biasedCapacity)
-  have hs := SoftplusRanges.ranges p.expBF p.log1pBF primitive.softplus (biased a dt)
+  have hs := SoftplusRanges.ranges p.policy p.expBF p.log1pBF primitive.softplus (biased a dt)
     profile.biasedCap profile.softCap (BFloat16Arithmetic.finite_flush _ hb.1) profile.softFinite hb.2 profile.softCapacity
   have he := primitive.scale aLog hl.1 hl.2
   have hn : |real (-p.exp aLog)| ≤ real profile.scaleCap := by

@@ -260,7 +260,6 @@ noncomputable def deltaMixerTrace (w : DeltaWeights) (conv rec : Option Value) (
 theorem delta_mixer (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoaded M K l w)
     (cache : DeltaNet.Cache) (conv rec : Option Value) (hc : HistoryHolds conv cache.history)
     (hr : StateHolds rec cache.recurrent) (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : ∀ h, Model.isFinite (Delta.Decay.biased (l.mixer.a.forward x h) (l.mixer.dtBias h)) = true) :
     ∃ mixed tail s, deltaMixerTrace M K w conv rec xv = some (mixed, tail, s) ∧
       Row mixed 5120 (l.mixer.forward cache (fun _ => x) 0) ∧
@@ -275,7 +274,7 @@ theorem delta_mixer (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoad
     (fun _ => l.mixer.qkv.forward x) l.mixer.convolutionWeight (history_value conv _ hc) tqkv hl.conv
   obtain ⟨q, k, v, e10, tq, tk, tv⟩ := GlueKernels.silu_rms_heads K _ _ _ c w.qScale w.kScale tc hl.qScale hl.kScale
   obtain ⟨beta, e11, tbeta⟩ := GlueAttention.sigmoid_row M bv _ tb
-  obtain ⟨g, e12, tg⟩ := GlueRoute.computeG_closure M w.aLog av w.dtBias _ _ _ hl.aLog ta hl.dtBias policy finite
+  obtain ⟨g, e12, tg⟩ := GlueRoute.computeG_closure M w.aLog av w.dtBias _ _ _ hl.aLog ta hl.dtBias finite
   let heads := DeltaHeads.forward K.heads (fun _ : Fin 1 => fun ch => Delta.Convolution.value M.convContracted
     (Delta.Convolution.window (fun j => cache.history j ch) (fun t => (fun _ => l.mixer.qkv.forward x) t ch) 0)
     (l.mixer.convolutionWeight ch)) l.mixer.headParams.qScale l.mixer.headParams.kScale
@@ -320,7 +319,7 @@ theorem delta_mixer (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoad
     rw [e15]; dsimp only [bind, Option.bind]
     rw [e16]; rfl
   · unfold DeltaNet.Layer.forward
-    congr 1
+    refine congrArg l.mixer.out.forward ?_
     funext i
     have hw : Normalization.GatedRms128TailSource.width = l.mixer.headParams.width := by rw [hl.width]; rfl
     have he : FloatMemory.decode (BitVec.ofNat 32 epsWord) = l.mixer.headParams.eps := by rw [l.epsilon]; rfl
@@ -396,14 +395,13 @@ noncomputable def deltaLayerTrace (w : DeltaWeights) (conv rec : Option Value) (
 theorem delta_layer (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoaded M K l w)
     (cache : DeltaNet.Cache) (conv rec : Option Value) (hc : HistoryHolds conv cache.history)
     (hr : StateHolds rec cache.recurrent) (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : ∀ h, Model.isFinite (Delta.Decay.biased (l.mixer.a.forward (l.inputNorm.forward x) h) (l.mixer.dtBias h)) = true) :
     ∃ out tail s, deltaLayerTrace M K w conv rec xv = some (out, tail, s) ∧
       Row out 5120 (l.forward cache (fun _ => x) 0) ∧
       HistoryHolds (some tail) (l.cacheAfter cache (fun _ => x) 1).history ∧
       StateHolds (some s) (l.cacheAfter cache (fun _ => x) 1).recurrent := by
   obtain ⟨normed, e1, tn⟩ := GlueAttention.hidden_norm M l.inputNorm hl.inputPlatform xv w.inputNorm x hx hl.inputNorm
-  obtain ⟨mixed, tail, s, e2, tm, tt, ts⟩ := delta_mixer M K l w hl cache conv rec hc hr normed _ tn policy finite
+  obtain ⟨mixed, tail, s, e2, tm, tt, ts⟩ := delta_mixer M K l w hl cache conv rec hc hr normed _ tn finite
   obtain ⟨out, e3, tout⟩ := suffix K l.suffix w.mlp hl.suffix xv mixed x _ hx tm
   refine ⟨out, tail, s, ?_, tout, tt, ts⟩
   unfold deltaLayerTrace

@@ -14,6 +14,8 @@ structure ExpContract (exp : Float32 → Float32) (error : Float32 → ℝ) : Pr
     |real (exp x) - Real.exp (real x)| ≤ error x
 
 structure Platform where
+  -- The compiled LogAddExp max/min tie choices (Softplus.Policy).
+  policy : Softplus.Policy
   exp : Float32 → Float32
   expError : Float32 → ℝ
   exponential : ExpContract exp expError
@@ -25,7 +27,7 @@ structure Platform where
   logarithmBF : Softplus.Log1pContract log1pBF log1pBFError
 
 def biased (a dt : BF) : BF := BFloat16Arithmetic.add a dt
-def soft (p : Platform) (a dt : BF) : BF := Softplus.value p.expBF p.log1pBF (biased a dt)
+def soft (p : Platform) (a dt : BF) : BF := Softplus.value p.policy p.expBF p.log1pBF (biased a dt)
 def argument (p : Platform) (aLog : Float32) (a dt : BF) : Float32 :=
   FlushToZero.mul (-p.exp aLog) (BFloat16.widen (soft p a dt))
 def value (p : Platform) (aLog : Float32) (a dt : BF) : Float32 := p.exp (argument p aLog a dt)
@@ -37,13 +39,13 @@ structure Finite (p : Platform) (aLog : Float32) (a dt : BF) : Prop where
   aFinite : Model.isFinite a = true
   dtFinite : Model.isFinite dt = true
   sumFinite : Model.isFinite (Model.add (BFloat16Arithmetic.flush a) (BFloat16Arithmetic.flush dt)) = true
-  softFinite : Softplus.Finite p.expBF p.log1pBF (biased a dt)
+  softFinite : Softplus.Finite p.policy p.expBF p.log1pBF (biased a dt)
   expFinite : (p.exp aLog).isFinite = true
   productFinite : (FlushToZero.flush (-p.exp aLog) * FlushToZero.flush (BFloat16.widen (soft p a dt))).isFinite = true
   outputFinite : (value p aLog a dt).isFinite = true
 
 noncomputable def softBudget (p : Platform) (a dt : BF) : ℝ :=
-  Softplus.budget p.expBF p.log1pBF p.expBFError p.log1pBFError (biased a dt) + BFloat16Arithmetic.addBudget a dt
+  Softplus.budget p.policy p.expBF p.log1pBF p.expBFError p.log1pBFError (biased a dt) + BFloat16Arithmetic.addBudget a dt
 noncomputable def argumentBudget (p : Platform) (aLog : Float32) (a dt : BF) : ℝ :=
   FlushToZero.mulBudget (-p.exp aLog) (BFloat16.widen (soft p a dt)) +
     p.expError aLog * Model.toReal (soft p a dt) + Real.exp (real aLog) * softBudget p a dt
@@ -52,15 +54,15 @@ noncomputable def budget (p : Platform) (aLog : Float32) (a dt : BF) : ℝ :=
 
 theorem soft_nonnegative (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aLog a dt) :
     0 ≤ Model.toReal (soft p a dt) :=
-  Softplus.value_nonnegative p.expBF p.log1pBF p.expBFError p.log1pBFError
+  Softplus.value_nonnegative p.policy p.expBF p.log1pBF p.expBFError p.log1pBFError
     p.exponentialBF p.logarithmBF (biased a dt) hf.softFinite
 
 theorem soft_finite (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aLog a dt) :
-    Model.isFinite (soft p a dt) = true := Softplus.value_finite p.expBF p.log1pBF (biased a dt) hf.softFinite
+    Model.isFinite (soft p a dt) = true := Softplus.value_finite p.policy p.expBF p.log1pBF (biased a dt) hf.softFinite
 
 theorem soft_error (p : Platform) (aLog : Float32) (a dt : BF) (hf : Finite p aLog a dt) :
     |Model.toReal (soft p a dt) - Gates.softplus (Model.toReal a + Model.toReal dt)| ≤ softBudget p a dt := by
-  have hl := Softplus.value_error p.expBF p.log1pBF p.expBFError p.log1pBFError
+  have hl := Softplus.value_error p.policy p.expBF p.log1pBF p.expBFError p.log1pBFError
     p.exponentialBF p.logarithmBF (biased a dt) hf.softFinite
   have hi := (Gates.softplus_lipschitz (Model.toReal a + Model.toReal dt) (Model.toReal (biased a dt))).trans
     (BFloat16Arithmetic.add_error a dt hf.aFinite hf.dtFinite hf.sumFinite)

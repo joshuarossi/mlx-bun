@@ -8,7 +8,7 @@ variable {aLog a dtBias b : Heads} {p : Inputs.Platform}
 variable {input : GateMemory.Input aLog a dtBias b}
 
 def source (input : GateMemory.Input aLog a dtBias b) (head : Fin 48) :=
-  ComputeGHostSource.execute MlxLogAddExpSource.legacyPolicy p.decay
+  ComputeGHostSource.execute p.decay.policy p.decay
     (input.storage.logarithm.read head) (input.storage.projectionA.read head) (input.storage.bias.read head)
 
 theorem source_execution (input : GateMemory.Input aLog a dtBias b) (head : Fin 48)

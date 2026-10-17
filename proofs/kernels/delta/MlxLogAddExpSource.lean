@@ -8,23 +8,9 @@ set_option maxRecDepth 10000
 attribute [local irreducible] MlxLogAddExpSyntax.parseNan MlxLogAddExpSyntax.parseInfinity
   MlxLogAddExpSyntax.parseCall MlxLogAddExpSyntax.parseReturn
 
--- metal::max/min remain scalar compiler primitives comparing flushed
--- operands. These flags specify their equal-operand choice, including
--- distinct signed-zero and subnormal bit patterns. No claim about the
--- installed compiler's tie choices is made here.
-structure Policy where
-  maximumLeft : Bool
-  minimumLeft : Bool
-  deriving DecidableEq,Repr
-
-def maximum (leftTie : Bool) (x y : Value) : Value :=
-  if Model.compare (flush x) (flush y)=some .lt then y else
-    if Model.compare (flush x) (flush y)=some .gt then x else if leftTie then x else y
-def minimum (leftTie : Bool) (x y : Value) : Value :=
-  if Model.compare (flush x) (flush y)=some .lt then x else
-    if Model.compare (flush x) (flush y)=some .gt then y else if leftTie then x else y
-
-def legacyPolicy : Policy := ⟨true,false⟩
+-- The tie flags of metal::max/min (Softplus.Policy).
+abbrev Policy := Softplus.Policy
+export Softplus (maximum minimum)
 
 theorem maximum_finite (policy : Bool) (x y : Value) (hx : Model.isFinite x=true) (hy : Model.isFinite y=true) :
     Model.isFinite (maximum policy x y)=true := by
@@ -43,16 +29,6 @@ theorem minimum_finite (policy : Bool) (x y : Value) (hx : Model.isFinite x=true
   · split
     · exact hy
     · split <;> assumption
-
-theorem maximum_zero (x : Value) : maximum true x Trellis.GateUpSplitTail.zero=Softplus.top x := by
-  simp only [maximum,Softplus.top,Trellis.GateUpSplitTail.negative,Trellis.GateUpSplitTail.zero,Softplus.flush_zero,
-    ite_true,ite_self]
-  rfl
-theorem minimum_zero (x : Value) : minimum false x Trellis.GateUpSplitTail.zero=Softplus.bottom x := by
-  simp only [minimum,Softplus.bottom,Trellis.GateUpSplitTail.negative,Trellis.GateUpSplitTail.zero,Softplus.flush_zero,
-    Bool.false_eq_true,ite_false,ite_self]
-  rfl
-
 
 def input (x y : Value) (name : String) : Option Value :=
   if name="x" then some x else if name="y" then some y else none
@@ -126,7 +102,7 @@ theorem fallback (exp log1p : Value→Value) (hi lo : Value) :
   simp only [MlxLogAddExpSyntax.returned,evaluate,captured]
   rfl
 
-attribute [local irreducible] evaluate call maximum minimum
+attribute [local irreducible] evaluate call Softplus.maximum Softplus.minimum
 
 theorem execution (policy : Policy) (exp log1p : Value→Value) (x y : Value)
     (hx : Model.isFinite x=true) (hy : Model.isFinite y=true) :
@@ -144,10 +120,11 @@ theorem execution (policy : Policy) (exp log1p : Value→Value) (x y : Value)
   simp only [mini,maxi,Bool.false_and,Bool.false_or,ite_false]
   exact fallback exp log1p _ _
 
-theorem legacy_execution (exp log1p : Value→Value) (x : Value) (hx : Model.isFinite x=true) :
-    executeFinite legacyPolicy exp log1p x Trellis.GateUpSplitTail.zero=some (Softplus.value exp log1p x) := by
+-- LogAddExp(x, 0) is softplus under the same tie policy.
+theorem zero_execution (policy : Policy) (exp log1p : Value→Value) (x : Value) (hx : Model.isFinite x=true) :
+    executeFinite policy exp log1p x Trellis.GateUpSplitTail.zero=some (Softplus.value policy exp log1p x) := by
   rw [execution _ _ _ _ _ hx (by decide)]
-  simp only [legacyPolicy,maximum_zero,minimum_zero,Softplus.value,Softplus.difference]
+  rfl
 
 theorem reject_nonfinite (policy : Policy) (exp log1p : Value→Value) (x y : Value)
     (outside : Model.isFinite x=false ∨ Model.isFinite y=false) : executeFinite policy exp log1p x y=none := by

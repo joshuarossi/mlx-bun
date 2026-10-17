@@ -112,6 +112,14 @@ structure Contract where
   narrow_model : ∀ x, x.isFinite=true → narrow x=BFloat16.narrow x
   widen_model : ∀ x, Model.isFinite x=true → widen x=BFloat16.widen x
 
+-- Proposed operation-level clause, not yet checked by the probe; a premise
+-- of the theorems that need it until the probe moves it into Contract.
+-- MLX's bf16 log1p (utils.h:327, the fused compute_g LogAddExp) divides
+-- fast_log(1+x) by (1+x)-1, a divisor in [2^-23, 1] below DivisorDomain.
+structure Proposed (C : Contract) : Prop where
+  fdiv_unit : ∀ x y, x.isFinite=true → y.isFinite=true → (2:ℝ)^(-23:Int)≤real y → real y≤1 →
+    C.fdiv x y=FlushToZero.div x y
+
 /- Device facts of the compute pipelines on this target. `maxThreads name` and
    `executionWidth name` are the maxTotalThreadsPerThreadgroup and
    threadExecutionWidth of the pipeline created for the Metal function `name`.

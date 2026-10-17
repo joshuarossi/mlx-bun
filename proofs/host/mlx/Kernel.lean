@@ -174,6 +174,12 @@ def _root_.Inference.Models.Qwen.WrittenLayers.GateDown.withScratch (mlp : GateD
 
 /-! ## The MLX contract for the route's custom kernels -/
 
+-- gate-up-codebook.ts:131 TAIL = (gate width ≠ up width) on the route's
+-- "split" tail: MLX's bf16 sigmoid (fast_fabs/fast_exp), else precise
+-- exp(-float(gate)).
+def trellisActivation (C : M1Max.Contract) (gateBits upBits : Nat) : Activation :=
+  if gateBits ≠ upBits then .split C.fastExpAbs else .float C.expNeg
+
 structure KernelContract (C : M1Max.Contract) where
   -- mlx_fast_metal_kernel_apply on the default GPU stream.
   apply : Kernel → List Value → Config → Option (List Value)
@@ -181,11 +187,10 @@ structure KernelContract (C : M1Max.Contract) where
   -- the platform structures' own primitive contracts.
   affineContracted : Bool
   affineTail : Bool
-  heads : Delta.SiluRmsHeads.Platform
+  headsContracted : Bool
   flags : Delta.Gated.Contraction
-  gated : GatedRmsNorm.Platform
+  gatedContracted : Bool
   residualContracted : Bool
-  activation : Nat → Nat → Activation
   lseSum : Bool
   lseNumerator : Attention.SdpaUpdate.Contraction
   affineRow3 : ∀ {steps blocks : Nat} (p : AffineVerifyLinear.Projection3 steps (4*(blocks*16)))
@@ -202,7 +207,7 @@ structure KernelContract (C : M1Max.Contract) where
     Row x 10240 values → GlueAttention.Vector qs 128 qScale → GlueAttention.Vector ks 128 kScale →
     ∃ q k v, apply .siluRmsHeads [x, qs, ks] headsConfig = some [q, k, v] ∧
       ∃ (input : DeltaHeadsMemory.Input values qScale kScale)
-        (e : DeltaHeadsMemory.Execution input heads Delta.SiluHeads128Output.width Delta.SiluHeads128Output.epsilon),
+        (e : DeltaHeadsMemory.Execution input (C.headsPlatform headsContracted) Delta.SiluHeads128Output.width Delta.SiluHeads128Output.epsilon),
         q = halfArray e.trace.memory (e.geometry.base 0) [1,1,16,128] ∧
         k = halfArray e.trace.memory (e.geometry.base 1) [1,1,16,128] ∧
         v = halfArray e.trace.memory (e.geometry.base 2) [1,1,48,128]
@@ -221,7 +226,7 @@ structure KernelContract (C : M1Max.Contract) where
     GlueAttention.Vector wv 128 weights →
     ∃ out, apply .gatedRmsNorm [xv, gv, wv] gatedNormConfig = some [out] ∧
       ∃ (input : GatedRmsNormMemory.Input x gate weights)
-        (e : GatedRmsNormMemory.Execution input gated Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord))),
+        (e : GatedRmsNormMemory.Execution input (C.gatedPlatform gatedContracted) Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord))),
         out = halfArray e.stores.memory e.base [1,1,48,128]
   residualRmsNorm : ∀ (left right weight : Fin 5120 → BF) (xv uv wv : Value),
     Row xv 5120 left → Row uv 5120 right → GlueAttention.Vector wv 5120 weight →
@@ -234,7 +239,7 @@ structure KernelContract (C : M1Max.Contract) where
   trellis : ∀ (mlp : GateDown) (input : Fin 5120 → BF) (x gc gs uc us dc ds : Value),
     mlp.gatePlatform.load = C.threadgroupLoad → mlp.gatePlatform.reduce = C.simdSum →
     mlp.downPlatform.load = C.threadgroupLoad → mlp.downPlatform.reduce = C.simdSum →
-    mlp.activation = activation mlp.gate.width mlp.up.width → Trellis mlp gc gs uc us dc ds →
+    mlp.activation = trellisActivation C mlp.gate.width mlp.up.width → Trellis mlp gc gs uc us dc ds →
     Flat x [1,5120] input →
     ∃ mid part out, apply .gateUp [x, gc, gs, uc, us] (gateUpConfig mlp.gate.width mlp.up.width) = some [mid] ∧
       apply .downPartial [mid, dc, ds] (downConfig mlp.down.width) = some [part] ∧
@@ -263,6 +268,9 @@ variable {C : M1Max.Contract} (K : KernelContract C)
 noncomputable def sampling : Sampling.LogSumExpRanges.Platform := C.logSumExpPlatform K.lseSum K.lseNumerator
 noncomputable def residual : RmsNorm.Platform := C.rmsPlatform 32 (by decide) (by decide) K.residualContracted
 noncomputable def affine : Quantization.AffineRow.Platform := C.rowPlatform K.affineContracted K.affineTail
+noncomputable def heads : Delta.SiluRmsHeads.Platform := C.headsPlatform K.headsContracted
+noncomputable def gated : GatedRmsNorm.Platform := C.gatedPlatform K.gatedContracted
+def activation (_ : KernelContract C) : Nat → Nat → Activation := trellisActivation C
 
 end KernelContract
 

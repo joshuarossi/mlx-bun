@@ -1622,6 +1622,10 @@ const proofFiles = [
   "host/mlx/GlueLayers.lean",
   "host/mlx/GlueStep.lean",
   "host/mlx/GlueContext.lean",
+  "contracts/mlx/BFloat16OverflowMargin.lean",
+  "contracts/mlx/BFloat16Log1p.lean",
+  "contracts/mlx/M1MaxCompositePlatforms.lean",
+  "host/mlx/GlueM1Max.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

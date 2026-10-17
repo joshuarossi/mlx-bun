@@ -142,7 +142,6 @@ def DecayFinite : (stages : List DecodeStage.Stage) → DecodeChain.Caches stage
 
 theorem stage (s : DecodeStage.Stage) (w : StageWeights) (hl : StageLoaded M K s w) (c : DecodeStage.Cache s n)
     (h : Handles) (hh : StageHolds s h c) (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : DecayOk s x) :
     ∃ y h', stageTrace M K n w h xv = some (y, h') ∧
       Row y 5120 (DecodeStage.forward s c x (RopeInputConstruction.inputs n)) ∧
@@ -155,7 +154,7 @@ theorem stage (s : DecodeStage.Stage) (w : StageWeights) (hl : StageLoaded M K s
       cases h with
       | attention _ _ => exact hh.elim
       | delta conv rec =>
-        obtain ⟨out, tail, st, e, tout, ht, hs⟩ := delta_layer M K l w hl c conv rec hh.1 hh.2 xv x hx policy finite
+        obtain ⟨out, tail, st, e, tout, ht, hs⟩ := delta_layer M K l w hl c conv rec hh.1 hh.2 xv x hx finite
         exact ⟨out, .delta (some tail) (some st), by simp only [stageTrace, e, Option.map_some], tout, ⟨ht, hs⟩⟩
   | attention l =>
     cases w with
@@ -170,7 +169,6 @@ theorem stage (s : DecodeStage.Stage) (w : StageWeights) (hl : StageLoaded M K s
 theorem chain (stages : List DecodeStage.Stage) (ws : List StageWeights) (hl : ChainLoaded M K stages ws)
     (c : DecodeChain.Caches stages n) (hs : List Handles) (hh : ChainHolds stages hs c)
     (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : DecayFinite stages c x (RopeInputConstruction.inputs n)) :
     ∃ y hs', chainTrace M K n ws hs xv = some (y, hs') ∧
       Row y 5120 (DecodeChain.run stages c x (RopeInputConstruction.inputs n)).1 ∧
@@ -190,7 +188,7 @@ theorem chain (stages : List DecodeStage.Stage) (ws : List StageWeights) (hl : C
       cases hs with
       | nil => exact hh.elim
       | cons h hs =>
-        obtain ⟨y, h', e1, ty, hy⟩ := stage M K s w hl.1 c.1 h hh.1 xv x hx policy finite.1
+        obtain ⟨y, h', e1, ty, hy⟩ := stage M K s w hl.1 c.1 h hh.1 xv x hx finite.1
         obtain ⟨z, hs', e2, tz, hz⟩ := ih ws hl.2 c.2 hs hh.2 y _ ty finite.2
         refine ⟨z, h' :: hs', ?_, tz, hy, hz⟩
         simp only [chainTrace, e1, Option.bind_eq_bind, Option.bind_some, e2]
@@ -319,7 +317,6 @@ noncomputable def stepTrace (w : PipelineWeights) (n token : Nat) (hs : List Han
 
 theorem step (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineLoaded M K p w)
     (c : p.graph.Cache n) (hs : List Handles) (hh : ChainHolds p.graph.stages hs c) (token : Fin 248320)
-    (policy : M.logAddExp = Delta.MlxLogAddExpSource.legacyPolicy)
     (finite : DecayFinite p.graph.stages c (p.embedding.forward token) (RopeInputConstruction.inputs n))
     (primitive : Sampling.LogSumExpRanges.Primitives K.sampling)
     (bound : ∀ i, Model.isFinite ((p.run c token (RopeInputConstruction.inputs n)).1 i) = true ∧
@@ -329,7 +326,7 @@ theorem step (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineL
       ChainHolds p.graph.stages hs' (p.run c token (RopeInputConstruction.inputs n)).2 := by
   obtain ⟨x, e1, tx⟩ := embed M p.embedding w.embedWords w.embedScales w.embedBiases hl.embedding token
   obtain ⟨hidden, hs', e2, th, hh'⟩ := chain M K p.graph.stages (stageWeights w) (stages_loaded M K p w hl) c hs hh
-    x _ tx policy finite
+    x _ tx finite
   obtain ⟨h, e3, tn⟩ := GlueAttention.hidden_norm M p.graph.finalNorm hl.finalPlatform hidden w.finalNorm _ th hl.finalNorm
   obtain ⟨logits, e4, tl⟩ := GlueLayers.project_row M K .affineRow w.head (blocks := 3880) p.graph.output hl.head (by decide) h _ tn
   have e5 := reshape_some logits [1, 248320] (by rw [tl.2.1]; rfl)

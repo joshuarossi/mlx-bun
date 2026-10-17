@@ -1,5 +1,5 @@
 import host.mlx.Value
-import contracts.mlx.M1MaxPlatforms
+import contracts.mlx.M1MaxCompositePlatforms
 import contracts.mlx.ElementwiseAdd
 import contracts.mlx.FloatMemory
 import layers.Normalization
@@ -322,18 +322,15 @@ structure MlxContract (C : M1Max.Contract) where
   qmvContracted : Bool
   qmvTail : Bool
   dequantizeContracted : Bool
-  -- unary_ops.h:308-313 Sigmoid on bfloat16: y = 1/(1+exp(|x|)), then
-  -- x<0 ? y : 1-y in BF16 (OutputGate.lean); `expAbs` is the bf16 exp(|x|).
-  sigmoid : Attention.OutputGate.Platform
   -- rope.cpp:123 `float base = std::log2(base_)` on the host (libm log2f).
   log2 : Float32 → Float32
   -- The observed log2f word for the route's base 1e7 (0x4b189680).
   log2_route : log2 (Float32.ofBits 0x4b189680) = Float32.ofBits 0x41ba0729
   -- compiled.cpp: a compiled closure's elementwise chain becomes one JIT
-  -- kernel; its LogAddExp uses the compiled preamble's max/min tie policy
+  -- kernel; its LogAddExp uses the compiled preamble's fast_fmax/fast_fmin
   -- with fast exp/log1p (MlxLogAddExpSource), not the uncompiled kernel.
+  -- The tie choice of those min/max carries no claim.
   logAddExp : Delta.MlxLogAddExpSource.Policy
-  decay : Delta.Decay.Platform
 
 namespace MlxContract
 variable {C : M1Max.Contract} (M : MlxContract C)
@@ -349,6 +346,11 @@ noncomputable def angles (_ : MlxContract C) : Attention.RopeAngles.Platform := 
 noncomputable def rotation : Attention.Rope.Platform := C.rotationPlatform M.ropeFirst M.ropeSecond
 noncomputable def sdpa : Attention.SdpaVector.Platform := C.sdpaPlatform M.sdpaSum M.sdpaNumerator M.sdpaScore
 noncomputable def row : Quantization.AffineRow.Platform := C.rowPlatform M.qmvContracted M.qmvTail
+-- unary_ops.h:308-313 Sigmoid on bfloat16: y = 1/(1+exp(|x|)), then
+-- x<0 ? y : 1-y in BF16 (OutputGate.lean), with precise fabs/exp.
+noncomputable def sigmoid (_ : MlxContract C) : Attention.OutputGate.Platform := C.sigmoidPlatform
+-- compute_g: precise exp on float, the fused LogAddExp under the compiled tie choice.
+noncomputable def decay : Delta.Decay.Platform := C.decayPlatform M.logAddExp
 
 theorem hiddenGroups : Normalization.MlxRmsHostSelection.groups M.hiddenThreads = 32 := by
   unfold Normalization.MlxRmsHostSelection.groups; rw [M.hiddenThreads_m1max]
@@ -482,13 +484,13 @@ inductive Closure where
   -- a closure whose body is our metal kernel launches
   | kernels (body : List Value → Option (List Value))
 
-def computeGValue (M : MlxContract C) (aLog a dt : Value) : Value :=
+noncomputable def computeGValue (M : MlxContract C) (aLog a dt : Value) : Value :=
   { dtype := .float32, shape := [1, 1, 48], elems := (fun i =>
     match Delta.ComputeGHostSource.execute M.logAddExp M.decay (bf (aLog.elems i)) (bf (a.elems i)) (bf (dt.elems i)) with
     | some (.fp g) => f32Word g
     | _ => 0) }
 
-def Closure.eval (M : MlxContract C) : Closure → List Value → Option (List Value)
+noncomputable def Closure.eval (M : MlxContract C) : Closure → List Value → Option (List Value)
   | .computeG, [aLog, a, dt] =>
     if aLog.dtype = .bfloat16 ∧ a.dtype = .bfloat16 ∧ dt.dtype = .bfloat16 ∧ a.shape = [1, 1, 48] then
       some [computeGValue M aLog a dt]
@@ -497,7 +499,7 @@ def Closure.eval (M : MlxContract C) : Closure → List Value → Option (List V
   | .kernels body, xs => body xs
 
 -- The closure contract: applying a compiled closure is evaluating it.
-def closureApply (M : MlxContract C) (f : Closure) (xs : List Value) : Option (List Value) := f.eval M xs
+noncomputable def closureApply (M : MlxContract C) (f : Closure) (xs : List Value) : Option (List Value) := f.eval M xs
 
 -- mlx_eval / mlx_async_eval have no value effect; item_uint32 reads element 0.
 def itemUint32 (v : Value) : Option Nat := if v.dtype = .uint32 ∧ v.size = 1 then some (v.elems 0) else none
