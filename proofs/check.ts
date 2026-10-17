@@ -1550,6 +1550,7 @@ const proofFiles = [
   "host/ts/sources/mlx/MetalKernel.lean",
   "host/ts/sources/mlx/Ops.lean",
   "host/ts/Sanity.lean",
+  "host/mlx/Value.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
