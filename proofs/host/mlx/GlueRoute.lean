@@ -97,20 +97,91 @@ theorem filled_vector (value : HeadScaleConstruction.Double) :
   exact BitVec.setWidth_eq _
 
 -- MLX's reference multiplies the unweighted rms_norm (weight 1) by the
--- scalar; the folded weight is applied first in the same kernel. For finite
--- operands BF16 multiplication commutes, so operand order cannot differ.
+-- scalar; the folded weight is applied first in the same kernel. Weight one
+-- returns the flushed operand exactly, and for finite operands BF16
+-- multiplication commutes, so operand order cannot differ.
+theorem one_dyadic : Model.toDyadic? BFloat16Arithmetic.one = some ⟨false, 128, -7⟩ := by decide +kernel
+
+theorem model_one_mul (z : BF) (hz : Model.isFinite z = true) : Model.mul BFloat16Arithmetic.one z = z := by
+  obtain ⟨dz, hdz⟩ := Model.exists_toDyadic?_of_isFinite hz
+  rw [Model.Proof.mul_eq_spec]
+  unfold Model.Spec.mul
+  rw [one_dyadic, hdz]
+  by_cases h0 : dz.significand = 0
+  · have hzero := Model.isZero_eq_true_of_toDyadic?_some_of_mant_eq_zero hdz h0
+    have hd := Option.some.inj (hdz.symm.trans (Model.toDyadic?_eq_zero_of_isZero_eq_true z hzero))
+    subst hd
+    simp
+    cases hs : Model.signBit z <;> rw [hs] at hdz <;> simp only [ite_true, ite_false, Bool.false_eq_true]
+    · exact Model.eq_of_toDyadic?_eq_some (by decide +kernel) hdz
+    · exact Model.eq_of_toDyadic?_eq_some (by decide +kernel) hdz
+  · simp [h0]
+    let d : Numerics.Dyadic := ⟨dz.negative, 128 * dz.significand, -7 + dz.exponent⟩
+    have hv : d.toReal = Model.toReal z := by
+      rw [Model.toReal_eq, hdz]
+      show d.toReal = dz.toReal
+      simp only [d, Numerics.Dyadic.toReal, Numerics.Dyadic.signedSignificand]
+      rw [zpow_add₀ two_ne_zero]
+      cases dz.negative <;> push_cast <;> norm_num <;> ring
+    have hb : |d.toReal| ≤ Model.toReal (Model.posMaxFinite FloatFormat.bfloat16) := by
+      rw [hv]; exact Model.abs_toReal_le_posMaxFinite_of_isIEEE_of_isFinite z (by decide) hz
+    have hf := Model.isFinite_roundDyadic_of_isIEEE_of_abs_toReal_le_posMaxFinite _ (by decide) d hb
+    have hr := Model.toReal_roundDyadic_eq_roundAt _ (by decide) d hf
+    rw [hv, Model.roundAt_toReal_eq z hz] at hr
+    apply Model.eq_of_toReal_eq_of_nonzero hf hz hr
+    rw [hr, ← hv]
+    exact (Model.Dyadic.toReal_eq_zero_iff d).not.mpr (by simp only [d]; omega)
+
+-- No rounding and no underflow flush: the product is the flushed operand.
+theorem mul_one_left (y : BF) (hy : Model.isFinite y = true) :
+    BFloat16Arithmetic.mul BFloat16Arithmetic.one y = BFloat16Arithmetic.flush y := by
+  have hz := BFloat16Arithmetic.finite_flush y hy
+  unfold BFloat16Arithmetic.mul
+  rw [BFloat16Arithmetic.flush_one, model_one_mul _ hz]
+  have hx := FlushToZero.exact_mul BFloat16Arithmetic.one (BFloat16Arithmetic.flush y)
+  rw [BFloat16Arithmetic.real_one, one_mul] at hx
+  obtain ⟨dz, hdz⟩ := Model.exists_toDyadic?_of_isFinite hz
+  have he : FlushToZero.mulExact BFloat16Arithmetic.one (BFloat16Arithmetic.flush y) =
+      some ((⟨false, 128, -7⟩ : Numerics.Dyadic).signedSignificand * dz.signedSignificand, 1, -7 + dz.exponent) := by
+    unfold FlushToZero.mulExact; rw [one_dyadic, hdz]
+  rw [he] at hx ⊢
+  unfold BFloat16Arithmetic.flushExact FlushToZero.underflow
+  cases hb : FlushToZero.below ((⟨false, 128, -7⟩ : Numerics.Dyadic).signedSignificand * dz.signedSignificand) 1 (-7 + dz.exponent)
+  · simp only [hb, Bool.false_eq_true, ite_false]
+  · exfalso
+    obtain ⟨hn, hl⟩ := (FlushToZero.below_iff _ _ _ (by decide)).mp hb
+    rw [hx.2] at hl
+    rcases BFloat16Arithmetic.flush_normal y with h0 | h0
+    · apply hn
+      have := hx.2
+      rw [h0] at this
+      have h2 : (2 : ℝ)^(-7 + dz.exponent) ≠ 0 := zpow_ne_zero _ two_ne_zero
+      have h3 := (mul_eq_zero.mp this).resolve_right h2
+      rw [Nat.cast_one, div_one] at h3
+      exact_mod_cast h3
+    · exact absurd hl (not_lt.mpr h0)
+
 theorem mul_comm_finite (x y : BF) (hx : Model.isFinite x = true) (hy : Model.isFinite y = true) :
     BFloat16Arithmetic.mul x y = BFloat16Arithmetic.mul y x := by
+  obtain ⟨dx, hdx⟩ := Model.exists_toDyadic?_of_isFinite (BFloat16Arithmetic.finite_flush x hx)
+  obtain ⟨dy, hdy⟩ := Model.exists_toDyadic?_of_isFinite (BFloat16Arithmetic.finite_flush y hy)
+  have e1 : FlushToZero.mulExact (BFloat16Arithmetic.flush x) (BFloat16Arithmetic.flush y) =
+      FlushToZero.mulExact (BFloat16Arithmetic.flush y) (BFloat16Arithmetic.flush x) := by
+    unfold FlushToZero.mulExact; rw [hdx, hdy]; dsimp only; rw [Int.mul_comm, Int.add_comm]
+  have e2 : Model.mul (BFloat16Arithmetic.flush x) (BFloat16Arithmetic.flush y) =
+      Model.mul (BFloat16Arithmetic.flush y) (BFloat16Arithmetic.flush x) := by
+    rw [Model.Proof.mul_eq_spec, Model.Proof.mul_eq_spec]
+    unfold Model.Spec.mul
+    rw [hdx, hdy]
+    simp only [Bool.xor_comm, Bool.or_comm, Nat.mul_comm, Int.add_comm]
+  unfold BFloat16Arithmetic.mul; rw [e1, e2]
+
+-- The reference: weight-one rms_norm output times the scalar is the folded product.
+theorem reference_scale (y s : BF) (hy : Model.isFinite y = true) (hs : Model.isFinite s = true) :
+    BFloat16Arithmetic.mul (BFloat16Arithmetic.mul BFloat16Arithmetic.one y) s = BFloat16Arithmetic.mul s y := by
+  rw [mul_one_left y hy, ← mul_comm_finite y s hy hs]
   unfold BFloat16Arithmetic.mul
-  congr 1
-  have fx := BFloat16Arithmetic.finite_flush x hx
-  have fy := BFloat16Arithmetic.finite_flush y hy
-  rw [Model.Proof.mul_eq_spec, Model.Proof.mul_eq_spec]
-  obtain ⟨dx, hdx⟩ := Model.exists_toDyadic?_of_isFinite fx
-  obtain ⟨dy, hdy⟩ := Model.exists_toDyadic?_of_isFinite fy
-  unfold Model.Spec.mul
-  rw [hdx, hdy]
-  simp only [Bool.xor_comm, Bool.or_comm, Nat.mul_comm, Int.add_comm]
+  rw [BFloat16Arithmetic.flush_flush]
 
 /-! ## Gap 9: dtype promotion
 

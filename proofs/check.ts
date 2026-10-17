@@ -175,6 +175,9 @@ const hostSourcePins = {
   "packages/mlx/src/ops.ts": "0672d9fa77e95490cad3201eb7a9eae073aa41a7c1aa0afaf3e1a640e32dc2cd",
 };
 const mlxSourcePins = {
+  "mlx/compile.cpp": "b95efbcaa0a0173d6d2184f43e49b75af43c376ab2eb970012ef344d694358f7",
+  "mlx/backend/metal/custom_kernel.cpp": "92548fba86690996a30725ef96bb8e0e299b69a4559e71c60340e7e11c1cac5e",
+  "mlx/backend/common/metal_kernel.cpp": "b4b36fae88cc3de926b423a82d44ab7de44c00e073c35784ff6b0034433c68b8",
   "mlx/dtype.h": "a9b6c8719deae53015cfcf0452b570b2620c8c24b409b93e80ffd8ecb4537748",
   "mlx/types/half_types.h": "43fa5d204abea6db4211f620058bde2f6869563f2615de2d5d5b28d9f7494229",
   "mlx/types/bf16.h": "a279b39030b406eda06a42069abd660ad24fced7b1cfe33378b236b2ce1e786f",
@@ -1614,6 +1617,11 @@ const proofFiles = [
   "host/ts/tests/KvSym.lean",
   "host/ts/tests/AttnSrc.lean",
   "host/ts/tests/AttnSym.lean",
+  "host/mlx/Kernel.lean",
+  "host/mlx/GlueKernels.lean",
+  "host/mlx/GlueLayers.lean",
+  "host/mlx/GlueStep.lean",
+  "host/mlx/GlueContext.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
