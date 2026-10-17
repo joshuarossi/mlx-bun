@@ -28,11 +28,14 @@ structure Linear where
   bits : Nat
 
 -- affine-verify-linear.ts AffineRowLinear.forward / quantized-linear.ts
--- QuantizedLinearPlain.forward (no bias on the route).
+-- QuantizedLinearPlain.forward (no bias on the route). The launch reads K from
+-- x and N from the scales (affine-row.ts affineRow); on the route x has K =
+-- scales.shape[1]·64 (affineRowEligible), the form taken here so the launch
+-- configuration is a function of the loaded weights.
 noncomputable def project : Projector → Linear → Value → Option Value
   | .affineRow, l, x => do
     let [y] ← K.apply .affineRow [x, l.w, l.scales, l.biases]
-      (affineConfig (x.shape.getLast?.getD 0) (l.scales.shape.headD 0) l.bits) | none
+      (affineConfig (l.scales.shape.getD 1 0 * 64) (l.scales.shape.headD 0) l.bits) | none
     pure y
   | .plain, l, x => quantizedMatmul M x l.w l.scales l.biases true 64 l.bits "affine"
 
@@ -83,19 +86,20 @@ theorem project_row (kind : Projector) (l : Linear) {blocks : Nat} (p : AffineVe
     (hl : Loaded M K kind l p) (limit : blocks ≤ 3880) (x : Value) (input : Fin (steps*512) → BF)
     (hx : Row x (steps*512) input) :
     ∃ y, project M K kind l x = some y ∧ Row y (4*(blocks*16)) (p.forward input) := by
-  have hk : x.shape.getLast?.getD 0 = steps*512 := by rw [hx.2.1]; rfl
   cases kind
   · cases p with
     | bits3 q =>
       obtain ⟨hb, hp, hw⟩ := hl
       obtain ⟨y, ha, hy, _⟩ := GlueKernels.affine_row3 K q input x l.w l.scales l.biases hp hx hw limit
       have hn : l.scales.shape.headD 0 = 4*(blocks*16) := by rw [hw.groups.2.1]; rfl
+      have hk : l.scales.shape.getD 1 0 * 64 = steps*512 := by rw [hw.groups.2.1]; simp only [List.getD_cons_succ, List.getD_cons_zero]; omega
       refine ⟨y, ?_, hy⟩
       simp only [project, hk, hn, hb, ha]; rfl
     | bits4 q =>
       obtain ⟨hb, hp, hw⟩ := hl
       obtain ⟨y, ha, hy, _⟩ := GlueKernels.affine_row4 K q input x l.w l.scales l.biases hp hx hw limit
       have hn : l.scales.shape.headD 0 = 4*(blocks*16) := by rw [hw.groups.2.1]; rfl
+      have hk : l.scales.shape.getD 1 0 * 64 = steps*512 := by rw [hw.groups.2.1]; simp only [List.getD_cons_succ, List.getD_cons_zero]; omega
       refine ⟨y, ?_, hy⟩
       simp only [project, hk, hn, hb, ha]; rfl
   · exact plain_row M K l p hl x input hx
