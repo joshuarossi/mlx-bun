@@ -118,6 +118,7 @@ import { checkDownStepSourceBinding } from "./kernels/trellis/DownStepSourceBind
 import { checkMlxRopeSingleSourceBinding } from "./kernels/attention/MlxRopeSingleSourceBinding.ts";
 import { checkMlxSdpaVectorSourceBinding } from "./kernels/attention/MlxSdpaVectorSourceBinding.ts";
 import { checkMlxSdpaScoreSourceBinding } from "./kernels/attention/MlxSdpaScoreSourceBinding.ts";
+import { checkHostTsSourceBinding } from "./host/ts/SourceBinding.ts";
 
 const root = new URL("../", import.meta.url);
 const lean = process.env.LEAN ?? "lean";
@@ -1509,6 +1510,46 @@ const proofFiles = [
   "models/qwen/CheckpointFileCheck.lean",
   "models/qwen/CheckpointFileMain.lean",
   "layers/AffineRouteParsedSource.lean",
+  "host/ts/Syntax.lean",
+  "host/ts/Lexer.lean",
+  "host/ts/Parser.lean",
+  "host/ts/Source.lean",
+  "host/ts/sources/inference/generation/Autoregressive.lean",
+  "host/ts/sources/inference/generation/PhaseDispatch.lean",
+  "host/ts/sources/inference/generation/Result.lean",
+  "host/ts/sources/inference/kernels/delta/Gated.lean",
+  "host/ts/sources/inference/kernels/quantization/AffineRow.lean",
+  "host/ts/sources/inference/kernels/sampling/NormalizedArgmax.lean",
+  "host/ts/sources/inference/kernels/trellis/DownCodebook.lean",
+  "host/ts/sources/inference/kernels/trellis/GateUpCodebook.lean",
+  "host/ts/sources/inference/layers/AffineVerifyLinear.lean",
+  "host/ts/sources/inference/layers/CompiledNormalization.lean",
+  "host/ts/sources/inference/layers/DeltaHeads.lean",
+  "host/ts/sources/inference/layers/Helpers.lean",
+  "host/ts/sources/inference/layers/Lora.lean",
+  "host/ts/sources/inference/layers/Normalization.lean",
+  "host/ts/sources/inference/layers/QuantizedEmbedding.lean",
+  "host/ts/sources/inference/layers/QuantizedLinear.lean",
+  "host/ts/sources/inference/layers/TrellisCodebookDown.lean",
+  "host/ts/sources/inference/layers/TrellisCodebookGateUp.lean",
+  "host/ts/sources/inference/models/qwen/Blocks.lean",
+  "host/ts/sources/inference/models/qwen/Qwen3827bTrellisM1max.lean",
+  "host/ts/sources/inference/models/qwen/WrittenLayers.lean",
+  "host/ts/sources/inference/runtime/Config.lean",
+  "host/ts/sources/inference/runtime/GraphForward.lean",
+  "host/ts/sources/inference/runtime/RowOperations.lean",
+  "host/ts/sources/inference/sampling/Extras.lean",
+  "host/ts/sources/inference/sampling/Step.lean",
+  "host/ts/sources/inference/state/AttentionRead.lean",
+  "host/ts/sources/inference/state/Kv.lean",
+  "host/ts/sources/inference/state/Ssm.lean",
+  "host/ts/sources/mlx/Array.lean",
+  "host/ts/sources/mlx/Compile.lean",
+  "host/ts/sources/mlx/Ffi.lean",
+  "host/ts/sources/mlx/Materialize.lean",
+  "host/ts/sources/mlx/MetalKernel.lean",
+  "host/ts/sources/mlx/Ops.lean",
+  "host/ts/Sanity.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -1738,6 +1779,8 @@ await checkDownStepSourceBinding({ selfTest: process.argv.includes("--self-test"
 await checkMlxRopeSingleSourceBinding({ selfTest: process.argv.includes("--self-test") });
 await checkMlxSdpaVectorSourceBinding({ selfTest: process.argv.includes("--self-test") });
 await checkMlxSdpaScoreSourceBinding({ selfTest: process.argv.includes("--self-test") });
+// Host TypeScript literals: Lean lexes and parses them; this checks bytes only.
+await checkHostTsSourceBinding({ selfTest: process.argv.includes("--self-test") });
 
 const dir = await mkdtemp(join(tmpdir(), "mlx-bun-proof-"));
 async function checkProof(name: string, text: string, build = false) {
@@ -1804,6 +1847,7 @@ try {
 }
 console.log(`Checked ${proofFiles.length} proof modules.`);
 console.log("Permitted axioms: propext, Classical.choice, Quot.sound. No native proof evaluation.");
+console.log("Host TypeScript frontend: 35 executed decode-route files are embedded verbatim; the kernel checks that Lean's own lexer and type-erasing parser accept each whole file, and that the parsed MlxArray.shape getter is the expected AST. No TypeScript semantics or Bun transpiler correspondence is established yet.");
 console.log("Mathematical scope: conditional one-token M1 Max Qwen inference covers quantized embedding, 48 Delta and 16 attention layers, final normalization, all 248320 logits, logsumexp, greedy selection and cache feedback through 262144 steps. Parameter and primitive contracts derive intermediate finiteness and ranges, including a 2^18 logit bound. Error budgets compare with a real-valued reference consuming the same emitted tokens; independent exact-real token agreement requires winner margins. A useful final accuracy guarantee remains open. Prefill, batching and adapters are outside this result.");
 console.log("Parsed Delta recurrence: selected one-token pointers and four-cell register initialization feed source-ordered decay, prediction, correction and readout. Parsed time control, BF16 output and FP32 state stores execute on the original mixed schedule for every protected input prefix. The model join reaches the actual gated-normalization input and retained recurrent cache heap. Reviewed host selection pins the unmasked inference route, Tin, templates, dtypes and dispatch; native descriptors, compiler contraction and SIMD primitives remain explicit.");
 console.log("Parsed Delta preparation/tail: native depthwise convolution, fixed-width128 BF16 SiLU/Q/K/V heads and gated RMS normalization now derive source operations and output stores on the original traces. Q/K/V survive gate writes into recurrence; normalization reaches the actual three/four-bit output projection. QKV/Z certificates follow the executed width route (three-bit custom row, four-bit MLX qmv_fast) and share the original ordered phase with native four-bit A/B. The typed computeG host graph parses cast/exp/neg/BF16-add/logaddexp/mixed-multiply/exp and reaches the actual FP32 gate buffer under finite inputs; BF16 beta uses the parsed48-cell unary schedule. Guarded host token extraction, compiler graph preservation and native max/min equality policy remain explicit.");
