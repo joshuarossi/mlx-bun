@@ -12,8 +12,8 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 
 /- The machine boundary of the native proof: what each AIR operation does on
    this target. Scope: Apple M1 Max (applegpu_g13s), macOS 27.0.1 (26A434),
-   AGXMetalG13X/AGXCompilerCore 360.34.5, AIR produced by metalfe-32023.883
-   (precompiled mlx.metallib) and metalfe-32023.921.5 (runtime compiler), with
+   AGXMetalG13X/AGXCompilerCore 360.34.5, AIR produced by metalfe-32023.921.6
+   (mlx.metallib built from MLX v0.32.2 by packages/mlx/scripts/build-native.sh) and metalfe-32023.921.5 (runtime compiler), with
    air.compile.denorms_disable and air.compile.fast_math_disable. Compiler
    conformance (MSL source to AIR, AIR to AGX code) is part of this boundary:
    each source operation means the operation named here.
