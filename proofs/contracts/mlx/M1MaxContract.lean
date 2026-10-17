@@ -4,6 +4,7 @@ import contracts.mlx.FlushedReduction
 import contracts.mlx.RsqrtEpsilonBounds
 import contracts.mlx.BFloat16Arithmetic
 import contracts.mlx.FloatMemory
+import contracts.mlx.Maximum
 
 namespace Inference.Contracts.Mlx.M1Max
 open Numerics
@@ -21,6 +22,12 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
    checkpoint or table. proofs/contracts/mlx/probe-m1max-contract.ts checks
    each clause on this machine (exhaustively for unary f32 clauses). This
    structure is a premise of the native theorem, not a declared axiom. -/
+-- air.simd_max.f32 is one fixed tree of `if left<right then right else left`.
+structure MaximumTree (reduce : (Fin 32 → Float32) → Float32) where
+  tree : Reduction.Tree 32
+  coverage : (Reduction.leaves tree).Perm (List.finRange 32)
+  execution : ∀ input, reduce input=Maximum.tree input tree
+
 structure Contract where
   -- Basic binary32 arithmetic, defined by the flushed nearest-even models.
   -- Kernel models compute with these definitions directly.
@@ -47,7 +54,7 @@ structure Contract where
   exp_overflow : ∀ x, x.isFinite=true → (exp x).isFinite=true ∨ exp x=Float32.inf
   fastExp_nonpositive : ∀ x, x.isFinite=true → real x≤0 → (fastExp x).isFinite=true ∧ 0≤real (fastExp x) ∧ real (fastExp x)≤1
   fastExp_zero : ∀ x, x.isFinite=true → real x=0 → real (fastExp x)=1
-  fastExp_negInf : fastExp (-Float32.inf)=0
+  fastExp_negInf : (fastExp (Float32.ofBits 0xff800000)).isFinite=true ∧ real (fastExp (Float32.ofBits 0xff800000))=0
   fastExp_nonnegative : ∀ x, x.isFinite=true → (fastExp x).isFinite=true → 0≤real (fastExp x)
   fastExp_overflow : ∀ x, x.isFinite=true → (fastExp x).isFinite=true ∨ fastExp x=Float32.inf
   -- air.exp2.f32 (precise).
@@ -67,8 +74,12 @@ structure Contract where
   fmax : Float32 → Float32 → Float32
   fmax_select : ∀ x y, x.isFinite=true → y.isFinite=true → (fmax x y=x ∨ fmax x y=y) ∧ real (fmax x y)=max (real x) (real y)
   simdMax : (Fin 32 → Float32) → Float32
-  simdMax_select : ∀ input : Fin 32 → Float32, (∀ i, (input i).isFinite=true) →
-    ∃ i, simdMax input=input i ∧ ∀ j, real (input j)≤real (input i)
+  simdMax_tree : MaximumTree simdMax
+  -- air.fabs.f32 and air.fast_fabs.f32 clear the sign of finite inputs.
+  fabs : Float32 → Float32
+  fastFabs : Float32 → Float32
+  fabs_value : ∀ x, x.isFinite=true → (fabs x).isFinite=true ∧ real (fabs x)=|real x|
+  fastFabs_value : ∀ x, x.isFinite=true → (fastFabs x).isFinite=true ∧ real (fastFabs x)=|real x|
   -- air.simd_sum.f32: one fixed binary tree of flushed nearest-even adds.
   simdSum : (Fin 32 → Float32) → Float32
   simdSum_tree : FlushedReduction.SimdContract simdSum
