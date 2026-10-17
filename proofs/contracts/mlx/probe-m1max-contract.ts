@@ -1,17 +1,20 @@
-/** Checks every clause of M1MaxContract.lean `Contract` on this machine.
- * Unary f32 clauses are exhaustive over all 2^32 inputs; binary arithmetic is
- * structured plus >= 2^30 random cases per operation against exact flushed RNE
- * references; simd_sum/simd_max trees are identified and then replayed.
+/** Checks every clause of M1MaxContract.lean (`Contract` and `Pipelines`) on this machine and
+ * prints one PASS/FAIL line per Lean field. References implement the Lean definitions
+ * (probe-m1max-contract-check.ts). Unary f32 clauses are exhaustive over all 2^32 inputs;
+ * bf16 arithmetic and bf16-valued fmax are exhaustive over all finite pairs; binary32
+ * arithmetic is structured plus 2^30 random cases per operation; simd_sum/simd_max trees are
+ * identified and then replayed; pipeline limits are read from the pipelines MLX creates.
  *   MLX_BUN_LIBMLXC=/path/to/libmlxc.dylib bun proofs/contracts/mlx/probe-m1max-contract.ts \
  *     [--verify-lowering] [--quick]
  * The outer process re-executes itself under ~/mlx-bun-perf/gpu.sh (the machine GPU lock).
- * --verify-lowering builds and loads metal-tracer.m before MLX, serializes every runtime
- * library MLX compiles, disassembles it with `xcrun metal-objdump -d`, and fails
- * unless each probe kernel uses exactly the AIR operation its clause names.
- * --quick samples (1/16 of unary chunks, 1/64 of random counts) for smoke runs. */
+ * metal-tracer.m is built and loaded before MLX (it records libraries and pipelines).
+ * --verify-lowering disassembles every runtime library MLX compiled with `xcrun metal-objdump -d`
+ * and fails unless each probe kernel uses exactly the AIR operation its clause names.
+ * --quick samples (1/16 of unary chunks, 1/64 of random counts, 1/128 of bf16 rows) for smoke runs.
+ * Exit status 0 iff every clause (and each precondition) passes. */
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 if (!argv.includes("--under-gpu-lock")) {
@@ -39,9 +42,9 @@ console.log(`chip ${chip}; macOS ${sh(["sw_vers", "-productVersion"])} (${sh(["s
   `AGXCompilerCore ${plist("/System/Library/PrivateFrameworks/AGXCompilerCore.framework/Resources/Info.plist")}; ` +
   `offline ${sh(["xcrun", "metal", "--version"]).split("\n")[0]}`);
 
+const { dlopen, FFIType, ptr } = await import("bun:ffi");
 const KT_DIR = "/tmp/m1max-contract-lowering";
-if (VERIFY) {
-  const { dlopen, FFIType, ptr } = await import("bun:ffi");
+const kt = (() => {
   const lib = join(KT_DIR + "-lib", "libmetal-tracer.dylib");
   mkdirSync(dirname(lib), { recursive: true });
   const built = Bun.spawnSync(["clang", "-dynamiclib", "-fobjc-arc", "-O1", "-Wno-deprecated-declarations", "-framework", "Foundation",
@@ -49,20 +52,23 @@ if (VERIFY) {
   if (built.exitCode !== 0) throw new Error(`Building the Metal tracer failed: ${built.stderr}`);
   rmSync(KT_DIR, { recursive: true, force: true });
   mkdirSync(KT_DIR, { recursive: true });
-  const kt = dlopen(lib, { kt_init: { args: [FFIType.ptr], returns: FFIType.void } }).symbols;
-  kt.kt_init(ptr(Buffer.from(KT_DIR + "\0")));
-}
+  const k = dlopen(lib, {
+    kt_init: { args: [FFIType.ptr], returns: FFIType.void },
+    kt_dump_pipelines: { args: [FFIType.ptr], returns: FFIType.void },
+  }).symbols;
+  k.kt_init(ptr(Buffer.from(KT_DIR + "\0")));
+  return k;
+})();
 
-const { ptr } = await import("bun:ffi");
 const { MlxArray } = await import("../../../packages/mlx/src/array.ts");
 const { MetalKernel } = await import("../../../packages/mlx/src/metal-kernel.ts");
 const { Dtype, clearCache } = await import("../../../packages/mlx/src/ffi.ts");
 const ops = await import("../../../packages/mlx/src/ops.ts");
 type Arr = InstanceType<typeof MlxArray>;
 
-const { hex, clauses, clause, report, F1, U1, bitsOf, valOf, TINY, fl, sameF, isNaNBits, fmtF, bf16Rne, bfVal, BV, BVF,
-  bfFromF32, bfFlush, leanWidenNaN, leanNarrowNaN, Policy, newStat, bfPolicies, Pool } = await import("./probe-m1max-contract-check.ts");
-type Clause = InstanceType<typeof import("./probe-m1max-contract-check.ts").Clause>;
+const { hex, clauses, clause, passed, report, bitsOf, valOf, TINY, fl, sameF, isNaNBits, canon, fmtF, bf16Rne, BV, BVF,
+  bfFlush, bfModel, BF_OPS, fmaRO, addRef, mulRef, divRef, fmaRef, addBits, maxValue, maxLess, newStat, Pool } =
+  await import("./probe-m1max-contract-check.ts");
 type UnaryName = import("./probe-m1max-contract-check.ts").UnaryName;
 type Task = import("./probe-m1max-contract-check.ts").Task;
 const section = (s: string) => console.log(`-- ${s} (${((performance.now() - T0) / 1000).toFixed(0)} s)`);
@@ -70,52 +76,48 @@ const WORKERS = Math.max(2, Number(sh(["sysctl", "-n", "hw.perflevel0.physicalcp
 const pool = new Pool(WORKERS);
 const addrOf = (a: Uint32Array) => Number(ptr(a));
 
-const D1 = new Float64Array(1), DU = new Uint32Array(D1.buffer);
-// Exact RNE fma for flushed binary32 inputs: exact product, TwoSum, round-to-odd to
-// binary64, then RNE to binary32 (53 >= 24 + 2, so the second rounding is exact).
-function fmaRO(a: number, b: number, c: number): number { // round-to-odd binary64 of a*b+c
-  const p = a * b; // exact: 48-bit product of normal binary32 values
-  const s = p + c;
-  const bb = s - p;
-  const e = (p - (s - bb)) + (c - bb);
-  if (e === 0 || !Number.isFinite(s)) return s;
-  D1[0] = s;
-  if ((DU[0]! & 1) === 0) {
-    const away = (e > 0) === (s > 0);
-    if (away) { if (DU[0] === 0xffffffff) { DU[0] = 0; DU[1] = DU[1]! + 1; } else DU[0] = DU[0]! + 1; }
-    else { if (DU[0] === 0) { DU[0] = 0xffffffff; DU[1] = DU[1]! - 1; } else DU[0] = DU[0]! - 1; }
+// ---------------------------------------------------------------- clause list = Lean fields
+// The clause fields of each structure: fields whose type mentions another field (an operation).
+function leanClauses(structure: string): string[] {
+  const src = readFileSync(join(import.meta.dir, "M1MaxContract.lean"), "utf8");
+  const body = new RegExp(`^structure ${structure} where\\n((?:(?:  .*)?\\n)*)`, "m").exec(src)?.[1];
+  if (!body) throw new Error(`structure ${structure} not found in M1MaxContract.lean`);
+  const fields: [string, string][] = [];
+  for (const line of body.split("\n")) {
+    const m = /^  ([A-Za-z_][A-Za-z_0-9]*) : (.*)$/.exec(line);
+    if (m) fields.push([m[1]!, m[2]!]); else if (/^   /.test(line) && fields.length) fields[fields.length - 1]![1] += " " + line.trim();
   }
-  return D1[0]!;
+  const names = fields.map(f => f[0]);
+  return fields.filter(([n, t]) => names.some(o => o !== n && new RegExp(`(^|[^.\\w])${o}([^\\w]|$)`).test(t))).map(f => f[0]);
 }
-const fmaRef = (a: number, b: number, c: number) => Math.fround(fmaRO(a, b, c));
-// Alternative flushing points, applied to a binary64 value 'pre' whose binary32 rounding is
-// the correct rounding of the exact result (exact, or round-to-odd / innocuous double rounding):
-// 'before' flushes when the exact result is below 2^-126 (tininess before rounding);
-// 'unbounded' rounds to 24 bits with unbounded exponent, then flushes below 2^-126.
-const flushBefore = (pre: number) => (pre !== 0 && pre > -TINY && pre < TINY ? (pre < 0 ? -0 : 0) : Math.fround(pre));
-const flushUnbounded = (pre: number) => {
-  const r = Math.abs(pre) >= 2 ** -100 ? Math.fround(pre) : Math.fround(pre * 2 ** 64) / 2 ** 64;
-  return r !== 0 && r > -TINY && r < TINY ? (r < 0 ? -0 : 0) : r;
-};
-const addRef = (a: number, b: number) => fl(Math.fround(fl(a) + fl(b)));
-const mulRef = (a: number, b: number) => fl(Math.fround(fl(a) * fl(b)));
-const divRef = (a: number, b: number) => fl(Math.fround(fl(a) / fl(b)));
-const fmaFlushRef = (a: number, b: number, c: number) => fl(fmaRef(fl(a), fl(b), fl(c)));
+const FIELDS = ["fadd_model", "fmul_model", "fma_model", "fdiv_model", "rsqrt_normal", "exp_nonpositive", "exp_zero",
+  "exp_nonnegative", "exp_small", "exp_overflow", "fastExp_nonpositive", "fastExp_zero", "fastExp_negInf", "fastExp_nonnegative",
+  "fastExp_overflow", "exp2_nonpositive", "log_bounded", "fastLog_unit", "fastSin_bounded", "fastCos_bounded", "fmax_value",
+  "simdMax_tree", "fabs_value", "fastFabs_value", "simdSum_tree", "threadgroupLoad_contract", "vectorLoad_components",
+  "bfadd_model", "bfsub_model", "bfmul_model", "bfdiv_model", "narrow_model", "widen_model"];
+const PIPELINE_FIELDS = ["rmsLooped", "logSumExpLooped", "generalCopy2D", "simdWidth"];
+for (const [s, mine] of [["Contract", FIELDS], ["Pipelines", PIPELINE_FIELDS]] as const) {
+  const lean = leanClauses(s);
+  if (lean.join() !== mine.join()) throw new Error(`probe clauses differ from M1MaxContract.lean ${s}: lean [${lean}] probe [${mine}]`);
+}
+const PRE = ["reference_selftest", ...(VERIFY ? ["lowering"] : [])];
+for (const n of [...PRE, ...FIELDS, ...PIPELINE_FIELDS.map(f => `Pipelines.${f}`)]) clause(n);
 
-// Exact BigInt rational reference (self-test of the fast references).
+// ---------------------------------------------------------------- exact references (self-test)
+// Exact BigInt rationals for the Lean definitions; the fast references must agree with them.
 type Q = { s: number; m: bigint; e: number }; // (-1)^s * m * 2^e
 const toQ = (b: number): Q => {
   const ef = (b >>> 23) & 255, mf = b & 0x7fffff;
   return { s: b >>> 31, m: BigInt(ef ? mf | 0x800000 : mf), e: (ef ? ef : 1) - 150 };
 };
 const bl = (x: bigint) => x === 0n ? 0 : x.toString(2).length;
-function roundQ(sign: number, num: bigint, den: bigint, P = 24): number { // num, den > 0; P-bit significand, binary32 exponent range
+function roundQ(sign: number, num: bigint, den: bigint, P = 24): number { // RNE of num/den > 0, P-bit significand, gradual underflow
   let E = bl(num) - bl(den);
   const ge = (k: number) => (k >= 0 ? num >= den << BigInt(k) : num << BigInt(-k) >= den);
   if (!ge(E)) E--;
   let Ep = Math.max(E, -126);
-  const sh = P - 1 - Ep;
-  let n = sh >= 0 ? num << BigInt(sh) : num, d = sh >= 0 ? den : den << BigInt(-sh);
+  const s = P - 1 - Ep;
+  const n = s >= 0 ? num << BigInt(s) : num, d = s >= 0 ? den : den << BigInt(-s);
   let M = n / d; const r2 = (n % d) * 2n;
   if (r2 > d || (r2 === d && (M & 1n) === 1n)) M++;
   if (M === 1n << BigInt(P)) { M = 1n << BigInt(P - 1); Ep++; }
@@ -123,10 +125,9 @@ function roundQ(sign: number, num: bigint, den: bigint, P = 24): number { // num
   const v = Number(M) * 2 ** (Ep - P + 1);
   return sign ? -v : v;
 }
-function qRound(x: { s: number; m: bigint; e: number }, zeroSign: number, P = 24): number {
-  if (x.m === 0n) return zeroSign ? -0 : 0;
-  return x.e >= 0 ? roundQ(x.s, x.m << BigInt(x.e), 1n, P) : roundQ(x.s, x.m, 1n << BigInt(-x.e), P);
-}
+// below 2^-126: num/den < 2^-126
+const belowQ = (num: bigint, den: bigint) => num !== 0n && (num << 126n) < den;
+const ratio = (x: Q): [bigint, bigint] => x.e >= 0 ? [x.m << BigInt(x.e), 1n] : [x.m, 1n << BigInt(-x.e)];
 function qAdd(a: Q, b: Q): Q {
   const e = Math.min(a.e, b.e);
   const va = (a.s ? -1n : 1n) * (a.m << BigInt(a.e - e)), vb = (b.s ? -1n : 1n) * (b.m << BigInt(b.e - e));
@@ -134,61 +135,82 @@ function qAdd(a: Q, b: Q): Q {
   return { s: v < 0n ? 1 : 0, m: v < 0n ? -v : v, e };
 }
 const fq = (v: number) => toQ(bitsOf(fl(v)));
+// FlushToZero.flushExact over an exact rational: zero of its sign below 2^-126, else RNE.
+function flushExactQ(x: Q, zeroSign: number, P = 24): number {
+  if (x.m === 0n) return zeroSign ? -0 : 0;
+  const [n, d] = ratio(x);
+  if (belowQ(n, d)) return x.s ? -0 : 0;
+  return roundQ(x.s, n, d, P);
+}
 function exactAdd(x: number, y: number) {
   const a = fq(x), b = fq(y), r = qAdd(a, b);
-  return fl(qRound(r, r.m === 0n && a.m === 0n && b.m === 0n ? a.s & b.s : 0));
+  if (r.m === 0n) return a.m === 0n && b.m === 0n && a.s & b.s ? -0 : 0;
+  const [n, d] = ratio(r);
+  return fl(roundQ(r.s, n, d));
 }
-function exactMul(x: number, y: number) {
-  const a = fq(x), b = fq(y);
-  return fl(qRound({ s: a.s ^ b.s, m: a.m * b.m, e: a.e + b.e }, a.s ^ b.s));
-}
+const exactMul = (x: number, y: number) => { const a = fq(x), b = fq(y); return flushExactQ({ s: a.s ^ b.s, m: a.m * b.m, e: a.e + b.e }, a.s ^ b.s); };
 function exactDiv(x: number, y: number) {
   const a = fq(x), b = fq(y), s = a.s ^ b.s;
   if (a.m === 0n) return s ? -0 : 0;
-  const e = a.e - b.e;
-  return fl(e >= 0 ? roundQ(s, a.m << BigInt(e), b.m) : roundQ(s, a.m, b.m << BigInt(-e)));
+  const e = a.e - b.e, n = e >= 0 ? a.m << BigInt(e) : a.m, d = e >= 0 ? b.m : b.m << BigInt(-e);
+  return belowQ(n, d) ? (s ? -0 : 0) : roundQ(s, n, d);
 }
 function exactFma(x: number, y: number, z: number) {
   const a = fq(x), b = fq(y), c = fq(z);
   const p: Q = { s: a.s ^ b.s, m: a.m * b.m, e: a.e + b.e };
   const r = qAdd(p, c);
-  return fl(qRound(r, r.m === 0n && p.m === 0n && c.m === 0n ? p.s & c.s : 0));
+  return flushExactQ(r, r.m === 0n && p.m === 0n && c.m === 0n ? p.s & c.s : 0);
 }
-
-function bfFromF64(v: number): number { // direct RNE of a binary64 value to bf16 bits (subnormals kept)
-  if (Number.isNaN(v)) return 0x7fc0;
-  if (v === 0 || !Number.isFinite(v)) return bitsOf(v) >>> 16;
-  const a = Math.abs(v);
-  const e = Math.max(Math.floor(Math.log2(a)), -126);
-  let E = e; if (2 ** E > a) E--; if (2 ** (E + 1) <= a) E++;
-  E = Math.max(E, -126);
-  const q = 2 ** (E - 7), x = a / q;
-  let n = Math.floor(x); const d = x - n;
-  if (d > 0.5 || (d === 0.5 && n % 2 === 1)) n++;
-  const r = n * q;
-  return (bitsOf(v < 0 ? -r : r) >>> 16) & 0xffff; // r >= 2^128 becomes inf through fround
-}
-
-// BFloat16Arithmetic.lean: flush subnormal inputs, exact op, RNE to bf16, flush subnormal result.
-// fround(f64 op) is RN_24 of the exact result (53 >= 2*24+2) and RN_8(RN_24(x)) = RN_8(x) (24 >= 2*8+2).
-const bfLean = (op: number, a: number, b: number) => { // op 0 + 1 - 2 * 3 /
-  const x = BVF[a]!, y = BVF[b]!;
-  return bfFromF32(Math.fround(op === 0 ? x + y : op === 1 ? x - y : op === 2 ? x * y : x / y));
-};
-function bfExact(op: number, a: number, b: number): number { // BigInt reference, finite inputs
+function bfExact(op: number, a: number, b: number): number { // BFloat16Arithmetic, finite inputs
   const qa = toQ(bitsOf(BVF[a]!)), qb = toQ(bitsOf(BVF[b]!));
-  let v: number;
+  const bits = (v: number) => (bitsOf(v) >>> 16) & 0xffff;
   if (op === 0 || op === 1) {
     const qb2 = op === 1 ? { ...qb, s: qb.s ^ 1 } : qb, r = qAdd(qa, qb2);
-    v = qRound(r, r.m === 0n && qa.m === 0n && qb2.m === 0n ? qa.s & qb2.s : 0, 8);
-  } else if (op === 2) v = qRound({ s: qa.s ^ qb.s, m: qa.m * qb.m, e: qa.e + qb.e }, qa.s ^ qb.s, 8);
-  else {
-    if (qb.m === 0n) return bfFromF32(BVF[a]! / BVF[b]!);
-    const sg = qa.s ^ qb.s, e = qa.e - qb.e;
-    v = qa.m === 0n ? (sg ? -0 : 0) : e >= 0 ? roundQ(sg, qa.m << BigInt(e), qb.m, 8) : roundQ(sg, qa.m, qb.m << BigInt(-e), 8);
+    if (r.m === 0n) return qa.m === 0n && qb2.m === 0n && qa.s & qb2.s ? 0x8000 : 0;
+    const [n, d] = ratio(r);
+    return bfFlush(bits(roundQ(r.s, n, d, 8)));
   }
-  return bfFlush(bitsOf(v) >>> 16);
+  const sg = qa.s ^ qb.s;
+  if (op === 2) return bits(flushExactQ({ s: sg, m: qa.m * qb.m, e: qa.e + qb.e }, sg, 8));
+  if (qb.m === 0n) return qa.m === 0n ? 0x7fc0 : sg ? 0xff80 : 0x7f80;
+  if (qa.m === 0n) return sg ? 0x8000 : 0;
+  const e = qa.e - qb.e, n = e >= 0 ? qa.m << BigInt(e) : qa.m, d = e >= 0 ? qb.m : qb.m << BigInt(-e);
+  return belowQ(n, d) ? (sg ? 0x8000 : 0) : bits(roundQ(sg, n, d, 8));
 }
+section("reference self-test (fast references vs exact BigInt rationals)");
+{
+  const c = clause("reference_selftest");
+  let s = 12345;
+  const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; s ^= s >>> 13; s = Math.imul(s, 0x5bd1e995) >>> 0; return s >>> 0; };
+  const pick = (exp: number) => valOf((((rnd() & 1) << 31) | (Math.min(254, Math.max(0, exp)) << 23) | (rnd() & 0x7fffff)) >>> 0);
+  for (let i = 0; i < 200000; i++) {
+    const m = i & 7, ea = rnd() % 255;
+    const eb = m < 2 ? rnd() % 255 : m < 4 ? ea + (rnd() % 61) - 30 : m === 4 ? rnd() % 6 : m === 5 ? 128 - ea + (rnd() % 7) - 3 : m === 6 ? 381 - ea + (rnd() % 7) - 3 : ea;
+    const a = pick(m === 4 ? rnd() % 6 : ea), b = m === 7 ? -pick(eb) : pick(eb);
+    const pc = -Math.fround(a * b), cc = i % 3 === 0 && Number.isFinite(pc) ? pc : i % 3 === 1 ? pick(rnd() % 4) : pick(rnd() % 255);
+    const y = valOf(((127 + rnd() % 126) << 23) | (rnd() & 0x7fffff));
+    const x = m === 5 ? pick(((bitsOf(y) >>> 23) & 255) - 126 + (rnd() % 7) - 3) : a;
+    c.cases += 4;
+    if (!sameF(addRef(a, b), exactAdd(a, b))) c.fail(`add ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))}`);
+    if (!sameF(mulRef(a, b), exactMul(a, b))) c.fail(`mul ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))}`);
+    if (!sameF(divRef(x, y), exactDiv(x, y))) c.fail(`div ${fmtF(bitsOf(x))} ${fmtF(bitsOf(y))}`);
+    if (!sameF(fmaRef(a, b, cc), exactFma(a, b, cc))) c.fail(`fma ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))} ${fmtF(bitsOf(cc))}`);
+  }
+  for (let i = 0; i < 400000; i++) {
+    const a = rnd() & 0xffff; let b = rnd() & 0xffff;
+    if (i & 1) b = (b & 0x807f) | (Math.min(254, Math.max(0, ((a >>> 7) & 255) + (rnd() % 21) - 10)) << 7);
+    if (i % 5 === 0) b = (a ^ 0x8000) ^ (rnd() & 3);
+    if (i % 7 === 0) b = (b & 0x807f) | (Math.min(254, Math.max(0, 254 - ((a >>> 7) & 255) + (rnd() % 9) - 4)) << 7);
+    if (i % 11 === 0) b &= 0x807f;
+    if (!Number.isFinite(BV[a]!) || !Number.isFinite(BV[b]!)) continue;
+    const op = i & 3; c.cases++;
+    const fast = bfModel(op, a, b), exact = bfExact(op, a, b);
+    if (fast !== exact) c.fail(`bf16 op${op} ${hex(a)} ${hex(b)}: ${hex(fast)} vs ${hex(exact)}`);
+  }
+  report(c);
+  if (c.fails) throw new Error("reference self-test failed; refusing to judge the hardware");
+}
+
 // ---------------------------------------------------------------- kernels
 const HASH = String.raw`
 inline uint h32(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
@@ -290,94 +312,44 @@ function dispatch(k: InstanceType<typeof MetalKernel>, inputs: Arr[], outLen: nu
   return o!.eval();
 }
 const u32 = (a: Arr) => { const v = a.rawBytesView(); return new Uint32Array(v.buffer, v.byteOffset, v.byteLength >>> 2); };
-const f32 = (a: Arr) => { const v = a.rawBytesView(); return new Float32Array(v.buffer, v.byteOffset, v.byteLength >>> 2); };
 const params = (...v: number[]) => {
   const a = Uint32Array.from(v.map(x => x >>> 0));
   return MlxArray.fromBytesCopy(new Uint8Array(a.buffer), [a.length], Dtype.uint32);
 };
 const fromU32 = (a: Uint32Array, dtype: number = Dtype.uint32) =>
   MlxArray.fromBytesCopy(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), [a.length], dtype);
-
-// ---------------------------------------------------------------- self-test of references
-section("reference self-test (fast TS references vs exact BigInt rationals)");
-{
-  const c = clause("reference_selftest");
-  let s = 12345;
-  const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; s ^= s >>> 13; s = Math.imul(s, 0x5bd1e995) >>> 0; return s >>> 0; };
-  const pick = (exp: number) => valOf((((rnd() & 1) << 31) | (Math.min(254, Math.max(0, exp)) << 23) | (rnd() & 0x7fffff)) >>> 0);
-  for (let i = 0; i < 200000; i++) {
-    const m = i & 7, ea = rnd() % 255;
-    const eb = m < 2 ? rnd() % 255 : m < 4 ? ea + (rnd() % 61) - 30 : m === 4 ? rnd() % 6 : m === 5 ? 128 - ea + (rnd() % 7) - 3 : m === 6 ? 381 - ea + (rnd() % 7) - 3 : ea;
-    const a = pick(m === 4 ? rnd() % 6 : ea), b = m === 7 ? -pick(eb) : pick(eb);
-    const pc = -Math.fround(a * b), cc = i % 3 === 0 && Number.isFinite(pc) ? pc : pick(rnd() % 255);
-    const y = valOf(((127 + rnd() % 126) << 23) | (rnd() & 0x7fffff));
-    const x = m === 5 ? pick(((bitsOf(y) >>> 23) & 255) - 126 + (rnd() % 7) - 3) : a;
-    c.cases += 4;
-    if (!sameF(addRef(a, b), exactAdd(a, b))) c.fail(`add ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))}`);
-    if (!sameF(mulRef(a, b), exactMul(a, b))) c.fail(`mul ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))}`);
-    if (!sameF(divRef(x, y), exactDiv(x, y))) c.fail(`div ${fmtF(bitsOf(x))} ${fmtF(bitsOf(y))}`);
-    if (!sameF(fmaFlushRef(a, b, cc), exactFma(a, b, cc))) c.fail(`fma ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))} ${fmtF(bitsOf(cc))}`);
-  }
-  for (let i = 0; i < 100000; i++) { // bf16 direct rounding of binary32 values vs integer RNE
-    const f = Math.fround((rnd() / 2 ** 32 - 0.5) * 2 ** ((rnd() % 260) - 130)); c.cases++;
-    if (Number.isFinite(f) && bfFromF64(f) !== bf16Rne(bitsOf(f))) c.fail(`bf16 ${fmtF(bitsOf(f))}`);
-  }
-  for (let i = 0; i < 400000; i++) { // bf16 Lean arithmetic: fround path vs exact rationals
-    const a = rnd() & 0xffff; let b = rnd() & 0xffff;
-    if (i & 1) b = (b & 0x807f) | (Math.min(254, Math.max(0, ((a >>> 7) & 255) + (rnd() % 21) - 10)) << 7);
-    if (i % 5 === 0) b = (a ^ 0x8000) ^ (rnd() & 3);
-    if (!Number.isFinite(BV[a]!) || !Number.isFinite(BV[b]!)) continue;
-    const op = i & 3; c.cases++;
-    const fast = bfLean(op, a, b), exact = bfExact(op, a, b);
-    if (fast !== exact && !(Number.isNaN(bfVal(fast)) && Number.isNaN(bfVal(exact)))) c.fail(`bf16 op${op} ${hex(a)} ${hex(b)}: ${hex(fast)} vs ${hex(exact)}`);
-  }
-  report(c);
-  if (c.fails) throw new Error("reference self-test failed; refusing to judge the hardware");
-}
+const CHUNK = 1 << 24;
 
 // ---------------------------------------------------------------- unary exhaustive sweeps
 section("unary f32 sweeps over all 2^32 inputs");
 const unarySpec: [UnaryName, string, Lowering][] = [
-  ["rsqrt", "metal::precise::rsqrt(x)", { require: [/@air\.rsqrt\.f32/], forbid: [/@air\.fast_rsqrt/] }],
-  ["exp", "metal::precise::exp(x)", { require: [/@air\.exp\.f32/], forbid: [/@air\.fast_exp/] }],
-  ["fastExp", "metal::fast::exp(x)", { require: [/@air\.fast_exp\.f32/], forbid: [/@air\.exp\.f32/] }],
-  ["exp2", "metal::precise::exp2(x)", { require: [/@air\.exp2\.f32/], forbid: [/@air\.fast_exp2/] }],
-  ["log", "metal::precise::log(x)", { require: [/@air\.log\.f32/], forbid: [/@air\.fast_log/] }],
-  ["fastLog", "metal::fast::log(x)", { require: [/@air\.fast_log\.f32/], forbid: [/@air\.log\.f32/] }],
-  ["fastSin", "metal::fast::sin(x)", { require: [/@air\.fast_sin\.f32/], forbid: [/@air\.sin\.f32/] }],
-  ["fastCos", "metal::fast::cos(x)", { require: [/@air\.fast_cos\.f32/], forbid: [/@air\.cos\.f32/] }],
-  ["fabs", "metal::precise::fabs(x)", { require: [/@air\.fabs\.f32/], forbid: [/@air\.fast_fabs/] }],
-  ["fastFabs", "metal::fast::fabs(x)", { require: [/@air\.fast_fabs\.f32/], forbid: [/@air\.fabs\.f32/] }],
+  ["rsqrt", "as_type<uint>(metal::precise::rsqrt(x))", { require: [/@air\.rsqrt\.f32/], forbid: [/@air\.fast_rsqrt/] }],
+  ["exp", "as_type<uint>(metal::precise::exp(x))", { require: [/@air\.exp\.f32/], forbid: [/@air\.fast_exp/] }],
+  ["fastExp", "as_type<uint>(metal::fast::exp(x))", { require: [/@air\.fast_exp\.f32/], forbid: [/@air\.exp\.f32/] }],
+  ["exp2", "as_type<uint>(metal::precise::exp2(x))", { require: [/@air\.exp2\.f32/], forbid: [/@air\.fast_exp2/] }],
+  ["log", "as_type<uint>(metal::precise::log(x))", { require: [/@air\.log\.f32/], forbid: [/@air\.fast_log/] }],
+  ["fastLog", "as_type<uint>(metal::fast::log(x))", { require: [/@air\.fast_log\.f32/], forbid: [/@air\.log\.f32/] }],
+  ["fastSin", "as_type<uint>(metal::fast::sin(x))", { require: [/@air\.fast_sin\.f32/], forbid: [/@air\.sin\.f32/] }],
+  ["fastCos", "as_type<uint>(metal::fast::cos(x))", { require: [/@air\.fast_cos\.f32/], forbid: [/@air\.cos\.f32/] }],
+  ["fabs", "as_type<uint>(metal::precise::fabs(x))", { require: [/@air\.fabs\.f32/], forbid: [/@air\.fast_fabs/] }],
+  ["fastFabs", "as_type<uint>(metal::fast::fabs(x))", { require: [/@air\.fast_fabs\.f32/], forbid: [/@air\.fabs\.f32/] }],
+  ["narrow", "uint(as_type<ushort>(bfloat(x)))", { require: [/fptrunc float [^\n]* to bfloat/] }],
 ];
-const unaryKernels = new Map<UnaryName, InstanceType<typeof MetalKernel>>();
-for (const [n, expr, low] of unarySpec) {
-  unaryKernels.set(n, kernel(`m1c_u_${n}_v1`, ["p"],
-    `uint i = thread_position_in_grid.x; float x = as_type<float>(p[0] + i); out[i] = as_type<uint>(${expr});`, low));
-}
-unaryKernels.set("bf16cast", kernel("m1c_u_bf16cast_v1", ["p"],
-  `uint i = thread_position_in_grid.x; float x = as_type<float>(p[0] + i); out[i] = uint(as_type<ushort>(bfloat(x)));`,
-  { require: [/fptrunc float [^\n]* to bfloat/] }));
-
-// Tables on bf16-widened inputs for the bf16 composition checks.
-const bfTable = new Map<UnaryName, Uint32Array>();
-for (const n of ["exp", "fastExp", "fabs", "fastFabs"] as UnaryName[]) bfTable.set(n, new Uint32Array(65536));
-
 const stat = newStat();
-const CHUNK = 1 << 24;
 {
-  const order: UnaryName[] = ["rsqrt", "exp", "fastExp", "exp2", "log", "fastLog", "fastSin", "fastCos", "fabs", "fastFabs", "bf16cast"];
-  const step = QUICK ? 16 : 1;
+  const ks = unarySpec.map(([n, expr, low]) => [n, kernel(`m1c_u_${n}_v2`, ["p"],
+    `uint i = thread_position_in_grid.x; float x = as_type<float>(p[0] + i); out[i] = ${expr};`, low)] as const);
+  // --quick: every 16th chunk plus chunk 255 (it holds -inf for fastExp_negInf).
+  const chunks = [...Array(256).keys()].filter(ci => !QUICK || ci % 16 === 0 || ci === 255);
   const SLICE = CHUNK / 4;
   let pending: Promise<void> | null = null;
-  for (let ci = 0; ci < 256; ci += step) {
+  for (const ci of chunks) {
     const base = ci * CHUNK;
     const p = params(base);
-    const outs = order.map(n => dispatch(unaryKernels.get(n)!, [p], CHUNK, CHUNK));
+    const outs = ks.map(([, k]) => dispatch(k, [p], CHUNK, CHUNK));
     const tasks: Task[] = [];
-    order.forEach((n, q) => {
+    ks.forEach(([n], q) => {
       const rb = u32(outs[q]!);
-      const tab = bfTable.get(n);
-      if (tab) for (let i = 0; i < CHUNK; i += 65536) tab[(base + i) >>> 16] = rb[i]!;
       for (let lo = 0; lo < CHUNK; lo += SLICE) tasks.push({ kind: "unary", n, base, lo, hi: lo + SLICE, ptr: addrOf(rb), words: CHUNK });
     });
     // Overlap: the next chunk's GPU work is encoded while workers check this one.
@@ -386,49 +358,44 @@ const CHUNK = 1 << 24;
     if (ci % 32 === 0) clearCache();
   }
   await pending;
-  clause("rsqrt_normal.bound").info.push(`observed |r|*sqrt(x) in [${stat.rsqrtMin}, ${stat.rsqrtMax}]`);
+  clause("rsqrt_normal").info.push(`observed |r|*sqrt(x) in [${stat.rsqrtMin}, ${stat.rsqrtMax}]`);
   clause("fastExp_nonpositive").info.push(`max fastExp on x<=0 = ${stat.fexpMaxNonpos}`);
   clause("exp_small").info.push(`max exp on |x|<=8 = ${stat.expMaxSmall}`);
   clause("log_bounded").info.push(`max |log| = ${stat.logMaxAbs}`);
   clause("fastLog_unit").info.push(`range [${stat.flogMin}, ${stat.flogMax}]`);
   clause("fastSin_bounded").info.push(`max |sin| = ${stat.sinMax}`);
   clause("fastCos_bounded").info.push(`max |cos| = ${stat.cosMax}`);
-  for (const [n, s] of [["fabs", [stat.fabsKept, stat.fabsOther, stat.fabsEx]], ["fastFabs", [stat.fastFabsKept, stat.fastFabsOther, stat.fastFabsEx]]] as const)
-    clause(`${n}_clearsSign (non-NaN)`).info.push(`NaN inputs: ${s[0]} gave input&0x7fffffff, ${s[1]} other${s[2] ? ` e.g. ${s[2]}` : ""}`);
-  clause("bf16 narrow T(f) = BFloat16.narrow (RNE, gradual underflow) (non-NaN)").info.push(
-    `NaN inputs: ${stat.bfKept} gave (x>>16)|0x40, ${stat.bfOther} other${stat.bfEx ? ` e.g. ${stat.bfEx}` : ""}; ${stat.bfLean} equal BFloat16.narrow (FloatLib payload rule); ${stat.bf7fff} gave 0x7fff`);
-  for (const c of clauses.values()) if (c.name !== "reference_selftest") report(c);
+  for (const n of ["rsqrt_normal", "exp_nonpositive", "exp_zero", "exp_nonnegative", "exp_small", "exp_overflow", "fastExp_nonpositive",
+    "fastExp_zero", "fastExp_negInf", "fastExp_nonnegative", "fastExp_overflow", "exp2_nonpositive", "log_bounded", "fastLog_unit",
+    "fastSin_bounded", "fastCos_bounded", "fabs_value", "fastFabs_value", "narrow_model"]) report(clause(n));
 }
 
 // ---------------------------------------------------------------- binary arithmetic
-section("fadd/fmul/fdiv/fma against flushed RNE models");
+section("fadd/fmul/fdiv/fma against FlushToZero.add/mul/div/fma");
 const RANDOM_CHUNKS = QUICK ? 1 : 64; // x 2^24 = 2^30 random cases per operation
 const binSpec = [
   { op: "fadd", width: 3, gen: "uint2 v = s ? uint2(sv(idx / 4080u), sv(idx % 4080u)) : genPair(idx, p[1], 0u);",
     expr: "as_type<float>(v.x) + as_type<float>(v.y)", structured: 4080 * 4080,
-    ref: addRef, low: { require: [/= fadd float /], forbid: [/@air\.fma/, /@air\.fast_/] } },
+    low: { require: [/= fadd float /], forbid: [/@air\.fma/, /@air\.fast_/] } },
   { op: "fmul", width: 3, gen: "uint2 v = s ? uint2(sv(idx / 4080u), sv(idx % 4080u)) : genPair(idx, p[1], 1u);",
     expr: "as_type<float>(v.x) * as_type<float>(v.y)", structured: 4080 * 4080,
-    ref: mulRef, low: { require: [/= fmul float /], forbid: [/@air\.fma/, /@air\.fast_/] } },
+    low: { require: [/= fmul float /], forbid: [/@air\.fma/, /@air\.fast_/] } },
   { op: "fdiv", width: 3, gen: "uint2 v = s ? uint2(sv(idx / 1009u), dv(idx % 1009u)) : genDiv(idx, p[1]);",
     expr: "as_type<float>(v.x) / as_type<float>(v.y)", structured: 4080 * 1009,
-    ref: divRef, low: { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] } },
+    low: { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] } },
   { op: "fma", width: 4, gen: "uint3 v = s ? uint3(tv(idx / 25600u), tv((idx / 160u) % 160u), tv(idx % 160u)) : genFma(idx, p[1]);",
     expr: "metal::fma(as_type<float>(v.x), as_type<float>(v.y), as_type<float>(v.z))", structured: 160 ** 3,
-    ref: null, low: { require: [/@air\.fma\.f32/], forbid: [/@air\.fast_/] } },
+    low: { require: [/@air\.fma\.f32/], forbid: [/@air\.fast_/] } },
 ] as const;
 for (const spec of binSpec) {
   const w = spec.width;
-  const k = kernel(`m1c_b_${spec.op}_v1`, ["p"], String.raw`
+  const k = kernel(`m1c_b_${spec.op}_v2`, ["p"], String.raw`
     uint i = thread_position_in_grid.x; uint idx = p[0] + i; bool s = p[2] != 0u;
     if (s && idx >= p[3]) return;
     ${spec.gen}
     out[${w}u * i] = v.x; out[${w}u * i + 1u] = v.y; ${w === 4 ? "out[4u * i + 2u] = v.z;" : ""}
     out[${w}u * i + ${w - 1}u] = as_type<uint>(${spec.expr});`, spec.low);
   const c = clause(`${spec.op}_model`);
-  const cb = clause(`${spec.op} = flush-before-rounding model (|exact| < 2^-126 -> signed 0, else RNE)`);
-  const cu = clause(`${spec.op} = unbounded-exponent RNE then flush model`);
-  const domain = spec.op === "fdiv";
   const run = (base: number, n: number, seed: number, structured: boolean) => {
     const p = params(base, seed, structured ? 1 : 0, spec.structured);
     const o = dispatch(k, [p], n * w, n);
@@ -436,23 +403,17 @@ for (const spec of binSpec) {
     for (let i = 0, j = 0; i < n; i++, j += w) {
       const a = f[j]!, bb = f[j + 1]!;
       if (!Number.isFinite(a) || !Number.isFinite(bb)) continue;
-      let want: number, pre: number;
+      let want: number;
       if (w === 4) {
         const cc = f[j + 2]!; if (!Number.isFinite(cc)) continue;
-        want = fmaFlushRef(a, bb, cc); pre = fmaRO(fl(a), fl(bb), fl(cc));
-      } else {
-        if (domain && !(bb >= 1 && bb <= 2 ** 126)) continue;
-        want = spec.ref!(a, bb);
-        const x = fl(a), y = fl(bb);
-        pre = spec.op === "fadd" ? x + y : spec.op === "fmul" ? x * y : x / y;
-      }
-      c.cases++; cb.cases++; cu.cases++;
-      const got = f[j + w - 1]!;
-      const e = (m: number) => `${[...b.subarray(j, j + w - 1)].map(fmtF).join(" ")} -> ${fmtF(b[j + w - 1]!)} want ${fmtF(bitsOf(m))}`;
-      if (!sameF(got, want)) c.fail(e(want));
-      const wb = flushBefore(pre), wu = flushUnbounded(pre);
-      if (!sameF(got, wb)) cb.fail(e(wb));
-      if (!sameF(got, wu)) cu.fail(e(wu));
+        want = fmaRef(a, bb, cc);
+      } else if (spec.op === "fdiv") {
+        if (!(bb >= 1 && bb <= 2 ** 126)) continue; // Division.DivisorDomain
+        want = divRef(a, bb);
+      } else want = spec.op === "fadd" ? addRef(a, bb) : mulRef(a, bb);
+      c.cases++;
+      if (!sameF(f[j + w - 1]!, want))
+        c.fail(`${[...b.subarray(j, j + w - 1)].map(fmtF).join(" ")} -> ${fmtF(b[j + w - 1]!)} want ${fmtF(bitsOf(want))}`);
     }
     o.dispose(); p.dispose();
   };
@@ -461,49 +422,51 @@ for (const spec of binSpec) {
   for (let ch = 0; ch < RANDOM_CHUNKS; ch++) run(ch * CHUNK, CHUNK, 0x51ed27 + ch * 7919, false);
   c.info.push(`${structuredCases} structured + ${c.cases - structuredCases} random`);
   clearCache();
-  report(c); report(cb); report(cu);
+  report(c);
 }
 
-// ---------------------------------------------------------------- fmax / fmin (binary)
-section("fmax/fmin (precise, fast, unqualified): selection and tie policy");
-const minmaxVariants = [
-  ["fmax precise", "metal::precise::fmax(a, b)", { require: [/@air\.fmax\.f32/], forbid: [/@air\.fast_fmax/] }, 1],
-  ["fmax fast", "metal::fast::fmax(a, b)", { require: [/@air\.fast_fmax\.f32/], forbid: [/@air\.fmax\.f32/] }, 1],
-  ["max unqualified", "metal::max(a, b)", { require: [/@air\.fast_fmax\.f32/], forbid: [/@air\.fmax\.f32/] }, 1],
-  ["fmin precise", "metal::precise::fmin(a, b)", { require: [/@air\.fmin\.f32/], forbid: [/@air\.fast_fmin/] }, 0],
-  ["fmin fast", "metal::fast::fmin(a, b)", { require: [/@air\.fast_fmin\.f32/], forbid: [/@air\.fmin\.f32/] }, 0],
-  ["min unqualified", "metal::min(a, b)", { require: [/@air\.fast_fmin\.f32/], forbid: [/@air\.fmin\.f32/] }, 0],
-] as const;
-for (const [label, expr, low, isMax] of minmaxVariants) {
-  const k = kernel(`m1c_mm_${label.replace(/ /g, "_")}_v1`, ["p"], String.raw`
-    uint i = thread_position_in_grid.x; uint idx = p[0] + i; bool s = p[2] != 0u;
-    if (s && idx >= p[3]) return;
-    uint2 v = s ? uint2(sv(idx / 4080u), sv(idx % 4080u)) : genPair(idx, p[1], 0u);
-    uint h = h32(idx ^ 0x7a3c19u);
-    if (!s && (h & 7u) == 0u) v.y = v.x; else if (!s && (h & 7u) == 1u) v.y = v.x ^ 0x80000000u;
-    float a = as_type<float>(v.x), b = as_type<float>(v.y);
-    out[3u * i] = v.x; out[3u * i + 1u] = v.y; out[3u * i + 2u] = as_type<uint>(${expr});`, low);
-  const pol = new Policy(label, isMax, "f32 structured+random");
-  const run = (base: number, n: number, seed: number, structured: boolean) => {
-    const p = params(base, seed, structured ? 1 : 0, 4080 * 4080);
-    const o = dispatch(k, [p], 3 * n, n);
-    const b = u32(o), f = new Float32Array(b.buffer, b.byteOffset, b.length);
-    for (let i = 0, j = 0; i < n; i++, j += 3) {
-      const x = f[j]!, y = f[j + 1]!; if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      pol.check(b[j]!, b[j + 1]!, x, y, b[j + 2]!, f[j + 2]!);
-    }
-    o.dispose(); p.dispose();
-  };
-  run(0, 4080 * 4080, 0, true);
-  for (let ch = 0; ch < (QUICK ? 1 : 4); ch++) run(ch * CHUNK, CHUNK, 0x3c6ef372 + ch, false);
-  pol.finish();
+// ---------------------------------------------------------------- fmax (binary32 pairs)
+section("fmax_value: air.fmax.f32 and air.fast_fmax.f32 (binary32 structured + random)");
+const fmaxCases = new Map<string, number>();
+{
+  const c = clause("fmax_value");
+  for (const [label, expr, low] of [
+    ["air.fmax.f32", "metal::precise::fmax(a, b)", { require: [/@air\.fmax\.f32/], forbid: [/@air\.fast_fmax/] }],
+    ["air.fast_fmax.f32", "metal::fast::fmax(a, b)", { require: [/@air\.fast_fmax\.f32/], forbid: [/@air\.fmax\.f32/] }],
+  ] as const) {
+    const k = kernel(`m1c_fmax_${label.replace(/\W/g, "_")}_v2`, ["p"], String.raw`
+      uint i = thread_position_in_grid.x; uint idx = p[0] + i; bool s = p[2] != 0u;
+      if (s && idx >= p[3]) return;
+      uint2 v = s ? uint2(sv(idx / 4080u), sv(idx % 4080u)) : genPair(idx, p[1], 0u);
+      uint h = h32(idx ^ 0x7a3c19u);
+      if (!s && (h & 7u) == 0u) v.y = v.x; else if (!s && (h & 7u) == 1u) v.y = v.x ^ 0x80000000u;
+      float a = as_type<float>(v.x), b = as_type<float>(v.y);
+      out[3u * i] = v.x; out[3u * i + 1u] = v.y; out[3u * i + 2u] = as_type<uint>(${expr});`, low);
+    const before = c.cases;
+    const run = (base: number, n: number, seed: number, structured: boolean) => {
+      const p = params(base, seed, structured ? 1 : 0, 4080 * 4080);
+      const o = dispatch(k, [p], 3 * n, n);
+      const b = u32(o);
+      for (let i = 0, j = 0; i < n; i++, j += 3) {
+        const xb = b[j]!, yb = b[j + 1]!;
+        if ((xb & 0x7f800000) === 0x7f800000 || (yb & 0x7f800000) === 0x7f800000) continue;
+        c.cases++;
+        const want = maxLess(yb, xb) ? xb : yb; // if Maximum.less y x then x else y
+        if (b[j + 2] !== want) c.fail(`${label} ${fmtF(xb)} ${fmtF(yb)} -> ${fmtF(b[j + 2]!)} want ${fmtF(want)}`);
+      }
+      o.dispose(); p.dispose();
+    };
+    run(0, 4080 * 4080, 0, true);
+    for (let ch = 0; ch < (QUICK ? 1 : 4); ch++) run(ch * CHUNK, CHUNK, 0x3c6ef372 + ch, false);
+    fmaxCases.set(label, c.cases - before);
+  }
 }
 
 // ---------------------------------------------------------------- simd_sum
-section("simd_sum: tree identification and replay");
+section("simdSum_tree: tree identification and replay");
 type Tree = number | [Tree, Tree];
 const leaves = (t: Tree): number[] => typeof t === "number" ? [t] : [...leaves(t[0]), ...leaves(t[1])];
-const show = (t: Tree): string => typeof t === "number" ? `${t}` : `(${show(t[0])}+${show(t[1])})`;
+const show = (t: Tree): string => typeof t === "number" ? `${t}` : `(${show(t[0])},${show(t[1])})`;
 function buildTree(lca: number[][]): Tree | string {
   // clusters: for each lane j and each size s, {j} ∪ {k : |LCA(j,k)| <= s}
   const sets = new Set<string>([...Array(32).keys()].map(i => `${i}`));
@@ -526,200 +489,179 @@ function buildTree(lca: number[][]): Tree | string {
   };
   return make([...Array(32).keys()]);
 }
-// Bit-level FTZ add with FloatLib NaN rules (signaling first, then left).
-function addBits(x: number, y: number): number {
-  const xn = isNaNBits(x), yn = isNaNBits(y);
-  if (xn || yn) {
-    const xs = xn && !(x & 0x400000), ys = yn && !(y & 0x400000);
-    return ((xs ? x : ys ? y : xn ? x : y) | 0x400000) >>> 0;
-  }
-  const v = addRef(valOf(x), valOf(y));
-  return Number.isNaN(v) ? 0x7fc00000 : bitsOf(v);
-}
-function compileTree(t: Tree) {
+// Evaluates a tree of the binary word operation `op` over words x[o..o+31].
+function compileTree(t: Tree, op: (a: number, b: number) => number) {
   const lines: string[] = []; let n = 0;
   const emit = (u: Tree): string => {
     if (typeof u === "number") return `x[o+${u}]`;
-    const a = emit(u[0]), b = emit(u[1]); const v = `t${n++}`; lines.push(`const ${v}=add(${a},${b});`); return v;
+    const a = emit(u[0]), b = emit(u[1]); const v = `t${n++}`; lines.push(`const ${v}=op(${a},${b});`); return v;
   };
   const r = emit(t);
-  return {
-    f64: new Function("add", "x", "o", `${lines.join("")}return ${r};`).bind(null, addRef) as (x: Float32Array, o: number) => number,
-    bits: new Function("add", "x", "o", `${lines.join("")}return ${r};`).bind(null, addBits) as (x: Uint32Array, o: number) => number,
-  };
+  return new Function("op", "x", "o", `${lines.join("")}return ${r};`).bind(null, op) as (x: Uint32Array, o: number) => number;
 }
+// Replays `got` (lane-0 result, 32 input words before it, lane-uniform flag after) against models.
+const LANE_OUT = String.raw`
+    bool isnanb = (sb & 0x7fffffffu) > 0x7f800000u;
+    uint cb = isnanb ? 0x7fc00000u : sb;
+    bool same = simd_all(cb == simd_broadcast(cb, 0u));`;
 let sumTree: Tree | null = null;
 {
-  const kd = kernel("m1c_simdsum_v1", ["v"], String.raw`
+  const c = clause("simdSum_tree");
+  const kd = kernel("m1c_simdsum_v2", ["v"], String.raw`
     uint gid = thread_position_in_grid.x;
     float s = simd_sum(as_type<float>(v[gid]));
     uint sb = as_type<uint>(s);
-    bool same = simd_all(sb == simd_broadcast(sb, 0u));
-    if (thread_index_in_simdgroup == 0u) { out[2u * (gid >> 5)] = sb; out[2u * (gid >> 5) + 1u] = same ? 1u : 0u; }`,
+    if (thread_index_in_simdgroup == 0u) out[gid >> 5] = sb;`,
     { require: [/@air\.simd_sum\.f32/] });
   const BIG = 0x4c000000, NBIG = 0xcc000000, ONE = 0x3f800000; // 2^25, -2^25, 1
   const trip: [number, number, number][] = [];
   for (let j = 0; j < 32; j++) for (let k = j + 1; k < 32; k++) for (let i = 0; i < 32; i++) if (i !== j && i !== k) trip.push([j, k, i]);
   const v = new Uint32Array(trip.length * 32);
   trip.forEach(([j, k, i], q) => { v[q * 32 + j] = BIG; v[q * 32 + k] = NBIG; v[q * 32 + i] = ONE; });
-  const va = fromU32(v); const o = dispatch(kd, [va], trip.length * 2, trip.length * 32, Dtype.uint32, 256);
+  const va = fromU32(v); const o = dispatch(kd, [va], trip.length, trip.length * 32, Dtype.uint32, 256);
   const r = u32(o);
   const lca = [...Array(32)].map(() => new Array(32).fill(2));
   let odd = 0;
   trip.forEach(([j, k], q) => {
-    const x = r[2 * q]!;
+    const x = r[q]!;
     if (x === 0) { lca[j]![k]++; lca[k]![j]++; } else if (x !== ONE) odd++;
   });
   o.dispose(); va.dispose();
-  const c = clause("simdSum_tree (finite inputs, bit-exact)");
-  const t = odd ? `discovery saw ${odd} results other than 0 or 1` : buildTree(lca);
-  if (typeof t === "string") { c.fail(`no binary tree of RNE adds: ${t}`); report(c); }
+  const t = odd ? `identification saw ${odd} results other than 0 or 1` : buildTree(lca);
+  if (typeof t === "string") c.fail(`no binary tree of flushed adds: ${t}`);
   else {
     sumTree = t;
-    const perm = leaves(t).sort((a, b) => a - b).every((x, i) => x === i);
-    console.log(`simd_sum tree: ${show(t)} (leaves a permutation of 0..31: ${perm})`);
+    if (!leaves(t).sort((a, b) => a - b).every((x, i) => x === i)) c.fail(`tree leaves are not a permutation of 0..31`);
     c.info.push(`tree ${show(t)}`);
-  }
-  if (sumTree) {
-    const ev = compileTree(sumTree);
-    const kr = kernel("m1c_simdsum_rand_v1", ["p"], String.raw`
+    const ev = compileTree(sumTree, addBits); // FlushedReduction.evaluate
+    const kr = kernel("m1c_simdsum_rand_v2", ["p"], String.raw`
       uint gid = thread_position_in_grid.x, lane = thread_index_in_simdgroup, vec = p[0] + (gid >> 5);
       uint xb = laneVal(vec, lane, p[1], p[2]);
       float s = simd_sum(as_type<float>(xb));
-      uint sb = as_type<uint>(s);
-      bool same = simd_all(sb == simd_broadcast(sb, 0u));
+      uint sb = as_type<uint>(s);${LANE_OUT}
       uint o = 34u * (gid >> 5);
       out[o + lane] = xb;
       if (lane == 0u) { out[o + 32u] = sb; out[o + 33u] = same ? 1u : 0u; }`,
       { require: [/@air\.simd_sum\.f32/] });
-    const cn = clause("simdSum_tree (infinite but no NaN lanes)");
-    // The Lean model (Float32 add has no NaN payload) yields 0x7fc00000 for any NaN lane.
-    const cnc = clause("simdSum_tree (some NaN lane = 0x7fc00000)");
-    const ca = clause("simd_sum result identical in all 32 lanes");
     const VEC = 1 << 20;
+    let finite = 0, inf = 0, nan = 0;
     const run = (chunk: number, nonfinite: boolean) => {
       const p = params(chunk * VEC, 0x2b7e1516 + chunk * 104729 + (nonfinite ? 1 : 0), nonfinite ? 1 : 0);
       const o = dispatch(kr, [p], VEC * 34, VEC * 32);
-      const b = u32(o), f = new Float32Array(b.buffer, b.byteOffset, b.length);
-      const cc = nonfinite ? cn : c;
+      const b = u32(o);
       for (let q = 0, off = 0; q < VEC; q++, off += 34) {
-        ca.cases++; if (b[off + 33] !== 1) ca.fail(`vector ${chunk}:${q}`);
-        let anyNonFinite = false, anyNaN = false;
-        if (nonfinite) for (let l = 0; l < 32; l++) { const x = f[off + l]!; if (!Number.isFinite(x)) anyNonFinite = true; if (x !== x) anyNaN = true; }
-        if (nonfinite && !anyNonFinite) continue;
-        const got = b[off + 32]!;
-        if (anyNaN) {
-          cnc.cases++; if (got !== 0x7fc00000) cnc.fail(`lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}] -> ${hex(got)}`);
-          continue;
-        }
-        cc.cases++;
-        let want: number;
-        if (nonfinite) want = ev.bits(b, off);
-        else { const w = ev.f64(f, off); want = Number.isNaN(w) ? 0x7fc00000 : bitsOf(w); }
-        if (got !== want) cc.fail(`lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}] -> ${hex(got)} want ${hex(want)}`);
+        let anyInf = false, anyNaN = false;
+        for (let l = 0; l < 32; l++) { const x = b[off + l]!; if ((x & 0x7f800000) === 0x7f800000) { if (x & 0x7fffff) anyNaN = true; else anyInf = true; } }
+        if (anyNaN) nan++; else if (anyInf) inf++; else finite++;
+        c.cases++;
+        const got = canon(b[off + 32]!), want = ev(b, off);
+        const lanes = () => `lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}]`;
+        if (b[off + 33] !== 1) c.fail(`${lanes()}: lanes disagree`);
+        else if (got !== want) c.fail(`${lanes()} -> ${hex(b[off + 32]!)} want ${hex(want)}`);
       }
       o.dispose(); p.dispose();
     };
     const N = QUICK ? 2 : 96; // 96 x 2^20 = 100,663,296 vectors
     for (let ch = 0; ch < N; ch++) run(ch, false);
     for (let ch = 0; ch < (QUICK ? 1 : 4); ch++) run(1000 + ch, true);
+    c.info.push(`${finite} finite, ${inf} with infinite and no NaN lanes, ${nan} with NaN lanes; NaN words compared through Float32.ofBits`);
     clearCache();
-    report(c); report(cn); report(cnc); report(ca);
   }
+  report(c);
 }
 
 // ---------------------------------------------------------------- simd_max
-section("simd_max: selection and tie order");
+section("simdMax_tree: Maximum.tree replay (finite, infinite and NaN lanes)");
 {
-  const kd = kernel("m1c_simdmax_v1", ["v"], String.raw`
+  const c = clause("simdMax_tree");
+  // For inputs without NaN every tree whose in-order leaves are 0..31 gives the first lane holding
+  // the largest flushed value; NaN lanes depend on the tree shape, so candidate trees are replayed.
+  const balanced = (lo: number, hi: number): Tree => hi - lo === 1 ? lo : [balanced(lo, (lo + hi) >> 1), balanced((lo + hi) >> 1, hi)];
+  let fold: Tree = 0; for (let l = 1; l < 32; l++) fold = [fold, l];
+  const candidates: [string, Tree][] = [["balanced in-order", balanced(0, 32)], ["left fold 0..31", fold]];
+  if (sumTree) candidates.push(["simd_sum tree", sumTree]);
+  const evs = candidates.map(([, t]) => compileTree(t, maxValue)); // Maximum.tree
+  const miss = candidates.map(() => ({ n: 0, finite: 0, ex: [] as string[] }));
+  let finite = 0, inf = 0, nan = 0, disagree = 0;
+  const lanesStr = (b: Uint32Array, off: number) => `lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}]`;
+  const check = (b: Uint32Array, off: number, got: number, same: boolean) => {
+    let anyInf = false, anyNaN = false;
+    for (let l = 0; l < 32; l++) { const x = b[off + l]!; if ((x & 0x7f800000) === 0x7f800000) { if (x & 0x7fffff) anyNaN = true; else anyInf = true; } }
+    if (anyNaN) nan++; else if (anyInf) inf++; else finite++;
+    c.cases++;
+    if (!same) { disagree++; if (c.ex.length < 6) c.ex.push(`${lanesStr(b, off)}: lanes disagree`); }
+    evs.forEach((ev, q) => {
+      const want = canon(ev(b, off));
+      if (canon(got) !== want) {
+        const m = miss[q]!; m.n++; if (!anyNaN) m.finite++;
+        if (m.ex.length < 6) m.ex.push(`${lanesStr(b, off)} -> ${hex(got)} want ${hex(want)}`);
+      }
+    });
+  };
+  const kd = kernel("m1c_simdmax_v2", ["v"], String.raw`
     uint gid = thread_position_in_grid.x;
     float s = simd_max(as_type<float>(v[gid]));
-    uint sb = as_type<uint>(s);
-    bool same = simd_all(sb == simd_broadcast(sb, 0u));
+    uint sb = as_type<uint>(s);${LANE_OUT}
     if (thread_index_in_simdgroup == 0u) { out[2u * (gid >> 5)] = sb; out[2u * (gid >> 5) + 1u] = same ? 1u : 0u; }`,
     { require: [/@air\.simd_max\.f32/] });
-  // +0 at lane i, -0 at lane j, -1 elsewhere: which zero survives?
-  const pairs: [number, number][] = [];
-  for (let i = 0; i < 32; i++) for (let j = 0; j < 32; j++) if (i !== j) pairs.push([i, j]);
-  const v = new Uint32Array(pairs.length * 32).fill(0xbf800000);
-  pairs.forEach(([i, j], q) => { v[q * 32 + i] = 0; v[q * 32 + j] = 0x80000000; });
-  const va = fromU32(v), o = dispatch(kd, [va], pairs.length * 2, pairs.length * 32);
-  const r = u32(o);
-  const plusWins = [...Array(32)].map(() => new Array(32).fill(false));
-  let other = 0;
-  pairs.forEach(([i, j], q) => { const x = r[2 * q]!; if (x === 0) plusWins[i]![j] = true; else if (x !== 0x80000000) other++; });
-  o.dispose(); va.dispose();
-  let rule: string, order: number[] | null = null;
-  const allPlus = pairs.every(([i, j]) => plusWins[i]![j]), allMinus = pairs.every(([i, j]) => !plusWins[i]![j]);
-  if (other) rule = `discovery saw ${other} results other than +-0`;
-  else if (allPlus) rule = "+0 always wins a +0/-0 tie (independent of lanes): no keep-left tree order matches";
-  else if (allMinus) rule = "-0 always wins a +0/-0 tie: no keep-left tree order matches";
-  else {
-    const antisym = pairs.every(([i, j]) => plusWins[i]![j] !== plusWins[j]![i]);
-    const ord = [...Array(32).keys()].sort((a, b) => plusWins[a]![b] ? -1 : 1);
-    const consistent = antisym && pairs.every(([i, j]) => plusWins[i]![j] === (ord.indexOf(i) < ord.indexOf(j)));
-    rule = consistent ? `first lane in leaf order [${ord}] wins ties` : "zero ties depend on lanes but form no total order";
-    if (consistent) order = ord;
+  // Structured: +0 at lane i and -0 at lane j over -1; one NaN (quiet, signaling, negative) at lane k over 1.0 or ascending lanes.
+  const rows: Uint32Array[] = [];
+  for (let i = 0; i < 32; i++) for (let j = 0; j < 32; j++) if (i !== j) {
+    const v = new Uint32Array(32).fill(0xbf800000); v[i] = 0; v[j] = 0x80000000; rows.push(v);
   }
-  console.log(`simd_max signed-zero tie rule: ${rule}`);
-  const kr = kernel("m1c_simdmax_rand_v1", ["p"], String.raw`
+  for (const nanWord of [0x7fc00000, 0x7fa00001, 0xffc00001]) for (let k = 0; k < 32; k++) {
+    const flat = new Uint32Array(32).fill(0x3f800000); flat[k] = nanWord; rows.push(flat);
+    const up = Uint32Array.from({ length: 32 }, (_, l) => bitsOf(l + 1)); up[k] = nanWord; rows.push(up);
+  }
+  for (let k = 0; k < 32; k++) { const v = new Uint32Array(32).fill(0x3f800000); v[k] = 0x7f800000; rows.push(v); v[(k + 1) % 32] = 0xff800000; }
+  const v = new Uint32Array(rows.length * 32); rows.forEach((r, q) => v.set(r, q * 32));
+  const va = fromU32(v), o = dispatch(kd, [va], rows.length * 2, rows.length * 32);
+  const r = u32(o);
+  const single = new Map<number, number>(); // NaN lane k over 1.0 -> result
+  rows.forEach((_, q) => {
+    check(v, q * 32, r[2 * q]!, r[2 * q + 1] === 1);
+    if (q >= 992 && (q - 992) % 2 === 0 && (q - 992) < 64) single.set((q - 992) / 2, r[2 * q]!);
+  });
+  o.dispose(); va.dispose();
+  const kr = kernel("m1c_simdmax_rand_v2", ["p"], String.raw`
     uint gid = thread_position_in_grid.x, lane = thread_index_in_simdgroup, vec = p[0] + (gid >> 5);
-    uint xb = laneVal(vec, lane, p[1], 0u);
+    uint xb = laneVal(vec, lane, p[1], p[2]);
     float s = simd_max(as_type<float>(xb));
-    uint sb = as_type<uint>(s);
-    bool same = simd_all(sb == simd_broadcast(sb, 0u));
+    uint sb = as_type<uint>(s);${LANE_OUT}
     uint o = 34u * (gid >> 5);
     out[o + lane] = xb;
     if (lane == 0u) { out[o + 32u] = sb; out[o + 33u] = same ? 1u : 0u; }`,
     { require: [/@air\.simd_max\.f32/] });
-  const cs = clause("simdMax_select"), ct = clause("simdMax = Maximum.tree (keep-left ties) bit-exact");
-  const cp = clause("simdMax = first max lane, +0 preferred over -0 (alternative tie rule)");
-  const ca = clause("simd_max result identical in all 32 lanes");
-  const cf = clause("simdMax = keep-left tree in lane order 0..31 comparing flushed values, returning the unflushed lane");
-  const csf = clause("simdMax selects a lane maximal among flushed values (replacement for simdMax_select)");
   const VEC = 1 << 20;
-  for (let ch = 0; ch < (QUICK ? 1 : 16); ch++) {
-    const p = params(ch * VEC, 0x9e3779b9 + ch * 31337, 0);
+  const run = (ch: number, nonfinite: boolean) => {
+    const p = params(ch * VEC, 0x9e3779b9 + ch * 31337, nonfinite ? 1 : 0);
     const o = dispatch(kr, [p], VEC * 34, VEC * 32);
-    const b = u32(o), f = new Float32Array(b.buffer, b.byteOffset, b.length);
-    for (let q = 0, off = 0; q < VEC; q++, off += 34) {
-      ca.cases++; if (b[off + 33] !== 1) ca.fail(`vector ${ch}:${q}`);
-      let m = -Infinity, ok = true;
-      for (let l = 0; l < 32; l++) { const x = f[off + l]!; if (!Number.isFinite(x)) { ok = false; break; } if (x > m) m = x; }
-      if (!ok) continue;
-      const got = b[off + 32]!;
-      cs.cases++; ct.cases++; cp.cases++;
-      let sel = false;
-      for (let l = 0; l < 32; l++) if (b[off + l] === got) { sel = true; break; }
-      const lanesStr = () => `lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}] -> ${hex(got)}`;
-      if (!(sel && f[off + 32] === m)) cs.fail(lanesStr());
-      cf.cases++; csf.cases++;
-      let mf = -Infinity; for (let l = 0; l < 32; l++) { const x = fl(f[off + l]!); if (x > mf) mf = x; }
-      let wantF = 0; for (let l = 0; l < 32; l++) if (fl(f[off + l]!) === mf) { wantF = b[off + l]!; break; }
-      if (got !== wantF) cf.fail(`${lanesStr()} want ${hex(wantF)}`);
-      if (!(sel && fl(f[off + 32]!) === mf)) csf.fail(lanesStr());
-      if (order) {
-        let want = 0; for (const l of order) if (f[off + l] === m) { want = b[off + l]!; break; }
-        if (got !== want) ct.fail(`${lanesStr()} want ${hex(want)}`);
-      } else ct.fail(`no tree order (${rule}); ${lanesStr()}`);
-      let wantP = -1;
-      for (let l = 0; l < 32; l++) if (f[off + l] === m && (wantP < 0 || (wantP === 0x80000000 && b[off + l] === 0))) wantP = b[off + l]!;
-      if (got !== wantP) cp.fail(`${lanesStr()} want ${hex(wantP)}`);
-    }
+    const b = u32(o);
+    for (let q = 0, off = 0; q < VEC; q++, off += 34) check(b, off, b[off + 32]!, b[off + 33] === 1);
     o.dispose(); p.dispose();
-  }
-  ct.info.push(rule);
-  if (!order) ct.fails = Math.max(ct.fails, 1);
-  report(cs); report(ct); report(cp); report(cf); report(csf); report(ca);
+  };
+  for (let ch = 0; ch < (QUICK ? 1 : 16); ch++) run(ch, false);
+  for (let ch = 0; ch < (QUICK ? 1 : 4); ch++) run(100 + ch, true);
+  // Pass iff the lanes agree and some candidate tree reproduces every vector.
+  let best = 0; miss.forEach((m, q) => { if (m.n < miss[best]!.n) best = q; });
+  c.fails = disagree + miss[best]!.n;
+  for (const e of miss[best]!.ex) if (c.ex.length < 6) c.ex.push(`[${candidates[best]![0]}] ${e}`);
+  c.info.push(`${finite} finite, ${inf} with infinite and no NaN lanes, ${nan} with NaN lanes`);
+  c.info.push(`mismatches per candidate tree: ${candidates.map(([n], q) => `${n} ${miss[q]!.n} (${miss[q]!.finite} without NaN)`).join(", ")}`);
+  const ignored = [...single.values()].filter(x => x === 0x3f800000).length;
+  if (ignored === 32) c.info.push("a single NaN lane over 1.0 gives 1.0 at every lane position; in Maximum.tree a NaN at the leftmost leaf reaches the root, so no tree reproduces NaN inputs");
+  else c.info.push(`single NaN lane over 1.0: ${ignored}/32 lane positions give 1.0`);
+  clearCache();
+  report(c);
 }
 
 // ---------------------------------------------------------------- loads
-section("threadgroup float load at unaligned byte addresses; device float4 load");
+section("threadgroupLoad_contract and vectorLoad_components");
 {
   const src = readFileSync(join(import.meta.dir, "../../../packages/inference/src/kernels/trellis/codebook.ts"), "utf8");
   const win = /export const CODEBOOK_WINDOW = String\.raw`([\s\S]*?)`;/.exec(src)?.[1];
   if (!win) throw new Error("CODEBOOK_WINDOW not found");
-  const k = kernel("m1c_tgload_v1", ["p"], String.raw`
+  const k = kernel("m1c_tgload_v2", ["p"], String.raw`
     threadgroup float table[4096];
     const uint t = thread_position_in_threadgroup.x, g = threadgroup_position_in_grid.x;
     for (uint w = t; w < 4096u; w += 256u) table[w] = as_type<float>(h32(w * 2654435761u + g * 40503u + p[0]));
@@ -731,7 +673,7 @@ section("threadgroup float load at unaligned byte addresses; device float4 load"
       const uint vv[2] = {0u, 0u};
       out[g * 16384u + slot] = trellis_codebook_window((const threadgroup uchar*)table, wv, vv, 2u, 12u);
     }`, { require: [/load float, float addrspace\(3\)\*/] }, HASH + win);
-  const c = clause("threadgroupLoad_contract (low two address bits ignored)");
+  const c = clause("threadgroupLoad_contract");
   const h32 = (x: number) => { x >>>= 0; x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15; x = Math.imul(x, 0x846ca68b); x ^= x >>> 16; return x >>> 0; };
   let nanWords = 0, subWords = 0;
   const G = 64;
@@ -753,12 +695,12 @@ section("threadgroup float load at unaligned byte addresses; device float4 load"
   c.info.push(`all 4 sub-word offsets x 4096 word bases x ${G} groups x 4 patterns; ${nanWords} NaN and ${subWords} subnormal words included`);
   report(c);
 
-  const kv = kernel("m1c_vec4_v1", ["src", "perm"], String.raw`
+  const kv = kernel("m1c_vec4_v2", ["src", "perm"], String.raw`
     uint i = thread_position_in_grid.x, e = perm[i];
     float4 v = ((const device float4*)src)[e];
     out[4u * i] = v.x; out[4u * i + 1u] = v.y; out[4u * i + 2u] = v.z; out[4u * i + 3u] = v.w;`,
     { require: [/load <4 x float>, <4 x float> addrspace\(1\)\*/] });
-  const cv = clause("vectorLoad_components (float4 at 16-aligned address = 4 scalar words)");
+  const cv = clause("vectorLoad_components");
   const N4 = 1 << 20;
   let s = 99;
   const rnd = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0; };
@@ -779,144 +721,99 @@ section("threadgroup float load at unaligned byte addresses; device float4 load"
 }
 
 // ---------------------------------------------------------------- bf16 operations
-section("bf16: widen/narrow, native arithmetic (exhaustive), min/max policy (exhaustive), compositions");
+section("bf16: widen, native arithmetic and bf16-valued fmax (exhaustive over finite pairs)");
 const BF_ROWS = QUICK ? 512 : 65536;
 {
-  // float(v): fpext bfloat -> float over all 65536 inputs.
   {
-    const k = kernel("m1c_bf16_widen_v1", ["p"], String.raw`
+    const k = kernel("m1c_bf16_widen_v2", ["p"], String.raw`
       uint i = thread_position_in_grid.x; const T v = as_type<T>(ushort(i)); out[i] = as_type<uint>(float(v));`,
       { require: [/fpext bfloat [^\n]* to float/] });
     const p = params(0), o = dispatch(k, [p], 65536, 65536, Dtype.uint32, 256, { T: Dtype.bfloat16 });
     const r = u32(o).slice(); o.dispose(); p.dispose();
-    const c = clause("bf16 widen float(v) = BFloat16.widen (= bits << 16) (non-NaN)");
-    let shift = 0, lean = 0, nan = 0;
+    const c = clause("widen_model");
     for (let h = 0; h < 65536; h++) {
-      if (Number.isNaN(BV[h]!)) { nan++; if (r[h] === ((h << 16) >>> 0)) shift++; if (r[h] === leanWidenNaN(h)) lean++; continue; }
-      c.cases++; if (r[h] !== ((h << 16) >>> 0)) c.fail(`${hex(h)} -> ${hex(r[h]!)}`);
+      if (!Number.isFinite(BV[h]!)) continue;
+      c.cases++; if (r[h] !== ((h << 16) >>> 0)) c.fail(`${hex(h)} -> ${hex(r[h]!)} want ${hex(h << 16)}`);
     }
-    c.info.push(`NaN inputs (${nan}): ${shift} gave bits<<16, ${lean} equal BFloat16.widen (FloatLib payload rule)`);
     report(c);
   }
-  // Native bfloat + - * / in a runtime kernel, all 65536^2 ordered pairs.
   const bfOps = [["add", "+", /fadd bfloat/], ["sub", "-", /fsub bfloat/], ["mul", "*", /fmul bfloat/], ["div", "/", /fdiv bfloat/]] as const;
   for (const [oi, [name, sym, re]] of bfOps.entries()) {
-    const k = kernel(`m1c_bf16_${name}_v1`, ["p"], String.raw`
+    const k = kernel(`m1c_bf16_${name}_v2`, ["p"], String.raw`
       uint i = thread_position_in_grid.x, a = p[0] + (i >> 16), b = i & 0xffffu;
       const T x = as_type<T>(ushort(a)), y = as_type<T>(ushort(b));
       const T r = x ${sym} y;
       out[i] = uint(as_type<ushort>(r));`, { require: [re], forbid: [/@air\.fast_/] });
-    const nanPol: Record<string, number> = {};
     const ROWS = 256;
     let pending: Promise<void> | null = null;
     for (let a0 = 0; a0 < BF_ROWS; a0 += ROWS) {
       const p = params(a0), o = dispatch(k, [p], ROWS * 65536, ROWS * 65536, Dtype.uint32, 256, { T: Dtype.bfloat16 });
       const r = u32(o), tasks: Task[] = [];
-      for (let lo = 0; lo < ROWS; lo += 16) tasks.push({ kind: "bf16op", oi, name, a0, lo, hi: lo + 16, ptr: addrOf(r), words: r.length });
+      for (let lo = 0; lo < ROWS; lo += 16) tasks.push({ kind: "bf16op", oi, a0, lo, hi: lo + 16, ptr: addrOf(r), words: r.length });
       if (pending) await pending;
-      pending = pool.run(tasks, undefined, nanPol).then(() => { o.dispose(); p.dispose(); });
-    }
-    await pending; pending = null;
-    const c = clause(`bf16 ${name} = BFloat16Arithmetic.${name} bitwise (all pairs with non-NaN model result)`);
-    c.info.push(`NaN model results: ${Object.entries(nanPol).map(([k, v]) => `${k} ${v}`).join(", ")}`);
-    report(c); report(clause(`bf16 ${name} = flush-before-rounding model (|exact| < 2^-126 -> signed 0, else RNE) (non-NaN)`));
-  }
-  // min/max intrinsics on all 65536^2 widened bf16 pairs.
-  {
-    const k = kernel("m1c_bf16_minmax_v1", ["p"], String.raw`
-      uint i = thread_position_in_grid.x, a = p[0] + (i >> 16), b = i & 0xffffu;
-      float x = as_type<float>(a << 16), y = as_type<float>(b << 16);
-      uint o = 4u * i;
-      out[o] = as_type<uint>(metal::fast::fmax(x, y)); out[o + 1u] = as_type<uint>(metal::fast::fmin(x, y));
-      out[o + 2u] = as_type<uint>(metal::precise::fmax(x, y)); out[o + 3u] = as_type<uint>(metal::precise::fmin(x, y));`,
-      { require: [/@air\.fast_fmax\.f32/, /@air\.fast_fmin\.f32/, /@air\.fmax\.f32/, /@air\.fmin\.f32/] });
-    const pols = bfPolicies();
-    const ROWS = 64;
-    let pending: Promise<void> | null = null;
-    for (let a0 = 0; a0 < BF_ROWS; a0 += ROWS) {
-      const p = params(a0), o = dispatch(k, [p], 4 * ROWS * 65536, ROWS * 65536);
-      const r = u32(o), tasks: Task[] = [];
-      for (let lo = 0; lo < ROWS; lo += 4) tasks.push({ kind: "bf16mm", a0, lo, hi: lo + 4, ptr: addrOf(r), words: r.length });
-      if (pending) await pending;
-      pending = pool.run(tasks, undefined, undefined, pols).then(() => { o.dispose(); p.dispose(); });
+      pending = pool.run(tasks).then(() => { o.dispose(); p.dispose(); });
     }
     await pending;
-    for (const pol of pols) pol.finish();
+    report(clause(BF_OPS[oi]!));
+  }
+  {
+    const k = kernel("m1c_bf16_fmax_v2", ["p"], String.raw`
+      uint i = thread_position_in_grid.x, a = p[0] + (i >> 16), b = i & 0xffffu;
+      float x = as_type<float>(a << 16), y = as_type<float>(b << 16);
+      out[2u * i] = as_type<uint>(metal::fast::fmax(x, y)); out[2u * i + 1u] = as_type<uint>(metal::precise::fmax(x, y));`,
+      { require: [/@air\.fast_fmax\.f32/, /@air\.fmax\.f32/] });
+    const before = clause("fmax_value").cases;
+    const ROWS = 128;
+    let pending: Promise<void> | null = null;
+    for (let a0 = 0; a0 < BF_ROWS; a0 += ROWS) {
+      const p = params(a0), o = dispatch(k, [p], 2 * ROWS * 65536, ROWS * 65536);
+      const r = u32(o), tasks: Task[] = [];
+      for (let lo = 0; lo < ROWS; lo += 8) tasks.push({ kind: "fmaxbf16", a0, lo, hi: lo + 8, ptr: addrOf(r), words: r.length });
+      if (pending) await pending;
+      pending = pool.run(tasks).then(() => { o.dispose(); p.dispose(); });
+    }
+    await pending;
+    const c = clause("fmax_value");
+    c.info.push(`binary32 structured+random: ${[...fmaxCases].map(([k, n]) => `${k} ${n}`).join(", ")}; ` +
+      `all finite bf16-valued pairs x 2 ops: ${c.cases - before}`);
+    report(c);
   }
   clearCache();
 }
-// Compositions: runtime exp(abs(v)) and sigmoid; precompiled ops.sigmoid (needs the full unary tables).
-if (!QUICK) {
-  const fastAbs = bfTable.get("fastFabs")!, fastExp = bfTable.get("fastExp")!, pAbs = bfTable.get("fabs")!, pExp = bfTable.get("exp")!;
-  const k = kernel("m1c_bf16_sigmoid_v1", ["p"], String.raw`
-    uint i = thread_position_in_grid.x;
-    const T value = as_type<T>(ushort(i));
-    const auto e = metal::exp(metal::abs(value));
-    const auto y = 1 / (1 + metal::exp(metal::abs(value)));
-    const T sigmoid = T(value < T(0) ? y : 1 - y);
-    out[2u * i] = uint(as_type<ushort>(e)) | (uint(sizeof(e)) << 16);
-    out[2u * i + 1u] = uint(as_type<ushort>(sigmoid));`,
-    { require: [/@air\.fast_fabs\.f32/, /@air\.fast_exp\.f32/], forbid: [/@air\.exp\.f32/, /@air\.fabs\.f32/] });
-  const p = params(0);
-  const o = dispatch(k, [p], 2 * 65536, 65536, Dtype.uint32, 256, { T: Dtype.bfloat16 });
-  const r = u32(o).slice();
-  o.dispose(); p.dispose();
-  const ce = clause("bf16 runtime exp(abs(v)) = bf16(fast_exp(f32(bf16(fast_fabs(f32 v))))) (all 65536, NaN results compared as NaN)");
-  const expAbs = (v: number, abs: Uint32Array, exT: Uint32Array) => bf16Rne(exT[bf16Rne(abs[v]!)]!);
-  for (let v = 0; v < 65536; v++) {
-    ce.cases++;
-    if ((r[2 * v]! >>> 16) !== 2) ce.fail(`exp(abs(bfloat)) is not 2 bytes wide`);
-    const got = r[2 * v]! & 0xffff, want = expAbs(v, fastAbs, fastExp);
-    if (got !== want && !(Number.isNaN(BV[got]!) && Number.isNaN(BV[want]!))) ce.fail(`v=${hex(v)} -> ${hex(got)} want ${hex(want)}`);
-  }
-  report(ce);
-  // Candidate models of native bfloat +, /, - (opcodes 0 +, 1 -, 3 /) and of bfloat < 0.
-  type Route = (op: number, a: number, b: number) => number;
-  const f64op = (op: number, x: number, y: number) => (op === 0 ? x + y : op === 1 ? x - y : op === 2 ? x * y : x / y);
-  const routes: [string, Route][] = [
-    ["BFloat16Arithmetic (flush in, RNE, flush out)", bfLean],
-    ["flush in, flush-before-rounding, RNE", (op, a, b) => { const pre = f64op(op, BVF[a]!, BVF[b]!);
-      return pre !== 0 && pre > -TINY && pre < TINY ? (pre < 0 ? 0x8000 : 0) : bfFromF32(Math.fround(pre)); }],
-    ["via f32 FTZ RNE then bf16 RNE", (op, a, b) => bf16Rne(bitsOf(fl(Math.fround(f64op(op, BVF[a]!, BVF[b]!)))))],
-    ["RNE without any flushing", (op, a, b) => bfFromF64(f64op(op, BV[a]!, BV[b]!))],
-  ];
-  const ONE = 0x3f80;
-  const sigModel = (v: number, abs: Uint32Array, exT: Uint32Array, route: Route, flushCmp: boolean) => {
-    const e = expAbs(v, abs, exT);
-    const q = route(3, ONE, route(0, e, ONE));
-    const neg = flushCmp ? BVF[v]! < 0 : BV[v]! < 0;
-    return neg ? q : route(1, ONE, q);
+
+// ---------------------------------------------------------------- pipelines
+section("Pipelines: limits of the compute pipelines MLX creates");
+{
+  const bf = (n: number, f: (i: number) => number) => {
+    const h = new Uint16Array(n); for (let i = 0; i < n; i++) h[i] = bf16Rne(bitsOf(f(i)));
+    return MlxArray.fromBytesCopy(new Uint8Array(h.buffer), [n], Dtype.bfloat16);
   };
-  const precompiled = (() => {
-    const all = new Uint32Array(32768); for (let i = 0; i < 32768; i++) all[i] = (2 * i) | ((2 * i + 1) << 16);
-    const x = MlxArray.fromBytesCopy(new Uint8Array(all.buffer), [65536], Dtype.bfloat16);
-    const s = ops.sigmoid(x).eval();
-    const b = s.rawBytesView(); const out = new Uint16Array(b.buffer, b.byteOffset, 65536).slice();
-    s.dispose(); x.dispose();
-    return out;
-  })();
-  for (const [label, got, abs, exT] of [
-    ["runtime kernel (fast_fabs, fast_exp)", (v: number) => r[2 * v + 1]!, fastAbs, fastExp],
-    ["precompiled ops.sigmoid (air.fabs, air.exp)", (v: number) => precompiled[v]!, pAbs, pExp],
-  ] as const) {
-    const matches: string[] = [];
-    let best = { n: Infinity, label: "", ex: [] as string[] };
-    for (const [rl, route] of routes) for (const flushCmp of [false, true]) {
-      let n = 0; const ex: string[] = [];
-      for (let v = 0; v < 65536; v++) {
-        const g = got(v), w = sigModel(v, abs, exT, route, flushCmp);
-        if (g !== w && !(Number.isNaN(BV[g]!) && Number.isNaN(BV[w]!))) { n++; if (ex.length < 4) ex.push(`v=${hex(v)} -> ${hex(g)} want ${hex(w)}`); }
-      }
-      const name = `${rl}, compare ${flushCmp ? "flushed" : "exact"}`;
-      if (n === 0) matches.push(name);
-      if (n < best.n) best = { n, label: name, ex };
-    }
-    const c = clause(`bf16 sigmoid ${label} = composition of probed ops (NaN results compared as NaN)`);
-    c.cases = 65536;
-    if (matches.length) c.info.push(`matching models: ${matches.join(" | ")}`);
-    else { c.fails = best.n; c.ex = best.ex; c.info.push(`no model matched; closest: ${best.label}`); }
+  // rms_looped (axis 5120 > 4096), looped logsumexp (axis 248320), KV-row slice update (gg2 copy).
+  const x = bf(5120, i => Math.sin(i)), wt = bf(5120, () => 1);
+  const x2 = ops.reshape(x, [1, 5120]);
+  ops.rmsNorm(x2, wt, 1e-6).eval().dispose();
+  const l = bf(248320, i => Math.cos(i) * 4), l2 = ops.reshape(l, [1, 248320]);
+  ops.logsumexpAxis(l2, 1, true).eval().dispose();
+  const cache = ops.zeros([1, 4, 64, 256], Dtype.bfloat16), row = ops.reshape(bf(1024, i => i / 1024), [1, 4, 1, 256]);
+  ops.sliceUpdate(cache, row, [0, 0, 5, 0], [1, 4, 6, 256]).eval().dispose();
+  for (const a of [x, wt, x2, l, l2, cache, row]) a.dispose();
+  const path = join(KT_DIR, "pipelines.tsv");
+  kt.kt_dump_pipelines(ptr(Buffer.from(path + "\0")));
+  const pipes = readFileSync(path, "utf8").trim().split("\n").map(s => s.split("\t"))
+    .map(([name, , origin, maxTotal, width]) => ({ name: name!, origin: origin!, maxTotal: Number(maxTotal), width: Number(width) }));
+  for (const [field, fn] of [["rmsLooped", "rms_loopedbfloat16"], ["logSumExpLooped", "looped_logsumexp_bfloat16"],
+    ["generalCopy2D", "gg2_copybfloat16bfloat16"]] as const) {
+    const c = clause(`Pipelines.${field}`), hits = pipes.filter(p => p.name === fn);
+    if (!hits.length) c.fail(`no pipeline for ${fn} was created`);
+    for (const p of hits) { c.cases++; if (p.maxTotal !== 1024) c.fail(`${fn} (${p.origin}) maxTotalThreadsPerThreadgroup ${p.maxTotal}`); }
+    c.info.push(`${fn} maxTotalThreadsPerThreadgroup ${hits.map(p => p.maxTotal).join(",")}`);
     report(c);
   }
+  const c = clause("Pipelines.simdWidth");
+  for (const p of pipes) { c.cases++; if (p.width !== 32) c.fail(`${p.name} threadExecutionWidth ${p.width}`); }
+  c.info.push(`every pipeline created by this probe (${pipes.length}); maxTotalThreadsPerThreadgroup values seen: ` +
+    [...new Set(pipes.map(p => p.maxTotal))].sort((a, b) => a - b).join(","));
+  report(c);
 }
 
 // ---------------------------------------------------------------- lowering verification
@@ -931,7 +828,7 @@ if (VERIFY) {
     for (let i = 1; i < parts.length; i += 2) funcs.set(parts[i]!, parts[i + 1]!);
   }
   console.log(`runtime compiler: ${[...idents].join(", ") || "(no llvm.ident found)"}`);
-  const c = clause("AIR lowering of probe kernels");
+  const c = clause("lowering");
   for (const { name, low } of kernels) {
     const hits = [...funcs].filter(([fn]) => fn.startsWith(`custom_kernel_${name}`));
     c.cases++;
@@ -945,27 +842,13 @@ if (VERIFY) {
       if (miss.length || bad.length || flags) c.fail(`${fn}: missing ${miss.join(",")} forbidden ${bad.join(",")} ${flags?.[0] ?? ""}`);
     }
   }
-  // Precompiled sigmoid: every bf16 Sigmoid variant in mlx.metallib.
-  const lib = process.env.MLX_BUN_LIBMLXC ? join(dirname(process.env.MLX_BUN_LIBMLXC), "mlx.metallib") : "";
-  if (lib && existsSync(lib)) {
-    const dis = sh(["xcrun", "metal-objdump", "-d", lib]);
-    const parts = dis.split(/^0x[0-9a-f]+ -- (\S+):$/m);
-    for (let i = 1; i < parts.length; i += 2) if (/^[a-z0-9]+_Sigmoidbfloat16bfloat16$/.test(parts[i]!)) {
-      const body = parts[i + 1]!; c.cases++;
-      const need = [/@air\.fabs\.f32/, /@air\.exp\.f32/, /fadd bfloat/, /fdiv bfloat/, /fsub bfloat/];
-      const miss = need.filter(re => !re.test(body));
-      const bad = /@air\.fast_/.test(body) || FP_FLAGS.test(body);
-      console.log(`  mlx.metallib ${parts[i]}: ${miss.length || bad ? "UNEXPECTED" : "air.fabs.f32, air.exp.f32, native bfloat fadd/fdiv/fsub"}`);
-      if (miss.length || bad) c.fail(`${parts[i]}: missing ${miss.join(",")}${bad ? " has fast ops" : ""}`);
-    }
-  } else c.info.push("mlx.metallib not found beside MLX_BUN_LIBMLXC; precompiled Sigmoid not checked");
   report(c);
 }
 
 // ---------------------------------------------------------------- summary
 pool.close();
-console.log("== summary");
+console.log("== summary (preconditions, then M1MaxContract.lean fields in declaration order)");
 let failed = 0;
-for (const c of clauses.values()) { console.log(`${c.fails ? "FAIL" : "PASS"} ${c.name} (${c.cases})`); if (c.fails) failed++; }
+for (const c of clauses.values()) { console.log(`${passed(c) ? "PASS" : "FAIL"} ${c.name} (${c.cases})`); if (!passed(c)) failed++; }
 console.log(`${failed} failing clause(s); total ${((performance.now() - T0) / 1000).toFixed(0)} s`);
 process.exit(failed ? 1 : 0);

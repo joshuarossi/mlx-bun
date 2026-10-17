@@ -1,6 +1,7 @@
 // Metal dispatch tracer: loaded into the bun process (bun:ffi dlopen) BEFORE MLX
 // creates its device. Swizzles every ObjC class that implements the relevant
-// Metal selectors and records libraries, functions, pipelines and dispatches.
+// Metal selectors and records libraries, functions, pipelines (with their
+// maxTotalThreadsPerThreadgroup and threadExecutionWidth) and dispatches.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
@@ -14,7 +15,7 @@ static __thread int depth = 0;
 static int enabled = 0;
 static NSMutableDictionary *libs;      // libptr -> desc dict
 static NSMutableDictionary *funcs;     // funcptr -> {name, specialized, lib}
-static NSMutableDictionary *pipes;     // pipeptr -> funcptr
+static NSMutableDictionary *pipes;     // pipeptr -> {name, specialized, origin, maxTotal, width}
 static NSMutableArray *events;         // strings
 static NSMutableDictionary *curPipe;   // encoderptr -> pipeptr
 static NSString *outDir;
@@ -36,6 +37,15 @@ static NSString *origin(id lib) {
   NSDictionary *ld = libs[key(lib)];
   if (!ld) return @"unknown";
   return [ld[@"kind"] isEqual:@"source"] ? [@"source:" stringByAppendingString:ld[@"sha256"]] : [@"file:" stringByAppendingString:ld[@"path"]];
+}
+// Records the function a pipeline was made from with the pipeline's own limits.
+static void recPipe(id p, id fn) {
+  id<MTLComputePipelineState> ps = p;
+  NSMutableDictionary *d = [(funcs[key(fn)] ?: @{@"name": @"?fn", @"specialized": @"?fn", @"origin": @"unknown"}) mutableCopy];
+  d[@"maxTotal"] = @((unsigned long)ps.maxTotalThreadsPerThreadgroup);
+  d[@"width"] = @((unsigned long)ps.threadExecutionWidth);
+  d[@"staticThreadgroupMemory"] = @((unsigned long)ps.staticThreadgroupMemoryLength);
+  pipes[key(p)] = d;
 }
 static void recLib(id lib, NSDictionary *desc) {
   if (!lib) return;
@@ -139,7 +149,7 @@ static void install(void) {
       depth++;
       id p = ((id (*)(id, SEL, id, NSError **))o)(self, @selector(newComputePipelineStateWithFunction:error:), fn, err);
       depth--;
-      if (depth == 0 && p) { pthread_mutex_lock(&mu); pipes[key(p)] = funcs[key(fn)] ?: @{@"name": @"?fn", @"specialized": @"?fn", @"origin": @"unknown"}; pthread_mutex_unlock(&mu); }
+      if (depth == 0 && p) { pthread_mutex_lock(&mu); recPipe(p, fn); pthread_mutex_unlock(&mu); }
       return p;
     };
   });
@@ -148,7 +158,7 @@ static void install(void) {
       depth++;
       id p = ((id (*)(id, SEL, id, MTLPipelineOption, id *, NSError **))o)(self, @selector(newComputePipelineStateWithDescriptor:options:reflection:error:), d, op, refl, err);
       depth--;
-      if (depth == 0 && p) { pthread_mutex_lock(&mu); pipes[key(p)] = funcs[key(d.computeFunction)] ?: @{@"name": @"?fn", @"specialized": @"?fn", @"origin": @"unknown"}; pthread_mutex_unlock(&mu); }
+      if (depth == 0 && p) { pthread_mutex_lock(&mu); recPipe(p, d.computeFunction); pthread_mutex_unlock(&mu); }
       return p;
     };
   });
@@ -166,7 +176,7 @@ static void install(void) {
       ((void (*)(id, SEL, MTLSize, MTLSize))o)(self, @selector(dispatchThreadgroups:threadsPerThreadgroup:), g, t);
       depth--;
       if (depth == 0 && enabled) { pthread_mutex_lock(&mu);
-        [events addObject:[NSString stringWithFormat:@"D\t%@\tgroups\t%lu,%lu,%lu\t%lu,%lu,%lu", desc(curPipe[key(self)]), g.width, g.height, g.depth, t.width, t.height, t.depth]];
+        [events addObject:[NSString stringWithFormat:@"D\t%@\tgroups\t%lu,%lu,%lu\t%lu,%lu,%lu\t%@", desc(curPipe[key(self)]), g.width, g.height, g.depth, t.width, t.height, t.depth, curPipe[key(self)][@"maxTotal"] ?: @"?"]];
         pthread_mutex_unlock(&mu); }
     };
   });
@@ -176,7 +186,7 @@ static void install(void) {
       ((void (*)(id, SEL, MTLSize, MTLSize))o)(self, @selector(dispatchThreads:threadsPerThreadgroup:), g, t);
       depth--;
       if (depth == 0 && enabled) { pthread_mutex_lock(&mu);
-        [events addObject:[NSString stringWithFormat:@"D\t%@\tthreads\t%lu,%lu,%lu\t%lu,%lu,%lu", desc(curPipe[key(self)]), g.width, g.height, g.depth, t.width, t.height, t.depth]];
+        [events addObject:[NSString stringWithFormat:@"D\t%@\tthreads\t%lu,%lu,%lu\t%lu,%lu,%lu\t%@", desc(curPipe[key(self)]), g.width, g.height, g.depth, t.width, t.height, t.depth, curPipe[key(self)][@"maxTotal"] ?: @"?"]];
         pthread_mutex_unlock(&mu); }
     };
   });
@@ -203,6 +213,18 @@ void kt_dump(const char *path) {
     NSMutableString *lt = [NSMutableString string];
     for (NSString *k in libs) [lt appendFormat:@"%@\t%@\n", k, libs[k]];
     [lt writeToFile:[[NSString stringWithUTF8String:path] stringByAppendingString:@".libs"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    pthread_mutex_unlock(&mu);
+  }
+}
+// One line per compute pipeline created since kt_init:
+// name, specialized name, origin, maxTotalThreadsPerThreadgroup, threadExecutionWidth, static threadgroup bytes.
+void kt_dump_pipelines(const char *path) {
+  @autoreleasepool {
+    pthread_mutex_lock(&mu);
+    NSMutableString *out = [NSMutableString string];
+    for (NSString *k in pipes) { NSDictionary *d = pipes[k];
+      [out appendFormat:@"%@\t%@\t%@\t%@\t%@\t%@\n", d[@"name"], d[@"specialized"], d[@"origin"], d[@"maxTotal"], d[@"width"], d[@"staticThreadgroupMemory"]]; }
+    [out writeToFile:[NSString stringWithUTF8String:path] atomically:YES encoding:NSUTF8StringEncoding error:nil];
     pthread_mutex_unlock(&mu);
   }
 }

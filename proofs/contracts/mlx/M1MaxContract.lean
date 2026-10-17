@@ -110,4 +110,19 @@ structure Contract where
   narrow_model : ∀ x, x.isFinite=true → narrow x=BFloat16.narrow x
   widen_model : ∀ x, Model.isFinite x=true → widen x=BFloat16.widen x
 
+/- Device facts of the compute pipelines on this target. `maxThreads name` and
+   `executionWidth name` are the maxTotalThreadsPerThreadgroup and
+   threadExecutionWidth of the pipeline created for the Metal function `name`.
+   The host proofs take these limits as premises: MLX sizes rms_looped and
+   looped logsumexp threadgroups and the KV-row 2-D general copy from
+   maxTotalThreadsPerThreadgroup, and the SIMD reductions assume 32 lanes.
+   The probe reads them from the pipelines MLX creates (metal-tracer.m). -/
+structure Pipelines where
+  maxThreads : String → Nat
+  executionWidth : String → Nat
+  rmsLooped : maxThreads "rms_loopedbfloat16"=1024
+  logSumExpLooped : maxThreads "looped_logsumexp_bfloat16"=1024
+  generalCopy2D : maxThreads "gg2_copybfloat16bfloat16"=1024
+  simdWidth : ∀ name, executionWidth name=32
+
 end Inference.Contracts.Mlx.M1Max
