@@ -1551,6 +1551,12 @@ const proofFiles = [
   "host/ts/sources/mlx/Ops.lean",
   "host/ts/Sanity.lean",
   "host/mlx/Value.lean",
+  "host/mlx/Ops.lean",
+  "host/mlx/GlueLayout.lean",
+  "host/mlx/GlueKv.lean",
+  "host/mlx/GlueConv.lean",
+  "host/mlx/GlueAttention.lean",
+  "host/mlx/GlueRoute.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
