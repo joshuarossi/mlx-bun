@@ -1502,6 +1502,7 @@ const proofFiles = [
   "models/qwen/NativeCopiedConstructedInputs.lean",
   "models/qwen/NativeCopiedHighWaterFrame.lean",
   "models/qwen/NativeCopiedHighWaterScalarBoundary.lean",
+  "contracts/mlx/M1MaxContract.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

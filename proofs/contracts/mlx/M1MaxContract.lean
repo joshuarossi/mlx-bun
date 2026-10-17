@@ -1,0 +1,83 @@
+import contracts.mlx.M1Max
+import contracts.mlx.Division
+import contracts.mlx.FlushedReduction
+import contracts.mlx.RsqrtEpsilonBounds
+import contracts.mlx.BFloat16Arithmetic
+import contracts.mlx.FloatMemory
+
+namespace Inference.Contracts.Mlx.M1Max
+open Numerics
+open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
+
+/- The machine boundary of the native proof: what each AIR operation does on
+   this target. Scope: Apple M1 Max (applegpu_g13s), macOS 27.0.1 (26A434),
+   AGXMetalG13X/AGXCompilerCore 360.34.5, AIR produced by metalfe-32023.883
+   (precompiled mlx.metallib) and metalfe-32023.921.5 (runtime compiler), with
+   air.compile.denorms_disable and air.compile.fast_math_disable. Compiler
+   conformance (MSL source to AIR, AIR to AGX code) is part of this boundary:
+   each source operation means the operation named here.
+
+   Every clause is operation-level and independent of any kernel, model,
+   checkpoint or table. proofs/contracts/mlx/probe-m1max-contract.ts checks
+   each clause on this machine (exhaustively for unary f32 clauses). This
+   structure is a premise of the native theorem, not a declared axiom. -/
+structure Contract where
+  -- Basic binary32 arithmetic, defined by the flushed nearest-even models.
+  -- Kernel models compute with these definitions directly.
+  fadd : Float32 → Float32 → Float32
+  fmul : Float32 → Float32 → Float32
+  fma : Float32 → Float32 → Float32 → Float32
+  fadd_model : ∀ x y, x.isFinite=true → y.isFinite=true → fadd x y=FlushToZero.add x y
+  fmul_model : ∀ x y, x.isFinite=true → y.isFinite=true → fmul x y=FlushToZero.mul x y
+  fma_model : ∀ x y z, x.isFinite=true → y.isFinite=true → z.isFinite=true → fma x y z=FlushToZero.fma x y z
+  -- `fdiv` without fast-math flags, correctly rounded with flushing on the
+  -- divisor domain the kernels reach.
+  fdiv : Float32 → Float32 → Float32
+  fdiv_model : ∀ x y, x.isFinite=true → y.isFinite=true → Division.DivisorDomain y → fdiv x y=FlushToZero.div x y
+  -- air.rsqrt.f32 on positive normal inputs.
+  rsqrt : Float32 → Float32
+  rsqrt_normal : RsqrtEpsilonBounds.NormalEnvelope rsqrt (17/16)
+  -- air.exp.f32 (precise) and air.fast_exp.f32.
+  exp : Float32 → Float32
+  fastExp : Float32 → Float32
+  exp_nonpositive : ∀ x, x.isFinite=true → real x≤0 → (exp x).isFinite=true ∧ 0≤real (exp x) ∧ real (exp x)≤1
+  exp_zero : ∀ x, x.isFinite=true → real x=0 → real (exp x)=1
+  exp_nonnegative : ∀ x, x.isFinite=true → (exp x).isFinite=true → 0≤real (exp x)
+  exp_small : ∀ x, x.isFinite=true → |real x|≤8 → (exp x).isFinite=true ∧ real (exp x)≤(2:ℝ)^(12:Nat)
+  exp_overflow : ∀ x, x.isFinite=true → (exp x).isFinite=true ∨ exp x=Float32.inf
+  fastExp_nonpositive : ∀ x, x.isFinite=true → real x≤0 → (fastExp x).isFinite=true ∧ 0≤real (fastExp x) ∧ real (fastExp x)≤1
+  fastExp_zero : ∀ x, x.isFinite=true → real x=0 → real (fastExp x)=1
+  fastExp_negInf : fastExp (-Float32.inf)=0
+  fastExp_nonnegative : ∀ x, x.isFinite=true → (fastExp x).isFinite=true → 0≤real (fastExp x)
+  fastExp_overflow : ∀ x, x.isFinite=true → (fastExp x).isFinite=true ∨ fastExp x=Float32.inf
+  -- air.exp2.f32 (precise).
+  exp2 : Float32 → Float32
+  exp2_nonpositive : ∀ x, x.isFinite=true → real x≤0 → (exp2 x).isFinite=true ∧ 0≤real (exp2 x) ∧ real (exp2 x)≤1
+  -- air.log.f32 (precise) and air.fast_log.f32.
+  log : Float32 → Float32
+  fastLog : Float32 → Float32
+  log_bounded : ∀ x, x.isFinite=true → 1≤real x → real x≤(2:ℝ)^(18:Nat) → (log x).isFinite=true ∧ |real (log x)|≤32
+  fastLog_unit : ∀ x, x.isFinite=true → 1≤real x → real x≤2 → (fastLog x).isFinite=true ∧ 0≤real (fastLog x) ∧ real (fastLog x)≤1
+  -- air.fast_sin.f32 and air.fast_cos.f32 on the reached angle domain.
+  fastSin : Float32 → Float32
+  fastCos : Float32 → Float32
+  fastSin_bounded : ∀ x, x.isFinite=true → |real x|≤(2:ℝ)^(18:Nat) → (fastSin x).isFinite=true ∧ |real (fastSin x)|≤2
+  fastCos_bounded : ∀ x, x.isFinite=true → |real x|≤(2:ℝ)^(18:Nat) → (fastCos x).isFinite=true ∧ |real (fastCos x)|≤2
+  -- air.fmax.f32 / air.fast_fmax.f32 and air.simd_max.f32 on finite inputs.
+  fmax : Float32 → Float32 → Float32
+  fmax_select : ∀ x y, x.isFinite=true → y.isFinite=true → (fmax x y=x ∨ fmax x y=y) ∧ real (fmax x y)=max (real x) (real y)
+  simdMax : (Fin 32 → Float32) → Float32
+  simdMax_select : ∀ input : Fin 32 → Float32, (∀ i, (input i).isFinite=true) →
+    ∃ i, simdMax input=input i ∧ ∀ j, real (input j)≤real (input i)
+  -- air.simd_sum.f32: one fixed binary tree of flushed nearest-even adds.
+  simdSum : (Fin 32 → Float32) → Float32
+  simdSum_tree : FlushedReduction.SimdContract simdSum
+  -- Threadgroup float load: the low two address bits are ignored.
+  threadgroupLoad : ThreadgroupLoad
+  threadgroupLoad_contract : LoadContract threadgroupLoad
+  -- Device float4 load at a 16-aligned address reads four scalar words.
+  vectorLoad : ByteMemory.Bytes → Nat → Fin 4 → Float32
+  vectorLoad_components : ∀ bytes address, address%16=0 → address+16≤2^64 →
+    ∀ component, vectorLoad bytes address component=FloatMemory.load bytes (address+4*component.val)
+
+end Inference.Contracts.Mlx.M1Max
