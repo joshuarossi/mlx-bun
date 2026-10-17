@@ -75,19 +75,19 @@ private theorem fp (e : Int) (lo : -149 ≤ e) (hi : e ≤ 100) :
     Contracts.Mlx.Numerics.real (DyadicBounds.ceiling 1 e) = (2 : ℝ)^e := by
   simpa only [Nat.cast_one, one_mul] using (DyadicBounds.ceiling_range 1 e (by decide) lo hi).2
 
-theorem decay (P : M1Max.Proposed C) :
+theorem decay :
     Delta.DecayRanges.PrimitiveRanges M.decay DeltaGateRanges.profile :=
-  C.decayRanges P M.logAddExp DeltaGateRanges.profile
+  C.decayRanges M.logAddExp DeltaGateRanges.profile
     (by rw [show DeltaGateRanges.profile.aLogCap = DyadicBounds.ceiling 1 3 from rfl, fp 3 (by decide) (by decide)]; norm_num)
     (by rw [show DeltaGateRanges.profile.scaleCap = DyadicBounds.ceiling 1 12 from rfl, fp 12 (by decide) (by decide)]; norm_num)
 
-noncomputable def deltaOther (P : M1Max.Proposed C) (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoaded M K l w) :
+noncomputable def deltaOther (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoaded M K l w) :
     ResidualDeltaOther l where
   mixer := {
     normalizationRoot := by rw [hl.inputPlatform]; exact root
     headExp := by rw [hl.heads]; exact C.fastExpAbs_exponential
     headRoot := by rw [hl.heads]; exact C.rsqrtEnvelope _ le_rfl
-    decay := by rw [hl.decay]; exact decay M P
+    decay := by rw [hl.decay]; exact decay M
     beta := by rw [hl.beta]; exact C.preciseExpAbs_exponential
     gatedRoot := by rw [hl.gated]; exact root
     gatedExp := by rw [hl.gated]; exact C.gatedExpAbs_exponential }
@@ -107,9 +107,9 @@ noncomputable def attentionOther (l : ResidualAttention.Layer) (w : AttentionWei
     gate := by rw [hl.bound.gate]; exact C.preciseExpAbs_exponential }
   suffix := mlpOther K _ _ hl.suffix
 
-noncomputable def other (P : M1Max.Proposed C) (p : TokenInference.Pipeline) (w : PipelineWeights)
+noncomputable def other (p : TokenInference.Pipeline) (w : PipelineWeights)
     (hl : PipelineLoaded M K p w) : Other p.graph where
-  delta i := deltaOther M K P _ _ (hl.delta i)
+  delta i := deltaOther M K _ _ (hl.delta i)
   attention i := attentionOther M K _ _ (hl.attention i)
   root := by rw [hl.finalPlatform]; exact root
 
@@ -119,11 +119,11 @@ noncomputable def other (P : M1Max.Proposed C) (p : TokenInference.Pipeline) (w 
 def noLocals : Nat → TokenReadyMemory.Locals := fun _ => ⟨fun _ => 0, fun _ _ => 0, fun _ => 0⟩
 
 -- The reached token context of the loaded pipeline: its primitive contracts
--- are proved from C (and P), its sampler is the MLX logsumexp platform, its
+-- are proved from C , its sampler is the MLX logsumexp platform, its
 -- angles are the route's RoPE inputs (rope.cpp position and log2 base).
-noncomputable def context (P : M1Max.Proposed C) (p : TokenInference.Pipeline) (w : PipelineWeights)
+noncomputable def context (p : TokenInference.Pipeline) (w : PipelineWeights)
     (hl : PipelineLoaded M K p w) (parameters : TokenSequenceRanges.Parameters p) : ReachedTokenContext.Context p :=
-  ReachedTokenContext.ofNormal parameters (selections M K p w hl) (other M K P p w hl) K.sampling
+  ReachedTokenContext.ofNormal parameters (selections M K p w hl) (other M K p w hl) K.sampling
     (C.logSumExpPrimitives K.lseSum K.lseNumerator) RopeInputConstruction.angles noLocals
 
 -- The reached ranges of every Delta layer include its finite a + dt_bias.
@@ -143,17 +143,17 @@ theorem decayFinite : (stages : List DecodeStage.Stage) → (c : DecodeChain.Cac
 /-- One decode step of the loaded pipeline on the M1 Max: from handles holding
 the reached context's cache at `time`, the MLX trace returns the context's
 next token and handles holding its next cache. Premises: the operation-level
-contract C and its proposed clause P, the MLX statements M and K (operation
+contract C, the MLX statements M and K (operation
 semantics; contraction and tie choices are free fields), the loaded pipeline,
 its checkpoint parameter ranges, and the handles' cache. -/
-theorem contextStep (P : M1Max.Proposed C) (p : TokenInference.Pipeline) (w : PipelineWeights)
+theorem contextStep (p : TokenInference.Pipeline) (w : PipelineWeights)
     (hl : PipelineLoaded M K p w) (parameters : TokenSequenceRanges.Parameters p)
     (token : Fin 248320) (time : Nat) (supported : time+1 ≤ 262144) (hs : List Handles)
-    (hh : ChainHolds p.graph.stages hs ((context M K P p w hl parameters).run token time (by omega)).cache) :
-    ∃ hs', stepTrace M K w time ((context M K P p w hl parameters).run token time (by omega)).token.val hs =
-        some (((context M K P p w hl parameters).run token (time+1) supported).token.val, hs') ∧
-      ChainHolds p.graph.stages hs' ((context M K P p w hl parameters).run token (time+1) supported).cache := by
-  let ctx := context M K P p w hl parameters
+    (hh : ChainHolds p.graph.stages hs ((context M K p w hl parameters).run token time (by omega)).cache) :
+    ∃ hs', stepTrace M K w time ((context M K p w hl parameters).run token time (by omega)).token.val hs =
+        some (((context M K p w hl parameters).run token (time+1) supported).token.val, hs') ∧
+      ChainHolds p.graph.stages hs' ((context M K p w hl parameters).run token (time+1) supported).cache := by
+  let ctx := context M K p w hl parameters
   let state := ctx.run token time (by omega)
   have lt : time < 262144 := by omega
   have ranges := ReachedSequenceRanges.Token.checked p ctx.parameters ctx.primitive state.cache state.cacheBound

@@ -178,7 +178,7 @@ theorem expNeg_exponential : Trellis.GateUpFloatTailRanges.ExponentialRange C.ex
 
 /-! ## Range premises from operation-level clauses -/
 
-theorem decayRanges (P : Proposed C) (policy : Delta.Softplus.Policy) (profile : Delta.DecayRanges.Profile)
+theorem decayRanges (policy : Delta.Softplus.Policy) (profile : Delta.DecayRanges.Profile)
     (aLogCap : real profile.aLogCap ≤ 8) (scaleCap : (2:ℝ)^(12:Nat) ≤ real profile.scaleCap) :
     Delta.DecayRanges.PrimitiveRanges (C.decayPlatform policy) profile where
   softplus := {
@@ -190,7 +190,7 @@ theorem decayRanges (P : Proposed C) (policy : Delta.Softplus.Policy) (profile :
         (by rw [BFloat16Arithmetic.real_one, abs_of_nonneg he.2.1]; exact he.2.2)
       rw [BFloat16Arithmetic.real_one] at hr
       exact ⟨hr.1, narrow_nonnegative _ he.1 he.2.1 hr.1, (le_abs_self _).trans hr.2⟩
-    logarithm := fun x hx h => BFloat16Log1p.range C.fastLog C.fdiv C.fastLog_unit P.fdiv_unit x hx h.1 h.2 }
+    logarithm := fun x hx h => BFloat16Log1p.range C.fastLog C.fdiv C.fastLog_unit C.fdiv_unit_model x hx h.1 h.2 }
   scale := by
     intro x hx hb
     have h := C.exp_small x hx (hb.trans aLogCap)

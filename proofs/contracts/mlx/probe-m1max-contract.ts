@@ -90,7 +90,7 @@ function leanClauses(structure: string): string[] {
   const names = fields.map(f => f[0]);
   return fields.filter(([n, t]) => names.some(o => o !== n && new RegExp(`(^|[^.\\w])${o}([^\\w]|$)`).test(t))).map(f => f[0]);
 }
-const FIELDS = ["fadd_model", "fmul_model", "fma_model", "fdiv_model", "rsqrt_normal", "exp_nonpositive", "exp_zero",
+const FIELDS = ["fadd_model", "fmul_model", "fma_model", "fdiv_model", "fdiv_unit_model", "rsqrt_normal", "exp_nonpositive", "exp_zero",
   "exp_nonnegative", "exp_small", "exp_overflow", "fastExp_nonpositive", "fastExp_zero", "fastExp_negInf", "fastExp_nonnegative",
   "fastExp_overflow", "exp2_nonpositive", "log_bounded", "fastLog_unit", "fastSin_bounded", "fastCos_bounded", "fmax_value",
   "simdMax_tree", "fabs_value", "fastFabs_value", "simdSum_tree", "threadgroupLoad_contract", "vectorLoad_components",
@@ -256,6 +256,13 @@ inline uint2 genDiv(uint idx, uint seed) {
   uint y = sel == 0u ? 0x7e800000u : sel == 1u ? 0x3f800000u : mk(0u, ey, mant(h4));
   return uint2(mk(h4 >> 31, ex, mant(h2)), y);
 }
+// Divisors in [2^-23, 1]: the bf16 log1p divisor (1+x)-1.
+inline uint2 genDivUnit(uint idx, uint seed) {
+  uint2 v = genDiv(idx, seed);
+  uint h = h32(idx ^ seed ^ 0x3c6ef372u), sel = h & 31u;
+  uint y = sel == 0u ? 0x3f800000u : sel == 1u ? 0x34000000u : mk(0u, 104 + int((h >> 5) % 23u), mant(h32(h)));
+  return uint2(v.x, y);
+}
 inline uint3 genFma(uint idx, uint seed) {
   uint2 ab = genPair(idx, seed, 1u);
   uint h5 = h32(idx * 0x2545f491u ^ seed ^ 0xdeadbeefu), h6 = h32(h5), h7 = h32(h6);
@@ -383,6 +390,9 @@ const binSpec = [
   { op: "fdiv", width: 3, gen: "uint2 v = s ? uint2(sv(idx / 1009u), dv(idx % 1009u)) : genDiv(idx, p[1]);",
     expr: "as_type<float>(v.x) / as_type<float>(v.y)", structured: 4080 * 1009,
     low: { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] } },
+  { op: "fdiv_unit", width: 3, gen: "uint2 v = s ? uint2(sv(idx / 1009u), (uint(104u + (idx % 1009u) % 24u) << 23) | ((((idx % 1009u) / 24u) * 199729u) & 0x7fffffu)) : genDivUnit(idx, p[1]);",
+    expr: "as_type<float>(v.x) / as_type<float>(v.y)", structured: 4080 * 1009,
+    low: { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] } },
   { op: "fma", width: 4, gen: "uint3 v = s ? uint3(tv(idx / 25600u), tv((idx / 160u) % 160u), tv(idx % 160u)) : genFma(idx, p[1]);",
     expr: "metal::fma(as_type<float>(v.x), as_type<float>(v.y), as_type<float>(v.z))", structured: 160 ** 3,
     low: { require: [/@air\.fma\.f32/], forbid: [/@air\.fast_/] } },
@@ -409,6 +419,9 @@ for (const spec of binSpec) {
         want = fmaRef(a, bb, cc);
       } else if (spec.op === "fdiv") {
         if (!(bb >= 1 && bb <= 2 ** 126)) continue; // Division.DivisorDomain
+        want = divRef(a, bb);
+      } else if (spec.op === "fdiv_unit") {
+        if (!(bb >= 2 ** -23 && bb <= 1)) continue; // fdiv_unit_model domain
         want = divRef(a, bb);
       } else want = spec.op === "fadd" ? addRef(a, bb) : mulRef(a, bb);
       c.cases++;
