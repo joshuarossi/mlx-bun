@@ -129,7 +129,7 @@ theorem sdpaMaximum (sumContracted : Bool) (numeratorContracted : Attention.Sdpa
   · intro input hi
     show ∃ i, C.simdMax input = input i ∧ ∀ j, real (FlushToZero.flush (input j)) ≤ real (FlushToZero.flush (input i))
     obtain ⟨⟨i, _, hv⟩, hle⟩ := Maximum.tree_spec input C.simdMax_tree.tree hi
-    refine ⟨i, (C.simdMax_tree.execution input).trans hv, fun j => ?_⟩
+    refine ⟨i, (C.simdMax_tree.execution input hi).trans hv, fun j => ?_⟩
     rw [← hv]
     exact hle j (C.simdMax_tree.coverage.mem_iff.mpr (List.mem_finRange j))
 

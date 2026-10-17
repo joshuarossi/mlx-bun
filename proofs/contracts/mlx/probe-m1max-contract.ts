@@ -571,7 +571,7 @@ let sumTree: Tree | null = null;
 }
 
 // ---------------------------------------------------------------- simd_max
-section("simdMax_tree: Maximum.tree replay (finite, infinite and NaN lanes)");
+section("simdMax_tree: Maximum.tree replay (all-finite lanes)");
 {
   const c = clause("simdMax_tree");
   // For inputs without NaN every tree whose in-order leaves are 0..31 gives the first lane holding
@@ -587,7 +587,8 @@ section("simdMax_tree: Maximum.tree replay (finite, infinite and NaN lanes)");
   const check = (b: Uint32Array, off: number, got: number, same: boolean) => {
     let anyInf = false, anyNaN = false;
     for (let l = 0; l < 32; l++) { const x = b[off + l]!; if ((x & 0x7f800000) === 0x7f800000) { if (x & 0x7fffff) anyNaN = true; else anyInf = true; } }
-    if (anyNaN) nan++; else if (anyInf) inf++; else finite++;
+    // simdMax_tree quantifies over all-finite lane vectors only.
+    if (anyNaN) { nan++; return; } else if (anyInf) { inf++; return; } else finite++;
     c.cases++;
     if (!same) { disagree++; if (c.ex.length < 6) c.ex.push(`${lanesStr(b, off)}: lanes disagree`); }
     evs.forEach((ev, q) => {

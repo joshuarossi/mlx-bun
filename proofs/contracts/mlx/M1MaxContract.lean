@@ -29,7 +29,7 @@ open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
 structure MaximumTree (reduce : (Fin 32 → Float32) → Float32) where
   tree : Reduction.Tree 32
   coverage : (Reduction.leaves tree).Perm (List.finRange 32)
-  execution : ∀ input, reduce input=Maximum.tree input tree
+  execution : ∀ input, (∀ i, (input i).isFinite=true) → reduce input=Maximum.tree input tree
 
 structure Contract where
   -- Basic binary32 arithmetic, defined by the flushed nearest-even models
@@ -104,7 +104,9 @@ structure Contract where
   bfadd_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfadd x y=BFloat16Arithmetic.add x y
   bfsub_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfsub x y=BFloat16Arithmetic.sub x y
   bfmul_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfmul x y=BFloat16Arithmetic.mul x y
-  bfdiv_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → bfdiv x y=BFloat16Arithmetic.div x y
+  -- Flushed 0/0 returns 0x7fff on the hardware; the kernels never divide by zero.
+  bfdiv_model : ∀ x y, Model.isFinite x=true → Model.isFinite y=true → Model.toReal (BFloat16Arithmetic.flush y)≠0 →
+    bfdiv x y=BFloat16Arithmetic.div x y
   narrow : Float32 → BFloat16Arithmetic.Value
   widen : BFloat16Arithmetic.Value → Float32
   narrow_model : ∀ x, x.isFinite=true → narrow x=BFloat16.narrow x

@@ -217,7 +217,8 @@ function checkBf16Op(oi: number, a0: number, lo: number, hi: number, r: Uint32Ar
     const a = a0 + ra; if (!Number.isFinite(BV[a]!)) continue;
     const base = ra * 65536;
     for (let b = 0; b < 65536; b++) {
-      if (!Number.isFinite(BV[b]!)) continue;
+      // bfdiv_model requires a nonzero flushed divisor (zero or subnormal b is excluded).
+      if (!Number.isFinite(BV[b]!) || (oi === 3 && (b & 0x7f80) === 0)) continue;
       k++;
       const got = r[base + b]!, want = bfModel(oi, a, b);
       if (got !== want) c.fail(`${hex(a)} ${sym} ${hex(b)} -> ${hex(got)} want ${hex(want)}`);
