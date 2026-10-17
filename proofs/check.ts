@@ -326,6 +326,7 @@ const proofFiles = [
   "kernels/delta/Gates.lean",
   "kernels/trellis/SigmoidRanges.lean",
   "kernels/trellis/GateUpSplitTailRanges.lean",
+  "kernels/trellis/GateUpFloatTailRanges.lean",
   "kernels/delta/Softplus.lean",
   "kernels/delta/SoftplusRanges.lean",
   "kernels/delta/Decay.lean",

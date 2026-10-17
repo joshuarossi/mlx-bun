@@ -36,11 +36,7 @@ structure Parameters (b : Mlp) : Prop where
 structure Primitives (b : Mlp) where
   division : DivisionDirectedBounds.Contract b.norm.platform.divide
   root : RsqrtBounds.Envelope b.norm.platform.rsqrt
-  expAbs : BF → BF
-  expError : BF → ℝ
-  selected : b.mlp.activation = .split expAbs
-  exponential : Kernels.Trellis.GateUpSplitTail.ExpAbsContract expAbs expError
-  expRange : Kernels.Trellis.SigmoidRanges.ExponentialRange expAbs
+  activation : TrellisMlpRanges.ActivationPrimitive b.mlp.activation
 
 theorem residual_ranges (stage : Nat) (hs : stage < 64) (x update : Fin 5120 → BF)
     (hx : InputBound stage x) (hu : UpdateBound update) (i : Fin 5120) :
@@ -95,10 +91,8 @@ noncomputable def checked (b : Mlp) (parameters : Parameters b) (primitive : Pri
   let hf : b.Finite x update := {
     addition := fun i => (ha i).1
     normalization := hn.1
-    mlp := TrellisMlpRanges.finite b.mlp parameters.mlp _ hi primitive.expAbs primitive.expError
-      primitive.selected primitive.exponential primitive.expRange }
-  have hm := TrellisMlpRanges.ranges b.mlp parameters.mlp _ hi primitive.expAbs primitive.expError
-    primitive.selected primitive.exponential primitive.expRange
+    mlp := TrellisMlpRanges.finite b.mlp parameters.mlp _ hi primitive.activation }
+  have hm := TrellisMlpRanges.ranges b.mlp parameters.mlp _ hi primitive.activation
   have capacity : Model.toReal (residualCap stage) + Model.toReal TrellisMlpRanges.outputCap ≤ Model.toReal (outputCap stage) := by
     rw [(residualCap_range stage hs).2, TrellisMlpRanges.outputCap_range.2, (outputCap_range stage hs).2]
     push_cast

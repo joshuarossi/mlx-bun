@@ -230,4 +230,17 @@ theorem float_overflow_error (p : Platform) (gate up : Projection) (input : Nat 
     (GateUpTailFlushToZero.tail_overflow_error expNeg _ _ he hp)
     (cast_error p gate input row hg hgb) (cast_error p up input row hu hub)
 
+theorem float_valid_error (p : Platform) (gate up : Projection) (input : Nat → BitVec 16) (row : Nat)
+    (expNeg : Float32 → Float32) (error : Float32 → ℝ) (exponential : GateUpTail.ExpNegContract expNeg error)
+    (hg : Finite p gate input row) (hu : Finite p up input row)
+    (hgb : Model.isFinite (BFloat16.narrow (raw p gate input row))=true)
+    (hub : Model.isFinite (BFloat16.narrow (raw p up input row))=true)
+    (hv : GateUpTailFlushToZero.Valid expNeg (BFloat16.cast (raw p gate input row)) (BFloat16.cast (raw p up input row))) :
+    |real (floatOutput p gate up input row expNeg)-layerTarget gate up input row| ≤
+      layerBudget p gate up input row (real (BFloat16.cast (raw p up input row)))
+        (GateUpTailFlushToZero.validBudget expNeg error (BFloat16.cast (raw p gate input row)) (BFloat16.cast (raw p up input row))) := by
+  exact SwiGLUStability.compose _ _ _ _ _ _ _ _
+    (GateUpTailFlushToZero.valid_error expNeg error exponential _ _ hv)
+    (cast_error p gate input row hg hgb) (cast_error p up input row hu hub)
+
 end Inference.Layers.TrellisCodebookGateUp

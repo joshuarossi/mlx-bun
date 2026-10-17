@@ -1,6 +1,7 @@
 import models.qwen.TrellisMlp
 import layers.TrellisCodebookRanges
 import kernels.trellis.GateUpSplitTailRanges
+import kernels.trellis.GateUpFloatTailRanges
 
 namespace Inference.Models.Qwen.TrellisMlpRanges
 open Contracts.Mlx Contracts.Mlx.Numerics Kernels.Trellis Layers WrittenLayers
@@ -72,50 +73,124 @@ theorem up_projection (mlp : GateDown) (params : Parameters mlp) (input : Nat �
   projection mlp.gatePlatform mlp.up input hx row (-4) 1 (by decide) (by decide) (by decide) projectionCap
     projectionCap_range.1 (by rw [projectionCap_range.2]; norm_num) (by norm_num; exact params.up row)
 
+structure SplitPrimitive (expAbs : BF → BF) where
+  expError : BF → ℝ
+  exponential : GateUpSplitTail.ExpAbsContract expAbs expError
+  expRange : SigmoidRanges.ExponentialRange expAbs
+
+-- Ranges use only expRange; the error function is free.
+structure FloatPrimitive (expNeg : Float32 → Float32) where
+  expError : Float32 → ℝ
+  exponential : GateUpTail.ExpNegContract expNeg expError
+  expRange : GateUpFloatTailRanges.ExponentialRange expNeg
+
+-- Scalar exponential premises for the statically selected tail.
+def ActivationPrimitive : Activation → Type
+  | .float expNeg => FloatPrimitive expNeg
+  | .split expAbs => SplitPrimitive expAbs
+
+abbrev ProjectionRange (p : TrellisCodebookGateUp.Platform) (w : TrellisCodebookGateUp.Projection)
+    (input : Nat → BitVec 16) (row : Nat) (cap : BF) : Prop :=
+  TrellisCodebookGateUp.Finite p w input row ∧
+    Model.isFinite (BFloat16.narrow (TrellisCodebookGateUp.raw p w input row)) = true ∧
+    |Model.toReal (BFloat16.narrow (TrellisCodebookGateUp.raw p w input row))| ≤ Model.toReal cap
+
+theorem cast_range (x : Float32) (cap : BF)
+    (h : Model.isFinite (BFloat16.narrow x) = true ∧ |Model.toReal (BFloat16.narrow x)| ≤ Model.toReal cap) :
+    (BFloat16.cast x).isFinite = true ∧ |real (BFloat16.cast x)| ≤ Model.toReal cap := by
+  refine ⟨BFloat16.widen_finite _ h.1, ?_⟩
+  change |real (BFloat16.widen (BFloat16.narrow x))| ≤ _
+  rw [BFloat16.widen_real _ h.1]
+  exact h.2
+
+noncomputable def activationBudget (a : Activation) (p : TrellisCodebookGateUp.Platform)
+    (gate up : TrellisCodebookGateUp.Projection) (input : Nat → BitVec 16)
+    (h : ActivationPrimitive a) (row : Nat) : ℝ :=
+  match a, h with
+  | .float expNeg, h => TrellisCodebookGateUp.layerBudget p gate up input row
+      (real (BFloat16.cast (TrellisCodebookGateUp.raw p up input row)))
+      (GateUpTailFlushToZero.validBudget expNeg h.expError
+        (BFloat16.cast (TrellisCodebookGateUp.raw p gate input row))
+        (BFloat16.cast (TrellisCodebookGateUp.raw p up input row)))
+  | .split expAbs, h => TrellisCodebookGateUp.layerBudget p gate up input row
+      (Model.toReal (BFloat16.narrow (TrellisCodebookGateUp.raw p up input row)))
+      (GateUpSplitTail.tailBudget expAbs
+        (BFloat16.narrow (TrellisCodebookGateUp.raw p gate input row))
+        (BFloat16.narrow (TrellisCodebookGateUp.raw p up input row))
+        (Kernels.Delta.Gates.betaBudget expAbs h.expError
+          (BFloat16.narrow (TrellisCodebookGateUp.raw p gate input row))))
+
+theorem tail_ranges (a : Activation) (h : ActivationPrimitive a) (p : TrellisCodebookGateUp.Platform)
+    (gate up : TrellisCodebookGateUp.Projection) (input : Nat → BitVec 16) (row : Nat)
+    (hg : ProjectionRange p gate input row gateCap) (hu : ProjectionRange p up input row projectionCap) :
+    (hidden a p gate up input row).isFinite = true ∧
+      |real (hidden a p gate up input row)| ≤ Model.toReal hiddenCap ∧
+      |real (hidden a p gate up input row) - TrellisCodebookGateUp.layerTarget gate up input row| ≤
+        activationBudget a p gate up input h row := by
+  match a, h with
+  | .float expNeg, h =>
+    have ht := GateUpFloatTailRanges.ranges tailProfile expNeg h.expRange _ _
+      (cast_range _ _ hg.2) (cast_range _ _ hu.2)
+    exact ⟨ht.2.1, ht.2.2, TrellisCodebookGateUp.float_valid_error p gate up input row expNeg h.expError
+      h.exponential hg.1 hu.1 hg.2.1 hu.2.1 ht.1⟩
+  | .split expAbs, h =>
+    have ht := GateUpSplitTailRanges.ranges tailProfile expAbs h.expError h.exponential h.expRange _ _ hg.2 hu.2
+    have he := GateUpSplitTailRanges.error tailProfile expAbs h.expError h.exponential h.expRange _ _ hg.2 hu.2
+    have hc := TrellisCodebookGateUp.split_compose p gate up input row expAbs _
+      hg.1 hu.1 hg.2.1 hu.2.1 ht.2.2.1 he
+    refine ⟨BFloat16.widen_finite _ ht.2.2.1, ?_, hc⟩
+    change |real (TrellisCodebookGateUp.splitOutput p gate up input row expAbs)| ≤ _
+    rw [TrellisCodebookGateUp.splitOutput, BFloat16.widen_real _ ht.2.2.1]
+    exact ht.2.2.2
+
+def tail_finite (a : Activation) (h : ActivationPrimitive a) (p : TrellisCodebookGateUp.Platform)
+    (gate up : TrellisCodebookGateUp.Projection) (input : Nat → BitVec 16)
+    (hg : ∀ row, ProjectionRange p gate input row gateCap) (hu : ∀ row, ProjectionRange p up input row projectionCap) :
+    TrellisMlp.TailFinite a p gate up input :=
+  match a, h with
+  | .float expNeg, h => ({
+      expError := h.expError
+      exponential := h.exponential
+      gateFinite := fun row => (hg row.val).1
+      upFinite := fun row => (hu row.val).1
+      gateCast := fun row => (hg row.val).2.1
+      upCast := fun row => (hu row.val).2.1
+      tail := fun row => (GateUpFloatTailRanges.ranges tailProfile expNeg h.expRange _ _
+        (cast_range _ _ (hg row.val).2) (cast_range _ _ (hu row.val).2)).1 } : TrellisMlp.FloatFinite p gate up input expNeg)
+  | .split expAbs, h => ({
+      expError := h.expError
+      exponential := h.exponential
+      gateFinite := fun row => (hg row.val).1
+      upFinite := fun row => (hu row.val).1
+      sigmoid := fun row => (GateUpSplitTailRanges.ranges tailProfile expAbs h.expError h.exponential h.expRange _ _
+        (hg row.val).2 (hu row.val).2).1
+      products := fun row => (GateUpSplitTailRanges.ranges tailProfile expAbs h.expError h.exponential h.expRange _ _
+        (hg row.val).2 (hu row.val).2).2.1 } : TrellisMlp.SplitFinite p gate up input expAbs)
+
 noncomputable def localBudget (mlp : GateDown) (input : Nat → BitVec 16)
-    (expAbs : BF → BF) (expError : BF → ℝ) (row : Nat) : ℝ :=
-  TrellisCodebookGateUp.layerBudget mlp.gatePlatform mlp.gate mlp.up input row
-    (Model.toReal (BFloat16.narrow (TrellisCodebookGateUp.raw mlp.gatePlatform mlp.up input row)))
-    (GateUpSplitTail.tailBudget expAbs
-      (BFloat16.narrow (TrellisCodebookGateUp.raw mlp.gatePlatform mlp.gate input row))
-      (BFloat16.narrow (TrellisCodebookGateUp.raw mlp.gatePlatform mlp.up input row))
-      (Kernels.Delta.Gates.betaBudget expAbs expError
-        (BFloat16.narrow (TrellisCodebookGateUp.raw mlp.gatePlatform mlp.gate input row))))
+    (activation : ActivationPrimitive mlp.activation) (row : Nat) : ℝ :=
+  activationBudget mlp.activation mlp.gatePlatform mlp.gate mlp.up input activation row
 
 theorem hidden_ranges (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVec 16) (hx : InputBound input)
-    (expAbs : BF → BF) (expError : BF → ℝ) (selected : mlp.activation = .split expAbs)
-    (exponential : GateUpSplitTail.ExpAbsContract expAbs expError)
-    (expRange : SigmoidRanges.ExponentialRange expAbs) (row : Nat) :
+    (activation : ActivationPrimitive mlp.activation) (row : Nat) :
     (mlp.intermediate input row).isFinite = true ∧
       |real (mlp.intermediate input row)| ≤ Model.toReal hiddenCap ∧
       |real (mlp.intermediate input row) - TrellisCodebookGateUp.layerTarget mlp.gate mlp.up input row| ≤
-        localBudget mlp input expAbs expError row := by
-  have hg := gate_projection mlp params input hx row
-  have hu := up_projection mlp params input hx row
-  have ht := GateUpSplitTailRanges.ranges tailProfile expAbs expError exponential expRange _ _ hg.2 hu.2
-  have he := GateUpSplitTailRanges.error tailProfile expAbs expError exponential expRange _ _ hg.2 hu.2
-  have hc := TrellisCodebookGateUp.split_compose mlp.gatePlatform mlp.gate mlp.up input row expAbs _
-    hg.1 hu.1 hg.2.1 hu.2.1 ht.2.2.1 he
-  simp only [GateDown.intermediate, WrittenLayers.hidden, selected]
-  refine ⟨BFloat16.widen_finite _ ht.2.2.1, ?_, hc⟩
-  rw [TrellisCodebookGateUp.splitOutput, BFloat16.widen_real _ ht.2.2.1]
-  exact ht.2.2.2
+        localBudget mlp input activation row :=
+  tail_ranges mlp.activation activation mlp.gatePlatform mlp.gate mlp.up input row
+    (gate_projection mlp params input hx row) (up_projection mlp params input hx row)
 
 noncomputable def hiddenContract (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVec 16) (hx : InputBound input)
-    (expAbs : BF → BF) (expError : BF → ℝ) (selected : mlp.activation = .split expAbs)
-    (exponential : GateUpSplitTail.ExpAbsContract expAbs expError)
-    (expRange : SigmoidRanges.ExponentialRange expAbs) :
+    (activation : ActivationPrimitive mlp.activation) :
     HiddenContract mlp.activation mlp.gatePlatform mlp.gate mlp.up input where
-  error := localBudget mlp input expAbs expError
-  accuracy row := (hidden_ranges mlp params input hx expAbs expError selected exponential expRange row.val).2.2
+  error := localBudget mlp input activation
+  accuracy row := (hidden_ranges mlp params input hx activation row.val).2.2
 
 theorem ranges (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVec 16) (hx : InputBound input)
-    (expAbs : BF → BF) (expError : BF → ℝ) (selected : mlp.activation = .split expAbs)
-    (exponential : GateUpSplitTail.ExpAbsContract expAbs expError)
-    (expRange : SigmoidRanges.ExponentialRange expAbs) :
+    (activation : ActivationPrimitive mlp.activation) :
     TrellisCodebookDown.Finite mlp.downPlatform mlp.down (mlp.intermediate input) ∧
       ∀ col, |Model.toReal (mlp.forward input col)| ≤ Model.toReal outputCap := by
-  have hi (row : Nat) := hidden_ranges mlp params input hx expAbs expError selected exponential expRange row
+  have hi (row : Nat) := hidden_ranges mlp params input hx activation row
   have hr (col : Fin 5120) := TrellisCodebookRanges.down_raw mlp.downPlatform mlp.down (mlp.intermediate input)
     (-5) 30 225 (by decide) (by decide) (by decide) (by decide) (by decide)
     (by norm_num; exact params.down)
@@ -129,33 +204,20 @@ theorem ranges (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVe
   exact ⟨⟨fun col => (hr col).1, fun col => (hn col).1⟩, fun col => (hn col).2⟩
 
 theorem accuracy (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVec 16) (hx : InputBound input)
-    (expAbs : BF → BF) (expError : BF → ℝ) (selected : mlp.activation = .split expAbs)
-    (exponential : GateUpSplitTail.ExpAbsContract expAbs expError)
-    (expRange : SigmoidRanges.ExponentialRange expAbs) (ideal inputError : Fin 5120 → ℝ)
+    (activation : ActivationPrimitive mlp.activation) (ideal inputError : Fin 5120 → ℝ)
     (hi : ∀ c, |real (GateUpExecution.widen (input c.val)) - ideal c| ≤ inputError c) (col : Fin 5120) :
     Model.isFinite (mlp.forward input col) = true ∧
       |Model.toReal (mlp.forward input col)| ≤ Model.toReal outputCap ∧
       |Model.toReal (mlp.forward input col) - mlp.target ideal col| ≤
-        mlp.errorBudget input ideal inputError (hiddenContract mlp params input hx expAbs expError selected exponential expRange) col := by
-  have h := ranges mlp params input hx expAbs expError selected exponential expRange
+        mlp.errorBudget input ideal inputError (hiddenContract mlp params input hx activation) col := by
+  have h := ranges mlp params input hx activation
   exact ⟨mlp.forward_finite input h.1 col, h.2 col,
     mlp.forward_error input ideal inputError hi _ h.1 col⟩
 
 noncomputable def finite (mlp : GateDown) (params : Parameters mlp) (input : Nat → BitVec 16) (hx : InputBound input)
-    (expAbs : BF → BF) (expError : BF → ℝ) (selected : mlp.activation = .split expAbs)
-    (exponential : GateUpSplitTail.ExpAbsContract expAbs expError)
-    (expRange : SigmoidRanges.ExponentialRange expAbs) : TrellisMlp.Finite mlp input where
-  tail := by
-    rw [TrellisMlp.TailFinite.eq_def, selected]
-    exact {
-      expError := expError
-      exponential := exponential
-      gateFinite := fun row => (gate_projection mlp params input hx row.val).1
-      upFinite := fun row => (up_projection mlp params input hx row.val).1
-      sigmoid := fun row => (GateUpSplitTailRanges.ranges tailProfile expAbs expError exponential expRange _ _
-        (gate_projection mlp params input hx row.val).2 (up_projection mlp params input hx row.val).2).1
-      products := fun row => (GateUpSplitTailRanges.ranges tailProfile expAbs expError exponential expRange _ _
-        (gate_projection mlp params input hx row.val).2 (up_projection mlp params input hx row.val).2).2.1 }
-  down := (ranges mlp params input hx expAbs expError selected exponential expRange).1
+    (activation : ActivationPrimitive mlp.activation) : TrellisMlp.Finite mlp input where
+  tail := tail_finite mlp.activation activation mlp.gatePlatform mlp.gate mlp.up input
+    (gate_projection mlp params input hx) (up_projection mlp params input hx)
+  down := (ranges mlp params input hx activation).1
 
 end Inference.Models.Qwen.TrellisMlpRanges

@@ -33,21 +33,13 @@ theorem outputAffine (projection : Projection 12 5120) (selected : AffineSelecte
 
 structure MlpOther (layer : ResidualBlocks.Mlp) where
   root : RsqrtBounds.Envelope layer.norm.platform.rsqrt
-  expAbs : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
-  expError : BFloat16Arithmetic.Value → ℝ
-  activation : layer.mlp.activation=.split expAbs
-  exponential : Kernels.Trellis.GateUpSplitTail.ExpAbsContract expAbs expError
-  expRange : Kernels.Trellis.SigmoidRanges.ExponentialRange expAbs
+  activation : TrellisMlpRanges.ActivationPrimitive layer.mlp.activation
 
 def mlp (selected : Selected layer.norm.platform.divide) (other : MlpOther layer) :
     ResidualMlpRanges.Primitives layer where
   division := NativeDivisionDomain.of_selection _ selected
   root := other.root
-  expAbs := other.expAbs
-  expError := other.expError
-  selected := other.activation
-  exponential := other.exponential
-  expRange := other.expRange
+  activation := other.activation
 
 structure DeltaSelected (norm : Blocks.Norm) (layer : DeltaNet.Layer) : Prop where
   normalization : Selected norm.platform.divide

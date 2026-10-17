@@ -170,4 +170,19 @@ theorem tail_overflow_error (expNeg : Float32 → Float32) (gate up : Float32)
     (roundedMul_error gate (roundedSigmoid expNeg gate) hp.hSilu hp.hSiluBfloat)
     (roundedMul_error (roundedMul gate (roundedSigmoid expNeg gate)) up hp.hOutput hp.hOutputBfloat)
 
+-- Either the finite exponential proof or its explicit +infinity branch.
+def Valid (expNeg : Float32 → Float32) (gate up : Float32) : Prop :=
+  Finite expNeg gate up ∨ (expNeg gate=Float32.inf ∧ ProductsFinite expNeg gate up)
+
+noncomputable def validBudget (expNeg : Float32 → Float32) (expError : Float32 → ℝ) (gate up : Float32) : ℝ :=
+  if (expNeg gate).isFinite then tailBudget expNeg expError gate up else overflowBudget expNeg gate up
+
+theorem valid_error (expNeg : Float32 → Float32) (expError : Float32 → ℝ)
+    (exponential : ExpNegContract expNeg expError) (gate up : Float32) (hv : Valid expNeg gate up) :
+    |real (tail expNeg gate up)-swiglu (real gate) (real up)| ≤ validBudget expNeg expError gate up := by
+  rcases hv with hf | ⟨he, hp⟩
+  · simpa only [validBudget, hf.hExponential, ite_true] using tail_error expNeg expError exponential gate up hf
+  · have hn : (expNeg gate).isFinite=false := by rw [he]; decide
+    simpa only [validBudget, hn, Bool.false_eq_true, ite_false] using tail_overflow_error expNeg gate up he hp
+
 end Inference.Kernels.Trellis.GateUpTailFlushToZero

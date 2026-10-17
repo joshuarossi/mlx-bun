@@ -15,21 +15,13 @@ open Qwen38TrellisM1Max Layers.AffineVerifyLinear
 open GraphDivisionPrimitives (Selected AffineSelected normalizedAffine outputAffine head128)
 structure MlpOther (layer : ResidualBlocks.Mlp) where
   root : RsqrtEpsilonBounds.NormalEnvelope layer.norm.platform.rsqrt 2
-  expAbs : BFloat16Arithmetic.Value → BFloat16Arithmetic.Value
-  expError : BFloat16Arithmetic.Value → ℝ
-  activation : layer.mlp.activation=.split expAbs
-  exponential : Kernels.Trellis.GateUpSplitTail.ExpAbsContract expAbs expError
-  expRange : Kernels.Trellis.SigmoidRanges.ExponentialRange expAbs
+  activation : TrellisMlpRanges.ActivationPrimitive layer.mlp.activation
 
 def mlp (selected : Selected layer.norm.platform.divide) (other : MlpOther layer) :
     ReachedStageRanges.Mlp.Primitives layer where
   division := NativeDivisionDomain.of_selection _ selected
   root := RsqrtEpsilonBounds.from_normal other.root Blocks.eps_normal
-  expAbs := other.expAbs
-  expError := other.expError
-  selected := other.activation
-  exponential := other.exponential
-  expRange := other.expRange
+  activation := other.activation
 
 abbrev DeltaSelected (norm : Blocks.Norm) (layer : DeltaNet.Layer) : Prop := GraphDivisionPrimitives.DeltaSelected norm layer
 

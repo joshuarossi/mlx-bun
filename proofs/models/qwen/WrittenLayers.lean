@@ -56,21 +56,21 @@ theorem gateDown_target_error (gate up : TrellisCodebookGateUp.Projection) (inpu
   TrellisCodebookDown.target_error words k scale _ _ _ col
     (fun row => TrellisCodebookGateUp.layer_input_error gate up input ideal inputError hi row.val)
 
-noncomputable def floatFiniteContract (p : TrellisCodebookGateUp.Platform)
+noncomputable def floatValidContract (p : TrellisCodebookGateUp.Platform)
     (gate up : TrellisCodebookGateUp.Projection) (input : Nat → BitVec 16)
     (expNeg : Float32 → Float32) (expError : Float32 → ℝ) (exponential : GateUpTail.ExpNegContract expNeg expError)
     (hg : ∀ row : Fin 17408, TrellisCodebookGateUp.Finite p gate input row.val)
     (hu : ∀ row : Fin 17408, TrellisCodebookGateUp.Finite p up input row.val)
     (hgb : ∀ row : Fin 17408, Model.isFinite (BFloat16.narrow (TrellisCodebookGateUp.raw p gate input row.val))=true)
     (hub : ∀ row : Fin 17408, Model.isFinite (BFloat16.narrow (TrellisCodebookGateUp.raw p up input row.val))=true)
-    (hf : ∀ row : Fin 17408, GateUpTailFlushToZero.Finite expNeg
+    (hf : ∀ row : Fin 17408, GateUpTailFlushToZero.Valid expNeg
       (BFloat16.cast (TrellisCodebookGateUp.raw p gate input row.val)) (BFloat16.cast (TrellisCodebookGateUp.raw p up input row.val))) :
     HiddenContract (.float expNeg) p gate up input where
   error row := TrellisCodebookGateUp.layerBudget p gate up input row
     (real (BFloat16.cast (TrellisCodebookGateUp.raw p up input row)))
-    (GateUpTailFlushToZero.tailBudget expNeg expError (BFloat16.cast (TrellisCodebookGateUp.raw p gate input row))
+    (GateUpTailFlushToZero.validBudget expNeg expError (BFloat16.cast (TrellisCodebookGateUp.raw p gate input row))
       (BFloat16.cast (TrellisCodebookGateUp.raw p up input row)))
-  accuracy row := TrellisCodebookGateUp.float_finite_error p gate up input row.val expNeg expError exponential
+  accuracy row := TrellisCodebookGateUp.float_valid_error p gate up input row.val expNeg expError exponential
     (hg row) (hu row) (hgb row) (hub row) (hf row)
 
 noncomputable def splitFiniteContract (p : TrellisCodebookGateUp.Platform)
