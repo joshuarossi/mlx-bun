@@ -1,0 +1,1819 @@
+/** CPU-only: LEAN=/path/to/lean bun proofs/check.ts [--self-test] [--jobs 1..64].
+ * Lake resolves the pinned FloatLib/mathlib proof dependencies in proofs/.
+ * No MLX import. */
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
+import { buildProofs } from "./build.ts";
+import { checkScalarCopySourceBinding } from "./kernels/copy/ScalarCopySourceBinding.ts";
+import { checkGeneralCopy2DHostBinding } from "./kernels/copy/GeneralCopy2DHostBinding.ts";
+import { checkM1MaxSingleTokenEntry } from "./models/qwen/M1MaxSingleTokenEntryBinding.ts";
+import { checkCodebookIntegerSourceBinding } from "./kernels/trellis/CodebookIntegerSourceBinding.ts";
+import { checkCodebookBitsSourceBinding } from "./kernels/trellis/CodebookBitsSourceBinding.ts";
+import { checkCodebookTableSourceBinding } from "./kernels/trellis/CodebookTableSourceBinding.ts";
+import { checkCodebookWindowSourceBinding } from "./kernels/trellis/CodebookWindowSourceBinding.ts";
+import { checkBFloatAddSourceBinding } from "./kernels/binary/BFloatAddSourceBinding.ts";
+import { checkBinaryVvSourceBinding } from "./kernels/binary/BinaryVvSourceBinding.ts";
+import { checkGeneralCopy2DSourceBinding } from "./kernels/copy/GeneralCopy2DSourceBinding.ts";
+import { checkVectorCopySourceBinding } from "./kernels/copy/VectorCopySourceBinding.ts";
+import { checkScalarFullHostSourceBinding } from "./kernels/copy/ScalarFullHostSourceBinding.ts";
+import { checkCpuScalarSourceBinding } from "./kernels/copy/CpuScalarSourceBinding.ts";
+
+import checkBufferLeaseSourceBinding from "./contracts/mlx/BufferLeaseSourceBinding.ts";
+import checkNormalizedArgmaxLeaseSourceBinding from "./models/qwen/NormalizedArgmaxLeaseSourceBinding.ts";
+import { checkResidualRmsCellSourceBinding } from "./kernels/normalization/ResidualRmsCellSourceBinding.ts";
+import { checkPackedArraySourceBinding } from "./kernels/trellis/PackedArraySourceBinding.ts";
+import { checkGateInputSourceBinding } from "./kernels/trellis/GateInputSourceBinding.ts";
+
+import { checkResidualRmsTailSourceBinding } from "./kernels/normalization/ResidualRmsTailSourceBinding.ts";
+import { checkGateAccumulateSourceBinding } from "./kernels/trellis/GateAccumulateSourceBinding.ts";
+
+import { checkResidualRmsOutputSourceBinding } from "./kernels/normalization/ResidualRmsOutputSourceBinding.ts";
+import { checkResidualRmsLoopSourceBinding } from "./kernels/normalization/ResidualRmsLoopSourceBinding.ts";
+import { checkMlxRmsOutputSourceBinding } from "./kernels/normalization/MlxRmsOutputSourceBinding.ts";
+import { checkGateWeightSourceBinding } from "./kernels/trellis/GateWeightSourceBinding.ts";
+import { checkGateLoopSourceBinding } from "./kernels/trellis/GateLoopSourceBinding.ts";
+import { checkGateProjectionSourceBinding } from "./kernels/trellis/GateProjectionSourceBinding.ts";
+import { checkGateTailSourceBinding } from "./kernels/trellis/GateTailSourceBinding.ts";
+import { checkArgmaxShuffleSourceBinding } from "./kernels/sampling/ArgmaxShuffleSourceBinding.ts";
+import { checkArgmaxFinalStoreSourceBinding } from "./kernels/sampling/ArgmaxFinalStoreSourceBinding.ts";
+
+import { checkMlxRmsLoopSourceBinding } from "./kernels/normalization/MlxRmsLoopSourceBinding.ts";
+import { checkMlxRmsHostSourceBinding } from "./kernels/normalization/MlxRmsHostSourceBinding.ts";
+import { checkGateRowSourceBinding } from "./kernels/trellis/GateRowSourceBinding.ts";
+import { checkNormalizedScoreSourceBinding } from "./kernels/sampling/NormalizedScoreSourceBinding.ts";
+import { checkArgmaxTraversalSourceBinding } from "./kernels/sampling/ArgmaxTraversalSourceBinding.ts";
+import { checkArgmaxScratchSourceBinding } from "./kernels/sampling/ArgmaxScratchSourceBinding.ts";
+import { checkAffineLiftSourceBinding } from "./kernels/quantization/AffineLiftSourceBinding.ts";
+
+import { checkMlxRmsReductionSourceBinding } from "./kernels/normalization/MlxRmsReductionSourceBinding.ts";
+import { checkAffineDot4SourceBinding } from "./kernels/quantization/AffineDot4SourceBinding.ts";
+import { checkAffineDot4LoopSourceBinding } from "./kernels/quantization/AffineDot4LoopSourceBinding.ts";
+import { checkAffineDot4FunctionSourceBinding } from "./kernels/quantization/AffineDot4FunctionSourceBinding.ts";
+import { checkMlxRmsHeadSourceBinding } from "./kernels/normalization/MlxRmsHeadSourceBinding.ts";
+import { checkArgmaxLaunchSourceBinding } from "./kernels/sampling/ArgmaxLaunchSourceBinding.ts";
+import { checkGatePointerSourceBinding } from "./kernels/trellis/GatePointerSourceBinding.ts";
+import { checkDownSetupSourceBinding } from "./kernels/trellis/DownSetupSourceBinding.ts";
+import { checkMlxQmvHostSourceBinding } from "./kernels/quantization/MlxQmvHostSourceBinding.ts";
+import { checkMlxQmvInput4SourceBinding } from "./kernels/quantization/MlxQmvInput4SourceBinding.ts";
+import { checkMlxQmvDot4SourceBinding } from "./kernels/quantization/MlxQmvDot4SourceBinding.ts";
+import { checkMlxQmvFast4SourceBinding } from "./kernels/quantization/MlxQmvFast4SourceBinding.ts";
+import { checkMlxQmvDelta48SourceBinding } from "./kernels/quantization/MlxQmvDelta48SourceBinding.ts";
+import { checkDownFoldSourceBinding } from "./kernels/trellis/DownFoldSourceBinding.ts";
+import { checkDownHostSourceBinding } from "./kernels/trellis/DownHostSourceBinding.ts";
+import { checkDownBuiltinSourceBinding } from "./kernels/trellis/DownBuiltinSourceBinding.ts";
+import { checkMlxSdpaTwoPassMergeSourceBinding } from "./kernels/attention/MlxSdpaTwoPassMergeSourceBinding.ts";
+import { checkMlxOutputGateSourceBinding } from "./kernels/attention/MlxOutputGateSourceBinding.ts";
+import { checkMlxOutputGateUnarySourceBinding } from "./kernels/attention/MlxOutputGateUnarySourceBinding.ts";
+import { checkMlxOutputGateBinarySourceBinding } from "./kernels/attention/MlxOutputGateBinarySourceBinding.ts";
+import { checkGatedHostSourceBinding } from "./kernels/delta/GatedHostSourceBinding.ts";
+import { checkMlxOutputGateHostSourceBinding } from "./kernels/attention/MlxOutputGateHostSourceBinding.ts";
+import { checkGatedStepSourceBinding } from "./kernels/delta/GatedStepSourceBinding.ts";
+import { checkGatedPointerSourceBinding } from "./kernels/delta/GatedPointerSourceBinding.ts";
+import { checkGatedOutputSourceBinding } from "./kernels/delta/GatedOutputSourceBinding.ts";
+import { checkAttentionGateCopyFreshRowSourceBinding } from "./models/qwen/AttentionGateCopyFreshRowSourceBinding.ts";
+import { checkAttentionGateCopyFreshSourceBinding } from "./models/qwen/AttentionGateCopyFreshSourceBinding.ts";
+import { checkGatherFrontSourceBinding } from "./kernels/copy/GatherFrontSourceBinding.ts";
+import { checkMlxKvConcatHostSourceBinding } from "./kernels/copy/MlxKvConcatHostSourceBinding.ts";
+import { checkAffineDequantizeSourceBinding } from "./kernels/quantization/AffineDequantizeSourceBinding.ts";
+import { checkLogSumExpSourceBinding } from "./kernels/sampling/LogSumExpSourceBinding.ts";
+import { checkAttentionGateCopyFreshReadBinding } from "./models/qwen/AttentionGateCopyFreshReadBinding.ts";
+import { checkAttentionKvCallerSourceBinding } from "./models/qwen/AttentionKvCallerSourceBinding.ts";
+import { checkDeltaConstructedPreparationSourceBinding } from "./models/qwen/DeltaConstructedPreparationSourceBinding.ts";
+import { checkQwen38CopiedAttentionSamplerSourceBinding } from "./models/qwen/Qwen38CopiedAttentionSamplerSourceBinding.ts";
+import { checkMlxAttentionGateReshapeSourceBinding } from "./kernels/attention/MlxAttentionGateReshapeSourceBinding.ts";
+import { checkMlxAttentionQueryCopySourceBinding } from "./kernels/attention/MlxAttentionQueryCopySourceBinding.ts";
+import { checkAttentionGateCopyCallerSourceBinding } from "./models/qwen/AttentionGateCopyCallerSourceBinding.ts";
+import { checkGateHostSourceBinding } from "./kernels/trellis/GateHostSourceBinding.ts";
+import { checkGatedRms128SourceBinding } from "./kernels/normalization/GatedRms128SourceBinding.ts";
+import { checkGatedRms128HostSourceBinding } from "./kernels/normalization/GatedRms128HostSourceBinding.ts";
+import { checkSiluHeads128SourceBinding } from "./kernels/delta/SiluHeads128SourceBinding.ts";
+import { checkSiluHeads128HostSourceBinding } from "./kernels/delta/SiluHeads128HostSourceBinding.ts";
+import { checkDeltaFusedCallerSourceBinding } from "./models/qwen/DeltaFusedCallerSourceBinding.ts";
+import { checkMlxDepthwiseConvSourceBinding } from "./kernels/delta/MlxDepthwiseConvSourceBinding.ts";
+import { checkMlxDepthwiseConvModelBinding } from "./kernels/delta/MlxDepthwiseConvModelBinding.ts";
+import { checkMlxLogAddExpSourceBinding } from "./kernels/delta/MlxLogAddExpSourceBinding.ts";
+import { checkComputeGHostSourceBinding } from "./kernels/delta/ComputeGHostSourceBinding.ts";
+import { checkDeltaBetaSourceBinding } from "./kernels/delta/DeltaBetaSourceBinding.ts";
+import { checkAffineOuter3SourceBinding } from "./kernels/quantization/AffineOuter3SourceBinding.ts";
+import { checkDownPartialSourceBinding } from "./kernels/trellis/DownPartialSourceBinding.ts";
+import { checkDownScratchSourceBinding } from "./kernels/trellis/DownScratchSourceBinding.ts";
+import { checkMlxSdpaTwoPassSourceBinding } from "./kernels/attention/MlxSdpaTwoPassSourceBinding.ts";
+import { checkAffineOuter4LifecycleSourceBinding } from "./kernels/quantization/AffineOuter4LifecycleSourceBinding.ts";
+import { checkAffineDot3SourceBinding } from "./kernels/quantization/AffineDot3SourceBinding.ts";
+import { checkAffineDot3FunctionSourceBinding } from "./kernels/quantization/AffineDot3FunctionSourceBinding.ts";
+import { checkAffineInput3SourceBinding } from "./kernels/quantization/AffineInput3SourceBinding.ts";
+import { checkDownLoopSourceBinding } from "./kernels/trellis/DownLoopSourceBinding.ts";
+import { checkDownInitialSourceBinding } from "./kernels/trellis/DownInitialSourceBinding.ts";
+import { checkMlxSdpaMergeSourceBinding } from "./kernels/attention/MlxSdpaMergeSourceBinding.ts";
+import { checkAffineInput4SourceBinding } from "./kernels/quantization/AffineInput4SourceBinding.ts";
+import { checkAffinePreload4SourceBinding } from "./kernels/quantization/AffinePreload4SourceBinding.ts";
+import { checkAffineOutputSourceBinding } from "./kernels/quantization/AffineOutputSourceBinding.ts";
+import { checkAffineRowHostSourceBinding } from "./kernels/quantization/AffineRowHostSourceBinding.ts";
+import { checkAffineOuter4SourceBinding } from "./kernels/quantization/AffineOuter4SourceBinding.ts";
+import { checkDownPointerSourceBinding } from "./kernels/trellis/DownPointerSourceBinding.ts";
+import { checkDownDispatchSourceBinding } from "./kernels/trellis/DownDispatchSourceBinding.ts";
+import { checkDownControlSourceBinding } from "./kernels/trellis/DownControlSourceBinding.ts";
+import { checkDownStepSourceBinding } from "./kernels/trellis/DownStepSourceBinding.ts";
+import { checkMlxRopeSingleSourceBinding } from "./kernels/attention/MlxRopeSingleSourceBinding.ts";
+import { checkMlxSdpaVectorSourceBinding } from "./kernels/attention/MlxSdpaVectorSourceBinding.ts";
+import { checkMlxSdpaScoreSourceBinding } from "./kernels/attention/MlxSdpaScoreSourceBinding.ts";
+
+const root = new URL("../", import.meta.url);
+const lean = process.env.LEAN ?? "lean";
+const lake = process.env.LAKE ?? join(dirname(lean), "lake");
+let dependencyPath = "";
+// Reviewed manual translations, not a verified Metal/TypeScript frontend. Pins
+// prevent source drift; changing a hash requires reviewing the affected proofs.
+const sourcePins = {
+  "layers/compiled-normalization.ts": "4a649678daf44c73e8528b519a57bace1a735178e29710711a5067c5e5e7d9cc",
+  "models/factory.ts": "8c9fa7ad26c51197673d20522a5ec1946ffadeb5fcd77df151737bc2b47c9023",
+  "models/implementation.ts": "fab08e8ed6431920c41ad28a726607ef1d2cd60a3aae7793e9c79040ffaef499",
+  "models/composition.ts": "b455b4498b44a2be4edc0d0c9aa4392574a203a66ce37a8c6b85119dd613dff9",
+  "models/cache-composition.ts": "b51b0056cce40215b2a5811058b59ea08855670518253b5e3c8078ee5029bbd8",
+  "models/capabilities.ts": "1c8e7c349233af2e865d5516421fc42c2557c87ba84fd11e0b8675d651162be7",
+  "state/kv-scheme.ts": "631a92f5a487cac486202a92dbac4fd1aa045242489747b0b9d90e5609c2e416",
+  "state/bf16-first-kv.ts": "91eb3dbe8857e5b2348402008f91b625e6135dea9b41c0a48e24d2d9bd018eaf",
+  "state/request-policy.ts": "95d6cffc7cd3eedb5db76e69c8defab9c50f3f67c787211ed1098dc8819b9ba4",
+  "generation/bindings/autoregressive.ts": "4d39973a00dea72a42659dd839805dc36169bc605c53426e4b3e6f2225a716c1",
+  "generation/autoregressive.ts": "d2a0b3980e26da231528aa04b1ceb1a904ef738e24bc4c4636cf206383c7a89c",
+  "generation/phase-dispatch.ts": "b17182d02c7d3fedb9335263b164907c99bb1898c176324b30076425432708de",
+  "generation/prefill.ts": "e7da71898c2ad711cf9250ece089220fcd9ba23071b5f9d690198b9488f9a2c3",
+  "contracts/portable/prefill.ts": "5709777b08e8915cf0f3fbcb3bf8226bf24b3fbe7a646eda4c040d2bb92ede3b",
+  "layers/quantized-embedding.ts": "cdead9d17af0a47f7f178ee4bd6b2710364a485dd7001e4ca98c62dec991fe4c",
+  "models/qwen/qwen38-27b-trellis-m1max.ts": "915f129881b5ce85f97b6bca5c98afe06dedc21be514a81137a75e058cac882b",
+  "state/kv.ts": "526a42d976c7dd0a8e908dcf8b515b94d43269042dc3fc3023e1a5baf0d8a579",
+  "state/attention-read.ts": "8081b76f6bd7676825511476c2275601c0c34cb5b68ef30637c7a1c8f9f1c50c",
+  "layers/affine-verify-linear.ts": "ee519b24ad34a0322dee6f35d9a0ed9e3c37a367b78a6b09bd4d0353c81a3870",
+  "layers/quantized-linear.ts": "bf1c24c17d04951c5ea296bcd2bf34f818ffd7aefc684793e7792a8e5c25e798",
+  "kernels/quantization/affine-row.ts": "cb5bd05e24a13547f5672cbe661c0262bc18969eea62266b185fcc3e68a1d20b",
+  "state/ssm.ts": "96b6f33dac6da5f75cfba8ab760b4dcdce92c73b88d4927b8afa1b413896a7d1",
+  "kernels/delta/silu-rms-heads.ts": "52c59772bf95e2cd8f7f813a69a7dfac0c352dadc3c2a1e0e550c054dd301145",
+  "kernels/residual-rms-norm.ts": "27353e109e7f91bc030fbd493785fcc4839eeccea2d585c22d610ba8f9e909d0",
+  "kernels/gated-rms-norm.ts": "e402118d33622ef62a017e964c257e23456d03f96b0fdc855b48704ff0fb954f",
+  "layers/delta-heads.ts": "3d44375dd8bf8be8ea6ebf9772a4c3f1321fa22f567e9e9c7e7da11301a87a6d",
+  "kernels/delta/gated.ts": "3f0e11f777f57b6595d57d62ec3f8b8331cbfa7263183e1baa98892efe935aec",
+  "models/qwen/blocks.ts": "2fa644511dbafc027cf4f191be69e932abda7d8c6a92ebe45f7d76332324645f",
+  "layers/loading.ts": "8dba0d4a34db80b373fb99f36b8f72cfc4afc77f96241101b1c4352ac32ee550",
+  "layers/normalization.ts": "3da742f8b9321aea3e05699361bb82a425b9c548f1a63340e2ca96fc7b8108c8",
+  "kernels/trellis/codebook.ts": "0ba8624952767d077cdecc531fd9f49a159545b95ae4fc4ddd213ed13fa1e276",
+  "kernels/trellis/down-codebook.ts": "5649124f12f6828241d88bb86f9e9f6bf965af2b3b5a298ddd8a2973277eec55",
+  "kernels/trellis/gate-up-codebook.ts": "c0aec9b9f951c5fd94270a52f4bf4da43e7fb7d0ecda6ccd65e20571e8931f45",
+  "kernels/trellis/launch.ts": "da0a19922ccc93935c5cab869de040d4b759271df08496c88c7371c386724052",
+  "layers/trellis-codebook-gate-up.ts": "28d27e84cb669c18a4532723e8dbc66786e386a4390454121640a3e14e5526f5",
+  "layers/trellis-codebook-down.ts": "48752c429a3ab558131f95c6d361b15b6795c3bb6ee161f8afdca71609437898",
+  "models/qwen/written-layers.ts": "ebf7710ffdf202d3e25ec7721930e5d992df31fb3d7fa5bde9709aa7a608c2c9",
+  "models/qwen/checkpoint.ts": "1ec846424a2d4e5a046bcb62b43a5e6b8e1f3d9c2b4b3f5f3d7180276362edd8",
+  "kernels/sampling/normalized-argmax.ts": "1578cff1ef678cbff3e2e9a754c6d7ba369e455885127e8d15c8b61f22a87740",
+};
+// Exact upstream source for the reviewed MLX arithmetic and kernel translations.
+// These pins do not establish correspondence with the bundled native binary.
+const mlxRevision = "1f8e74e3f12f31365464a6867c6579f0e9b29d85";
+const hostSourcePins = {
+  "packages/mlx/src/materialize.ts": "30a4811b8fd57b10e30779e864051328a012db7df3af38b32acad1108fb9db01",
+  "packages/mlx/src/ops.ts": "0672d9fa77e95490cad3201eb7a9eae073aa41a7c1aa0afaf3e1a640e32dc2cd",
+};
+const mlxSourcePins = {
+  "mlx/dtype.h": "a9b6c8719deae53015cfcf0452b570b2620c8c24b409b93e80ffd8ecb4537748",
+  "mlx/types/half_types.h": "43fa5d204abea6db4211f620058bde2f6869563f2615de2d5d5b28d9f7494229",
+  "mlx/types/bf16.h": "a279b39030b406eda06a42069abd660ad24fced7b1cfe33378b236b2ce1e786f",
+  "mlx/backend/metal/kernels/indexing/indexing.h": "e820b8ee2b5132a97122780c12433ebb5100d8078d31e211d0429400a11415bb",
+  "mlx/backend/common/common.cpp": "671d20a1a25524198e078c22af18a0f02b94f642786b6655f9c4e55ec8a6d8a4",
+  "mlx/backend/metal/kernels.h": "f45059a96ffa4cf38c6cb85754a818075563b455ca008d0ae624737546f7b972",
+  "mlx/backend/metal/jit_kernels.cpp": "8201a166cc426cd7b1f6983e5e6f282d3ca7a1992cc4c3a80fa42cf8dd237c46",
+  "mlx/backend/metal/nojit_kernels.cpp": "94b31481ce88c7edd7c993008e4f708dcff2f8a0936c0b237c750a93a3cbe610",
+  "mlx/backend/common/compiled.cpp": "a5a4e711add8b57b153be9c096089e312c747691dcb9ec61d4db1bf29186e2cc",
+  "mlx/backend/metal/utils.cpp": "180b558f6e317df418aec0bf56e866aaf75e450f87cedb40c45f7882b8645b13",
+  "mlx/backend/metal/kernels/binary_ops.h": "2dd13c2496f5d6f0856e4ca99db2ceb5c6d7dc0c344b9ba8e41ef3b7d7ed8a97",
+  "mlx/backend/gpu/copy.h": "ec5de8e2acaaa509aa4b1e42a6c6e478a189d8aae44a02f04b7d757ce8a2bc51",
+  "mlx/allocator.h": "7ef6044508b4e71520c8aa20474356c435c5aa06734bb1d09ee598b6bc3065f0",
+  "mlx/backend/metal/allocator.cpp": "b317edbeda67afbafe63a4abe685c810b1fb0fd7d94f5f5ee17a7773bf97c65f",
+  "mlx/backend/metal/allocator.h": "5ca3b085cc210f23c719175960921b51c39aed823a10736f95edd5b9bfbb0fff",
+  "mlx/backend/common/buffer_cache.h": "a4b4ea74476ad681a9a5db2063ae3939108a60b0df2014b590338bd1cccf0205",
+  "mlx/backend/metal/device.cpp": "008b67e599f5508ab670a91f2ea80372162a8767b5226fbbeb9f3d23c85cdb7c",
+  "mlx/backend/metal/device.h": "ab1e07495b916a86eb762cddc68c6f1ae5e4c61020baacdea3c0dadd59150603",
+  "mlx/backend/metal/unary.cpp": "35a7a35a9d14f5cac74e1535106093383aeb91c147a8a1a5f486913e74ccc521",
+  "mlx/backend/metal/binary.cpp": "2ff749f1ffb9ee35ed11d4c4c877c61578df51d0b5da3ecf3c0dfba3498c1c5e",
+  "mlx/backend/common/unary.h": "c732ffd23460198800006c6d5dac4487569000fc7d5e809c9fb3a8f21d964af6",
+  "mlx/backend/common/binary.h": "ee3e8dafc49d87dabe0edded9f617ca09682a3f5ef49310b71ca2fcbb65dc83c",
+  "mlx/backend/metal/kernels/unary.h": "fb952a2c30a6d0cd01f6c61e852cc15e426b286475de8ff139bb65b8d9001c8c",
+  "mlx/backend/metal/kernels/binary.h": "9a367967a48907ac6792be685bab4cc062f3ad916cccacb441c627d87a4b7898",
+  "mlx/backend/metal/normalization.cpp": "01bc537389638efe43a9bedeeb2008484864772022ac56e106a3f9911bcaa1aa",
+  "mlx/backend/metal/kernels/rms_norm.metal": "b2e04e377fdad1d645581f9beeaf9cbb06d1ad32926161e06cbc15240caf12bf",
+  "mlx/backend/metal/kernels/defines.h": "a2930dbd644c69c4b66a511a094034217f3c03f48e29a1613f601532150f9163",
+  "mlx/backend/metal/copy.cpp": "35570b10905afb07f59ea16bf7abf840d290435fedbf716ca83cc7c51691e5d8",
+  "mlx/backend/metal/kernels/copy.h": "a9fad1b262ffc25f4ccda4e09d0c76821cd580f12871acd2a0daa98151e1587c",
+  "mlx/backend/metal/kernels/utils.h": "5e1568e9edde9d05dbf86f68fa0d6c6240f2c32b973c7c6a76166b9c0d91543d",
+  "mlx/backend/metal/kernels/copy.metal": "ed8a579eb6fe6a14c36560d2c8b548baf99e66fa77d300fb4ad7554883820eba",
+  "mlx/backend/common/utils.cpp": "f831b4e6576cb76519fddcbab2e424dc53e8f75811cce448f4a877ec1885331e",
+  "mlx/backend/common/copy.h": "2caa44885b43327747e53460f317e3107b9a0c012759a3c8f3d44095d1819ef0",
+  "mlx/backend/common/slicing.cpp": "ac82dd8972605a46dd4eab0c04303ed6758b273065bd9bde696d4591f914b1a2",
+  "mlx/backend/metal/slicing.cpp": "604d3bea4ce0e87eda3ca550200fc06eb78d949de49db42ef8bf12fb331e0b6c",
+  "mlx/backend/metal/indexing.cpp": "6592dec7e5490acbe47301b85fd1d2b9a5186952a29ecb23e7e2ff3442d0917e",
+  "mlx/backend/metal/kernels/indexing/gather_front.h": "64aacebf6576dfcd389383564fa1214bc87f2a091dd33cc64c598c5367ecab96",
+  "mlx/backend/metal/utils.h": "2b57319453758b5f7c776de946375701f97f84deabca02a1ef024f0153599c70",
+  "mlx/backend/gpu/copy.cpp": "9e6304129e8a2425aae4d913e8b9eefb2dac4bf8afac5c460cfc9331c6c48031",
+  "mlx/backend/gpu/primitives.cpp": "5a796463969b675181111b42a7aeadce8243a9d793ec7a00a30051d325bffe86",
+  "mlx/backend/gpu/slicing.cpp": "6b010670e215a0016dd2707ab2101ddc256583243bc501a44b7be3ea4de513f4",
+  "mlx/backend/metal/kernels/unary_ops.h": "0a5492b65ae39ecb6d8b04e64ea5007e0a4ff60d8d9428559bfbfd03387ece2a",
+  "mlx/backend/metal/kernels/bf16.h": "abd87446a310b77ac530ef52a324feae5cb285d03ec9613e3a88ebb71410fdcb",
+  "mlx/backend/metal/scaled_dot_product_attention.cpp": "215ebac6495706cf01a2635c4dcec29802e130165ed8704f212d789679d2e673",
+  "mlx/backend/metal/kernels/scaled_dot_product_attention.metal": "f6fefad1d91b01f05c12095e69f248e255f880d65b5ae9e9d8bc2714da56fb41",
+  "mlx/backend/metal/kernels/sdpa_vector.h": "de098d50a67a865e2e64fb1700fc4819307861f009a65642679777a9a9cec7cd",
+  "mlx/backend/metal/rope.cpp": "9ec2d2f298381af6445b1e2281dd90521988861ed170a602944ec0f1fca17ecc",
+  "mlx/backend/metal/kernels/rope.metal": "2b35221ebea033ff43100b85eaaddec5c0e34e3cfd52e7c692573764b2b7d0ab",
+  "mlx/backend/metal/conv.cpp": "ffec76d32b453b232245978ee067fac70a0205981d9ff38311e19db422dc0758",
+  "mlx/backend/metal/kernels/conv.metal": "d0604f69e144ffb65dcfc99e6383880b6d2d61645fa73147f35230034a1cd874",
+  "mlx/backend/metal/quantized.cpp": "44483286a359afb7f35d8a9c1658ffaec6ff6c01a7ab34ac7bb35cf6438804a6",
+  "mlx/backend/metal/kernels/quantized.h": "2a007016da606afe569adb9adcc05e00f14558ad2e094bcb4f8974beb53c316f",
+  "mlx/ops.cpp": "6eae219354d0f9be37a064cb327c863fc3a12dba6668fd61d428e8d09d6baaf2",
+  "mlx/backend/metal/logsumexp.cpp": "e629a1fa0b8744c7ee7913ccdb37caf6d22ad76aa6945282aa6adc4afdd316e7",
+  "mlx/backend/metal/kernels/logsumexp.h": "233f9a7072bed21f2b71f522c41aa5e86208e3bcfd18fafc87cf28a7d7f13154",
+  "mlx/backend/metal/kernels/logsumexp.metal": "f9bec5e1e5a23d20bedf9ff8d29a8c03bbb5144bc5d751bbfe906d32ee894817",
+};
+const proofFiles = [
+  "contracts/mlx/M1Max.lean",
+  "contracts/mlx/Memory.lean",
+  "contracts/mlx/Numerics.lean",
+  "contracts/mlx/FlushToZero.lean",
+  "contracts/mlx/Arithmetic.lean",
+  "contracts/mlx/Float32Bounds.lean",
+  "contracts/mlx/NativeDivisionBounds.lean",
+  "contracts/mlx/Float32UnitInterval.lean",
+  "contracts/mlx/NativeMultiplication.lean",
+  "contracts/mlx/NativeFma.lean",
+  "contracts/mlx/ArithmeticBounds.lean",
+  "contracts/mlx/IntegerBounds.lean",
+  "contracts/mlx/Division.lean",
+  "contracts/mlx/BFloat16.lean",
+  "contracts/mlx/DyadicBounds.lean",
+  "contracts/mlx/DyadicCover.lean",
+  "contracts/mlx/Negation.lean",
+  "contracts/mlx/BFloat16Arithmetic.lean",
+  "contracts/mlx/TensorWords.lean",
+  "contracts/mlx/BFloat16Fma.lean",
+  "contracts/mlx/BFloat16Bounds.lean",
+  "contracts/mlx/BFloat16UnitInterval.lean",
+  "contracts/mlx/BFloat16DyadicBounds.lean",
+  "contracts/mlx/BFloat16ConversionBounds.lean",
+  "contracts/mlx/DivisionBounds.lean",
+  "contracts/mlx/DivisionDirectedBounds.lean",
+  "contracts/mlx/ElementwiseAdd.lean",
+  "contracts/mlx/Reduction.lean",
+  "contracts/mlx/FlushedReduction.lean",
+  "contracts/mlx/ArithmeticFold.lean",
+  "contracts/mlx/ArithmeticFoldBounds.lean",
+  "contracts/mlx/ArithmeticVaryingBounds.lean",
+  "contracts/mlx/AdditionFoldBounds.lean",
+  "contracts/mlx/ArithmeticDependencies.lean",
+  "contracts/mlx/DotProduct.lean",
+  "contracts/mlx/FlushedDotProduct.lean",
+  "contracts/mlx/FlushedDotProductBounds.lean",
+  "contracts/mlx/SquaredSum.lean",
+  "contracts/mlx/SquaredSumBounds.lean",
+  "contracts/mlx/SquaredSumDyadicBounds.lean",
+  "contracts/mlx/NormalizationSchedule.lean",
+  "contracts/mlx/NormalizationReduction.lean",
+  "contracts/mlx/Normalization.lean",
+  "contracts/mlx/NormalizationExecution.lean",
+  "contracts/mlx/RmsNorm.lean",
+  "contracts/mlx/NormalizationBounds.lean",
+  "contracts/mlx/NormalizationDyadicBounds.lean",
+  "contracts/mlx/NormalizationFloorBounds.lean",
+  "contracts/mlx/RsqrtBounds.lean",
+  "contracts/mlx/NormalizationUniform.lean",
+  "kernels/trellis/Codebook.lean",
+  "kernels/trellis/CodebookLoad.lean",
+  "kernels/trellis/CodebookFlushToZero.lean",
+  "kernels/trellis/CodebookAccuracy.lean",
+  "kernels/trellis/CodebookRanges.lean",
+  "kernels/trellis/CodebookInitialization.lean",
+  "kernels/trellis/DownCodebook.lean",
+  "kernels/trellis/GateUpCodebook.lean",
+  "kernels/trellis/DownExecution.lean",
+  "kernels/trellis/DownMemory.lean",
+  "kernels/trellis/DownAccuracy.lean",
+  "kernels/trellis/DownReduction.lean",
+  "kernels/trellis/GateUpExecution.lean",
+  "kernels/trellis/GateUpAccuracy.lean",
+  "kernels/trellis/GateUpFlushToZero.lean",
+  "kernels/trellis/DownFlushToZero.lean",
+  "kernels/trellis/GateUpTail.lean",
+  "kernels/trellis/SwiGLUStability.lean",
+  "kernels/trellis/GateUpTailFlushToZero.lean",
+  "kernels/trellis/GateUpSplitTail.lean",
+  "kernels/StableSigmoid.lean",
+  "kernels/StableSigmoidRanges.lean",
+  "kernels/quantization/AffinePacking.lean",
+  "kernels/quantization/AffineLift.lean",
+  "kernels/quantization/AffineDequantize.lean",
+  "kernels/quantization/AffineDequantizeBounds.lean",
+  "kernels/quantization/AffineInput.lean",
+  "kernels/quantization/AffineInputBounds.lean",
+  "kernels/quantization/AffineSumBounds.lean",
+  "kernels/quantization/AffineDot.lean",
+  "kernels/quantization/AffineDotBounds.lean",
+  "kernels/quantization/AffineTile.lean",
+  "kernels/quantization/AffineTileBounds.lean",
+  "kernels/quantization/AffineValueBounds.lean",
+  "kernels/quantization/AffineScaledBounds.lean",
+  "kernels/quantization/AffineShiftedDotBounds.lean",
+  "kernels/quantization/AffineShiftedTileBounds.lean",
+  "kernels/quantization/AffineLayout.lean",
+  "kernels/quantization/AffineRow.lean",
+  "kernels/quantization/AffineRowBounds.lean",
+  "kernels/quantization/MlxQmv.lean",
+  "kernels/delta/Gates.lean",
+  "kernels/trellis/SigmoidRanges.lean",
+  "kernels/trellis/GateUpSplitTailRanges.lean",
+  "kernels/delta/Softplus.lean",
+  "kernels/delta/SoftplusRanges.lean",
+  "kernels/delta/Decay.lean",
+  "kernels/delta/DecayRanges.lean",
+  "kernels/delta/Gated.lean",
+  "kernels/delta/GatedRanges.lean",
+  "kernels/delta/Convolution.lean",
+  "kernels/delta/ConvolutionBounds.lean",
+  "kernels/delta/Layout.lean",
+  "kernels/delta/Recurrence.lean",
+  "kernels/delta/Inputs.lean",
+  "kernels/delta/SiluRmsHeads.lean",
+  "kernels/delta/SiluRmsHeadsRanges.lean",
+  "kernels/attention/Rope.lean",
+  "kernels/attention/RopeAngles.lean",
+  "kernels/attention/OnlineSoftmax.lean",
+  "kernels/attention/SdpaUpdate.lean",
+  "kernels/attention/SdpaLoop.lean",
+  "kernels/attention/SdpaNormalize.lean",
+  "kernels/attention/SdpaScore.lean",
+  "kernels/attention/SdpaMerge.lean",
+  "kernels/attention/SdpaLayout.lean",
+  "kernels/attention/SdpaVector.lean",
+  "kernels/attention/OutputGate.lean",
+  "kernels/ResidualRmsNorm.lean",
+  "kernels/ResidualRmsNormRanges.lean",
+  "kernels/GatedRmsNorm.lean",
+  "kernels/GatedRmsNormRanges.lean",
+  "layers/TrellisCodebookGateUp.lean",
+  "layers/TrellisCodebookDown.lean",
+  "layers/TrellisCodebookRanges.lean",
+  "layers/Normalization.lean",
+  "layers/DeltaHeads.lean",
+  "layers/AffineVerifyLinear.lean",
+  "layers/AffineVerifyLinearBounds.lean",
+  "layers/AffineVerifyLinearShiftedBounds.lean",
+  "layers/QuantizedEmbedding.lean",
+  "state/Ssm.lean",
+  "state/Kv.lean",
+  "models/qwen/WrittenLayers.lean",
+  "models/qwen/Blocks.lean",
+  "models/qwen/NormalizationRanges.lean",
+  "models/qwen/NormalizationUniformBounds.lean",
+  "models/qwen/NormalizedAffineProjection.lean",
+  "models/qwen/AttentionHeads.lean",
+  "models/qwen/DeltaNet.lean",
+  "models/qwen/TrellisMlp.lean",
+  "models/qwen/TrellisMlpRanges.lean",
+  "models/qwen/ResidualBlocks.lean",
+  "models/qwen/ResidualMlpRanges.lean",
+  "models/qwen/DeltaCache.lean",
+  "models/qwen/DeltaInputRanges.lean",
+  "models/qwen/DeltaHeadRanges.lean",
+  "models/qwen/DeltaGateRanges.lean",
+  "models/qwen/DeltaInitialRecurrenceRanges.lean",
+  "models/qwen/DeltaOutputRanges.lean",
+  "models/qwen/DeltaInitialRanges.lean",
+  "models/qwen/ResidualDelta.lean",
+  "models/qwen/ResidualDeltaInitialRanges.lean",
+  "contracts/mlx/SdpaDispatch.lean",
+  "contracts/mlx/SdpaTwoPassDispatch.lean",
+  "kernels/attention/SdpaTwoPassLayout.lean",
+  "contracts/mlx/Float32OverflowMargin.lean",
+  "kernels/attention/SdpaExponentRanges.lean",
+  "contracts/mlx/FlushedIdentities.lean",
+  "kernels/attention/SdpaInitialUpdateRanges.lean",
+  "kernels/attention/SdpaScoreRanges.lean",
+  "kernels/attention/SdpaInitialLoopRanges.lean",
+  "contracts/mlx/FlushOrder.lean",
+  "kernels/attention/SdpaOrderedExponentRanges.lean",
+  "contracts/mlx/RelativeRounding.lean",
+  "contracts/mlx/NormalizedCastBounds.lean",
+  "contracts/mlx/ArithmeticMaddRelative.lean",
+  "contracts/mlx/TwoProductsRelative.lean",
+  "contracts/mlx/NonnegativeArithmetic.lean",
+  "kernels/attention/SdpaUpdateRelative.lean",
+  "kernels/attention/SdpaUpdateBounds.lean",
+  "kernels/attention/SdpaLoopBounds.lean",
+  "kernels/attention/SdpaSequenceLoopRanges.lean",
+  "kernels/attention/SdpaTwoPassFirstPass.lean",
+  "kernels/attention/SdpaTwoPassMaximum.lean",
+  "contracts/mlx/WeightedFold.lean",
+  "contracts/mlx/FlushedReductionRelative.lean",
+  "kernels/attention/SdpaTwoPassReduction.lean",
+  "kernels/attention/SdpaTwoPassMerge.lean",
+  "kernels/attention/SdpaTwoPassMergeRanges.lean",
+  "kernels/attention/SdpaTwoPassVector.lean",
+  "kernels/attention/SdpaMergeRanges.lean",
+  "contracts/mlx/WeightedReductionRelative.lean",
+  "kernels/attention/SdpaMergeRelative.lean",
+  "kernels/attention/SdpaSequenceRanges.lean",
+  "kernels/attention/SdpaTwoPassRanges.lean",
+  "kernels/attention/SdpaDispatched.lean",
+  "models/qwen/Attention.lean",
+  "models/qwen/ResidualAttention.lean",
+  "models/qwen/DecodeStage.lean",
+  "models/qwen/DecodeChain.lean",
+  "models/qwen/Qwen38TrellisM1Max.lean",
+  "models/qwen/TokenInference.lean",
+  "models/qwen/EmbeddingRanges.lean",
+  "models/qwen/EmbeddingNormalization.lean",
+  "models/qwen/InitialState.lean",
+  "kernels/attention/OutputGateRanges.lean",
+  "kernels/attention/RopeAnglesRanges.lean",
+  "kernels/attention/RopeRanges.lean",
+  "kernels/attention/SdpaInitialRanges.lean",
+  "models/qwen/AttentionInputRanges.lean",
+  "models/qwen/AttentionInitialHeadsRanges.lean",
+  "models/qwen/AttentionInitialRanges.lean",
+  "models/qwen/ResidualAttentionInitialRanges.lean",
+  "models/qwen/DecodeStageInitialRanges.lean",
+  "models/qwen/DecodeChainInitialRanges.lean",
+  "models/qwen/Qwen38TrellisM1MaxInitialRanges.lean",
+  "models/qwen/TokenInitialRanges.lean",
+  "models/qwen/CheckpointTransforms.lean",
+  "models/qwen/CheckpointRanges.lean",
+  "models/qwen/CheckpointNormalizationData.lean",
+  "models/qwen/CheckpointNormalizationBinding.lean",
+  "contracts/mlx/Argmax.lean",
+  "kernels/sampling/ArgmaxPairs.lean",
+  "kernels/sampling/NormalizedScores.lean",
+  "kernels/sampling/NormalizedArgmaxLayout.lean",
+  "kernels/sampling/NormalizedArgmaxExecution.lean",
+  "contracts/mlx/Maximum.lean",
+  "kernels/sampling/LogSumExpLayout.lean",
+  "kernels/sampling/LogSumExpExponentRanges.lean",
+  "kernels/sampling/LogSumExpAccumulator.lean",
+  "kernels/sampling/LogSumExpBlockRanges.lean",
+  "kernels/sampling/LogSumExpLoopRanges.lean",
+  "kernels/sampling/LogSumExpMergeRanges.lean",
+  "kernels/sampling/LogSumExpRanges.lean",
+  "kernels/sampling/GreedySampling.lean",
+  "models/qwen/TokenSampledInitialRanges.lean",
+  "contracts/mlx/RsqrtRelativeBounds.lean",
+  "contracts/mlx/SquaredSumRelativeBounds.lean",
+  "kernels/delta/RecurrenceStability.lean",
+  "kernels/delta/SiluRmsHeadsSumBounds.lean",
+  "kernels/delta/SiluRmsHeadsEnergy.lean",
+  "models/qwen/DeltaHeadEnergy.lean",
+  "kernels/delta/RecurrenceNumericalStability.lean",
+  "kernels/delta/GatedRecurrentRanges.lean",
+  "models/qwen/DeltaRecurrentInputs.lean",
+  "kernels/delta/RecurrenceGrowth.lean",
+  "contracts/mlx/ContractiveMultiplication.lean",
+  "kernels/delta/DecayStateBounds.lean",
+  "kernels/delta/GatedDotRelative.lean",
+  "kernels/delta/GatedPredictionRelative.lean",
+  "contracts/mlx/SubtractionRelative.lean",
+  "kernels/delta/GatedDeltaRelative.lean",
+  "kernels/delta/GatedUpdateRelative.lean",
+  "kernels/delta/RecurrenceSupportedRanges.lean",
+  "kernels/delta/RecurrenceReadoutRanges.lean",
+  "kernels/delta/RecurrenceSupportedError.lean",
+  "models/qwen/DeltaSequenceRecurrenceRanges.lean",
+  "models/qwen/DeltaSequenceRanges.lean",
+  "models/qwen/AttentionSequenceHeadsRanges.lean",
+  "models/qwen/AttentionSequenceRanges.lean",
+  "kernels/delta/RecurrenceEnvelope.lean",
+  "models/qwen/DeltaDecodeRecurrenceRanges.lean",
+  "models/qwen/DeltaDecodeRanges.lean",
+  "models/qwen/ResidualDeltaDecodeRanges.lean",
+  "models/qwen/ResidualAttentionSequenceRanges.lean",
+  "models/qwen/DecodeStageSequenceRanges.lean",
+  "models/qwen/DecodeChainSequenceRanges.lean",
+  "models/qwen/Qwen38TrellisM1MaxSequenceRanges.lean",
+  "models/qwen/TokenSequenceRanges.lean",
+  "models/qwen/TokenSampledSequenceRanges.lean",
+  "models/qwen/TokenAutoregressive.lean",
+  "kernels/attention/SdpaAddresses.lean",
+  "models/qwen/HeadScaleConstruction.lean",
+  "models/qwen/CheckpointDeltaData.lean",
+  "models/qwen/CheckpointSequenceBinding.lean",
+  "models/qwen/CheckpointAffine.lean",
+  "kernels/attention/SdpaTwoPassStorage.lean",
+  "kernels/attention/SdpaTwoPassExecution.lean",
+  "contracts/mlx/Float16.lean",
+  "contracts/mlx/PackedDictionary.lean",
+  "models/qwen/CheckpointTrellis.lean",
+  "models/qwen/CheckpointTrellisData.lean",
+  "models/qwen/CheckpointMlpBinding.lean",
+  "models/qwen/CheckpointConvolutionData.lean",
+  "models/qwen/CheckpointConvolutionBinding.lean",
+  "models/qwen/CheckpointAffineDictionaryData.lean",
+  "models/qwen/CheckpointAffineDictionary.lean",
+  "models/qwen/CheckpointDictionaryBinding.lean",
+  "models/qwen/RopeInputConstruction.lean",
+  "models/qwen/Qwen38TrellisM1MaxInference.lean",
+  "models/qwen/HeadScaleAccuracy.lean",
+  "models/qwen/CheckpointConstruction.lean",
+  "contracts/mlx/SquaredSumEnergyBounds.lean",
+  "contracts/mlx/NormalizationEnergyBounds.lean",
+  "contracts/mlx/NormalizationEnergyScale.lean",
+  "contracts/mlx/NormalizedVectorEnergy.lean",
+  "models/qwen/NormalizationEnergy.lean",
+  "models/qwen/NormalizedAffineEnergy.lean",
+  "contracts/mlx/AdditionMagnitude.lean",
+  "contracts/mlx/MaddMagnitude.lean",
+  "kernels/quantization/AffineInputMagnitude.lean",
+  "kernels/quantization/AffineSumMagnitude.lean",
+  "kernels/quantization/AffineRowMagnitude.lean",
+  "kernels/quantization/AffineDot3Magnitude.lean",
+  "kernels/quantization/AffineDot4Magnitude.lean",
+  "kernels/quantization/AffineTileMagnitude.lean",
+  "models/qwen/NormalizedAffineMagnitude.lean",
+  "kernels/quantization/AffineDot3SourceMagnitude.lean",
+  "kernels/quantization/AffineTile3Magnitude.lean",
+  "models/qwen/NormalizedAffineProjectionMagnitude.lean",
+  "models/qwen/Qwen38TrellisM1MaxMagnitude.lean",
+  "contracts/mlx/ThreadgroupWrites.lean",
+  "contracts/mlx/MemoryCells.lean",
+  "kernels/trellis/CodebookBarrier.lean",
+  "kernels/trellis/DownBarrier.lean",
+  "kernels/trellis/GateUpBarrier.lean",
+  "kernels/trellis/GateUpScheduled.lean",
+  "kernels/trellis/DownScheduled.lean",
+  "layers/TrellisScheduled.lean",
+  "models/qwen/TrellisMlpScheduled.lean",
+  "models/qwen/ResidualMlpScheduled.lean",
+  "models/qwen/DecodeStageScheduled.lean",
+  "models/qwen/DecodeChainScheduled.lean",
+  "models/qwen/Qwen38TrellisM1MaxScheduled.lean",
+  "models/qwen/TokenInferenceScheduled.lean",
+  "models/qwen/TokenAutoregressiveScheduled.lean",
+  "models/qwen/Qwen38TrellisM1MaxInferenceScheduled.lean",
+  "contracts/mlx/ByteMemory.lean",
+  "contracts/mlx/FloatMemory.lean",
+  "kernels/trellis/GateUpBytes.lean",
+  "kernels/trellis/DownBytes.lean",
+  "contracts/mlx/WriteOwnership.lean",
+  "kernels/trellis/WriteOwnership.lean",
+  "contracts/mlx/ReadOnlyThreads.lean",
+  "kernels/trellis/DownReadBarrier.lean",
+  "models/qwen/TrellisMlpBytes.lean",
+  "kernels/trellis/DownPartialMemory.lean",
+  "kernels/trellis/DownDevice.lean",
+  "contracts/mlx/HalfMemory.lean",
+  "kernels/trellis/GateUpOutput.lean",
+  "kernels/trellis/DownInputCongruence.lean",
+  "models/qwen/MlpExecution.lean",
+  "kernels/trellis/DownOutput.lean",
+  "models/qwen/TrellisMlpDevice.lean",
+  "contracts/mlx/TensorMemory.lean",
+  "models/qwen/CheckpointTrellisMemory.lean",
+  "contracts/mlx/ThreadgroupWriteProjection.lean",
+  "kernels/attention/SdpaTwoPassWrites.lean",
+  "kernels/attention/SdpaTwoPassBytes.lean",
+  "kernels/attention/SdpaTransposeBytes.lean",
+  "kernels/attention/SdpaTwoPassScratch.lean",
+  "kernels/attention/SdpaOutput.lean",
+  "kernels/attention/SdpaSummaryBytes.lean",
+  "kernels/attention/SdpaOnePassScratch.lean",
+  "kernels/attention/SdpaDispatchedDevice.lean",
+  "state/KvBytes.lean",
+  "state/KvAllocation.lean",
+  "contracts/mlx/Copy2D.lean",
+  "contracts/mlx/CopyShape.lean",
+  "contracts/mlx/CopyContiguous.lean",
+  "contracts/mlx/CopyIndices.lean",
+  "state/KvCopy.lean",
+  "state/KvConcat.lean",
+  "state/KvDevice.lean",
+  "models/qwen/AttentionExecution.lean",
+  "contracts/mlx/ArrayStorage.lean",
+  "contracts/mlx/ArrayViews.lean",
+  "contracts/mlx/HalfArrayWrites.lean",
+  "contracts/mlx/FloatArrayWrites.lean",
+  "contracts/mlx/Copy1D.lean",
+  "contracts/mlx/Concat1D.lean",
+  "kernels/delta/GatedInputs.lean",
+  "kernels/delta/GatedStores.lean",
+  "kernels/delta/GatedBytes.lean",
+  "kernels/delta/GatedDevice.lean",
+  "state/ConvolutionStorage.lean",
+  "state/ConvolutionLayout.lean",
+  "kernels/delta/ConvolutionDevice.lean",
+  "layers/DeltaHeadsDevice.lean",
+  "kernels/GatedRmsNormDevice.lean",
+  "kernels/delta/GatedOutput.lean",
+  "models/qwen/DeltaExecution.lean",
+  "kernels/quantization/AffineLoads.lean",
+  "kernels/quantization/MlxQmvDevice.lean",
+  "kernels/quantization/AffineStorage.lean",
+  "layers/AffineDevice.lean",
+  "models/qwen/CheckpointAffineMemory.lean",
+  "models/qwen/DeltaAffine.lean",
+  "kernels/delta/GateDevice.lean",
+  "models/qwen/DeltaConvolution.lean",
+  "models/qwen/DeltaDevice.lean",
+  "contracts/mlx/RmsScratch.lean",
+  "contracts/mlx/RowStorage.lean",
+  "kernels/RmsNormDevice.lean",
+  "kernels/ResidualRmsNormDevice.lean",
+  "models/qwen/AttentionAffine.lean",
+  "models/qwen/AttentionNormalization.lean",
+  "kernels/attention/RopeDevice.lean",
+  "kernels/attention/SdpaLoads.lean",
+  "kernels/attention/OutputGateDevice.lean",
+  "models/qwen/AttentionHeadsDevice.lean",
+  "state/KvSources.lean",
+  "models/qwen/AttentionReadStorage.lean",
+  "models/qwen/AttentionDevice.lean",
+  "models/qwen/DecodeImplementation.lean",
+  "models/qwen/AutoregressiveImplementation.lean",
+  "models/qwen/Qwen38TrellisM1MaxDevice.lean",
+  "models/qwen/DecodeStorage.lean",
+  "models/qwen/AutoregressiveStorage.lean",
+  "kernels/trellis/GateUpSource.lean",
+  "models/qwen/TrellisMlpSource.lean",
+  "contracts/mlx/ElementwiseAddDevice.lean",
+  "models/qwen/ResidualMlpDevice.lean",
+  "models/qwen/NormalizationDevice.lean",
+  "models/qwen/ResidualDeltaDevice.lean",
+  "models/qwen/ResidualAttentionDevice.lean",
+  "models/qwen/DecodeActivation.lean",
+  "contracts/mlx/WordArrayWrites.lean",
+  "layers/QuantizedEmbeddingDevice.lean",
+  "models/qwen/TokenActivation.lean",
+  "models/qwen/AutoregressiveActivation.lean",
+  "kernels/sampling/LogSumExpDevice.lean",
+  "kernels/sampling/ArgmaxStorage.lean",
+  "kernels/sampling/ArgmaxReductionDevice.lean",
+  "kernels/sampling/NormalizedArgmaxDevice.lean",
+  "kernels/sampling/GreedyDevice.lean",
+  "models/qwen/TokenDevice.lean",
+  "models/qwen/AutoregressiveDevice.lean",
+  "state/TokenStorage.lean",
+  "layers/QuantizedEmbeddingIndex.lean",
+  "models/qwen/AutoregressiveTokenStorage.lean",
+  "contracts/mlx/CopyFloatContiguous.lean",
+  "models/qwen/InitialStorage.lean",
+  "contracts/mlx/MemoryRegions.lean",
+  "models/qwen/InitialStorageRegions.lean",
+  "models/qwen/InitialStorageZeros.lean",
+  "models/qwen/InitialCacheMemory.lean",
+  "models/qwen/InitializedInference.lean",
+  "contracts/mlx/ArrayFrame.lean",
+  "state/KvRegions.lean",
+  "models/qwen/DeltaRegions.lean",
+  "models/qwen/DecodeFrame.lean",
+  "contracts/mlx/ArrayRelocation.lean",
+  "state/SampledToken.lean",
+  "contracts/mlx/AllocatorOwnership.lean",
+  "contracts/mlx/AllocatorSizes.lean",
+  "contracts/mlx/AllocatorRegions.lean",
+  "contracts/mlx/DispatchBarriers.lean",
+  "contracts/mlx/EncoderFences.lean",
+  "models/qwen/CacheOwnership.lean",
+  "models/qwen/SamplingMemory.lean",
+  "contracts/mlx/CopyExecution.lean",
+  "contracts/mlx/ConcatMemory.lean",
+  "state/ConvolutionMemory.lean",
+  "state/KvConcatMemory.lean",
+  "contracts/mlx/Copy2DMemory.lean",
+  "state/KvAppendMemory.lean",
+  "state/KvGrowthAppendMemory.lean",
+  "state/KvCacheMemory.lean",
+  "state/KvPreparedMemory.lean",
+  "state/KvGrowthPairMemory.lean",
+  "kernels/attention/SdpaMemory.lean",
+  "kernels/attention/SdpaOutputMemory.lean",
+  "contracts/mlx/MemoryProjection.lean",
+  "kernels/attention/SdpaTwoPassMemory.lean",
+  "kernels/attention/SdpaTwoPassShared.lean",
+  "kernels/attention/SdpaTwoPassCompletion.lean",
+  "contracts/mlx/ElementwiseMemory.lean",
+  "kernels/attention/OutputGateMemory.lean",
+  "kernels/attention/SdpaTwoPassDonation.lean",
+  "contracts/mlx/ReadBeforeOverwrite.lean",
+  "kernels/attention/SdpaQueryMemory.lean",
+  "kernels/attention/SdpaOnePassDonation.lean",
+  "models/qwen/AttentionGateMemory.lean",
+  "kernels/quantization/AffineMemory.lean",
+  "kernels/quantization/MlxQmvMemory.lean",
+  "layers/AffineMemory.lean",
+  "models/qwen/AttentionOutputMemory.lean",
+  "kernels/attention/SdpaShared.lean",
+  "models/qwen/AttentionTailMemory.lean",
+  "models/qwen/DecodePreservation.lean",
+  "models/qwen/AttentionPreservation.lean",
+  "contracts/mlx/BinaryMemory.lean",
+  "kernels/ResidualRmsMemory.lean",
+  "kernels/RmsNormMemory.lean",
+  "models/qwen/NormalizationMemory.lean",
+  "kernels/trellis/OutputRegions.lean",
+  "models/qwen/TrellisMlpMemory.lean",
+  "models/qwen/ResidualMlpMemory.lean",
+  "models/qwen/AttentionResidualMemory.lean",
+  "kernels/delta/GatedMemory.lean",
+  "kernels/delta/GatedShared.lean",
+  "kernels/GatedRmsNormMemory.lean",
+  "models/qwen/DeltaTailMemory.lean",
+  "models/qwen/DeltaResidualMemory.lean",
+  "contracts/mlx/TensorStorage.lean",
+  "models/qwen/CheckpointTrellisStorage.lean",
+  "models/qwen/TrellisWeightsMemory.lean",
+  "models/qwen/TrellisParameterExecution.lean",
+  "kernels/delta/ConvolutionMemory.lean",
+  "contracts/mlx/MultiOutputWrites.lean",
+  "layers/DeltaHeadsMemory.lean",
+  "contracts/mlx/UnaryMemory.lean",
+  "kernels/delta/GateMemory.lean",
+  "models/qwen/DeltaPreparedMemory.lean",
+  "models/qwen/DeltaConvolutionMemory.lean",
+  "models/qwen/DeltaBlockMemory.lean",
+  "layers/AffineMemoryFrames.lean",
+  "models/qwen/DeltaAffineMemory.lean",
+  "models/qwen/DeltaParameterMemory.lean",
+  "models/qwen/DeltaProjectionHandoff.lean",
+  "models/qwen/DeltaMemoryRefinement.lean",
+  "models/qwen/DeltaNormalizedMemory.lean",
+  "models/qwen/ResidualDeltaMemory.lean",
+  "models/qwen/AttentionAffineMemory.lean",
+  "models/qwen/AttentionQueryMemory.lean",
+  "kernels/RmsHeadReads.lean",
+  "kernels/RmsHeadStores.lean",
+  "kernels/RmsHeadsMemory.lean",
+  "models/qwen/AttentionParameterMemory.lean",
+  "models/qwen/AttentionProjectionHandoff.lean",
+  "models/qwen/AttentionNormalizedMemory.lean",
+  "models/qwen/AttentionNormalizationMemory.lean",
+  "models/qwen/DeltaAffineConstruction.lean",
+  "models/qwen/DeltaNormalizedConstruction.lean",
+  "kernels/attention/RopeSharedMemory.lean",
+  "kernels/attention/RopeDynamicMemory.lean",
+  "kernels/attention/RopeCopyMemory.lean",
+  "models/qwen/AttentionAffineConstruction.lean",
+  "models/qwen/AttentionNormalizedConstruction.lean",
+  "models/qwen/DeltaMemoryStage.lean",
+  "models/qwen/DeltaPreparationConstruction.lean",
+  "models/qwen/DeltaTailConstruction.lean",
+  "models/qwen/AttentionBlockMemory.lean",
+  "kernels/attention/RopeRowsMemory.lean",
+  "kernels/attention/RopeRowsDynamicMemory.lean",
+  "kernels/attention/RopeRowsCopyMemory.lean",
+  "kernels/RmsHeadsFreshMemory.lean",
+  "kernels/RmsHeadsDispatchMemory.lean",
+  "kernels/attention/RopeRowsDispatchMemory.lean",
+  "kernels/attention/RopeRowsLaunchMemory.lean",
+  "kernels/attention/SdpaSharedConstruction.lean",
+  "kernels/sampling/ArgmaxPairMemory.lean",
+  "kernels/sampling/LogSumExpMemory.lean",
+  "kernels/sampling/NormalizedArgmaxMemory.lean",
+  "layers/QuantizedEmbeddingMemory.lean",
+  "models/qwen/AttentionNormalizationDispatchMemory.lean",
+  "models/qwen/AttentionRopeMemory.lean",
+  "models/qwen/AttentionRopeDispatchMemory.lean",
+  "models/qwen/AttentionRopeNormalizedMemory.lean",
+  "models/qwen/ResidualMlpConstruction.lean",
+  "models/qwen/AttentionTailConstruction.lean",
+  "models/qwen/DecodeFrameRead.lean",
+  "models/qwen/ResidualAttentionMemory.lean",
+  "models/qwen/DecodeMemoryStage.lean",
+  "models/qwen/DecodeMemoryChain.lean",
+  "models/qwen/ResidualDeltaConstruction.lean",
+  "models/qwen/ResidualAttentionConstruction.lean",
+  "models/qwen/DecodeMemoryConstruction.lean",
+  "models/qwen/DecodeParameterMemory.lean",
+  "models/qwen/FinalProjectionConstruction.lean",
+  "models/qwen/Qwen38TrellisM1MaxMemory.lean",
+  "models/qwen/Qwen38TrellisM1MaxConstruction.lean",
+  "models/qwen/Qwen38TrellisM1MaxSamplingMemory.lean",
+  "models/qwen/Qwen38TrellisM1MaxParameterMemory.lean",
+  "models/qwen/ResidualDeltaStorageConstruction.lean",
+  "models/qwen/TokenAutoregressiveMemory.lean",
+  "models/qwen/TokenAutoregressiveMemoryConstruction.lean",
+  "kernels/attention/SdpaWorkspace.lean",
+  "kernels/sampling/NormalizedArgmaxAllocation.lean",
+  "layers/QuantizedEmbeddingAllocation.lean",
+  "models/qwen/ResidualAttentionStorageConstruction.lean",
+  "models/qwen/AttentionEntryAllocation.lean",
+  "models/qwen/AttentionPrefixAllocation.lean",
+  "state/KvGrowthAllocation.lean",
+  "models/qwen/AttentionReadAllocation.lean",
+  "models/qwen/AttentionPrefixReadAllocation.lean",
+  "models/qwen/AttentionTailAllocation.lean",
+  "models/qwen/ResidualMlpAllocation.lean",
+  "models/qwen/AttentionTailWorkspaceConstruction.lean",
+  "models/qwen/TokenParameterMemory.lean",
+  "models/qwen/DecodeParameterConstruction.lean",
+  "models/qwen/TokenParameterConstruction.lean",
+  "models/qwen/TokenInitializationMemory.lean",
+  "models/qwen/TokenInitializedConstruction.lean",
+  "models/qwen/CheckpointTokenMemory.lean",
+  "models/qwen/TokenInitializationAllocation.lean",
+  "models/qwen/DecodeCacheGeometry.lean",
+  "models/qwen/DeltaEntryAllocation.lean",
+  "models/qwen/DeltaPreparationAllocation.lean",
+  "models/qwen/DeltaTailAllocation.lean",
+  "models/qwen/FinalProjectionAllocation.lean",
+  "models/qwen/ResidualAttentionWorkspaceConstruction.lean",
+  "models/qwen/ResidualDeltaWorkspaceConstruction.lean",
+  "models/qwen/ResidualDeltaAllocation.lean",
+  "models/qwen/ResidualDeltaHighWater.lean",
+  "models/qwen/TokenWorkspaceConstruction.lean",
+  "kernels/copy/ScalarCopySemantics.lean",
+  "kernels/copy/ScalarCopySyntax.lean",
+  "kernels/copy/ScalarCopyBodySemantics.lean",
+  "kernels/copy/ScalarCopyInterleaving.lean",
+  "kernels/copy/ScalarCopySourceRefinement.lean",
+  "models/qwen/AttentionReadHighWater.lean",
+  "models/qwen/TokenBoundaryHighWater.lean",
+  "models/qwen/ResidualAttentionHighWater.lean",
+  "models/qwen/Qwen38TrellisM1MaxWorkspaceFootprint.lean",
+  "models/qwen/DecodeHighWaterConstruction.lean",
+  "models/qwen/TokenFirstPlanConstruction.lean",
+  "models/qwen/TokenInitializationHighWater.lean",
+  "models/qwen/TokenFirstInitializedConstruction.lean",
+  "models/qwen/CheckpointFirstTokenMemory.lean",
+  "models/qwen/ResidualAttentionExistingHighWater.lean",
+  "models/qwen/DecodeHighWaterGeometry.lean",
+  "models/qwen/DecodeExistingStepConstruction.lean",
+  "models/qwen/DecodeExistingHighWaterConstruction.lean",
+  "models/qwen/TokenFirstCacheGeometry.lean",
+  "models/qwen/TokenNextPlanConstruction.lean",
+  "models/qwen/CheckpointSecondTokenMemory.lean",
+  "models/qwen/InitialHistorySource.lean",
+  "models/qwen/InitialScalarConstruction.lean",
+  "models/qwen/Qwen38TrellisM1MaxCacheFootprint.lean",
+  "kernels/copy/GeneralCopy2DSyntax.lean",
+  "kernels/copy/GeneralCopy2DSemantics.lean",
+  "kernels/copy/GeneralCopy2DInterleaving.lean",
+  "kernels/copy/GeneralCopy2DSourceRefinement.lean",
+  "kernels/copy/KvRowDispatchGeometry.lean",
+  "kernels/copy/KvRowGeneralCopyBinding.lean",
+  "kernels/copy/ScalarCopyFloatSemantics.lean",
+  "kernels/copy/ScalarCopyFloatBodySemantics.lean",
+  "kernels/copy/ScalarCopyFloatInterleaving.lean",
+  "kernels/copy/ScalarCopyFloatSourceRefinement.lean",
+  "kernels/copy/ScalarCopyQuadSemantics.lean",
+  "kernels/copy/ScalarCopyQuadBodySemantics.lean",
+  "kernels/copy/ScalarCopyQuadInterleaving.lean",
+  "kernels/copy/ScalarCopyQuadSourceRefinement.lean",
+  "kernels/copy/VectorCopySemantics.lean",
+  "kernels/copy/VectorCopySyntax.lean",
+  "kernels/copy/VectorCopyBodySemantics.lean",
+  "kernels/copy/VectorCopyInterleaving.lean",
+  "kernels/copy/VectorCopySourceRefinement.lean",
+  "kernels/copy/VectorCopyHostSelection.lean",
+  "models/qwen/InitialCacheSourceConstruction.lean",
+  "models/qwen/InitialRecurrentSource.lean",
+  "kernels/copy/ScalarFullHostSelection.lean",
+  "state/KvSlicePreparationMemory.lean",
+  "state/KvInitialPairMemory.lean",
+  "models/qwen/AttentionInitialKvMemory.lean",
+  "models/qwen/AttentionInitialResultMemory.lean",
+  "models/qwen/AttentionInitialTailConstruction.lean",
+  "models/qwen/TokenGrowthPlanConstruction.lean",
+  "models/qwen/TokenReadyMemory.lean",
+  "models/qwen/TokenReadyStepMemory.lean",
+  "models/qwen/TokenGrowthStepMemory.lean",
+  "models/qwen/TokenReuseStepMemory.lean",
+  "models/qwen/TokenWorkspaceFootprint.lean",
+  "models/qwen/TokenConstructedStepMemory.lean",
+  "models/qwen/TokenConstructedSequenceMemory.lean",
+  "models/qwen/CheckpointReadyMemory.lean",
+  "models/qwen/CheckpointConstructedSequenceMemory.lean",
+  "models/qwen/InitialCacheParsedSourceConstruction.lean",
+  "models/qwen/InitialParsedRequestConstruction.lean",
+  "models/qwen/CheckpointParsedSequenceMemory.lean",
+  "models/qwen/InitialKvSourceMemory.lean",
+  "models/qwen/KvPreservationSourceMemory.lean",
+  "models/qwen/KvInitialDispatchMemory.lean",
+  "models/qwen/KvInitialKernelMemory.lean",
+  "models/qwen/TokenReuseSequenceMemory.lean",
+  "models/qwen/TokenSequenceWorkspaceFootprint.lean",
+  "state/KvInitialAllocation.lean",
+  "contracts/mlx/CopyDispatchCommutation.lean",
+  "contracts/mlx/NativeNormalizationDivision.lean",
+  "contracts/mlx/NativeDivisionDomain.lean",
+  "contracts/mlx/RsqrtEpsilonBounds.lean",
+  "kernels/binary/BFloatAddSource.lean",
+  "kernels/binary/BinaryVvSyntax.lean",
+  "kernels/binary/BinaryVvBody.lean",
+  "kernels/binary/BinaryVvInterleaving.lean",
+  "kernels/binary/BinaryVvSourceRefinement.lean",
+  "kernels/copy/GeneralCopy2DHostDispatch.lean",
+  "kernels/trellis/CodebookIntegerSyntax.lean",
+  "kernels/trellis/CodebookBitsSyntax.lean",
+  "kernels/trellis/CodebookIntegerSemantics.lean",
+  "kernels/trellis/CodebookBitsSemantics.lean",
+  "kernels/trellis/CodebookTableSyntax.lean",
+  "kernels/trellis/CodebookTableSource.lean",
+  "kernels/trellis/CodebookWindowSyntax.lean",
+  "kernels/trellis/CodebookWindowSemantics.lean",
+  "kernels/trellis/CodebookWindowSource.lean",
+  "models/qwen/AttentionInitialWorkspaceConstruction.lean",
+  "models/qwen/DecodeInitialMemoryStage.lean",
+  "models/qwen/AttentionInitialStageConstruction.lean",
+  "models/qwen/DecodeInitialMemoryChain.lean",
+  "models/qwen/DecodeInitialConstruction.lean",
+  "models/qwen/TokenDirectInitialConstruction.lean",
+  "models/qwen/DecodeInitialChainGeometry.lean",
+  "models/qwen/DecodeInitialGeometry.lean",
+  "models/qwen/TokenDirectInitialReady.lean",
+  "models/qwen/InitialDirectRequestConstruction.lean",
+  "models/qwen/TokenConstructedSequenceLogical.lean",
+  "models/qwen/CheckpointDirectSequenceMemory.lean",
+  "models/qwen/DecodeInitialWorkspaceFootprint.lean",
+  "models/qwen/GraphDivisionPrimitives.lean",
+  "models/qwen/M1MaxSingleTokenEntry.lean",
+  "models/qwen/M1MaxInitialKvDescriptor.lean",
+  "models/qwen/NormalizationEpsilonBounds.lean",
+  "models/qwen/ResidualMlpParsedAdd.lean",
+  "state/KvInitialDispatchScheduling.lean",
+  "contracts/mlx/BufferLeaseMemory.lean",
+  "kernels/NormalizationEpsilonRanges.lean",
+  "kernels/binary/BinaryVvAliasing.lean",
+  "kernels/normalization/ResidualRmsCellSyntax.lean",
+  "kernels/trellis/PackedArraySyntax.lean",
+  "models/qwen/AttentionHeadEpsilonRanges.lean",
+  "models/qwen/CheckpointDirectInference.lean",
+  "models/qwen/DeltaHeadEpsilonRanges.lean",
+  "models/qwen/DeltaOutputEpsilonRanges.lean",
+  "models/qwen/NormalizedArgmaxLeaseMemory.lean",
+  "kernels/normalization/ResidualRmsCellSemantics.lean",
+  "kernels/trellis/GateInputSyntax.lean",
+  "kernels/trellis/PackedArraySemantics.lean",
+  "models/qwen/DeltaHeadEnergyEpsilonRanges.lean",
+  "models/qwen/ReachedStageRanges.lean",
+  "kernels/normalization/ResidualRmsCellMemory.lean",
+  "kernels/normalization/ResidualRmsCellSource.lean",
+  "kernels/normalization/ResidualRmsFirstPassMemory.lean",
+  "kernels/trellis/GateInputSemantics.lean",
+  "kernels/trellis/PackedArrayPrograms.lean",
+  "models/qwen/ReachedSequenceRanges.lean",
+  "models/qwen/ReachedTokenContext.lean",
+  "models/qwen/ResidualMlpParsedFirstPass.lean",
+  "kernels/trellis/GateInputContext.lean",
+  "kernels/trellis/GateInputSource.lean",
+  "kernels/trellis/PackedArrayGate.lean",
+  "kernels/trellis/PackedArrayDown.lean",
+  "kernels/trellis/PackedArrayMaterialization.lean",
+  "kernels/trellis/PackedArrayDownMaterialization.lean",
+  "kernels/trellis/PackedArrayConsumer.lean",
+  "kernels/trellis/PackedArrayWeights.lean",
+  "kernels/trellis/PackedArraySource.lean",
+  "kernels/normalization/ResidualRmsReductionMemory.lean",
+  "kernels/normalization/ResidualRmsTailSyntax.lean",
+  "kernels/normalization/ResidualRmsTailSource.lean",
+  "kernels/trellis/GateAccumulateSource.lean",
+  "models/qwen/NormalizedArgmaxLeaseReuse.lean",
+  "models/qwen/ReachedTokenStepMemory.lean",
+  "models/qwen/ReachedTokenConstructedMemory.lean",
+  "models/qwen/ReachedTokenSequenceMemory.lean",
+  "models/qwen/ReachedTokenInitialMemory.lean",
+  "models/qwen/ReachedCheckpointMemory.lean",
+  "kernels/normalization/ResidualRmsOutputSyntax.lean",
+  "kernels/normalization/ResidualRmsOutputSemantics.lean",
+  "kernels/normalization/ResidualRmsOutputMemory.lean",
+  "kernels/normalization/ResidualRmsLoopSyntax.lean",
+  "kernels/normalization/ResidualRmsLoopControl.lean",
+  "kernels/normalization/ResidualRmsLoopMemory.lean",
+  "kernels/normalization/MlxRmsOutputSyntax.lean",
+  "kernels/normalization/MlxRmsOutputSemantics.lean",
+  "kernels/normalization/MlxRmsOutputMemory.lean",
+  "kernels/normalization/MlxRmsPointerSource.lean",
+  "kernels/trellis/GateWeightSyntax.lean",
+  "kernels/trellis/GateWeightSource.lean",
+  "kernels/trellis/GateLoopSource.lean",
+  "kernels/trellis/GateLaneBridge.lean",
+  "kernels/trellis/GateProjectionSource.lean",
+  "kernels/trellis/GateTailSyntax.lean",
+  "kernels/trellis/GateTailSource.lean",
+  "kernels/sampling/ArgmaxShuffleSyntax.lean",
+  "kernels/sampling/ArgmaxShuffleSemantics.lean",
+  "kernels/sampling/ArgmaxFinalStoreSyntax.lean",
+  "kernels/sampling/ArgmaxFinalStoreMemory.lean",
+  "kernels/normalization/MlxRmsLoopSyntax.lean",
+  "kernels/normalization/MlxRmsLoopControl.lean",
+  "kernels/normalization/MlxRmsLoopMemory.lean",
+  "kernels/normalization/MlxRmsHostSelection.lean",
+  "kernels/trellis/GateRowSyntax.lean",
+  "kernels/trellis/GateRowSource.lean",
+  "kernels/trellis/GateStoreSource.lean",
+  "kernels/sampling/NormalizedScoreSourceSyntax.lean",
+  "kernels/sampling/NormalizedScoreSourceMemory.lean",
+  "kernels/sampling/ArgmaxTraversalSource.lean",
+  "kernels/sampling/ArgmaxSourceOrigins.lean",
+  "kernels/sampling/ArgmaxScratchSourceSyntax.lean",
+  "kernels/sampling/ArgmaxScratchSourceMemory.lean",
+  "kernels/quantization/AffineLiftSource.lean",
+  "kernels/normalization/MlxRmsReductionCell.lean",
+  "kernels/normalization/MlxRmsReductionFirstPass.lean",
+  "kernels/normalization/MlxRmsReductionSyntax.lean",
+  "kernels/normalization/MlxRmsReductionSource.lean",
+  "contracts/mlx/Float32AdditionCommutative.lean",
+  "kernels/quantization/AffineDot4Syntax.lean",
+  "kernels/quantization/AffineDot4Source.lean",
+  "kernels/quantization/AffineDot4LoopSource.lean",
+  "kernels/quantization/AffineDot4FunctionSyntax.lean",
+  "kernels/quantization/AffineDot4FunctionSource.lean",
+  "kernels/normalization/MlxRmsHeadHostSelection.lean",
+  "kernels/normalization/MlxRmsHeadSyntax.lean",
+  "kernels/normalization/MlxRmsHeadRegisters.lean",
+  "kernels/normalization/MlxRmsHeadPointers.lean",
+  "kernels/normalization/MlxRmsHeadMemory.lean",
+  "kernels/normalization/MlxRmsHeadFirstPass.lean",
+  "kernels/normalization/MlxRmsHeadReduction.lean",
+  "models/qwen/AttentionParsedHeadNormalization.lean",
+  "kernels/sampling/ArgmaxLaunchSourceSyntax.lean",
+  "kernels/sampling/ArgmaxLaunchSourceMemory.lean",
+  "kernels/trellis/GatePointerSyntax.lean",
+  "kernels/trellis/GatePointerSemantics.lean",
+  "kernels/trellis/GatePointerSource.lean",
+  "kernels/trellis/GatePointerPipeline.lean",
+  "kernels/trellis/DownSetupSource.lean",
+  "kernels/quantization/AffineInput4Syntax.lean",
+  "kernels/quantization/AffineInput4Source.lean",
+  "kernels/quantization/AffineScratch4Source.lean",
+  "kernels/quantization/AffinePreload4Syntax.lean",
+  "kernels/quantization/AffinePreload4Source.lean",
+  "kernels/quantization/AffineDot4TileMemory.lean",
+  "kernels/quantization/AffineDot4PreparedMemory.lean",
+  "kernels/quantization/AffineDot4PreloadedMemory.lean",
+  "kernels/quantization/AffineDot4PreloadFrame.lean",
+  "kernels/quantization/AffineOutputSyntax.lean",
+  "kernels/quantization/AffineOutputSource.lean",
+  "kernels/quantization/AffineRowHostSelection.lean",
+  "kernels/quantization/AffineOuter4Syntax.lean",
+  "kernels/quantization/AffineOuter4Call.lean",
+  "kernels/quantization/AffineOuter4Source.lean",
+  "kernels/trellis/DownPointerSyntax.lean",
+  "kernels/trellis/DownPointerSemantics.lean",
+  "kernels/trellis/DownPointerSource.lean",
+  "kernels/trellis/DownPointerArrays.lean",
+  "kernels/trellis/DownDispatchSource.lean",
+  "kernels/trellis/DownDispatchPointer.lean",
+  "kernels/trellis/DownControlSyntax.lean",
+  "kernels/trellis/DownControlSource.lean",
+  "kernels/trellis/DownControlDispatch.lean",
+  "kernels/trellis/DownStepSyntax.lean",
+  "kernels/trellis/DownReadSource.lean",
+  "kernels/trellis/DownWindowSource.lean",
+  "kernels/trellis/DownStepSource.lean",
+  "kernels/attention/MlxRopeSingleSyntax.lean",
+  "kernels/attention/MlxRopeSingleAngles.lean",
+  "kernels/attention/MlxRopeSingleMemory.lean",
+  "kernels/attention/MlxRopeSingleDispatch.lean",
+  "kernels/attention/MlxSdpaVectorSyntax.lean",
+  "kernels/attention/MlxSdpaVectorLoop.lean",
+  "kernels/attention/MlxSdpaVectorMemory.lean",
+  "kernels/attention/MlxSdpaVectorDispatch.lean",
+  "kernels/attention/MlxSdpaScoreSource.lean",
+  "kernels/attention/MlxSdpaUpdateSource.lean",
+  "kernels/attention/MlxSdpaPartialSource.lean",
+  "models/qwen/AttentionParsedRope.lean",
+  "kernels/quantization/AffineOuter4Lifecycle.lean",
+  "kernels/quantization/AffineDot3Syntax.lean",
+  "kernels/quantization/AffineDot3Source.lean",
+  "kernels/quantization/AffineDot3LoopSource.lean",
+  "kernels/quantization/AffineDot3FunctionSource.lean",
+  "kernels/quantization/AffineDot3TileMemory.lean",
+  "kernels/quantization/AffineInput3Syntax.lean",
+  "kernels/quantization/AffineInput3Source.lean",
+  "kernels/quantization/AffinePreload3Source.lean",
+  "kernels/quantization/AffineDot3PreloadFrame.lean",
+  "kernels/quantization/AffineOutput3Source.lean",
+  "kernels/quantization/AffineOuter3Call.lean",
+  "kernels/quantization/AffineOuter3Source.lean",
+  "kernels/quantization/AffineOuter3Lifecycle.lean",
+  "kernels/trellis/DownLoopSyntax.lean",
+  "kernels/trellis/DownLoopSource.lean",
+  "kernels/trellis/DownLaneFold.lean",
+  "kernels/trellis/DownLaneSource.lean",
+  "kernels/trellis/DownInitialSyntax.lean",
+  "kernels/trellis/DownInitialSource.lean",
+  "kernels/trellis/DownScratchSyntax.lean",
+  "kernels/trellis/DownScratchIndex.lean",
+  "kernels/trellis/DownScratchSource.lean",
+  "kernels/trellis/DownScratchMemory.lean",
+  "kernels/trellis/DownPartialSyntax.lean",
+  "kernels/trellis/DownPartialIndex.lean",
+  "kernels/trellis/DownPartialSum.lean",
+  "kernels/trellis/DownPartialControl.lean",
+  "kernels/attention/MlxSdpaMergeSyntax.lean",
+  "kernels/attention/MlxSdpaMergeSource.lean",
+  "kernels/attention/MlxSdpaOutputSource.lean",
+  "kernels/attention/MlxSdpaTwoPassLoop.lean",
+  "kernels/attention/MlxSdpaTwoPassSyntax.lean",
+  "kernels/attention/MlxSdpaTwoPassMemory.lean",
+  "kernels/attention/MlxSdpaTwoPassFirstSource.lean",
+  "kernels/attention/MlxSdpaTwoPassStores.lean",
+  "kernels/attention/MlxSdpaFreshMemory.lean",
+  "kernels/attention/MlxSdpaFreshPartialSource.lean",
+  "kernels/attention/MlxSdpaFreshOutputSource.lean",
+  "layers/AffineParsedSource4.lean",
+  "models/qwen/FinalProjectionParsedAffine4.lean",
+  "models/qwen/AttentionParsedOnePass.lean",
+  "models/qwen/AttentionParsedFresh.lean",
+  "kernels/quantization/MlxQmvHostSource.lean",
+  "kernels/quantization/MlxQmvInput4Source.lean",
+  "kernels/quantization/MlxQmvDot4Syntax.lean",
+  "kernels/quantization/MlxQmvDot4Source.lean",
+  "kernels/quantization/MlxQmvDot4LoopSource.lean",
+  "kernels/quantization/MlxQmvDot4FunctionSyntax.lean",
+  "kernels/quantization/MlxQmvDot4FunctionSource.lean",
+  "kernels/quantization/MlxQmvDot4TileMemory.lean",
+  "kernels/quantization/MlxQmvPrivate4Memory.lean",
+  "kernels/quantization/MlxQmvFast4Syntax.lean",
+  "kernels/quantization/MlxQmvFast4LoopSource.lean",
+  "kernels/quantization/MlxQmvFast4Output.lean",
+  "kernels/quantization/MlxQmvFast4Pointers.lean",
+  "kernels/quantization/MlxQmvFast4Memory.lean",
+  "kernels/trellis/DownPartialSource.lean",
+  "kernels/trellis/DownPartialMemorySource.lean",
+  "kernels/trellis/DownFoldSyntax.lean",
+  "kernels/trellis/DownFoldVectorMemory.lean",
+  "kernels/trellis/DownFoldIndex.lean",
+  "kernels/trellis/DownFoldSource.lean",
+  "kernels/trellis/DownFoldOutputSource.lean",
+  "kernels/trellis/DownPipelineSource.lean",
+  "kernels/trellis/DownHostSelection.lean",
+  "kernels/trellis/DownBuiltinSource.lean",
+  "kernels/trellis/GateFmaOperations.lean",
+  "kernels/trellis/GateWeightOperations.lean",
+  "kernels/trellis/GateMemoryOperations.lean",
+  "kernels/trellis/GateFlushingLaneSource.lean",
+  "kernels/trellis/GateFlushingProjectionSource.lean",
+  "kernels/attention/MlxSdpaTwoPassQueryGeometry.lean",
+  "kernels/attention/MlxSdpaTwoPassMergeSyntax.lean",
+  "kernels/attention/MlxSdpaTwoPassMergeMemory.lean",
+  "kernels/attention/MlxSdpaTwoPassMergeSource.lean",
+  "kernels/attention/MlxSdpaTwoPassOutputSource.lean",
+  "kernels/attention/MlxSdpaTwoPassMergeFrame.lean",
+  "kernels/attention/MlxOutputGateSyntax.lean",
+  "kernels/attention/MlxOutputGateSource.lean",
+  "kernels/attention/MlxOutputGateMemory.lean",
+  "kernels/attention/MlxOutputGateUnaryLoop.lean",
+  "kernels/attention/MlxOutputGateBinaryLoop.lean",
+  "kernels/attention/MlxOutputGateScheduled.lean",
+  "kernels/attention/MlxOutputGateHostSelection.lean",
+  "kernels/delta/GatedStepSyntax.lean",
+  "kernels/delta/GatedLaneSource.lean",
+  "kernels/delta/GatedStepSource.lean",
+  "kernels/delta/GatedPointerSyntax.lean",
+  "kernels/delta/GatedPointerSource.lean",
+  "kernels/delta/GatedOutputSyntax.lean",
+  "kernels/delta/GatedOutputSource.lean",
+  "kernels/delta/GatedHostSelection.lean",
+  "layers/AffineParsedSource3.lean",
+  "layers/AffineParsedSource.lean",
+  "layers/AffineNativeParsedSource4.lean",
+  "models/qwen/AttentionParsedTwoPass.lean",
+  "models/qwen/AttentionParsedOutputGate.lean",
+  "models/qwen/AttentionParsedScheduledGate.lean",
+  "models/qwen/Delta48NativeParsedAffine4.lean",
+  "models/qwen/TrellisMlpParsedDown.lean",
+  "models/qwen/TrellisMlpParsedGateProjection.lean",
+  "models/qwen/DeltaParsedRecurrence.lean",
+  "kernels/attention/MlxAttentionGateCopyMemory.lean",
+  "kernels/attention/MlxAttentionGateCopySyntax.lean",
+  "kernels/attention/MlxAttentionGateReshapeHost.lean",
+  "kernels/attention/MlxAttentionQueryCopyHost.lean",
+  "kernels/delta/ComputeGHostMemory.lean",
+  "kernels/delta/ComputeGHostSource.lean",
+  "kernels/delta/ComputeGHostSyntax.lean",
+  "kernels/delta/DeltaBetaMemory.lean",
+  "kernels/delta/DeltaBetaSource.lean",
+  "kernels/delta/MlxDepthwiseConvHostSource.lean",
+  "kernels/delta/MlxDepthwiseConvMemory.lean",
+  "kernels/delta/MlxDepthwiseConvSource.lean",
+  "kernels/delta/MlxDepthwiseConvSyntax.lean",
+  "kernels/delta/MlxLogAddExpSource.lean",
+  "kernels/delta/MlxLogAddExpSyntax.lean",
+  "kernels/delta/SiluHeads128Activation.lean",
+  "kernels/delta/SiluHeads128Geometry.lean",
+  "kernels/delta/SiluHeads128HostSelection.lean",
+  "kernels/delta/SiluHeads128Memory.lean",
+  "kernels/delta/SiluHeads128Output.lean",
+  "kernels/delta/SiluHeads128Syntax.lean",
+  "kernels/delta/SiluHeads128Threads.lean",
+  "kernels/normalization/GatedRms128FirstSource.lean",
+  "kernels/normalization/GatedRms128HostSelection.lean",
+  "kernels/normalization/GatedRms128OutputSource.lean",
+  "kernels/normalization/GatedRms128Syntax.lean",
+  "kernels/normalization/GatedRms128TailSource.lean",
+  "kernels/trellis/DownInputTraceTransport.lean",
+  "kernels/trellis/GateHostSelectedShape.lean",
+  "kernels/trellis/GateHostSelection.lean",
+  "kernels/trellis/GateInputTraceTransport.lean",
+  "models/qwen/AttentionGateCopyFrames.lean",
+  "models/qwen/AttentionGateCopyFront.lean",
+  "models/qwen/AttentionGateCopyKeyConstruction.lean",
+  "models/qwen/AttentionGateCopyKvMemory.lean",
+  "models/qwen/AttentionGateCopyNormalizationMemory.lean",
+  "models/qwen/AttentionGateCopyParsedCacheAppend.lean",
+  "models/qwen/AttentionGateCopyParsedDispatch.lean",
+  "models/qwen/AttentionGateCopyParsedDonation.lean",
+  "models/qwen/AttentionGateCopyParsedFresh.lean",
+  "models/qwen/AttentionGateCopyParsedHeadNormalization.lean",
+  "models/qwen/AttentionGateCopyParsedPipeline.lean",
+  "models/qwen/AttentionGateCopyParsedQkv.lean",
+  "models/qwen/AttentionGateCopyParsedResult.lean",
+  "models/qwen/AttentionGateCopyParsedRope.lean",
+  "models/qwen/AttentionGateCopyParsedTwoPass.lean",
+  "models/qwen/AttentionGateCopyPreservation.lean",
+  "models/qwen/AttentionGateCopyQueryMemory.lean",
+  "models/qwen/AttentionGateCopyReadConstruction.lean",
+  "models/qwen/AttentionGateCopyRopeMemory.lean",
+  "models/qwen/AttentionGateCopyTrellisFrames.lean",
+  "models/qwen/AttentionGateCopyTrellisSuffix.lean",
+  "models/qwen/AttentionOutputParsedAffine4.lean",
+  "models/qwen/AttentionParsedGateReshape.lean",
+  "models/qwen/AttentionPlanParsedConstruction.lean",
+  "models/qwen/AttentionSuffixParsedConstruction.lean",
+  "models/qwen/DeltaConvolutionParsedSource.lean",
+  "models/qwen/DeltaParsedGatedNormalization.lean",
+  "models/qwen/DeltaParsedHeads.lean",
+  "models/qwen/DeltaParsedOutputProjection.lean",
+  "models/qwen/DeltaParsedProjections.lean",
+  "models/qwen/DeltaSuffixParsedConstruction.lean",
+  "models/qwen/Qwen38TrellisParsedExecution.lean",
+  "models/qwen/Qwen38TrellisParsedLayers.lean",
+  "models/qwen/Qwen38TrellisParsedLogitError.lean",
+  "models/qwen/ResidualMlpParsedConstruction.lean",
+  "models/qwen/ResidualMlpParsedTrellis.lean",
+  "models/qwen/TrellisMlpParsedGateStore.lean",
+  "models/qwen/TrellisMlpParsedGateTail.lean",
+  "models/qwen/TrellisMlpParsedMemory.lean",
+  "models/qwen/TrellisMlpParsedPipeline.lean",
+  "models/qwen/TrellisParsedHostBinding.lean",
+  "models/qwen/TrellisParsedNative.lean",
+  "models/qwen/TrellisParsedParameterAttachment.lean",
+  "models/qwen/TrellisParsedParameterChain.lean",
+  "models/qwen/TrellisParsedParameterStage.lean",
+  "models/qwen/TrellisParsedStageConstruction.lean",
+  "models/qwen/TrellisParsedStageSources.lean",
+  "kernels/copy/CopyExecutionConfluence.lean",
+  "kernels/copy/GatherFrontHost.lean",
+  "kernels/copy/GatherFrontSource.lean",
+  "kernels/copy/GatherFrontSyntax.lean",
+  "kernels/copy/GeneralCopy2DWideInterleaving.lean",
+  "kernels/copy/GeneralCopy2DWideSemantics.lean",
+  "kernels/copy/GeneralCopy2DWideSourceRefinement.lean",
+  "kernels/copy/MlxKvConcatHost.lean",
+  "kernels/copy/MlxKvConcatMemory.lean",
+  "kernels/copy/MlxKvConcatSource.lean",
+  "kernels/copy/MlxKvZeroSource.lean",
+  "kernels/quantization/AffineDequantizeHost.lean",
+  "kernels/quantization/AffineDequantizeSource.lean",
+  "kernels/quantization/AffineDequantizeSyntax.lean",
+  "kernels/sampling/LogSumExpSamplerSource.lean",
+  "kernels/sampling/LogSumExpSourceArithmetic.lean",
+  "kernels/sampling/LogSumExpSourceGeometry.lean",
+  "kernels/sampling/LogSumExpSourceHost.lean",
+  "kernels/sampling/LogSumExpSourceLoop.lean",
+  "kernels/sampling/LogSumExpSourceMemory.lean",
+  "kernels/sampling/LogSumExpSourceMerge.lean",
+  "kernels/sampling/LogSumExpSourceScratch.lean",
+  "kernels/sampling/LogSumExpSourceSyntax.lean",
+  "layers/QuantizedEmbeddingDequantizeSource.lean",
+  "layers/QuantizedEmbeddingGatherSource.lean",
+  "layers/QuantizedEmbeddingParsedPipeline.lean",
+  "models/qwen/AttentionGateCopyFreshRead.lean",
+  "models/qwen/AttentionGateCopyInitialParsedDispatch.lean",
+  "models/qwen/AttentionGateCopyInitialParsedDonation.lean",
+  "models/qwen/AttentionGateCopyInitialParsedFresh.lean",
+  "models/qwen/AttentionGateCopyInitialParsedPipeline.lean",
+  "models/qwen/AttentionGateCopyInitialParsedResult.lean",
+  "models/qwen/AttentionGateCopyInitialRead.lean",
+  "models/qwen/AttentionGateCopyInitialSources.lean",
+  "models/qwen/AttentionGateCopyInitialTrellisEntry.lean",
+  "models/qwen/AttentionGateCopyInitialTrellisFrames.lean",
+  "models/qwen/AttentionGateCopyInitialTrellisSuffix.lean",
+  "models/qwen/AttentionGateCopyInputNormalization.lean",
+  "models/qwen/AttentionGateCopyResidualStage.lean",
+  "models/qwen/AttentionGateCopyStageCache.lean",
+  "models/qwen/AttentionGateCopyTrellisEntry.lean",
+  "models/qwen/AttentionKvCallerSelection.lean",
+  "models/qwen/AttentionSuffixParsedNative.lean",
+  "models/qwen/CopiedAttentionChainParsed.lean",
+  "models/qwen/CopiedAttentionDecodeChain.lean",
+  "models/qwen/CopiedAttentionDecodeStage.lean",
+  "models/qwen/CopiedAttentionProjectionHeap.lean",
+  "models/qwen/CopiedAttentionStageParsed.lean",
+  "models/qwen/DeltaConstructedPreparationSource.lean",
+  "models/qwen/DeltaParsedConstructedStage.lean",
+  "models/qwen/DeltaParsedEntry.lean",
+  "models/qwen/DeltaParsedModelPipeline.lean",
+  "models/qwen/DeltaParsedPipeline.lean",
+  "models/qwen/DeltaParsedStoragePipeline.lean",
+  "models/qwen/DeltaProjectionParameterSource.lean",
+  "models/qwen/FinalProjectionParsedSource.lean",
+  "models/qwen/Qwen38CopiedAttentionCache.lean",
+  "models/qwen/Qwen38CopiedAttentionExecution.lean",
+  "models/qwen/Qwen38CopiedAttentionSamplerSource.lean",
+  "models/qwen/Qwen38CopiedTokenSource.lean",
+  "models/qwen/TrellisWeightsFrameRegions.lean",
+  "state/KvCacheFreshMemory.lean",
+  "state/KvSliceCapacityMemory.lean",
+  "state/KvSliceCapacityPreparation.lean",
+  "kernels/copy/MlxKvGrowthPairSource.lean",
+  "kernels/copy/VectorCopyWideBodySemantics.lean",
+  "kernels/copy/VectorCopyWideHostSelection.lean",
+  "kernels/copy/VectorCopyWideInterleaving.lean",
+  "kernels/copy/VectorCopyWideSemantics.lean",
+  "kernels/copy/VectorCopyWideSourceRefinement.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedDispatch.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedDonation.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedFresh.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedPipeline.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedResult.lean",
+  "models/qwen/AttentionGateCopyCapacityParsedTwoPass.lean",
+  "models/qwen/AttentionGateCopyFreshGeometry.lean",
+  "models/qwen/AttentionGateCopyFreshRowSources.lean",
+  "models/qwen/AttentionGateCopyFreshSources.lean",
+  "models/qwen/AttentionGateCopyGrowthInputs.lean",
+  "models/qwen/AttentionGateCopyInitialResidualStage.lean",
+  "models/qwen/AttentionGateCopyInitialStageCache.lean",
+  "models/qwen/AttentionGateCopyInitialSuffixAllocation.lean",
+  "models/qwen/AttentionGateCopyPositiveSources.lean",
+  "models/qwen/AttentionSuffixAllocation.lean",
+  "models/qwen/CopiedAttentionDerivedNative.lean",
+  "models/qwen/EmptyKvAttachment.lean",
+  "models/qwen/InitialCopiedChainParsed.lean",
+  "models/qwen/InitialCopiedDecodeChain.lean",
+  "models/qwen/InitialCopiedDecodeStage.lean",
+  "models/qwen/InitialCopiedStageParsed.lean",
+  "models/qwen/KvCapacityKernelMemory.lean",
+  "models/qwen/KvCapacityPreservationSourceMemory.lean",
+  "models/qwen/Qwen38CopiedCheckpointDerivedSource.lean",
+  "models/qwen/Qwen38CopiedCheckpointSource.lean",
+  "models/qwen/Qwen38CopiedTokenCache.lean",
+  "models/qwen/Qwen38CopiedTokenRanges.lean",
+  "models/qwen/Qwen38CopiedTokenState.lean",
+  "models/qwen/Qwen38InitialCopiedExecution.lean",
+  "layers/AffineStorageLineage.lean",
+  "models/qwen/AttentionGateCopyCapacityResidualStage.lean",
+  "models/qwen/AttentionGateCopyCapacityStageCache.lean",
+  "models/qwen/AttentionGateCopyCapacityStageParsed.lean",
+  "models/qwen/AttentionGateCopyCapacityTrellisEntry.lean",
+  "models/qwen/AttentionGateCopyCapacityTrellisFrames.lean",
+  "models/qwen/AttentionGateCopyCapacityTrellisSuffix.lean",
+  "models/qwen/AttentionTailStorageLineage.lean",
+  "models/qwen/CapacityAttentionChainParsed.lean",
+  "models/qwen/CapacityAttentionDecodeChain.lean",
+  "models/qwen/CapacityAttentionDecodeStage.lean",
+  "models/qwen/CapacityAttentionDerivedNative.lean",
+  "models/qwen/CapacityAttentionParameterConstruction.lean",
+  "models/qwen/CapacityAttentionParameterFrame.lean",
+  "models/qwen/CapacityAttentionStageParsed.lean",
+  "models/qwen/CapacityCopiedCheckpointParameters.lean",
+  "models/qwen/CapacityCopiedCheckpointSource.lean",
+  "models/qwen/CapacityCopiedSampledLogits.lean",
+  "models/qwen/CapacityCopiedTokenCache.lean",
+  "models/qwen/CapacityCopiedTokenConstruction.lean",
+  "models/qwen/CapacityCopiedTokenParameterFrame.lean",
+  "models/qwen/CapacityCopiedTokenRanges.lean",
+  "models/qwen/CapacityCopiedTokenResult.lean",
+  "models/qwen/CapacityCopiedTokenSource.lean",
+  "models/qwen/CheckpointNativeCopiedSequence.lean",
+  "models/qwen/CheckpointNativeCopiedTokenState.lean",
+  "models/qwen/CopiedAttentionCapacityFactory.lean",
+  "models/qwen/CopiedAttentionCapacityTailFactory.lean",
+  "models/qwen/CopiedAttentionEntryAllocation.lean",
+  "models/qwen/CopiedAttentionEntryHighWater.lean",
+  "models/qwen/CopiedAttentionFrontConstruction.lean",
+  "models/qwen/CopiedAttentionInitialFactory.lean",
+  "models/qwen/CopiedAttentionInitialReadAllocation.lean",
+  "models/qwen/CopiedAttentionInitialTailFactory.lean",
+  "models/qwen/CopiedAttentionNormalizationAllocation.lean",
+  "models/qwen/CopiedAttentionOriginalBundle.lean",
+  "models/qwen/CopiedAttentionOriginalCache.lean",
+  "models/qwen/CopiedAttentionOriginalCapacityStage.lean",
+  "models/qwen/CopiedAttentionOriginalInitialStage.lean",
+  "models/qwen/CopiedAttentionOriginalTailChains.lean",
+  "models/qwen/CopiedAttentionParameterConstruction.lean",
+  "models/qwen/CopiedAttentionProjectionAllocation.lean",
+  "models/qwen/CopiedAttentionProjectionConstruction.lean",
+  "models/qwen/CopiedAttentionProjectionLaunch.lean",
+  "models/qwen/CopiedAttentionRopeAllocation.lean",
+  "models/qwen/DecodeParameterCombine.lean",
+  "models/qwen/FinalParameterFrameBases.lean",
+  "models/qwen/FinalProjectionSamplerSource.lean",
+  "models/qwen/FinalProjectionStorageLineage.lean",
+  "models/qwen/InitialCopiedDerivedNative.lean",
+  "models/qwen/InitialCopiedParameterConstruction.lean",
+  "models/qwen/InitialCopiedParameterFrame.lean",
+  "models/qwen/InitialCopiedTokenCache.lean",
+  "models/qwen/InitialCopiedTokenConstruction.lean",
+  "models/qwen/InitialCopiedTokenParameterFrame.lean",
+  "models/qwen/InitialCopiedTokenRanges.lean",
+  "models/qwen/InitialCopiedTokenResult.lean",
+  "models/qwen/InitialCopiedTokenSource.lean",
+  "models/qwen/NativeCopiedSampledLogits.lean",
+  "models/qwen/NativeCopiedTokenConstruction.lean",
+  "models/qwen/NativeCopiedTokenMemory.lean",
+  "models/qwen/NativeCopiedTokenParameters.lean",
+  "models/qwen/NativeCopiedTokenRoute.lean",
+  "models/qwen/NativeCopiedTokenState.lean",
+  "models/qwen/Qwen38CapacityAttentionCache.lean",
+  "models/qwen/Qwen38CapacityAttentionDerivedParsed.lean",
+  "models/qwen/Qwen38CapacityAttentionExecution.lean",
+  "models/qwen/Qwen38CopiedTokenParameterFrame.lean",
+  "models/qwen/Qwen38InitialCopiedCache.lean",
+  "models/qwen/ReachedNativeCopiedTokenState.lean",
+  "models/qwen/TokenEmbeddingParsedConstruction.lean",
+  "models/qwen/AttentionSuffixHighWater.lean",
+  "models/qwen/CapacityCopiedAttentionHighWater.lean",
+  "models/qwen/CapacityCopiedDeltaHighWater.lean",
+  "models/qwen/CapacityCopiedHighWaterConstruction.lean",
+  "models/qwen/CapacityCopiedTokenHighWater.lean",
+  "models/qwen/CapacityCopiedWorkspace.lean",
+  "models/qwen/CheckpointCopiedHighWaterRun.lean",
+  "models/qwen/CheckpointCopiedHighWaterSeed.lean",
+  "models/qwen/CheckpointCopiedHighWaterSource.lean",
+  "models/qwen/CheckpointCopiedHighWaterState.lean",
+  "models/qwen/CheckpointCopiedInitializedRun.lean",
+  "models/qwen/CheckpointCopiedInitializedSource.lean",
+  "models/qwen/CheckpointNativeCopiedAdvanceGeometry.lean",
+  "models/qwen/CopiedAttentionAllocatedFront.lean",
+  "models/qwen/CopiedAttentionAllocatedFrontFrame.lean",
+  "models/qwen/CopiedAttentionAllocatedInitialRead.lean",
+  "models/qwen/CopiedAttentionAllocatedPositiveFrame.lean",
+  "models/qwen/CopiedAttentionAllocatedPositiveInput.lean",
+  "models/qwen/CopiedAttentionAllocatedPositiveRead.lean",
+  "models/qwen/CopiedAttentionAllocatedPositiveRoute.lean",
+  "models/qwen/CopiedAttentionCapacityArenaFactory.lean",
+  "models/qwen/CopiedAttentionCapacityArenaHighWater.lean",
+  "models/qwen/CopiedAttentionFreshAppendAllocation.lean",
+  "models/qwen/CopiedAttentionFreshReadHighWater.lean",
+  "models/qwen/CopiedAttentionGrowthPreparation.lean",
+  "models/qwen/CopiedAttentionInitialArenaFactory.lean",
+  "models/qwen/CopiedAttentionInitialArenaHighWater.lean",
+  "models/qwen/CopiedAttentionPositiveReuseAllocation.lean",
+  "models/qwen/CopiedAttentionPreparedGeometry.lean",
+  "models/qwen/CopiedAttentionReadHighWater.lean",
+  "models/qwen/CopiedAttentionTailArena.lean",
+  "models/qwen/CopiedAttentionTailArenaBounds.lean",
+  "models/qwen/CopiedAttentionTailArenaBuilt.lean",
+  "models/qwen/CopiedAttentionTailBuiltLineage.lean",
+  "models/qwen/CopiedTokenBodyConstruction.lean",
+  "models/qwen/CopiedTokenCacheGeometry.lean",
+  "models/qwen/CopiedTokenFinishAllocation.lean",
+  "models/qwen/CopiedTokenFinishHighWater.lean",
+  "models/qwen/CopiedTokenFinishRequest.lean",
+  "models/qwen/CopiedTokenFinishSafety.lean",
+  "models/qwen/EmptyKvLineage.lean",
+  "models/qwen/FinalProjectionAllocatedNative.lean",
+  "models/qwen/FinalProjectionSamplerAllocation.lean",
+  "models/qwen/InitialCopiedAttentionHighWater.lean",
+  "models/qwen/InitialCopiedDeltaHighWater.lean",
+  "models/qwen/InitialCopiedEntryLineage.lean",
+  "models/qwen/InitialCopiedHighWaterConstruction.lean",
+  "models/qwen/InitialCopiedInitializationLineage.lean",
+  "models/qwen/InitialCopiedSequenceSeed.lean",
+  "models/qwen/InitialCopiedTokenHighWater.lean",
+  "models/qwen/InitialCopiedWorkspace.lean",
+  "models/qwen/NativeCopiedAdvanceGeometry.lean",
+  "models/qwen/NativeCopiedAllocationBudget.lean",
+  "models/qwen/NativeCopiedHighWater.lean",
+  "models/qwen/NativeCopiedPlanGeometry.lean",
+  "models/qwen/NativeCopiedHighWaterFinalNative.lean",
+  "kernels/copy/CpuScalarSourceSemantics.lean",
+  "kernels/copy/CpuScalarSourceSyntax.lean",
+  "models/qwen/CapacityCopiedScalarBoundary.lean",
+  "models/qwen/CapacityCopiedTokenScalarBoundary.lean",
+  "models/qwen/CheckpointCopiedAllocatedAttachment.lean",
+  "models/qwen/CheckpointCopiedHighWaterRunFrame.lean",
+  "models/qwen/CheckpointCopiedInitializedBoundary.lean",
+  "models/qwen/CheckpointCopiedProducedScalarAttachment.lean",
+  "models/qwen/CheckpointCopiedReachedCertificate.lean",
+  "models/qwen/CopiedAttentionAllocatedScalarSources.lean",
+  "models/qwen/CopiedAttentionScalarPrefix.lean",
+  "models/qwen/CopiedCapacityGrowthBounds.lean",
+  "models/qwen/CopiedCapacityGrowthChainBounds.lean",
+  "models/qwen/CopiedCapacityScalarSources.lean",
+  "models/qwen/CopiedCpuScalarInitialization.lean",
+  "models/qwen/CopiedScalarInitialization.lean",
+  "models/qwen/CopiedScalarRunSources.lean",
+  "models/qwen/CpuScalarParsedConstruction.lean",
+  "models/qwen/InitialCopiedScalarBoundary.lean",
+  "models/qwen/InitialCopiedTokenScalarBoundary.lean",
+  "models/qwen/NativeCopiedConstructedInputs.lean",
+  "models/qwen/NativeCopiedHighWaterFrame.lean",
+  "models/qwen/NativeCopiedHighWaterScalarBoundary.lean",
+];
+
+const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
+  cwd: new URL("./", import.meta.url).pathname, onlyFiles: true, dot: false,
+}));
+for (const file of discoveredProofs) {
+  if (!proofFiles.includes(file)) throw new Error(`Proof module is missing from the checked build: ${file}`);
+}
+
+function checkSource(name: string, source: string, expected: string): void {
+  if (new Bun.CryptoHasher("sha256").update(source).digest("hex") !== expected) {
+    throw new Error(`${name} changed: review its translation and proofs before updating the source pin.`);
+  }
+}
+
+// Audit every theorem in the current module, including private helpers and newly
+// added theorems. collectAxioms walks transitive dependencies in the kernel env.
+const audit = `
+open Lean Elab Command in
+run_cmd do
+  let env ← getEnv
+  let names := env.constants.foldStage2 (fun ns name info =>
+    if info.isTheorem then ns.push name else ns) (#[] : Array Name)
+  if names.isEmpty then throwError "No proof declarations found"
+  for name in names do
+    let axioms ← collectAxioms name
+    for axiomName in axioms do
+      unless #[\`propext, \`Classical.choice, \`Quot.sound].contains axiomName do
+        throwError "Forbidden axiom {axiomName} in {name}"
+  logInfo m!"Axiom audit passed: {names.size} theorems"
+`;
+
+async function run(args: string[], leanPath?: string) {
+  const child = Bun.spawn([lean, ...args], {
+    cwd: root.pathname, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, ...(leanPath ? { LEAN_PATH: [leanPath, dependencyPath].filter(Boolean).join(delimiter) } : {}) },
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { output: stdout + stderr, code };
+}
+
+const version = await run(["--version"]);
+if (version.code !== 0 || !version.output.includes("version 4.35.0,")) {
+  throw new Error(`Expected Lean 4.35.0; got ${version.output}`);
+}
+async function runLake(args: string[]) {
+  const child = Bun.spawn([lake, ...args], {
+    cwd: new URL("./", import.meta.url).pathname, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, MATHLIB_NO_CACHE_ON_UPDATE: "1" },
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  if (code !== 0) throw new Error(`Lake failed: ${stdout}${stderr}`);
+  return stdout;
+}
+console.log("Building pinned numerical proof dependencies...");
+process.stdout.write(await runLake(["build",
+  "FloatLib.Floats.Formats.BinaryInterchange.Analysis.StandardModel",
+  "FloatLib.Floats.Formats.BinaryInterchange.Arithmetic.LeanModel.MulDiv",
+  "FloatLib.Floats.Formats.BinaryInterchange.Arithmetic.SqrtSemantics",
+  "FloatLib.Floats.Formats.BinaryInterchange.IntervalSemantics.Order",
+  "FloatLib.Floats.Formats.IEEE754.Native.Model",
+  "FloatLib.Floats.Formats.IEEE754.Native.AddSub",
+  "FloatLib.Floats.Formats.IEEE754.Native.Integer.Constructors",
+  "FloatLib.Floats.Formats.BinaryInterchange.DirectedSemantics.Exact",
+  "FloatLib.Floats.Formats.BinaryInterchange.Conversion.Cast.Proof",
+  "FloatLib.Floats.Formats.BinaryInterchange.Arithmetic.Constants",
+  "FloatLib.Floats.Formats.BinaryInterchange.Operations.Classification.Semantics",
+  "FloatLib.Floats.Formats.BinaryInterchange.Operations.Compare.Proof",
+  "Mathlib.Analysis.SpecialFunctions.Exp",
+  "Mathlib.Analysis.SpecialFunctions.ExpDeriv",
+  "Mathlib.Analysis.SpecialFunctions.Log.Deriv",
+  "Mathlib.Analysis.Calculus.MeanValue",
+  "Mathlib.Analysis.Calculus.Deriv.Inv",
+  "Mathlib.Analysis.Real.Sqrt",
+  "Mathlib.Analysis.SpecialFunctions.Trigonometric.Bounds",
+  "Mathlib.Data.List.FinRange",
+  "Mathlib.Data.List.Nodup",
+  "Mathlib.Algebra.Order.BigOperators.Ring.Finset",
+  "Mathlib.Analysis.Complex.ExponentialBounds",
+]));
+dependencyPath = (await runLake(["env", "printenv", "LEAN_PATH"])).trim();
+const sources = new Map<string, { source: string; expected: string }>();
+for (const [name, expected] of Object.entries(sourcePins)) {
+  const source = await Bun.file(new URL(`packages/inference/src/${name}`, root)).text();
+  checkSource(name, source, expected);
+  sources.set(name, { source, expected });
+}
+for (const [name, expected] of Object.entries(hostSourcePins)) {
+  const source = await Bun.file(new URL(name, root)).text();
+  checkSource(name, source, expected);
+  sources.set(name, { source, expected });
+}
+for (const [name, expected] of Object.entries(mlxSourcePins)) {
+  const cached = new URL(`.lake/sources/mlx/${mlxRevision}/${name}`, import.meta.url);
+  let source: string;
+  if (await Bun.file(cached).exists()) {
+    source = await Bun.file(cached).text();
+  } else {
+    const response = await fetch(`https://raw.githubusercontent.com/ml-explore/mlx/${mlxRevision}/${name}`);
+    if (!response.ok) throw new Error(`Cannot fetch pinned MLX source ${name}: HTTP ${response.status}`);
+    source = await response.text();
+    checkSource(name, source, expected);
+    await mkdir(dirname(cached.pathname), { recursive: true });
+    await Bun.write(cached, source);
+  }
+  checkSource(name, source, expected);
+  sources.set(`mlx@${mlxRevision}/${name}`, { source, expected });
+}
+
+// Bind the checked parser literal to the exact pinned native body.
+// Host extraction remains trusted; Lean checks parsing and execution proofs.
+await checkScalarCopySourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGeneralCopy2DHostBinding({ selfTest: process.argv.includes("--self-test") });
+await checkM1MaxSingleTokenEntry({ selfTest: process.argv.includes("--self-test") });
+await checkCodebookIntegerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkCodebookBitsSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkCodebookTableSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkCodebookWindowSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkBFloatAddSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkBinaryVvSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGeneralCopy2DSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkVectorCopySourceBinding({ selfTest: process.argv.includes("--self-test") });
+// Includes the Vector host wrapper guard. These C++ translations remain manual.
+await checkScalarFullHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkCpuScalarSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+await checkBufferLeaseSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkNormalizedArgmaxLeaseSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkResidualRmsCellSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkPackedArraySourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateInputSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+await checkResidualRmsTailSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateAccumulateSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+await checkResidualRmsOutputSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkResidualRmsLoopSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxRmsOutputSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateWeightSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateLoopSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateProjectionSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateTailSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkArgmaxShuffleSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkArgmaxFinalStoreSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+await checkMlxRmsLoopSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxRmsHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateRowSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkNormalizedScoreSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkArgmaxTraversalSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkArgmaxScratchSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineLiftSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+await checkMlxRmsReductionSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDot4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDot4LoopSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDot4FunctionSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxRmsHeadSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkArgmaxLaunchSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatePointerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownSetupSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxQmvHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxQmvInput4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxQmvDot4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxQmvFast4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxQmvDelta48SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownFoldSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownBuiltinSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxSdpaTwoPassMergeSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxOutputGateSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxOutputGateUnarySourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxOutputGateBinarySourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxOutputGateHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedStepSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedPointerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedOutputSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAttentionGateCopyFreshRowSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAttentionGateCopyFreshSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatherFrontSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxKvConcatHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDequantizeSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkLogSumExpSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAttentionGateCopyFreshReadBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAttentionKvCallerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDeltaConstructedPreparationSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkQwen38CopiedAttentionSamplerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxAttentionGateReshapeSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxAttentionQueryCopySourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAttentionGateCopyCallerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGateHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedRms128SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkGatedRms128HostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkSiluHeads128SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkSiluHeads128HostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDeltaFusedCallerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxDepthwiseConvSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxDepthwiseConvModelBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxLogAddExpSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkComputeGHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDeltaBetaSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineOuter3SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownPartialSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownScratchSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxSdpaTwoPassSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineOuter4LifecycleSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDot3SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineDot3FunctionSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineInput3SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownLoopSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownInitialSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxSdpaMergeSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineInput4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffinePreload4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineOutputSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineRowHostSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkAffineOuter4SourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownPointerSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownDispatchSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownControlSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkDownStepSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxRopeSingleSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxSdpaVectorSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMlxSdpaScoreSourceBinding({ selfTest: process.argv.includes("--self-test") });
+
+const dir = await mkdtemp(join(tmpdir(), "mlx-bun-proof-"));
+async function checkProof(name: string, text: string, build = false) {
+  const path = join(dir, name);
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, `import Lean\n${text}\n${audit}`);
+  return run(["-R", dir, ...(build ? ["-o", path.replace(/\.lean$/, ".olean")] : []), path], dir);
+}
+
+try {
+  const jobsIndex = process.argv.indexOf("--jobs");
+  const jobs = jobsIndex < 0 ? 1 : Number(process.argv[jobsIndex + 1]);
+  const proofSources = new Map(await Promise.all(proofFiles.map(async file =>
+    [file, await Bun.file(new URL(file, import.meta.url)).text()] as const)));
+  await buildProofs(proofSources, jobs, async (file, source) => {
+    console.log(`Checking ${file}...`);
+    const result = await checkProof(file, source, true);
+    process.stdout.write(result.output);
+    if (result.code !== 0 || result.output.includes("sorryAx") || !result.output.includes("Axiom audit passed:")) {
+      throw new Error(`Lean did not establish ${file} without forbidden assumptions.`);
+    }
+  });
+
+  if (process.argv.includes("--self-test")) {
+    for (const [name, { source, expected }] of sources) {
+      let rejected = false;
+      try { checkSource(name, source + "\n// source mutation\n", expected); } catch { rejected = true; }
+      if (!rejected) throw new Error(`Source mutation was accepted: ${name}`);
+    }
+    // Small prefix retains the arithmetic contract and its dependencies, avoiding
+    // repeated exhaustive floating-point checking for deliberately broken proofs.
+    const source = await Bun.file(new URL("kernels/trellis/Codebook.lean", import.meta.url)).text();
+    const proof = source.split("namespace PackedState")[0]! + "\nend Inference.Kernels.Trellis.Codebook\n";
+    const wrongClaim = proof.replace("implementation s = specification s :=", "implementation s = specification s + 1 :=");
+    const assumedClaim = proof.replace(
+      /theorem correct[\s\S]*?(?=\ntheorem range)/,
+      "axiom injected : ∀ s, implementation s = specification s\n" +
+      "theorem correct (s : BitVec 32) : implementation s = specification s := injected s\n",
+    );
+    const nativeProof = proof.replace("import Std\n", "import Std.Tactic.BVDecide\n").replace(
+      /theorem packedSum_bound[\s\S]*?(?=\ntheorem correct)/,
+      "theorem packedSum_bound (x : BitVec 32) : packedSum x ≤ 1020 := by\n  unfold packedSum\n  bv_decide\n",
+    );
+    const uncheckedTheorem = proof + "\nnamespace Inference\naxiom newAssumption : False\ntheorem newClaim : False := newAssumption\nend Inference\n";
+    const proofHole = proof + "\nnamespace Inference\ntheorem missingProof : False := by sorry\nend Inference\n";
+    for (const [name, text, axiomCheck] of [
+      ["FalseContract", wrongClaim, false],
+      ["AssumedContract", assumedClaim, true],
+      ["NativeComputation", nativeProof, true],
+      ["NewUncheckedTheorem", uncheckedTheorem, true],
+      ["ProofHole", proofHole, true],
+    ] as const) {
+      if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
+      const rejected = await checkProof(`${name}.lean`, text);
+      if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
+      if (axiomCheck && !rejected.output.includes("Forbidden axiom")) {
+        throw new Error(`${name} failed before the axiom audit:\n${rejected.output}`);
+      }
+    }
+    console.log("Negative checks passed: source drift, false claims, custom axioms, native computation, unaudited additions, and proof holes rejected.");
+  }
+} finally {
+  await rm(dir, { recursive: true, force: true });
+}
+console.log(`Checked ${proofFiles.length} proof modules.`);
+console.log("Permitted axioms: propext, Classical.choice, Quot.sound. No native proof evaluation.");
+console.log("Mathematical scope: conditional one-token M1 Max Qwen inference covers quantized embedding, 48 Delta and 16 attention layers, final normalization, all 248320 logits, logsumexp, greedy selection and cache feedback through 262144 steps. Parameter and primitive contracts derive intermediate finiteness and ranges, including a 2^18 logit bound. Error budgets compare with a real-valued reference consuming the same emitted tokens; independent exact-real token agreement requires winner margins. A useful final accuracy guarantee remains open. Prefill, batching and adapters are outside this result.");
+console.log("Parsed Delta recurrence: selected one-token pointers and four-cell register initialization feed source-ordered decay, prediction, correction and readout. Parsed time control, BF16 output and FP32 state stores execute on the original mixed schedule for every protected input prefix. The model join reaches the actual gated-normalization input and retained recurrent cache heap. Reviewed host selection pins the unmasked inference route, Tin, templates, dtypes and dispatch; native descriptors, compiler contraction and SIMD primitives remain explicit.");
+console.log("Parsed Delta preparation/tail: native depthwise convolution, fixed-width128 BF16 SiLU/Q/K/V heads and gated RMS normalization now derive source operations and output stores on the original traces. Q/K/V survive gate writes into recurrence; normalization reaches the actual three/four-bit output projection. QKV/Z custom projection certificates and native four-bit A/B certificates share the original ordered phase. The typed computeG host graph parses cast/exp/neg/BF16-add/logaddexp/mixed-multiply/exp and reaches the actual FP32 gate buffer under finite inputs; BF16 beta uses the parsed48-cell unary schedule. Guarded host token extraction, compiler graph preservation and native max/min equality policy remain explicit.");
+console.log("Copied attention source path: constructed Q projection, strided gate reshape copy, K/V projections, query copy, head RMS, RoPE, cache append, all three SDPA cases and gate/output projection share one sequence of current heaps. Separate initial and positive-capacity factories now use the original projection, normalization and Trellis parameters. Native descriptors, source selection and cache-route eligibility remain explicit.");
+console.log("Parsed Trellis composition: FTZ gate/up arithmetic, typed tails, BF16 stores, down partial/fold and residual output are joined on the same MLP heap. Original packed/scales checkpoint attachments and host shape/TAIL selection feed these source certificates. They compose over the existing parameter-backed64-stage constructor into actual hidden/logit heap reads and its conditional real-error theorem. That constructor retains its existing attention-prefix model; the newer copied-attention source construction is separate. Native compiler/ABI/descriptor attachment and device execution remain explicit.");
+console.log("Constructed Delta source pipeline: original input RMS and all four projections join convolution, SiLU/head normalization, computeG/beta, recurrence, gated RMS, output affine and Trellis on the original parameter/current-heap trace. Finite inputs derive from the model certificate; no expected intermediate register/output premise is added.");
+console.log("Copied-attention model chains retain actual copied-prefix events through all 64 layers, final normalization/projection, all 248320 logit reads and updated caches. The generic older route remains a model. Separate source-backed initial and positive-capacity chains use the original layer bundles, with direct zero first-token initialization and parsed positive preservation, row updates and all three SDPA cases. Native descriptor, compiler and completion correspondence remain explicit.");
+console.log("Embedding gather source: complete parsed front-gather/index-helper loops select actual bounded token words and read the original packed/scales/biases buffers at every protected copy prefix. Reviewed native host selection derives one-word and two-BF16 per-thread programs with signed-index bounds; the existing schedules and buffers are retained. Exact source guards also bind the runtime takeAxis caller and native gather selection.");
+console.log("Embedding dequantization source: selectedbf16/64/4 parsing derives byte masks/casts, ordered two-cell BF16 arithmetic and stores at every current output prefix. Host dispatch, existing gather schedules, output heap and conditional embedding error compose without assumed output values. Native compiler contraction/descriptor/physical scheduling remain explicit.");
+console.log("Log-sum-exp source: parsed bounded four-cell reads, ordered max/rescale/sums, both scratch phases and final BF16 store reach the existing sampler heap. The source-selected1024-thread pipeline bound, descriptor attachment, native exp/log/SIMD and contraction remain explicit.");
+console.log("Token source composition links actual embedding output bytes to the copied model input, final RMS/head projection and source-derived log-sum-exp/argmax/token store. The indexed constructor selects the initial or positive-capacity chain and uses one original parameter bundle for embedding, all 64 layers and final normalization/head. Native attachments, sampler primitives and cache-route eligibility remain explicit.");
+console.log("Initial copied model chain: the cache-zero 64-stage factory uses direct zero initialization and supported copied/donated first-token cache preservation without an empty concatenate. It constructs parsed attention prefixes and residual/Trellis suffixes from original parameters and retains caches through the final sampler heap. Positive-capacity construction has the same original-parameter and heap linkage.");
+console.log("Checkpoint-derived copied token source: literal checkpoint bounds, generated RoPE inputs and normal-input rsqrt/exact-division selection derive all 64 layer finite contracts and the final logit envelope. Native inputs bind their capacity predicate to the actual cache index. A reached-state sequence composes initial and positive source factories: each next embedding consumes the previous uint32 token and cache heap, with the same original parameter bytes retained. Token/cache reads equal the checkpoint-derived logical recurrence. Constructive copied-source initialization and indexed first/later-token arenas now derive all reached layer/token allocation plans and spatial protection from the original storage, dispatch choices and one cumulative address-space bound. Cache reuse/growth is selected automatically. The actual uint32 producer, next embedding and retained caches share the constructed heap. Native attachments, physical allocation success, compiler lowering and command scheduling remain explicit.");
+console.log("Memory refinement: concrete shared-heap kernel/layer constructors connect embedding, all decode stages, final projection, sampling and subsequent tokens. Final token and every updated cache are read from one resulting heap. Finite reachable traces require raw allocation plans only for actual predecessor states; they do not require an allocator for every possible heap. Head RMS supports fresh and donated Q/K buffers; RoPE preserves actual dynamic bases. Both dispatched SDPA routes, mixed Delta state/output writes, Trellis scratch/output phases and sampling local/global memories retain their read and frame proofs.");
+console.log("Parameter continuity: strong Delta and attention constructors consume the original parameter bundle, and the graph cursor selects each stage from one carried global bundle. Initialized finite token traces preserve that same embedding/graph bundle from the loaded initial heap through token stores, cache initialization, every layer and subsequent sampling. Checkpoint dictionary certificates supply the complete numerical Parameters contract to these memory-level results; ordered encodings, exact model bindings and primitive contracts remain explicit.");
+console.log("Constructible copied-source sequence: the actual guarded copied Q/K/V and gate route, original O weights, residual/Trellis suffix, final head and sampler are constructed without supplied initializer, layer or per-token plans. One monotone frontier derives fresh regions and preserves prior token/cache/parameter spans. The first state is produced by actual token/cache initialization. The exact indexed footprint is summed over all reached calls; a conservative 2^57-byte cumulative reservation budget covers 262144 calls, plus 153944080 initialization bytes. This is abstract 64-bit address headroom, not physical RAM fit, peak residency, native allocation success or lifetime recycling. Source certificates still require reached native metadata/descriptor and primitive attachments.");
+console.log("Produced scalar sources: selected parsed CPU zero construction and BF16/FP32 stores produce the exact scalar prefix heap used by parsed cache initialization. Current-heap scalar views survive every reached copied-source call. Initial and growth attention stages derive scalar-source witnesses and destination bounds from their constructed arenas; gate links and fresh final-normalization ownership are derived as well. Remaining attachments do not supply expected zero buffers or completed layer/token plans. Native C++ frontend and primitive/ABI conformance, per-call array identity and sharing, descriptor attachment and CPU/GPU coherence remain explicit boundaries; no native constant-sharing or physical-memory claim is established.");
+console.log("Constructible layouts for the older generic modeled route: parsed cache initialization, the direct BF16 first-token KV branch, and every subsequent token through 262144 are constructed from the original checkpoint bundle, fresh address-space bounds and primitive/dispatch contracts, with no supplied graph/token plan or per-step execution oracle. Initial KV allocation derives zero slabs, optional preservation copies, row updates and the active head stride. The exact first-token heap feeds the constructed continuation. A checkpoint adapter now accepts only the reached normal-input rsqrt envelopes and derives division bounds internally, preserving original functions and proving token selection with the lowest-index tie rule. Parameter bytes remain unchanged; readback has the reference cache ranges, propagated error bounds and finiteness. The conservative retained bump-address budget for 262143 later steps is 127015766109984 bytes. This address-space construction does not establish physical-memory fit, scratch reuse or native allocator ownership.");
+console.log("Checkpoint coverage: checked literals cover 129 main and 32 head normalization vectors, 144 Delta tensors, 192 Trellis scale tensors and 48 convolution tensors. Affine dictionaries cover distinct scale/bias alphabets from 612 tensors; ordered indices remain explicit inputs. Lean byte constructors establish exact parameter attachment and a fixed-point property. Native parsing/loading and specified host RoPE/head-scale results remain boundary contracts.");
+console.log("Native paths proved: 0. Selected scalar/vector/general copy kernels have checked parser/body and current-heap load/store refinements, including completed interleavings. Trellis integer codebook, reciprocal-based bit construction, cooperative table initialization and packed-window lookup have parsed-source refinements; parsed caller loops now derive packed word arrays and gate input chunks from original bytes. The parsed gate/up inner loops read original packed/scale/input bytes and refine the original lane specification without reassociation; accumulator initialization, SIMD projection and typed tail expressions have source bridges. Parsed row distribution and the lane-zero writer generate exact BF16 output stores in the current destination heap, with unique dispatch and outside-buffer preservation; Parsed gate/up pointer setup derives all private arrays from the original byte heap and propagates through the same lane, projection, tail and completed output schedule. Selected down-projection template, lane setup, builtin dispatch, active/row controls and typed row pointers now derive original packed arrays and input/scale loads. Parsed window and multiply-then-FMA statements consume those bytes and the actual current codebook heap. Parsed pair/tail/u/i loop headers now derive the entire down lane sequence from zero initialization, covering all 136 rows with separate standard/flushing variants. Parsed scratch alias, indices and all 256 thread programs now reuse the completed read-phase trace and derive current scratch bits/bytes, including represented NaN payloads. The partial producer parses its c-loop, group declarations, guard, positive-zero initializer, ordered four-way rounded add and 64-bit store address with no wrap. The parsed partial stores and final float4 fold now reuse the same native traces and current partial heap, reaching exact BF16 output bits/bytes. Reviewed host selection derives actual templates, intermediate shape/dtype and both dispatch geometries; parsed builtins derive producer split/block/lane indices. The model join uses the same preceding middle heap and carries the existing numerical bound to its actual output buffer. Standard and flush-to-zero gate/up weight/FMA interpretations are now explicitly separate and preserve source order. Residual RMS parses both loop schedules, current-heap cells, reduction tail and output stores through the exact completed normalized heap. MLX RMS joins the selected no-copy host route and native thread limit with parsed full/tail loops, current-heap BF16 first-pass cells, original FMA folds, both SIMD reductions, three barriers, inverse production, pointer updates and output stores through the exact normalized heap, including donated input. The selected 256-wide Q/K head path now parses actual cached captures, nonzero row pointers, original first-pass sums, shared reduction/inverse phases and donated-buffer output writes. An interleaved ownership simulation and query-to-key chain reach the exact existing final heap. Selected BF16 single-position partial RoPE now parses angles, loads, forward arithmetic and stores; copied/donated query24 then key4 execution reaches the same final heap and preserves untouched head tails. Selected one-pass SDPA derives source pointers, scaled captured-query loads, key loads from protected current heaps and exact strided key visits. Parsed ordered score folds, SIMD sum, max/exp updates and complete per-group partials consume current bytes without expected-score/partial premises. The unconditional short-cache dispatch range is below 1024; larger transitions depend on an explicit native architecture suffix. For donated one-pass SDPA, parsed cross-group summary writes, max/exp/sum merge, all eight scratch-transpose phases, barriers, divisions and BF16 stores now reach the same output heap. Complete source partitions supply summary and transpose provenance without expected intermediate values. The model join identifies that heap with the gate input and carries the existing real softmax error bound. The ordinary two-pass first phase now parses block-strided visits, six pointer cells, ordered SIMD score/update and mixed FP32-summary/BF16-partial stores; source partitions derive the actual second-pass readState with its BF16 narrow/widen step. Fresh-output one-pass now proves protected current query/cache reads, parsed complete partitions, summary/transpose provenance and final output schedules; both one-pass ownership branches feed the same layer gate heap. Contiguous query descriptor geometry remains explicit. Two-pass source merging now derives chunk reads from the actual first temporary heap, ordered SIMD/max/exp/sum/numerator/transposes and final stores, proving all output prefixes preserve first-phase reads. It joins the actual model gate heap and error contract, including architecture-independent long-cache selection under default override. Parsed BF16 sigmoid/multiply cells and selected width-one unary/binary traversals now execute the actual gate schedules, preserving current-heap reads and reaching the affine projection input. Contiguous native descriptor selection remains explicit. Native metadata/descriptor attachment and physical primitive/barrier conformance remain explicit. Argmax parses normalized scoring, bounded partial traversal, comparator/shuffle phases, local scratch stores/barriers and the final uint32 store. Unique candidate origins retain exact signed-zero bits through shuffle, and scratch execution uses actual heaps; Parsed global partial stores, finish traversal and reads, scratch merges and final token store now form a whole-sampler certificate through the same partial-output heap, concluding exact greedy-token readback without desired phase outputs as premises. The parsed affine MLXQ_F macro refines the existing exact masked-integer theorem. The four-bit qdot source now binds initialization, uint16 pointer reinterpretation, ordered accumulation body, all four loop visits and final scale/bias expression to the tile model. Finite binary32 addition commutativity bridges the final operand order with exact signed-zero preservation. Parsed input preparation and shared preload construct one completed scratch bank from the actual activation heap. Every subsequent protected output-store prefix uses that same scratch with original packed weights, scales and biases. Parsed outer K visits, pointer/scalar reads and ordered four-row updates derive the original lane registers. SIMD output reduction and BF16 stores reach the existing projection heap. A reviewed host translation derives complete 16-SIMD custom-row launches and excludes small 48-row projections. The four-bit lifecycle constructs one initial preload before quantifying over every protected output prefix. Its layer and final-head joins identify the actual output bytes with the original projection and inherit the numerical bound. Three-bit parsed qdot now derives the two ordered packed-byte iterations and all ten body updates per iteration, including split fields and their separately rounded scale factors. Its BF16 input preparation and producer-owned preload are parsed, and the three-bit lifecycle constructs one preload outside all later prefixes, actual parsed qdot call witnesses, ordered K/row accumulation and final output stores. The common custom three/four-bit layer source certificate reaches its actual output buffer. The distinct upstream MLX four-bit route now binds reviewed host selection, parsed private input loads, uint16 masks/casts, qdot loops, native K/row traversal, pointer updates and BF16 stores to the same output heap for every protected prefix. Its native two-SIMD branch reaches Delta48 A/B consumer buffers and existing projection bounds without assuming native architecture suffix or expected registers. Compiler lowering, helper interpretation and actual descriptor attachment remain explicit. Wrapper selection, native metadata and compiler contraction remain explicit. The BF16 Add helper and selected full binary_vv body have parsed-source and separate-load/store interleaving refinements; the residual MLP suffix uses their exact final heap. Physical builtin arithmetic remains a declared machine contract. Manual host translations select the default serial, unpaged, one-token BF16 M1 Max route and dispatch geometry. Trusted byte/hash guards bind these translations to source. Logical IEEE/FTZ division proves the mathematical division envelopes; actual instruction selection remains a boundary. Compiler lowering, native object/buffer extraction, command scheduling/visibility, checkpoint loading, allocator lifetimes and hardware arithmetic remain explicit boundaries. No GPU execution is part of this checker.");

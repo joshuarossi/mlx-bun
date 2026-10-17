@@ -1,0 +1,7 @@
+name = "inferenceProofs"
+version = "0.1.0"
+
+[[require]]
+name = "floatlib"
+git = "https://github.com/lean-dojo/FloatLib"
+rev = "1f5771b3e36a98f17fcac2c6d76aaa024b36aa37"

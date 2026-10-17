@@ -1,0 +1,214 @@
+import kernels.quantization.AffinePreload4Syntax
+import kernels.quantization.AffineLayout
+namespace Inference.Kernels.Quantization.AffinePreload4Source
+open Contracts.Mlx Contracts.Mlx.Numerics
+open FloatLib FloatLib.Floats FloatLib.Floats.Formats.BinaryInterchange
+open AffinePreload4Syntax
+set_option maxRecDepth 10000
+set_option maxHeartbeats 1000000
+attribute [local irreducible] AffinePreload4Syntax.parse AffineInput4Syntax.parse AffineScratch4Source.parse
+
+def sourceVisits (steps : Nat) (simd : Fin 16) (lane : Fin 32) : Option (List Nat) := do
+  let h ←parse sourceHeader
+  let groups ←parseGroups sourceGroups
+  AffineInput4Source.visits 1 (simd.val*h.lanes+lane.val) (steps*512/h.divisor) (groups*h.strideLanes)
+
+theorem source_visits (hsteps : steps≤15) (simd : Fin 16) (lane : Fin 32) :
+    sourceVisits steps simd lane=some (if simd.val*32+lane.val<steps*32 then [simd.val*32+lane.val] else []) := by
+  have limit : steps*512/16=steps*32 := by omega
+  have last : ¬simd.val*32+lane.val+512<steps*32 := by omega
+  simp only [sourceVisits,parsed_header,parsed_groups]
+  by_cases active : simd.val*32+lane.val<steps*32
+  all_goals simp [AffineInput4Source.visits,header,limit,last,active]
+
+theorem owner_visits (hsteps : steps≤15) (chunk : Fin (steps*32)) :
+    sourceVisits steps (AffineLayout.preloadOwner hsteps chunk).1 (AffineLayout.preloadOwner hsteps chunk).2=some [chunk.val] := by
+  rw [source_visits hsteps,AffineLayout.preload_owner hsteps chunk]
+  simp only [chunk.isLt,ite_true]
+
+theorem unique_owner (simd other : Fin 16) (lane another : Fin 32)
+    (equal : simd.val*32+lane.val=other.val*32+another.val) : simd=other ∧ lane=another :=
+  AffineLayout.preload_unique simd other lane another equal
+
+-- Arithmetic preceding and following the signed cast is representable. The
+-- selected loop therefore performs the natural-number visits above unchanged.
+theorem source_integer_bounds (hsteps : steps≤15) (simd : Fin 16) (lane : Fin 32) :
+    simd.val*32<2^32 ∧ simd.val*32+lane.val<2^31 ∧
+    simd.val*32+lane.val+512<2^31 ∧ steps*512≤7680 := by
+  have := simd.isLt; have := lane.isLt; omega
+
+variable (p : AffineTile.Platform) {x : Fin (steps*32) → Fin 16 → AffineInput.BF}
+  (buffers : ∀ chunk, ArrayStorage.BFBuffer (x chunk))
+
+def privateCells (chunk : Fin (steps*32)) : Nat → Float32 :=
+  MemoryCells.execute (AffineInput4Source.stores p.divide (buffers chunk).bytes (buffers chunk).base
+    AffineInput4Syntax.body [0,4,8,12]) (fun _ => 0)
+def chunkSum (chunk : Fin (steps*32)) : Float32 :=
+  AffineInput4Source.sum (buffers chunk).bytes (buffers chunk).base AffineInput4Syntax.body [0,4,8,12]
+def ssStore (chunk : Fin (steps*32)) : MemoryCells.Store Float32 := ⟨steps*32*16+chunk.val,chunkSum buffers chunk⟩
+def xsStore (chunk : Fin (steps*32)) (column : Fin 16) : MemoryCells.Store Float32 :=
+  ⟨chunk.val*16+column.val,privateCells p buffers chunk column.val⟩
+def chunkProgram (chunk : Fin (steps*32)) : List (MemoryCells.Store Float32) :=
+  ssStore buffers chunk::(List.finRange 16).map (xsStore p buffers chunk)
+
+-- Parsing both the loader and its caller produces the same ordered writes:
+-- ss first, followed by the sixteen private-to-threadgroup xs copies.
+def sourceProgram (chunk : Fin (steps*32)) : Option (List (MemoryCells.Store Float32)) := do
+  let h ←AffineScratch4Source.parse AffineScratch4Source.sourcePublish
+  if h.inputWidth≠16 ∨ h.start≠0 ∨ h.bound≠16 then none else do
+    let (sum,cells) ←AffineInput4Source.execute p.divide (buffers chunk).bytes (buffers chunk).base (fun _ => 0)
+    pure (⟨steps*32*16+chunk.val,sum⟩::AffineScratch4Source.copies (chunk.val*h.outputWidth) cells)
+
+theorem source_program (chunk : Fin (steps*32)) : sourceProgram p buffers chunk=some (chunkProgram p buffers chunk) := by
+  simp only [sourceProgram,AffineScratch4Source.parsed_publish]
+  change (do let (sum,cells) ←AffineInput4Source.execute p.divide (buffers chunk).bytes (buffers chunk).base (fun _ => 0)
+             pure ((⟨steps*32*16+chunk.val,sum⟩ : MemoryCells.Store Float32)::AffineScratch4Source.copies (chunk.val*16) cells))=_
+  simp only [AffineInput4Source.execute,AffineInput4Syntax.parsed_initializer,AffineInput4Syntax.parsed_loop,
+    AffineInput4Syntax.parsed_return]
+  rfl
+
+def threadProgram (thread : Fin 512) : List (MemoryCells.Store Float32) :=
+  if h : thread.val<steps*32 then chunkProgram p buffers ⟨thread.val,h⟩ else []
+def programs : List (List (MemoryCells.Store Float32)) := (List.finRange 512).map (threadProgram p buffers)
+
+def sourceThread (thread : Fin 512) : Option (List (MemoryCells.Store Float32)) := do
+  let visits ←sourceVisits steps ⟨thread.val/32,by have := thread.isLt; omega⟩ ⟨thread.val%32,by omega⟩
+  match visits with
+  | [] => some []
+  | [index] => if h : index<steps*32 then sourceProgram p buffers ⟨index,h⟩ else none
+  | _ => none
+
+theorem source_thread (hsteps : steps≤15) (thread : Fin 512) :
+    sourceThread p buffers thread=some (threadProgram p buffers thread) := by
+  unfold sourceThread
+  rw [source_visits hsteps]
+  have reconstruction : thread.val/32*32+thread.val%32=thread.val := by omega
+  simp only [reconstruction]
+  by_cases active : thread.val<steps*32
+  · simp [active,threadProgram,source_program]
+  · simp [active,threadProgram]
+
+theorem member_origin {store : MemoryCells.Store Float32} (member : store∈(programs p buffers).flatten) :
+    ∃ chunk, store=ssStore buffers chunk ∨ ∃ column, store=xsStore p buffers chunk column := by
+  obtain ⟨thread,outer,inner⟩ := List.mem_flatten.mp member
+  obtain ⟨owner,_,rfl⟩ := List.mem_map.mp outer
+  unfold threadProgram at inner
+  split at inner
+  next active =>
+    refine ⟨⟨owner.val,active⟩,?_⟩
+    rcases List.mem_cons.mp inner with head|tail
+    · exact Or.inl head
+    · obtain ⟨column,_,equal⟩ := List.mem_map.mp tail
+      exact Or.inr ⟨column,equal.symm⟩
+  next => simp at inner
+
+theorem chunk_member (hsteps : steps≤15) (chunk : Fin (steps*32)) : chunkProgram p buffers chunk∈programs p buffers := by
+  have bounded : chunk.val<512 := by have := chunk.isLt; omega
+  apply List.mem_map.mpr
+  refine ⟨⟨chunk.val,bounded⟩,List.mem_finRange _,?_⟩
+  simp only [threadProgram,chunk.isLt,↓reduceDIte]
+
+theorem xs_completed (hsteps : steps≤15) {schedule after}
+    (execution : ThreadgroupWrites.Executes (programs p buffers) schedule after)
+    (barrier : ThreadgroupWrites.AtBarrier after) (before : Nat → Float32)
+    (chunk : Fin (steps*32)) (column : Fin 16) :
+    MemoryCells.execute schedule before (chunk.val*16+column.val)=privateCells p buffers chunk column.val := by
+  apply MemoryCells.completed_value execution barrier
+  · intro store member equal
+    obtain ⟨other,ss|⟨offset,xs⟩⟩ := member_origin p buffers member
+    · subst store
+      have := chunk.isLt; have := column.isLt
+      dsimp [ssStore] at equal
+      omega
+    · subst store
+      have same := AffineLayout.scratch_injective other chunk offset column equal
+      rcases same with ⟨rfl,rfl⟩
+      rfl
+  · refine ⟨xsStore p buffers chunk column,List.mem_flatten.mpr ⟨chunkProgram p buffers chunk,
+      chunk_member p buffers hsteps chunk,?_⟩,rfl⟩
+    exact List.mem_cons_of_mem _ (List.mem_map.mpr ⟨column,List.mem_finRange _,rfl⟩)
+
+theorem ss_completed (hsteps : steps≤15) {schedule after}
+    (execution : ThreadgroupWrites.Executes (programs p buffers) schedule after)
+    (barrier : ThreadgroupWrites.AtBarrier after) (before : Nat → Float32) (chunk : Fin (steps*32)) :
+    MemoryCells.execute schedule before (steps*32*16+chunk.val)=AffineInput.summed (x chunk) AffineInput.groups4 := by
+  apply MemoryCells.completed_value execution barrier
+  · intro store member equal
+    obtain ⟨other,ss|⟨offset,xs⟩⟩ := member_origin p buffers member
+    · subst store
+      have same : other=chunk := Fin.ext (by simpa [ssStore] using equal)
+      subst other
+      exact AffineInput4Source.sum_eq (buffers chunk)
+    · subst store
+      have := other.isLt; have := offset.isLt
+      dsimp [xsStore] at equal
+      omega
+  · refine ⟨ssStore buffers chunk,List.mem_flatten.mpr ⟨chunkProgram p buffers chunk,
+      chunk_member p buffers hsteps chunk,by simp [chunkProgram]⟩,rfl⟩
+
+def scratch (memory : Nat → Float32) : AffineScratch4Source.Scratch :=
+  ⟨memory,fun chunk => memory (steps*32*16+chunk)⟩
+
+theorem completed_scratch (hsteps : steps≤15) {schedule after}
+    (execution : ThreadgroupWrites.Executes (programs p buffers) schedule after)
+    (barrier : ThreadgroupWrites.AtBarrier after) (before : Nat → Float32) :
+    ∀ chunk : Fin (steps*32),
+      (scratch (steps:=steps) (MemoryCells.execute schedule before)).ss chunk.val=AffineInput.summed (x chunk) AffineInput.groups4 ∧
+      ∀ packed packedBase i j, AffineDot4Source.input
+        (AffineScratch4Source.dotMemory packed packedBase chunk.val (scratch (steps:=steps) (MemoryCells.execute schedule before))) i j=
+          AffineTile.prepared4 p (x chunk) i j := by
+  intro chunk
+  refine ⟨ss_completed p buffers hsteps execution barrier before chunk,?_⟩
+  intro packed packedBase i j
+  have cell := xs_completed p buffers hsteps execution barrier before chunk (AffineInput.index4 i j)
+  have prepared := AffineInput4Source.private_cells p (buffers chunk) (fun _ => 0) i j
+  have index : (AffineInput.index4 i j).val=4*i.val+j.val := by simp [AffineInput.index4,Nat.mul_comm]
+  rw [index] at cell
+  simpa only [AffineDot4Source.input,AffineScratch4Source.dotMemory,scratch,Nat.add_assoc] using cell.trans prepared
+
+-- The completed state is constructible, in addition to being correct for any
+-- legal completed interleaving. No finished scratch image is assumed.
+theorem canonical_scratch (hsteps : steps≤15) (before : Nat → Float32) :
+    ∃ schedule after, ThreadgroupWrites.Executes (programs p buffers) schedule after ∧
+      ThreadgroupWrites.AtBarrier after ∧
+      ∀ chunk : Fin (steps*32),
+        (scratch (steps:=steps) (MemoryCells.execute schedule before)).ss chunk.val=AffineInput.summed (x chunk) AffineInput.groups4 ∧
+        ∀ packed packedBase i j, AffineDot4Source.input
+          (AffineScratch4Source.dotMemory packed packedBase chunk.val (scratch (steps:=steps) (MemoryCells.execute schedule before))) i j=
+            AffineTile.prepared4 p (x chunk) i j := by
+  exact ⟨_,_,ThreadgroupWrites.canonical _,ThreadgroupWrites.canonical_barrier _,
+    completed_scratch p buffers hsteps (ThreadgroupWrites.canonical _) (ThreadgroupWrites.canonical_barrier _) before⟩
+structure SourceTrace (schedule : List (MemoryCells.Store Float32)) (after : List (List (MemoryCells.Store Float32))) : Prop where
+  sourceOwned : ∀ thread, sourceThread p buffers thread=some (threadProgram p buffers thread)
+  barrierParsed : parseBarrier sourceBarrier=some ()
+  execution : ThreadgroupWrites.Executes (programs p buffers) schedule after
+  completed : ThreadgroupWrites.AtBarrier after
+
+theorem canonical_source_scratch (hsteps : steps≤15) (before : Nat → Float32) :
+    ∃ schedule after, SourceTrace p buffers schedule after ∧
+      ∀ chunk : Fin (steps*32),
+        (scratch (steps:=steps) (MemoryCells.execute schedule before)).ss chunk.val=AffineInput.summed (x chunk) AffineInput.groups4 ∧
+        ∀ packed packedBase i j, AffineDot4Source.input
+          (AffineScratch4Source.dotMemory packed packedBase chunk.val (scratch (steps:=steps) (MemoryCells.execute schedule before))) i j=
+            AffineTile.prepared4 p (x chunk) i j := by
+  exact ⟨_,_,⟨source_thread p buffers hsteps,parsed_barrier,ThreadgroupWrites.canonical _,ThreadgroupWrites.canonical_barrier _⟩,
+    completed_scratch p buffers hsteps (ThreadgroupWrites.canonical _) (ThreadgroupWrites.canonical_barrier _) before⟩
+
+theorem outside_frame {schedule after} (execution : ThreadgroupWrites.Executes (programs p buffers) schedule after)
+    (before : Nat → Float32) (word : Nat) (outside : steps*32*17≤word) :
+    MemoryCells.execute schedule before word=before word := by
+  apply MemoryCells.frame
+  intro store member equal
+  have origin : store∈(programs p buffers).flatten := by
+    have conservation := ThreadgroupWrites.conservation execution
+    exact conservation.mem_iff.mpr (List.mem_append_left _ member)
+  obtain ⟨chunk,ss|⟨column,xs⟩⟩ := member_origin p buffers origin
+  · subst store
+    have := chunk.isLt
+    dsimp [ssStore] at equal
+    omega
+  · subst store
+    have := chunk.isLt; have := column.isLt
+    dsimp [xsStore] at equal
+    omega
+end Inference.Kernels.Quantization.AffinePreload4Source
