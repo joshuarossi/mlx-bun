@@ -1,5 +1,5 @@
 import models.qwen.Delta48NativeParsedAffine4
-import layers.AffineParsedSource
+import layers.AffineRouteParsedSource
 
 namespace Inference.Models.Qwen.DeltaParsedProjections
 open Contracts.Mlx Layers Kernels.Delta
@@ -9,14 +9,15 @@ set_option maxRecDepth 2000
 variable {layer : DeltaNet.Layer} {input : Fin 5120 → ArrayStorage.BF}
   (phase : DeltaAffineMemory.Execution layer input)
 
--- QKV and Z use the custom complete-row wrapper. The 48-element A and B
--- projections use the native four-bit route, whose two-SIMD layout differs.
--- All four certificates refer to the executions in this one ordered phase.
+-- QKV and Z take the executed route of their stored width: three-bit uses
+-- the custom complete-row wrapper, four-bit MLX qmv_fast. The 48-element A and
+-- B projections are always four-bit qmv_fast. All four certificates refer to
+-- the executions in this one ordered phase.
 structure Certificate (a b : AffineVerifyLinear.Projection4 10 48)
     (ha : layer.a=.bits4 a) (hb : layer.b=.bits4 b)
     (generation : Nat) (size : Char) (before : Nat → Float32) : Prop where
-  qkv : AffineParsedSource.Certificate (steps := 10) (blocks := 160) phase.qkv before
-  z : AffineParsedSource.Certificate (steps := 10) (blocks := 96) phase.z before
+  qkv : AffineRouteParsedSource.Certificate 160 1280 phase.qkv before rfl rfl
+  z : AffineRouteParsedSource.Certificate 96 768 phase.z before rfl rfl
   a : AffineNativeParsedSource4.Certificate (blocks := 6)
     (Delta48NativeParsedAffine4.aExecution phase a ha) generation size before
   b : AffineNativeParsedSource4.Certificate (blocks := 6)
@@ -28,10 +29,8 @@ theorem checked (a b : AffineVerifyLinear.Projection4 10 48)
     (qkvFinite : layer.qkv.Finite input) (zFinite : layer.z.Finite input)
     (aFinite : a.Finite input) (bFinite : b.Finite input) :
     Certificate phase a b ha hb generation size before :=
-  ⟨AffineParsedSource.checked (steps := 10) (blocks := 160) (p := layer.qkv)
-      phase.qkv before (by decide) (by decide) qkvFinite,
-    AffineParsedSource.checked (steps := 10) (blocks := 96) (p := layer.z)
-      phase.z before (by decide) (by decide) zFinite,
+  ⟨AffineRouteParsedSource.checked phase.qkv before (by decide) (by decide) (by decide) qkvFinite rfl rfl,
+    AffineRouteParsedSource.checked phase.z before (by decide) (by decide) (by decide) zFinite rfl rfl,
     Delta48NativeParsedAffine4.a_source phase a ha generation size before aFinite,
     Delta48NativeParsedAffine4.b_source phase b hb generation size before bFinite⟩
 
@@ -48,17 +47,15 @@ variable {a b : AffineVerifyLinear.Projection4 10 48}
 
 include source in
 theorem qkv_readback (row : Fin 10240) :
-    phase.qkvBuffer.read row=AffineParsedSource.value (steps := 10) (blocks := 160) phase.qkv row := by
+    phase.qkvBuffer.read row=AffineRouteParsedSource.value phase.qkv row := by
   rw [ArrayStorage.BFBuffer.read_correct]
-  exact (AffineParsedSource.readback (steps := 10) (blocks := 160) (p := layer.qkv)
-    phase.qkv before source.qkv row).symm
+  exact (AffineRouteParsedSource.readback phase.qkv before source.qkv row).symm
 
 include source in
 theorem z_readback (row : Fin 6144) :
-    phase.zBuffer.read row=AffineParsedSource.value (steps := 10) (blocks := 96) phase.z row := by
+    phase.zBuffer.read row=AffineRouteParsedSource.value phase.z row := by
   rw [ArrayStorage.BFBuffer.read_correct]
-  exact (AffineParsedSource.readback (steps := 10) (blocks := 96) (p := layer.z)
-    phase.z before source.z row).symm
+  exact (AffineRouteParsedSource.readback phase.z before source.z row).symm
 
 include source in
 theorem a_readback (head : Fin 48) :
@@ -91,8 +88,7 @@ theorem qkv_error (target error : Fin 5120 → ℝ)
     |Model.toReal (phase.qkvBuffer.read row)-layer.qkv.target target row| ≤
       layer.qkv.budget input target error row := by
   rw [qkv_readback phase source row]
-  exact AffineParsedSource.readback_error (steps := 10) (blocks := 160) (p := layer.qkv)
-    phase.qkv before source.qkv target error inputBound finite row
+  exact AffineRouteParsedSource.readback_error phase.qkv before source.qkv target error inputBound finite row
 
 include source in
 theorem z_error (target error : Fin 5120 → ℝ)
@@ -101,7 +97,6 @@ theorem z_error (target error : Fin 5120 → ℝ)
     |Model.toReal (phase.zBuffer.read row)-layer.z.target target row| ≤
       layer.z.budget input target error row := by
   rw [z_readback phase source row]
-  exact AffineParsedSource.readback_error (steps := 10) (blocks := 96) (p := layer.z)
-    phase.z before source.z target error inputBound finite row
+  exact AffineRouteParsedSource.readback_error phase.z before source.z target error inputBound finite row
 
 end Inference.Models.Qwen.DeltaParsedProjections

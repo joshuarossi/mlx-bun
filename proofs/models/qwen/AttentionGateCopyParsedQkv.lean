@@ -1,5 +1,5 @@
 import models.qwen.AttentionGateCopyKvMemory
-import layers.AffineParsedSource
+import layers.AffineRouteParsedSource
 
 namespace Inference.Models.Qwen.AttentionGateCopyParsedQkv
 open Contracts.Mlx Kernels.Attention Layers
@@ -10,10 +10,12 @@ attribute [local irreducible] List.finRange Copy2D.labels Copy2DMemory.programs
 variable {p : AttentionHeads.Projections} {input : Fin 5120 → ArrayStorage.BF}
   (execution : AttentionGateCopyKvMemory.Execution p input)
 
+-- Each projection takes the executed route of its stored width: three-bit
+-- uses the custom complete-row wrapper, four-bit MLX qmv_fast.
 structure Certificate (before : Nat → Float32) : Prop where
-  query : AffineParsedSource.Certificate (steps:=10) (blocks:=192) execution.q before
-  key : AffineParsedSource.Certificate (steps:=10) (blocks:=16) execution.k before
-  value : AffineParsedSource.Certificate (steps:=10) (blocks:=16) execution.v before
+  query : AffineRouteParsedSource.Certificate 192 1536 execution.q before rfl rfl
+  key : AffineRouteParsedSource.Certificate 16 128 execution.k before rfl rfl
+  value : AffineRouteParsedSource.Certificate 16 128 execution.v before rfl rfl
   copy : ∃ programs,
     MlxAttentionGateCopyMemory.sourcePrograms (execution.gateCopy.source.base+512) execution.gateCopy.base=some programs ∧
     ThreadgroupWrites.Executes programs execution.gateCopy.trace.schedule execution.gateCopy.trace.remaining ∧
@@ -30,21 +32,21 @@ theorem checked (before : Nat → Float32) (queryFinite : p.q.Finite input)
   obtain ⟨programs,accepted,schedule,barrier,heap⟩ := MlxAttentionGateCopyMemory.checked execution.gateCopy
   have linked := congrArg ArrayStorage.BFBuffer.bytes execution.gateCopySource
   rw [linked] at heap
-  exact ⟨AffineParsedSource.checked (steps:=10) (blocks:=192) execution.q before (by decide) (by decide) queryFinite,
-    AffineParsedSource.checked (steps:=10) (blocks:=16) execution.k before (by decide) (by decide) keyFinite,
-    AffineParsedSource.checked (steps:=10) (blocks:=16) execution.v before (by decide) (by decide) valueFinite,
+  exact ⟨AffineRouteParsedSource.checked execution.q before (by decide) (by decide) (by decide) queryFinite rfl rfl,
+    AffineRouteParsedSource.checked execution.k before (by decide) (by decide) (by decide) keyFinite rfl rfl,
+    AffineRouteParsedSource.checked execution.v before (by decide) (by decide) (by decide) valueFinite rfl rfl,
     ⟨programs,accepted,schedule,barrier,heap⟩,execution.keyInputMemory,execution.value_input_memory,execution.memory_eq⟩
 
 theorem query_readback (before : Nat → Float32) (source : Certificate execution before) (row : Fin 12288) :
-    AffineParsedSource.value (steps:=10) (blocks:=192) execution.q row=execution.q.outputBuffer.read row :=
-  AffineParsedSource.same_buffer (steps:=10) (blocks:=192) execution.q before source.query row
+    AffineRouteParsedSource.value execution.q row=execution.q.outputBuffer.read row :=
+  AffineRouteParsedSource.same_buffer execution.q before source.query row
 
 theorem key_readback (before : Nat → Float32) (source : Certificate execution before) (row : Fin 1024) :
-    AffineParsedSource.value (steps:=10) (blocks:=16) execution.k row=execution.k.outputBuffer.read row :=
-  AffineParsedSource.same_buffer (steps:=10) (blocks:=16) execution.k before source.key row
+    AffineRouteParsedSource.value execution.k row=execution.k.outputBuffer.read row :=
+  AffineRouteParsedSource.same_buffer execution.k before source.key row
 
 theorem value_readback (before : Nat → Float32) (source : Certificate execution before) (row : Fin 1024) :
-    AffineParsedSource.value (steps:=10) (blocks:=16) execution.v row=execution.v.outputBuffer.read row :=
-  AffineParsedSource.same_buffer (steps:=10) (blocks:=16) execution.v before source.value row
+    AffineRouteParsedSource.value execution.v row=execution.v.outputBuffer.read row :=
+  AffineRouteParsedSource.same_buffer execution.v before source.value row
 
 end Inference.Models.Qwen.AttentionGateCopyParsedQkv

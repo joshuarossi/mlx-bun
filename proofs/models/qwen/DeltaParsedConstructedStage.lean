@@ -58,7 +58,7 @@ theorem checked (native : Native source plan) (finite : layer.Finite cache (fun 
 theorem concat_read (native : Native source plan) (parsed : Certificate source plan native) (row : Fin 10240) :
     (DeltaPreparationConstruction.window source.entry.affine source.cacheAfterEntry source.parametersAfterEntry rfl
       plan.preparation.convolution).joined.source.read row=
-      AffineParsedSource.value (steps := 10) (blocks := 160) source.entry.affine.qkv row :=
+      AffineRouteParsedSource.value source.entry.affine.qkv row :=
   DeltaConstructedPreparationSource.concat_parsed source plan.preparation parsed.1.projections row
 
 theorem decay_projection_read (native : Native source plan) (parsed : Certificate source plan native) (head : Fin 48) :

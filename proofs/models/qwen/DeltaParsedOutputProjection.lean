@@ -1,5 +1,5 @@
 import models.qwen.DeltaParsedGatedNormalization
-import layers.AffineParsedSource
+import layers.AffineRouteParsedSource
 
 namespace Inference.Models.Qwen.DeltaParsedOutputProjection
 open Contracts.Mlx Kernels Kernels.Delta Layers
@@ -15,13 +15,13 @@ variable {reduce : (Fin 32 → Float32) → Float32} {flags : Gated.Contraction}
   {projection : AffineVerifyLinear.Projection 12 5120}
   (tail : DeltaTailMemory.Execution input p width eps projection)
 
--- The full-row custom wrapper supports either checkpoint bit width here.
--- Native wrapper installation/descriptor attachment remains explicit.
+-- The executed route follows the stored width: three-bit uses the custom
+-- complete-row wrapper, four-bit MLX qmv_fast. Descriptor attachment remains
+-- explicit.
 theorem source (before : Nat → Float32)
     (finite : projection.Finite (GatedInputs.flatten tail.normalization.output)) :
-    AffineParsedSource.Certificate (steps := 12) (blocks := 80) tail.affine before :=
-  AffineParsedSource.checked (steps := 12) (blocks := 80) (p := projection)
-    tail.affine before (by decide) (by decide) finite
+    AffineRouteParsedSource.Certificate 80 640 tail.affine before rfl rfl :=
+  AffineRouteParsedSource.checked tail.affine before (by decide) (by decide) (by decide) finite rfl rfl
 
 theorem current_input : tail.affine.source=tail.normalization.outputBuffer := tail.linked
 
@@ -30,9 +30,8 @@ theorem current_heap : tail.affine.source.bytes=tail.normalization.stores.memory
 
 theorem readback (before : Nat → Float32)
     (finite : projection.Finite (GatedInputs.flatten tail.normalization.output)) (row : Fin 5120) :
-    AffineParsedSource.value (steps := 12) (blocks := 80) tail.affine row=tail.buffer.read row :=
-  AffineParsedSource.same_buffer (steps := 12) (blocks := 80) (p := projection)
-    tail.affine before (source tail before finite) row
+    AffineRouteParsedSource.value tail.affine row=tail.buffer.read row :=
+  AffineRouteParsedSource.same_buffer tail.affine before (source tail before finite) row
 
 theorem readback_error (before : Nat → Float32)
     (finite : projection.Finite (GatedInputs.flatten tail.normalization.output))
@@ -42,8 +41,7 @@ theorem readback_error (before : Nat → Float32)
     |Model.toReal (tail.buffer.read row)-projection.target target row| ≤
       projection.budget (GatedInputs.flatten tail.normalization.output) target error row := by
   rw [←readback tail before finite row]
-  exact AffineParsedSource.readback_error (steps := 12) (blocks := 80) (p := projection)
-    tail.affine before (source tail before finite) target error inputBound finite row
+  exact AffineRouteParsedSource.readback_error tail.affine before (source tail before finite) target error inputBound finite row
 
 theorem cache_heap : tail.afterState.bytes=tail.buffer.bytes := tail.state_output_shared
 

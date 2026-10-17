@@ -1,5 +1,5 @@
 import models.qwen.AttentionGateCopyInitialParsedDispatch
-import layers.AffineParsedSource
+import layers.AffineRouteParsedSource
 
 namespace Inference.Models.Qwen.AttentionGateCopyInitialParsedResult
 open Contracts.Mlx Kernels.Attention State Layers
@@ -13,12 +13,13 @@ variable {layer : Attention.Layer} {cache : Kv.Cache Kv.BF 0}
   (attention : AttentionGateCopyInitialParsedDispatch.Attention read)
   (tail : AttentionTailMemory.Execution attention (layer.heads values angle).gate layer.gate layer.output)
 
--- Both checkpoint formats use the written row-wrapper source. Native format,
--- allocation and descriptor attachment remain carried execution contracts.
+-- The executed route follows the stored width: three-bit uses the custom
+-- complete-row wrapper, four-bit MLX qmv_fast. Allocation and descriptor
+-- attachment remain carried execution contracts.
 theorem parsed_projection (before : Nat → Float32)
     (finite : layer.output.Finite (OutputGateMemory.values layer.gate attention.output (layer.heads values angle).gate)) :
-    AffineParsedSource.Certificate (steps:=12) (blocks:=80) tail.projected.affine before :=
-  AffineParsedSource.checked (steps:=12) (blocks:=80) tail.projected.affine before (by decide) (by decide) finite
+    AffineRouteParsedSource.Certificate 80 640 tail.projected.affine before rfl rfl :=
+  AffineRouteParsedSource.checked tail.projected.affine before (by decide) (by decide) (by decide) finite rfl rfl
 
 theorem current_gate_heap : tail.projected.affine.source.bytes=tail.gating.trace.memory :=
   congrArg ArrayStorage.BFBuffer.bytes tail.projected.linked
@@ -26,18 +27,17 @@ theorem current_gate_heap : tail.projected.affine.source.bytes=tail.gating.trace
 theorem output_readback (before : Nat → Float32)
     (finite : layer.output.Finite (OutputGateMemory.values layer.gate attention.output (layer.heads values angle).gate))
     (row : Fin 5120) :
-    AffineParsedSource.value (steps:=12) (blocks:=80) tail.projected.affine row=tail.buffer.read row :=
-  AffineParsedSource.same_buffer (steps:=12) (blocks:=80) tail.projected.affine before (parsed_projection read attention tail before finite) row
+    AffineRouteParsedSource.value tail.projected.affine row=tail.buffer.read row :=
+  AffineRouteParsedSource.same_buffer tail.projected.affine before (parsed_projection read attention tail before finite) row
 
 theorem output_error (before : Nat → Float32)
     (finite : layer.output.Finite (OutputGateMemory.values layer.gate attention.output (layer.heads values angle).gate))
     (target error : Fin 6144 → ℝ)
     (inputBound : ∀ i, |Model.toReal (OutputGateMemory.values layer.gate attention.output
       (layer.heads values angle).gate i)-target i|≤error i) (row : Fin 5120) :
-    |Model.toReal (AffineParsedSource.value (steps:=12) (blocks:=80)
-      tail.projected.affine row)-layer.output.target target row|≤
+    |Model.toReal (AffineRouteParsedSource.value tail.projected.affine row)-layer.output.target target row|≤
       layer.output.budget (OutputGateMemory.values layer.gate attention.output (layer.heads values angle).gate) target error row :=
-  AffineParsedSource.readback_error (steps:=12) (blocks:=80) tail.projected.affine before
+  AffineRouteParsedSource.readback_error tail.projected.affine before
     (parsed_projection read attention tail before finite) target error inputBound finite row
 
 structure Certificate (before : Nat → Float32) : Prop where
@@ -54,7 +54,7 @@ structure Certificate (before : Nat → Float32) : Prop where
     MlxOutputGateScheduled.binaryRun (attention.base/2) tail.gating.activation.base tail.gating.base
       tail.gating.trace.schedule intermediate=some gatedHeap ∧
     tail.buffer.bytes=HalfMemory.execute tail.projected.affine.stores gatedHeap
-  projectionSource : AffineParsedSource.Certificate (steps:=12) (blocks:=80) tail.projected.affine before
+  projectionSource : AffineRouteParsedSource.Certificate 80 640 tail.projected.affine before rfl rfl
   inputHeap : tail.projected.affine.source.bytes=tail.gating.trace.memory
   cacheHeap : tail.afterCache.memory=tail.buffer.bytes
 

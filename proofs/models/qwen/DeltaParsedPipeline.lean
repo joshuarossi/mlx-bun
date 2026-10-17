@@ -55,7 +55,7 @@ structure Certificate (before : Nat → Float32) : Prop where
       epsilon run.tail.normalization.base=some writes ∧
       ThreadgroupWrites.Executes writes run.tail.normalization.stores.schedule run.tail.normalization.stores.remaining ∧
       ThreadgroupWrites.AtBarrier run.tail.normalization.stores.remaining
-  projection : AffineParsedSource.Certificate (steps := 12) (blocks := 80) run.tail.affine before
+  projection : AffineRouteParsedSource.Certificate 80 640 run.tail.affine before rfl rfl
 
 theorem checked (before : Nat → Float32)
     (widthSame : width=SiluHeads128Output.width) (epsSame : eps=SiluHeads128Output.epsilon)
@@ -105,9 +105,8 @@ theorem recurrence_beta (head : Fin 48) :
   exact DeltaBetaMemory.cell_execution preparation.prepared.gates head
 
 theorem projection_readback (before : Nat → Float32) (source : Certificate run before) (row : Fin 5120) :
-    AffineParsedSource.value (steps := 12) (blocks := 80) run.tail.affine row=run.tail.buffer.read row :=
-  AffineParsedSource.same_buffer (steps := 12) (blocks := 80) (p := projection)
-    run.tail.affine before source.projection row
+    AffineRouteParsedSource.value run.tail.affine row=run.tail.buffer.read row :=
+  AffineRouteParsedSource.same_buffer run.tail.affine before source.projection row
 
 theorem projection_error (before : Nat → Float32) (source : Certificate run before)
     (finite : projection.Finite (GatedInputs.flatten run.tail.normalization.output))
@@ -117,8 +116,7 @@ theorem projection_error (before : Nat → Float32) (source : Certificate run be
     |Model.toReal (run.tail.buffer.read row)-projection.target target row| ≤
       projection.budget (GatedInputs.flatten run.tail.normalization.output) target error row := by
   rw [←projection_readback run before source row]
-  exact AffineParsedSource.readback_error (steps := 12) (blocks := 80) (p := projection)
-    run.tail.affine before source.projection target error inputBound finite row
+  exact AffineRouteParsedSource.readback_error run.tail.affine before source.projection target error inputBound finite row
 
 theorem retained_cache : run.afterCache.memory=run.outputBuffer.bytes ∧
     run.afterCache.buffers.recurrent.read=GatedDevice.producedState reduce flags initial preparation.prepared.values.inputs :=

@@ -127,7 +127,7 @@ include parsed in
 theorem concat_parsed (row : Fin 10240) :
     (DeltaPreparationConstruction.window source.entry.affine source.cacheAfterEntry source.parametersAfterEntry rfl
       plan.convolution).joined.source.read row=
-      AffineParsedSource.value (steps:=10) (blocks:=160) source.entry.affine.qkv row :=
+      AffineRouteParsedSource.value source.entry.affine.qkv row :=
   DeltaParsedProjections.qkv_readback source.entry.affine parsed row
 
 include parsed in
