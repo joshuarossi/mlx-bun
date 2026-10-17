@@ -270,7 +270,7 @@ structure PipelineLoaded (p : TokenInference.Pipeline) (w : PipelineWeights) : P
   attention : ∀ i, AttentionLoaded M K (p.graph.attention i) (w.attention i)
   finalNorm : GlueAttention.Vector w.finalNorm 5120 p.graph.finalNorm.weight
   finalPlatform : p.graph.finalNorm.platform = M.hiddenNorm
-  head : Loaded M K .plain w.head p.graph.output
+  head : Loaded M K .affineRow w.head p.graph.output
   deltaProjectors : ∀ i, ((w.delta i).qkvKind, (w.delta i).zKind, (w.delta i).outKind) = oneDelta i
   attentionProjectors : ∀ i, (w.attention i).qKind = .plain ∧ (w.attention i).kKind = .plain ∧
     (w.attention i).vKind = .plain ∧ (w.attention i).oKind = .plain
@@ -304,14 +304,14 @@ theorem stages_loaded (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : 
 , trivial⟩
 
 -- SubmittedGraphForwardScope(embed.encode(ids)), #run over #one, finalNorm,
--- the Plain lm_head, step.ts sampleDevice: reshape [1, V], normalizedArgmax,
+-- the AffineRow lm_head (H1), step.ts sampleDevice: reshape [1, V], normalizedArgmax,
 -- itemUint32. Evaluation scopes and command-buffer submission have no
 -- value effect.
 noncomputable def stepTrace (w : PipelineWeights) (n token : Nat) (hs : List Handles) : Option (Nat × List Handles) := do
   let x ← embedTrace M w.embedWords w.embedScales w.embedBiases token
   let (y, hs') ← chainTrace M K n (stageWeights w) hs x
   let h ← rmsNorm M.hiddenNorm y w.finalNorm (f32 0x358637bd)
-  let logits ← GlueLayers.project M K .plain w.head h
+  let logits ← GlueLayers.project M K .affineRow w.head h
   let l ← reshape logits [1, 248320]
   let [r] ← KernelClosure.eval K .normalizedArgmax [l] | none
   let t ← itemUint32 r
@@ -331,7 +331,7 @@ theorem step (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineL
   obtain ⟨hidden, hs', e2, th, hh'⟩ := chain M K p.graph.stages (stageWeights w) (stages_loaded M K p w hl) c hs hh
     x _ tx policy finite
   obtain ⟨h, e3, tn⟩ := GlueAttention.hidden_norm M p.graph.finalNorm hl.finalPlatform hidden w.finalNorm _ th hl.finalNorm
-  obtain ⟨logits, e4, tl⟩ := plain_row M K w.head p.graph.output hl.head h _ tn
+  obtain ⟨logits, e4, tl⟩ := GlueLayers.project_row M K .affineRow w.head (blocks := 3880) p.graph.output hl.head (by decide) h _ tn
   have e5 := reshape_some logits [1, 248320] (by rw [tl.2.1]; rfl)
   have fl : Flat { logits with shape := [1, 248320] } [1, 248320] (p.run c token (RopeInputConstruction.inputs n)).1 :=
     ⟨tl.1, rfl, fun j => by exact Row.elems tl j⟩
