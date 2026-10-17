@@ -5,8 +5,7 @@
  *   MLX_BUN_LIBMLXC=/path/to/libmlxc.dylib bun proofs/contracts/mlx/probe-m1max-contract.ts \
  *     [--verify-lowering] [--quick]
  * The outer process re-executes itself under ~/mlx-bun-perf/gpu.sh (the machine GPU lock).
- * --verify-lowering loads the Metal tracer (MLX_BUN_KT_LIB, default
- * /tmp/kerneltrace/interpose/libkt.dylib) before MLX, serializes every runtime
+ * --verify-lowering builds and loads metal-tracer.m before MLX, serializes every runtime
  * library MLX compiles, disassembles it with `xcrun metal-objdump -d`, and fails
  * unless each probe kernel uses exactly the AIR operation its clause names.
  * --quick samples (1/16 of unary chunks, 1/64 of random counts) for smoke runs. */
@@ -43,8 +42,11 @@ console.log(`chip ${chip}; macOS ${sh(["sw_vers", "-productVersion"])} (${sh(["s
 const KT_DIR = "/tmp/m1max-contract-lowering";
 if (VERIFY) {
   const { dlopen, FFIType, ptr } = await import("bun:ffi");
-  const lib = process.env.MLX_BUN_KT_LIB ?? "/tmp/kerneltrace/interpose/libkt.dylib";
-  if (!existsSync(lib)) throw new Error(`--verify-lowering needs the Metal tracer dylib (${lib}); set MLX_BUN_KT_LIB`);
+  const lib = join(KT_DIR + "-lib", "libmetal-tracer.dylib");
+  mkdirSync(dirname(lib), { recursive: true });
+  const built = Bun.spawnSync(["clang", "-dynamiclib", "-fobjc-arc", "-O1", "-Wno-deprecated-declarations", "-framework", "Foundation",
+    "-framework", "Metal", "-o", lib, join(import.meta.dir, "metal-tracer.m")]);
+  if (built.exitCode !== 0) throw new Error(`Building the Metal tracer failed: ${built.stderr}`);
   rmSync(KT_DIR, { recursive: true, force: true });
   mkdirSync(KT_DIR, { recursive: true });
   const kt = dlopen(lib, { kt_init: { args: [FFIType.ptr], returns: FFIType.void } }).symbols;
@@ -591,8 +593,8 @@ let sumTree: Tree | null = null;
       if (lane == 0u) { out[o + 32u] = sb; out[o + 33u] = same ? 1u : 0u; }`,
       { require: [/@air\.simd_sum\.f32/] });
     const cn = clause("simdSum_tree (infinite but no NaN lanes)");
-    const cnn = clause("simdSum_tree (some NaN lane, FloatLib payload propagation)");
-    const cnc = clause("simd_sum with some NaN lane = canonical 0x7fc00000 (alternative)");
+    // The Lean model (Float32 add has no NaN payload) yields 0x7fc00000 for any NaN lane.
+    const cnc = clause("simdSum_tree (some NaN lane = 0x7fc00000)");
     const ca = clause("simd_sum result identical in all 32 lanes");
     const VEC = 1 << 20;
     const run = (chunk: number, nonfinite: boolean) => {
@@ -608,8 +610,6 @@ let sumTree: Tree | null = null;
         const got = b[off + 32]!;
         if (anyNaN) {
           cnc.cases++; if (got !== 0x7fc00000) cnc.fail(`lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}] -> ${hex(got)}`);
-          cnn.cases++; const want = ev.bits(b, off);
-          if (got !== want) cnn.fail(`lanes [${[...b.subarray(off, off + 32)].map(hex).join(",")}] -> ${hex(got)} want ${hex(want)}`);
           continue;
         }
         cc.cases++;
@@ -624,7 +624,7 @@ let sumTree: Tree | null = null;
     for (let ch = 0; ch < N; ch++) run(ch, false);
     for (let ch = 0; ch < (QUICK ? 1 : 4); ch++) run(1000 + ch, true);
     clearCache();
-    report(c); report(cn); report(cnn); report(cnc); report(ca);
+    report(c); report(cn); report(cnc); report(ca);
   }
 }
 
