@@ -1,7 +1,7 @@
 import host.ts.RenameIntegerPacking
 namespace Host.Ts.Owned.Parametric
 
-private theorem valueSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a) :
+theorem valueSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a) :
     ∀ v, valueSupport p v → valueSupport q v := by
   intro v hv
   cases v with
@@ -13,7 +13,7 @@ private theorem valueSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a) 
   | _ => exact True.intro
 
 mutual
-  private theorem treeSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a)
+  theorem treeSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a)
       (t : Tree) : treeSupport p t → treeSupport q t :=
     match t with
     | .atom _ _ => id
@@ -25,14 +25,14 @@ mutual
     | .region _ => id
     | .number _ => id
     | .node _ xs => forestSupport_mono h xs
-  private theorem forestSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a)
+  theorem forestSupport_mono {p q : Nat → Prop} (h : ∀ a, p a → q a)
       (xs : List Tree) : forestSupport p xs → forestSupport q xs :=
     match xs with
     | [] => id
     | x :: xs => fun hp => ⟨treeSupport_mono h x hp.1,forestSupport_mono h xs hp.2⟩
 end
 
-private theorem listSupport_mono {α : Type} {p q : α → Prop} (h : ∀ a, p a → q a) :
+theorem listSupport_mono {α : Type} {p q : α → Prop} (h : ∀ a, p a → q a) :
     ∀ xs, listSupport p xs → listSupport q xs
   | [], hp => hp
   | x :: xs, hp => ⟨h x hp.1,listSupport_mono h xs hp.2⟩
