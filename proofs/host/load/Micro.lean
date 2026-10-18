@@ -169,6 +169,9 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
     index := index+1
     previousS := chosenS
     previousC := chosenC
+    -- These caches may otherwise retain every serialized state while the
+    -- environment already holds the declarations needed by later checks.
+    Meta.resetCache
   let ksDecl := Declaration.defnDecl { name := microPre ++ `ks, levelParams := [], type := mkApp (mkConst ``List [.zero]) (mkConst ``Nat), value := toExpr sizes.reverse, hints := .abbrev, safety := .safe }
   addDecl ksDecl
   compileDecl ksDecl
