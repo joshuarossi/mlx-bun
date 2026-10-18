@@ -8,10 +8,12 @@ namespace Host.Ts.Owned.Parametric.Driver
 open Lean Elab Command Meta
 
 def addData (name : Lean.Name) (value : Lean.Expr) (type? : Option Lean.Expr := none) : TermElabM Unit := do
+  let value ← instantiateMVars value
+  let type ← instantiateMVars (← match type? with | some type => pure type | none => inferType value)
   addDecl (.defnDecl {
     name := name
     levelParams := []
-    type := ← match type? with | some type => pure type | none => inferType value
+    type := type
     value := value
     hints := if name.getString! = "F" then .abbrev else .regular 0
     safety := .safe })
