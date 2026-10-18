@@ -37,6 +37,7 @@ elab "host_transport_read " f:term ", " s:term " to " t:term " as " name:ident :
   let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric in\n"
   let fact (tag proposition : String) := emit (header ++ s!"theorem {n}.{tag} : {proposition} := by host_kernel_rfl")
   fact "source_control" s!"{n}.input.ctl = .ret (.obj {n}.sourceAddress)"
+  let mut missing := false
   let rule ← if privateRead then do
     fact "source_frame" s!"{n}.input.stack = .e (.priv {n}.sourceBrand {n}.sourceName false)::{n}.sourceTail"
     fact "source_heap" s!"{n}.input.heap.get {n}.sourceAddress = some (.obj {n}.sourceObject)"
@@ -47,7 +48,7 @@ elab "host_transport_read " f:term ", " s:term " to " t:term " as " name:ident :
       {n}.source_control {n}.source_frame {n}.source_heap {n}.source_kind {n}.source_property"
   else do
     fact "source_frame" s!"{n}.input.stack = .e (.member (.str {n}.sourceName) false)::{n}.sourceTail"
-    let rec choosePath (address : Lean.Expr) : Nat → Nat → CommandElabM String
+    let rec choosePath (address : Lean.Expr) : Nat → Nat → CommandElabM (String × Bool)
       | 0, _ => throwError "host_transport_read: exhausted prototype path"
       | fuel+1, index => do
         let stem := s!"{n}.path{index}"
@@ -71,20 +72,24 @@ elab "host_transport_read " f:term ", " s:term " to " t:term " as " name:ident :
             let value ← field (mkConst (pre ++ Name.mkSimple s!"path{index}Property")) ``Option.some 2 1
             addData (pre ++ `sourceProperty) value
           fact s!"path{index}Find" s!"findProp (.str {n}.sourceName) {stem}Object.props = some {n}.sourceProperty"
-          pure s!"OrdinaryLookup.hit {fuel} {stem}Address {stem}Object {n}.sourceProperty {stem}Heap {stem}Kind {stem}Find"
+          pure (s!"OrdinaryLookup.hit {fuel} {stem}Address {stem}Object {n}.sourceProperty {stem}Heap {stem}Kind {stem}Find",false)
         | some next =>
           fact s!"path{index}Find" s!"findProp (.str {n}.sourceName) {stem}Object.props = none"
           if next.isConstOf ``Val.null then
-            throwError "host_transport_read: absent-property endpoint requires separate branch"
+            fact s!"path{index}Null" s!"{stem}Object.proto = .null"
+            return (s!"OrdinaryLookup.stop {fuel} {stem}Address {stem}Object {stem}Heap {stem}Kind {stem}Find {stem}Null",true)
           liftTermElabM <| addData (pre ++ Name.mkSimple s!"path{index}Next") next
           fact s!"path{index}NextEq" s!"{stem}Object.proto = .obj {stem}Next"
-          let child ← choosePath next (fuel) (index+1)
-          pure s!"OrdinaryLookup.next {fuel} {stem}Address {stem}Next {stem}Object {stem}Heap {stem}Kind {stem}Find {stem}NextEq ({child})"
-    let path ← choosePath (mkConst (pre ++ `sourceAddress)) 16 0
-    emit (header ++ s!"theorem {n}.source_path : OrdinaryLookup {n}.input {n}.sourceName 16 {n}.sourceAddress (some {n}.sourceProperty) := {path}")
+          let (child,missing) ← choosePath next (fuel) (index+1)
+          pure (s!"OrdinaryLookup.next {fuel} {stem}Address {stem}Next {stem}Object {stem}Heap {stem}Kind {stem}Find {stem}NextEq ({child})",missing)
+    let (path,isMissing) ← choosePath (mkConst (pre ++ `sourceAddress)) 16 0
+    missing := isMissing
+    let property := if isMissing then "none" else s!"(some {n}.sourceProperty)"
+    emit (header ++ s!"theorem {n}.source_path : OrdinaryLookup {n}.input {n}.sourceName 16 {n}.sourceAddress {property} := {path}")
     pure s!"step_member_lookup_from_source {n}.F NR FR R C₀ C live framed before after old old' {n}.input s h
-      {n}.sourceAddress {n}.sourceName (some {n}.sourceProperty) {n}.sourceTail {n}.source_control {n}.source_frame {n}.source_path"
-  let post := "Host.Ts.readProp " ++ s!"{n}.F " ++ "{" ++ s!"{n}.input with stack := {n}.sourceTail" ++ "}" ++ s!" (.obj {n}.sourceAddress) (some {n}.sourceProperty)"
+      {n}.sourceAddress {n}.sourceName {property} {n}.sourceTail {n}.source_control {n}.source_frame {n}.source_path"
+  let property := if missing then "none" else s!"(some {n}.sourceProperty)"
+  let post := "Host.Ts.readProp " ++ s!"{n}.F " ++ "{" ++ s!"{n}.input with stack := {n}.sourceTail" ++ "}" ++ s!" (.obj {n}.sourceAddress) {property}"
   fact "source_post" s!"({post}) = {n}.output"
   emit (header ++ s!"theorem {n}.transport (NR : NumV → NumV → Prop)
       (FR : Ren → {n}.F.S → {n}.F.S → Prop) (R : Ren) (C₀ C : CSrv)
