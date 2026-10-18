@@ -50,8 +50,8 @@ def normalizeRetainedLocals (goal : MVarId) (stateProof inventoryProof : Lean.Ex
 /-- Normalize the current symbolic record updates before composing a rule. -/
 elab "host_normalize_retained " state:ident ", " inventory:ident : tactic => do
   let goal ← getMainGoal
-  let stateProof ← elabTerm state none
-  let inventoryProof ← elabTerm inventory none
+  let (stateProof,inventoryProof) ← goal.withContext do
+    return (← elabTerm state none,← elabTerm inventory none)
   let goal ← normalizeRetainedLocals goal stateProof inventoryProof
   replaceMainGoal [goal]
 
