@@ -5352,6 +5352,11 @@ const proofFiles = [
   "host/ts/RenameRuntimeDriverPrivateFields.lean",
   "host/ts/renameOrdinary/RankOriginInitializedFirstHandle.lean",
   "host/ts/renameOrdinary/RuntimePrivateFieldsCases.lean",
+  "host/load/RuntimeConstructorBatch.lean",
+  "host/mlx/NativeCachedFreshHost.lean",
+  "host/ts/RenameRetainedPrivateAssign.lean",
+  "host/ts/RenameRuntimeDriverPrivateAssign.lean",
+  "host/ts/renameOrdinary/RuntimePrivateAssignCases.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
