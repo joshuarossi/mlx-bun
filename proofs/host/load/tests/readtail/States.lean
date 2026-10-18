@@ -1,4 +1,5 @@
 import host.load.ReadTail
+import host.load.Native
 namespace Host.Load.Tests.ReadTail
 open Host.Ts
 

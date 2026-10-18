@@ -29,6 +29,7 @@ for (let j = first ?? 0; j <= Math.min(last ?? nSeg - 1, nSeg - 1); j++) {
   await write(join(dir, "States.lean"), `import host.load.Route
 import host.load.Segment
 import host.load.Expr
+import host.load.Native
 namespace ${ns}
 open Host.Ts Host.Load
 

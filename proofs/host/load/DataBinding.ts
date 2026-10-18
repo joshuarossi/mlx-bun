@@ -112,12 +112,30 @@ end Host.Load.Data
   return { lean, pins };
 }
 
-/** Data.lean is exactly what the model directory and the repository produce, under the pins. */
-export async function checkLoadDataBinding(model = defaultModel): Promise<void> {
-  const { lean, pins } = await render(model);
-  if ((await Bun.file(new URL("./Data.lean", import.meta.url)).text()) !== lean)
-    throw new Error("host/load/Data.lean differs from the files it embeds");
+function verify(embedded: string, rendered: string, pins: Record<string, string>): void {
+  if (embedded !== rendered) throw new Error("host/load/Data.lean differs from the files it embeds");
+  if (Object.keys(pins).length !== Object.keys(dataPins).length) throw new Error("load data pin inventory changed");
   for (const [k, v] of Object.entries(dataPins)) if (pins[k] !== v) throw new Error(`data pin changed: ${k}`);
+}
+
+/** Data.lean is exactly what the model directory and the repository produce, under the pins. */
+export async function checkLoadDataBinding(model = defaultModel, selfTest = false): Promise<void> {
+  const { lean, pins } = await render(model);
+  const embedded = await Bun.file(new URL("./Data.lean", import.meta.url)).text();
+  verify(embedded, lean, pins);
+  if (selfTest) {
+    const rejects = (label: string, check: () => void) => {
+      try { check(); } catch { return; }
+      throw new Error(`Load data mutation escaped: ${label}`);
+    };
+    rejects("literal", () => verify(embedded + "\n", lean, pins));
+    for (const key of Object.keys(dataPins)) {
+      rejects(key, () => verify(embedded, lean, { ...pins, [key]: pins[key] + "0" }));
+      const missing = { ...pins };
+      delete missing[key];
+      rejects(`missing ${key}`, () => verify(embedded, lean, missing));
+    }
+  }
 }
 
 if (import.meta.main) {
@@ -128,7 +146,7 @@ if (import.meta.main) {
     await Bun.write(new URL("./Data.lean", import.meta.url), lean);
     console.log(JSON.stringify(pins, null, 2));
   } else {
-    await checkLoadDataBinding(model);
+    await checkLoadDataBinding(model, process.argv.includes("--self-test"));
     console.log(`Load route data binding passed: ${Object.keys(dataPins).length} pins`);
   }
 }

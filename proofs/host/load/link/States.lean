@@ -1,6 +1,7 @@
 import host.load.Route
 import host.ts.LinkChain
 import host.load.Expr
+import host.load.Native
 namespace Host.Load.Link
 open Host.Ts Host.Load
 
