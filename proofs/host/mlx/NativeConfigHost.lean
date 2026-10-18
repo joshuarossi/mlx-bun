@@ -71,7 +71,7 @@ open Host.Mlx.Ffi Host.Mlx.Ffi.NativeRoles Host.Mlx.Ffi.NativeRoles.Arguments Ho
 
 abbrev F : Host.Ts.Ffi := ⟨LSt,Host.Load.call,Host.Load.read,fun _ => 4096,Host.Load.back⟩
 
-def signature : List Val := [.str chars!"u64",.str chars!"u32",.str chars!"u32",.str chars!"u32"]
+def signature : List Val := [.str chars!"u64",.str chars!"i32",.str chars!"i32",.str chars!"i32"]
 
 def finishTriplet (op : ConfigTriplet) (s : Host.Ts.St LSt) (a : Nat) (c : Cfg) (x y z : NumV) : Host.Ts.St LSt :=
   finishStatus s (Host.Load.Owned.configTripletWorld op s.ffi a c x y z) op.name [.big (Int.ofNat a),.num x,.num y,.num z]
@@ -83,21 +83,21 @@ theorem step_triplet_eq (op : ConfigTriplet) (s : Host.Ts.St LSt) (fn types a : 
     (hk : fo.kind = .fn (.native (.ffi .symbol) [.str op.name,.obj types,.str returns]))
     (ht : s.heap.get types = some (.obj signature₀)) (htk : signature₀.kind = .array signature)
     (hn : s.ffi.mlx.obj? a = some (.cfg c)) :
-    step F s = (NumericDecoder.u32.action x).bind fun x =>
-      (NumericDecoder.u32.action y).bind fun y => (NumericDecoder.u32.action z).bind fun z =>
+    step F s = (NumericDecoder.i32.action x).bind fun x =>
+      (NumericDecoder.i32.action y).bind fun y => (NumericDecoder.i32.action z).bind fun z =>
         M.pure (finishTriplet op s a c x y z) := by
   funext β k
   simp only [step,hc,callStep,Host.Ts.St.obj?,hf,hk,callNative,ffiN]
   rw [elemsOf_array F s types signature₀ _ (by simp only [Host.Ts.St.obj?,ht]) htk]
   dsimp only [M.bind,M.pure]
   rw [show decodeArgs F s signature [.big (Int.ofNat a),.num x,.num y,.num z] = _ from
-    NumericDecoder.u32.decode_triple F s (Int.ofNat a) x y z]
+    NumericDecoder.i32.decode_triple F s (Int.ofNat a) x y z]
   dsimp only [M.bind,M.pure]
-  apply congrArg (NumericDecoder.u32.action x β)
+  apply congrArg (NumericDecoder.i32.action x β)
   funext x'
-  apply congrArg (NumericDecoder.u32.action y β)
+  apply congrArg (NumericDecoder.i32.action y β)
   funext y'
-  apply congrArg (NumericDecoder.u32.action z β)
+  apply congrArg (NumericDecoder.i32.action z β)
   funext z'
   have hcall : F.call s.ffi op.name [.big (Int.ofNat a),.num x',.num y',.num z'] =
       M.pure (some (Host.Load.Owned.configTripletWorld op s.ffi a c x' y' z',status0,[])) := by
@@ -135,7 +135,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
       interpC (step Host.Load.ffi s).run C = some (finishTriplet op s (R.handle a) target x' y' z',D) ∧
       StateR (NumberRoles ν₀ ν D₀ D)
         (VectorHost.NativeRelation ν₀ ν D₀ D nodes boundary
-          (objectWrite objects a (.config (op.role role [rx.decoded .u32,ry.decoded .u32,rz.decoded .u32])))
+          (objectWrite objects a (.config (op.role role [rx.decoded .i32,ry.decoded .i32,rz.decoded .i32])))
           H N tail host)
         R live framed before after old old'
         (finishTriplet op s₀ a source x₀' y₀' z₀')
@@ -173,16 +173,16 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                 have htKind := htr.kind
                 rw [htk₀] at htKind
                 obtain ⟨tys,htKind,htys⟩ := kind_array htKind
-                have exactTypes := string_values_exact [chars!"u64",chars!"u32",chars!"u32",chars!"u32"] htys
+                have exactTypes := string_values_exact [chars!"u64",chars!"i32",chars!"i32",chars!"i32"] htys
                 rw [exactTypes] at htKind
                 obtain ⟨x₀',A₀,y₀',B₀,z₀',D₀,hx₀',hy₀',hz₀',rx₀',ry₀',rz₀',ext₀⟩ :=
-                  Number.Holds.triple_decode .u32 sourceX sourceY sourceZ
+                  Number.Holds.triple_decode .i32 sourceX sourceY sourceZ
                 obtain ⟨x',A,y',B,z',D,hx',hy',hz',rx',ry',rz',ext⟩ :=
-                  Number.Holds.triple_decode .u32 hx hy hz
+                  Number.Holds.triple_decode .i32 hx hy hz
                 have hm := VectorHost.state_mono h ext₀ ext
                 obtain ⟨target,targetConfig,sourceFields,targetFields⟩ :=
                   hm.native.2.config_view_roles a handleLive role source objectRole sourceConfig
-                let updated := op.role role [rx.decoded .u32,ry.decoded .u32,rz.decoded .u32]
+                let updated := op.role role [rx.decoded .i32,ry.decoded .i32,rz.decoded .i32]
                 have sourceUpdated : updated.Holds ν₀ D₀ (op.config source [x₀',y₀',z₀']) :=
                   op.holds sourceFields (.cons rx₀' (.cons ry₀' (.cons rz₀' .nil)))
                 have targetUpdated : updated.Holds ν D (op.config target [x',y',z']) :=
@@ -212,12 +212,12 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                 · change interpC (step F s₀).run C₀ = _
                   rw [step_triplet_eq op s₀ fn types a x₀ y₀ z₀
                     fo signature₀ returns receiver source hc₀ hf₀ hk₀ ht₀ htk₀ sourceConfig]
-                  exact NumericDecoder.u32.triple_run (fun x y z => M.pure (finishTriplet op s₀ a source x y z))
+                  exact NumericDecoder.i32.triple_run (fun x y z => M.pure (finishTriplet op s₀ a source x y z))
                     x₀ y₀ z₀ x₀' y₀' z₀' C₀ A₀ B₀ D₀ hx₀' hy₀' hz₀'
                 · change interpC (step F s).run C = _
                   rw [step_triplet_eq op s (R.a fn) (R.a types) (R.handle a) x y z
                     fo' signature' returns this target hc hfo hfk hto htKind targetConfig]
-                  exact NumericDecoder.u32.triple_run (fun x y z => M.pure (finishTriplet op s (R.handle a) target x y z))
+                  exact NumericDecoder.i32.triple_run (fun x y z => M.pure (finishTriplet op s (R.handle a) target x y z))
                     x y z x' y' z' C A B D hx' hy' hz'
 
 end Host.Load.Run.Full.Ordinary.ConfigHost
