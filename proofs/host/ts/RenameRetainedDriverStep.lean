@@ -27,6 +27,7 @@ import host.ts.RenameRuntimeDriverConstructorReturn
 import host.ts.RenameRuntimeDriverFinally
 import host.ts.RenameRuntimeDriverArraySpreadEntry
 import host.ts.RenameRuntimeDriverPrivateAssign
+import host.ts.RenameRuntimeDriverPrivateObjectRead
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -163,6 +164,16 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.const 1 then
         pure "host_retained_update"
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.priv 3 then
+        let value ← whnf control.getAppArgs[0]!
+        if value.isAppOfArity ``Val.obj 1 then
+          let object ← whnf (← mkAppM ``St.obj? #[s,value.getAppArgs[0]!])
+          if object.isAppOfArity ``Option.some 2 then
+            let property ← whnf (← mkAppM ``findPriv #[inner.getAppArgs[0]!,inner.getAppArgs[1]!,← mkAppM ``Obj.priv #[object.getAppArgs[1]!]])
+            if property.isAppOfArity ``Option.some 2 then
+              let descriptor ← whnf property.getAppArgs[1]!
+              if descriptor.isAppOfArity ``PropV.data 3 then
+                if (← whnf descriptor.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
+                  return "host_retained_private_object"
         pure "host_retained_heap_read"
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.member 2 then
         let value ← whnf control.getAppArgs[0]!
