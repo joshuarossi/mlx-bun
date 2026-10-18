@@ -4152,7 +4152,7 @@ try {
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
       /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step)\s/m.test(source);
+      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
@@ -4309,6 +4309,29 @@ run_elab do
   let rhs ← mkAppM \`\`Option.some #[← mkAppM \`\`Prod.mk #[s,srv]]
   addDecl (.thmDecl { name := \`wrongShaEndpoint, levelParams := [], type := ← mkEq lhs rhs, value := mkConst \`\`Host.Load.Tests.Sha.Call.c0 })
 `;
+    const wrongGrowthEndpoint = `import host.load.growth.H0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full
+namespace WrongGrowth
+ noncomputable def F := Growth256.F
+ def ks := [1000]
+ noncomputable def s0 := Growth256.s0
+ noncomputable def S0 := Growth256.S0
+ noncomputable def s1 := Growth256.s0
+ noncomputable def S1 := Growth256.S0
+end WrongGrowth
+host_chunk WrongGrowth 0
+end Host.Load.Run.Full
+`;
+    const wrongGrowthGeometry = `import host.load.growth.H0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full
+host_growth_entry_checked wrong_growth_geometry : Growth256.entry using
+  { Growth256.roots with «cache» := Growth256.roots.cache + 1 }
+end Host.Load.Run.Full
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -4339,13 +4362,16 @@ run_elab do
       ["WrongShaDigest", wrongShaDigest, false],
       ["WrongShaEndpoint", wrongShaEndpoint, false],
       ["WrongMicroGroupEndpoint", wrongMicroGroupEndpoint, false],
+      ["WrongGrowthEndpoint", wrongGrowthEndpoint, false],
+      ["WrongGrowthGeometry", wrongGrowthGeometry, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
         name.includes("MicroEndpoint") || name === "WrongMicroGroupEndpoint" || name === "MutatedFixedWorld" ? loadNative : undefined);
       if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
       if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
-          name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint") &&
+          name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint" ||
+          name === "WrongGrowthEndpoint" || name === "WrongGrowthGeometry") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
       }
