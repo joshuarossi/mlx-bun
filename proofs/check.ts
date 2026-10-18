@@ -5634,6 +5634,54 @@ const proofFiles = [
   "host/mlx/OrdinaryAsyncEvalStates.lean",
   "host/mlx/OrdinaryRmsSource.lean",
   "host/mlx/OrdinaryRmsStates.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1100.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1125.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1150.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1175.lean",
+  "host/load/RuntimeNamespacedDecodeNullish.lean",
+  "host/load/RuntimeNamespacedDecodePlan.lean",
+  "host/load/RuntimeNamespacedDecodePlan1100.lean",
+  "host/load/RuntimeNamespacedDecodeRegion1100.lean",
+  "host/load/RuntimeNamespacedDecodeSliceReturn.lean",
+  "host/load/RuntimeNamespacedDecodeWrapper.lean",
+  "host/load/RuntimeOracleWeightMetadataPlan.lean",
+  "host/load/RuntimeOracleWeightRankQuery.lean",
+  "host/load/RuntimeOracleWeightShapeEntry.lean",
+  "host/load/RuntimeOracleWeightShapeQuery.lean",
+  "host/load/RuntimeOracleWeightShapeReturn.lean",
+  "host/load/RuntimeOracleWeightShapeSpread.lean",
+  "host/load/RuntimeOracleWeightShapeTail.lean",
+  "host/ts/RenameCachePhaseInventory.lean",
+  "host/ts/RenameLoopNamespaceAdvance.lean",
+  "host/ts/RenameRetainedNullishAssignment.lean",
+  "host/ts/RenameRetainedUndefinedVariable.lean",
+  "host/ts/RenameRuntimeDerivedCuts.lean",
+  "host/ts/RenameRuntimeDerivedCutsTest.lean",
+  "host/ts/RenameRuntimeDriverNullishAssignment.lean",
+  "host/ts/RenameRuntimeDriverNullishAssignmentTest.lean",
+  "host/ts/RenameRuntimeDriverUndefinedVariable.lean",
+  "host/ts/renameOrdinary/RankOriginCachePhases.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheWeightShape.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheWeightTail.lean",
+  "host/load/RuntimeNamespacedDtypeCuts.lean",
+  "host/load/RuntimeNamespacedSizeCuts.lean",
+  "host/load/RuntimeUsingCases.lean",
+  "host/load/tests/MicroStatesGroup.lean",
+  "host/mlx/NativeDtypeFrontend.lean",
+  "host/mlx/NativeDtypeRetained.lean",
+  "host/mlx/NativeSizeFrontend.lean",
+  "host/mlx/NativeSizeRetained.lean",
+  "host/mlx/NativeSizeValues.lean",
+  "host/mlx/NativeSizeValuesTest.lean",
+  "host/mlx/OrdinaryDtypeRetained.lean",
+  "host/mlx/OrdinarySizeRetained.lean",
+  "host/ts/RenameParametricUsing.lean",
+  "host/ts/RenameRetainedUsing.lean",
+  "host/ts/RenameRetainedUsingFrontend.lean",
+  "host/ts/RenameUsingNotes.lean",
+  "host/ts/RenameUsingScope.lean",
+  "host/ts/RenameUsingTest.lean",
+  "host/ts/RenameWellKnownLookup.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -5922,7 +5970,7 @@ try {
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
       /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary|host_cache_boundary|load_boundary_carriers)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
+      /^(?:host_micro_chunk|host_micro_states|host_micro_states_group|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }

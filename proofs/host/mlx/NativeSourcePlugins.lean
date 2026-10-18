@@ -28,6 +28,8 @@ import host.mlx.NativeTransposeFrontend
 import host.mlx.NativeQuantizedFrontend
 import host.mlx.NativeRmsFrontend
 import host.mlx.NativeEvalFrontend
+import host.mlx.NativeDtypeFrontend
+import host.mlx.NativeSizeFrontend
 
 set_option Elab.async false
 
@@ -67,3 +69,5 @@ host_register_native_source "mlx_fast_rms_norm" => "host_retained_rms"
 host_register_native_source "mlx_async_eval" => "host_retained_eval"
 host_register_native_source "mlx_array_eval" => "host_retained_eval"
 host_register_native_source "mlx_eval" => "host_retained_eval"
+host_register_native_source "mlx_array_dtype" => "host_retained_dtype"
+host_register_native_source "mlx_array_size" => "host_retained_size"

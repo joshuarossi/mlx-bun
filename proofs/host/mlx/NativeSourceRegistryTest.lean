@@ -62,6 +62,10 @@ run_cmd liftTermElabM do
   for symbol in [chars!"mlx_async_eval",chars!"mlx_array_eval",chars!"mlx_eval"] do
     let commands ← registeredNativeSourceCommands (toExpr symbol)
     unless commands == #["host_retained_eval"] do throwError "native source registry selected the wrong evaluation command"
+  let arrayDtype ← registeredNativeSourceCommands (toExpr chars!"mlx_array_dtype")
+  unless arrayDtype == #["host_retained_dtype"] do throwError "native source registry selected the wrong array dtype command"
+  let arraySize ← registeredNativeSourceCommands (toExpr chars!"mlx_array_size")
+  unless arraySize == #["host_retained_size"] do throwError "native source registry selected the wrong array size command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
