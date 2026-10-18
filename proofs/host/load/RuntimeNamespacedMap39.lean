@@ -1,0 +1,37 @@
+import host.load.RuntimeParameterBatch
+import host.load.RuntimeGetterBlocks
+import host.mlx.OrdinaryVectorStates
+import host.load.RuntimeBlockPlan
+import host.ts.RenameLoopVariableNamespace
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+set_option Elab.async false
+namespace Host.Load.Run.Full.Ordinary.NamespacedMap
+open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated
+open RetainedShapeBatch RetainedParameterBatch
+host_source_plan_subst P.F, P.RestStream.micro0 from 14 plan_steps 25 substitute LoopVariables.oracleVariables as Plan14
+
+host_retained_theorem through39 := fun (notes : RetainedNotes) (caller : List Annotated.Tree) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ Plan14.Block14.initialServer C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.RestStream.micro0.micro0.s14 s)
+    (inventory : RetainedInventory (RetainedShapePrefix.EndNotes notes caller
+      [.literal (.lit (F64.ofNat 1)),.literal (.lit (F64.ofNat 1)),.literal (.lit (F64.ofNat 10240))])
+      ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s14 s)
+    (budget : s.next + 64 ≤ 2^64)
+    (arrayLive : live aArrayProto) (arrayFixed : R.a aArrayProto = aArrayProto)
+    (exportEntry : notes.runtime.cells.cells 518 = some (.obj 2790))
+    (namespaceEntry : notes.runtime.cells.cells Preparation28.address = some (.obj 607))
+    (firstEntry : notes.runtime.cells.cells Preparation32.address = some (.obj initialObject32))
+    (secondEntry : notes.runtime.cells.cells Preparation34.address = some (.obj initialObject34))
+    (functionLive : live aFunctionProto) (functionFixed : R.a aFunctionProto = aFunctionProto)
+    (globalLive : live aGlobal) (globalFixed : R.a aGlobal = aGlobal)
+    (streamEntry : notes.runtime.cells.cells Parameter45.address = some (.handle defaultStreamHandle.toNat))
+    (firstHandle : notes.privates.owners RetainedGetterBlocks.First130.sourceOwner =
+      some ⟨RetainedGetterBlocks.First130.sourceBrand,RetainedGetterBlocks.First130.sourceHandleName,.handle 25732⟩)
+    (secondHandle : notes.privates.owners RetainedGetterBlocks.Second187.sourceOwner =
+      some ⟨RetainedGetterBlocks.Second187.sourceBrand,RetainedGetterBlocks.Second187.sourceHandleName,.handle 29363⟩) => by
+  host_retained_plan_chain P.F, Plan14 using h, inventory, inst
+host_assert_retained_schema through39, 25
+end Host.Load.Run.Full.Ordinary.NamespacedMap
