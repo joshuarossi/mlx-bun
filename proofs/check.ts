@@ -2380,6 +2380,19 @@ const proofFiles = [
   "host/load/Reify.lean",
   "host/load/tests/readtail/Frame.lean",
   "host/mlx/KernelSources.lean",
+  "host/load/ParameterSummary.lean",
+  "host/ts/KeyIndex.lean",
+  "host/ts/MapLookup.lean",
+  "host/ts/RenameBounded.lean",
+  "host/ts/RenameConcat.lean",
+  "host/ts/RenameLoopCut.lean",
+  "host/ts/RenameMaterializeState.lean",
+  "host/ts/RenameOutputs.lean",
+  "host/ts/RenamePrefix.lean",
+  "host/ts/RenamePrefixTest.lean",
+  "host/ts/RenameSlice.lean",
+  "host/ts/StringIndex.lean",
+  "host/ts/tests/stream/Sweep.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
