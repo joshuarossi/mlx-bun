@@ -140,3 +140,22 @@ source_parse source
 source_ast
 kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.bool true, .bool true, .bool true, .bool true, .num 0])) = some true
 end Host.Ts.Tests.Snippet.Roots
+
+namespace Host.Ts.Tests.Snippet.LoopCells
+open Host.Ts
+def source : String := "const fs = []; for (let i = 0, j = 10; i < 3; i++, j--) fs.push(() => [i, j]); const out = fs.map(f => f());"
+source_parse source
+source_ast
+-- Each iteration's closure keeps its own `i` and `j` (per-iteration bindings).
+kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.arr [.num 0, .num 10], .arr [.num 1, .num 9], .arr [.num 2, .num 8]])) = some true
+end Host.Ts.Tests.Snippet.LoopCells
+
+namespace Host.Ts.Tests.Snippet.Sort
+open Host.Ts
+def source : String := "const a = [[3, 0], [1, 1], [3, 2], [2, 3], [1, 4]].sort((x, y) => x[0] - y[0]); const out = [a.map(p => p[1]), [\"b\", \"c\", \"a\", \"ab\"].sort()];"
+source_parse source
+source_ast
+-- Comparator order with ties in input order (stable), and the default string order.
+kernel_rfl runs : ((snippetJ ast).map fun j => J.beq j (.arr [.arr [.num 1, .num 4, .num 3, .num 0, .num 2],
+  .arr [.str chars!"a", .str chars!"ab", .str chars!"b", .str chars!"c"]])) = some true
+end Host.Ts.Tests.Snippet.Sort

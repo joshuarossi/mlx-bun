@@ -10,9 +10,14 @@ export const pins: Record<string, string> = {
   "packages/inference/src/artifacts/config.ts": "696f575a1c8882086207c40137d91fbf7ed77e157dbac75cda74dbd0421bc97f",
   "packages/inference/src/artifacts/safetensors.ts": "78c27fb29817a58007f67dab130e9b7f903c7d4a6bc6094bd877e48ecd440f7f",
   "packages/inference/src/artifacts/weights.ts": "dbab9baf25188d34347c0cbaafd5a7c35c68b1ecbaf1ba1e0ee9c1f959a567d5",
+  "packages/inference/src/contracts/portable/composition.ts": "3d768fba1b447401d842f0137926f105f69af6fb8b86b36485b80aba27929788",
+  "packages/inference/src/contracts/portable/prefill.ts": "5709777b08e8915cf0f3fbcb3bf8226bf24b3fbe7a646eda4c040d2bb92ede3b",
   "packages/inference/src/generation/autoregressive.ts": "d2a0b3980e26da231528aa04b1ceb1a904ef738e24bc4c4636cf206383c7a89c",
+  "packages/inference/src/generation/bindings/autoregressive.ts": "4d39973a00dea72a42659dd839805dc36169bc605c53426e4b3e6f2225a716c1",
   "packages/inference/src/generation/phase-dispatch.ts": "b17182d02c7d3fedb9335263b164907c99bb1898c176324b30076425432708de",
+  "packages/inference/src/generation/prefill.ts": "e7da71898c2ad711cf9250ece089220fcd9ba23071b5f9d690198b9488f9a2c3",
   "packages/inference/src/generation/result.ts": "932c6da3a24d27ede91446e66f42a42e44413b29af78484c3173b4d07df4e99f",
+  "packages/inference/src/generation/scopes.ts": "4f0064db819e560d0b918e41b02482f65851d27fda8219ba697c8164e947d510",
   "packages/inference/src/kernels/delta/gated.ts": "3f0e11f777f57b6595d57d62ec3f8b8331cbfa7263183e1baa98892efe935aec",
   "packages/inference/src/kernels/delta/silu-rms-heads.ts": "52c59772bf95e2cd8f7f813a69a7dfac0c352dadc3c2a1e0e550c054dd301145",
   "packages/inference/src/kernels/gated-rms-norm.ts": "e402118d33622ef62a017e964c257e23456d03f96b0fdc855b48704ff0fb954f",
@@ -44,9 +49,13 @@ export const pins: Record<string, string> = {
   "packages/inference/src/runtime/graph-forward.ts": "cf774ab1a76d63bcc308ab91a61ff317d7fa75f051d3e246d8394976f9b4fdef",
   "packages/inference/src/runtime/row-operations.ts": "663617a8509b6b2b0dd4d41fcfdbaa6e303bc1f9c66338bc457855d6d44d9e11",
   "packages/inference/src/sampling/extras.ts": "4389ca6265f0e9e18748436e1e384dd82e52002f4a0afa0844dddb87a48f8408",
+  "packages/inference/src/sampling/index.ts": "3ac24b54d6753a5f8aad55207de763976c0fa476f087530bb9404b60bebc7326",
+  "packages/inference/src/sampling/processors.ts": "27d5199af05b83397ca8b09c9c1a92206d7ac0c573f43f43eb9719e3a6ce0304",
   "packages/inference/src/sampling/step.ts": "3f83101131b569127fd9b9923cbeebead676c3e175afbbaa97bc66b10023e925",
+  "packages/inference/src/sampling/window-filters.ts": "5353d354280b634a30fcb326f922a3e2f067fb526954281cad9e1d53b320b180",
   "packages/inference/src/state/attention-read.ts": "8081b76f6bd7676825511476c2275601c0c34cb5b68ef30637c7a1c8f9f1c50c",
   "packages/inference/src/state/kv.ts": "526a42d976c7dd0a8e908dcf8b515b94d43269042dc3fc3023e1a5baf0d8a579",
+  "packages/inference/src/state/request-policy.ts": "95d6cffc7cd3eedb5db76e69c8defab9c50f3f67c787211ed1098dc8819b9ba4",
   "packages/inference/src/state/ssm.ts": "96b6f33dac6da5f75cfba8ab760b4dcdce92c73b88d4927b8afa1b413896a7d1",
   "packages/mlx/src/array.ts": "9602f6e19ef3b0639791f68a86287c093e64891ad1c57e7184665e6f46de08ac",
   "packages/mlx/src/compile.ts": "90b19a80123e3e8ff274b5e7fdad4e03bfe757d7fcf0d64d88d5dd7c054cc280",
@@ -59,6 +68,8 @@ export const pins: Record<string, string> = {
 /** Pinned files embedded as slices (`sliceOf`): the declarations a run executes. */
 export const slices: Record<string, string[]> = {
   "packages/inference/src/artifacts/config.ts": ["parseQuantization", "quantFor"],
+  "packages/inference/src/generation/bindings/autoregressive.ts": ["assertMlxAutoregressiveBinding"],
+  "packages/inference/src/state/request-policy.ts": ["maybePageKv"],
 };
 
 function hash(text: string): string { return new Bun.CryptoHasher("sha256").update(text).digest("hex"); }

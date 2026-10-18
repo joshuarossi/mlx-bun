@@ -111,6 +111,14 @@ def copyIter (s : MS F) : List Name → Env → Env × MS F
     | some v => let (c, s) := s.alloc (.cell (some v)); copyIter s ns ((n, c) :: env)
     | none => let (c, s) := s.alloc (.cell none); copyIter s ns ((n, c) :: env)
 
+/-- The next iteration's bindings of a `for (let …)` loop (`CreatePerIterationEnvironment`):
+fresh cells with the current values, in front of the loop's environment, whose first
+`names.length` entries (the current iteration's cells, now shadowed) are dropped, so the
+environment does not grow with the iteration count. -/
+def nextIter (s : MS F) (names : List Name) (env : Env) : Env × MS F :=
+  let (env', s) := copyIter F s names env
+  (env'.take names.length ++ env'.drop (2 * names.length), s)
+
 /-! ## Operators -/
 
 def strLt : List Char → List Char → Bool
@@ -1119,12 +1127,12 @@ def forTestStep (s : MS F) (test update : Option Expr) (body : Stmt) (env : Env)
 def retLp (s : MS F) (f : LoopF) (v : Val) : RS F :=
   match f with
   | .forTest copy test update body env names labels =>
-    let (env, s) := bif copy then copyIter F s names env else (env, s)
+    let (env, s) := bif copy then nextIter F s names env else (env, s)
     forTestStep F s test update body env names labels
   | .forBody test update body env names labels => .bind (truthy v) fun b =>
     bif b then .pure ((s.push (.lp (.forUpd test update body env names labels))).go (.ex body env)) else retS F s .undef
   | .forUpd test update body env names labels =>
-    let (env, s) := copyIter F s names env
+    let (env, s) := nextIter F s names env
     match update with
     | some u => .pure ((s.push (.lp (.forTest false test update body env names labels))).go (.ev u env))
     | none => forTestStep F s test update body env names labels

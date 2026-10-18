@@ -7,6 +7,6 @@ open Host.Ts
 of layer 3), one decode forward at symbolic cache offset `n`, kernel-checked in chunks. `P.O`
 is the run's oracle (its tests answered at `n = 5`). -/
 
-host_chain_sym P : Host.Mlx.Ffi.ffi, boot0, [.var 0], (fun _ => F64.ofNat 5), 300000, [10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000]
+host_chain_sym P : Host.Mlx.Ffi.ffi, boot0, [.var 0], (fun _ => F64.ofNat 5), 300000, [10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000]
 
 end Host.Ts.Tests.Layers.AttnLayer

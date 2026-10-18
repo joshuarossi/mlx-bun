@@ -7,6 +7,7 @@ import host.ts.tests.layers.attn.C4
 import host.ts.tests.layers.attn.C5
 import host.ts.tests.layers.attn.C6
 import host.ts.tests.layers.attn.C7
+import host.ts.tests.layers.attn.C8
 namespace Host.Ts.Tests.Layers.AttnLayer
 host_chain_run P
 set_option maxRecDepth 1000000 in

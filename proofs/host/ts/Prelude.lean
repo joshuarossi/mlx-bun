@@ -66,16 +66,27 @@ function flatMap(f, t) {
   return r;
 }
 function sort(cmp) {
+  // Stable bottom-up merge sort: an element moves before an earlier one only
+  // when the comparator puts it strictly first (the order a stable sort gives).
   const n = this.length;
-  for (let i = 1; i < n; i++) {
-    const v = this[i]; let j = i - 1;
-    while (j >= 0) {
-      const w = this[j];
-      const c = cmp === undefined ? (String(w) > String(v) ? 1 : 0) : cmp(w, v);
-      if (c > 0) { this[j + 1] = w; j--; } else break;
+  let src = [];
+  for (let i = 0; i < n; i++) src.push(this[i]);
+  for (let width = 1; width < n; width *= 2) {
+    const dst = [];
+    for (let lo = 0; lo < n; lo += 2 * width) {
+      const mid = Math.min(lo + width, n), hi = Math.min(lo + 2 * width, n);
+      let i = lo, j = mid;
+      while (i < mid && j < hi) {
+        const w = src[i], v = src[j];
+        const c = cmp === undefined ? (String(w) > String(v) ? 1 : 0) : cmp(w, v);
+        if (c > 0) { dst.push(v); j++; } else { dst.push(w); i++; }
+      }
+      while (i < mid) { dst.push(src[i]); i++; }
+      while (j < hi) { dst.push(src[j]); j++; }
     }
-    this[j + 1] = v;
+    src = dst;
   }
+  for (let i = 0; i < n; i++) this[i] = src[i];
   return this;
 }
 function mapForEach(f) { for (const [k, v] of this) f(v, k, this); }

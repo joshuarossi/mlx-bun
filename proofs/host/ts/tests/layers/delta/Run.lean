@@ -12,6 +12,7 @@ import host.ts.tests.layers.delta.C9
 import host.ts.tests.layers.delta.C10
 import host.ts.tests.layers.delta.C11
 import host.ts.tests.layers.delta.C12
+import host.ts.tests.layers.delta.C13
 namespace Host.Ts.Tests.Layers.DeltaLayer
 host_chain_run P
 set_option maxRecDepth 1000000 in

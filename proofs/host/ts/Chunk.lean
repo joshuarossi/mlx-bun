@@ -406,7 +406,149 @@ elab "host_chain_result " p:ident : command => liftTermElabM do
 
 end Host.Ts
 
+
 namespace Host.Ts
 open Lean Elab Command Meta
 
+/-! ## A push-only array abstracted
+
+A generation loop keeps arrays that grow with the position (`forwarded`, the
+tokens whose KV entered the cache) and that an iteration only appends to.
+`host_chain_abs` takes a `host_chain_sym` chain and, for its states `i … j`,
+adds `P.a<k> : List Val → St`: the state with the elements the array `name`
+held at state `i` replaced by an arbitrary list `fw` (the elements pushed since
+kept after it, `(fw ++ [x₁]) ++ [x₂] …`, as `push` builds them). `host_chunk_abs P k`
+proves the chunk for every `fw` (`P.ac<k>`, one kernel check with `fw` free) and
+derives `P.c<k>` at the held elements `P.base` (`P.a<k> P.base` is `P.s<k>`).
+An iteration that read the array's elements, or its length, would leave the
+kernel stuck on `fw`, and the chunk check would fail. -/
+
+/-- Cells an environment binds to `name`, found in a serialized state. -/
+partial def cellsNamed (nameE : Lean.Expr) (e : Lean.Expr) : List Nat :=
+  let rec go (e : Lean.Expr) (acc : List Nat) : List Nat :=
+    match e with
+    | .app f a =>
+      let acc := match e.getAppFn, e.getAppArgs with
+        | .const ``Prod.mk _, #[_, _, n, .lit (.natVal k)] => if n == nameE then k :: acc else acc
+        | _, _ => acc
+      go a (go f acc)
+    | .lam _ t b _ | .forallE _ t b _ => go b (go t acc)
+    | .letE _ t v b _ => go b (go v (go t acc))
+    | .mdata _ b | .proj _ _ b => go b acc
+    | _ => acc
+  go e []
+
+/-- The sentinel element the abstraction replaces (no run makes this symbol). -/
+def absSentinel : Val := .sym 1000003
+
+/-- `(fw ++ [x₁]) ++ [x₂] …` over a bound `fw` (de Bruijn index 0). -/
+def absList (xs : List Lean.Expr) : Lean.Expr :=
+  let valT := mkConst ``Val
+  xs.foldl (fun acc x => mkApp3 (mkConst ``List.append [.zero]) valT acc
+    (mkApp3 (mkConst ``List.cons [.zero]) valT x (mkApp (mkConst ``List.nil [.zero]) valT))) (.bvar 0)
+
+/-- Replace `sentinel :: rest` by `absList rest`. -/
+partial def absReplace (sentE : Lean.Expr) (e : Lean.Expr) : Lean.Expr :=
+  e.replace fun t => match t.getAppFn, t.getAppArgs with
+    | .const ``List.cons _, #[_, h, rest] => if h == sentE then some (absList (listElems rest)) else none
+    | _, _ => none
+where
+  listElems (e : Lean.Expr) : List Lean.Expr := match e.getAppFn, e.getAppArgs with
+    | .const ``List.cons _, #[_, h, r] => h :: listElems r
+    | _, _ => []
+
+/-- The chain of `host_chain_sym` with, for states `i … j`, the abstracted states
+(`fun fw => …` bodies) and the elements held at state `i`. -/
+def chainStatesAbs (F : Ffi) (serS : F.S → Lean.Expr) (tyS : Lean.Expr) (ρ : Nat → F64) (fuel : Nat) (s₀ : St F.S)
+    (tab : List SymE) (ks : List Nat) (i j : Nat) (name : List Char) :
+    Except String (List Ans × List (Lean.Expr × Lean.Expr × Bool) × List Lean.Expr × Lean.Expr) := letI : ToExpr F.S := ⟨serS, tyS⟩; do
+  let o ← match discover F ρ fuel s₀ ⟨tab, []⟩ [] 0 with
+    | some (o, _, _) => pure o
+    | none => throw "discover failed"
+  let rec go (s : St F.S) (S : SSrv) : List Nat → Option (List (St F.S × SSrv))
+    | [] => some []
+    | k :: ks => (runS F k s S).bind fun (s', S') => (go s' S' ks).map ((s', S') :: ·)
+  let some sts := (go s₀ ⟨tab, o⟩ ks).map ((s₀, ⟨tab, o⟩) :: ·) | throw "a chunk failed"
+  let states := sts.map fun (s, S) => (toExpr s, toExpr S, isHalt s.ctl)
+  let some (si, _) := sts[i]? | throw "no state i"
+  let nameE := toExpr name
+  let cells := (cellsNamed nameE (toExpr si)).eraseDups
+  let addrs := cells.filterMap fun c => match si.cell? c with
+    | some (some (.obj a)) => some a
+    | _ => none
+  let [a] := addrs.eraseDups | throw s!"binding {String.ofList name}: arrays {addrs.eraseDups}"
+  let some (_, base) := arrayOf F si a | throw "not an array"
+  let sentE := toExpr absSentinel
+  let mut abs := []
+  for k in [i:j + 1] do
+    let some (s, _) := sts[k]? | throw "no state"
+    let some (ob, es) := arrayOf F s a | throw "array gone"
+    unless es.length ≥ base.length do throw s!"state {k}: the array shrank"
+    let s' := s.setObj a { ob with kind := .array (absSentinel :: es.drop base.length) }
+    abs := abs ++ [absReplace sentE (toExpr s')]
+  pure (o, states, abs, toExpr base)
+
+/-- `host_chain_abs P : F, boot, tab, ρ, fuel, [k₁, …], i, j, "name"`: `host_chain_sym`, and the
+abstraction of array `name` over states `i … j` (`P.a<k>`, `P.base`, `P.abs` = `(i, j)`). -/
+elab "host_chain_abs " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term ", " fuel:term ", " ks:term
+    ", " i:num ", " j:num ", " nm:str : command => liftTermElabM do
+  let pre := (← getCurrNamespace) ++ p.getId
+  let (fE, stTy, bE, serS, tyS) ← chainInputs f b
+  let tE ← instantiateMVars (← Term.elabTermAndSynthesize tab (some (mkApp (mkConst ``List [.zero]) (mkConst ``SymE))))
+  let rE ← instantiateMVars (← Term.elabTermAndSynthesize ρ (some (← mkArrow (mkConst ``Nat) (mkConst ``F64))))
+  let nE ← instantiateMVars (← Term.elabTermAndSynthesize fuel (some (mkConst ``Nat)))
+  let ksV ← unsafe evalExpr (List Nat) (mkApp (mkConst ``List [.zero]) (mkConst ``Nat))
+    (← instantiateMVars (← Term.elabTermAndSynthesize ks (some (mkApp (mkConst ``List [.zero]) (mkConst ``Nat)))))
+  let (iV, jV) := (i.getNat, j.getNat)
+  let resTy := mkApp2 (mkConst ``Except [.zero, .zero]) (mkConst ``String) (mkConst ``Unit)
+  let _ := resTy
+  let call ← mkAppM ``Option.map #[← withLocalDeclD `s stTy fun s => do
+    mkLambdaFVars #[s] (mkAppN (mkConst ``chainStatesAbs) #[fE, serS, tyS, rE, nE, s, tE, toExpr ksV, mkRawNatLit iV,
+      mkRawNatLit jV, toExpr nm.getString.toList]), bE]
+  let t0 ← IO.monoMsNow
+  let r ← unsafe evalExpr (Option (Except String (List Ans × List (Lean.Expr × Lean.Expr × Bool) × List Lean.Expr × Lean.Expr)))
+    (← inferType call) call
+  let some r := r | throw (.error .missing m!"host_chain_abs: boot failed")
+  let (o, states, abs, base) ← match r with
+    | .ok v => pure v
+    | .error e => throwError "host_chain_abs: {e}"
+  let ansTy := mkApp (mkConst ``List [.zero]) (mkConst ``Ans)
+  addDecl (Declaration.defnDecl { name := pre ++ `O, levelParams := [], type := ansTy, value := toExpr o, hints := ReducibilityHints.abbrev, safety := .safe })
+  addChain pre fE stTy bE (mkApp2 (mkConst ``SSrv.mk) tE (mkConst (pre ++ `O))) ksV states ((← IO.monoMsNow) - t0)
+  let valL := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
+  addDecl (Declaration.defnDecl { name := pre ++ `base, levelParams := [], type := valL, value := base, hints := .regular 0, safety := .safe })
+  let shared := ShareCommon.shareCommon' abs
+  let mut k := iV
+  for body in shared do
+    addDecl (Declaration.defnDecl { name := pre ++ Name.mkSimple ("a" ++ toString k), levelParams := [], type := ← mkArrow valL stTy, value := .lam `fw valL body .default, hints := .regular 0, safety := .safe })
+    k := k + 1
+  let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) (mkConst ``Nat) (mkConst ``Nat)
+  addDecl (Declaration.defnDecl { name := pre ++ `abs, levelParams := [], type := pairTy, value := mkApp4 (mkConst ``Prod.mk [.zero, .zero]) (mkConst ``Nat) (mkConst ``Nat) (mkRawNatLit iV) (mkRawNatLit jV), hints := ReducibilityHints.abbrev, safety := .safe })
+  logInfo m!"host_chain_abs {pre}: oracle of {o.length} answers; {String.ofList nm.getString.toList} abstracted over states {iV}…{jV}"
+
+/-- `host_chunk_abs P k`: `P.ac<k> : ∀ fw, runS P.F kₖ (P.a<k> fw) P.S<k> = some (P.a<k+1> fw, P.S<k+1>)`
+(one kernel check, `fw` free), and `P.c<k>` (the chunk of `host_chunk`) at `fw := P.base`. -/
+elab "host_chunk_abs " p:ident i:num : command => liftTermElabM do
+  let pre := (← getCurrNamespace) ++ p.getId
+  let k := i.getNat
+  let ks ← unsafe evalConst (List Nat) (pre ++ `ks)
+  let some n := ks[k]? | throwError "no chunk {k}"
+  let F := mkConst (pre ++ `F)
+  let stTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) F)
+  let pTy := mkApp2 (mkConst ``Prod [.zero, .zero]) stTy (mkConst ``SSrv)
+  let oTy := mkApp (mkConst ``Option [.zero]) pTy
+  let valL := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
+  let sN (i : Nat) := mkConst (pre ++ Name.mkSimple ("S" ++ toString i))
+  let eqAt (l r : Lean.Expr) (i : Nat) :=
+    let lhs := mkAppN (mkConst ``runS) #[F, mkRawNatLit n, l, sN i]
+    let rhs := mkApp2 (mkConst ``Option.some [.zero]) pTy (mkApp4 (mkConst ``Prod.mk [.zero, .zero]) stTy (mkConst ``SSrv) r (sN (i + 1)))
+    (mkApp3 (mkConst ``Eq [.succ .zero]) oTy lhs rhs, lhs)
+  let aN (i : Nat) := mkConst (pre ++ Name.mkSimple ("a" ++ toString i))
+  let (body, lhs) := eqAt (mkApp (aN k) (.bvar 0)) (mkApp (aN (k + 1)) (.bvar 0)) k
+  addDecl (.thmDecl { name := pre ++ Name.mkSimple ("ac" ++ toString k), levelParams := [], type := .forallE `fw valL body .default, value := .lam `fw valL (mkApp2 (mkConst ``Eq.refl [.succ .zero]) oTy lhs) .default })
+  let sK (i : Nat) := mkConst (pre ++ Name.mkSimple ("s" ++ toString i))
+  let (ty, _) := eqAt (sK k) (sK (k + 1)) k
+  addDecl (.thmDecl { name := pre ++ Name.mkSimple ("c" ++ toString k), levelParams := [], type := ty, value := mkApp (mkConst (pre ++ Name.mkSimple ("ac" ++ toString k))) (mkConst (pre ++ `base)) })
+
 end Host.Ts
+
