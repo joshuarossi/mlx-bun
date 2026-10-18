@@ -29,6 +29,23 @@ host_micro_run Q 0
 theorem fused : runS P.F 80 P.s0 P.S0 = some (P.s1, P.S1) := P.c0
 theorem separate : runS Q.F 80 Q.s0 Q.S0 = some (Q.s1, Q.S1) := Q.c0
 
+host_chain T : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
+host_micro_stream T 0, 17
+host_stream_state T.micro0 0
+host_stream_state T.micro0 1
+host_stream_state T.micro0 2
+host_stream_state T.micro0 3
+host_stream_state T.micro0 4
+host_stream_state T.micro0 5
+host_chunk T.micro0 0
+host_chunk T.micro0 1
+host_chunk T.micro0 2
+host_chunk T.micro0 3
+host_chunk T.micro0 4
+host_micro_run T 0
+
+theorem streamed : runS T.F 80 T.s0 T.S0 = some (T.s1, T.S1) := T.c0
+
 host_chain R : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [20, 20, 40]
 host_chunk R 0
 host_chunk R 1

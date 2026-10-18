@@ -67,7 +67,7 @@ private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
 boundary is subsequently used in an ordinary kernel reduction, including the
 last boundary's equality to the original outer chunk endpoint. -/
 private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option (Nat × Nat × Nat))
-    (checked : Bool) : TermElabM Unit := do
+    (checked : Bool) (streamed : Bool := false) : TermElabM Unit := do
   if width == 0 then throwError "host_micro_chunk: width must be positive"
   if let some (start, stop, fine) := refine then
     unless start < stop && fine > 0 do throwError "host_micro_chunk: invalid refinement interval"
@@ -94,9 +94,19 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
   astTabRef.set (← loadAstTab)
   Memo.reset
   let microPre := pre ++ Name.mkSimple s!"micro{i}"
+  let nonce := s!"{microPre}:{← IO.monoNanosNow}"
+  let dir ← streamDir
+  if streamed then
+    IO.FS.createDirAll (dir / microPre.toString)
+    let decl := Declaration.defnDecl { name := microPre ++ `nonce, levelParams := [], type := mkConst ``String, value := toExpr nonce, hints := .abbrev, safety := .safe }
+    addDecl decl
+    compileDecl decl
   addDefinition (microPre ++ `F) (mkConst ``Ffi) F
-  addDefinition (boundaryName microPre "s" 0) sTy startS
-  addDefinition (boundaryName microPre "S" 0) srvTy startC
+  if streamed then
+    IO.FS.writeBinFile (Stream.fileOf dir microPre 0) (writeRoots { nonce, defs := #[], st := startS, srv := startC })
+  else
+    addDefinition (boundaryName microPre "s" 0) sTy startS
+    addDefinition (boundaryName microPre "S" 0) srvTy startC
   let (initialS, initialC, initialG, valueCount, aliasCount) ← restore startS startC microPre
   let mut s := initialS
   let mut c := initialC
@@ -130,20 +140,28 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
     let (chosenS, chosenC) ← if last then do
       let sn := boundaryName microPre "s" (index+1)
       let cn := boundaryName microPre "S" (index+1)
-      addDefinition sn sTy endS
-      addDefinition cn srvTy endC
+      if streamed then
+        IO.FS.writeBinFile (Stream.fileOf dir microPre (index+1))
+          (writeRoots { nonce, defs := #[], st := endS, srv := endC })
+      else
+        addDefinition sn sTy endS
+        addDefinition cn srvTy endC
       pure (mkConst sn, mkConst cn)
     else do
       Memo.beginEpoch
       let (state, nextG) ← (stE StreamExpr.ser (mkConst ``LSt) s).run
         { g with idx := index+1, count := 0, defs := #[] }
       g := nextG
-      for (name, type, value) in g.defs do addDefinition name type value
       let sn := boundaryName microPre "s" (index+1)
       let cn := boundaryName microPre "S" (index+1)
-      addDefinition sn sTy state
       let server := toExpr c
-      addDefinition cn srvTy server
+      if streamed then
+        IO.FS.writeBinFile (Stream.fileOf dir microPre (index+1))
+          (writeRoots { nonce, defs := g.defs, st := state, srv := server })
+      else
+        for (name, type, value) in g.defs do addDefinition name type value
+        addDefinition sn sTy state
+        addDefinition cn srvTy server
       trace s!"micro {i}.{index}: {g.defs.size} definitions serialized"
       g := sweep { g with defs := #[] } #[state, server]
       peakAliases := max peakAliases g.memo.size
@@ -201,6 +219,13 @@ are aliases of the original outer boundaries. This command proves no run. -/
 elab "host_micro_states " p:ident i:num ", " width:num : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
     unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false
+
+/-- Write candidate microstates without retaining their definitions in one
+environment. `host_stream_state P.micro<i> j` imports each boundary and checks
+all its definitions before the existing chunk commands check execution. -/
+elab "host_micro_stream " p:ident i:num ", " width:num : command =>
+  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false true
 
 /-- Compose checked (possibly framed) microchunk theorems into the original
 outer chunk statement. This command performs no native state restoration. -/
