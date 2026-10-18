@@ -1,4 +1,5 @@
 import host.ts.Chunk
+import host.ts.Memo
 namespace Host.Ts
 open Lean Elab Command Meta
 
@@ -485,6 +486,7 @@ elab "host_stream " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term 
   let call ← withLocalDeclD `s stTy fun s => do
     mkLambdaFVars #[s] (mkAppN (mkConst ``generate) #[fE, serS, tyS, rE, toExpr ksV, toExpr skipV, absE, s, tE, toExpr pre, toExpr nonce])
   let t0 ← IO.monoMsNow
+  Memo.reset
   let gen ← unsafe evalExpr (Option (IO (List Ans × Nat × Nat × List SymE × List Val))) (mkApp (mkConst ``Option [.zero]) resTy)
     (← mkAppM ``Option.map #[call, bE])
   let some gen := gen | throwError "host_stream: boot failed"
