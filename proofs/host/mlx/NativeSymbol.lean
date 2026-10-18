@@ -23,6 +23,22 @@ theorem decodeArgs_ptr_u64_tail (F : Ffi) (s : St F.S) (b off : Nat) (handle : I
   simp only [decodeArgs,decodeArg_js_pointer F s b off bs hb,
     Host.Mlx.Ffi.NativeRoles.Arguments.decode_u64_big,tail,M.bind,M.pure,Option.map_some]
 
+theorem decodeArgs_u64_tail (F : Ffi) (s : St F.S) (value : Int)
+    (types values : List Val) (args : List Arg)
+    (tail : decodeArgs F s types values = M.pure (some args)) :
+    decodeArgs F s (.str chars!"u64" :: types) (.big value :: values) =
+      M.pure (some (.big value :: args)) := by
+  funext β k
+  simp only [decodeArgs,Host.Mlx.Ffi.NativeRoles.Arguments.decode_u64_big,tail,M.bind,M.pure,Option.map_some]
+
+theorem decodeArgs_i32_literal_tail (F : Ffi) (s : St F.S) (value : F64)
+    (same : F64.un .int32 value = value) (types values : List Val) (args : List Arg)
+    (tail : decodeArgs F s types values = M.pure (some args)) :
+    decodeArgs F s (.str chars!"i32" :: types) (.num (.lit value) :: values) =
+      M.pure (some (.num (.lit value) :: args)) := by
+  funext β k
+  simp only [decodeArgs,Host.Mlx.Ffi.NativeRoles.Arguments.decode_i32_literal,same,tail,M.bind,M.pure,Option.map_some]
+
 theorem step_ffi_decoded (F : Ffi) (s : St F.S) (fn types : Nat) (name returns : Name)
     (fo to : Obj) (receiver : Val) (signature values : List Val) (args : List Arg)
     (native : F.S) (result : Ret) (writes : List (Nat × Nat × List Byte))
