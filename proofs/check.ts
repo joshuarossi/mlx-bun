@@ -3776,6 +3776,34 @@ const proofFiles = [
   "host/ts/RenameParametricDescent.lean",
   "host/ts/RenameParametricPrivate.lean",
   "host/ts/RenameParametricPropWrites.lean",
+  "host/load/run/full/micro/C76.lean",
+  "host/load/run/full/micro/C77.lean",
+  "host/mlx/CachedInference.lean",
+  "host/mlx/NativeAnnotationRebase.lean",
+  "host/mlx/NativeAnnotationResources.lean",
+  "host/mlx/NativeObjectAnnotations.lean",
+  "host/mlx/TraceSelection.lean",
+  "host/ts/RenameParametricCalls.lean",
+  "host/ts/RenamePrefixGroupedTest.lean",
+  "host/load/Sha.lean",
+  "host/load/ShaCommand.lean",
+  "host/load/run/full/micro/C83.lean",
+  "host/load/run/full/micro/C83/Sha.lean",
+  "host/load/run/full/micro/C83/States.lean",
+  "host/load/run/full/micro/C83/Steps.lean",
+  "host/load/tests/Sha.lean",
+  "host/mlx/ActualCachedCall.lean",
+  "host/mlx/ActualCachedKernel.lean",
+  "host/mlx/ActualCachedYield.lean",
+  "host/mlx/AnnotatedGeometry.lean",
+  "host/mlx/AnnotatedInference.lean",
+  "host/mlx/AnnotatedInputs.lean",
+  "host/mlx/AnnotatedReplay.lean",
+  "host/ts/RenameParametricCallStep.lean",
+  "host/ts/RenameParametricDefaults.lean",
+  "host/ts/RenameParametricHoist.lean",
+  "host/ts/RenameParametricParameters.lean",
+  "host/ts/RenameParametricReturns.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -4038,7 +4066,7 @@ try {
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
       /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_stream)\s/m.test(source);
+      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_sha256_step)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
@@ -4158,6 +4186,24 @@ end Host.Load.Tests.LinkFixedNegative
       "end Host.Ts.RefScan.Wrong",
       "",
     ].join("\n");
+    const wrongShaDigest = `import host.load.tests.Sha
+set_option Elab.async false
+open Lean Elab Command Meta in
+run_elab do
+  let lhs := mkApp (mkConst \`\`Host.Ts.sha256) (mkConst \`\`Host.Load.Tests.Sha.Abc.msg)
+  addDecl (.thmDecl { name := \`wrongShaDigest, levelParams := [], type := ← mkEq lhs (toExpr ([0] : List Nat)), value := mkConst \`\`Host.Load.Tests.Sha.Abc.checked })
+`;
+    const wrongShaEndpoint = `import host.load.tests.Sha
+set_option Elab.async false
+open Lean Elab Command Meta in
+run_elab do
+  let F := mkConst \`\`Host.Load.Tests.Sha.Call.F
+  let s := mkConst \`\`Host.Load.Tests.Sha.Call.s0
+  let srv := mkConst \`\`Host.Load.Tests.Sha.Call.S0
+  let lhs := mkAppN (mkConst \`\`Host.Ts.runS) #[F,mkRawNatLit 1,s,srv]
+  let rhs ← mkAppM \`\`Option.some #[← mkAppM \`\`Prod.mk #[s,srv]]
+  addDecl (.thmDecl { name := \`wrongShaEndpoint, levelParams := [], type := ← mkEq lhs rhs, value := mkConst \`\`Host.Load.Tests.Sha.Call.c0 })
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -4185,12 +4231,15 @@ end Host.Load.Tests.LinkFixedNegative
       ["WrongComposedEndpoint", composeEndpoint, false],
       ["MutatedFixedWorld", fixedWorldMutation, false],
       ["WrongReferenceScan", wrongReferenceScan, false],
+      ["WrongShaDigest", wrongShaDigest, false],
+      ["WrongShaEndpoint", wrongShaEndpoint, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
         name.includes("MicroEndpoint") || name === "MutatedFixedWorld" ? loadNative : undefined);
       if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
-      if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan") &&
+      if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
+          name === "WrongShaDigest" || name === "WrongShaEndpoint") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
       }
