@@ -203,6 +203,24 @@ theorem step_argument_done_stack (F : Ffi) (NR : NumV → NumV → Prop)
   rw [← hr,hf,rest_shape]
   cases kind <;> rfl
 
+theorem step_argument_expression_stack_tail (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (v₀ : Val) (kind : Nat) (fn₀ this₀ : Val) (acc₀ : List Val) (rest : List Elem) (env : Env) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret v₀) (hf₀ : s₀.stack = .c (.args kind fn₀ this₀ acc₀ rest env)::fs₀)
+    (hk : kind ≤ 1) (expression : Expr) (remaining : List Elem) (rest_shape : rest = .expr expression::remaining)
+    (run : interpC (step F s).run C = some (result,D)) : result.stack.tail = s.stack.tail := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,_⟩ := h.stack_view hf₀
+  obtain ⟨fn,this,acc,hframe,_,_,_⟩ := hfr.args_view
+  rw [hframe] at hf
+  rw [step_argument_eq F s v kind fn this acc rest (R.env env) fs hc hf hk] at run
+  have hr := congrArg Prod.fst (Option.some.inj run)
+  dsimp only [M.pure,interpC_pure] at hr
+  rw [← hr,hf,rest_shape]
+  rfl
+
 theorem step_private_read_stack (F : Ffi) (NR : NumV → NumV → Prop)
     (FR : Ren → F.S → F.S → Prop) (R : Ren) (C₀ C D : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s₀ s result : St F.S)

@@ -41,14 +41,14 @@ theorem byte_product : F64.bin .mul (F64.ofNat 3) (F64.ofNat 4) = F64.ofNat 12 :
 /-- The actual source rank expression is dispatched with one retained cell
 annotation. All five original steps run, the saved left operand keeps its
 meaning, and literal folding derives the exact count required by the decoder. -/
-theorem byte_count_transport (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+theorem byte_count_transport_frame (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren) (ν₀ ν : Nat → F64)
     (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
     (s : St P.F.S)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' ByteBinary.input s)
     (rank : s.heap.get (R.a ByteRank.address) = some (.cell (some (natV 3)))) :
     ∃ result, runC P.F 5 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' ByteMultiply.output result ∧
-      result.ctl = .ret (natV 12) ∧ result.heap = s.heap ∧ result.next = s.next ∧ result.stack = s.stack := by
+      result.ctl = .ret (natV 12) ∧ result.heap = s.heap ∧ result.next = s.next ∧ result.stack = s.stack ∧ result.aux = s.aux := by
   let role : Annotated.Value := .literal (.lit (F64.ofNat 3))
   let cells := Annotated.Notes.empty.write ByteRank.address role
   have alive := h.stack_address_live ByteRank.address byte_rank_found
@@ -111,7 +111,7 @@ theorem byte_count_transport (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren) (
     exact (List.cons.inj (stack48.symm.trans actual48)).2
   have actual50 : s50.stack = .e (.binR .mul v49)::frames49 := rfl
   have frames51eq : frames51 = frames49 := (List.cons.inj (stack50.symm.trans actual50)).2
-  refine ⟨result,?_,h51',?_,rfl,rfl,frames51eq.trans frames49eq⟩
+  refine ⟨result,?_,h51',?_,rfl,rfl,frames51eq.trans frames49eq,rfl⟩
   · apply runC_cons P.F 4 s s47 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) run46t
     apply runC_cons P.F 3 s47 s48 result C C C (h47'.control.isHalt_eq.trans (by host_kernel_rfl)) run47t
     apply runC_cons P.F 2 s48 s49 result C C C (h48'.control.isHalt_eq.trans (by host_kernel_rfl)) run48t
@@ -119,4 +119,16 @@ theorem byte_count_transport (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren) (
     apply runC_cons P.F 0 s50 result result C C C (h50'.control.isHalt_eq.trans (by host_kernel_rfl)) run50t
     rfl
   · exact congrArg (fun x => Ctl.ret (.num (.lit x))) count
+
+theorem byte_count_transport (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+    (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+    (s : St P.F.S)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' ByteBinary.input s)
+    (rank : s.heap.get (R.a ByteRank.address) = some (.cell (some (natV 3)))) :
+    ∃ result, runC P.F 5 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' ByteMultiply.output result ∧
+      result.ctl = .ret (natV 12) ∧ result.heap = s.heap ∧ result.next = s.next ∧ result.stack = s.stack := by
+  obtain ⟨result,run,related,control,heap,next,stack,_⟩ :=
+    byte_count_transport_frame FR R ν₀ ν C₀ C live framed before after old old' s h rank
+  exact ⟨result,run,related,control,heap,next,stack⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat.WeightShape
