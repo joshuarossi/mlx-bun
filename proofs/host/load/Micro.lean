@@ -240,6 +240,25 @@ elab "host_micro_states " p:ident i:num ", " width:num cs:((" chunks " term)?) :
     let sizes ← microSizes cs.raw
     let _ ← unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false false sizes
 
+/-- Choose at most 1024 small boundaries across consecutive outer chunks,
+restoring the first native state once. This emits data only; each original
+endpoint and the order of the chosen states remain ordinary chunk obligations. -/
+elab "host_micro_states_group " p:ident first:num ", " count:num ", " width:num : command =>
+  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+    unless 0 < count.getNat && count.getNat ≤ 8 && width.getNat > 0 do
+      throwError "host_micro_states_group: expected 1 to 8 consecutive chunks and positive width"
+    let pre := (← getCurrNamespace) ++ p.getId
+    let ks ← unsafe evalConst (List Nat) (pre ++ `ks)
+    unless first.getNat+count.getNat ≤ ks.length do
+      throwError "host_micro_states_group: selected chunks are outside the original chain"
+    let selected := (ks.drop first.getNat).take count.getNat
+    let boundaries := selected.foldl (fun n k => n+(k+width.getNat-1)/width.getNat) 0
+    unless boundaries ≤ 1024 do
+      throwError "host_micro_states_group: at most 1024 small boundaries may be chosen"
+    let mut choice : Option (St LSt × SSrv × G) := none
+    for i in [first.getNat:first.getNat+count.getNat] do
+      choice := some (← unsafe microChunk pre i width.getNat none false false none choice)
+
 /-- Write candidate microstates without retaining their definitions in one
 environment. `host_stream_state P.micro<i> j` imports each boundary and checks
 all its definitions before the existing chunk commands check execution. -/
