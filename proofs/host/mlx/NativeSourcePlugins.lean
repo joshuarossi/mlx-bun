@@ -9,6 +9,7 @@ import host.mlx.NativeConfigIntFrontend
 import host.mlx.NativeConfigFactoryFrontend
 import host.mlx.NativeConfigFreeFrontend
 import host.mlx.NativeFixedSliceFrontend
+import host.mlx.NativeConfigOutputFrontend
 
 set_option Elab.async false
 
@@ -25,3 +26,4 @@ host_register_native_source "mlx_fast_metal_kernel_config_add_template_arg_int" 
 host_register_native_source "mlx_fast_metal_kernel_config_new" => "host_retained_configNew"
 host_register_native_source "mlx_fast_metal_kernel_config_free" => "host_retained_configFree"
 host_register_native_source "mlx_slice" => "host_retained_fixedSlice"
+host_register_native_source "mlx_fast_metal_kernel_config_add_output_arg" => "host_retained_configOutput"

@@ -25,6 +25,8 @@ run_cmd liftTermElabM do
   unless configNew == #["host_retained_configNew"] do throwError "native source registry selected the wrong configuration constructor command"
   let configFree ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_free")
   unless configFree == #["host_retained_configFree"] do throwError "native source registry selected the wrong configuration disposal command"
+  let output ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_add_output_arg")
+  unless output == #["host_retained_configOutput"] do throwError "native source registry selected the wrong output declaration command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
