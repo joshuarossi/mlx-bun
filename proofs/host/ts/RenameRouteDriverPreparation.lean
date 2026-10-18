@@ -50,10 +50,12 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
         add "sourceFunction" expr.getAppArgs[0]!
         pure "callback"
       else
-        let elems ← field expr ``Expr.array 1 0
-        add "sourceExpression" (← field (← field elems ``List.cons 3 1) ``Elem.expr 1 0)
-        add "sourceRest" (← field elems ``List.cons 3 2)
-        pure "arrayEntry"
+        let elems ← whnf (← field expr ``Expr.array 1 0)
+        if elems.isAppOfArity ``List.nil 1 then pure "emptyArray"
+        else
+          add "sourceExpression" (← field (← field elems ``List.cons 3 1) ``Elem.expr 1 0)
+          add "sourceRest" (← field elems ``List.cons 3 2)
+          pure "arrayEntry"
     else
       let value ← field ctl ``Ctl.ret 1 0
       add "sourceValue" value
@@ -140,6 +142,12 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
       emit (header ++ s!"theorem {n}.source_bound : {n}.input.next < 2^64 := by decide +kernel")
       pure (s!"step_callback_from_source {common} {n}.sourceFunction {n}.sourceEnv {n}.source_control
         prototypeLive prototypeFixed {n}.source_bound targetBound",false)
+    else if branch == "emptyArray" then do
+      fact "source_control" s!"{n}.input.ctl = .ev (.array []) {n}.sourceEnv"
+      emit (header ++ s!"theorem {n}.source_bound : {n}.input.next < 2^64 := by decide +kernel")
+      pure (s!"step_empty_array_roles {common} {n}.sourceEnv (R.env {n}.sourceEnv)
+        {n}.source_control (h.control_view {n}.source_control).ev_view
+        prototypeLive prototypeFixed {n}.source_bound targetBound",false)
     else if branch == "arrayEntry" then do
       fact "source_control" s!"{n}.input.ctl = .ev (.array (.expr {n}.sourceExpression :: {n}.sourceRest)) {n}.sourceEnv"
       pure (s!"step_array_entry_from_source {common} {n}.sourceExpression {n}.sourceRest {n}.sourceEnv {n}.source_control",false)
@@ -199,13 +207,13 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
         pure (s!"step_array_final_from_source {common} {n}.sourceValue {n}.sourceAcc {n}.sourceEnv {n}.sourceTail
           {n}.source_control {n}.source_frame prototypeLive prototypeFixed {n}.source_bound targetBound",true)
   emit (header ++ s!"theorem {n}.source_run (C₀ : CSrv) : interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) := by host_kernel_rfl")
-  let extras := if branch == "arrayFinal" then
+  let extras := if branch == "arrayFinal" || branch == "emptyArray" then
     "(prototypeLive : live aArrayProto) (prototypeFixed : R.a aArrayProto = aArrayProto) (targetBound : s.next < 2^64)"
     else if branch == "callback" then
       "(prototypeLive : live aFunctionProto) (prototypeFixed : R.a aFunctionProto = aFunctionProto) (targetBound : s.next < 2^64)"
     else if branch == "arrayMethod" then s!"(receiverNotFramed : ¬ framed {n}.sourceAddress)"
     else ""
-  let targetLive := if branch == "arrayFinal" || branch == "callback" then s!"(LiveAfter live {n}.input.next)" else "live"
+  let targetLive := if branch == "arrayFinal" || branch == "emptyArray" || branch == "callback" then s!"(LiveAfter live {n}.input.next)" else "live"
   let obtainArgs := if hasResult then "result,hr₀,hr,hpost" else "hr₀,hr,hpost"
   emit (header ++ s!"theorem {n}.transport (NR : NumV → NumV → Prop) (FR : Ren → {n}.F.S → {n}.F.S → Prop)
       (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)

@@ -21,9 +21,11 @@ elab "host_transport_structural " f:term ", " s:term " to " t:term " as " name:i
     let ctl ← whnf (← mkAppM ``St.ctl #[s])
     if ctl.isAppOfArity ``Ctl.ev 2 then
       let e ← whnf ctl.getAppArgs[0]!
-      unless e.isAppOfArity ``Expr.bin 3 do
-        throwError "host_transport_structural: unsupported expression {e.getAppFn.constName!.toString}"
-      let d := mkAppN (mkConst ``Descent.binary) e.getAppArgs
+      let d ← if e.isAppOfArity ``Expr.bin 3 then
+          pure (mkAppN (mkConst ``Descent.binary) e.getAppArgs)
+        else if e.isAppOfArity ``Expr.member 3 then
+          pure (mkAppN (mkConst ``Descent.member) e.getAppArgs)
+        else throwError "host_transport_structural: unsupported expression {e.getAppFn.constName!.toString}"
       addData (pre ++ `descent) d
       addData (pre ++ `sourceEnv) ctl.getAppArgs[1]!
       pure 0
