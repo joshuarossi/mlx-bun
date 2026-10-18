@@ -1,5 +1,6 @@
 import host.mlx.NativeConcatRoles
 import host.mlx.NativeReshapeHost
+import host.mlx.NativeWritesFrame
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -42,7 +43,7 @@ theorem step_concat_eq (s : Host.Ts.St LSt) (fn types out vec stream : Nat) (axi
 /-- Two-input concatenation uses the real input vector and fixed dimension meanings.
 The source support witness is carried from vector construction, while pure
 geometry supplies both inferred shapes and preserves indexed object fields. -/
-theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem from_source_framed (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (roles : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
     (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
     (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s₀ s : Host.Ts.St LSt)
@@ -82,7 +83,11 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
           symbol (callArgs out vec stream axisValue (cellParts .u64 (.big (Int.ofNat 0)) 8 0))) t ∧
       (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a out)) ∧
       t.next = s.next ∧ t.stack = s.stack ∧ (∀ a, a ≠ R.a out → t.heap.get a = s.heap.get a) ∧
-      listSupport (fun i => i = s₀.ffi.mlx.nnext ∨ N i) [x,y] := by
+      listSupport (fun i => i = s₀.ffi.mlx.nnext ∨ N i) [x,y] ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s₀ (finishBuffer s₀ (resultWorld s₀.ffi x y axis shape xn.dtype yn.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          symbol (callArgs out vec stream axisValue (cellParts .u64 (.big (Int.ofNat 0)) 8 0))) ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s t ∧ t.ctl = .ret (.num zeroN) := by
   have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   have outLive : live out := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.1
   obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
@@ -138,7 +143,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         have targetOutBound := Nat.lt_trans (h.heap.targetBound out outLive) targetHeap
         have post := h.finishBuffer_event native₀ native' nativeRelated out 0 outObject out' oldBytes oldBytes writes₀ writes'
           symbol args₀ args' outLive ho₀ hok₀ hro hlo hbo writesRelated sourceHeap targetOutBound zeroRole eventRoles
-        refine ⟨shape,t,?_,?_,post,?_,rfl,rfl,?_,Or.inr inputsLive.1,Or.inr inputsLive.2.1,True.intro⟩
+        refine ⟨shape,t,?_,?_,post,?_,rfl,rfl,?_,⟨Or.inr inputsLive.1,Or.inr inputsLive.2.1,True.intro⟩,?_,?_,rfl⟩
         · change interpC (step F s₀).run C₀ = _
           have call : F.call s₀.ffi symbol args₀ = M.pure (some (native₀,status0,[(out,0,writes₀)])) := by
             simpa only [F,symbol,args₀,callArgs,native₀,resultWorld,writes₀,u64Write,Int.ofNat_eq_natCast] using
@@ -162,5 +167,57 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         · intro a ne
           change (s.heap.set (R.a out) _).get a = s.heap.get a
           rw [PTrie.get_set_u64 _ _ _ targetOutBound,ite_eq_right ne]
+
+        · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s₀ native₀ out 0 outObject oldBytes writes₀
+            symbol args₀ ho₀ hok₀ sourceHeap
+        · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s native' (R.a out) 0 out' oldBytes writes'
+            symbol args' ho hok targetOutBound
+
+theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (roles : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s₀ s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C roles boundary objects H N tail host)
+      R live framed before after old old' s₀ s)
+    (fn types out vec x y axis stream : Nat) (axisValue : F64) (axisInt : Int) (returns : Name) (fo signature₀ outObject : Host.Ts.Obj)
+    (receiver : Val) (xn yn : Node) (output : Shape)
+    (hc₀ : s₀.ctl = .call (.obj fn) receiver [.ptr (.js out) 0,.big (Int.ofNat vec),.num (.lit axisValue),.big (Int.ofNat stream)])
+    (hf₀ : s₀.heap.get fn = some (.obj fo))
+    (hk₀ : fo.kind = .fn (.native (.ffi .symbol) [.str symbol,.obj types,.str returns]))
+    (ht₀ : s₀.heap.get types = some (.obj signature₀)) (htk₀ : signature₀.kind = .array signature)
+    (ho₀ : s₀.heap.get out = some (.obj outObject)) (hok₀ : outObject.kind = .buf (cellParts .u64 (.big (Int.ofNat 0)) 8 0))
+    (signatureFrame : ¬ framed types) (vectorLive : H vec) (inputsLive : listSupport N [x,y])
+    (sourceVector : s₀.ffi.mlx.obj? vec = some (.vec [x,y]))
+    (sourceX : s₀.ffi.mlx.nodes.get x = some xn) (sourceY : s₀.ffi.mlx.nodes.get y = some yn)
+    (axisFixed : F64.un .int32 axisValue = axisValue) (axisDecode : F64.toInt? axisValue = some axisInt)
+    (normalize : axisOf axisInt (len (roles x).shape) = some axis)
+    (sourceGeometry : ConcatGeometry ν₀ (roles x).shape (roles y).shape output axis)
+    (targetGeometry : ConcatGeometry ν (roles x).shape (roles y).shape output axis)
+    (argumentRoles : ListR (fun r v => r.role.Holds ν C R v) (arguments out vec stream axisValue) (callArguments s.ctl))
+    (outputRole : (Host.Ts.Owned.Annotated.fixedBufferRole VectorGetHost.nullRole).Holds ν C R (objectKindAt s (R.a out)))
+    (sourceNodes : s₀.ffi.mlx.nnext < 2^64) (targetNodes : s.ffi.mlx.nnext < 2^64)
+    (sourceHandles : s₀.ffi.mlx.next < 2^64) (targetHandles : s.ffi.mlx.next < 2^64)
+    (sourceHeap : out < 2^64) (targetHeap : s.next < 2^64) :
+    ∃ shape t,
+      interpC (step Host.Load.ffi s₀).run C₀ = some
+        (finishBuffer s₀ (resultWorld s₀.ffi x y axis shape xn.dtype yn.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          symbol (callArgs out vec stream axisValue (cellParts .u64 (.big (Int.ofNat 0)) 8 0)),C₀) ∧
+      interpC (step Host.Load.ffi s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C (nodeWrite roles s₀.ffi.mlx.nnext (concatRole roles x y axis output)) boundary objects
+          (fun a => a = s₀.ffi.mlx.next ∨ H a) (fun i => i = s₀.ffi.mlx.nnext ∨ N i) tail host)
+        R live framed before after old old'
+        (finishBuffer s₀ (resultWorld s₀.ffi x y axis shape xn.dtype yn.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          symbol (callArgs out vec stream axisValue (cellParts .u64 (.big (Int.ofNat 0)) 8 0))) t ∧
+      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a out)) ∧
+      t.next = s.next ∧ t.stack = s.stack ∧ (∀ a, a ≠ R.a out → t.heap.get a = s.heap.get a) ∧
+      listSupport (fun i => i = s₀.ffi.mlx.nnext ∨ N i) [x,y] := by
+  obtain ⟨shape,t,left,right,post,slot,next,stack,outside,supported,_,_,_⟩ := from_source_framed ν₀ ν C₀ C R roles boundary objects H N tail host live framed before after old old' s₀ s h
+    fn types out vec x y axis stream axisValue axisInt returns fo signature₀ outObject receiver xn yn output
+    hc₀ hf₀ hk₀ ht₀ htk₀ ho₀ hok₀ signatureFrame vectorLive inputsLive sourceVector sourceX sourceY axisFixed axisDecode
+    normalize sourceGeometry targetGeometry argumentRoles outputRole sourceNodes targetNodes sourceHandles targetHandles sourceHeap targetHeap
+  exact ⟨shape,t,left,right,post,slot,next,stack,outside,supported⟩
 
 end Host.Load.Run.Full.Ordinary.ConcatFamilyHost
