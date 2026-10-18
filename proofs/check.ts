@@ -4763,6 +4763,135 @@ const proofFiles = [
   "host/ts/RenameStackEffects.lean",
   "host/ts/renameOrdinary/ConcatToWeightGuard.lean",
   "host/ts/renameOrdinary/ParameterStream.lean",
+  "host/load/CachedGrowthShapes.lean",
+  "host/load/tests/CachedGrowthShapes.lean",
+  "host/mlx/NativeArrayFactoryHost.lean",
+  "host/mlx/NativeMetalHost.lean",
+  "host/mlx/NativeSizeGeometry.lean",
+  "host/mlx/NativeSizeHost.lean",
+  "host/mlx/NativeSliceGeometry.lean",
+  "host/mlx/NativeSliceHost.lean",
+  "host/mlx/NativeSliceRoles.lean",
+  "host/ts/RenamePrivateInventory.lean",
+  "host/ts/RenameRoleInventory.lean",
+  "host/ts/renameOrdinary/ConcatToWeightShape.lean",
+  "host/ts/renameOrdinary/IncomingToWeightGuard.lean",
+  "host/ts/renameOrdinary/IncomingToWeightShape.lean",
+  "host/ts/renameOrdinary/WeightShapePath.lean",
+  "host/ts/renameOrdinary/WeightShapeSteps.lean",
+  "host/mlx/NativeConcatGeometry.lean",
+  "host/mlx/NativeConcatHost.lean",
+  "host/mlx/NativeConcatRoles.lean",
+  "host/mlx/NativeConvGeometry.lean",
+  "host/mlx/NativeConvHost.lean",
+  "host/mlx/NativeConvRoles.lean",
+  "host/mlx/NativeTraceFits.lean",
+  "host/ts/RenameHeapInventory.lean",
+  "host/ts/RenameNativeCaptureInventory.lean",
+  "host/ts/RenameRuntimeArguments.lean",
+  "host/ts/RenameRuntimeArithmetic.lean",
+  "host/ts/RenameRuntimeDispatch.lean",
+  "host/ts/RenameRuntimeNotes.lean",
+  "host/ts/RenameRuntimeRefinement.lean",
+  "host/ts/renameOrdinary/WeightByteCountPath.lean",
+  "host/ts/renameOrdinary/WeightByteCountSteps.lean",
+  "host/load/Boundary.lean",
+  "host/load/BoundaryChoice.lean",
+  "host/load/BoundaryCommand.lean",
+  "host/load/BoundaryForward.lean",
+  "host/load/CacheBoundaryCases.lean",
+  "host/load/boundary/fill/Geometry.lean",
+  "host/load/boundary/fill/H0.lean",
+  "host/load/boundary/fill/H1.lean",
+  "host/load/boundary/fill/H10.lean",
+  "host/load/boundary/fill/H11.lean",
+  "host/load/boundary/fill/H12.lean",
+  "host/load/boundary/fill/H2.lean",
+  "host/load/boundary/fill/H3.lean",
+  "host/load/boundary/fill/H4.lean",
+  "host/load/boundary/fill/H5.lean",
+  "host/load/boundary/fill/H6.lean",
+  "host/load/boundary/fill/H7.lean",
+  "host/load/boundary/fill/H8.lean",
+  "host/load/boundary/fill/H9.lean",
+  "host/load/boundary/fill/Parameters.lean",
+  "host/load/boundary/fill/States.lean",
+  "host/load/boundary/growth/CG0.lean",
+  "host/load/boundary/growth/CG1.lean",
+  "host/load/boundary/growth/CG10.lean",
+  "host/load/boundary/growth/CG11.lean",
+  "host/load/boundary/growth/CG12.lean",
+  "host/load/boundary/growth/CG13.lean",
+  "host/load/boundary/growth/CG14.lean",
+  "host/load/boundary/growth/CG15.lean",
+  "host/load/boundary/growth/CG16.lean",
+  "host/load/boundary/growth/CG17.lean",
+  "host/load/boundary/growth/CG18.lean",
+  "host/load/boundary/growth/CG19.lean",
+  "host/load/boundary/growth/CG2.lean",
+  "host/load/boundary/growth/CG20.lean",
+  "host/load/boundary/growth/CG21.lean",
+  "host/load/boundary/growth/CG22.lean",
+  "host/load/boundary/growth/CG23.lean",
+  "host/load/boundary/growth/CG24.lean",
+  "host/load/boundary/growth/CG25.lean",
+  "host/load/boundary/growth/CG26.lean",
+  "host/load/boundary/growth/CG27.lean",
+  "host/load/boundary/growth/CG28.lean",
+  "host/load/boundary/growth/CG29.lean",
+  "host/load/boundary/growth/CG3.lean",
+  "host/load/boundary/growth/CG30.lean",
+  "host/load/boundary/growth/CG31.lean",
+  "host/load/boundary/growth/CG32.lean",
+  "host/load/boundary/growth/CG33.lean",
+  "host/load/boundary/growth/CG34.lean",
+  "host/load/boundary/growth/CG35.lean",
+  "host/load/boundary/growth/CG36.lean",
+  "host/load/boundary/growth/CG37.lean",
+  "host/load/boundary/growth/CG38.lean",
+  "host/load/boundary/growth/CG39.lean",
+  "host/load/boundary/growth/CG4.lean",
+  "host/load/boundary/growth/CG40.lean",
+  "host/load/boundary/growth/CG41.lean",
+  "host/load/boundary/growth/CG42.lean",
+  "host/load/boundary/growth/CG43.lean",
+  "host/load/boundary/growth/CG44.lean",
+  "host/load/boundary/growth/CG45.lean",
+  "host/load/boundary/growth/CG46.lean",
+  "host/load/boundary/growth/CG47.lean",
+  "host/load/boundary/growth/CG48.lean",
+  "host/load/boundary/growth/CG5.lean",
+  "host/load/boundary/growth/CG6.lean",
+  "host/load/boundary/growth/CG7.lean",
+  "host/load/boundary/growth/CG8.lean",
+  "host/load/boundary/growth/CG9.lean",
+  "host/load/boundary/growth/Execution.lean",
+  "host/load/boundary/growth/Geometry.lean",
+  "host/load/boundary/growth/H0.lean",
+  "host/load/boundary/growth/H1.lean",
+  "host/load/boundary/growth/H10.lean",
+  "host/load/boundary/growth/H11.lean",
+  "host/load/boundary/growth/H12.lean",
+  "host/load/boundary/growth/H2.lean",
+  "host/load/boundary/growth/H3.lean",
+  "host/load/boundary/growth/H4.lean",
+  "host/load/boundary/growth/H5.lean",
+  "host/load/boundary/growth/H6.lean",
+  "host/load/boundary/growth/H7.lean",
+  "host/load/boundary/growth/H8.lean",
+  "host/load/boundary/growth/H9.lean",
+  "host/load/boundary/growth/Parameters.lean",
+  "host/load/boundary/growth/Run.lean",
+  "host/load/boundary/growth/States.lean",
+  "host/mlx/NativeCachedHost.lean",
+  "host/mlx/NativeCachedRoles.lean",
+  "host/mlx/ReplaySupport.lean",
+  "host/ts/RenameRuntimeCallStart.lean",
+  "host/ts/RenameRuntimeSeeds.lean",
+  "host/ts/renameOrdinary/WeightBufferCase.lean",
+  "host/ts/renameOrdinary/WeightBufferPath.lean",
+  "host/ts/renameOrdinary/WeightBufferPrefix.lean",
+  "host/ts/renameOrdinary/WeightBufferSteps.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -5024,7 +5153,7 @@ try {
     // Native evaluation chooses explicit states only. Every generated equality
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
-      /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary)\s/m.test(source)) ||
+      /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary|host_cache_boundary|load_boundary_carriers)\s/m.test(source)) ||
       /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
@@ -5205,6 +5334,29 @@ host_growth_entry_checked wrong_growth_geometry : Growth256.entry using
   { Growth256.roots with «cache» := Growth256.roots.cache + 1 }
 end Host.Load.Run.Full
 `;
+    const wrongBoundaryEndpoint = `import host.load.boundary.growth.H0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full
+noncomputable def WrongGrowth64.F := Growth64.F
+def WrongGrowth64.ks := [1000]
+noncomputable def WrongGrowth64.s0 := Growth64.s0
+noncomputable def WrongGrowth64.S0 := Growth64.S0
+noncomputable def WrongGrowth64.s1 := Growth64.s0
+noncomputable def WrongGrowth64.S1 := Growth64.S0
+host_chunk WrongGrowth64 0
+end Host.Load.Run.Full
+`;
+    const wrongBoundaryCapacity = `import host.load.boundary.growth.Parameters
+set_option Elab.async false
+set_option maxRecDepth 1000000
+open Lean Elab Command Meta in
+run_elab do
+ let type := mkApp4 (mkConst \`\`Host.Load.CacheBoundary.EntryAt)
+  (mkConst \`\`Host.Load.Run.Full.Growth64.entry)
+  (mkConst \`\`Host.Load.Run.Full.Growth64.roots) (mkRawNatLit 256) (mkRawNatLit 512)
+ addDecl (.thmDecl { name := \`wrongBoundaryCapacity, levelParams := [], type, value := mkConst \`\`Host.Load.Run.Full.Growth64.entry_geometry })
+`;
     const wrongStopEndpoint = `import host.load.stop.OneH0
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -5274,6 +5426,8 @@ end Host.Load.Run.Full.Cached
       ["WrongMicroGroupEndpoint", wrongMicroGroupEndpoint, false],
       ["WrongGrowthEndpoint", wrongGrowthEndpoint, false],
       ["WrongGrowthGeometry", wrongGrowthGeometry, false],
+      ["WrongBoundaryEndpoint", wrongBoundaryEndpoint, false],
+      ["WrongBoundaryCapacity", wrongBoundaryCapacity, false],
       ["WrongStopEndpoint", wrongStopEndpoint, false],
       ["WrongStopCount", wrongStopCount, false],
       ["WrongLoadStateProjection", wrongLoadStateProjection, false],
@@ -5285,6 +5439,7 @@ end Host.Load.Run.Full.Cached
       if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
           name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint" ||
           name === "WrongGrowthEndpoint" || name === "WrongGrowthGeometry" ||
+          name === "WrongBoundaryEndpoint" || name === "WrongBoundaryCapacity" ||
           name === "WrongStopEndpoint" || name === "WrongStopCount" || name === "WrongLoadStateProjection") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
