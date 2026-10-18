@@ -37,4 +37,45 @@ host_chain_run_staged R
 
 theorem staged : runS R.F 80 R.s0 R.S0 = some (R.s3, R.S3) := R.run
 
+def linkCx : LinkCx LSt := ⟨[⟨chars!"main.ts", ast⟩], [], chars!"main.ts", []⟩
+link_chain L : linkCx, world, [1, 1, 1, 1, 1]
+link_chunk L 0
+link_chunk L 1
+link_chunk L 2
+link_chunk L 3
+link_chunk L 4
+link_chain_run_staged L
+
+theorem linked : bootL L.cx L.w 20 = some L.x5.st := L.booted 20 (by decide)
+
+link_chain FixedL : linkCx, world, [1, 1, 1, 1, 1] fixed_ffi
+link_chunk FixedL 0
+link_chunk FixedL 1
+link_chunk FixedL 2
+link_chunk FixedL 3
+link_chunk FixedL 4
+link_chain_run_staged FixedL
+
+theorem linked_fixed : bootL FixedL.cx FixedL.w 20 = some FixedL.x5.st :=
+  FixedL.booted 20 (by decide)
+
+open Lean Elab Command in
+run_elab do
+  let some (.defnInfo d) := (← getEnv).find? ``FixedL.x1
+    | throwError "missing fixed-world state"
+  unless (d.value.find? (· == Lean.mkConst ``world)).isSome do
+    throwError "fixed_ffi did not serialize the named world"
+
+def mutatingHost : HMod Nat := ⟨chars!"main.ts", do
+  modify fun s => s.setFfi (s.ffi+1)
+  pure []⟩
+
+def mutatingCx : LinkCx Nat := ⟨[], [mutatingHost], chars!"main.ts", []⟩
+def zeroWorld : Nat := 0
+
+link_chain MutatingDefault : mutatingCx, zeroWorld, [1]
+link_chunk MutatingDefault 0
+
+theorem default_changes_ffi : MutatingDefault.x1.st.ffi = 1 := rfl
+
 end Host.Load.Tests.Micro

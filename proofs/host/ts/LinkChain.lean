@@ -72,7 +72,7 @@ theorem boot_of_link {S : Type} (cx : LinkCx S) (w : S) {K : Nat} {x : LinkSt S}
 
 private def lname (pre : Lean.Name) (s : String) (i : Nat) : Lean.Name := pre ++ Name.mkSimple (s ++ toString i)
 
-elab "link_chain " p:ident " : " cx:term ", " w:term ", " ns:term : command => liftTermElabM do
+elab "link_chain " p:ident " : " cx:term ", " w:term ", " ns:term fixed:((" fixed_ffi")?) : command => liftTermElabM do
   let pre := (← getCurrNamespace) ++ p.getId
   let wE ← instantiateMVars (← Term.elabTermAndSynthesize w none)
   let sTy ← instantiateMVars (← inferType wE)
@@ -82,7 +82,17 @@ elab "link_chain " p:ident " : " cx:term ", " w:term ", " ns:term : command => l
     (← instantiateMVars (← Term.elabTermAndSynthesize ns (some (mkApp (mkConst ``List [.zero]) (mkConst ``Nat)))))
   astTabRef.set (← loadAstTab)
   let sRed ← whnf sTy
-  let serS ← mkAppOptM ``Lean.ToExpr.toExpr #[sRed, none]
+  -- This opt-in mode chooses the original world term for every FFI field.
+  -- It only saves repeated serialization: a host export that changes FFI
+  -- makes the subsequent ordinary `link_chunk` equality fail.
+  let serS ← if fixed.raw.getArgs.isEmpty then
+      mkAppOptM ``Lean.ToExpr.toExpr #[sRed, none]
+    else do
+      let .const worldName [] := wE
+        | throwError "link_chain fixed_ffi: expected a monomorphic named world"
+      let levels := mkApp (mkConst ``List.nil [.zero]) (mkConst ``Lean.Level)
+      let quotedWorld := mkApp2 (mkConst ``Lean.Expr.const) (toExpr worldName) levels
+      pure (mkLambda `s .default sRed quotedWorld)
   let tyS ← mkAppOptM ``Lean.ToExpr.toTypeExpr #[sRed, none]
   Memo.reset
   let call := mkAppN (mkConst ``linkStates) #[sTy, cxE, serS, tyS, wE, toExpr nsV]
