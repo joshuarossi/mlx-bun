@@ -106,15 +106,15 @@ theorem initial_node_relation {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren}
   subst n
   exact ⟨initial_annotations ν₀ C₀ rest i hi,target,initial_role_cut rest i hi⟩
 
-def requiredHandles (h : Nat) : Prop := h ∈ [1354,29376,29377]
+def requiredHandles (h : Nat) : Prop := h ∈ [1354,29376,29377,18182]
 
 theorem required_handle_bound (h : Nat) (hh : requiredHandles h) : h < source.next := by
   rw [source_handle_counter]
   simp [requiredHandles] at hh
-  rcases hh with rfl | rfl | rfl <;> decide +kernel
+  rcases hh with rfl | rfl | rfl | rfl <;> decide +kernel
 
 theorem required_handles_are_objects (h : Nat) (hh : requiredHandles h) : source.arrs.get h = none := by
   simp [requiredHandles] at hh
-  rcases hh with rfl | rfl | rfl <;> host_kernel_rfl
+  rcases hh with rfl | rfl | rfl | rfl <;> host_kernel_rfl
 
 end Host.Load.Run.Full.Ordinary.CachedCall
