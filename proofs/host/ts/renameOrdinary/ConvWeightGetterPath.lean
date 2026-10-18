@@ -2,6 +2,8 @@ import host.ts.renameOrdinary.ConvWeightGetterSteps
 import host.ts.RenameParameterBodyFrame
 import host.ts.RenameClosureEffects
 import host.ts.RenameArgumentEffects
+import host.ts.RenameStackEffects
+import host.ts.RenameClosureStackEffects
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -41,7 +43,7 @@ theorem WeightLive468.grow (live : Nat → Prop) (a : Nat) (ha : live a) : Weigh
 /-- The actual nested shape/ndim/handle getters supply the owned handle for
 its real native rank call. The private-field occurrence comes from entry;
 all intermediate reads and the call argument follow from execution. -/
-theorem conv_weight_rank_argument (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+theorem conv_weight_rank_argument_framed (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
     (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val)
     (old old' : List Event) (s : St LSt)
     (h : StateR NR FR R live framed before after old old' WeightShapeGetter445.input s)
@@ -52,7 +54,7 @@ theorem conv_weight_rank_argument (NR : NumV → NumV → Prop) (FR : Ren → LS
     ∃ result, runC P.F 39 s C = some (result,C) ∧
       StateR NR FR R (WeightLive468 live) framed before after old old' WeightRankArgument483.output result ∧
       callArgument result.ctl 0 = .big (Int.ofNat (R.handle 1365)) ∧
-      (∀ a, a < s.next → result.heap.get a = s.heap.get a) := by
+      (∀ a, a < s.next → result.heap.get a = s.heap.get a) ∧ result.stack.drop 9 = s.stack := by
   let s445 := s
   have h445 := h
   have next445 := h.heap.target_next_add h445.heap (WeightShapeGetter445.input.next-WeightShapeGetter445.input.next) (by host_kernel_rfl)
@@ -295,7 +297,241 @@ theorem conv_weight_rank_argument (NR : NumV → NumV → Prop) (FR : Ren → LS
   have argument := step_single_argument_fields P.F NR FR R C C (WeightLive468 live) framed before after old old'
     WeightRankArgument483.input s483 result h483 WeightRankArgument483.sourceFunction WeightRankArgument483.sourceThis
     (.big (Int.ofNat (R.handle 1365))) WeightRankArgument483.sourceEnv WeightRankArgument483.sourceTail frame483 ctl483 r483
-  refine ⟨result,?_,h484,argument,oldHeap484⟩
+  obtain ⟨_,_,stack446⟩ := step_closure_stack_prefix P.F NR FR R live framed before after old old' WeightShapeGetter445.input s445 s446 C C h445
+    WeightShapeGetter445.address WeightShapeGetter445.object WeightShapeGetter445.sourceFunction WeightShapeGetter445.sourceEnv WeightShapeGetter445.sourceArrow WeightShapeGetter445.sourceHome WeightShapeGetter445.sourceThis WeightShapeGetter445.sourceArgs WeightShapeGetter445.source_control WeightShapeGetter445.source_heap WeightShapeGetter445.source_kind r445
+  have effect446 : s446.stack.drop 2 = s445.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack446)
+  have suffix446 : s446.stack.drop 2 = s.stack :=
+    (stack_drop_extend effect446 0).trans (by rfl)
+  obtain ⟨_,stack447⟩ := step_parameter_body_stack_prefix P.F NR FR R (WeightLive446 live) framed before after old old' WeightShapeBody446.input s446 s447 C C h446
+    WeightShapeBody446.sourceValue WeightShapeBody446.sourceName WeightShapeBody446.sourceParams WeightShapeBody446.sourceBody WeightShapeBody446.sourceArgs WeightShapeBody446.sourceEnv WeightShapeBody446.sourceTail WeightShapeBody446.source_control WeightShapeBody446.source_frame WeightShapeBody446.source_hoist r446
+  have effect447 : s447.stack.drop 2 = s446.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack447)
+  have suffix447 : s447.stack.drop 3 = s.stack :=
+    (stack_drop_extend effect447 1).trans suffix446
+  have stack448 := step_block_next_stack P.F NR FR R (WeightLive447 live) framed before after old old' WeightShapeBlock447.input s447 s448 C C h447
+    WeightShapeBlock447.sourceValue WeightShapeBlock447.sourceStatement WeightShapeBlock447.sourceRest WeightShapeBlock447.sourceEnv WeightShapeBlock447.sourceTail WeightShapeBlock447.source_control WeightShapeBlock447.source_frame r447
+  have effect448 : s448.stack.drop 1 = s447.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack448)
+  have suffix448 : s448.stack.drop 3 = s.stack :=
+    (stack_drop_extend effect448 2).trans suffix447
+  have stack449 := step_statement_stack P.F NR FR R (WeightLive447 live) framed before after old old' WeightRankDeclaration448.input s448 s449 C C h448
+    WeightRankDeclaration448.sourceAction WeightRankDeclaration448.sourceEnv WeightRankDeclaration448.source_control r448
+  have effect449 : s449.stack.drop 1 = s448.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,WeightRankDeclaration448.sourceAction,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack449)
+  have suffix449 : s449.stack.drop 4 = s.stack :=
+    (stack_drop_extend effect449 3).trans suffix448
+  have stack450 := step_descent_stack P.F NR FR R (WeightLive447 live) framed before after old old' WeightRankMember449.input s449 s450 C C h449
+    WeightRankMember449.descent WeightRankMember449.sourceEnv WeightRankMember449.source_control r449
+  have effect450 : s450.stack.drop 1 = s449.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack450)
+  have suffix450 : s450.stack.drop 5 = s.stack :=
+    (stack_drop_extend effect450 4).trans suffix449
+  have stack451 := step_this_stack_from_source P.F NR FR R (WeightLive447 live) framed before after old old' WeightRankThis450.input s450 s451 C₀ C C h450
+    WeightRankThis450.sourceEnv WeightRankThis450.sourceAddress WeightRankThis450.sourceValue WeightRankThis450.source_control WeightRankThis450.source_lookup WeightRankThis450.source_cell r450
+  have effect451 : s451.stack.drop 0 = s450.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack451)
+  have suffix451 : s451.stack.drop 5 = s.stack :=
+    (stack_drop_extend effect451 5).trans suffix450
+  have stack452 := step_member_lookup_stack P.F NR FR R (WeightLive447 live) framed before after old old' WeightRankGetter451.input s451 s452 C₀ C C h451
+    WeightRankGetter451.sourceAddress WeightRankGetter451.sourceName (some WeightRankGetter451.sourceProperty) WeightRankGetter451.sourceTail WeightRankGetter451.source_control WeightRankGetter451.source_frame WeightRankGetter451.source_path r451
+  have effect452 : s452.stack.drop 0 = s451.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack452)
+  have suffix452 : s452.stack.drop 4 = s.stack :=
+    (stack_drop_extend effect452 4).trans suffix451
+  obtain ⟨_,_,stack453⟩ := step_closure_stack_prefix P.F NR FR R (WeightLive447 live) framed before after old old' WeightEnterRank452.input s452 s453 C C h452
+    WeightEnterRank452.address WeightEnterRank452.object WeightEnterRank452.sourceFunction WeightEnterRank452.sourceEnv WeightEnterRank452.sourceArrow WeightEnterRank452.sourceHome WeightEnterRank452.sourceThis WeightEnterRank452.sourceArgs WeightEnterRank452.source_control WeightEnterRank452.source_heap WeightEnterRank452.source_kind r452
+  have effect453 : s453.stack.drop 2 = s452.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack453)
+  have suffix453 : s453.stack.drop 6 = s.stack :=
+    (stack_drop_extend effect453 4).trans suffix452
+  obtain ⟨_,stack454⟩ := step_parameter_body_stack_prefix P.F NR FR R (WeightLive453 live) framed before after old old' WeightRankBody453.input s453 s454 C C h453
+    WeightRankBody453.sourceValue WeightRankBody453.sourceName WeightRankBody453.sourceParams WeightRankBody453.sourceBody WeightRankBody453.sourceArgs WeightRankBody453.sourceEnv WeightRankBody453.sourceTail WeightRankBody453.source_control WeightRankBody453.source_frame WeightRankBody453.source_hoist r453
+  have effect454 : s454.stack.drop 2 = s453.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack454)
+  have suffix454 : s454.stack.drop 7 = s.stack :=
+    (stack_drop_extend effect454 5).trans suffix453
+  have stack455 := step_block_next_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankBlock454.input s454 s455 C C h454
+    WeightRankBlock454.sourceValue WeightRankBlock454.sourceStatement WeightRankBlock454.sourceRest WeightRankBlock454.sourceEnv WeightRankBlock454.sourceTail WeightRankBlock454.source_control WeightRankBlock454.source_frame r454
+  have effect455 : s455.stack.drop 1 = s454.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack455)
+  have suffix455 : s455.stack.drop 7 = s.stack :=
+    (stack_drop_extend effect455 6).trans suffix454
+  have stack456 := step_statement_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankReturn455.input s455 s456 C C h455
+    (.returnExpression WeightRankReturn455.sourceExpression) WeightRankReturn455.sourceEnv WeightRankReturn455.source_control r455
+  have effect456 : s456.stack.drop 1 = s455.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack456)
+  have suffix456 : s456.stack.drop 8 = s.stack :=
+    (stack_drop_extend effect456 7).trans suffix455
+  have stack457 := step_identifier_call_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightNumberCall456.input s456 s457 C₀ C C h456
+    WeightNumberCall456.sourceName WeightNumberCall456.sourceArgs WeightNumberCall456.sourceOptional WeightNumberCall456.sourceEnv WeightNumberCall456.source_control r456
+  have effect457 : s457.stack.drop 1 = s456.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack457)
+  have suffix457 : s457.stack.drop 9 = s.stack :=
+    (stack_drop_extend effect457 8).trans suffix456
+  have stack458 : s458.stack = s457.stack := rfl
+  have effect458 : s458.stack.drop 0 = s457.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack458)
+  have suffix458 : s458.stack.drop 9 = s.stack :=
+    (stack_drop_extend effect458 9).trans suffix457
+  have stack459 := step_callStart_expression_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightNumberArguments458.input s458 s459 C C h458
+    (.callee WeightNumberArguments458.sourceOptional) WeightNumberArguments458.sourceAddress .undef WeightNumberArguments458.sourceArgs WeightNumberArguments458.sourceEnv WeightNumberArguments458.sourceTail WeightNumberArguments458.source_control WeightNumberArguments458.source_frame (match WeightNumberArguments458.sourceArgs with | .expr e::_ => e | _ => .lit .null) WeightNumberArguments458.sourceArgs.tail (by host_kernel_rfl) r458
+  have effect459 : s459.stack.drop 1 = s458.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack459)
+  have suffix459 : s459.stack.drop 9 = s.stack :=
+    (stack_drop_extend effect459 8).trans suffix458
+  have stack460 := step_method_descent_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankNativeCall459.input s459 s460 C₀ C C h459
+    WeightRankNativeCall459.sourceExpression WeightRankNativeCall459.sourceName WeightRankNativeCall459.sourceArgs WeightRankNativeCall459.sourceEnv WeightRankNativeCall459.sourceOptObject WeightRankNativeCall459.sourceOptCall WeightRankNativeCall459.source_control r459
+  have effect460 : s460.stack.drop 1 = s459.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack460)
+  have suffix460 : s460.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect460 9).trans suffix459
+  have stack461 : s461.stack = s460.stack := rfl
+  have effect461 : s461.stack.drop 0 = s460.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack461)
+  have suffix461 : s461.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect461 10).trans suffix460
+  have stack462 := step_method_data_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankNativeMethod461.input s461 s462 C C h461
+    WeightRankNativeMethod461.sourceAddress WeightRankNativeMethod461.sourceObject WeightRankNativeMethod461.sourceName WeightRankNativeMethod461.sourceArgs WeightRankNativeMethod461.sourceEnv WeightRankNativeMethod461.sourceOptObject WeightRankNativeMethod461.sourceOptCall WeightRankNativeMethod461.sourceMethod WeightRankNativeMethod461.sourceWritable WeightRankNativeMethod461.sourceEnumerable WeightRankNativeMethod461.sourceTail WeightRankNativeMethod461.source_control WeightRankNativeMethod461.source_frame WeightRankNativeMethod461.source_heap WeightRankNativeMethod461.source_kind WeightRankNativeMethod461.source_property r461
+  have effect462 : s462.stack.drop 1 = s461.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack462)
+  have suffix462 : s462.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect462 9).trans suffix461
+  have stack463 := step_callStart_expression_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankNativeArguments462.input s462 s463 C C h462
+    WeightRankNativeArguments462.sourceMode WeightRankNativeArguments462.sourceAddress WeightRankNativeArguments462.sourceThis WeightRankNativeArguments462.sourceArgs WeightRankNativeArguments462.sourceEnv WeightRankNativeArguments462.sourceTail WeightRankNativeArguments462.source_control WeightRankNativeArguments462.source_frame (match WeightRankNativeArguments462.sourceArgs with | .expr e::_ => e | _ => .lit .null) WeightRankNativeArguments462.sourceArgs.tail (by host_kernel_rfl) r462
+  have effect463 : s463.stack.drop 1 = s462.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack463)
+  have suffix463 : s463.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect463 9).trans suffix462
+  have stack464 := step_descent_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankHandleMember463.input s463 s464 C C h463
+    WeightRankHandleMember463.descent WeightRankHandleMember463.sourceEnv WeightRankHandleMember463.source_control r463
+  have effect464 : s464.stack.drop 1 = s463.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack464)
+  have suffix464 : s464.stack.drop 11 = s.stack :=
+    (stack_drop_extend effect464 10).trans suffix463
+  have stack465 := step_this_stack_from_source P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankHandleThis464.input s464 s465 C₀ C C h464
+    WeightRankHandleThis464.sourceEnv WeightRankHandleThis464.sourceAddress WeightRankHandleThis464.sourceValue WeightRankHandleThis464.source_control WeightRankHandleThis464.source_lookup WeightRankHandleThis464.source_cell r464
+  have effect465 : s465.stack.drop 0 = s464.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack465)
+  have suffix465 : s465.stack.drop 11 = s.stack :=
+    (stack_drop_extend effect465 11).trans suffix464
+  have stack466 := step_member_lookup_stack P.F NR FR R (WeightLive454 live) framed before after old old' WeightRankHandleGetter465.input s465 s466 C₀ C C h465
+    WeightRankHandleGetter465.sourceAddress WeightRankHandleGetter465.sourceName (some WeightRankHandleGetter465.sourceProperty) WeightRankHandleGetter465.sourceTail WeightRankHandleGetter465.source_control WeightRankHandleGetter465.source_frame WeightRankHandleGetter465.source_path r465
+  have effect466 : s466.stack.drop 0 = s465.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack466)
+  have suffix466 : s466.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect466 10).trans suffix465
+  obtain ⟨_,_,stack467⟩ := step_closure_stack_prefix P.F NR FR R (WeightLive454 live) framed before after old old' WeightEnterHandle466.input s466 s467 C C h466
+    WeightEnterHandle466.address WeightEnterHandle466.object WeightEnterHandle466.sourceFunction WeightEnterHandle466.sourceEnv WeightEnterHandle466.sourceArrow WeightEnterHandle466.sourceHome WeightEnterHandle466.sourceThis WeightEnterHandle466.sourceArgs WeightEnterHandle466.source_control WeightEnterHandle466.source_heap WeightEnterHandle466.source_kind r466
+  have effect467 : s467.stack.drop 2 = s466.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack467)
+  have suffix467 : s467.stack.drop 12 = s.stack :=
+    (stack_drop_extend effect467 10).trans suffix466
+  obtain ⟨_,stack468⟩ := step_parameter_body_stack_prefix P.F NR FR R (WeightLive467 live) framed before after old old' WeightHandleBody467.input s467 s468 C C h467
+    WeightHandleBody467.sourceValue WeightHandleBody467.sourceName WeightHandleBody467.sourceParams WeightHandleBody467.sourceBody WeightHandleBody467.sourceArgs WeightHandleBody467.sourceEnv WeightHandleBody467.sourceTail WeightHandleBody467.source_control WeightHandleBody467.source_frame WeightHandleBody467.source_hoist r467
+  have effect468 : s468.stack.drop 2 = s467.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 2) stack468)
+  have suffix468 : s468.stack.drop 13 = s.stack :=
+    (stack_drop_extend effect468 11).trans suffix467
+  have stack469 := step_block_next_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleBlock468.input s468 s469 C C h468
+    WeightHandleBlock468.sourceValue WeightHandleBlock468.sourceStatement WeightHandleBlock468.sourceRest WeightHandleBlock468.sourceEnv WeightHandleBlock468.sourceTail WeightHandleBlock468.source_control WeightHandleBlock468.source_frame r468
+  have effect469 : s469.stack.drop 1 = s468.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack469)
+  have suffix469 : s469.stack.drop 13 = s.stack :=
+    (stack_drop_extend effect469 12).trans suffix468
+  have stack470 := step_statement_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleDisposedTest469.input s469 s470 C C h469
+    WeightHandleDisposedTest469.sourceAction WeightHandleDisposedTest469.sourceEnv WeightHandleDisposedTest469.source_control r469
+  have effect470 : s470.stack.drop 1 = s469.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,WeightHandleDisposedTest469.sourceAction,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack470)
+  have suffix470 : s470.stack.drop 14 = s.stack :=
+    (stack_drop_extend effect470 13).trans suffix469
+  have stack471 := step_private_descent_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleDisposed470.input s470 s471 C₀ C C h470
+    WeightHandleDisposed470.sourceObject WeightHandleDisposed470.sourceName WeightHandleDisposed470.sourceOptional WeightHandleDisposed470.sourceEnv WeightHandleDisposed470.sourceBrand WeightHandleDisposed470.source_control WeightHandleDisposed470.source_brand r470
+  have effect471 : s471.stack.drop 1 = s470.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack471)
+  have suffix471 : s471.stack.drop 15 = s.stack :=
+    (stack_drop_extend effect471 14).trans suffix470
+  have stack472 := step_this_stack_from_source P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleDisposedThis471.input s471 s472 C₀ C C h471
+    WeightHandleDisposedThis471.sourceEnv WeightHandleDisposedThis471.sourceAddress WeightHandleDisposedThis471.sourceValue WeightHandleDisposedThis471.source_control WeightHandleDisposedThis471.source_lookup WeightHandleDisposedThis471.source_cell r471
+  have effect472 : s472.stack.drop 0 = s471.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack472)
+  have suffix472 : s472.stack.drop 15 = s.stack :=
+    (stack_drop_extend effect472 15).trans suffix471
+  have stack473 := step_private_read_stack P.F NR FR R C₀ C C (WeightLive468 live) framed before after old old' WeightHandleDisposedValue472.input s472 s473 h472
+    WeightHandleDisposedValue472.sourceAddress WeightHandleDisposedValue472.sourceBrand WeightHandleDisposedValue472.sourceName WeightHandleDisposedValue472.sourceObject WeightHandleDisposedValue472.sourceProperty WeightHandleDisposedValue472.sourceTail
+    WeightHandleDisposedValue472.source_control WeightHandleDisposedValue472.source_frame WeightHandleDisposedValue472.source_heap WeightHandleDisposedValue472.source_kind WeightHandleDisposedValue472.source_property r472
+  have effect473 : s473.stack.drop 0 = s472.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack473)
+  have suffix473 : s473.stack.drop 14 = s.stack :=
+    (stack_drop_extend effect473 14).trans suffix472
+  have stack474 := step_if_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleDisposedBranch473.input s473 s474 C C h473
+    WeightHandleDisposedBranch473.sourceGuard WeightHandleDisposedBranch473.sourceYes WeightHandleDisposedBranch473.sourceNo WeightHandleDisposedBranch473.sourceEnv WeightHandleDisposedBranch473.sourceTail WeightHandleDisposedBranch473.source_control WeightHandleDisposedBranch473.source_frame r473
+  have effect474 : s474.stack.drop 0 = s473.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack474)
+  have suffix474 : s474.stack.drop 13 = s.stack :=
+    (stack_drop_extend effect474 13).trans suffix473
+  have stack475 := step_block_next_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleReturnBlock474.input s474 s475 C C h474
+    WeightHandleReturnBlock474.sourceValue WeightHandleReturnBlock474.sourceStatement WeightHandleReturnBlock474.sourceRest WeightHandleReturnBlock474.sourceEnv WeightHandleReturnBlock474.sourceTail WeightHandleReturnBlock474.source_control WeightHandleReturnBlock474.source_frame r474
+  have effect475 : s475.stack.drop 1 = s474.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack475)
+  have suffix475 : s475.stack.drop 13 = s.stack :=
+    (stack_drop_extend effect475 12).trans suffix474
+  have stack476 := step_statement_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleReturn475.input s475 s476 C C h475
+    (.returnExpression WeightHandleReturn475.sourceExpression) WeightHandleReturn475.sourceEnv WeightHandleReturn475.source_control r475
+  have effect476 : s476.stack.drop 1 = s475.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (congrArg (List.drop 1) stack476)
+  have suffix476 : s476.stack.drop 14 = s.stack :=
+    (stack_drop_extend effect476 13).trans suffix475
+  have stack477 := step_private_descent_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandlePrivate476.input s476 s477 C₀ C C h476
+    WeightHandlePrivate476.sourceObject WeightHandlePrivate476.sourceName WeightHandlePrivate476.sourceOptional WeightHandlePrivate476.sourceEnv WeightHandlePrivate476.sourceBrand WeightHandlePrivate476.source_control WeightHandlePrivate476.source_brand r476
+  have effect477 : s477.stack.drop 1 = s476.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack477)
+  have suffix477 : s477.stack.drop 15 = s.stack :=
+    (stack_drop_extend effect477 14).trans suffix476
+  have stack478 := step_this_stack_from_source P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleThis477.input s477 s478 C₀ C C h477
+    WeightHandleThis477.sourceEnv WeightHandleThis477.sourceAddress WeightHandleThis477.sourceValue WeightHandleThis477.source_control WeightHandleThis477.source_lookup WeightHandleThis477.source_cell r477
+  have effect478 : s478.stack.drop 0 = s477.stack.drop 0 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack478)
+  have suffix478 : s478.stack.drop 15 = s.stack :=
+    (stack_drop_extend effect478 15).trans suffix477
+  have stack479 := step_private_read_stack P.F NR FR R C₀ C C (WeightLive468 live) framed before after old old' WeightHandleValue478.input s478 s479 h478
+    WeightHandleValue478.sourceAddress WeightHandleValue478.sourceBrand WeightHandleValue478.sourceName WeightHandleValue478.sourceObject WeightHandleValue478.sourceProperty WeightHandleValue478.sourceTail
+    WeightHandleValue478.source_control WeightHandleValue478.source_frame WeightHandleValue478.source_heap WeightHandleValue478.source_kind WeightHandleValue478.source_property r478
+  have effect479 : s479.stack.drop 0 = s478.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack479)
+  have suffix479 : s479.stack.drop 14 = s.stack :=
+    (stack_drop_extend effect479 14).trans suffix478
+  have stack480 := step_return_exit_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleReturn479.input s479 s480 C C h479
+    WeightHandleReturn479.sourceValue WeightHandleReturn479.sourceAction WeightHandleReturn479.sourceEnv WeightHandleReturn479.sourceTail WeightHandleReturn479.source_control WeightHandleReturn479.source_frame r479
+  have effect480 : s480.stack.drop 0 = s479.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack480)
+  have suffix480 : s480.stack.drop 13 = s.stack :=
+    (stack_drop_extend effect480 13).trans suffix479
+  have stack481 := step_return_unwind_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleBlock480.input s480 s481 C C h480
+    WeightHandleBlock480.sourceValue WeightHandleBlock480.sourceAction WeightHandleBlock480.sourceEnv WeightHandleBlock480.sourceTail WeightHandleBlock480.source_control WeightHandleBlock480.source_frame r480
+  have effect481 : s481.stack.drop 0 = s480.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack481)
+  have suffix481 : s481.stack.drop 12 = s.stack :=
+    (stack_drop_extend effect481 12).trans suffix480
+  have stack482 := step_return_unwind_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleScope481.input s481 s482 C C h481
+    WeightHandleScope481.sourceValue WeightHandleScope481.sourceAction WeightHandleScope481.sourceEnv WeightHandleScope481.sourceTail WeightHandleScope481.source_control WeightHandleScope481.source_frame r481
+  have effect482 : s482.stack.drop 0 = s481.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack482)
+  have suffix482 : s482.stack.drop 11 = s.stack :=
+    (stack_drop_extend effect482 11).trans suffix481
+  have stack483 := step_return_unwind_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightHandleCall482.input s482 s483 C C h482
+    WeightHandleCall482.sourceValue WeightHandleCall482.sourceAction WeightHandleCall482.sourceEnv WeightHandleCall482.sourceTail WeightHandleCall482.source_control WeightHandleCall482.source_frame r482
+  have effect483 : s483.stack.drop 0 = s482.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack483)
+  have suffix483 : s483.stack.drop 10 = s.stack :=
+    (stack_drop_extend effect483 10).trans suffix482
+  have stack484 := step_argument_done_stack P.F NR FR R (WeightLive468 live) framed before after old old' WeightRankArgument483.input s483 result C C h483
+    WeightRankArgument483.sourceValue WeightRankArgument483.sourceKind WeightRankArgument483.sourceFunction WeightRankArgument483.sourceThis WeightRankArgument483.sourceAcc WeightRankArgument483.sourceRest WeightRankArgument483.sourceEnv WeightRankArgument483.sourceTail WeightRankArgument483.source_control WeightRankArgument483.source_frame (by decide) (by host_kernel_rfl) r483
+  have effect484 : result.stack.drop 0 = s483.stack.drop 1 := by
+    simpa only [List.drop_succ_cons,List.drop_zero,List.drop_one,List.tail_cons,StatementAction.frames,List.cons_append,List.nil_append] using (stack484)
+  have suffix484 : result.stack.drop 9 = s.stack :=
+    (stack_drop_extend effect484 9).trans suffix483
+  refine ⟨result,?_,h484,argument,oldHeap484,suffix484⟩
   apply runC_cons P.F 38 s445 s446 result C C C (h445.control.isHalt_eq.trans (by host_kernel_rfl)) r445
   apply runC_cons P.F 37 s446 s447 result C C C (h446.control.isHalt_eq.trans (by host_kernel_rfl)) r446
   apply runC_cons P.F 36 s447 s448 result C C C (h447.control.isHalt_eq.trans (by host_kernel_rfl)) r447
@@ -336,5 +572,20 @@ theorem conv_weight_rank_argument (NR : NumV → NumV → Prop) (FR : Ren → LS
   apply runC_cons P.F 1 s482 s483 result C C C (h482.control.isHalt_eq.trans (by host_kernel_rfl)) r482
   apply runC_cons P.F 0 s483 result result C C C (h483.control.isHalt_eq.trans (by host_kernel_rfl)) r483
   rfl
+
+theorem conv_weight_rank_argument (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+    (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val)
+    (old old' : List Event) (s : St LSt)
+    (h : StateR NR FR R live framed before after old old' WeightShapeGetter445.input s)
+    (field : PrivateData s (R.a WeightHandleValue478.sourceAddress) (R.a WeightHandleValue478.sourceBrand)
+      WeightHandleValue478.sourceName (.big (Int.ofNat (R.handle 1365))))
+    (globalLive : live aGlobal) (globalFixed : R.a aGlobal = aGlobal)
+    (bound : s.next+20 ≤ 2^64) :
+    ∃ result, runC P.F 39 s C = some (result,C) ∧
+      StateR NR FR R (WeightLive468 live) framed before after old old' WeightRankArgument483.output result ∧
+      callArgument result.ctl 0 = .big (Int.ofNat (R.handle 1365)) ∧
+      (∀ a, a < s.next → result.heap.get a = s.heap.get a) := by
+  obtain ⟨result,run,hresult,arg,heap,_⟩ := conv_weight_rank_argument_framed NR FR R C₀ C live framed before after old old' s h field globalLive globalFixed bound
+  exact ⟨result,run,hresult,arg,heap⟩
 
 end Host.Load.Run.Full.Ordinary.VectorToConcat
