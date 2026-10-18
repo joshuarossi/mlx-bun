@@ -12,7 +12,7 @@ theorem listR_length_eq {α β : Type} {rel : α → β → Prop} {as : List α}
   | nil => rfl
   | cons _ _ ih => exact congrArg Nat.succ ih
 
-theorem FrameR.member_view {NR : NumV → NumV → Prop} {R : Ren}
+theorem FrameR.arrayLengthMember_view {NR : NumV → NumV → Prop} {R : Ren}
     {name : Name} {opt : Bool} {f : Frame}
     (h : FrameR NR R (.e (.member (.str name) opt)) f) : f = .e (.member (.str name) opt) := by
   obtain ⟨ef,rfl,hh⟩ := h.e_view
@@ -60,7 +60,7 @@ theorem step_array_length_from_source (F : Ffi) (NR : NumV → NumV → Prop)
   obtain ⟨v,hc,hv⟩ := (h.control_view hc₀).ret_view
   cases hv
   obtain ⟨f,fs,hf,hfr,hfs⟩ := h.stack_view hf₀
-  rw [hfr.member_view] at hf
+  rw [hfr.arrayLengthMember_view] at hf
   have ha : live a := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   obtain ⟨o,vs,ho,hk,hvs,_⟩ := h.heap.read_array a o₀ vs₀ ha hn ho₀ hk₀
   have hlen : len vs = len vs₀ := by simpa only [len_list_length] using (listR_length_eq hvs).symm

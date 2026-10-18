@@ -15,6 +15,22 @@ def mapIndexResult {S : Type} (s : St S) (i n : Name) (update : Option Expr) (bo
   {s' with ctl := .ret value,stack := (.e (.binR .lt zero)::
     .lp (.forBody (some (.bin .lt (.id i) (.id n))) update body env' [i] [])::s.stack)}
 
+theorem mapIndexResult_index {S : Type} (s : St S) (i n : Name) (update : Option Expr)
+    (body : Stmt) (env : Env) (value : Val) (bound : s.next+1 < 2^64) :
+    (mapIndexResult s i n update body env value).heap.get (s.next+1) =
+      some (.cell (some (natV 0))) := by
+  simp only [mapIndexResult,St.alloc,St.setCell,PTrie.get_set_u64 _ _ _ bound,ite_true]
+  rfl
+
+theorem mapIndexResult_frame {S : Type} (s : St S) (i n : Name) (update : Option Expr)
+    (body : Stmt) (env : Env) (value : Val) (a : Nat) (old : a < s.next)
+    (bound : s.next+1 < 2^64) :
+    (mapIndexResult s i n update body env value).heap.get a = s.heap.get a := by
+  have b0 : s.next < 2^64 := by omega
+  simp only [mapIndexResult,St.alloc,St.setCell,PTrie.get_set_u64 _ _ _ bound,
+    PTrie.get_set_u64 _ _ _ b0,ite_eq_right (Nat.ne_of_lt old),
+    ite_eq_right (show a ≠ s.next+1 by omega)]
+
 theorem lookupEnv_head (name : Name) (a : Nat) (env : Env) :
     lookupEnv name ((name,a)::env) = some a := by
   simp only [lookupEnv,Nat.beq_refl,brec]
@@ -93,7 +109,7 @@ theorem map_index_run (F : Ffi) (s : St F.S) (C : CSrv) (i n : Name) (update : O
   apply runC_cons F 0 s9 s10 s10 C C C rfl (by rw [h9]; rfl)
   rfl
 
-theorem step_block_next_heap (F : Ffi) (NR : NumV → NumV → Prop)
+theorem step_map_block_next_heap (F : Ffi) (NR : NumV → NumV → Prop)
     (FR : Ren → F.S → F.S → Prop) (R : Ren) (C D : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s₀ s result : St F.S)
     (h : StateR NR FR R live framed before after old old' s₀ s)
