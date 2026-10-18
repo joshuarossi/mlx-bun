@@ -260,8 +260,9 @@ structure G where
   pre : Lean.Name
   idx : Nat := 0
   count : Nat := 0
-  /-- Native value (by address, kept alive) ↦ the constant naming it. -/
-  memo : Std.HashMap USize (Lean.Name × NonScalar) := {}
+  /-- Native value (by address and type, kept alive) ↦ its constant. Immediate
+  values such as empty lists and tries share an address across different types. -/
+  memo : Std.HashMap (USize × Lean.Expr) (Lean.Name × NonScalar) := {}
   defs : Array (Lean.Name × Lean.Expr × Lean.Expr) := #[]
 
 abbrev GenM := StateT G IO
@@ -274,11 +275,11 @@ instance (priority := low) {α : Type} [ToExpr α] : StreamExpr α := ⟨fun x =
 
 unsafe def namedImpl {α : Type} (ty : Lean.Expr) (tag : String) (x : α) (ser : α → GenM Lean.Expr) : GenM Lean.Expr := do
   let p := ptrAddrUnsafe x
-  if let some (n, _) := (← get).memo[p]? then return mkConst n
+  if let some (n, _) := (← get).memo[(p, ty)]? then return mkConst n
   let e ← ser x
   let g ← get
   let n := g.pre ++ Lean.Name.mkSimple s!"{tag}{g.idx}_{g.count}"
-  set { g with memo := g.memo.insert p (n, unsafeCast x), defs := g.defs.push (n, ty, e), count := g.count + 1 }
+  set { g with memo := g.memo.insert (p, ty) (n, unsafeCast x), defs := g.defs.push (n, ty, e), count := g.count + 1 }
   return mkConst n
 
 /-- `x` as a constant: the one an earlier boundary defined for this native value, or a new one. -/
@@ -326,7 +327,7 @@ unsafe def listNamedImpl {β : Type} [ToExpr β] (tag : String) (l : List β) : 
   let mut cur := l
   let mut tail := mkApp (mkConst ``List.nil [.zero]) tyβ
   repeat
-    if let some (n, _) := memo[ptrAddrUnsafe cur]? then
+    if let some (n, _) := memo[(ptrAddrUnsafe cur, tyL)]? then
       tail := mkConst n
       break
     match cur with
