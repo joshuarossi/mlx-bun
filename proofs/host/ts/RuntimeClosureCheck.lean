@@ -63,6 +63,34 @@ theorem allTrie_node {α : Type} (check : α → Bool) (v : Option α) (a b c e 
     allTrie check (.node v a b c e) = true := by
   simp only [allTrie,value,ha,hb,hc,he,Bool.and_self]
 
+theorem allTrie_node_some {α : Type} (check : α → Bool) (x : α) (a b c e : Trie α)
+    (value : check x = true) (ha : allTrie check a = true) (hb : allTrie check b = true)
+    (hc : allTrie check c = true) (he : allTrie check e = true) :
+    allTrie check (.node (some x) a b c e) = true := by
+  exact allTrie_node check (some x) a b c e value ha hb hc he
+
+theorem allTrie_node_none {α : Type} (check : α → Bool) (a b c e : Trie α)
+    (ha : allTrie check a = true) (hb : allTrie check b = true)
+    (hc : allTrie check c = true) (he : allTrie check e = true) :
+    allTrie check (.node none a b c e) = true := by
+  exact allTrie_node check none a b c e rfl ha hb hc he
+
+theorem allTrie_nil_at {α : Type} (check : α → Bool) (t : Trie α) (shape : t = .nil) :
+    allTrie check t = true := by rw [shape]; rfl
+
+theorem allTrie_some_at {α : Type} (check : α → Bool) (t : Trie α) (x : α) (a b c e : Trie α)
+    (shape : t = .node (some x) a b c e) (value : check x = true)
+    (ha : allTrie check a = true) (hb : allTrie check b = true)
+    (hc : allTrie check c = true) (he : allTrie check e = true) : allTrie check t = true := by
+  rw [shape]
+  exact allTrie_node_some check x a b c e value ha hb hc he
+
+theorem allTrie_none_at {α : Type} (check : α → Bool) (t : Trie α) (a b c e : Trie α)
+    (shape : t = .node none a b c e) (ha : allTrie check a = true) (hb : allTrie check b = true)
+    (hc : allTrie check c = true) (he : allTrie check e = true) : allTrie check t = true := by
+  rw [shape]
+  exact allTrie_node_none check a b c e ha hb hc he
+
 theorem number_sound (limit : Nat) (n : NumV) (h : number limit n = true) : NumberBelow limit n := by
   cases n with
   | lit x => trivial

@@ -56,11 +56,18 @@ elab "host_closure_groups " state:term ", " addresses:num ", " numbers:num
 
 private partial def combine (pre : Lean.Name) (check t : Lean.Expr) (index : Nat) :
     TermElabM (Lean.Expr × Nat) := do
-  let some (value,children) ← parts t | return (← reflTrue,index)
+  let type ← whnf (← inferType t)
+  unless type.isAppOfArity ``Trie 1 do throwError "closure certificate: expected the source trie type"
+  let α := type.getAppArgs[0]!
+  let shape ← mkEqRefl t
+  let some (value,children) ← parts t |
+    return (mkAppN (mkConst ``allTrie_nil_at) #[α,check,t,shape],index)
   let v ← whnf value
-  let (valueProof,index) ← if v.isAppOfArity ``Option.some 2 then
-      pure (mkConst (groupName pre index),index+1)
-    else if v.isAppOfArity ``Option.none 1 then pure (← reflTrue,index)
+  let (lemma,arguments,index) ← if v.isAppOfArity ``Option.some 2 then
+      pure (``allTrie_some_at,#[α,check,t,v.getAppArgs[1]!] ++ children ++
+        #[shape,mkConst (groupName pre index)],index+1)
+    else if v.isAppOfArity ``Option.none 1 then
+      pure (``allTrie_none_at,#[α,check,t] ++ children ++ #[shape],index)
     else throwError "closure certificate: expected an optional source group"
   let mut index := index
   let mut childProofs := #[]
@@ -68,8 +75,10 @@ private partial def combine (pre : Lean.Name) (check t : Lean.Expr) (index : Nat
     let (proof,next) ← combine pre check child index
     childProofs := childProofs.push proof
     index := next
-  let proof ← mkAppM ``allTrie_node (#[check,value] ++ children ++ #[valueProof] ++ childProofs)
-  return (proof,index)
+  -- Applying this fully typed helper needs no elaborator unification of a
+  -- group predicate against its Option.map/getD wrapper. That comparison can
+  -- otherwise unfold all checked leaf computations a second time.
+  return (mkAppN (mkConst lemma) (arguments ++ childProofs),index)
 
 /-- The final structural join consumes every source group certificate. The
 original complete heap predicate remains the theorem statement. -/
