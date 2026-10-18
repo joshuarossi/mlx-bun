@@ -1,5 +1,6 @@
 import host.ts.renameOrdinary.RankOriginNative
 import host.ts.RenameRouteArgumentFields
+import host.ts.RenameRoutePrivateFields
 import host.ts.RenameRouteReturnFields
 import host.ts.RenameRouteDriverReturns
 import host.ts.RenameRouteDriverBinding
@@ -30,7 +31,7 @@ theorem number_post : numberInput.ret (intV (Int.ofNat 3)) = P.micro3275.s4 := b
 
 /-- The real native rank call, Number conversion, returns and lexical binding
 initialize the actual shape getter's rank cell with literal three. -/
-theorem initialize_rank (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+theorem initialize_rank_framed (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
     (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
     (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' input s)
     (NodeRel : Nat → Host.Mlx.Ffi.Node → Host.Mlx.Ffi.Node → Prop)
@@ -43,9 +44,10 @@ theorem initialize_rank (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν 
     (bound : s.next ≤ 2^64) :
     ∃ result, runC P.F 9 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.micro3275.s10 result ∧
-      result.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))) := by
+      result.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))) ∧
+      (∀ a, a ≠ R.a Variable5.address → result.heap.get a = s.heap.get a) := by
   let NR := NumberRoles ν₀ ν C₀ C
-  obtain ⟨s2,hr1,h2,hc2⟩ := transport NR FR R C₀ C ν live framed before after old old' s h
+  obtain ⟨s2,hr1,h2,hc2,hh2⟩ := transport_fields NR FR R C₀ C ν live framed before after old old' s h
     NodeRel ObjRel H N tail native shape signatureFrame handleLive handleRole
   obtain ⟨s3,hr2,h3⟩ := Collect2.transport NR FR R C₀ C live framed before after old old' s2 h2
   have hf2 : Collect2.input.stack = .c (.args 0 Collect2.sourceFunction Collect2.sourceThis
@@ -113,7 +115,28 @@ theorem initialize_rank (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν 
     simp only [St.ret,St.setCell,PTrie.get_set_u64 _ _ _ haddress,ite_true]
   have hsourceAddress : Initialize9.sourceAddress = Variable5.address := by host_kernel_rfl
   rw [hsourceAddress] at hcell
-  refine ⟨result,?_,h10,hcell⟩
+  have hh3 := step_argument_heap_from_source P.F NR FR R live framed before after old old' Collect2.input s2 s3 C C h2
+    Collect2.sourceValue Collect2.sourceKind Collect2.sourceFunction Collect2.sourceThis Collect2.sourceAcc Collect2.sourceRest
+    Collect2.sourceEnv Collect2.sourceTail Collect2.source_control Collect2.source_frame (by decide) hr2
+  have hh5 := step_return_exit_heap P.F NR FR R live framed before after old old' Return4.input s4 s5 C C h4
+    Return4.sourceValue Return4.sourceAction Return4.sourceEnv Return4.sourceTail Return4.source_control Return4.source_frame hr4
+  have hh6 := step_return_unwind_heap P.F NR FR R live framed before after old old' Return5.input s5 s6 C C h5
+    Return5.sourceValue Return5.sourceAction Return5.sourceEnv Return5.sourceTail Return5.source_control Return5.source_frame hr5
+  have hh7 := step_return_unwind_heap P.F NR FR R live framed before after old old' Return6.input s6 s7 C C h6
+    Return6.sourceValue Return6.sourceAction Return6.sourceEnv Return6.sourceTail Return6.source_control Return6.source_frame hr6
+  have hh8 := step_return_unwind_heap P.F NR FR R live framed before after old old' Return7.input s7 s8 C C h7
+    Return7.sourceValue Return7.sourceAction Return7.sourceEnv Return7.sourceTail Return7.source_control Return7.source_frame hr7
+  have hh9 := step_declaration_value_heap P.F NR FR R live framed before after old old' Declare8.input s8 s9 C C h8
+    Declare8.sourceValue Declare8.sourceKind Declare8.sourcePattern Declare8.sourceRest Declare8.sourceEnv Declare8.sourceTail
+    Declare8.source_control Declare8.source_frame Declare8.source_kind hr8
+  have heap9 : s9.heap = s.heap := hh9.trans (hh8.trans (hh7.trans (hh6.trans (hh5.trans (hh3.trans hh2)))))
+  have frame : ∀ a, a ≠ R.a Variable5.address → result.heap.get a = s.heap.get a := by
+    intro a ha
+    have ha' : a ≠ R.a Initialize9.sourceAddress := hsourceAddress.symm ▸ ha
+    rw [he]
+    simp only [St.ret,St.setCell,PTrie.get_set_u64 _ _ _ haddress,ite_eq_right ha']
+    rw [heap9]
+  refine ⟨result,?_,h10,hcell,frame⟩
   apply runC_cons P.F 8 s s2 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) hr1
   apply runC_cons P.F 7 s2 s3 result C C C (h2.control.isHalt_eq.trans (by host_kernel_rfl)) hr2
   apply runC_cons P.F 6 s3 s4 result C C C (h3.control.isHalt_eq.trans (by host_kernel_rfl)) hr3
@@ -125,4 +148,21 @@ theorem initialize_rank (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν 
   apply runC_cons P.F 0 s9 result result C C C (h9.control.isHalt_eq.trans (by host_kernel_rfl)) hr9
   rfl
 
+theorem initialize_rank (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+    (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+    (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' input s)
+    (NodeRel : Nat → Host.Mlx.Ffi.Node → Host.Mlx.Ffi.Node → Prop)
+    (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (H N : Nat → Prop) (tail : List NumV)
+    (native : Host.Mlx.Ffi.NativeRoles.Live (NumberRoles ν₀ ν C₀ C) R NodeRel ObjRel H N tail input.ffi.mlx s.ffi.mlx)
+    (shape : ∀ i n n', NodeRel i n n' → Host.Mlx.Ffi.Parametric.ShapeR (NumberRoles ν₀ ν C₀ C) n.shape n'.shape)
+    (signatureFrame : ¬ framed signature) (handleLive : H 29363)
+    (handleRole : (Annotated.Value.handle 29363).Holds ν C R (callArgument s.ctl 0))
+    (bound : s.next ≤ 2^64) :
+    ∃ result, runC P.F 9 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.micro3275.s10 result ∧
+      result.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))) := by
+  obtain ⟨result,hr,hs,rank,_⟩ := initialize_rank_framed FR R ν₀ ν C₀ C live framed before after old old' s h
+    NodeRel ObjRel H N tail native shape signatureFrame handleLive handleRole bound
+  exact ⟨result,hr,hs,rank⟩
 end Host.Load.Run.Full.Ordinary.RankOrigin

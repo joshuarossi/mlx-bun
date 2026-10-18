@@ -1,5 +1,6 @@
 import host.ts.RenameRouteDriver
 import host.ts.RenameParametricReads
+import host.ts.RenameRouteReadFields
 namespace Host.Ts.Owned.Parametric.Driver
 open Lean Elab Command Meta
 
@@ -93,4 +94,14 @@ elab "host_transport_read " f:term ", " s:term " to " t:term " as " name:ident :
         StateR NR FR R live framed before after old old' {n}.output result := by
     obtain ⟨p,fs,_,hr,hs,_⟩ := {rule}
     exact ⟨_,hr,{n}.source_post ▸ hs⟩")
+  emit (header ++ s!"theorem {n}.heap_frame (NR : NumV → NumV → Prop)
+      (FR : Ren → {n}.F.S → {n}.F.S → Prop) (R : Ren) (C₀ C D : CSrv)
+      (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+      (s result : St {n}.F.S) (h : StateR NR FR R live framed before after old old' {n}.input s)
+      (run : interpC (step {n}.F s).run C = some (result,D)) : result.heap = s.heap := by
+    obtain ⟨p,fs,_,hr,_,_⟩ := {rule}
+    have he := congrArg Prod.fst (Option.some.inj (run.symm.trans hr))
+    have hh := congrArg St.heap he
+    rw [readProp_heap] at hh
+    exact hh")
 end Host.Ts.Owned.Parametric.Driver

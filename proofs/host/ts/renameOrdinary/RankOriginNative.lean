@@ -31,6 +31,26 @@ theorem source_rank : len node.shape = 3 := by host_kernel_rfl
 theorem source_post : finishBig input input.ffi chars!"mlx_array_ndim" [.big (Int.ofNat 29363)]
     (Int.ofNat 3) = output := by host_kernel_rfl
 
+theorem transport_fields (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+    (R : Ren) (C₀ C : CSrv) (ν : Nat → F64) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR NR FR R live framed before after old old' input s)
+    (NodeRel : Nat → Host.Mlx.Ffi.Node → Host.Mlx.Ffi.Node → Prop)
+    (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (H N : Nat → Prop) (tail : List NumV)
+    (native : Host.Mlx.Ffi.NativeRoles.Live NR R NodeRel ObjRel H N tail input.ffi.mlx s.ffi.mlx)
+    (shape : ∀ i n n', NodeRel i n n' → Host.Mlx.Ffi.Parametric.ShapeR NR n.shape n'.shape)
+    (signatureFrame : ¬ framed signature) (handleLive : H 29363)
+    (handleRole : (Annotated.Value.handle 29363).Holds ν C R (callArgument s.ctl 0)) :
+    ∃ result, interpC (step P.F s).run C = some (result,C) ∧
+      StateR NR FR R live framed before after old old' output result ∧
+      result.ctl = .ret (.big (Int.ofNat 3)) ∧ result.heap = s.heap := by
+  obtain ⟨_,hr,hs⟩ := step_ndim_from_source NR FR R C₀ C ν live framed before after old old' input s h
+    NodeRel ObjRel H N tail native shape 4635 signature 29363 functionObject signatureObject returns (.obj 4817) node
+    source_control source_heap source_kind source_signature source_types signatureFrame handleLive source_node handleRole
+  rw [source_rank,source_post] at hs
+  rw [source_rank] at hr
+  exact ⟨_,hr,hs,rfl,rfl⟩
 theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
     (R : Ren) (C₀ C : CSrv) (ν : Nat → F64) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
@@ -45,10 +65,7 @@ theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Pr
     ∃ result, interpC (step P.F s).run C = some (result,C) ∧
       StateR NR FR R live framed before after old old' output result ∧
       result.ctl = .ret (.big (Int.ofNat 3)) := by
-  obtain ⟨_,hr,hs⟩ := step_ndim_from_source NR FR R C₀ C ν live framed before after old old' input s h
-    NodeRel ObjRel H N tail native shape 4635 signature 29363 functionObject signatureObject returns (.obj 4817) node
-    source_control source_heap source_kind source_signature source_types signatureFrame handleLive source_node handleRole
-  rw [source_rank,source_post] at hs
-  rw [source_rank] at hr
-  exact ⟨_,hr,hs,rfl⟩
+  obtain ⟨result,hr,hs,hc,_⟩ := transport_fields NR FR R C₀ C ν live framed before after old old' s h
+    NodeRel ObjRel H N tail native shape signatureFrame handleLive handleRole
+  exact ⟨result,hr,hs,hc⟩
 end Host.Load.Run.Full.Ordinary.RankOrigin
