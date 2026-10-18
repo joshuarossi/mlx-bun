@@ -31,25 +31,32 @@ elab "host_prefix_frames " p:ident i:num ", " j:num " arrays " addresses:term : 
   let addresses ← unsafe evalExpr (List Nat) listNat
     (← instantiateMVars (← Term.elabTermAndSynthesize addresses (some listNat)))
   let some first := addresses.head? | throwError "host_prefix_frames: expected at least one array"
-  addDecl (.defnDecl {
-    name := pre ++ `prefixAddresses
-    levelParams := []
-    type := listNat
-    value := toExpr addresses
-    hints := .regular 0
-    safety := .safe })
-  let base ← arrayValues pre i.getNat first
+  if (← getEnv).contains (pre ++ `prefixAddresses) then
+    unless ← isDefEq (mkConst (pre ++ `prefixAddresses)) (toExpr addresses) do
+      throwError "host_prefix_frames: the shared framed addresses changed"
+  else
+    addDecl (.defnDecl {
+      name := pre ++ `prefixAddresses
+      levelParams := []
+      type := listNat
+      value := toExpr addresses
+      hints := .regular 0
+      safety := .safe })
+  let base ← if (← getEnv).contains (pre ++ `prefixBase) then
+    pure (mkConst (pre ++ `prefixBase))
+  else arrayValues pre i.getNat first
   let baseValues ← listValues base
   let valList := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
   let numList := mkApp (mkConst ``List [.zero]) (mkConst ``NumV)
   let stTy ← inferType (mkConst (chainName pre "s" i.getNat))
-  addDecl (.defnDecl {
-    name := pre ++ `prefixBase
-    levelParams := []
-    type := valList
-    value := base
-    hints := .regular 0
-    safety := .safe })
+  unless (← getEnv).contains (pre ++ `prefixBase) do
+    addDecl (.defnDecl {
+      name := pre ++ `prefixBase
+      levelParams := []
+      type := valList
+      value := base
+      hints := .regular 0
+      safety := .safe })
   for k in [i.getNat:j.getNat + 1] do
     let suffixes ← addresses.mapM fun a => do
       let values ← listValues (← arrayValues pre k a)

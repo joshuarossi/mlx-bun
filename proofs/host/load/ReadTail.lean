@@ -54,7 +54,11 @@ elab "host_read_tail " p:ident i:num ", " j:num " keep " keep:num : command => l
     | .error e => throwError "host_read_tail: {e}"
   let listTy := mkApp (mkConst ``List [.zero]) (mkConst ``NumV)
   let stTy ← inferType (mkConst (chainName pre "s" i.getNat))
-  addDecl (.defnDecl { name := pre ++ `tokenBase, levelParams := [], type := listTy, value := suffix, hints := .regular 0, safety := .safe })
+  if (← getEnv).contains (pre ++ `tokenBase) then
+    unless ← isDefEq (mkConst (pre ++ `tokenBase)) suffix do
+      throwError "host_read_tail: the shared unread suffix changed"
+  else
+    addDecl (.defnDecl { name := pre ++ `tokenBase, levelParams := [], type := listTy, value := suffix, hints := .regular 0, safety := .safe })
   for k in [i.getNat:j.getNat + 1] do
     let value ← stateValue pre k
     let body ← withLocalDeclD `tail listTy fun tail => do
