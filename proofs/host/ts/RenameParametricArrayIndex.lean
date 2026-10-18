@@ -99,6 +99,34 @@ theorem step_array_index_eq (F : Ffi) (s : St F.S) (key : Val) (a i : Nat)
 
 /-- A fixed evaluated index selects related elements of the actual owned
 array. The target array read, element and step are all derived. -/
+theorem step_array_index_from_source_fields (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s : St F.S)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (key : Val) (a i : Nat) (o₀ : Obj) (values₀ : List Val) (value₀ : Val) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret key) (hf₀ : s₀.stack = .e (.indexR (.obj a))::fs₀)
+    (hi : numIndex key = some i) (ho₀ : s₀.heap.get a = some (.obj o₀))
+    (hk₀ : o₀.kind = .array values₀) (hv₀ : nth? values₀ i = some value₀)
+    (notFramed : ¬ framed a) (hc : s.ctl = .ret key) :
+    ∃ value result, interpC (step F s₀).run C₀ = some ({s₀ with stack := fs₀}.ret value₀,C₀) ∧
+      interpC (step F s).run C = some (result,C) ∧
+      StateR NR FR R live framed before after old old' ({s₀ with stack := fs₀}.ret value₀) result ∧
+      result.ctl = .ret value ∧ ValueR NR R value₀ value ∧ result.heap = s.heap := by
+  obtain ⟨f,fs,hf,hfr,hfs⟩ := h.stack_view hf₀
+  obtain ⟨receiver,hframe,hr⟩ := hfr.indexRight_view
+  cases hr
+  rw [hframe] at hf
+  have hl := h.stackLive
+  rw [hf₀] at hl
+  have ha : live a := hl.1.1.1
+  obtain ⟨o,values,ho,hk,hvalues,hvaluesl⟩ := h.heap.read_array a o₀ values₀ ha notFramed ho₀ hk₀
+  obtain ⟨value,hv,hr⟩ := listR_nth_some hvalues i value₀ hv₀
+  have hvl := listSupport_nth (valueSupport live) values₀ hvaluesl i value₀ hv₀
+  refine ⟨value,{s with stack := fs}.ret value,?_,?_,?_,rfl,hr,rfl⟩
+  · rw [step_array_index_eq F s₀ key a i o₀ values₀ value₀ fs₀ hc₀ hf₀ hi ho₀ hk₀ hv₀]; rfl
+  · rw [step_array_index_eq F s key (R.a a) i o values value fs hc hf hi ho hk hv]; rfl
+  · exact (h.restack hfs hl.2).go (.node _ (.cons (.value hr) .nil)) ⟨hvl,True.intro⟩
+
 theorem step_array_index_from_source (F : Ffi) (NR : NumV → NumV → Prop)
     (FR : Ren → F.S → F.S → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s₀ s : St F.S)
@@ -112,19 +140,9 @@ theorem step_array_index_from_source (F : Ffi) (NR : NumV → NumV → Prop)
       interpC (step F s).run C = some (result,C) ∧
       StateR NR FR R live framed before after old old' ({s₀ with stack := fs₀}.ret value₀) result ∧
       result.ctl = .ret value ∧ ValueR NR R value₀ value := by
-  obtain ⟨f,fs,hf,hfr,hfs⟩ := h.stack_view hf₀
-  obtain ⟨receiver,hframe,hr⟩ := hfr.indexRight_view
-  cases hr
-  rw [hframe] at hf
-  have hl := h.stackLive
-  rw [hf₀] at hl
-  have ha : live a := hl.1.1.1
-  obtain ⟨o,values,ho,hk,hvalues,hvaluesl⟩ := h.heap.read_array a o₀ values₀ ha notFramed ho₀ hk₀
-  obtain ⟨value,hv,hr⟩ := listR_nth_some hvalues i value₀ hv₀
-  have hvl := listSupport_nth (valueSupport live) values₀ hvaluesl i value₀ hv₀
-  refine ⟨value,{s with stack := fs}.ret value,?_,?_,?_,rfl,hr⟩
-  · rw [step_array_index_eq F s₀ key a i o₀ values₀ value₀ fs₀ hc₀ hf₀ hi ho₀ hk₀ hv₀]; rfl
-  · rw [step_array_index_eq F s key (R.a a) i o values value fs hc hf hi ho hk hv]; rfl
-  · exact (h.restack hfs hl.2).go (.node _ (.cons (.value hr) .nil)) ⟨hvl,True.intro⟩
+  obtain ⟨value,result,hr₀,hr,hpost,hc,hrv,_⟩ := step_array_index_from_source_fields F NR FR R C₀ C
+    live framed before after old old' s₀ s h key a i o₀ values₀ value₀ fs₀
+    hc₀ hf₀ hi ho₀ hk₀ hv₀ notFramed hc
+  exact ⟨value,result,hr₀,hr,hpost,hc,hrv⟩
 
 end Host.Ts.Owned.Parametric
