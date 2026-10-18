@@ -90,10 +90,10 @@ theorem elemsOf_array (F : Ffi) (s : St F.S) (a : Nat) (o : Obj) (es : List Val)
 /-- Interpreter dispatch of the actual native-symbol wrapper with its pointer/u64
 signature. The concrete native symbol theorem supplies `hcall`; no machine-step
 simulation premise is used. -/
-theorem step_ffi_ptr_u64 (F : Ffi) (s : St F.S) (fn types b off : Nat) (handle : Int)
+theorem step_ffi_ptr_u64 (F : Ffi) (s : St F.S) {receiver : Val} (fn types b off : Nat) (handle : Int)
     (name returns : Name) (fo to : Obj) (bs : List Byte)
     (native : F.S) (result : Ret) (writes : List (Nat × Nat × List Byte))
-    (hc : s.ctl = .call (.obj fn) .undef [.ptr (.js b) off, .big handle])
+    (hc : s.ctl = .call (.obj fn) receiver [.ptr (.js b) off, .big handle])
     (hfn : s.obj? fn = some fo)
     (hfk : fo.kind = .fn (.native (.ffi .symbol) [.str name, .obj types, .str returns]))
     (ht : s.obj? types = some to) (htk : to.kind = .array [.str chars!"ptr", .str chars!"u64"])
@@ -137,10 +137,10 @@ theorem ffiDone_status0_materialize (F : Ffi) (ffiMap : CSrv → F.S → F.S) (C
 buffer writes, trace and return. Concrete symbol lemmas discharge the two call
 equations; this theorem does not assume a machine-step simulation. -/
 theorem step_ffi_ptr_u64_materialize (F : Ffi) (ffiMap : CSrv → F.S → F.S)
-    (C : CSrv) (s u : St F.S) (fn types b off : Nat) (handle : Int)
+    (C : CSrv) (s u : St F.S) {receiver : Val} (fn types b off : Nat) (handle : Int)
     (name returns : Name) (fo to : Obj) (bs : List Byte)
     (native : F.S) (writes : List (Nat × Nat × List Byte))
-    (hc : s.ctl = .call (.obj fn) .undef [.ptr (.js b) off, .big handle])
+    (hc : s.ctl = .call (.obj fn) receiver [.ptr (.js b) off, .big handle])
     (hfn : s.obj? fn = some fo)
     (hfk : fo.kind = .fn (.native (.ffi .symbol) [.str name, .obj types, .str returns]))
     (ht : s.obj? types = some to) (htk : to.kind = .array [.str chars!"ptr", .str chars!"u64"])
@@ -160,7 +160,7 @@ theorem step_ffi_ptr_u64_materialize (F : Ffi) (ffiMap : CSrv → F.S → F.S)
   have hdone := ffiDone_status0_materialize F ffiMap C s u native name
     [Arg.jsPtr b off (bs.drop off), .big handle] writes hw
   have hcs : (materializeStateWith ffiMap C s).ctl =
-      .call (.obj fn) .undef [.ptr (.js b) off, .big handle] := by
+      .call (.obj fn) ((materializer C).val receiver) [.ptr (.js b) off, .big handle] := by
     change (materializer C).ctl s.ctl = _
     rw [hc]
     rfl

@@ -8,7 +8,6 @@ structure LoopRolePlaces extends ReadbackSlots where
   cur : LoopPlace
   yieldedEarly : LoopPlace
   currentHandle : LoopPlace
-  cacheCapacities : List LoopPlace
 
 /-- Exact source entry to the ordinary uint32 read, after lookahead forwarding.
 The loop counter and all cache positions are literal numbers in this source
@@ -22,12 +21,10 @@ structure SupportedOrdinaryCut (F : Ffi) (native : F.S → Host.Mlx.Ffi.St) (pla
   generatedLiteral : places.generated.read s = some (natV i)
   stepIndexLiteral : places.stepIndex.read s = some (natV i)
   offsetLiterals : ∀ p ∈ places.cacheOffsets, p.read s = some (natV (prompt + i + 1))
-  capacityCount : places.cacheCapacities.length = 16
-  capacityLiterals : ∀ p ∈ places.cacheCapacities, p.read s = some (natV capacity)
   early : places.yieldedEarly.read s = some (.bool false)
   pendingObject : ∃ a, places.pending.read s = some (.obj a) ∧ places.cur.read s = some (.obj a)
-  readEntry : ∃ fn types b off handle fo to bs,
-    s.ctl = .call (.obj fn) .undef [.ptr (.js b) off, .big (Int.ofNat handle)] ∧
+  readEntry : ∃ fn types b off handle fo to bs receiver,
+    s.ctl = .call (.obj fn) receiver [.ptr (.js b) off, .big (Int.ofNat handle)] ∧
     s.obj? fn = some fo ∧
     fo.kind = .fn (.native (.ffi .symbol)
       [.str chars!"mlx_array_item_uint32", .obj types, .str chars!"i32"]) ∧
@@ -35,8 +32,9 @@ structure SupportedOrdinaryCut (F : Ffi) (native : F.S → Host.Mlx.Ffi.St) (pla
     places.currentHandle.read s = some (.big (Int.ofNat handle)) ∧
     bufBytes F s b = some bs
 
-/-- The next body may perform a periodic cache clear independently of whether
-its one-token append grows a KV allocation. The last read has no lookahead. -/
+/-- Budget and capacity guards for a continuing body. EOS and other stop tests
+are separate source branches. A periodic cache clear is independent of growth;
+the last budgeted read has no lookahead. -/
 inductive NextCutCase (prompt i limit capacity : Nat) : Prop where
   | ordinarySteady : i + 2 < limit → prompt + i + 1 < capacity →
       NextCutCase prompt i limit capacity

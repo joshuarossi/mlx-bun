@@ -7,6 +7,7 @@ inductive LoopPlace where
   | cell (address : Nat)
   | data (address : Nat) (key : PKey)
   | privField (address brand : Nat) (name : Name)
+  | element (address index : Nat)
 
 def LoopPlace.read {S : Type} (s : St S) : LoopPlace → Option Val
   | .cell a => (s.cell? a).join
@@ -19,6 +20,11 @@ def LoopPlace.read {S : Type} (s : St S) : LoopPlace → Option Val
     let o ← s.obj? a
     match findPriv b n o.priv with
     | some (.data v _ _) => some v
+    | _ => none
+  | .element a i => do
+    let o ← s.obj? a
+    match o.kind with
+    | .array xs => nth? xs i
     | _ => none
 
 def LoopPlace.number {S : Type} (C : CSrv) (s : St S) (p : LoopPlace) : Option F64 := do

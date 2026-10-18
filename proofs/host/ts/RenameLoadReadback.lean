@@ -37,10 +37,10 @@ private theorem ffi_call_eq : ffi.call = call := by
 /-- The complete native read step at the source generator's ordinary cut, using
 the actual load-world dispatcher. It retains all host facts and real pending MLX
 buffers while consuming the current read and recording its uint32 write. -/
-theorem step_itemU32_materialize (C : CSrv) (s : St LSt)
+theorem step_itemU32_materialize (C : CSrv) (s : St LSt) {receiver : Val}
     (fn types b off handle node : Nat) (returns : Name) (fo to bo : Obj) (bs : List Byte)
     (n : Host.Mlx.Ffi.Node) (token : NumV) (tail : List NumV)
-    (hc : s.ctl = .call (.obj fn) .undef [.ptr (.js b) off, .big (Int.ofNat handle)])
+    (hc : s.ctl = .call (.obj fn) receiver [.ptr (.js b) off, .big (Int.ofNat handle)])
     (hfn : s.obj? fn = some fo)
     (hfk : fo.kind = .fn (.native (.ffi .symbol)
       [.str chars!"mlx_array_item_uint32", .obj types, .str returns]))
