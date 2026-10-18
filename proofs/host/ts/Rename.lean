@@ -27,15 +27,22 @@ queries substituted.
 Native bigint handles and native regions have separate maps. Their use at ordinary
 bigint arithmetic remains an additional obligation of the reachable-state relation. -/
 
-structure Ren where
+inductive NumMode where
+  | refs
+  | concrete (server : CSrv)
+
+/-- One traversal serves fresh-name renaming and concrete numeric materialization. -/
+structure NameMap (mode : NumMode) where
   a : Nat → Nat
   n : Nat → Nat
   big : Int → Int := id
   region : Nat → Nat := id
   node : Nat → Nat := id
 
-namespace Ren
-variable (R : Ren)
+abbrev Ren := NameMap .refs
+
+namespace NameMap
+variable {mode : NumMode} (R : NameMap mode)
 
 /-- Native handles appear in the JS runtime as nonnegative bigints. -/
 def handle (h : Nat) : Nat := (R.big (Int.ofNat h)).toNat
@@ -45,7 +52,9 @@ def sym (i : Nat) : Nat := bif Nat.blt i 16 then i else R.a (i - 16) + 16
 
 def num : NumV → NumV
   | .lit x => .lit x
-  | .ref i => .ref (R.n i)
+  | .ref i => match mode with
+    | .refs => .ref (R.n i)
+    | .concrete C => .lit ((C.val (.ref i)).getD .nan)
 
 def mem : Mem → Mem
   | .js b => .js (R.a b)
@@ -328,6 +337,60 @@ theorem cellParts (k : EltK) (c : Cell) : ∀ n i,
   | n + 1, i => by
     simp only [Host.Ts.cellParts, List.map_cons, byte, cellParts k c n (i + 1)]
 
+end NameMap
+
+attribute [reducible] NameMap.handle NameMap.sym NameMap.num NameMap.mem NameMap.val NameMap.key
+  NameMap.prop NameMap.props NameMap.vals NameMap.cell NameMap.byte NameMap.abr NameMap.comp NameMap.env
+  NameMap.inst NameMap.bnd NameMap.src NameMap.pairs NameMap.callF NameMap.exprF NameMap.litF NameMap.target
+  NameMap.asgF NameMap.stmtF NameMap.loopF NameMap.bindF NameMap.fnF NameMap.frame NameMap.ctl NameMap.stores
+  NameMap.susp NameMap.gen NameMap.reaction NameMap.pstate NameMap.code NameMap.kind NameMap.obj NameMap.hobj
+  NameMap.arg NameMap.ret NameMap.event NameMap.job NameMap.write
+
+namespace Ren
+abbrev handle (R : Ren) := NameMap.handle R
+abbrev sym (R : Ren) := NameMap.sym R
+abbrev num (R : Ren) := NameMap.num R
+abbrev mem (R : Ren) := NameMap.mem R
+abbrev val (R : Ren) := NameMap.val R
+abbrev key (R : Ren) := NameMap.key R
+abbrev prop (R : Ren) := NameMap.prop R
+abbrev props (R : Ren) := NameMap.props R
+abbrev vals (R : Ren) := NameMap.vals R
+abbrev cell (R : Ren) := NameMap.cell R
+abbrev byte (R : Ren) := NameMap.byte R
+abbrev abr (R : Ren) := NameMap.abr R
+abbrev comp (R : Ren) := NameMap.comp R
+abbrev env (R : Ren) := NameMap.env R
+abbrev inst (R : Ren) := NameMap.inst R
+abbrev bnd (R : Ren) := NameMap.bnd R
+abbrev src (R : Ren) := NameMap.src R
+abbrev pairs (R : Ren) := NameMap.pairs R
+abbrev callF (R : Ren) := NameMap.callF R
+abbrev exprF (R : Ren) := NameMap.exprF R
+abbrev litF (R : Ren) := NameMap.litF R
+abbrev target (R : Ren) := NameMap.target R
+abbrev asgF (R : Ren) := NameMap.asgF R
+abbrev stmtF (R : Ren) := NameMap.stmtF R
+abbrev loopF (R : Ren) := NameMap.loopF R
+abbrev bindF (R : Ren) := NameMap.bindF R
+abbrev fnF (R : Ren) := NameMap.fnF R
+abbrev frame (R : Ren) := NameMap.frame R
+abbrev ctl (R : Ren) := NameMap.ctl R
+abbrev stores (R : Ren) := NameMap.stores R
+abbrev susp (R : Ren) := NameMap.susp R
+abbrev gen (R : Ren) := NameMap.gen R
+abbrev reaction (R : Ren) := NameMap.reaction R
+abbrev pstate (R : Ren) := NameMap.pstate R
+abbrev code (R : Ren) := NameMap.code R
+abbrev kind (R : Ren) := NameMap.kind R
+abbrev obj (R : Ren) := NameMap.obj R
+abbrev hobj (R : Ren) := NameMap.hobj R
+abbrev arg (R : Ren) := NameMap.arg R
+abbrev ret (R : Ren) := NameMap.ret R
+abbrev event (R : Ren) := NameMap.event R
+abbrev job (R : Ren) := NameMap.job R
+abbrev write (R : Ren) := NameMap.write R
+abbrev cellParts (R : Ren) := NameMap.cellParts R
 end Ren
 
 /-! ## Related states and servers -/

@@ -1,11 +1,13 @@
 import host.ts.RenameNative
-namespace Host.Ts.Ren
+namespace Host.Ts.NameMap
 open Host.Mlx.Ffi
-variable (R : Host.Ts.Ren)
+variable {mode : NumMode} (R : NameMap mode)
 
 def dim : Dim → Dim
   | .lit i => .lit i
-  | .sym n => .sym (R.num n)
+  | .sym n => match mode with
+    | .refs => .sym (R.num n)
+    | .concrete _ => dimOf (R.num n)
 
 def cfg (c : Cfg) : Cfg :=
   ⟨c.outs.map (fun (s, d) => (s.map R.dim, d)), c.grid.map R.num, c.group.map R.num,
@@ -62,8 +64,21 @@ def nativePending (p : Pending) : Pending :=
   ⟨R.handle p.id, R.a p.outBuf, p.outOff, R.handle p.outSlot, R.handle p.cls,
     p.ins.map R.node, p.tracers.map R.node, p.res.map (List.map R.node)⟩
 
-theorem dim_num (d : Dim) : (R.dim d).num = R.num d.num := by cases d <;> rfl
+end Host.Ts.NameMap
 
+attribute [reducible] Host.Ts.NameMap.dim Host.Ts.NameMap.cfg Host.Ts.NameMap.prim
+  Host.Ts.NameMap.nativeTrace Host.Ts.NameMap.nativeClo Host.Ts.NameMap.nativeObj Host.Ts.NameMap.nativePending
+
+namespace Host.Ts.Ren
+open Host.Mlx.Ffi
+abbrev dim (R : Ren) := NameMap.dim R
+abbrev cfg (R : Ren) := NameMap.cfg R
+abbrev prim (R : Ren) := NameMap.prim R
+abbrev nativeTrace (R : Ren) := NameMap.nativeTrace R
+abbrev nativeClo (R : Ren) := NameMap.nativeClo R
+abbrev nativeObj (R : Ren) := NameMap.nativeObj R
+abbrev nativePending (R : Ren) := NameMap.nativePending R
+theorem dim_num (R : Ren) (d : Dim) : (R.dim d).num = R.num d.num := by cases d <;> rfl
 end Host.Ts.Ren
 
 namespace Host.Mlx.Ffi

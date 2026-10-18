@@ -13,6 +13,15 @@ theorem TableExtends.refl (C : CSrv) : TableExtends C C := fun _ _ h => h
 theorem TableExtends.append (C : CSrv) (xs : List F64) : TableExtends C ⟨C.tab ++ xs⟩ :=
   fun i x h => nth?_append_keep xs C.tab i x h
 
+theorem TableExtends.trans {A B C : CSrv} (hab : TableExtends A B) (hbc : TableExtends B C) :
+    TableExtends A C := fun i x h => hbc i x (hab i x h)
+
+theorem TableExtends.val {C D : CSrv} (h : TableExtends C D) {a : NumV} {x : F64}
+    (ha : C.val a = some x) : D.val a = some x := by
+  cases a with
+  | lit y => exact ha
+  | ref i => exact h i x ha
+
 theorem requestC_bin (C : CSrv) (op : NBin) (a b : NumV) (x y : F64)
     (ha : C.val a = some x) (hb : C.val b = some y) :
     interpC (.bin op a b (fun i => .pure (NumV.ref i))) C =

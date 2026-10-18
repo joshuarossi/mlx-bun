@@ -65,7 +65,7 @@ theorem step_typeof_renamed (F : Ffi) {FR : Ren → F.S → F.S → Prop} {R : R
     interpS (step F s).run S = some (t, S) ∧
     interpS (step F s').run S' = some (t', S') ∧ Renamed FR R tb tb' t t' := by
   dsimp only
-  have hcs : s'.ctl = .ret (R.val v) := by rw [h.ctl, hc]; rfl
+  have hcs : s'.ctl = .ret (R.val v) := by rw [h.ctl, hc]
   have hfs : s'.stack = .e .typeof :: fs.map R.frame := by rw [h.stack, hf]; rfl
   have hsupp : AddrSupported s.next (fun Q => fs.map Q.frame) := by
     intro Q P ha hn
@@ -105,7 +105,7 @@ theorem step_numNeg_ref_renamed (F : Ffi) {FR : Ren → F.S → F.S → Prop} {R
     interpS (step F s').run S' = some (t', T') ∧
     Renamed FR R tb tb' t t' ∧ SrvR R θ T T' := by
   dsimp only
-  have hcs : s'.ctl = .ret (.num (.ref (R.n i))) := by rw [h.ctl, hc]; rfl
+  have hcs : s'.ctl = .ret (.num (.ref (R.n i))) := by rw [h.ctl, hc]
   have hfs : s'.stack = .e (.unary .neg) :: fs.map R.frame := by rw [h.stack, hf]; rfl
   have hsupp : AddrSupported s.next (fun Q => fs.map Q.frame) := by
     intro Q P ha hn
@@ -114,12 +114,12 @@ theorem step_numNeg_ref_renamed (F : Ffi) {FR : Ren → F.S → F.S → Prop} {R
     exact (List.cons.inj ht).2
   have hctl : AddrSupported s.next (fun Q => Q.ctl (.ret (.num (.ref S.tab.length)))) := by
     intro Q P _ hn
-    simp only [Ren.ctl, Ren.val, Ren.num, hn.1]
+    simp only [Ren.ctl, Ren.val, Ren.num, NameMap.ctl, NameMap.val, NameMap.num, hn.1]
   have hn : R.n S.tab.length = S'.tab.length := by simpa using hs.fresh 0
   refine ⟨step_numNeg_ref F s i fs hc hf S e he,
     step_numNeg_ref F s' (R.n i) (fs.map R.frame) hcs hfs S' (e.subst θ) (hs.val he), ?_,
     hs.push (.un .neg e)⟩
   have ht := h.control (.ret (.num (.ref S.tab.length))) fs hctl hsupp
-  simpa only [Ren.ctl, Ren.val, Ren.num, hn] using ht
+  simpa only [Ren.ctl, Ren.val, Ren.num, NameMap.ctl, NameMap.val, NameMap.num, hn] using ht
 
 end Host.Ts

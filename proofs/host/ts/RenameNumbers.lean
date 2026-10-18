@@ -20,7 +20,7 @@ theorem request_bin_renamed {R : Ren} {θ : Nat → SymE} {S S' T : SSrv}
       refine ⟨{ S' with tab := S'.tab ++ [.bin op (x.subst θ) (y.subst θ)] }, ?_, h.push (.bin op x y)⟩
       have hn : R.n S.tab.length = S'.tab.length := by simpa using h.fresh 0
       rw [interpS_bin, h.val hx, h.val hy]
-      simp only [interpS_pure, Ren.num, hn]
+      simp only [interpS_pure, Ren.num, NameMap.num, hn]
 
 theorem request_un_renamed {R : Ren} {θ : Nat → SymE} {S S' T : SSrv}
     (h : SrvR R θ S S') (op : NUn) (a : NumV) {v : NumV}
@@ -35,7 +35,7 @@ theorem request_un_renamed {R : Ren} {θ : Nat → SymE} {S S' T : SSrv}
     refine ⟨{ S' with tab := S'.tab ++ [.un op (x.subst θ)] }, ?_, h.push (.un op x)⟩
     have hn : R.n S.tab.length = S'.tab.length := by simpa using h.fresh 0
     rw [interpS_un, h.val hx]
-    simp only [interpS_pure, Ren.num, hn]
+    simp only [interpS_pure, Ren.num, NameMap.num, hn]
 
 theorem request_test_renamed {R : Ren} {θ : Nat → SymE} {S S' T : SSrv}
     (h : SrvR R θ S S') (op : NTest) (a b : NumV) {v : Bool}
