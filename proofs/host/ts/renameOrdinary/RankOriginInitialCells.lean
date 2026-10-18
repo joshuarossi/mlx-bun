@@ -40,10 +40,12 @@ structure Seeds (notes : RetainedNotes) : Prop where
   firstEntry : notes.runtime.cells.cells Preparation32.address = some (.obj RetainedShapeBatch.initialObject32)
   secondEntry : notes.runtime.cells.cells Preparation34.address = some (.obj RetainedShapeBatch.initialObject34)
   streamEntry : notes.runtime.cells.cells Parameter45.address = some (.handle 2)
+  firstHandle : notes.privates.owners 2978923 = some ⟨4852,chars!"handle",.handle 25732⟩
+  secondHandle : notes.privates.owners 3126165 = some ⟨4852,chars!"handle",.handle 29363⟩
 
 theorem initial_seeds (control : Annotated.Tree) (stack : List Annotated.Tree) :
     Seeds (InitialRetained.notes control stack) :=
-  ⟨export_entry,namespace_entry,first_entry,second_entry,stream_entry⟩
+  ⟨export_entry,namespace_entry,first_entry,second_entry,stream_entry,PrivateSeed.first_entry,PrivateSeed.second_entry⟩
 
 theorem entry_cell (initialControl : Annotated.Tree) (initialStack : List Annotated.Tree)
     (control : Annotated.Tree) (fnRole thisRole : Annotated.Value) (saved : Annotated.Tree)
@@ -68,6 +70,7 @@ theorem entry_seeds (initialControl : Annotated.Tree) (initialStack : List Annot
     (same _ (by decide +kernel) (by decide +kernel)).trans namespace_entry,
     (same _ (by decide +kernel) (by decide +kernel)).trans first_entry,
     (same _ (by decide +kernel) (by decide +kernel)).trans second_entry,
-    (same _ (by decide +kernel) (by decide +kernel)).trans stream_entry⟩
+    (same _ (by decide +kernel) (by decide +kernel)).trans stream_entry,
+    PrivateSeed.first_entry,PrivateSeed.second_entry⟩
 
 end Host.Load.Run.Full.Ordinary.RankOrigin.InitialCells

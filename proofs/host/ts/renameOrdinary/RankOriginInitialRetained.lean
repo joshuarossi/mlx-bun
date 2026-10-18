@@ -4,6 +4,7 @@ import host.ts.renameOrdinary.TypedCaptureInitialization
 import host.ts.renameOrdinary.DriverParameters
 import host.ts.RenameStructuralCellSeed
 import host.mlx.NativeIdentitySeed
+import host.ts.renameOrdinary.RankOriginPrivateSeed
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -15,7 +16,7 @@ noncomputable def cells : Notes := (structuralCells live input).write Parameter4
 noncomputable def captures : NativeCaptureNotes := literalCaptures live input
 def constructorMetadata : NativeCaptureNote := literalNativeNote (.buf .typedCtor) [natV 4,natV 21]
 noncomputable def notes (control : Annotated.Tree) (stack : List Annotated.Tree) : RetainedNotes :=
-  ⟨⟨control,stack,cells⟩,PrivateNotes.empty,captures,ArrayNotes.empty,PublicNotes.empty,BufferNotes.empty⟩
+  ⟨⟨control,stack,cells⟩,PrivateSeed.notes,captures,ArrayNotes.empty,PublicNotes.empty,BufferNotes.empty⟩
 
 theorem source_default_gpu : input.heap.get Parameter45.address = some (.cell (some (.big (Int.ofNat 2)))) := by host_kernel_rfl
 theorem source_stream_object : input.ffi.mlx.objs.get 2 = some .stream := by host_kernel_rfl
@@ -71,7 +72,7 @@ theorem initial_inventory (ρ : Nat → F64) (C : CSrv)
   obtain ⟨stack,sourceStack,targetStack⟩ := ForestR.annotations (frameList_forest h.stack)
   have cellInventory := cell_inventory ρ C table
   refine ⟨control,stack,⟨cellInventory.keyLive,⟨sourceControl,sourceStack,cellInventory.source⟩,
-    ⟨targetControl,targetStack,cellInventory.target⟩⟩,PrivateInventory.empty,
+    ⟨targetControl,targetStack,cellInventory.target⟩⟩,PrivateSeed.inventory ρ ρ C C,
     capture_inventory ρ C,ArrayInventory.empty,PublicInventory.empty,BufferInventory.empty⟩
 
 end Host.Load.Run.Full.Ordinary.RankOrigin.InitialRetained
