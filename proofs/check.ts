@@ -3477,6 +3477,8 @@ const proofFiles = [
   "host/mlx/FfiCache.lean",
   "host/mlx/OwnedMetadata.lean",
   "host/ts/RenameParametricState.lean",
+  "host/load/CachedInputs.lean",
+  "host/ts/tests/stream/PTrieMemo.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
