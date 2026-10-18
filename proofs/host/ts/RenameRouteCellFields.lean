@@ -24,4 +24,22 @@ theorem step_bind_init_cell_fields (F : Ffi) (NR : NumV → NumV → Prop)
   dsimp only at heq
   rw [← heq]
   simp only [St.setCell,St.ret,PTrie.get_set_u64 _ _ _ hb,ite_true]
+
+/-- A fixed value established in the current mapped cell is retained by the
+real identifier read. The target environment lookup is derived from StateR. -/
+theorem step_variable_cell_fields (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (name : Name) (env : Env) (a : Nat) (v : Val)
+    (hc₀ : s₀.ctl = .ev (.id name) env) (lookup : lookupEnv name env = some a)
+    (cell : s.heap.get (R.a a) = some (.cell (some v)))
+    (run : interpC (step F s).run C = some (result,D)) :
+    result.ctl = .ret v ∧ result.heap = s.heap := by
+  have hc := (h.control_view hc₀).ev_view
+  have he : lookupEnv name (R.env env) = some (R.a a) := by rw [lookupEnv_map,lookup]; rfl
+  rw [step_variable_eq F s name (R.env env) (R.a a) v hc he cell] at run
+  have heq := congrArg Prod.fst (Option.some.inj run)
+  dsimp only at heq
+  exact ⟨(congrArg St.ctl heq).symm,(congrArg St.heap heq).symm⟩
 end Host.Ts.Owned.Parametric
