@@ -1,4 +1,4 @@
-import host.ts.RenameRetainedInventory
+import host.ts.RenameRetainedAllocation
 import host.ts.RenameRuntimeArguments
 import host.ts.RenameParametricArrayBuffer
 
@@ -49,19 +49,7 @@ theorem RetainedInventory.toArrayBuffer_step (F : Ffi) (FR : Ren → F.S → F.S
     control read kind offset size offsetRole countRole protoLive protoFixed sourceBound targetBound
   let object₀ := externalBuffer region (origin+off) count
   let object' := externalBuffer (R.region region) (origin+off) count
-  have cells := inventory.runtime.cellInventory.alloc h.heap object₀ object' (.obj s₀.next) (.obj s.next) sourceBound targetBound
-  have fresh : R.a s₀.next = s.next := by simpa only [Nat.add_zero] using h.heap.fresh 0
-  have targetRole : (Value.obj s₀.next).Holds ν C R (.obj s.next) := by
-    simpa only [fresh] using Value.Holds.obj (ν := ν) (C := C) (R := R) s₀.next
-  have runtime : RuntimeInventory {notes.runtime with control := returnNote (.obj s₀.next)} ν₀ ν C₀ C R
-      (LiveAfter live s₀.next) ((s₀.alloc object₀).2.ret (.obj s₀.next)) ((s.alloc object').2.ret (.obj s.next)) :=
-    ⟨cells.keyLive,⟨returnNote_holds (.obj s₀.next),inventory.runtime.source.stack,cells.source⟩,
-      ⟨returnNote_holds targetRole,inventory.runtime.target.stack,cells.target⟩⟩
-  have heap := inventory.heapInventory.alloc h.heap object₀ object' (.obj s₀.next) (.obj s.next) sourceBound targetBound
-  exact ⟨sourceRun,targetRun,post,⟨runtime,heap.privates,heap.captures,
-      inventory.arrays.alloc h.heap object₀ object' (.obj s₀.next) (.obj s.next) sourceBound targetBound,
-      inventory.publicFields.alloc h.heap object₀ object' (.obj s₀.next) (.obj s.next) sourceBound targetBound,
-      inventory.buffers.alloc h.heap object₀ object' (.obj s₀.next) (.obj s.next) sourceBound targetBound⟩,
+  exact ⟨sourceRun,targetRun,post,inventory.allocate_return h.heap object₀ object' sourceBound targetBound,
     fun a old => alloc_ret_heap_below s₀ object₀ (.obj s₀.next) sourceBound a old,
     fun a old => alloc_ret_heap_below s object' (.obj s.next) targetBound a old,rfl,rfl,rfl,rfl⟩
 
