@@ -16,7 +16,7 @@ theorem slot_binding_other : SlotBinding300.sourceAddress ≠ 3126700 := by deci
 /-- The eleven real steps after constructing the null slot initialize its
 binding, evaluate ptr(slot), and return its mapped JS pointer. The slot's
 existing backing buffer is framed through the entire path. -/
-theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+theorem slot_pointer_transport_heap (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
     (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
     (h : StateR NR FR R live framed before after old old' SlotDeclaration299.input s)
@@ -24,10 +24,7 @@ theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt �
     ∃ result, runC P.F 11 s C = some (result,C) ∧
       StateR NR FR R live framed before after old old' Pointer309.output result ∧
       result.ctl = .ret (.ptr (.js (R.a 3126700)) 0) ∧
-      result.heap.get (R.a 3126700) = s.heap.get (R.a 3126700) := by
-  have viewLive : live 3126701 := by have hl := h.controlLive; rw [slot_entry_control] at hl; exact hl.1
-  obtain ⟨_,_,_,bufferLive⟩ := h.heap.read_typedBuffer 3126701 3126700 0 1 Pointer309.viewObject .u64
-    viewLive slot_view_at_entry Pointer309.source_view_kind
+      (∀ a, live a → a ≠ SlotBinding300.sourceAddress → result.heap.get (R.a a) = s.heap.get (R.a a)) := by
   obtain ⟨s300,hr299,h300⟩ := SlotDeclaration299.transport NR FR R C₀ C live framed before after old old' s h
   have bound300 : s300.next ≤ 2^64 := by rw [h.target_next_eq h300 (by host_kernel_rfl)]; exact bound
   obtain ⟨s301,hr300,h301⟩ := SlotBinding300.transport NR FR R C₀ C live framed before after old old' s300 h300 bound300
@@ -51,12 +48,9 @@ theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt �
     change treeSupport live (Encode.ctl SlotBinding300.input.ctl) at hl
     rw [SlotBinding300.source_control] at hl
     exact env_lookup_live SlotBinding300.sourceName SlotBinding300.sourceEnv SlotBinding300.sourceAddress hl.2.2.1 SlotBinding300.source_lookup
-  have mappedOther : R.a 3126700 ≠ R.a SlotBinding300.sourceAddress := by
-    intro he
-    exact slot_binding_other (h.heap.inj SlotBinding300.sourceAddress 3126700 cellLive bufferLive he.symm)
   have hh301 := step_bind_init_heap_other P.F NR FR R live framed before after old old' SlotBinding300.input s300 s301 C C h300
     SlotBinding300.sourceName SlotBinding300.sourceValue SlotBinding300.sourceEnv SlotBinding300.sourceKind SlotBinding300.sourceAddress
-    SlotBinding300.source_control SlotBinding300.source_lookup bound300 hr300 (R.a 3126700) mappedOther
+    SlotBinding300.source_control SlotBinding300.source_lookup bound300 hr300
   have hh302 := step_declaration_next_heap P.F NR FR R live framed before after old old' SlotDone301.input s301 s302 C C h301
     SlotDone301.sourceValue SlotDone301.sourceKind SlotDone301.sourceRest SlotDone301.sourceEnv SlotDone301.sourceTail
     SlotDone301.source_control SlotDone301.source_frame hr301
@@ -74,12 +68,16 @@ theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt �
     SlotArgument308.sourceValue SlotArgument308.sourceKind SlotArgument308.sourceFunction SlotArgument308.sourceThis
     SlotArgument308.sourceAcc SlotArgument308.sourceRest SlotArgument308.sourceEnv SlotArgument308.sourceTail
     SlotArgument308.source_control SlotArgument308.source_frame (by decide) hr308
-  have framedBuffer : result.heap.get (R.a 3126700) = s.heap.get (R.a 3126700) := by
+  have framedBuffer : ∀ a, live a → a ≠ SlotBinding300.sourceAddress → result.heap.get (R.a a) = s.heap.get (R.a a) := by
+    intro a ha other
+    have mappedOther : R.a a ≠ R.a SlotBinding300.sourceAddress := by
+      intro he
+      exact other (h.heap.inj a SlotBinding300.sourceAddress ha cellLive he)
     rw [heap310,hh309]
-    change s307.heap.get (R.a 3126700) = _
+    change s307.heap.get (R.a a) = _
     rw [hh307]
-    change s305.heap.get (R.a 3126700) = _
-    rw [hh305,hh304,hh303,hh302,hh301,hh300]
+    change s305.heap.get (R.a a) = _
+    rw [hh305,hh304,hh303,hh302,hh301 (R.a a) mappedOther,hh300]
   refine ⟨result,?_,h310,hc310,framedBuffer⟩
   apply runC_cons P.F 10 s s300 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) hr299
   apply runC_cons P.F 9 s300 s301 result C C C (h300.control.isHalt_eq.trans (by host_kernel_rfl)) hr300
@@ -93,4 +91,18 @@ theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt �
   apply runC_cons P.F 1 s308 s309 result C C C (h308.control.isHalt_eq.trans (by host_kernel_rfl)) hr308
   apply runC_cons P.F 0 s309 result result C C C (h309.control.isHalt_eq.trans (by host_kernel_rfl)) hr309
   rfl
+theorem slot_pointer_transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+    (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR NR FR R live framed before after old old' SlotDeclaration299.input s)
+    (bound : s.next ≤ 2^64) :
+    ∃ result, runC P.F 11 s C = some (result,C) ∧
+      StateR NR FR R live framed before after old old' Pointer309.output result ∧
+      result.ctl = .ret (.ptr (.js (R.a 3126700)) 0) ∧
+      result.heap.get (R.a 3126700) = s.heap.get (R.a 3126700) := by
+  obtain ⟨result,run,hr,hc,frame⟩ := slot_pointer_transport_heap NR FR R C₀ C live framed before after old old' s h bound
+  have viewLive : live 3126701 := by have hl := h.controlLive; rw [slot_entry_control] at hl; exact hl.1
+  obtain ⟨_,_,_,bufferLive⟩ := h.heap.read_typedBuffer 3126701 3126700 0 1 Pointer309.viewObject .u64
+    viewLive slot_view_at_entry Pointer309.source_view_kind
+  exact ⟨result,run,hr,hc,frame _ bufferLive (Ne.symm slot_binding_other)⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat

@@ -39,7 +39,7 @@ open Host.Mlx.Ffi.Annotated
 
 /-- The four original steps from mlx_array_new to the typed output slot derive
 its fixed null annotation; no slot contents at a future native cut are assumed. -/
-theorem initialize_null_slot (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem initialize_null_slot_heap (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (nodes : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
     (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
     (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
@@ -56,7 +56,8 @@ theorem initialize_null_slot (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
       StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
         R (LiveAfter (LiveAfter (LiveAfter live Array296.input.next) Typed298.input.next) (Typed298.input.next+1))
         framed before after old old' Typed298.output result ∧
-      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) := by
+      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) ∧
+      (∀ a, live a → result.heap.get (R.a a) = s.heap.get (R.a a)) := by
   let NR := NumberRoles ν₀ ν C₀ C
   let fr := VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host
   have ctorLive := constructor_live NR fr R live framed before after old old' s h
@@ -86,13 +87,45 @@ theorem initialize_null_slot (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     rw [he]; exact proto
   have next298 : s298.next = s.next+1 := h.target_next_add h298 1 (by host_kernel_rfl)
   have hb298 : s298.next+1 < 2^64 := by rw [next298]; omega
-  obtain ⟨result,hr298,h299,slot⟩ := Typed298.transport NR fr R ν C₀ C (LiveAfter live Array296.input.next) framed before after old old' s298 h298
+  obtain ⟨result,hr298,h299,slot,typedFrame⟩ := Typed298.transport_heap NR fr R ν C₀ C (LiveAfter live Array296.input.next) framed before after old old' s298 h298
     contents298 code298 proto298 (Or.inl bufferProtoLive) bufferProtoFixed (Or.inl typedProtoLive) typedProtoFixed
     h298.native.2.handleZero hb298
-  refine ⟨result,?_,h299,slot⟩
+  have oldFrame : ∀ a, live a → result.heap.get (R.a a) = s.heap.get (R.a a) := by
+    intro a ha
+    have hb := h296.heap.targetBound a ha
+    have next296' : s296.next = s.next := next296
+    have targetOld : R.a a < s298.next := by rw [next298]; rw [next296'] at hb; omega
+    calc
+      result.heap.get (R.a a) = s298.heap.get (R.a a) := typedFrame _ targetOld
+      _ = s297.heap.get (R.a a) := congrArg (fun heap => heap.get (R.a a)) heap298
+      _ = s296.heap.get (R.a a) := frame297 _ hb
+      _ = s.heap.get (R.a a) := congrArg (fun heap => heap.get (R.a a)) heap296
+  refine ⟨result,?_,h299,slot,oldFrame⟩
   apply runC_cons P.F 3 s s296 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) hr295
   apply runC_cons P.F 2 s296 s297 result C C C (h296.control.isHalt_eq.trans (by host_kernel_rfl)) hr296
   apply runC_cons P.F 1 s297 s298 result C C C (h297.control.isHalt_eq.trans (by host_kernel_rfl)) hr297
   apply runC_cons P.F 0 s298 result result C C C (h298.control.isHalt_eq.trans (by host_kernel_rfl)) hr298
   rfl
+theorem initialize_null_slot (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (nodes : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+      R live framed before after old old' ArrayCall.input s)
+    (signatureFrame : ¬ framed 4253)
+    (code : (Annotated.Value.literal (.lit (F64.ofNat 9))).Holds ν C R (nativeDataArgument s (R.a 95) 0))
+    (proto : (Annotated.Value.literal (.lit (F64.ofNat 26))).Holds ν C R (nativeDataArgument s (R.a 95) 1))
+    (arrayProtoLive : live aArrayProto) (arrayProtoFixed : R.a aArrayProto = aArrayProto)
+    (bufferProtoLive : live aArrayBufferProto) (bufferProtoFixed : R.a aArrayBufferProto = aArrayBufferProto)
+    (typedProtoLive : live 26) (typedProtoFixed : R.a 26 = 26)
+    (bound : s.next+3 ≤ 2^64) :
+    ∃ result, runC P.F 4 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+        R (LiveAfter (LiveAfter (LiveAfter live Array296.input.next) Typed298.input.next) (Typed298.input.next+1))
+        framed before after old old' Typed298.output result ∧
+      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) := by
+  obtain ⟨result,run,hr,slot,_⟩ := initialize_null_slot_heap ν₀ ν C₀ C R nodes boundary objects H N tail host
+    live framed before after old old' s h signatureFrame code proto arrayProtoLive arrayProtoFixed
+    bufferProtoLive bufferProtoFixed typedProtoLive typedProtoFixed bound
+  exact ⟨result,run,hr,slot⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat

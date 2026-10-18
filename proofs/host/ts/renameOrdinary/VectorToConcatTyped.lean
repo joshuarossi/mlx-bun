@@ -1,4 +1,4 @@
-import host.ts.RenameParametricTypedArray
+import host.ts.RenameTypedArrayEffects
 import host.mlx.OrdinaryVectorStates
 import host.mlx.NativeSymbol
 import host.ts.RenameRouteDriver
@@ -27,7 +27,7 @@ theorem source_post : (newTyped P.F input .u64 26 (cellParts .u64 (.big 0) 8 0) 
 
 /-- The real BigUint64Array constructor turns its already-computed null
 integer element into the null output slot and retains the full host relation. -/
-theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+theorem transport_heap (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
     (R : Ren) (ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
     (h : StateR NR FR R live framed before after old old' input s)
@@ -39,7 +39,8 @@ theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Pr
     (handleZero : R.handle 0 = 0) (bound : s.next+1 < 2^64) :
     ∃ result, interpC (step P.F s).run C = some (result,C) ∧
       StateR NR FR R (LiveAfter (LiveAfter live input.next) (input.next+1)) framed before after old old' output result ∧
-      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) := by
+      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) ∧
+      (∀ a, a < s.next → result.heap.get a = s.heap.get a) := by
   obtain ⟨_,hr,hs⟩ := step_construct_u64_zero_from_source P.F NR FR R C₀ C ν live framed before after old old' input s h
     95 3126699 26 constructorObject arrayObject newTarget (F64.ofNat 9) (F64.ofNat 26)
     source_control source_constructor source_kind source_array source_values (by decide +kernel) (by decide +kernel)
@@ -54,5 +55,21 @@ theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Pr
       (objectKindAt ((newTyped P.F s .u64 26 (cellParts .u64 (.big 0) 8 0) 1).2.ret (.obj (s.next+1))) (R.a 3126700)) := by
     simp only [objectKindAt,hn,buffer]
     exact role
-  exact ⟨_,hr,hs',actual⟩
+  exact ⟨_,hr,hs',actual,fun a ha => newTyped_heap_below P.F s .u64 26 (cellParts .u64 (.big 0) 8 0) 1 a ha bound⟩
+theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
+    (R : Ren) (ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR NR FR R live framed before after old old' input s)
+    (contents : ArrayData s (R.a 3126699) [.big 0])
+    (code : (Annotated.Value.literal (.lit (F64.ofNat 9))).Holds ν C R (nativeDataArgument s (R.a 95) 0))
+    (proto : (Annotated.Value.literal (.lit (F64.ofNat 26))).Holds ν C R (nativeDataArgument s (R.a 95) 1))
+    (bufferProtoLive : live aArrayBufferProto) (bufferProtoFixed : R.a aArrayBufferProto = aArrayBufferProto)
+    (protoLive : live 26) (protoFixed : R.a 26 = 26)
+    (handleZero : R.handle 0 = 0) (bound : s.next+1 < 2^64) :
+    ∃ result, interpC (step P.F s).run C = some (result,C) ∧
+      StateR NR FR R (LiveAfter (LiveAfter live input.next) (input.next+1)) framed before after old old' output result ∧
+      (slotKindRole 0).Holds ν C R (objectKindAt result (R.a 3126700)) := by
+  obtain ⟨result,run,hr,slot,_⟩ := transport_heap NR FR R ν C₀ C live framed before after old old' s h contents code proto
+    bufferProtoLive bufferProtoFixed protoLive protoFixed handleZero bound
+  exact ⟨result,run,hr,slot⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat.Typed298
