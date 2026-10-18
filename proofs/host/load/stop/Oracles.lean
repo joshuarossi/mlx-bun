@@ -1,5 +1,7 @@
 import host.load.stop.OneResult
 import host.load.stop.OneEosResult
+import host.load.stop.TwoResult
+import host.load.stop.TwoEosResult
 import host.load.stop.FinalEosResult
 import host.load.stop.first_eos.Result
 import host.load.stop.EosResult
@@ -202,5 +204,60 @@ theorem FirstEos.concrete_run (ρ : Nat → F64) (C : CSrv)
     ∃ C', runC Host.Load.ffi 1495111 P.s2973 C = some (FirstEos.s150, C') ∧ Inst ρ FirstEos.S150 C' :=
   run_sim Host.Load.ffi ρ 1495111 P.s2973 FirstEos.s150 FirstEos.srv FirstEos.S150 C
     ⟨table, FirstEos.good_eos ρ budget eos⟩ FirstEos.execution
+
+theorem TwoToken.oracle_iff (ρ : Nat → F64) :
+    Good ρ TwoToken.srv.oracle ↔
+      F64.test .eq (.fin false 248044 0) (ρ 1) = false ∧
+      F64.test .lt (.fin false 2 0) (ρ 0) = false ∧
+      F64.test .eq (.fin false 248044 0) (ρ 2) = false := by
+  change Good ρ TwoToken.O ↔ _
+  simp only [Good, TwoToken.O, List.forall_mem_cons, SymE.eval]
+  constructor
+  · rintro ⟨a, b, c, _⟩
+    exact ⟨a, b, c⟩
+  · rintro ⟨a, b, c⟩
+    exact ⟨a, b, c, by intro q hq; cases hq⟩
+
+theorem TwoToken.good_budget (ρ : Nat → F64) (budget : ρ 0 = .fin false 2 0)
+    (first : F64.test .eq (.fin false 248044 0) (ρ 1) = false)
+    (last : F64.test .eq (.fin false 248044 0) (ρ 2) = false) :
+    Good ρ TwoToken.srv.oracle :=
+  (TwoToken.oracle_iff ρ).2 ⟨first, by rw [budget]; decide, last⟩
+
+theorem TwoToken.concrete_run (ρ : Nat → F64) (C : CSrv)
+    (table : C.tab = TwoToken.srv.tab.map (SymE.eval ρ))
+    (budget : ρ 0 = .fin false 2 0)
+    (first : F64.test .eq (.fin false 248044 0) (ρ 1) = false)
+    (last : F64.test .eq (.fin false 248044 0) (ρ 2) = false) :
+    ∃ C', runC Host.Load.ffi 1430 P.s3123 C = some (TwoToken.s3, C') ∧ Inst ρ TwoToken.S3 C' :=
+  run_sim Host.Load.ffi ρ 1430 P.s3123 TwoToken.s3 TwoToken.srv TwoToken.S3 C
+    ⟨table, TwoToken.good_budget ρ budget first last⟩ TwoToken.execution
+
+theorem TwoEos.oracle_iff (ρ : Nat → F64) :
+    Good ρ TwoEos.srv.oracle ↔
+      F64.test .eq (.fin false 248044 0) (ρ 1) = false ∧
+      F64.test .lt (.fin false 2 0) (ρ 0) = false ∧
+      F64.test .eq (.fin false 248044 0) (ρ 2) = true := by
+  change Good ρ TwoEos.O ↔ _
+  simp only [Good, TwoEos.O, List.forall_mem_cons, SymE.eval]
+  constructor
+  · rintro ⟨a, b, c, _⟩
+    exact ⟨a, b, c⟩
+  · rintro ⟨a, b, c⟩
+    exact ⟨a, b, c, by intro q hq; cases hq⟩
+
+theorem TwoEos.good_eos (ρ : Nat → F64) (budget : ρ 0 = .fin false 2 0)
+    (first : F64.test .eq (.fin false 248044 0) (ρ 1) = false)
+    (eos : ρ 2 = .fin false 248044 0) : Good ρ TwoEos.srv.oracle :=
+  (TwoEos.oracle_iff ρ).2 ⟨first, by rw [budget]; decide, by rw [eos]; decide⟩
+
+theorem TwoEos.concrete_run (ρ : Nat → F64) (C : CSrv)
+    (table : C.tab = TwoEos.srv.tab.map (SymE.eval ρ))
+    (budget : ρ 0 = .fin false 2 0)
+    (first : F64.test .eq (.fin false 248044 0) (ρ 1) = false)
+    (eos : ρ 2 = .fin false 248044 0) :
+    ∃ C', runC Host.Load.ffi 1254 P.s3123 C = some (TwoEos.s3, C') ∧ Inst ρ TwoEos.S3 C' :=
+  run_sim Host.Load.ffi ρ 1254 P.s3123 TwoEos.s3 TwoEos.srv TwoEos.S3 C
+    ⟨table, TwoEos.good_eos ρ budget first eos⟩ TwoEos.execution
 
 end Host.Load.Run.Full

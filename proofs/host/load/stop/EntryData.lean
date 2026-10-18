@@ -36,6 +36,8 @@ kernel_rfl final_oracle : P.S0.oracle = finalAnswers ++ P.S3573.oracle
 kernel_rfl one_table : OneToken.srv.tab = P.S2973.tab
 kernel_rfl one_eos_table : OneEos.srv.tab = P.S2973.tab
 kernel_rfl first_eos_table : FirstEos.srv.tab = P.S2973.tab
+kernel_rfl two_table : TwoToken.srv.tab = P.S3123.tab
+kernel_rfl two_eos_table : TwoEos.srv.tab = P.S3123.tab
 kernel_rfl ordinary_eos_table : EosToken.srv.tab = P.S3272.tab
 kernel_rfl final_eos_table : FinalEos.srv.tab = P.S3573.tab
 

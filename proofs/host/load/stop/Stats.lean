@@ -25,6 +25,14 @@ theorem OneEos.cache_tokens :
     Stop.cacheTokens OneEos.s6 OneEos.S6 (entryEnv P.s0) =
       some [.lit (F64.ofNat 9707)] := by rfl
 
+theorem TwoToken.cache_tokens :
+    Stop.cacheTokens TwoToken.s3 TwoToken.S3 (entryEnv P.s0) =
+      some [.lit (F64.ofNat 9707), .var 1] := by rfl
+
+theorem TwoEos.cache_tokens :
+    Stop.cacheTokens TwoEos.s3 TwoEos.S3 (entryEnv P.s0) =
+      some [.lit (F64.ofNat 9707), .var 1] := by rfl
+
 theorem EosToken.cache_tokens :
     Stop.cacheTokens EosToken.s2 EosToken.S2 (entryEnv P.s0) =
       some [.lit (F64.ofNat 9707), .var 1, .var 2] := by rfl
@@ -43,6 +51,10 @@ theorem BudgetEnd.cache_tokens :
 
 kernel_rfl OneEos.finish_reason :
     Stop.statsField OneEos.s6 (entryEnv P.s0) chars!"finishReason" =
+      some (.str chars!"stop")
+
+kernel_rfl TwoEos.finish_reason :
+    Stop.statsField TwoEos.s3 (entryEnv P.s0) chars!"finishReason" =
       some (.str chars!"stop")
 
 kernel_rfl EosToken.finish_reason :
