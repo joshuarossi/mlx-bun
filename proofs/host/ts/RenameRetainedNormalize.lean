@@ -24,11 +24,7 @@ private def flatState (expression : Lean.Expr) : MetaM Lean.Expr := do
   unless reduced.getAppFn.isConstOf ``St.mk do return expression
   projectData reduced
 
-/-- Flatten current symbolic state/inventory records in a local proof context.
-Both replacements use the ordinary definitional-equality check. The returned
-goal retains the same proof-variable IDs and all original logical premises. -/
-def normalizeRetainedLocals (goal : MVarId) (stateProof inventoryProof : Lean.Expr) : MetaM MVarId :=
-  goal.withContext do
+private def retainedLocalTypes (stateProof inventoryProof : Lean.Expr) : MetaM (Lean.Expr × Lean.Expr) := do
     unless stateProof.isFVar && inventoryProof.isFVar do throwError "expected local current invariant proofs"
     let stateType := (← instantiateMVars (← inferType stateProof)).consumeMData.headBeta.consumeMData
     let inventoryType := (← instantiateMVars (← inferType inventoryProof)).consumeMData.headBeta.consumeMData
@@ -44,8 +40,27 @@ def normalizeRetainedLocals (goal : MVarId) (stateProof inventoryProof : Lean.Ex
       if e == source then some sourceFlat else if e == target then some targetFlat else none
     let newStateType ← projectData (replaceStates stateType)
     let newInventoryType ← projectData (replaceStates inventoryType)
+    return (newStateType,newInventoryType)
+
+/-- Replace current symbolic state/inventory local types using ordinary
+definitional-equality checks. Dependent local IDs may change; callers retaining
+proof expressions should use normalizeRetainedAliases instead. -/
+def normalizeRetainedLocals (goal : MVarId) (stateProof inventoryProof : Lean.Expr) : MetaM MVarId :=
+  goal.withContext do
+    let (newStateType,newInventoryType) ← retainedLocalTypes stateProof inventoryProof
     let goal ← goal.changeLocalDecl stateProof.fvarId! newStateType
     goal.changeLocalDecl inventoryProof.fvarId! newInventoryType
+
+/-- Add checked aliases at normalized types without replacing existing locals.
+All old proof-variable IDs remain live; the returned expressions select the
+new aliases for subsequent metadata-directed rule composition. -/
+def normalizeRetainedAliases (goal : MVarId) (stateProof inventoryProof : Lean.Expr) : MetaM (MVarId × Lean.Expr × Lean.Expr) :=
+  goal.withContext do
+    let (stateType,inventoryType) ← retainedLocalTypes stateProof inventoryProof
+    let (stateId,goal) ← goal.note (← mkFreshUserName `normalizedState) stateProof (some stateType)
+    goal.withContext do
+      let (inventoryId,goal) ← goal.note (← mkFreshUserName `normalizedInventory) inventoryProof (some inventoryType)
+      return (goal,mkFVar stateId,mkFVar inventoryId)
 
 /-- Normalize the current symbolic record updates before composing a rule. -/
 elab "host_normalize_retained " state:ident ", " inventory:ident : tactic => do
