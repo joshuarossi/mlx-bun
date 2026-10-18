@@ -42,4 +42,12 @@ host_retained_kvAppend Host.Load.ffi,
   {Source48904.input with ctl := .call (.obj 4714) (.obj 4817) [.ptr (.js 3131509) 0,.big 25850,.big 29491,.ptr (.js 3131480) 0,.big 3,.ptr (.js 3131482) 0,.big 4,.ptr (.js 3131497) 0,.big 4,.big 2]}
   using P.RestStream.micro0.micro489.S4 to Source48904.output using P.RestStream.micro0.micro489.S5 as RejectRank
 
+/-- error: (kernel) declaration type mismatch -/
+#guard_msgs (error, substring := true) in
+run_cmd do
+  let saved ← Lean.getEnv
+  try
+    Host.Ts.Owned.Parametric.Driver.emit "host_retained_kvAppend Host.Load.ffi, Source48904.input using P.RestStream.micro0.micro489.S4 to Source48904.input using P.RestStream.micro0.micro489.S4 as RejectWrongEndpoint"
+  finally Lean.setEnv saved
+
 end Host.Load.Run.Full.Ordinary.KvAppend
