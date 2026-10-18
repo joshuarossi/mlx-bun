@@ -294,4 +294,16 @@ theorem step_binary_left_stack_from_source (F : Ffi) (NR : NumV → NumV → Pro
   rw [hf]
   exact (congrArg (fun t => t.stack.tail) hr).symm
 
+theorem step_array_spread_entry_stack (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C₀ C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (e : Expr) (rest : List Elem) (env : Env)
+    (hc₀ : s₀.ctl = .ev (.array (.spread e::rest)) env)
+    (run : interpC (step F s).run C = some (result,D)) : result.stack.tail = s.stack := by
+  obtain ⟨_,hr,_⟩ := step_array_spread_entry_from_source F NR FR R C₀ C live framed before after old old' s₀ s h
+    e rest env hc₀
+  have hh := congrArg (fun t => t.stack.tail) (congrArg Prod.fst (Option.some.inj (run.symm.trans hr)))
+  exact hh
+
 end Host.Ts.Owned.Parametric
