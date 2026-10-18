@@ -4892,6 +4892,20 @@ const proofFiles = [
   "host/ts/renameOrdinary/WeightBufferPath.lean",
   "host/ts/renameOrdinary/WeightBufferPrefix.lean",
   "host/ts/renameOrdinary/WeightBufferSteps.lean",
+  "host/ts/RenameArrayInventory.lean",
+  "host/mlx/NativeProducerSupport.lean",
+  "host/mlx/NativeReplaySupport.lean",
+  "host/mlx/NativeSupportRebase.lean",
+  "host/ts/RenameRuntimeArraySpread.lean",
+  "host/ts/RenameRuntimeBinding.lean",
+  "host/ts/renameOrdinary/WeightSpreadCase.lean",
+  "host/ts/renameOrdinary/WeightTypedCase.lean",
+  "host/mlx/NativeCreationSupport.lean",
+  "host/mlx/NativeKernelSupport.lean",
+  "host/ts/RenameArrayAllocation.lean",
+  "host/ts/RenameRuntimeArrayLiteral.lean",
+  "host/ts/RenameRuntimeArrayEmpty.lean",
+  "host/ts/RenameRuntimeArraySchedule.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
