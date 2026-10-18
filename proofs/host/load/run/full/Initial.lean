@@ -29,4 +29,27 @@ theorem handles_initial (value : TensorValues) :
 
 theorem cache_offsets_zero : parameterChoice.cache.map Cache.offset = List.replicate 64 0 := by rfl
 
+open Inference.Models.Qwen
+
+def handlesFor : List DecodeStage.Stage → List Handles
+  | [] => []
+  | .delta _ :: ss => .delta none none :: handlesFor ss
+  | .attention _ :: ss => .attention none none :: handlesFor ss
+
+theorem initial_holds (stages : List DecodeStage.Stage) :
+    ChainHolds stages (handlesFor stages) (InitialState.caches stages) := by
+  induction stages with
+  | nil => trivial
+  | cons s ss ih =>
+    cases s <;> exact ⟨⟨rfl, rfl⟩, ih⟩
+
+theorem graph_initial_handles (g : Qwen38TrellisM1Max.Graph) : handlesFor g.stages = initialHandles := by rfl
+
+/-- The actual empty source-cache handles realize the mathematical initial
+cache of the complete 64-stage pipeline. No initial cache relation is assumed. -/
+theorem initialChainHolds (p : TokenInference.Pipeline) :
+    ChainHolds p.graph.stages initialHandles (InitialState.caches p.graph.stages) := by
+  rw [← graph_initial_handles p.graph]
+  exact initial_holds p.graph.stages
+
 end Host.Load.Run.Full
