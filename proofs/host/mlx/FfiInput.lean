@@ -1,4 +1,5 @@
 import host.mlx.FfiEval
+import host.mlx.TokenBuffer
 
 namespace Host.Mlx.FfiEval
 open Inference.Contracts.Mlx Host.Mlx.GlueStep Host.Mlx.GlueLayers
@@ -6,6 +7,15 @@ open Inference.Contracts.Mlx Host.Mlx.GlueStep Host.Mlx.GlueLayers
 /-- The actual single-token prompt buffer uses int32, whereas native argmax
 feedback uses uint32. Both carry the same nonnegative vocabulary index. -/
 def promptIds (token : Nat) : Value := ⟨.int32, [1, 1], fun _ => token⟩
+
+theorem prompt_buffer (token : Nat) (h : token < 2 ^ 31) : TokenBuffer (promptIds token) token :=
+  ⟨.inr rfl, rfl, rfl, h⟩
+
+/-- Bytes of the actual driver's one-token Int32Array prompt. -/
+theorem prompt_data : dataValue [235, 37, 0, 0] [1, 1] 7 = some (promptIds 9707) := by
+  change some (⟨.int32, [1, 1], fun i => leWord [235, 37, 0, 0] 4 (i % 1)⟩ : Value) = _
+  simp only [Nat.mod_one]
+  rfl
 
 theorem prompt_take (table : Value) (token : Nat) (h : token < 2^31) :
     takeAxis0 table (promptIds token) = takeAxis0 table (tokenIds token) := by
@@ -28,32 +38,31 @@ section
 variable {C : M1Max.Contract} (M : MlxContract C) (K : KernelContract C) {κ : Type} [DecidableEq κ] (env : Env κ)
 
 theorem embedG_spec_ids (key : InKey → κ) (words scales biases : Value) (token : Nat) (ids : Value)
-    (htake : ∀ table, takeAxis0 table ids = takeAxis0 table (tokenIds token))
+    (hembed : bufferEmbed M words scales biases ids = embedTrace M words scales biases token)
     (hk : env.inputs (key .tokenIds) = some ids) (hw : env.inputs (key .embedWords) = some words)
     (hs : env.inputs (key .embedScales) = some scales) (hb : env.inputs (key .embedBiases) = some biases)
     (g : List (RNode Int κ)) (fs : List (Nat × Value)) (hfs : AllEv M K env g fs)
     (x : Value) (hx : embedTrace M words scales biases token = some x) :
     Spec (embedG (δ := Int) key) g (fun o g' => AllEv M K env g' ((o, x) :: fs)) := by
-  unfold embedTrace at hx
-  peel hx => rows e1
-  peel hx => sc e2
-  peel hx => bi e3
-  have e1' := (htake words).trans e1
-  have e2' := (htake scales).trans e2
-  have e3' := (htake biases).trans e3
+  have actual := hembed.trans hx
+  unfold bufferEmbed at actual
+  peel actual => rows e1
+  peel actual => sc e2
+  peel actual => bi e3
   unfold embedG
   refine spec_inp M K env hfs hk fun g1 i1 h1 => ?_
   refine spec_inp M K env h1 hw fun g2 i2 h2 => ?_
   refine spec_inp M K env h2 hs fun g3 i3 h3 => ?_
   refine spec_inp M K env h3 hb fun g4 i4 h4 => ?_
-  refine spec_step M K env h4 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e1') fun g5 i5 h5 => ?_
-  refine spec_step M K env h5 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e2') fun g6 i6 h6 => ?_
-  refine spec_step M K env h6 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e3') fun g7 i7 h7 => ?_
-  exact spec_last M K env h7 (by simp [isExp]) (by simp) ((pe_dequant M K env _ _ _).trans hx)
+  refine spec_step M K env h4 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e1) fun g5 i5 h5 => ?_
+  refine spec_step M K env h5 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e2) fun g6 i6 h6 => ?_
+  refine spec_step M K env h6 (by simp [isExp]) (by simp) ((pe_take M K env _ _).trans e3) fun g7 i7 h7 => ?_
+  exact spec_last M K env h7 (by simp [isExp]) (by simp) ((pe_dequant M K env _ _ _).trans actual)
     fun g' i h => h.mono M K env (by sub_tac)
 
 theorem stepG_spec_ids (n : Nat) (w : PipelineWeights) (token : Nat) (ids : Value)
-    (htake : ∀ table, takeAxis0 table ids = takeAxis0 table (tokenIds token)) (hs : List Handles) (key : InKey → κ)
+    (hembed : bufferEmbed M w.embedWords w.embedScales w.embedBiases ids =
+      embedTrace M w.embedWords w.embedScales w.embedBiases token) (hs : List Handles) (key : InKey → κ)
     (hkey : ∀ k, env.inputs (key k) = stepInputsWithIds w ids hs k) (hfn : w.finalNorm.shape = [5120])
     (hsh : ShapesOk (stageWeights w) hs) (t : Nat) (hs' : List Handles)
     (h : stepTrace M K w n token hs = some (t, hs')) :
@@ -87,7 +96,7 @@ theorem stepG_spec_ids (n : Nat) (w : PipelineWeights) (token : Nat) (ids : Valu
   subst hrr
   have hfs0 : AllEv M K env ([] : List (RNode Int κ)) [] := fun _ hp => by simp at hp
   unfold stepG
-  refine spec_seq (embedG_spec_ids M K env key w.embedWords w.embedScales w.embedBiases token ids htake (hkey _) (hkey _)
+  refine spec_seq (embedG_spec_ids M K env key w.embedWords w.embedScales w.embedBiases token ids hembed (hkey _) (hkey _)
     (hkey _) (hkey _) [] [] hfs0 x e1) fun i1 g1 h1 => ?_
   have hst : StagesIn env key 0 (stageWeights w) hs := fun i k => by
     rw [hkey]; simp only [stepInputsWithIds, stepInputs, Nat.zero_add]
@@ -122,7 +131,8 @@ def stepEnvWithIds (weights : List Char → List Char → Option Value) (w : Pip
     (hs : List Handles) : Env InKey := ⟨weights, stepInputsWithIds w ids hs⟩
 
 theorem stepGraph_eval_ids (weights : List Char → List Char → Option Value) (w : PipelineWeights) (n token : Nat) (ids : Value)
-    (htake : ∀ table, takeAxis0 table ids = takeAxis0 table (tokenIds token))
+    (hembed : bufferEmbed M w.embedWords w.embedScales w.embedBiases ids =
+      embedTrace M w.embedWords w.embedScales w.embedBiases token)
     (hs hs' : List Handles) (t : Nat) (hfn : w.finalNorm.shape = [5120]) (hsh : ShapesOk (stageWeights w) hs)
     (h : stepTrace M K w n token hs = some (t, hs')) :
     (∃ r, (stepGraphOf w hs n).2.1 < (stepGraphOf w hs n).1.length ∧
@@ -131,7 +141,7 @@ theorem stepGraph_eval_ids (weights : List Char → List Char → Option Value) 
     (stepGraphOf w hs n).2.2.length = hs'.length ∧ (∀ h ∈ hs', (handleVals h).isSome) ∧
     ∀ q ∈ cacheFacts (stepGraphOf w hs n).2.2 hs', q.1 < (stepGraphOf w hs n).1.length ∧
       evalR M K (stepEnvWithIds weights w ids hs) (listGraph (stepGraphOf w hs n).1) q.1 = some q.2 := by
-  have := stepG_spec_ids M K (stepEnvWithIds weights w ids hs) n w token ids htake hs id (fun _ => rfl) hfn hsh t hs' h
+  have := stepG_spec_ids M K (stepEnvWithIds weights w ids hs) n w token ids hembed hs id (fun _ => rfl) hfn hsh t hs' h
   obtain ⟨⟨r, hr, ht⟩, hl, hsome, hc⟩ := this
   exact ⟨⟨r, hr.1, hr.2, ht⟩, hl, hsome, fun q hq => hc q hq⟩
 
@@ -140,7 +150,8 @@ carries the step's expected graph at `cert` (a decidable check) and the
 carriers of its inputs hold the inputs, the FFI token node evaluates to the
 trace's token and its cache nodes to the trace's caches. -/
 theorem ffi_step_ids (weights : List Char → List Char → Option Value) (w : PipelineWeights) (n token : Nat) (ids : Value)
-    (htake : ∀ table, takeAxis0 table ids = takeAxis0 table (tokenIds token))
+    (hembed : bufferEmbed M w.embedWords w.embedScales w.embedBiases ids =
+      embedTrace M w.embedWords w.embedScales w.embedBiases token)
     (hs hs' : List Handles) (t : Nat) (hfn : w.finalNorm.shape = [5120]) (hsh : ShapesOk (stageWeights w) hs)
     (h : stepTrace M K w n token hs = some (t, hs')) (G : Nat → Option (RNode Int InKey)) (cert : List Nat)
     (hm : Matches G (stepGraphOf w hs n).1 cert = true)
@@ -149,7 +160,7 @@ theorem ffi_step_ids (weights : List Char → List Char → Option Value) (w : P
       itemUint32 r = some t) ∧
     ∀ q ∈ cacheFacts (stepGraphOf w hs n).2.2 hs',
       evalR M K (stepEnvWithIds weights w ids hs) G (certAt cert q.1) = some q.2 := by
-  obtain ⟨⟨r, hlt, hr, ht⟩, _, _, hc⟩ := stepGraph_eval_ids M K weights w n token ids htake hs hs' t hfn hsh h
+  obtain ⟨⟨r, hlt, hr, ht⟩, _, _, hc⟩ := stepGraph_eval_ids M K weights w n token ids hembed hs hs' t hfn hsh h
   refine ⟨⟨r, ?_, ht⟩, fun q hq => ?_⟩
   · rw [matches_eval M K _ G _ cert hm hin _ hlt]; exact hr
   · obtain ⟨hql, hqv⟩ := hc q hq
@@ -159,8 +170,7 @@ theorem ffi_step_ids (weights : List Char → List Char → Option Value) (w : P
 theorem ffi_context_step_ids (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineLoaded M K p w)
     (parameters : TokenSequenceRanges.Parameters p) (token : Fin 248320) (time : Nat) (supported : time + 1 ≤ 262144)
     (ids : Value)
-    (htake : ∀ table, takeAxis0 table ids = takeAxis0 table (tokenIds
-      ((GlueM1Max.context M K p w hl parameters).run token time (by omega)).token.val))
+    (hids : TokenBuffer ids ((GlueM1Max.context M K p w hl parameters).run token time (by omega)).token.val)
     (hs : List Handles)
     (hh : ChainHolds p.graph.stages hs ((GlueM1Max.context M K p w hl parameters).run token time (by omega)).cache)
     (weights : List Char → List Char → Option Value) (G : Nat → Option (RNode Int InKey)) (cert : List Nat)
@@ -176,7 +186,9 @@ theorem ffi_context_step_ids (p : TokenInference.Pipeline) (w : PipelineWeights)
           G (certAt cert q.1) = some q.2 := by
   obtain ⟨hs', e, h'⟩ := GlueM1Max.contextStep M K p w hl parameters token time supported hs hh
   have hsh := shapes_of_holds M K _ _ _ _ (stages_loaded M K p w hl) hh
-  obtain ⟨ht, hc⟩ := ffi_step_ids M K weights w time _ ids htake hs hs' _ hl.finalNorm.2.1 hsh e G cert hm hin
+  have hembed := bufferEmbed_eq M w.embedWords w.embedScales w.embedBiases ids _ hids
+    hl.embedding.words.1 hl.embedding.words.2.1 hl.embedding.scales.2.1 hl.embedding.biases.2.1
+  obtain ⟨ht, hc⟩ := ffi_step_ids M K weights w time _ ids hembed hs hs' _ hl.finalNorm.2.1 hsh e G cert hm hin
   exact ⟨hs', ht, h', hc⟩
 
 end
