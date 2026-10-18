@@ -51,6 +51,25 @@ theorem matchesRange_complete {κ : Type} [DecidableEq κ] (G : Nat → Option (
   rw [List.range_eq_range']
   exact h
 
+/-- Input leaves must use the actual load/cache/token projection's carriers.
+`Matches` intentionally handles operation structure; this separate finite check
+ties its free leaves to their source-state provenance. -/
+def inputCarriersMatch {κ : Type} (E : List (RNode Int κ)) (cert : List Nat)
+    (inputs : κ → Option Nat) : Bool :=
+  (List.range E.length).all fun k => match E[k]? with
+    | some e => match e.prim with
+      | .input key => decide (inputs key = some (certAt cert k))
+      | _ => true
+    | none => false
+
+theorem inputCarriersMatch_get {κ : Type} (E : List (RNode Int κ)) (cert : List Nat)
+    (inputs : κ → Option Nat) (h : inputCarriersMatch E cert inputs = true)
+    (k : Nat) (e : RNode Int κ) (key : κ) (he : E[k]? = some e) (hp : e.prim = .input key) :
+    inputs key = some (certAt cert k) := by
+  obtain ⟨hk, _⟩ := List.getElem?_eq_some_iff.mp he
+  have hh := List.all_eq_true.mp h k (List.mem_range.mpr hk)
+  simpa only [he, hp, decide_eq_true_eq] using hh
+
 theorem certify_matches (G : Nat → Option (RNode Int InKey))
     (E : List (RNode Int InKey)) (inputs : InKey → Option Nat) (upper : Nat)
     (cert : List Nat) (h : certify G E inputs upper = some cert) :
@@ -68,6 +87,17 @@ theorem certify_matches (G : Nat → Option (RNode Int InKey))
 section
 open Inference.Contracts.Mlx
 variable {C : M1Max.Contract} (M : MlxContract C) (K : KernelContract C)
+
+/-- Discharge `InputsHeld` from checked carrier provenance and the value of
+each actual projected input. The latter is supplied by load preprocessing,
+cache evolution and token-buffer decoding, not by graph matching alone. -/
+theorem inputsHeld_of_carriers (env : Env InKey) (G : Nat → Option (RNode Int InKey))
+    (E : List (RNode Int InKey)) (cert : List Nat) (inputs : InKey → Option Nat)
+    (h : inputCarriersMatch E cert inputs = true)
+    (values : ∀ key n, inputs key = some n → evalR M K env G n = env.inputs key) :
+    InputsHeld M K env G E cert := by
+  intro k e key he hp
+  exact values key _ (inputCarriersMatch_get E cert inputs h k e key he hp)
 
 /-- A successful certificate and independently established input values suffice
 to transfer every expected node's value to its actual FFI carrier. -/
@@ -98,6 +128,8 @@ theorem accepts_carried_graph : certify (actual [1, 1]) expected input 8 = some 
 theorem rejects_changed_shape : certify (actual [1, 2]) expected input 8 = none := by decide +kernel
 theorem rejects_missing_input : certify (actual [1, 1]) expected (fun _ => none) 8 = none := by decide +kernel
 theorem rejects_short_search : certify (actual [1, 1]) expected input 7 = none := by decide +kernel
+theorem input_carriers_bound : inputCarriersMatch expected [4, 7] input = true := by decide +kernel
+theorem rejects_wrong_input_carrier : inputCarriersMatch expected [5, 7] input = false := by decide +kernel
 
 end CertificateChecks
 end Host.Mlx.FfiEval

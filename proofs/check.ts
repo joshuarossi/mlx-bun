@@ -2395,6 +2395,7 @@ const proofFiles = [
   "host/ts/tests/stream/Sweep.lean",
   "host/ts/RenameBranch.lean",
   "host/ts/RenameIncrement.lean",
+  "host/ts/tests/stream/MemoEpoch.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
