@@ -139,6 +139,37 @@ theorem ndim_transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
   exact ⟨_,by simpa only [F,Host.Load.ffi,← source_ndim_post,ndimPost] using h₀,
     by simpa only [F,Host.Load.ffi] using ht,hr,rfl⟩
 
+theorem source_ndim_rank : len NdimCall.node.shape = 3 := by host_kernel_rfl
+
+/-- The original rank query returns ordinary bigint three and leaves both
+the host heap and allocation counter unchanged. -/
+theorem ndim_transport_heap_literal (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (nodes : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+      R live framed before after old old' NdimCall.input s)
+    (role : (Host.Ts.Owned.Annotated.Value.handle 1365).Holds ν C R (callArgument s.ctl 0))
+    (signatureFrame : ¬ framed 4263) (handleLive : H 1365) :
+    ∃ t, interpC (step F NdimCall.input).run C₀ = some (NdimCall.output,C₀) ∧
+      interpC (step F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+        R live framed before after old old' NdimCall.output t ∧
+      t.ffi = s.ffi ∧ t.heap = s.heap ∧ t.next = s.next ∧ t.ctl = .ret (.big 3) := by
+  have hk := NdimCall.source_kind
+  rw [NdimCall.source_caps] at hk
+  obtain ⟨h₀,ht,hr⟩ := step_ndim_from_source _ _ R C₀ C ν live framed before after old old' NdimCall.input s h
+    _ _ H N tail h.native.2 (fun _ _ _ p => p.base.shape) 4635 4263 1365 NdimCall.calleeObject
+    NdimCall.signatureObject NdimCall.returns (.obj 4817) NdimCall.node NdimCall.source_control NdimCall.source_callee
+    hk NdimCall.source_signature NdimCall.source_signature_kind signatureFrame handleLive NdimCall.source_node role
+  change StateR _ _ _ _ _ _ _ _ _ ndimPost _ at hr
+  rw [source_ndim_post] at hr
+  refine ⟨_,by simpa only [F,Host.Load.ffi,← source_ndim_post,ndimPost] using h₀,
+    by simpa only [F,Host.Load.ffi] using ht,hr,rfl,rfl,rfl,?_⟩
+  change Ctl.ret (.big (Int.ofNat (len NdimCall.node.shape))) = _
+  rw [source_ndim_rank]
+  rfl
+
 /-- Actual rest529 returns the shape region supplied by native ownership;
 all target native lookups follow from the entry graph invariant. -/
 theorem shape_transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
