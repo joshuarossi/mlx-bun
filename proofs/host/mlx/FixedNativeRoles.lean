@@ -11,18 +11,21 @@ inductive FixedArgument where
   | handle (handle : Nat)
   | integer (value : Int)
   | literal (value : F64)
+  | boolean (value : Bool)
 
 def FixedArgument.role : FixedArgument → Value
   | .pointer b off => .ptr (.js b) off
   | .handle h => .handle h
   | .integer i => .ordinaryBig i
   | .literal x => .literal (.lit x)
+  | .boolean b => .bool b
 
 def FixedArgument.value (R : Ren) : FixedArgument → Val
   | .pointer b off => .ptr (.js (R.a b)) off
   | .handle h => .big (Int.ofNat (R.handle h))
   | .integer i => .big i
   | .literal x => .num (.lit x)
+  | .boolean b => .bool b
 
 theorem FixedArgument.exact {ν : Nat → F64} {C : CSrv} {R : Ren} {r : FixedArgument} {v : Val}
     (h : r.role.Holds ν C R v) : v = r.value R := by
