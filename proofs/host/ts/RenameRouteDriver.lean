@@ -7,7 +7,7 @@ import Lean
 namespace Host.Ts.Owned.Parametric.Driver
 open Lean Elab Command Meta
 
-private def addData (name : Lean.Name) (value : Lean.Expr) (type? : Option Lean.Expr := none) : TermElabM Unit := do
+def addData (name : Lean.Name) (value : Lean.Expr) (type? : Option Lean.Expr := none) : TermElabM Unit := do
   addDecl (.defnDecl {
     name := name
     levelParams := []
@@ -16,13 +16,13 @@ private def addData (name : Lean.Name) (value : Lean.Expr) (type? : Option Lean.
     hints := if name.getString! = "F" then .abbrev else .regular 0
     safety := .safe })
 
-private def field (e : Lean.Expr) (constructor : Lean.Name) (arity index : Nat) : TermElabM Lean.Expr := do
+def field (e : Lean.Expr) (constructor : Lean.Name) (arity index : Nat) : TermElabM Lean.Expr := do
   let e ← whnf e
   unless e.isAppOfArity constructor arity do
     throwError "host_transport_step: unsupported source constructor {e.getAppFn.constName!.toString}"
   pure e.getAppArgs[index]!
 
-private def emit (source : String) : CommandElabM Unit := do
+def emit (source : String) : CommandElabM Unit := do
   let stx ← match Parser.runParserCategory (← getEnv) `command source with
     | .ok stx => pure stx
     | .error message => throwError "host_transport_step generated syntax: {message}"
