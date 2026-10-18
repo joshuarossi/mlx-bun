@@ -2,6 +2,7 @@ import host.ts.renameOrdinary.MlxConstructorSteps
 import host.ts.RenameConstructorAssignmentEffects
 import host.ts.RenameRouteCellFields
 import host.ts.RenameResourceFields
+import host.ts.RenameClassHeapEffects
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -18,7 +19,7 @@ theorem handle_receiver_identity : HandleStore390.sourceAddress = 3126703 := by 
 /-- Execute the real constructor parameter, body entry and private assignment.
 The exact incoming argument is stored into #handle; it is not recovered by
 choosing one of ValueR's bigint interpretations. -/
-theorem initialize_constructor_handle (NR : NumV → NumV → Prop)
+theorem initialize_constructor_handle_framed (NR : NumV → NumV → Prop)
     (FR : Ren → LSt → LSt → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
     (h : StateR NR FR R live framed before after old old' HandleParameter381.input s)
@@ -26,7 +27,9 @@ theorem initialize_constructor_handle (NR : NumV → NumV → Prop)
     (bound : s.next+(blockNames ConstructorBlock383.sourceBody).length ≤ 2^64) :
     ∃ result, runC P.F 10 s C = some (result,C) ∧
       StateR NR FR R (HandleLive live) framed before after old old' HandleStore390.output result ∧
-      PrivateData result (R.a 3126703) (R.a HandleStore390.sourceBrand) HandleStore390.sourceName argument := by
+      PrivateData result (R.a 3126703) (R.a HandleStore390.sourceBrand) HandleStore390.sourceName argument ∧
+      (∀ m, m < s.next → m ≠ R.a 3126703 → m ≠ R.a HandleBinding382.sourceAddress →
+        result.heap.get m = s.heap.get m) := by
   have bound0 : s.next ≤ 2^64 := by omega
   obtain ⟨s382,r381,h382⟩ := HandleParameter381.transport NR FR R C₀ C live framed before after old old' s h
   have arg382 := (step_parameter_argument_fields P.F NR FR R C C live framed before after old old' _ _ _ h
@@ -95,7 +98,30 @@ theorem initialize_constructor_handle (NR : NumV → NumV → Prop)
     HandleStore390.sourceTail HandleStore390.source_control ctl390 HandleStore390.source_frame HandleStore390.source_heap
     HandleStore390.source_kind HandleStore390.source_property HandleStore390.source_bound bound390 r390).2
   rw [handle_receiver_identity] at stored
-  refine ⟨result,?_,h391,stored⟩
+  have frame (m : Nat) (below : m < s.next) (notInstance : m ≠ R.a 3126703)
+      (notParameter : m ≠ R.a HandleBinding382.sourceAddress) : result.heap.get m = s.heap.get m := by
+    have heap382 := (step_parameter_argument_fields P.F NR FR R C C live framed before after old old' _ _ _ h
+      HandleParameter381.sourceValue HandleParameter381.sourceFunction HandleParameter381.sourceName
+      HandleParameter381.sourceParams HandleParameter381.sourceArgs HandleParameter381.sourceEnv HandleParameter381.sourceTail
+      HandleParameter381.source_control HandleParameter381.source_frame r381).2
+    have heap383 := step_bind_init_heap_other P.F NR FR R live framed before after old old' _ _ _ C C h382
+      HandleBinding382.sourceName HandleBinding382.sourceValue HandleBinding382.sourceEnv HandleBinding382.sourceKind
+      HandleBinding382.sourceAddress HandleBinding382.source_control HandleBinding382.source_lookup
+      (by rw [next382]; exact bound0) r382 m notParameter
+    have heap384m := step_parameter_body_heap P.F NR FR R C C live framed before after old old' _ _ _ h383
+      ConstructorBlock383.sourceValue ConstructorBlock383.sourceName ConstructorBlock383.sourceParams
+      ConstructorBlock383.sourceBody ConstructorBlock383.sourceArgs ConstructorBlock383.sourceEnv ConstructorBlock383.sourceTail
+      ConstructorBlock383.source_control ConstructorBlock383.source_frame ConstructorBlock383.source_hoist
+      m (by rw [next383]; exact below) bodyBound r383
+    have heap391m := step_private_store_heap_other P.F NR FR R C₀ C C (HandleLive live) framed before after old old' _ _ _ h390
+      HandleStore390.sourceAddress HandleStore390.sourceBrand HandleStore390.sourceName HandleStore390.sourceValue
+      HandleStore390.sourcePrior HandleStore390.sourceOld HandleStore390.sourceEnumerable HandleStore390.sourceObject
+      HandleStore390.sourceTail HandleStore390.source_control HandleStore390.source_frame HandleStore390.source_heap
+      HandleStore390.source_kind HandleStore390.source_property HandleStore390.source_bound bound390 r390 m
+      (by rw [handle_receiver_identity]; exact notInstance)
+    have beforeStore : s390.heap = s384.heap := heap389.trans (heap388.trans (heap387.trans (heap386.trans heap385)))
+    exact heap391m.trans ((congrArg (fun heap => heap.get m) beforeStore).trans (heap384m.trans (heap383.trans (congrArg (fun heap => heap.get m) heap382))))
+  refine ⟨result,?_,h391,stored,frame⟩
   apply runC_cons P.F 9 s s382 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) r381
   apply runC_cons P.F 8 s382 s383 result C C C (h382.control.isHalt_eq.trans (by host_kernel_rfl)) r382
   apply runC_cons P.F 7 s383 s384 result C C C (h383.control.isHalt_eq.trans (by host_kernel_rfl)) r383
@@ -107,4 +133,17 @@ theorem initialize_constructor_handle (NR : NumV → NumV → Prop)
   apply runC_cons P.F 1 s389 s390 result C C C (h389.control.isHalt_eq.trans (by host_kernel_rfl)) r389
   apply runC_cons P.F 0 s390 result result C C C (h390.control.isHalt_eq.trans (by host_kernel_rfl)) r390
   rfl
+
+theorem initialize_constructor_handle (NR : NumV → NumV → Prop)
+    (FR : Ren → LSt → LSt → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR NR FR R live framed before after old old' HandleParameter381.input s)
+    (argument : Val) (first : constructorParameterArgument s.stack = argument)
+    (bound : s.next+(blockNames ConstructorBlock383.sourceBody).length ≤ 2^64) :
+    ∃ result, runC P.F 10 s C = some (result,C) ∧
+      StateR NR FR R (HandleLive live) framed before after old old' HandleStore390.output result ∧
+      PrivateData result (R.a 3126703) (R.a HandleStore390.sourceBrand) HandleStore390.sourceName argument := by
+  obtain ⟨result,run,related,field,_⟩ := initialize_constructor_handle_framed NR FR R C₀ C live framed before after old old'
+    s h argument first bound
+  exact ⟨result,run,related,field⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat
