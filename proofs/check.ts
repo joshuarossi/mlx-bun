@@ -3804,6 +3804,35 @@ const proofFiles = [
   "host/ts/RenameParametricHoist.lean",
   "host/ts/RenameParametricParameters.lean",
   "host/ts/RenameParametricReturns.lean",
+  "host/load/run/full/micro/C84.lean",
+  "host/load/run/full/micro/C86.lean",
+  "host/load/run/full/micro/C87.lean",
+  "host/load/run/full/micro/C88.lean",
+  "host/mlx/ActualShapelessCall.lean",
+  "host/mlx/ActualShapelessFacts.lean",
+  "host/mlx/ActualShapelessPlan.lean",
+  "host/mlx/ActualShapelessYield.lean",
+  "host/mlx/ClosedGeometry.lean",
+  "host/mlx/LiteralReplay.lean",
+  "host/mlx/ReplaySource.lean",
+  "host/ts/RenameOffsetBlock.lean",
+  "host/ts/RenameParametricArguments.lean",
+  "host/ts/RenameParametricDeclarations.lean",
+  "host/ts/RenameParametricStatements.lean",
+  "host/ts/RenameParametricViews.lean",
+  "host/ts/renameOrdinary/CallCase.lean",
+  "host/ts/renameOrdinary/CallPrefix.lean",
+  "host/ts/renameOrdinary/Frames.lean",
+  "host/ts/renameOrdinary/HostCuts.lean",
+  "host/ts/renameOrdinary/micro/RestStreamStates.lean",
+  "host/ts/renameOrdinary/micro/streamed128/H0.lean",
+  "host/mlx/ActualReplayFrames.lean",
+  "host/mlx/ActualSamplerCall.lean",
+  "host/mlx/ActualSamplerPlan.lean",
+  "host/mlx/ActualSamplerYield.lean",
+  "host/mlx/ReplayFrame.lean",
+  "host/ts/RenameParametricCallStart.lean",
+  "host/ts/RenameParametricExpressionReturns.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -4066,7 +4095,7 @@ try {
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
       /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_sha256_step)\s/m.test(source);
+      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
@@ -4193,6 +4222,25 @@ run_elab do
   let lhs := mkApp (mkConst \`\`Host.Ts.sha256) (mkConst \`\`Host.Load.Tests.Sha.Abc.msg)
   addDecl (.thmDecl { name := \`wrongShaDigest, levelParams := [], type := ← mkEq lhs (toExpr ([0] : List Nat)), value := mkConst \`\`Host.Load.Tests.Sha.Abc.checked })
 `;
+    const wrongMicroGroupEndpoint = `import host.load.tests.Micro
+set_option Elab.async false
+namespace Host.Load.Tests.Micro
+open Lean Elab Command Meta Host.Ts
+run_elab do
+  let pre := \`Host.Load.Tests.Micro.BadGroup
+  let p := \`Host.Load.Tests.Micro.Grouped
+  let addData (n : Lean.Name) (type value : Lean.Expr) : TermElabM Unit :=
+    addDecl (.defnDecl { name := n, levelParams := [], type, value, hints := .regular 0, safety := .safe })
+  addData (pre ++ \`F) (mkConst \`\`Ffi) (mkConst (p ++ \`F))
+  let ks := Declaration.defnDecl { name := pre ++ \`ks, levelParams := [], type := mkApp (mkConst \`\`List [.zero]) (mkConst \`\`Nat), value := toExpr ([20,20,40] : List Nat), hints := .abbrev, safety := .safe }
+  addDecl ks
+  compileDecl ks
+  for j in [0:4] do
+    addData (pre ++ Name.mkSimple s!"s{j}") (mkApp (mkConst \`\`St) (mkConst \`\`LSt)) (mkConst (p ++ Name.mkSimple s!"s{if j==2 then 1 else j}"))
+    addData (pre ++ Name.mkSimple s!"S{j}") (mkConst \`\`SSrv) (mkConst (p ++ Name.mkSimple s!"S{j}"))
+host_micro_group BadGroup 0, 3, 7
+end Host.Load.Tests.Micro
+`;
     const wrongShaEndpoint = `import host.load.tests.Sha
 set_option Elab.async false
 open Lean Elab Command Meta in
@@ -4233,13 +4281,14 @@ run_elab do
       ["WrongReferenceScan", wrongReferenceScan, false],
       ["WrongShaDigest", wrongShaDigest, false],
       ["WrongShaEndpoint", wrongShaEndpoint, false],
+      ["WrongMicroGroupEndpoint", wrongMicroGroupEndpoint, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
-        name.includes("MicroEndpoint") || name === "MutatedFixedWorld" ? loadNative : undefined);
+        name.includes("MicroEndpoint") || name === "WrongMicroGroupEndpoint" || name === "MutatedFixedWorld" ? loadNative : undefined);
       if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
       if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
-          name === "WrongShaDigest" || name === "WrongShaEndpoint") &&
+          name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
       }
