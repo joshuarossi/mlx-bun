@@ -11,6 +11,13 @@ theorem numberServer_inst (ν : Nat → F64) (S : SSrv) (C : CSrv)
     (table : C.tab = S.tab.map (SymE.eval ν)) : Inst ν (numberServer S) C :=
   ⟨table,by intro query impossible; cases impossible⟩
 
+theorem pure_step_inst (F : Ffi) (ν : Nat → F64) (S₀ S₁ : SSrv) (C : CSrv) (s t : St F.S)
+    (inst : Inst ν S₀ C) (symbolic : interpS (step F s).run S₀ = some (t,S₁))
+    (concrete : interpC (step F s).run C = some (t,C)) : Inst ν S₁ C := by
+  obtain ⟨D,run,post⟩ := interp_sim ν (step F s).run S₀ C t S₁ inst symbolic
+  have same : C = D := congrArg Prod.snd (Option.some.inj (concrete.symm.trans run))
+  exact same ▸ post
+
 inductive NumericRole : Value → SymE → Prop where
   | number (e : SymE) : NumericRole (.num e) e
   | literal (e : SymE) : NumericRole (.literal e) e
@@ -107,5 +114,35 @@ theorem RuntimeInventory.arithmetic_cut (F : Ffi) (FR : Ren → F.S → F.S → 
   cases table
   rw [state] at related annotated
   exact ⟨_,expectedD,D,sourceRun,right,expectedInst,related,annotated,leftExt,rightExt⟩
+
+/-- The representation-sensitive variant keeps literal output notes when both
+operand notes require literal values. -/
+theorem RuntimeInventory.literal_arithmetic_cut (F : Ffi) (FR : Ren → F.S → F.S → Prop)
+    (notes : RuntimeNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s₀ t₀ s : St F.S)
+    (S₀ S₁ : SSrv) (sourceStep : interpS (step F s₀).run S₀ = some (t₀,S₁))
+    (inst : Inst ν₀ S₀ C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' s₀ s)
+    (inventory : RuntimeInventory notes ν₀ ν C₀ C R live s₀ s)
+    (op : ArithmeticKind) (a₀ b₀ : F64) (ea eb : SymE) (frames : List Frame) (tailNotes : List Tree)
+    (control : s₀.ctl = .ret (.num (.lit b₀)))
+    (stack : s₀.stack = .e (.binR op.jsOp (.num (.lit a₀)))::frames)
+    (controlNote : notes.control = returnNote (.literal eb))
+    (stackNote : notes.stack = binaryRightNote op.jsOp (.literal ea)::tailNotes) :
+    ∃ result, interpC (step F s₀).run C₀ = some (t₀,C₀) ∧
+      interpC (step F s).run C = some (result,C) ∧ Inst ν₀ S₁ C₀ ∧
+      Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' t₀ result ∧
+      RuntimeInventory (notes.binaryResult (.literal (.bin op.numOp ea eb)) tailNotes)
+        ν₀ ν C₀ C R live t₀ result := by
+  obtain ⟨expectedD,sourceRun,expectedInst⟩ := interp_sim ν₀ (step F s₀).run S₀ C₀ t₀ S₁ inst sourceStep
+  obtain ⟨a,b,targetFrames,left,right,related,annotated,_⟩ := inventory.literal_arithmetic_step F FR notes ν₀ ν C₀ C R
+    live framed before after old old' s₀ s h op a₀ b₀ ea eb frames tailNotes control stack controlNote stackNote
+  have both := Option.some.inj (left.symm.trans sourceRun)
+  have state := congrArg Prod.fst both
+  have table := congrArg Prod.snd both
+  dsimp only at state table
+  rw [state] at related annotated
+  rw [← table] at sourceRun expectedInst
+  exact ⟨_,sourceRun,right,expectedInst,related,annotated⟩
 
 end Host.Ts.Owned.Annotated

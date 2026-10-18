@@ -10,7 +10,7 @@ source step. The emitted transport consumes fixed operand notes and the
 instantiated source table; no target step or target numeric allocation is read. -/
 elab "host_runtime_arithmetic " f:term ", " s:term " using " initial:term " to " t:term " using " next:term " as " name:ident : command => do
   let pre := (← getCurrNamespace) ++ name.getId
-  liftTermElabM do
+  let literalOperands ← liftTermElabM do
     let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
     let stateTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) f)
     let s ← Term.elabTermEnsuringType s stateTy
@@ -43,6 +43,13 @@ elab "host_runtime_arithmetic " f:term ", " s:term " using " initial:term " to "
       let type? := if tag == "input" || tag == "output" then some (mkApp (mkConst ``St)
         (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
       addData (pre ++ Name.mkSimple tag) value type?
+    let left ← whnf left
+    let right ← whnf right
+    if left.isAppOfArity ``NumV.lit 1 && right.isAppOfArity ``NumV.lit 1 then
+      addData (pre ++ `sourceLeftLiteral) left.getAppArgs[0]!
+      addData (pre ++ `sourceRightLiteral) right.getAppArgs[0]!
+      pure true
+    else pure false
   let n := "_root_." ++ pre.toString
   let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"
   Parametric.Driver.emit (header ++ s!"theorem {n}.source_control : {n}.input.ctl = .ret (.num {n}.sourceRight) := by host_kernel_rfl")
@@ -67,5 +74,23 @@ elab "host_runtime_arithmetic " f:term ", " s:term " using " initial:term " to "
       inventory.arithmetic_cut {n}.F FR notes ν₀ ν C₀ C R live framed before after old old' {n}.input {n}.output s
         {n}.initialServer {n}.nextServer {n}.source_step inst h {n}.kind {n}.sourceLeft {n}.sourceRight ea eb leftRole rightRole
         leftNumeric rightNumeric {n}.sourceTail tailNotes {n}.source_control {n}.source_stack controlNote stackNote")
+  if literalOperands then
+    Parametric.Driver.emit (header ++ s!"theorem {n}.source_literal_control : {n}.input.ctl = .ret (.num (.lit {n}.sourceRightLiteral)) := by host_kernel_rfl")
+    Parametric.Driver.emit (header ++ s!"theorem {n}.source_literal_stack : {n}.input.stack = .e (.binR {n}.kind.jsOp (.num (.lit {n}.sourceLeftLiteral)))::{n}.sourceTail := by host_kernel_rfl")
+    Parametric.Driver.emit (header ++ s!"theorem {n}.runtime_literal_transport (notes : RuntimeNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+      (FR : Ren → {n}.F.S → {n}.F.S → Prop) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+      (s : St {n}.F.S) (inst : Inst ν₀ {n}.initialServer C₀)
+      (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.input s)
+      (inventory : RuntimeInventory notes ν₀ ν C₀ C R live {n}.input s)
+      (ea eb : SymE) (tailNotes : List Annotated.Tree)
+      (controlNote : notes.control = returnNote (.literal eb))
+      (stackNote : notes.stack = binaryRightNote {n}.kind.jsOp (.literal ea)::tailNotes) :
+      ∃ result, interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) ∧
+        interpC (step {n}.F s).run C = some (result,C) ∧ Inst ν₀ {n}.nextServer C₀ ∧
+        Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.output result ∧
+        RuntimeInventory (notes.binaryResult (.literal (.bin {n}.kind.numOp ea eb)) tailNotes) ν₀ ν C₀ C R live {n}.output result :=
+      inventory.literal_arithmetic_cut {n}.F FR notes ν₀ ν C₀ C R live framed before after old old' {n}.input {n}.output s
+        {n}.initialServer {n}.nextServer {n}.source_step inst h {n}.kind {n}.sourceLeftLiteral {n}.sourceRightLiteral
+        ea eb {n}.sourceTail tailNotes {n}.source_literal_control {n}.source_literal_stack controlNote stackNote")
 
 end Host.Ts.Owned.Annotated.Driver
