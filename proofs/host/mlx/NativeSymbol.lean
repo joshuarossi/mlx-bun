@@ -118,6 +118,13 @@ theorem ffiDone_status0_buffer (F : Ffi) (s : St F.S) (native : F.S)
 def finishBig {S : Type} (s : St S) (native : S) (name : Name) (args : List Arg) (value : Int) : St S :=
   ((s.setFfi native).setTrace (⟨name,args,.big value⟩::s.trace)).ret (.big value)
 
+def finishStatus {S : Type} (s : St S) (native : S) (name : Name) (args : List Arg) : St S :=
+  ((s.setFfi native).setTrace (⟨name,args,Host.Mlx.Ffi.status0⟩::s.trace)).ret (.num zeroN)
+
+theorem ffiDone_status0_empty (F : Ffi) (s : St F.S) (native : F.S) (name : Name) (args : List Arg) :
+    ffiDone F s name args (some (native,Host.Mlx.Ffi.status0,[])) =
+      M.pure (finishStatus s native name args) := rfl
+
 theorem ffiDone_big_empty (F : Ffi) (s : St F.S) (native : F.S)
     (name : Name) (args : List Arg) (value : Int) :
     ffiDone F s name args (some (native,.big value,[])) = M.pure (finishBig s native name args value) := rfl
@@ -144,6 +151,18 @@ theorem StateR.finishBig {S : Type} {NR : NumV → NumV → Prop}
       (Host.Ts.finishBig s native name args value) (Host.Ts.finishBig s' native' name args' value') :=
   ((h.setFfi native native' hn).traceCons _ _ he).go
     (.node _ (.cons (.value hv) .nil)) ⟨True.intro,True.intro⟩
+
+theorem StateR.finishStatus {S : Type} {NR : NumV → NumV → Prop}
+    {FR FR' : Ren → S → S → Prop} {R : Ren} {live framed : Nat → Prop}
+    {before after : List Val} {old old' : List Event} {s s' : St S}
+    (h : StateR NR FR R live framed before after old old' s s')
+    (native native' : S) (hn : FR' R native native') (name : Name) (args args' : List Arg)
+    (he : TreeR NR R (event ⟨name,args,Host.Mlx.Ffi.status0⟩) (event ⟨name,args',Host.Mlx.Ffi.status0⟩))
+    (hz : NR zeroN zeroN) :
+    StateR NR FR' R live framed before after old old'
+      (Host.Ts.finishStatus s native name args) (Host.Ts.finishStatus s' native' name args') :=
+  ((h.setFfi native native' hn).traceCons _ _ he).go
+    (.node _ (.cons (.value (.num hz)) .nil)) ⟨True.intro,True.intro⟩
 
 theorem event_ptr_handles_roles {NR : NumV → NumV → Prop} {R : Ren}
     (name : Name) (b off h1 h2 : Nat) (bs bs' : List Byte)
