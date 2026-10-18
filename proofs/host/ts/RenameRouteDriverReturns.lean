@@ -66,9 +66,9 @@ elab "host_transport_return " f:term ", " s:term " to " t:term " as " name:ident
   emit (header ++ s!"theorem {n}.transport (NR : NumV → NumV → Prop)
       (FR : Ren → {n}.F.S → {n}.F.S → Prop) (R : Ren) (C₀ C : CSrv)
       (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
-      (s : St {n}.F.S) (h : StateR NR FR R live framed before after old old' {n}.input s) :
+      (s : St {n}.F.S) (h : Parametric.StateR NR FR R live framed before after old old' {n}.input s) :
       ∃ result, interpC (step {n}.F s).run C = some (result,C) ∧
-        StateR NR FR R live framed before after old old' {n}.output result := by
+        Parametric.StateR NR FR R live framed before after old old' {n}.output result := by
     obtain ⟨v,fs,_,hr,hpost,_⟩ := {rule} {n}.F NR FR R C₀ C live framed before after
       old old' {n}.input s h {n}.sourceValue {n}.sourceAction {n}.sourceEnv {n}.sourceTail
       {n}.source_control {n}.source_frame

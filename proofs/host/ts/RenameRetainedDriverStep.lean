@@ -33,6 +33,8 @@ import host.ts.RenameRuntimeDriverNullishAssignment
 import host.ts.RenameRuntimeDriverUndefinedVariable
 import host.ts.RenameRetainedUsingFrontend
 import host.ts.RenameRuntimeDriverNullishVariable
+import host.ts.RenameRuntimeDriverReverseComparison
+import host.ts.RenameRetainedCleanupFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -112,15 +114,16 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if expression.isAppOfArity ``Expr.assign 3 then
         let pattern ← whnf expression.getAppArgs[1]!
         let op ← whnf expression.getAppArgs[0]!
-        if pattern.isAppOfArity ``Pat.id 1 && op.isAppOfArity ``AsgOp.log 1 &&
-            (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish then
-          let address ← whnf (← mkAppM ``lookupEnv #[pattern.getAppArgs[0]!,control.getAppArgs[1]!])
-          if address.isAppOfArity ``Option.some 2 then
-            let cell ← whnf (← mkAppM ``St.cell? #[s,address.getAppArgs[1]!])
-            if cell.isAppOfArity ``Option.some 2 then
-              let value ← whnf cell.getAppArgs[1]!
-              if value.isAppOfArity ``Option.some 2 && (← whnf value.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
-                return "host_retained_nullish_variable"
+        if pattern.isAppOfArity ``Pat.id 1 && op.isAppOfArity ``AsgOp.log 1 then
+          if (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish then
+            let address ← whnf (← mkAppM ``lookupEnv #[pattern.getAppArgs[0]!,control.getAppArgs[1]!])
+            if address.isAppOfArity ``Option.some 2 then
+              let cell ← whnf (← mkAppM ``St.cell? #[s,address.getAppArgs[1]!])
+              if cell.isAppOfArity ``Option.some 2 then
+                let value ← whnf cell.getAppArgs[1]!
+                if value.isAppOfArity ``Option.some 2 then
+                  if (← whnf value.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+                    return "host_retained_nullish_variable"
         if pattern.isAppOfArity ``Pat.expr 1 then
           if (← whnf pattern.getAppArgs[0]!).isAppOfArity ``Expr.priv 3 then
             return "host_retained_private_assign"
@@ -141,6 +144,11 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       pure "host_retained_closure"
     else if control.isAppOfArity ``Ctl.abr 1 then
       let abrupt ← whnf control.getAppArgs[0]!
+      let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
+      if frame.isAppOfArity ``Frame.s 1 then
+        let stmt ← whnf frame.getAppArgs[0]!
+        if stmt.isAppOfArity ``StmtF.scope 1 then
+          if (← whnf stmt.getAppArgs[0]!).isAppOfArity ``List.cons 3 then return "host_retained_cleanup"
       if abrupt.isAppOfArity ``Abrupt.ret 1 then
         if (← whnf abrupt.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
           let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
@@ -170,10 +178,11 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         pure "host_retained_update"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.old 4 then
         let op ← whnf inner.getAppArgs[0]!
-        if op.isAppOfArity ``AsgOp.log 1 && (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish &&
-            (← whnf control.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
-          pure "host_retained_nullish_object"
-        else pure "host_retained_pure_step"
+        if op.isAppOfArity ``AsgOp.log 1 then
+          if (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish then
+            if (← whnf control.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
+              return "host_retained_nullish_object"
+        pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.privObj 5 then
         pure "host_retained_private_assign"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.put 3 then
@@ -189,6 +198,11 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else pure "host_retained_branch"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.finally_ 1 then
         pure "host_retained_finally"
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.dispose 2 then
+        pure "host_retained_cleanup"
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.scope 1 then
+        if (← whnf inner.getAppArgs[0]!).isAppOfArity ``List.cons 3 then pure "host_retained_cleanup"
+        else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.lp 1 then
         if inner.isAppOfArity ``LoopF.forTest 7 || inner.isAppOfArity ``LoopF.forBody 6 || inner.isAppOfArity ``LoopF.forUpd 6 then
           pure "host_retained_for"
@@ -234,6 +248,9 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else if returned.isAppOfArity ``Val.num 1 && saved.isAppOfArity ``Val.num 1 then
           let right ← whnf returned.getAppArgs[0]!
           let left ← whnf saved.getAppArgs[0]!
+          if right.isAppOfArity ``NumV.lit 1 && left.isAppOfArity ``NumV.lit 1 &&
+              (operation.isConstOf ``BinOp.gt || operation.isConstOf ``BinOp.ge) then
+            return "host_retained_closed_reverse_comparison"
           if right.isAppOfArity ``NumV.lit 1 && left.isAppOfArity ``NumV.lit 1 &&
               (operation.isConstOf ``BinOp.lt || operation.isConstOf ``BinOp.le || operation.isConstOf ``BinOp.seq ||
                operation.isConstOf ``BinOp.sne || operation.isConstOf ``BinOp.eq || operation.isConstOf ``BinOp.ne) then

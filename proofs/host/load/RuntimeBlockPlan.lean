@@ -33,7 +33,10 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
             if statements.isAppOfArity ``List.cons 3 then
               let first ← whnf statements.getAppArgs[1]!
               if first.isAppOfArity ``Stmt.if_ 3 then
-                return some ("host_retained_outArray_return",15)
+                let condition ← whnf first.getAppArgs[0]!
+                if condition.isAppOfArity ``Expr.bin 3 then
+                  if (← whnf condition.getAppArgs[0]!).isConstOf ``BinOp.sne then
+                    return some ("host_retained_outArray_return",15)
     unless control.isAppOfArity ``Ctl.call 3 do return none
     let callee ← whnf control.getAppArgs[0]!
     unless callee.isAppOfArity ``Val.obj 1 do return none
