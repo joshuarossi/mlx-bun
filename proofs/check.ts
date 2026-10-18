@@ -4530,6 +4530,20 @@ const proofFiles = [
   "host/ts/renameOrdinary/VectorToRegisteredArray.lean",
   "host/ts/RenameMapBodyEffects.lean",
   "host/ts/renameOrdinary/MapBodyIndex.lean",
+  "host/load/run/full/cached/Choice2.lean",
+  "host/load/run/full/cached/Choice3.lean",
+  "host/load/run/full/cached/Choice4.lean",
+  "host/load/run/full/cached/Choice5.lean",
+  "host/mlx/NativeConfigFreeHost.lean",
+  "host/mlx/NativeDtypeHost.lean",
+  "host/ts/RenameArgumentEffects.lean",
+  "host/ts/RenameParametricFinally.lean",
+  "host/ts/RenameRouteDriverFinally.lean",
+  "host/ts/RenameRouteDriverFinallyTest.lean",
+  "host/ts/renameOrdinary/MapGetterHandle.lean",
+  "host/ts/renameOrdinary/MlxCleanupPath.lean",
+  "host/ts/renameOrdinary/MlxCleanupSteps.lean",
+  "host/ts/renameOrdinary/VectorToCleanupEntry.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -4791,7 +4805,7 @@ try {
     // Native evaluation chooses explicit states only. Every generated equality
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
-      /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source)) ||
+      /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary)\s/m.test(source)) ||
       /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
@@ -5000,6 +5014,15 @@ end WrongClear
 host_chunk WrongClear 0
 end Host.Load.Run.Full
 `;
+    const wrongLoadStateProjection = `import host.load.run.full.cached.Choice2
+import host.load.run.full.cached.Choice3
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full.Cached
+open Host.Ts Host.Load.Extract
+load_summary_checked wrong : P.s3123, entryEnv P.s0 using after3
+end Host.Load.Run.Full.Cached
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -5034,6 +5057,7 @@ end Host.Load.Run.Full
       ["WrongGrowthGeometry", wrongGrowthGeometry, false],
       ["WrongStopEndpoint", wrongStopEndpoint, false],
       ["WrongStopCount", wrongStopCount, false],
+      ["WrongLoadStateProjection", wrongLoadStateProjection, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
@@ -5042,7 +5066,7 @@ end Host.Load.Run.Full
       if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
           name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint" ||
           name === "WrongGrowthEndpoint" || name === "WrongGrowthGeometry" ||
-          name === "WrongStopEndpoint" || name === "WrongStopCount") &&
+          name === "WrongStopEndpoint" || name === "WrongStopCount" || name === "WrongLoadStateProjection") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
       }
