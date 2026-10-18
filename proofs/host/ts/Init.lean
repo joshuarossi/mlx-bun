@@ -287,9 +287,8 @@ def realmPrelude : B S Unit := do
   let arr ← getA aGlobal (.str chars!"Array")
   let env ← hoistPrelude
   for n in [chars!"map", chars!"forEach", chars!"filter", chars!"some", chars!"every", chars!"find",
-      chars!"findIndex", chars!"reduce", chars!"flatMap"] do
+      chars!"findIndex", chars!"reduce", chars!"flatMap", chars!"sort"] do
     setP aArrayProto (.str n) (.data (← preludeFn env n) true false)
-  method aArrayProto chars!"sort" (.arr .sort) [← preludeFn env chars!"sort"]
   for n in [chars!"map", chars!"forEach", chars!"some", chars!"every", chars!"find", chars!"findIndex", chars!"reduce"] do
     setP aTypedProto (.str n) (.data (← preludeFn env n) true false)
   setP aMapProto (.str chars!"forEach") (.data (← preludeFn env chars!"mapForEach") true false)

@@ -3,8 +3,8 @@ namespace Host.Ts.Tests.Stream
 open Host.Ts
 
 noncomputable def output : Option (List Val) := do
-  let .obj a ← bindingOf P.s2 (entryEnv P.s0) chars!"out" | none
-  let (_, es) ← arrayOf nullFfi P.s2 a
+  let .obj a ← bindingOf P.s4 (entryEnv P.s0) chars!"out" | none
+  let (_, es) ← arrayOf nullFfi P.s4 a
   pure es
 
 set_option maxRecDepth 1000000 in

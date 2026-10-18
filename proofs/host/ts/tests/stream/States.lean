@@ -19,5 +19,5 @@ source_ast
 
 def initial : Option (St Unit) := boot () [⟨chars!"main.ts", ast⟩] [] chars!"main.ts"
 set_option maxHeartbeats 0 in
-host_stream P : nullFfi, initial, [], (fun _ => F64.ofNat 0), 100, 2
+host_stream P : nullFfi, initial, [], (fun _ => F64.ofNat 0), 1000, 4
 end Host.Ts.Tests.Stream

@@ -131,6 +131,7 @@ deriving instance Lean.ToExpr for Host.Ts.BufN
 deriving instance Lean.ToExpr for Host.Ts.FnN
 deriving instance Lean.ToExpr for Host.Ts.CtlN
 deriving instance Lean.ToExpr for Host.Ts.FfiN
+deriving instance Lean.ToExpr for Host.Ts.HostN
 deriving instance Lean.ToExpr for Host.Ts.Native
 deriving instance Lean.ToExpr for Host.Ts.CallF
 deriving instance Lean.ToExpr for Host.Ts.ExprF
@@ -148,7 +149,6 @@ deriving instance Lean.ToExpr for Host.Ts.GenState
 deriving instance Lean.ToExpr for Host.Ts.Reaction
 deriving instance Lean.ToExpr for Host.Ts.PState
 deriving instance Lean.ToExpr for Host.Ts.Code
-deriving instance Lean.ToExpr for Host.Ts.MapT
 deriving instance Lean.ToExpr for Host.Ts.Kind
 deriving instance Lean.ToExpr for Host.Ts.Obj
 deriving instance Lean.ToExpr for Host.Ts.HObj

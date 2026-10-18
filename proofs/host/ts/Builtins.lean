@@ -214,7 +214,6 @@ def arrN (s : St F.S) (this : Val) (args : List Val) : ArrN → RS F
       | some n => let (r, s) := newArray s (List.replicate n .undef); retS F s (.obj r)
       | none => rangeErr s (chars!"invalid array length")
     | vs => let (r, s) := newArray s vs; retS F s (.obj r)
-  | .sort => .fail "sort is dispatched with its data (sortN)"
   | .push => withArr fun a _ es =>
       let es := es ++ args
       retS F (setArray F s a es) (natV (len es))
@@ -629,128 +628,30 @@ where
       | _ => proto
     .bind (mkError F s proto (arg args 0) (arg args 1)) fun (v, s) => retS F s v
 
-/-! ## Sorting strings
+/-! ## Map, Set, WeakMap -/
 
-`Array.prototype.sort()` without a comparator on an array of strings: the
-prelude's stable merge sort (`Prelude.sort`) compares `String(w) > String(v)`,
-which for strings is `strLt v w`. A stable sort's result is determined by its
-order, so a native merge sort by the same order returns the same array in one
-step. Other calls run the prelude's sort (`data`). -/
-
-def strBefore : List Char → List Char → Bool
-  | [], [] => false
-  | [], _ :: _ => true
-  | _ :: _, [] => false
-  | a :: as, b :: bs => bif Nat.blt a.toNat b.toNat then true else bif Nat.beq a.toNat b.toNat then strBefore as bs else false
-
-/-- Merge two sorted runs, the left first among equals (fuel: their total length). -/
-def mergeStrs : Nat → List (List Char) → List (List Char) → List (List Char)
-  | 0, a, b => a ++ b
-  | _ + 1, [], b => b
-  | _ + 1, a, [] => a
-  | f + 1, x :: xs, y :: ys =>
-    bif strBefore y x then y :: mergeStrs f (x :: xs) ys else x :: mergeStrs f xs (y :: ys)
-
-/-- One bottom-up pass: merge adjacent runs from the left. -/
-def mergePass : List (List (List Char)) → List (List (List Char))
-  | a :: b :: r => mergeStrs (len a + len b) a b :: mergePass r
-  | r => r
-
-/-- Passes until one run is left (fuel: the number of runs). -/
-def mergeAll : Nat → List (List (List Char)) → List (List Char)
-  | _, [] => []
-  | _, [r] => r
-  | 0, rs => rs.flatten
-  | f + 1, rs => mergeAll f (mergePass rs)
-
-def allStrs : List Val → Option (List (List Char))
-  | [] => some []
-  | .str cs :: r => (allStrs r).map (cs :: ·)
-  | _ => none
-
-def sortN (s : St F.S) (data : List Val) (this : Val) (args : List Val) : RS F :=
-  match arg args 0, this with
-  | .undef, .obj a => match arrayOf F s a with
-    | some (o, es) => match allStrs es, o.extensible with
-      | some css, true =>
-        retS F (setArray F s a ((mergeAll (len css) (css.map fun c => [c])).map Val.str)) this
-      | _, _ => js
-    | none => js
-  | _, _ => js
+def findEntry (s : St F.S) (k : Val) : List (Val × Val) → Nat → M (Option Nat)
+  | [], _ => .pure none
+  | (j, _) :: es, i => .bind (sameValueZero j k) fun b => bif b then .pure (some i) else findEntry s k es (i + 1)
 where
-  js : RS F := match data with
-    | [f] => .pure (s.go (.call f this args))
-    | _ => .fail "sort data"
+  sameValueZero (a b : Val) : M Bool := match a, b with
+    | .num (.lit .nan), .num (.lit .nan) => .pure true
+    | a, b => strictEq F s a b
 
-/-! ## Map, Set, WeakMap
-
-`MapT` (`Value`): a key's bucket is its `keyHash`, so `get`, `set`, `has` and
-`delete` compare the key with the entries of one bucket. Strings hash by their
-code (`pack`), objects by address, symbols by number; every other key (numbers,
-possibly symbolic, booleans, `undefined`, `null`, bigints, pointers) shares one
-bucket, where `SameValueZero` decides as before. Equal keys hash alike, so the
-first equal key in the bucket is the one a scan in insertion order finds. -/
-
-def keyHash : Val → Nat
-  | .str cs => Nat.mul 4 (Nat.mod (pack cs) 16381)
-  | .obj a => Nat.succ (Nat.mul 4 (Nat.mod a 16381))
-  | .sym i => Nat.add 2 (Nat.mul 4 (Nat.mod i 16381))
-  | _ => 3
-
-namespace MapT
-def empty : MapT := ⟨.nil, 0, 0, .nil⟩
-def bucket (m : MapT) (h : Nat) : List (Val × Nat) := (m.idx.get h).getD []
-def entry (m : MapT) (n : Nat) : Option (Val × Val) := (m.ents.get n).bind id
-/-- Add a key the map does not hold, last in order. -/
-def insert (m : MapT) (k v : Val) : MapT :=
-  ⟨m.ents.set m.seq (some (k, v)), m.seq + 1, m.size + 1, m.idx.set (keyHash k) (m.bucket (keyHash k) ++ [(k, m.seq)])⟩
-/-- Replace the value of entry `n` (its key and place stay). -/
-def update (m : MapT) (n : Nat) (v : Val) : MapT :=
-  match m.entry n with
-  | some (k, _) => { m with ents := m.ents.set n (some (k, v)) }
-  | none => m
-/-- Remove entry `n`, whose key is `k`. -/
-def erase (m : MapT) (n : Nat) (k : Val) : MapT :=
-  ⟨m.ents.set n none, m.seq, m.size - 1, m.idx.set (keyHash k) ((m.bucket (keyHash k)).filter fun p => !Nat.beq p.2 n)⟩
-/-- Live entries in insertion order. -/
-def toList (m : MapT) : List (Val × Val) := (List.range m.seq).filterMap m.entry
-end MapT
-
-def sameValueZero (s : St F.S) (a b : Val) : M Bool := match a, b with
-  | .num (.lit .nan), .num (.lit .nan) => .pure true
-  | a, b => strictEq F s a b
-
-def findKey (s : St F.S) (k : Val) : List (Val × Nat) → M (Option Nat)
-  | [] => .pure none
-  | (j, n) :: r => .bind (sameValueZero F s j k) fun b => bif b then .pure (some n) else findKey s k r
-
-/-- The insertion number of key `k`. -/
-def MapT.find (s : St F.S) (m : MapT) (k : Val) : M (Option Nat) := findKey F s k (m.bucket (keyHash k))
-
-/-- `Map.prototype.set`. -/
-def MapT.put (s : St F.S) (m : MapT) (k v : Val) : M MapT :=
-  .bind (m.find F s k) fun
-    | some n => .pure (m.update n v)
-    | none => .pure (m.insert k v)
-
-def MapT.ofList (s : St F.S) : List (Val × Val) → MapT → M MapT
-  | [], m => .pure m
-  | (k, v) :: r, m => .bind (m.put F s k v) fun m => MapT.ofList s r m
-
-def mapOf (s : St F.S) (this : Val) : Option (Nat × Obj × MapT) :=
+def mapOf (s : St F.S) (this : Val) : Option (Nat × Obj × List (Val × Val)) :=
   match this with
   | .obj a => match s.obj? a with
     | some o => match o.kind with
-      | .map m => some (a, o, m)
+      | .map es => some (a, o, es)
       | _ => none
     | none => none
   | _ => none
 
-def setOf (s : St F.S) (this : Val) : Option (Nat × Obj × MapT) :=
+def setOf (s : St F.S) (this : Val) : Option (Nat × Obj × List Val) :=
   match this with
   | .obj a => match s.obj? a with
     | some o => match o.kind with
-      | .set m => some (a, o, m)
+      | .set es => some (a, o, es)
       | _ => none
     | none => none
   | _ => none
@@ -766,30 +667,31 @@ def pairsOf (s : St F.S) : List Val → Option (List (Val × Val))
 def mapN (s : St F.S) (this : Val) (args : List Val) : MapN → RS F
   | .ctor => ctor aMapProto
   | .weakCtor => ctor aWeakMapProto
-  | .get => withMap fun _ _ m => .bind (m.find F s (arg args 0)) fun
-    | some n => retS F s ((m.entry n).elim .undef Prod.snd)
+  | .get => withMap fun _ _ es => .bind (findEntry F s (arg args 0) es 0) fun
+    | some i => retS F s ((nth? es i).elim .undef Prod.snd)
     | none => retS F s .undef
-  | .has => withMap fun _ _ m => .bind (m.find F s (arg args 0)) fun r => retS F s (.bool r.isSome)
-  | .set => withMap fun a o m => .bind (m.put F s (arg args 0) (arg args 1)) fun m =>
-    retS F (s.setObj a { o with kind := .map m }) this
-  | .delete => withMap fun a o m => .bind (m.find F s (arg args 0)) fun
-    | some n => retS F (s.setObj a { o with kind := .map (m.erase n (arg args 0)) }) (.bool true)
+  | .has => withMap fun _ _ es => .bind (findEntry F s (arg args 0) es 0) fun r => retS F s (.bool r.isSome)
+  | .set => withMap fun a o es => .bind (findEntry F s (arg args 0) es 0) fun
+    | some i => retS F (s.setObj a { o with kind := .map (setNth (.undef, .undef) es i (arg args 0, arg args 1)) }) this
+    | none => retS F (s.setObj a { o with kind := .map (es ++ [(arg args 0, arg args 1)]) }) this
+  | .delete => withMap fun a o es => .bind (findEntry F s (arg args 0) es 0) fun
+    | some i => retS F (s.setObj a { o with kind := .map (es.take i ++ es.drop (i + 1)) }) (.bool true)
     | none => retS F s (.bool false)
-  | .clear => withMap fun a o _ => retS F (s.setObj a { o with kind := .map .empty }) .undef
-  | .keys => withMap fun _ _ m => snapshot (m.toList.map Prod.fst) 0
-  | .values => withMap fun _ _ m => snapshot (m.toList.map Prod.snd) 0
-  | .entries => withMap fun _ _ m =>
+  | .clear => withMap fun a o _ => retS F (s.setObj a { o with kind := .map [] }) .undef
+  | .keys => withMap fun _ _ es => snapshot (es.map Prod.fst) 0
+  | .values => withMap fun _ _ es => snapshot (es.map Prod.snd) 0
+  | .entries => withMap fun _ _ es =>
     let rec mk (s : St F.S) : List (Val × Val) → List Val × St F.S
       | [] => ([], s)
       | (k, v) :: r => let (p, s) := newArray s [k, v]; let (ps, s) := mk s r; (.obj p :: ps, s)
-    let (ps, s) := mk s m.toList
+    let (ps, s) := mk s es
     let (arr, s) := newArray s ps
     let (it, s) := s.allocObj (.iter (.obj arr) 0 0) (.obj aArrayIterProto) []
     retS F s (.obj it)
 where
-  withMap (k : Nat → Obj → MapT → RS F) : RS F :=
+  withMap (k : Nat → Obj → List (Val × Val) → RS F) : RS F :=
     match mapOf F s this with
-    | some (a, o, m) => k a o m
+    | some (a, o, es) => k a o es
     | none => typeErr s (chars!"Map method on a non-Map")
   snapshot (vs : List Val) (mode : Nat) : RS F :=
     let (arr, s) := newArray s vs
@@ -801,8 +703,7 @@ where
       | v => .bind (elemsOf F s v) fun
         | some es => .pure (pairsOf F s es)
         | none => .pure none) fun
-    | some es => .bind (MapT.ofList F s es .empty) fun m =>
-      let (a, s) := s.allocObj (.map m) (.obj proto) []; retS F s (.obj a)
+    | some es => let (a, s) := s.allocObj (.map es) (.obj proto) []; retS F s (.obj a)
     | none => .fail "Map from a non-array iterable"
 
 def setN (s : St F.S) (this : Val) (args : List Val) : SetN → RS F
@@ -810,29 +711,29 @@ def setN (s : St F.S) (this : Val) (args : List Val) : SetN → RS F
       | .undef | .null => .pure (some [])
       | v => elemsOf F s v) fun
     | some es =>
-      let rec add (m : MapT) : List Val → M MapT
-        | [] => .pure m
-        | v :: vs => .bind (m.find F s v) fun
-          | some _ => add m vs
-          | none => add (m.insert v .undef) vs
-      .bind (add .empty es) fun m => let (a, s) := s.allocObj (.set m) (.obj aSetProto) []; retS F s (.obj a)
+      let rec dedup (acc : List Val) : List Val → M (List Val)
+        | [] => .pure acc.reverse
+        | v :: vs => .bind (findEntry F s v (acc.map fun x => (x, x)) 0) fun
+          | some _ => dedup acc vs
+          | none => dedup (v :: acc) vs
+      .bind (dedup [] es) fun es => let (a, s) := s.allocObj (.set es) (.obj aSetProto) []; retS F s (.obj a)
     | none => .fail "Set from a non-array iterable"
-  | .add => withSet fun a o m => .bind (m.find F s (arg args 0)) fun
+  | .add => withSet fun a o es => .bind (findEntry F s (arg args 0) (es.map fun x => (x, x)) 0) fun
     | some _ => retS F s this
-    | none => retS F (s.setObj a { o with kind := .set (m.insert (arg args 0) .undef) }) this
-  | .has => withSet fun _ _ m => .bind (m.find F s (arg args 0)) fun r => retS F s (.bool r.isSome)
-  | .delete => withSet fun a o m => .bind (m.find F s (arg args 0)) fun
-    | some n => retS F (s.setObj a { o with kind := .set (m.erase n (arg args 0)) }) (.bool true)
+    | none => retS F (s.setObj a { o with kind := .set (es ++ [arg args 0]) }) this
+  | .has => withSet fun _ _ es => .bind (findEntry F s (arg args 0) (es.map fun x => (x, x)) 0) fun r => retS F s (.bool r.isSome)
+  | .delete => withSet fun a o es => .bind (findEntry F s (arg args 0) (es.map fun x => (x, x)) 0) fun
+    | some i => retS F (s.setObj a { o with kind := .set (es.take i ++ es.drop (i + 1)) }) (.bool true)
     | none => retS F s (.bool false)
-  | .clear => withSet fun a o _ => retS F (s.setObj a { o with kind := .set .empty }) .undef
-  | .values => withSet fun _ _ m =>
-    let (arr, s) := newArray s (m.toList.map Prod.fst)
+  | .clear => withSet fun a o _ => retS F (s.setObj a { o with kind := .set [] }) .undef
+  | .values => withSet fun _ _ es =>
+    let (arr, s) := newArray s es
     let (it, s) := s.allocObj (.iter (.obj arr) 0 0) (.obj aArrayIterProto) []
     retS F s (.obj it)
 where
-  withSet (k : Nat → Obj → MapT → RS F) : RS F :=
+  withSet (k : Nat → Obj → List Val → RS F) : RS F :=
     match setOf F s this with
-    | some (a, o, m) => k a o m
+    | some (a, o, es) => k a o es
     | none => typeErr s (chars!"Set method on a non-Set")
 
 /-! ## Buffers -/

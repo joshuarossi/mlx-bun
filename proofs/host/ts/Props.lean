@@ -63,8 +63,8 @@ def ownGet (s : St F.S) (o : Obj) (k : PKey) : M (Option PropV) :=
       else .pure (findProp k o.props)
   | .buf bs => bif keyEq k (.str (chars!"byteLength")) then .pure (some (.data (natV (len bs)) false false)) else .pure (findProp k o.props)
   | .extBuf _ _ n => bif keyEq k (.str (chars!"byteLength")) then .pure (some (.data (natV n) false false)) else .pure (findProp k o.props)
-  | .map m => bif keyEq k (.str (chars!"size")) then .pure (some (.data (natV m.size) false false)) else .pure (findProp k o.props)
-  | .set m => bif keyEq k (.str (chars!"size")) then .pure (some (.data (natV m.size) false false)) else .pure (findProp k o.props)
+  | .map es => bif keyEq k (.str (chars!"size")) then .pure (some (.data (natV (len es)) false false)) else .pure (findProp k o.props)
+  | .set es => bif keyEq k (.str (chars!"size")) then .pure (some (.data (natV (len es)) false false)) else .pure (findProp k o.props)
   | .ns ex => match k with
     | .str n => match findExport n ex with
       | some c => match s.cell? c with
