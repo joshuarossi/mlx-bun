@@ -15,6 +15,37 @@ def constructorNotes {S : Type} (notes : RetainedNotes) (source : St S) (env : E
   let current := handleNotes notes source env proto brand argument role
   current.withRuntime ⟨returnNote (.obj source.next),notes.runtime.stack,current.runtime.cells⟩
 
+theorem constructor_handle_note {S : Type} (notes : RetainedNotes) (source : St S) (env : Env) (proto brand : Nat)
+    (argument : Val) (role : Value) :
+    (constructorNotes notes source env proto brand argument role).privates.owners source.next =
+      some ⟨brand,chars!"handle",role⟩ := stored_handle_note notes source env proto brand argument role
+
+theorem constructor_instance {S : Type} (source : St S) (env : Env) (proto brand : Nat) (argument : Val)
+    (bound : source.next+6 ≤ 2^64) :
+    (constructorOutput source env proto brand argument).heap.get source.next =
+      some (.obj (storedInstance proto brand (source.next+2) argument)) :=
+  handle_instance source env proto brand argument bound
+
+theorem constructor_handle_field {S : Type} (source : St S) (env : Env) (proto brand : Nat) (argument : Val)
+    (bound : source.next+6 ≤ 2^64) :
+    PrivateData (constructorOutput source env proto brand argument) source.next brand chars!"handle" argument := by
+  refine ⟨storedInstance proto brand (source.next+2) argument,true,false,
+    constructor_instance source env proto brand argument bound,?_⟩
+  exact findPriv_set_same brand chars!"handle" (.data argument true false) _
+
+/-- Registration and return preserve the native state. Thus an existing native
+array's ownership and producer evidence remain available for the new wrapper. -/
+theorem constructor_native {S : Type} (source : St S) (env : Env) (proto brand : Nat) (argument : Val) :
+    (constructorOutput source env proto brand argument).ffi = source.ffi := rfl
+
+theorem constructor_next {S : Type} (source : St S) (env : Env) (proto brand : Nat) (argument : Val) :
+    (constructorOutput source env proto brand argument).next = source.next+5 := rfl
+
+theorem constructor_old (F : Ffi) (source : St F.S) (env : Env) (proto brand : Nat) (argument : Val)
+    (bound : source.next+6 ≤ 2^64) (address : Nat) (old : address < source.next) :
+    (constructorOutput source env proto brand argument).heap.get address = source.heap.get address :=
+  handle_old F source env proto brand argument bound address old
+
 /-- The complete original MLXArray constructor, including private fields,
 argument binding, handle assignment, inherited registry call and normal return.
 All entry data describes the current source class/captures. Fresh instance,
