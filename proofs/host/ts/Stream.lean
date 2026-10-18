@@ -10,6 +10,7 @@ the sum of the states. A streamed chain keeps one state at a time:
 * `host_stream P : F, boot, tab, ρ, k, N` (`States`) runs the machine
   natively for `N` chunks of `k` steps, answering the symbolic tests at `ρ`
   (the oracle `P.O`, as `discover`), and writes each chunk boundary to a file;
+  `chunks [k₀, …]` overrides the uniform sizes to place boundaries at exact cuts;
 * `host_stream_state P i` (`G<i>`, importing `G<i-1>`) reads boundary `i`
   and adds `P.s<i>` and `P.S<i>`;
 * `host_chunk P i` (`C<i>`, importing `G<i+1>`) checks chunk `i` as for
@@ -372,10 +373,10 @@ def absArray (F : Ffi) (s : St F.S) (name : List Char) : Except String (Nat × L
   let some (_, es) := arrayOf F s a | throw "not an array"
   pure (a, es)
 
-/-- Run `N` chunks of `k` steps from the state `skip` steps after `s₀`, answering tests at `ρ`,
+/-- Run chunks of `ks` steps from the state `skip` steps after `s₀`, answering tests at `ρ`,
 writing boundaries `0 … N` (and the abstracted states of `abs`). Returns the oracle (in order),
 the steps run, the bytes written, the number table at boundary 0 and the abstraction's base. -/
-def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : Nat → F64) (k N skip : Nat)
+def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : Nat → F64) (ks : List Nat) (skip : Nat)
     (abs : Option AbsSpec) (s₀ : St F.S) (tab : List SymE) (pre : Lean.Name) (nonce : String) :
     IO (List Ans × Nat × Nat × List SymE × List Val) := do
   let mut s₀ := s₀
@@ -427,7 +428,7 @@ def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : N
   let mut c : SSrv := ⟨tab, []⟩
   let mut o : Array Ans := #[]
   let mut steps := 0
-  for i in [0:N] do
+  for (k, i) in ks.zipIdx do
     for _ in [0:k] do
       if isHalt s.ctl then break
       match interpRec ρ (step F s).run c [] with
@@ -442,8 +443,10 @@ def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : N
 partial def natIn (stx : Syntax) : Option Nat := stx.isNatLit?.orElse fun _ => stx.getArgs.findSome? natIn
 
 /-- `host_stream P : F, boot, tab, ρ, k, N`: the chain's constants (`P.F`, `P.boot`, `P.O`,
-`P.srv`, `P.ks`, `P.nonce`) after writing its `N + 1` boundaries. -/
+`P.srv`, `P.ks`, `P.nonce`) after writing its `N + 1` boundaries. Optional
+`chunks ks` uses the explicit sizes and their length instead of `k` and `N`. -/
 elab "host_stream " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term ", " k:term ", " n:term sk:((", " num)?)
+    cs:((" chunks " term)?)
     ab:((" abs " num ", " num ", " str)?) : command =>
     liftTermElabM do
   let pre := (← getCurrNamespace) ++ p.getId
@@ -459,8 +462,14 @@ elab "host_stream " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term 
   let rE ← instantiateMVars (← Term.elabTermAndSynthesize ρ (some (← mkArrow (mkConst ``Nat) (mkConst ``F64))))
   let kV ← unsafe evalExpr Nat (mkConst ``Nat) (← instantiateMVars (← Term.elabTermAndSynthesize k (some (mkConst ``Nat))))
   let nV ← unsafe evalExpr Nat (mkConst ``Nat) (← instantiateMVars (← Term.elabTermAndSynthesize n (some (mkConst ``Nat))))
+  let ksV ← match cs.raw.getArgs.toList with
+    | [_, ks] =>
+      let ty := mkApp (mkConst ``List [.zero]) (mkConst ``Nat)
+      unsafe evalExpr (List Nat) ty (← instantiateMVars (← Term.elabTermAndSynthesize ks (some ty)))
+    | _ => pure (List.replicate nV kV)
+  let nV := ksV.length
   let skipV : Nat := (natIn sk.raw).getD 0
-  let absV : Option (Nat × Nat × String) := match ab.raw.getArgs.toList.flatMap (·.getArgs.toList) with
+  let absV : Option (Nat × Nat × String) := match ab.raw.getArgs.toList with
     | [_, i, _, j, _, nm] => match i.isNatLit?, j.isNatLit?, nm.isStrLit? with
       | some i, some j, some nm => some (i, j, nm)
       | _, _, _ => none
@@ -473,7 +482,7 @@ elab "host_stream " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term 
   let resTy := mkApp (mkConst ``IO) (← mkAppM ``Prod #[mkApp (mkConst ``List [.zero]) (mkConst ``Ans),
     ← mkAppM ``Prod #[mkConst ``Nat, ← mkAppM ``Prod #[mkConst ``Nat, ← mkAppM ``Prod #[mkApp (mkConst ``List [.zero]) (mkConst ``SymE), mkApp (mkConst ``List [.zero]) (mkConst ``Val)]]]])
   let call ← withLocalDeclD `s stTy fun s => do
-    mkLambdaFVars #[s] (mkAppN (mkConst ``generate) #[fE, serS, tyS, rE, toExpr kV, toExpr nV, toExpr skipV, absE, s, tE, toExpr pre, toExpr nonce])
+    mkLambdaFVars #[s] (mkAppN (mkConst ``generate) #[fE, serS, tyS, rE, toExpr ksV, toExpr skipV, absE, s, tE, toExpr pre, toExpr nonce])
   let t0 ← IO.monoMsNow
   let gen ← unsafe evalExpr (Option (IO (List Ans × Nat × Nat × List SymE × List Val))) (mkApp (mkConst ``Option [.zero]) resTy)
     (← mkAppM ``Option.map #[call, bE])
@@ -492,12 +501,12 @@ elab "host_stream " p:ident " : " f:term ", " b:term ", " tab:term ", " ρ:term 
   addDecl (Declaration.defnDecl { name := pre ++ `boot, levelParams := [], type := optSt, value := bE, hints := ReducibilityHints.abbrev, safety := .safe })
   addDecl (Declaration.defnDecl { name := pre ++ `srv, levelParams := [], type := mkConst ``SSrv, value := mkApp2 (mkConst ``SSrv.mk) tE (mkConst (pre ++ `O)), hints := ReducibilityHints.abbrev, safety := .safe })
   let ksTy := mkApp (mkConst ``List [.zero]) (mkConst ``Nat)
-  let ks := toExpr (List.replicate nV kV)
+  let ks := toExpr ksV
   addDecl (Declaration.defnDecl { name := pre ++ `ks, levelParams := [], type := ksTy, value := ks, hints := ReducibilityHints.abbrev, safety := .safe })
   compileDecl (Declaration.defnDecl { name := pre ++ `ks, levelParams := [], type := ksTy, value := ks, hints := ReducibilityHints.abbrev, safety := .safe })
   addDecl (Declaration.defnDecl { name := pre ++ `nonce, levelParams := [], type := mkConst ``String, value := toExpr nonce, hints := ReducibilityHints.abbrev, safety := .safe })
   compileDecl (Declaration.defnDecl { name := pre ++ `nonce, levelParams := [], type := mkConst ``String, value := toExpr nonce, hints := ReducibilityHints.abbrev, safety := .safe })
-  logInfo m!"host_stream {pre}: {nV} chunks of {kV} steps from step {skipV} ({steps} run), oracle of {o.length} answers, {bytes} bytes, native {(← IO.monoMsNow) - t0} ms"
+  logInfo m!"host_stream {pre}: {nV} chunks from step {skipV} ({steps} run), oracle of {o.length} answers, {bytes} bytes, native {(← IO.monoMsNow) - t0} ms"
 
 /-- `host_stream_state P i`: `P.s<i>`, `P.S<i>` and the constants boundary `i` names, from its file. -/
 elab "host_stream_state " p:ident i:num : command => liftTermElabM do

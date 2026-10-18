@@ -1,7 +1,7 @@
 /** Chunk files for a `host_stream` run.
  * bun proofs/host/ts/stream.ts <dir>
  * <dir>/States.lean holds one `host_stream P : F, boot, tab, ρ, k, N` (or `…, k, N, j`: from step j; then
- * optionally `abs i, j, "name"`: `host_chunk_abs` for chunks i … j-1) in a namespace; this writes
+ * optionally `chunks [k0, ...]` for exact cuts, then `abs i, j, "name"`: `host_chunk_abs` for chunks i … j-1) in a namespace; this writes
  * <dir>/G<i>.lean (`host_stream_state P i`, importing G<i-1>; i in [0, N]), <dir>/C<i>.lean
  * (`host_chunk P i`, importing G<i+1>; one kernel check each, independent of each other), Run.lean
  * (`host_chain_run P`) and, for a run from boot, Boot.lean and `host_chain_result P` (the run halts), and
@@ -13,13 +13,13 @@ const dir = resolve(process.argv[2] ?? "");
 const proofs = resolve(import.meta.dir, "../..");
 const states = await Bun.file(join(dir, "States.lean")).text();
 const ns = states.match(/^namespace (\S+)/m)?.[1];
-const line = states.match(/^host_stream (\S+) : (.*?)((?:, \d+){2,3})(?: abs (\d+), (\d+), "[^"]+")?\s*$/m);
+const line = states.match(/^host_stream (\S+) : (.*?)((?:, \d+){2,3})(?: chunks (\[[^\n]*\]))?(?: abs (\d+), (\d+), "[^"]+")?\s*$/m);
 if (!ns || !line) throw new Error("States.lean needs a namespace and a host_stream line ending in `k, N` (or `k, N, j`) literals");
 const pre = line[1]!;
 const nums = line[3]!.split(",").slice(1).map(Number);
-const N = nums[1]!;
+const N = line[4] === undefined ? nums[1]! : (JSON.parse(line[4]) as number[]).length;
 const fromBoot = nums.length === 2;
-const abstracted = (i: number) => line[4] !== undefined && i >= Number(line[4]) && i < Number(line[5]);
+const abstracted = (i: number) => line[5] !== undefined && i >= Number(line[5]) && i < Number(line[6]);
 const mod = (file: string) => relative(proofs, join(dir, file)).replace(/\.lean$/, "").replaceAll("/", ".");
 const header = (imports: string[]) => imports.map(i => `import ${i}`).join("\n") + `\nnamespace ${ns}\nset_option maxRecDepth 1000000 in\n`;
 
