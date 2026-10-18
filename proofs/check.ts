@@ -3764,6 +3764,18 @@ const proofFiles = [
   "host/mlx/NativeKernelFresh.lean",
   "host/ts/RenameParametricLookup.lean",
   "host/ts/RenameParametricProps.lean",
+  "host/load/run/full/micro/C49.lean",
+  "host/load/run/full/micro/C69.lean",
+  "host/load/run/full/micro/C70.lean",
+  "host/load/run/full/micro/C71.lean",
+  "host/load/run/full/micro/C75.lean",
+  "host/mlx/CachedReplay.lean",
+  "host/mlx/NativeAnnotations.lean",
+  "host/mlx/ReplayPlan.lean",
+  "host/mlx/ReplayResult.lean",
+  "host/ts/RenameParametricDescent.lean",
+  "host/ts/RenameParametricPrivate.lean",
+  "host/ts/RenameParametricPropWrites.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
