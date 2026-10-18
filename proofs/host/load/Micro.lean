@@ -1,6 +1,7 @@
 import host.load.Stream
 import host.load.Segment
 import host.ts.DecodeExpr
+import host.load.Native
 
 namespace Host.Load
 open Lean Elab Command Meta Host.Ts Host.Ts.Stream
