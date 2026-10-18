@@ -3487,6 +3487,7 @@ const proofFiles = [
   "host/ts/RenameParametricTests.lean",
   "host/ts/renameOrdinary/Cut.lean",
   "host/ts/renameOrdinary/ReadEntry.lean",
+  "host/load/Compose.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -3846,6 +3847,7 @@ host_chunk W.micro0 2
 host_chunk W.micro0 3
 host_chunk W.micro0 4
 host_micro_run W 0`);
+    const composeEndpoint = "import host.load.tests.Micro\n\nnamespace Host.Load.Tests.ComposeEndpoint\nopen Host.Ts Lean Elab Command Meta\n\nnamespace Bad\ndef ks : List Nat := [20, 20, 40]\nrun_elab do\n  for (target, source) in [(\"F\", \"F\"), (\"s0\", \"s0\"), (\"s1\", \"s1\"), (\"s2\", \"s2\"),\n      (\"s3\", \"s0\"), (\"S0\", \"S0\"), (\"S1\", \"S1\"), (\"S2\", \"S2\"), (\"S3\", \"S3\")] do\n    let value := mkConst (`Host.Load.Tests.Micro.R ++ Name.mkSimple source)\n    addDecl (.defnDecl { name := `Host.Load.Tests.ComposeEndpoint.Bad ++ Name.mkSimple target, levelParams := [], type := ← inferType value, value, hints := .regular 0, safety := .safe })\n  for i in [0:3] do\n    let name := Name.mkSimple s!\"c{i}\"\n    let value := mkConst (`Host.Load.Tests.Micro.R ++ name)\n    addDecl (.thmDecl { name := `Host.Load.Tests.ComposeEndpoint.Bad ++ name, levelParams := [], type := ← inferType value, value })\nend Bad\n\n-- The supplied final chunk reaches R.s3, while the advertised end is R.s0.\n-- Staged composition must reject the final prefix in the ordinary kernel.\nhost_chain_run_staged Bad\n\nend Host.Load.Tests.ComposeEndpoint\n";
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -3870,11 +3872,15 @@ host_micro_run W 0`);
         "def program : Host.Load.Program.Code := [⟨.load chars!\"checkpoint\" chars!\"different\""), false],
       ["WrongMicroEndpoint", microBoundary.replace("def s1 := P.s1", "def s1 := P.s0"), false],
       ["WrongFramedMicroEndpoint", microFramedBoundary.replace("def s1 := P.s1", "def s1 := P.s0"), false],
+      ["WrongComposedEndpoint", composeEndpoint, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
         name.includes("MicroEndpoint") ? loadNative : undefined);
       if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
+      if (name === "WrongComposedEndpoint" && !rejected.output.includes("(kernel)")) {
+        throw new Error(`${name} failed before checking its composed endpoint:\n${rejected.output}`);
+      }
       if (axiomCheck && !rejected.output.includes("Forbidden axiom")) {
         throw new Error(`${name} failed before the axiom audit:\n${rejected.output}`);
       }
