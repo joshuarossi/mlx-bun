@@ -21,6 +21,19 @@ run_cmd liftTermElabM do
   let (c', g) ← (named ty "childAgain" child (fun x => pure (toExpr x))).run g
   unless c' == c && g.defs.isEmpty do
     throwError "reusing a whole group lost its unvisited child alias"
+  let tyParent := toTypeExpr (List (List Nat))
+  let (wrapped, imported) ← (named (toTypeExpr (List (List (List Nat)))) "wrapped" [parent]
+    (fun _ => pure (mkApp3 (mkConst ``List.cons [.zero]) tyParent p
+      (mkApp (mkConst ``List.nil [.zero]) tyParent)))).run
+    { g with pre := `Host.Ts.Tests.Stream.Sweep.Restored, idx := 1, count := 0, defs := #[] }
+  for (n, t, v) in imported.defs do
+    addDecl (.defnDecl { name := n, levelParams := [], type := t, value := v, hints := .regular 0, safety := .safe })
+  let imported := sweep { imported with defs := #[] } #[wrapped]
+  unless imported.memo.size == 3 && imported.deps.size == 3 do
+    throwError "restored stream lost an imported parent or child alias"
+  let (c'', imported) ← (named ty "importedChildAgain" child (fun x => pure (toExpr x))).run imported
+  unless c'' == c && imported.defs.isEmpty do
+    throwError "imported child alias was not retained transitively"
   let mut g := g
   for i in [1:1001] do
     Memo.reset
@@ -32,5 +45,6 @@ run_cmd liftTermElabM do
   Memo.reset
 
 theorem parent_value : p0_1 = ([[17, 18]] : List (List Nat)) := rfl
+theorem restored_value : Restored.wrapped1_0 = ([[[17, 18]]] : List (List (List Nat))) := rfl
 
 end Host.Ts.Tests.Stream.Sweep

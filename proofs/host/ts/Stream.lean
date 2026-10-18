@@ -271,6 +271,11 @@ structure G where
 
 abbrev GenM := StateT G IO
 
+/-- Imported snapshot aliases participate when their dependency entries have
+been seeded by the restoring chooser, even outside this stream's namespace. -/
+def G.trackedAlias (g : G) (n : Lean.Name) : Bool :=
+  g.pre.isPrefixOf n || g.deps.contains n
+
 /-- A serializer of FFI states for streamed chains; `toExpr` unless an instance names parts. -/
 class StreamExpr (α : Type) where
   ser : α → GenM Lean.Expr
@@ -283,7 +288,7 @@ unsafe def namedImpl {α : Type} (ty : Lean.Expr) (tag : String) (x : α) (ser :
   let e ← ser x
   let g ← get
   let n := g.pre ++ Lean.Name.mkSimple s!"{tag}{g.idx}_{g.count}"
-  let deps := (ty.getUsedConstants ++ e.getUsedConstants).filter g.pre.isPrefixOf
+  let deps := (ty.getUsedConstants ++ e.getUsedConstants).filter g.trackedAlias
   set { g with memo := g.memo.insert (p, ty) (n, unsafeCast x), deps := g.deps.insert n deps, defs := g.defs.push (n, ty, e), count := g.count + 1 }
   return mkConst n
 
@@ -294,14 +299,14 @@ unsafe def namedImpl {α : Type} (ty : Lean.Expr) (tag : String) (x : α) (ser :
 serialized state. Old files retain their definitions independently. Keeping
 dependency edges lets a reused group retain its unvisited child-page aliases. -/
 def sweep (g : G) (roots : Array Lean.Expr) : G := Id.run do
-  let mut todo := roots.foldl (fun ns e => ns ++ e.getUsedConstants.filter g.pre.isPrefixOf) #[]
+  let mut todo := roots.foldl (fun ns e => ns ++ e.getUsedConstants.filter g.trackedAlias) #[]
   let mut live : Std.HashSet Lean.Name := {}
   while h : todo.size > 0 do
     let n := todo[todo.size - 1]
     todo := todo.pop
     if live.contains n then continue
     live := live.insert n
-    if let some ds := g.deps[n]? then todo := todo ++ ds
+    if let some ds := g.deps[n]? then todo := todo ++ ds.filter g.trackedAlias
   let memo := g.memo.fold (fun m k v => if live.contains v.1 then m.insert k v else m) {}
   let deps := g.deps.fold (fun m n ds => if live.contains n then m.insert n ds else m) {}
   return { g with memo, deps }
