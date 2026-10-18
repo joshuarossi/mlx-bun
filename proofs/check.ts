@@ -1814,12 +1814,18 @@ function checkSource(name: string, source: string, expected: string): void {
   }
 }
 
-// Audit every theorem in the current module, including private helpers and newly
-// added theorems. collectAxioms walks transitive dependencies in the kernel env.
+// Definition-only and import-only modules are allowed. Reject custom axiom
+// declarations even when unused, and audit every theorem's transitive dependencies,
+// including private helpers and newly added theorems.
 const audit = `
 open Lean Elab Command in
 run_cmd do
   let env ← getEnv
+  let declaredAxioms := env.constants.foldStage2 (fun ns name info =>
+    if info.isAxiom then ns.push name else ns) (#[] : Array Name)
+  for name in declaredAxioms do
+    unless #[\`propext, \`Classical.choice, \`Quot.sound].contains name do
+      throwError "Forbidden axiom declaration {name}"
   let names := env.constants.foldStage2 (fun ns name info =>
     if info.isTheorem then ns.push name else ns) (#[] : Array Name)
   for name in names do
@@ -2074,12 +2080,18 @@ try {
     );
     const uncheckedTheorem = proof + "\nnamespace Inference\naxiom newAssumption : False\ntheorem newClaim : False := newAssumption\nend Inference\n";
     const proofHole = proof + "\nnamespace Inference\ntheorem missingProof : False := by sorry\nend Inference\n";
+    const unusedAxiom = "namespace Inference\naxiom unusedAssumption : False\ndef definitionOnly : Nat := 7\nend Inference\n";
+    const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
+    if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
+      throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
+    }
     for (const [name, text, axiomCheck] of [
       ["FalseContract", wrongClaim, false],
       ["AssumedContract", assumedClaim, true],
       ["NativeComputation", nativeProof, true],
       ["NewUncheckedTheorem", uncheckedTheorem, true],
       ["ProofHole", proofHole, true],
+      ["UnusedAxiom", unusedAxiom, true],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text);
