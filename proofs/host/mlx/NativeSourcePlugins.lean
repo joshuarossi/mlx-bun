@@ -10,6 +10,8 @@ import host.mlx.NativeConfigFactoryFrontend
 import host.mlx.NativeConfigFreeFrontend
 import host.mlx.NativeFixedSliceFrontend
 import host.mlx.NativeConfigOutputFrontend
+import host.mlx.NativeConfigDtypeFrontend
+import host.mlx.NativeClosedFixedSliceFrontend
 
 set_option Elab.async false
 
@@ -25,5 +27,7 @@ host_register_native_source "mlx_fast_scaled_dot_product_attention" => "host_ret
 host_register_native_source "mlx_fast_metal_kernel_config_add_template_arg_int" => "host_retained_configInt"
 host_register_native_source "mlx_fast_metal_kernel_config_new" => "host_retained_configNew"
 host_register_native_source "mlx_fast_metal_kernel_config_free" => "host_retained_configFree"
+host_register_native_source "mlx_slice" => "host_retained_closedFixedSlice"
 host_register_native_source "mlx_slice" => "host_retained_fixedSlice"
 host_register_native_source "mlx_fast_metal_kernel_config_add_output_arg" => "host_retained_configOutput"
+host_register_native_source "mlx_fast_metal_kernel_config_add_template_arg_dtype" => "host_retained_configDtype"

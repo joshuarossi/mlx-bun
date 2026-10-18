@@ -14,7 +14,7 @@ run_cmd liftTermElabM do
   let append ← registeredNativeSourceCommands (toExpr chars!"mlx_slice_update")
   unless append == #["host_retained_kvAppend"] do throwError "native source registry selected the wrong append command"
   let view ← registeredNativeSourceCommands (toExpr chars!"mlx_slice")
-  unless view == #["host_retained_kvView","host_retained_fixedSlice"] do throwError "native source registry selected the wrong view commands"
+  unless view == #["host_retained_kvView","host_retained_closedFixedSlice","host_retained_fixedSlice"] do throwError "native source registry selected the wrong view commands"
   let disposal ← registeredNativeSourceCommands (toExpr chars!"mlx_array_free")
   unless disposal == #["host_retained_arrayFree"] do throwError "native source registry selected the wrong array disposal command"
   let attention ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_scaled_dot_product_attention")
@@ -27,6 +27,8 @@ run_cmd liftTermElabM do
   unless configFree == #["host_retained_configFree"] do throwError "native source registry selected the wrong configuration disposal command"
   let output ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_add_output_arg")
   unless output == #["host_retained_configOutput"] do throwError "native source registry selected the wrong output declaration command"
+  let dtype ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_add_template_arg_dtype")
+  unless dtype == #["host_retained_configDtype"] do throwError "native source registry selected the wrong dtype declaration command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
