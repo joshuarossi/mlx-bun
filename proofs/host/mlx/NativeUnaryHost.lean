@@ -1,5 +1,6 @@
 import host.mlx.NativeUnaryRoles
 import host.mlx.NativeVectorGetHost
+import host.mlx.NativeWritesFrame
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -62,7 +63,13 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         (finishBuffer s₀ (Host.Load.Owned.unaryWorld s₀.ffi name input node) b 0 buffer₀
           (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0) name
           [.jsPtr b 0 (cellParts .u64 (.big (Int.ofNat 0)) 8 0),.big (Int.ofNat handle),.big (Int.ofNat stream)]) t ∧
-      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a b)) := by
+      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a b)) ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s₀
+        (finishBuffer s₀ (Host.Load.Owned.unaryWorld s₀.ffi name input node) b 0 buffer₀
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0) name
+          [.jsPtr b 0 (cellParts .u64 (.big (Int.ofNat 0)) 8 0),.big (Int.ofNat handle),.big (Int.ofNat stream)]) ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s t ∧
+      (∀ a, a ≠ R.a b → t.heap.get a = s.heap.get a) ∧ t.ctl = .ret (.num zeroN) := by
   have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   have outputLive : live b := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.1
   obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
@@ -133,7 +140,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
               have targetOutputBound := Nat.lt_trans (h.heap.targetBound b outputLive) targetHeapBound
               have hpost := h.finishBuffer_event native₀ native' nativeRelated b 0 buffer₀ out bs bs ws₀ ws'
                 name args₀ args' outputLive hb₀ hbk₀ hro hlo hbo writesRelated sourceHeapBound targetOutputBound hz hevent
-              refine ⟨t,?_,?_,hpost,?_⟩
+              refine ⟨t,?_,?_,hpost,?_,?_,?_,?_,rfl⟩
               · have hb : bufBytes Host.Load.ffi s₀ b = some bs :=
                     bufBytes_of_obj _ _ _ _ _ (by simp only [Host.Ts.St.obj?,hb₀]) hbk₀
                 have hcall : Host.Load.ffi.call s₀.ffi name args₀ =
@@ -168,5 +175,12 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                 dsimp only [ws']
                 rw [← native.handleMap.head]
                 exact slot_role ν C R s₀.ffi.mlx.next
+              · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s₀ native₀ b 0 buffer₀ bs ws₀ name args₀
+                  hb₀ hbk₀ sourceHeapBound
+              · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s native' (R.a b) 0 out bs ws' name args'
+                  ho hko targetOutputBound
+              · intro a different
+                change (s.heap.set (R.a b) _).get a = s.heap.get a
+                rw [PTrie.get_set_u64 _ _ _ targetOutputBound,ite_eq_right different]
 
 end Host.Load.Run.Full.Ordinary.UnaryHost

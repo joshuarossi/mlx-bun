@@ -67,7 +67,7 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
       (slotKindRole 29381).Holds ν C R (objectKindAt t (R.a 3127013)) := by
   have hk := SigmoidCall.source_kind
   rw [SigmoidCall.source_caps] at hk
-  obtain ⟨t,h₀,ht,hr,hslot⟩ := UnaryHost.from_source ν₀ ν C₀ C R nodes boundary objects H N tail host
+  obtain ⟨t,h₀,ht,hr,hslot,_,_,_,_⟩ := UnaryHost.from_source ν₀ ν C₀ C R nodes boundary objects H N tail host
     live framed before after old old' SigmoidCall.input s h chars!"mlx_sigmoid" 4700 4393 3127013 29369 2 22585
     SigmoidCall.inputNode SigmoidCall.calleeObject SigmoidCall.signatureObject SigmoidCall.bufferObject SigmoidCall.returns
     (.obj 4817) (by decide +kernel) (by decide +kernel) SigmoidCall.source_control SigmoidCall.source_callee hk
