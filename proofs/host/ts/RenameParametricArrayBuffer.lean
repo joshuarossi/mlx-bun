@@ -6,6 +6,13 @@ set_option Elab.async false
 
 namespace Host.Ts.Owned.Parametric
 
+/-- A fresh allocation leaves every older heap address unchanged. The machine
+word bound is explicit because the indexed store uses bounded address writes. -/
+theorem alloc_ret_heap_below {S : Type} (s : St S) (o : HObj) (v : Val)
+    (bound : s.next < 2^64) (a : Nat) (old : a < s.next) :
+    ((s.alloc o).2.ret v).heap.get a = s.heap.get a := by
+  simp only [St.alloc,St.ret,PTrie.get_set_u64 _ _ _ bound,ite_eq_right (Nat.ne_of_lt old)]
+
 /-- An occurrence selector for a call's arguments. Its fixed literal roles
 must be established by the preceding source execution. -/
 def callArgument (c : Ctl) (i : Nat) : Val :=

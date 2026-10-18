@@ -46,4 +46,25 @@ theorem transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S �
   rw [Nat.zero_add,source_post] at hpost
   exact ⟨_,hr,hpost⟩
 
+/-- The actual target builtin allocates one fresh object and preserves every
+older heap address, including the initialized typed-constructor metadata. -/
+theorem transport_heap_frame (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (C₀ C : CSrv) (ν : Nat → F64) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s result : St P.F.S)
+    (h : StateR NR FR R live framed before after old old' input s)
+    (offsetRole : (Annotated.Value.literal (.lit (F64.ofNat 0))).Holds ν C R (callArgument s.ctl 1))
+    (countRole : (Annotated.Value.literal (.lit (F64.ofNat 12))).Holds ν C R (callArgument s.ctl 2))
+    (hp : live aArrayBufferProto) (hpr : R.a aArrayBufferProto = aArrayBufferProto)
+    (ht : s.next < 2^64) (run : interpC (step P.F s).run C = some (result,C)) :
+    (∀ a, a < s.next → result.heap.get a = s.heap.get a) ∧
+      result.next = s.next + 1 ∧ result.ffi = s.ffi := by
+  obtain ⟨_,hr,_⟩ := step_toArrayBuffer_from_source P.F NR FR R C₀ C ν live framed
+    before after old old' input s h 2639 object [] .undef 117452 0 0 12
+    (F64.ofNat 0) (F64.ofNat 12) source_control source_heap source_kind
+    (by decide +kernel) (by decide +kernel) offsetRole countRole hp hpr source_bound ht
+  have he := congrArg Prod.fst (Option.some.inj (run.symm.trans hr))
+  dsimp only at he
+  rw [he]
+  exact ⟨fun a ha => alloc_ret_heap_below s _ _ ht a ha,rfl,rfl⟩
+
 end Host.Load.Run.Full.Ordinary.NativeBuffer
