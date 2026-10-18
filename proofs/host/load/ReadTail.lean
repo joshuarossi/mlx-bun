@@ -87,3 +87,74 @@ elab "host_chunk_read_tail " p:ident i:num : command => liftTermElabM do
   addDecl (.thmDecl { name := chainName pre "tc" k, levelParams := [], type := ty, value := mkApp (mkConst (chainName pre "tac" k)) (mkConst (pre ++ `tokenBase)) })
 
 end Host.Load.ReadTail
+
+namespace Host.Load.ReadTail
+open Lean Elab Command Meta Host.Ts
+
+private partial def listValues (e : Lean.Expr) : TermElabM (List Lean.Expr) := do
+  let e ← whnf e
+  match e.getAppFn, e.getAppArgs with
+  | .const ``List.nil _, _ => pure []
+  | .const ``List.cons _, #[_, h, r] => return h :: (← listValues r)
+  | _, _ => throwError "host_forward_frame: array elements are not a concrete list"
+
+private def arrayElements (pre : Lean.Name) (i a : Nat) : TermElabM Lean.Expr := do
+  let e ← whnf (← mkAppM ``arrayOf #[mkConst (pre ++ `F), mkConst (chainName pre "s" i), mkRawNatLit a])
+  match e.getAppFn, e.getAppArgs with
+  | .const ``Option.some _, #[_, p] =>
+    let p ← whnf p
+    match p.getAppFn, p.getAppArgs with
+    | .const ``Prod.mk _, #[_, _, _, es] => pure es
+    | _, _ => throwError "host_forward_frame: unexpected array result"
+  | _, _ => throwError "host_forward_frame: address {a} is not an array at boundary {i}"
+
+/-- Add a forwarded-array prefix parameter on top of the native queue suffix.
+Each state is a small wrapper around `ta<i>`, updating only this caller array.
+`qbase<i>` checks that the two concrete inputs recover the original state. -/
+elab "host_forward_frame " p:ident i:num ", " j:num " array " a:term : command => liftTermElabM do
+  let pre := (← getCurrNamespace) ++ p.getId
+  let address ← unsafe evalExpr Nat (mkConst ``Nat) (← instantiateMVars (← Term.elabTermAndSynthesize a (some (mkConst ``Nat))))
+  let base ← arrayElements pre i.getNat address
+  let baseValues ← listValues base
+  let valList := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
+  let numList := mkApp (mkConst ``List [.zero]) (mkConst ``NumV)
+  let stTy ← inferType (mkConst (chainName pre "s" i.getNat))
+  addDecl (.defnDecl { name := pre ++ `forwardBase, levelParams := [], type := valList, value := base, hints := .regular 0, safety := .safe })
+  for k in [i.getNat:j.getNat + 1] do
+    let es ← listValues (← arrayElements pre k address)
+    unless es.length ≥ baseValues.length do throwError "host_forward_frame: the array shrank at boundary {k}"
+    let body ← withLocalDeclD `fw valList fun fw => withLocalDeclD `tail numList fun tail => do
+      let values := (es.drop baseValues.length).foldl (fun acc x => mkApp3 (mkConst ``List.append [.zero]) (mkConst ``Val) acc (mkApp3 (mkConst ``List.cons [.zero]) (mkConst ``Val) x (mkApp (mkConst ``List.nil [.zero]) (mkConst ``Val)))) fw
+      let st ← mkAppM ``setArray #[mkConst (pre ++ `F), mkApp (mkConst (chainName pre "ta" k)) tail, mkRawNatLit address, values]
+      mkLambdaFVars #[fw, tail] st
+    let fnTy ← mkArrow valList (← mkArrow numList stTy)
+    addDecl (.defnDecl { name := chainName pre "qa" k, levelParams := [], type := fnTy, value := body, hints := .regular 0, safety := .safe })
+    let original := mkConst (chainName pre "s" k)
+    let value := mkApp2 (mkConst (chainName pre "qa" k)) (mkConst (pre ++ `forwardBase)) (mkConst (pre ++ `tokenBase))
+    addDecl (.thmDecl { name := chainName pre "qbase" k, levelParams := [], type := mkApp3 (mkConst ``Eq [.succ .zero]) stTy value original, value := mkApp2 (mkConst ``Eq.refl [.succ .zero]) stTy original })
+
+/-- Kernel-check one body for every forwarded prefix and every unused native
+readback suffix. The specialized theorem refers to the original state constants. -/
+elab "host_chunk_forward_frame " p:ident i:num : command => liftTermElabM do
+  let pre := (← getCurrNamespace) ++ p.getId
+  let k := i.getNat
+  let ks ← unsafe evalConst (List Nat) (pre ++ `ks)
+  let some n := ks[k]? | throwError "host_chunk_forward_frame: no chunk {k}"
+  let F := mkConst (pre ++ `F)
+  let stTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) F)
+  let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) stTy (mkConst ``SSrv)
+  let optionTy := mkApp (mkConst ``Option [.zero]) pairTy
+  let valList := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
+  let numList := mkApp (mkConst ``List [.zero]) (mkConst ``NumV)
+  let eqAt (a b : Lean.Expr) :=
+    let lhs := mkAppN (mkConst ``runS) #[F, mkRawNatLit n, a, mkConst (chainName pre "S" k)]
+    let rhs := mkApp2 (mkConst ``Option.some [.zero]) pairTy (mkApp4 (mkConst ``Prod.mk [.zero, .zero]) stTy (mkConst ``SSrv) b (mkConst (chainName pre "S" (k + 1))))
+    (mkApp3 (mkConst ``Eq [.succ .zero]) optionTy lhs rhs, lhs)
+  let (ty, value) ← withLocalDeclD `fw valList fun fw => withLocalDeclD `tail numList fun tail => do
+    let (ty, lhs) := eqAt (mkApp2 (mkConst (chainName pre "qa" k)) fw tail) (mkApp2 (mkConst (chainName pre "qa" (k + 1))) fw tail)
+    return (← mkForallFVars #[fw, tail] ty, ← mkLambdaFVars #[fw, tail] (mkApp2 (mkConst ``Eq.refl [.succ .zero]) optionTy lhs))
+  addDecl (.thmDecl { name := chainName pre "qac" k, levelParams := [], type := ty, value })
+  let (ty, _) := eqAt (mkConst (chainName pre "s" k)) (mkConst (chainName pre "s" (k + 1)))
+  addDecl (.thmDecl { name := chainName pre "qtc" k, levelParams := [], type := ty, value := mkApp2 (mkConst (chainName pre "qac" k)) (mkConst (pre ++ `forwardBase)) (mkConst (pre ++ `tokenBase)) })
+
+end Host.Load.ReadTail
