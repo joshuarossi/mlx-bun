@@ -1,4 +1,5 @@
 import host.ts.Props
+import host.ts.StringIndex
 namespace Host.Ts
 
 /-! # Builtins
@@ -638,6 +639,21 @@ where
     | .num (.lit .nan), .num (.lit .nan) => .pure true
     | a, b => strictEq F s a b
 
+def mapEntryValueLinear (s : St F.S) (k : Val) (es : List (Val × Val)) : M Val :=
+  .bind (findEntry F s k es 0) fun
+    | some i => .pure ((nth? es i).elim .undef Prod.snd)
+    | none => .pure .undef
+
+/-- Preserve short-list traversal and all non-string SameValueZero requests.
+Large string-key maps derive an index from their unchanged ordered entries. -/
+@[implemented_by mapEntryValueLinear]
+def mapEntryValue (s : St F.S) (k : Val) (es : List (Val × Val)) : M Val :=
+  match k with
+  | .str cs => bif KeyIndex.large es 16 then
+      M.pure ((KeyIndex.lookup (StringIndex.buildValues es) (pack cs)).getD .undef)
+      else mapEntryValueLinear F s k es
+  | _ => mapEntryValueLinear F s k es
+
 def mapOf (s : St F.S) (this : Val) : Option (Nat × Obj × List (Val × Val)) :=
   match this with
   | .obj a => match s.obj? a with
@@ -667,9 +683,7 @@ def pairsOf (s : St F.S) : List Val → Option (List (Val × Val))
 def mapN (s : St F.S) (this : Val) (args : List Val) : MapN → RS F
   | .ctor => ctor aMapProto
   | .weakCtor => ctor aWeakMapProto
-  | .get => withMap fun _ _ es => .bind (findEntry F s (arg args 0) es 0) fun
-    | some i => retS F s ((nth? es i).elim .undef Prod.snd)
-    | none => retS F s .undef
+  | .get => withMap fun _ _ es => .bind (mapEntryValue F s (arg args 0) es) fun v => retS F s v
   | .has => withMap fun _ _ es => .bind (findEntry F s (arg args 0) es 0) fun r => retS F s (.bool r.isSome)
   | .set => withMap fun a o es => .bind (findEntry F s (arg args 0) es 0) fun
     | some i => retS F (s.setObj a { o with kind := .map (setNth (.undef, .undef) es i (arg args 0, arg args 1)) }) this

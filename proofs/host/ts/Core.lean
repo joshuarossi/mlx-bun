@@ -1,5 +1,6 @@
 import host.ts.Value
 import host.ts.Source
+import host.ts.KeyIndex
 namespace Host.Ts
 
 /-! # Machine primitives: names, heap, numbers, conversions, buffers
@@ -62,10 +63,54 @@ def findPropImpl (k : PKey) : Props → Option PropV
   | (j, p) :: ps => bif keyEq k j then some p else findPropImpl k ps
 
 @[implemented_by findPropImpl]
-def findProp (k : PKey) (ps : Props) : Option PropV :=
+def findPropLinear (k : PKey) (ps : Props) : Option PropV :=
   List.rec (motive := fun _ => Nat → Option PropV) (fun _ => none)
     (fun q _ ih c => Prod.rec (motive := fun _ => Option PropV) (fun j p => brec (Nat.beq c j.code) (some p) (ih c)) q)
     ps k.code
+
+def propIndexImpl : Props → KeyIndex.Index PropV
+  | [] => .nil
+  | (k, p) :: ps => KeyIndex.add (propIndexImpl ps) k.code p
+
+@[implemented_by propIndexImpl]
+def propIndex (ps : Props) : KeyIndex.Index PropV :=
+  List.rec (motive := fun _ => KeyIndex.Index PropV) .nil
+    (fun p _ ih => KeyIndex.add ih p.1.code p.2) ps
+
+theorem propIndex_cons (k : PKey) (p : PropV) (ps : Props) :
+    propIndex ((k, p) :: ps) = KeyIndex.add (propIndex ps) k.code p := rfl
+
+theorem findPropLinear_cons (k j : PKey) (p : PropV) (ps : Props) :
+    findPropLinear k ((j, p) :: ps) =
+      brec (Nat.beq k.code j.code) (some p) (findPropLinear k ps) := rfl
+
+/-- The index returns the same first descriptor, even with duplicates and
+hash collisions. This applies to every list produced by a property update. -/
+theorem propIndex_lookup (ps : Props) (k : PKey) :
+    KeyIndex.lookup (propIndex ps) k.code = findPropLinear k ps := by
+  induction ps with
+  | nil => rfl
+  | cons p ps ih =>
+    rcases p with ⟨j, p⟩
+    rw [propIndex_cons, KeyIndex.lookup_add, ih, findPropLinear_cons]
+    by_cases h : k.code = j.code
+    · simp [h, brec]
+    · have hb : Nat.beq k.code j.code = false := by
+        cases he : Nat.beq k.code j.code
+        · rfl
+        · exact False.elim (h (Nat.eq_of_beq_eq_true he))
+      simp [Ne.symm h, hb, brec]
+
+/-- The entry list stays authoritative; only large-list reads derive an index.
+Native state generation continues to use the original traversal. -/
+@[implemented_by findPropImpl]
+def findProp (k : PKey) (ps : Props) : Option PropV :=
+  brec (KeyIndex.large ps 16) (KeyIndex.lookup (propIndex ps) k.code) (findPropLinear k ps)
+
+theorem findProp_eq_linear (k : PKey) (ps : Props) : findProp k ps = findPropLinear k ps := by
+  unfold findProp
+  rw [propIndex_lookup]
+  cases KeyIndex.large ps 16 <;> rfl
 
 def setPropLImpl (k : PKey) (p : PropV) : Props → Props
   | [] => [(k, p)]
