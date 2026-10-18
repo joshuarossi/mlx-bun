@@ -251,7 +251,8 @@ def sliceDynamic (v start : Value) (axes sizes : List Nat) : Option Value :=
 def map1 (op : BF → BF) (v : Value) : Option Value :=
   if v.dtype = .bfloat16 then some { v with elems := fun i => bfWord (op (bf (v.elems i))) } else none
 
--- Same-shape binary operations (no broadcasting occurs on the route).
+-- Same-shape binary operations used in decode. Load-time addition also
+-- broadcasts a scalar; that case is handled explicitly by `add` below.
 def map2 (op : BF → BF → BF) (a b : Value) : Option Value :=
   if a.dtype = .bfloat16 ∧ b.dtype = .bfloat16 ∧ a.shape = b.shape then
     some { a with elems := fun i => bfWord (op (bf (a.elems i)) (bf (b.elems i))) }
@@ -415,7 +416,35 @@ noncomputable def sdpa (M : MlxContract C) (q k v : Value) (scale : Float32) : O
 -- unary.cpp / binary.cpp on bf16 operands (unary_ops.h, binary_ops.h).
 noncomputable def sigmoid (M : MlxContract C) (v : Value) : Option Value := map1 (Attention.OutputGate.sigmoid M.sigmoid) v
 def multiply (a b : Value) : Option Value := map2 BFloat16Arithmetic.mul a b
-def add (a b : Value) : Option Value := map2 BFloat16Arithmetic.add a b
+/-- BF16 addition on equal shapes or a right-hand scalar. The latter is the
+normalization-weight `+ 1` in the actual loader: MLX `ops.cpp` broadcasts the
+inputs, and `binary_vs` reads the scalar's element zero for every output.
+Other broadcast patterns remain outside this partial route model. -/
+def add (a b : Value) : Option Value :=
+  if a.shape = b.shape then map2 BFloat16Arithmetic.add a b
+  else if a.dtype = .bfloat16 ∧ b.dtype = .bfloat16 ∧ b.shape = [] then
+    some { a with elems := fun i => bfWord (BFloat16Arithmetic.add (bf (a.elems i)) (bf (b.elems 0))) }
+  else none
+
+theorem add_same (a b : Value) (h : a.shape = b.shape) :
+    add a b = map2 BFloat16Arithmetic.add a b := by simp [add, h]
+
+theorem add_scalar_right (a b : Value) (ha : a.dtype = .bfloat16)
+    (hb : b.dtype = .bfloat16) (hs : b.shape = []) (hn : a.shape ≠ []) :
+    add a b = some { a with elems := (fun i =>
+      bfWord (BFloat16Arithmetic.add (bf (a.elems i)) (bf (b.elems 0)))) } := by
+  simp [add, ha, hb, hs, hn]
+
+theorem add_exists (a b : Value) (ha : a.dtype = .bfloat16) (hb : b.dtype = .bfloat16)
+    (hs : a.shape = b.shape ∨ b.shape = []) :
+    ∃ w, add a b = some w ∧ w.dtype = .bfloat16 ∧ w.shape = a.shape := by
+  by_cases he : a.shape = b.shape
+  · simp only [add_same a b he, map2, ha, hb, he, and_self, ↓reduceIte]
+    exact ⟨_, rfl, rfl, rfl⟩
+  · have hbshape : b.shape = [] := hs.resolve_left he
+    unfold add
+    rw [ite_eq_right he, ite_eq_left ⟨ha, hb, hbshape⟩]
+    exact ⟨_, rfl, ha, rfl⟩
 
 -- mlx_conv1d(in [1,4,C], w [C,4,1], stride 1, padding 0, dilation 1,
 -- groups C): conv.cpp:1551 selects depthwise_conv_1d (Convolution.selected).

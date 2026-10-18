@@ -91,6 +91,13 @@ theorem broadcast_self (a : List Dim) : Pure (broadcast a a) (some a) := by
   simp only [List.reverse_reverse]
   exact Pure.ret _
 
+theorem broadcast_scalar_right (a : List Dim) : Pure (broadcast a []) (some a) := by
+  have hg (xs : List Dim) : Pure (broadcast.go xs []) (some xs.reverse) := by
+    cases xs <;> exact Pure.ret _
+  unfold broadcast
+  refine Pure.bind (hg a.reverse) ?_
+  simpa only [List.reverse_reverse] using (Pure.ret (some a))
+
 /-! ## Shape-preserving operations -/
 
 theorem infers_unary (op : List Char) (s : List Dim) (d : Nat) :
@@ -103,6 +110,13 @@ theorem infers_binary_same (op : List Char) (s : List Dim) (d e : Nat) :
   intro β k
   simp only [infer]
   exact (broadcast_self s β _)
+
+theorem infers_binary_scalar_right (op : List Char) (s : List Dim) (d e : Nat) :
+    Infers (.binary op) [(s, d), ([], e)] s (binaryDtype op d e) := by
+  refine ⟨.node s (binaryDtype op d e), ?_, rfl, rfl⟩
+  intro β k
+  simp only [infer]
+  exact broadcast_scalar_right s β _
 
 /-! ## Agreement, operation by operation -/
 
@@ -146,7 +160,20 @@ theorem multiply_shape (a b w : Value) (h : Host.Mlx.multiply a b = some w) :
 
 theorem add_shape (a b w : Value) (h : Host.Mlx.add a b = some w) :
     Infers (.binary chars!"add") [(natDims a.shape, a.dtype.code), (natDims b.shape, b.dtype.code)]
-      (natDims w.shape) w.dtype.code := map2_shape _ _ (by decide +kernel) a b w h
+      (natDims w.shape) w.dtype.code := by
+  unfold Host.Mlx.add at h
+  split at h
+  · exact map2_shape _ _ (by decide +kernel) a b w h
+  · split at h
+    · next hc =>
+      cases h
+      obtain ⟨ha, hb, hs⟩ := hc
+      rw [ha, hb, hs]
+      have hn : binaryDtype chars!"add" dtBf16 dtBf16 = dtBf16 := by decide +kernel
+      have hh := infers_binary_scalar_right chars!"add" (natDims a.shape) dtBf16 dtBf16
+      rw [hn] at hh
+      exact hh
+    · cases h
 
 theorem rowwise_shape (n : Nat) (f : Nat → (Fin n → BF) → Fin n → BF)
     (v w : Value) (h : rowwise n f v = some w) :
@@ -313,21 +340,25 @@ theorem dequantizeRow_shape (wq sc bi w : Value) (g : Nat) (hs : sc.dtype = .bfl
 theorem takeAxis0_shape (table ids w : Value) (h : Host.Mlx.takeAxis0 table ids = some w) :
     Infers (.take 0) [(natDims table.shape, table.dtype.code), (natDims ids.shape, ids.dtype.code)]
       (natDims w.shape) w.dtype.code := by
-  unfold Host.Mlx.takeAxis0 takeRows at h
-  split at h
-  · next hid =>
+  have hh : isInteger ids.dtype.code = true ∧ takeRows table ids = some w := by
+    unfold Host.Mlx.takeAxis0 at h
     split at h
-    · next rows cols ht =>
-      cases h
-      refine ⟨.node (natDims (ids.shape ++ [cols])) table.dtype.code, ?_, rfl, rfl⟩
-      rw [ht, hid]
-      have hint : isInteger Dtype.uint32.code = true := by decide +kernel
-      have hb : Nat.blt 0 (len (natDims [rows, cols])) = true := rfl
-      intro β k
-      simp only [infer, hb, hint, Bool.and_true, Bool.cond_true, natDims_append]
-      rfl
-    · cases h
-  · cases h
+    · next hid => exact ⟨hid ▸ (by decide +kernel), h⟩
+    · split at h
+      · next hid => exact ⟨hid.1 ▸ (by decide +kernel), h⟩
+      · cases h
+  obtain ⟨hint, hv⟩ := hh
+  unfold takeRows at hv
+  split at hv
+  · next rows cols ht =>
+    cases hv
+    refine ⟨.node (natDims (ids.shape ++ [cols])) table.dtype.code, ?_, rfl, rfl⟩
+    rw [ht]
+    have hb : Nat.blt 0 (len (natDims [rows, cols])) = true := rfl
+    intro β k
+    simp only [infer, hb, hint, Bool.and_true, Bool.cond_true, natDims_append]
+    rfl
+  · cases hv
 
 theorem natDims_map {α : Type} (f : α → Nat) : ∀ (l : List α), natDims (l.map f) = l.map (fun a => Dim.lit (f a : Int))
   | [] => rfl

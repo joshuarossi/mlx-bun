@@ -339,7 +339,8 @@ theorem delta_mixer (l : ResidualDelta.Layer) (w : DeltaWeights) (hl : DeltaLoad
 theorem add_row (a b : Value) (x y : Fin m → BF) (ha : Row a m x) (hb : Row b m y) :
     ∃ p, add a b = some p ∧ Row p m (fun j => BFloat16Arithmetic.add (x j) (y j)) := by
   have op : add a b = some { a with elems := fun i => bfWord (BFloat16Arithmetic.add (bf (a.elems i)) (bf (b.elems i))) } := by
-    unfold add map2; rw [ite_eq_left ⟨ha.1, hb.1, ha.2.1.trans hb.2.1.symm⟩]
+    rw [add_same a b (ha.2.1.trans hb.2.1.symm)]
+    unfold map2; rw [ite_eq_left ⟨ha.1, hb.1, ha.2.1.trans hb.2.1.symm⟩]
   refine ⟨_, op, Row.mk ha.1 ha.2.1 fun j => ?_⟩
   dsimp only
   rw [bf_word, Row.elems ha j, Row.elems hb j]
