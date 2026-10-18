@@ -4,7 +4,7 @@ namespace Host.Ts.Owned.Parametric
 
 /-- Both original typed-array allocations leave all earlier heap addresses
 untouched. The two bounded-store hypotheses are discharged by one bound. -/
-theorem newTyped_heap_below (F : Ffi) (s : St F.S) (k : EltK) (proto : Nat)
+theorem newTyped_ret_heap_below (F : Ffi) (s : St F.S) (k : EltK) (proto : Nat)
     (bs : List Byte) (count a : Nat) (old : a < s.next) (bound : s.next+1 < 2^64) :
     ((newTyped F s k proto bs count).2.ret (.obj (s.next+1))).heap.get a = s.heap.get a := by
   have hb : s.next < 2^64 := by omega

@@ -55,7 +55,7 @@ theorem transport_heap (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt �
       (objectKindAt ((newTyped P.F s .u64 26 (cellParts .u64 (.big 0) 8 0) 1).2.ret (.obj (s.next+1))) (R.a 3126700)) := by
     simp only [objectKindAt,hn,buffer]
     exact role
-  exact ⟨_,hr,hs',actual,fun a ha => newTyped_heap_below P.F s .u64 26 (cellParts .u64 (.big 0) 8 0) 1 a ha bound⟩
+  exact ⟨_,hr,hs',actual,fun a ha => newTyped_ret_heap_below P.F s .u64 26 (cellParts .u64 (.big 0) 8 0) 1 a ha bound⟩
 theorem transport (NR : NumV → NumV → Prop) (FR : Ren → LSt → LSt → Prop)
     (R : Ren) (ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
