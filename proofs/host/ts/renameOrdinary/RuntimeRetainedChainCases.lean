@@ -79,6 +79,27 @@ host_retained_theorem automatic_inferred_ten := fun (notes : RetainedNotes) (ν�
       Source1.sourceRest Source1.sourceEnv::tailNotes) => by
   host_retained_chain P.F, [Source0.retained_transport,Source1.retained_transport,Source2.retained_transport,Source3.retained_transport,Source4.retained_transport,Source5.retained_transport,Source6.retained_transport,Source7.retained_transport,Source8.retained_transport,Source9.retained_transport] using h, inventory, inst
 
+host_retained_theorem automatic_inferred_split_ten := fun (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ (numberServer P.RestStream.micro0.micro0.S0) C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s0 s)
+    (fnRole thisRole pointerRole : Annotated.Value) (tailNotes : List Annotated.Tree)
+    (pointerEntry : notes.runtime.cells.cells Source0.address = some pointerRole)
+    (rankEntry : notes.runtime.cells.cells Source5.address = some (.literal (.lit (F64.ofNat 3))))
+    (stackNotes : notes.runtime.stack = argumentFrameNote false Source1.sourceKind fnRole thisRole []
+      Source1.sourceRest Source1.sourceEnv::tailNotes) => by
+  have earlier := first_five notes ν₀ ν C₀ C R FR live framed before after old old' s inst h inventory fnRole thisRole pointerRole tailNotes pointerEntry rankEntry stackNotes
+  have post5 := Classical.choose_spec earlier
+  have h5 := post5.2.1
+  have i5 := post5.2.2.1
+  have q5 := post5.2.2.2
+  host_retained_chain_after P.F, [Source5.retained_transport,Source6.retained_transport,Source7.retained_transport,Source8.retained_transport,Source9.retained_transport] using h5, i5, q5 continuing_run post5.1 initial_relation h
+
+host_assert_retained_schema automatic_inferred_split_ten, 10
+
 open Lean Elab Command in
 run_cmd do
   for (source,expected) in [("theorem missing_rank (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)\n    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)\n    (before after : List Val) (old old' : List Event) (s : St P.F.S)\n    (inst : Inst ν₀ (numberServer P.RestStream.micro0.micro0.S0) C₀)\n    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'\n      P.RestStream.micro0.micro0.s0 s)\n    (inventory : RetainedInventory notes ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s0 s)\n    (fnRole thisRole pointerRole : Annotated.Value) (tailNotes : List Annotated.Tree)\n    (pointerEntry : notes.runtime.cells.cells Source0.address = some pointerRole)\n    (stackNotes : notes.runtime.stack = argumentFrameNote false Source1.sourceKind fnRole thisRole []\n      Source1.sourceRest Source1.sourceEnv::tailNotes) :\n    ∃ result, runC P.F 10 s C = some (result,C) ∧\n      Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'\n        P.RestStream.micro0.micro0.s10 result ∧\n      RetainedInventory (notes.withRuntime {notes.runtime with control := (callNote fnRole thisRole\n        [pointerRole,.literal (.lit (F64.ofNat 0)),\n          .literal (.bin .mul (.lit (F64.ofNat 3)) (.lit (F64.ofNat 4)))]),stack := tailNotes})\n        ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s10 result ∧\n      Inst ν₀ (numberServer P.RestStream.micro0.micro0.S10) C₀ := by\n  host_retained_chain P.F, [Source0.retained_transport,Source1.retained_transport,Source2.retained_transport,Source3.retained_transport,Source4.retained_transport,Source5.retained_transport,Source6.retained_transport,Source7.retained_transport,Source8.retained_transport,Source9.retained_transport] using h, inventory, inst","rule premises"),

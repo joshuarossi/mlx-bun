@@ -1,16 +1,20 @@
 import host.ts.RenameRetainedChainFacts
 import host.ts.RenameRouteComposition
+import host.ts.RenameParametricMapControl
 import Lean.Elab.Tactic
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Meta Tactic
+
+private def proofType (proof : Lean.Expr) : MetaM Lean.Expr := do
+  return (← instantiateMVars (← inferType proof)).consumeMData.headBeta.consumeMData
 
 private def sameType (left right : Lean.Expr) : MetaM Bool :=
   isDefEq left right
 
 private partial def proveFromContext (type : Lean.Expr) (fuel : Nat := 8) : MetaM (Option Lean.Expr) := do
   if fuel == 0 then return none
-  let type ← instantiateMVars type
+  let type := (← instantiateMVars type).consumeMData.headBeta.consumeMData
   if type.isAppOfArity ``Eq 3 then
     let saved ← saveState
     if ← sameType type.getAppArgs[1]! type.getAppArgs[2]! then
@@ -21,18 +25,46 @@ private partial def proveFromContext (type : Lean.Expr) (fuel : Nat := 8) : Meta
       let saved ← saveState
       if ← sameType declaration.type type then return some declaration.toExpr
       saved.restore
+  let args := type.getAppArgs
+  if type.isAppOfArity ``Parametric.LiveAfter 3 then
+    let left := mkApp args[0]! args[2]!
+    if let some proof ← proveFromContext left (fuel-1) then
+      return some (← mkAppOptM ``Or.inl #[some left,some (← mkEq args[2]! args[1]!),some proof])
+  else if type.isAppOfArity ``Parametric.CellsLive 4 then
+    if let some proof ← proveFromContext (mkApp args[0]! args[3]!) (fuel-1) then
+      return some (← mkAppM ``Parametric.CellsLive.grow #[args[0]!,args[1]!,args[2]!,args[3]!,proof])
+  else if type.isAppOfArity ``Parametric.ClosureLive 6 then
+    if let some proof ← proveFromContext (mkApp args[0]! args[5]!) (fuel-1) then
+      return some (← mkAppM ``Parametric.ClosureLive.grow #[args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,proof])
   let reduced ← withReducible (whnf type)
   if reduced.isAppOfArity ``Or 2 then
     if let some proof ← proveFromContext reduced.getAppArgs[0]! (fuel-1) then
-      return some (← mkAppM ``Or.inl #[proof])
+      return some (← mkAppOptM ``Or.inl #[some reduced.getAppArgs[0]!,some reduced.getAppArgs[1]!,some proof])
     if let some proof ← proveFromContext reduced.getAppArgs[1]! (fuel-1) then
-      return some (← mkAppM ``Or.inr #[proof])
+      return some (← mkAppOptM ``Or.inr #[some reduced.getAppArgs[0]!,some reduced.getAppArgs[1]!,some proof])
   if reduced.isConstOf ``True then return some (mkConst ``True.intro)
   return none
 
+private partial def constantOffset (expression base : Lean.Expr) (fuel : Nat := 16) : MetaM (Option Nat) := do
+  if fuel == 0 then return none
+  let saved ← saveState
+  if ← sameType expression base then return some 0
+  saved.restore
+  let expression ← instantiateMVars expression
+  let args := expression.getAppArgs
+  if expression.getAppFn.isConstOf ``Nat.add || expression.getAppFn.isConstOf ``HAdd.hAdd then
+    if args.size ≥ 2 then
+      if let some right ← getNatValue? (← whnf args.back!) then
+        if let some left ← constantOffset args[args.size-2]! base (fuel-1) then
+          return some (left+right)
+  let expression ← whnf expression
+  if expression.isAppOfArity ``Nat.succ 1 then
+    if let some rest ← constantOffset expression.getAppArgs[0]! base (fuel-1) then return some (rest+1)
+  return none
+
 private def guardFromEntry (initial current type : Lean.Expr) : MetaM (Option Lean.Expr) := do
-  let initialArgs := (← inferType initial).getAppArgs
-  let currentArgs := (← inferType current).getAppArgs
+  let initialArgs := (← proofType initial).getAppArgs
+  let currentArgs := (← proofType current).getAppArgs
   let firstSource := initialArgs[initialArgs.size-2]!
   let currentSource := currentArgs[currentArgs.size-2]!
   let firstNext ← mkAppM ``St.next #[firstSource]
@@ -44,7 +76,7 @@ private def guardFromEntry (initial current type : Lean.Expr) : MetaM (Option Le
       if let some a ← getNatValue? (← whnf address) then
         if firstValue ≤ a then
           let proof ← mkAppM ``chain_not_framed_fresh #[initial,address,← mkDecideProof (← mkLe firstNext address)]
-          if ← sameType (← inferType proof) type then return some proof
+          if ← sameType (← proofType proof) type then return some proof
     return none
   let args := type.getAppArgs
   let (lhs,limit,strict) ← if type.isAppOfArity ``LT.lt 4 then pure (args[2]!,args[3]!,true)
@@ -53,13 +85,9 @@ private def guardFromEntry (initial current type : Lean.Expr) : MetaM (Option Le
     else if type.isAppOfArity ``Nat.le 2 then pure (args[0]!,args[1]!,false) else return none
   let currentTarget := currentArgs.back!
   let targetNext ← mkAppM ``St.next #[currentTarget]
-  let required ← if ← sameType lhs targetNext then pure (mkNatLit 0)
-    else if strict then return none
-    else
-      let required ← mkFreshExprMVar (mkConst ``Nat)
-      unless ← sameType lhs (← mkAppM ``Nat.add #[targetNext,required]) do return none
-      instantiateMVars required
-  let some requiredValue ← getNatValue? (← whnf required) | return none
+  let some requiredValue ← constantOffset lhs targetNext | return none
+  if strict && requiredValue != 0 then return none
+  let required := mkNatLit requiredValue
   let some currentValue ← getNatValue? (← whnf (← mkAppM ``St.next #[currentSource])) | return none
   if currentValue < firstValue then return none
   let offset := mkNatLit (currentValue-firstValue)
@@ -79,12 +107,12 @@ private def guardFromEntry (initial current type : Lean.Expr) : MetaM (Option Le
         mkAppM ``chain_next_budget_le #[initial,current,offset,required,allowance,limit,← mkEqRefl sourceRhs,
           ← mkDecideProof (← mkLe (← mkAppM ``Nat.add #[offset,required]) allowance),budget]
       else return none
-  if ← sameType (← inferType proof) type then return some proof
+  if ← sameType (← proofType proof) type then return some proof
   return none
 
 private partial def expose (goal : MVarId) (proof : Lean.Expr) : MetaM (MVarId × Array Lean.Expr) :=
   goal.withContext do
-    let original ← inferType proof
+    let original ← proofType proof
     let type ← if original.getAppFn.isConstOf ``Inst then pure original else withReducible (whnf original)
     if type.isAppOfArity ``Exists 2 then
       let (field,goal) ← goal.note (← mkFreshUserName `transition) proof
@@ -101,13 +129,13 @@ private partial def expose (goal : MVarId) (proof : Lean.Expr) : MetaM (MVarId �
 
 private def factNamed (facts : Array Lean.Expr) (name : Lean.Name) : MetaM Lean.Expr := do
   for proof in facts do
-    if (← inferType proof).getAppFn.isConstOf name then return proof
-  throwError "host_retained_chain: transition did not retain {name}; derived types: {MessageData.joinSep (← facts.toList.mapM fun fact => return MessageData.ofExpr (← inferType fact)) m!"\n"}"
+    if (← proofType proof).getAppFn.isConstOf name then return proof
+  throwError "host_retained_chain: transition did not retain {name}; derived types: {MessageData.joinSep (← facts.toList.mapM fun fact => return MessageData.ofExpr (← proofType fact)) m!"\n"}"
 
 private def factOfType (facts : Array Lean.Expr) (type : Lean.Expr) : MetaM Lean.Expr := do
   for proof in facts do
     let saved ← saveState
-    let candidate ← inferType proof
+    let candidate ← proofType proof
     if ← withReducible (isDefEq candidate type) then return proof
     saved.restore
     if candidate.getAppFn == type.getAppFn &&
@@ -133,36 +161,54 @@ private partial def normalStack (stack : Lean.Expr) : MetaM Lean.Expr := do
     mkAppM ``List.cons #[← whnf stack.getAppArgs[1]!,← normalStack stack.getAppArgs[2]!]
   else pure stack
 
+private def compactNotes (notes : Lean.Expr) : MetaM Lean.Expr := do
+  let selectors := #[``RetainedNotes.runtime,``RetainedNotes.privates,``RetainedNotes.captures,
+    ``RetainedNotes.arrays,``RetainedNotes.publicFields,``RetainedNotes.buffers,
+    ``RuntimeNotes.control,``RuntimeNotes.stack,``RuntimeNotes.cells,``Notes.cells,
+    ``PrivateNotes.owners,``NativeCaptureNotes.owners,``ArrayNotes.owners,``PublicNotes.fields,``BufferNotes.owners]
+  let structures := #[``RetainedNotes,``RuntimeNotes,``Notes,``PrivateNotes,``NativeCaptureNotes,
+    ``ArrayNotes,``PublicNotes,``BufferNotes]
+  Meta.transform notes (pre := fun expression => do
+    let selected := match expression with
+      | .proj name _ _ => structures.contains name
+      | _ => match expression.getAppFn with
+        | .const name _ => selectors.contains name
+        | _ => false
+    if selected then
+      let reduced ← whnf expression
+      if reduced != expression then return .visit reduced
+    return .continue) (skipConstInApp := true)
+
 private def normalNotes (notes : Lean.Expr) : MetaM Lean.Expr := do
   let runtime ← mkAppM ``RetainedNotes.runtime #[notes]
   let runtime ← mkAppM ``RuntimeNotes.mk #[
     ← whnf (← mkAppM ``RuntimeNotes.control #[runtime]),
     ← normalStack (← mkAppM ``RuntimeNotes.stack #[runtime]),
     ← whnf (← mkAppM ``RuntimeNotes.cells #[runtime])]
-  mkAppM ``RetainedNotes.mk #[runtime,
+  compactNotes (← mkAppM ``RetainedNotes.mk #[runtime,
     ← whnf (← mkAppM ``RetainedNotes.privates #[notes]),
     ← whnf (← mkAppM ``RetainedNotes.captures #[notes]),
     ← whnf (← mkAppM ``RetainedNotes.arrays #[notes]),
     ← whnf (← mkAppM ``RetainedNotes.publicFields #[notes]),
-    ← whnf (← mkAppM ``RetainedNotes.buffers #[notes])]
+    ← whnf (← mkAppM ``RetainedNotes.buffers #[notes])])
 
 private def instantiateRule (rule initial state inventory inst : Lean.Expr) : MetaM Lean.Expr := do
-  let (arguments,_,_) ← forallMetaTelescope (← inferType rule)
+  let (arguments,_,_) ← forallMetaTelescope (← proofType rule)
   for argument in arguments do
-    let type ← inferType argument
+    let type ← proofType argument
     let value := if type.getAppFn.isConstOf ``Parametric.StateR then some state
       else if type.getAppFn.isConstOf ``RetainedInventory then some inventory
       else if type.getAppFn.isConstOf ``Inst then some inst else none
     if let some value := value then
-      unless ← sameType type (← inferType value) do
-        throwError "host_retained_chain: current invariant {(← inferType value)} does not match source rule {type}"
+      unless ← sameType type (← proofType value) do
+        throwError "host_retained_chain: current invariant {(← proofType value)} does not match source rule {type}"
       argument.mvarId!.assign value
   -- Data roles are determined by the retained-note equalities. No source or
   -- target numeric bits are inspected to choose a meaning.
   for _ in [:3] do
     for argument in arguments do
-      if !(← argument.mvarId!.isAssigned) && (← isProp (← inferType argument)) then
-        let type ← inferType argument
+      if !(← argument.mvarId!.isAssigned) && (← isProp (← proofType argument)) then
+        let type ← proofType argument
         if let some proof ← proveFromContext type then argument.mvarId!.assign proof
         else
           let saved ← saveState
@@ -204,10 +250,21 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
     | none => pure state
   let mut inventory ← Term.elabTerm initialInventory none
   let mut inst ← Term.elabTerm initialInst none
-  unless (← inferType state).getAppFn.isConstOf ``Parametric.StateR &&
-      (← inferType entryState).getAppFn.isConstOf ``Parametric.StateR &&
-      (← inferType inventory).getAppFn.isConstOf ``RetainedInventory do
-    throwError "host_retained_chain: expected the current StateR and RetainedInventory proofs"
+  unless (← proofType state).getAppFn.isConstOf ``Parametric.StateR &&
+      (← proofType entryState).getAppFn.isConstOf ``Parametric.StateR &&
+      (← proofType inventory).getAppFn.isConstOf ``RetainedInventory do
+    throwError "host_retained_chain: expected the current StateR and RetainedInventory proofs; found {(← proofType state).getAppFn}, {(← proofType entryState).getAppFn}, {(← proofType inventory).getAppFn}"
+  let entryLive := (← proofType entryState).getAppArgs[4]!
+  let mut retainedAddresses : Array Lean.Expr := #[]
+  for declaration in (← getLCtx) do
+    unless declaration.isImplementationDetail do
+      let type := declaration.type.consumeMData.headBeta.consumeMData
+      if type.isApp then
+        let address := type.getAppArgs.back!
+        if (← proofType address).isConstOf ``Nat then
+          let saved ← saveState
+          if ← sameType type (mkApp entryLive address) then retainedAddresses := retainedAddresses.push address
+          saved.restore
   let mut goal ← getMainGoal
   let mut accumulated ← previousRun.mapM fun run => Term.elabTerm run none
   let mut finalFacts := #[]
@@ -215,15 +272,22 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
     unless rule.isConst do throwError "host_retained_chain: expected a named source rule"
     trace[Elab.debug] "retained chain applying {rule}"
     goal ← goal.withContext do
-      let source := (← inferType inventory).getAppArgs[8]!
+      let mut currentGoal := goal
+      let live := (← proofType inventory).getAppArgs[7]!
+      for address in retainedAddresses do
+        currentGoal ← currentGoal.withContext do
+          let type := mkApp live address
+          let some proof ← proveFromContext type | throwError "host_retained_chain: allocation failed to retain initial live resource {address} at {rule}; expected {type}"
+          return (← currentGoal.note (← mkFreshUserName `resourceLive) proof (some type)).2
+      let source := (← proofType inventory).getAppArgs[8]!
       let stack ← whnf (← mkAppM ``St.stack #[source])
       if stack.isAppOfArity ``List.cons 3 then
         let runtime ← mkAppM ``RetainedInventory.runtime #[inventory]
         let view ← mkAppM ``RuntimeInventory.stack_cons #[runtime,stack.getAppArgs[1]!,stack.getAppArgs[2]!,← mkEqRefl stack]
-        return (← goal.note (← mkFreshUserName `stackNotes) view).2
-      else return goal
+        return (← currentGoal.note (← mkFreshUserName `stackNotes) view).2
+      else return currentGoal
     let (nextGoal,nextState,nextInventory,nextInst,run,facts) ← goal.withContext do
-      let currentArgs := (← inferType inventory).getAppArgs
+      let currentArgs := (← proofType inventory).getAppArgs
       let source := currentArgs[8]!
       let target := currentArgs[9]!
       let server := currentArgs[5]!
@@ -232,7 +296,7 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
       nextGoal.withContext do
         let nextState ← factNamed facts ``Parametric.StateR
         let nextInventory ← factNamed facts ``RetainedInventory
-        let nextArgs := (← inferType nextInventory).getAppArgs
+        let nextArgs := (← proofType nextInventory).getAppArgs
         let nextServerName := rule.constName!.getPrefix ++ `nextServer
         unless (← getEnv).contains nextServerName do
           throwError "host_retained_chain: source rule has no checked next server {nextServerName}"
@@ -261,7 +325,7 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
           let normalized ← normalNotes nextArgs[1]!
           let definition ← nextGoal.define (← mkFreshUserName `notes) (mkConst ``RetainedNotes) normalized
           let (noteName,nextGoal) ← definition.intro1P
-          let inventoryType := mkAppN (← inferType nextInventory).getAppFn (nextArgs.set! 1 (mkFVar noteName))
+          let inventoryType := mkAppN (← proofType nextInventory).getAppFn (nextArgs.set! 1 (mkFVar noteName))
           let (inventoryName,nextGoal) ← nextGoal.note (← mkFreshUserName `inventory) nextInventory (some inventoryType)
           let nextInventory := mkFVar inventoryName
           return (nextGoal,nextState,nextInventory,nextInst,run,(facts.push nextInst).push nextInventory)
@@ -275,11 +339,11 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
   goal.withContext do
     let expected := (← instantiateMVars (← goal.getType)).consumeMData
     if expected.getAppFn.isMVar then
-      let target := (← inferType inventory).getAppArgs.back!
+      let target := (← proofType inventory).getAppArgs.back!
       let bodyFacts := #[run,state,inventory,inst]
-      let conclusion ← withLocalDeclD `result (← inferType target) fun result => do
+      let conclusion ← withLocalDeclD `result (← proofType target) fun result => do
         let types ← bodyFacts.mapM fun proof => do
-          let type ← inferType proof
+          let type ← proofType proof
           pure (type.replace fun expression => if expression == target then some result else none)
         let mut body := types.back!
         for type in types.toList.dropLast.reverse do body ← mkAppM ``And #[type,body]
@@ -348,7 +412,7 @@ generation; an equality leaf cannot pass as a complete retained transition. -/
 elab "host_assert_retained_schema " theoremName:ident ", " steps:num : command =>
   Elab.Command.liftTermElabM do
     let proof ← Term.elabTerm theoremName none
-    assertSchema (← inferType proof) (some steps.getNat)
+    assertSchema (← proofType proof) (some steps.getNat)
 
 /-- Infer the explicit reached annotation type from a connected proof, then
 submit it as an ordinary theorem. The result must be a closed proposition. -/
@@ -358,7 +422,7 @@ elab "host_retained_theorem " name:ident " := " proof:term : command => do
     let proof ← Term.elabTerm proof none
     Term.synthesizeSyntheticMVarsNoPostponing
     let proof ← instantiateMVars proof
-    let type ← instantiateMVars (← inferType proof)
+    let type ← instantiateMVars (← proofType proof)
     unless !proof.hasFVar && !proof.hasMVar && !type.hasFVar && !type.hasMVar && (← isProp type) do
       throwError "host_retained_theorem: expected a closed proof with an explicit proposition type"
     assertSchema type

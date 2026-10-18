@@ -36,6 +36,10 @@ elab "host_runtime_call_start " f:term ", " s:term " using " initial:term " to "
     Parametric.Driver.addData (pre ++ `initialServer) (← mkAppM ``numberServer #[initial])
     Parametric.Driver.addData (pre ++ `nextServer) (← mkAppM ``numberServer #[next])
   let n := "_root_." ++ pre.toString
+  let method ← liftTermElabM do
+    return (← whnf (mkConst (pre ++ `sourceMode))).isAppOfArity ``CallStart.method 1
+  let receiverRole := if method then "thisRole" else "(.undef : Annotated.Value)"
+  let receiverParameter := if method then "(thisRole : Annotated.Value)" else ""
   let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"
   let fact (tag proposition : String) := Parametric.Driver.emit (header ++ s!"theorem {n}.{tag} : {proposition} := by host_kernel_rfl")
   fact "source_control" s!"{n}.input.ctl = .ret (.obj {n}.sourceAddress)"
@@ -44,21 +48,21 @@ elab "host_runtime_call_start " f:term ", " s:term " using " initial:term " to "
     s!"{n}.sourceMode.kind (.obj {n}.sourceAddress) ({n}.sourceMode.receiver {n}.sourceThis) [] {n}.sourceArgs {n}.sourceEnv = {n}.output")
   fact "source_step" s!"interpS (step {n}.F {n}.input).run {n}.initialServer = some ({n}.output,{n}.nextServer)"
   let postNotes := "({notes with stack := tailNotes}.arguments " ++
-    s!"{n}.sourceMode.kind (.obj {n}.sourceAddress) (callReceiverNote {n}.sourceMode thisRole) [] {n}.sourceArgs {n}.sourceEnv)"
+    s!"{n}.sourceMode.kind (.obj {n}.sourceAddress) (callReceiverNote {n}.sourceMode {receiverRole}) [] {n}.sourceArgs {n}.sourceEnv)"
   Parametric.Driver.emit (header ++ s!"theorem {n}.runtime_transport
       (notes : RuntimeNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
       (FR : Ren → {n}.F.S → {n}.F.S → Prop) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
       (s : St {n}.F.S) (inst : Inst ν₀ {n}.initialServer C₀)
       (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.input s)
       (inventory : RuntimeInventory notes ν₀ ν C₀ C R live {n}.input s)
-      (thisRole : Annotated.Value) (tailNotes : List Annotated.Tree)
-      (stackNotes : notes.stack = callStartFrameNote {n}.sourceMode thisRole {n}.sourceArgs {n}.sourceEnv::tailNotes) :
+      {receiverParameter} (tailNotes : List Annotated.Tree)
+      (stackNotes : notes.stack = callStartFrameNote {n}.sourceMode {receiverRole} {n}.sourceArgs {n}.sourceEnv::tailNotes) :
       ∃ result, interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) ∧
       interpC (step {n}.F s).run C = some (result,C) ∧
       Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.output result ∧
       RuntimeInventory ({postNotes}) ν₀ ν C₀ C R live {n}.output result ∧ Inst ν₀ {n}.nextServer C₀ := by
       obtain ⟨receiver,frames,left,right,related,annotated⟩ := inventory.call_start_step {n}.F FR notes ν₀ ν C₀ C R live framed before after old old'
-        {n}.input s h {n}.sourceMode {n}.sourceAddress {n}.sourceThis thisRole {n}.sourceArgs {n}.sourceEnv {n}.sourceTail tailNotes
+        {n}.input s h {n}.sourceMode {n}.sourceAddress {n}.sourceThis {receiverRole} {n}.sourceArgs {n}.sourceEnv {n}.sourceTail tailNotes
         {n}.source_control {n}.source_frame stackNotes
       have source : interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) := by simpa only [{n}.source_post] using left
       exact ⟨_,source,right,{n}.source_post ▸ related,{n}.source_post ▸ annotated,
