@@ -90,6 +90,30 @@ theorem free_transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
   exact ⟨_,by simpa only [F,Host.Load.ffi,← source_free_post,freePost] using h₀,
     by simpa only [F,Host.Load.ffi] using ht,hr,rfl,rfl⟩
 
+/-- The exact original disposal also preserves every heap address and the
+allocation counter, so host occurrence annotations survive its return. -/
+theorem free_transport_heap (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → LSt → LSt → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' FreeCall.input s)
+    (role : (Host.Ts.Owned.Annotated.Value.handle 29371).Holds ν C R (callArgument s.ctl 0))
+    (signatureFrame : ¬ framed 4413) :
+    ∃ t, interpC (step F FreeCall.input).run C₀ = some (FreeCall.output,C₀) ∧
+      interpC (step F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' FreeCall.output t ∧
+      t.ffi = s.ffi ∧ t.ctl = .ret (.num zeroN) ∧ t.heap = s.heap ∧ t.next = s.next := by
+  have hk := FreeCall.source_kind
+  rw [FreeCall.source_caps] at hk
+  have hz : NumberRoles ν₀ ν C₀ C zeroN zeroN := ⟨.lit (F64.zero false),⟨rfl,rfl⟩⟩
+  obtain ⟨h₀,ht,hr⟩ := step_vector_free_from_source _ FR R C₀ C ν live framed before after old old'
+    FreeCall.input s h 4710 4413 29371 FreeCall.calleeObject FreeCall.signatureObject FreeCall.returns (.obj 4817)
+    FreeCall.source_control FreeCall.source_callee hk FreeCall.source_signature FreeCall.source_signature_kind
+    signatureFrame hz role
+  change StateR _ _ _ _ _ _ _ _ _ freePost _ at hr
+  rw [source_free_post] at hr
+  exact ⟨_,by simpa only [F,Host.Load.ffi,← source_free_post,freePost] using h₀,
+    by simpa only [F,Host.Load.ffi] using ht,hr,rfl,rfl,rfl,rfl⟩
+
 /-- Actual rest484 obtains rank from the owned node, allowing dimensions to
 vary while retaining their list length and every indexed native annotation. -/
 theorem ndim_transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
