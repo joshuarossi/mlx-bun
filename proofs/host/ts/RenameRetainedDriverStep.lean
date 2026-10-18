@@ -30,6 +30,9 @@ import host.ts.RenameRuntimeDriverPrivateAssign
 import host.ts.RenameRuntimeDriverPrivateObjectRead
 import host.ts.RenameRuntimeDriverObjectVariable
 import host.ts.RenameRuntimeDriverNullishAssignment
+import host.ts.RenameRuntimeDriverUndefinedVariable
+import host.ts.RenameRetainedUsingFrontend
+import host.ts.RenameRuntimeDriverNullishVariable
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -90,8 +93,10 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
             if cell.isAppOfArity ``Option.some 2 then
               let value ← whnf cell.getAppArgs[1]!
               if value.isAppOfArity ``Option.some 2 then
-                if (← whnf value.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+                let value ← whnf value.getAppArgs[1]!
+                if value.isAppOfArity ``Val.obj 1 then
                   return "host_retained_object_variable"
+                if value.isConstOf ``Val.undef then return "host_retained_undefined_variable"
           pure "host_retained_pure_step"
       else if expression.isConstOf ``Expr.this || expression.isAppOfArity ``Expr.priv 3 then
         pure "host_retained_heap_read"
@@ -106,6 +111,16 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if expression.isAppOfArity ``Expr.update 3 then pure "host_retained_update"
       else if expression.isAppOfArity ``Expr.assign 3 then
         let pattern ← whnf expression.getAppArgs[1]!
+        let op ← whnf expression.getAppArgs[0]!
+        if pattern.isAppOfArity ``Pat.id 1 && op.isAppOfArity ``AsgOp.log 1 &&
+            (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish then
+          let address ← whnf (← mkAppM ``lookupEnv #[pattern.getAppArgs[0]!,control.getAppArgs[1]!])
+          if address.isAppOfArity ``Option.some 2 then
+            let cell ← whnf (← mkAppM ``St.cell? #[s,address.getAppArgs[1]!])
+            if cell.isAppOfArity ``Option.some 2 then
+              let value ← whnf cell.getAppArgs[1]!
+              if value.isAppOfArity ``Option.some 2 && (← whnf value.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+                return "host_retained_nullish_variable"
         if pattern.isAppOfArity ``Pat.expr 1 then
           if (← whnf pattern.getAppArgs[0]!).isAppOfArity ``Expr.priv 3 then
             return "host_retained_private_assign"
@@ -166,6 +181,9 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.decl 4 then
+        if (← whnf inner.getAppArgs[0]!).isConstOf ``DeclKind.using then pure "host_retained_using"
+        else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.if_ 3 then
         if (← whnf control.getAppArgs[0]!).isConstOf ``Val.undef then pure "host_retained_undefined_branch"
         else pure "host_retained_branch"
