@@ -11,6 +11,11 @@ theorem setVec_existing (s : St) (a : Nat) (old nodes : List Nat)
   unfold setVec
   rw [ha]
 
+theorem setVec_fresh (s : St) (slot : Nat) (nodes : List Nat) (ha : s.obj? slot = none) :
+    setVec s slot nodes = s.newObj (.vec nodes) := by
+  unfold setVec
+  rw [ha]
+
 namespace Live
 variable {NR : NumV → NumV → Prop} {R : Ren}
   {NodeRel : Nat → Node → Node → Prop} {H N : Nat → Prop} {tail : List NumV} {s s' : St}
@@ -55,6 +60,16 @@ theorem setVec_existing (h : Live NR R NodeRel (fun _ => ObjectR NR R) H N tail 
   ⟨NativeRoles.setVec_existing s a old nodes hv,
     NativeRoles.setVec_existing s' (R.handle a) (old.map R.node) (nodes.map R.node) (h.vec_view a ha old hv),
     h.setObj a ha _ _ (.vec nodes) bs bt⟩
+
+theorem setVec_fresh (h : Live NR R NodeRel (fun _ => ObjectR NR R) H N tail s s')
+    (slot slot' : Nat) (nodes : List Nat) (hs : s.obj? slot = none) (ht : s'.obj? slot' = none)
+    (bs : s.next < 2^64) (bt : s'.next < 2^64) :
+    setVec s slot nodes = s.newObj (.vec nodes) ∧
+      setVec s' slot' (nodes.map R.node) = s'.newObj (.vec (nodes.map R.node)) ∧
+      Live NR R NodeRel (fun _ => ObjectR NR R) (fun a => a = s.next ∨ H a) N tail
+        (s.newObj (.vec nodes)).2 (s'.newObj (.vec (nodes.map R.node))).2 :=
+  ⟨NativeRoles.setVec_fresh s slot nodes hs,NativeRoles.setVec_fresh s' slot' (nodes.map R.node) ht,
+    h.newObj _ _ (.vec nodes) bs bt⟩
 
 end Live
 end Host.Mlx.Ffi.NativeRoles

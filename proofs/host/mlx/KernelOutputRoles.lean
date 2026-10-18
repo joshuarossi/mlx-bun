@@ -66,6 +66,17 @@ theorem kernel_outputs_objs (kh : Nat) (xs : List Nat) (c : Cfg) :
     rcases a with ⟨shape,dt⟩
     exact ih (s.addNode ⟨.kernel kh c index,xs,shape,dt⟩).2 (index+1)
 
+theorem kernel_outputs_next (kh : Nat) (xs : List Nat) (c : Cfg) :
+    ∀ (outputs : List (List Dim × Nat)) (s : St) (index : Nat),
+      (kernelApply.outs kh xs c s index outputs).1.next = s.next := by
+  intro outputs
+  induction outputs with
+  | nil => intro s index; rfl
+  | cons a outputs ih =>
+    intro s index
+    rcases a with ⟨shape,dt⟩
+    exact ih (s.addNode ⟨.kernel kh c index,xs,shape,dt⟩).2 (index+1)
+
 theorem call_kernelApply (s : St) (out kernel inputs config stream : Arg) :
     call s chars!"mlx_fast_metal_kernel_apply" [out,kernel,inputs,config,stream] =
       kernelApply s out kernel inputs config := by
