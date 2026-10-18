@@ -47,6 +47,38 @@ theorem NodeRel.replayed {roles : Nat → GraphNode} {ν₀ ν : Nat → F64} {C
     rw [freshRole] at absent
     cases absent
 
+theorem NodeRel.inferred {roles : Nat → GraphNode} {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren}
+    {boundary : Nat → Prop} {i fresh : Nat} {n₀ n : Node}
+    (h : NodeRel roles ν₀ ν C₀ C R boundary i n₀ n)
+    (closure : Nat) (primitive : Primitive) (captured inputs targetInputs : List Nat)
+    (shapeRole : Shape) (shape₀ shape : List Dim) (dtype : Nat)
+    (graph : (roles i).graph = some (primitive,captured))
+    (freshRole : roles fresh = ⟨shapeRole,dtype,some (.replayed closure primitive,inputs)⟩)
+    (mapped : targetInputs = inputs.map R.node)
+    (sourceShape : Shape.Holds ν₀ C₀ shapeRole shape₀) (targetShape : Shape.Holds ν C shapeRole shape) :
+    NodeRel roles ν₀ ν C₀ C R boundary fresh
+      ⟨.replayed closure n₀.prim,inputs,shape₀,dtype⟩
+      ⟨.replayed (R.handle closure) n.prim,targetInputs,shape,dtype⟩ := by
+  refine ⟨?_,?_,?_⟩
+  · rw [freshRole]
+    refine ⟨sourceShape,rfl,?_⟩
+    intro p ins he
+    have eq : (.replayed closure primitive,inputs) = (p,ins) := Option.some.inj he
+    cases eq
+    have hp := Primitive.Holds.replayed closure (h.source.graph primitive captured graph).1
+    have identityHandle : Owned.Annotated.identity.handle closure = closure := by rfl
+    rw [identityHandle] at hp
+    exact ⟨hp,by simp only [Owned.Annotated.identity,List.map_id_fun,id_eq]⟩
+  · rw [freshRole]
+    refine ⟨targetShape,rfl,?_⟩
+    intro p ins he
+    have eq : (.replayed closure primitive,inputs) = (p,ins) := Option.some.inj he
+    cases eq
+    exact ⟨.replayed closure (h.target.graph primitive captured graph).1,mapped⟩
+  · intro absent
+    rw [freshRole] at absent
+    cases absent
+
 def withReplayRole (roles : Nat → GraphNode) (old fresh closure : Nat) (inputs : List Nat) : Nat → GraphNode :=
   fun i => if i = fresh then match (roles old).graph with
     | some (p,_) => (roles old).replayRole closure p inputs

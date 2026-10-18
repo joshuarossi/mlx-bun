@@ -25,6 +25,26 @@ theorem broadcast_suffix (shape leading : List Dim) :
   simp only [List.reverse_append,List.reverse_reverse]
   rfl
 
+theorem broadcast_leading (shape leading : List Dim) :
+    broadcast (leading ++ shape) shape = M.pure (some (leading ++ shape)) := by
+  have go : ∀ shape leading : List Dim,
+      broadcast.go (shape ++ leading) shape = M.pure (some ((shape ++ leading).reverse)) := by
+    intro shape
+    induction shape with
+    | nil => intro leading; cases leading <;> rfl
+    | cons d ds ih =>
+      intro leading
+      simp only [List.cons_append,broadcast.go,dEq_self]
+      change (broadcast.go (ds ++ leading) ds).bind
+        (fun r => M.pure (r.map (· ++ [d]))) = _
+      rw [ih]
+      simp only [List.reverse_cons]
+      rfl
+  unfold broadcast
+  rw [List.reverse_append,go]
+  simp only [List.reverse_append,List.reverse_reverse]
+  rfl
+
 theorem binary_suffix {NR : NumV → NumV → Prop} (op : List Char)
     (shape shape' leading leading' : List Dim) (da db : Nat)
     (hs : Parametric.ShapeR NR shape shape') (hp : Parametric.ShapeR NR leading leading') :
