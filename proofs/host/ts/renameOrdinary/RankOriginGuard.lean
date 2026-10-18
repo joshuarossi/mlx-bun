@@ -1,0 +1,121 @@
+import host.ts.renameOrdinary.RankOriginBinding
+import host.ts.RenameRouteHeapFields
+import host.ts.RenameRouteDriverMapControl
+import host.ts.RenameParametricTests
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+set_option Elab.async false
+namespace Host.Load.Run.Full.Ordinary.RankOrigin
+open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric
+host_transport_binding P.F, P.micro3275.s10 to P.micro3275.s11 as Continue10
+host_transport_preparation P.F, P.micro3275.s11 to P.micro3275.s12 as Block11
+host_transport_map_control P.F, P.micro3275.s12 to P.micro3275.s13 as If12
+host_transport_structural P.F, P.micro3275.s13 to P.micro3275.s14 as Binary13
+host_transport_step P.F, P.micro3275.s14 to P.micro3275.s15 as Rank14
+host_transport_structural P.F, P.micro3275.s15 to P.micro3275.s16 as Left15
+host_transport_step P.F, P.micro3275.s16 to P.micro3275.s17 as Zero16
+host_transport_map_control P.F, P.micro3275.s18 to P.micro3275.s19 as Guard18
+noncomputable def comparisonInput : St LSt := P.micro3275.s17
+noncomputable def comparisonTail : List Frame := comparisonInput.stack.tail
+theorem comparison_control : comparisonInput.ctl = .ret (natV 0) := by host_kernel_rfl
+theorem comparison_frame : comparisonInput.stack = .e (.binR .seq (natV 3))::comparisonTail := by host_kernel_rfl
+theorem comparison_post : ({comparisonInput with stack := comparisonTail}.ret (.bool false)) = P.micro3275.s18 := by host_kernel_rfl
+
+/-- The rank-zero branch is decided from the initialized literal rank and the
+actual zero expression. The target guard and unchanged rank cell are derived. -/
+theorem rank_guard_transport (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+    (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+    (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.micro3275.s10 s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3)))) :
+    ∃ result, runC P.F 9 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.micro3275.s19 result ∧
+      result.heap = s.heap := by
+  let NR := NumberRoles ν₀ ν C₀ C
+  obtain ⟨s11,hr10,h11⟩ := Continue10.transport NR FR R C₀ C live framed before after old old' s h
+  obtain ⟨s12,hr11,h12⟩ := Block11.transport NR FR R C₀ C live framed before after old old' s11 h11
+  obtain ⟨s13,hr12,h13⟩ := If12.transport NR FR R C₀ C live framed before after old old' s12 h12
+  obtain ⟨s14,hr13,h14⟩ := Binary13.transport NR FR R C₀ C live framed before after old old' s13 h13
+  have hh11 := step_declaration_next_heap P.F NR FR R live framed before after old old'
+    Continue10.input s s11 C C h Continue10.sourceValue Continue10.sourceKind Continue10.sourceRest
+    Continue10.sourceEnv Continue10.sourceTail Continue10.source_control Continue10.source_frame hr10
+  have hh12 := step_block_next_heap P.F NR FR R live framed before after old old' Block11.input s11 s12 C C h11
+    Block11.sourceValue Block11.sourceStatement Block11.sourceRest Block11.sourceEnv Block11.sourceTail
+    Block11.source_control Block11.source_frame hr11
+  have hh13 := step_statement_heap P.F NR FR R live framed before after old old' If12.input s12 s13 C C h12
+    If12.sourceAction If12.sourceEnv If12.source_control hr12
+  have hh14 := step_descent_heap_from_source P.F NR FR R live framed before after old old' Binary13.input s13 s14 C C h13
+    Binary13.descent Binary13.sourceEnv Binary13.source_control hr13
+  have hh14all : s14.heap = s.heap := hh14.trans (hh13.trans (hh12.trans hh11))
+  have addr : Rank14.address = Variable5.address := by host_kernel_rfl
+  have hc14 := (h14.control_view Rank14.source_control).ev_view
+  have hl14 : lookupEnv Rank14.sourceName (R.env Rank14.sourceEnv) = some (R.a Rank14.address) := by
+    rw [lookupEnv_map,Rank14.source_lookup]; rfl
+  have hp14 : s14.heap.get (R.a Rank14.address) = some (.cell (some (natV 3))) := by rw [hh14all,addr]; exact rank
+  obtain ⟨v14,hr14,h15,_⟩ := Rank14.transport NR FR R C₀ C live framed before after old old' s14 h14
+  have fixed14 : interpC (step P.F s14).run C = some (s14.ret (natV 3),C) := by
+    rw [step_variable_eq P.F s14 Rank14.sourceName (R.env Rank14.sourceEnv) (R.a Rank14.address)
+      (natV 3) hc14 hl14 hp14]; rfl
+  have hv14 : v14 = natV 3 := by
+    have he := congrArg (fun p : St LSt × CSrv => p.1.ctl) (Option.some.inj (hr14.symm.trans fixed14))
+    exact Ctl.ret.inj he
+  subst v14
+  let s15 := s14.ret (natV 3)
+  obtain ⟨s16,hr15,h16⟩ := Left15.transport NR FR R C₀ C live framed before after old old' s15 h15
+  obtain ⟨fs,hf16,_,hh16⟩ := step_binary_left_saved_fields P.F NR FR R live framed before after old old'
+    Left15.input s15 s16 C C h15 (natV 3) Left15.sourceOp Left15.sourceRight Left15.sourceEnv
+    Left15.sourceTail Left15.source_frame rfl hr15
+  have op15 : Left15.sourceOp = .seq := by host_kernel_rfl
+  rw [op15] at hf16
+  obtain ⟨hr16,h17,_,_⟩ := Zero16.transport FR R ν₀ ν C₀ C live framed before after old old' s16 h16
+  let s17 := s16.ret Zero16.sourceValue
+  have zero : Zero16.sourceValue = natV 0 := by host_kernel_rfl
+  have hc17 : s17.ctl = .ret (natV 0) := congrArg Ctl.ret zero
+  have hf17 : s17.stack = .e (.binR .seq (natV 3))::fs := hf16
+  have nonzero : F64.test .eq (F64.ofNat 3) (F64.ofNat 0) = false := by decide +kernel
+  obtain ⟨_,hr17,h18raw⟩ := step_comparison_roles Host.Load.ffi FR R ν₀ ν C₀ C live framed before after old old'
+    comparisonInput s17 h17 .seq (.lit (F64.ofNat 3)) (.lit (F64.ofNat 3)) (.lit (F64.ofNat 0)) (.lit (F64.ofNat 0))
+    (.lit (F64.ofNat 3)) (.lit (F64.ofNat 0)) comparisonTail fs
+    (NumRole.literal ν₀ ν C₀ C _) (NumRole.literal ν₀ ν C₀ C _)
+    comparison_control hc17 comparison_frame hf17 false nonzero nonzero
+  let s18 := ({s17 with stack := fs}.ret (.bool false))
+  have h18 : StateR NR FR R live framed before after old old' P.micro3275.s18 s18 := comparison_post ▸ h18raw
+  obtain ⟨result,hr18,h19⟩ := Guard18.transport NR FR R C₀ C live framed before after old old' s18 h18
+  have hh19 := step_if_heap P.F NR FR R live framed before after old old' Guard18.input s18 result C C h18
+    Guard18.sourceGuard Guard18.sourceYes Guard18.sourceNo Guard18.sourceEnv Guard18.sourceTail
+    Guard18.source_control Guard18.source_frame hr18
+  have hh : result.heap = s.heap := hh19.trans (hh16.trans hh14all)
+  refine ⟨result,?_,h19,hh⟩
+  apply runC_cons P.F 8 s s11 result C C C (h.control.isHalt_eq.trans (by host_kernel_rfl)) hr10
+  apply runC_cons P.F 7 s11 s12 result C C C (h11.control.isHalt_eq.trans (by host_kernel_rfl)) hr11
+  apply runC_cons P.F 6 s12 s13 result C C C (h12.control.isHalt_eq.trans (by host_kernel_rfl)) hr12
+  apply runC_cons P.F 5 s13 s14 result C C C (h13.control.isHalt_eq.trans (by host_kernel_rfl)) hr13
+  apply runC_cons P.F 4 s14 s15 result C C C (h14.control.isHalt_eq.trans (by host_kernel_rfl)) hr14
+  apply runC_cons P.F 3 s15 s16 result C C C (h15.control.isHalt_eq.trans (by host_kernel_rfl)) hr15
+  apply runC_cons P.F 2 s16 s17 result C C C (h16.control.isHalt_eq.trans (by host_kernel_rfl)) hr16
+  apply runC_cons P.F 1 s17 s18 result C C C (h17.control.isHalt_eq.trans (by host_kernel_rfl)) hr17
+  apply runC_cons P.F 0 s18 result result C C C (h18.control.isHalt_eq.trans (by host_kernel_rfl)) hr18
+  rfl
+
+theorem initialize_rank_and_guard (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+    (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+    (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' input s)
+    (NodeRel : Nat → Host.Mlx.Ffi.Node → Host.Mlx.Ffi.Node → Prop)
+    (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (H N : Nat → Prop) (tail : List NumV)
+    (native : Host.Mlx.Ffi.NativeRoles.Live (NumberRoles ν₀ ν C₀ C) R NodeRel ObjRel H N tail input.ffi.mlx s.ffi.mlx)
+    (shape : ∀ i n n', NodeRel i n n' → Host.Mlx.Ffi.Parametric.ShapeR (NumberRoles ν₀ ν C₀ C) n.shape n'.shape)
+    (signatureFrame : ¬ framed signature) (handleLive : H 29363)
+    (handleRole : (Annotated.Value.handle 29363).Holds ν C R (callArgument s.ctl 0))
+    (bound : s.next ≤ 2^64) :
+    ∃ result, runC P.F 18 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.micro3275.s19 result ∧
+      result.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))) := by
+  obtain ⟨s10,hr10,h10,rank10⟩ := initialize_rank FR R ν₀ ν C₀ C live framed before after old old' s h
+    NodeRel ObjRel H N tail native shape signatureFrame handleLive handleRole bound
+  obtain ⟨result,hr19,h19,heap19⟩ := rank_guard_transport FR R ν₀ ν C₀ C live framed before after old old'
+    s10 h10 rank10
+  refine ⟨result,runC_join P.F hr10 hr19,h19,?_⟩
+  rw [heap19]
+  exact rank10
+
+end Host.Load.Run.Full.Ordinary.RankOrigin
