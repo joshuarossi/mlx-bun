@@ -39,7 +39,7 @@ theorem shape_return_heap_transport (NR : NumV → NumV → Prop) (FR : Ren → 
 
 /-- The actual native shape's fixed second dimension is read through its byte
 view, returned as a JS array, and initialized into the real S binding. -/
-theorem shape_sequence_origin
+theorem shape_sequence_origin_frame
     (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv)
     (roles : Nat → Host.Mlx.Ffi.Annotated.GraphNode)
     (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
@@ -55,10 +55,12 @@ theorem shape_sequence_origin
     ∃ result, runC P.F 12 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R (LiveAfter live ShapeSpread.input.next)
         framed before after old old' P.RestStream.micro0.micro0.s25 result ∧
-      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ LiveAfter live ShapeSpread.input.next Binding20.sourceAddress := by
+      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ LiveAfter live ShapeSpread.input.next Binding20.sourceAddress ∧
+      ∀ a, live a → a ≠ Binding20.sourceAddress → a ≠ Binding22.sourceAddress →
+        result.heap.get (R.a a) = s.heap.get (R.a a) := by
   let nr := NumberRoles ν₀ ν C₀ C
   let live' := LiveAfter live ShapeSpread.input.next
-  obtain ⟨s14,hr14,h14,node,relation,arrayHeap⟩ := ShapeSpread.transport_fields FR R ν₀ ν C₀ C live framed
+  obtain ⟨s14,hr14,h14,node,relation,arrayHeap,frame14⟩ := ShapeSpread.transport_fields_frame FR R ν₀ ν C₀ C live framed
     before after old old' s h roles ObjRel boundary H N tail native nativeHandle region prototypeLive prototypeFixed bound
   obtain ⟨d,hd,hrole⟩ := Host.Ts.Owned.Parametric.ListR.nth_some relation.target.shape 1 (.literal (.lit (F64.ofNat 1))) dimension
   have deq := Host.Mlx.Ffi.Annotated.Dimension.literal_one hrole
@@ -79,9 +81,32 @@ theorem shape_sequence_origin
     simp only [Nat.add_zero,hn] at ht
     exact ht.symm.trans hf
   have next18 : s18.next = s14.next := h14.target_next_eq h18 (by host_kernel_rfl)
-  obtain ⟨result,hr25,h25,stored,cellLive⟩ := shape_binding_sequence_transport nr FR R C₀ C live' framed before after old old'
+  obtain ⟨result,hr25,h25,stored,cellLive,frame25⟩ := shape_binding_sequence_frame_transport nr FR R C₀ C live' framed before after old old'
     s18 h18 notFramed (by omega) vs sequence at18
   have one : runC P.F 1 s C = some (s14,C) := runC_cons P.F 0 s s14 s14 C C C
     (h.control.isHalt_eq.trans (by host_kernel_rfl)) hr14 rfl
-  exact ⟨result,runC_join P.F (m:=5) (n:=7) (runC_join P.F (m:=1) (n:=4) one hr18) hr25,h25,stored,cellLive⟩
+  refine ⟨result,runC_join P.F (m:=5) (n:=7) (runC_join P.F (m:=1) (n:=4) one hr18) hr25,h25,stored,cellLive,?_⟩
+  intro a alive neS neD
+  rw [frame25 a (Or.inl alive) neS neD,heap18,frame14 _ (h.heap.targetBound _ alive)]
+theorem shape_sequence_origin
+    (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv)
+    (roles : Nat → Host.Mlx.Ffi.Annotated.GraphNode)
+    (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (boundary H N : Nat → Prop) (tail : List NumV)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' ShapeSpread.input s)
+    (native : Host.Mlx.Ffi.NativeRoles.Live (NumberRoles ν₀ ν C₀ C) R
+      (Host.Mlx.Ffi.Annotated.NodeRel roles ν₀ ν C₀ C R boundary) ObjRel H N tail ShapeSpread.input.ffi.mlx s.ffi.mlx)
+    (dimension : (roles 22582).shape[1]? = some (.literal (.lit (F64.ofNat 1))))
+    (nativeHandle : H 29363) (region : R.region 117452 = 4*R.handle 29363)
+    (prototypeLive : live aArrayProto) (prototypeFixed : R.a aArrayProto = aArrayProto)
+    (notFramed : ¬ framed Binding19.sourceAddress) (bound : s.next < 2^64) :
+    ∃ result, runC P.F 12 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R (LiveAfter live ShapeSpread.input.next)
+        framed before after old old' P.RestStream.micro0.micro0.s25 result ∧
+      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ LiveAfter live ShapeSpread.input.next Binding20.sourceAddress := by
+  obtain ⟨result,run,relation,stored,alive,_⟩ := shape_sequence_origin_frame FR R ν₀ ν C₀ C roles ObjRel boundary H N tail
+    live framed before after old old' s h native dimension nativeHandle region prototypeLive prototypeFixed notFramed bound
+  exact ⟨result,run,relation,stored,alive⟩
+
 end Host.Load.Run.Full.Ordinary

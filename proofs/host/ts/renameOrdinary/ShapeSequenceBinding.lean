@@ -23,7 +23,7 @@ theorem sequence_binding_control {S : Type} (s : St S) (R : Ren) (vs : List Val)
   rw [hp,he,hm,hk]
   cases vs <;> rfl
 
-theorem shape_binding_sequence_transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
+theorem shape_binding_sequence_frame_transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
     (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val)
     (old old' : List Event) (s : St P.F.S)
     (h : StateR NR FR R live framed before after old old' P.RestStream.micro0.micro0.s18 s)
@@ -32,7 +32,9 @@ theorem shape_binding_sequence_transport (NR : NumV → NumV → Prop) (FR : Ren
     (arrayHeap : s.heap.get (R.a Binding19.sourceAddress) = some (valueArray vs)) :
     ∃ result, runC P.F 7 s C = some (result,C) ∧
       StateR NR FR R live framed before after old old' P.RestStream.micro0.micro0.s25 result ∧
-      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ live Binding20.sourceAddress := by
+      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ live Binding20.sourceAddress ∧
+      ∀ a, live a → a ≠ Binding20.sourceAddress → a ≠ Binding22.sourceAddress →
+        result.heap.get (R.a a) = s.heap.get (R.a a) := by
   obtain ⟨s19,hr18,h19⟩ := Binding18.transport NR FR R C₀ C live framed before after old old' s h
   have heap19 := step_declaration_value_heap P.F NR FR R live framed before after old old'
     Binding18.input s s19 C C h Binding18.sourceValue Binding18.sourceKind Binding18.sourcePattern
@@ -85,7 +87,7 @@ theorem shape_binding_sequence_transport (NR : NumV → NumV → Prop) (FR : Ren
   have frame24 : Binding24.input.stack = .s (.declNext Binding24.sourceKind [] Binding24.sourceEnv)::Binding24.sourceTail := by host_kernel_rfl
   have heap25 := step_empty_declaration_next_heap P.F NR FR R live framed before after old old' Binding24.input s24 result C C h24
     Binding24.sourceValue Binding24.sourceEnv Binding24.sourceKind Binding24.sourceTail Binding24.source_control frame24 hr24
-  refine ⟨result,?_,h25,?_,liveS⟩
+  refine ⟨result,?_,h25,?_,liveS,?_⟩
   ·
     apply runC_cons P.F 6 s s19 result C C C (h.control.isHalt_eq.trans binding_active18) hr18
     apply runC_cons P.F 5 s19 s20 result C C C (h19.control.isHalt_eq.trans binding_active19) hr19
@@ -98,5 +100,33 @@ theorem shape_binding_sequence_transport (NR : NumV → NumV → Prop) (FR : Ren
 
   · rw [heap25,heap24,heap23,heap22]
     exact stored
+
+  · intro a alive neS neD
+    have neS' : R.a a ≠ R.a Binding20.sourceAddress := fun e => neS (h20.heap.inj _ _ alive liveS e)
+    have neD' : R.a a ≠ R.a Binding22.sourceAddress := fun e => neD (h22.heap.inj _ _ alive liveD e)
+    have frame20 := step_bind_init_heap_other P.F NR FR R live framed before after old old' Binding20.input s20 s21 C C h20
+      Binding20.sourceName Binding20.sourceValue Binding20.sourceEnv Binding20.sourceKind Binding20.sourceAddress
+      Binding20.source_control Binding20.source_lookup hb20 hr20 (R.a a) neS'
+    have frame22 := step_bind_init_heap_other P.F NR FR R live framed before after old old' Binding22.input s22 s23 C C h22
+      Binding22.sourceName Binding22.sourceValue Binding22.sourceEnv Binding22.sourceKind Binding22.sourceAddress
+      Binding22.source_control Binding22.source_lookup hb22 hr22 (R.a a) neD'
+    have heap20 : s20.heap = s19.heap := by
+      rw [exact20]
+      exact arrayBinding_heap s19 Binding19.sourcePatterns vs (R.env Binding19.sourceEnv) Binding19.sourceMode Binding19.sourceKind
+    rw [heap25,heap24,frame22,heap22,frame20,heap20,heap19]
+
+theorem shape_binding_sequence_transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val)
+    (old old' : List Event) (s : St P.F.S)
+    (h : StateR NR FR R live framed before after old old' P.RestStream.micro0.micro0.s18 s)
+    (notFramed : ¬ framed Binding19.sourceAddress) (targetBound : s.next ≤ 2^64)
+    (vs : List Val) (sequence : vs[1]? = some (natV 1))
+    (arrayHeap : s.heap.get (R.a Binding19.sourceAddress) = some (valueArray vs)) :
+    ∃ result, runC P.F 7 s C = some (result,C) ∧
+      StateR NR FR R live framed before after old old' P.RestStream.micro0.micro0.s25 result ∧
+      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧ live Binding20.sourceAddress := by
+  obtain ⟨result,hr,hpost,stored,alive,_⟩ := shape_binding_sequence_frame_transport NR FR R C₀ C live framed
+    before after old old' s h notFramed targetBound vs sequence arrayHeap
+  exact ⟨result,hr,hpost,stored,alive⟩
 
 end Host.Load.Run.Full.Ordinary

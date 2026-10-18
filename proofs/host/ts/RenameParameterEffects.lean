@@ -89,4 +89,15 @@ theorem three_parameters_axis {S : Type} (s : St S) (ss : List Stmt) (env : Env)
   simp only [St.setCell,PTrie.get_set_u64 _ _ _ cbound,PTrie.get_set_u64 _ _ _ bbound,
     ite_eq_right bc,ite_true]
 
+theorem three_parameters_stream {S : Type} (s : St S) (ss : List Stmt) (env : Env)
+    (a b c : Nat) (x y z : Val) (fs : List Frame)
+    (hc : c < s.next) (bound : s.next + (blockNames ss).length ≤ 2^64)
+    (hi : noInitFunctions ss = true) :
+    (enterBlock {((s.setCell a x).setCell b y).setCell c z with ctl := .ret .undef, stack := fs} ss env).heap.get c =
+      some (.cell (some z)) := by
+  rw [enterBlock_heap_below {((s.setCell a x).setCell b y).setCell c z with ctl := .ret .undef, stack := fs}
+    ss env c hc bound hi]
+  have cbound : c < 2^64 := Nat.lt_of_lt_of_le hc (Nat.le_trans (Nat.le_add_right _ _) bound)
+  simp only [St.setCell,PTrie.get_set_u64 _ _ _ cbound,ite_true]
+
 end Host.Ts.Owned.Parametric

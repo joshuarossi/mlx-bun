@@ -118,7 +118,7 @@ open Host.Mlx.Ffi.NativeRoles Host.Mlx.Ffi.Annotated
 /-- The real shape-spread step is derived from the host heap and the annotated
 native graph. Native ownership determines the target node and every shape
 read; the original interpreter then enumerates and allocates the JS array. -/
-theorem step_shape_spread_fields_from_source (FR : Ren → LSt → LSt → Prop) (R : Ren)
+theorem step_shape_spread_fields_frame_from_source (FR : Ren → LSt → LSt → Prop) (R : Ren)
     (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s₀ s : Host.Ts.St LSt)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' s₀ s)
@@ -142,7 +142,8 @@ theorem step_shape_spread_fields_from_source (FR : Ren → LSt → LSt → Prop)
         (({s₀ with stack := fs₀}.alloc (valueArray (node.shape.map (fun d : Dim => Val.num d.num)))).2.ret (.obj s₀.next)) result ∧
       ∃ i node', s₀.ffi.mlx.arrs.get handle = some i ∧
         NodeRel roles ν₀ ν C₀ C R boundary i node node' ∧
-        result.heap.get (R.a s₀.next) = some (valueArray (node'.shape.map (fun d : Dim => Val.num d.num))) := by
+        result.heap.get (R.a s₀.next) = some (valueArray (node'.shape.map (fun d : Dim => Val.num d.num))) ∧
+        ∀ a, a < s.next → result.heap.get a = s.heap.get a := by
   obtain ⟨v,hc,hv⟩ := (h.control_view hc₀).ret_view
   have hv : v = .obj (R.a a) := by cases hv; rfl
   rw [hv] at hc
@@ -173,12 +174,45 @@ theorem step_shape_spread_fields_from_source (FR : Ren → LSt → LSt → Prop)
   have hfsLive := h.stackLive
   rw [hf₀] at hfsLive
   have hpost := (h.restack htail hfsLive.2).alloc_valueArray _ _ hvalues hlive hp hpr hs ht
-  refine ⟨_,?_,?_,hpost,i,node',by assumption,hnodeRel,?_⟩
+  refine ⟨_,?_,?_,hpost,i,node',by assumption,hnodeRel,?_,?_⟩
   · rw [step_spread_final_eq ffi s₀ (.obj a) env fs₀ _ hc₀ hf₀ he₀]; rfl
   · rw [step_spread_final_eq ffi s (.obj (R.a a)) (R.env env) fs _ hc hf he]; rfl
 
   · have hn : R.a s₀.next = s.next := by simpa only [Nat.add_zero] using h.heap.fresh 0
     simp only [St.alloc,St.ret,hn,PTrie.get_set_u64 _ _ _ ht,ite_true]
+
+  · intro a oldAddress
+    exact alloc_ret_heap_below {s with stack := fs} _ _ ht a oldAddress
+
+theorem step_shape_spread_fields_from_source (FR : Ren → LSt → LSt → Prop) (R : Ren)
+    (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' s₀ s)
+    (roles : Nat → GraphNode) (ObjRel : Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (boundary H N : Nat → Prop) (tail : List NumV)
+    (native : Live (NumberRoles ν₀ ν C₀ C) R (NodeRel roles ν₀ ν C₀ C R boundary)
+      ObjRel H N tail s₀.ffi.mlx s.ffi.mlx)
+    (a b handle : Nat) (o bo : Host.Ts.Obj) (node : Node) (env : Env) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret (.obj a)) (hf₀ : s₀.stack = .l (.spread [] [] env)::fs₀)
+    (ho₀ : s₀.heap.get a = some (.obj o)) (hk₀ : o.kind = .typed .i32 b 0 (len node.shape))
+    (hbo₀ : s₀.heap.get b = some (.obj bo)) (hbk₀ : bo.kind = .extBuf (4*handle) 0 (len node.shape*4))
+    (hnode : s₀.ffi.mlx.node? handle = some node) (hhandle : H handle)
+    (region : R.region (4*handle) = 4*R.handle handle)
+    (hp : live aArrayProto) (hpr : R.a aArrayProto = aArrayProto)
+    (hs : s₀.next < 2^64) (ht : s.next < 2^64) :
+    ∃ result,
+      interpC (step ffi s₀).run C₀ = some
+        (({s₀ with stack := fs₀}.alloc (valueArray (node.shape.map (fun d : Dim => Val.num d.num)))).2.ret (.obj s₀.next),C₀) ∧
+      interpC (step ffi s).run C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R (LiveAfter live s₀.next) framed before after old old'
+        (({s₀ with stack := fs₀}.alloc (valueArray (node.shape.map (fun d : Dim => Val.num d.num)))).2.ret (.obj s₀.next)) result ∧
+      ∃ i node', s₀.ffi.mlx.arrs.get handle = some i ∧
+        NodeRel roles ν₀ ν C₀ C R boundary i node node' ∧
+        result.heap.get (R.a s₀.next) = some (valueArray (node'.shape.map (fun d : Dim => Val.num d.num))) := by
+  obtain ⟨result,hr₀,hr,hpost,i,node',hi,relation,heap,_⟩ := step_shape_spread_fields_frame_from_source FR R ν₀ ν C₀ C
+    live framed before after old old' s₀ s h roles ObjRel boundary H N tail native
+    a b handle o bo node env fs₀ hc₀ hf₀ ho₀ hk₀ hbo₀ hbk₀ hnode hhandle region hp hpr hs ht
+  exact ⟨result,hr₀,hr,hpost,i,node',hi,relation,heap⟩
 
 theorem step_shape_spread_from_source (FR : Ren → LSt → LSt → Prop) (R : Ren)
     (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)

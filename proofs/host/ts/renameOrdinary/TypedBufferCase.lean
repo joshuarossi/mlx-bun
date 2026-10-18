@@ -31,6 +31,26 @@ theorem source_run (C : CSrv) : interpC (step P.F input).run C = some (output,C)
 /-- The actual Int32Array constructor creates the rank-three view used by
 shape spread. Builtin element-code/prototype annotations must be carried from
 initialization; the target backing buffer and its length follow from StateR. -/
+theorem transport_frame (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (C₀ C : CSrv) (ν : Nat → F64) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (h : StateR NR FR R live framed before after old old' input s)
+    (codeRole : (Annotated.Value.literal (.lit (F64.ofNat 4))).Holds ν C R (nativeDataArgument s (R.a 90) 0))
+    (protoRole : (Annotated.Value.literal (.lit (F64.ofNat 21))).Holds ν C R (nativeDataArgument s (R.a 90) 1))
+    (hp : live 21) (hpr : R.a 21 = 21) (ht : s.next < 2^64) :
+    ∃ result, interpC (step P.F s).run C = some (result,C) ∧
+      StateR NR FR R (LiveAfter live input.next) framed before after old old' output result ∧
+      ∀ a, a < s.next → result.heap.get a = s.heap.get a := by
+  obtain ⟨_,hr,hpost⟩ := step_construct_typedBuffer_from_source P.F NR FR R C₀ C ν live framed
+    before after old old' input s h 90 3126661 constructorObject bufferObject (.obj 90)
+    117452 0 12 4 21 (F64.ofNat 4) (F64.ofNat 21) source_control source_heap source_kind
+    source_buffer source_buffer_kind (by decide +kernel) (by decide +kernel)
+    codeRole protoRole hp hpr source_bound ht
+  change StateR NR FR R (LiveAfter live input.next) framed before after old old'
+    ((input.alloc (typedBuffer .i32 3126661 0 3 21)).2.ret (.obj input.next)) _ at hpost
+  rw [source_post] at hpost
+  exact ⟨_,hr,hpost,fun a oldAddress => alloc_ret_heap_below s _ _ ht a oldAddress⟩
+
 theorem transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S → Prop)
     (R : Ren) (C₀ C : CSrv) (ν : Nat → F64) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
@@ -40,14 +60,7 @@ theorem transport (NR : NumV → NumV → Prop) (FR : Ren → P.F.S → P.F.S �
     (hp : live 21) (hpr : R.a 21 = 21) (ht : s.next < 2^64) :
     ∃ result, interpC (step P.F s).run C = some (result,C) ∧
       StateR NR FR R (LiveAfter live input.next) framed before after old old' output result := by
-  obtain ⟨_,hr,hpost⟩ := step_construct_typedBuffer_from_source P.F NR FR R C₀ C ν live framed
-    before after old old' input s h 90 3126661 constructorObject bufferObject (.obj 90)
-    117452 0 12 4 21 (F64.ofNat 4) (F64.ofNat 21) source_control source_heap source_kind
-    source_buffer source_buffer_kind (by decide +kernel) (by decide +kernel)
-    codeRole protoRole hp hpr source_bound ht
-  change StateR NR FR R (LiveAfter live input.next) framed before after old old'
-    ((input.alloc (typedBuffer .i32 3126661 0 3 21)).2.ret (.obj input.next)) _ at hpost
-  rw [source_post] at hpost
-  exact ⟨_,hr,hpost⟩
+  obtain ⟨result,run,relation,_⟩ := transport_frame NR FR R C₀ C ν live framed before after old old' s h codeRole protoRole hp hpr ht
+  exact ⟨result,run,relation⟩
 
 end Host.Load.Run.Full.Ordinary.TypedBuffer
