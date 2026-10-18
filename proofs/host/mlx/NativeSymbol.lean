@@ -1,11 +1,49 @@
 import host.mlx.NativeHostState
 import host.ts.RenameParametricArrayBuffer
 import host.ts.RenameParametricArrayBinding
+import host.mlx.NativeArguments
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
 
 namespace Host.Ts
+
+theorem decodeArgs_ptr_u64_one_u64 (F : Ffi) (s : St F.S) (b off : Nat)
+    (h1 h2 : Int) (bs : List Byte) (hb : bufBytes F s b = some bs) :
+    decodeArgs F s [.str chars!"ptr",.str chars!"u64",.str chars!"i32",.str chars!"u64"]
+      [.ptr (.js b) off,.big h1,.num one,.big h2] =
+      M.pure (some [.jsPtr b off (bs.drop off),.big h1,.num one,.big h2]) := by
+  have hp : nameEq chars!"ptr" chars!"ptr" = true := Nat.beq_refl _
+  have decodePtr : decodeArg F s chars!"ptr" (.ptr (.js b) off) =
+      M.pure (some (.jsPtr b off (bs.drop off))) := by
+    simp only [decodeArg,hp,Bool.true_or,Bool.cond_true,hb,Option.map_some]
+  have decodeOne : decodeArg F s chars!"i32" (.num one) = M.pure (some (.num one)) := by
+    have hx : F64.un .int32 (F64.fin false 1 0) = F64.fin false 1 0 := by decide +kernel
+    simpa only [one,hx] using Host.Mlx.Ffi.NativeRoles.Arguments.decode_i32_literal F s (F64.fin false 1 0)
+  funext β k
+  simp only [decodeArgs,decodePtr,decodeOne,Host.Mlx.Ffi.NativeRoles.Arguments.decode_u64_big,M.bind,M.pure,Option.map_some]
+
+theorem step_ffi_ptr_u64_one_u64 (F : Ffi) (s : St F.S) {receiver : Val}
+    (fn types b off : Nat) (h1 h2 : Int) (name returns : Name) (fo to : Obj) (bs : List Byte)
+    (native : F.S) (result : Ret) (writes : List (Nat × Nat × List Byte))
+    (hc : s.ctl = .call (.obj fn) receiver [.ptr (.js b) off,.big h1,.num one,.big h2])
+    (hfn : s.obj? fn = some fo)
+    (hfk : fo.kind = .fn (.native (.ffi .symbol) [.str name,.obj types,.str returns]))
+    (ht : s.obj? types = some to)
+    (htk : to.kind = .array [.str chars!"ptr",.str chars!"u64",.str chars!"i32",.str chars!"u64"])
+    (hb : bufBytes F s b = some bs)
+    (hcall : F.call s.ffi name [.jsPtr b off (bs.drop off),.big h1,.num one,.big h2] =
+      M.pure (some (native,result,writes))) :
+    step F s = ffiDone F s name [.jsPtr b off (bs.drop off),.big h1,.num one,.big h2]
+      (some (native,result,writes)) := by
+  funext β k
+  simp only [step,hc,callStep,hfn,hfk,callNative,ffiN]
+  rw [elemsOf_array F s types to _ ht htk]
+  dsimp only [M.bind,M.pure]
+  rw [decodeArgs_ptr_u64_one_u64 F s b off h1 h2 bs hb]
+  simp only [M.bind,M.pure]
+  rw [hcall]
+  rfl
 
 theorem step_ffi_noargs (F : Ffi) (s : St F.S) {receiver : Val}
     (fn types : Nat) (name returns : Name) (fo to : Obj)
@@ -141,6 +179,25 @@ theorem StateR.finishBuffer {S : Type} {NR : NumV → NumV → Prop}
     ha ho hk hr hol hb hw hs ht
   exact (hh.traceCons _ _ (event_ptr_handles_roles name b off h1 h2 _ _ (hb.drop off) hz)).go
     (.node _ (.cons (.value (.num hz)) .nil)) ⟨True.intro,True.intro⟩
+
+theorem StateR.finishBuffer_event {S : Type} {NR : NumV → NumV → Prop}
+    {FR FR' : Ren → S → S → Prop} {R : Ren} {live framed : Nat → Prop}
+    {before after : List Val} {old old' : List Event} {s s' : St S}
+    (h : StateR NR FR R live framed before after old old' s s')
+    (native native' : S) (hn : FR' R native native')
+    (b off : Nat) (o o' : Obj) (bs bs' ws ws' : List Byte) (name : Name) (args args' : List Arg)
+    (ha : live b) (ho : s.heap.get b = some (.obj o)) (hk : o.kind = .buf bs)
+    (hr : ObjectR NR R o o') (hol : treeSupport live (Encode.obj o))
+    (hb : ListR (ByteR NR R) bs bs') (hw : ListR (ByteR NR R) ws ws')
+    (hs : b < 2^64) (ht : R.a b < 2^64) (hz : NR zeroN zeroN)
+    (he : TreeR NR R (event ⟨name,args,Host.Mlx.Ffi.status0⟩)
+      (event ⟨name,args',Host.Mlx.Ffi.status0⟩)) :
+    StateR NR FR' R live framed before after old old'
+      (Host.Ts.finishBuffer s native b off o bs ws name args)
+      (Host.Ts.finishBuffer s' native' (R.a b) off o' bs' ws' name args') := by
+  have hh := (h.setFfi native native' hn).write_buffer b off o o' bs bs' ws ws'
+    ha ho hk hr hol hb hw hs ht
+  exact (hh.traceCons _ _ he).go (.node _ (.cons (.value (.num hz)) .nil)) ⟨True.intro,True.intro⟩
 
 def objectKindAt {S : Type} (s : St S) (a : Nat) : Owned.Tree :=
   match s.obj? a with
