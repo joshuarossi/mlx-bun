@@ -24,14 +24,17 @@ elab "host_source_step " f:term ", " s:term " using " initial:term " to " t:term
       if code.isAppOfArity ``Code.closure 4 then pure "host_retained_step"
       else
         let native ← whnf (← Parametric.Driver.field code ``Code.native 2 0)
-        if native.isAppOfArity ``Native.ffi 1 && (← whnf native.getAppArgs[0]!).isConstOf ``FfiN.toArrayBuffer then
-          pure "host_retained_arrayBuffer"
+        if native.isAppOfArity ``Native.ffi 1 then
+          if (← whnf native.getAppArgs[0]!).isConstOf ``FfiN.toArrayBuffer then
+            pure "host_retained_arrayBuffer"
+          else throwError "host_source_step: unsupported original native source call"
         else throwError "host_source_step: unsupported original native source call"
     else if control.isAppOfArity ``Ctl.construct 3 then pure "host_retained_typedBuffer"
     else if control.isAppOfArity ``Ctl.ret 1 then
       let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
-      if frame.isAppOfArity ``Frame.l 1 && (← whnf frame.getAppArgs[0]!).isAppOfArity ``LitF.spread 3 then
-        pure "host_retained_shapeSpread"
+      if frame.isAppOfArity ``Frame.l 1 then
+        if (← whnf frame.getAppArgs[0]!).isAppOfArity ``LitF.spread 3 then pure "host_retained_shapeSpread"
+        else pure "host_retained_step"
       else pure "host_retained_step"
     else pure "host_retained_step"
   Parametric.Driver.emit s!"{selected} {← printed f.raw}, {← printed s.raw} using {← printed initial.raw} to {← printed t.raw} using {← printed next.raw} as {name.getId}"

@@ -4,6 +4,8 @@ import host.ts.RenameRuntimeDriverHeapReads
 import host.ts.RenameRuntimeDriverPatterns
 import host.ts.RenameRuntimeDriverMethods
 import host.ts.RenameRuntimeDriverGlobal
+import host.ts.RenameRuntimeDriverArrays
+import host.ts.RenameRuntimeDriverAllocations
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -30,6 +32,8 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else pure "host_retained_pure_step"
       else if expression.isConstOf ``Expr.this || expression.isAppOfArity ``Expr.priv 3 then
         pure "host_retained_heap_read"
+      else if expression.isAppOfArity ``Expr.array 1 then pure "host_retained_array"
+      else if expression.isAppOfArity ``Expr.arrow 1 then pure "host_retained_allocation"
       else pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.bind 5 then pure "host_retained_pattern"
     else if control.isAppOfArity ``Ctl.call 3 then
@@ -41,12 +45,17 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       pure "host_retained_closure"
     else if control.isAppOfArity ``Ctl.ret 1 then
       let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
-      if frame.isAppOfArity ``Frame.c 1 && (← whnf frame.getAppArgs[0]!).isAppOfArity ``CallF.member 5 then
+      let inner ← if frame.getAppArgs.size == 1 then whnf frame.getAppArgs[0]! else pure frame
+      if frame.isAppOfArity ``Frame.c 1 && inner.isAppOfArity ``CallF.member 5 then
         pure "host_retained_method"
+      else if frame.isAppOfArity ``Frame.c 1 && inner.isAppOfArity ``CallF.spread 6 then
+        pure "host_retained_array"
+      else if frame.isAppOfArity ``Frame.l 1 && inner.isAppOfArity ``LitF.array 3 then
+        pure "host_retained_array"
       else if frame.isAppOfArity ``Frame.b 1 then pure "host_retained_pattern"
-      else if frame.isAppOfArity ``Frame.s 1 && (← whnf frame.getAppArgs[0]!).isAppOfArity ``StmtF.declNext 3 then
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
-      else if frame.isAppOfArity ``Frame.e 1 && (← whnf frame.getAppArgs[0]!).isAppOfArity ``ExprF.priv 3 then
+      else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.priv 3 then
         pure "host_retained_heap_read"
       else if frame.isAppOfArity ``Frame.k 1 then
         let fn ← whnf frame.getAppArgs[0]!
