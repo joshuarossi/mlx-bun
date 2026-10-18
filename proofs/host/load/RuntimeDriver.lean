@@ -7,6 +7,7 @@ import host.mlx.NativeVectorFreeFrontend
 import host.mlx.NativeMetadataFrontend
 import host.mlx.NativeIntegerConversionFrontend
 import host.mlx.NativeNumberConversionFrontend
+import host.ts.RenameRuntimeDriverRegistry
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -56,6 +57,9 @@ elab "host_source_step " f:term ", " s:term " using " initial:term " to " t:term
           if (← whnf native.getAppArgs[0]!).isConstOf ``NumN.bigint then pure "host_retained_bigint"
           else if (← whnf native.getAppArgs[0]!).isConstOf ``NumN.number then pure "host_retained_number"
           else throwError "host_source_step: unsupported original numeric native call"
+        else if native.isAppOfArity ``Native.fn 1 then
+          if (← whnf native.getAppArgs[0]!).isConstOf ``FnN.finRegister then pure "host_retained_registry"
+          else throwError "host_source_step: unsupported original function native call"
         else throwError "host_source_step: unsupported original native source call"
     else if control.isAppOfArity ``Ctl.construct 3 then
       let address ← Parametric.Driver.field control.getAppArgs[0]! ``Val.obj 1 0

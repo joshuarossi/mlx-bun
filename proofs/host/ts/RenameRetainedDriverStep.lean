@@ -22,6 +22,11 @@ import host.ts.RenameRuntimeDriverTry
 import host.ts.RenameRuntimeDriverMissingRead
 import host.ts.RenameRuntimeDriverConstructors
 import host.ts.RenameRuntimeDriverUndefinedBranch
+import host.ts.RenameRuntimeDriverPrivateFields
+import host.ts.RenameRuntimeDriverConstructorReturn
+import host.ts.RenameRuntimeDriverFinally
+import host.ts.RenameRuntimeDriverArraySpreadEntry
+import host.ts.RenameRuntimeDriverPrivateAssign
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -79,10 +84,21 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else pure "host_retained_pure_step"
       else if expression.isConstOf ``Expr.this || expression.isAppOfArity ``Expr.priv 3 then
         pure "host_retained_heap_read"
-      else if expression.isAppOfArity ``Expr.array 1 then pure "host_retained_array"
+      else if expression.isAppOfArity ``Expr.array 1 then
+        let elements ← whnf expression.getAppArgs[0]!
+        if elements.isAppOfArity ``List.cons 3 then
+          if (← whnf elements.getAppArgs[1]!).isAppOfArity ``Elem.spread 1 then
+            return "host_retained_array_spread_entry"
+        pure "host_retained_array"
       else if expression.isAppOfArity ``Expr.arrow 1 then pure "host_retained_allocation"
       else if expression.isAppOfArity ``Expr.object 1 then pure "host_retained_object"
       else if expression.isAppOfArity ``Expr.update 3 then pure "host_retained_update"
+      else if expression.isAppOfArity ``Expr.assign 3 then
+        let pattern ← whnf expression.getAppArgs[1]!
+        if pattern.isAppOfArity ``Pat.expr 1 then
+          if (← whnf pattern.getAppArgs[0]!).isAppOfArity ``Expr.priv 3 then
+            return "host_retained_private_assign"
+        pure "host_retained_pure_step"
       else pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.ex 2 then
       let statement ← whnf control.getAppArgs[0]!
@@ -97,6 +113,16 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       unless code.isAppOfArity ``Code.closure 4 do
         throwError "host_retained_step: native source call requires native retained frontend"
       pure "host_retained_closure"
+    else if control.isAppOfArity ``Ctl.abr 1 then
+      let abrupt ← whnf control.getAppArgs[0]!
+      if abrupt.isAppOfArity ``Abrupt.ret 1 then
+        if (← whnf abrupt.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
+          let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
+          if frame.isAppOfArity ``Frame.s 1 then
+            let statement ← whnf frame.getAppArgs[0]!
+            if statement.isAppOfArity ``StmtF.try_ 3 then
+              if (← whnf statement.getAppArgs[1]!).isAppOfArity ``Option.some 2 then return "host_retained_finally"
+      pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.ret 1 then
       let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
       let inner ← if frame.getAppArgs.size == 1 then whnf frame.getAppArgs[0]! else pure frame
@@ -116,11 +142,18 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if frame.isAppOfArity ``Frame.b 1 then pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.updOld 3 then
         pure "host_retained_update"
+      else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.privObj 5 then
+        pure "host_retained_private_assign"
+      else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.put 3 then
+        if (← whnf inner.getAppArgs[1]!).isAppOfArity ``Target.priv 3 then pure "host_retained_private_assign"
+        else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.if_ 3 then
         if (← whnf control.getAppArgs[0]!).isConstOf ``Val.undef then pure "host_retained_undefined_branch"
         else pure "host_retained_branch"
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.finally_ 1 then
+        pure "host_retained_finally"
       else if frame.isAppOfArity ``Frame.lp 1 then
         if inner.isAppOfArity ``LoopF.forTest 7 || inner.isAppOfArity ``LoopF.forBody 6 || inner.isAppOfArity ``LoopF.forUpd 6 then
           pure "host_retained_for"
@@ -171,6 +204,10 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
             else pure "host_retained_parameter_body"
           else pure "host_retained_pure_step"
         else if fn.isAppOfArity ``FnF.ctorBody 4 then pure "host_retained_constructor"
+        else if fn.isAppOfArity ``FnF.fields 3 || fn.isAppOfArity ``FnF.privVal 5 then pure "host_retained_private_fields"
+        else if fn.isAppOfArity ``FnF.fn 1 then
+          if (← whnf fn.getAppArgs[0]!).isAppOfArity ``Boundary.ctor 1 then pure "host_retained_constructor_return"
+          else pure "host_retained_pure_step"
         else pure "host_retained_pure_step"
       else pure "host_retained_pure_step"
     else pure "host_retained_pure_step"
