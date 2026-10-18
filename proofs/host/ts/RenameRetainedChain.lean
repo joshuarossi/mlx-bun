@@ -1,4 +1,5 @@
 import host.ts.RenameRetainedChainFacts
+import host.ts.RenameRetainedNormalize
 import host.ts.RenameRouteComposition
 import host.ts.RenameParametricMapControl
 import Lean.Elab.Tactic
@@ -303,6 +304,11 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
   for rule in rules do
     unless rule.isConst do throwError "host_retained_chain: expected a named source rule"
     trace[Elab.debug] "retained chain applying {rule}"
+    if state.isFVar && inventory.isFVar then
+      let (normalizedGoal,normalizedState,normalizedInventory) ← normalizeRetainedAliases goal state inventory
+      goal := normalizedGoal
+      state := normalizedState
+      inventory := normalizedInventory
     goal ← goal.withContext do
       let mut currentGoal := goal
       let live := (← proofType inventory).getAppArgs[7]!

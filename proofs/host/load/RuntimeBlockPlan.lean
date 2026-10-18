@@ -71,7 +71,8 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
 hundred-step microstate groups. Successful summaries keep their checked span;
 otherwise the original one-transition selector is used. Planning discharges
 source facts, while retained entry roles are discharged by the chain consumer. -/
-elab "host_source_plan " f:term ", " base:ident " from " start:num " plan_steps " count:num " as " name:ident : command => do
+private def generatePlan (f : TSyntax `term) (base : TSyntax `ident)
+    (start count : TSyntax `num) (name : TSyntax `ident) (replacement : Option (TSyntax `term)) : CommandElabM Unit := do
   let some fText := f.raw.reprint | throwError "host_source_plan: cannot print Ffi"
   let count := count.getNat
   unless 0 < count && count ≤ 1000 do throwError "host_source_plan: expected between 1 and 1000 source transitions"
@@ -80,7 +81,14 @@ elab "host_source_plan " f:term ", " base:ident " from " start:num " plan_steps 
   let pre := (← getCurrNamespace) ++ name.getId
   let root := base.getId.toString
   let state (index : Nat) := s!"{root}.micro{index/100}.s{index%100}"
-  let server (index : Nat) := s!"{root}.micro{index/100}.S{index%100}"
+  let replacementText ← replacement.mapM fun expression => do
+    let some text := expression.raw.reprint | throwError "host_source_plan: cannot print symbolic substitution"
+    pure text
+  let server (index : Nat) :=
+    let original := s!"{root}.micro{index/100}.S{index%100}"
+    match replacementText with
+    | none => original
+    | some expression => s!"(({original}).substitute ({expression}))"
   let mut cursor := start
   let mut rules : List Lean.Name := []
   let mut spans : List Nat := []
@@ -120,6 +128,15 @@ elab "host_source_plan " f:term ", " base:ident " from " start:num " plan_steps 
     Parametric.Driver.addData (pre ++ `blockCount) (mkNatLit rules.length)
   let n := "_root_." ++ pre.toString
   Parametric.Driver.emit s!"theorem {n}.span_total : {n}.spans.sum = {n}.sourceSteps := by decide +kernel"
+
+elab "host_source_plan " f:term ", " base:ident " from " start:num " plan_steps " count:num " as " name:ident : command =>
+  generatePlan f base start count name none
+
+/-- Reuse the same actual source states with substituted number servers.
+Each selected frontend still checks both original source endpoints. -/
+elab "host_source_plan_subst " f:term ", " base:ident " from " start:num " plan_steps " count:num
+    " substitute " replacement:term " as " name:ident : command =>
+  generatePlan f base start count name (some replacement)
 
 private partial def plannedName (expression : Lean.Expr) : MetaM Lean.Name := do
   let expression ← whnf expression
