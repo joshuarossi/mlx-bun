@@ -1,4 +1,5 @@
 import host.mlx.FfiBytes
+import host.mlx.TokenBuffer
 import host.ts.RenameBounded
 set_option Elab.async false
 
@@ -77,6 +78,28 @@ theorem native_feedback_data (native : Host.Mlx.Ffi.St) (sources : KernelSources
   simp only [ffiGraph, hn, Option.bind_some, resolveNode, resolvePrim, concrete]
   rw [feedback_bytes ν value token hv ht]
   rfl
+
+/-- Device feedback preserves the producing token by reshaping its singleton
+value; it does not require a host byte-buffer round trip. -/
+theorem eval_feedback_reshape (node input token : Nat) (r : Value)
+    (hn : G node = some ⟨.reshape [1,1], [input]⟩) (hi : input < node)
+    (hv : evalR M K env G input = some r) (hr : itemUint32 r = some token)
+    (ht : token < 2 ^ 31) :
+    ∃ ids, evalR M K env G node = some ids ∧ TokenBuffer ids token := by
+  have hsize : r.size = 1 := by
+    unfold itemUint32 at hr
+    split at hr
+    · next h => exact h.2
+    · cases hr
+  let ids : Value := { r with shape := [1,1] }
+  have hs : reshape r [1,1] = some ids := by
+    simp only [reshape, List.foldr_cons, List.foldr_nil, Nat.mul_one, hsize, ↓reduceIte]
+    rfl
+  refine ⟨ids, ?_, TokenBuffer.of_readback r ids token hr hs ht⟩
+  rw [evalR_eq, hn, cgLeaves_none G node _ hn rfl]
+  simp only [List.mapM_cons, List.mapM_nil, hi, ↓reduceDIte, hv]
+  change reshapeDims r [1,1] = some ids
+  exact hs
 
 /-- A read symbol denotes the uint32 value of its producing graph node. This
 property is proved from graph evaluation and the chosen recurrence valuation;
