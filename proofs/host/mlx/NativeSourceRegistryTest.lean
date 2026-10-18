@@ -17,6 +17,8 @@ run_cmd liftTermElabM do
   unless view == #["host_retained_kvView"] do throwError "native source registry selected the wrong view command"
   let disposal ← registeredNativeSourceCommands (toExpr chars!"mlx_array_free")
   unless disposal == #["host_retained_arrayFree"] do throwError "native source registry selected the wrong array disposal command"
+  let attention ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_scaled_dot_product_attention")
+  unless attention == #["host_retained_attention"] do throwError "native source registry selected the wrong attention command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
