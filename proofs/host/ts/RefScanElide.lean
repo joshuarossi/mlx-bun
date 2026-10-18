@@ -82,4 +82,29 @@ theorem addUser_eq_scanned {S : Type} (root : List Char) (u : UMod) (refs : List
     simp only [hz, Bool.cond_false, Bool.cond_true, addUserScanned]
   · rw [usesMeta_elideItems refs u.ast h]
 
+/-- One original linker action, using the proved scan without reducing the
+closed module's reference traversal again. -/
+theorem linkStep_user_scanned {S : Type} (cx : LinkCx S) (k : Nat) (ls : LinkSt S)
+    (u : UMod) (refs : List Nat) (hd : ls.done = false)
+    (hk : Nat.blt k (len cx.us) = true) (hu : nth? cx.us k = some u)
+    (hr : refsM u.ast = refs) :
+    linkStep cx k ls = match (addUserScanned cx.root u refs).run ls.st with
+      | (some m, st) => some { ls with st, mods := ls.mods ++ [m] }
+      | (none, _) => none := by
+  simp only [linkStep, hd, Bool.cond_false, hk, Bool.cond_true, hu]
+  rw [addUser_eq_scanned cx.root u refs hr]
+  rfl
+
+theorem linkRun_one_user_scanned {S : Type} (cx : LinkCx S) (k : Nat) (ls : LinkSt S)
+    (u : UMod) (refs : List Nat) (hd : ls.done = false)
+    (hk : Nat.blt k (len cx.us) = true) (hu : nth? cx.us k = some u)
+    (hr : refsM u.ast = refs) :
+    linkRun cx k 1 ls = match (addUserScanned cx.root u refs).run ls.st with
+      | (some m, st) => some { ls with st, mods := ls.mods ++ [m] }
+      | (none, _) => none := by
+  simp only [linkRun]
+  rw [linkStep_user_scanned cx k ls u refs hd hk hu hr]
+  cases (addUserScanned cx.root u refs).run ls.st with
+  | mk m st => cases m <;> rfl
+
 end Host.Ts.RefScan
