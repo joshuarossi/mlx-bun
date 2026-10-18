@@ -86,10 +86,11 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
       let bytes ← field (← mkAppM ``Obj.kind #[object]) ``Kind.buf 1 0
       let argument ← mkAppM ``Arg.jsPtr #[owner,mkNatLit 0,bytes]
       let count ← mkAppM ``Arg.big #[← mkAppM ``Int.ofNat #[mkNatLit 3]]
-      integers (← field (← mkAppM ``Host.Mlx.Ffi.dimsArg #[argument,count]) ``Option.some 2 1)
-    let first ← dimensionBuffer start
-    let last ← dimensionBuffer stop
-    let steps ← dimensionBuffer stride
+      let dimensions ← integers (← field (← mkAppM ``Host.Mlx.Ffi.dimsArg #[argument,count]) ``Option.some 2 1)
+      pure (object,dimensions)
+    let (startObject,first) ← dimensionBuffer start
+    let (stopObject,last) ← dimensionBuffer stop
+    let (strideObject,steps) ← dimensionBuffer stride
     unless ← isDefEq steps (← mkListLit (mkConst ``Int) [toExpr (1 : Int),toExpr (1 : Int),toExpr (1 : Int)]) do
       throwError "host_retained_fixedSlice: expected unit strides"
     let extents ← mkAppM ``Host.Mlx.Ffi.NativeRoles.sliceExtents #[first,last]
@@ -98,7 +99,8 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     for (tag,value) in [("F",f),("input",s),("output",t),("address",address),("object",object),
       ("types",types),("signatureObject",signatureObject),("returns",returns),("sourceThis",ctl.getAppArgs[1]!),
       ("out",out),("handle",handle),("start",start),("stop",stop),("stride",stride),("stream",stream),
-      ("producer",input),("node",node),("kind",kind),("inputSizes",inputSizes),("first",first),("last",last)] do
+      ("producer",input),("node",node),("kind",kind),("inputSizes",inputSizes),("first",first),("last",last),
+      ("startObject",startObject),("stopObject",stopObject),("strideObject",strideObject)] do
       let type? := if tag == "input" || tag == "output" then
         some (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
       addData (pre ++ Name.mkSimple tag) value type?
@@ -115,12 +117,22 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     ("signature_kind",s!"{n}.signatureObject.kind = .array Host.Load.Run.Full.Ordinary.SliceFamilyHost.signature"),
     ("source_producers",s!"nodesOf {n}.input.ffi.mlx [{n}.handle] = some [{n}.producer]"),
     ("source_node",s!"{n}.input.ffi.mlx.nodes.get {n}.producer = some {n}.node"),
+    ("source_input_shape",s!"{n}.node.shape = {n}.inputSizes.map Dim.lit"),
+    ("source_start",s!"{n}.input.heap.get {n}.start = some (.obj {n}.startObject)"),
+    ("source_stop",s!"{n}.input.heap.get {n}.stop = some (.obj {n}.stopObject)"),
+    ("source_stride",s!"{n}.input.heap.get {n}.stride = some (.obj {n}.strideObject)"),
+    ("start_kind",s!"{n}.startObject.kind = .buf (shapeBytes ({n}.first.map Dim.lit))"),
+    ("stop_kind",s!"{n}.stopObject.kind = .buf (shapeBytes ({n}.last.map Dim.lit))"),
+    ("stride_kind",s!"{n}.strideObject.kind = .buf (shapeBytes ((List.replicate {n}.inputSizes.length 1).map Dim.lit))"),
     ("source_allocation",s!"{n}.output.ffi.mlx.nnext = {n}.input.ffi.mlx.nnext + (match {n}.kind with | .fresh => 1 | .alias => 0)")]
     do Parametric.Driver.emit (fixedSliceHeader ++ s!"theorem {n}.{fact} : {type} := by host_kernel_rfl")
   for (fact,type) in [
     ("source_native_bound",s!"{n}.input.ffi.mlx.next < 2^64"),
     ("source_node_bound",s!"{n}.input.ffi.mlx.nnext < 2^64"),
-    ("source_output_bound",s!"{n}.out < 2^64")]
+    ("source_output_bound",s!"{n}.out < 2^64"),
+    ("out_ne_start",s!"{n}.out ≠ {n}.start"),("out_ne_stop",s!"{n}.out ≠ {n}.stop"),
+    ("out_ne_stride",s!"{n}.out ≠ {n}.stride"),("stop_ne_start",s!"{n}.stop ≠ {n}.start"),
+    ("stride_ne_start",s!"{n}.stride ≠ {n}.start"),("stride_ne_stop",s!"{n}.stride ≠ {n}.stop")]
     do Parametric.Driver.emit (fixedSliceHeader ++ s!"theorem {n}.{fact} : {type} := by decide +kernel")
   for (fact,type) in [
     ("input_exact",s!"ExactDimensions {n}.inputSizes"),("start_exact",s!"ExactDimensions {n}.first"),
