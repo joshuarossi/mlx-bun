@@ -62,6 +62,59 @@ def inputCarriersMatch {κ : Type} (E : List (RNode Int κ)) (cert : List Nat)
       | _ => true
     | none => false
 
+/-- Traverse explicit nodes once, retaining the original expected-node index.
+Named list tails let each Boolean obligation have a separate kernel check. -/
+def checkNodes {κ : Type} (f : Nat → RNode Int κ → Bool) : Nat → List (RNode Int κ) → Bool
+  | _, [] => true
+  | i, e :: es => f i e && checkNodes f (i + 1) es
+
+theorem checkNodes_cons {κ : Type} (f : Nat → RNode Int κ → Bool)
+    (i : Nat) (e : RNode Int κ) (es : List (RNode Int κ))
+    (hh : f i e = true) (ht : checkNodes f (i + 1) es = true) :
+    checkNodes f i (e :: es) = true := by simp only [checkNodes, hh, ht, Bool.and_self]
+
+theorem checkNodes_get {κ : Type} (f : Nat → RNode Int κ → Bool)
+    (es : List (RNode Int κ)) (offset : Nat) {i : Nat} {e : RNode Int κ}
+    (h : checkNodes f offset es = true) (he : es[i]? = some e) : f (offset + i) e = true := by
+  induction es generalizing offset i with
+  | nil => simp at he
+  | cons a es ih =>
+    simp only [checkNodes, Bool.and_eq_true] at h
+    cases i with
+    | zero =>
+      have ha : a = e := by simpa using he
+      simpa [ha] using h.1
+    | succ i =>
+      have := ih (offset + 1) h.2 (by simpa using he)
+      simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using this
+
+theorem matches_of_checkNodes {κ : Type} [DecidableEq κ]
+    (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ)) (cert : List Nat)
+    (h : checkNodes (nodeOk G cert) 0 E = true) : Matches G E cert = true := by
+  apply List.all_eq_true.mpr
+  intro i hi
+  have hil : i < E.length := List.mem_range.mp hi
+  have he := List.getElem?_eq_getElem hil
+  simp only [he]
+  simpa using checkNodes_get (nodeOk G cert) E 0 h he
+
+def inputNodeOk {κ : Type} (cert : List Nat) (inputs : κ → Option Nat)
+    (i : Nat) (e : RNode Int κ) : Bool :=
+  match e.prim with
+  | .input key => decide (inputs key = some (certAt cert i))
+  | _ => true
+
+theorem inputCarriersMatch_of_checkNodes {κ : Type}
+    (E : List (RNode Int κ)) (cert : List Nat) (inputs : κ → Option Nat)
+    (h : checkNodes (inputNodeOk cert inputs) 0 E = true) :
+    inputCarriersMatch E cert inputs = true := by
+  apply List.all_eq_true.mpr
+  intro i hi
+  have hil : i < E.length := List.mem_range.mp hi
+  have he := List.getElem?_eq_getElem hil
+  simp only [he]
+  simpa only [Nat.zero_add, inputNodeOk] using checkNodes_get (inputNodeOk cert inputs) E 0 h he
+
 theorem inputCarriersMatch_get {κ : Type} (E : List (RNode Int κ)) (cert : List Nat)
     (inputs : κ → Option Nat) (h : inputCarriersMatch E cert inputs = true)
     (k : Nat) (e : RNode Int κ) (key : κ) (he : E[k]? = some e) (hp : e.prim = .input key) :

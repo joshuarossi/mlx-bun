@@ -2402,6 +2402,13 @@ const proofFiles = [
   "host/mlx/GraphStability.lean",
   "host/ts/RenameMaterializeReadback.lean",
   "host/ts/RenameWrites.lean",
+  "host/ts/RenameLoadReadback.lean",
+  "host/load/Choice.lean",
+  "host/load/ProgramCommand.lean",
+  "host/load/run/full/ChoiceStates.lean",
+  "host/mlx/GraphBuild.lean",
+  "host/mlx/GraphBuildCommand.lean",
+  "host/mlx/GraphBuildTest.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -2662,7 +2669,7 @@ try {
     console.log(`Checking ${file}...`);
     // Native evaluation chooses explicit states only. Every generated equality
     // is checked by the kernel below, under the same axiom audit as other proofs.
-    const loadChooser = file.startsWith("host/load/") && /^(?:host_stream|link_chain|run_segment)\s/m.test(source);
+    const loadChooser = file.startsWith("host/load/") && /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
@@ -2704,6 +2711,21 @@ try {
     const uncheckedTheorem = proof + "\nnamespace Inference\naxiom newAssumption : False\ntheorem newClaim : False := newAssumption\nend Inference\n";
     const proofHole = proof + "\nnamespace Inference\ntheorem missingProof : False := by sorry\nend Inference\n";
     const unusedAxiom = "namespace Inference\naxiom unusedAssumption : False\ndef definitionOnly : Nat := 7\nend Inference\n";
+    const graphCertificate = `import host.mlx.GraphCertificateCommand
+open Host.Mlx.FfiEval
+namespace CertificateNegative
+def graph : Nat → Option (RNode Int InKey)
+  | 3 => some ⟨.data [1, 0, 0, 0] [1] 7, []⟩
+  | 6 => some ⟨.reshape [1, 1], [3]⟩
+  | _ => none
+def expected : List (RNode Int InKey) :=
+  [⟨.input .tokenIds, []⟩, ⟨.reshape [1, 1], [0]⟩]
+def inputs : InKey → Option Nat
+  | .tokenIds => some 3
+  | _ => none
+ffi_check_certificate checked : graph, expected, [3, 6], inputs choosing expected
+end CertificateNegative
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -2715,6 +2737,10 @@ try {
       ["NewUncheckedTheorem", uncheckedTheorem, true],
       ["ProofHole", proofHole, true],
       ["UnusedAxiom", unusedAxiom, true],
+      ["WrongGraphCarrier", graphCertificate.replace("expected, [3, 6], inputs", "expected, [3, 5], inputs"), false],
+      ["WrongGraphEdge", graphCertificate.replace(".reshape [1, 1], [3]", ".reshape [1, 1], [4]"), false],
+      ["WrongInputProvenance", graphCertificate.replace(".tokenIds => some 3", ".tokenIds => some 4"), false],
+      ["WrongChosenGraph", graphCertificate.replace("choosing expected", "choosing []"), false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text);
@@ -2723,7 +2749,7 @@ try {
         throw new Error(`${name} failed before the axiom audit:\n${rejected.output}`);
       }
     }
-    console.log("Negative checks passed: source drift, false claims, custom axioms, native computation, unaudited additions, and proof holes rejected.");
+    console.log("Negative checks passed: source drift, false claims, custom axioms, native computation, unaudited additions, proof holes, wrong graph carriers/edges, and wrong input provenance rejected.");
   }
 } finally {
   await rm(dir, { recursive: true, force: true });
