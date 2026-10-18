@@ -120,6 +120,7 @@ import { checkMlxSdpaVectorSourceBinding } from "./kernels/attention/MlxSdpaVect
 import { checkMlxSdpaScoreSourceBinding } from "./kernels/attention/MlxSdpaScoreSourceBinding.ts";
 import { checkHostTsSourceBinding } from "./host/ts/SourceBinding.ts";
 import { checkLoadDataBinding } from "./host/load/DataBinding.ts";
+import { checkKernelSourceBinding } from "./host/mlx/KernelSourceBinding.ts";
 import { buildLoadNative } from "./host/load/native.ts";
 
 const root = new URL("../", import.meta.url);
@@ -2375,6 +2376,10 @@ const proofFiles = [
   "host/ts/RenameProtocol.lean",
   "host/ts/RenameReadback.lean",
   "host/ts/RenameShapes.lean",
+  "host/load/Parameters.lean",
+  "host/load/Reify.lean",
+  "host/load/tests/readtail/Frame.lean",
+  "host/mlx/KernelSources.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -2615,6 +2620,7 @@ await checkMlxSdpaScoreSourceBinding({ selfTest: process.argv.includes("--self-t
 // Host TypeScript literals: Lean lexes and parses them; this checks bytes only.
 await checkHostTsSourceBinding({ selfTest: process.argv.includes("--self-test") });
 await checkLoadDataBinding(undefined, process.argv.includes("--self-test"));
+await checkKernelSourceBinding({ selfTest: process.argv.includes("--self-test") });
 
 const dir = await mkdtemp(join(tmpdir(), "mlx-bun-proof-"));
 async function checkProof(name: string, text: string, build = false, library?: string) {
