@@ -1,6 +1,7 @@
 import host.mlx.NativeArrayBufferClosedInventory
 import host.mlx.NativeTypedBufferInventory
 import host.mlx.NativeShapeSpreadInventory
+import host.mlx.NativeMemoryInventory
 import host.ts.RenameRuntimeSourceCut
 import host.ts.RenameRouteDriver
 
@@ -261,6 +262,129 @@ elab "host_retained_shapeSpread " f:term ", " s:term " using " initial:term " to
         protoLive protoFixed {n}.source_bound targetBound
       have indexSame : i = {n}.sourceIndex := Option.some.inj (index.symm.trans {n}.source_index)
       subst i
+      have source := {n}.source_run C₀
+      have same := congrArg Prod.fst (Option.some.inj (left.symm.trans source))
+      dsimp only at same
+      rw [same] at post retained
+      exact ⟨_,source,right,post,retained,pure_step_inst {n}.F ν₀ {n}.initialServer {n}.nextServer C₀
+        {n}.input {n}.output inst {n}.source_step source⟩")
+
+/-- Select the real Bun pointer builtin over a nonempty typed JS buffer. -/
+elab "host_retained_pointer " f:term ", " s:term " using " initial:term " to " t:term " using " next:term " as " name:ident : command => do
+  let pre := (← getCurrNamespace) ++ name.getId
+  liftTermElabM do
+    let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
+    let stateTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) f)
+    let s ← Term.elabTermEnsuringType s stateTy
+    let t ← Term.elabTermEnsuringType t stateTy
+    let ctl ← whnf (← mkAppM ``St.ctl #[s])
+    unless ctl.isAppOfArity ``Ctl.call 3 do throwError "host_retained_pointer: expected source call"
+    let address ← field ctl.getAppArgs[0]! ``Val.obj 1 0
+    let object ← field (← mkAppM ``St.obj? #[s,address]) ``Option.some 2 1
+    let code ← whnf (← field (← mkAppM ``Obj.kind #[object]) ``Kind.fn 1 0)
+    let native ← whnf (← field code ``Code.native 2 0)
+    let builtin ← field native ``Native.ffi 1 0
+    unless (← whnf builtin).isConstOf ``FfiN.ptr do throwError "host_retained_pointer: expected Bun.ptr callee"
+    let values := ctl.getAppArgs[2]!
+    let view ← field (← field values ``List.cons 3 1) ``Val.obj 1 0
+    unless (← whnf (← field values ``List.cons 3 2)).isAppOfArity ``List.nil 1 do
+      throwError "host_retained_pointer: expected exactly one source argument"
+    let viewObject ← field (← mkAppM ``St.obj? #[s,view]) ``Option.some 2 1
+    let viewKind ← whnf (← mkAppM ``Obj.kind #[viewObject])
+    unless viewKind.isAppOfArity ``Kind.typed 4 do throwError "host_retained_pointer: expected source typed view"
+    let buffer := viewKind.getAppArgs[1]!
+    let backing ← field (← mkAppM ``St.obj? #[s,buffer]) ``Option.some 2 1
+    let bytes ← field (← mkAppM ``Obj.kind #[backing]) ``Kind.buf 1 0
+    for (tag,value) in [("F",f),("input",s),("output",t),("address",address),("object",object),
+      ("sourceData",code.getAppArgs[1]!),("sourceThis",ctl.getAppArgs[1]!),("view",view),("viewObject",viewObject),
+      ("buffer",buffer),("backing",backing),("bytes",bytes),("elementKind",viewKind.getAppArgs[0]!),
+      ("offset",viewKind.getAppArgs[2]!),("count",viewKind.getAppArgs[3]!)] do
+      let type? := if tag == "input" || tag == "output" then
+        some (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
+      addData (pre ++ Name.mkSimple tag) value type?
+  servers pre initial.raw next.raw
+  let n := "_root_." ++ pre.toString
+  sourceFacts n [
+    ("source_control",s!"{n}.input.ctl = .call (.obj {n}.address) {n}.sourceThis [.obj {n}.view]"),
+    ("source_heap",s!"{n}.input.heap.get {n}.address = some (.obj {n}.object)"),
+    ("source_kind",s!"{n}.object.kind = .fn (.native (.ffi .ptr) {n}.sourceData)"),
+    ("source_view",s!"{n}.input.heap.get {n}.view = some (.obj {n}.viewObject)"),
+    ("source_view_kind",s!"{n}.viewObject.kind = .typed {n}.elementKind {n}.buffer {n}.offset {n}.count"),
+    ("source_buffer",s!"{n}.input.heap.get {n}.buffer = some (.obj {n}.backing)"),
+    ("source_buffer_kind",s!"{n}.backing.kind = .buf {n}.bytes")]
+  Parametric.Driver.emit (header ++ s!"theorem {n}.source_nonempty : {n}.count ≠ 0 := by decide +kernel")
+  Parametric.Driver.emit (header ++ s!"theorem {n}.retained_transport
+      (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+      (FR : Ren → {n}.F.S → {n}.F.S → Prop) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+      (s : St {n}.F.S) (inst : Inst ν₀ {n}.initialServer C₀)
+      (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.input s)
+      (inventory : RetainedInventory notes ν₀ ν C₀ C R live {n}.input s) :
+      ∃ result, interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) ∧
+        interpC (step {n}.F s).run C = some (result,C) ∧
+        Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.output result ∧
+        RetainedInventory (notes.withRuntime ⟨returnNote (.ptr (.js {n}.buffer) {n}.offset),notes.runtime.stack,notes.runtime.cells⟩)
+          ν₀ ν C₀ C R live {n}.output result ∧ Inst ν₀ {n}.nextServer C₀ := by
+      obtain ⟨left,right,post,retained⟩ := inventory.pointer_step {n}.F FR h
+        {n}.address {n}.view {n}.buffer {n}.offset {n}.count {n}.object {n}.viewObject {n}.backing {n}.elementKind
+        {n}.sourceData {n}.sourceThis {n}.bytes {n}.source_control {n}.source_heap {n}.source_kind {n}.source_view
+        {n}.source_view_kind {n}.source_buffer {n}.source_buffer_kind {n}.source_nonempty
+      have source := {n}.source_run C₀
+      have same := congrArg Prod.fst (Option.some.inj (left.symm.trans source))
+      dsimp only at same
+      rw [same] at post retained
+      exact ⟨_,source,right,post,retained,pure_step_inst {n}.F ν₀ {n}.initialServer {n}.nextServer C₀
+        {n}.input {n}.output inst {n}.source_step source⟩")
+
+/-- Select an owned-handle read from a slot whose current fixed byte notes
+were established by initialization or a preceding checked native write. -/
+elab "host_retained_readU64 " f:term ", " s:term " using " initial:term " to " t:term " using " next:term " as " name:ident : command => do
+  let pre := (← getCurrNamespace) ++ name.getId
+  liftTermElabM do
+    let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
+    let stateTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) f)
+    let s ← Term.elabTermEnsuringType s stateTy
+    let t ← Term.elabTermEnsuringType t stateTy
+    let ctl ← whnf (← mkAppM ``St.ctl #[s])
+    unless ctl.isAppOfArity ``Ctl.call 3 do throwError "host_retained_readU64: expected source call"
+    let address ← field ctl.getAppArgs[0]! ``Val.obj 1 0
+    let object ← field (← mkAppM ``St.obj? #[s,address]) ``Option.some 2 1
+    let code ← whnf (← field (← mkAppM ``Obj.kind #[object]) ``Kind.fn 1 0)
+    let native ← whnf (← field code ``Code.native 2 0)
+    let builtin ← field native ``Native.ffi 1 0
+    unless (← whnf builtin).isConstOf ``FfiN.readU64 do throwError "host_retained_readU64: expected Bun.read.u64 callee"
+    let values := ctl.getAppArgs[2]!
+    let pointer ← whnf (← field values ``List.cons 3 1)
+    unless pointer.isAppOfArity ``Val.ptr 2 do throwError "host_retained_readU64: expected source JS pointer"
+    let buffer ← field pointer.getAppArgs[0]! ``Mem.js 1 0
+    for (tag,value) in [("F",f),("input",s),("output",t),("address",address),("object",object),
+      ("sourceData",code.getAppArgs[1]!),("sourceThis",ctl.getAppArgs[1]!),("buffer",buffer)] do
+      let type? := if tag == "input" || tag == "output" then
+        some (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
+      addData (pre ++ Name.mkSimple tag) value type?
+  servers pre initial.raw next.raw
+  let n := "_root_." ++ pre.toString
+  sourceFacts n [
+    ("source_control",s!"{n}.input.ctl = .call (.obj {n}.address) {n}.sourceThis [.ptr (.js {n}.buffer) 0,.num zeroN]"),
+    ("source_heap",s!"{n}.input.heap.get {n}.address = some (.obj {n}.object)"),
+    ("source_kind",s!"{n}.object.kind = .fn (.native (.ffi .readU64) {n}.sourceData)")]
+  Parametric.Driver.emit (header ++ s!"theorem {n}.retained_transport
+      (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+      (FR : Ren → {n}.F.S → {n}.F.S → Prop) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+      (s : St {n}.F.S) (inst : Inst ν₀ {n}.initialServer C₀)
+      (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.input s)
+      (inventory : RetainedInventory notes ν₀ ν C₀ C R live {n}.input s)
+      (handle : Nat) (fnRole thisRole : Annotated.Value)
+      (controlNote : notes.runtime.control = callNote fnRole thisRole
+        ([FixedArgument.pointer {n}.buffer 0,FixedArgument.literal (F64.zero false)].map FixedArgument.role))
+      (selected : notes.buffers.owners {n}.buffer = some (handleSlotNotes handle)) :
+      ∃ result, interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) ∧
+        interpC (step {n}.F s).run C = some (result,C) ∧
+        Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' {n}.output result ∧
+        RetainedInventory (notes.withRuntime ⟨returnNote (.handle handle),notes.runtime.stack,notes.runtime.cells⟩)
+          ν₀ ν C₀ C R live {n}.output result ∧ Inst ν₀ {n}.nextServer C₀ := by
+      obtain ⟨left,right,post,retained⟩ := inventory.read_handle_step {n}.F FR h
+        {n}.address {n}.buffer handle {n}.object {n}.sourceData {n}.sourceThis fnRole thisRole
+        {n}.source_control {n}.source_heap {n}.source_kind controlNote selected
       have source := {n}.source_run C₀
       have same := congrArg Prod.fst (Option.some.inj (left.symm.trans source))
       dsimp only at same
