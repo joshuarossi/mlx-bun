@@ -150,4 +150,16 @@ theorem runS_replace_tail (F : Ffi) {n : Nat} {s s' : St F.S} {S S' : SSrv} {fro
     runS F n s { S with oracle := front ++ tail } = some (s', { S' with oracle := tail }) := by
   simpa only [List.nil_append] using runS_append F tail n s s' _ _ (runS_strip F execution shape)
 
+/-- Concretize a checked prefix without requiring its unread future answers
+to hold at the new valuation. -/
+theorem concrete_prefix (F : Ffi) (ρ : Nat → F64) {n : Nat} {s s' : St F.S}
+    {S S' : SSrv} {front : List Ans} (C : CSrv)
+    (execution : runS F n s S = some (s', S'))
+    (shape : S.oracle = front ++ S'.oracle)
+    (table : C.tab = S.tab.map (SymE.eval ρ)) (good : Good ρ front) :
+    ∃ C', runC F n s C = some (s', C') ∧ C'.tab = S'.tab.map (SymE.eval ρ) := by
+  obtain ⟨C', run, inst⟩ := run_sim F ρ n s s' { S with oracle := front }
+    { S' with oracle := [] } C ⟨table, good⟩ (runS_strip F execution shape)
+  exact ⟨C', run, inst.1⟩
+
 end Host.Load.OraclePrefix
