@@ -120,7 +120,7 @@ theorem signature_live {NR : NumV → NumV → Prop} {FR : Ren → LSt → LSt �
 /-- Apply the actual ordinary cached call through the original symbol wrapper.
 Only fixed argument/slot annotations and allocation bounds supplement the
 source-derived live state; neither a target heap read nor a target run is assumed. -/
-theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem transport_annotated (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (base : Nat → GraphNode) (H frame : Nat → Prop) (tail : List NumV)
     (host : HostSt → HostSt → Prop) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
@@ -138,7 +138,8 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
       interpC (step F s).run C = some (t,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C)
         (NativeRelation ν₀ ν C₀ C base H (fun i => CachedCall.N3 i ∨ frame i) tail host)
-        R live framed before after old old' output t := by
+        R live framed before after old old' output t ∧
+      (slotKindRole 29377).Holds ν C R (objectKindAt t (R.a 3126924)) := by
   obtain ⟨fo,data,this,args,hc,hfo,hfk,hd,_,ha⟩ := h.native_call_view 4782 NativeCall.calleeObject
     (.ffi .symbol) _ (.obj 4817) _ source_control source_callee source_callee_kind
   cases hd with | cons hn hd =>
@@ -208,7 +209,7 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                       fo targetSignature bs' native' status0 [u64Write (R.a 3126924) 0 (R.handle 29377)] hc
                       (by simp only [Host.Ts.St.obj?,hfo]) hfk (by simp only [Host.Ts.St.obj?,hto])
                       htKind htBuf htLoad
-                    refine ⟨t,?_,?_,?_⟩
+                    refine ⟨t,?_,?_,?_,?_⟩
                     · rw [source_step]; rfl
                     · rw [targetStep]
                       simp only [u64Write]
@@ -219,5 +220,32 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                     · change StateR _ _ _ _ _ _ _ _ _ sourcePost t at hpost
                       rw [source_post] at hpost
                       exact hpost
+                    · exact finishBuffer_slot_role ν C R s native' 3126924 29377 bo chars!"mlx_closure_apply"
+                        [CachedCall.targetOutArg R,.big (Int.ofNat (R.handle 1354)),.big (Int.ofNat (R.handle 29376))]
+                        (Nat.lt_trans (h.heap.targetBound _ bufferLive) heapBound)
+
+theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (base : Nat → GraphNode) (H frame : Nat → Prop) (tail : List NumV)
+    (host : HostSt → HostSt → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (NativeRelation ν₀ ν C₀ C base H (fun i => CachedCall.N0 i ∨ frame i) tail host)
+      R live framed before after old old' input s)
+    (closureRole : (Host.Ts.Owned.Annotated.Value.handle 1354).Holds ν C R (callArgument s.ctl 1))
+    (vectorRole : (Host.Ts.Owned.Annotated.Value.handle 29376).Holds ν C R (callArgument s.ctl 2))
+    (slotRole : (slotKindRole 29377).Holds ν C R (objectKindAt s (R.a 3126924)))
+    (signatureFrame : ¬ framed 4557)
+    (closureLive : H 1354) (vectorLive : H 29376) (outputLive : H 29377)
+    (nodesBound : s.ffi.mlx.nnext + CachedCall.trace.order.length < 2^64)
+    (handlesBound : s.ffi.mlx.next < 2^64) (heapBound : s.next < 2^64) :
+    ∃ t, interpC (step F input).run C₀ = some (output,C₀) ∧
+      interpC (step F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (NativeRelation ν₀ ν C₀ C base H (fun i => CachedCall.N3 i ∨ frame i) tail host)
+        R live framed before after old old' output t := by
+  obtain ⟨t,hs,ht,hr,_⟩ := transport_annotated ν₀ ν C₀ C R base H frame tail host live framed
+    before after old old' s h closureRole vectorRole slotRole signatureFrame closureLive vectorLive outputLive
+    nodesBound handlesBound heapBound
+  exact ⟨t,hs,ht,hr⟩
 
 end Host.Load.Run.Full.Ordinary.CachedHost

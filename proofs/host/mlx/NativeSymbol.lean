@@ -1,5 +1,6 @@
 import host.mlx.NativeHostState
 import host.ts.RenameParametricArrayBuffer
+import host.ts.RenameParametricArrayBinding
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -108,16 +109,6 @@ def objectKindAt {S : Type} (s : St S) (a : Nat) : Owned.Tree :=
   | some o => Encode.kind o.kind
   | none => .node "Absent" []
 
-theorem kind_array {NR : NumV → NumV → Prop} {R : Ren} {xs : List Val} {k : Kind}
-    (h : TreeR NR R (Encode.kind (.array xs)) (Encode.kind k)) :
-    ∃ ys, k = .array ys ∧ ListR (ValueR NR R) xs ys := by
-  have ht := h.tag_eq
-  cases k <;> simp only [Encode.kind,treeTag] at ht
-  all_goals try contradiction
-  case array ys =>
-    cases h with | node tag hs =>
-      cases hs with | cons hv hs => exact ⟨ys,rfl,vals_roles_of hv⟩
-
 def slotPartRoles (handle : Nat) (n i : Nat) : List Annotated.Tree :=
   match n with
   | 0 => []
@@ -142,17 +133,41 @@ theorem slot_parts_exact {ν : Nat → F64} {C : CSrv} {R : Ren}
             cases hc
             exact congrArg (Byte.part .u64 (.big (Int.ofNat (R.handle handle))) i :: ·) (ih _ _ hs)
 
-theorem slot_role_source (ν : Nat → F64) (C : CSrv) (handle : Nat) :
-    (slotKindRole handle).Holds ν C Annotated.identity
-      (Encode.kind (.buf (cellParts .u64 (.big (Int.ofNat handle)) 8 0))) := by
+theorem slot_role (ν : Nat → F64) (C : CSrv) (R : Ren) (handle : Nat) :
+    (slotKindRole handle).Holds ν C R
+      (Encode.kind (.buf (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0))) := by
   refine .node _ (.cons (.node _ ?_) .nil)
-  have aux : ∀ n i, Annotated.ForestHolds ν C Annotated.identity
-      (slotPartRoles handle n i) ((cellParts .u64 (.big (Int.ofNat handle)) n i).map Encode.byte) := by
+  have aux : ∀ n i, Annotated.ForestHolds ν C R
+      (slotPartRoles handle n i) ((cellParts .u64 (.big (Int.ofNat (R.handle handle))) n i).map Encode.byte) := by
     intro n
     induction n with
     | zero => intro i; exact .nil
     | succ n ih => intro i; exact .cons (.byte (.part _ _ _ _ (.handle handle))) (ih (i+1))
   exact aux 8 0
+
+theorem slot_role_source (ν : Nat → F64) (C : CSrv) (handle : Nat) :
+    (slotKindRole handle).Holds ν C Annotated.identity
+      (Encode.kind (.buf (cellParts .u64 (.big (Int.ofNat handle)) 8 0))) :=
+  slot_role ν C Annotated.identity handle
+
+/-- Completing the write preserves the fixed output-slot annotation, so a
+subsequent wrapper can read the owned handle without repicking its role. -/
+theorem finishBuffer_slot_role {S : Type} (ν : Nat → F64) (C : CSrv) (R : Ren)
+    (s : St S) (native : S) (a handle : Nat) (o : Obj) (name : Name) (args : List Arg)
+    (bound : R.a a < 2^64) :
+    (slotKindRole handle).Holds ν C R
+      (objectKindAt (finishBuffer s native (R.a a) 0 o
+        (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0)
+        (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0) name args) (R.a a)) := by
+  have patch :
+      (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0).take 0 ++
+        cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0 ++
+        (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0).drop
+          (0 + len (cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0)) =
+      cellParts .u64 (.big (Int.ofNat (R.handle handle))) 8 0 := rfl
+  simp only [objectKindAt,finishBuffer,St.ret,St.setTrace,St.setFfi,St.setObj,St.obj?,
+    PTrie.get_set_u64 _ _ _ bound,patch]
+  exact slot_role ν C R handle
 
 /-- A fixed annotation on the output slot determines its actual tagged bytes.
 It is a heap occurrence annotation, not an assumed native read or step. -/
