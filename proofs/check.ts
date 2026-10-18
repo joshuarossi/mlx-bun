@@ -5260,6 +5260,14 @@ const proofFiles = [
   "host/mlx/NativeVectorFreeFrontend.lean",
   "host/mlx/NativeVectorFreeRetained.lean",
   "host/mlx/OrdinaryVectorFreeFrontend.lean",
+  "host/load/RuntimeNextCases.lean",
+  "host/mlx/NativeMetadataFrontend.lean",
+  "host/mlx/NativeMetadataRetained.lean",
+  "host/mlx/OrdinaryMetadataFrontend.lean",
+  "host/ts/RenameRetainedGetter.lean",
+  "host/ts/RenameRuntimeDriverGetter.lean",
+  "host/ts/RenameRuntimeDriverGetterTest.lean",
+  "host/ts/renameOrdinary/RuntimeGetterCase.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -5279,6 +5287,36 @@ function checkSource(name: string, source: string, expected: string): void {
 // declarations even when unused, and audit every theorem's transitive dependencies,
 // including private helpers and newly added theorems.
 const audit = `
+namespace MlxProofAxiomAudit
+open Lean Elab Command
+
+-- Each local declaration is traversed once across all theorem roots. Imported
+-- declarations retain Lean's own precomputed transitive axiom collection.
+private partial def visit (env : Environment) (root name : Name) : StateRefT NameSet CommandElabM Unit := do
+  if (← get).contains name then return
+  modify fun seen => seen.insert name
+  if (env.getModuleIdxFor? name).isSome then
+    for axiomName in (← collectAxioms name) do
+      unless #[\`propext, \`Classical.choice, \`Quot.sound].contains axiomName do
+        throwError "Forbidden axiom {axiomName} in {root}"
+    return
+  let expression (value : Expr) := value.getUsedConstants.forM (visit env root)
+  -- Match Lean.Util.CollectAxioms, including types, opaque bodies, recursors
+  -- and inductive constructors. Consult the checked kernel environment.
+  match env.checked.get.find? name with
+  | some (.axiomInfo value) =>
+    unless #[\`propext, \`Classical.choice, \`Quot.sound].contains name do
+      throwError "Forbidden axiom {name} in {root}"
+    expression value.type
+  | some (.defnInfo value) => expression value.type *> expression value.value
+  | some (.thmInfo value) => expression value.type *> expression value.value
+  | some (.opaqueInfo value) => expression value.type *> expression value.value
+  | some (.ctorInfo value) => expression value.type
+  | some (.recInfo value) => expression value.type
+  | some (.inductInfo value) => expression value.type *> value.ctors.forM (visit env root)
+  | some (.quotInfo _) | none => pure ()
+
+end MlxProofAxiomAudit
 open Lean Elab Command in
 run_cmd do
   let env ← getEnv
@@ -5289,11 +5327,7 @@ run_cmd do
       throwError "Forbidden axiom declaration {name}"
   let names := env.constants.foldStage2 (fun ns name info =>
     if info.isTheorem then ns.push name else ns) (#[] : Array Name)
-  for name in names do
-    let axioms ← collectAxioms name
-    for axiomName in axioms do
-      unless #[\`propext, \`Classical.choice, \`Quot.sound].contains axiomName do
-        throwError "Forbidden axiom {axiomName} in {name}"
+  (names.forM fun name => MlxProofAxiomAudit.visit env name name).run' ({} : NameSet)
   logInfo m!"Axiom audit passed: {names.size} theorems"
 `;
 
@@ -5547,6 +5581,54 @@ try {
       try { checkSource(name, source + "\n// source mutation\n", expected); } catch { rejected = true; }
       if (!rejected) throw new Error(`Source mutation was accepted: ${name}`);
     }
+    // Compile this deliberately unaudited dependency only for traversal tests.
+    // Imported assumptions must be rejected through local theorem roots, rather
+    // than by the current module's unused-axiom declaration gate.
+    const auditForeignPath = join(dir, "AxiomAuditForeign.lean");
+    await Bun.write(auditForeignPath, `import Lean
+namespace AxiomAuditForeign
+axiom forbidden : False
+axiom predicate : Prop
+private axiom hiddenAssumption : False
+private theorem hiddenProof : False := hiddenAssumption
+theorem viaHidden : False := hiddenProof
+opaque viaOpaque : False := hiddenAssumption
+end AxiomAuditForeign
+`);
+    const auditForeign = await run(["-R", dir, "-o", auditForeignPath.replace(/\.lean$/, ".olean"), auditForeignPath], dir);
+    if (auditForeign.code !== 0) {
+      throw new Error(`Axiom traversal dependency did not compile:\n${auditForeign.output}`);
+    }
+    const auditAllowed = await checkProof("AxiomAuditAllowed.lean", `import AxiomAuditForeign
+inductive AuditTree where
+  | leaf
+  | branch : List AuditTree → AuditTree
+private theorem privateTree (x : AuditTree) : True := by cases x <;> trivial
+theorem sharedTree (x : AuditTree) : True := privateTree x
+theorem allowedChoice (p : Prop) (h : Nonempty p) : p := Classical.choice h
+theorem allowedPropext (p q : Prop) (h : p ↔ q) : p = q := propext h
+theorem allowedQuot (r : Nat → Nat → Prop) (x y : Nat) (h : r x y) :
+    Quot.mk r x = Quot.mk r y := Quot.sound h
+`);
+    if (auditAllowed.code !== 0 || !auditAllowed.output.includes("Axiom audit passed:")) {
+      throw new Error(`Allowed axiom and recursive traversal fixture failed:\n${auditAllowed.output}`);
+    }
+    for (const [name, body] of [
+      ["AuditPrivateUnused", "private theorem unused : False := AxiomAuditForeign.forbidden\ntheorem harmless : True := True.intro"],
+      ["AuditOpaqueBody", "opaque hiddenBody : False := AxiomAuditForeign.forbidden\ntheorem rejected : False := hiddenBody"],
+      ["AuditTypeOnly", "theorem rejected : (fun _ : Prop => True) AxiomAuditForeign.predicate := True.intro"],
+      ["AuditInductiveConstructor", "inductive AuditBox where\n  | wrap : AxiomAuditForeign.predicate → AuditBox\ntheorem rejected (x : AuditBox) : x = x := rfl"],
+      ["AuditSharedRoots", "private def shared : Nat := False.elim AxiomAuditForeign.forbidden\ntheorem rejectedLeft : shared = shared := rfl\ntheorem rejectedRight : shared = shared := rfl"],
+      ["AuditImportedPrivate", "theorem rejected : False := AxiomAuditForeign.viaHidden"],
+      ["AuditImportedOpaque", "theorem rejected : False := AxiomAuditForeign.viaOpaque"],
+    ] as const) {
+      const rejected = await checkProof(`${name}.lean`, `import AxiomAuditForeign\n${body}\n`);
+      if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
+      if (!rejected.output.includes("Forbidden axiom") || rejected.output.includes("Forbidden axiom declaration")) {
+        throw new Error(`${name} did not reach the transitive axiom audit:\n${rejected.output}`);
+      }
+    }
+    console.log("Axiom traversal checks passed: private, opaque, type-only, constructor, shared-root, and imported dependencies rejected.");
     // Small prefix retains the arithmetic contract and its dependencies, avoiding
     // repeated exhaustive floating-point checking for deliberately broken proofs.
     const source = await Bun.file(new URL("kernels/trellis/Codebook.lean", import.meta.url)).text();
