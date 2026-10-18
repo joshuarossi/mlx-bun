@@ -9,15 +9,6 @@ set_option Elab.async false
 namespace Host.Load.Run.Full.Ordinary
 open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric
 
-private theorem closure_live_grow (live : Nat → Prop) (start : Nat) (arrow : Bool) (home : Val) (f : Func)
-    (a : Nat) (ha : live a) : ClosureLive live start arrow home f a := by
-  unfold ClosureLive
-  split
-  · exact CellsLive.grow _ _ _ _ ha
-  · cases home <;> simp only <;> apply CellsLive.grow
-    · exact Or.inl ha
-    all_goals exact Or.inl (Or.inl ha)
-
 theorem map_second_push (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren)
     (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
@@ -117,8 +108,8 @@ theorem map_iterations (FR : Ren → P.F.S → P.F.S → Prop) (R : Ren)
   have arrayLive2 : L2 3126677 := by
     apply Or.inl
     apply CellsLive.grow
-    apply closure_live_grow
-    apply closure_live_grow
+    apply ClosureLive.grow
+    apply ClosureLive.grow
     exact arrayLive
   have nextIndexOther : R.a 3126683 ≠ R.a 3126677 := fun eq => by
     have bad := h157.heap.inj _ _ nextIndexLive arrayLive2 eq
