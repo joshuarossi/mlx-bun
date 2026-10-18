@@ -7,6 +7,16 @@ enter through this function; all handles and quantization choices come from
 `loaded`, rather than from a separately assembled parameter table. -/
 abbrev TensorValues := Tensor → Value
 
+/-- Array contents can be left abstract while their dtype and dimensions are
+read from the checked load metadata. The concrete summary checks every
+parameter has a supported dtype and literal nonnegative dimensions. A caller
+connecting these Values to FFI evaluation must prove that interpretation;
+this function alone makes no claim about external payload bytes. -/
+def headerValues (contents : Nat → Nat → Nat) (t : Tensor) : Value :=
+  ⟨(Dtype.ofCode t.value.dtype).getD .uint8,
+    t.value.shape.map (fun d => match d with | .lit n => n.toNat | .sym _ => 0),
+    contents t.node⟩
+
 def linearWeights (value : TensorValues) (l : Linear) : Option GlueLayers.Linear := do
   let b ← l.biases
   let _ ← linearLayout l
