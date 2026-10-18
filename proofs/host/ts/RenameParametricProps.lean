@@ -34,13 +34,13 @@ theorem keyEq_string_map (R : Ren) (name : Name) (k : PKey) :
     change Nat.beq (2 * pack name) (Nat.succ (2 * R.sym n)) = Nat.beq (2 * pack name) (Nat.succ (2*n))
     rw [odd,odd]
 
-private theorem PropsR.nil_left {NR : NumV → NumV → Prop} {R : Ren} {ps : Props}
+theorem PropsR.nil_left {NR : NumV → NumV → Prop} {R : Ren} {ps : Props}
     (h : PropsR NR R [] ps) : ps = [] := by
   cases ps with
   | nil => rfl
   | cons p ps => cases h with | node tag hs => cases hs
 
-private theorem PropsR.cons {NR : NumV → NumV → Prop} {R : Ren}
+theorem PropsR.cons {NR : NumV → NumV → Prop} {R : Ren}
     {k : PKey} {p : PropV} {ps ps' : Props} (h : PropsR NR R ((k,p)::ps) ps') :
     ∃ k' p' rest, ps' = (k',p')::rest ∧ KeyR NR R k k' ∧ PropR NR R p p' ∧ PropsR NR R ps rest := by
   cases ps' with
