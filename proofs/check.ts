@@ -4544,7 +4544,7 @@ try {
     // is checked by the kernel below, under the same axiom audit as other proofs.
     const loadChooser = (file.startsWith("host/load/") &&
       /^(?:host_stream|link_chain|run_segment|load_replay_summary)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment)\s/m.test(source);
+      /^(?:host_micro_chunk|host_micro_states|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
@@ -4724,6 +4724,34 @@ host_growth_entry_checked wrong_growth_geometry : Growth256.entry using
   { Growth256.roots with «cache» := Growth256.roots.cache + 1 }
 end Host.Load.Run.Full
 `;
+    const wrongStopEndpoint = `import host.load.stop.OneH0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full
+noncomputable def OneWrong.F := OneToken.F
+def OneWrong.ks := [500]
+noncomputable def OneWrong.s0 := OneToken.s0
+noncomputable def OneWrong.S0 := OneToken.S0
+noncomputable def OneWrong.s1 := OneToken.s0
+noncomputable def OneWrong.S1 := OneToken.S1
+host_chunk OneWrong 0
+end Host.Load.Run.Full
+`;
+    const wrongStopCount = `import host.load.stop.Clear256H0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+namespace Host.Load.Run.Full
+namespace WrongClear
+noncomputable def F := Clear256.F
+def ks := [32]
+noncomputable def s0 := Host.Load.Stop.generatedAt Clear256.original Clear256.generatedCell 256
+noncomputable def S0 := Clear256.S0
+noncomputable def s1 := Host.Load.Stop.generatedAt Clear256.s1 Clear256.generatedCell 256
+noncomputable def S1 := Clear256.S1
+end WrongClear
+host_chunk WrongClear 0
+end Host.Load.Run.Full
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -4756,6 +4784,8 @@ end Host.Load.Run.Full
       ["WrongMicroGroupEndpoint", wrongMicroGroupEndpoint, false],
       ["WrongGrowthEndpoint", wrongGrowthEndpoint, false],
       ["WrongGrowthGeometry", wrongGrowthGeometry, false],
+      ["WrongStopEndpoint", wrongStopEndpoint, false],
+      ["WrongStopCount", wrongStopCount, false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text, false,
@@ -4763,7 +4793,8 @@ end Host.Load.Run.Full
       if (rejected.code === 0) throw new Error(`Lean accepted ${name}.`);
       if ((name === "WrongComposedEndpoint" || name === "MutatedFixedWorld" || name === "WrongReferenceScan" ||
           name === "WrongShaDigest" || name === "WrongShaEndpoint" || name === "WrongMicroGroupEndpoint" ||
-          name === "WrongGrowthEndpoint" || name === "WrongGrowthGeometry") &&
+          name === "WrongGrowthEndpoint" || name === "WrongGrowthGeometry" ||
+          name === "WrongStopEndpoint" || name === "WrongStopCount") &&
           !rejected.output.includes("(kernel)")) {
         throw new Error(`${name} failed before checking its endpoint:\n${rejected.output}`);
       }
