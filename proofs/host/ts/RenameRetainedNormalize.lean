@@ -24,14 +24,11 @@ private def flatState (expression : Lean.Expr) : MetaM Lean.Expr := do
   unless reduced.getAppFn.isConstOf ``St.mk do return expression
   projectData reduced
 
-/-- Flatten current symbolic record updates before composing the next rule.
-Every local type change is checked for definitional equality. This changes no
-runtime state or proof premise and does not evaluate an interpreter run. -/
-elab "host_normalize_retained " state:ident ", " inventory:ident : tactic => do
-  let goal ← getMainGoal
-  let goal ← goal.withContext do
-    let stateProof ← elabTerm state none
-    let inventoryProof ← elabTerm inventory none
+/-- Flatten current symbolic state/inventory records in a local proof context.
+Both replacements use the ordinary definitional-equality check. The returned
+goal retains the same proof-variable IDs and all original logical premises. -/
+def normalizeRetainedLocals (goal : MVarId) (stateProof inventoryProof : Lean.Expr) : MetaM MVarId :=
+  goal.withContext do
     unless stateProof.isFVar && inventoryProof.isFVar do throwError "expected local current invariant proofs"
     let stateType := (← instantiateMVars (← inferType stateProof)).consumeMData.headBeta.consumeMData
     let inventoryType := (← instantiateMVars (← inferType inventoryProof)).consumeMData.headBeta.consumeMData
@@ -49,6 +46,13 @@ elab "host_normalize_retained " state:ident ", " inventory:ident : tactic => do
     let newInventoryType ← projectData (replaceStates inventoryType)
     let goal ← goal.changeLocalDecl stateProof.fvarId! newStateType
     goal.changeLocalDecl inventoryProof.fvarId! newInventoryType
+
+/-- Normalize the current symbolic record updates before composing a rule. -/
+elab "host_normalize_retained " state:ident ", " inventory:ident : tactic => do
+  let goal ← getMainGoal
+  let stateProof ← elabTerm state none
+  let inventoryProof ← elabTerm inventory none
+  let goal ← normalizeRetainedLocals goal stateProof inventoryProof
   replaceMainGoal [goal]
 
 end Host.Ts.Owned.Annotated.Driver
