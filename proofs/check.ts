@@ -2726,6 +2726,16 @@ def inputs : InKey → Option Nat
 ffi_check_certificate checked : graph, expected, [3, 6], inputs choosing expected
 end CertificateNegative
 `;
+    const loadMatch = `import host.load.ProgramMatchCommand
+open Host.Ts Host.Mlx Host.Load.Program
+namespace LoadMatchNegative
+def program : Host.Load.Program.Code := [⟨.load chars!"checkpoint" chars!"weight", [], [1], 7⟩]
+def graph : Ffi.St := { Ffi.init [] [] [] [] with
+  nodes := PTrie.set PTrie.nil 1 ⟨.load chars!"checkpoint" chars!"weight", [], [.lit 1], 7⟩
+  nnext := 2 }
+load_program_matches checked : program, [1], graph
+end LoadMatchNegative
+`;
     const definitions = await checkProof("DefinitionOnly.lean", "namespace Inference\ndef definitionOnly : Nat := 7\nend Inference\n");
     if (definitions.code !== 0 || !definitions.output.includes("Axiom audit passed:")) {
       throw new Error(`Definition-only module failed the axiom audit:\n${definitions.output}`);
@@ -2745,6 +2755,9 @@ end CertificateNegative
         "ffi_check_certificate checked : graph,",
         "ffi_check_family checked : Nat, (fun parameter node => if parameter == 0 then graph node else none),",
       ), false],
+      ["WrongLoadCarrier", loadMatch.replace("program, [1], graph", "program, [2], graph"), false],
+      ["WrongLoadProgram", loadMatch.replace("def program : Host.Load.Program.Code := [⟨.load chars!\"checkpoint\" chars!\"weight\"",
+        "def program : Host.Load.Program.Code := [⟨.load chars!\"checkpoint\" chars!\"different\""), false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text);
