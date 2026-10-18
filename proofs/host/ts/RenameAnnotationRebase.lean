@@ -5,12 +5,16 @@ def nextValuation (θ : Nat → SymE) (ν : Nat → F64) : Nat → F64 := fun i 
 
 def Value.subst (θ : Nat → SymE) : Value → Value
   | .num e => .num (e.subst θ)
+  | .literal e => .literal (e.subst θ)
   | .numericInteger e => .numericInteger (e.subst θ)
+  | .exactInteger e => .exactInteger (e.subst θ)
   | v => v
 
 def Cell.subst (θ : Nat → SymE) : Cell → Cell
   | .num e => .num (e.subst θ)
+  | .literal e => .literal (e.subst θ)
   | .numericInteger e => .numericInteger (e.subst θ)
+  | .exactInteger e => .exactInteger (e.subst θ)
   | v => v
 
 def Byte.subst (θ : Nat → SymE) : Byte → Byte
@@ -38,6 +42,11 @@ private theorem denote_subst {ν : Nat → F64} {C : CSrv} (θ : Nat → SymE) (
   simp only [NumDenote,SymE.eval_subst]
   rfl
 
+private theorem int_subst {ν : Nat → F64} (θ : Nat → SymE) (e : SymE) (i : Int) :
+    F64.toInt? ((e.subst θ).eval ν) = some i ↔ F64.toInt? (e.eval (nextValuation θ ν)) = some i := by
+  simp only [SymE.eval_subst]
+  rfl
+
 /-- Numeric annotations rebase by expression substitution at every occurrence.
 The runtime values and concrete numeric table are unchanged by this theorem. -/
 theorem Value.holds_subst {ν : Nat → F64} {C : CSrv} {R : Ren}
@@ -49,6 +58,8 @@ theorem Value.holds_subst {ν : Nat → F64} {C : CSrv} {R : Ren}
     | assumption
     | exact (denote_subst θ _ _).mp (by assumption)
     | exact (denote_subst θ _ _).mpr (by assumption)
+    | exact (int_subst θ _ _).mp (by assumption)
+    | exact (int_subst θ _ _).mpr (by assumption)
 
 theorem Cell.holds_subst {ν : Nat → F64} {C : CSrv} {R : Ren}
     (θ : Nat → SymE) (role : Cell) (v : Host.Ts.Cell) :
@@ -59,6 +70,8 @@ theorem Cell.holds_subst {ν : Nat → F64} {C : CSrv} {R : Ren}
     | assumption
     | exact (denote_subst θ _ _).mp (by assumption)
     | exact (denote_subst θ _ _).mpr (by assumption)
+    | exact (int_subst θ _ _).mp (by assumption)
+    | exact (int_subst θ _ _).mpr (by assumption)
 
 theorem Byte.holds_subst {ν : Nat → F64} {C : CSrv} {R : Ren}
     (θ : Nat → SymE) (role : Byte) (v : Host.Ts.Byte) :

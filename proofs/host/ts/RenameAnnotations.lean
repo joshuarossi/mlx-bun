@@ -7,8 +7,10 @@ can have different roles at different paths, but one path has one fixed role. -/
 inductive Value where
   | undef | null | bool (b : Bool) | str (s : Name)
   | num (meaning : SymE)
+  | literal (meaning : SymE)
   | ordinaryBig (i : Int)
   | numericInteger (meaning : SymE)
+  | exactInteger (meaning : SymE)
   | handle (h : Nat)
   | pointerInteger (m : Mem) (off : Nat)
   | obj (a : Nat) | sym (a : Nat) | ptr (m : Mem) (off : Nat)
@@ -19,9 +21,12 @@ inductive Value.Holds (ν : Nat → F64) (C : CSrv) (R : Ren) : Value → Val �
   | bool (b : Bool) : Holds ν C R (.bool b) (.bool b)
   | str (s : Name) : Holds ν C R (.str s) (.str s)
   | num (e : SymE) (n : NumV) : NumDenote ν C e n → Holds ν C R (.num e) (.num n)
+  | literal (e : SymE) (x : F64) : NumDenote ν C e (.lit x) → Holds ν C R (.literal e) (.num (.lit x))
   | ordinaryBig (i : Int) : Holds ν C R (.ordinaryBig i) (.big i)
   | numericInteger (e : SymE) (i : Int) : NumDenote ν C e (.lit (F64.ofInt i)) →
       Holds ν C R (.numericInteger e) (.big i)
+  | exactInteger (e : SymE) (i : Int) : NumDenote ν C e (.lit (F64.ofInt i)) →
+      F64.toInt? (e.eval ν) = some i → Holds ν C R (.exactInteger e) (.big i)
   | handle (h : Nat) : Holds ν C R (.handle h) (.big (Int.ofNat (R.handle h)))
   | pointerInteger (m : Mem) (off : Nat) :
       Holds ν C R (.pointerInteger m off) (.big (ptrInt (R.mem m) off))
@@ -57,8 +62,10 @@ theorem Value.paired {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren} {role : 
   case bool b => exact .bool b
   case str s => exact .str s
   case num e n₀ h₀ n h => exact .num ⟨e,⟨h₀,h⟩⟩
+  case literal e x₀ h₀ x h => exact .num ⟨e,⟨h₀,h⟩⟩
   case ordinaryBig i => exact .ordinaryBig i
   case numericInteger e i₀ h₀ i h => exact .numericInteger ⟨e,⟨h₀,h⟩⟩
+  case exactInteger e i₀ h₀ hi₀ i h hi => exact .numericInteger ⟨e,⟨h₀,h⟩⟩
   case handle h => exact .handle h
   case pointerInteger m off => cases m <;> exact .pointerInteger _ off
   case obj a => exact .obj a
@@ -68,14 +75,18 @@ theorem Value.paired {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren} {role : 
   case ptr m off => cases m <;> exact .ptr _ off
 
 inductive Cell where
-  | num (meaning : SymE) | ordinaryBig (i : Int) | numericInteger (meaning : SymE)
+  | num (meaning : SymE) | literal (meaning : SymE)
+  | ordinaryBig (i : Int) | numericInteger (meaning : SymE) | exactInteger (meaning : SymE)
   | handle (h : Nat) | pointerInteger (m : Mem) (off : Nat)
 
 inductive Cell.Holds (ν : Nat → F64) (C : CSrv) (R : Ren) : Cell → Host.Ts.Cell → Prop where
   | num (e : SymE) (n : NumV) : NumDenote ν C e n → Holds ν C R (.num e) (.num n)
+  | literal (e : SymE) (x : F64) : NumDenote ν C e (.lit x) → Holds ν C R (.literal e) (.num (.lit x))
   | ordinaryBig (i : Int) : Holds ν C R (.ordinaryBig i) (.big i)
   | numericInteger (e : SymE) (i : Int) : NumDenote ν C e (.lit (F64.ofInt i)) →
       Holds ν C R (.numericInteger e) (.big i)
+  | exactInteger (e : SymE) (i : Int) : NumDenote ν C e (.lit (F64.ofInt i)) →
+      F64.toInt? (e.eval ν) = some i → Holds ν C R (.exactInteger e) (.big i)
   | handle (h : Nat) : Holds ν C R (.handle h) (.big (Int.ofNat (R.handle h)))
   | pointerInteger (m : Mem) (off : Nat) :
       Holds ν C R (.pointerInteger m off) (.big (ptrInt (R.mem m) off))
@@ -85,8 +96,10 @@ theorem Cell.paired {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren} {role : C
     Parametric.CellR (NumberRoles ν₀ ν C₀ C) R c₀ c := by
   cases h₀ <;> cases h
   case num e n₀ h₀ n h => exact .num ⟨e,⟨h₀,h⟩⟩
+  case literal e x₀ h₀ x h => exact .num ⟨e,⟨h₀,h⟩⟩
   case ordinaryBig i => exact .ordinaryBig i
   case numericInteger e i₀ h₀ i h => exact .numericInteger ⟨e,⟨h₀,h⟩⟩
+  case exactInteger e i₀ h₀ hi₀ i h hi => exact .numericInteger ⟨e,⟨h₀,h⟩⟩
   case handle h => exact .handle h
   case pointerInteger m off => cases m <;> exact .pointerInteger _ off
 
@@ -162,7 +175,9 @@ include he
 theorem Value.Holds.mono {role : Value} {v : Val} (h : role.Holds ν C R v) : role.Holds ν D R v := by
   cases h with
   | num e n h => exact .num e n (h.mono he)
+  | literal e x h => exact .literal e x (h.mono he)
   | numericInteger e i h => exact .numericInteger e i (h.mono he)
+  | exactInteger e i h hi => exact .exactInteger e i (h.mono he) hi
   | undef => exact .undef
   | null => exact .null
   | bool b => exact .bool b
@@ -177,7 +192,9 @@ theorem Value.Holds.mono {role : Value} {v : Val} (h : role.Holds ν C R v) : ro
 theorem Cell.Holds.mono {role : Cell} {v : Host.Ts.Cell} (h : role.Holds ν C R v) : role.Holds ν D R v := by
   cases h with
   | num e n h => exact .num e n (h.mono he)
+  | literal e x h => exact .literal e x (h.mono he)
   | numericInteger e i h => exact .numericInteger e i (h.mono he)
+  | exactInteger e i h hi => exact .exactInteger e i (h.mono he) hi
   | ordinaryBig i => exact .ordinaryBig i
   | handle h => exact .handle h
   | pointerInteger m off => exact .pointerInteger m off

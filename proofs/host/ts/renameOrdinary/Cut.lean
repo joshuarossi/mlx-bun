@@ -1,4 +1,5 @@
 import host.ts.renameOrdinary.ReadEntry
+import host.ts.RenameAnnotatedLoop
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -211,5 +212,12 @@ theorem actual_supported_cut (limit : Nat) (hlo : 3 ≤ limit) (hhi : limit ≤ 
     rfl
   · exact ⟨4711,4415,3123575,0,25658,objectAt 4711,objectAt 4415,readBytes,.obj 4817,
       actual_read_control,rfl,rfl,rfl,rfl,rfl,rfl⟩
+
+/-- The actual all64-layer source cut realizes the fixed numeric annotations.
+This observation is separate from reachability under a changed budget. -/
+theorem actual_loop_numbers (limit : Nat) (hlo : 3 ≤ limit) (hhi : limit ≤ 262143) :
+    Owned.Annotated.LoopNumbers (Owned.Annotated.loopValuation 1 1 limit 256)
+      (budgetValuation limit) Owned.Annotated.identity places P.s3272 :=
+  Owned.Annotated.SupportedOrdinaryCut.loopNumbers (actual_supported_cut limit hlo hhi) _
 
 end Host.Load.Run.Full.Ordinary
