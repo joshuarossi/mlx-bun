@@ -1,5 +1,6 @@
 import host.ts.Props
 import host.ts.StringIndex
+import host.ts.BufferFill
 namespace Host.Ts
 
 /-! # Builtins
@@ -853,7 +854,7 @@ def bufN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : BufN �
       .bind (toCell k (arg args 0)) fun
       | some c => match s.obj? b with
         | some ⟨.buf bs, p, ps, pr, ex⟩ =>
-          let bs := (List.range (j - i)).foldl (fun bs t => writeCell k c bs (off + (i + t) * k.size)) bs
+          let bs := fillCells k c bs (off + i * k.size) (j - i)
           retS F (s.setObj b ⟨.buf bs, p, ps, pr, ex⟩) this
         | _ => .fail "fill of native memory"
       | none => typeErr s (chars!"fill value")
