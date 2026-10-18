@@ -12,7 +12,7 @@ private def proofType (proof : Lean.Expr) : MetaM Lean.Expr := do
 private def sameType (left right : Lean.Expr) : MetaM Bool :=
   isDefEq left right
 
-private partial def proveFromContext (type : Lean.Expr) (fuel : Nat := 8) : MetaM (Option Lean.Expr) := do
+private partial def proveFromContext (type : Lean.Expr) (fuel : Nat := 64) : MetaM (Option Lean.Expr) := do
   if fuel == 0 then return none
   let type := (← instantiateMVars type).consumeMData.headBeta.consumeMData
   if type.isAppOfArity ``Eq 3 then
@@ -136,6 +136,14 @@ private def factOfType (facts : Array Lean.Expr) (type : Lean.Expr) : MetaM Lean
   for proof in facts do
     let saved ← saveState
     let candidate ← proofType proof
+    if type.isAppOfArity ``Eq 3 && candidate.isAppOfArity ``Eq 3 then
+      let wanted := type.getAppArgs[1]!.consumeMData
+      let found := candidate.getAppArgs[1]!.consumeMData
+      if wanted.isAppOfArity ``runC 4 && found.isAppOfArity ``runC 4 then
+        unless (← sameType found.getAppArgs[2]! wanted.getAppArgs[2]!) &&
+            (← sameType found.getAppArgs[3]! wanted.getAppArgs[3]!) do
+          saved.restore
+          continue
     if ← withReducible (isDefEq candidate type) then return proof
     saved.restore
     if candidate.getAppFn == type.getAppFn &&
@@ -154,6 +162,20 @@ private def factOfType (facts : Array Lean.Expr) (type : Lean.Expr) : MetaM Lean
           if ← sameType candidate type then return proof
           saved.restore
   throwError "host_retained_chain: missing derived fact {type}"
+
+private def blockRunOfType (facts : Array Lean.Expr) (type target server : Lean.Expr) : MetaM Lean.Expr := do
+  -- Compare state/server arguments before asking conversion to inspect a run.
+  -- An unrelated closed source run must not be unfolded against the target.
+  for proof in facts do
+    let candidate ← proofType proof
+    if candidate.isAppOfArity ``Eq 3 then
+      let lhs := candidate.getAppArgs[1]!.consumeMData
+      if lhs.isAppOfArity ``runC 4 then
+        let saved ← saveState
+        if (← sameType lhs.getAppArgs[2]! target) && (← sameType lhs.getAppArgs[3]! server) then
+          if ← sameType candidate type then return proof
+        saved.restore
+  throwError "host_retained_chain: missing checked block run {type}"
 
 private partial def normalStack (stack : Lean.Expr) : MetaM Lean.Expr := do
   let stack ← whnf stack
@@ -304,18 +326,27 @@ private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
         let nextInstProof ← closeFromFacts nextInstType facts
         let nextTarget := nextArgs[9]!
         let nextServer := nextArgs[5]!
-        let stepRun ← mkAppM ``interpC #[← mkAppM ``M.run #[← mkAppM ``step #[f,target]],server]
-        let expected ← mkEq stepRun (← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[nextTarget,nextServer]])
-        let targetRun ← factOfType facts expected
-        let control ← mkAppM ``Parametric.StateR.control #[state]
-        let haltEqual ← mkAppM ``Parametric.ControlR.isHalt_eq #[control]
-        let closedHalt ← mkEqRefl (mkConst ``Bool.false)
-        let sourceHalt ← mkAppM ``isHalt #[← mkAppM ``St.ctl #[source]]
-        unless ← sameType sourceHalt (mkConst ``Bool.false) do
-          throwError "host_retained_chain: source step is already halted"
-        let notHalt ← mkAppM ``Eq.trans #[haltEqual,closedHalt]
-        let zero ← mkEqRefl (← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[nextTarget,nextServer]])
-        let one ← mkAppM ``Parametric.runC_cons #[f,mkNatLit 0,target,nextTarget,nextTarget,server,nextServer,nextServer,notHalt,targetRun,zero]
+        let spanName := rule.constName!.getPrefix ++ `span
+        let one ← if (← getEnv).contains spanName then do
+            let span := mkConst spanName
+            unless (← inferType span).isConstOf ``Nat do
+              throwError "host_retained_chain: block span must be a natural number"
+            let blockRun ← mkAppM ``runC #[f,span,target,server]
+            let expected ← mkEq blockRun (← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[nextTarget,nextServer]])
+            blockRunOfType facts expected target server
+          else do
+            let stepRun ← mkAppM ``interpC #[← mkAppM ``M.run #[← mkAppM ``step #[f,target]],server]
+            let expected ← mkEq stepRun (← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[nextTarget,nextServer]])
+            let targetRun ← factOfType facts expected
+            let control ← mkAppM ``Parametric.StateR.control #[state]
+            let haltEqual ← mkAppM ``Parametric.ControlR.isHalt_eq #[control]
+            let closedHalt ← mkEqRefl (mkConst ``Bool.false)
+            let sourceHalt ← mkAppM ``isHalt #[← mkAppM ``St.ctl #[source]]
+            unless ← sameType sourceHalt (mkConst ``Bool.false) do
+              throwError "host_retained_chain: source step is already halted"
+            let notHalt ← mkAppM ``Eq.trans #[haltEqual,closedHalt]
+            let zero ← mkEqRefl (← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[nextTarget,nextServer]])
+            mkAppM ``Parametric.runC_cons #[f,mkNatLit 0,target,nextTarget,nextTarget,server,nextServer,nextServer,notHalt,targetRun,zero]
         let run ← match accumulated with
           | none => pure one
           | some previous => mkAppM ``Parametric.runC_join #[f,previous,one]
