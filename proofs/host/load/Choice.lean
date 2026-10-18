@@ -55,11 +55,18 @@ elab "load_replay_summary " name:ident " : " boot:term ", " tab:term ", " valuat
     | some (s', srv', _) => s := s'; srv := srv'
     | none => throwError "load_replay_summary: native replay stuck at {i}"
   let some metadata := loaded s (entryEnv initial) | throwError "load_replay_summary: extraction failed"
-  let action : SharingM Lean.Expr := do return (← share (toExpr metadata)).1
-  let (body, sharing) ← action.run { pre }
+  let graph := s.ffi.mlx
+  let action : SharingM (Lean.Expr × Lean.Expr) := do
+    let loaded ← share (toExpr metadata)
+    let graph ← share (toExpr graph)
+    return (loaded.1, graph.1)
+  let ((body, graphBody), sharing) ← action.run { pre }
   let d := Declaration.defnDecl { name := pre, levelParams := [], type := mkConst ``Loaded, value := body, hints := .regular 0, safety := .safe }
   addDecl d
   compileDecl d
+  let graphDecl := Declaration.defnDecl { name := pre ++ `graph, levelParams := [], type := mkConst ``Host.Mlx.Ffi.St, value := graphBody, hints := .regular 0, safety := .safe }
+  addDecl graphDecl
+  compileDecl graphDecl
   logInfo m!"load_replay_summary {pre}: {k} native steps, {sharing.next} metadata pages, {(← IO.monoMsNow) - started} ms (candidate only)"
 
 /-- Connect chosen metadata to the authoritative source state by a kernel
