@@ -4,6 +4,7 @@ import host.ts.RuntimeInventoryArrayBinding
 import host.ts.RuntimeInventoryDefaultBinding
 import host.ts.RuntimeInventoryObjectBinding
 import host.ts.RenameRetainedStores
+import host.ts.RenameRuntimeDriverComplexPatterns
 
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
@@ -28,19 +29,29 @@ elab "host_retained_pattern " f:term ", " s:term " using " initial:term " to " t
       let pattern ← whnf control.getAppArgs[0]!
       if pattern.isAppOfArity ``Pat.array 2 then pure "array"
       else if pattern.isAppOfArity ``Pat.id 1 then pure "init"
+      else if pattern.isAppOfArity ``Pat.dflt 2 then pure "default"
+      else if pattern.isAppOfArity ``Pat.object 2 then pure "object"
       else throwError "host_retained_pattern: unsupported binding pattern"
     else
       unless control.isAppOfArity ``Ctl.ret 1 do throwError "host_retained_pattern: expected binding or return control"
       let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
       if frame.isAppOfArity ``Frame.b 1 then
-        unless (← whnf frame.getAppArgs[0]!).isAppOfArity ``BindF.arr 6 do
-          throwError "host_retained_pattern: unsupported binding continuation"
-        pure "next"
+        let binding ← whnf frame.getAppArgs[0]!
+        if binding.isAppOfArity ``BindF.dflt 4 then pure "default"
+        else if binding.isAppOfArity ``BindF.obj 7 || binding.isAppOfArity ``BindF.objVal 9 then pure "object"
+        else
+          unless binding.isAppOfArity ``BindF.arr 6 do
+            throwError "host_retained_pattern: unsupported binding continuation"
+          pure "next"
       else
         let statement ← whnf (← Parametric.Driver.field frame ``Frame.s 1 0)
         unless statement.isAppOfArity ``StmtF.declNext 3 do
           throwError "host_retained_pattern: unsupported declaration continuation"
         pure "declNext"
+  if branch == "default" || branch == "object" then
+    let selected := if branch == "default" then "host_retained_default_pattern" else "host_retained_object_pattern"
+    Parametric.Driver.emit s!"{selected} {← printed f.raw}, {← printed s.raw} using {← printed initial.raw} to {← printed t.raw} using {← printed next.raw} as {name.getId}"
+    return
   Parametric.Driver.emit s!"host_transport_binding {← printed f.raw}, {← printed s.raw} to {← printed t.raw} as {name.getId}"
   liftTermElabM do
     let initial ← Term.elabTermEnsuringType initial (mkConst ``SSrv)
