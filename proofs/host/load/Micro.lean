@@ -67,12 +67,15 @@ private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
 boundary is subsequently used in an ordinary kernel reduction, including the
 last boundary's equality to the original outer chunk endpoint. -/
 private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option (Nat × Nat × Nat))
-    (checked : Bool) (streamed : Bool := false) : TermElabM Unit := do
+    (checked : Bool) (streamed : Bool := false) (explicit : Option (List Nat) := none) : TermElabM Unit := do
   if width == 0 then throwError "host_micro_chunk: width must be positive"
   if let some (start, stop, fine) := refine then
     unless start < stop && fine > 0 do throwError "host_micro_chunk: invalid refinement interval"
   let ks ← evalConst (List Nat) (pre ++ `ks)
   let some fuel := ks[i]? | throwError "host_micro_chunk: no outer chunk {i}"
+  if let some sizes := explicit then
+    unless sizes.all (· > 0) && sizes.foldl (·+·) 0 == fuel do
+      throwError "host_micro_chunk: explicit chunks must be positive and sum to outer fuel"
   let F := mkConst (pre ++ `F)
   unless ← isDefEq F (mkConst ``Host.Load.ffi) do
     throwError "host_micro_chunk: expected the actual load FFI"
@@ -123,12 +126,15 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
   let mut composed : Option Lean.Expr := none
   let mut sizes : List Nat := []
   while consumed < fuel do
-    let chosenWidth := match refine with
-      | some (start, stop, fine) =>
-        if consumed < start then min width (start-consumed)
-        else if consumed < stop then min fine (stop-consumed)
-        else width
-      | none => width
+    let chosenWidth := match explicit with
+      | some sizes => sizes[index]?.getD 0
+      | none => match refine with
+        | some (start, stop, fine) =>
+          if consumed < start then min width (start-consumed)
+          else if consumed < stop then min fine (stop-consumed)
+          else width
+        | none => width
+    if chosenWidth == 0 then throwError "host_micro_chunk: exhausted explicit chunks"
     let k := min chosenWidth (fuel-consumed)
     if k == 1 then trace s!"micro {i}.{index} at {consumed}: {controlLabel s}"
     let some (nextS, nextC) := runFast Host.Load.ffi k s c
@@ -202,30 +208,41 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
   Memo.reset
   logInfo m!"host_micro {pre} {i}: {fuel} steps, {index} segments, checked={checked}; restore {restored-started} ms, total {(← IO.monoMsNow)-started} ms; {g.memo.size} live native aliases, peak {peakAliases}"
 
+private def microSizes (stx : Syntax) : TermElabM (Option (List Nat)) := do
+  match stx.getArgs.toList with
+  | [_, sizes] =>
+    let ty := mkApp (mkConst ``List [.zero]) (mkConst ``Nat)
+    let value ← instantiateMVars (← Term.elabTermAndSynthesize sizes (some ty))
+    return some (← unsafe evalExpr (List Nat) ty value)
+  | _ => return none
+
 /-- Subdivide one outer source-execution chunk without changing its statement
 or any outer boundary. Native restoration chooses data; `Eq.refl` proves each
 small transition, and `runS_trans` composes the original chunk theorem. -/
 elab "host_micro_chunk " p:ident i:num ", " width:num
-    fine:((" refine " num ", " num ", " num)?) : command =>
+    fine:((" refine " num ", " num ", " num)?) cs:((" chunks " term)?) : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
     let refine := match fine.raw.getArgs.toList with
       | [_, a, _, b, _, c] => do pure (← a.isNatLit?, ← b.isNatLit?, ← c.isNatLit?)
       | _ => none
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat refine true
+    let sizes ← microSizes cs.raw
+    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat refine true false sizes
 
 /-- Choose a subdivided chain for the existing read-tail and prefix-frame
 commands. `P.micro<i>` exports `F`, `ks`, `s0…sN`, and `S0…SN`; its endpoints
 are aliases of the original outer boundaries. This command proves no run. -/
-elab "host_micro_states " p:ident i:num ", " width:num : command =>
+elab "host_micro_states " p:ident i:num ", " width:num cs:((" chunks " term)?) : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false
+    let sizes ← microSizes cs.raw
+    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false false sizes
 
 /-- Write candidate microstates without retaining their definitions in one
 environment. `host_stream_state P.micro<i> j` imports each boundary and checks
 all its definitions before the existing chunk commands check execution. -/
-elab "host_micro_stream " p:ident i:num ", " width:num : command =>
+elab "host_micro_stream " p:ident i:num ", " width:num cs:((" chunks " term)?) : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false true
+    let sizes ← microSizes cs.raw
+    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false true sizes
 
 /-- Compose checked (possibly framed) microchunk theorems into the original
 outer chunk statement. This command performs no native state restoration. -/

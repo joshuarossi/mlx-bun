@@ -18,7 +18,7 @@ host_chain P : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
 host_micro_chunk P 0, 13 refine 26, 29, 1
 
 host_chain Q : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
-host_micro_states Q 0, 17
+host_micro_states Q 0, 17 chunks [5, 12, 18, 20, 25]
 host_chunk Q.micro0 0
 host_chunk Q.micro0 1
 host_chunk Q.micro0 2
@@ -30,7 +30,7 @@ theorem fused : runS P.F 80 P.s0 P.S0 = some (P.s1, P.S1) := P.c0
 theorem separate : runS Q.F 80 Q.s0 Q.S0 = some (Q.s1, Q.S1) := Q.c0
 
 host_chain T : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
-host_micro_stream T 0, 17
+host_micro_stream T 0, 17 chunks [5, 12, 18, 20, 25]
 host_stream_state T.micro0 0
 host_stream_state T.micro0 1
 host_stream_state T.micro0 2
