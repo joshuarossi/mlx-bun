@@ -80,4 +80,58 @@ theorem step_return_finally_heap (F : Ffi) (NR : NumV → NumV → Prop)
   change (hoist _ fin (R.env env)).2.heap = s.heap
   rw [hoist_inert_eq _ _ _ inert,names]
   rfl
+theorem FrameR.finally_return_view {NR : NumV → NumV → Prop} {R : Ren}
+    {value : Val} {f : Frame} (h : FrameR NR R (.s (.finally_ (.abrupt (.ret value)))) f) :
+    ∃ value', f = .s (.finally_ (.abrupt (.ret value'))) ∧ ValueR NR R value value' := by
+  obtain ⟨st,rfl,hh⟩ := h.s_view
+  have ht := hh.tag_eq
+  cases st <;> simp only [Encode.stmtF,treeTag] at ht
+  all_goals try contradiction
+  case finally_ completion =>
+    cases hh with | node tag hs =>
+      cases hs with | cons hcomp hs =>
+        have ht := hcomp.tag_eq
+        cases completion <;> simp only [Encode.comp,treeTag] at ht
+        all_goals try contradiction
+        case abrupt abrupt =>
+          cases hcomp with | node tag cs =>
+            cases cs with | cons ha cs =>
+              have ht := ha.tag_eq
+              cases abrupt <;> simp only [Encode.abr,treeTag] at ht
+              all_goals try contradiction
+              case ret value' =>
+                cases ha with | node tag rs =>
+                  cases rs with | cons hv rs =>
+                    cases hv with | value hv => exact ⟨value',rfl,hv⟩
+
+theorem step_finally_return_eq (F : Ffi) (s : St F.S) (initial value : Val) (fs : List Frame)
+    (hc : s.ctl = .ret initial) (hf : s.stack = .s (.finally_ (.abrupt (.ret value)))::fs) :
+    step F s = M.pure ({s with stack := fs}.go (.abr (.ret value))) := by
+  simp only [step,hc,stepRet,hf,retStep,retSt,resume]
+
+/-- Normal completion of the actual finalizer resumes its saved return,
+whose value and role are obtained from the existing continuation frame. -/
+theorem step_finally_return_from_source (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s : St F.S)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (initial₀ value₀ : Val) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret initial₀) (hf₀ : s₀.stack = .s (.finally_ (.abrupt (.ret value₀)))::fs₀) :
+    ∃ value fs,
+      interpC (step F s₀).run C₀ = some ({s₀ with stack := fs₀}.go (.abr (.ret value₀)),C₀) ∧
+      interpC (step F s).run C = some ({s with stack := fs}.go (.abr (.ret value)),C) ∧
+      StateR NR FR R live framed before after old old' ({s₀ with stack := fs₀}.go (.abr (.ret value₀)))
+        ({s with stack := fs}.go (.abr (.ret value))) := by
+  obtain ⟨initial,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,htail⟩ := h.stack_view hf₀
+  obtain ⟨value,hframe,hv⟩ := hfr.finally_return_view
+  rw [hframe] at hf
+  have hl := h.stackLive
+  rw [hf₀] at hl
+  have valueLive := hl.1.1.1.1.1
+  have related := (h.restack htail hl.2).go (c := .abr (.ret value₀)) (c' := .abr (.ret value))
+    (.node _ (.cons (.node _ (.cons (.value hv) .nil)) .nil)) ⟨⟨valueLive,True.intro⟩,True.intro⟩
+  exact ⟨value,fs,by rw [step_finally_return_eq F s₀ initial₀ value₀ fs₀ hc₀ hf₀]; rfl,
+    by rw [step_finally_return_eq F s initial value fs hc hf]; rfl,related⟩
+
 end Host.Ts.Owned.Parametric
