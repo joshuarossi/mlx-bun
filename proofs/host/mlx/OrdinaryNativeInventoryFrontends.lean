@@ -1,6 +1,7 @@
 import host.mlx.NativeInventoryFrontends
 import host.ts.renameOrdinary.HostCuts
 import host.mlx.OrdinaryConcatStates
+import host.mlx.OrdinaryVectorStates
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -32,5 +33,8 @@ host_retained_pointer P.F, P.RestStream.micro0.micro3.s9 using P.RestStream.micr
 
 host_retained_readU64 P.F, P.RestStream.micro0.micro3.s52 using P.RestStream.micro0.micro3.S52
   to P.RestStream.micro0.micro3.s53 using P.RestStream.micro0.micro3.S53 as Source352
+
+host_retained_nullTyped P.F, P.RestStream.micro0.micro2.s98 using P.RestStream.micro0.micro2.S98
+  to P.RestStream.micro0.micro2.s99 using P.RestStream.micro0.micro2.S99 as Source298
 
 end Host.Load.Run.Full.Ordinary.NativeInventoryCases
