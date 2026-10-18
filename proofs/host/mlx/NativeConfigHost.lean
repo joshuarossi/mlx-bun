@@ -76,6 +76,13 @@ def signature : List Val := [.str chars!"u64",.str chars!"i32",.str chars!"i32",
 def finishTriplet (op : ConfigTriplet) (s : Host.Ts.St LSt) (a : Nat) (c : Cfg) (x y z : NumV) : Host.Ts.St LSt :=
   finishStatus s (Host.Load.Owned.configTripletWorld op s.ffi a c x y z) op.name [.big (Int.ofNat a),.num x,.num y,.num z]
 
+private theorem literal_decode_server {ν : Nat → F64} {C D : CSrv} {meaning : SymE} {a v : NumV}
+    (held : (Number.literal meaning).Holds ν C a)
+    (run : interpC (NumericDecoder.i32.action a).run C = some (v,D)) : D = C := by
+  cases held with | literal _ value _ =>
+    have pair : some (.lit (F64.un .int32 value),C) = some (v,D) := run
+    exact (congrArg Prod.snd (Option.some.inj pair)).symm
+
 theorem step_triplet_eq (op : ConfigTriplet) (s : Host.Ts.St LSt) (fn types a : Nat) (x y z : NumV)
     (fo signature₀ : Host.Ts.Obj) (returns : Name) (receiver : Val) (c : Cfg)
     (hc : s.ctl = .call (.obj fn) receiver [.big (Int.ofNat a),.num x,.num y,.num z])
@@ -140,7 +147,8 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         R live framed before after old old'
         (finishTriplet op s₀ a source x₀' y₀' z₀')
         (finishTriplet op s (R.handle a) target x' y' z') ∧
-      TableExtends C₀ D₀ ∧ TableExtends C D := by
+      TableExtends C₀ D₀ ∧ TableExtends C D ∧
+      (∀ ex ey ez, rx = .literal ex → ry = .literal ey → rz = .literal ez → D₀ = C₀ ∧ D = C) := by
   have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
     (h.heap.function_notFramed fn fo _ calleeLive hf₀ hk₀) hf₀
@@ -179,6 +187,17 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                   Number.Holds.triple_decode .i32 sourceX sourceY sourceZ
                 obtain ⟨x',A,y',B,z',D,hx',hy',hz',rx',ry',rz',ext⟩ :=
                   Number.Holds.triple_decode .i32 hx hy hz
+                have literalServers (ex ey ez : SymE)
+                    (xeq : rx = .literal ex) (yeq : ry = .literal ey) (zeq : rz = .literal ez) : D₀ = C₀ ∧ D = C := by
+                  cases xeq; cases yeq; cases zeq
+                  have sourceA := literal_decode_server sourceX hx₀'
+                  have sourceB := literal_decode_server (sourceY.mono (by rw [sourceA]; exact .refl C₀)) hy₀'
+                  have sourceD := literal_decode_server (sourceZ.mono (by
+                    rw [sourceB,sourceA]; exact .refl C₀)) hz₀'
+                  have targetA := literal_decode_server hx hx'
+                  have targetB := literal_decode_server (hy.mono (by rw [targetA]; exact .refl C)) hy'
+                  have targetD := literal_decode_server (hz.mono (by rw [targetB,targetA]; exact .refl C)) hz'
+                  exact ⟨sourceD.trans (sourceB.trans sourceA),targetD.trans (targetB.trans targetA)⟩
                 have hm := VectorHost.state_mono h ext₀ ext
                 obtain ⟨target,targetConfig,sourceFields,targetFields⟩ :=
                   hm.native.2.config_view_roles a handleLive role source objectRole sourceConfig
@@ -208,7 +227,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                           (.cons (.node _ (.cons (.number hzRel) .nil)) .nil)))))
                     (.cons (.node _ (.cons (.number zeroRole) .nil)) .nil)))
                 refine ⟨x₀',y₀',z₀',x',y',z',target,D₀,D,?_,?_,
-                  hm.finishStatus _ _ nativeAfter _ _ _ eventRoles zeroRole,ext₀,ext⟩
+                  hm.finishStatus _ _ nativeAfter _ _ _ eventRoles zeroRole,ext₀,ext,literalServers⟩
                 · change interpC (step F s₀).run C₀ = _
                   rw [step_triplet_eq op s₀ fn types a x₀ y₀ z₀
                     fo signature₀ returns receiver source hc₀ hf₀ hk₀ ht₀ htk₀ sourceConfig]
