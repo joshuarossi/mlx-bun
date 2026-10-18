@@ -109,6 +109,11 @@ instance (priority := 20000) instToExprTrieMemo {α : Type} [ToExpr α] : ToExpr
     | t@(.node v a b c d) => memo tag t fun _ => mkAppN node #[toExpr v, go a, go b, go c, go d]
   ⟨go, mkApp (mkConst ``Trie) ty⟩
 
+-- Capture the cached Trie instances at all three page levels. Chunk's earlier
+-- derived instance was elaborated before those instances existed.
+deriving instance Lean.ToExpr for Host.Ts.PTrie
+attribute [instance 20000] instToExprPTrie
+
 section
 variable {α : Type} (inst : ToExpr α) (k : UInt64)
 /-- An instance whose results are memoized per object. -/
