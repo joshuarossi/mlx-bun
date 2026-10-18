@@ -193,17 +193,26 @@ private partial def closeFromFacts (goalType : Lean.Expr) (facts : Array Lean.Ex
 /-- Compose checked retained source rules in one proof. Each rule is applied
 only to the preceding result and its retained annotations. Unavailable initial
 notes or symbolic guards are rejected instead of becoming new assumptions. -/
-elab "host_retained_chain " f:term ", " "[" rules:term,* "]" " using " initialState:term ", " initialInventory:term ", " initialInst:term : tactic => do
+private def chain (f : TSyntax `term) (rules : Array (TSyntax `term))
+    (initialState initialInventory initialInst : TSyntax `term)
+    (previousRun entryRelation : Option (TSyntax `term)) : TacticM Unit := do
   let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
-  let rules ← rules.getElems.mapM fun rule => Term.elabTerm rule none
+  let rules ← rules.mapM fun rule => Term.elabTerm rule none
   let mut state ← Term.elabTerm initialState none
-  let entryState := state
+  let entryState ← match entryRelation with
+    | some relation => Term.elabTerm relation none
+    | none => pure state
   let mut inventory ← Term.elabTerm initialInventory none
   let mut inst ← Term.elabTerm initialInst none
+  unless (← inferType state).getAppFn.isConstOf ``Parametric.StateR &&
+      (← inferType entryState).getAppFn.isConstOf ``Parametric.StateR &&
+      (← inferType inventory).getAppFn.isConstOf ``RetainedInventory do
+    throwError "host_retained_chain: expected the current StateR and RetainedInventory proofs"
   let mut goal ← getMainGoal
-  let mut accumulated : Option Lean.Expr := none
+  let mut accumulated ← previousRun.mapM fun run => Term.elabTerm run none
   let mut finalFacts := #[]
   for rule in rules do
+    unless rule.isConst do throwError "host_retained_chain: expected a named source rule"
     trace[Elab.debug] "retained chain applying {rule}"
     goal ← goal.withContext do
       let source := (← inferType inventory).getAppArgs[8]!
@@ -264,8 +273,8 @@ elab "host_retained_chain " f:term ", " "[" rules:term,* "]" " using " initialSt
     finalFacts := facts
   let some run := accumulated | throwError "host_retained_chain: expected at least one source rule"
   goal.withContext do
-    let expected ← goal.getType
-    if expected.isMVar then
+    let expected := (← instantiateMVars (← goal.getType)).consumeMData
+    if expected.getAppFn.isMVar then
       let target := (← inferType inventory).getAppArgs.back!
       let bodyFacts := #[run,state,inventory,inst]
       let conclusion ← withLocalDeclD `result (← inferType target) fun result => do
@@ -284,6 +293,63 @@ elab "host_retained_chain " f:term ", " "[" rules:term,* "]" " using " initialSt
     goal.assign proof
   replaceMainGoal []
 
+elab "host_retained_chain " f:term ", " "[" rules:term,* "]" " using " initialState:term ", " initialInventory:term ", " initialInst:term : tactic =>
+  withMainContext do chain f rules.getElems initialState initialInventory initialInst none none
+
+/-- Continue a checked chunk, joining its existing run and retaining the
+original entry relation for a single allocation budget. -/
+elab "host_retained_chain_after " f:term ", " "[" rules:term,* "]" " using " initialState:term ", " initialInventory:term ", " initialInst:term
+    " continuing_run " previousRun:term " initial_relation " entryRelation:term : tactic =>
+  withMainContext do chain f rules.getElems initialState initialInventory initialInst (some previousRun) (some entryRelation)
+
+private partial def schemaLeaves (type : Lean.Expr) : MetaM (Array Lean.Expr) := do
+  if type.getAppFn.isConstOf ``Inst then return #[type]
+  let type ← whnf type
+  if type.isAppOfArity ``And 2 then
+    return (← schemaLeaves type.getAppArgs[0]!) ++ (← schemaLeaves type.getAppArgs[1]!)
+  return #[type]
+
+private def assertSchema (type : Lean.Expr) (steps : Option Nat := none) : MetaM Unit :=
+  forallTelescopeReducing type fun _ conclusion => do
+    let conclusion ← whnf conclusion
+    unless conclusion.isAppOfArity ``Exists 2 do
+      throwError "retained batch schema: expected an existential reached state and the full retained bundle"
+    let domain ← whnf conclusion.getAppArgs[0]!
+    unless domain.getAppFn.isConstOf ``St do
+      throwError "retained batch schema: reached witness must be an interpreter state"
+    withLocalDeclD `result conclusion.getAppArgs[0]! fun result => do
+      let fields ← schemaLeaves (mkApp conclusion.getAppArgs[1]! result)
+      let some state := fields.find? (fun field => field.getAppFn.isConstOf ``Parametric.StateR)
+        | throwError "retained batch schema: missing StateR"
+      let some inventory := fields.find? (fun field => field.getAppFn.isConstOf ``RetainedInventory)
+        | throwError "retained batch schema: missing RetainedInventory"
+      let some inst := fields.find? (fun field => field.getAppFn.isConstOf ``Inst)
+        | throwError "retained batch schema: missing source numeric-server Inst"
+      let some run := fields.find? (fun field => field.isAppOfArity ``Eq 3 && field.getAppArgs[1]!.getAppFn.isConstOf ``runC)
+        | throwError "retained batch schema: missing target runC"
+      let runArgs := run.getAppArgs[1]!.getAppArgs
+      if let some steps := steps then
+        unless ← isDefEq runArgs[1]! (mkNatLit steps) do
+          throwError "retained batch schema: target run has the wrong step count"
+      let someValue ← whnf run.getAppArgs[2]!
+      unless someValue.isAppOfArity ``Option.some 2 do throwError "retained batch schema: run must return a reached state"
+      let pair ← whnf someValue.getAppArgs[1]!
+      unless pair.isAppOfArity ``Prod.mk 4 do throwError "retained batch schema: run must return state and numeric server"
+      let stateArgs := state.getAppArgs
+      let inventoryArgs := inventory.getAppArgs
+      for (left,right) in [(stateArgs.back!,result),(inventoryArgs[9]!,result),(pair.getAppArgs[2]!,result),
+          (pair.getAppArgs[3]!,inventoryArgs[5]!),(inst.getAppArgs[2]!,inventoryArgs[4]!),
+          (stateArgs[3]!,inventoryArgs[6]!),(stateArgs[4]!,inventoryArgs[7]!),
+          (stateArgs[stateArgs.size-2]!,inventoryArgs[8]!)] do
+        unless ← isDefEq left right do throwError "retained batch schema: reached state, resource map, live set or servers disagree"
+
+/-- Check the public type after a proof-local export as well as after
+generation; an equality leaf cannot pass as a complete retained transition. -/
+elab "host_assert_retained_schema " theoremName:ident ", " steps:num : command =>
+  Elab.Command.liftTermElabM do
+    let proof ← Term.elabTerm theoremName none
+    assertSchema (← inferType proof) (some steps.getNat)
+
 /-- Infer the explicit reached annotation type from a connected proof, then
 submit it as an ordinary theorem. The result must be a closed proposition. -/
 elab "host_retained_theorem " name:ident " := " proof:term : command => do
@@ -295,6 +361,7 @@ elab "host_retained_theorem " name:ident " := " proof:term : command => do
     let type ← instantiateMVars (← inferType proof)
     unless !proof.hasFVar && !proof.hasMVar && !type.hasFVar && !type.hasMVar && (← isProp type) do
       throwError "host_retained_theorem: expected a closed proof with an explicit proposition type"
+    assertSchema type
     addDecl (.thmDecl {name,levelParams := [],type,value := proof})
 
 end Host.Ts.Owned.Annotated.Driver

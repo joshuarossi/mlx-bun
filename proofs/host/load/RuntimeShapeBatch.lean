@@ -65,4 +65,5 @@ host_retained_theorem composed := fun (notes : RetainedNotes) (caller : List Ann
     (secondEntry : notes.runtime.cells.cells Preparation34.address = some (.obj initialObject34)) => by
   host_retained_chain P.F, [Step14.retained_transport,Step15.retained_transport,Step16.retained_transport,Step17.retained_transport,Step18.retained_transport,Step19.retained_transport,Step20.retained_transport,Step21.retained_transport,Step22.retained_transport,Step23.retained_transport,Step24.retained_transport,Step25.retained_transport,Step26.retained_transport,Step27.retained_transport,Step28.retained_transport,Step29.retained_transport,Step30.retained_transport,Step31.retained_transport,Step32.retained_transport,Step33.retained_transport,Step34.retained_transport,Step35.retained_transport,Step36.retained_transport,Step37.retained_transport,Step38.retained_transport] using h, inventory, inst
 host_runtime_export composed as shape_to_concat
+host_assert_retained_schema shape_to_concat, 25
 end Host.Load.Run.Full.Ordinary.RetainedShapeBatch

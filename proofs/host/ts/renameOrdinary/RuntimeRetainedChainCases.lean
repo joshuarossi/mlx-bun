@@ -27,6 +27,44 @@ theorem automatic_ten (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C :
       Inst ν₀ (numberServer P.RestStream.micro0.micro0.S10) C₀ := by
   host_retained_chain P.F, [Source0.retained_transport,Source1.retained_transport,Source2.retained_transport,Source3.retained_transport,Source4.retained_transport,Source5.retained_transport,Source6.retained_transport,Source7.retained_transport,Source8.retained_transport,Source9.retained_transport] using h, inventory, inst
 
+host_retained_theorem first_five := fun (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ (numberServer P.RestStream.micro0.micro0.S0) C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s0 s)
+    (fnRole thisRole pointerRole : Annotated.Value) (tailNotes : List Annotated.Tree)
+    (pointerEntry : notes.runtime.cells.cells Source0.address = some pointerRole)
+    (rankEntry : notes.runtime.cells.cells Source5.address = some (.literal (.lit (F64.ofNat 3))))
+    (stackNotes : notes.runtime.stack = argumentFrameNote false Source1.sourceKind fnRole thisRole []
+      Source1.sourceRest Source1.sourceEnv::tailNotes) => by
+  host_retained_chain P.F, [Source0.retained_transport,Source1.retained_transport,Source2.retained_transport,Source3.retained_transport,Source4.retained_transport] using h, inventory, inst
+
+theorem automatic_split_ten (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ (numberServer P.RestStream.micro0.micro0.S0) C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s0 s)
+    (fnRole thisRole pointerRole : Annotated.Value) (tailNotes : List Annotated.Tree)
+    (pointerEntry : notes.runtime.cells.cells Source0.address = some pointerRole)
+    (rankEntry : notes.runtime.cells.cells Source5.address = some (.literal (.lit (F64.ofNat 3))))
+    (stackNotes : notes.runtime.stack = argumentFrameNote false Source1.sourceKind fnRole thisRole []
+      Source1.sourceRest Source1.sourceEnv::tailNotes) :
+    ∃ result, runC P.F 10 s C = some (result,C) ∧
+      Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+        P.RestStream.micro0.micro0.s10 result ∧
+      RetainedInventory (notes.withRuntime {notes.runtime with control := (callNote fnRole thisRole
+        [pointerRole,.literal (.lit (F64.ofNat 0)),
+          .literal (.bin .mul (.lit (F64.ofNat 3)) (.lit (F64.ofNat 4)))]),stack := tailNotes})
+        ν₀ ν C₀ C R live P.RestStream.micro0.micro0.s10 result ∧
+      Inst ν₀ (numberServer P.RestStream.micro0.micro0.S10) C₀ := by
+  obtain ⟨s5,r5,h5,i5,q5⟩ := first_five notes ν₀ ν C₀ C R FR live framed before after old old' s inst h inventory fnRole thisRole pointerRole tailNotes pointerEntry rankEntry stackNotes
+  host_retained_chain_after P.F, [Source5.retained_transport,Source6.retained_transport,Source7.retained_transport,Source8.retained_transport,Source9.retained_transport] using h5, i5, q5 continuing_run r5 initial_relation h
+
+
 host_retained_theorem automatic_inferred_ten := fun (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
@@ -71,4 +109,24 @@ run_cmd do
   let created := (← getEnv).contains ((← getCurrNamespace) ++ `CannotProveData)
   set saved
   unless rejected && !created do throwError "retained theorem command accepted data as a proof"
+host_assert_retained_schema automatic_ten, 10
+host_assert_retained_schema automatic_inferred_ten, 10
+host_assert_retained_schema automatic_split_ten, 10
+host_assert_retained_schema first_five, 5
+
+open Lean Elab Command in
+run_cmd do
+  for source in ["host_retained_theorem CannotExportLeaf := Eq.refl (0 : Nat)",
+      "host_assert_retained_schema automatic_inferred_ten, 9"] do
+    let saved : Lean.Elab.Command.State ← get
+    let mut rejected := false
+    try
+      Parametric.Driver.emit source
+    catch _ => rejected := true
+    for message in (← get).messages.toList do
+      let rendered ← message.data.toString
+      if (rendered.splitOn "retained batch schema").length > 1 then rejected := true
+    let created := (← getEnv).contains ((← getCurrNamespace) ++ `CannotExportLeaf)
+    set saved
+    unless rejected && !created do throwError "retained schema accepted a leaf equality or an incorrect step count"
 end Host.Load.Run.Full.Ordinary.RetainedPrefix
