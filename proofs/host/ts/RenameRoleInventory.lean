@@ -154,6 +154,31 @@ theorem CellInventory.store {NR : NumV → NumV → Prop} {framed : Nat → Prop
         simp only [St.setCell,St.ret,PTrie.get_set_u64 _ _ _ targetBound,ite_eq_right distinct]
       simpa only [cellValueAt,frame] using h.target b other oldEntry
 
+/-- An object replacement preserves cell annotations, including an undefined
+cell selector at the owning object's address. -/
+theorem CellInventory.setObject {NR : NumV → NumV → Prop} {framed : Nat → Prop}
+    {before after : List Val} (h : CellInventory notes ν₀ ν C₀ C R live s₀ s)
+    (heap : Parametric.HeapR NR R live framed before after s₀ s) (a : Nat) (old₀ old new₀ new : Obj) (v₀ v : Val)
+    (alive : live a) (sourceObject : s₀.heap.get a = some (.obj old₀)) (targetObject : s.heap.get (R.a a) = some (.obj old))
+    (sourceBound : a < 2^64) (targetBound : R.a a < 2^64) :
+    CellInventory notes ν₀ ν C₀ C R live ((s₀.setObj a new₀).ret v₀) ((s.setObj (R.a a) new).ret v) := by
+  refine ⟨h.keyLive,?_,?_⟩
+  · intro b role entry
+    by_cases eq : b = a
+    · subst b
+      simpa only [cellValueAt,identity,id_eq,sourceObject,St.setObj,St.ret,PTrie.get_set_u64 _ _ _ sourceBound,ite_true]
+        using h.source a role entry
+    · simpa only [cellValueAt,identity,id_eq,St.setObj,St.ret,PTrie.get_set_u64 _ _ _ sourceBound,ite_eq_right eq]
+        using h.source b role entry
+  · intro b role entry
+    by_cases eq : b = a
+    · subst b
+      simpa only [cellValueAt,targetObject,St.setObj,St.ret,PTrie.get_set_u64 _ _ _ targetBound,ite_true]
+        using h.target a role entry
+    · have other : R.a b ≠ R.a a := fun e => eq (heap.inj b a (h.keyLive b role entry) alive e)
+      simpa only [cellValueAt,St.setObj,St.ret,PTrie.get_set_u64 _ _ _ targetBound,ite_eq_right other]
+        using h.target b role entry
+
 /-- Substitution rebases all numeric occurrence meanings together. -/
 theorem Notes.Holds.subst (θ : Nat → SymE) :
     (notes.mapRoles (Value.subst θ)).Holds ν C R s ↔ notes.Holds (nextValuation θ ν) C R s := by
