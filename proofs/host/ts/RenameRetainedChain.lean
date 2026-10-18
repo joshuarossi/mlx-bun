@@ -37,6 +37,16 @@ private partial def proveFromContext (type : Lean.Expr) (fuel : Nat := 64) : Met
     if let some proof ← proveFromContext (mkApp args[0]! args[5]!) (fuel-1) then
       return some (← mkAppM ``Parametric.ClosureLive.grow #[args[0]!,args[1]!,args[2]!,args[3]!,args[4]!,args[5]!,proof])
   let reduced ← withReducible (whnf type)
+  let reduced ← if reduced == type && type.getAppFn.isConst then do
+      let expanded ← whnf type
+      if expanded.isAppOfArity ``Or 2 || expanded.isAppOfArity ``Parametric.LiveAfter 3 ||
+          expanded.isAppOfArity ``Parametric.CellsLive 4 || expanded.isAppOfArity ``Parametric.ClosureLive 6 then
+        pure expanded
+      else pure reduced
+    else pure reduced
+  if reduced != type && (reduced.isAppOfArity ``Parametric.LiveAfter 3 ||
+      reduced.isAppOfArity ``Parametric.CellsLive 4 || reduced.isAppOfArity ``Parametric.ClosureLive 6) then
+    return ← proveFromContext reduced (fuel-1)
   if reduced.isAppOfArity ``Or 2 then
     if let some proof ← proveFromContext reduced.getAppArgs[0]! (fuel-1) then
       return some (← mkAppOptM ``Or.inl #[some reduced.getAppArgs[0]!,some reduced.getAppArgs[1]!,some proof])
