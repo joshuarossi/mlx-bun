@@ -1,0 +1,152 @@
+import host.mlx.NativeInferredReshapeRoles
+import host.mlx.NativeReshapeHost
+
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+namespace Host.Load.Run.Full.Ordinary.InferredReshapeHost
+open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric
+open Host.Mlx.Ffi Host.Mlx.Ffi.NativeRoles Host.Mlx.Ffi.NativeRoles.Arguments Host.Mlx.Ffi.Annotated
+
+abbrev F := ReshapeHost.F
+abbrev symbol := ReshapeHost.symbol
+abbrev signature := ReshapeHost.signature
+abbrev arguments := ReshapeHost.arguments
+abbrev callArgs := ReshapeHost.callArgs
+def resultWorld (s : LSt) (input : Nat) (request result : List Dim) (dtype : Nat) : LSt :=
+  {s with mlx := NativeRoles.createZero s.mlx (inferredReshapeNode input request result dtype)}
+
+/-- The original reshape ABI with one trailing inferred dimension. Its
+requested primitive and resolved output retain distinct fixed annotations. -/
+theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (roles : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s₀ s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) (VectorHost.NativeRelation ν₀ ν C₀ C roles boundary objects H N tail host)
+      R live framed before after old old' s₀ s)
+    (fn types out handle input shapeBuffer stream : Nat) (fo signature₀ outObject shapeObject : Host.Ts.Obj)
+    (returns : Name) (receiver : Val) (shapeBytes₀ : List Byte) (leading : Shape) (feature : Int) (node : Node)
+    (hc₀ : s₀.ctl = .call (.obj fn) receiver [.ptr (.js out) 0,.big (Int.ofNat handle),.ptr (.js shapeBuffer) 0,
+      .big (Int.ofNat (trailingRequest leading).length),.big (Int.ofNat stream)])
+    (hf₀ : s₀.heap.get fn = some (.obj fo))
+    (hk₀ : fo.kind = .fn (.native (.ffi .symbol) [.str symbol,.obj types,.str returns]))
+    (ht₀ : s₀.heap.get types = some (.obj signature₀)) (htk₀ : signature₀.kind = .array signature)
+    (ho₀ : s₀.heap.get out = some (.obj outObject)) (hok₀ : outObject.kind = .buf (cellParts .u64 (.big (Int.ofNat 0)) 8 0))
+    (hs₀ : s₀.heap.get shapeBuffer = some (.obj shapeObject)) (hsk₀ : shapeObject.kind = .buf shapeBytes₀)
+    (signatureFrame : ¬ framed types) (handleLive : H handle)
+    (producer : Host.Mlx.Ffi.nodesOf s₀.ffi.mlx [handle] = some [input]) (sourceNode : s₀.ffi.mlx.nodes.get input = some node)
+    (sourceShape : ShapeBuffer.Holds (trailingRequest leading) ν₀ C₀ shapeBytes₀)
+    (decodable : (trailingRequest leading).Decodable)
+    (sourceGeometry : TrailingReshapeGeometry ν₀ (roles input).shape leading feature)
+    (targetGeometry : TrailingReshapeGeometry ν (roles input).shape leading feature)
+    (featureExact : F64.toInt? (F64.ofInt feature) = some feature)
+    (argumentRoles : ListR (fun r v => r.role.Holds ν C R v)
+      (arguments out handle shapeBuffer (trailingRequest leading).length stream) (callArguments s.ctl))
+    (outputRole : (Host.Ts.Owned.Annotated.fixedBufferRole VectorGetHost.nullRole).Holds ν C R (objectKindAt s (R.a out)))
+    (shapeRole : ShapeBuffer.Holds (trailingRequest leading) ν C (ShapeBuffer.bytesAt s (R.a shapeBuffer)))
+    (sourceNodes : s₀.ffi.mlx.nnext < 2^64) (targetNodes : s.ffi.mlx.nnext < 2^64)
+    (sourceHandles : s₀.ffi.mlx.next < 2^64) (targetHandles : s.ffi.mlx.next < 2^64)
+    (sourceHeap : out < 2^64) (targetHeap : s.next < 2^64) :
+    ∃ request result t,
+      interpC (step Host.Load.ffi s₀).run C₀ = some
+        (finishBuffer s₀ (resultWorld s₀.ffi input request result node.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          symbol (callArgs out handle shapeBuffer (trailingRequest leading).length stream (cellParts .u64 (.big (Int.ofNat 0)) 8 0) shapeBytes₀),C₀) ∧
+      interpC (step Host.Load.ffi s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C
+          (nodeWrite roles s₀.ffi.mlx.nnext (inferredReshapeRole roles input leading feature)) boundary objects
+          (fun a => a = s₀.ffi.mlx.next ∨ H a) (fun i => i = s₀.ffi.mlx.nnext ∨ N i) tail host)
+        R live framed before after old old'
+        (finishBuffer s₀ (resultWorld s₀.ffi input request result node.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          symbol (callArgs out handle shapeBuffer (trailingRequest leading).length stream (cellParts .u64 (.big (Int.ofNat 0)) 8 0) shapeBytes₀)) t ∧
+      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a out)) := by
+  have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
+  have outLive : live out := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.1
+  have shapeLive : live shapeBuffer := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.2.2.1
+  obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
+    (h.heap.function_notFramed fn fo _ calleeLive hf₀ hk₀) hf₀
+  have signatureLive : live types := by have hl := hol.1; rw [hk₀] at hl; exact hl.1.2.1.2.1
+  obtain ⟨fo',data,this,args,hc,hfo,hfk,hd,_,_⟩ := h.native_call_view fn fo (.ffi .symbol) _ receiver _ hc₀ hf₀ hk₀
+  cases hd with | cons hn hd =>
+    cases hd with | cons ht hd =>
+      cases hd with | cons hr hd =>
+        cases hd
+        cases hn; cases ht; cases hr
+        have argsExact := Host.Ts.Owned.Annotated.FixedArgument.list_exact _ argumentRoles
+        simp only [hc,callArguments] at argsExact
+        rw [argsExact] at hc
+        simp only [arguments,ReshapeHost.arguments,Host.Ts.Owned.Annotated.FixedArgument.value,List.map_cons,List.map_nil] at hc
+        obtain ⟨signature',hto,htr,_⟩ := h.heap.readObject types signature₀ signatureLive signatureFrame ht₀
+        have htKind := htr.kind
+        rw [htk₀] at htKind
+        obtain ⟨tys,htKind,htys⟩ := kind_array htKind
+        have exactTypes := string_values_exact [chars!"ptr",chars!"u64",chars!"ptr",chars!"u64",chars!"u64"] htys
+        rw [exactTypes] at htKind
+        obtain ⟨out',ho,hok,hro,hlo,hbo⟩ := h.read_fixed_buffer out outObject _ VectorGetHost.nullRole outLive ho₀ hok₀ outputRole
+        rw [VectorGetHost.null_bytes] at hok hbo
+        obtain ⟨shape',hs,hrs,_⟩ := h.heap.readObject shapeBuffer shapeObject shapeLive
+          (h.heap.buffer_notFramed shapeBuffer shapeObject shapeBytes₀ shapeLive hs₀ hsk₀) hs₀
+        have shapeKind := hrs.kind
+        rw [hsk₀] at shapeKind
+        obtain ⟨shapeBytes,shapeKind,hbs⟩ := kind_buffer shapeKind
+        have shapeFields : ShapeBuffer.Holds (trailingRequest leading) ν C shapeBytes := by
+          simpa only [ShapeBuffer.bytesAt,Host.Ts.St.obj?,hs,shapeKind] using shapeRole
+        let oldBytes := cellParts .u64 (.big (Int.ofNat 0)) 8 0
+        let args₀ := callArgs out handle shapeBuffer (trailingRequest leading).length stream oldBytes shapeBytes₀
+        let args' := callArgs (R.a out) (R.handle handle) (R.a shapeBuffer) (trailingRequest leading).length (R.handle stream) oldBytes shapeBytes
+        have native := h.native.2
+        obtain ⟨request,request',result,result',node',sourceCall,targetCall,nativeAfter⟩ := native.reshape_trailing_null
+          (.jsPtr out 0 oldBytes) (.jsPtr (R.a out) 0 oldBytes) (.big (Int.ofNat stream)) (.big (Int.ofNat (R.handle stream)))
+          out 0 handle input shapeBuffer shapeBytes₀ shapeBytes leading feature node handleLive producer sourceNode rfl rfl
+          sourceShape shapeFields decodable sourceGeometry targetGeometry featureExact sourceNodes targetNodes sourceHandles targetHandles
+        let native₀ := resultWorld s₀.ffi input request result node.dtype
+        let native' := resultWorld s.ffi (R.node input) request' result' node'.dtype
+        have nativeRelated : VectorHost.NativeRelation ν₀ ν C₀ C
+            (nodeWrite roles s₀.ffi.mlx.nnext (inferredReshapeRole roles input leading feature)) boundary objects
+            (fun a => a = s₀.ffi.mlx.next ∨ H a) (fun i => i = s₀.ffi.mlx.nnext ∨ N i) tail host R native₀ native' :=
+          ⟨h.native.1,nativeAfter⟩
+        let writes₀ := cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0
+        let writes' := cellParts .u64 (.big (Int.ofNat s.ffi.mlx.next)) 8 0
+        let t := finishBuffer s native' (R.a out) 0 out' oldBytes writes' symbol args'
+        have zeroRole : NumberRoles ν₀ ν C₀ C zeroN zeroN := ⟨.lit (F64.zero false),⟨rfl,rfl⟩⟩
+        have argsRelated : ForestR (NumberRoles ν₀ ν C₀ C) R (args₀.map Parametric.arg) (args'.map Parametric.arg) :=
+          .cons (.node _ (.cons (.address out) (.cons (.atom _ _) (.cons (bytes_roles hbo) .nil))))
+            (.cons (.node _ (.cons (.value (.handle handle)) .nil))
+              (.cons (.node _ (.cons (.address shapeBuffer) (.cons (.atom _ _) (.cons (bytes_roles hbs) .nil))))
+                (.cons (.node _ (.cons (.value (.ordinaryBig (Int.ofNat (trailingRequest leading).length))) .nil))
+                  (.cons (.node _ (.cons (.value (.handle stream)) .nil)) .nil))))
+        have eventRoles : TreeR (NumberRoles ν₀ ν C₀ C) R (event ⟨symbol,args₀,status0⟩) (event ⟨symbol,args',status0⟩) :=
+          .node _ (.cons (.atom _ _) (.cons (.node _ argsRelated) (.cons (.node _ (.cons (.number zeroRole) .nil)) .nil)))
+        have writesRelated : ListR (ByteR (NumberRoles ν₀ ν C₀ C) R) writes₀ writes' := by
+          dsimp only [writes₀,writes']; rw [← native.handleMap.head]
+          exact Host.Mlx.Ffi.Parametric.cellParts_roles (.handle _) .u64 8 0
+        have targetOutBound := Nat.lt_trans (h.heap.targetBound out outLive) targetHeap
+        have post := h.finishBuffer_event native₀ native' nativeRelated out 0 outObject out' oldBytes oldBytes writes₀ writes'
+          symbol args₀ args' outLive ho₀ hok₀ hro hlo hbo writesRelated sourceHeap targetOutBound zeroRole eventRoles
+        refine ⟨request,result,t,?_,?_,post,?_⟩
+        · change interpC (step F s₀).run C₀ = _
+          have call : F.call s₀.ffi symbol args₀ = M.pure (some (native₀,status0,[(out,0,writes₀)])) := by
+            simpa only [F,ReshapeHost.F,symbol,ReshapeHost.symbol,args₀,callArgs,ReshapeHost.callArgs,native₀,resultWorld,writes₀,u64Write,Int.ofNat_eq_natCast] using
+              Host.Load.Owned.load_unary_call s₀.ffi symbol _ _ _ (by decide +kernel) sourceCall
+          rw [ReshapeHost.step_reshape_eq s₀ fn types out handle shapeBuffer (trailingRequest leading).length stream fo signature₀ outObject returns receiver
+            oldBytes shapeBytes₀ native₀ writes₀ hc₀ hf₀ hk₀ ht₀ htk₀ ho₀ hok₀
+            (bufBytes_of_obj F s₀ shapeBuffer shapeObject shapeBytes₀ (by simp only [Host.Ts.St.obj?,hs₀]) hsk₀) call]
+          rfl
+        · change interpC (step F s).run C = _
+          have call : F.call s.ffi symbol args' = M.pure (some (native',status0,[(R.a out,0,writes')])) := by
+            simpa only [F,ReshapeHost.F,symbol,ReshapeHost.symbol,args',callArgs,ReshapeHost.callArgs,native',resultWorld,writes',u64Write,Int.ofNat_eq_natCast] using
+              Host.Load.Owned.load_unary_call s.ffi symbol _ _ _ (by decide +kernel) targetCall
+          rw [ReshapeHost.step_reshape_eq s (R.a fn) (R.a types) (R.a out) (R.handle handle) (R.a shapeBuffer) (trailingRequest leading).length (R.handle stream)
+            fo' signature' out' returns this oldBytes shapeBytes native' writes' hc hfo hfk hto htKind ho hok
+            (bufBytes_of_obj F s (R.a shapeBuffer) shape' shapeBytes (by simp only [Host.Ts.St.obj?,hs]) shapeKind) call]
+          rfl
+        · have patch : oldBytes.take 0 ++ writes' ++ oldBytes.drop (0 + len writes') = writes' := rfl
+          simp only [objectKindAt,t,finishBuffer,Host.Ts.St.ret,Host.Ts.St.setTrace,Host.Ts.St.setFfi,Host.Ts.St.setObj,
+            Host.Ts.St.obj?,PTrie.get_set_u64 _ _ _ targetOutBound,patch]
+          dsimp only [writes']; rw [← native.handleMap.head]
+          exact slot_role ν C R s₀.ffi.mlx.next
+
+end Host.Load.Run.Full.Ordinary.InferredReshapeHost
