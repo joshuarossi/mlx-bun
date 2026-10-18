@@ -39,7 +39,7 @@ private def chainName (pre : Lean.Name) (tag : String) (i : Nat) : Lean.Name :=
 
 private def stateValue (pre : Lean.Name) (i : Nat) : TermElabM Lean.Expr := do
   match ← getConstInfo (chainName pre "s" i) with
-  | .defnInfo d => pure d.value
+  | .defnInfo d => whnf d.value
   | _ => throwError "host_read_tail: the boundary must be a state definition"
 
 /-- Abstract an unused readback suffix over boundaries `i … j`. `keep` is the
