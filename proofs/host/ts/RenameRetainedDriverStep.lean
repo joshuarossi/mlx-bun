@@ -17,6 +17,11 @@ import host.ts.RenameRuntimeDriverObjectShorthand
 import host.ts.RenameRuntimeDriverUpdate
 import host.ts.RenameRuntimeDriverArrayPush
 import host.ts.RenameRuntimeDriverExpressionBody
+import host.ts.RenameRuntimeDriverGetter
+import host.ts.RenameRuntimeDriverTry
+import host.ts.RenameRuntimeDriverMissingRead
+import host.ts.RenameRuntimeDriverConstructors
+import host.ts.RenameRuntimeDriverUndefinedBranch
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -25,6 +30,37 @@ private def printed (stx : Syntax) : CommandElabM String :=
   match stx.reprint with
   | some text => pure text
   | none => throwError "host_retained_step: source syntax cannot be printed"
+
+private def ordinaryGetter (state key address : Lean.Expr) : Nat → MetaM Bool
+  | 0 => pure false
+  | fuel+1 => do
+    let found ← whnf (← mkAppM ``St.obj? #[state,address])
+    unless found.isAppOfArity ``Option.some 2 do return false
+    let object := found.getAppArgs[1]!
+    unless (← whnf (← mkAppM ``Obj.kind #[object])).isConstOf ``Kind.ordinary do return false
+    let property ← whnf (← mkAppM ``findProp #[key,← mkAppM ``Obj.props #[object]])
+    if property.isAppOfArity ``Option.some 2 then
+      let property ← whnf property.getAppArgs[1]!
+      unless property.isAppOfArity ``PropV.acc 3 do return false
+      return (← whnf property.getAppArgs[0]!).isAppOfArity ``Val.obj 1 &&
+        (← whnf property.getAppArgs[2]!).isConstOf ``Bool.false
+    let proto ← whnf (← mkAppM ``Obj.proto #[object])
+    if proto.isAppOfArity ``Val.obj 1 then ordinaryGetter state key proto.getAppArgs[0]! fuel
+    else pure false
+
+private def ordinaryMissing (state key address : Lean.Expr) : Nat → MetaM Bool
+  | 0 => pure false
+  | fuel+1 => do
+    let found ← whnf (← mkAppM ``St.obj? #[state,address])
+    unless found.isAppOfArity ``Option.some 2 do return false
+    let object := found.getAppArgs[1]!
+    unless (← whnf (← mkAppM ``Obj.kind #[object])).isConstOf ``Kind.ordinary do return false
+    unless (← whnf (← mkAppM ``findProp #[key,← mkAppM ``Obj.props #[object]])).isAppOfArity ``Option.none 1 do
+      return false
+    let proto ← whnf (← mkAppM ``Obj.proto #[object])
+    if proto.isConstOf ``Val.null then pure true
+    else if proto.isAppOfArity ``Val.obj 1 then ordinaryMissing state key proto.getAppArgs[0]! fuel
+    else pure false
 
 /-- Source-selected retained host rules. Native dispatch is registered by its
 owning frontend. An unsupported source case is rejected before a target result
@@ -51,6 +87,7 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
     else if control.isAppOfArity ``Ctl.ex 2 then
       let statement ← whnf control.getAppArgs[0]!
       if statement.isAppOfArity ``Stmt.for_ 4 then pure "host_retained_for"
+      else if statement.isAppOfArity ``Stmt.try_ 3 then pure "host_retained_try"
       else pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.bind 5 then pure "host_retained_pattern"
     else if control.isAppOfArity ``Ctl.call 3 then
@@ -82,7 +119,8 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.if_ 3 then
-        pure "host_retained_branch"
+        if (← whnf control.getAppArgs[0]!).isConstOf ``Val.undef then pure "host_retained_undefined_branch"
+        else pure "host_retained_branch"
       else if frame.isAppOfArity ``Frame.lp 1 then
         if inner.isAppOfArity ``LoopF.forTest 7 || inner.isAppOfArity ``LoopF.forBody 6 || inner.isAppOfArity ``LoopF.forUpd 6 then
           pure "host_retained_for"
@@ -102,6 +140,10 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
             if kind.isAppOfArity ``Kind.array 1 then
               if ← isDefEq inner.getAppArgs[0]! (mkConst ``kLength) then pure "host_retained_array_length"
               else pure "host_retained_pure_step"
+            else if ← ordinaryGetter s inner.getAppArgs[0]! value.getAppArgs[0]! 16 then
+              pure "host_retained_getter"
+            else if ← ordinaryMissing s inner.getAppArgs[0]! value.getAppArgs[0]! 16 then
+              pure "host_retained_missing_read"
             else pure "host_retained_pure_step"
           else pure "host_retained_pure_step"
         else pure "host_retained_pure_step"
@@ -128,6 +170,7 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
             if (← whnf body).isAppOfArity ``Body.expr 1 then pure "host_retained_expression_body"
             else pure "host_retained_parameter_body"
           else pure "host_retained_pure_step"
+        else if fn.isAppOfArity ``FnF.ctorBody 4 then pure "host_retained_constructor"
         else pure "host_retained_pure_step"
       else pure "host_retained_pure_step"
     else pure "host_retained_pure_step"
