@@ -4239,6 +4239,18 @@ const proofFiles = [
   "host/ts/renameOrdinary/micro/streamed128/H98.lean",
   "host/ts/renameOrdinary/micro/streamed128/H99.lean",
   "host/ts/renameOrdinary/micro/streamed128/Result.lean",
+  "host/mlx/OrdinaryArrayCut.lean",
+  "host/mlx/OrdinaryArrayHost.lean",
+  "host/ts/RenameParametricArrayLength.lean",
+  "host/ts/RenameParametricMapControl.lean",
+  "host/ts/RenameRouteArgumentFields.lean",
+  "host/ts/RenameRouteDriverArrayLength.lean",
+  "host/ts/RenameRouteDriverMapControl.lean",
+  "host/ts/renameOrdinary/DriverMapEntry.lean",
+  "host/ts/renameOrdinary/DriverMapSetup.lean",
+  "host/ts/renameOrdinary/Prefix40.lean",
+  "host/ts/renameOrdinary/Prefix49.lean",
+  "host/ts/renameOrdinary/PrefixAxis.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
