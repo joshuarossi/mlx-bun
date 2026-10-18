@@ -131,6 +131,9 @@ def materializeStateWith {S : Type} (ffiMap : CSrv → S → S) (C : CSrv) (s : 
 
 abbrev materializeState := materializeStateWith materializeNative
 
+theorem materializeStateWith_ffi {S : Type} (ffiMap : CSrv → S → S)
+    (C : CSrv) (s : St S) : (materializeStateWith ffiMap C s).ffi = ffiMap C s.ffi := rfl
+
 theorem materializeStateWith_setCell {S : Type} (ffiMap : CSrv → S → S)
     (C : CSrv) (s : St S) (a : Nat) (v : Val) :
     materializeStateWith ffiMap C (s.setCell a v) =
@@ -150,6 +153,26 @@ theorem materializeStateWith_cell {S : Type} (ffiMap : CSrv → S → S)
   cases hh : s.heap.get a with
   | none => rfl
   | some o => cases o <;> rfl
+
+theorem materializeStateWith_obj {S : Type} (ffiMap : CSrv → S → S)
+    (C : CSrv) (s : St S) (a : Nat) :
+    (materializeStateWith ffiMap C s).obj? a =
+      (s.obj? a).map (materializer C).obj := by
+  unfold St.obj? materializeStateWith
+  dsimp only
+  rw [PTrie.get_map]
+  cases hh : s.heap.get a with
+  | none => rfl
+  | some o => cases o <;> rfl
+
+theorem materializeStateWith_setObj {S : Type} (ffiMap : CSrv → S → S)
+    (C : CSrv) (s : St S) (a : Nat) (o : Obj) :
+    materializeStateWith ffiMap C (s.setObj a o) =
+      (materializeStateWith ffiMap C s).setObj a ((materializer C).obj o) := by
+  unfold St.setObj materializeStateWith
+  dsimp only
+  rw [PTrie.map_set]
+  rfl
 
 theorem cell?_control {S : Type} (s : St S) (c : Ctl) (fs : List Frame) (a : Nat) :
     ({ s with ctl := c, stack := fs }).cell? a = s.cell? a := rfl

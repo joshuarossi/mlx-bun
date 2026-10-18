@@ -112,4 +112,40 @@ elab "host_chunk_prefix_frames " p:ident i:num : command => liftTermElabM do
     type := ty
     value := mkApp2 (mkConst (chainName pre "pfac" k)) (mkConst (pre ++ `prefixBase)) (mkConst (pre ++ `tokenBase)) })
 
+/-- Compose the checked source chunks, retaining the same arbitrary caller prefix
+and unread native suffix throughout the whole interval. -/
+elab "host_chain_prefix_frames " p:ident i:num ", " j:num : command => liftTermElabM do
+  let pre := (← getCurrNamespace) ++ p.getId
+  let first := i.getNat
+  let last := j.getNat
+  unless first < last do throwError "host_chain_prefix_frames: expected a nonempty interval"
+  let ks ← unsafe evalConst (List Nat) (pre ++ `ks)
+  unless last ≤ ks.length do throwError "host_chain_prefix_frames: missing chunks"
+  let F := mkConst (pre ++ `F)
+  let valList := mkApp (mkConst ``List [.zero]) (mkConst ``Val)
+  let numList := mkApp (mkConst ``List [.zero]) (mkConst ``NumV)
+  let stTy := mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) F)
+  let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) stTy (mkConst ``SSrv)
+  let optionTy := mkApp (mkConst ``Option [.zero]) pairTy
+  let (ty, value) ← withLocalDeclD `fw valList fun fw => withLocalDeclD `tail numList fun tail => do
+    let state (k : Nat) := mkApp2 (mkConst (chainName pre "pfa" k)) fw tail
+    let server (k : Nat) := mkConst (chainName pre "S" k)
+    let chunk (k : Nat) := mkApp2 (mkConst (chainName pre "pfac" k)) fw tail
+    let mut fuel := ks[first]!
+    let mut proof := chunk first
+    for k in [first + 1:last] do
+      proof := mkAppN (mkConst ``runS_trans) #[F, mkRawNatLit fuel, mkRawNatLit ks[k]!,
+        state first, state k, state (k + 1), server first, server k, server (k + 1), proof, chunk k]
+      fuel := fuel + ks[k]!
+    let lhs := mkAppN (mkConst ``runS) #[F, mkRawNatLit fuel, state first, server first]
+    let rhs := mkApp2 (mkConst ``Option.some [.zero]) pairTy
+      (mkApp4 (mkConst ``Prod.mk [.zero, .zero]) stTy (mkConst ``SSrv) (state last) (server last))
+    let eq := mkApp3 (mkConst ``Eq [.succ .zero]) optionTy lhs rhs
+    return (← mkForallFVars #[fw, tail] eq, ← mkLambdaFVars #[fw, tail] proof)
+  addDecl (.thmDecl {
+    name := pre ++ Lean.Name.mkSimple ("prefixRun" ++ toString first ++ "_" ++ toString last)
+    levelParams := []
+    type := ty
+    value := value })
+
 end Host.Ts.PrefixFrame
