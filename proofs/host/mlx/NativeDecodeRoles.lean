@@ -172,6 +172,12 @@ def Number.decoded (r : Number) : NumericDecoder → Number
   | .f32 => r.convert .f32
   | .f64 => r
 
+theorem Number.convert_subst (r : Number) (op : NUn) (θ : Nat → SymE) :
+    (r.convert op).subst θ = (r.subst θ).convert op := by cases r <;> rfl
+
+theorem Number.decoded_subst (r : Number) (kind : NumericDecoder) (θ : Nat → SymE) :
+    (r.decoded kind).subst θ = (r.subst θ).decoded kind := by cases kind <;> cases r <;> rfl
+
 theorem Number.Holds.decode {ν : Nat → F64} {C : CSrv} {r : Number} {a : NumV}
     (h : r.Holds ν C a) (kind : NumericDecoder) :
     ∃ v D, interpC (kind.action a).run C = some (v,D) ∧ (r.decoded kind).Holds ν D v ∧ TableExtends C D := by
