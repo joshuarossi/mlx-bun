@@ -289,7 +289,9 @@ def jsonEsc (c : Char) : List Char :=
 
 def jsonQuote (cs : List Char) : List Char := '"' :: (cs.flatMap jsonEsc ++ ['"'])
 
-/-- Serialization of `v`; `none` for `undefined` and functions (omitted in objects). -/
+mutual
+/-- Serialization of `v`; `none` for `undefined` and functions (omitted in objects). Fuel
+bounds the nodes visited (structural recursion on it, so the kernel evaluates it). -/
 def jsonSer (s : St F.S) : Nat → Val → M (Option (Option (List Char)))
   | 0, _ => .pure none
   | f + 1, v => match v with
@@ -303,26 +305,29 @@ def jsonSer (s : St F.S) : Nat → Val → M (Option (Option (List Char)))
     | .obj a => match s.obj? a with
       | some o => match o.kind with
         | .fn _ => .pure (some none)
-        | .array es =>
-          let rec items : List Val → M (Option (List (List Char)))
-            | [] => .pure (some [])
-            | e :: r => .bind (jsonSer s f e) fun
-              | some x => .bind (items r) fun rs => .pure (rs.map ((x.getD chars!"null") :: ·))
-              | none => .pure none
-          .bind (items es) fun r => .pure (r.map fun xs => some ('[' :: (List.intercalate [','] xs ++ [']'])))
+        | .array es => .bind (jsonItems s f es) fun r =>
+          .pure (r.map fun xs => some ('[' :: (List.intercalate [','] xs ++ [']'])))
         | _ => .bind (dataProps F s o) fun
-          | some kvs =>
-            let rec props : List (PKey × Val) → M (Option (List (List Char)))
-              | [] => .pure (some [])
-              | (.str k, e) :: r => .bind (jsonSer s f e) fun
-                | some (some x) => .bind (props r) fun rs => .pure (rs.map ((jsonQuote k ++ ':' :: x) :: ·))
-                | some none => props r
-                | none => .pure none
-              | _ :: r => props r
-            .bind (props kvs) fun r => .pure (r.map fun xs => some ('{' :: (List.intercalate [','] xs ++ ['}'])))
+          | some kvs => .bind (jsonProps s f kvs) fun r =>
+            .pure (r.map fun xs => some ('{' :: (List.intercalate [','] xs ++ ['}'])))
           | none => .pure none
       | none => .pure none
     | _ => .pure none
+def jsonItems (s : St F.S) : Nat → List Val → M (Option (List (List Char)))
+  | 0, _ => .pure none
+  | _ + 1, [] => .pure (some [])
+  | f + 1, e :: r => .bind (jsonSer s f e) fun
+    | some x => .bind (jsonItems s f r) fun rs => .pure (rs.map ((x.getD chars!"null") :: ·))
+    | none => .pure none
+def jsonProps (s : St F.S) : Nat → List (PKey × Val) → M (Option (List (List Char)))
+  | 0, _ => .pure none
+  | _ + 1, [] => .pure (some [])
+  | f + 1, (.str k, e) :: r => .bind (jsonSer s f e) fun
+    | some (some x) => .bind (jsonProps s f r) fun rs => .pure (rs.map ((jsonQuote k ++ ':' :: x) :: ·))
+    | some none => jsonProps s f r
+    | none => .pure none
+  | f + 1, _ :: r => jsonProps s f r
+end
 
 end
 
@@ -363,6 +368,7 @@ def charEsc : List Char → Option (Nat × List Char)
       || (Nat.ble 97 c.toNat && Nat.ble c.toNat 122) then none else some (c.toNat, r)
   | [] => none
 
+mutual
 /-- Class body after `[` (and `^`): ranges and the rest after `]`. -/
 def classBody : Nat → List (Nat × Nat) → List Char → Option (List (Nat × Nat) × List Char)
   | 0, _, _ => none
@@ -373,12 +379,13 @@ def classBody : Nat → List (Nat × Nat) → List Char → Option (List (Nat ×
     | none => (charEsc (c :: r)).bind fun (x, r) => classRange f acc x r
   | f + 1, acc, c :: r => classRange f acc c.toNat r
   | _, _, [] => none
-where
-  classRange (f : Nat) (acc : List (Nat × Nat)) (lo : Nat) : List Char → Option (List (Nat × Nat) × List Char)
-    | '-' :: ']' :: r => some (acc ++ [(lo, lo), (45, 45)], r)
-    | '-' :: '\\' :: c :: r => (charEsc (c :: r)).bind fun (hi, r) => classBody f (acc ++ [(lo, hi)]) r
-    | '-' :: c :: r => classBody f (acc ++ [(lo, c.toNat)]) r
-    | r => classBody f (acc ++ [(lo, lo)]) r
+def classRange : Nat → List (Nat × Nat) → Nat → List Char → Option (List (Nat × Nat) × List Char)
+  | 0, _, _, _ => none
+  | f + 1, acc, lo, '-' :: ']' :: r => let _ := f; some (acc ++ [(lo, lo), (45, 45)], r)
+  | f + 1, acc, lo, '-' :: '\\' :: c :: r => (charEsc (c :: r)).bind fun (hi, r) => classBody f (acc ++ [(lo, hi)]) r
+  | f + 1, acc, lo, '-' :: c :: r => classBody f (acc ++ [(lo, c.toNat)]) r
+  | f + 1, acc, lo, r => classBody f (acc ++ [(lo, lo)]) r
+end
 
 def natLit (cs : List Char) : Option (Nat × List Char) :=
   let ds := cs.takeWhile fun c => Nat.ble 48 c.toNat && Nat.ble c.toNat 57
@@ -585,7 +592,7 @@ def hostN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : HostN 
       | some cs => jsonStep F s cs 0 []
       | none => .fail "JSON.parse of an object"
   | .jsonStringify => match arg args 1, arg args 2 with
-    | .undef, .undef => .bind (jsonSer F s 64 (arg args 0)) fun
+    | .undef, .undef => .bind (jsonSer F s 100000 (arg args 0)) fun
       | some (some cs) => retS F s (.str cs)
       | some none => retS F s .undef
       | none => .fail "JSON.stringify of an unsupported value"

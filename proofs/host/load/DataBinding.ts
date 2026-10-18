@@ -112,17 +112,23 @@ end Host.Load.Data
   return { lean, pins };
 }
 
+/** Data.lean is exactly what the model directory and the repository produce, under the pins. */
+export async function checkLoadDataBinding(model = defaultModel): Promise<void> {
+  const { lean, pins } = await render(model);
+  if ((await Bun.file(new URL("./Data.lean", import.meta.url)).text()) !== lean)
+    throw new Error("host/load/Data.lean differs from the files it embeds");
+  for (const [k, v] of Object.entries(dataPins)) if (pins[k] !== v) throw new Error(`data pin changed: ${k}`);
+}
+
 if (import.meta.main) {
   const mi = process.argv.indexOf("--model-dir");
   const model = mi < 0 ? defaultModel : process.argv[mi + 1]!;
-  const { lean, pins } = await render(model);
-  const out = new URL("./Data.lean", import.meta.url);
   if (process.argv.includes("--write")) {
-    await Bun.write(out, lean);
+    const { lean, pins } = await render(model);
+    await Bun.write(new URL("./Data.lean", import.meta.url), lean);
     console.log(JSON.stringify(pins, null, 2));
   } else {
-    if ((await Bun.file(out).text()) !== lean) throw new Error("host/load/Data.lean differs from the files it embeds");
-    for (const [k, v] of Object.entries(dataPins)) if (pins[k] !== v) throw new Error(`data pin changed: ${k}`);
-    console.log(`Load route data binding passed: ${Object.keys(pins).length} pins`);
+    await checkLoadDataBinding(model);
+    console.log(`Load route data binding passed: ${Object.keys(dataPins).length} pins`);
   }
 }

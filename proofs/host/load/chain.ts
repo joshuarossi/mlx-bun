@@ -60,4 +60,30 @@ kernel_rfl boot_join : Host.Load.Link.L.x42.st = S0.P.s0
 
 end Host.Load.Run
 `);
+// run/Result.lean: the whole load run from the link chain's boot (checks once every segment is checked).
+if ((first ?? 0) === 0 && (last ?? nSeg - 1) >= nSeg - 1) {
+  const segKs = Array.from({ length: nSeg }, (_, j) => {
+    const n = Math.min(per, Math.ceil((total - j * segLen) / steps)) + (j === nSeg - 1 ? 1 : 0);
+    return n;
+  });
+  const out = [`import host.load.link.Run`, `import host.load.run.Boot`,
+    ...segKs.map((_, j) => `import host.load.run.S${j}.Run`), ...segKs.slice(0, -1).map((_, j) => `import host.load.run.Join${j}`),
+    `namespace Host.Load.Run`, `open Host.Ts Host.Load`, ``,
+    `/-! The load run, composed: the link chain boots the machine (\`L.booted\`), segment 0 starts`,
+    `there (\`boot_join\`), and each segment continues the previous one (\`P.join\`). -/`, ``];
+  let K = 0;
+  segKs.forEach((n, j) => {
+    const prevK = K; K += n * steps;
+    if (j === 0) out.push(`theorem upTo0 : runS Host.Load.ffi ${K} S0.P.s0 S0.P.S0 = some (S0.P.s${n}, S0.P.S${n}) := S0.P.run`);
+    else out.push(`theorem upTo${j} : runS Host.Load.ffi ${K} S0.P.s0 S0.P.S0 = some (S${j}.P.s${n}, S${j}.P.S${n}) :=`,
+      `  runS_trans (m := ${prevK}) (n := ${n * steps}) Host.Load.ffi upTo${j - 1} (by rw [S${j - 1}.P.join, S${j - 1}.P.joinS]; exact S${j}.P.run)`);
+  });
+  const last = nSeg - 1, nl = segKs[last]!;
+  out.push(``, `/-- From the link chain's boot, ${K} steps of the load run reach the last segment's final state. -/`,
+    `theorem load : (bootL Route.cx Route.world 2000).bind (fun s => runS Host.Load.ffi ${K} s ⟨[], []⟩) =`,
+    `    some (S${last}.P.s${nl}, S${last}.P.S${nl}) := by`,
+    `  rw [Host.Load.Link.L.booted 2000 (by decide), Option.bind_some, boot_join]`,
+    `  exact upTo${last}`, ``, `end Host.Load.Run`, ``);
+  await write(join(runDir, "Result.lean"), out.join("\n"));
+}
 for (const f of files) console.log(`  "${f}",`);

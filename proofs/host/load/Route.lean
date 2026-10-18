@@ -1,6 +1,6 @@
 import host.ts.ast.inference.Index
-import host.ts.ast.inference.generation.bindings.Autoregressive
-import host.ts.ast.inference.state.RequestPolicy
+import host.ts.ast.inference.generation.bindings.AutoregressiveWhole
+import host.ts.ast.inference.state.RequestPolicyWhole
 import host.ts.ast.inference.contracts.portable.Composition
 import host.ts.ast.inference.state.Ssm
 import host.ts.ast.inference.state.Kv
@@ -311,8 +311,8 @@ def entry : List Char := chars!"packages/inference/src/__load.ts"
 /-- The modules, in the order the import graph reaches them from the driver. -/
 def mods : List UMod :=
   [⟨chars!"packages/inference/src/index.ts", Host.Ts.Sources.Inference.Index.ast⟩,
-   ⟨chars!"packages/inference/src/generation/bindings/autoregressive.ts", Host.Ts.Sources.Inference.Generation.Bindings.Autoregressive.ast⟩,
-   ⟨chars!"packages/inference/src/state/request-policy.ts", Host.Ts.Sources.Inference.State.RequestPolicy.ast⟩,
+   ⟨chars!"packages/inference/src/generation/bindings/autoregressive.ts", Host.Ts.Sources.Inference.Generation.Bindings.AutoregressiveWhole.ast⟩,
+   ⟨chars!"packages/inference/src/state/request-policy.ts", Host.Ts.Sources.Inference.State.RequestPolicyWhole.ast⟩,
    ⟨chars!"packages/inference/src/contracts/portable/composition.ts", Host.Ts.Sources.Inference.Contracts.Portable.Composition.ast⟩,
    ⟨chars!"packages/inference/src/state/ssm.ts", Host.Ts.Sources.Inference.State.Ssm.ast⟩,
    ⟨chars!"packages/inference/src/state/kv.ts", Host.Ts.Sources.Inference.State.Kv.ast⟩,

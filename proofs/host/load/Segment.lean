@@ -14,19 +14,27 @@ steps). Chunk files (`host_chunk P i`) and `host_chain_run P` work as for
 compose into one run (`runS_trans`). The first segment's `P.s0` is joined
 to the end of a link chain by `boot_join`. -/
 
+/-- `runS` as a loop (native state choice only: `runS` nests a continuation per step). -/
+def runFast (F : Ffi) : Nat → St F.S → SSrv → Option (St F.S × SSrv)
+  | 0, s, c => some (s, c)
+  | n + 1, s, c => bif isHalt s.ctl then some (s, c) else
+    match interpS (step F s).run c with
+    | some (s', c') => runFast F n s' c'
+    | none => none
+
 /-- `chainStates` over the memoizing serializers (`Memo`). -/
 def chainStatesM (F : Ffi) (serS : F.S → Lean.Expr) (tyS : Lean.Expr) (s₀ : St F.S) (S₀ : SSrv) (ks : List Nat) :
     Option (List (Lean.Expr × Lean.Expr × Bool)) :=
   letI : ToExpr F.S := ⟨serS, tyS⟩
   let rec go (s : St F.S) (S : SSrv) : List Nat → Option (List (Lean.Expr × Lean.Expr × Bool))
     | [] => some []
-    | k :: ks => (runS F k s S).bind fun (s', S') =>
+    | k :: ks => (runFast F k s S).bind fun (s', S') =>
       (go s' S' ks).map ((toExpr s', toExpr S', isHalt s'.ctl) :: ·)
   (go s₀ S₀ ks).map ((toExpr s₀, toExpr S₀, isHalt s₀.ctl) :: ·)
 
 def segmentStates (F : Ffi) (serS : F.S → Lean.Expr) (tyS : Lean.Expr) (s₀ : St F.S) (S₀ : SSrv) (skip : Nat)
     (ks : List Nat) : Option (List (Lean.Expr × Lean.Expr × Bool)) :=
-  (runS F skip s₀ S₀).bind fun (s, S) => chainStatesM F serS tyS s S ks
+  (runFast F skip s₀ S₀).bind fun (s, S) => chainStatesM F serS tyS s S ks
 
 elab "run_segment " p:ident " : " f:term ", " b:term ", " srv:term ", " skip:term ", " ks:term : command => liftTermElabM do
   let pre := (← getCurrNamespace) ++ p.getId
