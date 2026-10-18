@@ -45,6 +45,23 @@ run_cmd liftTermElabM do
     unless commands == #["host_retained_binary"] do throwError "native source registry selected the wrong binary command"
   let newData ← registeredNativeSourceCommands (toExpr chars!"mlx_array_new_data")
   unless newData == #["host_retained_arrayNewData"] do throwError "native source registry selected the wrong data constructor command"
+  let reshape ← registeredNativeSourceCommands (toExpr chars!"mlx_reshape")
+  unless reshape == #["host_retained_reshape"] do throwError "native source registry selected the wrong reshape command"
+  let rope ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_rope")
+  unless rope == #["host_retained_rope"] do throwError "native source registry selected the wrong rope command"
+  for (symbol,command) in [(chars!"mlx_vector_array_new","host_retained_vectorNew"),
+      (chars!"mlx_vector_array_size","host_retained_vectorSize"),(chars!"mlx_vector_array_get","host_retained_vectorGet")] do
+    let commands ← registeredNativeSourceCommands (toExpr symbol)
+    unless commands == #[command] do throwError "native source registry selected the wrong vector command"
+  let transpose ← registeredNativeSourceCommands (toExpr chars!"mlx_transpose_axes")
+  unless transpose == #["host_retained_transpose"] do throwError "native source registry selected the wrong transpose command"
+  let quantized ← registeredNativeSourceCommands (toExpr chars!"mlx_quantized_matmul")
+  unless quantized == #["host_retained_quantized"] do throwError "native source registry selected the wrong quantized command"
+  let rms ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_rms_norm")
+  unless rms == #["host_retained_rms"] do throwError "native source registry selected the wrong RMS command"
+  for symbol in [chars!"mlx_async_eval",chars!"mlx_array_eval",chars!"mlx_eval"] do
+    let commands ← registeredNativeSourceCommands (toExpr symbol)
+    unless commands == #["host_retained_eval"] do throwError "native source registry selected the wrong evaluation command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 

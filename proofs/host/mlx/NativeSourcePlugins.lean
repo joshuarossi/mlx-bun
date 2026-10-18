@@ -19,6 +19,15 @@ import host.mlx.NativeUnaryFrontend
 import host.mlx.NativeConvFrontend
 import host.mlx.NativeBinaryFrontend
 import host.mlx.NativeDataFrontend
+import host.mlx.NativeReshapeFrontend
+import host.mlx.NativeRopeFrontend
+import host.mlx.NativeVectorFactoryFrontend
+import host.mlx.NativeVectorSizeFrontend
+import host.mlx.NativeVectorGetFrontend
+import host.mlx.NativeTransposeFrontend
+import host.mlx.NativeQuantizedFrontend
+import host.mlx.NativeRmsFrontend
+import host.mlx.NativeEvalFrontend
 
 set_option Elab.async false
 
@@ -47,3 +56,14 @@ host_register_native_source "mlx_conv1d" => "host_retained_conv1d"
 host_register_native_source "mlx_add" => "host_retained_binary"
 host_register_native_source "mlx_multiply" => "host_retained_binary"
 host_register_native_source "mlx_array_new_data" => "host_retained_arrayNewData"
+host_register_native_source "mlx_reshape" => "host_retained_reshape"
+host_register_native_source "mlx_fast_rope" => "host_retained_rope"
+host_register_native_source "mlx_vector_array_new" => "host_retained_vectorNew"
+host_register_native_source "mlx_vector_array_size" => "host_retained_vectorSize"
+host_register_native_source "mlx_vector_array_get" => "host_retained_vectorGet"
+host_register_native_source "mlx_transpose_axes" => "host_retained_transpose"
+host_register_native_source "mlx_quantized_matmul" => "host_retained_quantized"
+host_register_native_source "mlx_fast_rms_norm" => "host_retained_rms"
+host_register_native_source "mlx_async_eval" => "host_retained_eval"
+host_register_native_source "mlx_array_eval" => "host_retained_eval"
+host_register_native_source "mlx_eval" => "host_retained_eval"
