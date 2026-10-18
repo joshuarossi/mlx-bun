@@ -11,6 +11,8 @@ noncomputable def First.rules := Plan.rules.take 32
 noncomputable def Second.rules := (Plan.rules.drop 32).take 32
 noncomputable def Null.rules := (Plan.rules.drop 32).take 14
 noncomputable def Slot.rules := (Plan.rules.drop 46).take 18
+noncomputable def Array.rules := (Plan.rules.drop 46).take 2
+noncomputable def Ready.rules := Plan.rules.drop 49
 noncomputable def Third.rules := Plan.rules.drop 64
 
 end Host.Load.Run.Full.Ordinary.RetainedVectorPreludeBatch
