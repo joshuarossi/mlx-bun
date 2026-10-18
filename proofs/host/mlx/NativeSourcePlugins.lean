@@ -5,6 +5,8 @@ import host.mlx.NativeKvAppendFrontend
 import host.mlx.NativeKvViewFrontend
 import host.mlx.NativeArrayFreeFrontend
 import host.mlx.NativeAttentionFrontend
+import host.mlx.NativeConfigIntFrontend
+import host.mlx.NativeConfigFactoryFrontend
 
 set_option Elab.async false
 
@@ -17,3 +19,5 @@ host_register_native_source "mlx_slice_update" => "host_retained_kvAppend"
 host_register_native_source "mlx_slice" => "host_retained_kvView"
 host_register_native_source "mlx_array_free" => "host_retained_arrayFree"
 host_register_native_source "mlx_fast_scaled_dot_product_attention" => "host_retained_attention"
+host_register_native_source "mlx_fast_metal_kernel_config_add_template_arg_int" => "host_retained_configInt"
+host_register_native_source "mlx_fast_metal_kernel_config_new" => "host_retained_configNew"

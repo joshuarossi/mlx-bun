@@ -19,6 +19,10 @@ run_cmd liftTermElabM do
   unless disposal == #["host_retained_arrayFree"] do throwError "native source registry selected the wrong array disposal command"
   let attention ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_scaled_dot_product_attention")
   unless attention == #["host_retained_attention"] do throwError "native source registry selected the wrong attention command"
+  let configInt ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_add_template_arg_int")
+  unless configInt == #["host_retained_configInt"] do throwError "native source registry selected the wrong configuration setter command"
+  let configNew ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_new")
+  unless configNew == #["host_retained_configNew"] do throwError "native source registry selected the wrong configuration constructor command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
