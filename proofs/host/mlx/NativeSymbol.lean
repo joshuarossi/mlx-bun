@@ -61,6 +61,13 @@ theorem ffiDone_status0_buffer (F : Ffi) (s : St F.S) (native : F.S)
   rw [ffiDone,applyWrites_one_buffer F (s.setFfi native) b off ws bs o ho' hk]
   rfl
 
+def finishBig {S : Type} (s : St S) (native : S) (name : Name) (args : List Arg) (value : Int) : St S :=
+  ((s.setFfi native).setTrace (⟨name,args,.big value⟩::s.trace)).ret (.big value)
+
+theorem ffiDone_big_empty (F : Ffi) (s : St F.S) (native : F.S)
+    (name : Name) (args : List Arg) (value : Int) :
+    ffiDone F s name args (some (native,.big value,[])) = M.pure (finishBig s native name args value) := rfl
+
 end Host.Ts
 
 namespace Host.Ts.Owned.Parametric
@@ -68,6 +75,21 @@ namespace Host.Ts.Owned.Parametric
 theorem fixed_handle_value {ν : Nat → F64} {C : CSrv} {R : Ren} {handle : Nat} {v : Val}
     (h : (Annotated.Value.handle handle).Holds ν C R v) :
     v = .big (Int.ofNat (R.handle handle)) := by cases h; rfl
+
+theorem fixed_ordinary_big_value {ν : Nat → F64} {C : CSrv} {R : Ren} {value : Int} {v : Val}
+    (h : (Annotated.Value.ordinaryBig value).Holds ν C R v) : v = .big value := by cases h; rfl
+
+theorem StateR.finishBig {S : Type} {NR : NumV → NumV → Prop}
+    {FR FR' : Ren → S → S → Prop} {R : Ren} {live framed : Nat → Prop}
+    {before after : List Val} {old old' : List Event} {s s' : St S}
+    (h : StateR NR FR R live framed before after old old' s s')
+    (native native' : S) (hn : FR' R native native') (name : Name) (args args' : List Arg) (value value' : Int)
+    (he : TreeR NR R (event ⟨name,args,.big value⟩) (event ⟨name,args',.big value'⟩))
+    (hv : ValueR NR R (.big value) (.big value')) :
+    StateR NR FR' R live framed before after old old'
+      (Host.Ts.finishBig s native name args value) (Host.Ts.finishBig s' native' name args' value') :=
+  ((h.setFfi native native' hn).traceCons _ _ he).go
+    (.node _ (.cons (.value hv) .nil)) ⟨True.intro,True.intro⟩
 
 theorem event_ptr_handles_roles {NR : NumV → NumV → Prop} {R : Ren}
     (name : Name) (b off h1 h2 : Nat) (bs bs' : List Byte)

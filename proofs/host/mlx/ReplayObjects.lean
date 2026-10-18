@@ -46,6 +46,20 @@ theorem Live.setObjectRoles {NR : NumV → NumV → Prop} {R : Ren}
     · subst b; exact h.handleMap.bound a (h.liveHandleBound a ha)
     · rw [ite_eq_right he] at hb; exact h.targetObjsBound b obj hb
 
+/-- A fresh object receives its fixed annotation while every previously live
+object keeps its occurrence meanings. Freshness follows from the counters. -/
+theorem Live.newObjectRoles {NR : NumV → NumV → Prop} {R : Ren}
+    {NodeRel : Nat → Node → Node → Prop} {ObjRel ObjRel' : Nat → Obj → Obj → Prop}
+    {H N : Nat → Prop} {tail : List NumV} {s s' : St}
+    (h : Live NR R NodeRel ObjRel H N tail s s') (o o' : Obj)
+    (created : ObjRel' s.next o o')
+    (frame : ∀ i, i ≠ s.next → ∀ x y, ObjRel i x y → ObjRel' i x y)
+    (bs : s.next < 2^64) (bt : s'.next < 2^64) :
+    Live NR R NodeRel ObjRel' (fun a => a = s.next ∨ H a) N tail (s.newObj o).2 (s'.newObj o').2 := by
+  have before : Live NR R NodeRel ObjRel' H N tail s s' := h.withObjects (fun i hi =>
+    (h.objs i hi).mono (frame i (Nat.ne_of_lt (h.liveHandleBound i hi))))
+  exact before.newObj o o' created bs bt
+
 /-- Replay's checked object-store frame restores the complete fixed object
 relation after the local shape proof uses its binary projection. -/
 theorem ReplayPlan.replay_objects {NR : NumV → NumV → Prop} {R : Ren} {boundary : Nat → Prop}
