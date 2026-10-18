@@ -2,6 +2,8 @@ import host.ts.RenameRouteDriver
 import host.ts.RenameParametricNamespace
 import host.ts.RenameParametricArrayLiteral
 import host.ts.RenameParametricStatements
+import host.ts.RenameParametricCallback
+import host.ts.RenameParametricArrayMethod
 
 namespace Host.Ts.Owned.Parametric.Driver
 open Lean Elab Command Meta
@@ -41,6 +43,12 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
         for (tag,value) in [("sourceExpression",member.getAppArgs[0]!),("sourceName",member.getAppArgs[1]!),
           ("sourceOptObject",member.getAppArgs[2]!),("sourceArgs",expr.getAppArgs[1]!),("sourceOptCall",expr.getAppArgs[2]!)] do add tag value
         pure "methodDescent"
+      else if expr.isAppOfArity ``Expr.new 2 then
+        add "sourceDescent" (mkAppN (mkConst ``Descent.construct) expr.getAppArgs)
+        pure "descent"
+      else if expr.isAppOfArity ``Expr.arrow 1 then
+        add "sourceFunction" expr.getAppArgs[0]!
+        pure "callback"
       else
         let elems ← field expr ``Expr.array 1 0
         add "sourceExpression" (← field (← field elems ``List.cons 3 1) ``Elem.expr 1 0)
@@ -75,11 +83,25 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
             let value ← field (← field (← mkAppM ``St.cell? #[s,cell]) ``Option.some 2 1) ``Option.some 2 1
             for (tag,v) in [("sourceExports",exports),("sourceCell",cell),("sourceMethod",value)] do add tag v
             pure "namespace"
+          else if kind.isAppOfArity ``Kind.array 1 then
+            add "sourceElements" kind.getAppArgs[0]!
+            let prototype ← field (← mkAppM ``Obj.proto #[obj]) ``Val.obj 1 0
+            let parent ← field (← mkAppM ``St.obj? #[s,prototype]) ``Option.some 2 1
+            let prop ← whnf (← field (← mkAppM ``findProp #[a[0]!,← mkAppM ``Obj.props #[parent]]) ``Option.some 2 1)
+            unless prop.isAppOfArity ``PropV.data 3 do throwError "host_transport_preparation: expected prototype data method"
+            for (tag,v) in [("sourcePrototype",prototype),("sourceParent",parent),
+              ("sourceMethod",prop.getAppArgs[0]!),("sourceWritable",prop.getAppArgs[1]!),("sourceEnumerable",prop.getAppArgs[2]!)] do add tag v
+            pure "arrayMethod"
           else
             let prop ← whnf (← field (← mkAppM ``findProp #[a[0]!,← mkAppM ``Obj.props #[obj]]) ``Option.some 2 1)
             unless prop.isAppOfArity ``PropV.data 3 do throwError "host_transport_preparation: expected own data method"
             for (tag,v) in [("sourceMethod",prop.getAppArgs[0]!),("sourceWritable",prop.getAppArgs[1]!),("sourceEnumerable",prop.getAppArgs[2]!)] do add tag v
             pure "methodData"
+        else if cf.isAppOfArity ``CallF.newCallee 2 then
+          add "sourceAddress" (← field value ``Val.obj 1 0)
+          for (tag,v) in [("sourceThis",mkConst ``Val.undef),("sourceArgs",a[0]!),
+            ("sourceEnv",a[1]!),("sourceMode",mkConst ``CallStart.construct)] do add tag v
+          pure "callStart"
         else
           unless cf.isAppOfArity ``CallF.method 4 do throwError "host_transport_preparation: unsupported call frame"
           add "sourceAddress" (← field value ``Val.obj 1 0)
@@ -110,6 +132,14 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
         {n}.sourceArgs {n}.sourceOptCall) {n}.sourceEnv"
       pure (s!"step_method_descent_from_source {common} {n}.sourceExpression {n}.sourceName {n}.sourceArgs
         {n}.sourceEnv {n}.sourceOptObject {n}.sourceOptCall {n}.source_control",false)
+    else if branch == "descent" then do
+      fact "source_control" s!"{n}.input.ctl = .ev {n}.sourceDescent.whole {n}.sourceEnv"
+      pure (s!"step_descent_from_source {common} {n}.sourceDescent {n}.sourceEnv {n}.source_control",false)
+    else if branch == "callback" then do
+      fact "source_control" s!"{n}.input.ctl = .ev (.arrow {n}.sourceFunction) {n}.sourceEnv"
+      emit (header ++ s!"theorem {n}.source_bound : {n}.input.next < 2^64 := by decide +kernel")
+      pure (s!"step_callback_from_source {common} {n}.sourceFunction {n}.sourceEnv {n}.source_control
+        prototypeLive prototypeFixed {n}.source_bound targetBound",false)
     else if branch == "arrayEntry" then do
       fact "source_control" s!"{n}.input.ctl = .ev (.array (.expr {n}.sourceExpression :: {n}.sourceRest)) {n}.sourceEnv"
       pure (s!"step_array_entry_from_source {common} {n}.sourceExpression {n}.sourceRest {n}.sourceEnv {n}.source_control",false)
@@ -119,7 +149,7 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
         fact "source_frame" s!"{n}.input.stack = .s (.block ({n}.sourceStatement :: {n}.sourceRest) {n}.sourceEnv) :: {n}.sourceTail"
         pure (s!"step_block_next_from_source {common} {n}.sourceValue {n}.sourceStatement {n}.sourceRest {n}.sourceEnv
           {n}.sourceTail {n}.source_control {n}.source_frame",true)
-      else if branch == "methodData" || branch == "namespace" then
+      else if branch == "methodData" || branch == "namespace" || branch == "arrayMethod" then
         fact "source_frame" s!"{n}.input.stack = .c (.member (.str {n}.sourceName) {n}.sourceArgs {n}.sourceEnv
           {n}.sourceOptObject {n}.sourceOptCall) :: {n}.sourceTail"
         fact "source_heap" s!"{n}.input.heap.get {n}.sourceAddress = some (.obj {n}.sourceObject)"
@@ -131,6 +161,22 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
             {n}.sourceName {n}.sourceArgs {n}.sourceEnv {n}.sourceOptObject {n}.sourceOptCall {n}.sourceCell
             {n}.sourceMethod {n}.sourceTail {n}.source_control {n}.source_frame {n}.source_heap {n}.source_kind
             {n}.source_export {n}.source_cell",true)
+        else if branch == "arrayMethod" then
+          fact "source_kind" s!"{n}.sourceObject.kind = .array {n}.sourceElements"
+          fact "source_nonindex" s!"keyIndex (.str {n}.sourceName) = none"
+          fact "source_nonlength" s!"keyEq (.str {n}.sourceName) kLength = false"
+          fact "source_absent" s!"findProp (.str {n}.sourceName) {n}.sourceObject.props = none"
+          fact "source_prototype" s!"{n}.sourceObject.proto = .obj {n}.sourcePrototype"
+          fact "source_parent" s!"{n}.input.heap.get {n}.sourcePrototype = some (.obj {n}.sourceParent)"
+          fact "source_parentKind" s!"{n}.sourceParent.kind = .ordinary"
+          fact "source_property" s!"findProp (.str {n}.sourceName) {n}.sourceParent.props =
+            some (.data {n}.sourceMethod {n}.sourceWritable {n}.sourceEnumerable)"
+          pure (s!"step_array_method_from_source {common} {n}.sourceAddress {n}.sourcePrototype
+            {n}.sourceObject {n}.sourceParent {n}.sourceElements {n}.sourceName {n}.sourceArgs
+            {n}.sourceEnv {n}.sourceOptObject {n}.sourceOptCall {n}.sourceMethod {n}.sourceWritable
+            {n}.sourceEnumerable {n}.sourceTail {n}.source_control {n}.source_frame {n}.source_heap
+            {n}.source_kind {n}.source_nonindex {n}.source_nonlength {n}.source_absent {n}.source_prototype
+            {n}.source_parent {n}.source_parentKind {n}.source_property receiverNotFramed",true)
         else
           fact "source_kind" s!"{n}.sourceObject.kind = .ordinary"
           fact "source_property" s!"findProp (.str {n}.sourceName) {n}.sourceObject.props =
@@ -154,8 +200,12 @@ elab "host_transport_preparation " f:term ", " s:term " to " t:term " as " name:
           {n}.source_control {n}.source_frame prototypeLive prototypeFixed {n}.source_bound targetBound",true)
   emit (header ++ s!"theorem {n}.source_run (C₀ : CSrv) : interpC (step {n}.F {n}.input).run C₀ = some ({n}.output,C₀) := by host_kernel_rfl")
   let extras := if branch == "arrayFinal" then
-    "(prototypeLive : live aArrayProto) (prototypeFixed : R.a aArrayProto = aArrayProto) (targetBound : s.next < 2^64)" else ""
-  let targetLive := if branch == "arrayFinal" then s!"(LiveAfter live {n}.input.next)" else "live"
+    "(prototypeLive : live aArrayProto) (prototypeFixed : R.a aArrayProto = aArrayProto) (targetBound : s.next < 2^64)"
+    else if branch == "callback" then
+      "(prototypeLive : live aFunctionProto) (prototypeFixed : R.a aFunctionProto = aFunctionProto) (targetBound : s.next < 2^64)"
+    else if branch == "arrayMethod" then s!"(receiverNotFramed : ¬ framed {n}.sourceAddress)"
+    else ""
+  let targetLive := if branch == "arrayFinal" || branch == "callback" then s!"(LiveAfter live {n}.input.next)" else "live"
   let obtainArgs := if hasResult then "result,hr₀,hr,hpost" else "hr₀,hr,hpost"
   emit (header ++ s!"theorem {n}.transport (NR : NumV → NumV → Prop) (FR : Ren → {n}.F.S → {n}.F.S → Prop)
       (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
