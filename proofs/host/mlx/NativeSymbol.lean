@@ -7,6 +7,22 @@ set_option maxRecDepth 1000000
 
 namespace Host.Ts
 
+theorem step_ffi_noargs (F : Ffi) (s : St F.S) {receiver : Val}
+    (fn types : Nat) (name returns : Name) (fo to : Obj)
+    (native : F.S) (result : Ret) (writes : List (Nat × Nat × List Byte))
+    (hc : s.ctl = .call (.obj fn) receiver [])
+    (hfn : s.obj? fn = some fo)
+    (hfk : fo.kind = .fn (.native (.ffi .symbol) [.str name,.obj types,.str returns]))
+    (ht : s.obj? types = some to) (htk : to.kind = .array [])
+    (hcall : F.call s.ffi name [] = M.pure (some (native,result,writes))) :
+    step F s = ffiDone F s name [] (some (native,result,writes)) := by
+  funext β k
+  simp only [step,hc,callStep,hfn,hfk,callNative,ffiN]
+  rw [elemsOf_array F s types to _ ht htk]
+  simp only [decodeArgs,M.bind,M.pure]
+  rw [hcall]
+  rfl
+
 theorem decodeArgs_ptr_u64_u64 (F : Ffi) (s : St F.S) (b off : Nat)
     (h1 h2 : Int) (bs : List Byte) (hb : bufBytes F s b = some bs) :
     decodeArgs F s [.str chars!"ptr",.str chars!"u64",.str chars!"u64"]
