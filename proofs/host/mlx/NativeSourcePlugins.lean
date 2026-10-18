@@ -15,6 +15,8 @@ import host.mlx.NativeClosedFixedSliceFrontend
 import host.mlx.NativeConfigTripletFrontend
 import host.mlx.NativeMetalFrontend
 import host.mlx.NativeSliceDynamicFrontend
+import host.mlx.NativeUnaryFrontend
+import host.mlx.NativeConvFrontend
 
 set_option Elab.async false
 
@@ -38,3 +40,5 @@ host_register_native_source "mlx_fast_metal_kernel_config_set_grid" => "host_ret
 host_register_native_source "mlx_fast_metal_kernel_config_set_thread_group" => "host_retained_configTriplet"
 host_register_native_source "mlx_fast_metal_kernel_apply" => "host_retained_metal"
 host_register_native_source "mlx_slice_dynamic" => "host_retained_sliceDynamic"
+host_register_native_source "mlx_sigmoid" => "host_retained_unary"
+host_register_native_source "mlx_conv1d" => "host_retained_conv1d"

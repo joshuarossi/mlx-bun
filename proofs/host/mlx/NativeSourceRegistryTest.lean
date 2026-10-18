@@ -36,6 +36,10 @@ run_cmd liftTermElabM do
   unless metal == #["host_retained_metal"] do throwError "native source registry selected the wrong Metal application command"
   let dynamicSlice ← registeredNativeSourceCommands (toExpr chars!"mlx_slice_dynamic")
   unless dynamicSlice == #["host_retained_sliceDynamic"] do throwError "native source registry selected the wrong dynamic slice command"
+  let sigmoid ← registeredNativeSourceCommands (toExpr chars!"mlx_sigmoid")
+  unless sigmoid == #["host_retained_unary"] do throwError "native source registry selected the wrong unary command"
+  let conv ← registeredNativeSourceCommands (toExpr chars!"mlx_conv1d")
+  unless conv == #["host_retained_conv1d"] do throwError "native source registry selected the wrong convolution command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
