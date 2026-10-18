@@ -13,8 +13,7 @@ The generation driver consumes the caches returned by the actual binding.
 The working-set limit is the M1 Max/MLX 0.32.2 platform fact captured in
 `2026-09-27-gemma12b-fresh-oracle-02d723a2/reference/gemma4-parity.json`. -/
 def world : LSt :=
-  { Route.world with mlx := { Route.world.mlx with tokens := reads,
-      deviceSizes := [(chars!"max_recommended_working_set_size", 26800603136)] } }
+  { Route.world with mlx := { Route.world.mlx with tokens := reads, deviceSizes := [(chars!"max_recommended_working_set_size", 26800603136)] } }
 
 /-- A discovery valuation; it chooses branch answers only. Every resulting chunk
 is checked against the symbolic server by the kernel. -/
