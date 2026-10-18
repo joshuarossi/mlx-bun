@@ -17,7 +17,7 @@ private theorem ordinary_zero_values {ν : Nat → F64} {C : CSrv} {R : Ren} {va
     rfl
 
 def RetainedNotes.nullTyped (notes : RetainedNotes) (fresh : Nat) : RetainedNotes :=
-  {notes with runtime := ⟨returnNote (.obj (fresh+1)),notes.runtime.stack,notes.runtime.cells⟩, buffers := notes.buffers.write fresh (handleSlotNotes 0)}
+  notes.typedBytes fresh (handleSlotNotes 0)
 
 /-- BigUint64Array([0n]) gets its element from the current array inventory,
 its builtin literals from captured metadata, and its null-handle meaning from
@@ -65,23 +65,9 @@ theorem RetainedInventory.typedArray_null_step
     live framed before after old old' s₀ s h fn arrayOwner proto object sourceArray newTarget x y
     control read kind sourceRead sourceKind codeIndex protoIndex targetContents codeRole protoRole
     bufferProtoLive bufferProtoFixed protoLive protoFixed sourceBound targetBound
-  have prior := inventory.newTyped_return Host.Load.ffi h.heap .u64 proto 1
-    (cellParts .u64 (.big 0) 8 0) (cellParts .u64 (.big 0) 8 0) sourceBound targetBound
-  have sourceBuffer : ((newTyped Host.Load.ffi s₀ .u64 proto (cellParts .u64 (.big 0) 8 0) 1).2.ret (.obj (s₀.next+1))).heap.get s₀.next =
-      some (.obj ⟨.buf (cellParts .u64 (.big 0) 8 0),.obj aArrayBufferProto,[],[],true⟩) := by
-    simp only [newTyped,St.allocObj,St.alloc,St.ret,PTrie.get_set_u64 _ _ _ sourceBound,
-      PTrie.get_set_u64 _ _ _ (show s₀.next < 2^64 by omega),ite_eq_right (show s₀.next ≠ s₀.next+1 by omega),ite_true]
-  have fresh : R.a s₀.next = s.next := by simpa only [Nat.add_zero] using h.heap.fresh 0
-  have targetBuffer : ((newTyped Host.Load.ffi s .u64 proto (cellParts .u64 (.big 0) 8 0) 1).2.ret (.obj (s.next+1))).heap.get (R.a s₀.next) =
-      some (.obj ⟨.buf (cellParts .u64 (.big 0) 8 0),.obj aArrayBufferProto,[],[],true⟩) := by
-    rw [fresh]
-    simp only [newTyped,St.allocObj,St.alloc,St.ret,PTrie.get_set_u64 _ _ _ targetBound,
-      PTrie.get_set_u64 _ _ _ (show s.next < 2^64 by omega),ite_eq_right (show s.next ≠ s.next+1 by omega),ite_true]
   have sourceBytes := null_handle_cellPartNotes ν₀ C₀ identity rfl 8 0
   have targetBytes := null_handle_cellPartNotes ν C R native.handleZero 8 0
-  have buffers := prior.buffers.annotate s₀.next (handleSlotNotes 0) (Or.inl (Or.inr rfl))
-    ⟨_,_,sourceBuffer,rfl,sourceBytes⟩ ⟨_,_,targetBuffer,rfl,targetBytes⟩
-  exact ⟨sourceRun,targetRun,post,
-    ⟨prior.runtime,prior.privates,prior.captures,prior.arrays,prior.publicFields,buffers⟩⟩
+  exact ⟨sourceRun,targetRun,post,inventory.newTyped_buffer Host.Load.ffi h.heap .u64 proto 1
+    _ _ (handleSlotNotes 0) sourceBytes targetBytes sourceBound targetBound⟩
 
 end Host.Ts.Owned.Annotated

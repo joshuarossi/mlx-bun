@@ -37,4 +37,7 @@ host_retained_readU64 P.F, P.RestStream.micro0.micro3.s52 using P.RestStream.mic
 host_retained_nullTyped P.F, P.RestStream.micro0.micro2.s98 using P.RestStream.micro0.micro2.S98
   to P.RestStream.micro0.micro2.s99 using P.RestStream.micro0.micro2.S99 as Source298
 
+host_retained_handleTyped P.F, P.RestStream.micro0.micro2.s23 using P.RestStream.micro0.micro2.S23
+  to P.RestStream.micro0.micro2.s24 using P.RestStream.micro0.micro2.S24 as Source223
+
 end Host.Load.Run.Full.Ordinary.NativeInventoryCases
