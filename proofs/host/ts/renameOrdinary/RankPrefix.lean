@@ -21,7 +21,7 @@ theorem binary_operator_mul : Structural6.sourceOp = .mul := by host_kernel_rfl
 /-- A fixed rank cell supplies the occurrence annotation used by the real shape
 byte-length arithmetic. The prefix derives literal operands rather than
 recovering their roles from the unannotated numeric relation. -/
-theorem first_eight_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+theorem first_eight_rank_heap_transport (FR : Ren → P.F.S → P.F.S → Prop)
     (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
@@ -31,7 +31,7 @@ theorem first_eight_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
         P.RestStream.micro0.micro0.s8 result ∧
       result.ctl = .ret (natV 4) ∧
-      ∃ fs, result.stack = .e (.binR .mul (natV 3)) :: fs ∧ ShapeArgumentTail fs := by
+      ∃ fs, result.stack = .e (.binR .mul (natV 3)) :: fs ∧ ShapeArgumentTail fs ∧ result.heap = s.heap := by
   obtain ⟨v0,hr0,h1,_⟩ := FirstVariable.transport (NumberRoles ν₀ ν C₀ C) FR R C₀ C live framed before after old old' s h
   let s1 := s.ret v0
   obtain ⟨s2,hr1,h2⟩ := Structural1.transport (NumberRoles ν₀ ν C₀ C) FR R C₀ C live framed before after old old' s1 h1
@@ -120,7 +120,21 @@ theorem first_eight_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
     change s5.stack.tail = fs6 at ht
     change s5.stack.tail = s4.stack at hd
     exact ht.symm.trans hd
-  refine ⟨result,?_,h8,?_,fs6,?_,?_⟩
+  have hh7 := step_binary_left_heap_from_source P.F (NumberRoles ν₀ ν C₀ C) FR R live framed
+    before after old old' Structural6.input s6 s7 C C h6 Structural6.sourceValue Structural6.sourceOp
+    Structural6.sourceRight Structural6.sourceEnv Structural6.sourceTail Structural6.source_control
+    Structural6.source_frame hr6original
+  refine ⟨result,?_,h8,?_,fs6,?_,?_,?_⟩
+  case refine_5 =>
+    change s7.heap = s.heap
+    calc
+      s7.heap = s6.heap := hh7
+      _ = s5.heap := rfl
+      _ = s4.heap := hh5
+      _ = s3.heap := hh4
+      _ = s2.heap := rfl
+      _ = s1.heap := hh2
+      _ = s.heap := rfl
   case refine_4 => exact ⟨fn3,this3,ptr3,R.env Structural3.sourceEnv,fs3,htail6.trans hstack4⟩
   case refine_2 => exact congrArg Ctl.ret literal_four
   case refine_3 =>
@@ -139,9 +153,24 @@ theorem first_eight_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
   apply runC_cons P.F 0 s7 result result C C C (h7.control.isHalt_eq.trans source_active7) hr7
   rfl
 
+theorem first_eight_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3)))) :
+    ∃ result, runC P.F 8 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+        P.RestStream.micro0.micro0.s8 result ∧
+      result.ctl = .ret (natV 4) ∧
+      ∃ fs, result.stack = .e (.binR .mul (natV 3)) :: fs ∧ ShapeArgumentTail fs := by
+  obtain ⟨result,hr,hh,hc,fs,hf,ht,_⟩ := first_eight_rank_heap_transport FR R ν₀ ν C₀ C
+    live framed before after old old' s h rank
+  exact ⟨result,hr,hh,hc,fs,hf,ht⟩
+
 /-- With the fixed rank occurrence, the actual numeric primitive folds to the
 literal byte count12 and leaves the target server unchanged. -/
-theorem first_nine_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+theorem first_nine_rank_heap_transport (FR : Ren → P.F.S → P.F.S → Prop)
     (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
@@ -149,8 +178,8 @@ theorem first_nine_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
     (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3)))) :
     ∃ result, runC P.F 9 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
-        P.RestStream.micro0.micro0.s9 result ∧ result.ctl = .ret (natV 12) ∧ ShapeArgumentTail result.stack := by
-  obtain ⟨s8,hr8,h8,hc8,fs8,hf8,hshape8⟩ := first_eight_rank_transport FR R ν₀ ν C₀ C
+        P.RestStream.micro0.micro0.s9 result ∧ result.ctl = .ret (natV 12) ∧ ShapeArgumentTail result.stack ∧ result.heap = s.heap := by
+  obtain ⟨s8,hr8,h8,hc8,fs8,hf8,hshape8,hheap8⟩ := first_eight_rank_heap_transport FR R ν₀ ν C₀ C
     live framed before after old old' s h rank
   have hr9fixed : interpC (step P.F s8).run C = some ({s8 with stack := fs8}.ret (natV 12),C) := by
     rw [step_arithmetic_eq P.F s8 .mul (.lit (F64.ofNat 3)) (.lit (F64.ofNat 4)) fs8 hc8 hf8]
@@ -164,14 +193,30 @@ theorem first_nine_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
   dsimp only at hs
   have one : runC P.F 1 s8 C = some (s9,C) :=
     runC_cons P.F 0 s8 s9 s9 C C C (h8.control.isHalt_eq.trans source_active8) hr9 rfl
-  refine ⟨s9,runC_join P.F hr8 one,h9,(congrArg St.ctl hs).symm,?_⟩
-  have hh : fs8 = s9.stack := congrArg St.stack hs
-  exact hh ▸ hshape8
+  refine ⟨s9,runC_join P.F hr8 one,h9,(congrArg St.ctl hs).symm,?_,?_⟩
+  · have hh : fs8 = s9.stack := congrArg St.stack hs
+    exact hh ▸ hshape8
+  · have hh := congrArg St.heap hs
+    change s8.heap = s9.heap at hh
+    exact hh.symm.trans hheap8
 
+
+theorem first_nine_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3)))) :
+    ∃ result, runC P.F 9 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+        P.RestStream.micro0.micro0.s9 result ∧ result.ctl = .ret (natV 12) ∧ ShapeArgumentTail result.stack := by
+  obtain ⟨result,hr,hh,hc,ht,_⟩ := first_nine_rank_heap_transport FR R ν₀ ν C₀ C
+    live framed before after old old' s h rank
+  exact ⟨result,hr,hh,hc,ht⟩
 
 /-- The argument continuation retains both literal offset0 and literal count12.
 These are derived from the executed AST literals and fixed rank cell. -/
-theorem first_ten_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+theorem first_ten_rank_heap_transport (FR : Ren → P.F.S → P.F.S → Prop)
     (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St P.F.S)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
@@ -181,9 +226,10 @@ theorem first_ten_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
         P.RestStream.micro0.micro0.s10 result ∧
       (Annotated.Value.literal (.lit (F64.ofNat 0))).Holds ν C R (callArgument result.ctl 1) ∧
-      (Annotated.Value.literal (.lit (F64.ofNat 12))).Holds ν C R (callArgument result.ctl 2) := by
-  obtain ⟨s9,hr9,h9,hc9,fn,this,ptr,env,fs,hf9⟩ := first_nine_rank_transport FR R ν₀ ν C₀ C
+      (Annotated.Value.literal (.lit (F64.ofNat 12))).Holds ν C R (callArgument result.ctl 2) ∧ result.heap = s.heap := by
+  obtain ⟨s9,hr9,h9,hc9,hshape9,hheap9⟩ := first_nine_rank_heap_transport FR R ν₀ ν C₀ C
     live framed before after old old' s h rank
+  obtain ⟨fn,this,ptr,env,fs,hf9⟩ := hshape9
   have hr10fixed : interpC (step P.F s9).run C =
       some ({s9 with stack := fs}.go (.call fn this [ptr,natV 0,natV 12]),C) := by
     rw [step_argument_eq P.F s9 (natV 12) 0 fn this [natV 0,ptr] [] env fs hc9 hf9 (by decide)]
@@ -195,11 +241,29 @@ theorem first_ten_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
   have hc10 : s10.ctl = .call fn this [ptr,natV 0,natV 12] := (congrArg St.ctl hs10).symm
   have one : runC P.F 1 s9 C = some (s10,C) :=
     runC_cons P.F 0 s9 s10 s10 C C C (h9.control.isHalt_eq.trans source_active9) hr10 rfl
-  refine ⟨s10,runC_join P.F hr9 one,h10,?_,?_⟩
+  refine ⟨s10,runC_join P.F hr9 one,h10,?_,?_,?_⟩
   · rw [hc10]
     exact .literal _ _ rfl
   · rw [hc10]
     exact .literal _ _ rfl
+  · have hh := congrArg St.heap hs10
+    change s9.heap = s10.heap at hh
+    exact hh.symm.trans hheap9
+
+theorem first_ten_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3)))) :
+    ∃ result, runC P.F 10 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+        P.RestStream.micro0.micro0.s10 result ∧
+      (Annotated.Value.literal (.lit (F64.ofNat 0))).Holds ν C R (callArgument result.ctl 1) ∧
+      (Annotated.Value.literal (.lit (F64.ofNat 12))).Holds ν C R (callArgument result.ctl 2) := by
+  obtain ⟨result,hr,hh,hoff,hcount,_⟩ := first_ten_rank_heap_transport FR R ν₀ ν C₀ C
+    live framed before after old old' s h rank
+  exact ⟨result,hr,hh,hoff,hcount⟩
 
 theorem source_active10 : isHalt P.RestStream.micro0.micro0.s10.ctl = false := by host_kernel_rfl
 
@@ -258,5 +322,51 @@ theorem first_twelve_rank_transport (FR : Ren → P.F.S → P.F.S → Prop)
   have one : runC P.F 1 s11 C = some (s12,C) := runC_cons P.F 0 s11 s12 s12 C C C
     (h11.control.isHalt_eq.trans source_active11) hr12 rfl
   exact ⟨s12,runC_join P.F hr11 one,h12⟩
+
+
+/-- The complete prefix preserves every preexisting target heap address. This
+carries initialized typed-constructor annotations across its one allocation. -/
+theorem first_twelve_rank_frame_transport (FR : Ren → P.F.S → P.F.S → Prop)
+    (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old'
+      P.RestStream.micro0.micro0.s0 s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))))
+    (hp : live aArrayBufferProto) (hpr : R.a aArrayBufferProto = aArrayBufferProto)
+    (ht : s.next < 2^64) :
+    ∃ result, runC P.F 12 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R (LiveAfter live NativeBuffer.input.next)
+        framed before after old old' P.RestStream.micro0.micro0.s12 result ∧
+      ∀ a, a < s.next → result.heap.get a = s.heap.get a := by
+  obtain ⟨s10,hr10,h10,hoff,hcount,hheap10⟩ := first_ten_rank_heap_transport FR R ν₀ ν C₀ C
+    live framed before after old old' s h rank
+  have hnext : s10.next = s.next := by
+    have hstart := h.heap.fresh 0
+    have hend := h10.heap.fresh 0
+    simp only [Nat.add_zero] at hstart hend
+    rw [source_buffer_next] at hstart
+    exact hend.symm.trans hstart
+  have ht10 : s10.next < 2^64 := hnext ▸ ht
+  obtain ⟨s11,hr11,h11⟩ := NativeBuffer.transport (NumberRoles ν₀ ν C₀ C) FR R C₀ C ν live framed
+    before after old old' s10 h10 hoff hcount hp hpr ht10
+  obtain ⟨frame11,_,_⟩ := NativeBuffer.transport_heap_frame (NumberRoles ν₀ ν C₀ C) FR R C₀ C ν
+    live framed before after old old' s10 s11 h10 hoff hcount hp hpr ht10 hr11
+  obtain ⟨s12,hr12,h12⟩ := Structural11.transport (NumberRoles ν₀ ν C₀ C) FR R C₀ C
+    (LiveAfter live NativeBuffer.input.next) framed before after old old' s11 h11
+  have heap12 := step_argument_heap_from_source P.F (NumberRoles ν₀ ν C₀ C) FR R
+    (LiveAfter live NativeBuffer.input.next) framed before after old old' Structural11.input s11 s12 C C h11
+    Structural11.sourceValue Structural11.sourceKind Structural11.sourceFunction Structural11.sourceThis
+    Structural11.sourceAcc Structural11.sourceRest Structural11.sourceEnv Structural11.sourceTail
+    Structural11.source_control Structural11.source_frame (by decide) hr12
+  have one11 : runC P.F 1 s10 C = some (s11,C) := runC_cons P.F 0 s10 s11 s11 C C C
+    (h10.control.isHalt_eq.trans source_active10) hr11 rfl
+  have one12 : runC P.F 1 s11 C = some (s12,C) := runC_cons P.F 0 s11 s12 s12 C C C
+    (h11.control.isHalt_eq.trans source_active11) hr12 rfl
+  refine ⟨s12,runC_join P.F (runC_join P.F hr10 one11) one12,h12,?_⟩
+  intro a ha
+  have hf11 := frame11 a (by rw [hnext]; exact ha)
+  have hf12 := congrArg (fun heap => heap.get a) heap12
+  have hf10 := congrArg (fun heap => heap.get a) hheap10
+  exact hf12.trans (hf11.trans hf10)
 
 end Host.Load.Run.Full.Ordinary
