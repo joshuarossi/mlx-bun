@@ -2399,6 +2399,9 @@ const proofFiles = [
   "host/mlx/TokenBuffer.lean",
   "host/load/Program.lean",
   "host/load/ProgramValues.lean",
+  "host/mlx/GraphStability.lean",
+  "host/ts/RenameMaterializeReadback.lean",
+  "host/ts/RenameWrites.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
