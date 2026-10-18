@@ -5279,6 +5279,14 @@ const proofFiles = [
   "host/load/RuntimeConcatBatch.lean",
   "host/load/RuntimeParameterBatch.lean",
   "host/ts/RenameRetainedRestart.lean",
+  "host/mlx/NativeIntegerConversionFrontend.lean",
+  "host/mlx/NativeIntegerConversionRetained.lean",
+  "host/mlx/OrdinaryIntegerConversionFrontend.lean",
+  "host/ts/RenameRetainedTry.lean",
+  "host/ts/RenameRuntimeDriverTry.lean",
+  "host/ts/RenameRuntimeDriverTryTest.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCallback.lean",
+  "host/ts/renameOrdinary/RuntimeTryCase.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
