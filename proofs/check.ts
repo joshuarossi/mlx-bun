@@ -5305,6 +5305,8 @@ const proofFiles = [
   "host/ts/RenameRuntimeDriverUndefinedBranch.lean",
   "host/ts/RenameRuntimeDriverUndefinedBranchTest.lean",
   "host/ts/renameOrdinary/RuntimeUndefinedBranchCase.lean",
+  "host/ts/RenameRuntimeDriverRegistry.lean",
+  "host/ts/renameOrdinary/RuntimeRegistryCase.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
