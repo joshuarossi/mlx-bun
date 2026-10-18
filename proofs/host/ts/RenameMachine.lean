@@ -114,7 +114,7 @@ theorem step_numNeg_ref_renamed (F : Ffi) {FR : Ren → F.S → F.S → Prop} {R
     exact (List.cons.inj ht).2
   have hctl : AddrSupported s.next (fun Q => Q.ctl (.ret (.num (.ref S.tab.length)))) := by
     intro Q P _ hn
-    simp only [Ren.ctl, Ren.val, Ren.num, hn]
+    simp only [Ren.ctl, Ren.val, Ren.num, hn.1]
   have hn : R.n S.tab.length = S'.tab.length := by simpa using hs.fresh 0
   refine ⟨step_numNeg_ref F s i fs hc hf S e he,
     step_numNeg_ref F s' (R.n i) (fs.map R.frame) hcs hfs S' (e.subst θ) (hs.val he), ?_,

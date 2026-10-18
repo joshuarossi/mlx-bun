@@ -24,15 +24,21 @@ queries substituted.
 
 `StepSim F FR θ` states the remaining obligation for one complete machine step.
 `runS_renamed` is conditional on that obligation; it does not establish it.
-Native bigint handles and native regions are fixed by this renaming, so this relation
-does not yet transfer MLX states whose native resources have different names. -/
+Native bigint handles and native regions have separate maps. Their use at ordinary
+bigint arithmetic remains an additional obligation of the reachable-state relation. -/
 
 structure Ren where
   a : Nat → Nat
   n : Nat → Nat
+  big : Int → Int := id
+  region : Nat → Nat := id
+  node : Nat → Nat := id
 
 namespace Ren
 variable (R : Ren)
+
+/-- Native handles appear in the JS runtime as nonnegative bigints. -/
+def handle (h : Nat) : Nat := (R.big (Int.ofNat h)).toNat
 
 /-- Symbols past the well-known ones are addresses `+ 16` (`Symbol()` allocates a cell). -/
 def sym (i : Nat) : Nat := bif Nat.blt i 16 then i else R.a (i - 16) + 16
@@ -43,10 +49,11 @@ def num : NumV → NumV
 
 def mem : Mem → Mem
   | .js b => .js (R.a b)
-  | .ext r => .ext r
+  | .ext r => .ext (R.region r)
 
 def val : Val → Val
   | .num x => .num (R.num x)
+  | .big i => .big (R.big i)
   | .sym i => .sym (R.sym i)
   | .obj a => .obj (R.a a)
   | .ptr m off => .ptr (R.mem m) off
@@ -66,7 +73,7 @@ def vals (vs : List Val) : List Val := vs.map R.val
 
 def cell : Cell → Cell
   | .num x => .num (R.num x)
-  | .big i => .big i
+  | .big i => .big (R.big i)
 
 def byte : Byte → Byte
   | .lit b => .lit b
@@ -275,7 +282,7 @@ def kind : Kind → Kind
   | .array es => .array (R.vals es)
   | .fn c => .fn (R.code c)
   | .buf bs => .buf (bs.map R.byte)
-  | .extBuf r o l => .extBuf r o l
+  | .extBuf r o l => .extBuf (R.region r) o l
   | .typed k b o l => .typed k (R.a b) o l
   | .view b o l => .view (R.a b) o l
   | .map m => .map (R.pairs m)
@@ -295,13 +302,17 @@ def hobj : HObj → HObj
 
 def arg : Arg → Arg
   | .num x => .num (R.num x)
+  | .big i => .big (R.big i)
   | .jsPtr b o bs => .jsPtr (R.a b) o (bs.map R.byte)
+  | .extPtr r o => .extPtr (R.region r) o
   | .other v => .other (R.val v)
   | a => a
 
 def ret : Ret → Ret
   | .num x => .num (R.num x)
-  | .callback f as => .callback f (as.map R.arg)
+  | .big i => .big (R.big i)
+  | .ptr r o => .ptr (R.region r) o
+  | .callback f as => .callback (R.region f) (as.map R.arg)
   | r => r
 
 def event (e : Event) : Event := ⟨e.sym, e.args.map R.arg, R.ret e.ret⟩
@@ -324,7 +335,8 @@ end Ren
 /-- A traversal has address support below `b`: changing a renaming outside the allocated
 address range cannot change its result. The number-reference map is held fixed. -/
 def AddrSupported {α : Type} (b : Nat) (f : Ren → α) : Prop :=
-  ∀ R Q, (∀ a, a < b → R.a a = Q.a a) → R.n = Q.n → f R = f Q
+  ∀ R Q, (∀ a, a < b → R.a a = Q.a a) →
+    (R.n = Q.n ∧ R.big = Q.big ∧ R.region = Q.region) → f R = f Q
 
 /-- All JS addresses in the live machine data are allocated. This is separate from heap
 lookup correspondence: the latter alone cannot rule out dangling values in control frames. -/

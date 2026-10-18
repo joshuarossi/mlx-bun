@@ -4,7 +4,7 @@ namespace Host.Ts.RenameCounterexample
 /-! The original one-sided heap embedding permits a dangling source object to become a
 function in the target. An actual `typeof` transition distinguishes the two states. -/
 
-def identity : Ren := ⟨id, id⟩
+def identity : Ren := { a := id, n := id }
 
 def ffi : Ffi := ⟨Unit, fun _ _ _ => .fail "unused", fun _ _ _ _ => none,
   fun _ => 0, fun _ _ => .fail "unused"⟩
@@ -55,5 +55,18 @@ theorem repaired_relation_rejects (FR : Ren → Unit → Unit → Prop) :
   have hh := h.heap 0 (by decide)
   change some _ = none at hh
   cases hh
+
+/-- Reference renaming cannot lift an inline loop counter into a symbolic reference.
+The interpreter keeps arithmetic on inline operands inline, so such a lift needs a
+numeric representation relation in addition to resource renaming. -/
+theorem literal_cannot_become_reference (R : Ren) (f : F64) (i : Nat) :
+    R.val (.num (.lit f)) ≠ .num (.ref i) := by
+  intro h
+  cases h
+
+theorem distinct_literals_cannot_rename (R : Ren) (f g : F64) (hfg : f ≠ g) :
+    R.val (.num (.lit f)) ≠ .num (.lit g) := by
+  intro h
+  exact hfg (NumV.lit.inj (Val.num.inj h))
 
 end Host.Ts.RenameCounterexample
