@@ -3,7 +3,7 @@ import {resolve} from "node:path";
 import {fileURLToPath,pathToFileURL} from "node:url";
 const revision="1f8e74e3f12f31365464a6867c6579f0e9b29d85";
 const nativeHash="2dd13c2496f5d6f0856e4ca99db2ceb5c6d7dc0c344b9ba8e41ef3b7d7ed8a97";
-const pins:Record<string,string>={MlxLogAddExpSyntax:"e2a176c8088b5657bd0bd020bf7ca3579e490b71d63193be05b052c5632041d4",MlxLogAddExpSource:"5df37abe108472c291368cf8f231650b0df72bbf673cd008957226b412b19945"};
+const pins:Record<string,string>={MlxLogAddExpSyntax:"e2a176c8088b5657bd0bd020bf7ca3579e490b71d63193be05b052c5632041d4",MlxLogAddExpSource:"05c9be2659a9847831a4e3c3c9a66cd9569740927728d31a3868dd9bbcbfe677"};
 const hash=(s:string)=>createHash("sha256").update(s).digest("hex");
 export function extract(native:string):Record<string,string>{
  const start=native.indexOf("struct LogAddExp {");const end=native.indexOf("template <>",start);

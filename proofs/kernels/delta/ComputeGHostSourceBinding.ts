@@ -5,8 +5,8 @@ import {checkMlxLogAddExpSourceBinding} from "./MlxLogAddExpSourceBinding.ts";
 const runtimeHash="3f0e11f777f57b6595d57d62ec3f8b8331cbfa7263183e1baa98892efe935aec";
 const pins:Record<string,string>={
   "ComputeGHostSyntax": "359d055ca57fb086850d3dad6b1a1c5fefd3e17a82ad81f0d6e65bb1b9529ecc",
-  "ComputeGHostSource": "1b2a0dc039543dd5ad79e6c06cecf64925fb2255beb6c084e554ea7495eb7340",
-  "ComputeGHostMemory": "b65242a12b258195aeed0415bf5f67d230840c6e1485e4b705094dfd41825305"
+  "ComputeGHostSource": "12899a6217eb1a59500cef99926a56fb53a867ae62acb417339d67633c1a37c1",
+  "ComputeGHostMemory": "5ba49d9ae97310748a1740d29abef08916f8909dda38d201a8cbab8009ad7993"
 };
 const hash=(s:string)=>createHash("sha256").update(s).digest("hex");
 export function extract(runtime:string):{body:string;caller:string}{

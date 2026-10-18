@@ -6,7 +6,7 @@ const here = new URL("./", import.meta.url);
 const sourceHash = "1578cff1ef678cbff3e2e9a754c6d7ba369e455885127e8d15c8b61f22a87740";
 const reviewed: Record<string,string> = {
   "ArgmaxShuffleSyntax.lean": "8a28551fc26793e899e754fca3369f825598fd19ff27a6dbe51dd83351562d98",
-  "ArgmaxShuffleSemantics.lean": "7cc706db1796ad75288d5f227c40354ead4d232fb25c999b440f7b2baee0f32a"
+  "ArgmaxShuffleSemantics.lean": "5f73691e796271daa9ace1531f9119873aef51dfc7c98ceb747fa028acbc79dc"
 };
 const hash = (text:string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 function checkedHash(text:string, expected:string):void { if(hash(text)!==expected) throw Error("Reviewed hash changed"); }

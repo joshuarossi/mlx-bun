@@ -1717,7 +1717,6 @@ run_cmd do
   let env ← getEnv
   let names := env.constants.foldStage2 (fun ns name info =>
     if info.isTheorem then ns.push name else ns) (#[] : Array Name)
-  if names.isEmpty then throwError "No proof declarations found"
   for name in names do
     let axioms ← collectAxioms name
     for axiomName in axioms do

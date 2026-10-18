@@ -11,8 +11,8 @@ import {checkAffineOuter4SourceBinding} from "../../kernels/quantization/AffineO
 const pins:Record<string,string>={
   "models/qwen/DeltaParsedEntry": "60af5464252392e3f4338fc0520b9742a4ca5f068a4951d7d713f549fd65c363",
   "models/qwen/DeltaProjectionParameterSource": "bdf9f35425106eaa0d30536735110fff43c60e7963e3f880b65812437e9e6513",
-  "models/qwen/DeltaConstructedPreparationSource": "92decc781d773c68d0e42665d9edc423221276dfa72fb4f07a60d84f38cf2ae1",
-  "models/qwen/DeltaParsedProjections": "3196d5d99713a815133f8eaf116865c16c57d82e96425cd9f6621ce03e0de78e"
+  "models/qwen/DeltaConstructedPreparationSource": "36b04bfe9cfd77d3456e81e1779e1b3e515b5f5a94d095df172b9da625d3b617",
+  "models/qwen/DeltaParsedProjections": "6513fd4f1afe6108d169e6d4209ab63cec6e64f15e97e2c1b7cfbf0019aaf46b"
 };
 const hash=(s:string)=>createHash("sha256").update(s).digest("hex");
 export function checkProofs(sources:Record<string,string>):void{

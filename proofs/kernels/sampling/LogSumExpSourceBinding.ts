@@ -11,7 +11,7 @@ const nativePins:Record<string,string>={
 };
 const pins:Record<string,string>={
   "LogSumExpSourceSyntax": "482386a166d9cc78fd67f5dcb43d5711ce9a141471dcf6d73d5687f0653b5673",
-  "LogSumExpSourceArithmetic": "d849a02a8375dc2a78313aed0032b3f31becc9700f13007f24a174d52007b8d3",
+  "LogSumExpSourceArithmetic": "5bb19fdd6e7148c5a25c81b3882f9c219fc5b2268069b5f15af422361abe38c5",
   "LogSumExpSourceGeometry": "137461cdb8d138829b5b6278ccb62bc28837362c08640475b652ae1fc98e67fb",
   "LogSumExpSourceLoop": "9d4deb8a39fd491e930d629b9bc2cceaba5c9138da4639af0dc37ff5999a80ae",
   "LogSumExpSourceMerge": "bff74816a233db06671cac9e3ff4025fb50e1d23fc5fac7082da750d3574d6d6",
