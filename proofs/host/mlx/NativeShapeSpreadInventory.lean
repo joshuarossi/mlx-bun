@@ -10,7 +10,7 @@ set_option maxHeartbeats 0
 namespace Host.Ts.Owned.Annotated
 open Parametric
 
-theorem ForestHolds.tail {ν : Nat → F64} {C : CSrv} {R : Ren} {roles : List Tree} {values : List Owned.Tree}
+theorem ForestHolds.spreadTail {ν : Nat → F64} {C : CSrv} {R : Ren} {roles : List Tree} {values : List Owned.Tree}
     (held : ForestHolds ν C R roles values) : ForestHolds ν C R roles.tail values.tail := by
   cases held with
   | nil => exact .nil
@@ -81,8 +81,8 @@ theorem RetainedInventory.shape_spread_step
   have stackLive := h.stackLive
   rw [stack] at stackLive
   have popped := h.restack tailRole stackLive.2
-  have sourceTail := inventory.runtime.source.stack.tail
-  have targetTail := inventory.runtime.target.stack.tail
+  have sourceTail := inventory.runtime.source.stack.spreadTail
+  have targetTail := inventory.runtime.target.stack.spreadTail
   rw [stack,List.map_cons,List.tail_cons] at sourceTail
   rw [targetStack,List.map_cons,List.tail_cons] at targetTail
   let poppedNotes := notes.withRuntime {notes.runtime with stack := notes.runtime.stack.tail}
