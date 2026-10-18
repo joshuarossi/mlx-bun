@@ -8,6 +8,39 @@ set_option maxRecDepth 1000000
 
 namespace Host.Ts
 
+theorem decodeArg_js_pointer (F : Ffi) (s : St F.S) (b off : Nat) (bs : List Byte)
+    (hb : bufBytes F s b = some bs) :
+    decodeArg F s chars!"ptr" (.ptr (.js b) off) = M.pure (some (.jsPtr b off (bs.drop off))) := by
+  have hp : nameEq chars!"ptr" chars!"ptr" = true := Nat.beq_refl _
+  simp only [decodeArg,hp,Bool.true_or,Bool.cond_true,hb,Option.map_some]
+
+theorem decodeArgs_ptr_u64_tail (F : Ffi) (s : St F.S) (b off : Nat) (handle : Int) (bs : List Byte)
+    (types values : List Val) (args : List Arg) (hb : bufBytes F s b = some bs)
+    (tail : decodeArgs F s types values = M.pure (some args)) :
+    decodeArgs F s (.str chars!"ptr" :: .str chars!"u64" :: types) (.ptr (.js b) off :: .big handle :: values) =
+      M.pure (some (.jsPtr b off (bs.drop off) :: .big handle :: args)) := by
+  funext β k
+  simp only [decodeArgs,decodeArg_js_pointer F s b off bs hb,
+    Host.Mlx.Ffi.NativeRoles.Arguments.decode_u64_big,tail,M.bind,M.pure,Option.map_some]
+
+theorem step_ffi_decoded (F : Ffi) (s : St F.S) (fn types : Nat) (name returns : Name)
+    (fo to : Obj) (receiver : Val) (signature values : List Val) (args : List Arg)
+    (native : F.S) (result : Ret) (writes : List (Nat × Nat × List Byte))
+    (hc : s.ctl = .call (.obj fn) receiver values) (hf : s.obj? fn = some fo)
+    (hk : fo.kind = .fn (.native (.ffi .symbol) [.str name,.obj types,.str returns]))
+    (ht : s.obj? types = some to) (htk : to.kind = .array signature)
+    (decode : decodeArgs F s signature values = M.pure (some args))
+    (call : F.call s.ffi name args = M.pure (some (native,result,writes))) :
+    step F s = ffiDone F s name args (some (native,result,writes)) := by
+  funext β k
+  simp only [step,hc,callStep,hf,hk,callNative,ffiN]
+  rw [elemsOf_array F s types to signature ht htk]
+  dsimp only [M.bind,M.pure]
+  rw [decode]
+  simp only [M.bind,M.pure]
+  rw [call]
+  rfl
+
 theorem decodeArgs_ptr_u64_one_u64 (F : Ffi) (s : St F.S) (b off : Nat)
     (h1 h2 : Int) (bs : List Byte) (hb : bufBytes F s b = some bs) :
     decodeArgs F s [.str chars!"ptr",.str chars!"u64",.str chars!"i32",.str chars!"u64"]
