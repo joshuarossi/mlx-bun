@@ -77,23 +77,24 @@ host_micro_run WrongOrder 0
 host_chunk WrongOrder.micro1 0
 host_chunk WrongOrder.micro1 1
 
-/-- error: (kernel) declaration type mismatch, 'Host.Load.Tests.MicroStatesGroup.WrongEndpoint.micro0.c2' has type
-  runS WrongEndpoint.micro0.F 6 WrongEndpoint.micro0.s2 WrongEndpoint.micro0.S2 =
-    runS WrongEndpoint.micro0.F 6 WrongEndpoint.micro0.s2 WrongEndpoint.micro0.S2
-but it is expected to have type
-  runS WrongEndpoint.micro0.F 6 WrongEndpoint.micro0.s2 WrongEndpoint.micro0.S2 =
-    some (WrongEndpoint.micro0.s3, WrongEndpoint.micro0.S3) -/
-#guard_msgs (whitespace := lax) in
-host_chunk WrongEndpoint.micro0 2
-
-/-- error: (kernel) declaration type mismatch, 'Host.Load.Tests.MicroStatesGroup.WrongOrder.micro1.c2' has type
-  runS WrongOrder.micro1.F 6 WrongOrder.micro1.s2 WrongOrder.micro1.S2 =
-    runS WrongOrder.micro1.F 6 WrongOrder.micro1.s2 WrongOrder.micro1.S2
-but it is expected to have type
-  runS WrongOrder.micro1.F 6 WrongOrder.micro1.s2 WrongOrder.micro1.S2 =
-    some (WrongOrder.micro1.s3, WrongOrder.micro1.S3) -/
-#guard_msgs (whitespace := lax) in
-host_chunk WrongOrder.micro1 2
+/- Rejected kernel declarations must not remain as placeholder axioms in the
+environment audited after this test. Preserve the complete command state. -/
+open Lean Elab Command in
+run_cmd do
+  for chain in ["WrongEndpoint.micro0","WrongOrder.micro1"] do
+    let saved : Command.State ← get
+    let mut rejected := false
+    try
+      let stx ← match Parser.runParserCategory (← getEnv) `command s!"host_chunk {chain} 2" with
+        | .ok stx => pure stx
+        | .error message => throwError "{message}"
+      withScope (fun scope => {scope with opts := scope.opts.setBool `Elab.async false}) (elabCommand stx)
+    catch exception =>
+      rejected := ((← exception.toMessageData.toString).splitOn "kernel").length > 1
+    for message in (← get).messages.toList do
+      if ((← message.data.toString).splitOn "kernel").length > 1 then rejected := true
+    set saved
+    unless rejected do throwError "incorrect grouped endpoint/order was not rejected by the kernel"
 
 namespace TooMany
 def ks : List Nat := [1025]
