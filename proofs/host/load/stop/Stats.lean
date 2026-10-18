@@ -29,6 +29,10 @@ theorem EosToken.cache_tokens :
     Stop.cacheTokens EosToken.s2 EosToken.S2 (entryEnv P.s0) =
       some [.lit (F64.ofNat 9707), .var 1, .var 2] := by rfl
 
+theorem FinalEos.cache_tokens :
+    Stop.cacheTokens FinalEos.s3 FinalEos.S3 (entryEnv P.s0) =
+      some [.lit (F64.ofNat 9707), .var 1, .var 2, .var 3, .var 4] := by rfl
+
 theorem BudgetEnd.cache_tokens :
     Stop.cacheTokens P.s3575 P.S3575 (entryEnv P.s0) =
       some [.lit (F64.ofNat 9707), .var 1, .var 2, .var 3, .var 4] := by rfl
@@ -39,6 +43,10 @@ kernel_rfl OneEos.finish_reason :
 
 kernel_rfl EosToken.finish_reason :
     Stop.statsField EosToken.s2 (entryEnv P.s0) chars!"finishReason" =
+      some (.str chars!"stop")
+
+kernel_rfl FinalEos.finish_reason :
+    Stop.statsField FinalEos.s3 (entryEnv P.s0) chars!"finishReason" =
       some (.str chars!"stop")
 
 end Host.Load.Run.Full

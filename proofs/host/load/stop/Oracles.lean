@@ -1,5 +1,6 @@
 import host.load.stop.OneResult
 import host.load.stop.OneEosResult
+import host.load.stop.FinalEosResult
 import host.load.stop.EosResult
 import host.load.stop.Clear512Result
 import host.load.stop.BudgetEnd
@@ -145,5 +146,34 @@ theorem BudgetEnd.concrete_run (ρ : Nat → F64) (C : CSrv)
     ∃ C', runC P.F 1310 P.s3573 C = some (P.s3575, C') ∧ Inst ρ P.S3575 C' :=
   run_sim P.F ρ 1310 P.s3573 P.s3575 P.S3573 P.S3575 C
     ⟨table, BudgetEnd.good_budget ρ budget notEos⟩ BudgetEnd.execution
+
+theorem FinalEos.oracle_iff (ρ : Nat → F64) :
+    Good ρ FinalEos.srv.oracle ↔
+      F64.test .lt (.fin false 5 0) (ρ 0) = false ∧
+      F64.test .eq (.fin false 248044 0) (ρ 5) = true := by
+  change Good ρ FinalEos.O ↔ _
+  simp only [Good, FinalEos.O, List.forall_mem_cons, SymE.eval]
+  constructor
+  · intro h
+    exact ⟨h.1, h.2.1⟩
+  · intro h
+    exact ⟨h.1, h.2, by intro q hq; cases hq⟩
+
+theorem FinalEos.good_eos (ρ : Nat → F64) (budget : ρ 0 = .fin false 5 0)
+    (eos : ρ 5 = .fin false 248044 0) : Good ρ FinalEos.srv.oracle := by
+  apply (FinalEos.oracle_iff ρ).2
+  constructor
+  · rw [budget]
+    decide
+  · rw [eos]
+    decide
+
+theorem FinalEos.concrete_run (ρ : Nat → F64) (C : CSrv)
+    (table : C.tab = FinalEos.srv.tab.map (SymE.eval ρ))
+    (budget : ρ 0 = .fin false 5 0)
+    (eos : ρ 5 = .fin false 248044 0) :
+    ∃ C', runC Host.Load.ffi 1134 P.s3573 C = some (FinalEos.s3, C') ∧ Inst ρ FinalEos.S3 C' :=
+  run_sim Host.Load.ffi ρ 1134 P.s3573 FinalEos.s3 FinalEos.srv FinalEos.S3 C
+    ⟨table, FinalEos.good_eos ρ budget eos⟩ FinalEos.execution
 
 end Host.Load.Run.Full
