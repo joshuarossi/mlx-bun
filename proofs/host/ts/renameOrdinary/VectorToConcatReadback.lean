@@ -88,4 +88,53 @@ theorem vector_to_readback (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
   obtain ⟨result,run,related,slot,status,handle,_⟩ := vector_to_readback_with_vector ν₀ ν C₀ C R base boundary objects H N tail host live framed before after old old' s h countRole bufferRole axisRole streamRole code proto vectorSignatureFrame nullSignatureFrame concatSignatureFrame firstLive secondLive functionProtoLive functionProtoFixed globalLive globalFixed arrayProtoLive arrayProtoFixed bufferProtoLive bufferProtoFixed typedProtoLive typedProtoFixed nodeBound nativeBound heapBound
   exact ⟨result,run,related,slot,status,handle⟩
 
+theorem vector_to_readback_with_caller (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (base : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.preRoles base) boundary objects H N tail host)
+      R live framed before after old old' VectorCall.input s)
+    (countRole : (Annotated.Value.ordinaryBig (Int.ofNat 2)).Holds ν C R (callArgument s.ctl 1))
+    (bufferRole : (VectorBuffer.role [25732,29363]).Holds ν C R (objectKindAt s (R.a 3126688)))
+    (axisRole : (Annotated.Value.literal (.lit (F64.fin false 1 0))).Holds ν C R (cellValueAt s (R.a AxisVariable332.address)))
+    (streamRole : (Annotated.Value.handle 2).Holds ν C R (cellValueAt s (R.a StreamVariable334.address)))
+    (code : (Annotated.Value.literal (.lit (F64.ofNat 9))).Holds ν C R (nativeDataArgument s (R.a 95) 0))
+    (proto : (Annotated.Value.literal (.lit (F64.ofNat 26))).Holds ν C R (nativeDataArgument s (R.a 95) 1))
+    (vectorSignatureFrame : ¬ framed 4411) (nullSignatureFrame : ¬ framed 4253) (concatSignatureFrame : ¬ framed 4409)
+    (firstLive : H 25732) (secondLive : H 29363)
+    (functionProtoLive : live aFunctionProto) (functionProtoFixed : R.a aFunctionProto = aFunctionProto)
+    (globalLive : live aGlobal) (globalFixed : R.a aGlobal = aGlobal)
+    (arrayProtoLive : live aArrayProto) (arrayProtoFixed : R.a aArrayProto = aArrayProto)
+    (bufferProtoLive : live aArrayBufferProto) (bufferProtoFixed : R.a aArrayBufferProto = aArrayBufferProto)
+    (typedProtoLive : live 26) (typedProtoFixed : R.a 26 = 26)
+    (nodeBound : s.ffi.mlx.nnext < 2^64) (nativeBound : s.ffi.mlx.next+1 < 2^64) (heapBound : s.next+40 ≤ 2^64) :
+    ∃ result, runC P.F 104 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.postRoles base) boundary
+          (objectWrite objects 29371 (.vec [20208,22582]))
+          (fun a => a = 29372 ∨ a = 29371 ∨ H a) (fun i => i = 22587 ∨ N i) tail host)
+        R (callbackLive (initializedSlotLive (outBodyLive live))) framed before after old old' ReadHandle352.output result ∧
+      (slotKindRole 29372).Holds ν C R (objectKindAt result (R.a 3126700)) ∧
+      result.heap.get (R.a StatusBinding340.sourceAddress) = some (.cell (some (.num zeroN))) ∧
+      result.ctl = .ret (.big (Int.ofNat (R.handle 29372))) ∧
+      (Annotated.Value.handle 29371).Holds ν C R (cellValueAt result (R.a VectorVariable330.address)) ∧
+      (∀ a, live a → a < 3126665 → result.heap.get (R.a a) = s.heap.get (R.a a)) := by
+  obtain ⟨s342,hr249,h342,slot342,status342,vector342,caller342⟩ := vector_to_status_cell_with_caller ν₀ ν C₀ C R base boundary objects H N tail host live framed before after old old' s h countRole bufferRole axisRole streamRole code proto vectorSignatureFrame nullSignatureFrame concatSignatureFrame firstLive secondLive functionProtoLive functionProtoFixed globalLive globalFixed arrayProtoLive arrayProtoFixed bufferProtoLive bufferProtoFixed typedProtoLive typedProtoFixed nodeBound nativeBound heapBound
+  obtain ⟨result,hr342,h353,handle353,heap353⟩ := concat_read_handle ν₀ ν C₀ C
+    (VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.postRoles base) boundary
+      (objectWrite objects 29371 (.vec [20208,22582]))
+      (fun a => a = 29372 ∨ a = 29371 ∨ H a) (fun i => i = 22587 ∨ N i) tail host)
+    R (callbackLive (initializedSlotLive (outBodyLive live))) framed before after old old' s342 h342 slot342
+  have slot : (slotKindRole 29372).Holds ν C R (objectKindAt result (R.a 3126700)) := by
+    simpa only [objectKindAt,St.obj?,heap353] using slot342
+  have status : result.heap.get (R.a StatusBinding340.sourceAddress) = some (.cell (some (.num zeroN))) := by
+    rw [heap353]
+    exact status342
+  have vectorPost : (Annotated.Value.handle 29371).Holds ν C R (cellValueAt result (R.a VectorVariable330.address)) := by
+    simpa only [cellValueAt,heap353] using vector342
+  refine ⟨result,runC_join P.F (m := 93) (n := 11) hr249 hr342,h353,slot,status,handle353,vectorPost,?_⟩
+  intro a ha below
+  exact (congrArg (fun hp => hp.get (R.a a)) heap353).trans (caller342 a ha below)
+
 end Host.Load.Run.Full.Ordinary.VectorToConcat
