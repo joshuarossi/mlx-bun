@@ -84,6 +84,7 @@ elab "host_prefix_frames " p:ident i:num ", " j:num " arrays " addresses:term : 
 /-- Check an actual streamed chunk for every shared array prefix and unread token
 suffix. A prefix read affecting control or an incorrect successor fails kernel checking. -/
 elab "host_chunk_prefix_frames " p:ident i:num : command => liftTermElabM do
+  let started ← IO.monoMsNow
   let pre := (← getCurrNamespace) ++ p.getId
   let k := i.getNat
   let ks ← unsafe evalConst (List Nat) (pre ++ `ks)
@@ -111,6 +112,7 @@ elab "host_chunk_prefix_frames " p:ident i:num : command => liftTermElabM do
     levelParams := []
     type := ty
     value := mkApp2 (mkConst (chainName pre "pfac" k)) (mkConst (pre ++ `prefixBase)) (mkConst (pre ++ `tokenBase)) })
+  IO.println s!"prefix chunk {k} checked in {(← IO.monoMsNow) - started}ms"
 
 /-- Compose the checked source chunks, retaining the same arbitrary caller prefix
 and unread native suffix throughout the whole interval. -/
