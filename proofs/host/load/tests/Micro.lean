@@ -78,4 +78,12 @@ link_chunk MutatingDefault 0
 
 theorem default_changes_ffi : MutatingDefault.x1.st.ffi = 1 := rfl
 
+host_stream Imported : Host.Load.ffi, initial, ([] : List SymE), (fun _ => F64.ofNat 0), 80, 1
+host_stream_state Imported 0
+host_stream_state Imported 1
+host_micro_chunk Imported 0, 11
+
+theorem imported_roundtrip : runS Imported.F 80 Imported.s0 Imported.S0 =
+    some (Imported.s1, Imported.S1) := Imported.c0
+
 end Host.Load.Tests.Micro

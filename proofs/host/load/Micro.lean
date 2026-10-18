@@ -51,8 +51,14 @@ private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
   let (sNative, decoded) ← (ConstructorDecode.decode state).run {}
   let (cNative, decoded) ← (ConstructorDecode.decode server).run decoded
   let mut g : G := { pre }
+  let aliasNames : Std.HashSet Lean.Name := decoded.aliases.foldl (fun names alias => names.insert alias.1) {}
+  let env ← getEnv
   for (name, type, value) in decoded.aliases do
-    g := { g with memo := g.memo.insert (ptrAddrUnsafe value, type) (name, value) }
+    let bodyConstants := match env.find? name with
+      | some (.defnInfo d) => d.value.getUsedConstants
+      | _ => #[]
+    let deps := (type.getUsedConstants ++ bodyConstants).filter aliasNames.contains
+    g := { g with memo := g.memo.insert (ptrAddrUnsafe value, type) (name, value), deps := g.deps.insert name deps }
   -- The expression-value table is local to this call, so it cannot remain
   -- live while the caller checks reductions. Named objects survive in G.
   return (unsafeCast sNative, unsafeCast cNative, g, decoded.values.size, decoded.aliases.size)
@@ -95,10 +101,11 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
   let mut s := initialS
   let mut c := initialC
   let mut g := initialG
+  let mut peakAliases := g.memo.size
   let restored ← IO.monoMsNow
   trace s!"micro {i}: restored {valueCount} values, {aliasCount} aliases in {restored-started} ms"
-  -- The alias memo keeps the restored objects alive. Expression decoding
-  -- caches are no longer needed while the machine advances.
+  -- The alias memo keeps restored objects alive while their named data is
+  -- reachable. Expression decoding caches are no longer needed here.
   let mut previousS := mkConst (boundaryName microPre "s" 0)
   let mut previousC := mkConst (boundaryName microPre "S" 0)
   let mut consumed := 0
@@ -135,8 +142,13 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
       let sn := boundaryName microPre "s" (index+1)
       let cn := boundaryName microPre "S" (index+1)
       addDefinition sn sTy state
-      addDefinition cn srvTy (toExpr c)
+      let server := toExpr c
+      addDefinition cn srvTy server
       trace s!"micro {i}.{index}: {g.defs.size} definitions serialized"
+      g := sweep { g with defs := #[] } #[state, server]
+      peakAliases := max peakAliases g.memo.size
+      if index % 100 == 0 then
+        trace s!"micro {i}.{index}: {g.memo.size} live native aliases, {g.deps.size} dependency entries"
       pure (mkConst sn, mkConst cn)
     if checked then
       let lhs := run k previousS previousC
@@ -167,7 +179,7 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
       | none => mkEqRefl lhs
     addProof (boundaryName pre "c" i) (← mkEq lhs (result endS endC)) proof
   Memo.reset
-  logInfo m!"host_micro {pre} {i}: {fuel} steps, {index} segments, checked={checked}; restore {restored-started} ms, total {(← IO.monoMsNow)-started} ms"
+  logInfo m!"host_micro {pre} {i}: {fuel} steps, {index} segments, checked={checked}; restore {restored-started} ms, total {(← IO.monoMsNow)-started} ms; {g.memo.size} live native aliases, peak {peakAliases}"
 
 /-- Subdivide one outer source-execution chunk without changing its statement
 or any outer boundary. Native restoration chooses data; `Eq.refl` proves each
