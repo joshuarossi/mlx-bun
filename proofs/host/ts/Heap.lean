@@ -61,7 +61,8 @@ def setImpl {α : Type} : Nat → Trie α → Nat → α → Trie α
       | nil => put (Nat.mod n 4) none nil nil nil nil (setImpl f nil (Nat.div n 4) x)
       | node v a b c e => put (Nat.mod n 4) v a b c e (setImpl f (pick (Nat.mod n 4) a b c e) (Nat.div n 4) x)
 
-/-- Update with fuel on the digits (32 base-4 digits cover 64 bits). -/
+/-- Update with fuel on the digits. One step writes the terminal zero;
+fuel 32 covers addresses below 4^31 (see `StoreLaws`). -/
 @[implemented_by setImpl]
 def setF {α : Type} (f : Nat) : Trie α → Nat → α → Trie α :=
   Nat.rec (motive := fun _ => Trie α → Nat → α → Trie α) (fun t _ _ => t)
