@@ -3479,6 +3479,14 @@ const proofFiles = [
   "host/ts/RenameParametricState.lean",
   "host/load/CachedInputs.lean",
   "host/ts/tests/stream/PTrieMemo.lean",
+  "host/load/CacheInputValues.lean",
+  "host/load/run/full/CachedStep.lean",
+  "host/load/run/full/CachedValues.lean",
+  "host/ts/RenameParametricConversions.lean",
+  "host/ts/RenameParametricNumbers.lean",
+  "host/ts/RenameParametricTests.lean",
+  "host/ts/renameOrdinary/Cut.lean",
+  "host/ts/renameOrdinary/ReadEntry.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
