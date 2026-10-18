@@ -1,0 +1,63 @@
+/** Chunk files of the load run (`host/load/run`).
+ *   bun proofs/host/load/chain.ts <total steps> <steps per chunk> <chunks per segment> [first segment] [last segment]
+ * Segment `j` (`run/S<j>/`) starts `j · chunks · steps` steps after boot: `States.lean`
+ * (`run_segment`, native boot and skip, then its states), `C<i>.lean` (`host_chunk`, one kernel
+ * check each), `Run.lean` (`host_chain_run`); `run/Join<j>.lean` joins segment `j` to `j + 1`
+ * (`seg_join`) and `run/Boot.lean` joins the link chain to segment 0. The last segment gets one
+ * more chunk of the remainder, so the run halts within it. Prints the files for proofFiles.
+ * States files are elaborated with the interpreter compiled as a plugin (`--load-dynlib`). */
+import { mkdir } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
+
+const [total, steps, per, first, last] = process.argv.slice(2).map(Number) as [number, number, number, number?, number?];
+if (!total || !steps || !per) throw new Error("usage: chain.ts <total> <steps> <chunks per segment> [first] [last]");
+const proofs = resolve(import.meta.dir, "../..");
+const runDir = join(proofs, "host/load/run");
+const segLen = steps * per;
+const nSeg = Math.ceil(total / segLen);
+const files: string[] = [];
+const mod = (p: string) => relative(proofs, p).replace(/\.lean$/, "").replaceAll("/", ".");
+const write = async (p: string, text: string) => { await mkdir(join(p, ".."), { recursive: true }); await Bun.write(p, text); files.push(relative(proofs, p)); };
+
+for (let j = first ?? 0; j <= Math.min(last ?? nSeg - 1, nSeg - 1); j++) {
+  const dir = join(runDir, `S${j}`);
+  const skip = j * segLen;
+  const remaining = total - skip;
+  const ks = Array.from({ length: Math.min(per, Math.ceil(remaining / steps)) }, () => steps);
+  if (j === nSeg - 1) ks.push(steps);
+  const ns = `Host.Load.Run.S${j}`;
+  await write(join(dir, "States.lean"), `import host.load.Route
+import host.load.Segment
+import host.load.Expr
+namespace ${ns}
+open Host.Ts Host.Load
+
+/-! Segment ${j} of the load run: ${ks.length} chunks of ${steps} steps from step ${skip}. -/
+
+set_option maxRecDepth 1000000 in
+set_option maxHeartbeats 0 in
+set_option interpreter.prefer_native true in
+run_segment P : Host.Load.ffi, bootL Route.cx Route.world 2000, ⟨[], []⟩, ${skip}, [${ks.join(", ")}]
+
+end ${ns}
+`);
+  for (let i = 0; i < ks.length; i++)
+    await write(join(dir, `C${i}.lean`), `import ${mod(join(dir, "States.lean"))}\nnamespace ${ns}\nset_option maxRecDepth 1000000 in\nhost_chunk P ${i}\nend ${ns}\n`);
+  await write(join(dir, "Run.lean"), [...Array.from({ length: ks.length }, (_, i) => `import ${mod(join(dir, `C${i}.lean`))}`)].join("\n") +
+    `\nnamespace ${ns}\nhost_chain_run P\nend ${ns}\n`);
+  if (j + 1 < nSeg)
+    await write(join(runDir, `Join${j}.lean`), `import ${mod(join(dir, "States.lean"))}\nimport host.load.run.S${j + 1}.States\nnamespace Host.Load.Run\nset_option maxRecDepth 1000000 in\nseg_join S${j}.P S${j + 1}.P\nend Host.Load.Run\n`);
+}
+if ((first ?? 0) === 0)
+  await write(join(runDir, "Boot.lean"), `import host.load.link.States
+import host.load.run.S0.States
+namespace Host.Load.Run
+open Host.Ts
+
+-- The linked machine is segment 0's first state.
+set_option maxRecDepth 1000000 in
+kernel_rfl boot_join : Host.Load.Link.L.x42.st = S0.P.s0
+
+end Host.Load.Run
+`);
+for (const f of files) console.log(`  "${f}",`);

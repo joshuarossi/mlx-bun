@@ -1,0 +1,368 @@
+import host.ts.Source
+namespace Host.Ts.Sources.Inference.Layers.QuantizedAttention
+set_option maxRecDepth 100000
+
+/-- Verbatim `packages/inference/src/layers/quantized-attention.ts`; `host/ts/SourceBinding.ts` checks the bytes. -/
+def source : String := r#"import { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
+import * as ops from "@mlx-bun/mlx/ops";
+import type { Mask } from "../contracts/mlx/cache";
+import { isCompiledTrace } from "../runtime/compiled-trace";
+
+
+export const FINFO_MIN: Partial<Record<Dtype, number>> = {
+  [Dtype.bfloat16]: -3.3895313892515355e38,
+  [Dtype.float16]: -65504,
+  [Dtype.float32]: -3.4028234663852886e38,
+};
+
+/** Port of base.py quantized_scaled_dot_product_attention (stock,
+ *  non-tiled): scores and output via quantized_matmul against the
+ *  quantized KV triples; GQA via a 5-d reshape. Exported for the
+ *  fused-vs-unfused parity tests. */
+export function quantizedSdpaUnfused(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  return unfused(q, kq, vq, scale, mask, groupSize, bits, false);
+}
+
+/** `quantizedSdpaUnfused` with the key matmul over three GQA heads per batch:
+ *  the queries of each KV head enter the key quantized_matmul as [2, 9] rows
+ *  instead of 18, and the scores are restored to [nRep, L] before the mask,
+ *  softmax and value matmul. On the M4 Pro GPU (applegpu_g16s) MLX's native
+ *  key matvec keeps exact arithmetic in that grouping at 8192 or more keys.
+ *  A kernel for one composition: depth-2 speculative verify (L = 3) on 24
+ *  query heads, 4 KV heads, head dim 256, B <= 2, a 4-bit group-64 cache and
+ *  bf16 or f32 queries, built only by the cache composed for it. Other shapes
+ *  are outside its contract (the [2, 9] split needs nRep * L = 18). */
+export function quantizedSdpaGroupedHeads(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  return unfused(q, kq, vq, scale, mask, groupSize, bits, true);
+}
+
+function unfused(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number, groupHeads: boolean,
+): MlxArray {
+  const [B, H, L, D] = q.shape as [number, number, number, number];
+  const KV = kq.packed.shape[1]!;
+  const nRep = H / KV;
+  const N = kq.packed.shape[2]!;
+
+  // scale is 1.0 for Gemma4 (q/k are RMS-normed) — skip the identity multiply.
+  let queries = q;
+  const owned: MlxArray[] = [];
+  if (scale !== 1.0) { queries = ops.mulScalar(q, scale); owned.push(queries); }
+
+  let kT = kq;
+  let vT = vq;
+  if (nRep > 1) {
+    const qr = ops.reshape(queries, [B, KV, nRep, L, D]);
+    owned.push(qr);
+    queries = qr;
+    const expand = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const e = (a: MlxArray): MlxArray => {
+        // expand_dims(axis=-3) like the reference — view-preserving;
+        // reshape would copy the strided slice and change kernel paths
+        const r = ops.expandDims(a, -3);
+        owned.push(r);
+        return r;
+      };
+      return { packed: e(t.packed), scales: e(t.scales), biases: e(t.biases) };
+    };
+    kT = expand(kq);
+    vT = expand(vq);
+  }
+
+  // Grouped heads (quantizedSdpaGroupedHeads): three GQA heads per key
+  // matmul batch; restore score geometry before softmax/value work.
+  let keyQueries = queries;
+  if (groupHeads) {
+    keyQueries = ops.reshape(queries, [B, KV, 2, 9, D]);
+    owned.push(keyQueries);
+  }
+  let scores = ops.quantizedMatmulQT(keyQueries, kT, true, groupSize, bits);
+  owned.push(scores);
+  if (groupHeads) {
+    scores = ops.reshape(scores, [B, KV, nRep, L, N]);
+    owned.push(scores);
+  }
+
+  let maskArr: MlxArray | null = null;
+  let ownsMask = false;
+  if (mask.mode === "causal") {
+    const qIdx = ops.arange(N - L, N, 1, Dtype.int32);
+    const kIdx = ops.arange(0, N, 1, Dtype.int32);
+    const qCol = ops.reshape(qIdx, [L, 1]);
+    const kRow = ops.reshape(kIdx, [1, N]);
+    maskArr = ops.greaterEqual(qCol, kRow);
+    ownsMask = true;
+    for (const a of [qIdx, kIdx, qCol, kRow]) a.dispose();
+  } else if (mask.mode === "array") {
+    maskArr = mask.arr;
+    // Batched padding masks are [B,1,L,S] (buildBatchedDecodeMask). When GQA
+    // reshaped the scores to 5-D [B,KV,nRep,L,S], trailing-dim broadcasting
+    // would misalign the mask's B with KV — insert the unit axis explicitly:
+    // [B,1,1,L,S] broadcasts correctly over (KV, nRep).
+    if (maskArr && maskArr.ndim === 4 && nRep > 1) {
+      maskArr = ops.expandDims(maskArr, 1);
+      ownsMask = true;
+    }
+  }
+  if (maskArr) {
+    let masked: MlxArray;
+    if (maskArr.dtype === Dtype.bool) {
+      using ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+      masked = ops.where(maskArr, scores, ninf);
+    } else masked = ops.add(scores, maskArr);
+    if (ownsMask) maskArr.dispose();
+    owned.push(masked);
+    scores = masked;
+  }
+
+  const probs = ops.softmaxAxis(scores, -1, true);
+  owned.push(probs);
+  let out = ops.quantizedMatmulQT(probs, vT, false, groupSize, bits);
+  if (nRep > 1) {
+    const r = ops.reshape(out, [B, H, L, D]);
+    out.dispose();
+    out = r;
+  }
+  for (const a of owned) a.dispose();
+  return out;
+}
+
+/** GQA folded into rows over a quantized cache: each KV head's rep·L query
+ *  rows share one quantized_matmul against its packed keys and one against
+ *  its values, so the cache is read once per KV head instead of once per query
+ *  head (the broadcast in quantizedSdpaUnfused). B = 1; the L queries are the
+ *  last L positions (causal), no array mask. Not bit-identical to quantizedSdpa
+ *  (bf16-level). */
+export function foldedQuantizedSdpaEligible(q: MlxArray, kq: ops.QuantizedTensor, mask: Mask): boolean {
+  const [B, H, L] = q.shape as [number, number, number, number];
+  const KVH = kq.packed.shape[1]!;
+  return B === 1 && H % KVH === 0 && !mask.arr && (L === 1 || mask.mode === "causal") && L <= kq.packed.shape[2]!;
+}
+
+export function foldedQuantizedSdpa(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, groupSize: number, bits: number,
+): MlxArray {
+  const [, H, L, D] = q.shape as [number, number, number, number];
+  const KVH = kq.packed.shape[1]!, N = kq.packed.shape[2]!, rep = H / KVH;
+  using q4 = ops.reshape(q, [1, KVH, rep * L, D]);             // rows (r, i): head KVH·rep + r, query i
+  using qs = ops.mulScalar(q4, scale);
+  using scores = ops.quantizedMatmulQT(qs, kq, true, groupSize, bits); // [1, KVH, rep·L, N]
+  let probs: MlxArray;
+  if (L > 1) {
+    using cols = ops.arange(0, N, 1, Dtype.int32);
+    using colRow = ops.reshape(cols, [1, N]);
+    using limits = ops.fromInt32(Array.from({ length: rep * L }, (_, row) => N - L + (row % L)), [rep * L, 1]);
+    using allowed = ops.lessEqual(colRow, limits);
+    using ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+    using masked = ops.where(allowed, scores, ninf);
+    probs = ops.softmaxAxis(masked, -1, true);
+  } else probs = ops.softmaxAxis(scores, -1, true);
+  using p = probs;
+  using out = ops.quantizedMatmulQT(p, vq, false, groupSize, bits);    // [1, KVH, rep·L, D]
+  return ops.reshape(out, [1, H, L, out.shape[3]!]);
+}
+
+/** Tile size for the fused quantized-SDPA prefill path (oracle default). */
+export const FUSED_N_CHUNK = 512;
+
+/** Port of optiq fused_quant_sdpa._prefill_flashattn_n_tiled: a
+ *  FlashAttention-2 loop over the KV N axis with mx.quantized_matmul as
+ *  the inner kernel. Never materializes the full [..., L, N] scores
+ *  matrix — the per-tile transient is bounded by FUSED_N_CHUNK, which is
+ *  the whole point (stock u4 KV prefill peaks ABOVE fp16 KV at long
+ *  context; see the oracle's module docstring). Op composition order
+ *  mirrors the oracle exactly: parity is tier a (bit-exact) vs the python
+ *  fused path; vs quantizedSdpaUnfused it is tier b by construction
+ *  (online softmax ≠ one-shot precise softmax in bf16). */
+export function quantizedSdpaTiled(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  const [B, H, L, D] = q.shape as [number, number, number, number];
+  const KV = kq.packed.shape[1]!;
+  const nRep = H / KV;
+  const N = kq.packed.shape[2]!;
+
+  // scale is 1.0 for Gemma4 (q/k are RMS-normed) — skip the identity multiply.
+  let queries = q;
+  let ownsQueries = false;
+  if (scale !== 1.0) { queries = ops.mulScalar(q, scale); ownsQueries = true; }
+
+  let kT = kq;
+  let vT = vq;
+  const expanded: MlxArray[] = [];
+  if (nRep > 1) {
+    const qr = ops.reshape(queries, [B, KV, nRep, L, D]);
+    if (ownsQueries) queries.dispose();
+    queries = qr;
+    ownsQueries = true;
+    const expand = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const e = (a: MlxArray): MlxArray => {
+        const r = ops.expandDims(a, -3);
+        expanded.push(r);
+        return r;
+      };
+      return { packed: e(t.packed), scales: e(t.scales), biases: e(t.biases) };
+    };
+    kT = expand(kq);
+    vT = expand(vq);
+  }
+
+  // The oracle builds a bottom-right-aligned [L, N] bool causal matrix
+  // and slices columns per tile; our "array" masks (createCausalMask at
+  // offset > 0) are that same matrix already materialized — both slice
+  // identically below.
+  let maskArr: MlxArray | null = null;
+  let ownsMask = false;
+  if (mask.mode === "causal") {
+    const qIdx = ops.arange(N - L, N, 1, Dtype.int32);
+    const kIdx = ops.arange(0, N, 1, Dtype.int32);
+    const qCol = ops.reshape(qIdx, [L, 1]);
+    const kRow = ops.reshape(kIdx, [1, N]);
+    maskArr = ops.greaterEqual(qCol, kRow);
+    ownsMask = true;
+    for (const a of [qIdx, kIdx, qCol, kRow]) a.dispose();
+  } else if (mask.mode === "array") {
+    maskArr = mask.arr;
+  }
+
+  // Slice [..., n0:n1, :] (KV triples) / [..., n0:n1] (mask chunks).
+  // Under a compiled-decode trace, subrange Slice swaps to DynamicSlice
+  // (identical values; shapeless compile rejects Slice — same pattern as
+  // the per-layer-input and MoE top-k slices).
+  const sliceAxis = (a: MlxArray, axisFromEnd: 1 | 2, n0: number, n1: number): MlxArray => {
+    const dims = a.shape;
+    const axis = dims.length - axisFromEnd;
+    if (isCompiledTrace()) {
+      const start = ops.fromInt32([n0], [1]);
+      const size = [...dims];
+      size[axis] = n1 - n0;
+      const out = ops.sliceDynamic(a, start, [axis], size);
+      start.dispose();
+      return out;
+    }
+    const start = dims.map(() => 0);
+    const stop = [...dims];
+    start[axis] = n0;
+    stop[axis] = n1;
+    return a.slice(start, stop);
+  };
+
+  let oAcc: MlxArray | null = null;
+  let rowMax: MlxArray | null = null;
+  let rowSum: MlxArray | null = null;
+
+  for (let n0 = 0; n0 < N; n0 += FUSED_N_CHUNK) {
+    const n1 = Math.min(n0 + FUSED_N_CHUNK, N);
+    const kChunk: ops.QuantizedTensor = {
+      packed: sliceAxis(kT.packed, 2, n0, n1),
+      scales: sliceAxis(kT.scales, 2, n0, n1),
+      biases: sliceAxis(kT.biases, 2, n0, n1),
+    };
+    const vChunk: ops.QuantizedTensor = {
+      packed: sliceAxis(vT.packed, 2, n0, n1),
+      scales: sliceAxis(vT.scales, 2, n0, n1),
+      biases: sliceAxis(vT.biases, 2, n0, n1),
+    };
+
+    let scores = ops.quantizedMatmulQT(queries, kChunk, true, groupSize, bits);
+    for (const a of [kChunk.packed, kChunk.scales, kChunk.biases]) a.dispose();
+
+    if (maskArr) {
+      const maskChunk = sliceAxis(maskArr, 1, n0, n1);
+      let masked: MlxArray;
+      if (maskChunk.dtype === Dtype.bool) {
+        const ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+        masked = ops.where(maskChunk, scores, ninf);
+        ninf.dispose();
+      } else {
+        masked = ops.add(scores, maskChunk);
+      }
+      maskChunk.dispose();
+      scores.dispose();
+      scores = masked;
+    }
+
+    const chunkMax = ops.maxAxis(scores, -1, true);
+    if (oAcc === null) {
+      rowMax = chunkMax;
+      const shifted = ops.sub(scores, rowMax);
+      const exps = ops.exp(shifted);
+      shifted.dispose();
+      rowSum = ops.sumAxis(exps, -1, true);
+      oAcc = ops.quantizedMatmulQT(exps, vChunk, false, groupSize, bits);
+      exps.dispose();
+    } else {
+      const newMax = ops.maximum(rowMax!, chunkMax);
+      chunkMax.dispose();
+      const maxDiff = ops.sub(rowMax!, newMax);
+      const factor = ops.exp(maxDiff);
+      maxDiff.dispose();
+      const shifted = ops.sub(scores, newMax);
+      const exps = ops.exp(shifted);
+      shifted.dispose();
+      // new_sum = factor * row_sum + sum(exps)  (association order kept)
+      const carried = ops.mul(factor, rowSum!);
+      const sumExps = ops.sumAxis(exps, -1, true);
+      const newSum = ops.add(carried, sumExps);
+      carried.dispose();
+      sumExps.dispose();
+      const deltaOut = ops.quantizedMatmulQT(exps, vChunk, false, groupSize, bits);
+      exps.dispose();
+      // o_acc = o_acc * factor + delta_out
+      const scaledAcc = ops.mul(oAcc!, factor);
+      factor.dispose();
+      const nextAcc = ops.add(scaledAcc, deltaOut);
+      scaledAcc.dispose();
+      deltaOut.dispose();
+      oAcc!.dispose();
+      oAcc = nextAcc;
+      rowMax!.dispose();
+      rowMax = newMax;
+      rowSum!.dispose();
+      rowSum = newSum;
+    }
+    scores.dispose();
+    for (const a of [vChunk.packed, vChunk.scales, vChunk.biases]) a.dispose();
+  }
+
+  let out = ops.div(oAcc!, rowSum!);
+  oAcc!.dispose();
+  rowMax!.dispose();
+  rowSum!.dispose();
+  if (ownsMask) maskArr!.dispose();
+  for (const a of expanded) a.dispose();
+  if (ownsQueries) queries.dispose();
+  if (nRep > 1) {
+    const r = ops.reshape(out, [B, H, L, D]);
+    out.dispose();
+    out = r;
+  }
+  return out;
+}
+
+/** The (bits, group size, dtype) the tiled kernel takes: the composition's
+ *  tiled-causal set (`composedAffineKernels`) tiles exactly these. */
+export function fusedSdpaConfigSupported(groupSize: number, bits: number, dtype: Dtype): boolean {
+  return (bits === 4 || bits === 8) && (groupSize === 32 || groupSize === 64 || groupSize === 128) &&
+    (dtype === Dtype.bfloat16 || dtype === Dtype.float16);
+}
+"#
+
+source_parse source
+
+/-- Lean's lexer and parser accept the whole file (kernel-checked chunks). -/
+theorem parses : (parse chars).isSome = true := parse_isSome lex_eq parsesTokens
+
+theorem sourceParses : (parse source.toList).isSome = true := chars.eq ▸ parses
+
+end Host.Ts.Sources.Inference.Layers.QuantizedAttention

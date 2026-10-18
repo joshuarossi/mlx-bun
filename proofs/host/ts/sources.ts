@@ -3,7 +3,7 @@
 // checks that every embedded literal equals its repository file byte for byte.
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { pins, slices } from "./SourceBinding.ts";
+import { pins, route, slices } from "./SourceBinding.ts";
 
 export const files = () => Object.keys(pins);
 
@@ -28,15 +28,36 @@ export const embedded = (file: string, text: string) => slices[file] ? sliceOf(t
 
 const pascal = (s: string) => s.split(/[-_.]/).map(p => p[0]!.toUpperCase() + p.slice(1)).join("");
 
-/** `packages/mlx/src/ops.ts` → `host/ts/sources/mlx/Ops.lean`, module `host.ts.sources.mlx.Ops`. */
-export function modulePath(file: string): string {
+/** `packages/mlx/src/ops.ts` → `host/ts/sources/mlx/Ops.lean`, module `host.ts.sources.mlx.Ops`;
+ *  `whole`: the whole file of a sliced pin (`…/ConfigWhole.lean`). */
+export function modulePath(file: string, whole = false): string {
   const parts = file.replace(/^packages\//, "").replace(/\.ts$/, "").split("/").filter(p => p !== "src");
-  return `host/ts/sources/${parts.slice(0, -1).join("/")}/${pascal(parts.at(-1)!)}.lean`;
+  return `host/ts/sources/${parts.slice(0, -1).map(d => d.replaceAll("-", "_")).join("/")}/${pascal(parts.at(-1)!)}${whole ? "Whole" : ""}.lean`;
 }
 
-function namespaceOf(file: string): string {
-  return "Host.Ts.Sources." + modulePath(file).slice("host/ts/sources/".length, -".lean".length)
+/** The AST module of a source module: `host/ts/ast/…`. */
+export const astPath = (file: string, whole = false) => modulePath(file, whole).replace(/^host\/ts\/sources\//, "host/ts/ast/");
+
+function namespaceOf(file: string, whole = false): string {
+  return "Host.Ts.Sources." + modulePath(file, whole).slice("host/ts/sources/".length, -".lean".length)
     .split("/").map(pascal).join(".");
+}
+
+/** Embeddings: every pin (its slice if sliced), and the whole file of a sliced route file. */
+export function embeddings(): { file: string; whole: boolean }[] {
+  return [...Object.keys(pins).map(file => ({ file, whole: false })),
+    ...route.filter(f => slices[f]).map(file => ({ file, whole: true }))];
+}
+
+export function renderAst(file: string, whole = false): string {
+  const ns = namespaceOf(file, whole);
+  return `import ${modulePath(file, whole).replace(/\.lean$/, "").replaceAll("/", ".")}
+import host.ts.Ast
+namespace ${ns}
+set_option maxRecDepth 100000
+source_ast
+end ${ns}
+`;
 }
 
 /** Raw-literal delimiter: one more `#` than any `"#…` run in the text. */
@@ -56,10 +77,10 @@ export function literalOf(lean: string): string {
   return lean.slice(start, end);
 }
 
-export function render(file: string, text: string): string {
+export function render(file: string, text: string, whole = false): string {
   const h = hashes(text);
   return `import host.ts.Source
-namespace ${namespaceOf(file)}
+namespace ${namespaceOf(file, whole)}
 set_option maxRecDepth 100000
 
 /-- Verbatim \`${file}\`; \`host/ts/SourceBinding.ts\` checks the bytes. -/
@@ -72,19 +93,23 @@ theorem parses : (parse chars).isSome = true := parse_isSome lex_eq parsesTokens
 
 theorem sourceParses : (parse source.toList).isSome = true := chars.eq ▸ parses
 
-end ${namespaceOf(file)}
+end ${namespaceOf(file, whole)}
 `;
 }
 
 if (import.meta.main) {
   const root = new URL("../../../", import.meta.url);
   const only = process.argv.slice(2);
-  for (const file of files()) {
+  for (const { file, whole } of embeddings()) {
     if (only.length && !only.some(o => file.includes(o))) continue;
     const text = await Bun.file(new URL(file, root)).text();
-    const out = new URL(`../../${modulePath(file)}`, import.meta.url);
+    const out = new URL(`../../${modulePath(file, whole)}`, import.meta.url);
     await mkdir(dirname(out.pathname), { recursive: true });
-    await Bun.write(out, render(file, embedded(file, text)));
-    console.log(modulePath(file));
+    const lean = whole ? render(file, text, true) : render(file, embedded(file, text));
+    if (!(await Bun.file(out).exists()) || (await Bun.file(out).text()) !== lean) await Bun.write(out, lean);
+    const ast = new URL(`../../${astPath(file, whole)}`, import.meta.url);
+    await mkdir(dirname(ast.pathname), { recursive: true });
+    if (!(await Bun.file(ast).exists()) || (await Bun.file(ast).text()) !== renderAst(file, whole)) await Bun.write(ast, renderAst(file, whole));
+    console.log(modulePath(file, whole));
   }
 }

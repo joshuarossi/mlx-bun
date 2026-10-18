@@ -1,4 +1,4 @@
-import host.ts.Builtins
+import host.ts.HostBuiltins
 namespace Host.Ts
 
 /-! # Control builtins: functions, promises, generators, AsyncLocalStorage, FFI
@@ -462,6 +462,11 @@ def ffiN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : FfiN â†
     | .ptr (.ext r) o => .bind (offsetArg (arg args 1)) fun off => .bind (offsetArg (arg args 2)) fun n =>
       let (b, s) := s.allocObj (.extBuf r (o + off) n) (.obj aArrayBufferProto) []
       retS F s (.obj b)
+    | .num (.lit x) => match hostAddr x with
+      | some (r, o) => .bind (offsetArg (arg args 1)) fun off => .bind (offsetArg (arg args 2)) fun n =>
+        let (b, s) := s.allocObj (.extBuf r (o + off) n) (.obj aArrayBufferProto) []
+        retS F s (.obj b)
+      | none => .fail "toArrayBuffer of a number that names no native memory"
     | _ => .fail "toArrayBuffer of a non-native pointer"
   | .jsCallback => .fail "JSCallback requires new"
   | .callbackRet => .fail "callback continuation called"
@@ -471,6 +476,18 @@ where
   rd (k : EltK) : RS F := .bind (offsetArg (arg args 1)) fun off => .bind (readMem F s (arg args 0) off k) fun
     | some c => retS F s (cellVal c)
     | none => .fail "read of unknown memory"
+
+/-- A call into the host world model: `Ffi.call` with the builtin's name;
+JavaScript values pass as they are (`Arg.other` for strings and objects). -/
+def hostCall (s : St F.S) (args : List Val) (data : List Val) : RS F :=
+  match data with
+  | [.str name] =>
+    let as := args.map fun
+      | .num x => Arg.num x | .big i => .big i | .bool b => .bool b | .undef | .null => .null
+      | .ptr (.ext r) off => .extPtr r off
+      | v => .other v
+    .bind (F.call s.ffi name as) (ffiDone F s name as)
+  | _ => .fail "host call data"
 
 /-! ## Dispatch -/
 
@@ -497,6 +514,9 @@ def callNative (s : St F.S) (n : Native) (data : List Val) (this : Val) (args : 
   | .fn f => fnN F s this args f
   | .ctl f => ctlN F s this args data f
   | .ffi f => ffiN F s this args data f
+  | .host f => match f with
+    | .call => hostCall F s args data
+    | f => hostN F s this args data f
 
 def constructNative (s : St F.S) (n : Native) (data : List Val) (args : List Val) (nt : Val) : RS F :=
   match n with
@@ -506,6 +526,7 @@ def constructNative (s : St F.S) (n : Native) (data : List Val) (args : List Val
   | .buf f => bufN F s .undef args data f
   | .arr .ctor => arrN F s .undef args .ctor
   | .fn .finRegCtor => let (a, s) := s.allocObj .ordinary (.obj aFinRegProto) []; retS F s (.obj a)
+  | .host f => let _ := nt; hostN F s .undef args data f
   | .ctl .alsCtor => let (a, s) := s.allocObj .ordinary (.obj aAlsProto) []; retS F s (.obj a)
   | .ctl .promiseCtor =>
     let (p, s) := newPromise s
@@ -533,6 +554,7 @@ def nativeRet (s : St F.S) (n : Native) (data : List Val) (v : Val) : RS F :=
       | none => .fail "JSCallback result"
   | .ctl .promiseCtor, [p] => let _ := v; retS F s p
   | .ctl .alsRun, _ => retS F (s.setStores s.stores.tail) v
+  | .host .jsonParse, data => jsonResume F s data
   | _, _ => .fail "builtin continuation"
 
 /-- A builtin frame receiving an abrupt completion. -/

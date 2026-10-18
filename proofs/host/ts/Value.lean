@@ -247,10 +247,17 @@ inductive FfiN where
   /-- A native call waiting for a `JSCallback` it invoked. -/
   | callbackRet
 
+/-- Host builtins (`HostBuiltins`): JSON, UTF-8, SHA-256, regular expressions,
+C strings, and calls into the host world model. -/
+inductive HostN where
+  | jsonParse | jsonStringify | utf8Decode | utf8Encode | sha256 | regexNew | regexExecAt | cstring
+  /-- A call into the host world (`Ffi.call` with the captured name). -/
+  | call
+
 inductive Native where
   | obj (f : ObjN) | arr (f : ArrN) | iter (f : IterN) | math (f : MathN) | num (f : NumN)
   | str (f : StrN) | str2 (f : Str2N) | err (f : ErrN) | map (f : MapN) | set (f : SetN)
-  | buf (f : BufN) | fn (f : FnN) | ctl (f : CtlN) | ffi (f : FfiN)
+  | buf (f : BufN) | fn (f : FnN) | ctl (f : CtlN) | ffi (f : FfiN) | host (f : HostN)
 
 /-- Calls in progress: `kind` 0 call, 1 construct, 2 `super(...)`. -/
 inductive CallF where

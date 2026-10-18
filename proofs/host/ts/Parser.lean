@@ -728,6 +728,9 @@ def primaryWord (r : Rec) (n : Name) (k : Kw) (ts : Ts) : R Expr :=
   | .function_, ts => funcExpr r false ts
   | .class_, ts => bnd (classP r ts) fun c ts => some (.cls c, ts)
   | .async_, .mk false (.id _ (some .function_)) :: ts => funcExpr r true ts
+  -- `import.meta` is the module's binding `%meta`; `import(…)` calls `%import`
+  | .import_, .mk _ (.p .dot) :: .mk _ (.id ['m','e','t','a'] _) :: ts => some (.id ['%','m','e','t','a'], ts)
+  | .import_, .mk nl (.p .lp) :: ts => some (.id ['%','i','m','p','o','r','t'], .mk nl (.p .lp) :: ts)
   | k, ts => bif k.reserved then none else some (.id n, ts)
 
 def primary (r : Rec) : Ts → R Expr
@@ -1216,7 +1219,10 @@ def exportSpec : Ts → R (Option (Name × Name))
   | .mk _ (.id n _) :: ts => some (some (n, n), ts)
   | _ => none
 
+/-- Import attributes (`with { type: "text" }`) are erased: the linker knows its text modules. -/
 def fromP : Ts → R (List Char)
+  | .mk _ (.id _ (some .from_)) :: .mk _ (.str s) :: .mk false (.id _ (some .with_)) :: .mk _ (.p .lc) :: ts =>
+    ((group ts).bind semi).map fun ts => (s, ts)
   | .mk _ (.id _ (some .from_)) :: .mk _ (.str s) :: ts => (semi ts).map fun ts => (s, ts)
   | _ => none
 
@@ -1240,6 +1246,8 @@ def importP : Ts → R (Option Item)
   | .mk _ (.id _ (some .type_)) :: .mk _ (.p .lc) :: ts =>
     ((group ts).bind fun ts => (fromP ts).map (·.2)).map fun ts => (none, ts)
   | .mk _ (.id _ (some .type_)) :: .mk _ (.id _ none) :: ts => (fromP ts).map fun st => (none, st.2)
+  | .mk _ (.id _ (some .type_)) :: .mk _ (.bin .mul) :: .mk _ (.id _ (some .as_)) :: .mk _ (.id _ _) :: ts =>
+    (fromP ts).map fun st => (none, st.2)
   | .mk _ (.id n none) :: .mk _ (.p .comma) :: ts => importNamed [.default n] ts
   | .mk _ (.id n none) :: ts => importNamed [.default n] ts
   | ts => importNamed [] ts
@@ -1259,7 +1267,11 @@ def exportFrom : Ts → R (Option (List Char))
 def exportP (r : Rec) : Ts → R (Option Item)
   | .mk _ (.id _ (some .default_)) :: ts => exportDefault r ts
   | .mk _ (.p .lc) :: ts =>
-    bnd (list .rc exportSpec ts) fun ss ts => bnd (exportFrom ts) fun s ts => some (some (.exportNamed (ss.filterMap id) s), ts)
+    bnd (list .rc exportSpec ts) fun ss ts => bnd (exportFrom ts) fun s ts =>
+      -- specifiers that are all `type` specifiers erase the export (and its module load)
+      match ss.filterMap id, ss with
+      | [], _ :: _ => some (none, ts)
+      | sp, _ => some (some (.exportNamed sp s), ts)
   | .mk _ (.bin .mul) :: .mk _ (.id _ (some .as_)) :: .mk _ (.id n _) :: ts =>
     bnd (fromP ts) fun s ts => some (some (.exportAll (some n) s), ts)
   | .mk _ (.bin .mul) :: ts => bnd (fromP ts) fun s ts => some (some (.exportAll none s), ts)

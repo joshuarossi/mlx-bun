@@ -1,5 +1,6 @@
 import host.ts.sources.inference.models.qwen.Checkpoint
 import host.ts.Ast
 namespace Host.Ts.Sources.Inference.Models.Qwen.Checkpoint
+set_option maxRecDepth 100000
 source_ast
 end Host.Ts.Sources.Inference.Models.Qwen.Checkpoint

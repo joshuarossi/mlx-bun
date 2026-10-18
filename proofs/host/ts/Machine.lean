@@ -422,7 +422,12 @@ def evLit (s : MS F) : Lit → RS F
     | none => .fail "string literal escape"
   | .bool b => retS F s (.bool b)
   | .null => retS F s .null
-  | .regex _ _ => .fail "regular expression literal"
+  -- a fresh `RegExp` per evaluation, with the global constructor's prototype
+  | .regex p fl => .bind (getChain F s (.str chars!"RegExp") 16 aGlobal) fun
+    | some (.data (.obj c) _ _) => .bind (dataOf F s (.obj c) kPrototype) fun
+      | some (.obj pr) => hostN F s .undef [.str p, .str fl] [.obj pr] .regexNew
+      | _ => .fail "RegExp.prototype"
+    | _ => .fail "regular expression literal without a RegExp global"
 
 def arrayNext (s : MS F) (acc : List Val) (rest : List Elem) (env : Env) : RS F :=
   match rest with

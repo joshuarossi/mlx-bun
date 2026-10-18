@@ -460,15 +460,91 @@ def natDigits : Nat → Nat → List Char → List Char
 
 def natStr (n : Nat) : List Char := natDigits 400 n []
 
-/-- `Number::toString` for integers below `10^21`; other values are not
-modelled (`none`). -/
+/-! ### Shortest round-trip decimals (`Number::toString`, ECMA-262 6.1.6.1.20)
+
+For `|x| = p/q`: `n` with `10^(n-1) ≤ |x| < 10^n`; for `k = 1, 2, …` the two
+`k`-digit neighbours `⌊t⌋`, `⌊t⌋ + 1` of `t = |x|·10^(k-n)` are the only
+`k`-digit candidates closest to `|x|`; the first `k` with a candidate that
+rounds back to `|x|` is the spec's least `k`, and of its round-tripping
+candidates the closer (the even one on a tie) is its `s`. -/
+
+/-- `10^i` for an integer `i`, as numerator and denominator. -/
+def pow10 (i : Int) : Nat × Nat :=
+  match i with
+  | .ofNat k => (10 ^ k, 1)
+  | .negSucc k => (1, 10 ^ (k + 1))
+
+/-- `a/b < c/d`. -/
+def ratLt (a b c d : Nat) : Bool := Nat.blt (a * d) (c * b)
+
+/-- The decimal exponent `n` of `p/q`, from an estimate `n0`. -/
+def decExp : Nat → Nat → Nat → Int → Int
+  | 0, _, _, n => n
+  | f + 1, p, q, n =>
+    let (a, b) := pow10 (n - 1)
+    let (c, d) := pow10 n
+    bif ratLt p q a b then decExp f p q (n - 1)
+    else bif ratLt p q c d then n else decExp f p q (n + 1)
+
+/-- Least `k ≤ 17` and its digits `s` (`s·10^(n-k) = |x|` after rounding). -/
+def shortestLoop (x : F64) (p q : Nat) (n : Int) : Nat → Nat → Option (Nat × Nat)
+  | 0, _ => none
+  | f + 1, k =>
+    let (a, b) := pow10 ((k : Int) - n)
+    let A := p * a
+    let B := q * b
+    let lo := A / B
+    let hi := lo + 1
+    let okLo := bif Nat.beq lo 0 then false else decide (ofDecimal lo (n - k) = x)
+    let okHi := decide (ofDecimal hi (n - k) = x)
+    let dLo := A - lo * B
+    let dHi := hi * B - A
+    bif okLo && okHi then
+      (bif Nat.blt dLo dHi then some (k, lo) else bif Nat.blt dHi dLo then some (k, hi)
+       else some (k, bif Nat.beq (lo % 2) 0 then lo else hi))
+    else bif okLo then some (k, lo) else bif okHi then some (k, hi) else shortestLoop x p q n f (k + 1)
+
+def zerosC (n : Nat) : List Char := List.replicate n '0'
+
+/-- Digits `ds` (`k` of them, no trailing zero) at decimal exponent `n`, formatted. -/
+def fmtDec (ds : List Char) (n : Int) : List Char :=
+  let k : Int := ds.length
+  bif ile k n && ile n 21 then ds ++ zerosC (n - k).toNat
+  else bif ilt 0 n && ile n 21 then ds.take n.toNat ++ '.' :: ds.drop n.toNat
+  else bif ilt (-6) n && ile n 0 then '0' :: '.' :: (zerosC (-n).toNat ++ ds)
+  else
+    let e := n - 1
+    let es := (bif ilt e 0 then '-' else '+') :: natStr e.natAbs
+    match ds with
+    | [d] => d :: 'e' :: es
+    | d :: r => d :: '.' :: (r ++ 'e' :: es)
+    | [] => []
+
+def stripZeros : Nat → Nat → Nat × Nat
+  | 0, s => (s, 0)
+  | f + 1, s => bif Nat.beq s 0 then (s, 0) else bif Nat.beq (s % 10) 0 then let (t, z) := stripZeros f (s / 10); (t, z + 1) else (s, 0)
+
+/-- `Number::toString` of a finite nonzero `±m·2^e`. -/
+def shortestStr (neg : Bool) (m : Nat) (e : Int) : Option (List Char) :=
+  let x := fin false m e
+  let (p, q) := pow2 e
+  let p := p * m
+  let n0 : Int := ((Nat.log2 p : Int) - (Nat.log2 q : Int)) * 30103 / 100000 + 1
+  let n := decExp 64 p q n0
+  (shortestLoop x p q n 17 1).map fun (k, s) =>
+    let (t, z) := stripZeros 20 s
+    let ds := natStr t
+    -- `|x| = t·10^(n-k+z)`; `s` may have carried to `10^k`
+    (bif neg then ['-'] else []) ++ fmtDec ds (n - k + z + ds.length)
+
+/-- `Number::toString` (radix 10). -/
 def toStr : F64 → Option (List Char)
   | nan => some ['N', 'a', 'N']
   | inf s => some ((bif s then ['-'] else []) ++ ['I', 'n', 'f', 'i', 'n', 'i', 't', 'y'])
   | zero _ => some ['0']
-  | x@(fin s _ _) => match toInt? x with
-    | some i => let n := i.natAbs; bif Nat.blt n (10 ^ 21) then some ((bif s then ['-'] else []) ++ natStr n) else none
-    | none => none
+  | x@(fin s m e) => match toInt? x with
+    | some i => let n := i.natAbs; bif Nat.blt n small then some ((bif s then ['-'] else []) ++ natStr n) else shortestStr s m e
+    | none => shortestStr s m e
 
 def isWs (c : Char) : Bool := c == ' ' || c == '\n' || c == '\t' || c == '\r'
 
