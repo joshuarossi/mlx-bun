@@ -417,9 +417,9 @@ def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : N
   let mut arr : Option (Nat × List Val) := none
   let boundary (g : G) (i : Nat) (s : St F.S) (tab : List SymE) (m : Nat) (arr : Option (Nat × List Val)) :
       IO (G × Nat) := do
-    -- Memo's expression/native-object table is local to one boundary. Cross-
-    -- boundary sharing is represented by G's named aliases, swept below.
-    Memo.reset
+    -- Retain expressions touched in this or the previous boundary only.
+    -- G's separately swept aliases preserve cross-boundary named sharing.
+    Memo.beginEpoch
     let (sE, g) ← (stE serS tyS s).run { g with idx := i, count := 0, defs := #[] }
     let mut g := g
     let mut roots := #[sE]
@@ -437,7 +437,6 @@ def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : N
     let bytes := writeRoots { nonce, defs := g.defs, st := sE, srv }
     IO.FS.writeBinFile (fileOf dir pre i) bytes
     g := sweep { g with defs := #[] } (roots.push srv)
-    Memo.reset
     pure (g, bytes.size)
   let findArr (i : Nat) (s : St F.S) (arr : Option (Nat × List Val)) : IO (Option (Nat × List Val)) :=
     match abs with

@@ -20,6 +20,8 @@ checks compare against: a wrong expression fails a kernel check. -/
 -- array-based table would be copied on every insertion.
 initialize memoRef : IO.Ref (Lean.PersistentHashMap (UInt64 × USize) Lean.Expr) ← IO.mkRef {}
 initialize keepRef : IO.Ref (List NonScalar) ← IO.mkRef []
+initialize previousRef : IO.Ref (Lean.PersistentHashMap (UInt64 × USize) Lean.Expr) ← IO.mkRef {}
+initialize previousKeepRef : IO.Ref (List NonScalar) ← IO.mkRef []
 
 unsafe def memoImpl {α : Type} (tag : UInt64) (x : α) (f : Unit → Lean.Expr) : Lean.Expr :=
   unsafeBaseIO do
@@ -27,7 +29,9 @@ unsafe def memoImpl {α : Type} (tag : UInt64) (x : α) (f : Unit → Lean.Expr)
     match (← memoRef.get).find? k with
     | some e => pure e
     | none =>
-      let e := f ()
+      let e ← match (← previousRef.get).find? k with
+        | some e => pure e
+        | none => pure (f ())
       memoRef.modify (·.insert k e)
       keepRef.modify (unsafeCast x :: ·)
       pure e
@@ -35,7 +39,18 @@ unsafe def memoImpl {α : Type} (tag : UInt64) (x : α) (f : Unit → Lean.Expr)
 /-- `f ()`, once per object `x` (per `tag`). -/
 @[implemented_by memoImpl] opaque memo {α : Type} (tag : UInt64) (x : α) (f : Unit → Lean.Expr) : Lean.Expr
 
-def resetImpl : IO Unit := do memoRef.set {}; keepRef.set []
+def resetImpl : IO Unit := do
+  memoRef.set {}; keepRef.set []
+  previousRef.set {}; previousKeepRef.set []
+
+/-- Start the next serialization epoch. Only the previous boundary may supply
+cached expressions; hits promote the native value and expression into this
+boundary. Values unused for two boundaries are released. -/
+def beginEpoch : IO Unit := do
+  previousRef.set (← memoRef.get)
+  previousKeepRef.set (← keepRef.get)
+  memoRef.set {}
+  keepRef.set []
 
 /-- Forget all memoized expressions (each chain command starts afresh). -/
 def reset : IO Unit := resetImpl
@@ -47,6 +62,7 @@ suffix backwards (no recursion on the list's length). -/
 unsafe def listExprImpl {α : Type} (tag : UInt64) (nil cons : Lean.Expr) (elem : α → Lean.Expr) (l : List α) : Lean.Expr :=
   unsafeBaseIO do
     let table ← memoRef.get
+    let previous ← previousRef.get
     let mut cells : Array (List α) := #[]
     let mut cur := l
     let mut tail := nil
@@ -56,7 +72,13 @@ unsafe def listExprImpl {α : Type} (tag : UInt64) (nil cons : Lean.Expr) (elem 
       | _ :: as =>
         match table.find? (tag, ptrAddrUnsafe cur) with
         | some e => tail := e; break
-        | none => cells := cells.push cur; cur := as
+        | none => match previous.find? (tag, ptrAddrUnsafe cur) with
+          | some old =>
+            memoRef.modify (·.insert (tag, ptrAddrUnsafe cur) old)
+            keepRef.modify (unsafeCast cur :: ·)
+            tail := old
+            break
+          | none => cells := cells.push cur; cur := as
     let mut e := tail
     for i in [0:cells.size] do
       let c := cells[cells.size - 1 - i]!
