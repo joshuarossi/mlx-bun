@@ -349,13 +349,20 @@ checked by the kernel alone (`Eq.refl`). -/
 elab "host_chunk " p:ident i:num : command => liftTermElabM do
   let pre := (← getCurrNamespace) ++ p.getId
   let i := i.getNat
+  let t0 ← IO.monoMsNow
+  let traceFile ← IO.getEnv "HOST_CHUNK_TRACE"
+  let trace (message : String) : IO Unit := match traceFile with
+    | none => pure ()
+    | some path => IO.FS.withFile path .append fun handle => handle.putStrLn message
+  trace s!"chunk {pre} {i}: entered"
   let ks ← chainKs pre
   let some k := ks[i]? | throwError "no chunk {i}"
   let lhs := runSE pre k i
   let ty := mkApp3 (mkConst ``Eq [.succ .zero]) (optPTy pre) lhs (← someStE pre (i + 1))
-  let t0 ← IO.monoMsNow
   addDecl (.thmDecl { name := chainName pre "c" i, levelParams := [], type := ty, value := mkApp2 (mkConst ``Eq.refl [.succ .zero]) (optPTy pre) lhs })
-  let _ := t0
+  -- With async elaboration enabled, return need not mean the kernel task
+  -- has finished. Large run modules select synchronous elaboration.
+  trace s!"chunk {pre} {i}: returned after {(← IO.monoMsNow)-t0} ms"
 
 /-- `host_chain_run P`: `P.run : runS P.F (k₁ + … + k_N) P.s0 P.S0 = some (P.sN, P.SN)`
 from the chunk theorems. -/
