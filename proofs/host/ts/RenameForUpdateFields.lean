@@ -16,6 +16,22 @@ theorem forUpdateState_heap {S : Type} (s : St S) (test update : Option Expr)
   | none => exact forTestState_heap s test none body env names labels
   | some _ => rfl
 
+theorem step_for_test_heap_from_source (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (v₀ : Val) (test update : Option Expr) (body : Stmt) (env : Env)
+    (names labels : List Name) (fs₀ : List Frame) (hc₀ : s₀.ctl = .ret v₀)
+    (hf₀ : s₀.stack = .lp (.forTest false test update body env names labels)::fs₀)
+    (run : interpC (step F s).run C = some (result,D)) : result.heap = s.heap := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,_⟩ := h.stack_view hf₀
+  rw [hfr.forTest_view] at hf
+  rw [step_for_test_eq F s v test update body (R.env env) names labels fs hc hf] at run
+  have he := congrArg St.heap (congrArg Prod.fst (Option.some.inj run))
+  rw [forTestState_heap] at he
+  exact he.symm
+
 /-- The original per-iteration copy retains the incoming index occurrence in
 its fresh cell. Existing addresses remain unchanged. -/
 theorem step_for_update_fixed_fields (F : Ffi) (NR : NumV → NumV → Prop)
