@@ -4,6 +4,7 @@ import host.ts.renameOrdinary.ShapeSpreadCase
 import host.ts.renameOrdinary.DriverReturns
 import host.ts.renameOrdinary.DriverBinding
 import host.ts.renameOrdinary.DriverPreparation
+import host.ts.renameOrdinary.PrefixAxis
 
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -45,7 +46,7 @@ theorem nativeDataArgument_heap_eq {S : Type} (s t : St S) (a i : Nat)
 /-- All thirty-nine original interpreter steps reach the first real concatAxis
 call. Rank and immutable constructor roles are supplied at entry and transported
 through execution; no future-cut numeric/native/read/run premise is used. -/
-theorem transport
+theorem transport_axis
     (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv)
     (roles : Nat → Host.Mlx.Ffi.Annotated.GraphNode)
     (ObjRel : Ren → Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
@@ -65,7 +66,8 @@ theorem transport
       StateR (NumberRoles ν₀ ν C₀ C) (NativeFrame FR ν₀ ν C₀ C roles ObjRel boundary H N tail) R
         (LiveAfter (LiveAfter (LiveAfter (LiveAfter live NativeBuffer.input.next)
           TypedBuffer.input.next) ShapeSpread.input.next) P.RestStream.micro0.micro0.s35.next)
-        framed before after old old' output result := by
+        framed before after old old' output result ∧
+      callArgument result.ctl 1 = natV 1 := by
   let nr := NumberRoles ν₀ ν C₀ C
   let fr := NativeFrame FR ν₀ ν C₀ C roles ObjRel boundary H N tail
   let live1 := LiveAfter live NativeBuffer.input.next
@@ -106,12 +108,35 @@ theorem transport
   obtain ⟨s25,hr25,h25⟩ := shape_binding_transport nr fr R C₀ C live3 framed before after old old'
     s18 h18 notFramed (by omega)
   have hnext25 : s25.next = s.next + 3 := counter_add h h25 3 next25
-  obtain ⟨result,hr39,h39⟩ := concat_preparation_transport fr R ν₀ ν C₀ C live3 framed before after old old'
+  obtain ⟨result,hr39,h39,axis⟩ := concat_preparation_axis_transport fr R ν₀ ν C₀ C live3 framed before after old old'
     s25 h25 (Or.inl (Or.inl (Or.inl arrayProtoLive))) arrayProtoFixed (by omega)
   have hh12 : isHalt s12.ctl = false := h12.control.isHalt_eq.trans (by host_kernel_rfl)
   have hh13 : isHalt s13.ctl = false := h13.control.isHalt_eq.trans (by host_kernel_rfl)
   have one13 : runC P.F 1 s12 C = some (s13,C) := runC_cons P.F 0 s12 s13 s13 C C C hh12 hr13 rfl
   have one14 : runC P.F 1 s13 C = some (s14,C) := runC_cons P.F 0 s13 s14 s14 C C C hh13 hr14 rfl
   exact ⟨result,runC_join P.F (runC_join P.F (runC_join P.F
-    (runC_join P.F (runC_join P.F hr12 one13) one14) hr18) hr25) hr39,h39⟩
+    (runC_join P.F (runC_join P.F hr12 one13) one14) hr18) hr25) hr39,h39,axis⟩
+theorem transport
+    (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64) (C₀ C : CSrv)
+    (roles : Nat → Host.Mlx.Ffi.Annotated.GraphNode)
+    (ObjRel : Ren → Nat → Host.Mlx.Ffi.Obj → Host.Mlx.Ffi.Obj → Prop)
+    (boundary H N : Nat → Prop) (tail : List NumV)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) (NativeFrame FR ν₀ ν C₀ C roles ObjRel boundary H N tail)
+      R live framed before after old old' input s)
+    (rank : s.heap.get (R.a Variable5.address) = some (.cell (some (natV 3))))
+    (code : (Annotated.Value.literal (.lit (F64.ofNat 4))).Holds ν C R (nativeDataArgument s (R.a 90) 0))
+    (proto : (Annotated.Value.literal (.lit (F64.ofNat 21))).Holds ν C R (nativeDataArgument s (R.a 90) 1))
+    (bufferProtoLive : live aArrayBufferProto) (bufferProtoFixed : R.a aArrayBufferProto = aArrayBufferProto)
+    (typedProtoLive : live 21) (typedProtoFixed : R.a 21 = 21)
+    (arrayProtoLive : live aArrayProto) (arrayProtoFixed : R.a aArrayProto = aArrayProto)
+    (nativeHandle : H 29363) (region : R.region 117452 = 4*R.handle 29363)
+    (bound : s.next + 4 ≤ 2^64) :
+    ∃ result, runC P.F 39 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) (NativeFrame FR ν₀ ν C₀ C roles ObjRel boundary H N tail) R
+        (LiveAfter (LiveAfter (LiveAfter (LiveAfter live NativeBuffer.input.next)
+          TypedBuffer.input.next) ShapeSpread.input.next) P.RestStream.micro0.micro0.s35.next)
+        framed before after old old' output result := by
+  obtain ⟨result,hr,hs,_⟩ := transport_axis FR R ν₀ ν C₀ C roles ObjRel boundary H N tail live framed before after old old' s h rank code proto bufferProtoLive bufferProtoFixed typedProtoLive typedProtoFixed arrayProtoLive arrayProtoFixed nativeHandle region bound
+  exact ⟨result,hr,hs⟩
 end Host.Load.Run.Full.Ordinary.Prefix
