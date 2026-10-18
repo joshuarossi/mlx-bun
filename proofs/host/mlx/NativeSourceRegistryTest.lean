@@ -13,6 +13,10 @@ run_cmd liftTermElabM do
     throwError "native source registry lost imported candidates or duplicated a registration"
   let append ← registeredNativeSourceCommands (toExpr chars!"mlx_slice_update")
   unless append == #["host_retained_kvAppend"] do throwError "native source registry selected the wrong append command"
+  let view ← registeredNativeSourceCommands (toExpr chars!"mlx_slice")
+  unless view == #["host_retained_kvView"] do throwError "native source registry selected the wrong view command"
+  let disposal ← registeredNativeSourceCommands (toExpr chars!"mlx_array_free")
+  unless disposal == #["host_retained_arrayFree"] do throwError "native source registry selected the wrong array disposal command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
