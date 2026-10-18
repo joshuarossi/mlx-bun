@@ -5249,6 +5249,17 @@ const proofFiles = [
   "host/ts/renameOrdinary/initialClosure/Groups7.lean",
   "host/ts/renameOrdinary/initialClosure/Groups8.lean",
   "host/ts/renameOrdinary/initialClosure/Groups9.lean",
+  "host/ts/RenameBufferKindFrame.lean",
+  "host/ts/RenameRetainedArrayPush.lean",
+  "host/ts/RenameRetainedExpressionBody.lean",
+  "host/ts/RenameRuntimeDriverArrayPush.lean",
+  "host/ts/RenameRuntimeDriverExpressionBody.lean",
+  "host/ts/RenameRuntimeDriverExpressionBodyTest.lean",
+  "host/ts/renameOrdinary/RuntimeExpressionBodyCase.lean",
+  "host/ts/renameOrdinary/RuntimeRetainedArrayPushCases.lean",
+  "host/mlx/NativeVectorFreeFrontend.lean",
+  "host/mlx/NativeVectorFreeRetained.lean",
+  "host/mlx/OrdinaryVectorFreeFrontend.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
