@@ -264,6 +264,9 @@ structure G where
   /-- Native value (by address and type, kept alive) ↦ its constant. Immediate
   values such as empty lists and tries share an address across different types. -/
   memo : Std.HashMap (USize × Lean.Expr) (Lean.Name × NonScalar) := {}
+  /-- Named definitions referenced by each alias. This keeps child-page aliases
+  live when serialization reuses a whole unchanged group without visiting it. -/
+  deps : Std.HashMap Lean.Name (Array Lean.Name) := {}
   defs : Array (Lean.Name × Lean.Expr × Lean.Expr) := #[]
 
 abbrev GenM := StateT G IO
@@ -280,11 +283,28 @@ unsafe def namedImpl {α : Type} (ty : Lean.Expr) (tag : String) (x : α) (ser :
   let e ← ser x
   let g ← get
   let n := g.pre ++ Lean.Name.mkSimple s!"{tag}{g.idx}_{g.count}"
-  set { g with memo := g.memo.insert (p, ty) (n, unsafeCast x), defs := g.defs.push (n, ty, e), count := g.count + 1 }
+  let deps := (ty.getUsedConstants ++ e.getUsedConstants).filter g.pre.isPrefixOf
+  set { g with memo := g.memo.insert (p, ty) (n, unsafeCast x), deps := g.deps.insert n deps, defs := g.defs.push (n, ty, e), count := g.count + 1 }
   return mkConst n
 
 /-- `x` as a constant: the one an earlier boundary defined for this native value, or a new one. -/
 @[implemented_by namedImpl] opaque named {α : Type} (ty : Lean.Expr) (tag : String) (x : α) (ser : α → GenM Lean.Expr) : GenM Lean.Expr
+
+/-- Retain native identities only for aliases reachable from the current
+serialized state. Old files retain their definitions independently. Keeping
+dependency edges lets a reused group retain its unvisited child-page aliases. -/
+def sweep (g : G) (roots : Array Lean.Expr) : G := Id.run do
+  let mut todo := roots.foldl (fun ns e => ns ++ e.getUsedConstants.filter g.pre.isPrefixOf) #[]
+  let mut live : Std.HashSet Lean.Name := {}
+  while h : todo.size > 0 do
+    let n := todo[todo.size - 1]
+    todo := todo.pop
+    if live.contains n then continue
+    live := live.insert n
+    if let some ds := g.deps[n]? then todo := todo ++ ds
+  let memo := g.memo.fold (fun m k v => if live.contains v.1 then m.insert k v else m) {}
+  let deps := g.deps.fold (fun m n ds => if live.contains n then m.insert n ds else m) {}
+  return { g with memo, deps }
 
 partial def trieE {β : Type} (tyβ : Lean.Expr) (leaf : β → GenM Lean.Expr) : Trie β → GenM Lean.Expr
   | .nil => pure (mkApp (mkConst ``Trie.nil) tyβ)
@@ -397,21 +417,28 @@ def generate (F : Ffi) (serS : F.S → GenM Lean.Expr) (tyS : Lean.Expr) (ρ : N
   let mut arr : Option (Nat × List Val) := none
   let boundary (g : G) (i : Nat) (s : St F.S) (tab : List SymE) (m : Nat) (arr : Option (Nat × List Val)) :
       IO (G × Nat) := do
+    -- Memo's expression/native-object table is local to one boundary. Cross-
+    -- boundary sharing is represented by G's named aliases, swept below.
+    Memo.reset
     let (sE, g) ← (stE serS tyS s).run { g with idx := i, count := 0, defs := #[] }
     let mut g := g
+    let mut roots := #[sE]
     if let (some sp, some (a, base)) := (abs, arr) then
       if sp.i ≤ i ∧ i ≤ sp.j then
         let some (ob, es) := arrayOf F s a | throw (IO.userError s!"host_stream {pre}: the abstracted array is gone at {i}")
         unless es.length ≥ base.length do throw (IO.userError s!"host_stream {pre}: the abstracted array shrank at {i}")
         let s' := s.setObj a { ob with kind := .array (absSentinel :: es.drop base.length) }
         let (aE, g') ← (stE serS tyS s' (keep := some a)).run g
+        roots := roots.push aE
         g := { g' with defs := g'.defs.push (pre ++ Lean.Name.mkSimple s!"a{i}", Lean.Expr.forallE `x valL stTy .default,
           .lam `fw valL (absReplace (toExpr absSentinel) aE) .default) }
     let oracle := mkApp3 (mkConst ``List.drop [.zero]) ansTy (mkRawNatLit m) oE
     let srv := mkApp2 (mkConst ``SSrv.mk) (toExpr tab) oracle
     let bytes := writeRoots { nonce, defs := g.defs, st := sE, srv }
     IO.FS.writeBinFile (fileOf dir pre i) bytes
-    pure ({ g with defs := #[] }, bytes.size)
+    g := sweep { g with defs := #[] } (roots.push srv)
+    Memo.reset
+    pure (g, bytes.size)
   let findArr (i : Nat) (s : St F.S) (arr : Option (Nat × List Val)) : IO (Option (Nat × List Val)) :=
     match abs with
     | some sp =>
