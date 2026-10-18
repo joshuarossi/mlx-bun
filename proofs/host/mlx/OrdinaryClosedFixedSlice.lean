@@ -33,7 +33,7 @@ run_cmd Lean.Elab.Command.liftTermElabM do
     for forbidden in [`inputSchema,`sourceValues,`targetValues] do
       if names.contains forbidden then throwError "closed fixed slice: normalized/future geometry premise remained"
 
-/-- error: host_retained_fixedSlice: expected three dimensions -/
+/-- error: host_retained_fixedSlice: expected matching dimension counts -/
 #guard_msgs in
 host_retained_closedFixedSlice Host.Load.ffi,
   {SliceCall.input with ctl := .call (.obj 4713) (.obj 4817) [.ptr (.js 3126780) 0,.big 29372,

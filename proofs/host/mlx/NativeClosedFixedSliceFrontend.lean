@@ -41,8 +41,8 @@ elab "host_retained_closedFixedSlice " f:term ", " s:term " using " initial:term
       (targetNodes : s.ffi.mlx.nnext < 2^64) (targetHandles : s.ffi.mlx.next < 2^64) (targetHeap : s.next < 2^64)
       (roots : Nat → Prop) (policy : ProducerAnnotations roots H N roles objects)
       (fnRole thisRole startCount stopCount strideCount : Annotated.Value)
-      (startSchema : FixedIntegerRole startCount (Int.ofNat 3)) (stopSchema : FixedIntegerRole stopCount (Int.ofNat 3))
-      (strideSchema : FixedIntegerRole strideCount (Int.ofNat 3))
+      (startSchema : FixedIntegerRole startCount (Int.ofNat {b}.rank)) (stopSchema : FixedIntegerRole stopCount (Int.ofNat {b}.rank))
+      (strideSchema : FixedIntegerRole strideCount (Int.ofNat {b}.rank))
       (note : notes.runtime.control = callNote fnRole thisRole
         (Host.Load.Run.Full.Ordinary.SliceFamilyHost.literalSliceArgumentNotes {b}.out {b}.handle {b}.start {b}.stop {b}.stride {b}.stream startCount stopCount strideCount))
       (selected : notes.buffers.owners {b}.out = some (handleSlotNotes 0))

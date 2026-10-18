@@ -24,6 +24,18 @@ theorem original_infer :
     infer (.slice ([0,1,0].map Dim.lit) ([1,4,10240].map Dim.lit) ([1,1,1].map Dim.lit))
       [([1,4,10240].map Dim.lit,12)] = M.pure (some (.node ([1,3,10240].map Dim.lit) 12)) := rfl
 
+def widthSplitValues (ν : Nat → F64) :
+    LiteralSliceValues ν (constantShape [1,1,24,512]) (constantShape [1,1,24,256])
+      (constantShape [0,0,0,256]) (constantShape [1,1,24,512]) (constantShape [1,1,1,1]) .fresh :=
+  .constants ν [1,1,24,512] [0,0,0,256] [1,1,24,512] .fresh
+    (by decide +kernel) (by decide +kernel) (by decide +kernel) (by decide +kernel)
+    (by decide +kernel) (by decide +kernel)
+
+theorem width_split_geometry (ν : Nat → F64) :
+    SliceGeometry ν (constantShape [1,1,24,512]) (constantShape [1,1,24,256])
+      (constantShape [0,0,0,256]) (constantShape [1,1,24,512]) (constantShape [1,1,1,1]) false :=
+  (widthSplitValues ν).geometry
+
 theorem rounded_integer_rejected : ¬ ExactDimensions [9007199254740993] := by decide +kernel
 
 /-- error: (kernel) declaration type mismatch -/

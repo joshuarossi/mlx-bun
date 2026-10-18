@@ -10,7 +10,7 @@ open Parametric.Driver
 
 private def fixedSliceHeader : String := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated Host.Mlx.Ffi Host.Mlx.Ffi.NativeRoles Host.Mlx.Ffi.Annotated in\n"
 
-/-- Select an original fixed three-dimensional unit-stride view. Source
+/-- Select an original fixed literal unit-stride view with matching rank/counts. Source
 inspection proposes only source facts; the exported theorem requires the
 current fixed role/buffer inventory. Source-certified constant geometry then
 derives the target call, all six inventories and the new producer policy. -/
@@ -45,9 +45,10 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     let stop ← pointer values[4]!
     let stride ← pointer values[6]!
     let stream ← natural values[8]!
-    for i in [3,5,7] do
-      unless ← isDefEq (← natural values[i]!) (mkNatLit 3) do
-        throwError "host_retained_fixedSlice: expected three dimensions"
+    let rank ← natural values[3]!
+    for i in [5,7] do
+      unless ← isDefEq (← natural values[i]!) rank do
+        throwError "host_retained_fixedSlice: expected matching dimension counts"
     let object ← field (← mkAppM ``St.obj? #[s,address]) ``Option.some 2 1
     let code ← whnf (← field (← mkAppM ``Obj.kind #[object]) ``Kind.fn 1 0)
     let native ← whnf (← field code ``Code.native 2 0)
@@ -70,8 +71,8 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     let input ← producer handle
     let nodes ← mkAppM ``Host.Mlx.Ffi.St.nodes #[mlx]
     let node ← field (← mkAppM ``PTrie.get #[nodes,input]) ``Option.some 2 1
-    unless ← isDefEq (← mkAppM ``List.length #[← mkAppM ``Host.Mlx.Ffi.Node.shape #[node]]) (mkNatLit 3) do
-      throwError "host_retained_fixedSlice: expected three-dimensional input"
+    unless ← isDefEq (← mkAppM ``List.length #[← mkAppM ``Host.Mlx.Ffi.Node.shape #[node]]) rank do
+      throwError "host_retained_fixedSlice: expected input rank matching dimension count"
     let integers (dimensions : Lean.Expr) := do
       let mut rest := dimensions
       let mut result : Array Lean.Expr := #[]
@@ -85,13 +86,13 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
       let object ← field (← mkAppM ``St.obj? #[s,owner]) ``Option.some 2 1
       let bytes ← field (← mkAppM ``Obj.kind #[object]) ``Kind.buf 1 0
       let argument ← mkAppM ``Arg.jsPtr #[owner,mkNatLit 0,bytes]
-      let count ← mkAppM ``Arg.big #[← mkAppM ``Int.ofNat #[mkNatLit 3]]
+      let count ← mkAppM ``Arg.big #[← mkAppM ``Int.ofNat #[rank]]
       let dimensions ← integers (← field (← mkAppM ``Host.Mlx.Ffi.dimsArg #[argument,count]) ``Option.some 2 1)
       pure (object,dimensions)
     let (startObject,first) ← dimensionBuffer start
     let (stopObject,last) ← dimensionBuffer stop
     let (strideObject,steps) ← dimensionBuffer stride
-    unless ← isDefEq steps (← mkListLit (mkConst ``Int) [toExpr (1 : Int),toExpr (1 : Int),toExpr (1 : Int)]) do
+    unless ← isDefEq steps (← mkAppM ``List.replicate #[rank,toExpr (1 : Int)]) do
       throwError "host_retained_fixedSlice: expected unit strides"
     let extents ← mkAppM ``Host.Mlx.Ffi.NativeRoles.sliceExtents #[first,last]
     let kind := if ← isDefEq extents inputSizes then mkConst ``Host.Mlx.Ffi.NativeRoles.SliceResult.alias
@@ -99,7 +100,7 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     for (tag,value) in [("F",f),("input",s),("output",t),("address",address),("object",object),
       ("types",types),("signatureObject",signatureObject),("returns",returns),("sourceThis",ctl.getAppArgs[1]!),
       ("out",out),("handle",handle),("start",start),("stop",stop),("stride",stride),("stream",stream),
-      ("producer",input),("node",node),("kind",kind),("inputSizes",inputSizes),("first",first),("last",last),
+      ("producer",input),("node",node),("kind",kind),("rank",rank),("inputSizes",inputSizes),("first",first),("last",last),
       ("startObject",startObject),("stopObject",stopObject),("strideObject",strideObject)] do
       let type? := if tag == "input" || tag == "output" then
         some (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
@@ -110,7 +111,7 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
     addData (pre ++ `nextServer) (← mkAppM ``numberServer #[next])
   let n := "_root_." ++ pre.toString
   for (fact,type) in [
-    ("source_control",s!"{n}.input.ctl = .call (.obj {n}.address) {n}.sourceThis [.ptr (.js {n}.out) 0,.big (Int.ofNat {n}.handle),.ptr (.js {n}.start) 0,.big (Int.ofNat 3),.ptr (.js {n}.stop) 0,.big (Int.ofNat 3),.ptr (.js {n}.stride) 0,.big (Int.ofNat 3),.big (Int.ofNat {n}.stream)]"),
+    ("source_control",s!"{n}.input.ctl = .call (.obj {n}.address) {n}.sourceThis [.ptr (.js {n}.out) 0,.big (Int.ofNat {n}.handle),.ptr (.js {n}.start) 0,.big (Int.ofNat {n}.rank),.ptr (.js {n}.stop) 0,.big (Int.ofNat {n}.rank),.ptr (.js {n}.stride) 0,.big (Int.ofNat {n}.rank),.big (Int.ofNat {n}.stream)]"),
     ("source_heap",s!"{n}.input.heap.get {n}.address = some (.obj {n}.object)"),
     ("source_kind",s!"{n}.object.kind = .fn (.native (.ffi .symbol) [.str Host.Load.Run.Full.Ordinary.SliceFamilyHost.symbol,.obj {n}.types,.str {n}.returns])"),
     ("source_signature",s!"{n}.input.heap.get {n}.types = some (.obj {n}.signatureObject)"),
@@ -157,7 +158,7 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
       (targetNodes : s.ffi.mlx.nnext < 2^64) (targetHandles : s.ffi.mlx.next < 2^64) (targetHeap : s.next < 2^64)
       (roots : Nat → Prop) (policy : ProducerAnnotations roots H N roles objects)
       (fnRole thisRole startCount stopCount strideCount : Annotated.Value)
-      (startSchema : FixedIntegerRole startCount (Int.ofNat 3)) (stopSchema : FixedIntegerRole stopCount (Int.ofNat 3)) (strideSchema : FixedIntegerRole strideCount (Int.ofNat 3))
+      (startSchema : FixedIntegerRole startCount (Int.ofNat {n}.rank)) (stopSchema : FixedIntegerRole stopCount (Int.ofNat {n}.rank)) (strideSchema : FixedIntegerRole strideCount (Int.ofNat {n}.rank))
       (note : notes.runtime.control = callNote fnRole thisRole
         (Host.Load.Run.Full.Ordinary.SliceFamilyHost.literalSliceArgumentNotes {n}.out {n}.handle {n}.start {n}.stop {n}.stride {n}.stream startCount stopCount strideCount))
       (selected : notes.buffers.owners {n}.out = some (handleSlotNotes 0))
@@ -183,9 +184,9 @@ elab "host_retained_fixedSlice " f:term ", " s:term " using " initial:term " to 
         {n}.input_exact {n}.start_exact {n}.stop_exact {n}.output_exact {n}.source_bounds {n}.source_branch
       have targetValues := LiteralSliceValues.constants ν {n}.inputSizes {n}.first {n}.last {n}.kind
         {n}.input_exact {n}.start_exact {n}.stop_exact {n}.output_exact {n}.source_bounds {n}.source_branch
-      have sl : starts.length = 3 := by host_kernel_rfl
-      have el : stops.length = 3 := by host_kernel_rfl
-      have rl : strides.length = 3 := by host_kernel_rfl
+      have sl : starts.length = {n}.rank := by host_kernel_rfl
+      have el : stops.length = {n}.rank := by host_kernel_rfl
+      have rl : strides.length = {n}.rank := by host_kernel_rfl
       have sourceValues' : LiteralSliceValues ν₀ (roles {n}.producer).shape (constantShape (sliceExtents {n}.first {n}.last))
           (starts.map Dimension.literal) (stops.map Dimension.literal) (strides.map Dimension.literal) {n}.kind := by
         simpa only [starts,stops,strides,constantExpressions_shape,inputSchema] using sourceValues

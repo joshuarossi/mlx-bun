@@ -21,7 +21,7 @@ theorem source_dimensions : Source1086.inputSizes = [1,4,10240] ∧ Source1086.f
 
 theorem source_branch : Source1086.kind = SliceResult.fresh := rfl
 
-/-- error: host_retained_fixedSlice: expected three dimensions -/
+/-- error: host_retained_fixedSlice: expected matching dimension counts -/
 #guard_msgs in
 host_retained_fixedSlice Host.Load.ffi,
   {Source1086.input with ctl := .call (.obj 4713) (.obj 4817) [.ptr (.js 3126780) 0,.big 29372,
