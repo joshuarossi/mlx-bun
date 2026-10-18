@@ -5382,6 +5382,23 @@ const proofFiles = [
   "host/ts/renameOrdinary/RankOriginInitializedVector.lean",
   "host/ts/renameOrdinary/RankOriginObjectFacts.lean",
   "host/ts/renameOrdinary/RankOriginObjectSeed.lean",
+  "host/load/RuntimeGetterCallBlocks.lean",
+  "host/load/RuntimeMapperSummaryBlocks.lean",
+  "host/mlx/NativeCounterRebase.lean",
+  "host/mlx/NativeKvAppendFrontend.lean",
+  "host/mlx/NativeKvAppendGeometry.lean",
+  "host/mlx/NativeKvAppendRetained.lean",
+  "host/mlx/NativeKvAppendTest.lean",
+  "host/mlx/NativeShapeBufferInventory.lean",
+  "host/mlx/NativeSliceUpdateFrame.lean",
+  "host/mlx/NativeStateValuationRebase.lean",
+  "host/mlx/NativeStateValuationRebaseTest.lean",
+  "host/mlx/OrdinaryKvAppend.lean",
+  "host/mlx/OrdinaryKvAppendStates.lean",
+  "host/ts/RenameRetainedGetterCallFrontend.lean",
+  "host/ts/RenameRetainedMapperCall.lean",
+  "host/ts/RenameRetainedMapperCallFrontend.lean",
+  "host/ts/RenameStateValuationRebase.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
