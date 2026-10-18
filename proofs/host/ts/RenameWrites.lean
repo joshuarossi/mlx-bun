@@ -133,4 +133,65 @@ theorem ffiDone_status0_materialize (F : Ffi) (ffiMap : CSrv → F.S → F.S) (C
   · simp only [ffiDone, hw', Host.Mlx.Ffi.status0, retVal, retS]
     rfl
 
+/-- Lift a proved native-symbol result through the interpreter's actual wrapper,
+buffer writes, trace and return. Concrete symbol lemmas discharge the two call
+equations; this theorem does not assume a machine-step simulation. -/
+theorem step_ffi_ptr_u64_materialize (F : Ffi) (ffiMap : CSrv → F.S → F.S)
+    (C : CSrv) (s u : St F.S) (fn types b off : Nat) (handle : Int)
+    (name returns : Name) (fo to : Obj) (bs : List Byte)
+    (native : F.S) (writes : List (Nat × Nat × List Byte))
+    (hc : s.ctl = .call (.obj fn) .undef [.ptr (.js b) off, .big handle])
+    (hfn : s.obj? fn = some fo)
+    (hfk : fo.kind = .fn (.native (.ffi .symbol) [.str name, .obj types, .str returns]))
+    (ht : s.obj? types = some to) (htk : to.kind = .array [.str chars!"ptr", .str chars!"u64"])
+    (hb : bufBytes F s b = some bs)
+    (hb' : bufBytes F (materializeStateWith ffiMap C s) b = some (bs.map (materializer C).byte))
+    (hw : applyWrites F (s.setFfi native) writes = some u)
+    (hcall : F.call s.ffi name [.jsPtr b off (bs.drop off), .big handle] =
+      M.pure (some (native, Host.Mlx.Ffi.status0, writes)))
+    (hcall' : F.call (ffiMap C s.ffi) name
+      [.jsPtr b off ((bs.map (materializer C).byte).drop off), .big handle] =
+      M.pure (some (ffiMap C native, Host.Mlx.Ffi.status0, writes.map (materializer C).write))) :
+    let args := [Arg.jsPtr b off (bs.drop off), .big handle]
+    let t := (u.setTrace (⟨name, args, Host.Mlx.Ffi.status0⟩ :: u.trace)).ret (.num zeroN)
+    step F s = M.pure t ∧
+      step F (materializeStateWith ffiMap C s) = M.pure (materializeStateWith ffiMap C t) := by
+  dsimp only
+  have hdone := ffiDone_status0_materialize F ffiMap C s u native name
+    [Arg.jsPtr b off (bs.drop off), .big handle] writes hw
+  have hcs : (materializeStateWith ffiMap C s).ctl =
+      .call (.obj fn) .undef [.ptr (.js b) off, .big handle] := by
+    change (materializer C).ctl s.ctl = _
+    rw [hc]
+    rfl
+  have hfn' : (materializeStateWith ffiMap C s).obj? fn = some ((materializer C).obj fo) := by
+    rw [materializeStateWith_obj, hfn]
+    rfl
+  have hfk' : ((materializer C).obj fo).kind = .fn (.native (.ffi .symbol)
+      [.str name, .obj types, .str returns]) := by
+    change (materializer C).kind fo.kind = _
+    rw [hfk]
+    rfl
+  have ht' : (materializeStateWith ffiMap C s).obj? types = some ((materializer C).obj to) := by
+    rw [materializeStateWith_obj, ht]
+    rfl
+  have htk' : ((materializer C).obj to).kind = .array [.str chars!"ptr", .str chars!"u64"] := by
+    change (materializer C).kind to.kind = _
+    rw [htk]
+    rfl
+  have hcall'' : F.call (materializeStateWith ffiMap C s).ffi name
+      [.jsPtr b off ((bs.map (materializer C).byte).drop off), .big handle] =
+      M.pure (some (ffiMap C native, Host.Mlx.Ffi.status0, writes.map (materializer C).write)) := by
+    rw [materializeStateWith_ffi]
+    exact hcall'
+  constructor
+  · rw [step_ffi_ptr_u64 F s fn types b off handle name returns fo to bs native
+      Host.Mlx.Ffi.status0 writes hc hfn hfk ht htk hb hcall]
+    exact hdone.1
+  · rw [step_ffi_ptr_u64 F (materializeStateWith ffiMap C s) fn types b off handle name returns
+      ((materializer C).obj fo) ((materializer C).obj to) (bs.map (materializer C).byte)
+      (ffiMap C native) Host.Mlx.Ffi.status0 (writes.map (materializer C).write)
+      hcs hfn' hfk' ht' htk' hb' hcall'']
+    simpa only [List.map_cons, List.map_nil, NameMap.arg, List.map_drop, materializer, id_eq] using hdone.2
+
 end Host.Ts
