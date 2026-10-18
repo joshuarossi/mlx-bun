@@ -67,7 +67,8 @@ private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
 boundary is subsequently used in an ordinary kernel reduction, including the
 last boundary's equality to the original outer chunk endpoint. -/
 private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option (Nat × Nat × Nat))
-    (checked : Bool) (streamed : Bool := false) (explicit : Option (List Nat) := none) : TermElabM Unit := do
+    (checked : Bool) (streamed : Bool := false) (explicit : Option (List Nat) := none)
+    (choice : Option (St LSt × SSrv × G) := none) : TermElabM (St LSt × SSrv × G) := do
   if width == 0 then throwError "host_micro_chunk: width must be positive"
   if let some (start, stop, fine) := refine then
     unless start < stop && fine > 0 do throwError "host_micro_chunk: invalid refinement interval"
@@ -110,7 +111,9 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
   else
     addDefinition (boundaryName microPre "s" 0) sTy startS
     addDefinition (boundaryName microPre "S" 0) srvTy startC
-  let (initialS, initialC, initialG, valueCount, aliasCount) ← restore startS startC microPre
+  let (initialS, initialC, initialG, valueCount, aliasCount) ← match choice with
+    | none => restore startS startC microPre
+    | some (s,c,g) => pure (s,c,{ g with pre := microPre, idx := 0, count := 0, defs := #[] },0,g.memo.size)
   let mut s := initialS
   let mut c := initialC
   let mut g := initialG
@@ -207,6 +210,7 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
     addProof (boundaryName pre "c" i) (← mkEq lhs (result endS endC)) proof
   Memo.reset
   logInfo m!"host_micro {pre} {i}: {fuel} steps, {index} segments, checked={checked}; restore {restored-started} ms, total {(← IO.monoMsNow)-started} ms; {g.memo.size} live native aliases, peak {peakAliases}"
+  return (s,c,g)
 
 private def microSizes (stx : Syntax) : TermElabM (Option (List Nat)) := do
   match stx.getArgs.toList with
@@ -226,7 +230,7 @@ elab "host_micro_chunk " p:ident i:num ", " width:num
       | [_, a, _, b, _, c] => do pure (← a.isNatLit?, ← b.isNatLit?, ← c.isNatLit?)
       | _ => none
     let sizes ← microSizes cs.raw
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat refine true false sizes
+    let _ ← unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat refine true false sizes
 
 /-- Choose a subdivided chain for the existing read-tail and prefix-frame
 commands. `P.micro<i>` exports `F`, `ks`, `s0…sN`, and `S0…SN`; its endpoints
@@ -234,7 +238,7 @@ are aliases of the original outer boundaries. This command proves no run. -/
 elab "host_micro_states " p:ident i:num ", " width:num cs:((" chunks " term)?) : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
     let sizes ← microSizes cs.raw
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false false sizes
+    let _ ← unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false false sizes
 
 /-- Write candidate microstates without retaining their definitions in one
 environment. `host_stream_state P.micro<i> j` imports each boundary and checks
@@ -242,7 +246,18 @@ all its definitions before the existing chunk commands check execution. -/
 elab "host_micro_stream " p:ident i:num ", " width:num cs:((" chunks " term)?) : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
     let sizes ← microSizes cs.raw
-    unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false true sizes
+    let _ ← unsafe microChunk ((← getCurrNamespace) ++ p.getId) i.getNat width.getNat none false true sizes
+
+/-- Reuse native choice data across consecutive outer chunks. Each original
+outer endpoint and each substep still has its own ordinary kernel equation;
+the retained values cannot discharge any proof obligation. -/
+elab "host_micro_group " p:ident first:num ", " count:num ", " width:num : command =>
+  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+    if count.getNat == 0 then throwError "host_micro_group: count must be positive"
+    let pre := (← getCurrNamespace) ++ p.getId
+    let mut choice : Option (St LSt × SSrv × G) := none
+    for i in [first.getNat:first.getNat+count.getNat] do
+      choice := some (← unsafe microChunk pre i width.getNat none true false none choice)
 
 /-- Compose checked (possibly framed) microchunk theorems into the original
 outer chunk statement. This command performs no native state restoration. -/
