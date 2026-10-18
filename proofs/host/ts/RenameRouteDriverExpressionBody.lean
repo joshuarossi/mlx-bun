@@ -35,9 +35,9 @@ elab "host_transport_expression_body " f:term ", " s:term " to " t:term " as " n
     {n}.output := by host_kernel_rfl")
   emit (header ++ s!"theorem {n}.transport (NR : NumV → NumV → Prop) (FR : Ren → {n}.F.S → {n}.F.S → Prop)
       (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
-      (s : St {n}.F.S) (h : StateR NR FR R live framed before after old old' {n}.input s) :
+      (s : St {n}.F.S) (h : Host.Ts.Owned.Parametric.StateR NR FR R live framed before after old old' {n}.input s) :
       ∃ result, interpC (step {n}.F s).run C = some (result,C) ∧
-        StateR NR FR R live framed before after old old' {n}.output result ∧ result.heap = s.heap := by
+        Host.Ts.Owned.Parametric.StateR NR FR R live framed before after old old' {n}.output result ∧ result.heap = s.heap := by
     obtain ⟨result,_,hr,hpost,heap⟩ := step_parameter_expression_from_source {n}.F NR FR R C₀ C live framed before after old old'
       {n}.input s h {n}.sourceValue {n}.sourceName {n}.sourceParams {n}.sourceExpression {n}.sourceArgs
       {n}.sourceEnv {n}.sourceTail {n}.source_control {n}.source_frame
