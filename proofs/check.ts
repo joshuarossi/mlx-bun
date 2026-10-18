@@ -3471,6 +3471,8 @@ const proofFiles = [
   "host/ts/tests/stream/DecodeExpr.lean",
   "host/load/Micro.lean",
   "host/load/tests/Micro.lean",
+  "host/mlx/OwnedFfi.lean",
+  "host/ts/RenameNumericRole.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
