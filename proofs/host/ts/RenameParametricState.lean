@@ -11,6 +11,11 @@ inductive ValueR (NR : NumV → NumV → Prop) (R : Ren) : Val → Val → Prop 
   | str (s : Name) : ValueR NR R (.str s) (.str s)
   | num {n n' : NumV} : NR n n' → ValueR NR R (.num n) (.num n')
   | ordinaryBig (i : Int) : ValueR NR R (.big i) (.big i)
+  /-- Numeric integer results, such as native array size, may vary with the loop
+  parameters. The relation records their actual `Number(bigint)` results;
+  integer arithmetic requires its own exactness or guard facts. -/
+  | numericInteger {i i' : Int} :
+      NR (.lit (F64.ofInt i)) (.lit (F64.ofInt i')) → ValueR NR R (.big i) (.big i')
   | handle (h : Nat) : ValueR NR R (.big (Int.ofNat h)) (.big (Int.ofNat (R.handle h)))
   | pointerInteger (m : Mem) (off : Nat) :
       ValueR NR R (.big (ptrInt m off)) (.big (ptrInt (R.mem m) off))
@@ -21,6 +26,8 @@ inductive ValueR (NR : NumV → NumV → Prop) (R : Ren) : Val → Val → Prop 
 inductive CellR (NR : NumV → NumV → Prop) (R : Ren) : Cell → Cell → Prop where
   | num {n n' : NumV} : NR n n' → CellR NR R (.num n) (.num n')
   | ordinaryBig (i : Int) : CellR NR R (.big i) (.big i)
+  | numericInteger {i i' : Int} :
+      NR (.lit (F64.ofInt i)) (.lit (F64.ofInt i')) → CellR NR R (.big i) (.big i')
   | handle (h : Nat) : CellR NR R (.big (Int.ofNat h)) (.big (Int.ofNat (R.handle h)))
   | pointerInteger (m : Mem) (off : Nat) :
       CellR NR R (.big (ptrInt m off)) (.big (ptrInt (R.mem m) off))
@@ -129,6 +136,7 @@ theorem ValueR.mono {v v' : Val} (h : ValueR NR R v v') : ValueR NR' R v v' := b
   | bool b => exact .bool b
   | str s => exact .str s
   | ordinaryBig i => exact .ordinaryBig i
+  | numericInteger h => exact .numericInteger (m _ _ h)
   | handle h => exact .handle h
   | pointerInteger p o => exact .pointerInteger p o
   | obj a => exact .obj a
@@ -139,6 +147,7 @@ theorem CellR.mono {c c' : Cell} (h : CellR NR R c c') : CellR NR' R c c' := by
   cases h with
   | num h => exact .num (m _ _ h)
   | ordinaryBig i => exact .ordinaryBig i
+  | numericInteger h => exact .numericInteger (m _ _ h)
   | handle h => exact .handle h
   | pointerInteger p o => exact .pointerInteger p o
 
