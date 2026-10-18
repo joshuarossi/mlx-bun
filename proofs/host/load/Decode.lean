@@ -9,9 +9,12 @@ def tab : List SymE := (List.range 9).map SymE.var
 def reads : List NumV := (List.range 8).map fun i => .ref (i + 1)
 
 /-- The original load environment with explicit symbolic native readbacks.
-The generation driver consumes the caches returned by the actual binding. -/
+The generation driver consumes the caches returned by the actual binding.
+The working-set limit is the M1 Max/MLX 0.32.2 platform fact captured in
+`2026-09-27-gemma12b-fresh-oracle-02d723a2/reference/gemma4-parity.json`. -/
 def world : LSt :=
-  { Route.world with mlx := { Route.world.mlx with tokens := reads } }
+  { Route.world with mlx := { Route.world.mlx with tokens := reads,
+      deviceSizes := [(chars!"max_recommended_working_set_size", 26800603136)] } }
 
 /-- A discovery valuation; it chooses branch answers only. Every resulting chunk
 is checked against the symbolic server by the kernel. -/
