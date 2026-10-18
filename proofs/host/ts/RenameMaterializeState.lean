@@ -32,6 +32,41 @@ theorem get_map (f : α → β) (t : Trie α) : ∀ i, (t.map f).get i = (t.get 
       exact (pick_map (Option.map f) (i % 4) (a.get (i / 4)) (b.get (i / 4))
         (c.get (i / 4)) (d.get (i / 4))).symm
 
+private theorem map_put (f : α → β) (i : Nat) (v : Option α) (a b c d x : Trie α) :
+    (put i v a b c d x).map f =
+      put i (v.map f) (a.map f) (b.map f) (c.map f) (d.map f) (x.map f) := by
+  unfold put brec
+  cases Nat.blt i 2 <;> cases Nat.beq i 0 <;> cases Nat.beq i 2 <;> rfl
+
+theorem map_setF (f : α → β) (fuel : Nat) (t : Trie α) (n : Nat) (x : α) :
+    (t.setF fuel n x).map f = (t.map f).setF fuel n (f x) := by
+  induction fuel generalizing t n with
+  | zero => rfl
+  | succ fuel ih =>
+    cases t with
+    | nil =>
+      rw [setF_nil]
+      change (if n = 0 then node (some x) nil nil nil nil
+        else put (n % 4) none nil nil nil nil (setF fuel nil (n / 4) x)).map f =
+          setF (fuel + 1) nil n (f x)
+      rw [setF_nil]
+      by_cases hn : n = 0
+      · simp only [ite_eq_left hn, map, Option.map_some]
+      · simp only [ite_eq_right hn, map_put, ih, map, Option.map_none]
+    | node v a b c d =>
+      rw [setF_node]
+      change (if n = 0 then node (some x) a b c d
+        else put (n % 4) v a b c d (setF fuel (pick (n % 4) a b c d) (n / 4) x)).map f =
+          setF (fuel + 1) (node (v.map f) (a.map f) (b.map f) (c.map f) (d.map f)) n (f x)
+      rw [setF_node]
+      by_cases hn : n = 0
+      · simp only [ite_eq_left hn, map, Option.map_some]
+      · simp only [ite_eq_right hn, map_put, ih]
+        rw [pick_map (map f)]
+
+theorem map_set (f : α → β) (t : Trie α) (n : Nat) (x : α) :
+    (t.set n x).map f = (t.map f).set n (f x) := map_setF f 32 t n x
+
 end Trie
 
 namespace PTrie
@@ -54,12 +89,27 @@ theorem get_map (f : α → β) (t : PTrie α) (i : Nat) : (t.map f).get i = (t.
       simp only [Option.map_some, orNil_some]
       exact Trie.get_map f p (i % 64)
 
+private theorem orNil_map (f : α → β) (o : Option (Trie α)) :
+    orNil (o.map (Trie.map f)) = (orNil o).map f := by cases o <;> rfl
+
+theorem map_set (f : α → β) (t : PTrie α) (i : Nat) (x : α) :
+    (t.set i x).map f = (t.map f).set i (f x) := by
+  simp only [map, set, Trie.map_set, Trie.get_map, orNil_map]
+
 end PTrie
 
 /-- Materialization keeps all resource identities and replaces numeric references by
 their concrete table values. Invalid references become NaN; specialization lemmas require
 successful input lookups or numeric-closure witnesses, so that fallback is never used. -/
 def materializer (C : CSrv) : NameMap (.concrete C) := { a := id, n := id }
+
+theorem materializer_env (C : CSrv) (env : Env) : (materializer C).env env = env := by
+  induction env with
+  | nil => rfl
+  | cons p ps ih =>
+    obtain ⟨n, a⟩ := p
+    change (n, a) :: (materializer C).env ps = (n, a) :: ps
+    rw [ih]
 
 namespace NameMap
 
@@ -80,6 +130,29 @@ def materializeStateWith {S : Type} (ffiMap : CSrv → S → S) (C : CSrv) (s : 
     ⟨s.jobs.map M.job, ffiMap C s.ffi, s.trace.map M.event, M.stores s.stores⟩⟩
 
 abbrev materializeState := materializeStateWith materializeNative
+
+theorem materializeStateWith_setCell {S : Type} (ffiMap : CSrv → S → S)
+    (C : CSrv) (s : St S) (a : Nat) (v : Val) :
+    materializeStateWith ffiMap C (s.setCell a v) =
+      (materializeStateWith ffiMap C s).setCell a ((materializer C).val v) := by
+  unfold St.setCell materializeStateWith
+  dsimp only
+  rw [PTrie.map_set]
+  rfl
+
+theorem materializeStateWith_cell {S : Type} (ffiMap : CSrv → S → S)
+    (C : CSrv) (s : St S) (a : Nat) :
+    (materializeStateWith ffiMap C s).cell? a =
+      (s.cell? a).map (Option.map (materializer C).val) := by
+  unfold St.cell? materializeStateWith
+  dsimp only
+  rw [PTrie.get_map]
+  cases hh : s.heap.get a with
+  | none => rfl
+  | some o => cases o <;> rfl
+
+theorem cell?_control {S : Type} (s : St S) (c : Ctl) (fs : List Frame) (a : Nat) :
+    ({ s with ctl := c, stack := fs }).cell? a = s.cell? a := rfl
 
 theorem materializeStateWith_control {S : Type} (ffiMap : CSrv → S → S)
     (C : CSrv) (s : St S) (c : Ctl) (fs : List Frame) :
@@ -114,6 +187,15 @@ theorem NumericClosedWith.mono {S : Type} {ffiMap : CSrv → S → S} {C D : CSr
   intro E he
   exact (h E (hd.trans he)).trans (h D hd).symm
 
+theorem NumericClosedWith.set_number {S : Type} {ffiMap : CSrv → S → S} {C : CSrv} {s : St S}
+    (h : NumericClosedWith ffiMap C s) (address : Nat) (a : NumV) (x : F64) (ha : C.val a = some x) :
+    NumericClosedWith ffiMap C (s.setCell address (.num a)) := by
+  intro D hd
+  rw [materializeStateWith_setCell, materializeStateWith_setCell, h D hd]
+  change (materializeStateWith ffiMap C s).setCell address (.num ((materializer D).num a)) =
+    (materializeStateWith ffiMap C s).setCell address (.num ((materializer C).num a))
+  rw [materialize_num D a x (hd.val ha), materialize_num C a x ha]
+
 /-- Returning a defined number and removing the top frame preserves numeric closure.
 All untouched heap, native-state, and dormant-frame data are framed by the prior invariant. -/
 theorem NumericClosedWith.ret_number {S : Type} {ffiMap : CSrv → S → S} {C : CSrv} {s : St S}
@@ -135,6 +217,50 @@ theorem NumericClosedWith.ret_number {S : Type} {ffiMap : CSrv → S → S} {C :
       ctl := .ret (.num ((materializer C).num a))
       stack := fs.map (materializer C).frame }
   rw [materialize_num D a x (hd.val ha), materialize_num C a x ha]
+
+theorem NumericClosedWith.ret_number_postfix {S : Type} {ffiMap : CSrv → S → S} {C : CSrv} {s : St S}
+    (h : NumericClosedWith ffiMap C s) (a b : NumV) (x y : F64)
+    (ha : C.val a = some x) (hb : C.val b = some y)
+    (f : Frame) (fs : List Frame) (hf : s.stack = f :: fs) :
+    NumericClosedWith ffiMap C { s with
+      ctl := .ret (.num a)
+      stack := .e (.const (.num b)) :: fs } := by
+  intro D hd
+  have hs := h D hd
+  have hstack : fs.map (materializer D).frame = fs.map (materializer C).frame := by
+    have hh := congrArg (fun u : St S => u.stack) hs
+    change s.stack.map (materializer D).frame = s.stack.map (materializer C).frame at hh
+    rw [hf] at hh
+    exact (List.cons.inj hh).2
+  rw [materializeStateWith_control, materializeStateWith_control, hs]
+  change { materializeStateWith ffiMap C s with
+      ctl := .ret (.num ((materializer D).num a))
+      stack := .e (.const (.num ((materializer D).num b))) :: fs.map (materializer D).frame } =
+    { materializeStateWith ffiMap C s with
+      ctl := .ret (.num ((materializer C).num a))
+      stack := .e (.const (.num ((materializer C).num b))) :: fs.map (materializer C).frame }
+  rw [hstack, materialize_num D a x (hd.val ha), materialize_num C a x ha,
+    materialize_num D b y (hd.val hb), materialize_num C b y hb]
+
+theorem materialize_number_return {S : Type} (ffiMap : CSrv → S → S) (C D : CSrv) (s : St S)
+    (closed : NumericClosedWith ffiMap C s) (hd : TableExtends C D)
+    (a : NumV) (x : F64) (ha : D.val a = some x) (f : Frame) (fs : List Frame)
+    (hf : s.stack = f :: fs) :
+    materializeStateWith ffiMap D { s with ctl := .ret (.num a), stack := fs } =
+      { materializeStateWith ffiMap C s with
+        ctl := .ret (.num (.lit x))
+        stack := fs.map (materializer C).frame } := by
+  have hs := closed D hd
+  have hstack : fs.map (materializer D).frame = fs.map (materializer C).frame := by
+    have hh := congrArg (fun u : St S => u.stack) hs
+    change s.stack.map (materializer D).frame = s.stack.map (materializer C).frame at hh
+    rw [hf] at hh
+    exact (List.cons.inj hh).2
+  rw [materializeStateWith_control, hs, hstack]
+  change { materializeStateWith ffiMap C s with
+      ctl := .ret (.num ((materializer D).num a))
+      stack := fs.map (materializer C).frame } = _
+  rw [materialize_num D a x ha]
 
 theorem materialize_heap (C : CSrv) (s : St Host.Mlx.Ffi.St) (a : Nat) :
     (materializeState C s).heap.get a = (s.heap.get a).map (materializer C).hobj :=
