@@ -1,6 +1,7 @@
 import host.load.run.full.FirstValues
 import host.load.run.full.FirstOutputs
 import host.load.run.full.InitialLayout
+import host.mlx.FfiCache
 namespace Host.Load.Run.Full
 open Host.Load.Extract Host.Load.Program Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Ts
 open Inference.Models.Qwen
@@ -29,12 +30,14 @@ def promptToken : Fin 248320 := ⟨9707, by decide⟩
 next caches. Its parameters are constructed from the actual load program;
 only checkpoint leaves, their dtypes, numerical ranges, and platform contracts
 remain premises. Source execution to the named cut is a separate theorem. -/
-theorem first_decode_graph (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+theorem first_decode_graph_caches (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (parameters : TokenSequenceRanges.Parameters (firstPipeline M K env table leaves typed)) :
     let after := (firstContext M K env table leaves typed parameters).run promptToken 1 (by decide)
     ∃ hs', (∃ r, evalR M K (firstStepEnv M K env table) (firstFfiGraph table) 17776 = some r ∧
       itemUint32 r = some after.token.val) ∧
       ChainHolds (firstPipeline M K env table leaves typed).graph.stages hs' after.cache ∧
+      Expected.cacheOutputs.length = hs'.length ∧
+      (∀ h ∈ hs', (handleVals h).isSome) ∧
       ∀ q ∈ cacheFacts Expected.cacheOutputs hs',
         evalR M K (firstStepEnv M K env table) (firstFfiGraph table) (certAt firstCarriers q.1) = some q.2 := by
   let p := firstPipeline M K env table leaves typed
@@ -49,13 +52,24 @@ theorem first_decode_graph (leaves : Leaves code env.weights) (typed : TypedChec
     rw [show stepGraphOf w initialHandles 0 = (Expected.graph, Expected.tokenNode, Expected.cacheOutputs) from
       initial_step_graph (contents M K env (firstFfiGraph table))]
     exact first_input_values M K env table leaves _ _ (firstCertificate.inputs table)
-  obtain ⟨hs', ht, hc, hv⟩ := ffi_context_step_ids M K p w hl parameters promptToken 0 (by decide)
+  obtain ⟨hs', ht, hc, hlen, hsome, hv⟩ := ffi_context_step_ids_caches M K p w hl parameters promptToken 0 (by decide)
     (promptIds 9707) (prompt_buffer 9707 (by decide)) initialHandles (initialChainHolds p)
     env.weights (firstFfiGraph table) firstCarriers hm hi
   have hg := initial_step_graph (contents M K env (firstFfiGraph table))
   change stepGraphOf w initialHandles 0 = _ at hg
-  rw [hg] at ht hv
-  refine ⟨hs', ?_, hc, hv⟩
+  rw [hg] at ht hlen hv
+  refine ⟨hs', ?_, hc, hlen, hsome, hv⟩
   simpa only [first_token_carrier, firstStepEnv, firstContext, p, w, Nat.zero_add] using ht
+
+theorem first_decode_graph (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+    (parameters : TokenSequenceRanges.Parameters (firstPipeline M K env table leaves typed)) :
+    let after := (firstContext M K env table leaves typed parameters).run promptToken 1 (by decide)
+    ∃ hs', (∃ r, evalR M K (firstStepEnv M K env table) (firstFfiGraph table) 17776 = some r ∧
+      itemUint32 r = some after.token.val) ∧
+      ChainHolds (firstPipeline M K env table leaves typed).graph.stages hs' after.cache ∧
+      ∀ q ∈ cacheFacts Expected.cacheOutputs hs',
+        evalR M K (firstStepEnv M K env table) (firstFfiGraph table) (certAt firstCarriers q.1) = some q.2 := by
+  obtain ⟨hs', ht, hc, _, _, hv⟩ := first_decode_graph_caches M K env table leaves typed parameters
+  exact ⟨hs', ht, hc, hv⟩
 
 end Host.Load.Run.Full

@@ -1,4 +1,5 @@
 import host.load.run.full.FirstStep
+import host.load.CacheValues
 
 namespace Host.Load.Run.Full
 open Host.Load.Extract Host.Load.Program Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Ts
@@ -57,5 +58,26 @@ theorem first_decoded_state (leaves : Leaves code env.weights) (typed : TypedChe
   rw [first_cache_nodes, cacheFacts_map_nodes] at hq
   obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hq
   exact (stable _).symm.trans (hv p hp)
+
+/-- The actual first-yield cache objects have all the produced values needed
+by the next decode call. No cache contents are added as external premises. -/
+theorem first_source_cache_values (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+    (parameters : TokenSequenceRanges.Parameters (firstPipeline M K env table leaves typed)) :
+    let G := ffiGraph (concrete (CSrv.val ⟨table⟩)) SourceKernels.sources P.s2974.ffi.mlx
+    let after := (firstContext M K env table leaves typed parameters).run promptToken 1 (by decide)
+    ∃ hs', (∃ r, evalR M K env G 17776 = some r ∧ itemUint32 r = some after.token.val) ∧
+      ChainHolds (firstPipeline M K env table leaves typed).graph.stages hs' after.cache ∧
+      CacheValues M K env G firstChoice.cache hs' := by
+  dsimp only
+  rw [first_graph_matches]
+  obtain ⟨hs', ⟨r, hr, ht⟩, hc, hlen, hsome, hv⟩ :=
+    first_decode_graph_caches M K env table leaves typed parameters
+  have stable (i : Nat) := evalFfi_inputs M K (firstStepEnv M K env table) env rfl
+    (concrete (CSrv.val ⟨table⟩)) SourceKernels.sources firstChoice.graph i
+  refine ⟨hs', ⟨r, (stable _).symm.trans hr, ht⟩, hc, ?_⟩
+  have cached := cacheValues_of_facts M K (firstStepEnv M K env table) (firstFfiGraph table)
+    firstChoice.cache Expected.cacheOutputs hs' (certAt firstCarriers)
+    first_cache_carriers.symm hlen hsome hv
+  exact cached.congr M K _ _ env _ stable
 
 end Host.Load.Run.Full
