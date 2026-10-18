@@ -6,6 +6,14 @@ import host.ts.RenameRuntimeDriverMethods
 import host.ts.RenameRuntimeDriverGlobal
 import host.ts.RenameRuntimeDriverArrays
 import host.ts.RenameRuntimeDriverAllocations
+import host.ts.RenameRuntimeDriverUndefined
+import host.ts.RenameRuntimeDriverBranch
+import host.ts.RenameRuntimeDriverObjects
+import host.ts.RenameRuntimeDriverArrayLength
+import host.ts.RenameRuntimeDriverFor
+import host.ts.RenameRuntimeDriverClosedComparison
+import host.ts.RenameRuntimeDriverIndex
+import host.ts.RenameRuntimeDriverObjectShorthand
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -34,6 +42,11 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         pure "host_retained_heap_read"
       else if expression.isAppOfArity ``Expr.array 1 then pure "host_retained_array"
       else if expression.isAppOfArity ``Expr.arrow 1 then pure "host_retained_allocation"
+      else if expression.isAppOfArity ``Expr.object 1 then pure "host_retained_object"
+      else pure "host_retained_pure_step"
+    else if control.isAppOfArity ``Ctl.ex 2 then
+      let statement ← whnf control.getAppArgs[0]!
+      if statement.isAppOfArity ``Stmt.for_ 4 then pure "host_retained_for"
       else pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.bind 5 then pure "host_retained_pattern"
     else if control.isAppOfArity ``Ctl.call 3 then
@@ -52,11 +65,53 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         pure "host_retained_array"
       else if frame.isAppOfArity ``Frame.l 1 && inner.isAppOfArity ``LitF.array 3 then
         pure "host_retained_array"
+      else if frame.isAppOfArity ``Frame.l 1 && inner.isAppOfArity ``LitF.objVal 4 then
+        let rest ← whnf inner.getAppArgs[2]!
+        if rest.isAppOfArity ``List.cons 3 then
+          let property ← whnf rest.getAppArgs[1]!
+          if property.isAppOfArity ``Property.short 1 then pure "host_retained_object_short"
+          else pure "host_retained_object"
+        else pure "host_retained_object"
       else if frame.isAppOfArity ``Frame.b 1 then pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
+      else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.if_ 3 then
+        pure "host_retained_branch"
+      else if frame.isAppOfArity ``Frame.lp 1 then
+        if inner.isAppOfArity ``LoopF.forTest 7 || inner.isAppOfArity ``LoopF.forBody 6 || inner.isAppOfArity ``LoopF.forUpd 6 then
+          pure "host_retained_for"
+        else pure "host_retained_pure_step"
+      else if frame.isAppOfArity ``Frame.e 1 && (inner.isAppOfArity ``ExprF.indexL 3 || inner.isAppOfArity ``ExprF.indexR 1) then
+        pure "host_retained_index"
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.priv 3 then
         pure "host_retained_heap_read"
+      else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.member 2 then
+        let value ← whnf control.getAppArgs[0]!
+        if value.isAppOfArity ``Val.obj 1 then
+          let object ← whnf (← mkAppM ``St.obj? #[s,value.getAppArgs[0]!])
+          if object.isAppOfArity ``Option.some 2 then
+            let kind ← whnf (← mkAppM ``Obj.kind #[object.getAppArgs[1]!])
+            if kind.isAppOfArity ``Kind.array 1 then
+              if ← isDefEq inner.getAppArgs[0]! (mkConst ``kLength) then pure "host_retained_array_length"
+              else pure "host_retained_pure_step"
+            else pure "host_retained_pure_step"
+          else pure "host_retained_pure_step"
+        else pure "host_retained_pure_step"
+      else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.binR 2 then
+        let returned ← whnf control.getAppArgs[0]!
+        let saved ← whnf inner.getAppArgs[1]!
+        let operation ← whnf inner.getAppArgs[0]!
+        if returned.isConstOf ``Val.undef && saved.isConstOf ``Val.undef && operation.isConstOf ``BinOp.sne then
+          pure "host_retained_undefined"
+        else if returned.isAppOfArity ``Val.num 1 && saved.isAppOfArity ``Val.num 1 then
+          let right ← whnf returned.getAppArgs[0]!
+          let left ← whnf saved.getAppArgs[0]!
+          if right.isAppOfArity ``NumV.lit 1 && left.isAppOfArity ``NumV.lit 1 &&
+              (operation.isConstOf ``BinOp.lt || operation.isConstOf ``BinOp.le || operation.isConstOf ``BinOp.seq ||
+               operation.isConstOf ``BinOp.sne || operation.isConstOf ``BinOp.eq || operation.isConstOf ``BinOp.ne) then
+            pure "host_retained_closed_comparison"
+          else pure "host_retained_pure_step"
+        else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.k 1 then
         let fn ← whnf frame.getAppArgs[0]!
         if fn.isAppOfArity ``FnF.params 4 then
