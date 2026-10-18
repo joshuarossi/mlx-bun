@@ -88,19 +88,39 @@ structure RNode (δ κ : Type) where
   ins : List Nat
 deriving DecidableEq
 
-/-- How a node's numbers are read: integers into `δ`, f32 scalars as words. -/
+/-- How a node's numbers are read: integers into `δ`, f32 scalars as words,
+and typed host-buffer bytes through the same number valuation. -/
 structure Nums (δ : Type) where
   dim : Host.Ts.NumV → Option δ
   word : Host.Ts.NumV → Option Nat
   lit : Int → δ
+  byte : Host.Ts.Byte → Option Nat
 
 def Nums.d {δ : Type} (N : Nums δ) : Dim → Option δ
   | .lit i => some (N.lit i)
   | .sym x => N.dim x
 
+/-- Materialize a typed-array cell without changing the element conversion
+performed by the interpreter when it wrote that cell. -/
+def concreteCell (ν : Host.Ts.NumV → Option Host.Ts.F64) : Host.Ts.Cell → Option Host.Ts.Cell
+  | .num x => (ν x).map fun f => .num (.lit f)
+  | .big i => some (.big i)
+
+/-- Typed-array writes retain `Byte.part` cells, including token readbacks
+represented by numeric references. Encode them using the interpreter's own
+element encoding after resolving those references. Missing references or
+out-of-range byte offsets fail, rather than becoming zero bytes. -/
+def concreteByte (ν : Host.Ts.NumV → Option Host.Ts.F64) : Host.Ts.Byte → Option Nat
+  | .lit b => some b
+  | .part k c i => do
+    let cell ← concreteCell ν c
+    let bytes ← Host.Ts.encodeCell k cell
+    Host.Ts.nth? bytes i
+
 /-- The concrete reading: a number valuation (the final concrete server's `val`). -/
 def concrete (ν : Host.Ts.NumV → Option Host.Ts.F64) : Nums Int :=
-  ⟨fun x => (ν x).bind Host.Ts.F64.toInt?, fun x => (ν x).map fun f => Host.Ts.F64.f32Bits (Host.Ts.F64.toF32 f), id⟩
+  ⟨fun x => (ν x).bind Host.Ts.F64.toInt?, fun x => (ν x).map fun f => Host.Ts.F64.f32Bits (Host.Ts.F64.toF32 f), id,
+    concreteByte ν⟩
 
 def litBytes : List Host.Ts.Byte → Option (List Nat)
   | [] => some []
@@ -120,7 +140,7 @@ def resolveCfg {δ : Type} (N : Nums δ) (c : Cfg) : Option (RCfg δ) := do
 /-- `kn h`: the route name of kernel object `h` if its source and header are the route's. -/
 def resolvePrim {δ κ : Type} (N : Nums δ) (kn : Nat → Option (List Char)) (shape : List Dim) (dtype : Nat) :
     Prim → Option (RPrim δ κ)
-  | .data bytes => do pure (.data (← litBytes bytes) (← shape.mapM N.d) dtype)
+  | .data bytes => do pure (.data (← bytes.mapM N.byte) (← shape.mapM N.d) dtype)
   | .load f k => some (.load f k)
   | .tracer _ => some .unsupported
   | .zeros => (shape.mapM N.d).map (.zeros · dtype)
