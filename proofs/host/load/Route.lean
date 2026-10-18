@@ -288,17 +288,34 @@ import { maybePageKv } from "./state/request-policy";
 import { BF16_KV } from "./contracts/portable/composition";
 import { SSMCache } from "./state/ssm";
 import { KVCache } from "./state/kv";
+import { generateAutoregressive } from "./generation/autoregressive";
+import { MAX_TOKENS } from "%proof/decode-input";
 const DIR = "/Users/joshrossi/.cache/huggingface/hub/models--mlx-bun--Qwen3.8-27B-Trellis-3.2bpw/snapshots/cbb7a58a7222a19a3d02d36540c9cab5d9aadf0d";
 export let model = null;
 export let binding = null;
 export let cache = null;
 export let out = null;
+export let loadDone = false;
+export let generation = null;
+export let emitted = [];
+export let yieldCount = 0;
+export let lastYield = null;
+export let completed = false;
 async function main() {
   model = await openModel(DIR);
   binding = bindMlxAutoregressiveGraph(model);
   cache = binding.makeCache();
   maybePageKv(cache, binding.kv ?? BF16_KV, binding.pagedKv ?? null, 1 + 300);
   out = [cache.length, cache.filter(c => c instanceof SSMCache).length, cache.filter(c => c instanceof KVCache).length];
+  loadDone = true;
+  generation = generateAutoregressive(binding, [9707], { cache, maxTokens: MAX_TOKENS });
+  for await (const t of generation) {
+    emitted.push(t.token);
+    lastYield = t;
+    yieldCount = t.index + 1;
+  }
+  out = [emitted, generation.stats.generatedTokens, cache[3].offset, cache[3].keys.shape, cache[0].offset];
+  completed = true;
 }
 main().catch(e => { out = ["error", String(e && e.message)]; });
 "#
@@ -574,7 +591,8 @@ def mods : List UMod :=
   HostLib.mods ++ [⟨entry, Driver.ast⟩]
 
 def hosts : List (HMod LSt) :=
-  HostLib.hosts ++ [HostLib.textMod chars!"packages/inference/src/state/persistence.worker.js" Data.workerChars]
+  HostLib.hosts ++ [HostLib.textMod chars!"packages/inference/src/state/persistence.worker.js" Data.workerChars,
+    ⟨chars!"%proof/decode-input", pure [(chars!"MAX_TOKENS", .num (.ref 0))]⟩]
 
 /-- Module paths are relative to the real run's overlay root (`import.meta`). -/
 def cx : LinkCx LSt := ⟨mods, hosts, entry, chars!"/tmp/tscov/inst"⟩
