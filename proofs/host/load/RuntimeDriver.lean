@@ -28,6 +28,10 @@ elab "host_source_step " f:term ", " s:term " using " initial:term " to " t:term
           if (← whnf native.getAppArgs[0]!).isConstOf ``FfiN.toArrayBuffer then
             pure "host_retained_arrayBuffer"
           else throwError "host_source_step: unsupported original native source call"
+        else if native.isAppOfArity ``Native.arr 1 then
+          if (← whnf native.getAppArgs[0]!).isConstOf ``ArrN.push then
+            pure "host_retained_arrayPush"
+          else throwError "host_source_step: unsupported original native source call"
         else throwError "host_source_step: unsupported original native source call"
     else if control.isAppOfArity ``Ctl.construct 3 then pure "host_retained_typedBuffer"
     else if control.isAppOfArity ``Ctl.ret 1 then

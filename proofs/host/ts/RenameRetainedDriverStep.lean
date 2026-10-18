@@ -14,6 +14,9 @@ import host.ts.RenameRuntimeDriverFor
 import host.ts.RenameRuntimeDriverClosedComparison
 import host.ts.RenameRuntimeDriverIndex
 import host.ts.RenameRuntimeDriverObjectShorthand
+import host.ts.RenameRuntimeDriverUpdate
+import host.ts.RenameRuntimeDriverArrayPush
+import host.ts.RenameRuntimeDriverExpressionBody
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -43,6 +46,7 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if expression.isAppOfArity ``Expr.array 1 then pure "host_retained_array"
       else if expression.isAppOfArity ``Expr.arrow 1 then pure "host_retained_allocation"
       else if expression.isAppOfArity ``Expr.object 1 then pure "host_retained_object"
+      else if expression.isAppOfArity ``Expr.update 3 then pure "host_retained_update"
       else pure "host_retained_pure_step"
     else if control.isAppOfArity ``Ctl.ex 2 then
       let statement ← whnf control.getAppArgs[0]!
@@ -73,6 +77,8 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
           else pure "host_retained_object"
         else pure "host_retained_object"
       else if frame.isAppOfArity ``Frame.b 1 then pure "host_retained_pattern"
+      else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.updOld 3 then
+        pure "host_retained_update"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.declNext 3 then
         pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.s 1 && inner.isAppOfArity ``StmtF.if_ 3 then
@@ -83,6 +89,8 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
         else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.e 1 && (inner.isAppOfArity ``ExprF.indexL 3 || inner.isAppOfArity ``ExprF.indexR 1) then
         pure "host_retained_index"
+      else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.const 1 then
+        pure "host_retained_update"
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.priv 3 then
         pure "host_retained_heap_read"
       else if frame.isAppOfArity ``Frame.e 1 && inner.isAppOfArity ``ExprF.member 2 then
@@ -115,7 +123,10 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if frame.isAppOfArity ``Frame.k 1 then
         let fn ← whnf frame.getAppArgs[0]!
         if fn.isAppOfArity ``FnF.params 4 then
-          if (← whnf fn.getAppArgs[1]!).isAppOfArity ``List.nil 1 then pure "host_retained_parameter_body"
+          if (← whnf fn.getAppArgs[1]!).isAppOfArity ``List.nil 1 then
+            let body ← Parametric.Driver.field fn.getAppArgs[0]! ``Func.mk 7 3
+            if (← whnf body).isAppOfArity ``Body.expr 1 then pure "host_retained_expression_body"
+            else pure "host_retained_parameter_body"
           else pure "host_retained_pure_step"
         else pure "host_retained_pure_step"
       else pure "host_retained_pure_step"
