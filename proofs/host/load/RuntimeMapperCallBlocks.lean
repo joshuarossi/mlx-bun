@@ -34,4 +34,27 @@ host_assert_retained_schema callback, 26
 #guard_msgs in
 host_assert_retained_schema callback, 27
 
+host_source_step P.F, P.RestStream.micro0.micro1.s82 using P.RestStream.micro0.micro1.S82 to P.RestStream.micro0.micro1.s83 using P.RestStream.micro0.micro1.S83 as Lookup182
+host_source_step P.F, P.RestStream.micro0.micro1.s83 using P.RestStream.micro0.micro1.S83 to P.RestStream.micro0.micro1.s84 using P.RestStream.micro0.micro1.S84 as Enter183
+host_source_step P.F, P.RestStream.micro0.micro1.s84 using P.RestStream.micro0.micro1.S84 to P.RestStream.micro0.micro1.s85 using P.RestStream.micro0.micro1.S85 as Body184
+host_source_step P.F, P.RestStream.micro0.micro1.s85 using P.RestStream.micro0.micro1.S85 to P.RestStream.micro0.micro1.s86 using P.RestStream.micro0.micro1.S86 as Next185
+host_source_step P.F, P.RestStream.micro0.micro1.s86 using P.RestStream.micro0.micro1.S86 to P.RestStream.micro0.micro1.s87 using P.RestStream.micro0.micro1.S87 as Guard186
+
+host_retained_theorem second_callback := fun
+    (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ RetainedMapperBodyBlocks.SecondReceiver.initialServer C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' RetainedMapperBodyBlocks.SecondReceiver.input s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live RetainedMapperBodyBlocks.SecondReceiver.input s)
+    (fnRole thisRole role : Annotated.Value) (extraRoles : List Annotated.Value)
+    (controlNote : notes.runtime.control = callNote fnRole thisRole (.obj RetainedMapperEntryBlocks.Second176.sourceOwner::extraRoles))
+    (fieldNote : notes.privates.owners RetainedGetterBlocks.Second187.sourceOwner =
+      some ⟨RetainedGetterBlocks.Second187.sourceBrand,RetainedGetterBlocks.Second187.sourceHandleName,role⟩)
+    (bound : s.next+3 ≤ 2^64) => by
+  host_retained_chain P.F, [RetainedMapperBodyBlocks.SecondReceiver.retained_transport,
+    Lookup182.retained_transport,Enter183.retained_transport,Body184.retained_transport,Next185.retained_transport,Guard186.retained_transport,
+    RetainedGetterReturns.Second187.retained_transport,RetainedMapperBodyBlocks.SecondReturn.retained_transport] using h, inventory, inst
+host_assert_retained_schema second_callback, 26
+
 end Host.Load.Run.Full.Ordinary.RetainedMapperCallBlocks
