@@ -101,7 +101,8 @@ theorem retained_int_from_source {notes : RetainedNotes}
       ProducerSupport roots H N (finishInt s₀ handle buffer sourceConfig name bytes₀ value₀').ffi.mlx ∧
       ProducerSupport (resourceImage R.node (fun i => N i ∧ roots i)) (resourceImage R.handle H) (resourceImage R.node N)
         (finishInt s (R.handle handle) (R.a buffer) target name bytes value').ffi.mlx ∧
-      TableExtends C₀ D₀ ∧ TableExtends C D := by
+      TableExtends C₀ D₀ ∧ TableExtends C D ∧
+      (∀ meaning, numberRole = .literal meaning → D₀ = C₀ ∧ D = C) := by
   dsimp only
   have handleRole := (inventory.runtime.call_argument_role fnRole thisRole
     [.handle handle,.ptr (.js buffer) 0,valueRole] (.obj fn) receiver _ control controlNote 0 (.handle handle) rfl).2
@@ -109,7 +110,7 @@ theorem retained_int_from_source {notes : RetainedNotes}
     [.handle handle,.ptr (.js buffer) 0,valueRole] (.obj fn) receiver _ control controlNote 2 valueRole rfl
   have sourceNumber : numberRole.Holds ν₀ C₀ value₀ := numeric.number
     (by simpa only [control,callArgument,Host.Ts.arg,nthD] using sourceValue)
-  obtain ⟨value₀',value',bytes,target,D₀,D,left,right,post,sourceExtension,targetExtension⟩ := ConfigIntHost.from_source
+  obtain ⟨value₀',value',bytes,target,D₀,D,left,right,post,sourceExtension,targetExtension,literalServers⟩ := ConfigIntHost.from_source
     ν₀ ν C₀ C R nodes boundary objects H N tail host live framed before after old old' s₀ s h
     fn types handle buffer value₀ function signatureObject bufferObject returns receiver bytes₀ name
     control functionRead functionKind signatureRead signatureKind bufferRead bufferKind sourceName signatureFrame handleLive
@@ -124,6 +125,6 @@ theorem retained_int_from_source {notes : RetainedNotes}
   have retained := inventory.heap_step runtime rfl rfl sourceExtension targetExtension
   have updatedPolicy := policy.config_write handle {configRole with ints := configRole.ints ++ [(name,numberRole.decoded .i32)]}
   exact ⟨value₀',value',bytes,target,D₀,D,left,right,post,retained,updatedPolicy,
-    updatedPolicy.source post.native.2,updatedPolicy.target post.native.2,sourceExtension,targetExtension⟩
+    updatedPolicy.source post.native.2,updatedPolicy.target post.native.2,sourceExtension,targetExtension,literalServers⟩
 
 end Host.Load.Run.Full.Ordinary.ConfigIntInventory

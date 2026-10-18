@@ -103,7 +103,8 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         R live framed before after old old'
         (finishInt s₀ a b source name bytes₀ value₀')
         (finishInt s (R.handle a) (R.a b) target name bytes value') ∧
-      TableExtends C₀ D₀ ∧ TableExtends C D := by
+      TableExtends C₀ D₀ ∧ TableExtends C D ∧
+      (∀ meaning, numberRole = .literal meaning → D₀ = C₀ ∧ D = C) := by
   have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   have bufferLive : live b := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.2.1
   obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
@@ -145,6 +146,14 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                 (cstrArg_roles b 0 hbytes).symm.trans sourceName
               obtain ⟨value₀',D₀,run₀,role₀,ext₀⟩ := sourceValue.decode .i32
               obtain ⟨value',D,run',role',ext⟩ := hvalue.decode .i32
+              have literalServers (meaning : SymE) (literal : numberRole = .literal meaning) : D₀ = C₀ ∧ D = C := by
+                cases literal
+                cases sourceValue with | literal _ x _ =>
+                  cases hvalue with | literal _ y _ =>
+                    have left : some (.lit (F64.un .int32 x),C₀) = some (value₀',D₀) := run₀
+                    have right : some (.lit (F64.un .int32 y),C) = some (value',D) := run'
+                    exact ⟨(congrArg Prod.snd (Option.some.inj left)).symm,
+                      (congrArg Prod.snd (Option.some.inj right)).symm⟩
               have hm := VectorHost.state_mono h ext₀ ext
               obtain ⟨target,targetConfig,sourceFields,targetFields⟩ :=
                 hm.native.2.config_view_roles a handleLive role source objectRole sourceConfig
@@ -172,7 +181,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
                 .node _ (.cons (.atom _ _) (.cons (.node _ argumentRoles)
                   (.cons (.node _ (.cons (.number zeroRole) .nil)) .nil)))
               refine ⟨value₀',value',bytes,target,D₀,D,?_,?_,
-                hm.finishStatus _ _ nativeAfter _ _ _ eventRoles zeroRole,ext₀,ext⟩
+                hm.finishStatus _ _ nativeAfter _ _ _ eventRoles zeroRole,ext₀,ext,literalServers⟩
               · change interpC (step F s₀).run C₀ = _
                 rw [step_int_eq s₀ fn types a b value₀ fo signature₀ returns receiver source name bytes₀
                   hc₀ hf₀ hk₀ ht₀ htk₀
