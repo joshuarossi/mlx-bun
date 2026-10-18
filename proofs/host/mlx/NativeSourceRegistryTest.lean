@@ -40,6 +40,11 @@ run_cmd liftTermElabM do
   unless sigmoid == #["host_retained_unary"] do throwError "native source registry selected the wrong unary command"
   let conv ← registeredNativeSourceCommands (toExpr chars!"mlx_conv1d")
   unless conv == #["host_retained_conv1d"] do throwError "native source registry selected the wrong convolution command"
+  for symbol in [chars!"mlx_add",chars!"mlx_multiply"] do
+    let commands ← registeredNativeSourceCommands (toExpr symbol)
+    unless commands == #["host_retained_binary"] do throwError "native source registry selected the wrong binary command"
+  let newData ← registeredNativeSourceCommands (toExpr chars!"mlx_array_new_data")
+  unless newData == #["host_retained_arrayNewData"] do throwError "native source registry selected the wrong data constructor command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 

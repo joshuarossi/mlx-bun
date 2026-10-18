@@ -17,6 +17,8 @@ import host.mlx.NativeMetalFrontend
 import host.mlx.NativeSliceDynamicFrontend
 import host.mlx.NativeUnaryFrontend
 import host.mlx.NativeConvFrontend
+import host.mlx.NativeBinaryFrontend
+import host.mlx.NativeDataFrontend
 
 set_option Elab.async false
 
@@ -42,3 +44,6 @@ host_register_native_source "mlx_fast_metal_kernel_apply" => "host_retained_meta
 host_register_native_source "mlx_slice_dynamic" => "host_retained_sliceDynamic"
 host_register_native_source "mlx_sigmoid" => "host_retained_unary"
 host_register_native_source "mlx_conv1d" => "host_retained_conv1d"
+host_register_native_source "mlx_add" => "host_retained_binary"
+host_register_native_source "mlx_multiply" => "host_retained_binary"
+host_register_native_source "mlx_array_new_data" => "host_retained_arrayNewData"
