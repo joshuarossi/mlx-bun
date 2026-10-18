@@ -120,6 +120,7 @@ elab "host_chunk_prefix_frames " p:ident i:num : command => liftTermElabM do
     type := ty
     value := mkApp2 (mkConst (chainName pre "pfac" k)) (mkConst (pre ++ `prefixBase)) (mkConst (pre ++ `tokenBase)) })
   IO.println s!"prefix chunk {k} checked in {(← IO.monoMsNow) - started}ms"
+  (← IO.getStdout).flush
 
 /-- Compose the checked source chunks, retaining the same arbitrary caller prefix
 and unread native suffix throughout the whole interval. -/
