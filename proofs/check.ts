@@ -5399,6 +5399,9 @@ const proofFiles = [
   "host/ts/RenameRetainedMapperCall.lean",
   "host/ts/RenameRetainedMapperCallFrontend.lean",
   "host/ts/RenameStateValuationRebase.lean",
+  "host/load/RuntimeOutArrayReturnBlocks.lean",
+  "host/ts/RenameRetainedOutArrayReturn.lean",
+  "host/ts/RenameRetainedOutArrayReturnFrontend.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
