@@ -5268,6 +5268,12 @@ const proofFiles = [
   "host/ts/RenameRuntimeDriverGetter.lean",
   "host/ts/RenameRuntimeDriverGetterTest.lean",
   "host/ts/renameOrdinary/RuntimeGetterCase.lean",
+  "host/mlx/NativeIdentitySeed.lean",
+  "host/mlx/NativeIdentitySeedTest.lean",
+  "host/ts/renameOrdinary/RankOriginInitialRetained.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedShape.lean",
+  "host/ts/renameOrdinary/RankOriginNativeFacts.lean",
+  "host/ts/renameOrdinary/RankOriginNativeSeed.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
