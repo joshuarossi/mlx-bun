@@ -29,6 +29,7 @@ import host.ts.RenameRuntimeDriverArraySpreadEntry
 import host.ts.RenameRuntimeDriverPrivateAssign
 import host.ts.RenameRuntimeDriverPrivateObjectRead
 import host.ts.RenameRuntimeDriverObjectVariable
+import host.ts.RenameRuntimeDriverNullishAssignment
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -152,6 +153,12 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       else if frame.isAppOfArity ``Frame.b 1 then pure "host_retained_pattern"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.updOld 3 then
         pure "host_retained_update"
+      else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.old 4 then
+        let op ← whnf inner.getAppArgs[0]!
+        if op.isAppOfArity ``AsgOp.log 1 && (← whnf op.getAppArgs[0]!).isConstOf ``LogOp.nullish &&
+            (← whnf control.getAppArgs[0]!).isAppOfArity ``Val.obj 1 then
+          pure "host_retained_nullish_object"
+        else pure "host_retained_pure_step"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.privObj 5 then
         pure "host_retained_private_assign"
       else if frame.isAppOfArity ``Frame.a 1 && inner.isAppOfArity ``AsgF.put 3 then

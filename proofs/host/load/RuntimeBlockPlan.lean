@@ -72,7 +72,8 @@ hundred-step microstate groups. Successful summaries keep their checked span;
 otherwise the original one-transition selector is used. Planning discharges
 source facts, while retained entry roles are discharged by the chain consumer. -/
 private def generatePlan (f : TSyntax `term) (base : TSyntax `ident)
-    (start count : TSyntax `num) (name : TSyntax `ident) (replacement : Option (TSyntax `term)) : CommandElabM Unit := do
+    (start count : TSyntax `num) (name : TSyntax `ident) (replacement : Option (TSyntax `term))
+    (linear : Bool := false) : CommandElabM Unit := do
   let some fText := f.raw.reprint | throwError "host_source_plan: cannot print Ffi"
   let count := count.getNat
   unless 0 < count && count ≤ 1000 do throwError "host_source_plan: expected between 1 and 1000 source transitions"
@@ -80,12 +81,19 @@ private def generatePlan (f : TSyntax `term) (base : TSyntax `ident)
   let finish := start+count
   let pre := (← getCurrNamespace) ++ name.getId
   let root := base.getId.toString
-  let state (index : Nat) := s!"{root}.micro{index/100}.s{index%100}"
+  let env ← getEnv
+  let boundary (tag : String) (index : Nat) :=
+    if linear then s!"{root}.{tag}{index}"
+    else
+      let inner := base.getId ++ Name.mkSimple s!"micro{index/100}" ++ Name.mkSimple s!"{tag}{index%100}"
+      if index%100 == 0 && !env.contains inner then s!"{root}.{tag}{index/100}"
+      else inner.toString
+  let state (index : Nat) := boundary "s" index
   let replacementText ← replacement.mapM fun expression => do
     let some text := expression.raw.reprint | throwError "host_source_plan: cannot print symbolic substitution"
     pure text
   let server (index : Nat) :=
-    let original := s!"{root}.micro{index/100}.S{index%100}"
+    let original := boundary "S" index
     match replacementText with
     | none => original
     | some expression => s!"(({original}).substitute ({expression}))"
@@ -137,6 +145,12 @@ Each selected frontend still checks both original source endpoints. -/
 elab "host_source_plan_subst " f:term ", " base:ident " from " start:num " plan_steps " count:num
     " substitute " replacement:term " as " name:ident : command =>
   generatePlan f base start count name (some replacement)
+
+/-- Plan a checked, field-shared source region with consecutive local aliases.
+The selected rules and span checks are the same as the retained-cut planner. -/
+elab "host_source_linear_plan_subst " f:term ", " base:ident " from " start:num " plan_steps " count:num
+    " substitute " replacement:term " as " name:ident : command =>
+  generatePlan f base start count name (some replacement) true
 
 private partial def plannedName (expression : Lean.Expr) : MetaM Lean.Name := do
   let expression ← whnf expression
