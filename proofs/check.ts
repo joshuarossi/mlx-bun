@@ -3473,6 +3473,10 @@ const proofFiles = [
   "host/load/tests/Micro.lean",
   "host/mlx/OwnedFfi.lean",
   "host/ts/RenameNumericRole.lean",
+  "host/load/CacheValues.lean",
+  "host/mlx/FfiCache.lean",
+  "host/mlx/OwnedMetadata.lean",
+  "host/ts/RenameParametricState.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
