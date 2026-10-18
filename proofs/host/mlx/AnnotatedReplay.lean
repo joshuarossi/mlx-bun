@@ -85,6 +85,34 @@ def withReplayRole (roles : Nat → GraphNode) (old fresh closure : Nat) (inputs
     | none => roles old
   else roles i
 
+def GraphNode.capturedReplay (role : GraphNode) (closure : Nat) (inputs : List Nat) : GraphNode :=
+  match role.graph with
+  | some (p,_) => role.replayRole closure p inputs
+  | none => role
+
+theorem GraphNode.capturedReplay_shape (role : GraphNode) (closure : Nat) (inputs : List Nat) :
+    (role.capturedReplay closure inputs).shape = role.shape := by
+  cases hg : role.graph <;> simp [capturedReplay,hg,replayRole]
+
+theorem GraphNode.capturedReplay_dtype (role : GraphNode) (closure : Nat) (inputs : List Nat) :
+    (role.capturedReplay closure inputs).dtype = role.dtype := by
+  cases hg : role.graph <;> simp [capturedReplay,hg,replayRole]
+
+theorem NodeRel.captured_replayed {roles : Nat → GraphNode} {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren}
+    {boundary : Nat → Prop} {old fresh closure : Nat} {inputs targetInputs : List Nat} {n₀ n : Node}
+    (h : NodeRel roles ν₀ ν C₀ C R boundary old n₀ n) (full : ¬ boundary old)
+    (freshRole : roles fresh = (roles old).capturedReplay closure inputs)
+    (mapped : targetInputs = inputs.map R.node) :
+    NodeRel roles ν₀ ν C₀ C R boundary fresh
+      ⟨.replayed closure n₀.prim,inputs,n₀.shape,n₀.dtype⟩
+      ⟨.replayed (R.handle closure) n.prim,targetInputs,n.shape,n.dtype⟩ := by
+  cases hg : (roles old).graph with
+  | none => exact False.elim (full (h.cut hg))
+  | some pair =>
+    rcases pair with ⟨p,captured⟩
+    exact h.replayed closure p captured inputs targetInputs hg
+      (by rw [freshRole,GraphNode.capturedReplay,hg]) mapped
+
 /-- The fresh annotation is computed from the captured annotation before
 interpretation. A fully related traced node supplies its primitive role. -/
 theorem NodeRel.fresh_replayed {roles : Nat → GraphNode} {ν₀ ν : Nat → F64} {C₀ C : CSrv} {R : Ren}
