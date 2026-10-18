@@ -4,6 +4,12 @@ import host.ts.RenameParametricPropWrites
 set_option Elab.async false
 namespace Host.Ts.Owned.Parametric
 
+/-- Fixed constructor argument retained below field-initializer frames. -/
+def classBodyArgument : List Frame → Val
+  | .k (.ctorBody _ _ _ args)::_ => nthD .undef args 0
+  | _::rest => classBodyArgument rest
+  | [] => .undef
+
 theorem kind_base_class {NR : NumV → NumV → Prop} {R : Ren}
     {ctor : Func} {env : Env} {members : List InstMember} {k : Kind}
     (h : TreeR NR R (Encode.kind (.fn (.klass (some ctor) env .null members))) (Encode.kind k)) :

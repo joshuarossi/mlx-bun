@@ -8,10 +8,7 @@ namespace Host.Load.Run.Full.Ordinary.VectorToConcat
 open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Mlx.Ffi.Annotated
 host_transport_structural P.F, P.RestStream.micro0.micro3.s71 to P.RestStream.micro0.micro3.s72 as MlxClassArgument371
 
-def constructorArgument {S : Type} (s : St S) : Val :=
-  match s.stack with
-  | .k (.fields _ _ _)::.k (.ctorBody _ _ _ args)::_ => nthD .undef args 0
-  | _ => .undef
+def constructorArgument {S : Type} (s : St S) : Val := classBodyArgument s.stack
 
 /-- The returned owned handle flows through the real constructor argument
 collector and class entry into the new constructor-body frame. -/
