@@ -5,6 +5,7 @@ import host.ts.RenameRuntimeDriverReturns
 import host.ts.RenameRuntimeDriverDescent
 import host.ts.RenameRuntimeDriverCallStart
 import host.ts.RenameRuntimeDriverCallEntry
+import host.ts.RenameRuntimeDriverParameters
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -55,7 +56,10 @@ elab "host_runtime_step " f:term ", " s:term " using " initial:term " to " t:ter
           else pure "host_runtime_statement"
         else if statement.isConstOf ``StmtF.ret || statement.isAppOfArity ``StmtF.scope 1 then pure "host_runtime_return"
         else throwError "host_runtime_step: unsupported source statement continuation"
-      else if frame.isAppOfArity ``Frame.k 1 then pure "host_runtime_return"
+      else if frame.isAppOfArity ``Frame.k 1 then
+        let fn ← whnf frame.getAppArgs[0]!
+        if fn.isAppOfArity ``FnF.params 4 || fn.isAppOfArity ``FnF.paramDflt 5 then pure "host_runtime_parameter"
+        else pure "host_runtime_return"
       else throwError "host_runtime_step: unsupported source continuation"
     else throwError "host_runtime_step: unsupported source control"
   Parametric.Driver.emit s!"{selected} {← printed f.raw}, {← printed s.raw} using {← printed initial.raw} to {← printed t.raw} using {← printed next.raw} as {name.getId}"
