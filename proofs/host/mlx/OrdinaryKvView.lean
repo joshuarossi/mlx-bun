@@ -22,6 +22,13 @@ theorem source_counters : Source50036.output.ffi.mlx.next = Source50036.input.ff
 host_retained_kvView Host.Load.ffi, Source50036.output using KvViewSource.nextServer
   to Source50036.output using KvViewSource.nextServer as RejectReturn
 
+/-- error: host_retained_kvView: expected cache prefix geometry -/
+#guard_msgs in
+host_retained_kvView Host.Load.ffi,
+  {Source50036.input with ctl := .call (.obj 4713) (.obj 4817) [.ptr (.js 3131616) 0,.big 29492,.ptr (.js 3131589) 0,.big 4,
+      .ptr (.js 3131589) 0,.big 4,.ptr (.js 3131604) 0,.big 4,.big 2]}
+  using KvViewSource.initialServer to Source50036.output using KvViewSource.nextServer as RejectNonzeroStart
+
 /-- error: (kernel) declaration type mismatch -/
 #guard_msgs (error, substring := true) in
 run_cmd do

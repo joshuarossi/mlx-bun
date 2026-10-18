@@ -1,4 +1,5 @@
 import host.mlx.NativeKvViewRetained
+import host.mlx.NativeKvViewSelection
 import host.ts.RenameRuntimeSourceCut
 import host.ts.RenameRouteDriver
 
@@ -72,6 +73,27 @@ elab "host_retained_kvView " f:term ", " s:term " using " initial:term " to " t:
     let node ← field (← mkAppM ``PTrie.get #[nodes,input]) ``Option.some 2 1
     unless ← isDefEq (← mkAppM ``List.length #[← mkAppM ``Host.Mlx.Ffi.Node.shape #[node]]) (mkNatLit 4) do
       throwError "host_retained_kvView: expected four-dimensional input"
+    let integers (dimensions : Lean.Expr) := do
+      let mut rest := dimensions
+      let mut result : Array Lean.Expr := #[]
+      while !(← whnf rest).isAppOfArity ``List.nil 1 do
+        let dimension ← field rest ``List.cons 3 1
+        result := result.push (← field dimension ``Host.Mlx.Ffi.Dim.lit 1 0)
+        rest ← field rest ``List.cons 3 2
+      mkListLit (mkConst ``Int) result.toList
+    let inputSizes ← integers (← mkAppM ``Host.Mlx.Ffi.Node.shape #[node])
+    let dimensions (owner : Lean.Expr) := do
+      let object ← field (← mkAppM ``St.obj? #[s,owner]) ``Option.some 2 1
+      let bytes ← field (← mkAppM ``Obj.kind #[object]) ``Kind.buf 1 0
+      let argument ← mkAppM ``Arg.jsPtr #[owner,mkNatLit 0,bytes]
+      let count ← mkAppM ``Arg.big #[← mkAppM ``Int.ofNat #[mkNatLit 4]]
+      integers (← field (← mkAppM ``Host.Mlx.Ffi.dimsArg #[argument,count]) ``Option.some 2 1)
+    let first ← dimensions start
+    let last ← dimensions stop
+    let steps ← dimensions stride
+    let eligible ← mkAppM ``Host.Mlx.Ffi.Annotated.kvPrefixEligible #[inputSizes,first,last,steps]
+    unless ← isDefEq eligible (mkConst ``Bool.true) do
+      throwError "host_retained_kvView: expected cache prefix geometry"
     let sourceNext ← mkAppM ``Host.Mlx.Ffi.St.nnext #[mlx]
     let sourceEndNative ← mkAppM ``Host.Load.LSt.mlx #[← mkAppM ``St.ffi #[t]]
     let sourceEndNext ← mkAppM ``Host.Mlx.Ffi.St.nnext #[sourceEndNative]
@@ -80,7 +102,8 @@ elab "host_retained_kvView " f:term ", " s:term " using " initial:term " to " t:
     for (tag,value) in [("F",f),("input",s),("output",t),("address",address),("object",object),
       ("types",types),("signatureObject",signatureObject),("returns",returns),("sourceThis",ctl.getAppArgs[1]!),
       ("out",out),("handle",handle),("start",start),("stop",stop),("stride",stride),("stream",stream),
-      ("producer",input),("node",node),("kind",kind)] do
+      ("producer",input),("node",node),("kind",kind),
+      ("inputSizes",inputSizes),("first",first),("last",last),("steps",steps)] do
       let type? := if tag == "input" || tag == "output" then
         some (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) (mkConst (pre ++ `F)))) else none
       addData (pre ++ Name.mkSimple tag) value type?
@@ -100,6 +123,7 @@ elab "host_retained_kvView " f:term ", " s:term " using " initial:term " to " t:
     ("source_allocation",s!"{n}.output.ffi.mlx.nnext = {n}.input.ffi.mlx.nnext + (match {n}.kind with | .fresh => 1 | .alias => 0)")]
     do Parametric.Driver.emit (kvHeader ++ s!"theorem {n}.{fact} : {type} := by host_kernel_rfl")
   for (fact,type) in [
+    ("source_eligible",s!"kvPrefixEligible {n}.inputSizes {n}.first {n}.last {n}.steps = true"),
     ("source_native_bound",s!"{n}.input.ffi.mlx.next < 2^64"),
     ("source_node_bound",s!"{n}.input.ffi.mlx.nnext < 2^64"),
     ("source_output_bound",s!"{n}.out < 2^64")]
