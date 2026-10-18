@@ -44,7 +44,7 @@ theorem source_step : step F ArrayCall.input = M.pure ArrayCall.output := by
 
 /-- The actual empty-array constructor returns the fixed null handle and
 preserves the entire native relation, including all selected object roles. -/
-theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem transport_heap (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (nodes : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
     (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
     (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
@@ -58,7 +58,7 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
         R live framed before after old old' ArrayCall.output t ∧
       t.ctl = .ret (.big 0) ∧ t.ffi = s.ffi ∧
-      (Host.Ts.Owned.Annotated.Value.ordinaryBig 0).Holds ν C R (.big 0) := by
+      (Host.Ts.Owned.Annotated.Value.ordinaryBig 0).Holds ν C R (.big 0) ∧ t.heap = s.heap ∧ t.next = s.next := by
   have hk := ArrayCall.source_callee_kind
   rw [ArrayCall.source_caps] at hk
   have calleeLive : live 4630 := by
@@ -95,7 +95,7 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         have hpost := h.finishBig ArrayCall.input.ffi s.ffi h.native chars!"mlx_array_new" [] [] 0 0 he hv
         have hcall : F.call s.ffi chars!"mlx_array_new" [] = M.pure (some (s.ffi,.big 0,[])) := by
           simpa only [F] using load_array_new s.ffi
-        refine ⟨t,?_,?_,?_,rfl,rfl,.ordinaryBig 0⟩
+        refine ⟨t,?_,?_,?_,rfl,rfl,.ordinaryBig 0,rfl,rfl⟩
         · rw [source_step]; rfl
         · rw [step_ffi_noargs F s (R.a 4630) (R.a 4253) chars!"mlx_array_new" chars!"u64"
             fo signature s.ffi (.big 0) [] hc (by simp only [Host.Ts.St.obj?,hfo]) hfk
@@ -104,5 +104,24 @@ theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         · change StateR _ _ _ _ _ _ _ _ _ sourcePost t at hpost
           rw [source_post] at hpost
           exact hpost
+
+theorem transport (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (nodes : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+      R live framed before after old old' ArrayCall.input s)
+    (signatureFrame : ¬ framed 4253) :
+    ∃ t, interpC (step F ArrayCall.input).run C₀ = some (ArrayCall.output,C₀) ∧
+      interpC (step F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C nodes boundary objects H N tail host)
+        R live framed before after old old' ArrayCall.output t ∧
+      t.ctl = .ret (.big 0) ∧ t.ffi = s.ffi ∧
+      (Host.Ts.Owned.Annotated.Value.ordinaryBig 0).Holds ν C R (.big 0) := by
+  obtain ⟨t,h₀,ht,hr,hctl,hffi,hrole,_,_⟩ := transport_heap ν₀ ν C₀ C R nodes boundary objects H N tail host
+    live framed before after old old' s h signatureFrame
+  exact ⟨t,h₀,ht,hr,hctl,hffi,hrole⟩
 
 end Host.Load.Run.Full.Ordinary.ArrayHost
