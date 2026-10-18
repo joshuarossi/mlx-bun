@@ -230,4 +230,68 @@ theorem step_private_read_stack (F : Ffi) (NR : NumV → NumV → Prop)
   rw [hf]
   exact stack
 
+theorem step_declaration_value_stack (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (v₀ : Val) (kind : DeclKind) (p : Pat) (rest : List (Pat × Option Expr)) (env : Env) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret v₀) (hf₀ : s₀.stack = .s (.decl kind p rest env)::fs₀)
+    (hk : isUsing kind = false) (run : interpC (step F s).run C = some (result,D)) : result.stack.tail = s.stack.tail := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,_⟩ := h.stack_view hf₀
+  rw [hfr.decl_view] at hf
+  rw [step_declaration_value_eq F s v kind p rest (R.env env) fs hc hf hk] at run
+  have he := congrArg Prod.fst (Option.some.inj run)
+  rw [hf]
+  exact (congrArg (fun t => t.stack.tail) he).symm
+
+theorem step_declaration_done_stack (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (v₀ : Val) (kind : DeclKind) (rest : List (Pat × Option Expr)) (env : Env) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret v₀) (hf₀ : s₀.stack = .s (.declNext kind rest env)::fs₀)
+    (empty : rest = []) (run : interpC (step F s).run C = some (result,D)) : result.stack = s.stack.tail := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,_⟩ := h.stack_view hf₀
+  rw [hfr.declNext_view] at hf
+  rw [step_declaration_next_eq F s v kind rest (R.env env) fs hc hf] at run
+  have he := congrArg Prod.fst (Option.some.inj run)
+  dsimp only at he
+  rw [← he,hf,empty]
+  rfl
+
+theorem step_bind_init_stack (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (name : Name) (v₀ : Val) (env : Env) (kind : DeclKind) (a : Nat)
+    (hc₀ : s₀.ctl = .bind (.id name) v₀ env .init kind) (he₀ : lookupEnv name env = some a)
+    (run : interpC (step F s).run C = some (result,D)) :
+    result.stack = s.stack := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).bind_view
+  have hl := h.controlLive
+  rw [hc₀] at hl
+  have ha := env_lookup_live name env a hl.2.2.1 he₀
+  have he : lookupEnv name (R.env env) = some (R.a a) := by rw [lookupEnv_map,he₀]; rfl
+  rw [step_bind_init_eq F s name v (R.env env) kind (R.a a) hc he] at run
+  have heq := congrArg Prod.fst (Option.some.inj run)
+  dsimp only at heq
+  exact (congrArg St.stack heq).symm
+
+theorem step_binary_left_stack_from_source (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s result : St F.S) (C D : CSrv)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (v₀ : Val) (op : BinOp) (right : Expr) (env : Env) (fs₀ : List Frame)
+    (hc₀ : s₀.ctl = .ret v₀) (hf₀ : s₀.stack = .e (.binL op right env)::fs₀)
+    (run : interpC (step F s).run C = some (result,D)) : result.stack.tail = s.stack.tail := by
+  obtain ⟨v,hc,_⟩ := (h.control_view hc₀).ret_view
+  obtain ⟨f,fs,hf,hfr,_⟩ := h.stack_view hf₀
+  rw [hfr.binL_view] at hf
+  rw [step_binary_left_eq F s v op right (R.env env) fs hc hf] at run
+  have hr := congrArg Prod.fst (Option.some.inj run)
+  rw [hf]
+  exact (congrArg (fun t => t.stack.tail) hr).symm
+
 end Host.Ts.Owned.Parametric

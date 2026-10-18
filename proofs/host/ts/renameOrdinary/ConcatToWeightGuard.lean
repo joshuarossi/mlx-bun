@@ -28,7 +28,7 @@ theorem concat_node_counter : Callback49.input.ffi.mlx.nnext = VectorCall.input.
 /-- Continuous original source execution from concat parameter initialization,
 through both map callbacks, vector/concat and construction, to the weight rank
 check. Fixed later fields are carried from this entry by actual heap frames. -/
-theorem concat_to_weight_rank_guard (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem concat_to_weight_rank_guard_framed (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (base : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
     (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
     (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
@@ -68,7 +68,7 @@ theorem concat_to_weight_rank_guard (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R 
       result.heap.get (R.a ConvInputBinding429.sourceAddress) = some (.cell (some (.obj (R.a 3126703)))) ∧
       result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧
       (∀ a, live a → a < 3126665 → a ≠ ConvInputBinding429.sourceAddress → result.heap.get (R.a a) = s.heap.get (R.a a)) ∧
-      result.heap.get (R.a WeightInitialize9.sourceAddress) = some (.cell (some (natV 3))) := by
+      result.heap.get (R.a WeightInitialize9.sourceAddress) = some (.cell (some (natV 3))) ∧ SavedConvSequence R (result.stack.drop 3) := by
   let NR := NumberRoles ν₀ ν C₀ C
   let FR := VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.preRoles base) boundary objects H N tail host
   have firstBound : R.handle 25732 < 2^64 := by
@@ -128,17 +128,65 @@ theorem concat_to_weight_rank_guard (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R 
   have next249 := h.target_next_add h249 (VectorCall.input.next-Callback49.input.next) (by host_kernel_rfl)
   have budget : VectorCall.input.next-Callback49.input.next+40 ≤ 64 := by decide +kernel
   have bound249 : s249.next+40 ≤ 2^64 := by omega
-  obtain ⟨result,run253,hpost,privateResult,inputResult,sequenceResult,frameResult,rankResult⟩ := vector_to_weight_rank_guard
+  obtain ⟨result,run253,hpost,privateResult,inputResult,sequenceResult,frameResult,rankResult,savedResult⟩ := vector_to_weight_rank_guard_framed
     ν₀ ν C₀ C R base boundary objects H N tail host (ConcatVectorLive live) framed before after old old' s249 h249
     count buffer axis249 stream249 code249 proto249 vectorSignatureFrame nullSignatureFrame concatSignatureFrame freeSignatureFrame
     firstLive secondLive (grow _ functionProtoLive) functionProtoFixed (grow _ globalLive) globalFixed
     (grow _ arrayProtoLive) arrayProtoFixed (grow _ bufferProtoLive) bufferProtoFixed
     (grow _ typedProtoLive) typedProtoFixed objectProtoFixed weight249 weightSignatureFrame weightHandleLive
     (grow _ sequenceLive) sequence249 (sameNodes.symm ▸ nodeBound) ((congrArg (fun n => n+1) sameNative).symm ▸ nativeBound) bound249
-  refine ⟨result,runC_join P.F (m:=200) (n:=253) run200 run253,hpost,privateResult,inputResult,sequenceResult,?_,rankResult⟩
+  refine ⟨result,runC_join P.F (m:=200) (n:=253) run200 run253,hpost,privateResult,inputResult,sequenceResult,?_,rankResult,savedResult⟩
   intro address alive below other
   have beforeHandles : address ≠ VectorInput225.sourceAddress := by
     have : VectorInput225.sourceAddress = 3126669 := by host_kernel_rfl
     rw [this]; omega
   exact (frameResult address (grow _ alive) below other).trans (frame249 address alive beforeHandles)
+theorem concat_to_weight_rank_guard (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (base : Nat → GraphNode) (boundary : Nat → Prop) (objects : Nat → Object)
+    (H N : Nat → Prop) (tail : List NumV) (host : HostSt → HostSt → Prop)
+    (live framed : Nat → Prop) (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.preRoles base) boundary objects H N tail host)
+      R live framed before after old old' Callback49.input s)
+    (inputNotFramed : ¬ framed Callback56.sourceAddress)
+    (firstField : PrivateData s (R.a MapBody138.sourceAddress) (R.a MapBody138.sourceBrand)
+      MapBody138.sourceName (.big (Int.ofNat (R.handle 25732))))
+    (secondField : PrivateData s (R.a MapBody195.sourceAddress) (R.a MapBody195.sourceBrand)
+      MapBody195.sourceName (.big (Int.ofNat (R.handle 29363))))
+    (axisRole : (Annotated.Value.literal (.lit (F64.fin false 1 0))).Holds ν C R (cellValueAt s (R.a AxisVariable332.address)))
+    (streamRole : (Annotated.Value.handle 2).Holds ν C R (cellValueAt s (R.a StreamVariable334.address)))
+    (code : (Annotated.Value.literal (.lit (F64.ofNat 9))).Holds ν C R (nativeDataArgument s (R.a 95) 0))
+    (proto : (Annotated.Value.literal (.lit (F64.ofNat 26))).Holds ν C R (nativeDataArgument s (R.a 95) 1))
+    (vectorSignatureFrame : ¬ framed 4411) (nullSignatureFrame : ¬ framed 4253) (concatSignatureFrame : ¬ framed 4409) (freeSignatureFrame : ¬ framed 4413)
+    (firstLive : H 25732) (secondLive : H 29363)
+    (functionProtoLive : live aFunctionProto) (functionProtoFixed : R.a aFunctionProto = aFunctionProto)
+    (globalLive : live aGlobal) (globalFixed : R.a aGlobal = aGlobal)
+    (arrayProtoLive : live aArrayProto) (arrayProtoFixed : R.a aArrayProto = aArrayProto)
+    (bufferProtoLive : live aArrayBufferProto) (bufferProtoFixed : R.a aArrayBufferProto = aArrayBufferProto)
+    (typedProtoLive : live 26) (typedProtoFixed : R.a 26 = 26)
+    (objectProtoFixed : R.a aObjectProto = aObjectProto)
+    (weightField : PrivateData s (R.a WeightHandleValue478.sourceAddress) (R.a WeightHandleValue478.sourceBrand)
+      WeightHandleValue478.sourceName (.big (Int.ofNat (R.handle 1365))))
+    (weightSignatureFrame : ¬ framed 4263) (weightHandleLive : H 1365)
+    (sequenceLive : live Binding20.sourceAddress)
+    (sequence : s.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))))
+    (nodeBound : s.ffi.mlx.nnext < 2^64) (nativeBound : s.ffi.mlx.next+1 < 2^64) (heapBound : s.next+64 ≤ 2^64) :
+    ∃ result, runC P.F 453 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C (ConcatNative.postRoles base) boundary
+          (objectWrite objects 29371 (.vec [20208,22582]))
+          (fun a => a = 29372 ∨ a = 29371 ∨ H a) (fun i => i = 22587 ∨ N i) tail host)
+        R (WeightLive468 (HandleLive (ConstructorBodyLive (LiveAfter (BaseClassLive (callbackLive (initializedSlotLive (outBodyLive (ConcatVectorLive live)))) MlxClass372.input.next) TokenObject376.input.next) MlxBody380.input.next Sources.Mlx.Array.ast_n20))) framed before after old old' WeightGuard18.output result ∧
+      PrivateData result (R.a 3126703) (R.a HandleStore390.sourceBrand) HandleStore390.sourceName (.big (Int.ofNat (R.handle 29372))) ∧
+      result.heap.get (R.a ConvInputBinding429.sourceAddress) = some (.cell (some (.obj (R.a 3126703)))) ∧
+      result.heap.get (R.a Binding20.sourceAddress) = some (.cell (some (natV 1))) ∧
+      (∀ a, live a → a < 3126665 → a ≠ ConvInputBinding429.sourceAddress → result.heap.get (R.a a) = s.heap.get (R.a a)) ∧
+      result.heap.get (R.a WeightInitialize9.sourceAddress) = some (.cell (some (natV 3))) := by
+  obtain ⟨result,run,hresult,field,input,sequence,frame,rank,_⟩ := concat_to_weight_rank_guard_framed ν₀ ν C₀ C R base boundary objects H N tail host live framed before after old old' s h
+    inputNotFramed firstField secondField axisRole streamRole code proto vectorSignatureFrame nullSignatureFrame concatSignatureFrame freeSignatureFrame
+    firstLive secondLive functionProtoLive functionProtoFixed globalLive globalFixed arrayProtoLive arrayProtoFixed
+    bufferProtoLive bufferProtoFixed typedProtoLive typedProtoFixed objectProtoFixed weightField weightSignatureFrame weightHandleLive
+    sequenceLive sequence nodeBound nativeBound heapBound
+  exact ⟨result,run,hresult,field,input,sequence,frame,rank⟩
+
 end Host.Load.Run.Full.Ordinary.VectorToConcat

@@ -1,4 +1,5 @@
 import host.ts.renameOrdinary.ConvWeightRankPath
+import host.ts.RenameStackEffects
 import host.ts.RenameRouteArgumentFields
 import host.ts.RenameRoutePrivateFields
 import host.ts.RenameRouteReturnFields
@@ -31,7 +32,7 @@ theorem Weightnumber_post : WeightnumberInput.ret (intV (Int.ofNat 3)) = P.RestS
 
 /-- The native rank result flows through the real Number conversion, returns
 and lexical binding into the shape getter's rank cell. -/
-theorem conv_weight_rank_binding (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+theorem conv_weight_rank_binding_framed (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
     (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
     (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' WeightCollect2.input s)
     (rank : s.ctl = .ret (.big (Int.ofNat 3)))
@@ -39,7 +40,8 @@ theorem conv_weight_rank_binding (FR : Ren → LSt → LSt → Prop) (R : Ren) (
     ∃ result, runC P.F 8 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.RestStream.micro0.micro4.s93 result ∧
       result.heap.get (R.a WeightInitialize9.sourceAddress) = some (.cell (some (natV 3))) ∧
-      (∀ a, a ≠ R.a WeightInitialize9.sourceAddress → result.heap.get a = s.heap.get a) := by
+      (∀ a, a ≠ R.a WeightInitialize9.sourceAddress → result.heap.get a = s.heap.get a) ∧
+      result.stack.drop 4 = s.stack.drop 9 := by
   let NR := NumberRoles ν₀ ν C₀ C
   let s2 := s
   have h2 := h
@@ -131,7 +133,56 @@ theorem conv_weight_rank_binding (FR : Ren → LSt → LSt → Prop) (R : Ren) (
     rw [he]
     simp only [St.ret,St.setCell,PTrie.get_set_u64 _ _ _ haddress,ite_eq_right ha']
     rw [heap9]
-  refine ⟨result,?_,h10,hcell,frame⟩
+  have stack3 := step_argument_done_stack P.F NR FR R live framed before after old old' WeightCollect2.input s2 s3 C C h2
+    WeightCollect2.sourceValue WeightCollect2.sourceKind WeightCollect2.sourceFunction WeightCollect2.sourceThis WeightCollect2.sourceAcc WeightCollect2.sourceRest
+    WeightCollect2.sourceEnv WeightCollect2.sourceTail WeightCollect2.source_control WeightCollect2.source_frame (by decide) (by host_kernel_rfl) hr2
+  have stack4 : s4.stack = s3.stack := rfl
+  have stack5 := step_return_exit_stack P.F NR FR R live framed before after old old' WeightReturn4.input s4 s5 C C h4
+    WeightReturn4.sourceValue WeightReturn4.sourceAction WeightReturn4.sourceEnv WeightReturn4.sourceTail WeightReturn4.source_control WeightReturn4.source_frame hr4
+  have stack6 := step_return_unwind_stack P.F NR FR R live framed before after old old' WeightReturn5.input s5 s6 C C h5
+    WeightReturn5.sourceValue WeightReturn5.sourceAction WeightReturn5.sourceEnv WeightReturn5.sourceTail WeightReturn5.source_control WeightReturn5.source_frame hr5
+  have stack7 := step_return_unwind_stack P.F NR FR R live framed before after old old' WeightReturn6.input s6 s7 C C h6
+    WeightReturn6.sourceValue WeightReturn6.sourceAction WeightReturn6.sourceEnv WeightReturn6.sourceTail WeightReturn6.source_control WeightReturn6.source_frame hr6
+  have stack8 := step_return_unwind_stack P.F NR FR R live framed before after old old' WeightReturn7.input s7 s8 C C h7
+    WeightReturn7.sourceValue WeightReturn7.sourceAction WeightReturn7.sourceEnv WeightReturn7.sourceTail WeightReturn7.source_control WeightReturn7.source_frame hr7
+  have stack9 := step_declaration_value_stack P.F NR FR R live framed before after old old' WeightDeclare8.input s8 s9 C C h8
+    WeightDeclare8.sourceValue WeightDeclare8.sourceKind WeightDeclare8.sourcePattern WeightDeclare8.sourceRest WeightDeclare8.sourceEnv WeightDeclare8.sourceTail
+    WeightDeclare8.source_control WeightDeclare8.source_frame WeightDeclare8.source_kind hr8
+  have stack10 : result.stack = s9.stack := by
+    simpa only [St.ret,St.setCell,St.go] using congrArg St.stack he
+  have effect3 : s3.stack.drop 0 = s2.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack3
+  have suffix3 : s3.stack.drop 8 = s.stack.drop 9 :=
+    (stack_drop_extend effect3 8).trans (by rfl)
+  have effect4 : s4.stack.drop 0 = s3.stack.drop 0 := by
+    simpa only [List.drop_zero,List.drop_one] using stack4
+  have suffix4 : s4.stack.drop 8 = s.stack.drop 9 :=
+    (stack_drop_extend effect4 8).trans suffix3
+  have effect5 : s5.stack.drop 0 = s4.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack5
+  have suffix5 : s5.stack.drop 7 = s.stack.drop 9 :=
+    (stack_drop_extend effect5 7).trans suffix4
+  have effect6 : s6.stack.drop 0 = s5.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack6
+  have suffix6 : s6.stack.drop 6 = s.stack.drop 9 :=
+    (stack_drop_extend effect6 6).trans suffix5
+  have effect7 : s7.stack.drop 0 = s6.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack7
+  have suffix7 : s7.stack.drop 5 = s.stack.drop 9 :=
+    (stack_drop_extend effect7 5).trans suffix6
+  have effect8 : s8.stack.drop 0 = s7.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack8
+  have suffix8 : s8.stack.drop 4 = s.stack.drop 9 :=
+    (stack_drop_extend effect8 4).trans suffix7
+  have effect9 : s9.stack.drop 1 = s8.stack.drop 1 := by
+    simpa only [List.drop_zero,List.drop_one] using stack9
+  have suffix9 : s9.stack.drop 4 = s.stack.drop 9 :=
+    (stack_drop_extend effect9 3).trans suffix8
+  have effect10 : result.stack.drop 0 = s9.stack.drop 0 := by
+    simpa only [List.drop_zero,List.drop_one] using stack10
+  have suffix10 : result.stack.drop 4 = s.stack.drop 9 :=
+    (stack_drop_extend effect10 4).trans suffix9
+  refine ⟨result,?_,h10,hcell,frame,suffix10⟩
   apply runC_cons P.F 7 s2 s3 result C C C (h2.control.isHalt_eq.trans (by host_kernel_rfl)) hr2
   apply runC_cons P.F 6 s3 s4 result C C C (h3.control.isHalt_eq.trans (by host_kernel_rfl)) hr3
   apply runC_cons P.F 5 s4 s5 result C C C (h4.control.isHalt_eq.trans (by host_kernel_rfl)) hr4
@@ -141,5 +192,17 @@ theorem conv_weight_rank_binding (FR : Ren → LSt → LSt → Prop) (R : Ren) (
   apply runC_cons P.F 1 s8 s9 result C C C (h8.control.isHalt_eq.trans (by host_kernel_rfl)) hr8
   apply runC_cons P.F 0 s9 result result C C C (h9.control.isHalt_eq.trans (by host_kernel_rfl)) hr9
   rfl
+
+theorem conv_weight_rank_binding (FR : Ren → LSt → LSt → Prop) (R : Ren) (ν₀ ν : Nat → F64)
+    (C₀ C : CSrv) (live framed : Nat → Prop) (before after : List Val) (old old' : List Event)
+    (s : St LSt) (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' WeightCollect2.input s)
+    (rank : s.ctl = .ret (.big (Int.ofNat 3)))
+    (bound : s.next ≤ 2^64) :
+    ∃ result, runC P.F 8 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' P.RestStream.micro0.micro4.s93 result ∧
+      result.heap.get (R.a WeightInitialize9.sourceAddress) = some (.cell (some (natV 3))) ∧
+      (∀ a, a ≠ R.a WeightInitialize9.sourceAddress → result.heap.get a = s.heap.get a) := by
+  obtain ⟨result,run,hresult,rankCell,heap,_⟩ := conv_weight_rank_binding_framed FR R ν₀ ν C₀ C live framed before after old old' s h rank bound
+  exact ⟨result,run,hresult,rankCell,heap⟩
 
 end Host.Load.Run.Full.Ordinary.VectorToConcat
