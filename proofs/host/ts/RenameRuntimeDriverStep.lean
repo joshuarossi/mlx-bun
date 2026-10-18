@@ -2,6 +2,9 @@ import host.ts.RenameRuntimeDriverExpression
 import host.ts.RenameRuntimeDriverBinding
 import host.ts.RenameRuntimeDriverStatements
 import host.ts.RenameRuntimeDriverReturns
+import host.ts.RenameRuntimeDriverDescent
+import host.ts.RenameRuntimeDriverCallStart
+import host.ts.RenameRuntimeDriverCallEntry
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -24,6 +27,9 @@ elab "host_runtime_step " f:term ", " s:term " using " initial:term " to " t:ter
       if expression.isAppOfArity ``Expr.lit 1 || expression.isAppOfArity ``Expr.id 1 then
         pure "host_runtime_value"
       else if expression.isAppOfArity ``Expr.bin 3 then pure "host_runtime_structural"
+      else if expression.isAppOfArity ``Expr.call 3 then pure "host_runtime_call_entry"
+      else if #[``Expr.member,``Expr.index,``Expr.new,``Expr.chain,``Expr.await,``Expr.yield,
+        ``Expr.log,``Expr.cond,``Expr.seq].contains expression.getAppFn.constName! then pure "host_runtime_descent"
       else throwError "host_runtime_step: unsupported source expression"
     else if control.isAppOfArity ``Ctl.ex 2 then pure "host_runtime_statement"
     else if control.isAppOfArity ``Ctl.abr 1 then pure "host_runtime_return"
@@ -38,6 +44,8 @@ elab "host_runtime_step " f:term ", " s:term " using " initial:term " to " t:ter
       else if frame.isAppOfArity ``Frame.c 1 then
         let call ← whnf frame.getAppArgs[0]!
         if call.isAppOfArity ``CallF.args 6 then pure "host_runtime_structural"
+        else if #[``CallF.callee,``CallF.method,``CallF.newCallee].contains call.getAppFn.constName! then
+          pure "host_runtime_call_start"
         else throwError "host_runtime_step: unsupported source call continuation"
       else if frame.isAppOfArity ``Frame.s 1 then
         let statement ← whnf frame.getAppArgs[0]!
