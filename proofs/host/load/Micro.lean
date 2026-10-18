@@ -38,7 +38,12 @@ private def controlLabel (s : St LSt) : String := Id.run do
     return s!"call {code}, receiver {object this}, args {args.map object}"
   | .ev e _ => return s!"eval {(toExpr e).getAppFn}"
   | .ex st _ => return s!"exec {(toExpr st).getAppFn}"
-  | .ret _ => return s!"return, frame {s.stack.head?.map (fun f => (toExpr f).getAppFn)}"
+  | .ret _ =>
+    let frame := match s.stack.head? with
+      | some (.k f) => s!"function {(toExpr f).getAppFn}"
+      | some f => s!"{(toExpr f).getAppFn}"
+      | none => "none"
+    return s!"return, frame {frame}"
   | _ => return s!"{(toExpr s.ctl).getAppFn}"
 
 private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
@@ -140,10 +145,13 @@ private unsafe def microChunk (pre : Lean.Name) (i width : Nat) (refine : Option
       addProof name ty (← mkEqRefl lhs)
       trace s!"micro {i}.{index}: {k} steps checked"
       let nextProof := mkConst name
-      composed := some <| match composed with
+      let prefixProof := match composed with
         | none => nextProof
         | some proof => mkAppN (mkConst ``runS_trans) #[F, mkRawNatLit consumed, mkRawNatLit k,
             startS, previousS, chosenS, startC, previousC, chosenC, proof, nextProof]
+      let prefixName := boundaryName microPre "up" (index+1)
+      addProof prefixName (← mkEq (run (consumed+k) startS startC) (result chosenS chosenC)) prefixProof
+      composed := some (mkConst prefixName)
     sizes := k :: sizes
     consumed := consumed+k
     index := index+1
@@ -191,22 +199,30 @@ elab "host_micro_run " p:ident i:num : command =>
     let some fuel := outerKs[i]? | throwError "host_micro_run: no outer chunk {i}"
     unless ks.foldl (·+·) 0 == fuel do throwError "host_micro_run: micro sizes do not sum to outer fuel"
     let F := mkConst (pre ++ `F)
+    let sTy := mkApp (mkConst ``St) (mkConst ``LSt)
+    let srvTy := mkConst ``SSrv
+    let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) sTy srvTy
+    let run (fuel : Nat) := mkAppN (mkConst ``runS) #[F, mkRawNatLit fuel,
+      mkConst (boundaryName pre "s" i), mkConst (boundaryName pre "S" i)]
+    let result (j : Nat) := mkApp2 (mkConst ``Option.some [.zero]) pairTy
+      (mkApp4 (mkConst ``Prod.mk [.zero, .zero]) sTy srvTy
+        (mkConst (boundaryName micro "s" j)) (mkConst (boundaryName micro "S" j)))
     let mut total := 0
     let mut proof : Option Lean.Expr := none
     for (k,j) in ks.zipIdx do
       let next := mkConst (boundaryName micro "c" j)
-      proof := some <| match proof with
+      let prefixProof := match proof with
         | none => next
         | some previous => mkAppN (mkConst ``runS_trans) #[F, mkRawNatLit total, mkRawNatLit k,
             mkConst (boundaryName micro "s" 0), mkConst (boundaryName micro "s" j),
             mkConst (boundaryName micro "s" (j+1)), mkConst (boundaryName micro "S" 0),
             mkConst (boundaryName micro "S" j), mkConst (boundaryName micro "S" (j+1)), previous, next]
       total := total+k
+      let prefixName := boundaryName micro "up" (j+1)
+      addProof prefixName (← mkEq (run total) (result (j+1))) prefixProof
+      proof := some (mkConst prefixName)
     let lhs := mkAppN (mkConst ``runS) #[F, mkRawNatLit fuel,
       mkConst (boundaryName pre "s" i), mkConst (boundaryName pre "S" i)]
-    let sTy := mkApp (mkConst ``St) (mkConst ``LSt)
-    let srvTy := mkConst ``SSrv
-    let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) sTy srvTy
     let rhs := mkApp2 (mkConst ``Option.some [.zero]) pairTy
       (mkApp4 (mkConst ``Prod.mk [.zero, .zero]) sTy srvTy
         (mkConst (boundaryName pre "s" (i+1))) (mkConst (boundaryName pre "S" (i+1))))

@@ -1,4 +1,5 @@
 import host.load.Micro
+import host.load.Compose
 
 namespace Host.Load.Tests.Micro
 open Host.Ts Host.Load
@@ -27,5 +28,13 @@ host_micro_run Q 0
 
 theorem fused : runS P.F 80 P.s0 P.S0 = some (P.s1, P.S1) := P.c0
 theorem separate : runS Q.F 80 Q.s0 Q.S0 = some (Q.s1, Q.S1) := Q.c0
+
+host_chain R : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [20, 20, 40]
+host_chunk R 0
+host_chunk R 1
+host_chunk R 2
+host_chain_run_staged R
+
+theorem staged : runS R.F 80 R.s0 R.S0 = some (R.s3, R.S3) := R.run
 
 end Host.Load.Tests.Micro
