@@ -119,4 +119,54 @@ theorem step_closure_roles (F : Ffi) (NR : NumV → NumV → Prop)
   · exact enterClosure_arrow_roles F NR FR R C₀ C live framed before after old old' s₀ s h f env
       home₀ home this₀ this args₀ args .call .call (.node _ .nil) hrargs True.intro hargsl henv (by omega) (by omega)
 
+theorem vals_roles_of {NR : NumV → NumV → Prop} {R : Ren} {xs ys : List Val}
+    (h : TreeR NR R (Encode.vals xs) (Encode.vals ys)) : ListR (ValueR NR R) xs ys := by
+  induction xs generalizing ys with
+  | nil => cases ys with
+    | nil => exact .nil
+    | cons v vs => cases h with | node tag hs => cases hs
+  | cons v vs ih => cases ys with
+    | nil => cases h with | node tag hs => cases hs
+    | cons w ws => cases h with | node tag hs =>
+      cases hs with | cons hv ht =>
+        cases hv with | value hv => exact .cons hv (ih (.node _ ht))
+
+theorem call_arguments {NR : NumV → NumV → Prop} {R : Ren} {f₀ f this₀ this : Val} {args₀ args : List Val}
+    (h : ControlR NR R (.call f₀ this₀ args₀) (.call f this args)) :
+    ValueR NR R this₀ this ∧ ListR (ValueR NR R) args₀ args := by
+  cases h with | node tag hs =>
+    cases hs with | cons hf hs =>
+      cases hs with | cons ht hs =>
+        cases hs with | cons ha hs =>
+          cases ht with | value ht => exact ⟨ht,vals_roles_of ha⟩
+
+theorem HeapR.function_notFramed {S : Type} {NR : NumV → NumV → Prop} {R : Ren}
+    {live framed : Nat → Prop} {before after : List Val} {s₀ s : St S}
+    (h : HeapR NR R live framed before after s₀ s) (a : Nat) (o : Obj) (code : Code)
+    (ha : live a) (ho : s₀.heap.get a = some (.obj o)) (hk : o.kind = .fn code) : ¬ framed a := by
+  have hr := h.lookup a ha
+  rw [ho] at hr
+  generalize hh : s.heap.get (R.a a) = target at hr
+  cases hr with
+  | regular hf => exact hf
+  | framed hf hk₀ => rw [hk] at hk₀; cases hk₀
+
+theorem step_closure_from_state (F : Ffi) (NR : NumV → NumV → Prop)
+    (FR : Ren → F.S → F.S → Prop) (R : Ren) (C₀ C : CSrv) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s₀ s : St F.S)
+    (h : StateR NR FR R live framed before after old old' s₀ s)
+    (a : Nat) (o₀ : Obj) (f : Func) (env : Env) (arrow : Bool) (home₀ this₀ this : Val) (args₀ args : List Val)
+    (hc₀ : s₀.ctl = .call (.obj a) this₀ args₀) (hc : s.ctl = .call (.obj (R.a a)) this args)
+    (ho : s₀.heap.get a = some (.obj o₀)) (hk : o₀.kind = .fn (.closure f env arrow home₀))
+    (hs : s₀.next + 2 + (paramNames f).length ≤ 2^64) (ht : s.next + 2 + (paramNames f).length ≤ 2^64) :
+    ∃ result₀ result, interpC (step F s₀).run C₀ = some (result₀,C₀) ∧
+      interpC (step F s).run C = some (result,C) ∧
+      StateR NR FR R (ClosureLive live s₀.next arrow home₀ f) framed before after old old' result₀ result := by
+  have hcR := h.control
+  rw [hc₀,hc] at hcR
+  have ha : live a := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
+  have hv := call_arguments hcR
+  exact step_closure_roles F NR FR R C₀ C live framed before after old old' s₀ s h a o₀ f env arrow
+    home₀ this₀ this args₀ args hc₀ hc ha (h.heap.function_notFramed a o₀ _ ha ho hk) ho hk hv.1 hv.2 hs ht
+
 end Host.Ts.Owned.Parametric
