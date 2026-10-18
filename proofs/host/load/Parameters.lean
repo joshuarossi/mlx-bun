@@ -17,6 +17,16 @@ def headerValues (contents : Nat → Nat → Nat) (t : Tensor) : Value :=
     t.value.shape.map (fun d => match d with | .lit n => n.toNat | .sym _ => 0),
     contents t.node⟩
 
+def linearTensors (l : Linear) : List Tensor := [l.words, l.scales] ++ l.biases.toList
+
+def mlpTensors (m : Mlp) : List Tensor :=
+  [m.norm, m.gate.codes, m.gate.scales, m.up.codes, m.up.scales, m.down.codes, m.down.scales]
+
+def parameterTensors (l : Loaded) : List Tensor :=
+  l.model.embedding.map Prod.snd ++ [l.model.finalNorm] ++ linearTensors l.model.head ++
+    l.model.stages.flatMap (fun s => [s.inputNorm] ++ s.linears.flatMap (linearTensors ∘ Prod.snd) ++
+      s.tensors.map Prod.snd ++ mlpTensors s.mlp)
+
 def linearWeights (value : TensorValues) (l : Linear) : Option GlueLayers.Linear := do
   let b ← l.biases
   let _ ← linearLayout l
