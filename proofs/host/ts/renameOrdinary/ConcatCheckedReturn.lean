@@ -18,7 +18,7 @@ theorem status_not_handle_cell : StatusVariable359.address ≠ HandleBinding354.
 /-- The real outArray caller stores the produced handle, reads its previously
 derived literal status, proves the error guard false, and returns the owned
 handle through its lexical/function frames in 18 original machine steps. -/
-theorem concat_checked_return (ν₀ ν : Nat → F64) (C₀ C : CSrv)
+theorem concat_checked_return_framed (ν₀ ν : Nat → F64) (C₀ C : CSrv)
     (FR : Ren → LSt → LSt → Prop) (R : Ren) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : St LSt)
     (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' HandleValue353.input s)
@@ -27,7 +27,8 @@ theorem concat_checked_return (ν₀ ν : Nat → F64) (C₀ C : CSrv)
     (bound : s.next ≤ 2^64) :
     ∃ result, runC P.F 18 s C = some (result,C) ∧
       StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' HandleCallUnwind370.output result ∧
-      result.ctl = .ret (.big (Int.ofNat (R.handle 29372))) := by
+      result.ctl = .ret (.big (Int.ofNat (R.handle 29372))) ∧
+      (∀ a, live a → a ≠ HandleBinding354.sourceAddress → result.heap.get (R.a a) = s.heap.get (R.a a)) := by
   let NR := NumberRoles ν₀ ν C₀ C
   let s353 := s
   have h353 := h
@@ -141,5 +142,43 @@ theorem concat_checked_return (ν₀ ν : Nat → F64) (C₀ C : CSrv)
     apply runC_cons P.F 1 s369 s370 s371 C C C (h369.control.isHalt_eq.trans (by host_kernel_rfl)) hr369
     apply runC_cons P.F 0 s370 s371 s371 C C C (h370.control.isHalt_eq.trans (by host_kernel_rfl)) hr370
     rfl
-  exact ⟨s371,run,h371,hc371⟩
+  have hh368 := step_return_exit_heap P.F NR FR R live framed before after old old' _ _ _ C C h367
+    HandleReturn367.sourceValue HandleReturn367.sourceAction HandleReturn367.sourceEnv HandleReturn367.sourceTail
+    HandleReturn367.source_control HandleReturn367.source_frame hr367
+  have hh369 := step_return_unwind_heap P.F NR FR R live framed before after old old' _ _ _ C C h368
+    HandleBlockUnwind368.sourceValue HandleBlockUnwind368.sourceAction HandleBlockUnwind368.sourceEnv HandleBlockUnwind368.sourceTail
+    HandleBlockUnwind368.source_control HandleBlockUnwind368.source_frame hr368
+  have hh370 := step_return_unwind_heap P.F NR FR R live framed before after old old' _ _ _ C C h369
+    HandleScopeUnwind369.sourceValue HandleScopeUnwind369.sourceAction HandleScopeUnwind369.sourceEnv HandleScopeUnwind369.sourceTail
+    HandleScopeUnwind369.source_control HandleScopeUnwind369.source_frame hr369
+  have hh371 := step_return_unwind_heap P.F NR FR R live framed before after old old' _ _ _ C C h370
+    HandleCallUnwind370.sourceValue HandleCallUnwind370.sourceAction HandleCallUnwind370.sourceEnv HandleCallUnwind370.sourceTail
+    HandleCallUnwind370.source_control HandleCallUnwind370.source_frame hr370
+  have heap371 : s371.heap = s355.heap := hh371.trans (hh370.trans (hh369.trans (hh368.trans heap366)))
+  have frame (a : Nat) (ha : live a) (other : a ≠ HandleBinding354.sourceAddress) :
+      s371.heap.get (R.a a) = s.heap.get (R.a a) := by
+    have hl := h354.controlLive
+    change treeSupport live (Encode.ctl HandleBinding354.input.ctl) at hl
+    rw [HandleBinding354.source_control] at hl
+    have handleLive := env_lookup_live _ _ _ hl.2.2.1 HandleBinding354.source_lookup
+    have otherMapped : R.a a ≠ R.a HandleBinding354.sourceAddress := fun he => other (h354.heap.inj _ _ ha handleLive he)
+    have storeFrame := step_bind_init_heap_other P.F NR FR R live framed before after old old' _ _ _ C C h354
+      HandleBinding354.sourceName HandleBinding354.sourceValue HandleBinding354.sourceEnv HandleBinding354.sourceKind
+      HandleBinding354.sourceAddress HandleBinding354.source_control HandleBinding354.source_lookup bound354 hr354 (R.a a) otherMapped
+    exact (congrArg (fun hp => hp.get (R.a a)) heap371).trans (storeFrame.trans (congrArg (fun hp => hp.get (R.a a)) hh354))
+  exact ⟨s371,run,h371,hc371,frame⟩
+
+theorem concat_checked_return (ν₀ ν : Nat → F64) (C₀ C : CSrv)
+    (FR : Ren → LSt → LSt → Prop) (R : Ren) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St LSt)
+    (h : StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' HandleValue353.input s)
+    (handle : s.ctl = .ret (.big (Int.ofNat (R.handle 29372))))
+    (status : s.heap.get (R.a StatusBinding340.sourceAddress) = some (.cell (some (.num zeroN))))
+    (bound : s.next ≤ 2^64) :
+    ∃ result, runC P.F 18 s C = some (result,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' HandleCallUnwind370.output result ∧
+      result.ctl = .ret (.big (Int.ofNat (R.handle 29372))) := by
+  obtain ⟨result,run,related,handle,_⟩ := concat_checked_return_framed ν₀ ν C₀ C FR R live framed before after old old'
+    s h handle status bound
+  exact ⟨result,run,related,handle⟩
 end Host.Load.Run.Full.Ordinary.VectorToConcat
