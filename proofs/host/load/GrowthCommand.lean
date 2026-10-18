@@ -10,7 +10,9 @@ deriving instance Lean.ToExpr for Roots
 private def define (name : Lean.Name) (type value : Lean.Expr) : TermElabM Unit :=
   addDecl (.defnDecl { name, levelParams := [], type, value, hints := .regular 0, safety := .safe })
 
-private unsafe def restore (state server : Lean.Expr) (pre : Lean.Name) :
+/-- Restore candidate data for a source fragment and retain its imported
+serialization aliases. This constructs no execution theorem. -/
+unsafe def restoreChoiceState (state server : Lean.Expr) (pre : Lean.Name) :
     TermElabM (St LSt × SSrv × G) := do
   let (s, decoded) ← (ConstructorDecode.decode state).run {}
   let (c, decoded) ← (ConstructorDecode.decode server).run decoded
@@ -85,7 +87,7 @@ elab "host_growth_fragment " name:ident " from " state:term ", " server:term
   astTabRef.set (← loadAstTab)
   Memo.reset
   let started ← IO.monoMsNow
-  let (initial, initialC, initialG) ← unsafe restore sE cE pre
+  let (initial, initialC, initialG) ← unsafe restoreChoiceState sE cE pre
   let mut s := initial
   let mut c := initialC
   let mut seekSteps : Nat := 0
