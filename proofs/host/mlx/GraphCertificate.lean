@@ -27,6 +27,30 @@ def certify (G : Nat → Option (RNode Int InKey))
   let cert ← findCarriers G E inputs upper
   if Matches G E cert then some cert else none
 
+/-- Check a bounded segment of the original certificate. Segments keep kernel
+reduction memory bounded without changing any node or correspondence check. -/
+def matchesRange {κ : Type} [DecidableEq κ] (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ))
+    (cert : List Nat) (start count : Nat) : Bool :=
+  (List.range' start count).all fun k => match E[k]? with
+    | some e => nodeOk G cert k e
+    | none => false
+
+theorem matchesRange_append {κ : Type} [DecidableEq κ] (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ))
+    (cert : List Nat) (start m n : Nat)
+    (hm : matchesRange G E cert start m = true)
+    (hn : matchesRange G E cert (start + m) n = true) :
+    matchesRange G E cert start (m + n) = true := by
+  unfold matchesRange at *
+  rw [← List.range'_append_1, List.all_append, hm, hn]
+  rfl
+
+theorem matchesRange_complete {κ : Type} [DecidableEq κ] (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ))
+    (cert : List Nat) (h : matchesRange G E cert 0 E.length = true) :
+    Matches G E cert = true := by
+  unfold Matches
+  rw [List.range_eq_range']
+  exact h
+
 theorem certify_matches (G : Nat → Option (RNode Int InKey))
     (E : List (RNode Int InKey)) (inputs : InKey → Option Nat) (upper : Nat)
     (cert : List Nat) (h : certify G E inputs upper = some cert) :
