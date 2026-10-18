@@ -5274,6 +5274,11 @@ const proofFiles = [
   "host/ts/renameOrdinary/RankOriginInitializedShape.lean",
   "host/ts/renameOrdinary/RankOriginNativeFacts.lean",
   "host/ts/renameOrdinary/RankOriginNativeSeed.lean",
+  "host/ts/renameOrdinary/RankOriginInitialCells.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedBoot.lean",
+  "host/load/RuntimeConcatBatch.lean",
+  "host/load/RuntimeParameterBatch.lean",
+  "host/ts/RenameRetainedRestart.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
