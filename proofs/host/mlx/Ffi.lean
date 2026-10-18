@@ -244,10 +244,10 @@ abbrev Header := List (List Char × List Nat × Nat)
 
 structure St where
   next : Nat
-  nodes : Trie Node
+  nodes : PTrie Node
   nnext : Nat
-  arrs : Trie Nat
-  objs : Trie Obj
+  arrs : PTrie Nat
+  objs : PTrie Obj
   /-- Values `mlx_array_item_uint32` returns, in order (numbers of the run's server: a
   symbolic run reads symbolic tokens). -/
   tokens : List NumV
@@ -259,7 +259,7 @@ structure St where
   deviceSizes : List (List Char × Nat)
   wired : Nat
   /-- Values read back so far, by node: reading an array again returns the same value. -/
-  items : Trie NumV
+  items : PTrie NumV
 
 def init (tokens : List NumV) (files : List (List Char × Header)) (arch : List Char)
     (deviceSizes : List (List Char × Nat)) : St :=

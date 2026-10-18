@@ -205,49 +205,50 @@ rebuild is the identity. -/
 section
 variable {S β : Type}
 
-noncomputable def rb6 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
+noncomputable def rb6 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
     (ss : List (Nat × Val)) (k : St S → β) : β :=
-  List.rec (motive := fun _ => Trie HObj → Nat → Ctl → List Frame → List Job → S → List Event → (St S → β) → β)
+  List.rec (motive := fun _ => PTrie HObj → Nat → Ctl → List Frame → List Job → S → List Event → (St S → β) → β)
     (fun h nx c st j f t k => k ⟨h, nx, c, st, ⟨j, f, t, []⟩⟩)
     (fun a r _ h nx c st j f t k => k ⟨h, nx, c, st, ⟨j, f, t, a :: r⟩⟩) ss h nx c st j f t k
 
-noncomputable def rb5 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
+noncomputable def rb5 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
     (ss : List (Nat × Val)) (k : St S → β) : β :=
-  List.rec (motive := fun _ => Trie HObj → Nat → Ctl → List Frame → List Job → S → List (Nat × Val) → (St S → β) → β)
+  List.rec (motive := fun _ => PTrie HObj → Nat → Ctl → List Frame → List Job → S → List (Nat × Val) → (St S → β) → β)
     (fun h nx c st j f ss k => rb6 h nx c st j f [] ss k)
     (fun a r _ h nx c st j f ss k => rb6 h nx c st j f (a :: r) ss k) t h nx c st j f ss k
 
-noncomputable def rb4 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
+noncomputable def rb4 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (j : List Job) (f : S) (t : List Event)
     (ss : List (Nat × Val)) (k : St S → β) : β :=
-  List.rec (motive := fun _ => Trie HObj → Nat → Ctl → List Frame → S → List Event → List (Nat × Val) → (St S → β) → β)
+  List.rec (motive := fun _ => PTrie HObj → Nat → Ctl → List Frame → S → List Event → List (Nat × Val) → (St S → β) → β)
     (fun h nx c st f t ss k => rb5 h nx c st [] f t ss k)
     (fun a r _ h nx c st f t ss k => rb5 h nx c st (a :: r) f t ss k) j h nx c st f t ss k
 
-noncomputable def rb3 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
-  List.rec (motive := fun _ => Trie HObj → Nat → Ctl → Aux S → (St S → β) → β)
+noncomputable def rb3 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+  List.rec (motive := fun _ => PTrie HObj → Nat → Ctl → Aux S → (St S → β) → β)
     (fun h nx c ax k => rb4 h nx c [] ax.jobs ax.ffi ax.trace ax.stores k)
     (fun a r _ h nx c ax k => rb4 h nx c (a :: r) ax.jobs ax.ffi ax.trace ax.stores k) st h nx c ax k
 
-noncomputable def rb2 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
-  Nat.rec (motive := fun _ => Trie HObj → Ctl → List Frame → Aux S → (St S → β) → β)
+noncomputable def rb2 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+  Nat.rec (motive := fun _ => PTrie HObj → Ctl → List Frame → Aux S → (St S → β) → β)
     (fun h c st ax k => rb3 h 0 c st ax k)
     (fun n _ h c st ax k => rb3 h (Nat.succ n) c st ax k) nx h c st ax k
 
-def rb1Impl (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+def rb1Impl (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
   k ⟨h, nx, c, st, ax⟩
 
 @[implemented_by rb1Impl]
-def rb1 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
-  Trie.rec (motive := fun _ => Nat → Ctl → List Frame → Aux S → (St S → β) → β)
-    (fun nx c st ax k => rb2 .nil nx c st ax k)
-    (fun v a b c2 d _ _ _ _ nx c st ax k => rb2 (.node v a b c2 d) nx c st ax k) h nx c st ax k
+def rb1 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+  PTrie.rec (motive := fun _ => Nat → Ctl → List Frame → Aux S → (St S → β) → β)
+    (fun r nx c st ax k => Trie.rec (motive := fun _ => Nat → Ctl → List Frame → Aux S → (St S → β) → β)
+      (fun nx c st ax k => rb2 ⟨.nil⟩ nx c st ax k)
+      (fun v a b c2 d _ _ _ _ nx c st ax k => rb2 ⟨.node v a b c2 d⟩ nx c st ax k) r nx c st ax k) h nx c st ax k
 
-def rb0Impl (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+def rb0Impl (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
   k ⟨h, nx, c, st, ax⟩
 
 @[implemented_by rb0Impl]
-def rb0 (h : Trie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
-  Ctl.rec (motive := fun _ => Trie HObj → Nat → List Frame → Aux S → (St S → β) → β)
+def rb0 (h : PTrie HObj) (nx : Nat) (c : Ctl) (st : List Frame) (ax : Aux S) (k : St S → β) : β :=
+  Ctl.rec (motive := fun _ => PTrie HObj → Nat → List Frame → Aux S → (St S → β) → β)
     (fun e env h nx st ax k => rb1 h nx (.ev e env) st ax k)
     (fun x env h nx st ax k => rb1 h nx (.ex x env) st ax k)
     (fun v h nx st ax k => rb1 h nx (.ret v) st ax k)
@@ -273,7 +274,7 @@ theorem St.rebuild_eq (s : St S) (k : St S → β) : s.rebuild k = k s := by
   have e2 : ∀ h nx c st ax, rb2 h nx c st ax k = k ⟨h, nx, c, st, ax⟩ := by
     intro h nx c st ax; cases nx <;> exact e3 ..
   have e1 : ∀ h nx c st ax, rb1 h nx c st ax k = k ⟨h, nx, c, st, ax⟩ := by
-    intro h nx c st ax; cases h <;> exact e2 ..
+    intro h nx c st ax; obtain ⟨r⟩ := h; cases r <;> exact e2 ..
   have e0 : ∀ h nx c st ax, rb0 h nx c st ax k = k ⟨h, nx, c, st, ax⟩ := by
     intro h nx c st ax; cases c <;> exact e1 ..
   exact e0 _ _ _ _ _

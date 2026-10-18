@@ -477,6 +477,7 @@ where
 def callNative (s : St F.S) (n : Native) (data : List Val) (this : Val) (args : List Val) : RS F :=
   match n with
   | .obj f => objN F s this args f
+  | .arr .sort => sortN F s data this args
   | .arr f => arrN F s this args f
   | .iter f => iterN F s this f
   | .math f => mathN F s args f

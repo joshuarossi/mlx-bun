@@ -24,6 +24,14 @@ def packImpl (cs : List Char) : Nat := packAux cs 1
 def pack (cs : List Char) : Nat :=
   List.rec (motive := fun _ => Nat → Nat) (fun n => n) (fun c _ ih n => ih (Nat.add (Nat.mul n 2097152) c.toNat)) cs 1
 
+/-- Native comparison by characters (`pack` is injective, so this is `nameEq`
+without building the codes, which are bignums natively). -/
+def nameEqImpl : List Char → List Char → Bool
+  | [], [] => true
+  | c :: cs, d :: ds => chEq c d && nameEqImpl cs ds
+  | _, _ => false
+
+@[implemented_by nameEqImpl]
 def nameEq (a b : List Char) : Bool := Nat.beq (pack a) (pack b)
 
 def lookupEnvImpl (n : Name) : Env → Option Nat
@@ -41,6 +49,12 @@ def PKey.code : PKey → Nat
   | .str a => Nat.mul 2 (pack a)
   | .sym i => Nat.succ (Nat.mul 2 i)
 
+def keyEqImpl : PKey → PKey → Bool
+  | .str a, .str b => nameEqImpl a b
+  | .sym i, .sym j => Nat.beq i j
+  | _, _ => false
+
+@[implemented_by keyEqImpl]
 def keyEq (a b : PKey) : Bool := Nat.beq a.code b.code
 
 def findPropImpl (k : PKey) : Props → Option PropV

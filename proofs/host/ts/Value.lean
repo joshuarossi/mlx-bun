@@ -213,7 +213,7 @@ inductive ObjN where
   | protoToString | isFrozen
 inductive ArrN where
   | isArray | push | pop | slice | at | includes | indexOf | join | fill | concat | splice | reverse
-  | shift | unshift | lastIndexOf | ctor
+  | shift | unshift | lastIndexOf | ctor | sort
 inductive IterN where
   | values | keys | entries | next | self
 inductive MathN where
@@ -472,6 +472,16 @@ inductive Code where
   | native (n : Native) (data : List Val)
   | bound (target this : Val) (args : List Val)
 
+/-- A `Map`, `Set` or `WeakMap` store (`Builtins`): entries by insertion number (`none`
+once deleted), the next insertion number, the live count, and a hash index: bucket
+(`keyHash` of the key) ↦ (key, insertion number) of the live entries. Lookup scans one
+bucket, so it costs the key's hash and a few comparisons, not one per entry. -/
+structure MapT where
+  ents : Trie (Option (Val × Val))
+  seq : Nat
+  size : Nat
+  idx : Trie (List (Val × Nat))
+
 inductive Kind where
   | ordinary
   | array (elems : List Val)
@@ -481,8 +491,9 @@ inductive Kind where
   | extBuf (r off len : Nat)
   | typed (k : EltK) (buf off len : Nat)
   | view (buf off len : Nat)
-  | map (entries : List (Val × Val))
-  | set (elems : List Val)
+  | map (m : MapT)
+  /-- Elements as keys (values unused). -/
+  | set (m : MapT)
   | promise (s : PState)
   | gen (s : GenState) (async : Bool) (queue : List (Nat × Comp))
   /-- Module namespace: export names to cells. -/
@@ -564,7 +575,7 @@ structure Aux (S : Type) where
   stores : List (Nat × Val)
 
 structure St (S : Type) where
-  heap : Trie HObj
+  heap : PTrie HObj
   next : Nat
   ctl : Ctl
   stack : List Frame

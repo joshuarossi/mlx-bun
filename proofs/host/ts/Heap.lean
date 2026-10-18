@@ -74,3 +74,63 @@ def set {α : Type} (t : Trie α) (n : Nat) (a : α) : Trie α := setF 32 t n a
 
 end Trie
 end Host.Ts
+
+namespace Host.Ts
+
+/-! # Paged stores
+
+A store keyed by addresses that are allocated in order (heap cells and
+objects, FFI handles and graph nodes): a trie of groups (`n / 4096`), each a
+trie of pages (`(n / 64) % 64`), each a trie of entries (`n % 64`). Lookup
+costs the same digits as one trie; what changes is locality: consecutive
+addresses share a page, so a run's step rewrites few pages and leaves the
+others pointer-identical, which chunked runs name once and share across
+states (`Stream`). Small addresses stay shallow: group `0` and page `0` sit at
+the roots. -/
+
+structure PTrie (α : Type) where
+  root : Trie (Trie (Trie α))
+
+namespace PTrie
+variable {α : Type}
+
+def nil : PTrie α := ⟨.nil⟩
+instance : Inhabited (PTrie α) := ⟨nil⟩
+
+def getImpl (t : PTrie α) (n : Nat) : Option α :=
+  match t.root.get (n / 4096) with
+  | some g => match g.get ((n / 64) % 64) with
+    | some p => p.get (n % 64)
+    | none => none
+  | none => none
+
+@[implemented_by getImpl]
+def get (t : PTrie α) (n : Nat) : Option α :=
+  Option.rec (motive := fun _ => Nat → Option α) (fun _ => none)
+    (fun g n => Option.rec (motive := fun _ => Nat → Option α) (fun _ => none) (fun p n => p.get (Nat.mod n 64))
+      (g.get (Nat.mod (Nat.div n 64) 64)) n)
+    (t.root.get (Nat.div n 4096)) n
+
+def orNilImpl {β : Type} : Option (Trie β) → Trie β
+  | some t => t
+  | none => .nil
+
+/-- The trie an optional child holds (`nil` when absent). -/
+@[implemented_by orNilImpl]
+def orNil {β : Type} (o : Option (Trie β)) : Trie β := Option.rec (motive := fun _ => Trie β) .nil (fun t => t) o
+
+def setImpl (t : PTrie α) (n : Nat) (a : α) : PTrie α :=
+  let gi := n / 4096
+  let pi := (n / 64) % 64
+  let g := (t.root.get gi).getD .nil
+  let p := (g.get pi).getD .nil
+  ⟨t.root.set gi (g.set pi (p.set (n % 64) a))⟩
+
+@[implemented_by setImpl]
+def set (t : PTrie α) (n : Nat) (a : α) : PTrie α :=
+  ⟨t.root.set (Nat.div n 4096)
+    ((orNil (t.root.get (Nat.div n 4096))).set (Nat.mod (Nat.div n 64) 64)
+      ((orNil ((orNil (t.root.get (Nat.div n 4096))).get (Nat.mod (Nat.div n 64) 64))).set (Nat.mod n 64) a))⟩
+
+end PTrie
+end Host.Ts
