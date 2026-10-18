@@ -2741,6 +2741,10 @@ end CertificateNegative
       ["WrongGraphEdge", graphCertificate.replace(".reshape [1, 1], [3]", ".reshape [1, 1], [4]"), false],
       ["WrongInputProvenance", graphCertificate.replace(".tokenIds => some 3", ".tokenIds => some 4"), false],
       ["WrongChosenGraph", graphCertificate.replace("choosing expected", "choosing []"), false],
+      ["WrongGraphFamily", graphCertificate.replace(
+        "ffi_check_certificate checked : graph,",
+        "ffi_check_family checked : Nat, (fun parameter node => if parameter == 0 then graph node else none),",
+      ), false],
     ] as const) {
       if (proof === text) throw new Error(`Negative proof test did not alter its target: ${name}`);
       const rejected = await checkProof(`${name}.lean`, text);

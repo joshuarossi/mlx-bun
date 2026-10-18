@@ -8,31 +8,19 @@ open Lean Elab Command Meta
 private def addDefinition (name : Lean.Name) (ty value : Lean.Expr) : TermElabM Unit :=
   addDecl (.defnDecl { name, levelParams := [], type := ty, value, hints := .regular 0, safety := .safe })
 
-private def addProof (name : Lean.Name) (ty value : Lean.Expr) : TermElabM Unit :=
-  addDecl (.thmDecl { name, levelParams := [], type := ty, value })
+private def addProof (name : Lean.Name) (params : Array Lean.Expr) (ty value : Lean.Expr) : TermElabM Unit := do
+  addDecl (.thmDecl { name, levelParams := [], type := ← mkForallFVars params ty, value := ← mkLambdaFVars params value })
 
-private def checkTrue (name : Lean.Name) (value : Lean.Expr) : TermElabM Unit := do
-  addProof name (← mkEq value (mkConst ``Bool.true)) (← mkEqRefl value)
+private def checkTrue (name : Lean.Name) (params : Array Lean.Expr) (value : Lean.Expr) : TermElabM Unit := do
+  addProof name params (← mkEq value (mkConst ``Bool.true)) (← mkEqRefl value)
 
 /-- Check a supplied candidate one node at a time, then compose exactly
 `Matches` and the independent source-input carrier check. The candidate and
 node literals are untrusted; every equality is checked by the ordinary kernel. -/
-elab "ffi_check_certificate " name:ident " : " graph:term ", " expected:term ", " certificate:term ", " inputs:term
-    " choosing " chooser:term : command =>
-  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
-  let pre := (← getCurrNamespace) ++ name.getId
-  let natTy := mkConst ``Nat
+private def checkCertificate (pre : Lean.Name) (params : Array Lean.Expr)
+    (g es cert ins choice : Lean.Expr) : TermElabM Unit := do
   let nodeTy := mkApp2 (mkConst ``RNode) (mkConst ``Int) (mkConst ``InKey)
   let nodesTy := mkApp (mkConst ``List [.zero]) nodeTy
-  let certTy := mkApp (mkConst ``List [.zero]) natTy
-  let option (ty : Lean.Expr) := mkApp (mkConst ``Option [.zero]) ty
-  let elaborate (stx : Syntax) (ty : Lean.Expr) := do
-    instantiateMVars (← Term.elabTermAndSynthesize stx (some ty))
-  let g ← elaborate graph (← mkArrow natTy (option nodeTy))
-  let es ← elaborate expected nodesTy
-  let cert ← elaborate certificate certTy
-  let ins ← elaborate inputs (← mkArrow (mkConst ``InKey) (option natTy))
-  let choice ← elaborate chooser nodesTy
   let nodes ← unsafe evalExpr (List (RNode Int InKey)) nodesTy choice
   let nodes := nodes.toArray
   let mut exprs := #[]
@@ -49,7 +37,7 @@ elab "ffi_check_certificate " name:ident " : " graph:term ", " expected:term ", 
     addDefinition nm nodesTy value
     tails := tails.set! i (mkConst nm)
   -- Check that the structural list used below is exactly the supplied graph.
-  addProof (pre ++ `expected_eq) (← mkEq tails[0]! es) (← mkEqRefl tails[0]!)
+  addProof (pre ++ `expected_eq) #[] (← mkEq tails[0]! es) (← mkEqRefl tails[0]!)
   let matchF ← mkAppM ``nodeOk #[g, cert]
   let inputF ← mkAppM ``inputNodeOk #[cert, ins]
   for (label, f) in [("match", matchF), ("input", inputF)] do
@@ -58,20 +46,54 @@ elab "ffi_check_certificate " name:ident " : " graph:term ", " expected:term ", 
       let i := nodes.size - j
       let nm := pre ++ Name.mkSimple s!"{label}All{i}"
       let value ← mkAppM ``checkNodes #[f, mkRawNatLit i, tails[i]!]
-      if i == nodes.size then checkTrue nm value
+      if i == nodes.size then checkTrue nm params value
       else
         let head := pre ++ Name.mkSimple s!"{label}Head{i}"
-        checkTrue head (mkApp2 f (mkRawNatLit i) exprs[i]!)
-        let proof ← mkAppM ``checkNodes_cons #[f, mkRawNatLit i, exprs[i]!, tails[i+1]!, mkConst head, next]
-        addProof nm (← mkEq value (mkConst ``Bool.true)) proof
-      next := mkConst nm
+        checkTrue head params (mkApp2 f (mkRawNatLit i) exprs[i]!)
+        let proof ← mkAppM ``checkNodes_cons #[f, mkRawNatLit i, exprs[i]!, tails[i+1]!, mkAppN (mkConst head) params, next]
+        addProof nm params (← mkEq value (mkConst ``Bool.true)) proof
+      next := mkAppN (mkConst nm) params
     let proof ← if label == "match" then mkAppM ``matches_of_checkNodes #[g, tails[0]!, cert, next]
       else mkAppM ``inputCarriersMatch_of_checkNodes #[tails[0]!, cert, ins, next]
     let goal ← if label == "match" then mkAppM ``Matches #[g, es, cert]
       else mkAppM ``inputCarriersMatch #[es, cert, ins]
-    addProof (pre ++ Name.mkSimple (if label == "match" then "matches" else "inputs"))
+    addProof (pre ++ Name.mkSimple (if label == "match" then "matches" else "inputs")) params
       (← mkEq goal (mkConst ``Bool.true)) proof
   logInfo m!"Kernel-checked {nodes.size} FFI nodes and their input carrier provenance"
+
+private def elaborateCertificate (name : Syntax) (domain : Option Syntax)
+    (graph expected certificate inputs chooser : Syntax) : CommandElabM Unit :=
+  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+  let pre := (← getCurrNamespace) ++ name.getId
+  let natTy := mkConst ``Nat
+  let nodeTy := mkApp2 (mkConst ``RNode) (mkConst ``Int) (mkConst ``InKey)
+  let nodesTy := mkApp (mkConst ``List [.zero]) nodeTy
+  let option (ty : Lean.Expr) := mkApp (mkConst ``Option [.zero]) ty
+  let elaborate (stx : Syntax) (ty : Lean.Expr) := do
+    instantiateMVars (← Term.elabTermAndSynthesize stx (some ty))
+  let graphTy ← mkArrow natTy (option nodeTy)
+  let es ← elaborate expected nodesTy
+  let cert ← elaborate certificate (mkApp (mkConst ``List [.zero]) natTy)
+  let ins ← elaborate inputs (← mkArrow (mkConst ``InKey) (option natTy))
+  let choice ← elaborate chooser nodesTy
+  match domain with
+  | none => checkCertificate pre #[] (← elaborate graph graphTy) es cert ins choice
+  | some domain =>
+    let ty ← elaborate domain (mkSort (.succ .zero))
+    let g ← elaborate graph (← mkArrow ty graphTy)
+    withLocalDeclD `parameter ty fun parameter =>
+      checkCertificate pre #[parameter] (mkApp g parameter) es cert ins choice
+
+elab "ffi_check_certificate " name:ident " : " graph:term ", " expected:term ", " certificate:term ", " inputs:term
+    " choosing " chooser:term : command =>
+  elaborateCertificate name none graph expected certificate inputs chooser
+
+/-- Check the same correspondence for every member of a graph family. In
+particular, source graphs whose operations use only literals can be checked
+for every number-server table, without fixing the symbolic readback values. -/
+elab "ffi_check_family " name:ident " : " domain:term ", " graph:term ", " expected:term ", " certificate:term ", " inputs:term
+    " choosing " chooser:term : command =>
+  elaborateCertificate name (some domain) graph expected certificate inputs chooser
 
 /-- Search for a finite carrier certificate outside the kernel, then check
 `Matches` on that explicit certificate inside the kernel. Neither the search
@@ -116,6 +138,8 @@ private def inputs : InKey → Option Nat
 ffi_certificate carried : graph, expected, inputs, 7
 theorem found_actual_nodes : carried = [3, 6] := rfl
 ffi_check_certificate checked : graph, expected, carried, inputs choosing expected
+ffi_check_family family : Nat, (fun _ => graph), expected, carried, inputs choosing expected
+theorem family_checked (parameter : Nat) : Matches graph expected carried = true := family.matches parameter
 
 end CertificateCommandChecks
 end Host.Mlx.FfiEval
