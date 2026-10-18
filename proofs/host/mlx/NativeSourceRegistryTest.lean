@@ -29,6 +29,13 @@ run_cmd liftTermElabM do
   unless output == #["host_retained_configOutput"] do throwError "native source registry selected the wrong output declaration command"
   let dtype ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_config_add_template_arg_dtype")
   unless dtype == #["host_retained_configDtype"] do throwError "native source registry selected the wrong dtype declaration command"
+  for symbol in [chars!"mlx_fast_metal_kernel_config_set_grid",chars!"mlx_fast_metal_kernel_config_set_thread_group"] do
+    let commands ← registeredNativeSourceCommands (toExpr symbol)
+    unless commands == #["host_retained_configTriplet"] do throwError "native source registry selected the wrong grid/group command"
+  let metal ← registeredNativeSourceCommands (toExpr chars!"mlx_fast_metal_kernel_apply")
+  unless metal == #["host_retained_metal"] do throwError "native source registry selected the wrong Metal application command"
+  let dynamicSlice ← registeredNativeSourceCommands (toExpr chars!"mlx_slice_dynamic")
+  unless dynamicSlice == #["host_retained_sliceDynamic"] do throwError "native source registry selected the wrong dynamic slice command"
   let unknown ← registeredNativeSourceCommands (toExpr chars!"unregistered_operation")
   unless unknown.isEmpty do throwError "native source registry accepted an unknown symbol"
 
