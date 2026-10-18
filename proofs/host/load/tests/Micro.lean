@@ -17,6 +17,14 @@ def initial : Option (St LSt) := boot world [⟨chars!"main.ts", ast⟩] [] char
 host_chain P : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
 host_micro_chunk P 0, 13 refine 26, 29, 1
 
+/-- error: host_micro_chunk: explicit chunks must be positive and sum to outer fuel -/
+#guard_msgs in
+host_micro_states P 0, 17 chunks [79]
+
+/-- error: host_micro_chunk: explicit chunks must be positive and sum to outer fuel -/
+#guard_msgs in
+host_micro_states P 0, 17 chunks [0,80]
+
 host_chain Q : Host.Load.ffi, initial, (⟨[], []⟩ : SSrv), [80]
 host_micro_states Q 0, 17 chunks [5, 12, 18, 20, 25]
 host_chunk Q.micro0 0
