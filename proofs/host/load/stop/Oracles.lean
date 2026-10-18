@@ -1,6 +1,8 @@
 import host.load.stop.OneResult
+import host.load.stop.OneEosResult
 import host.load.stop.EosResult
 import host.load.stop.Clear512Result
+import host.load.stop.BudgetEnd
 set_option Elab.async false
 set_option maxRecDepth 1000000
 namespace Host.Load.Run.Full
@@ -24,6 +26,27 @@ theorem OneToken.good_one (ρ : Nat → F64) (budget : ρ 0 = .fin false 1 0)
     Good ρ OneToken.srv.oracle := by
   apply (OneToken.oracle_iff ρ).2
   exact ⟨by rw [budget]; decide, notEos⟩
+
+theorem OneEos.oracle_iff (ρ : Nat → F64) :
+    Good ρ OneEos.srv.oracle ↔
+      F64.test .lt (.fin false 1 0) (ρ 0) = false ∧
+      F64.test .eq (.fin false 248044 0) (ρ 1) = true := by
+  change Good ρ OneEos.O ↔ _
+  simp only [Good, OneEos.O, List.forall_mem_cons, SymE.eval, and_self_left]
+  constructor
+  · intro h
+    exact ⟨h.1, h.2.1⟩
+  · intro h
+    exact ⟨h.1, h.2, by intro q hq; cases hq⟩
+
+theorem OneEos.good_one_eos (ρ : Nat → F64) (budget : ρ 0 = .fin false 1 0)
+    (eos : ρ 1 = .fin false 248044 0) : Good ρ OneEos.srv.oracle := by
+  apply (OneEos.oracle_iff ρ).2
+  constructor
+  · rw [budget]
+    decide
+  · rw [eos]
+    decide
 
 /-- The ordinary EOS fragment has no token-budget or future-read premise. -/
 theorem EosToken.oracle_iff (ρ : Nat → F64) :
@@ -61,6 +84,14 @@ theorem OneToken.concrete_run (ρ : Nat → F64) (C : CSrv)
   run_sim Host.Load.ffi ρ 3144 P.s2973 OneToken.s7 OneToken.srv OneToken.S7 C
     ⟨table, OneToken.good_one ρ budget notEos⟩ OneToken.execution
 
+theorem OneEos.concrete_run (ρ : Nat → F64) (C : CSrv)
+    (table : C.tab = OneEos.srv.tab.map (SymE.eval ρ))
+    (budget : ρ 0 = .fin false 1 0)
+    (eos : ρ 1 = .fin false 248044 0) :
+    ∃ C', runC Host.Load.ffi 2952 P.s2973 C = some (OneEos.s6, C') ∧ Inst ρ OneEos.S6 C' :=
+  run_sim Host.Load.ffi ρ 2952 P.s2973 OneEos.s6 OneEos.srv OneEos.S6 C
+    ⟨table, OneEos.good_one_eos ρ budget eos⟩ OneEos.execution
+
 theorem EosToken.concrete_run (ρ : Nat → F64) (C : CSrv)
     (table : C.tab = EosToken.srv.tab.map (SymE.eval ρ))
     (eos : ρ 2 = .fin false 248044 0) :
@@ -79,5 +110,40 @@ theorem Clear512.concrete_run (ρ : Nat → F64) (C : CSrv)
     ∃ C', runC Host.Load.ffi 32 Clear512.entry C = some (Clear512.s1, C') ∧ Inst ρ Clear512.S1 C' :=
   run_sim Host.Load.ffi ρ 32 Clear512.entry Clear512.s1 Clear512.srv Clear512.S1 C
     ⟨table, Clear512.good ρ⟩ Clear512.execution
+
+open Lean Elab Command Meta in
+run_elab do
+  let lhs ← Term.elabTermAndSynthesize (← `(P.S3573.oracle)) none
+  let rhs ← Term.elabTermAndSynthesize
+    (← `(([⟨.lt, .lit (.fin false 5 0), .var 0, false⟩,
+      ⟨.eq, .lit (.fin false 248044 0), .var 5, false⟩] : List Ans))) (some (← inferType lhs))
+  let type ← mkEq lhs rhs
+  let value ← mkEqRefl lhs
+  addDecl (.thmDecl { name := `Host.Load.Run.Full.BudgetEnd.oracle_tail, levelParams := [], type, value })
+
+theorem BudgetEnd.oracle_iff (ρ : Nat → F64) :
+    Good ρ P.S3573.oracle ↔
+      F64.test .lt (.fin false 5 0) (ρ 0) = false ∧
+      F64.test .eq (.fin false 248044 0) (ρ 5) = false := by
+  rw [BudgetEnd.oracle_tail]
+  simp only [Good, List.forall_mem_cons, SymE.eval]
+  constructor
+  · intro h
+    exact ⟨h.1, h.2.1⟩
+  · intro h
+    exact ⟨h.1, h.2, by intro q hq; cases hq⟩
+
+theorem BudgetEnd.good_budget (ρ : Nat → F64) (budget : ρ 0 = .fin false 5 0)
+    (notEos : F64.test .eq (.fin false 248044 0) (ρ 5) = false) : Good ρ P.S3573.oracle := by
+  apply (BudgetEnd.oracle_iff ρ).2
+  exact ⟨by rw [budget]; decide, notEos⟩
+
+theorem BudgetEnd.concrete_run (ρ : Nat → F64) (C : CSrv)
+    (table : C.tab = P.S3573.tab.map (SymE.eval ρ))
+    (budget : ρ 0 = .fin false 5 0)
+    (notEos : F64.test .eq (.fin false 248044 0) (ρ 5) = false) :
+    ∃ C', runC P.F 1310 P.s3573 C = some (P.s3575, C') ∧ Inst ρ P.S3575 C' :=
+  run_sim P.F ρ 1310 P.s3573 P.s3575 P.S3573 P.S3575 C
+    ⟨table, BudgetEnd.good_budget ρ budget notEos⟩ BudgetEnd.execution
 
 end Host.Load.Run.Full
