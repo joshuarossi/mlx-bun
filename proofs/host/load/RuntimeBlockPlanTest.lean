@@ -2,6 +2,7 @@ import host.load.RuntimeBlockPlan
 import host.ts.renameOrdinary.MapBodyStates
 import host.mlx.OrdinaryVectorStates
 import host.mlx.OrdinaryConcatStates
+import host.mlx.OrdinaryFreeStates
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -14,6 +15,7 @@ host_source_plan P.F, P.RestStream.micro0 from 119 plan_steps 25 as Clipped
 host_source_plan P.F, P.RestStream.micro0 from 126 plan_steps 17 as Getter
 host_source_plan P.F, P.RestStream.micro0 from 125 plan_steps 18 as LookupGetter
 host_source_plan P.F, P.RestStream.micro0 from 356 plan_steps 15 as OutArray
+host_source_plan P.F, P.RestStream.micro0 from 372 plan_steps 37 as Constructor
 
 theorem first_plan : First.starts = [119] ∧ First.spans = [26] ∧ First.blockCount = 1 := by decide +kernel
 theorem second_plan : Second.starts = [176] ∧ Second.spans = [26] ∧ Second.blockCount = 1 := by decide +kernel
@@ -21,6 +23,7 @@ theorem getter_plan : Getter.starts = [126] ∧ Getter.spans = [17] ∧ Getter.b
 theorem lookup_getter_plan : LookupGetter.starts = [125,126] ∧ LookupGetter.spans = [1,17] := by decide +kernel
 theorem clipped_plan : Clipped.starts.head? = some 119 ∧ Clipped.spans.head? = some 1 ∧ Clipped.spans.sum = 25 := by decide +kernel
 theorem out_array_plan : OutArray.starts = [356] ∧ OutArray.spans = [15] ∧ OutArray.blockCount = 1 := by decide +kernel
+theorem constructor_plan : Constructor.starts = [372] ∧ Constructor.spans = [37] ∧ Constructor.blockCount = 1 := by decide +kernel
 
 host_retained_theorem planned_callback := fun
     (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)

@@ -2,6 +2,7 @@ import host.load.RuntimeDriver
 import host.ts.RenameRetainedMapperCallFrontend
 import host.ts.RenameRetainedGetterCallFrontend
 import host.ts.RenameRetainedOutArrayReturnFrontend
+import host.ts.RenameRuntimeDriverMlxConstructor
 import host.ts.RenameRetainedChain
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
@@ -12,6 +13,15 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
     let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
     let source ← Term.elabTermEnsuringType source (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) f))
     let control ← whnf (← mkAppM ``St.ctl #[source])
+    if control.isAppOfArity ``Ctl.construct 3 then
+      let callee ← whnf control.getAppArgs[0]!
+      if callee.isAppOfArity ``Val.obj 1 then
+        let object ← whnf (← mkAppM ``St.obj? #[source,callee.getAppArgs[0]!])
+        if object.isAppOfArity ``Option.some 2 then
+          let kind ← whnf (← mkAppM ``Obj.kind #[object.getAppArgs[1]!])
+          if kind.isAppOfArity ``Kind.fn 1 then
+            if (← whnf kind.getAppArgs[0]!).isAppOfArity ``Code.klass 4 then
+              return some ("host_retained_mlx_constructor",37)
     if control.isAppOfArity ``Ctl.ret 1 && (← whnf control.getAppArgs[0]!).isConstOf ``Val.undef then
       let stack ← whnf (← mkAppM ``St.stack #[source])
       if stack.isAppOfArity ``List.cons 3 then

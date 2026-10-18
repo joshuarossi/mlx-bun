@@ -28,6 +28,7 @@ import host.ts.RenameRuntimeDriverFinally
 import host.ts.RenameRuntimeDriverArraySpreadEntry
 import host.ts.RenameRuntimeDriverPrivateAssign
 import host.ts.RenameRuntimeDriverPrivateObjectRead
+import host.ts.RenameRuntimeDriverObjectVariable
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -82,7 +83,15 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       if expression.isAppOfArity ``Expr.id 1 then
         let address ← whnf (← mkAppM ``lookupEnv #[expression.getAppArgs[0]!,control.getAppArgs[1]!])
         if address.isAppOfArity ``Option.none 1 then pure "host_retained_global"
-        else pure "host_retained_pure_step"
+        else
+          if address.isAppOfArity ``Option.some 2 then
+            let cell ← whnf (← mkAppM ``St.cell? #[s,address.getAppArgs[1]!])
+            if cell.isAppOfArity ``Option.some 2 then
+              let value ← whnf cell.getAppArgs[1]!
+              if value.isAppOfArity ``Option.some 2 then
+                if (← whnf value.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+                  return "host_retained_object_variable"
+          pure "host_retained_pure_step"
       else if expression.isConstOf ``Expr.this || expression.isAppOfArity ``Expr.priv 3 then
         pure "host_retained_heap_read"
       else if expression.isAppOfArity ``Expr.array 1 then
