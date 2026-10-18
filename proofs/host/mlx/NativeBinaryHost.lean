@@ -1,5 +1,6 @@
 import host.mlx.NativeBinaryRoles
 import host.mlx.NativeReshapeHost
+import host.mlx.NativeWritesFrame
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -74,7 +75,13 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         (finishBuffer s₀ (resultWorld s₀.ffi name x y shape xn.dtype yn.dtype) out 0 outObject
           (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
           name (callArgs out hx hy stream (cellParts .u64 (.big (Int.ofNat 0)) 8 0))) t ∧
-      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a out)) := by
+      (slotKindRole s₀.ffi.mlx.next).Holds ν C R (objectKindAt t (R.a out)) ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s₀
+        (finishBuffer s₀ (resultWorld s₀.ffi name x y shape xn.dtype yn.dtype) out 0 outObject
+          (cellParts .u64 (.big (Int.ofNat 0)) 8 0) (cellParts .u64 (.big (Int.ofNat s₀.ffi.mlx.next)) 8 0)
+          name (callArgs out hx hy stream (cellParts .u64 (.big (Int.ofNat 0)) 8 0))) ∧
+      Host.Ts.Owned.Annotated.NativeHeapFrame s t ∧
+      (∀ a, a ≠ R.a out → t.heap.get a = s.heap.get a) ∧ t.ctl = .ret (.num zeroN) := by
   have calleeLive : live fn := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.1
   have outLive : live out := by have hl := h.controlLive; rw [hc₀] at hl; exact hl.2.2.1.1
   obtain ⟨_,_,_,hol⟩ := h.heap.readObject fn fo calleeLive
@@ -129,7 +136,7 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
         have targetOutBound := Nat.lt_trans (h.heap.targetBound out outLive) targetHeap
         have post := h.finishBuffer_event native₀ native' nativeRelated out 0 outObject out' oldBytes oldBytes writes₀ writes'
           name args₀ args' outLive ho₀ hok₀ hro hlo hbo writesRelated sourceHeap targetOutBound zeroRole eventRoles
-        refine ⟨shape,t,?_,?_,post,?_⟩
+        refine ⟨shape,t,?_,?_,post,?_,?_,?_,?_,rfl⟩
         · change interpC (step F s₀).run C₀ = _
           have call : F.call s₀.ffi name args₀ = M.pure (some (native₀,status0,[(out,0,writes₀)])) := by
             simpa only [F,args₀,callArgs,native₀,resultWorld,writes₀,u64Write,Int.ofNat_eq_natCast] using
@@ -150,5 +157,12 @@ theorem from_source (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
           dsimp only [writes']
           rw [← native.handleMap.head]
           exact slot_role ν C R s₀.ffi.mlx.next
+        · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s₀ native₀ out 0 outObject oldBytes writes₀ name args₀
+            ho₀ hok₀ sourceHeap
+        · exact Host.Ts.Owned.Annotated.NativeHeapFrame.finishBuffer s native' (R.a out) 0 out' oldBytes writes' name args'
+            ho hok targetOutBound
+        · intro a different
+          change (s.heap.set (R.a out) _).get a = s.heap.get a
+          rw [PTrie.get_set_u64 _ _ _ targetOutBound,ite_eq_right different]
 
 end Host.Load.Run.Full.Ordinary.BinaryHost
