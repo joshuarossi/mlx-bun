@@ -467,9 +467,15 @@ def dequantizeRow (M : MlxContract C) (w scales biases : Value) : Option Value :
       else 0) }
   else none
 
--- mlx_take_axis(table [rows, cols], ids [1,1] u32, 0) = takeRows.
+-- mlx_take_axis accepts integral index arrays (ops.cpp gather). The route
+-- uses uint32 feedback and a nonnegative int32 prompt. Negative signed
+-- indices remain outside this partial model; gather_front's offset_neg_idx
+-- leaves nonnegative signed indices unchanged.
 def takeAxis0 (table ids : Value) : Option Value :=
-  if ids.dtype = .uint32 then takeRows table ids else none
+  if ids.dtype = .uint32 then takeRows table ids
+  else if ids.dtype = .int32 ∧ (List.range (extent ids.shape)).all (fun i => ids.elems i < 2^31) then
+    takeRows table ids
+  else none
 
 /-! ## Compiled closures (gap 5)
 
