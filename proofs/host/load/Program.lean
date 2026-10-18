@@ -51,7 +51,38 @@ def validAt (p : Code) (i : Nat) (n : Node) : Bool :=
     | _ => false
   | _, _ => false
 
-def Valid (p : Code) : Prop := ∀ i : Fin p.length, validAt p i.val p[i] = true
+
+def allAt (f : Nat → α → Bool) : Nat → List α → Bool
+  | _, [] => true
+  | i, n :: ns => f i n && allAt f (i + 1) ns
+
+theorem allAt_cons (f : Nat → α → Bool) (i : Nat) (n : α) (ns : List α)
+    (hh : f i n = true) (ht : allAt f (i + 1) ns = true) :
+    allAt f i (n :: ns) = true := by simp only [allAt, hh, ht, Bool.and_self]
+
+theorem allAt_get (f : Nat → α → Bool) (xs : List α) (offset : Nat)
+    (h : allAt f offset xs = true) (hn : xs[i]? = some n) : f (offset + i) n = true := by
+  induction xs generalizing offset i with
+  | nil => simp at hn
+  | cons a xs ih =>
+    simp only [allAt, Bool.and_eq_true] at h
+    cases i with
+    | zero =>
+      have he : a = n := by simpa using hn
+      simpa [he] using h.1
+    | succ i =>
+      have := ih (offset + 1) h.2 (by simpa using hn)
+      simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using this
+
+theorem allAt_ignore (f : α → Bool) (xs : List α) (offset : Nat) :
+    allAt (fun _ a => f a) offset xs = xs.all f := by
+  induction xs generalizing offset with
+  | nil => rfl
+  | cons a xs ih => simp only [allAt, List.all_cons, ih]
+
+def valid (p : Code) : Bool := allAt (validAt p) 0 p
+
+def Valid (p : Code) : Prop := valid p = true
 
 /-- The external checkpoint assumption is indexed by actual file/key leaves.
 No intermediate-node contents are accepted as external parameters. -/
@@ -134,11 +165,7 @@ theorem data_header (bs shape : List Nat) (h : (Dtype.ofCode dt).isSome = true) 
   simp [dataValue, hd, hs shape]
 
 theorem valid_get (p : Code) (hp : Valid p) (h : p[i]? = some n) : validAt p i n = true := by
-  have hi : i < p.length := by
-    by_contra hn
-    simp [List.getElem?_eq_none (by omega : p.length ≤ i)] at h
-  have hn : p[i] = n := by simpa [List.getElem?_eq_getElem hi] using h
-  simpa [hn] using hp ⟨i, hi⟩
+  simpa using allAt_get (validAt p) p 0 hp h
 
 theorem evaluated (p : Code) (hp : Valid p) (hl : Leaves p weights) :
     ∀ (i : Nat) (n : Node), p[i]? = some n → ∃ v, value M K weights inputs p i = some v ∧ Header v n := by
@@ -252,5 +279,15 @@ theorem evaluated_actual (p : Code) (G : Nat → Option (RNode Int InKey)) (cert
   refine ⟨v, ?_, hh⟩
   exact (matches_eval M K ⟨weights, inputs⟩ G (p.map Node.erase) cert hm
     (no_inputs M K weights inputs p G cert) i (by simpa using hi)).trans hv
+
+theorem matches_of_allAt (p : Code) (G : Nat → Option (RNode Int InKey)) (cert : List Nat)
+    (h : allAt (fun i n => nodeOk G cert i n.erase) 0 p = true) :
+    Matches G (p.map Node.erase) cert = true := by
+  apply List.all_eq_true.mpr
+  intro i hi
+  have hil : i < p.length := by simpa using List.mem_range.mp hi
+  have hn : p[i]? = some p[i] := List.getElem?_eq_getElem hil
+  simp only [List.getElem?_map, hn, Option.map_some]
+  simpa using allAt_get (fun i n => nodeOk G cert i n.erase) p 0 h hn
 
 end Host.Load.Program
