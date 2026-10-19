@@ -5957,6 +5957,10 @@ const proofFiles = [
   "host/load/RuntimeCachedArrayEntryTest.lean",
   "host/ts/RenameCachedArrayEntryAssignment.lean",
   "host/ts/RenameCachedArrayEntryBlock.lean",
+  "host/load/RuntimeCompiledVariableIndex.lean",
+  "host/load/RuntimePostCachedArrayJoined.lean",
+  "host/ts/RenameRetainedVariableIndexAssignment.lean",
+  "host/ts/RenameRetainedVariableIndexAssignmentStep.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
