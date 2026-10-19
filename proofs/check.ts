@@ -5855,6 +5855,21 @@ const proofFiles = [
   "host/ts/RuntimeInventoryPrivateOther.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicFree.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicSliceCleanup.lean",
+  "host/load/RuntimeNamespacedDecodeConvolutionCallEntry.lean",
+  "host/load/RuntimeNamespacedDecodeConvolutionEntry.lean",
+  "host/load/RuntimeNamespacedDecodeConvolutionFacts.lean",
+  "host/load/RuntimeNamespacedDecodeConvolutionNative.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1678.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1770.lean",
+  "host/load/RuntimeNamespacedDecodePlan1678.lean",
+  "host/load/RuntimeNamespacedDecodePlan1770.lean",
+  "host/load/RuntimeProvidedDefaultParameterCase.lean",
+  "host/ts/RenameRetainedProvidedDefault.lean",
+  "host/ts/RenameRetainedProvidedDefaultTest.lean",
+  "host/ts/RenameRuntimeDriverProvidedDefault.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheConvolution.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheConvolutionCall.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheConvolutionEntry.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

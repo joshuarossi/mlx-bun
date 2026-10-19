@@ -1,3 +1,4 @@
+import host.ts.RenameRuntimeDriverProvidedDefault
 import host.ts.RenameRuntimeDriverRetained
 import host.ts.RenameRuntimeDriverClosure
 import host.ts.RenameRuntimeDriverHeapReads
@@ -284,7 +285,14 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
             let body ← Parametric.Driver.field fn.getAppArgs[0]! ``Func.mk 7 3
             if (← whnf body).isAppOfArity ``Body.expr 1 then pure "host_retained_expression_body"
             else pure "host_retained_parameter_body"
-          else pure "host_retained_pure_step"
+          else
+            let params ← whnf fn.getAppArgs[1]!
+            let pattern ← whnf (← Parametric.Driver.field params ``List.cons 3 1)
+            if pattern.isAppOfArity ``Pat.dflt 2 then
+              if (← whnf pattern.getAppArgs[0]!).isAppOfArity ``Pat.id 1 then
+                let value ← whnf (← mkAppM ``nthD #[mkConst ``Val.undef,fn.getAppArgs[2]!,mkNatLit 0])
+                unless value.isConstOf ``Val.undef do return "host_retained_provided_default"
+            pure "host_retained_pure_step"
         else if fn.isAppOfArity ``FnF.ctorBody 4 then pure "host_retained_constructor"
         else if fn.isAppOfArity ``FnF.fields 3 || fn.isAppOfArity ``FnF.privVal 5 then pure "host_retained_private_fields"
         else if fn.isAppOfArity ``FnF.fn 1 then
