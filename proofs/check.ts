@@ -6027,6 +6027,7 @@ const proofFiles = [
   "host/ts/renameOrdinary/RankOriginInitializedCompiledVector.lean",
   "host/ts/renameOrdinary/RankOriginCompiledClosureFacts.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCompiledClosure.lean",
+  "host/ts/renameOrdinary/RankOriginCompiledReplayFacts.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
