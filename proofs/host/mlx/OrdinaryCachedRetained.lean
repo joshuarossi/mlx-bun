@@ -34,11 +34,13 @@ theorem source_step : interpS (step CachedHost.F CachedHost.input).run initialSe
 cache roots and all six retained inventories. Initial annotations and current
 call/slot notes determine the target call and producer-policy update; the
 source plan, trace selection and postconditions are not incoming obligations. -/
-theorem retained_transport (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+theorem retained_transport_servers (sourceServer resultServer : SSrv)
+    (stepSource : interpS (step CachedHost.F CachedHost.input).run sourceServer = some (CachedHost.output,resultServer))
+    (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
     (base : Nat → GraphNode) (objects : Nat → Object) (H frame roots : Nat → Prop) (tail : List NumV)
     (host : HostSt → HostSt → Prop) (live framed : Nat → Prop)
     (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
-    (inst : Inst ν₀ initialServer C₀)
+    (inst : Inst ν₀ sourceServer C₀)
     (h : StateR (NumberRoles ν₀ ν C₀ C)
       (CachedStrongHost.NativeRelation ν₀ ν C₀ C base objects H (fun i => CachedCall.N0 i ∨ frame i) tail host)
       R live framed before after old old' CachedHost.input s)
@@ -63,7 +65,7 @@ theorem retained_transport (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C�
       ProducerAnnotations roots H (fun i => CachedCall.N3 i ∨ frame i)
         (CachedCall.roles (CachedCall.coupledRoles base)) (CachedCall.outputObjectRoles objects) ∧
       ProducerSupport roots H (fun i => CachedCall.N3 i ∨ frame i) CachedHost.output.ffi.mlx ∧
-      Inst ν₀ nextServer C₀ := by
+      Inst ν₀ resultServer C₀ := by
   let roles := CachedCall.roles (CachedCall.coupledRoles base)
   let N := fun i => CachedCall.N0 i ∨ frame i
   have native := h.native.2
@@ -105,6 +107,41 @@ theorem retained_transport (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C�
   dsimp only at same
   rw [same] at post retained support
   exact ⟨t,source,right,post,retained,policyPost,support,
-    pure_step_inst CachedHost.F ν₀ initialServer nextServer C₀ CachedHost.input CachedHost.output inst source_step source⟩
+    pure_step_inst CachedHost.F ν₀ sourceServer resultServer C₀ CachedHost.input CachedHost.output inst stepSource source⟩
+
+/-- Original source-server specialization, with its existing statement preserved. -/
+theorem retained_transport (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (base : Nat → GraphNode) (objects : Nat → Object) (H frame roots : Nat → Prop) (tail : List NumV)
+    (host : HostSt → HostSt → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (inst : Inst ν₀ initialServer C₀)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (CachedStrongHost.NativeRelation ν₀ ν C₀ C base objects H (fun i => CachedCall.N0 i ∨ frame i) tail host)
+      R live framed before after old old' CachedHost.input s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live CachedHost.input s)
+    (policy : ProducerAnnotations roots H (fun i => CachedCall.N0 i ∨ frame i)
+      (CachedCall.roles (CachedCall.coupledRoles base)) objects)
+    (signatureFrame : ¬ framed 4557) (closureLive : H 1354) (vectorLive : H 29376) (outputLive : H 29377)
+    (targetNodes : s.ffi.mlx.nnext + CachedCall.trace.order.length < 2^64)
+    (targetHandles : s.ffi.mlx.next < 2^64) (targetHeap : s.next < 2^64)
+    (fnRole thisRole : Value)
+    (note : notes.runtime.control = callNote fnRole thisRole
+      ((CachedFamilyHost.arguments 3126924 1354 29376).map FixedArgument.role))
+    (selected : notes.buffers.owners 3126924 = some (handleSlotNotes 29377)) :
+    ∃ t, interpC (step CachedHost.F CachedHost.input).run C₀ = some (CachedHost.output,C₀) ∧
+      interpC (step CachedHost.F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (CachedStrongHost.NativeRelation ν₀ ν C₀ C base (CachedCall.outputObjectRoles objects) H
+          (fun i => CachedCall.N3 i ∨ frame i) tail host)
+        R live framed before after old old' CachedHost.output t ∧
+      RetainedInventory (notes.withRuntime ⟨returnNote nativeStatusRole,notes.runtime.stack,notes.runtime.cells⟩)
+        ν₀ ν C₀ C R live CachedHost.output t ∧
+      ProducerAnnotations roots H (fun i => CachedCall.N3 i ∨ frame i)
+        (CachedCall.roles (CachedCall.coupledRoles base)) (CachedCall.outputObjectRoles objects) ∧
+      ProducerSupport roots H (fun i => CachedCall.N3 i ∨ frame i) CachedHost.output.ffi.mlx ∧
+      Inst ν₀ nextServer C₀ := by
+  exact retained_transport_servers initialServer nextServer source_step notes ν₀ ν C₀ C R
+    base objects H frame roots tail host live framed before after old old' s inst h inventory policy
+    signatureFrame closureLive vectorLive outputLive targetNodes targetHandles targetHeap fnRole thisRole note selected
 
 end Host.Load.Run.Full.Ordinary.CachedRetained

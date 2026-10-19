@@ -16,8 +16,10 @@ noncomputable def roles (i : Nat) : GraphNode :=
 theorem roles_live (i : Nat) (held : NativeSeed.nodes i) : roles i = NativeSeed.roles i :=
   ite_eq_left held
 
-theorem old_graph_none (i : Nat) : (NativeSeed.roles i).graph = none := by
-  unfold NativeSeed.roles Geometry.entryRoles
+theorem old_graph_none (i : Nat) (outside : ¬ CapturedKernelSeed.selected i) :
+    (NativeSeed.roles i).graph = none := by
+  rw [NativeSeed.roles,CapturedKernelSeed.other _ i outside]
+  unfold Geometry.entryRoles
   split
   · rfl
   · unfold Initial.nodeRoles
@@ -38,8 +40,16 @@ theorem producer_policy : ProducerAnnotations roots NativeSeed.handles NativeSee
     · simp only [roles,ite_eq_right held] at noGraph
       cases noGraph
   · intro i held primitive inputs graph
-    rw [roles_live i held,old_graph_none] at graph
-    cases graph
+    rw [roles_live i held] at graph
+    by_cases captured : CapturedKernelSeed.selected i
+    · rw [NativeSeed.roles,CapturedKernelSeed.enrich,ite_eq_left captured] at graph
+      rw [CapturedKernelSeed.graph_inputs i captured primitive inputs graph]
+      change listSupport (fun i => i < NativeSeed.native.nnext) [15252,15253,15254]
+      rw [NativeSeed.source_nnext]
+      dsimp [listSupport]
+      decide +kernel
+    · rw [old_graph_none i captured] at graph
+      cases graph
 
 /-- Upgrade the retained initialized equality to fixed indexed object roles.
 Every callback/config/vector role and producer dependency is checked against

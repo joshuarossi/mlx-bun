@@ -2,6 +2,7 @@ import host.ts.renameOrdinary.RankOriginGeometrySeed
 import host.ts.renameOrdinary.initialClosure.Facts
 import host.mlx.NativeIdentitySeed
 import host.ts.StoreEntries
+import host.ts.renameOrdinary.RankOriginCapturedKernelSeed
 
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -14,7 +15,7 @@ noncomputable def native : Host.Mlx.Ffi.St := input.ffi.mlx
 noncomputable def handles (h : Nat) : Prop := h < native.next
 noncomputable def nodes (i : Nat) : Prop := i < native.nnext
 noncomputable def roles : Nat → Host.Mlx.Ffi.Annotated.GraphNode :=
-  Geometry.entryRoles (Host.Mlx.Ffi.Annotated.Initial.nodeRoles native)
+  CapturedKernelSeed.enrich (Geometry.entryRoles (Host.Mlx.Ffi.Annotated.Initial.nodeRoles native))
 def boundary (_ : Nat) : Prop := True
 def objectRelation (_ : Nat) (source target : Host.Mlx.Ffi.Obj) : Prop := source = target
 
@@ -33,6 +34,12 @@ theorem source_handle : native.arrs.get 29363 = some 22582 := by host_kernel_rfl
 
 theorem source_annotation (ρ : Nat → F64) (C : CSrv) (i : Nat) (n : Node)
     (read : native.nodes.get i = some n) : (roles i).Holds ρ C identity n := by
+  by_cases captured : CapturedKernelSeed.selected i
+  · change (CapturedKernelSeed.enrich _ i).Holds ρ C identity n
+    rw [CapturedKernelSeed.enrich,ite_eq_left captured]
+    exact CapturedKernelSeed.source_annotation ρ C i n captured read
+  change (CapturedKernelSeed.enrich _ i).Holds ρ C identity n
+  rw [CapturedKernelSeed.other _ i captured]
   by_cases selected : i = 22582
   · subst i
     have same : n = Geometry.sourceNode := Option.some.inj (read.symm.trans Geometry.source_lookup)

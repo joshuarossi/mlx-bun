@@ -63,7 +63,7 @@ theorem initialized_callback (ρ : Nat → F64) (C : CSrv)
   have budget : s14.next+64 ≤ 2^64 := by rw [next14]; decide +kernel
   have geometry : (NativeSeed.roles 22582).shape.valueRoles =
       [.literal (.lit (F64.ofNat 1)),.literal (.lit (F64.ofNat 1)),.literal (.lit (F64.ofNat 10240))] :=
-    Geometry.hidden_role_shape _
+    by host_kernel_rfl
   rw [geometry] at inventory14
   have streamEntry := seeds.streamEntry
   rw [← RetainedParameterBatch.default_stream_handle] at streamEntry

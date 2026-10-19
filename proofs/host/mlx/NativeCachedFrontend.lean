@@ -54,6 +54,18 @@ elab "host_retained_cached " f:term ", " s:term " using " initial:term " to " t:
         match expression with
         | .const constant levels => substitutions.find? (fun item => item.1 == constant) |>.map (fun item => mkConst item.2 levels)
         | _ => none
-      addDecl (.thmDecl {name := pre ++ tag,levelParams := info.levelParams,type := type,value := mkConst original (info.levelParams.map Level.param)})
+      let value ← if tag == `source_step then
+          let program ← mkAppM ``M.run #[← mkAppM ``step #[mkConst ``CachedHost.F,mkConst ``CachedHost.input]]
+          let run ← mkAppM ``interpS #[program,mkConst (pre ++ `initialServer)]
+          let result ← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[mkConst ``CachedHost.output,mkConst (pre ++ `nextServer)]]
+          let sourceType ← mkEq run result
+          let proof ← Term.elabTermEnsuringType (← `(by rw [CachedHost.source_step]; host_kernel_rfl)) sourceType
+          Term.synthesizeSyntheticMVarsNoPostponing
+          instantiateMVars proof
+        else if tag == `retained_transport then
+          pure (mkAppN (mkConst ``CachedRetained.retained_transport_servers)
+            #[mkConst (pre ++ `initialServer),mkConst (pre ++ `nextServer),mkConst (pre ++ `source_step)])
+        else pure (mkConst original (info.levelParams.map Level.param))
+      addDecl (.thmDecl {name := pre ++ tag,levelParams := info.levelParams,type := type,value := value})
 
 end Host.Ts.Owned.Annotated.Driver

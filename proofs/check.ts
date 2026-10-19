@@ -5876,6 +5876,9 @@ const proofFiles = [
   "host/load/RuntimeCompiledArgumentEntryPrefix.lean",
   "host/load/RuntimeNamespacedDecodeFree2056Native.lean",
   "host/ts/RenameRetainedNamespaceRestart.lean",
+  "host/load/RuntimeNamespacedDecodeCachedNative.lean",
+  "host/ts/renameOrdinary/RankOriginCachedReplayRoles.lean",
+  "host/ts/renameOrdinary/RankOriginCapturedKernelSeed.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
