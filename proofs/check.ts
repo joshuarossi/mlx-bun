@@ -5888,6 +5888,15 @@ const proofFiles = [
   "host/load/RuntimeClosureApplyBridge.lean",
   "host/load/RuntimeClosureApplyBridgeCuts.lean",
   "host/load/RuntimeClosureApplyBridgePlan.lean",
+  "host/load/RuntimeCompiledArgumentEntryChain.lean",
+  "host/load/RuntimeCompiledArgumentEntryChainNegative.lean",
+  "host/load/RuntimeCompiledArgumentEntryCuts2057.lean",
+  "host/load/RuntimeCompiledArgumentEntrySelect.lean",
+  "host/load/RuntimeCompiledArgumentSelectorTest.lean",
+  "host/load/RuntimePostConvCleanupFrames.lean",
+  "host/ts/RenameCompiledArgumentEntryChain.lean",
+  "host/ts/RenameCompiledArgumentEntryChainStep.lean",
+  "host/ts/renameOrdinary/RankOriginCapturedShapelessSeed.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
