@@ -9,6 +9,7 @@ import host.ts.RenameRetainedLiteralArrowFrontend
 import host.ts.RenameRetainedOptIntFrontend
 import host.ts.RenameRetainedDisposeFrontend
 import host.ts.RenameRetainedNdimCallFrontend
+import host.ts.RenameRetainedShapeCallFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -89,6 +90,8 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
         return some ("host_retained_dispose",40)
       if ← isDefEq code.getAppArgs[0]! (mkConst ``Sources.Mlx.Array.ast_n61) then
         return some ("host_retained_ndim_call",39)
+      if ← isDefEq code.getAppArgs[0]! (mkConst ``Sources.Mlx.Array.ast_n67) then
+        return some ("host_retained_shape_call",115)
     let body ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 3)
     if arrow.isConstOf ``Bool.true then
       if body.isAppOfArity ``Body.expr 1 then

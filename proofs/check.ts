@@ -6011,6 +6011,18 @@ const proofFiles = [
   "host/load/RuntimeCompiledArgumentEntryThrough279ThirdIndex.lean",
   "host/load/RuntimeCompiledArgumentEntryThrough279ThirdStore.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCompiledArgumentFull.lean",
+  "host/load/RuntimeShapeCallEntryCases.lean",
+  "host/load/RuntimeShapeCallWholeCases.lean",
+  "host/load/RuntimeShapeWholeCallPlanCases.lean",
+  "host/mlx/NativeShapeCallBody.lean",
+  "host/ts/RenameRetainedShapeCall.lean",
+  "host/ts/RenameRetainedShapeCallEntry.lean",
+  "host/ts/RenameRetainedShapeCallEntryFrontend.lean",
+  "host/ts/RenameRetainedShapeCallFacts.lean",
+  "host/ts/RenameRetainedShapeCallFrontend.lean",
+  "host/ts/RenameRetainedShapeCallGuard.lean",
+  "host/ts/RenameRetainedShapeCallPrelude.lean",
+  "host/ts/RenameRetainedShapeCallReadback.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
