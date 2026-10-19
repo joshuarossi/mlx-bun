@@ -5984,6 +5984,7 @@ const proofFiles = [
   "host/ts/RenameRetainedTypedHandleStore.lean",
   "host/ts/RenameRetainedTypedHandleStoreFrames.lean",
   "host/ts/RenameRetainedTypedHandleStoreStep.lean",
+  "host/load/RuntimeWholeCallPlanCases.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

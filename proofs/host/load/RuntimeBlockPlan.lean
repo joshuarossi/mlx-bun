@@ -7,6 +7,8 @@ import host.ts.RenameRetainedChain
 import host.mlx.NativeNumberReturnFrontend
 import host.ts.RenameRetainedLiteralArrowFrontend
 import host.ts.RenameRetainedOptIntFrontend
+import host.ts.RenameRetainedDisposeFrontend
+import host.ts.RenameRetainedNdimCallFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -81,6 +83,12 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
             if (← whnf argument.getAppArgs[0]!).isAppOfArity ``NumV.lit 1 then
               return some ("host_retained_optInt",40)
     let arrow ← whnf code.getAppArgs[2]!
+    if arrow.isConstOf ``Bool.false && arguments.isAppOfArity ``List.nil 1 &&
+        (← whnf control.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+      if ← isDefEq code.getAppArgs[0]! (mkConst ``Sources.Mlx.Array.ast_n170) then
+        return some ("host_retained_dispose",40)
+      if ← isDefEq code.getAppArgs[0]! (mkConst ``Sources.Mlx.Array.ast_n61) then
+        return some ("host_retained_ndim_call",39)
     let body ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 3)
     if arrow.isConstOf ``Bool.true then
       if body.isAppOfArity ``Body.expr 1 then
