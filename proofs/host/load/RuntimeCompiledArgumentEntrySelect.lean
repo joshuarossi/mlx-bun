@@ -4,6 +4,7 @@ import host.ts.RenameCompiledArgumentEntryNotStep
 import host.ts.RenameRetainedStructuralMemberStep
 import host.ts.RenameRetainedTypedCountStep
 import host.ts.RenameRetainedVariableIndexAssignmentStep
+import host.ts.RenameRetainedTypedHandleStoreStep
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 1000000
@@ -24,8 +25,8 @@ private def chainReturn? (state : String) : CommandElabM Bool := do
     unless frame.isAppOfArity ``Frame.e 1 do return false
     return (← whnf frame.getAppArgs[0]!).isConstOf ``ExprF.chain
 
-private def specialStep? (state : String) : CommandElabM (Option String) := do
-  if ← chainReturn? state then return some "Chain"
+private def specialStep? (state : String) : CommandElabM (Option (String × Option Nat)) := do
+  if ← chainReturn? state then return some ("Chain",none)
   let stx ← liftCoreM <| ofExcept <| Parser.runParserCategory (← getEnv) `term state
   liftTermElabM do
     let s ← Term.elabTerm stx none
@@ -47,7 +48,7 @@ private def specialStep? (state : String) : CommandElabM (Option String) := do
                     let value ← whnf args.getAppArgs[1]!
                     if value.isAppOfArity ``Val.num 1 then
                       if (← whnf value.getAppArgs[0]!).isAppOfArity ``NumV.lit 1 then
-                        return some "TypedCount"
+                        return some ("TypedCount",none)
     if ctl.isAppOfArity ``Ctl.ev 2 then
       let expression ← whnf ctl.getAppArgs[0]!
       if expression.isAppOfArity ``Expr.assign 3 then
@@ -58,11 +59,31 @@ private def specialStep? (state : String) : CommandElabM (Option String) := do
             if target.isAppOfArity ``Expr.index 3 then
               if (← whnf target.getAppArgs[0]!).isAppOfArity ``Expr.id 1 then
                 if (← whnf target.getAppArgs[1]!).isAppOfArity ``Expr.id 1 then
-                  return some "VariableIndex"
+                  return some ("VariableIndex",none)
       if expression.isAppOfArity ``Expr.unary 2 then
-        if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some "Not"
+        if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some ("Not",none)
       return none
     unless ctl.isAppOfArity ``Ctl.ret 1 do return none
+    if (← whnf ctl.getAppArgs[0]!).isAppOfArity ``Val.big 1 then
+      let stack ← whnf (← mkAppM ``St.stack #[s])
+      if stack.isAppOfArity ``List.cons 3 then
+        let frame ← whnf stack.getAppArgs[1]!
+        if frame.isAppOfArity ``Frame.a 1 then
+          let assignment ← whnf frame.getAppArgs[0]!
+          if assignment.isAppOfArity ``AsgF.put 3 then
+            if (← whnf assignment.getAppArgs[0]!).isAppOfArity ``Option.none 1 then
+              if (← whnf assignment.getAppArgs[2]!).isConstOf ``Val.undef then
+                let target ← whnf assignment.getAppArgs[1]!
+                if target.isAppOfArity ``Target.prop 2 then
+                  let receiver ← whnf target.getAppArgs[0]!
+                  if receiver.isAppOfArity ``Val.obj 1 then
+                    let object? ← whnf (← mkAppM ``St.obj? #[s,receiver.getAppArgs[0]!])
+                    if object?.isAppOfArity ``Option.some 2 then
+                      let objectKind ← whnf (← mkAppM ``Obj.kind #[object?.getAppArgs[1]!])
+                      if objectKind.isAppOfArity ``Kind.typed 4 then
+                        if (← whnf objectKind.getAppArgs[0]!).isConstOf ``EltK.u64 then
+                          if let some count ← getNatValue? (← whnf objectKind.getAppArgs[3]!) then
+                            return some ("TypedStore",some count)
     unless (← whnf ctl.getAppArgs[0]!).isAppOfArity ``Val.obj 1 do return none
     let stack ← whnf (← mkAppM ``St.stack #[s])
     unless stack.isAppOfArity ``List.cons 3 do return none
@@ -70,7 +91,7 @@ private def specialStep? (state : String) : CommandElabM (Option String) := do
     unless frame.isAppOfArity ``Frame.e 1 do return none
     let expression ← whnf frame.getAppArgs[0]!
     if expression.isAppOfArity ``ExprF.unary 1 then
-      if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some "Not"
+      if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some ("Not",none)
     if expression.isAppOfArity ``ExprF.member 2 then
       unless (← whnf expression.getAppArgs[1]!).isConstOf ``Bool.false do return none
       let address := (← whnf ctl.getAppArgs[0]!).getAppArgs[0]!
@@ -85,7 +106,7 @@ private def specialStep? (state : String) : CommandElabM (Option String) := do
               let data ← whnf data?.getAppArgs[1]!
               if data.isAppOfArity ``PropV.data 3 then
                 if (← whnf (← mkAppM ``structuralRole #[data.getAppArgs[0]!])).isAppOfArity ``Option.some 2 then
-                  return some "Member"
+                  return some ("Member",none)
     return none
 
 private partial def readName (expression : Lean.Expr) : MetaM Lean.Name := do
@@ -123,11 +144,17 @@ private def definitionValue (name : Lean.Name) : CommandElabM Lean.Expr :=
   liftTermElabM do
     whnf (← getConstInfoDefn name).value
 
-/-- Local block selector for the compiled-argument region. Chain returns and
-logical not use checked continuations; other spans reuse the linear planner.
-Central drivers are not registered. -/
-elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start:num
-    " plan_steps " count:num " as " name:ident : command => do
+private def emitCompiledArgumentChecked (source : String) : CommandElabM Unit := do
+  let count := (← get).messages.reportedPlusUnreported.toList.length
+  Parametric.Driver.emit source
+  let errors := ((← get).messages.reportedPlusUnreported.toList.drop count).filter
+    (fun message => message.severity == .error)
+  unless errors.isEmpty do
+    let rendered ← errors.mapM fun message => message.data.toString
+    throwError "compiled argument plan: generated source proof failed\n{String.intercalate "\n" rendered}"
+
+private def generateCompiledArgumentPlan (f : TSyntax `term) (base : TSyntax `ident)
+    (start count : TSyntax `num) (name : TSyntax `ident) : CommandElabM Unit := do
   let some fText := f.raw.reprint | throwError "compiled argument plan: cannot print Ffi"
   let some baseText := base.raw.reprint | throwError "compiled argument plan: cannot print the source region"
   let count := count.getNat
@@ -144,7 +171,7 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
   let mut spans : List Nat := []
   let mut starts : List Nat := []
   while cursor < finish do
-    if let some kind ← specialStep? (state cursor) then
+    if let some (kind,expectedCount) ← specialStep? (state cursor) then
       let span := if kind == "VariableIndex" then 5 else 1
       unless cursor + span ≤ finish do
         throwError "compiled argument plan: complete indexed assignment exceeds the requested endpoint"
@@ -154,12 +181,12 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
         else if kind == "Member" then "host_retained_structural_member"
         else if kind == "TypedCount" then "host_retained_typed_count"
         else if kind == "VariableIndex" then "host_retained_variable_index_assignment"
+        else if kind == "TypedStore" then "host_retained_typed_handle_store"
         else "host_compiled_argument_not_step"
-      Parametric.Driver.emit s!"{command} {fText}, {state cursor} using {server cursor} to {state (cursor + span)} using {server (cursor + span)} as {relative}"
+      let extra := match expectedCount with | none => "" | some count => s!" with {count}"
+      emitCompiledArgumentChecked s!"{command} {fText}, {state cursor} using {server cursor} to {state (cursor + span)} using {server (cursor + span)}{extra} as {relative}"
       unless (← getEnv).contains (block ++ `retained_transport) do
         throwError "compiled argument plan: {kind} was not checked at region index {cursor}"
-      if (← get).messages.hasErrors then
-        throwError "compiled argument plan: {kind} failed at region index {cursor}"
       rules := rules ++ [block ++ `retained_transport]
       spans := spans ++ [span]
       starts := starts ++ [cursor]
@@ -171,11 +198,9 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
         span := span + 1
       let relative := name.getId ++ Lean.Name.mkSimple s!"Span{cursor}"
       let block := (← getCurrNamespace) ++ relative
-      Parametric.Driver.emit s!"host_source_linear_plan_subst {fText}, {baseText} from {cursor} plan_steps {span} substitute {oracle} as {relative}"
+      emitCompiledArgumentChecked s!"host_source_linear_plan_subst {fText}, {baseText} from {cursor} plan_steps {span} substitute {oracle} as {relative}"
       unless (← getEnv).contains (block ++ `rules) do
         throwError "compiled argument plan: no checked span was generated at region index {cursor}"
-      if (← get).messages.hasErrors then
-        throwError "compiled argument plan: source span failed at region index {cursor}"
       rules := rules ++ (← liftTermElabM <| readNames (← definitionValue (block ++ `rules)))
       spans := spans ++ (← liftTermElabM <| readNats (← definitionValue (block ++ `spans)))
       starts := starts ++ (← liftTermElabM <| readNats (← definitionValue (block ++ `starts)))
@@ -188,6 +213,21 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
     Parametric.Driver.addData (pre ++ `sourceSteps) (mkNatLit count)
     Parametric.Driver.addData (pre ++ `blockCount) (mkNatLit rules.length)
   let printed := "_root_." ++ pre.toString
-  Parametric.Driver.emit s!"theorem {printed}.span_total : {printed}.spans.sum = {printed}.sourceSteps := by decide +kernel"
+  emitCompiledArgumentChecked s!"theorem {printed}.span_total : {printed}.spans.sum = {printed}.sourceSteps := by decide +kernel"
+
+/-- Local source selection is one transaction, including declarations from
+earlier blocks when a later block fails. Pre-existing messages are preserved. -/
+def elaborateCompiledArgumentLinearPlan (f : TSyntax `term) (base : TSyntax `ident)
+    (start count : TSyntax `num) (name : TSyntax `ident) : CommandElabM Unit := do
+  let saved : Command.State ← get
+  try
+    generateCompiledArgumentPlan f base start count name
+  catch error =>
+    set saved
+    throw error
+
+elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start:num
+    " plan_steps " count:num " as " name:ident : command =>
+  elaborateCompiledArgumentLinearPlan f base start count name
 
 end Host.Ts.Owned.Annotated.Driver
