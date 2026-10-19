@@ -43,7 +43,7 @@ private def expectKernelRejection (claim marker : String) : CommandElabM Unit :=
   if rendered == "" then throwError "private-list claim was accepted: {claim}"
   if (rendered.splitOn "Unknown identifier").length > 1 || (rendered.splitOn "unknown identifier").length > 1 then
     throwError "private-list rejection used an unknown identifier:\n{rendered}"
-  unless (rendered.splitOn "kernel").length > 1 do
+  unless (rendered.splitOn "(kernel) declaration type mismatch").length > 1 do
     throwError "private-list rejection was not a kernel diagnostic:\n{rendered}"
   unless (rendered.splitOn marker).length > 1 do
     throwError "private-list rejection did not mention {marker}:\n{rendered}"

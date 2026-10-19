@@ -5842,6 +5842,19 @@ const proofFiles = [
   "host/ts/RenameRuntimeDriverUnregister.lean",
   "host/load/RuntimeNamespacedDecodeDynamicSliceWrapper.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicSliceWrapper.lean",
+  "host/load/RuntimeDynamicDisposedStore.lean",
+  "host/load/RuntimeNamespacedDecodeDynamicFreeNative.lean",
+  "host/load/RuntimeNamespacedDecodeDynamicSliceCleanup.lean",
+  "host/ts/RenameParametricProvidedDefault.lean",
+  "host/ts/RenamePrivateListFrame.lean",
+  "host/ts/RenamePrivateListFrameTest.lean",
+  "host/ts/RenameRetainedPrivateOther.lean",
+  "host/ts/RenameRuntimeDriverPrivateOther.lean",
+  "host/ts/RenameRuntimeStaticCall.lean",
+  "host/ts/RenameRuntimeStaticCallTest.lean",
+  "host/ts/RuntimeInventoryPrivateOther.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicFree.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicSliceCleanup.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
