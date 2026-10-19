@@ -5885,6 +5885,9 @@ const proofFiles = [
   "host/load/RuntimePostConvCleanup.lean",
   "host/load/RuntimePostConvCleanupCuts.lean",
   "host/load/RuntimePostConvCleanupPlan.lean",
+  "host/load/RuntimeClosureApplyBridge.lean",
+  "host/load/RuntimeClosureApplyBridgeCuts.lean",
+  "host/load/RuntimeClosureApplyBridgePlan.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
