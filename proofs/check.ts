@@ -5805,6 +5805,8 @@ const proofFiles = [
   "host/load/RuntimeNamespacedDecodeMetadata1285.lean",
   "host/load/RuntimeNamespacedDecodePlan1286.lean",
   "host/load/RuntimeNamespacedDecodeShapePointerEntry.lean",
+  "host/load/RuntimeNdimCallCases.lean",
+  "host/ts/RenameRetainedNdim.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
