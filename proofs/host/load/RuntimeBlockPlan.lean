@@ -6,6 +6,7 @@ import host.ts.RenameRuntimeDriverMlxConstructor
 import host.ts.RenameRetainedChain
 import host.mlx.NativeNumberReturnFrontend
 import host.ts.RenameRetainedLiteralArrowFrontend
+import host.ts.RenameRetainedOptIntFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -69,6 +70,16 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
     unless kind.isAppOfArity ``Kind.fn 1 do return none
     let code ← whnf kind.getAppArgs[0]!
     unless code.isAppOfArity ``Code.closure 4 do return none
+    -- Select only the pinned complete optInt body. The frontend separately
+    -- proves both source endpoints and the retained arbitrary-target result.
+    if ← isDefEq code.getAppArgs[0]! (mkConst ``optIntFunction) then
+      if arguments.isAppOfArity ``List.cons 3 then
+        if (← whnf arguments.getAppArgs[2]!).isAppOfArity ``List.nil 1 then
+          let argument ← whnf arguments.getAppArgs[1]!
+          if argument.isConstOf ``Val.null then return some ("host_retained_optInt",18)
+          if argument.isAppOfArity ``Val.num 1 then
+            if (← whnf argument.getAppArgs[0]!).isAppOfArity ``NumV.lit 1 then
+              return some ("host_retained_optInt",40)
     let arrow ← whnf code.getAppArgs[2]!
     let body ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 3)
     if arrow.isConstOf ``Bool.true then

@@ -5944,6 +5944,13 @@ const proofFiles = [
   "host/load/RuntimeCompiledArgumentTypedCount.lean",
   "host/ts/RenameRetainedTypedCount.lean",
   "host/ts/RenameRetainedTypedCountStep.lean",
+  "host/load/RuntimePostCachedReturn.lean",
+  "host/load/RuntimePostCachedReturnCuts.lean",
+  "host/load/RuntimePostCachedReturnNative.lean",
+  "host/load/RuntimePostCachedReturnPlan.lean",
+  "host/load/RuntimePostCachedReturnTest.lean",
+  "host/load/RuntimePostCachedReturnToFree.lean",
+  "host/load/RuntimeOptIntPlanCases.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
