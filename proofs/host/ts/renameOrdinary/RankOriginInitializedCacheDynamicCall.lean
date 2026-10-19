@@ -33,6 +33,18 @@ noncomputable def resultNotes (notes : RetainedNotes) (caller : List Annotated.T
   connectedNotes notes caller
 noncomputable def live := connectedLive InitializedCacheDynamicSliceAllocationEntry.live
 
+theorem live_grow (a : Nat) (alive : InitialRetained.live a) : live a := by
+  unfold live connectedLive
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply ClosureLive.grow
+  apply Or.inl
+  apply Or.inl
+  apply Or.inl
+  exact InitializedCacheDynamicSliceAllocationEntry.live_grow a alive
+
 theorem native_frame : Plan1438.Block110.output.ffi.mlx = Plan1362.Block75.output.ffi.mlx := by
   host_kernel_rfl
 theorem source_endpoint : Plan1438.Block110.output = Region1438.s111 := by host_kernel_rfl

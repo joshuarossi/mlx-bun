@@ -5840,6 +5840,8 @@ const proofFiles = [
   "host/load/RuntimeNamespacedDecodePlan1550.lean",
   "host/ts/RenameParametricUnregister.lean",
   "host/ts/RenameRuntimeDriverUnregister.lean",
+  "host/load/RuntimeNamespacedDecodeDynamicSliceWrapper.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicSliceWrapper.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
