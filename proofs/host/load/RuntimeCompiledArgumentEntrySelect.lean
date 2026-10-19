@@ -1,5 +1,7 @@
 import host.load.RuntimeBlockPlan
 import host.ts.RenameCompiledArgumentEntryChainStep
+import host.ts.RenameCompiledArgumentEntryNotStep
+import host.ts.RenameRetainedStructuralMemberStep
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 1000000
@@ -19,6 +21,43 @@ private def chainReturn? (state : String) : CommandElabM Bool := do
     let frame ← whnf stack.getAppArgs[1]!
     unless frame.isAppOfArity ``Frame.e 1 do return false
     return (← whnf frame.getAppArgs[0]!).isConstOf ``ExprF.chain
+
+private def specialStep? (state : String) : CommandElabM (Option String) := do
+  if ← chainReturn? state then return some "Chain"
+  let stx ← liftCoreM <| ofExcept <| Parser.runParserCategory (← getEnv) `term state
+  liftTermElabM do
+    let s ← Term.elabTerm stx none
+    let ctl ← whnf (← mkAppM ``St.ctl #[s])
+    if ctl.isAppOfArity ``Ctl.ev 2 then
+      let expression ← whnf ctl.getAppArgs[0]!
+      if expression.isAppOfArity ``Expr.unary 2 then
+        if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some "Not"
+      return none
+    unless ctl.isAppOfArity ``Ctl.ret 1 do return none
+    unless (← whnf ctl.getAppArgs[0]!).isAppOfArity ``Val.obj 1 do return none
+    let stack ← whnf (← mkAppM ``St.stack #[s])
+    unless stack.isAppOfArity ``List.cons 3 do return none
+    let frame ← whnf stack.getAppArgs[1]!
+    unless frame.isAppOfArity ``Frame.e 1 do return none
+    let expression ← whnf frame.getAppArgs[0]!
+    if expression.isAppOfArity ``ExprF.unary 1 then
+      if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some "Not"
+    if expression.isAppOfArity ``ExprF.member 2 then
+      unless (← whnf expression.getAppArgs[1]!).isConstOf ``Bool.false do return none
+      let address := (← whnf ctl.getAppArgs[0]!).getAppArgs[0]!
+      let object? ← whnf (← mkAppM ``St.obj? #[s,address])
+      if object?.isAppOfArity ``Option.some 2 then
+        let object := object?.getAppArgs[1]!
+        if (← whnf (← mkAppM ``Obj.kind #[object])).isConstOf ``Kind.ordinary then
+          let key ← whnf expression.getAppArgs[0]!
+          if key.isAppOfArity ``PKey.str 1 then
+            let data? ← whnf (← mkAppM ``findProp #[key,← mkAppM ``Obj.props #[object]])
+            if data?.isAppOfArity ``Option.some 2 then
+              let data ← whnf data?.getAppArgs[1]!
+              if data.isAppOfArity ``PropV.data 3 then
+                if (← whnf (← mkAppM ``structuralRole #[data.getAppArgs[0]!])).isAppOfArity ``Option.some 2 then
+                  return some "Member"
+    return none
 
 private partial def readName (expression : Lean.Expr) : MetaM Lean.Name := do
   let expression ← whnf expression
@@ -55,8 +94,8 @@ private def definitionValue (name : Lean.Name) : CommandElabM Lean.Expr :=
   liftTermElabM do
     whnf (← getConstInfoDefn name).value
 
-/-- Local block selector for the compiled-argument region. Chain returns use the
-local continuation; every other contiguous span reuses the checked linear planner.
+/-- Local block selector for the compiled-argument region. Chain returns and
+logical not use checked continuations; other spans reuse the linear planner.
 Central drivers are not registered. -/
 elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start:num
     " plan_steps " count:num " as " name:ident : command => do
@@ -76,14 +115,17 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
   let mut spans : List Nat := []
   let mut starts : List Nat := []
   while cursor < finish do
-    if ← chainReturn? (state cursor) then
-      let relative := name.getId ++ Lean.Name.mkSimple s!"Chain{cursor}"
+    if let some kind ← specialStep? (state cursor) then
+      let relative := name.getId ++ Lean.Name.mkSimple s!"{kind}{cursor}"
       let block := (← getCurrNamespace) ++ relative
-      Parametric.Driver.emit s!"host_compiled_argument_chain_step {fText}, {state cursor} using {server cursor} to {state (cursor + 1)} using {server (cursor + 1)} as {relative}"
+      let command := if kind == "Chain" then "host_compiled_argument_chain_step"
+        else if kind == "Member" then "host_retained_structural_member"
+        else "host_compiled_argument_not_step"
+      Parametric.Driver.emit s!"{command} {fText}, {state cursor} using {server cursor} to {state (cursor + 1)} using {server (cursor + 1)} as {relative}"
       unless (← getEnv).contains (block ++ `retained_transport) do
-        throwError "compiled argument plan: chain return was not checked at region index {cursor}"
+        throwError "compiled argument plan: {kind} was not checked at region index {cursor}"
       if (← get).messages.hasErrors then
-        throwError "compiled argument plan: chain return failed at region index {cursor}"
+        throwError "compiled argument plan: {kind} failed at region index {cursor}"
       rules := rules ++ [block ++ `retained_transport]
       spans := spans ++ [1]
       starts := starts ++ [cursor]
@@ -91,7 +133,7 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
     else
       let mut span := 1
       while cursor + span < finish do
-        if ← chainReturn? (state (cursor + span)) then break
+        if (← specialStep? (state (cursor + span))).isSome then break
         span := span + 1
       let relative := name.getId ++ Lean.Name.mkSimple s!"Span{cursor}"
       let block := (← getCurrNamespace) ++ relative

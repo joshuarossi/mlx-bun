@@ -5934,6 +5934,13 @@ const proofFiles = [
   "host/load/RuntimeCompiledArgumentEntryPlanHead.lean",
   "host/ts/renameOrdinary/RankOriginCompiledArgumentFacts.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCompiledArgumentClosures.lean",
+  "host/load/RuntimeCompiledArgumentEntryContinuationChecks.lean",
+  "host/load/RuntimeCompiledArgumentEntryPlanFrom30.lean",
+  "host/load/RuntimeCompiledArgumentEntryWrapper.lean",
+  "host/ts/RenameCompiledArgumentEntryNotStep.lean",
+  "host/ts/RenameRetainedStructuralMember.lean",
+  "host/ts/RenameRetainedStructuralMemberStep.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCompiledArgumentWrapper.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
