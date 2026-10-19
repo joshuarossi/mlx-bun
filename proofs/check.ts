@@ -5941,6 +5941,9 @@ const proofFiles = [
   "host/ts/RenameRetainedStructuralMember.lean",
   "host/ts/RenameRetainedStructuralMemberStep.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCompiledArgumentWrapper.lean",
+  "host/load/RuntimeCompiledArgumentTypedCount.lean",
+  "host/ts/RenameRetainedTypedCount.lean",
+  "host/ts/RenameRetainedTypedCountStep.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
