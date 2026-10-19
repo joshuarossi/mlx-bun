@@ -5991,6 +5991,8 @@ const proofFiles = [
   "host/load/RuntimeShapeCallTailCases.lean",
   "host/mlx/NativeShapeCallTail.lean",
   "host/ts/RenameRetainedShapeCallTailFrontend.lean",
+  "host/ts/renameOrdinary/RankOriginCompiledArgumentBounds.lean",
+  "host/ts/renameOrdinary/RankOriginCompiledArgumentInputFacts.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
