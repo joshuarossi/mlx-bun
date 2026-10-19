@@ -5870,6 +5870,8 @@ const proofFiles = [
   "host/ts/renameOrdinary/RankOriginInitializedCacheConvolution.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheConvolutionCall.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheConvolutionEntry.lean",
+  "host/load/RuntimeNamespacedDecodeFree1978Native.lean",
+  "host/load/RuntimeNamespacedDecodeVectorInputNative.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
