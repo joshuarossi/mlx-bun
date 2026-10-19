@@ -45,8 +45,8 @@ elab "host_compiled_argument_chain_step " f:term ", " s:term " using " initial:t
         Parametric.Driver.addData (pre ++ Name.mkSimple tag) value type?
       Parametric.Driver.addData (pre ++ `sourceValue) value
       Parametric.Driver.addData (pre ++ `sourceTail) tail
-      Parametric.Driver.addData (pre ++ `initialServer) initial
-      Parametric.Driver.addData (pre ++ `nextServer) next
+      Parametric.Driver.addData (pre ++ `initialServer) (← mkAppM ``numberServer #[initial])
+      Parametric.Driver.addData (pre ++ `nextServer) (← mkAppM ``numberServer #[next])
       pure ()
     let n := "_root_." ++ pre.toString
     let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"
