@@ -5920,6 +5920,9 @@ const proofFiles = [
   "host/load/RuntimePostConcatCleanupRun74.lean",
   "host/load/RuntimePostConcatCleanupThroughStore.lean",
   "host/ts/renameOrdinary/RankOriginShapelessFrameRetag.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedPostConcat.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedPostConcatFree.lean",
+  "host/ts/renameOrdinary/RankOriginPostConcatFacts.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
