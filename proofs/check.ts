@@ -5822,6 +5822,11 @@ const proofFiles = [
   "host/load/RuntimeNamespacedDecodePlan1438.lean",
   "host/ts/renameOrdinary/RankOriginDynamicSliceStartSeed.lean",
   "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicCall.lean",
+  "host/load/RuntimeTwoArgumentEntryCases.lean",
+  "host/ts/RenameRetainedTwoArgumentEntry.lean",
+  "host/ts/RenameRetainedTwoArgumentEntryFrontend.lean",
+  "host/ts/RenameRetainedTwoArgumentEntryTest.lean",
+  "host/ts/RenameTwoParameterEntryFields.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
