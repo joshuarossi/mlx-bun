@@ -41,6 +41,31 @@ noncomputable def resultNotes (notes : RetainedNotes) (caller : List Annotated.T
   connectedNotes (inputNotes notes caller) (continuation notes caller)
 noncomputable def live := connectedLive InitializedCacheSlice.live28
 
+theorem live_grow (a : Nat) (alive : InitialRetained.live a) : live a := by
+  have base := InitializedCacheSliceReady.live28_grow a alive
+  unfold live connectedLive Plan1220.Block47.endLive
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply Or.inl
+  unfold Plan1200.Block1.endLive
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  unfold MlxConstruction.ParametersLive ConstructorBodyLive
+  apply CellsLive.grow
+  apply Or.inl
+  unfold MlxConstruction.FieldsLive
+  apply Or.inl
+  unfold BaseClassLive
+  exact Or.inl (Or.inl base)
+
 theorem stack_shape (notes : RetainedNotes) (caller : List Annotated.Tree) :
     (inputNotes notes caller).runtime.stack =
       frame notes caller 0::frame notes caller 1::frame notes caller 2::frame notes caller 3::
