@@ -5835,6 +5835,11 @@ const proofFiles = [
   "host/ts/RenameDefaultIdentifierParameterFields.lean",
   "host/ts/RenameRetainedDefaultIdentifierParameter.lean",
   "host/ts/RenameRetainedDefaultIdentifierParameterTest.lean",
+  "host/load/RuntimeFinalizationUnregisterCase.lean",
+  "host/load/RuntimeNamespacedDecodeCuts1550.lean",
+  "host/load/RuntimeNamespacedDecodePlan1550.lean",
+  "host/ts/RenameParametricUnregister.lean",
+  "host/ts/RenameRuntimeDriverUnregister.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

@@ -8,6 +8,7 @@ import host.mlx.NativeMetadataFrontend
 import host.mlx.NativeIntegerConversionFrontend
 import host.mlx.NativeNumberConversionFrontend
 import host.ts.RenameRuntimeDriverRegistry
+import host.ts.RenameRuntimeDriverUnregister
 import host.ts.RenameNativeSourceRegistry
 import host.ts.RenameRuntimeDriverLiteralI32Array
 set_option Elab.async false
@@ -64,6 +65,7 @@ elab "host_source_step " f:term ", " s:term " using " initial:term " to " t:term
           else throwError "host_source_step: unsupported original numeric native call"
         else if native.isAppOfArity ``Native.fn 1 then
           if (← whnf native.getAppArgs[0]!).isConstOf ``FnN.finRegister then pure #["host_retained_registry"]
+          else if (← whnf native.getAppArgs[0]!).isConstOf ``FnN.finUnregister then pure #["host_retained_unregister"]
           else throwError "host_source_step: unsupported original function native call"
         else throwError "host_source_step: unsupported original native source call"
     else if control.isAppOfArity ``Ctl.construct 3 then
