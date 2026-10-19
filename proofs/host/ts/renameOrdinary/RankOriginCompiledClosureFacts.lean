@@ -78,14 +78,6 @@ theorem compiled_seed_candidate_absent : InitialArrayHandles.candidate input Pri
 theorem compiled_seed_absent : PrivateSeed.notes.owners After.Block2378.sourceAddress = none := by
   simp only [PrivateSeed.notes,InitialArrayHandles.notes,compiled_seed_candidate_absent,Option.map_none,ite_self]
 
-theorem current_compiled_absent (ic : Annotated.Tree) (is : List Annotated.Tree)
-    (control : Annotated.Tree) (fnRole receiverRole : Annotated.Value) (saved : Annotated.Tree)
-    (caller : List Annotated.Tree) :
-    (initializedNotes ic is control fnRole receiverRole saved caller).privates.owners After.Block2378.sourceAddress = none := by
-  calc
-    _ = (PrivateSeed.notes.owners After.Block2378.sourceAddress).map (fun note => note.mapRole (Annotated.Value.subst LoopVariables.oracleVariables)) := by host_kernel_rfl
-    _ = none := by rw [compiled_seed_absent]; rfl
-
 theorem compiled_current_object : Vector2336.output.heap.get After.Block2378.sourceAddress =
     some (.obj After.Block2378.sourceObject) := by host_kernel_rfl
 
@@ -109,13 +101,11 @@ theorem brand_live : InitializedCompiledVector.live After.Block2378.sourceBrand 
 
 def compiledRole : Annotated.Value := .handle 1354
 
-noncomputable def retaggedNotes (notes : RetainedNotes) (caller : List Annotated.Tree) : RetainedNotes :=
-  let current := entryNotes notes caller
-  {current with privates := current.privates.write After.Block2378.sourceAddress (⟨After.Block2378.sourceBrand,After.Block2378.sourceName,compiledRole⟩)}
-
-theorem current_compiled (notes : RetainedNotes) (caller : List Annotated.Tree) :
-    (retaggedNotes notes caller).privates.owners After.Block2378.sourceAddress =
+theorem current_compiled (ic : Annotated.Tree) (is : List Annotated.Tree)
+    (control : Annotated.Tree) (fnRole receiverRole : Annotated.Value) (saved : Annotated.Tree)
+    (caller : List Annotated.Tree) :
+    (initializedNotes ic is control fnRole receiverRole saved caller).privates.owners After.Block2378.sourceAddress =
       some ⟨After.Block2378.sourceBrand,After.Block2378.sourceName,compiledRole⟩ := by
-  simp only [retaggedNotes,PrivateNotes.write,ite_true]
+  host_kernel_rfl
 
 end Host.Load.Run.Full.Ordinary.RankOrigin.CompiledClosureFacts
