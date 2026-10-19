@@ -32,6 +32,13 @@ noncomputable def resultNotes (notes : RetainedNotes) (caller : List Annotated.T
   connectedNotes notes caller
 noncomputable def live := connectedLive InitializedCacheShapePointerEntry.live
 
+theorem live_grow (a : Nat) (alive : InitialRetained.live a) : live a := by
+  unfold live connectedLive
+  apply Or.inl
+  apply Or.inl
+  apply Or.inl
+  exact InitializedCacheShapePointerEntry.live_grow a alive
+
 theorem native_frame : Plan1331.Block30.output.ffi.mlx = Plan1286.Block43.output.ffi.mlx := by
   host_kernel_rfl
 theorem source_endpoint : Plan1331.Block30.output = Region1331.s31 := by host_kernel_rfl
