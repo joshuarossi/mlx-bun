@@ -6023,6 +6023,8 @@ const proofFiles = [
   "host/ts/RenameRetainedShapeCallGuard.lean",
   "host/ts/RenameRetainedShapeCallPrelude.lean",
   "host/ts/RenameRetainedShapeCallReadback.lean",
+  "host/ts/renameOrdinary/RankOriginCompiledArgumentVectorFacts.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCompiledVector.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
