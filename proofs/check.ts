@@ -5827,6 +5827,9 @@ const proofFiles = [
   "host/ts/RenameRetainedTwoArgumentEntryFrontend.lean",
   "host/ts/RenameRetainedTwoArgumentEntryTest.lean",
   "host/ts/RenameTwoParameterEntryFields.lean",
+  "host/load/RuntimeNamespacedDecodeDynamicSliceFacts.lean",
+  "host/load/RuntimeNamespacedDecodeDynamicSliceNative.lean",
+  "host/ts/renameOrdinary/RankOriginInitializedCacheDynamicSlice.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
