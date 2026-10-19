@@ -45,6 +45,12 @@ noncomputable def resultNotes (notes : RetainedNotes) (caller : List Annotated.T
   connectedNotes (inputNotes notes caller) (continuation notes caller)
 noncomputable def live := connectedLive InitializedCacheShapeRankEntry.live
 
+theorem live_grow (a : Nat) (alive : InitialRetained.live a) : live a := by
+  unfold live connectedLive Plan1286.Block26.endLive
+  apply CellsLive.grow
+  apply ClosureLive.grow
+  exact InitializedCacheShapeRankEntry.live_grow a alive
+
 theorem control_shape (notes : RetainedNotes) (caller : List Annotated.Tree) :
     (inputNotes notes caller).runtime.control =
       callNote functionRole receiverRole [.handle Meta1285.handle] := by host_kernel_rfl
