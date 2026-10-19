@@ -4,6 +4,7 @@ import host.ts.RenameRetainedGetterCallFrontend
 import host.ts.RenameRetainedOutArrayReturnFrontend
 import host.ts.RenameRuntimeDriverMlxConstructor
 import host.ts.RenameRetainedChain
+import host.mlx.NativeNumberReturnFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -13,6 +14,26 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
     let f ← Term.elabTermEnsuringType f (mkConst ``Ffi)
     let source ← Term.elabTermEnsuringType source (mkApp (mkConst ``St) (mkApp (mkConst ``Ffi.S) f))
     let control ← whnf (← mkAppM ``St.ctl #[source])
+    if control.isAppOfArity ``Ctl.ret 1 then
+      if (← whnf control.getAppArgs[0]!).isAppOfArity ``Val.big 1 then
+        let stack ← whnf (← mkAppM ``St.stack #[source])
+        if stack.isAppOfArity ``List.cons 3 then
+          let frame ← whnf stack.getAppArgs[1]!
+          if frame.isAppOfArity ``Frame.c 1 then
+            let args ← whnf frame.getAppArgs[0]!
+            if args.isAppOfArity ``CallF.args 6 then
+              let callee ← whnf args.getAppArgs[1]!
+              if callee.isAppOfArity ``Val.obj 1 then
+                let object ← whnf (← mkAppM ``St.obj? #[source,callee.getAppArgs[0]!])
+                if object.isAppOfArity ``Option.some 2 then
+                  let kind ← whnf (← mkAppM ``Obj.kind #[object.getAppArgs[1]!])
+                  if kind.isAppOfArity ``Kind.fn 1 then
+                    let code ← whnf kind.getAppArgs[0]!
+                    if code.isAppOfArity ``Code.native 2 then
+                      let native ← whnf code.getAppArgs[0]!
+                      if native.isAppOfArity ``Native.num 1 then
+                        if (← whnf native.getAppArgs[0]!).isConstOf ``NumN.number then
+                          return some ("host_retained_number_return",6)
     if control.isAppOfArity ``Ctl.construct 3 then
       let callee ← whnf control.getAppArgs[0]!
       if callee.isAppOfArity ``Val.obj 1 then

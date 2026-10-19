@@ -35,6 +35,7 @@ import host.ts.RenameRetainedUsingFrontend
 import host.ts.RenameRuntimeDriverNullishVariable
 import host.ts.RenameRuntimeDriverReverseComparison
 import host.ts.RenameRetainedCleanupFrontend
+import host.ts.RenameRuntimeDriverNamespaceObject
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -161,6 +162,21 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
       let frame ← whnf (← Parametric.Driver.field (← mkAppM ``St.stack #[s]) ``List.cons 3 1)
       let inner ← if frame.getAppArgs.size == 1 then whnf frame.getAppArgs[0]! else pure frame
       if frame.isAppOfArity ``Frame.c 1 && inner.isAppOfArity ``CallF.member 5 then
+        let value ← whnf control.getAppArgs[0]!
+        if value.isAppOfArity ``Val.obj 1 then
+          let found ← whnf (← mkAppM ``St.obj? #[s,value.getAppArgs[0]!])
+          if found.isAppOfArity ``Option.some 2 then
+            let kind ← whnf (← mkAppM ``Obj.kind #[found.getAppArgs[1]!])
+            let key ← whnf inner.getAppArgs[0]!
+            if kind.isAppOfArity ``Kind.ns 1 && key.isAppOfArity ``PKey.str 1 then
+              let exported ← whnf (← mkAppM ``findExport #[key.getAppArgs[0]!,kind.getAppArgs[0]!])
+              if exported.isAppOfArity ``Option.some 2 then
+                let cell ← whnf (← mkAppM ``St.cell? #[s,exported.getAppArgs[1]!])
+                if cell.isAppOfArity ``Option.some 2 then
+                  let initialized ← whnf cell.getAppArgs[1]!
+                  if initialized.isAppOfArity ``Option.some 2 then
+                    if (← whnf initialized.getAppArgs[1]!).isAppOfArity ``Val.obj 1 then
+                      return "host_retained_namespace_object"
         pure "host_retained_method"
       else if frame.isAppOfArity ``Frame.c 1 && inner.isAppOfArity ``CallF.spread 6 then
         pure "host_retained_array"

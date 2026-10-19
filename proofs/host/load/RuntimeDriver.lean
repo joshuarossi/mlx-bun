@@ -9,6 +9,7 @@ import host.mlx.NativeIntegerConversionFrontend
 import host.mlx.NativeNumberConversionFrontend
 import host.ts.RenameRuntimeDriverRegistry
 import host.ts.RenameNativeSourceRegistry
+import host.ts.RenameRuntimeDriverLiteralI32Array
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -77,6 +78,19 @@ elab "host_source_step " f:term ", " s:term " using " initial:term " to " t:term
         if object.isAppOfArity ``Option.some 2 then
           let kind ← whnf (← mkAppM ``Obj.kind #[object.getAppArgs[1]!])
           if kind.isAppOfArity ``Kind.array 1 then
+            if code.isAppOfArity ``Code.native 2 then
+              let native ← whnf code.getAppArgs[0]!
+              if native.isAppOfArity ``Native.buf 1 then
+                if (← whnf native.getAppArgs[0]!).isConstOf ``BufN.typedCtor then
+                  let data ← whnf code.getAppArgs[1]!
+                  if data.isAppOfArity ``List.cons 3 then
+                    let codeValue ← whnf data.getAppArgs[1]!
+                    if codeValue.isAppOfArity ``Val.num 1 then
+                      let number ← whnf codeValue.getAppArgs[0]!
+                      if number.isAppOfArity ``NumV.lit 1 then
+                        if ← isDefEq (← mkAppM ``F64.toIndex? #[number.getAppArgs[0]!])
+                            (← mkAppM ``Option.some #[mkNatLit 4]) then
+                          return #["host_retained_literalI32Typed"]
             let elements ← whnf kind.getAppArgs[0]!
             if elements.isAppOfArity ``List.cons 3 then
               let head ← whnf elements.getAppArgs[1]!
