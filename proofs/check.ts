@@ -5882,6 +5882,9 @@ const proofFiles = [
   "host/load/RuntimePostConcatCleanupCuts.lean",
   "host/load/RuntimePostConcatCleanupUnary.lean",
   "host/ts/RenamePostConcatCleanup.lean",
+  "host/load/RuntimePostConvCleanup.lean",
+  "host/load/RuntimePostConvCleanupCuts.lean",
+  "host/load/RuntimePostConvCleanupPlan.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
