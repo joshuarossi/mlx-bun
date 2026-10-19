@@ -2,6 +2,8 @@ import host.load.RuntimeBlockPlan
 import host.ts.RenameCompiledArgumentEntryChainStep
 import host.ts.RenameCompiledArgumentEntryNotStep
 import host.ts.RenameRetainedStructuralMemberStep
+import host.ts.RenameRetainedTypedCountStep
+import host.ts.RenameRetainedVariableIndexAssignmentStep
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 1000000
@@ -28,8 +30,35 @@ private def specialStep? (state : String) : CommandElabM (Option String) := do
   liftTermElabM do
     let s ← Term.elabTerm stx none
     let ctl ← whnf (← mkAppM ``St.ctl #[s])
+    if ctl.isAppOfArity ``Ctl.construct 3 then
+      let callee ← whnf ctl.getAppArgs[0]!
+      if callee.isAppOfArity ``Val.obj 1 then
+        let object? ← whnf (← mkAppM ``St.obj? #[s,callee.getAppArgs[0]!])
+        if object?.isAppOfArity ``Option.some 2 then
+          let kind ← whnf (← mkAppM ``Obj.kind #[object?.getAppArgs[1]!])
+          if kind.isAppOfArity ``Kind.fn 1 then
+            let code ← whnf kind.getAppArgs[0]!
+            if code.isAppOfArity ``Code.native 2 then
+              let native ← whnf code.getAppArgs[0]!
+              if native.isAppOfArity ``Native.buf 1 then
+                if (← whnf native.getAppArgs[0]!).isConstOf ``BufN.typedCtor then
+                  let args ← whnf ctl.getAppArgs[1]!
+                  if args.isAppOfArity ``List.cons 3 then
+                    let value ← whnf args.getAppArgs[1]!
+                    if value.isAppOfArity ``Val.num 1 then
+                      if (← whnf value.getAppArgs[0]!).isAppOfArity ``NumV.lit 1 then
+                        return some "TypedCount"
     if ctl.isAppOfArity ``Ctl.ev 2 then
       let expression ← whnf ctl.getAppArgs[0]!
+      if expression.isAppOfArity ``Expr.assign 3 then
+        if (← whnf expression.getAppArgs[0]!).isConstOf ``AsgOp.assign then
+          let pat ← whnf expression.getAppArgs[1]!
+          if pat.isAppOfArity ``Pat.expr 1 then
+            let target ← whnf pat.getAppArgs[0]!
+            if target.isAppOfArity ``Expr.index 3 then
+              if (← whnf target.getAppArgs[0]!).isAppOfArity ``Expr.id 1 then
+                if (← whnf target.getAppArgs[1]!).isAppOfArity ``Expr.id 1 then
+                  return some "VariableIndex"
       if expression.isAppOfArity ``Expr.unary 2 then
         if (← whnf expression.getAppArgs[0]!).isConstOf ``UnOp.not then return some "Not"
       return none
@@ -116,20 +145,25 @@ elab "host_compiled_argument_linear_plan " f:term ", " base:ident " from " start
   let mut starts : List Nat := []
   while cursor < finish do
     if let some kind ← specialStep? (state cursor) then
+      let span := if kind == "VariableIndex" then 5 else 1
+      unless cursor + span ≤ finish do
+        throwError "compiled argument plan: complete indexed assignment exceeds the requested endpoint"
       let relative := name.getId ++ Lean.Name.mkSimple s!"{kind}{cursor}"
       let block := (← getCurrNamespace) ++ relative
       let command := if kind == "Chain" then "host_compiled_argument_chain_step"
         else if kind == "Member" then "host_retained_structural_member"
+        else if kind == "TypedCount" then "host_retained_typed_count"
+        else if kind == "VariableIndex" then "host_retained_variable_index_assignment"
         else "host_compiled_argument_not_step"
-      Parametric.Driver.emit s!"{command} {fText}, {state cursor} using {server cursor} to {state (cursor + 1)} using {server (cursor + 1)} as {relative}"
+      Parametric.Driver.emit s!"{command} {fText}, {state cursor} using {server cursor} to {state (cursor + span)} using {server (cursor + span)} as {relative}"
       unless (← getEnv).contains (block ++ `retained_transport) do
         throwError "compiled argument plan: {kind} was not checked at region index {cursor}"
       if (← get).messages.hasErrors then
         throwError "compiled argument plan: {kind} failed at region index {cursor}"
       rules := rules ++ [block ++ `retained_transport]
-      spans := spans ++ [1]
+      spans := spans ++ [span]
       starts := starts ++ [cursor]
-      cursor := cursor + 1
+      cursor := cursor + span
     else
       let mut span := 1
       while cursor + span < finish do
