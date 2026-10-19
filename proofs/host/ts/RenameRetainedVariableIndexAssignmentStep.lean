@@ -43,6 +43,7 @@ elab "host_retained_variable_index_assignment " f:term ", " s:term " using " ini
         addData (pre ++ Name.mkSimple tag) value (if tag == "input" || tag == "output" then some stateTy else none)
       addData (pre ++ `initialServer) (← mkAppM ``numberServer #[← Term.elabTermEnsuringType initial (mkConst ``SSrv)])
       addData (pre ++ `nextServer) (← mkAppM ``numberServer #[← Term.elabTermEnsuringType next (mkConst ``SSrv)])
+      addData (pre ++ `span) (mkNatLit 5)
     let n := "_root_." ++ pre.toString
     let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"
     let emit (text : String) : CommandElabM Unit := do
