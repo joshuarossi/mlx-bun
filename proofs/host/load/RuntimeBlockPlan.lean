@@ -5,6 +5,7 @@ import host.ts.RenameRetainedOutArrayReturnFrontend
 import host.ts.RenameRuntimeDriverMlxConstructor
 import host.ts.RenameRetainedChain
 import host.mlx.NativeNumberReturnFrontend
+import host.ts.RenameRetainedLiteralArrowFrontend
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -71,6 +72,12 @@ private def sourceSummary (f source : Syntax) : CommandElabM (Option (String × 
     let arrow ← whnf code.getAppArgs[2]!
     let body ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 3)
     if arrow.isConstOf ``Bool.true then
+      if body.isAppOfArity ``Body.expr 1 then
+        if (← whnf body.getAppArgs[0]!).isAppOfArity ``Expr.lit 1 then
+          let params ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 1)
+          let rest ← whnf (← Parametric.Driver.field code.getAppArgs[0]! ``Func.mk 7 2)
+          if params.isAppOfArity ``List.nil 1 && rest.isAppOfArity ``Option.none 1 then
+            return some ("host_retained_literal_arrow",5)
       unless arguments.isAppOfArity ``List.cons 3 do return none
       unless (← whnf arguments.getAppArgs[1]!).isAppOfArity ``Val.obj 1 do return none
       unless body.isAppOfArity ``Body.expr 1 do return none

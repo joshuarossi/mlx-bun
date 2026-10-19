@@ -36,6 +36,7 @@ import host.ts.RenameRuntimeDriverNullishVariable
 import host.ts.RenameRuntimeDriverReverseComparison
 import host.ts.RenameRetainedCleanupFrontend
 import host.ts.RenameRuntimeDriverNamespaceObject
+import host.ts.RenameRuntimeDriverTypedLength
 set_option Elab.async false
 namespace Host.Ts.Owned.Annotated.Driver
 open Lean Elab Command Meta
@@ -245,6 +246,9 @@ elab "host_retained_step " f:term ", " s:term " using " initial:term " to " t:te
           let object ← whnf (← mkAppM ``St.obj? #[s,value.getAppArgs[0]!])
           if object.isAppOfArity ``Option.some 2 then
             let kind ← whnf (← mkAppM ``Obj.kind #[object.getAppArgs[1]!])
+            if kind.isAppOfArity ``Kind.typed 4 then
+              if ← isDefEq inner.getAppArgs[0]! (mkConst ``kLength) then
+                return "host_retained_typed_length"
             if kind.isAppOfArity ``Kind.array 1 then
               if ← isDefEq inner.getAppArgs[0]! (mkConst ``kLength) then pure "host_retained_array_length"
               else pure "host_retained_pure_step"
