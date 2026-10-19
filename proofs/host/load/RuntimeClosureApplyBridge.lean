@@ -106,8 +106,6 @@ host_retained_theorem retained_to_call := fun
     (compiledRole : Annotated.Value)
     (compiledEntry : notes.privates.owners After.Block2378.sourceAddress =
       some ⟨After.Block2378.sourceBrand, After.Block2378.sourceName, compiledRole⟩)
-    (argumentRole : Annotated.Value)
-    (argumentEntry : notes.runtime.cells.cells After.Block2380.address = some argumentRole)
     (signatureFrame : ¬ framed VectorNew.sourceTypes)
     (nativeBound : s.ffi.mlx.next + 1 < 2^64) => by
   have earlier := before_vector notes ν₀ ν C₀ C R nodes boundary objects H N tail host
