@@ -16,9 +16,10 @@ noncomputable def roles (i : Nat) : GraphNode :=
 theorem roles_live (i : Nat) (held : NativeSeed.nodes i) : roles i = NativeSeed.roles i :=
   ite_eq_left held
 
-theorem old_graph_none (i : Nat) (outside : ¬ CapturedKernelSeed.selected i) :
+theorem old_graph_none (i : Nat) (outside : ¬ CapturedKernelSeed.selected i)
+    (outsideShapeless : ¬ CapturedShapelessSeed.selected i) :
     (NativeSeed.roles i).graph = none := by
-  rw [NativeSeed.roles,CapturedKernelSeed.other _ i outside]
+  rw [NativeSeed.roles,CapturedShapelessSeed.other _ i outsideShapeless,CapturedKernelSeed.other _ i outside]
   unfold Geometry.entryRoles
   split
   · rfl
@@ -41,14 +42,20 @@ theorem producer_policy : ProducerAnnotations roots NativeSeed.handles NativeSee
       cases noGraph
   · intro i held primitive inputs graph
     rw [roles_live i held] at graph
+    by_cases shapeless : CapturedShapelessSeed.selected i
+    · rw [NativeSeed.roles,CapturedShapelessSeed.enrich,ite_eq_left shapeless] at graph
+      have supported := CapturedShapelessSeed.input_support i shapeless primitive inputs graph
+      change listSupport (fun a => a < NativeSeed.native.nnext) inputs
+      rw [NativeSeed.source_nnext]
+      exact supported
     by_cases captured : CapturedKernelSeed.selected i
-    · rw [NativeSeed.roles,CapturedKernelSeed.enrich,ite_eq_left captured] at graph
+    · rw [NativeSeed.roles,CapturedShapelessSeed.other _ i shapeless,CapturedKernelSeed.enrich,ite_eq_left captured] at graph
       rw [CapturedKernelSeed.graph_inputs i captured primitive inputs graph]
       change listSupport (fun i => i < NativeSeed.native.nnext) [15252,15253,15254]
       rw [NativeSeed.source_nnext]
       dsimp [listSupport]
       decide +kernel
-    · rw [old_graph_none i captured] at graph
+    · rw [old_graph_none i captured shapeless] at graph
       cases graph
 
 /-- Upgrade the retained initialized equality to fixed indexed object roles.
