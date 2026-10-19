@@ -29,11 +29,15 @@ run_cmd Lean.Elab.Command.liftTermElabM do
     for forbidden in [`targetValue,`targetParameter,`targetGlobal,`targetBigint,`targetRun,`postInventory] do
       if names.contains forbidden then throwError "optInt: future target premise remained"
 
-/-- error: (kernel) declaration type mismatch -/
-#guard_msgs (error, substring := true) in
+open Lean Elab Command in
 run_cmd do
-  let saved ←Lean.getEnv
-  try
-    Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt P.F, input64 using (OptIntSource.From8175.S1.substitute LoopVariables.oracleVariables) to input64 using (OptIntSource.From8175.S1.substitute LoopVariables.oracleVariables) as RejectEndpoint"
-  finally Lean.setEnv saved
+  let saved : Lean.Elab.Command.State ← get
+  let mut rejected := false
+  try Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt P.F, input64 using (OptIntSource.From8175.S1.substitute LoopVariables.oracleVariables) to input64 using (OptIntSource.From8175.S1.substitute LoopVariables.oracleVariables) as RejectEndpoint"
+  catch exception =>
+    rejected := ((← exception.toMessageData.toString).splitOn "kernel").length > 1
+  for message in (← get).messages.toList do
+    if ((← message.data.toString).splitOn "kernel").length > 1 then rejected := true
+  set saved
+  unless rejected do throwError "incorrect optInt source/body/result was not rejected by the kernel"
 end Host.Load.Run.Full.Ordinary.OptIntCases

@@ -40,34 +40,46 @@ noncomputable def referenceInput : St Unit := input (.num (.ref 0))
 #guard_msgs (error, substring := true) in
 host_retained_optInt ffi, referenceInput using server to output 64 using server as RejectReference
 
-/-- error: (kernel) declaration type mismatch -/
-#guard_msgs (error, substring := true) in
+open Lean Elab Command in
 run_cmd do
-  let saved ←Lean.getEnv
-  try
-    Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, numeric 64 using server to numeric 64 using server as RejectEndpoint"
-  finally Lean.setEnv saved
+  let saved : Lean.Elab.Command.State ← get
+  let mut rejected := false
+  try Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, numeric 64 using server to numeric 64 using server as RejectEndpoint"
+  catch exception =>
+    rejected := ((← exception.toMessageData.toString).splitOn "kernel").length > 1
+  for message in (← get).messages.toList do
+    if ((← message.data.toString).splitOn "kernel").length > 1 then rejected := true
+  set saved
+  unless rejected do throwError "incorrect optInt source/body/result was not rejected by the kernel"
 
 noncomputable def missingFlag : St Unit := (output 64).ret (.big 64)
-/-- error: (kernel) declaration type mismatch -/
-#guard_msgs (error, substring := true) in
+open Lean Elab Command in
 run_cmd do
-  let saved ←Lean.getEnv
-  try
-    Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, numeric 64 using server to missingFlag using server as RejectMissingFlag"
-  finally Lean.setEnv saved
+  let saved : Lean.Elab.Command.State ← get
+  let mut rejected := false
+  try Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, numeric 64 using server to missingFlag using server as RejectMissingFlag"
+  catch exception =>
+    rejected := ((← exception.toMessageData.toString).splitOn "kernel").length > 1
+  for message in (← get).messages.toList do
+    if ((← message.data.toString).splitOn "kernel").length > 1 then rejected := true
+  set saved
+  unless rejected do throwError "incorrect optInt source/body/result was not rejected by the kernel"
 
 /-- Same name and parameter list, with a different body. -/
 def mutatedFunction : Func := .mk (some chars!"optInt") [.id chars!"value"] none (.block []) false false []
 noncomputable def mutatedInput : St Unit := (numeric 64).setObj 50
   ⟨.fn (.closure mutatedFunction [] false .undef),.null,[],[],true⟩
-/-- error: (kernel) declaration type mismatch -/
-#guard_msgs (error, substring := true) in
+open Lean Elab Command in
 run_cmd do
-  let saved ←Lean.getEnv
-  try
-    Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, mutatedInput using server to output 64 using server as RejectMutatedBody"
-  finally Lean.setEnv saved
+  let saved : Lean.Elab.Command.State ← get
+  let mut rejected := false
+  try Host.Ts.Owned.Parametric.Driver.emit "host_retained_optInt ffi, mutatedInput using server to output 64 using server as RejectMutatedBody"
+  catch exception =>
+    rejected := ((← exception.toMessageData.toString).splitOn "kernel").length > 1
+  for message in (← get).messages.toList do
+    if ((← message.data.toString).splitOn "kernel").length > 1 then rejected := true
+  set saved
+  unless rejected do throwError "incorrect optInt source/body/result was not rejected by the kernel"
 
 run_cmd Lean.Elab.Command.liftTermElabM do
   let info ←Lean.getConstInfo ``SixtyFour.retained_transport
