@@ -10,8 +10,8 @@ open Host.Load.Run.Full.Ordinary
 
 /-- Select the checked ordinary shapeless cached-call summary from the original source.
 The exported theorem keeps the current strong native invariant and producer
-policy. Its complete type, including the supplied states and numeric tables,
-is checked against the existing replay proof by the kernel. -/
+policy. The source equation for the supplied numeric tables is derived and
+kernel-checked here; it is not an extra premise of the adapter. -/
 elab "host_retained_shapeless " f:term ", " s:term " using " initial:term " to " t:term " using " next:term " as " name:ident : command => do
   let pre := (← getCurrNamespace) ++ name.getId
   liftTermElabM do
@@ -60,6 +60,18 @@ elab "host_retained_shapeless " f:term ", " s:term " using " initial:term " to "
         match expression with
         | .const constant levels => substitutions.find? (fun item => item.1 == constant) |>.map (fun item => mkConst item.2 levels)
         | _ => none
-      addDecl (.thmDecl {name := pre ++ tag,levelParams := info.levelParams,type := type,value := mkConst original (info.levelParams.map Level.param)})
+      let value ← if tag == `source_step then
+          let program ← mkAppM ``M.run #[← mkAppM ``step #[mkConst ``ShapelessHost.F,mkConst ``ShapelessHost.input]]
+          let run ← mkAppM ``interpS #[program,mkConst (pre ++ `initialServer)]
+          let result ← mkAppM ``Option.some #[← mkAppM ``Prod.mk #[mkConst ``ShapelessHost.output,mkConst (pre ++ `nextServer)]]
+          let sourceType ← mkEq run result
+          let proof ← Term.elabTermEnsuringType (← `(by rw [ShapelessHost.source_native_step]; host_kernel_rfl)) sourceType
+          Term.synthesizeSyntheticMVarsNoPostponing
+          instantiateMVars proof
+        else if tag == `retained_transport then
+          pure (mkAppN (mkConst ``ShapelessHost.retained_transport_servers)
+            #[mkConst (pre ++ `initialServer),mkConst (pre ++ `nextServer),mkConst (pre ++ `source_step)])
+        else pure (mkConst original (info.levelParams.map Level.param))
+      addDecl (.thmDecl {name := pre ++ tag,levelParams := info.levelParams,type := type,value := value})
 
 end Host.Ts.Owned.Annotated.Driver

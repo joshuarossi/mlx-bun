@@ -58,6 +58,63 @@ theorem source_step : interpS (step F input).run initialServer = some (output,ne
   rw [source_native_step]
   host_kernel_rfl
 
+/-- The same actual call, for numeric tables whose source step has already been
+checked. The tables are parameters; every ownership and annotation obligation
+stays the one proved for source3686. -/
+theorem retained_transport_servers (sourceServer resultServer : SSrv)
+    (checkedSourceStep : interpS (step F input).run sourceServer = some (output,resultServer))
+    (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (base : Nat → GraphNode) (leading : Shape) (objects : Nat → Object) (H frame roots : Nat → Prop) (tail : List NumV)
+    (host : HostSt → HostSt → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : Host.Ts.St LSt)
+    (inst : Inst ν₀ sourceServer C₀)
+    (h : StateR (NumberRoles ν₀ ν C₀ C)
+      (VectorHost.NativeRelation ν₀ ν C₀ C (ShapelessCall.roles base leading) ShapelessCall.boundary objects H
+        (fun i => ShapelessCall.N0 i ∨ frame i) tail host) R live framed before after old old' input s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live input s)
+    (policy : ProducerAnnotations roots H (fun i => ShapelessCall.N0 i ∨ frame i) (ShapelessCall.roles base leading) objects)
+    (signatureFrame : ¬ framed 4557) (closureLive : H 18194) (vectorLive : H 29382) (outputLive : H 29383)
+    (targetNodes : s.ffi.mlx.nnext + ShapelessCall.trace.order.length < 2^64)
+    (targetHandles : s.ffi.mlx.next < 2^64) (targetHeap : s.next < 2^64)
+    (fnRole thisRole : Value)
+    (note : notes.runtime.control = callNote fnRole thisRole ((CachedFamilyHost.arguments 3127055 18194 29382).map FixedArgument.role))
+    (selected : notes.buffers.owners 3127055 = some (handleSlotNotes 29383)) :
+    ∃ t, interpC (step F input).run C₀ = some (output,C₀) ∧ interpC (step F s).run C = some (t,C) ∧
+      StateR (NumberRoles ν₀ ν C₀ C)
+        (VectorHost.NativeRelation ν₀ ν C₀ C (ShapelessCall.roles base leading) ShapelessCall.boundary
+          (objectWrite objects 29383 (.vec [22601])) H (fun i => ShapelessCall.N8 i ∨ frame i) tail host)
+        R live framed before after old old' output t ∧
+      RetainedInventory (notes.withRuntime ⟨returnNote nativeStatusRole,notes.runtime.stack,notes.runtime.cells⟩)
+        ν₀ ν C₀ C R live output t ∧
+      ProducerAnnotations roots H (fun i => ShapelessCall.N8 i ∨ frame i) (ShapelessCall.roles base leading)
+        (objectWrite objects 29383 (.vec [22601])) ∧
+      ProducerSupport roots H (fun i => ShapelessCall.N8 i ∨ frame i) output.ffi.mlx ∧ Inst ν₀ resultServer C₀ := by
+  have native := h.native.2
+  have signature := policy.shapeless_signature native 18194 281474976715599 29382 payload ShapelessCall.trace ShapelessCall.inputs
+    closureLive vectorLive source_closure source_vector metadata metadata source_captured_meta source_input_meta rfl
+  have keys : listSupport (fun p : Nat × Nat => p.1 < ShapelessCall.s8.nnext) ShapelessCall.m8 := by
+    change listSupport (fun p : Nat × Nat => p.1 < 22602)
+      [(15272,22601),(15271,22600),(15270,22599),(15268,22598),(15267,22597),(15266,22596),(15265,22595),(15262,1330),(15263,22586),(15264,1331)]
+    dsimp [listSupport]; decide +kernel
+  have outputs : listSupport (· < ShapelessCall.s8.nnext) ShapelessCall.trace.outs := by change 15272 < 22602 ∧ True; decide +kernel
+  obtain ⟨t,left,right,post,retained,policyPost,support⟩ := CachedFamilyHost.retained_from_source
+    ν₀ ν C₀ C R (ShapelessCall.roles base leading) ShapelessCall.boundary objects H
+    (fun i => ShapelessCall.N0 i ∨ frame i) (fun i => ShapelessCall.N8 i ∨ frame i) tail host live framed before after old old' input s h inventory
+    4782 4557 3127055 18194 29382 29383 281474976715599 functionObject signatureObject bufferObject chars!"i32" (.obj 4817)
+    payload true ShapelessCall.trace ShapelessCall.inputs [] ShapelessCall.s8 ShapelessCall.m8
+    source_control source_function source_kind source_signature source_signature_kind source_buffer source_buffer_kind
+    signatureFrame closureLive vectorLive outputLive source_closure source_vector source_output signature metadata metadata source_captured_meta source_input_meta
+    ((ShapelessCall.plan0 base leading).frame frame) keys outputs roots policy
+    (by change 22595+8 < 2^64; decide +kernel) targetNodes (by change 29384 < 2^64; decide +kernel)
+    targetHandles (by decide +kernel) targetHeap fnRole thisRole note selected
+  have source := source_run C₀
+  have same := congrArg Prod.fst (Option.some.inj (left.symm.trans source))
+  dsimp only at same
+  rw [same] at post retained support
+  have outputNodes : ShapelessCall.trace.outs.map (substOf ShapelessCall.m8) = [22601] := by rfl
+  rw [outputNodes] at post policyPost
+  exact ⟨t,source,right,post,retained,policyPost,support,pure_step_inst F ν₀ sourceServer resultServer C₀ input output inst checkedSourceStep source⟩
+
 /-- The real ordinary call3686 uses an existing vector slot. Its checked
 source plan and shapeless matching are derived here from current producer
 annotations. All six inventories, strong native annotations, producer policy
@@ -88,30 +145,8 @@ theorem retained_transport (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C�
       ProducerAnnotations roots H (fun i => ShapelessCall.N8 i ∨ frame i) (ShapelessCall.roles base leading)
         (objectWrite objects 29383 (.vec [22601])) ∧
       ProducerSupport roots H (fun i => ShapelessCall.N8 i ∨ frame i) output.ffi.mlx ∧ Inst ν₀ nextServer C₀ := by
-  have native := h.native.2
-  have signature := policy.shapeless_signature native 18194 281474976715599 29382 payload ShapelessCall.trace ShapelessCall.inputs
-    closureLive vectorLive source_closure source_vector metadata metadata source_captured_meta source_input_meta rfl
-  have keys : listSupport (fun p : Nat × Nat => p.1 < ShapelessCall.s8.nnext) ShapelessCall.m8 := by
-    change listSupport (fun p : Nat × Nat => p.1 < 22602)
-      [(15272,22601),(15271,22600),(15270,22599),(15268,22598),(15267,22597),(15266,22596),(15265,22595),(15262,1330),(15263,22586),(15264,1331)]
-    dsimp [listSupport]; decide +kernel
-  have outputs : listSupport (· < ShapelessCall.s8.nnext) ShapelessCall.trace.outs := by change 15272 < 22602 ∧ True; decide +kernel
-  obtain ⟨t,left,right,post,retained,policyPost,support⟩ := CachedFamilyHost.retained_from_source
-    ν₀ ν C₀ C R (ShapelessCall.roles base leading) ShapelessCall.boundary objects H
-    (fun i => ShapelessCall.N0 i ∨ frame i) (fun i => ShapelessCall.N8 i ∨ frame i) tail host live framed before after old old' input s h inventory
-    4782 4557 3127055 18194 29382 29383 281474976715599 functionObject signatureObject bufferObject chars!"i32" (.obj 4817)
-    payload true ShapelessCall.trace ShapelessCall.inputs [] ShapelessCall.s8 ShapelessCall.m8
-    source_control source_function source_kind source_signature source_signature_kind source_buffer source_buffer_kind
-    signatureFrame closureLive vectorLive outputLive source_closure source_vector source_output signature metadata metadata source_captured_meta source_input_meta
-    ((ShapelessCall.plan0 base leading).frame frame) keys outputs roots policy
-    (by change 22595+8 < 2^64; decide +kernel) targetNodes (by change 29384 < 2^64; decide +kernel)
-    targetHandles (by decide +kernel) targetHeap fnRole thisRole note selected
-  have source := source_run C₀
-  have same := congrArg Prod.fst (Option.some.inj (left.symm.trans source))
-  dsimp only at same
-  rw [same] at post retained support
-  have outputNodes : ShapelessCall.trace.outs.map (substOf ShapelessCall.m8) = [22601] := by rfl
-  rw [outputNodes] at post policyPost
-  exact ⟨t,source,right,post,retained,policyPost,support,pure_step_inst F ν₀ initialServer nextServer C₀ input output inst source_step source⟩
+  exact retained_transport_servers initialServer nextServer source_step notes ν₀ ν C₀ C R
+    base leading objects H frame roots tail host live framed before after old old' s inst h inventory policy
+    signatureFrame closureLive vectorLive outputLive targetNodes targetHandles targetHeap fnRole thisRole note selected
 
 end Host.Load.Run.Full.Ordinary.ShapelessHost
