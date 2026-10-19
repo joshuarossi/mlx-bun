@@ -1,6 +1,7 @@
 import host.load.RuntimeOptIntCuts8100
 import host.ts.RenameRetainedOptIntFrontend
 import host.ts.RenameLoopVariableNamespace
+import host.ts.RenameRetainedChain
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 1000000
@@ -20,6 +21,25 @@ host_retained_optInt P.F, input4 using From8216.S8 to output4 using From8216.S8 
 
 theorem actual_second_argument : Source8224.sourceNumber = 4 ∧ Source8224.address = 2731 := ⟨rfl,rfl⟩
 theorem actual_second_return : output4.ctl = .ret (.big 4294967300) := by host_kernel_rfl
+
+host_retained_theorem first_call := fun
+    (notes : RetainedNotes) (ν₀ ν : Nat → F64) (C₀ C : CSrv) (R : Ren)
+    (FR : Ren → P.F.S → P.F.S → Prop) (live framed : Nat → Prop)
+    (before after : List Val) (old old' : List Event) (s : St P.F.S)
+    (inst : Inst ν₀ Source8176.initialServer C₀)
+    (h : Parametric.StateR (NumberRoles ν₀ ν C₀ C) FR R live framed before after old old' Source8176.input s)
+    (inventory : RetainedInventory notes ν₀ ν C₀ C R live Source8176.input s)
+    (meaning : SymE) (closed : ∀ valuation, meaning.eval valuation = F64.ofNat Source8176.sourceNumber)
+    (globalLive : live aGlobal) (globalFixed : R.a aGlobal = aGlobal)
+    (fnRole thisRole : Annotated.Value)
+    (controlNote : notes.runtime.control = callNote fnRole thisRole [.literal meaning])
+    (budget : s.next+3 ≤ 2^64) => by
+  host_retained_chain P.F, [Source8176.retained_transport] using h, inventory, inst
+host_assert_retained_schema first_call, 40
+
+/-- error: retained batch schema: target run has the wrong step count -/
+#guard_msgs in
+host_assert_retained_schema first_call, 41
 
 run_cmd Lean.Elab.Command.liftTermElabM do
   let info ←Lean.getConstInfo ``Source8176.retained_transport

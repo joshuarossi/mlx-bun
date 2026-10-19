@@ -76,6 +76,7 @@ elab "host_retained_optInt " f:term ", " s:term " using " initial:term " to " t:
         ("writable",property.getAppArgs[1]!),("enumerable",property.getAppArgs[2]!)] do addData (pre ++ Name.mkSimple tag) value
     addData (pre ++ `initialServer) (←mkAppM ``numberServer #[←Term.elabTermEnsuringType initial (mkConst ``SSrv)])
     addData (pre ++ `nextServer) (←mkAppM ``numberServer #[←Term.elabTermEnsuringType next (mkConst ``SSrv)])
+    addData (pre ++ `span) (toExpr (if isNull then (18 : Nat) else 40))
     pure isNull
   let n := "_root_." ++ pre.toString
   let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"

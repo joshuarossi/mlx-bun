@@ -49,6 +49,7 @@ elab "host_retained_cstr_cached_body " f:term ", " s:term " using " initial:term
         (if tag == "input" || tag == "output" then some stateTy else none)
     Parametric.Driver.addData (pre ++ `initialServer) (← mkAppM ``numberServer #[← Term.elabTermEnsuringType initial (mkConst ``SSrv)])
     Parametric.Driver.addData (pre ++ `nextServer) (← mkAppM ``numberServer #[← Term.elabTermEnsuringType next (mkConst ``SSrv)])
+    Parametric.Driver.addData (pre ++ `span) (toExpr (25 : Nat))
   let n := "_root_." ++ pre.toString
   let header := "open Host.Ts Host.Ts.Owned Host.Ts.Owned.Parametric Host.Ts.Owned.Annotated in\n"
   let fact (tag proposition : String) := Parametric.Driver.emit (header ++ s!"theorem {n}.{tag} : {proposition} := by host_kernel_rfl")
