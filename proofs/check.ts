@@ -5905,6 +5905,21 @@ const proofFiles = [
   "host/ts/renameOrdinary/RankOriginInitializedConvolutionFree.lean",
   "host/ts/renameOrdinary/RankOriginInitializedConvolutionFreeEntry.lean",
   "host/ts/renameOrdinary/RankOriginShapelessRoleCompatibility.lean",
+  "host/load/RuntimePostConcatCleanup.lean",
+  "host/load/RuntimePostConcatCleanupPlan.lean",
+  "host/load/RuntimePostConcatCleanupPrefix.lean",
+  "host/load/RuntimePostConcatCleanupRun46.lean",
+  "host/load/RuntimePostConcatCleanupRun50.lean",
+  "host/load/RuntimePostConcatCleanupRun54.lean",
+  "host/load/RuntimePostConcatCleanupRun55.lean",
+  "host/load/RuntimePostConcatCleanupRun56.lean",
+  "host/load/RuntimePostConcatCleanupRun58.lean",
+  "host/load/RuntimePostConcatCleanupRun62.lean",
+  "host/load/RuntimePostConcatCleanupRun66.lean",
+  "host/load/RuntimePostConcatCleanupRun70.lean",
+  "host/load/RuntimePostConcatCleanupRun74.lean",
+  "host/load/RuntimePostConcatCleanupThroughStore.lean",
+  "host/ts/renameOrdinary/RankOriginShapelessFrameRetag.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
