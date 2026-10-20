@@ -21,10 +21,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@mlx-bun/app-core": "workspace:*",
-    "@mlx-bun/inference": "workspace:*",
     "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.3",
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/web-kit": "workspace:*",
     "typebox": "1.1.38"
   },
   "devDependencies": {

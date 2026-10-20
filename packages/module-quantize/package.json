@@ -23,7 +23,8 @@
   "dependencies": {
     "@mlx-bun/app-core": "workspace:*",
     "@mlx-bun/inference": "workspace:*",
-    "@mlx-bun/quantize": "workspace:*"
+    "@mlx-bun/quantize": "workspace:*",
+    "@mlx-bun/web-kit": "workspace:*"
   },
   "devDependencies": {
     "@mlx-bun/app-services": "workspace:*",
