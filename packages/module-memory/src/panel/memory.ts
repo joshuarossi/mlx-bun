@@ -109,6 +109,7 @@ export function isMemPanelOpen(): boolean {
 export function closeMemPanel(): void {
   const overlay = $("mem-overlay");
   if (!overlay.classList.contains("open")) return;
+  beginView(); // a fetch still in flight renders nothing into the closed drawer and reports nothing
   overlay.classList.remove("open");
   slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
@@ -121,6 +122,12 @@ export function closeMemPanel(): void {
 function changed(): void {
   emitHostEvent(HOST_EVENTS.panelChanged, undefined, $("mem-overlay"), { bubbles: true, composed: true });
 }
+
+/** A view's render belongs to the latest request: a slower earlier fetch, or one still in flight when the drawer
+ *  closed, neither overwrites what the user chose since nor raises a change for a view no longer wanted. */
+let viewSeq = 0;
+const beginView = (): number => ++viewSeq;
+const isCurrentView = (seq: number): boolean => seq === viewSeq;
 
 /** Opens the drawer. `articleName` jumps straight to that article (the provenance chips and the link chips use it);
  *  omitted, it shows the list. The view raises the change once it is rendered, so a host's snapshot never describes
@@ -189,9 +196,10 @@ function wireArticleRows(container: HTMLElement): void {
   });
 }
 
-async function renderListBody(): Promise<void> {
+async function renderListBody(seq: number): Promise<void> {
   const body = $("mem-body");
   const st = await fetchStatus();
+  if (!isCurrentView(seq)) return;
   if (!st.enabled || !st.status) {
     $("mem-status").innerHTML = "";
     body.innerHTML = emptyVaultHtml(st.root || "~/.mlx-bun/wiki");
@@ -203,23 +211,24 @@ async function renderListBody(): Promise<void> {
   body.innerHTML =
     '<div class="mem-search"><input class="input" type="search" id="mem-search" placeholder="Search memory" aria-label="Search memory" autocomplete="off"></div>' +
     '<div id="mem-list">' + loadingHtml("Loading the articles") + "</div>";
-  await renderArticleLists("");
+  await renderArticleLists("", seq);
   const search = $("mem-search") as HTMLInputElement;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   search.addEventListener("input", () => {
     clearTimeout(debounce);
-    debounce = setTimeout(() => renderArticleLists(search.value.trim()), 180);
+    debounce = setTimeout(() => renderArticleLists(search.value.trim(), seq), 180);
   });
 }
 
-async function renderArticleLists(query: string): Promise<void> {
+async function renderArticleLists(query: string, seq: number): Promise<void> {
   const listEl = $("mem-list");
   if (!query) {
     const d = await api.get<ListResp>("list");
+    if (!isCurrentView(seq)) return;
     if (!d.ok) {
       listEl.innerHTML = '<div class="notice bad" role="alert"><span><b>Could not load the vault.</b> ' + esc(errorText(d, "The server did not say why.")) +
         '</span><span class="actions"><button class="btn sm" type="button" id="mem-list-retry">Retry</button></span></div>';
-      ($("mem-list-retry") as HTMLButtonElement).onclick = () => { void renderArticleLists(""); };
+      ($("mem-list-retry") as HTMLButtonElement).onclick = () => { void renderArticleLists("", seq); };
       return;
     }
     const articles = d.articles || [], reference = d.reference || [];
@@ -233,6 +242,7 @@ async function renderArticleLists(query: string): Promise<void> {
     return;
   }
   const d = await api.get<SearchResp>("search?q=" + encodeURIComponent(query));
+  if (!isCurrentView(seq)) return;
   if (!d.ok) {
     listEl.innerHTML = '<p class="mem-note bad" role="alert">Search failed: ' + esc(errorText(d, "the server did not say why")) + ". Try again in a moment.</p>";
     return;
@@ -267,10 +277,11 @@ async function runInit(button: HTMLButtonElement): Promise<void> {
 }
 
 async function showList(): Promise<void> {
+  const seq = beginView();
   setBack(false);
   $("mem-title").textContent = "Memory";
   $("mem-body").scrollTop = 0;
-  try { await renderListBody(); } finally { changed(); }
+  try { await renderListBody(seq); } finally { if (isCurrentView(seq)) changed(); }
 }
 
 /* ────────────────────────────────────────────────────────────────────
@@ -294,19 +305,21 @@ function wireLinkChips(container: HTMLElement): void {
 }
 
 async function showArticle(name: string): Promise<void> {
+  const seq = beginView();
   setBack(true);
   $("mem-title").textContent = display(name);
   const body = $("mem-body");
   body.innerHTML = loadingHtml("Loading the article");
   body.scrollTop = 0;
-  try { await renderArticle(name, body); } finally { changed(); }
+  try { await renderArticle(name, body, seq); } finally { if (isCurrentView(seq)) changed(); }
 }
 
-async function renderArticle(name: string, body: HTMLElement): Promise<void> {
+async function renderArticle(name: string, body: HTMLElement, seq: number): Promise<void> {
   const [artRes, linksRes] = await Promise.all([
     api.get<ArticleResp>("article?name=" + encodeURIComponent(name)),
     api.get<LinksResp>("links?name=" + encodeURIComponent(name)),
   ]);
+  if (!isCurrentView(seq)) return;
   if (!artRes.ok || artRes.content == null) {
     body.innerHTML = '<div class="notice bad" role="alert"><span><b>Could not open “' + esc(display(name)) + "”.</b> " +
       esc(errorText(artRes, "It may have been renamed or removed.")) + "</span></div>";

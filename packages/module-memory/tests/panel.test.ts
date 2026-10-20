@@ -80,6 +80,70 @@ test("the panel-changed event follows the view it describes: the article a chip 
   } finally { document.removeEventListener("mlx-panel-changed", record); panel.remove(); globalThis.fetch = saved; }
 });
 
+test("a slower earlier view never overwrites the newer one, and nothing renders or reports after the drawer closed", async () => {
+  const saved = globalThis.fetch;
+  // The slow article answers only when released; everything else answers at once.
+  const gates = new Map<string, () => void>();
+  const gated = (key: string, body: unknown) => new Promise<Response>((resolve) => { gates.set(key, () => resolve(Response.json(body))); });
+  const release = (key: string) => { gates.get(key)!(); gates.delete(key); };
+  globalThis.fetch = (async (input: string) => {
+    const url = String(input);
+    if (url.endsWith("/status")) return Response.json({ ok: true, enabled: true, status: { root: "/vault", exists: true, articleCount: 2, referenceCount: 0, isGitRepo: true, recentArticles: [] } });
+    if (url.endsWith("/list")) return Response.json({ ok: true, articles: ["Slow_one", "Fast_one"], reference: [] });
+    if (url.includes("/article?name=Slow_one")) return gated("slow", { ok: true, content: "# Slow one\n\nThe slow article's text." });
+    if (url.includes("/article?")) return Response.json({ ok: true, content: "# Fast one\n\nThe fast article's text." });
+    if (url.includes("/links?")) return Response.json({ ok: true, outbound: [], inbound: [] });
+    return Response.json({ ok: false });
+  }) as typeof fetch;
+  const panel = new MemoryPanel();
+  panel.connection = { apiBase: "http://remote.test/api/memory", eventsUrl: "" };
+  document.body.append(panel);
+  const seen: string[] = [];
+  const title = () => panel.querySelector("#mem-title")!.textContent;
+  const body = () => panel.querySelector("#mem-body")!.textContent ?? "";
+  const record = () => { seen.push(panel.isOpen() ? `${panel.querySelector("#mem-panel")!.classList.contains("reading") ? "article" : "list"}: ${title()}` : "closed"); };
+  document.addEventListener("mlx-panel-changed", record);
+  try {
+    // The slow article is asked for, then the fast one: the fast one shows and reports, and the slow answer,
+    // arriving later, is dropped instead of replacing it.
+    const slow = panel.open("Slow_one");
+    await settle();
+    expect(seen).toEqual([]);
+    await panel.open("Fast_one");
+    expect(seen).toEqual(["article: Fast one"]);
+    expect(body()).toContain("The fast article's text.");
+    release("slow");
+    await slow;
+    await settle();
+    expect(seen).toEqual(["article: Fast one"]);
+    expect(title()).toBe("Fast one");
+    expect(body()).not.toContain("The slow article's text.");
+    // Back to the list while the slow article is still loading: the list wins the same way.
+    const slowAgain = panel.open("Slow_one");
+    await settle();
+    (panel.querySelector("#mem-back") as HTMLElement).click();
+    await settle();
+    expect(seen.at(-1)).toBe("list: Memory");
+    release("slow");
+    await slowAgain;
+    await settle();
+    expect(seen.at(-1)).toBe("list: Memory");
+    expect(title()).toBe("Memory");
+    expect(body()).not.toContain("The slow article's text.");
+    // Closed while the slow article is still loading: closing reports once, and the late answer reports nothing.
+    const slowClosed = panel.open("Slow_one");
+    await settle();
+    panel.close();
+    expect(seen.at(-1)).toBe("closed");
+    const reported = seen.length;
+    release("slow");
+    await slowClosed;
+    await settle();
+    expect(seen).toHaveLength(reported);
+    expect(panel.isOpen()).toBe(false);
+  } finally { document.removeEventListener("mlx-panel-changed", record); panel.remove(); globalThis.fetch = saved; }
+});
+
 test("attachChat works on the slots it is handed: memory's classes and wiring on them, its notices through ui.notify", async () => {
   const requests: string[] = [];
   let enabled = false;
