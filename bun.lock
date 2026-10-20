@@ -262,9 +262,19 @@
         "@mlx-bun/mlx": "workspace:*",
       },
     },
+    "packages/web-kit": {
+      "name": "@mlx-bun/web-kit",
+      "version": "1.0.0",
+      "devDependencies": {
+        "happy-dom": "20.10.6",
+      },
+    },
     "packages/web-shell": {
       "name": "@mlx-bun/web-shell",
       "version": "1.0.0",
+      "dependencies": {
+        "@mlx-bun/web-kit": "workspace:*",
+      },
       "devDependencies": {
         "happy-dom": "20.10.6",
       },
@@ -548,6 +558,8 @@
     "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
     "@mlx-bun/training": ["@mlx-bun/training@workspace:packages/training"],
+
+    "@mlx-bun/web-kit": ["@mlx-bun/web-kit@workspace:packages/web-kit"],
 
     "@mlx-bun/web-shell": ["@mlx-bun/web-shell@workspace:packages/web-shell"],
 

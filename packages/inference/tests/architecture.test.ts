@@ -79,8 +79,11 @@ const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 // (and later service implementations) the host side, `module-<id>` the features.
 const coreName = "@mlx-bun/app-core";
 const isModulePackage = (name: string) => name.startsWith("@mlx-bun/module-");
-/** The web shell: browser code every host's UI reuses. It depends on no workspace package; modules never depend on it. */
+/** The web shell: browser code every host's UI reuses. It depends only on the web kit; modules never depend on it. */
 const webShellName = "@mlx-bun/web-shell";
+/** The web kit: the browser code panels and shells build with (tokens, base styles, DOM helpers, the API, stream and
+ * socket clients). It depends on no workspace package; a module's panel may import it, its server code never. */
+const webKitName = "@mlx-bun/web-kit";
 const isHostLibrary = (name: string) => name.startsWith("@mlx-bun/app-") && name !== coreName;
 /** Libraries below the app: everything that is not a contract, host library, module or app. */
 const belowApp = (owner: Library) => !owner.app && owner.name !== coreName && !isHostLibrary(owner.name) && !isModulePackage(owner.name);
@@ -317,8 +320,10 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (isModulePackage(owner.name)) for (const dependency of workspaceDependencies)
       if (dependency.name !== coreName && (dependency.app || isModulePackage(dependency.name) || isHostLibrary(dependency.name) || dependency.name === webShellName))
         violations.push(`${owner.name}: a module depends only on app-core and domain libraries (${dependency.name})`);
-    if (owner.name === webShellName && workspaceDependencies.length)
-      violations.push(`${owner.name}: the web shell has no workspace dependencies (${workspaceDependencies.map(item => item.name).join(", ")})`);
+    if (owner.name === webShellName && workspaceDependencies.some(item => item.name !== webKitName))
+      violations.push(`${owner.name}: the web shell depends only on the web kit (${workspaceDependencies.filter(item => item.name !== webKitName).map(item => item.name).join(", ")})`);
+    if (owner.name === webKitName && workspaceDependencies.length)
+      violations.push(`${owner.name}: the web kit has no workspace dependencies (${workspaceDependencies.map(item => item.name).join(", ")})`);
   }
   const packageGraph = new Map(libraries.map(item => [item.name, item.dependencies.filter(name => names.includes(name))]));
   violations.push(...cycles(packageGraph).map(cycle => `Package cycle: ${cycle}`));
@@ -379,10 +384,13 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
         relative(owner.source, file) === "content.config.ts" && specifier === "astro:content";
       const isExternal = siteContentApi || external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
       if (inModulePanel(file, owner) && (external.has(specifier) || (dependency !== undefined && !names.includes(dependency)))) {
-        violations.push(`${at}: panel code imports only panel files and its protocol.ts (${specifier})`); continue;
+        violations.push(`${at}: panel code imports only panel files, its protocol.ts and the web kit (${specifier})`); continue;
       }
       if (owner.name === webShellName && isExternal) {
-        violations.push(`${at}: the web shell is browser code and imports only its own files (${specifier})`); continue;
+        violations.push(`${at}: the web shell is browser code and imports only its own files and the web kit (${specifier})`); continue;
+      }
+      if (owner.name === webKitName && isExternal) {
+        violations.push(`${at}: the web kit is browser code and imports only its own files (${specifier})`); continue;
       }
       const browser = owner.app && relative(owner.source, file).startsWith("web/browser/");
       if (browser && isExternal) { violations.push(`${at}: browser cannot import ${specifier}`); continue; }
@@ -399,14 +407,18 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (!actual || !sources.has(actual)) { violations.push(`${at}: unresolved or unclassified import ${specifier}`); continue; }
       const targetOwner = ownerOf(actual)!;
       if (browser && !(actual.startsWith(resolve(owner.source, "web/browser") + "/") || targetOwner.name === webShellName ||
-          actual === resolve(owner.source, "jobs/protocol.ts")))
-        violations.push(`${at}: browser may import only browser modules, the web shell and data protocols (${specifier})`);
-      if (owner.name === webShellName && targetOwner !== owner)
-        violations.push(`${at}: the web shell is browser code and imports only its own files (${specifier})`);
+          targetOwner.name === webKitName || actual === resolve(owner.source, "jobs/protocol.ts")))
+        violations.push(`${at}: browser may import only browser modules, the web shell, the web kit and data protocols (${specifier})`);
+      if (owner.name === webShellName && targetOwner !== owner && targetOwner.name !== webKitName)
+        violations.push(`${at}: the web shell is browser code and imports only its own files and the web kit (${specifier})`);
+      if (owner.name === webKitName && targetOwner !== owner)
+        violations.push(`${at}: the web kit is browser code and imports only its own files (${specifier})`);
       const to = layer(actual, targetOwner);
-      if (inModulePanel(file, owner) && !(targetOwner === owner &&
-          (actual.startsWith(resolve(owner.source, "panel") + "/") || actual === resolve(owner.source, "protocol.ts"))))
-        violations.push(`${at}: panel code imports only panel files and its protocol.ts (${specifier})`);
+      if (inModulePanel(file, owner) && !(targetOwner.name === webKitName || (targetOwner === owner &&
+          (actual.startsWith(resolve(owner.source, "panel") + "/") || actual === resolve(owner.source, "protocol.ts")))))
+        violations.push(`${at}: panel code imports only panel files, its protocol.ts and the web kit (${specifier})`);
+      if (isModulePackage(owner.name) && !inModulePanel(file, owner) && targetOwner.name === webKitName)
+        violations.push(`${at}: a module's server code never imports the web kit; only its panel does (${specifier})`);
       if (owner.name === coreName && targetOwner !== owner) violations.push(`${at}: app-core has no workspace imports (${specifier})`);
       if (targetOwner.name === coreName && belowApp(owner)) violations.push(`${at}: libraries below the app never import app-core`);
       if (isModulePackage(owner.name) && targetOwner !== owner && targetOwner.name !== coreName &&
@@ -1781,7 +1793,8 @@ function moduleWorkspace() {
     ["packages/hub", "@mlx-bun/hub", {}],
     ["packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "" }],
     ["packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "" }],
-    ["packages/web-shell", "@mlx-bun/web-shell", {}],
+    ["packages/web-kit", "@mlx-bun/web-kit", {}],
+    ["packages/web-shell", "@mlx-bun/web-shell", { "@mlx-bun/web-kit": "" }],
     ["apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "" }],
   ];
   for (const [path, name, dependencies] of packages) { manifest(path, name, dependencies); link(name, path); }
@@ -1795,7 +1808,8 @@ function moduleWorkspace() {
   write("packages/module-a/src/panel/index.ts", 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const panel = (p: Progress) => helper(p.done);');
   write("packages/module-a/src/panel/helper.ts", "export const helper = (n: number) => n;");
   write("packages/module-b/src/index.ts", "export default { id: \"b\" };");
-  write("packages/web-shell/src/index.ts", "export const shell = 1;");
+  write("packages/web-kit/src/index.ts", "export const kit = 1;");
+  write("packages/web-shell/src/index.ts", 'import { kit } from "@mlx-bun/web-kit"; export const shell = kit;');
   write("apps/example/src/modules.ts", 'import a from "@mlx-bun/module-a"; import type { Thing } from "@mlx-bun/app-core"; export const modules: readonly unknown[] = [a]; export type T = Thing;');
   write("apps/example/src/cli/main.ts", 'import { modules } from "../modules"; import { load } from "@mlx-bun/app-host"; export const main = () => [modules, load];');
   return { root, write, manifest, packages, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -1934,7 +1948,7 @@ test("module, host-library and host code cannot branch on model identity or impo
   } finally { cleanup(); }
 });
 
-test("the web shell is browser code that imports only its own files; modules cannot use it and an app's browser code can", async () => {
+test("the web shell is browser code that imports only its own files and the web kit; modules cannot use it and an app's browser code can", async () => {
   const { root, write, manifest, cleanup } = moduleWorkspace();
   try {
     expect(await inspectWorkspaces(root)).toEqual([]);
@@ -1942,14 +1956,25 @@ test("the web shell is browser code that imports only its own files; modules can
     const shell = "packages/web-shell/src/index.ts";
     for (const specifier of ["node:fs", "bun", "@mlx-bun/app-core", "@mlx-bun/hub", "@mlx-bun/module-a"]) {
       write(shell, `import * as x from ${JSON.stringify(specifier)}; export const y = x;`);
-      expect(mentions(await inspectWorkspaces(root), `${shell}:1: the web shell is browser code and imports only its own files (${specifier})`)).toBe(true);
+      expect(mentions(await inspectWorkspaces(root), `${shell}:1: the web shell is browser code and imports only its own files and the web kit (${specifier})`)).toBe(true);
     }
-    write(shell, 'import { own } from "./own"; export const y = own;');
+    write(shell, 'import { own } from "./own"; import { kit } from "@mlx-bun/web-kit"; export const y = own + kit;');
     write("packages/web-shell/src/own.ts", "export const own = 1;");
     expect(await inspectWorkspaces(root)).toEqual([]);
-    manifest("packages/web-shell", "@mlx-bun/web-shell", { "@mlx-bun/app-core": "" });
-    expect(mentions(await inspectWorkspaces(root), "@mlx-bun/web-shell: the web shell has no workspace dependencies (@mlx-bun/app-core)")).toBe(true);
-    manifest("packages/web-shell", "@mlx-bun/web-shell");
+    manifest("packages/web-shell", "@mlx-bun/web-shell", { "@mlx-bun/web-kit": "", "@mlx-bun/app-core": "" });
+    expect(mentions(await inspectWorkspaces(root), "@mlx-bun/web-shell: the web shell depends only on the web kit (@mlx-bun/app-core)")).toBe(true);
+    manifest("packages/web-shell", "@mlx-bun/web-shell", { "@mlx-bun/web-kit": "" });
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    // The web kit sits below the shell: its own files only, no workspace dependency.
+    const kit = "packages/web-kit/src/index.ts";
+    for (const specifier of ["node:fs", "@mlx-bun/app-core", "@mlx-bun/web-shell"]) {
+      write(kit, `import * as x from ${JSON.stringify(specifier)}; export const kit = x;`);
+      expect(mentions(await inspectWorkspaces(root), `${kit}:1: the web kit is browser code and imports only its own files (${specifier})`)).toBe(true);
+    }
+    write(kit, "export const kit = 1;");
+    manifest("packages/web-kit", "@mlx-bun/web-kit", { "@mlx-bun/app-core": "" });
+    expect(mentions(await inspectWorkspaces(root), "@mlx-bun/web-kit: the web kit has no workspace dependencies (@mlx-bun/app-core)")).toBe(true);
+    manifest("packages/web-kit", "@mlx-bun/web-kit");
     expect(await inspectWorkspaces(root)).toEqual([]);
     // A module is handed its connection by the shell; it never imports the shell.
     manifest("packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "", "@mlx-bun/web-shell": "" });
@@ -1964,20 +1989,33 @@ test("the web shell is browser code that imports only its own files; modules can
     write("apps/example/src/web/browser/main.ts", 'import { shell } from "@mlx-bun/web-shell"; export const start = () => shell;');
     expect(await inspectWorkspaces(root)).toEqual([]);
     write("apps/example/src/web/browser/main.ts", 'import a from "@mlx-bun/module-a";');
-    expect(mentions(await inspectWorkspaces(root), "browser may import only browser modules, the web shell and data protocols")).toBe(true);
+    expect(mentions(await inspectWorkspaces(root), "browser may import only browser modules, the web shell, the web kit and data protocols")).toBe(true);
+    manifest("apps/example", "example-host", { ...host, "@mlx-bun/web-shell": "", "@mlx-bun/web-kit": "" });
+    write("apps/example/src/web/browser/main.ts", 'import { kit } from "@mlx-bun/web-kit"; export const start = () => kit;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { cleanup(); }
 });
 
-test("panel code imports only panel files and its protocol.ts, and the protocol imports nothing", async () => {
-  const { root, write, cleanup } = moduleWorkspace();
+test("panel code imports only panel files, its protocol.ts and the web kit; the protocol imports nothing; module server code never imports the kit", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
   try {
     expect(await inspectWorkspaces(root)).toEqual([]);
     const panel = "packages/module-a/src/panel/index.ts";
     for (const specifier of ["../own", "@mlx-bun/app-core", "@mlx-bun/hub", "@mlx-bun/web-shell", "node:fs", "bun", "../index"]) {
       write(panel, `import * as x from ${JSON.stringify(specifier)}; export const y = x;`);
-      expect(mentions(await inspectWorkspaces(root), `${panel}:1: panel code imports only panel files and its protocol.ts (${specifier})`)).toBe(true);
+      expect(mentions(await inspectWorkspaces(root), `${panel}:1: panel code imports only panel files, its protocol.ts and the web kit (${specifier})`)).toBe(true);
     }
     write(panel, 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const p = (x: Progress) => helper(x.done);');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    // A declared web-kit dependency is the panel's to use; the module's server code may not reach it.
+    manifest("packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "", "@mlx-bun/web-kit": "" });
+    write(panel, 'import { kit } from "@mlx-bun/web-kit"; import type { Progress } from "../protocol"; export const p = (x: Progress) => kit + x.done;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("packages/module-a/src/index.ts", 'import { kit } from "@mlx-bun/web-kit"; export default { id: "a", kit };');
+    expect(mentions(await inspectWorkspaces(root), "packages/module-a/src/index.ts:1: a module's server code never imports the web kit; only its panel does (@mlx-bun/web-kit)")).toBe(true);
+    write("packages/module-a/src/index.ts", 'import type { Thing } from "@mlx-bun/app-core"; import { hub } from "@mlx-bun/hub"; import { own } from "./own"; export default { id: "a", hub, own } satisfies Thing | object;');
+    write(panel, 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const p = (x: Progress) => helper(x.done);');
+    manifest("packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "" });
     expect(await inspectWorkspaces(root)).toEqual([]);
     write("packages/module-a/src/protocol.ts", 'import type { Thing } from "@mlx-bun/app-core"; export type Progress = Thing;');
     expect(mentions(await inspectWorkspaces(root), "packages/module-a/src/protocol.ts: a module's data protocol imports nothing")).toBe(true);
