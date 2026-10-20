@@ -949,7 +949,10 @@ drives that app in headless Chromium over the same fake backend and reports ever
 desktop and a phone width, keyboard order and focus, the palette and overlays, the Models actions, each wizard end to
 end, the chat's stream, Stop, failure and approval paths, going offline and recovering, the failing and empty
 scenarios), with screenshots and a report under `dist/web-walk`; it finds Chromium through `--chromium`, `$CHROMIUM`,
-Playwright's install or Google Chrome.
+Playwright's install or Google Chrome. `bun apps/mlx-bun/scripts/web-static.ts [out.html]` writes the app as one
+self-contained HTML file with the fake backend running inside the page ([`tests/web/browser-mock.ts`](tests/web/browser-mock.ts)
+stands in for `fetch`, `WebSocket` and `EventSource`), for a design review or a hosted preview with no server: a
+control in its corner switches the scenario, and going offline shows the unreachable and recovery states.
 
 [Boot tests](tests/web/boot.test.ts) run the built bundle against `app.html` (the shell's tabs and pages, the
 module panels mounted through the shell, the settings dialog's wiring to the chat). [Browser tests](tests/web/browser.test.ts)
