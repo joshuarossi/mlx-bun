@@ -432,7 +432,9 @@ async function walkDefault(page: Page) {
     const finished = () => page.waitFor("!window.__vis('#chat-stop') && !window.__q('#chat-box').disabled", 20000);
     const ask = async (text: string) => { await page.focus("#chat-box"); await page.type(text); await page.key("Enter"); };
     // The wizard sits on Done from the earlier steps: a hidden field cannot be pointed at, so start it over first.
-    if (await page.vis('mlx-quantize-panel >>> #q-again')) { await page.go("quantize"); await page.click("mlx-quantize-panel >>> #q-again"); await page.go("chat"); }
+    await page.go("quantize");
+    if (await page.vis('mlx-quantize-panel >>> #q-again')) await page.click("mlx-quantize-panel >>> #q-again");
+    await page.go("chat");
     await ask("take me to quantize and show me where to start");
     check("the agent navigates to the page it was asked for", await page.waitFor("location.hash === '#/quantize'", 5000), await page.eval("location.hash"));
     check("and highlights where to start, with its hint", await page.waitFor("window.__vis('#assistant-spotlight') && document.getElementById('assistant-spotlight').classList.contains('show') && /Start here/.test(window.__text('#assistant-spotlight .asr-pop-text') || '')", 6000), await page.text("#assistant-spotlight .asr-pop-text") ?? "");
