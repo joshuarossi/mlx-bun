@@ -4,6 +4,7 @@
 // `#app`; `#nav-developer`; `#nav-menu` and `#nav-backdrop` for the sheet); the shell drives it and adds a tab and a
 // page for every module panel.
 import { $, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
+import { SHEET_MEDIA } from "./chrome";
 import { createOverlays, type Overlays } from "./overlays";
 import { buildPanelPage, type ShellPanel } from "./panels";
 import { initTheme } from "./theme";
@@ -137,20 +138,26 @@ export function createShell(options: ShellOptions): Shell {
   // Open, the sheet is a dialog over the page: Tab and Shift+Tab stay inside it, and closing it returns focus to
   // whatever opened it (the menu button, or the shortcut's focus), never to the page behind the backdrop.
   let sheetTrap: FocusTrap | undefined;
+  let sheetFocus: ReturnType<typeof setTimeout> | undefined;
   const nav: NavSheet = {
     isOpen: () => !!navElement()?.classList.contains("open"),
     open() {
       const element = navElement();
-      if (!element) return;
+      // Already open: the restore target stays what opened it, not a control inside the sheet.
+      if (!element || nav.isOpen()) return;
       sheetTrap ??= trapFocus(element, () => nav.isOpen());
       sheetTrap.capture();
       element.classList.add("open");
       document.getElementById("nav-backdrop")?.classList.add("open");
       document.getElementById("nav-menu")?.setAttribute("aria-expanded", "true");
-      setTimeout(() => element.querySelector<HTMLElement>(".tab.active, .tab")?.focus(), 30);
+      // The first tab takes focus once the sheet has slid in; a close before then cancels it.
+      clearTimeout(sheetFocus);
+      sheetFocus = setTimeout(() => { sheetFocus = undefined; if (nav.isOpen()) element.querySelector<HTMLElement>(".tab.active, .tab")?.focus(); }, 30);
     },
     close() {
       if (!nav.isOpen()) return;
+      clearTimeout(sheetFocus);
+      sheetFocus = undefined;
       const element = navElement();
       element?.classList.remove("open");
       document.getElementById("nav-backdrop")?.classList.remove("open");
@@ -254,6 +261,12 @@ export function createShell(options: ShellOptions): Shell {
     if (backdrop) backdrop.onclick = () => nav.close();
     // A tap on a tab closes the sheet even when it is the current page's (no hash change, so no navigation).
     navElement()?.addEventListener("click", (e) => { if ((e.target as Element).closest(".tab")) nav.close(); });
+    // Past the breakpoint the rail is a rail again: a sheet left open closes, so its backdrop and focus trap do not
+    // outlive the layout that needed them.
+    const sheetMedia = typeof window.matchMedia === "function" ? window.matchMedia(SHEET_MEDIA) : null;
+    const onLayout = () => { if (sheetMedia && !sheetMedia.matches) nav.close(); };
+    sheetMedia?.addEventListener?.("change", onLayout);
+    window.addEventListener("resize", onLayout);
   }
 
   function markUnavailable(id: string): void {
