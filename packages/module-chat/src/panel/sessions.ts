@@ -1,60 +1,10 @@
-// Part of the chat panel (`@mlx-bun/module-chat`), bundled into the app's browser build.
-//
-// Recent-chats sidebar (list/search/fork/delete), the last-user-message
-// sibling `< i/n >` toggle (edit-and-resend branching), and the
-// per-message action row (copy/regenerate/edit). Extracted from the
-// original monolithic controllers.chat closure in app.html — behavior
-// identical, but state that used to be closed-over local variables is now
-// passed explicitly (SidebarState/SiblingState) so this module has no
-// hidden coupling to chat.ts beyond what's passed in.
-//
-// Later additions (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-// beat-matrix Axis 10/11): full-text
-// "in messages" search fallback below the title filter (GET
-// /api/sessions/search, backed by packages/module-chat/src/session-search.ts), an export
-// action per session row (Markdown/JSON, via GET /api/sessions/export —
-// path-validated server-side under sessionDir exactly like pi-web's
-// isUnderSessionDir), and openSessionRowByPath(), the DOM-click bridge the
-// command palette (palette.ts) uses to open a session without this module
-// needing any reference back into chat.ts's WebSocket (chat.ts already
-// wires each rendered `.sess` row's click to `onOpen` below — this just
-// finds and clicks the right row instead of duplicating that send()).
-
+// The recent-chats sidebar: the saved chats as rows (title, relative time, message count) with Export, New chat from
+// here and Delete; the search field, which filters titles at once and, when few titles match, searches inside the
+// messages (`/api/sessions/search`); and export as Markdown or JSON (`/api/sessions/export`, path-checked server-side).
+// Opening a chat is a click on its row, so the host's palette opens one the same way (`openByPath`).
+import { $, el, esc, listen, relativeTime, type Api, type Disposer } from "@mlx-bun/web-kit";
 import type { SessionListItem } from "../protocol";
-import { $, api, el, injectStyles } from "./dom";
-
-const SESSIONS_STYLE_ID = "mlxbun-sessions-style";
-
-/** Injected once (shell.ts's injectStyles is idempotent per id): the small
- *  set of new classes this module's later additions need
- *  (full-text-search fallback rows + the export micro-menu) that have no
- *  home in app.html's own <style> block, since this module doesn't touch
- *  that file. References the existing :root design tokens so it matches
- *  the current theme automatically. */
-function injectSessionsStyles(): void {
-  injectStyles(SESSIONS_STYLE_ID, `
-.sess-msg-search{margin-top:6px;padding-top:6px;border-top:1px solid var(--hairline,rgba(255,255,255,.14));}
-.sess-msg-search-hdr{font-size:11px;color:var(--dim,#86868b);text-transform:uppercase;
-  letter-spacing:.04em;padding:4px 10px;}
-.sess-msg-search-loading{color:var(--dim,#86868b);font-size:12px;padding:6px 10px;}
-.sess-msg-hit{padding:7px 10px;border-radius:8px;cursor:pointer;}
-.sess-msg-hit:hover{background:var(--card-hover,rgba(255,255,255,.08));}
-.sess-msg-hit .stitle{font-size:12.5px;}
-.sess-msg-snippet{color:var(--dim,#86868b);font-size:11px;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;margin-top:2px;}
-.sess-msg-snippet mark{background:rgba(255,214,10,.35);color:inherit;border-radius:2px;}
-.sess-export-menu{position:fixed;z-index:950;background:var(--bg,#000);
-  border:1px solid var(--hairline-strong,rgba(255,255,255,.28));border-radius:10px;
-  box-shadow:0 12px 30px rgba(0,0,0,.4);overflow:hidden;min-width:150px;}
-.sess-export-item{display:block;width:100%;box-sizing:border-box;appearance:none;background:none;
-  border:0;text-align:left;color:var(--ink,#fff);font-size:12.5px;padding:9px 12px;cursor:pointer;}
-.sess-export-item:hover{background:var(--card-hover,rgba(255,255,255,.08));}
-`);
-}
-
-/* ────────────────────────────────────────────────────────────────────
-   Sidebar (session list + search)
-   ──────────────────────────────────────────────────────────────────── */
+import { ICON } from "./icons";
 
 export interface SidebarCallbacks {
   onOpen(path: string): void;
@@ -62,409 +12,222 @@ export interface SidebarCallbacks {
   onDelete(path: string): void;
 }
 
-/** Mutable box so renderSessions/applySessSearch share the last-rendered
- *  item list without a module-level global (kept per chat-controller
- *  instance — there's only ever one, but this avoids reintroducing a
- *  bare module-level `let` for state that's really the controller's). */
-export interface SidebarState {
-  lastSessionItems: SessionListItem[];
+export interface Sidebar {
+  /** Redraws the list from a `sessions` frame. */
+  render(items: readonly SessionListItem[] | undefined, activePath: string | undefined): void;
+  /** Re-applies the search field to the rows (after typing, or a redraw). */
+  applySearch(): void;
+  /** Opens a listed chat as a click on its row does; false when the list does not hold it. */
+  openByPath(path: string): boolean;
+  /** Downloads a chat as Markdown or JSON. */
+  exportChat(path: string, title: string, format: "md" | "json"): Promise<void>;
+  /** The listed chats, for the host's palette. */
+  recentChats(): { title: string; path: string }[];
 }
 
-export function newSidebarState(): SidebarState {
-  return { lastSessionItems: [] };
-}
-
-function relTime(ms: number | undefined): string {
-  if (!ms) return "";
-  const s = (Date.now() - ms) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return Math.floor(s / 60) + "m ago";
-  if (s < 86400) return Math.floor(s / 3600) + "h ago";
-  if (s < 604800) return Math.floor(s / 86400) + "d ago";
-  try { return new Date(ms).toLocaleDateString(); } catch { return ""; }
-}
-
-// Local esc() to avoid importing markdown.ts's whole surface just for
-// escaping — identical logic.
-function esc(s: unknown): string {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]!);
-}
-
-export function renderSessions(state: SidebarState, items: SessionListItem[] | undefined, activePath: string | undefined, cb: SidebarCallbacks): void {
-  injectSessionsStyles();
-  state.lastSessionItems = items || [];
-  const box = $("chat-sessions");
-  if (!items || !items.length) { box.innerHTML = '<div class="sessempty">No saved chats yet. Your conversations are saved locally here.</div>'; return; }
-  box.innerHTML = "";
-  for (const s of items) {
-    const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
-    row.dataset.title = (s.title || "New chat").toLowerCase();
-    row.dataset.path = s.path;
-    row.innerHTML =
-      '<div class="stitle">' + esc(s.title || "New chat") + '</div>' +
-      '<div class="smeta"><span>' + esc(relTime(s.modified)) + '</span>' +
-        (s.messageCount ? '<span>· ' + s.messageCount + ' msg' + (s.messageCount === 1 ? '' : 's') + '</span>' : '') +
-        (s.forked ? '<span>· forked</span>' : '') + '</div>' +
-      '<button class="sbtn sexport" title="Export this chat">⇩</button>' +
-      '<button class="sbtn sfork" title="New chat from here">⑂</button>' +
-      '<button class="sbtn sdel" title="Delete chat">✕</button>';
-    row.addEventListener("click", () => { cb.onOpen(s.path); });
-    row.querySelector(".sexport")!.addEventListener("click", (e) => { e.stopPropagation(); openExportMenu(row.querySelector(".sexport") as HTMLElement, s.path, s.title); });
-    row.querySelector(".sfork")!.addEventListener("click", (e) => { e.stopPropagation(); cb.onFork(s.path); });
-    row.querySelector(".sdel")!.addEventListener("click", (e) => { e.stopPropagation(); cb.onDelete(s.path); });
-  }
-  applySessSearch(state);
-}
-
-/** Find the rendered `.sess` row for `path` (present for every session —
- *  renderSessions draws the full list, title-search only hides rows via
- *  `.sess-hidden`) and click it, reusing chat.ts's existing onOpen wiring
- *  instead of this module needing its own WebSocket reference. Un-hides the
- *  row first so a click reaches an element that isn't `display:none`-adjacent
- *  (sess-hidden only dims/collapses via CSS, but clearing it keeps the
- *  sidebar visibly consistent with "this is the chat you're now in").
- *  Returns false (no-op) if the row isn't in the DOM yet (e.g. sessions
- *  frame hasn't arrived) — callers (palette.ts) treat that as "can't open
- *  yet", never a throw. */
-export function openSessionRowByPath(path: string): boolean {
-  const box = document.getElementById("chat-sessions");
-  if (!box) return false;
-  const row = box.querySelector<HTMLElement>('.sess[data-path="' + cssEscape(path) + '"]');
-  if (!row) return false;
-  row.classList.remove("sess-hidden");
-  row.click();
-  return true;
-}
-
-/** Minimal CSS.escape fallback (attribute-selector value escaping) — avoids
- *  depending on the global CSS.escape existing (it does in every real
- *  browser, but happy-dom's test environment is the reason this is spelled
- *  out defensively rather than assumed). */
-function cssEscape(s: string): string {
-  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(s);
-  return s.replace(/["\\]/g, "\\$&");
-}
-
-/** Client-side substring filter over session titles (no server round
- *  trip). Re-applied after every re-render since #chat-sessions is
- *  rebuilt wholesale on each `sessions` frame. When the title filter yields
- *  few/no hits, debounced-fetches a full-text "in messages" fallback
- *  section (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
- *  beat-matrix Axis 10/11's full-text BEAT) below the title-filtered rows. */
-export function applySessSearch(state: SidebarState): void {
-  const input = $("chat-sess-search") as HTMLInputElement | null;
-  const q = input ? input.value.trim().toLowerCase() : "";
-  const rows = $("chat-sessions").querySelectorAll<HTMLElement>(".sess");
-  let visibleCount = 0;
-  rows.forEach((row) => {
-    const match = !q || (row.dataset.title || "").includes(q);
-    row.classList.toggle("sess-hidden", !match);
-    if (match) visibleCount++;
-  });
-  let empty = $("chat-sessions").querySelector(".sess-search-empty");
-  if (q && !visibleCount && state.lastSessionItems.length) {
-    if (!empty) { empty = el("div", "sessempty sess-search-empty", $("chat-sessions")); }
-    empty.textContent = "No chats match “" + q + "”.";
-  } else if (empty) {
-    empty.remove();
-  }
-  scheduleMessageSearch(state, q, visibleCount);
-}
-
-/* ────────────────────────────────────────────────────────────────────
-   Full-text "in messages" fallback (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-   beat-matrix Axis 10/11): when the
-   title filter yields few/no hits, debounce a GET /api/sessions/search
-   and render title+snippet rows below the sidebar's own list. Clicking a
-   row opens that session via the existing sidebar click flow (the row is
-   already rendered by renderSessions above — a full-text hit is always
-   for a session that's IN the sidebar, since the sidebar lists every
-   session on disk, just some hidden by the title filter).
-   ──────────────────────────────────────────────────────────────────── */
-
-const MESSAGE_SEARCH_DEBOUNCE_MS = 250;
-/** Only bother with the server round trip once the title filter has mostly
- *  given up — a query that already matches plenty of titles doesn't need a
- *  second, slower full-text pass under it. */
+/** Only search inside messages once the title filter has mostly given up. */
 const FEW_HITS_THRESHOLD = 3;
+const MESSAGE_SEARCH_DEBOUNCE_MS = 250;
 
-let messageSearchTimer: ReturnType<typeof setTimeout> | undefined;
-let messageSearchSeq = 0;
+const cssEscape = (value: string): string => typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 
-function scheduleMessageSearch(state: SidebarState, q: string, titleHits: number): void {
-  if (messageSearchTimer) clearTimeout(messageSearchTimer);
-  const section = document.getElementById("chat-sessions")?.querySelector(".sess-msg-search");
-  if (!q || q.length < 2 || titleHits > FEW_HITS_THRESHOLD) {
-    if (section) section.remove();
-    return;
-  }
-  const seq = ++messageSearchSeq;
-  messageSearchTimer = setTimeout(() => runMessageSearch(state, q, seq), MESSAGE_SEARCH_DEBOUNCE_MS);
-}
-
-async function runMessageSearch(state: SidebarState, q: string, seq: number): Promise<void> {
-  const box = $("chat-sessions");
-  let section = box.querySelector(".sess-msg-search") as HTMLElement | null;
-  if (!section) section = el("div", "sess-msg-search", box);
-  section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sess-msg-search-loading">Searching…</div>';
-
-  const d = await api("/api/sessions/search?q=" + encodeURIComponent(q)).catch(() => ({ ok: false } as { ok: boolean }));
-  if (seq !== messageSearchSeq) return; // superseded by a newer keystroke
-  // The input may have been cleared/changed while the request was in flight.
-  const input = $("chat-sess-search") as HTMLInputElement | null;
-  if (!input || input.value.trim().toLowerCase() !== q) return;
-
-  const body = d as { ok: boolean; results?: Array<{ sessionPath: string; sessionTitle: string; matches: Array<{ snippet: string; ranges: Array<[number, number]>; role: string }> }> };
-  if (!body.ok || !body.results || !body.results.length) {
-    section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sessempty">No message matches for “' + esc(q) + '”.</div>';
-    return;
-  }
-  section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div>';
-  for (const r of body.results) {
-    const item = el("div", "sess-msg-hit", section);
-    item.dataset.path = r.sessionPath;
-    const first = r.matches[0];
-    item.innerHTML =
-      '<div class="stitle">' + esc(r.sessionTitle) + '</div>' +
-      (first ? '<div class="sess-msg-snippet">' + highlightSnippetHtml(first.snippet, first.ranges) + '</div>' : "");
-    item.addEventListener("click", () => { openSessionRowByPath(r.sessionPath); });
-  }
-}
-
-/** Escape a plain-text snippet then re-insert `<mark>` around the reported
- *  [start,end) ranges — same escape-then-restore discipline markdown.ts
- *  uses for code spans, applied here to search highlighting instead. Ranges
- *  are assumed non-overlapping and sorted (buildSnippet in
- *  packages/module-chat/src/session-search.ts only ever emits one range per snippet
- *  today, but this loop handles more without change). */
+/** A plain-text snippet, escaped, with `<mark>` around the reported `[start, end)` ranges (sorted, non-overlapping). */
 export function highlightSnippetHtml(snippet: string, ranges: Array<[number, number]>): string {
   if (!ranges.length) return esc(snippet);
-  let out = "";
-  let cursor = 0;
+  let out = "", cursor = 0;
   for (const [start, end] of ranges) {
     if (start < cursor || end <= start || end > snippet.length) continue;
-    out += esc(snippet.slice(cursor, start));
-    out += "<mark>" + esc(snippet.slice(start, end)) + "</mark>";
+    out += esc(snippet.slice(cursor, start)) + "<mark>" + esc(snippet.slice(start, end)) + "</mark>";
     cursor = end;
   }
-  out += esc(snippet.slice(cursor));
-  return out;
+  return out + esc(snippet.slice(cursor));
 }
 
-/* ────────────────────────────────────────────────────────────────────
-   Message actions (copy / regenerate / edit) + sibling toggle
-   ──────────────────────────────────────────────────────────────────── */
-
-export interface SiblingInfo {
-  entryId: string | null;
-  index: number;
-  count: number;
-  siblingIds: string[];
-}
-
-export function newSiblingInfo(): SiblingInfo {
-  return { entryId: null, index: 0, count: 0, siblingIds: [] };
-}
-
-export interface MsgActionOpts {
-  regenerate?: boolean;
-  edit?: boolean;
-}
-
-/** Append a hover/focus action row to a message element. `text` is the
- *  RAW SOURCE (markdown for assistant, plain for user) — never innerHTML —
- *  so Copy puts back exactly what the model said / the user typed.
- *  `onRegenerate`/`onEdit` are the click handlers (owned by chat.ts, which
- *  knows about the WS connection and turnActive state this module doesn't). */
-export function addMsgActions(
-  m: HTMLElement,
-  text: string,
-  opts: MsgActionOpts,
-  handlers: { onRegenerate?: () => void; onEdit?: (m: HTMLElement) => void },
-): HTMLElement {
-  const row = el("div", "msg-actions", m);
-  const copyBtn = el("button", "maction", row);
-  copyBtn.type = "button"; copyBtn.textContent = "Copy";
-  copyBtn.addEventListener("click", () => {
-    if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(text || "").then(() => {
-      copyBtn.textContent = "Copied"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
-    }).catch(() => {});
-  });
-  if (opts.regenerate) {
-    const btn = el("button", "maction", row);
-    btn.type = "button"; btn.textContent = "Regenerate";
-    btn.title = "Re-run this reply (keeps the old one on disk as a branch)";
-    btn.addEventListener("click", () => { handlers.onRegenerate && handlers.onRegenerate(); });
-  }
-  if (opts.edit) {
-    const btn = el("button", "maction", row);
-    btn.type = "button"; btn.textContent = "Edit";
-    btn.title = "Edit and resend — keeps the original as a numbered branch";
-    btn.addEventListener("click", () => { handlers.onEdit && handlers.onEdit(m); });
-  }
-  return row;
-}
-
-/** Render (or clear) the `< i/n >` sibling toggle above the last user
- *  message. Rebuilt whenever a `siblings` frame arrives or the thread is
- *  rebuilt. Hidden entirely when count <= 1 (the common no-edits case). */
-export function renderSiblingToggle(
-  lastUserMsgEl: HTMLElement | null,
-  lastUserEntryId: string | null,
-  siblingInfo: SiblingInfo,
-  onSwitch: (delta: number) => void,
-): void {
-  if (!lastUserMsgEl) return;
-  let box = lastUserMsgEl.querySelector(".sib-toggle") as HTMLElement | null;
-  if (siblingInfo.count <= 1 || siblingInfo.entryId !== lastUserEntryId) {
-    if (box) box.remove();
-    return;
-  }
-  if (!box) {
-    box = el("div", "sib-toggle", null);
-    lastUserMsgEl.insertBefore(box, lastUserMsgEl.firstChild);
-  }
-  const { index, count } = siblingInfo;
-  box.innerHTML =
-    '<button class="sib-prev" type="button" ' + (index <= 1 ? "disabled" : "") + '>&lt;</button>' +
-    '<span>' + index + '/' + count + '</span>' +
-    '<button class="sib-next" type="button" ' + (index >= count ? "disabled" : "") + '>&gt;</button>';
-  box.querySelector(".sib-prev")!.addEventListener("click", () => onSwitch(-1));
-  box.querySelector(".sib-next")!.addEventListener("click", () => onSwitch(1));
-}
-
-/** Resolve the sibling target id for a +-1 direction move from siblingInfo,
- *  or null if there's no such neighbor (caller should no-op). Pure — split
- *  out from the button wiring above so it's independently testable. */
-export function switchSiblingTarget(siblingInfo: SiblingInfo, delta: number): string | null {
-  const ids = siblingInfo.siblingIds || [];
-  return ids[siblingInfo.index - 1 + delta] ?? null;
-}
-
-/* ────────────────────────────────────────────────────────────────────
-   Export (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-   beat-matrix Axis 10 "Chat export" + Axis 11 "Portable JSON export / import"):
-   Markdown or raw JSON, built from
-   GET /api/sessions/export?path= (server-validated under sessionDir) — used
-   uniformly for the open session and any other session in the sidebar,
-   so this module needs no reference into chat.ts's in-memory thread state.
-   ──────────────────────────────────────────────────────────────────── */
-
-/** Slugify a session title into a filesystem-safe download filename stem
- *  (lowercase, spaces/punctuation -> hyphens, collapsed, trimmed, capped —
- *  same shape as a typical static-site slug). Pure — independently
- *  testable and reused by palette.ts's export action. */
+/** A filesystem-safe download name from a chat title. */
 export function slugTitle(title: string): string {
-  const slug = (title || "chat")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const slug = (title || "chat").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return (slug || "chat").slice(0, 60);
 }
 
-interface ExportEntry {
-  type?: string;
-  message?: { role?: string; content?: unknown };
-}
+interface ExportEntry { type?: string; message?: { role?: string; content?: unknown } }
 
 function entryContentText(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((p): p is { type: string; text: string } =>
-        !!p && (p as { type?: string }).type === "text" && typeof (p as { text?: unknown }).text === "string")
-      .map((p) => p.text)
-      .join(" ");
-  }
-  return "";
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((p): p is { type: string; text: string } => !!p && (p as { type?: string }).type === "text" && typeof (p as { text?: unknown }).text === "string")
+    .map((p) => p.text).join(" ");
 }
 
-/** Render a session's raw JSONL entries (as returned by GET
- *  /api/sessions/export) into plain Markdown: one `### User`/`### Assistant`
- *  heading per turn plus its text. Pure — takes the already-parsed entry
- *  array, not a fetch, so it's testable without a network stub and reusable
- *  for both "export the open session" and "export any sidebar session"
- *  (both go through the same server endpoint in this module, see
- *  exportSession below). */
+/** A saved chat's raw entries as Markdown: one `### User` or `### Assistant` heading per message. */
 export function sessionEntriesToMarkdown(entries: unknown[], title: string): string {
   const lines: string[] = ["# " + (title || "Chat"), ""];
   for (const raw of entries) {
-    const e = raw as ExportEntry;
-    if (e.type !== "message" || !e.message) continue;
-    const role = e.message.role;
+    const entry = raw as ExportEntry;
+    if (entry.type !== "message" || !entry.message) continue;
+    const role = entry.message.role;
     if (role !== "user" && role !== "assistant") continue;
-    const text = entryContentText(e.message.content);
-    if (!text) continue;
-    lines.push("### " + (role === "user" ? "User" : "Assistant"), "", text, "");
+    const text = entryContentText(entry.message.content);
+    if (text) lines.push("### " + (role === "user" ? "User" : "Assistant"), "", text, "");
   }
   return lines.join("\n");
 }
 
 function downloadBlob(filename: string, content: string, mime: string): void {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const link = el("a", "", document.body);
+  link.href = url; link.download = filename;
+  link.click();
+  link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Fetch a session's raw entries + title and trigger a browser download in
- *  the requested format. Always goes through GET /api/sessions/export
- *  (works uniformly whether or not this is the currently-open session —
- *  SessionManager flushes each turn to disk as it happens, so the file is
- *  never meaningfully stale relative to what's on screen). */
-export async function exportSession(path: string, title: string, format: "md" | "json"): Promise<void> {
-  const d = await api("/api/sessions/export?path=" + encodeURIComponent(path))
-    .catch(() => ({ ok: false } as { ok: boolean }));
-  const body = d as { ok: boolean; entries?: unknown[] };
-  if (!body.ok || !body.entries) return;
-  const stem = slugTitle(title);
-  if (format === "json") {
-    downloadBlob(stem + ".json", JSON.stringify(body.entries, null, 2), "application/json");
-  } else {
-    downloadBlob(stem + ".md", sessionEntriesToMarkdown(body.entries, title), "text/markdown");
+const rowHtml = (s: SessionListItem): string =>
+  '<button type="button" class="sopen">' +
+    '<span class="stitle">' + esc(s.title || "New chat") + "</span>" +
+    '<span class="smeta"><span>' + esc(s.modified ? relativeTime(s.modified) : "") + "</span>" +
+      (s.messageCount ? "<span>" + s.messageCount + " message" + (s.messageCount === 1 ? "" : "s") + "</span>" : "") +
+      (s.forked ? "<span>branched</span>" : "") + "</span></button>" +
+  '<span class="sacts">' +
+    '<button type="button" class="sbtn sexport btn icon sm quiet" title="Export this chat" aria-label="Export this chat">' + ICON.download + "</button>" +
+    '<button type="button" class="sbtn sfork btn icon sm quiet" title="New chat from here" aria-label="New chat from here">' + ICON.branch + "</button>" +
+    '<button type="button" class="sbtn sdel btn icon sm quiet" title="Delete this chat" aria-label="Delete this chat">' + ICON.trash + "</button></span>";
+
+export function createSidebar(api: Api, callbacks: SidebarCallbacks, disposer: Disposer): Sidebar {
+  let items: readonly SessionListItem[] = [];
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  let searchSeq = 0;
+  let exportMenu: HTMLElement | null = null;
+  let stopMenuListeners: (() => void) | null = null;
+  disposer.add(() => { clearTimeout(searchTimer); closeExportMenu(); });
+
+  const list = () => $("chat-sessions");
+  const query = () => (($("chat-sess-search") as HTMLInputElement | null)?.value || "").trim().toLowerCase();
+
+  function closeExportMenu(): void {
+    exportMenu?.remove();
+    exportMenu = null;
+    stopMenuListeners?.();
+    stopMenuListeners = null;
   }
-}
 
-let exportMenuEl: HTMLElement | null = null;
-
-function closeExportMenu(): void {
-  if (exportMenuEl) { exportMenuEl.remove(); exportMenuEl = null; }
-}
-
-/** Tiny two-item popover (Markdown / JSON) anchored under the export
- *  button. Not a FocusTrap-managed overlay (it's a two-button micro-menu,
- *  not a modal) — a document-level click-outside listener closes it, and
- *  Escape closes it via the same listener path since Escape isn't
- *  special-cased elsewhere for this menu. */
-function openExportMenu(anchor: HTMLElement, path: string, title: string): void {
-  closeExportMenu();
-  const menu = el("div", "sess-export-menu", document.body);
-  const rect = anchor.getBoundingClientRect();
-  menu.style.position = "fixed";
-  menu.style.top = (rect.bottom + 4) + "px";
-  menu.style.left = Math.max(4, rect.right - 140) + "px";
-  menu.innerHTML =
-    '<button class="sess-export-item" data-fmt="md">Export as Markdown</button>' +
-    '<button class="sess-export-item" data-fmt="json">Export as JSON</button>';
-  menu.querySelectorAll<HTMLButtonElement>(".sess-export-item").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      exportSession(path, title, (btn.dataset.fmt as "md" | "json"));
-      closeExportMenu();
+  /** A two-item menu under the export button; a click elsewhere or Escape closes it. */
+  function openExportMenu(anchor: HTMLElement, path: string, title: string): void {
+    closeExportMenu();
+    const menu = el("div", "sess-export-menu", document.body);
+    menu.setAttribute("role", "menu");
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = (rect.bottom + 4) + "px";
+    menu.style.left = Math.max(8, rect.right - 180) + "px";
+    menu.innerHTML = '<button type="button" role="menuitem" class="sess-export-item" data-fmt="md">Export as Markdown</button>' +
+      '<button type="button" role="menuitem" class="sess-export-item" data-fmt="json">Export as JSON</button>';
+    menu.querySelectorAll<HTMLButtonElement>(".sess-export-item").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void exportChat(path, title, button.dataset.fmt as "md" | "json");
+        closeExportMenu();
+      });
     });
-  });
-  exportMenuEl = menu;
-  setTimeout(() => {
-    document.addEventListener("click", closeExportMenu, { once: true });
-    document.addEventListener("keydown", onExportMenuKeydown);
-  }, 0);
-}
+    exportMenu = menu;
+    menu.querySelector<HTMLButtonElement>(".sess-export-item")?.focus();
+    // Registered after this click finishes bubbling, so the click that opened the menu does not close it.
+    setTimeout(() => {
+      if (exportMenu !== menu) return;
+      const stopClick = listen(document, "click", closeExportMenu);
+      const stopKey = listen(document, "keydown", (event) => { if ((event as KeyboardEvent).key === "Escape") { closeExportMenu(); anchor.focus(); } });
+      stopMenuListeners = () => { stopClick(); stopKey(); };
+    }, 0);
+  }
 
-function onExportMenuKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") { closeExportMenu(); document.removeEventListener("keydown", onExportMenuKeydown); }
+  async function exportChat(path: string, title: string, format: "md" | "json"): Promise<void> {
+    const answer = await api.get<{ entries?: unknown[] }>("/api/sessions/export?path=" + encodeURIComponent(path));
+    if (!answer.ok || !answer.entries) return;
+    const stem = slugTitle(title);
+    if (format === "json") downloadBlob(stem + ".json", JSON.stringify(answer.entries, null, 2), "application/json");
+    else downloadBlob(stem + ".md", sessionEntriesToMarkdown(answer.entries, title), "text/markdown");
+  }
+
+  function openByPath(path: string): boolean {
+    const row = list()?.querySelector<HTMLElement>('.sess[data-path="' + cssEscape(path) + '"]');
+    if (!row) return false;
+    row.classList.remove("sess-hidden");
+    row.click();
+    return true;
+  }
+
+  async function runMessageSearch(q: string, seq: number): Promise<void> {
+    const box = list();
+    let section = box.querySelector<HTMLElement>(".sess-msg-search");
+    if (!section) section = el("div", "sess-msg-search", box);
+    section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sess-msg-search-loading"><span class="skeleton">Searching…</span></div>';
+    type Hit = { sessionPath: string; sessionTitle: string; matches: Array<{ snippet: string; ranges: Array<[number, number]>; role: string }> };
+    const answer = await api.get<{ results?: Hit[] }>("/api/sessions/search?q=" + encodeURIComponent(q));
+    if (seq !== searchSeq || query() !== q) return; // superseded, or the field changed while it was in flight
+    if (!answer.ok || !answer.results?.length) {
+      section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sessempty">' +
+        (answer.ok ? "No messages mention “" + esc(q) + "”." : "Could not search the messages. Try again in a moment.") + "</div>";
+      return;
+    }
+    section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div>';
+    for (const hit of answer.results) {
+      const item = el("button", "sess-msg-hit", section);
+      item.type = "button";
+      item.dataset.path = hit.sessionPath;
+      const first = hit.matches[0];
+      item.innerHTML = '<span class="stitle">' + esc(hit.sessionTitle) + "</span>" +
+        (first ? '<span class="sess-msg-snippet">' + highlightSnippetHtml(first.snippet, first.ranges) + "</span>" : "");
+      item.addEventListener("click", () => { openByPath(hit.sessionPath); });
+    }
+  }
+
+  function scheduleMessageSearch(q: string, titleHits: number): void {
+    clearTimeout(searchTimer);
+    if (!q || q.length < 2 || titleHits > FEW_HITS_THRESHOLD) { list()?.querySelector(".sess-msg-search")?.remove(); return; }
+    const seq = ++searchSeq;
+    searchTimer = setTimeout(() => { void runMessageSearch(q, seq); }, MESSAGE_SEARCH_DEBOUNCE_MS);
+  }
+
+  function applySearch(): void {
+    const q = query();
+    const box = list();
+    let visible = 0;
+    box.querySelectorAll<HTMLElement>(".sess").forEach((row) => {
+      const match = !q || (row.dataset.title || "").includes(q);
+      row.classList.toggle("sess-hidden", !match);
+      if (match) visible++;
+    });
+    let empty = box.querySelector(".sess-search-empty");
+    if (q && !visible && items.length) {
+      empty ??= el("div", "sessempty sess-search-empty", box);
+      empty.textContent = "No chat titles match “" + q + "”.";
+    } else empty?.remove();
+    scheduleMessageSearch(q, visible);
+  }
+
+  function render(next: readonly SessionListItem[] | undefined, activePath: string | undefined): void {
+    items = next || [];
+    const box = list();
+    if (!items.length) { box.innerHTML = '<div class="sessempty">No saved chats yet. Each conversation is saved on this Mac and listed here.</div>'; return; }
+    box.innerHTML = "";
+    for (const s of items) {
+      const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
+      row.dataset.title = (s.title || "New chat").toLowerCase();
+      row.dataset.path = s.path;
+      row.innerHTML = rowHtml(s);
+      if (s.path === activePath) row.querySelector(".sopen")!.setAttribute("aria-current", "true");
+      row.addEventListener("click", () => callbacks.onOpen(s.path));
+      const exportButton = row.querySelector<HTMLElement>(".sexport")!;
+      exportButton.addEventListener("click", (event) => { event.stopPropagation(); openExportMenu(exportButton, s.path, s.title); });
+      row.querySelector(".sfork")!.addEventListener("click", (event) => { event.stopPropagation(); callbacks.onFork(s.path); });
+      row.querySelector(".sdel")!.addEventListener("click", (event) => { event.stopPropagation(); callbacks.onDelete(s.path); });
+    }
+    applySearch();
+  }
+
+  function recentChats(): { title: string; path: string }[] {
+    return [...(list()?.querySelectorAll<HTMLElement>(".sess") ?? [])].flatMap((row) =>
+      row.dataset.path ? [{ title: row.querySelector(".stitle")?.textContent || "New chat", path: row.dataset.path }] : []);
+  }
+
+  return { render, applySearch, openByPath, exportChat, recentChats };
 }

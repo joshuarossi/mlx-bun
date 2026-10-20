@@ -1,28 +1,11 @@
-// Part of the chat panel (`@mlx-bun/module-chat`), bundled into the app's browser build.
-//
-// Adapter routing table: the deep surface behind
-// the composer's ⚙ button beside #chat-adapter. Shows every on-disk
-// adapter with its three states (available / loaded+mounted /
-// selected-for-this-chat), base model, rank, size on disk, and RAM cost
-// when mounted (GET /v1/adapters now reports `ram_bytes` — see
-// `02d723a:docs/reference/server-api.md`), with compatible-graying and a why-not
-// tooltip. Actions: mount, select, unselect, and stack two compatible
-// adapters as "a+b" — resolveSpec/injectAdapter already support composite
-// ids end to end (proved in packages/module-chat/tests/chat-policy.test.ts's stacking
-// test; the shape-validated mount is proved against real weights in the
-// MLX_BUN_TEST_LORA=1-gated `02d723a:tests/parity/lora.test.ts`).
-//
-// Single source of SELECTION state, not a single fetch: composer.ts's quick
-// <select> and this table each hit /v1/adapters(+/available) independently
-// (same endpoints, same shapes) rather than sharing one in-memory cache —
-// but chat.ts keeps them from disagreeing about what's SELECTED by writing
-// through both on every change (adapterSel.onchange syncs
-// adaptersPanel.selectedSpec; this table's actions sync #chat-adapter's
-// value back). What must never drift is which adapter(s) are active for
-// the chat, not which HTTP call fetched the list.
-
-import { $, api, toast, trapFocus, type FocusTrap } from "./dom";
-import { esc } from "./markdown";
+// The adapter routing table behind the composer's adapters button: every adapter on disk with its three states
+// (on disk, mounted, selected for this chat), base model, rank, size on disk and RAM cost once mounted, incompatible
+// ones grayed with the reason. Actions: mount, select, unselect, and stack two mounted adapters as `a+b` (composite ids
+// are supported end to end). The composer's quick select and this table fetch the same routes independently, but
+// they never disagree about what is selected: each writes the selection through to the other.
+import { $, errorOf, esc, trapFocus, type Api, type FocusTrap } from "@mlx-bun/web-kit";
+import type { ClientMessage } from "../protocol";
+import { toast } from "./host";
 import { setPopoverClose } from "./popovers";
 
 /** Shape returned by GET /v1/adapters/available (on-disk, unfiltered). */
@@ -54,8 +37,7 @@ function fmtBytes(n: number | null | undefined): string {
   return n + " B";
 }
 
-/** Send callback type shared with the rest of chat.ts's WS wiring. */
-type Send = (obj: unknown) => boolean;
+type Send = (frame: ClientMessage) => boolean;
 
 export class AdaptersPanelState {
   available: AvailableAdapterRow[] = [];
@@ -70,24 +52,16 @@ export class AdaptersPanelState {
 
 let trap: FocusTrap | null = null;
 
-/** Fetch both adapter endpoints once and refresh every dependent view: the
- *  table body (if open, with its actions re-wired against `send`) and the
- *  composer's quick <select> (renderAdapterOptionsHtml, imported from
- *  composer.ts — one source of truth, not a second fetch). `send` is
- *  required (not optional) so a refresh never silently leaves the table's
- *  mount/select/stack buttons wired to a no-op. */
-export async function refreshAdaptersPanel(state: AdaptersPanelState, send: Send): Promise<void> {
-  const [availD, mountedD] = await Promise.all([
-    api("/v1/adapters/available").catch(() => ({ ok: false } as const)),
-    api("/v1/adapters").catch(() => ({ ok: false } as const)),
-  ]);
+/** Fetches both adapter routes and redraws the table, its actions wired against `send`. */
+export async function refreshAdaptersPanel(state: AdaptersPanelState, send: Send, api: Api): Promise<void> {
+  const [availD, mountedD] = await Promise.all([api.get("/v1/adapters/available"), api.get("/v1/adapters")]);
   state.available = ((availD as { adapters?: AvailableAdapterRow[] }).adapters) || [];
   const mountedList = ((mountedD as { adapters?: MountedAdapterRow[] }).adapters) || [];
   state.mounted = new Map(mountedList.map((a) => [a.id, a]));
   // Drop stack picks for adapters that vanished from disk (e.g. an
   // in-flight delete elsewhere).
   for (const id of [...state.stackPicks]) if (!state.available.some((a) => a.id === id)) state.stackPicks.delete(id);
-  renderAdaptersBody(state, send);
+  renderAdaptersBody(state, send, api);
 }
 
 /** Parse the composer's currently-selected spec ("" | "id" | "a+b") into
@@ -162,8 +136,8 @@ export function renderAdapterRow(
 export function renderAdaptersBodyHtml(state: AdaptersPanelState): string {
   if (!state.available.length) {
     return (
-      '<div class="ad-empty">No adapters found on disk yet.<br>' +
-      "Fine-tune one in the Developer tab, or drop an adapter directory into " +
+      '<div class="ad-empty empty"><h3>No adapters found on disk yet.</h3>' +
+      "Fine-tune one under Developer tools, or put an adapter directory in " +
       "<code>~/.mlx-bun/adapters</code>.</div>"
     );
   }
@@ -178,42 +152,41 @@ export function renderAdaptersBodyHtml(state: AdaptersPanelState): string {
   const picks = [...state.stackPicks];
   const stackBar = picks.length
     ? '<div class="ad-stack-bar"><span class="lbl">Stack:</span><span class="expr">' +
-        esc(picks.join(" + ")) + '</span><button type="button" id="ad-stack-apply" class="ad-actions-btn">Apply</button>' +
-        '<button type="button" id="ad-stack-clear" class="ad-actions-btn">Clear</button></div>'
+        esc(picks.join(" + ")) + '</span><button type="button" id="ad-stack-apply" class="ad-actions-btn btn primary sm">Apply</button>' +
+        '<button type="button" id="ad-stack-clear" class="ad-actions-btn btn sm">Clear</button></div>'
     : "";
   return (
-    '<div class="ad-note">Every adapter found on disk, mounted or not. Mounting loads it into ' +
-    "memory (RAM cost shown once mounted); selecting makes it active for this chat's next turn " +
-    "(a fresh KV segment). Tick two mounted adapters' “stack” boxes to compose them as " +
-    '<code>a+b</code> — the server already supports it end to end.</div>' +
+    '<div class="ad-note">Every adapter on disk, mounted or not. Mounting loads it into memory (its RAM cost ' +
+    "shows once mounted); selecting makes it answer this chat's next turns, which start a fresh KV cache segment. " +
+    "Tick “stack” on two mounted adapters to compose them as <code>a+b</code>.</div>" +
     stackBar +
     '<div class="ad-sec-title">On disk (' + state.available.length + ")</div>" +
     rows
   );
 }
 
-function renderAdaptersBody(state: AdaptersPanelState, send: Send): void {
+function renderAdaptersBody(state: AdaptersPanelState, send: Send, api: Api): void {
   const body = $("adapters-body");
   if (!body) return;
   body.innerHTML = renderAdaptersBodyHtml(state);
-  wireRowActions(state, send);
+  wireRowActions(state, send, api);
 }
 
-function wireRowActions(state: AdaptersPanelState, send: Send): void {
+function wireRowActions(state: AdaptersPanelState, send: Send, api: Api): void {
   const body = $("adapters-body");
   if (!body) return;
   body.querySelectorAll<HTMLButtonElement>(".ad-mount").forEach((btn) => {
     btn.onclick = async () => {
       const id = btn.dataset.id!, path = btn.dataset.path!;
       btn.disabled = true; btn.textContent = "Mounting…";
-      const r = await api("/v1/adapters", { method: "POST", body: { id, path } });
-      if (r && (r.error || r.ok === false)) {
-        toast("adapter: " + (r.error || "mount failed"), "err");
+      const r = await api.post("/v1/adapters", { id, path });
+      if (r.error || r.ok === false) {
+        toast("Could not mount " + id + ": " + errorOf(r, "mount failed"), "err");
         btn.disabled = false; btn.textContent = "Mount";
         return;
       }
-      toast("mounted " + id, "ok");
-      await refreshAdaptersPanel(state, send);
+      toast("Mounted " + id + ".", "ok");
+      await refreshAdaptersPanel(state, send, api);
     };
   });
   body.querySelectorAll<HTMLButtonElement>(".ad-select").forEach((btn) => {
@@ -224,8 +197,8 @@ function wireRowActions(state: AdaptersPanelState, send: Send): void {
       send({ type: "set_adapter", id });
       const sel = $("chat-adapter") as HTMLSelectElement | null;
       if (sel && [...sel.options].some((o) => o.value === id)) sel.value = id;
-      toast("adapter selected — new turns start a fresh KV segment", "ok");
-      renderAdaptersBody(state, send);
+      toast("Adapter selected. New turns start a fresh KV cache segment.", "ok");
+      renderAdaptersBody(state, send, api);
     };
   });
   body.querySelectorAll<HTMLButtonElement>(".ad-unselect").forEach((btn) => {
@@ -234,37 +207,37 @@ function wireRowActions(state: AdaptersPanelState, send: Send): void {
       send({ type: "set_adapter", id: null });
       const sel = $("chat-adapter") as HTMLSelectElement | null;
       if (sel) sel.value = "";
-      renderAdaptersBody(state, send);
+      renderAdaptersBody(state, send, api);
     };
   });
   body.querySelectorAll<HTMLInputElement>(".ad-stack-pick").forEach((chk) => {
     chk.onchange = () => {
       const id = chk.dataset.id!;
       if (chk.checked) state.stackPicks.add(id); else state.stackPicks.delete(id);
-      renderAdaptersBody(state, send);
+      renderAdaptersBody(state, send, api);
     };
   });
   const apply = $("ad-stack-apply") as HTMLButtonElement | null;
   if (apply) apply.onclick = () => {
-    if (state.stackPicks.size < 2) { toast("stack needs at least two ticked adapters", "err"); return; }
+    if (state.stackPicks.size < 2) { toast("Tick at least two mounted adapters to stack them.", "err"); return; }
     const spec = [...state.stackPicks].join("+");
     state.selectedSpec = spec;
     send({ type: "set_adapter", id: spec });
     const sel = $("chat-adapter") as HTMLSelectElement | null;
     if (sel) sel.value = ""; // composite spec has no matching single <option>
-    toast("stacked " + spec + " — new turns start a fresh KV segment", "ok");
-    renderAdaptersBody(state, send);
+    toast("Stacked " + spec + ". New turns start a fresh KV cache segment.", "ok");
+    renderAdaptersBody(state, send, api);
   };
   const clear = $("ad-stack-clear") as HTMLButtonElement | null;
-  if (clear) clear.onclick = () => { state.stackPicks.clear(); renderAdaptersBody(state, send); };
+  if (clear) clear.onclick = () => { state.stackPicks.clear(); renderAdaptersBody(state, send, api); };
 }
 
-function openPanel(state: AdaptersPanelState, send: Send): void {
-  const ov = $("adapters-overlay");
-  ov.classList.add("open");
-  $("adapters-manage").setAttribute("aria-expanded", "true");
+function openPanel(state: AdaptersPanelState, send: Send, api: Api): void {
   if (trap) trap.capture();
-  refreshAdaptersPanel(state, send);
+  $("adapters-overlay").classList.add("open");
+  $("adapters-manage").setAttribute("aria-expanded", "true");
+  $("adapters-close")?.focus();
+  void refreshAdaptersPanel(state, send, api);
 }
 export function closeAdaptersPanel(): void {
   $("adapters-overlay").classList.remove("open");
@@ -272,14 +245,12 @@ export function closeAdaptersPanel(): void {
   if (trap) trap.restore();
 }
 
-/** Wire the ⚙ button + overlay close affordances. Escape is handled by the
- *  global closeTopOverlay sweep in shell.ts (one mechanism, not a bespoke
- *  listener per overlay — same pattern as the HF modal / sampling popover). */
-export function initAdaptersPanel(state: AdaptersPanelState, send: Send): void {
+/** Wires the adapters button and the table's close controls. Escape closes it through the host's sweep. */
+export function initAdaptersPanel(state: AdaptersPanelState, send: Send, api: Api): void {
   const btn = $("adapters-manage");
   if (!btn) return;
   trap = trapFocus($("adapters-panel"), () => $("adapters-overlay").classList.contains("open"));
-  btn.onclick = () => openPanel(state, send);
+  btn.onclick = () => openPanel(state, send, api);
   const close = $("adapters-close");
   if (close) close.onclick = closeAdaptersPanel;
   $("adapters-overlay").addEventListener("click", (e) => { if (e.target === $("adapters-overlay")) closeAdaptersPanel(); });

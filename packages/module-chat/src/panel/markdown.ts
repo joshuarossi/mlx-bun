@@ -121,8 +121,8 @@ export function mdCodeBlock(lang: string, code: string): string {
  *  `mem-body`) whose innerHTML gets replaced/extended repeatedly; delegation
  *  means newly rendered codeblocks are wired for free, no per-render
  *  re-attachment needed. Copy-button wiring already lives inline in
- *  chat.ts's own delegated listener — this function only owns the Canvas
- *  toggle so it can be shared between chat.ts and memory-panel.ts without
+ *  the chat controller's own delegated listener — this function only owns the Canvas
+ *  toggle so it can be shared between the chat thread and other views without
  *  duplicating the Copy logic in two places. */
 export function wireCanvasToggle(container: HTMLElement): void {
   container.addEventListener("click", (e) => {
@@ -140,7 +140,7 @@ export function wireCanvasToggle(container: HTMLElement): void {
  *  `container` — NOT by fence content, since two identical fences would
  *  collide on a content key and streamed text can still be mutating right
  *  up to the caller's re-render. Positional index is stable across a
- *  finishStreaming-style "replace innerHTML with a fresh render of the
+ *  settleTurn-style "replace innerHTML with a fresh render of the
  *  same final text" pass because mdToHtml walks the same fences in the
  *  same order both times. Returns an empty array cheaply when nothing is
  *  in Preview (the common case) — callers should skip the restore pass
@@ -213,10 +213,10 @@ function setCanvasView(block: HTMLElement, view: "preview" | "source"): void {
 /* ────────────────────────────────────────────────────────────────────
    CHAT-WITH-FILES RAG v1 — [n] citation markers (`02d723a:docs/design/web-chat-redesign.md`
    Appendix A, beat-matrix Axis 5): when a turn's prompt carried retrieved chunks
-   (composer.ts's buildMessageText, retrieval-mode branch), the model is
+   (composer/attachments.ts's buildMessageText, retrieval-mode branch), the model is
    asked to cite them inline as `[n]`. This turns each SURVIVING `[n]`
    marker in the assistant's rendered HTML into a clickable superscript
-   link that expands/scrolls the Sources panel (chat.ts) — but ONLY when a
+   link that expands/scrolls the Sources panel (turn.ts) — but ONLY when a
    citation map for that exact n was actually attached to this message
    (never linkify `[n]` in an ordinary reply, e.g. "see note [1] below" in
    a message with no attachments at all — that would be a false citation).
@@ -367,8 +367,8 @@ export function mdToHtml(src: unknown): string {
    complete. We guarantee this by (a) never touching a block's DOM once
    it's marked done, using the same mdToHtml on that exact substring
    that a full pass would have used, and (b) doing one full non-
-   memoized mdToHtml(fullText) pass at turn-end (see finishStreaming in
-   chat.ts) to paper over any edge case where incremental block splitting
+   memoized mdToHtml(fullText) pass at turn-end (see settleTurn in
+   turn.ts) to paper over any edge case where incremental block splitting
    disagrees with whole-text parsing (e.g. a list that only "closes"
    because a later blank line arrives, or a paragraph the tail-block
    join glued differently than the full parse would). That final pass
@@ -489,11 +489,11 @@ export function renderBlocksIncremental(container: HTMLElement, text: string, st
         (the live streaming tail is never highlighted — that would mean
         re-highlighting on every token, the same O(n^2) shape the block-
         memoization pass just fixed).
-     2. finishStreaming() in chat.ts, the end-of-turn full mdToHtml pass
+     2. settleTurn() in turn.ts, the end-of-turn full mdToHtml pass
         (ground truth — catches any block whose "done" transition happened
         without a fresh render, e.g. the last block if it ends exactly on
         a blank line).
-     3. renderAssistantStatic() in chat.ts, for replayed history.
+     3. addAssistantMessage() in history.ts, for replayed history.
    Idempotent via hljs's own `data-highlighted` marker (set on the <code>
    element after its first highlightElement() call) — highlightElement()
    itself throws "Element previously highlighted" if called twice on the

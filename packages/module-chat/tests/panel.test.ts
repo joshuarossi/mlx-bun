@@ -1,16 +1,22 @@
 // DOM-level tests of the chat panel's browser code (`src/panel/*`): the markdown renderer's streaming parity with a
 // one-shot render, the turn lifecycle through the real element, the composer's queue, attachments, mention picker
 // and adapter table, chat-with-files retrieval, the assistant's snapshot and spotlight resolution, and the route
-// catalog. Model-free and server-free: no socket, no fetch to a real server (fetch is stubbed per test where the
-// panel's `api()` is exercised). happy-dom provides document and window (see ./dom-setup.ts, imported first for its
-// side effect of installing globals before any panel module runs).
+// catalog. Model-free and server-free: happy-dom provides document and window (see ./dom-setup.ts, imported first for
+// its side effect of installing globals before any panel module runs), and the lifecycle tests run the element on the
+// web kit's `FakeWebSocket` and `fakeFetch` (`@mlx-bun/web-kit/testing`) with requestAnimationFrame captured and, where
+// a reconnect is timed, Bun's fake timers.
+//
+// Heartbeat: the chat socket has no client-side heartbeat or keep-alive. A server that goes away shows up as the
+// socket's own close, which the session reports and reconnects from; the lifecycle suite's last test pins that nothing
+// is sent on a timer. (The job and metrics event streams' keep-alive comments are the kit's `openEventStream` concern.)
 import "./dom-setup";
-import { describe, expect, it, beforeEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import { FakeWebSocket, fakeFetch, installFakes } from "@mlx-bun/web-kit/testing";
 import {
   captureCanvasViewStates, highlightIn, isCanvasFence, linkifyCitations, makeFrameScheduler, mdCodeBlock, mdToHtml,
   renderBlocksIncremental, restoreCanvasViewStates, splitBlocks, wireCanvasToggle, type BlockState,
 } from "../src/panel/markdown";
-import { api } from "../src/panel/dom";
+import { createApi } from "@mlx-bun/web-kit";
 import { renderQueue } from "../src/panel/composer";
 import { renderAdapterOptionsHtml, type AdapterInfo } from "../src/panel/composer";
 import {
@@ -18,7 +24,7 @@ import {
   renderMentionListHtml, type Attachment, type MentionItem, type MentionQuery,
 } from "../src/panel/composer";
 import { buildMessageText, ComposerState } from "../src/panel/composer";
-import { renderSourcesHtml } from "../src/panel/chat";
+import { renderSourcesHtml } from "../src/panel/turn";
 import "../src/panel";
 import {
   AdaptersPanelState, renderAdapterRow, renderAdaptersBodyHtml,
@@ -62,8 +68,8 @@ describe("streaming parity: renderBlocksIncremental vs one-shot mdToHtml", () =>
       for (let i = 1; i <= fullText.length; i++) {
         renderBlocksIncremental(container, fullText.slice(0, i), state);
       }
-      // Final full non-memoized pass — same as finishStreaming() in
-      // chat.ts (the acceptance test the design doc calls the "ground
+      // Final full non-memoized pass — same as settleTurn() in
+      // turn.ts (the acceptance test the design doc calls the "ground
       // truth"). The INVARIANT under test is actually stronger than "the
       // final state matches": the incremental container's rendered HTML,
       // right before any final pass, must already equal a one-shot
@@ -84,7 +90,7 @@ describe("streaming parity: renderBlocksIncremental vs one-shot mdToHtml", () =>
       // after the same HTML-serialization normalization (e.g. boolean
       // attributes like `disabled`/`checked` round-trip as `disabled=""`
       // in some engines) — the real invariant is "same DOM," not
-      // "identical source string," and finishStreaming() in chat.ts does
+      // "identical source string," and settleTurn() in turn.ts does
       // exactly this same innerHTML-assignment for its ground-truth pass.
       const oneShotContainer = document.createElement("div");
       oneShotContainer.innerHTML = mdToHtml(fullText);
@@ -118,61 +124,228 @@ describe("streaming parity: renderBlocksIncremental vs one-shot mdToHtml", () =>
 });
 
 describe("chat turn rendering lifecycle", () => {
-  it("finishes a turn before its queued frame render without touching cleared state", async () => {
+  // The real <mlx-chat-panel> on the kit's fake socket and fetch, with requestAnimationFrame captured so each test
+  // decides when the streamed text renders. The chat socket has no client-side heartbeat: a dropped server shows up
+  // as the socket's own close, which the session reports and reconnects from (the last test pins that no ping or
+  // timer-driven frame is ever sent).
+  type Panel = HTMLElement & { enter(): void; leave(): void };
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  let frames: FrameRequestCallback[] = [];
+  let restoreFakes: () => void = () => {};
+  const flushFrames = () => { for (const callback of frames.splice(0)) callback(performance.now()); };
+  const byId = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+  const send = () => byId<HTMLButtonElement>("chat-send"), stop = () => byId("chat-stop");
+  const section = () => byId("s-chat");
+
+  beforeEach(() => {
     document.body.innerHTML = '<div id="toasts"></div><section data-route="chat" id="s-chat" class="active"></section>';
     localStorage.clear();
+    FakeWebSocket.reset();
+    frames = [];
+    restoreFakes = installFakes({ WebSocket: FakeWebSocket, fetch: fakeFetch({ "/v1/adapters/available": { ok: true, adapters: [] } }) });
+    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => frames.push(callback)) as typeof requestAnimationFrame;
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    document.body.innerHTML = ""; // the panel leaves the document: it closes its socket and listeners
+    restoreFakes();
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+  });
 
-    class FakeWebSocket {
-      static last: FakeWebSocket | null = null;
-      readyState = 0;
-      onopen: ((event: Event) => void) | null = null;
-      onclose: ((event: Event) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onmessage: ((event: MessageEvent) => void) | null = null;
+  /** Attaches the panel as the shell does (append, then enter) and opens its socket. */
+  function mount(): { panel: Panel; socket: FakeWebSocket } {
+    const panel = document.createElement("mlx-chat-panel") as Panel;
+    section().append(panel);
+    panel.enter();
+    const socket = FakeWebSocket.last()!;
+    expect(socket.url).toEndWith("/ws/chat");
+    socket.open();
+    return { panel, socket };
+  }
+  const ready = { type: "ready", model: "mlx-community/Test-4bit", vision: false, audio: false, thinking: true, genDefaults: { temperature: null, topP: null, topK: null } };
+  /** The composer is usable: Send shown and enabled, Stop hidden, no streaming cursor, no queue. */
+  function expectComposerReady(): void {
+    expect(send().disabled).toBe(false);
+    expect(send().style.display).toBe("");
+    expect(stop().style.display).toBe("none");
+    expect(document.querySelector("#chat-thread .cursor")).toBeNull();
+    expect(byId("chat-queue").textContent).toBe("");
+  }
 
-      constructor(readonly url: string) { FakeWebSocket.last = this; }
-      send(_data: string): void {}
-      emit(value: unknown): void {
-        this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
-      }
-      open(): void {
-        this.readyState = 1;
-        this.onopen?.(new Event("open"));
-      }
+  it("finishes a turn before its queued frame render without touching cleared state", () => {
+    const { socket } = mount();
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "A normal streamed answer." });
+    socket.emit({ type: "turn_end", lane: "batched" });
+
+    expect(() => flushFrames()).not.toThrow();
+    expect(document.querySelector(".msg.assistant .atext")?.textContent).toBe("A normal streamed answer.");
+    expect(send().disabled).toBe(false);
+  });
+
+  it("normal completion: the settled reply equals a one-shot render, with its tool card, actions and meta line", () => {
+    const { socket } = mount();
+    socket.emit(ready);
+    socket.emit({ type: "turn_start" });
+    expect(stop().style.display).toBe("");
+    expect(send().disabled).toBe(true);
+    socket.emit({ type: "thinking_delta", delta: "Check the " });
+    socket.emit({ type: "thinking_delta", delta: "library first." });
+    const reply = "Three models fit:\n\n- **Qwen3** 27B\n- gemma 12B\n\n| model | GB |\n| - | - |\n| Qwen3 | 12.3 |\n\n```sh\nmlx-bun ls\n```\n\nDone.";
+    for (const delta of reply.match(/[\s\S]{1,5}/g)!) socket.emit({ type: "text_delta", delta });
+    expect(document.querySelector("#chat-thread .cursor")).not.toBeNull();
+    flushFrames(); // the incremental render, mid-stream
+    expect(document.querySelector(".msg.assistant .atext .md-block")).not.toBeNull();
+    socket.emit({ type: "tool_start", callId: "t1", tool: "bash", args: { command: "mlx-bun ls" } });
+    socket.emit({ type: "tool_update", callId: "t1", chunk: "Qwen3\n" });
+    socket.emit({ type: "tool_end", callId: "t1", ok: true, result: "Qwen3\ngemma" });
+    const card = document.querySelector<HTMLElement>("#chat-thread .tool")!;
+    expect(card.classList.contains("ok")).toBe(true);
+    expect(card.querySelector(".tname")!.textContent).toBe("bash");
+    expect(card.querySelector(".slabel")!.textContent).toBe("Done");
+    expect(card.querySelector(".tbody .ares")!.textContent).toBe("Qwen3\ngemma");
+    card.querySelector<HTMLButtonElement>(".thead")!.click();
+    expect(card.classList.contains("open")).toBe(true);
+    socket.emit({ type: "turn_end" });
+    flushFrames(); // a frame queued before the end must not overwrite the settled render
+
+    const message = document.querySelector<HTMLElement>(".msg.assistant")!;
+    const oneShot = document.createElement("div");
+    oneShot.innerHTML = mdToHtml(reply);
+    expect(message.querySelector(".atext")!.innerHTML).toBe(oneShot.innerHTML);
+    expect(message.querySelector(".thinkbody")!.textContent).toBe("Check the library first.");
+    expect(message.querySelector(".thinkbox")!.classList.contains("live")).toBe(false);
+    expectComposerReady();
+    expect([...message.querySelectorAll(".msg-actions .maction")].map(button => button.textContent)).toEqual(["Copy", "Regenerate"]);
+    expect(message.querySelector(".meta")!.textContent).toMatch(/tok\/s · \d+ tokens · first token/);
+    expect(byId("pf-tps").textContent).toContain("tok/s");
+  });
+
+  it("cancellation: Stop sends abort and hides at once; the partial reply keeps its actions when the turn ends", () => {
+    const { socket } = mount();
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "A partial " });
+    socket.emit({ type: "text_delta", delta: "answer" });
+    stop().click();
+    expect(socket.sentOfType("abort")).toEqual([{ type: "abort" }]);
+    expect(stop().style.display).toBe("none");
+    expect(send().style.display).toBe("");
+    expect(send().disabled).toBe(true); // until the server confirms the end
+    socket.emit({ type: "turn_end" });
+    flushFrames();
+    const message = document.querySelector<HTMLElement>(".msg.assistant")!;
+    expect(message.querySelector(".atext")!.textContent).toBe("A partial answer");
+    expect(message.querySelector(".msg-actions")).not.toBeNull();
+    expectComposerReady();
+  });
+
+  it("upstream failure: an error frame mid-turn shows the error, clears the turn, and a later prompt sends", () => {
+    const { socket } = mount();
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "Half an answer" });
+    socket.emit({ type: "error", message: "The model worker exited." });
+    expect(document.querySelector("#chat-thread .agent-error")!.textContent).toContain("The model worker exited.");
+    expect(byId("toasts").textContent).toContain("The model worker exited.");
+    expectComposerReady();
+    expect(document.querySelector(".msg.assistant .atext")!.textContent).toBe("Half an answer"); // what streamed stays
+
+    const box = byId<HTMLTextAreaElement>("chat-box");
+    box.value = "Try again";
+    send().click();
+    expect(socket.sentOfType("prompt").at(-1)).toEqual({ type: "prompt", text: "Try again" });
+    expect(document.querySelector(".msg.user:last-of-type .msg-text")!.textContent).toBe("Try again");
+  });
+
+  it("client disconnect mid-turn: the reply settles, the composer frees, reconnects wait for the page, and the chat resumes", () => {
+    jest.useFakeTimers();
+    const { panel, socket } = mount();
+    socket.emit(ready);
+    socket.emit({ type: "sessions", items: [{ path: "/s/trip.jsonl", id: "a", title: "Trip", modified: Date.now(), messageCount: 2, forked: false }], activePath: "/s/trip.jsonl" });
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "Lisbon in three days" });
+
+    socket.drop();
+    expect(byId("chat-status-line").textContent).toContain("Reconnecting");
+    expectComposerReady();
+    const partial = document.querySelector<HTMLElement>(".msg.assistant")!;
+    expect(partial.querySelector(".atext")!.textContent).toBe("Lisbon in three days");
+    expect(partial.querySelector(".meta")!.textContent).toContain("connection dropped");
+
+    // The page is showing: one reconnect after the delay, and its `ready` reopens the chat and re-asserts the settings.
+    jest.advanceTimersByTime(2199);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const second = FakeWebSocket.last()!;
+    second.open();
+    expect(byId("chat-status-line").textContent).toContain("Connected");
+    second.emit(ready);
+    expect(second.sentOfType("open_session")).toEqual([{ type: "open_session", path: "/s/trip.jsonl" }]);
+    expect(second.sentOfType("set_coding_tools")).toEqual([{ type: "set_coding_tools", enabled: false }]);
+    const order = second.sent.map(frame => (frame as { type: string }).type);
+    expect(order.indexOf("open_session")).toBeGreaterThan(order.indexOf("set_coding_tools"));
+
+    // Another page is showing: a drop schedules nothing until the chat is entered again.
+    section().classList.remove("active");
+    panel.leave();
+    second.drop();
+    jest.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    section().classList.add("active");
+    panel.enter();
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
+  it("resource cleanup: one live socket across reconnects, one set_coding_tools per ready, and a superseded socket's late frames are ignored", () => {
+    jest.useFakeTimers();
+    const { socket: first } = mount();
+    first.emit(ready);
+    expect(first.sentOfType("set_coding_tools")).toHaveLength(1);
+
+    // A served-model change reconnects at once (no turn in flight).
+    window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: "mlx-community/Other-4bit" }));
+    expect(first.closedByClient).toBe(true);
+    expect(FakeWebSocket.live).toHaveLength(1);
+    const second = FakeWebSocket.last()!;
+    second.open();
+    second.emit(ready);
+    expect(second.sentOfType("set_coding_tools")).toHaveLength(1);
+
+    // The server drops the second; the reconnect timer opens a third.
+    second.drop();
+    jest.advanceTimersByTime(2200);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    expect(FakeWebSocket.live).toHaveLength(1);
+    const third = FakeWebSocket.last()!;
+    third.open();
+    third.emit(ready);
+    expect(FakeWebSocket.instances.map(item => item.sentOfType("set_coding_tools").length)).toEqual([1, 1, 1]);
+
+    // Late frames from either superseded socket reach nothing.
+    for (const stale of [first, second]) {
+      stale.readyState = 1;
+      stale.emit({ type: "turn_start" });
+      stale.emit({ type: "text_delta", delta: "ghost" });
     }
+    expect(document.querySelectorAll(".msg.assistant")).toHaveLength(0);
+    expectComposerReady();
 
-    const originalFetch = globalThis.fetch;
-    const originalWebSocket = globalThis.WebSocket;
-    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
-    const pendingFrames: FrameRequestCallback[] = [];
-    globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
-    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
-      pendingFrames.push(callback);
-      return pendingFrames.length;
-    }) as typeof requestAnimationFrame;
-    try {
-      // The panel element is the page: attaching it renders its markup and wires the controller; the shell then enters it.
-      const panel = document.createElement("mlx-chat-panel") as HTMLElement & { enter(): void };
-      document.querySelector("#s-chat")!.append(panel);
-      panel.enter();
-      const socket = FakeWebSocket.last;
-      expect(socket).not.toBeNull();
-      socket!.open();
-      socket!.emit({ type: "turn_start" });
-      socket!.emit({ type: "text_delta", delta: "A normal streamed answer." });
-      socket!.emit({ type: "turn_end", lane: "batched" });
+    // A model change mid-turn does not reconnect under the turn.
+    third.emit({ type: "turn_start" });
+    window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: "mlx-community/Third-4bit" }));
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    third.emit({ type: "turn_end" });
+  });
 
-      expect(() => {
-        for (const callback of pendingFrames) callback(performance.now());
-      }).not.toThrow();
-      expect(document.querySelector(".msg.assistant .atext")?.textContent).toBe("A normal streamed answer.");
-      expect((document.getElementById("chat-send") as HTMLButtonElement).disabled).toBe(false);
-    } finally {
-      globalThis.fetch = originalFetch;
-      globalThis.WebSocket = originalWebSocket;
-      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
-    }
+  it("heartbeat: the chat socket sends nothing on a timer and stays the one connection while idle", () => {
+    jest.useFakeTimers();
+    const { socket } = mount();
+    socket.emit(ready);
+    const sent = socket.sent.length;
+    jest.advanceTimersByTime(10 * 60_000);
+    expect(socket.sent).toHaveLength(sent);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.live).toEqual([socket]);
   });
 });
 
@@ -250,11 +423,11 @@ describe("Canvas v1: fence detection", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Canvas v1 view-state survives finishStreaming's full re-render (review
-   finding, chat.ts finishStreaming): the turn-end pass replaces
+   Canvas v1 view-state survives settleTurn's full re-render (review
+   finding, turn.ts settleTurn): the turn-end pass replaces
    textNode.innerHTML wholesale with a fresh mdToHtml(text), and mdCodeBlock
    always emits qualifying fences back in their default Source view — a
-   user's mid-stream Preview click must not silently revert. chat.ts wires
+   user's mid-stream Preview click must not silently revert. turn.ts wires
    this via captureCanvasViewStates (before the re-render) +
    restoreCanvasViewStates (after).
    ──────────────────────────────────────────────────────────────────── */
@@ -265,7 +438,7 @@ describe("Canvas v1: view state survives a full re-render", () => {
     expect(captureCanvasViewStates(container)).toEqual([]);
   });
 
-  it("restoreCanvasViewStates re-applies Preview after innerHTML is replaced (finishStreaming's exact sequence)", () => {
+  it("restoreCanvasViewStates re-applies Preview after innerHTML is replaced (settleTurn's exact sequence)", () => {
     const container = document.createElement("div");
     const text = "```html\n<p>a</p>\n```\n\n```html\n<p>b</p>\n```\n";
     container.innerHTML = mdToHtml(text);
@@ -275,10 +448,10 @@ describe("Canvas v1: view state survives a full re-render", () => {
     (blocks[1]!.querySelector(".cbview-preview") as HTMLElement).click();
     expect(blocks[1]!.querySelector(".cbview-preview")!.classList.contains("active")).toBe(true);
 
-    // finishStreaming's sequence: capture, replace innerHTML, restore.
+    // settleTurn's sequence: capture, replace innerHTML, restore.
     const previewIdx = captureCanvasViewStates(container);
     expect(previewIdx).toEqual([1]);
-    container.innerHTML = mdToHtml(text); // full non-memoized re-render, same as chat.ts
+    container.innerHTML = mdToHtml(text); // full non-memoized re-render, same as turn.ts
     // Freshly rendered blocks default back to Source (the bug, absent the fix).
     const freshBlocks = container.querySelectorAll(".codeblock.has-canvas");
     expect(freshBlocks[1]!.querySelector(".cbview-preview")!.classList.contains("active")).toBe(false);
@@ -340,11 +513,13 @@ describe("renderQueue array-length semantics", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   (c) api() error-envelope unwrapping (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #4): an
-   OpenAI-style {error:{message}} object must unwrap to a plain string,
-   never surface as "[object Object]".
+   (c) Error-envelope unwrapping in the panel's API client (the kit's
+   createApi over the chat's connection, which replaced the panel's own
+   api() helper): an OpenAI-style {error:{message}} object must unwrap to a
+   plain string, never surface as "[object Object]".
    ──────────────────────────────────────────────────────────────────── */
-describe("api() error-envelope unwrapping", () => {
+describe("the panel's API client: error-envelope unwrapping", () => {
+  const api = (path: string) => createApi("/api/chat").get(path);
   // Each test stubs globalThis.fetch and restores it in a finally block
   // (rather than a shared afterEach) so a thrown assertion still leaves
   // fetch un-clobbered for the next test.
@@ -912,7 +1087,7 @@ describe("rag.ts: toCitations numbering", () => {
   });
 });
 
-describe("Chat-with-files RAG v1: Sources panel rendering (chat.ts)", () => {
+describe("Chat-with-files RAG v1: Sources panel rendering (turn.ts)", () => {
   it("renders nothing for an empty citation list", () => {
     expect(renderSourcesHtml([])).toBe("");
   });
@@ -1167,7 +1342,7 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
   });
 
   // Model-invented inputs must MISS (→ the "couldn't find that on screen"
-  // toast in chat.ts), never throw a SyntaxError through the ws message
+  // toast in app-context.ts), never throw a SyntaxError through the ws message
   // handler (2026-07-07 review finding).
   it("treats an invalid model-invented selector as a miss, not a throw", () => {
     document.body.innerHTML = '<button id="chat-send">Send</button>';

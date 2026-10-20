@@ -1,6 +1,8 @@
 // What the panel takes from the page that hosts it, beyond its connection. Everything is optional: a host
 // with none gets a chat that stands alone (no memory chips, no settings section). The shell sets it as the
-// element's `host` property before the panel attaches.
+// element's `host` property before the panel attaches. The page's `#toasts` container, when it has one, is where
+// the panel's notifications appear.
+import { el } from "@mlx-bun/web-kit";
 
 /** A tool card a host draws in place of the default one (memory's provenance chip). */
 export interface ToolCardHandle {
@@ -25,4 +27,17 @@ export interface ChatHost {
     /** The always-allow list, with the action that forgets one entry. */
     approvals(tools: readonly string[], forget: (tool: string) => void): void;
   };
+}
+
+/** A toast in the host page's `#toasts` container (its live region); a page without one shows none. */
+export function toast(message: string, kind: "" | "ok" | "err" = "", ms = 4200): void {
+  const container = document.getElementById("toasts");
+  if (!container) return;
+  const item = el("div", "toast " + kind, container);
+  item.setAttribute("role", kind === "err" ? "alert" : "status");
+  item.textContent = message;
+  setTimeout(() => {
+    item.classList.add("leaving");
+    setTimeout(() => item.remove(), 240);
+  }, ms);
 }

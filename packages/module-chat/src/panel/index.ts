@@ -1,13 +1,12 @@
 // `<mlx-chat-panel>`: the chat as a workspace panel. It is the product's own page, so the shell gives it the whole
 // page, keeps it attached while another page shows (a turn in flight and the socket survive a visit elsewhere) and
-// tells it when its page is shown (`enter`) and hidden (`leave`). It renders into the light DOM, with its own
-// markup and stylesheet, and takes only its host's design tokens; what lives beside it on the host page (memory's
-// sidebar entry, the settings dialog's agent-tools section) is wired through the `host` property (`ChatHost`).
-// The panel talks to the module's socket (`/ws/chat`) and routes (`/api/sessions/*`, `/api/settings/tool-approvals`),
-// which keep their shipped paths.
-import { createChatController } from "./chat";
-import { exportSession, openSessionRowByPath } from "./sessions";
-import { $, injectStyles, trapFocus, type FocusTrap } from "./dom";
+// tells it when its page is shown (`enter`) and hidden (`leave`). It renders into the light DOM with its own markup
+// and stylesheet over the web kit's tokens and base vocabulary, which the host page links; what lives beside it on
+// the host page (memory's sidebar entry, the settings dialog's agent-tools section) is wired through the `host`
+// property (`ChatHost`). It talks to the module's socket (`/ws/chat`) and routes (`/api/sessions/*`,
+// `/api/settings/tool-approvals`), which keep their shipped root paths on the connection's origin.
+import { $, createApi, injectStyles, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
+import { createChatController, type ChatController } from "./chat";
 import type { ChatHost } from "./host";
 import { closeTopPopover, hasOpenPopover } from "./popovers";
 import { STYLE } from "./style";
@@ -19,10 +18,10 @@ export type { ChatHost, ToolCardHandle } from "./host";
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
 
 class ChatPanel extends Base {
-  /** Set by the shell before the panel attaches; unused (the module's routes keep their shipped paths). */
-  connection: unknown;
+  /** Set by the shell before the panel attaches: the module's API base, whose origin the panel's routes resolve on. */
+  connection: { readonly apiBase?: string } | undefined;
   host: ChatHost | undefined;
-  #controller: ReturnType<typeof createChatController> | undefined;
+  #controller: ChatController | undefined;
   #drawer: FocusTrap | undefined;
 
   connectedCallback() {
@@ -34,10 +33,22 @@ class ChatPanel extends Base {
     $("chat-drawer-backdrop").addEventListener("click", () => this.closeDrawer());
     this.#controller = createChatController({
       host: this.host, element: this,
+      api: createApi(this.connection?.apiBase ?? "/api/chat"),
       isActive: () => !!this.closest("section")?.classList.contains("active"),
       closeDrawer: () => this.closeDrawer(),
     });
     this.#controller.init();
+  }
+
+  /** The shell never detaches a workspace panel; one that leaves the document for good (not a move within one task)
+   * closes its socket and drops its page-level listeners. */
+  disconnectedCallback() {
+    queueMicrotask(() => {
+      if (this.isConnected || !this.#controller) return;
+      this.#controller.dispose();
+      this.#controller = undefined;
+      this.#drawer = undefined;
+    });
   }
 
   /** The chat page is shown: connect if the socket is down, focus the composer, refresh the adapter list. */
@@ -46,40 +57,33 @@ class ChatPanel extends Base {
   leave() { this.#controller?.leave(); }
 
   /** Start a fresh chat (the old one stays on disk). */
-  newChat() { (this.#controller?.newChat as (() => void) | undefined)?.(); }
-  /** Copy the last assistant response, as its own Copy button does. */
-  copyLastResponse() { (this.#controller?.copyLastResponse as (() => void) | undefined)?.(); }
+  newChat() { this.#controller?.newChat(); }
+  /** Copy the last reply, as its own Copy button does. */
+  copyLastResponse() { this.#controller?.copyLastResponse(); }
   /** Ask for (or stop asking for) file-changing tools; applies from the next new, opened or forked chat. */
   setCodingTools(enabled: boolean) { this.#controller?.setCodingTools(enabled); }
   /** Reload the adapter list (a training job finished). */
   refreshAdapters() { this.#controller?.refreshAdapters(); }
   focusComposer() { $("chat-box")?.focus(); }
-  /** Toggle the model's reasoning, as its pill does. */
+  /** Toggle the model's reasoning, as its button does. */
   toggleThinking() { $("chat-think")?.click(); }
 
-  /** The recent chats the sidebar lists (or filters), for the host's palette. */
-  recentChats(): { title: string; path: string }[] {
-    return [...document.querySelectorAll<HTMLElement>("#chat-sessions .sess")].flatMap(row =>
-      row.dataset.path ? [{ title: row.querySelector(".stitle")?.textContent || "New chat", path: row.dataset.path }] : []);
-  }
+  /** The recent chats the sidebar lists, for the host's palette. */
+  recentChats(): { title: string; path: string }[] { return this.#controller?.recentChats() ?? []; }
   /** Open a recent chat by its file path, as clicking its row does; false when the sidebar does not list it. */
-  openSession(path: string): boolean { return openSessionRowByPath(path); }
+  openSession(path: string): boolean { return this.#controller?.openSession(path) ?? false; }
   /** Download the chat the sidebar marks active (Markdown by default); nothing when there is none. */
-  async exportActiveChat(format: "md" | "json" = "md"): Promise<void> {
-    const row = document.querySelector<HTMLElement>("#chat-sessions .sess.active");
-    if (!row || !row.dataset.path) return;
-    await exportSession(row.dataset.path, row.querySelector(".stitle")?.textContent || "chat", format);
-  }
+  async exportActiveChat(format: "md" | "json" = "md"): Promise<void> { await this.#controller?.exportActiveChat(format); }
 
-  /** The mobile drawer: the recent-chats sidebar as a slide-over. */
-  toggleDrawer() { $("chat-sidebar").classList.contains("drawer-open") ? this.closeDrawer() : this.openDrawer(); }
+  /** The narrow-screen drawer: the recent-chats sidebar as a slide-over with a focus trap. */
+  toggleDrawer() { if (this.drawerOpen()) this.closeDrawer(); else this.openDrawer(); }
   openDrawer() {
     if (!this.#drawer) return;
     this.#drawer.capture();
     $("chat-sidebar").classList.add("drawer-open");
     $("chat-drawer-backdrop").classList.add("open");
     this.#drawerTrigger()?.setAttribute("aria-expanded", "true");
-    setTimeout(() => { const search = $("chat-sess-search"); if (search) search.focus(); }, 30);
+    setTimeout(() => { $("chat-sess-search")?.focus(); }, 30);
   }
   closeDrawer() {
     if (!this.#drawer) return;

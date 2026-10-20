@@ -1,532 +1,397 @@
-// The panel's stylesheet, injected once into the page's head. It uses the host page's design tokens (`--ink`, `--dim`,
-// `--hairline`, `--card`, `--blue`, ...) so it follows the theme; the host supplies those and the base element styles.
+// The panel's own rules, injected once into the page's head after the kit's base vocabulary, which the host page links
+// (`.btn`, `.input`, `.select`, `.textarea`, `.tag`, `.dot`, `.notice`, `.empty`, `.skeleton`). Written against the
+// kit's tokens only, so the panel follows the theme. The memory module styles what it draws into the panel (the
+// sidebar entry, the consent card, the provenance chips); these rules only place them.
 export const STYLE = String.raw`
-  /* ── the panel element is the page: sidebar and conversation side by side ── */
-  mlx-chat-panel{display:flex;flex-direction:row;height:100%}
-  /* ── base rules the panel shares with its host page (identical there; a standalone host has only these) ── */
-  .grad{background-clip:text;-webkit-background-clip:text;color:transparent}
-  .g-hero{background-image:linear-gradient(96deg,var(--orange) 0%,var(--pink) 30%,var(--purple) 62%,var(--blue) 100%)}
-  .pill{display:inline-flex;align-items:center;gap:8px;
-      border:1px solid var(--hairline);border-radius:999px;padding:6px 13px;
-      font-size:12.5px;font-weight:600;color:var(--dim);letter-spacing:.01em;white-space:nowrap}
-  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);
-      box-shadow:0 0 0 transparent;transition:all .4s}
-  .pill.ok .dot{background:var(--green);box-shadow:0 0 11px var(--green)}
-  .pill.ok{color:var(--ink)}
-  .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
-  .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
-  .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:300px;
-      max-height:min(70vh,560px);overflow-y:auto;
-      background:var(--popover-panel);border:1px solid var(--hairline);border-radius:13px;padding:13px 14px;
-      backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
-      box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;
-      transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
-  .samplepop.open{display:block;transform:translateY(0);opacity:1}
-  .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
-      text-transform:uppercase;margin:0}
-  .mem-head{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--hairline-soft);flex:0 0 auto}
-  .mem-head h2{font-size:16px;font-weight:700;letter-spacing:-.01em;flex:1 1 auto}
-  .mem-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:15px;
-      width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s;flex:0 0 auto}
-  .mem-close:hover{color:var(--ink);background:var(--card-hover)}
-  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-  /* ── chat ── */
-  #chat-think{display:none;cursor:pointer;gap:7px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
-      transition:color .22s var(--ease),border-color .22s var(--ease)}
-  #chat-think .dot{width:7px;height:7px}
-  #chat-think:hover{border-color:var(--hairline-strong)}
-  #chat-think.think-on{color:var(--ink)}
-  #chat-think.think-on .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
-  /* sampling disclosure: a small pill that opens a popover above the composer */
-  #chat-sampling-wrap{position:relative;display:inline-flex}
-  #chat-sampling{cursor:pointer;gap:6px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
-      transition:color .22s var(--ease),border-color .22s var(--ease)}
-  #chat-sampling:hover{border-color:var(--hairline-strong);color:var(--ink)}
-  #chat-sampling.on{color:var(--ink);border-color:var(--hairline-strong)}
-  #chat-sampling.dirty .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
-  /* Distinct one-shot-armed dot state (task brief item 2) — orange/amber
-       reads as "temporary/pending" against the plain blue "overridden"
-       state, matching the same semantic the orange dot already carries
-       elsewhere (.pill.warn) rather than inventing a new color meaning. */
-  #chat-sampling.armed .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:pulse-armed 1.6s var(--ease) infinite}
-  @media (prefers-reduced-motion:reduce){#chat-sampling.armed .dot{animation:none}}
-  @keyframes pulse-armed{0%,100%{opacity:1}50%{opacity:.45}}
-  #chat-sampling .dot{width:7px;height:7px}
-  .samp-head-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}
-  .samp-oneshot-chip{font:10.5px/1 var(--mono);color:var(--orange);background:rgba(255,159,10,.12);
-      border:1px solid rgba(255,159,10,.3);border-radius:999px;padding:3px 8px;letter-spacing:.01em;white-space:nowrap}
-  .samp-scope-row{display:flex;align-items:center;gap:9px;margin:0 0 12px;padding-bottom:11px;border-bottom:1px solid var(--hairline-soft)}
-  .samp-scope-row label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
-  .samp-scope-row select{flex:1 1 auto;background:var(--card);border:1px solid var(--hairline);border-radius:7px;
-      color:var(--ink);font-size:12px;padding:5px 8px;cursor:pointer;appearance:none;-webkit-appearance:none;
-      transition:border-color .18s var(--ease)}
-  .samp-scope-row select:hover,.samp-scope-row select:focus{border-color:var(--hairline-strong)}
-  .samprow{display:flex;align-items:center;gap:9px;margin:0 0 11px}
-  .samprow label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
-  .samprow input[type=range]{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:4px;margin:0;
-      border-radius:3px;background:rgba(255,255,255,.15);outline:none;cursor:pointer}
-  .samprow input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:15px;height:15px;
-      border-radius:50%;background:var(--ink);border:0;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer;
-      transition:background .15s var(--ease)}
-  .samprow input[type=range]:hover::-webkit-slider-thumb,
-    .samprow input[type=range]:focus::-webkit-slider-thumb{background:var(--blue)}
-  .samp-val{width:40px;flex:0 0 auto;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink)}
-  .samp-val.auto{color:var(--dimmer)}
-  .samp-num{width:74px;flex:0 0 auto;text-align:right;background:var(--card);border:1px solid var(--hairline);
-      border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:11.5px;padding:3px 6px}
-  .samp-num.auto{color:var(--dimmer)}
-  .samppop-foot{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
-  .samppop-foot .note{font-size:10.5px;color:var(--dimmer);line-height:1.3;flex:1 1 auto;padding-right:8px}
-  .samppop-foot button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
-      color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;flex:0 0 auto;
-      transition:color .18s var(--ease),border-color .18s var(--ease)}
-  .samppop-foot button:hover{color:var(--ink);border-color:var(--hairline-strong)}
-  /* Advanced sampling disclosure — collapsed by default, same visual language
-       as the primary rows so it doesn't read as a separate control system. */
-  .samp-adv{margin:2px 0 12px}
-  .samp-adv > summary{cursor:pointer;font-size:11.5px;font-weight:600;color:var(--dim);letter-spacing:.02em;
-      text-transform:uppercase;list-style:none;padding:2px 0 8px;user-select:none;-webkit-user-select:none}
-  .samp-adv > summary::-webkit-details-marker{display:none}
-  .samp-adv > summary::before{content:"▸ ";display:inline-block;transition:transform .15s var(--ease)}
-  .samp-adv[open] > summary::before{transform:rotate(90deg)}
-  .samp-adv > summary:hover{color:var(--ink)}
-  .samp-adv .seed-row{display:flex;align-items:center;gap:9px;margin:0 0 4px}
-  .samp-adv .seed-row label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
-  .samp-adv .seed-row input[type=text]{flex:1 1 auto;background:var(--card);border:1px solid var(--hairline);
-      border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:12px;padding:5px 8px}
-  .samp-adv .seed-row input[type=text]::placeholder{color:var(--dimmer)}
-  /* System prompt pill + popover — same chrome as
-       #chat-sampling-wrap/.samplepop, just to its left in the hint row. */
-  #chat-sysprompt-wrap{position:relative;display:inline-flex}
-  #chat-sysprompt{cursor:pointer;gap:6px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
-      transition:color .22s var(--ease),border-color .22s var(--ease)}
-  #chat-sysprompt:hover{border-color:var(--hairline-strong);color:var(--ink)}
-  #chat-sysprompt.on{color:var(--ink);border-color:var(--hairline-strong)}
-  #chat-sysprompt.dirty .dot{background:var(--purple);box-shadow:0 0 11px var(--purple)}
-  #chat-sysprompt .dot{width:7px;height:7px}
-  .sysprompt-pop{width:320px}
-  #sysprompt-text{width:100%;resize:vertical;min-height:80px;background:var(--card);
-      border:1px solid var(--hairline);border-radius:9px;color:var(--ink);
-      font:12.5px/1.5 inherit;padding:9px 10px;margin:0 0 6px}
-  #sysprompt-text::placeholder{color:var(--dimmer)}
-  #sysprompt-text:focus{outline:none;border-color:var(--hairline-strong)}
-  .sysprompt-foot-row{display:flex;justify-content:space-between;align-items:center;margin:0 0 10px}
-  .sysprompt-foot-row .note{font-size:10.5px;color:var(--dimmer)}
-  .sysprompt-foot-row button,.sysprompt-preset-row button{appearance:none;cursor:pointer;background:var(--card);
-      border:1px solid var(--hairline);color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;
-      font-weight:600;flex:0 0 auto;transition:color .18s var(--ease),border-color .18s var(--ease)}
-  .sysprompt-foot-row button:hover,.sysprompt-preset-row button:hover{color:var(--ink);border-color:var(--hairline-strong)}
-  .sysprompt-presets{margin-top:12px;padding-top:12px;border-top:1px solid var(--hairline-soft)}
-  .sysprompt-preset-row{display:flex;align-items:center;gap:6px;margin:0 0 6px}
-  #sysprompt-preset-select{flex:1 1 auto;min-width:0;max-width:none;appearance:none;-webkit-appearance:none;
-      cursor:pointer;background:var(--card);text-overflow:ellipsis}
-  /* ─── Adapter routing table — same right-side
-       overlay/panel/head/body chrome as the Memory panel (mem-overlay/
-       mem-panel/mem-head/mem-body), new top-level ids since it's a distinct
-       panel opened from the composer instead of the sidebar. ─── */
-  #adapters-overlay{position:fixed;inset:var(--nav-h) 0 0 0;z-index:150;display:none;justify-content:flex-end;
-      background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
-  #adapters-overlay.open{display:flex;animation:fade .22s var(--ease)}
-  #adapters-panel{width:min(520px,100%);height:100%;background:var(--overlay-panel);border-left:1px solid var(--hairline);
-      display:flex;flex-direction:column;box-shadow:-24px 0 60px rgba(0,0,0,.4)}
-  #adapters-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 24px}
-  .ad-empty{text-align:center;color:var(--dim);padding:50px 18px;font-size:13.5px;line-height:1.6}
-  .ad-sec-title{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin:0 0 9px}
-  .ad-note{font-size:11.5px;color:var(--dim);line-height:1.5;margin:0 0 16px}
-  .ad-row{display:flex;align-items:flex-start;gap:11px;padding:11px 12px;border-radius:12px;
-      border:1px solid var(--hairline-soft);margin-bottom:9px;transition:border-color .15s var(--ease)}
-  .ad-row.incompatible{opacity:.55}
-  .ad-row.selected{border-color:rgba(10,132,255,.5);background:rgba(10,132,255,.06)}
-  .ad-row-main{flex:1 1 auto;min-width:0}
-  .ad-row-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .ad-row-id{font-size:13.5px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ad-badge{font:10.5px var(--mono);letter-spacing:.02em;padding:2px 8px;border-radius:999px;border:1px solid var(--hairline);color:var(--dim);white-space:nowrap}
-  .ad-badge.mounted{color:var(--green);border-color:rgba(48,209,88,.4)}
-  .ad-badge.selected{color:var(--blue);border-color:rgba(10,132,255,.4)}
-  .ad-meta{font-size:11.5px;color:var(--dimmer);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap}
-  .ad-meta b{color:var(--dim);font-weight:600;font-variant-numeric:tabular-nums}
-  .ad-why{font-size:11px;color:var(--dimmer);margin-top:4px;font-style:italic}
-  .ad-actions{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap;align-items:center}
-  .ad-actions button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
-      color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;white-space:nowrap;
-      transition:color .18s var(--ease),border-color .18s var(--ease),background .18s var(--ease)}
-  .ad-actions button:hover:not(:disabled){color:var(--ink);border-color:var(--hairline-strong)}
-  .ad-actions button:disabled{opacity:.4;cursor:default}
-  .ad-actions button.primary{color:var(--ink);border-color:rgba(10,132,255,.5);background:rgba(10,132,255,.1)}
-  .ad-actions label.ad-stack-chk{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dimmer);cursor:pointer;white-space:nowrap}
-  .ad-actions label.ad-stack-chk input{width:auto;margin:0;accent-color:var(--blue)}
-  .ad-stack-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;
-      background:var(--card);border:1px solid var(--hairline);margin-bottom:14px}
-  .ad-stack-bar .lbl{font-size:11.5px;color:var(--dim);flex:0 0 auto}
-  .ad-stack-bar .expr{font:12px var(--mono);color:var(--ink);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* App-aware assistant spotlight ('02d723a:docs/design/web-chat-redesign.md' Appendix A,
-       beat-matrix Axis 12) — NEVER-HIJACK overlay: pointer-events:none on the whole thing (the
-       highlighted control stays clickable straight through the ring/popover),
-       no focus trap, transform/opacity-only animation, auto-dismiss handled
-       in assistant.ts. Positioned in fixed viewport coordinates by JS
-       (getBoundingClientRect of the target), not CSS layout. */
-  #assistant-spotlight{position:fixed;inset:0;z-index:95;pointer-events:none;
-      opacity:0;transform:scale(.98);transition:opacity .22s var(--ease),transform .22s var(--ease)}
-  #assistant-spotlight.show{opacity:1;transform:none}
-  #assistant-spotlight .asr-ring{position:fixed;border-radius:12px;
-      box-shadow:0 0 0 3px var(--blue),0 0 0 9999px rgba(0,0,0,.32),0 0 24px rgba(10,132,255,.5);
-      transition:left .22s var(--ease),top .22s var(--ease),width .22s var(--ease),height .22s var(--ease)}
-  #assistant-spotlight .asr-pop{position:fixed;max-width:min(320px,80vw);background:var(--overlay-panel);
-      backdrop-filter:blur(20px);border:1px solid var(--hairline);border-radius:12px;padding:10px 14px;
-      font-size:13px;line-height:1.4;box-shadow:0 16px 50px rgba(0,0,0,.35)}
-  @media (prefers-reduced-motion:reduce){
-      #assistant-spotlight{transition:opacity .01ms;transform:none}
-      #assistant-spotlight .asr-ring{transition:none}
-    }
-  /* ═══════════════════ CHAT ═══════════════════ */
-  #chat-main{flex:1;min-width:0;display:flex;flex-direction:column}
-  /* recent-chats sidebar */
-  #chat-sidebar{flex:0 0 252px;display:flex;flex-direction:column;gap:8px;padding:14px 12px;
-      border-right:1px solid var(--hairline);overflow-y:auto;background:var(--card-2)}
-  #chat-new{width:100%;text-align:left;padding:10px 13px;border-radius:11px;cursor:pointer;
-      background:var(--card);border:1px solid var(--hairline);color:var(--ink);font-size:13.5px;font-weight:600;
-      transition:background .15s,border-color .15s}
-  #chat-new:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
-  /* Session search — trivial client-side substring filter over titles.
-       No server change: SessionListItem
-       carries no preview text today, so title-only is the honest scope. */
-  #chat-sess-search{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:10px;
-      color:var(--ink);font-size:12.5px;padding:8px 11px;outline:none;transition:border-color .2s}
-  #chat-sess-search:focus{border-color:rgba(10,132,255,.5)}
-  #chat-sess-search::placeholder{color:var(--dimmer)}
-  .sesslist{display:flex;flex-direction:column;gap:2px;margin-top:4px}
-  .sess{position:relative;padding:9px 50px 9px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent}
-  .sess:hover{background:var(--card)}
-  .sess.active{background:var(--card);border-color:var(--hairline)}
-  .sess.sess-hidden{display:none}
-  .sess .stitle{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .sess .smeta{font-size:11px;color:var(--dim);margin-top:2px;display:flex;gap:5px;align-items:center;white-space:nowrap}
-  .sess .sbtn{position:absolute;top:7px;width:20px;height:20px;border:none;background:transparent;color:var(--dim);
-      cursor:pointer;border-radius:6px;opacity:0;font-size:12px;line-height:1;transition:opacity .12s,background .12s,color .12s}
-  .sess:hover .sbtn{opacity:.85}
-  .sess .sfork{right:28px}
-  .sess .sdel{right:6px}
-  .sess .sfork:hover{background:var(--card-hover);color:var(--ink);opacity:1}
-  .sess .sdel:hover{background:rgba(255,69,58,.18);color:var(--red);opacity:1}
-  .sessempty{color:var(--dim);font-size:12px;padding:8px 11px;line-height:1.5}
-  /* ─── mobile drawer: the sidebar becomes a
-       slide-over panel on narrow viewports instead of vanishing outright. ─── */
-  @media (max-width:760px){
-      #chat-sidebar{
-        position:fixed;top:var(--nav-h);bottom:0;left:0;width:min(84vw,320px);z-index:120;
-        border-right:1px solid var(--hairline);
-        transform:translateX(-100%);transition:transform .28s var(--ease);
-        box-shadow:0 0 0 rgba(0,0,0,0);
-      }
-      #chat-sidebar.drawer-open{transform:translateX(0);box-shadow:24px 0 60px rgba(0,0,0,.45)}
-      #chat-drawer-backdrop{display:none;position:fixed;inset:var(--nav-h) 0 0 0;z-index:110;
-        background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
-      #chat-drawer-backdrop.open{display:block;animation:fade .2s var(--ease)}
-    }
-  @media (max-width:760px) and (prefers-reduced-motion:reduce){
-      #chat-sidebar{transition:none}
-    }
-  #chat-scroll{flex:1;overflow-y:auto}
-  #chat-thread{max-width:840px;margin:0 auto;padding:30px 22px 16px;display:flex;flex-direction:column;gap:18px}
-  .msg{display:flex;flex-direction:column;gap:6px;max-width:90%}
-  .msg .who{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--dimmer)}
-  .msg .bubble{border-radius:16px;padding:13px 17px;line-height:1.6;word-break:break-word;overflow-wrap:anywhere}
-  .msg.user{align-self:flex-end;align-items:flex-end}
-  .msg.user .bubble{background:linear-gradient(120deg,rgba(10,132,255,.26),rgba(94,92,230,.26));border:1px solid rgba(10,132,255,.35)}
-  .msg.assistant{align-self:flex-start;width:100%;max-width:840px}
-  .msg.assistant .bubble{background:var(--card);border:1px solid var(--hairline)}
-  .msg .meta{font-size:11.5px;color:var(--dimmer);font-variant-numeric:tabular-nums}
-  .msg .meta b{color:var(--green);font-weight:600}
-  /* Message actions: a quiet hover/focus row under each message,
-       same visual language as the code-block copy button (.cbcopy) — dim by
-       default, brightens on hover, never shouts. Kept visible via :focus-within
-       too so keyboard users can tab to the buttons without hovering. */
-  .msg-actions{display:flex;gap:6px;opacity:0;transition:opacity .15s;margin-top:2px}
-  .msg:hover .msg-actions,.msg:focus-within .msg-actions,.msg-actions.pinned{opacity:1}
-  .msg.user .msg-actions{align-self:flex-end}
-  .maction{font:11px/1 var(--mono);color:var(--dim);background:transparent;border:1px solid var(--hairline);
-      border-radius:6px;padding:4px 9px;cursor:pointer;transition:color .15s,border-color .15s}
-  .maction:hover{color:var(--ink);border-color:var(--dim)}
-  .maction:disabled{opacity:.4;cursor:default}
-  .maction:disabled:hover{color:var(--dim);border-color:var(--hairline)}
-  /* Edit-and-resend as sibling branch: ChatGPT/Claude's '< i/n >' linear
-       toggle (a tree view is explicitly out of scope). Only
-       rendered on the LAST user message, and only when count > 1. */
-  .sib-toggle{display:flex;align-items:center;gap:5px;font:11px/1 var(--mono);color:var(--dimmer)}
-  .sib-toggle button{background:transparent;border:1px solid var(--hairline);border-radius:6px;color:var(--dim);
-      cursor:pointer;padding:2px 7px;line-height:1.4}
-  .sib-toggle button:hover:not(:disabled){color:var(--ink);border-color:var(--dim)}
-  .sib-toggle button:disabled{opacity:.35;cursor:default}
-  .msg-edit-box{width:100%;box-sizing:border-box;background:var(--card-2);border:1px solid var(--hairline);
-      border-radius:10px;padding:9px 11px;color:var(--ink);font:inherit;line-height:1.5;resize:vertical;min-height:44px}
-  .msg-edit-actions{display:flex;gap:8px;margin-top:6px;justify-content:flex-end}
-  .thinkbox{margin:0 0 12px;border:1px solid rgba(10,132,255,.18);border-radius:12px;background:rgba(10,132,255,.06);overflow:hidden}
-  .thinkbox summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;color:var(--dim);user-select:none}
-  .thinkbody{padding:0 12px 10px;color:var(--dim);font-size:.92em;white-space:pre-wrap}
-  .cursor{display:inline-block;width:8px;height:17px;vertical-align:-3px;border-radius:2px;
-      background:linear-gradient(180deg,var(--pink),var(--purple));animation:blink 1s steps(2) infinite}
-  @keyframes blink{50%{opacity:0}}
-  /* tool cards */
-  .tool{margin:10px 0;border:1px solid var(--hairline);border-radius:14px;overflow:hidden;background:var(--card-2)}
-  .tool .thead{display:flex;align-items:center;gap:10px;padding:11px 15px;cursor:pointer;user-select:none;transition:background .2s}
-  .tool .thead:hover{background:rgba(255,255,255,.04)}
-  .tool .ticon{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
-      font-size:13px;background:rgba(94,92,230,.18);color:var(--cyan);flex:0 0 auto}
-  .tool .tname{font:600 13.5px var(--mono);color:var(--ink)}
-  .tool .targs{font:12px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
-  .tool .tstat{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;flex:0 0 auto;display:flex;align-items:center;gap:6px}
-  .tool .tstat .sdot{width:7px;height:7px;border-radius:50%}
-  .tool.running .tstat{color:var(--cyan)}
-  .tool.running .sdot{background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 1.1s infinite}
-  .tool.ok .tstat{color:var(--green)}
-  .tool.ok .sdot{background:var(--green)}
-  .tool.fail .tstat{color:var(--red)}
-  .tool.fail .sdot{background:var(--red)}
-  .tool .caret{color:var(--dimmer);transition:transform .25s var(--ease);flex:0 0 auto}
-  .tool.open .caret{transform:rotate(90deg)}
-  .tool .tbody{display:none;border-top:1px solid var(--hairline-soft);padding:12px 15px}
-  .tool.open .tbody{display:block}
-  .tool .blk{margin-bottom:10px}
-  .tool .blk:last-child{margin-bottom:0}
-  .tool .blbl{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin-bottom:5px}
-  .tool pre{background:var(--code-bg-soft);border-radius:9px;padding:10px 12px;overflow-x:auto;
-      font:12px/1.55 var(--mono);color:rgba(245,245,247,.7);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
-  /* approval dialog */
-  .approval{margin:12px 0;border:1px solid rgba(255,159,10,.45);border-radius:16px;overflow:hidden;
-      background:rgba(255,159,10,.06);animation:fade .4s var(--ease)}
-  .approval .ahead{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid rgba(255,159,10,.25)}
-  .approval .ahead .ai{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
-      background:rgba(255,159,10,.2);color:var(--orange);font-size:15px}
-  .approval .ahead .at{font-weight:700;font-size:14px}
-  .approval .ahead .as{font:12px var(--mono);color:var(--orange);margin-left:auto}
-  .approval .abody{padding:13px 16px}
-  .approval pre{background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:12px 14px;overflow-x:auto;
-      font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
-  .approval .diffadd{color:var(--green)}
-  .approval .diffdel{color:var(--red)}
-  .approval .actions{display:flex;gap:10px;padding:0 16px 15px}
-  .approval .resolved{padding:11px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
-  .approval .resolved.allow{color:var(--green)}
-  .approval .resolved.deny{color:var(--red)}
-  /* Editable arguments (LM Studio's pattern): pre-filled
-       with the proposed args JSON; the diff (edit/write only) stays above as
-       a read-only visual aid so large content edits don't only exist as raw
-       JSON. Approve re-parses the textarea and ships the edited object. */
-  .approval .a-diff{margin-bottom:10px}
-  .approval textarea.a-args{width:100%;background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline);
-      border-radius:10px;padding:12px 14px;font:12.5px/1.6 var(--mono);resize:vertical;min-height:64px;max-height:280px}
-  .approval textarea.a-args:focus{outline:none;border-color:var(--orange)}
-  .approval .a-argerr{margin-top:8px;font-size:12px;color:var(--red)}
-  .approval .a-always{display:flex;align-items:center;gap:9px;padding:0 16px 13px;font-size:12.5px;
-      color:var(--dim);cursor:pointer;font-weight:500}
-  .approval .a-always input{width:auto;margin:0;accent-color:var(--orange)}
-  /* ─── Chat-with-files RAG v1 Sources panel ('02d723a:docs/design/web-chat-redesign.md' Appendix A,
-       beat-matrix Axis 5) — deliberately close to the memchip's citation language above:
-       a collapsed "Sources · K" line under the reply that expands to
-       filename+snippet per retrieved chunk, plus [n] markers in the reply
-       text rendered as small round citation buttons that jump to their row. */
-  .sources{margin-top:11px;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;
-      background:rgba(255,255,255,.03)}
-  .sources summary{list-style:none;display:flex;align-items:center;gap:7px;padding:8px 13px;
-      cursor:pointer;user-select:none;font-size:12.5px;font-weight:600;color:var(--dim)}
-  .sources summary::-webkit-details-marker{display:none}
-  .sources summary::before{content:"›";display:inline-block;color:var(--dimmer);
-      transition:transform .2s var(--ease)}
-  .sources[open] summary::before{transform:rotate(90deg)}
-  .src-list{border-top:1px solid var(--hairline-soft);padding:9px 13px 11px;display:flex;flex-direction:column;gap:10px}
-  .src-row{border-radius:9px;padding:7px 9px;transition:background .5s var(--ease)}
-  .src-row.pulse{background:rgba(10,132,255,.16)}
-  .src-n{font:700 11px var(--mono);color:var(--blue);margin-right:7px}
-  .src-meta{display:inline-flex;align-items:baseline;gap:8px;flex-wrap:wrap}
-  .src-file{font-size:12.5px;font-weight:600;color:var(--ink)}
-  .src-range{font:11px var(--mono);color:var(--dimmer)}
-  .src-snippet{margin-top:4px;font-size:12px;line-height:1.5;color:var(--dim);white-space:pre-wrap;word-break:break-word}
-  /* [n] citation markers rendered inline in the assistant's reply text
-       (markdown.ts's linkifyCitations) — small round buttons, never full-size
-       links, so they read as footnote markers rather than ordinary hyperlinks. */
-  :is(.bubble) .cite-mark{display:inline-flex;align-items:center;justify-content:center;
-      min-width:16px;height:16px;padding:0 4px;margin:0 1px;border-radius:999px;border:none;
-      background:rgba(10,132,255,.18);color:var(--blue);font:700 10px var(--mono);
-      cursor:pointer;vertical-align:2px;line-height:1;transition:background .15s}
-  :is(.bubble) .cite-mark:hover{background:rgba(10,132,255,.3)}
-  @media (prefers-reduced-motion:reduce){.src-row{transition:none}.sources summary::before{transition:none}}
-  /* chat hello / starters */
-  #chat-hello{max-width:840px;margin:6vh auto 0;padding:0 22px;text-align:center}
-  #chat-hello h1{font-size:clamp(34px,5vw,54px);font-weight:700;letter-spacing:-.03em;line-height:1.08}
-  #chat-hello p{margin-top:13px;color:var(--dim);font-size:15.5px}
-  #chat-hello .chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:28px}
-  .chip{border:1px solid var(--hairline);background:var(--card);color:var(--dim);border-radius:999px;
-      padding:9px 16px;font-size:13.5px;cursor:pointer;transition:all .25s var(--ease)}
-  .chip:hover{color:var(--ink);border-color:var(--hairline-strong);background:var(--card-hover)}
-  /* chat composer */
-  #chat-foot{flex:0 0 auto;border-top:1px solid var(--hairline);padding:14px 22px 16px;
-      background:var(--card-2);backdrop-filter:blur(16px)}
-  .composer{max-width:840px;margin:0 auto}
-  .queuebar{display:none;max-width:840px;margin:0 auto 10px;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
-  .queuebar .qtag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hairline);
-      border-radius:999px;padding:4px 11px;background:var(--card)}
-  .queuebar .qtag b{color:var(--ink);font-weight:600}
-  .inputrow{display:flex;gap:10px;align-items:flex-end}
-  #chat-box-wrap{position:relative;flex:1;min-width:0}
-  #chat-box{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:16px;
-      color:var(--ink);font:15px/1.5 inherit;padding:13px 16px;resize:none;outline:none;
-      max-height:200px;min-height:50px;transition:border-color .25s;box-sizing:border-box}
-  #chat-box:focus{border-color:rgba(10,132,255,.5)}
-  /* Unified "#" retrieval mention picker — same
-       floating-panel chrome as .samplepop, anchored above the textarea it
-       types into instead of a pill. Zero layout shift: absolutely positioned,
-       hidden by default, never reflows the composer underneath it. */
-  .mentionpop{position:absolute;bottom:calc(100% + 8px);left:0;right:0;z-index:40;
-      max-height:min(46vh,320px);overflow-y:auto;
-      background:var(--popover-panel);border:1px solid var(--hairline);border-radius:13px;padding:6px;
-      backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
-      box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;
-      transform:translateY(4px);opacity:0;transition:opacity .14s var(--ease),transform .14s var(--ease)}
-  .mentionpop.open{display:block;transform:translateY(0);opacity:1}
-  .mention-sec-title{font-size:10.5px;font-weight:600;color:var(--dimmer);letter-spacing:.04em;
-      text-transform:uppercase;padding:7px 9px 4px}
-  .mention-row{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;cursor:pointer}
-  .mention-row:hover,.mention-row.active{background:var(--card-hover)}
-  .mention-ico{font-size:12px;color:var(--dimmer);flex:0 0 auto}
-  .mention-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-      font-size:13px;color:var(--ink)}
-  .mention-tag{flex:0 0 auto;font-size:10px;color:var(--dimmer);text-transform:uppercase;letter-spacing:.03em}
-  .mention-empty{padding:10px 9px;font-size:12px;color:var(--dim)}
-  /* Pulse a file's attach-chip when it's selected from the mention picker
-       (the file is already attached — this is the only feedback needed). */
-  .attach-chip.pulse{animation:chippulse .5s var(--ease) 2}
-  @keyframes chippulse{0%,100%{box-shadow:0 0 0 rgba(10,132,255,0)}50%{box-shadow:0 0 0 3px rgba(10,132,255,.45)}}
-  @media (prefers-reduced-motion:reduce){.attach-chip.pulse{animation:none}}
-  #chat-send{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff;
-      border:none;border-radius:14px;height:50px;padding:0 22px;font:600 14px inherit;cursor:pointer;transition:filter .2s}
-  #chat-send:hover{filter:brightness(1.14)}
-  #chat-send:disabled{filter:grayscale(.8) brightness(.6);cursor:default}
-  #chat-stop{display:none;background:var(--card);border:1px solid var(--hairline);color:var(--ink);
-      border-radius:14px;height:50px;padding:0 20px;font:600 14px inherit;cursor:pointer}
-  #chat-stop:hover{background:var(--card-hover)}
-  /* Wrap + shrink rules (2026-07-06 jank fix): without flex-wrap/min-width:0
-       the right pill cluster overflowed past the viewport edge at tablet
-       widths ("no adapter" clipped). The status line ellipsizes first; the
-       pills wrap to a second row before anything leaves the screen. */
-  .chat-hint{max-width:840px;margin:8px auto 0;font-size:11.5px;color:var(--dimmer);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
-  .chat-hint #chat-status-line{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .chat-hint .hint-right{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:flex-end;min-width:0}
-  /* Native <select> in .pill clothes: reset the UA appearance and draw our
-       own chevron — the stock arrow collided with the label text ("no adaptɘr"
-       glyph pile-up), and long adapter ids now ellipsize instead of overflow. */
-  #chat-adapter{appearance:none;-webkit-appearance:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-      padding-right:27px;cursor:pointer;
-      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%23909098' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
-      background-repeat:no-repeat;background-position:right 11px center}
-  /* perf strip — always-visible, quiet: replaces the old bare #chat-tps text
-       with tok/s + TTFT + context-fill + (server-driven only) a lane badge. */
-  #chat-perf{max-width:840px;margin:8px auto 0;display:flex;align-items:center;gap:14px;
-      font:11px/1 var(--mono);letter-spacing:.01em;color:var(--dimmer);flex-wrap:wrap}
-  #chat-perf .pf-item{white-space:nowrap}
-  #chat-perf .pf-item b{color:var(--ink);font-weight:600}
-  /* adapter chip — upgraded presentation over the bare <select>: current
-       selection + specialty line, options grayed by /v1/adapters/available's
-       compatible flag rather than hidden outright. */
-  #chat-adapter option:disabled{color:var(--dimmer);font-style:italic}
-  /* "manage adapters" gear beside the quick-switch <select> — opens the
-       routing table (#adapters-overlay), same pill sizing as #chat-think. */
-  #adapters-manage{appearance:none;-webkit-appearance:none;cursor:pointer;display:inline-flex;align-items:center;
-      justify-content:center;width:27px;height:27px;border-radius:999px;background:var(--card);
-      border:1px solid var(--hairline);color:var(--dim);font-size:12.5px;line-height:1;flex:0 0 auto;
-      transition:color .18s var(--ease),border-color .18s var(--ease),background .18s var(--ease)}
-  #adapters-manage:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
-  /* attach (+) button + attachment chips */
-  #chat-attach-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
-      border:1px solid var(--hairline);color:var(--ink);font-size:23px;line-height:1;cursor:pointer;transition:background .15s,border-color .15s}
-  #chat-attach-btn:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
-  /* hold-to-talk mic (voice.ts) */
-  #chat-mic-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
-      border:1px solid var(--hairline);color:var(--ink);font-size:20px;line-height:1;cursor:pointer;user-select:none;-webkit-user-select:none;transition:background .15s,border-color .15s}
-  #chat-mic-btn:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
-  #chat-mic-btn.recording{background:rgba(255,69,58,.18);border-color:rgba(255,69,58,.7);animation:micpulse 1s ease-in-out infinite}
-  #chat-mic-btn.busy{opacity:.6;cursor:progress}
-  @keyframes micpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,69,58,.35)}50%{box-shadow:0 0 0 8px rgba(255,69,58,0)}}
-  .attach-row{display:none;flex-wrap:wrap;gap:8px;max-width:840px;width:100%;margin:0 auto 8px}
-  .attach-chip{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--hairline);
-      border-radius:10px;padding:5px 9px;font-size:12px;max-width:240px}
-  .attach-chip img{width:34px;height:34px;object-fit:cover;border-radius:6px;display:block}
-  .attach-chip .att-ico{font-size:16px}
-  .attach-chip .att-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
-  .attach-chip .att-x{border:none;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;line-height:1;padding:0 2px}
-  .attach-chip .att-x:hover{color:var(--red)}
-  /* Chat-with-files RAG v1 ('02d723a:docs/design/web-chat-redesign.md' Appendix A,
-       beat-matrix Axis 5): shown on
-       text-file chips once the attached set is large enough that only the
-       most relevant chunks get sent per turn instead of the whole file
-       (composer.ts's shouldRetrieve threshold) — transparency principle, the
-       mode switch must be visible on the chip, not just in prompt content
-       the user never sees. */
-  .attach-chip .att-tag{flex:0 0 auto;font-size:9.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
-      color:var(--purple);background:rgba(191,90,242,.14);border-radius:999px;padding:2px 7px}
-  .composer.dragover{outline:2px dashed var(--blue);outline-offset:6px;border-radius:14px}
-  .msg-atts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
-  .msg-att-img{max-width:220px;max-height:220px;border-radius:10px;display:block}
-  .msg-att-file{display:inline-flex;align-items:center;gap:5px;font-size:12px;background:rgba(255,255,255,.08);border-radius:8px;padding:5px 10px}
-  .msg.user .msg-text{white-space:pre-wrap;word-break:break-word}
-  /* ── rendered markdown (the same rules the host page applies to the memory panel articles) ── */
-  /* markdown-ish rendering — shared by chat bubbles AND the memory panel's
-       article view (.mem-article-render renders vault/Reference docs through
-       the same mdToHtml; without this scope the panel's code fences lost
-       their header chrome — "shCopy" mash, 2026-07-07 visual QA). */
-  .bubble p{margin:0 0 10px}
-  .bubble p:last-child{margin-bottom:0}
-  .bubble ul,.bubble ol{margin:0 0 10px;padding-left:22px}
-  .bubble li{margin:3px 0}
-  .bubble strong{font-weight:700;color:var(--ink)}
-  .bubble em{font-style:italic}
-  .bubble code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
-  .bubble pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
-      padding:13px 15px;overflow-x:auto;margin:10px 0;font:12.5px/1.6 var(--mono)}
-  .bubble pre code{background:none;padding:0;font-size:inherit;color:inherit}
-  .bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{font-weight:700;margin:14px 0 7px;letter-spacing:-.01em;line-height:1.3}
-  .bubble h1{font-size:1.28em}
-  .bubble h2{font-size:1.16em}
-  .bubble h3{font-size:1.06em}
-  .bubble h4,.bubble h5,.bubble h6{font-size:1em;color:var(--dim)}
-  .bubble h1:first-child,.bubble h2:first-child,.bubble h3:first-child{margin-top:0}
-  .bubble a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(100,210,255,.34)}
-  .bubble a:hover{border-bottom-color:var(--cyan)}
-  .bubble del{opacity:.55}
-  .bubble blockquote{margin:9px 0;padding:3px 14px;border-left:3px solid var(--hairline);color:var(--dim)}
-  .bubble blockquote p:last-child{margin-bottom:0}
-  .bubble hr{border:none;border-top:1px solid var(--hairline);margin:15px 0}
-  .bubble li.task{list-style:none;margin-left:-18px}
-  .bubble li.task input{margin-right:7px;accent-color:var(--blue);vertical-align:-1px}
-  .bubble .md-tablewrap{overflow-x:auto;margin:11px 0}
-  .bubble table.md-table{width:100%;border-collapse:collapse;font-size:.92em}
-  .bubble table.md-table th,.bubble table.md-table td{border:1px solid var(--hairline-soft);padding:6px 11px;text-align:left}
-  .bubble table.md-table th{background:rgba(255,255,255,.05);font-weight:600;color:var(--ink)}
-  .bubble .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:var(--code-bg);color:var(--code-ink)}
-  .bubble .cbhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 9px 5px 13px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--hairline-soft)}
-  .bubble .cblang{font:11px/1 var(--mono);color:rgba(245,245,247,.65);letter-spacing:.02em}
-  .bubble .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
-  .bubble .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
-  .bubble .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
-  /* Canvas v1 ('02d723a:docs/design/web-chat-redesign.md' Appendix A,
-       beat-matrix Axis 2): Preview|Source toggle
-       for html/svg fences, sharing .cbhead with the existing lang tag + Copy
-       button. .cbhead keeps lang pinned left; the toggle+copy group sits
-       right via margin-left:auto on the first right-side element instead of
-       space-between, since space-between with 3 children would push the
-       toggle to the dead center of the bar. */
-  .bubble .cbhead{justify-content:flex-start}
-  .bubble .cbtoggle{display:inline-flex;gap:2px;margin-left:auto;padding:2px;border-radius:7px;background:rgba(255,255,255,.05)}
-  .bubble .cbview{font:11px/1 var(--mono);color:rgba(245,245,247,.55);background:transparent;border:none;
-      border-radius:5px;padding:4px 9px;cursor:pointer;transition:color .15s,background .15s}
-  .bubble .cbview:hover{color:var(--code-ink)}
-  .bubble .cbview.active{color:var(--code-ink);background:rgba(255,255,255,.14)}
-  /* has-canvas keeps Copy visually last, right after the toggle group. */
-  .bubble .codeblock.has-canvas .cbcopy{margin-left:2px}
-  .bubble .cbcanvas{position:relative;background:#fff}
-  .bubble .cbframe{display:block;width:100%;height:420px;min-height:160px;max-height:80vh;
-      border:none;resize:vertical;overflow:auto;background:#fff}
-  /* No layout shift on toggle: pre and cbcanvas are simply swapped via
-       [hidden] — the codeblock's own border/rounding stays put, and the
-       iframe's own default height (420px) plus resize:vertical means the
-       block doesn't jump when Preview first opens vs. later re-opens. */
+/* ── the panel is the page: the recent chats beside the conversation ── */
+mlx-chat-panel{display:flex;height:100%;min-width:0;background:var(--bg);color:var(--ink)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes chat-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes chat-blink{50%{opacity:0}}
+@keyframes chat-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes chat-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ── sidebar ── */
+#chat-sidebar{flex:0 0 260px;display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;padding:14px 10px 10px;
+  background:var(--bg);border-right:1px solid var(--line)}
+#chat-new{justify-content:flex-start;width:100%}
+.cs-search{position:relative}
+.cs-search svg{position:absolute;left:9px;top:50%;width:14px;height:14px;transform:translateY(-50%);color:var(--dimmer);pointer-events:none}
+#chat-sess-search{padding-left:29px}
+#chat-sessions{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;margin:0 -4px;padding:0 4px}
+.sess{position:relative;display:flex;align-items:center;gap:2px;min-width:0;border-radius:var(--radius-md);cursor:pointer;
+  transition:background var(--fast) var(--ease)}
+.sess:hover,.sess:focus-within{background:var(--raised)}
+.sess.active{background:var(--raised);box-shadow:inset 2px 0 0 var(--accent)}
+.sess.active .stitle{font-weight:600}
+.sess.sess-hidden{display:none}
+.sess .sopen{appearance:none;flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;padding:7px 10px;border:0;
+  border-radius:var(--radius-md);background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.sess .sopen:focus-visible{outline-offset:-2px}
+.sess .stitle{display:block;font-size:var(--text-md);font-weight:550;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .smeta{display:flex;gap:6px;font-size:var(--text-xs);color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
+.sess .smeta span+span::before{content:"·";margin-right:6px;color:var(--dimmer)}
+.sess .sacts{position:absolute;top:50%;right:4px;display:flex;gap:0;padding-left:12px;transform:translateY(-50%);opacity:0;pointer-events:none;
+  background:linear-gradient(to right,transparent,var(--raised) 12px);border-radius:var(--radius-sm);transition:opacity var(--fast) var(--ease)}
+.sess:hover .sacts,.sess:focus-within .sacts{opacity:1;pointer-events:auto}
+.sess .sbtn{width:26px;height:26px;color:var(--dim)}
+.sess .sbtn svg{width:14px;height:14px}
+.sess .sbtn:hover{background:var(--line-strong);color:var(--ink)}
+.sess .sdel:hover{color:var(--bad);background:var(--bad-soft)}
+.sessempty{color:var(--dim);font-size:var(--text-sm);line-height:1.5;padding:8px 10px}
+.sess-msg-search{margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
+.sess-msg-search-hdr{font-size:var(--text-xs);font-weight:600;color:var(--dimmer);padding:4px 10px}
+.sess-msg-search-loading{padding:6px 10px;font-size:var(--text-sm)}
+.sess-msg-hit{appearance:none;display:block;width:100%;padding:7px 10px;border:0;border-radius:var(--radius-md);background:none;color:inherit;
+  font:inherit;text-align:left;cursor:pointer}
+.sess-msg-hit:hover{background:var(--raised)}
+.sess-msg-hit .stitle{display:block;font-size:var(--text-sm);font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess-msg-snippet{display:block;color:var(--dim);font-size:var(--text-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.sess-msg-snippet mark{background:var(--warn-soft);color:inherit;border-radius:2px}
+.sess-export-menu{position:fixed;z-index:950;min-width:180px;padding:4px;background:var(--panel);border:1px solid var(--line-strong);
+  border-radius:var(--radius-md);box-shadow:var(--shadow-lg);animation:chat-pop-in var(--fast) var(--ease)}
+.sess-export-item{appearance:none;display:block;width:100%;padding:7px 10px;border:0;border-radius:var(--radius-sm);background:none;color:var(--ink);
+  font:inherit;font-size:var(--text-md);text-align:left;cursor:pointer}
+.sess-export-item:hover,.sess-export-item:focus-visible{background:var(--raised)}
+#chat-drawer-backdrop{display:none}
+
+/* ── the conversation ── */
+#chat-main{flex:1 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column}
+#chat-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}
+#chat-thread{max-width:780px;margin:0 auto;padding:28px 24px 12px;display:flex;flex-direction:column;gap:22px}
+#chat-thread:empty{padding:0}
+
+/* empty state: what answers, what to ask, and memory's offer */
+#chat-hello{max-width:780px;margin:0 auto;padding:13vh 24px 24px}
+.hello-title{font-size:var(--text-2xl);font-weight:650;letter-spacing:-.015em;line-height:1.2}
+.hello-sub{margin-top:8px;color:var(--dim);font-size:var(--text-md);line-height:1.5}
+.hello-sub b{color:var(--ink);font-weight:600;font-size:.95em}
+.hello-note{margin-top:4px;color:var(--dimmer);font-size:var(--text-sm);font-variant-numeric:tabular-nums}
+#chat-hello-chips{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:22px}
+#chat-hello-chips .chip{appearance:none;display:block;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-md);
+  background:var(--surface);color:var(--ink);font:inherit;font-size:var(--text-md);text-align:left;cursor:pointer;
+  transition:border-color var(--fast) var(--ease),background var(--fast) var(--ease)}
+#chat-hello-chips .chip:hover{border-color:var(--line-strong);background:var(--raised)}
+#chat-consent:not(.show){display:none}
+#chat-hello #chat-consent{max-width:none;margin:16px 0 0}
+
+/* messages: the user's on a raised surface at the right, the assistant's on the page */
+.msg{display:flex;flex-direction:column;gap:6px;min-width:0}
+.msg .bubble{min-width:0;max-width:100%;font-size:var(--text-lg);line-height:1.6;overflow-wrap:anywhere}
+.msg.user{align-self:flex-end;align-items:flex-end;max-width:min(82%,620px)}
+.msg.user .bubble{padding:9px 14px;border-radius:var(--radius-lg);background:var(--raised)}
+.msg.user .msg-text{white-space:pre-wrap}
+.msg.assistant{align-self:stretch}
+.msg .meta{font-size:var(--text-xs);color:var(--dimmer);font-variant-numeric:tabular-nums}
+.msg .meta:empty{display:none}
+.msg .meta-note{color:var(--warn)}
+.msg-atts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.msg-att-img{display:block;max-width:220px;max-height:220px;border-radius:var(--radius-md)}
+.msg-att-file{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:var(--radius-sm);background:var(--panel);font-size:var(--text-sm)}
+.msg-att-file svg{width:14px;height:14px;color:var(--dim)}
+.agent-error .notice{align-items:flex-start;font-size:var(--text-md)}
+.agent-error .ai{display:inline-flex;color:var(--bad);margin-top:2px}
+.agent-error .err-hint{color:var(--dim);font-size:var(--text-sm);margin-top:4px}
+
+/* message actions: quiet until the message is hovered or focused (always shown without hover) */
+.msg-actions{display:flex;gap:2px;margin-left:-6px;opacity:0;transition:opacity var(--fast) var(--ease)}
+.msg.user .msg-actions{margin:0 -6px 0 0}
+.msg:hover .msg-actions,.msg:focus-within .msg-actions,.msg.assistant:last-child .msg-actions{opacity:1}
+@media (hover:none){.msg-actions{opacity:1}}
+.maction{appearance:none;display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 7px;border:0;border-radius:var(--radius-sm);
+  background:none;color:var(--dim);font:inherit;font-size:var(--text-xs);font-weight:550;cursor:pointer;
+  transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.maction:hover{background:var(--raised);color:var(--ink)}
+.maction svg{width:13px;height:13px}
+.sib-toggle{display:flex;align-items:center;gap:2px;font-size:var(--text-xs);color:var(--dim)}
+.sib-toggle .sib-prev svg{transform:rotate(180deg)}
+.sib-toggle .btn{width:24px;height:24px}
+.msg-edit-box{width:min(620px,78vw);min-height:64px;font-size:var(--text-lg)}
+.msg-edit-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
+
+/* thinking: a quiet disclosure; its label shimmers while the reply streams */
+.thinkbox{margin:0 0 10px}
+.thinkbox summary{display:inline-flex;align-items:center;gap:5px;padding:2px 4px 2px 0;border-radius:var(--radius-sm);list-style:none;cursor:pointer;
+  color:var(--dim);font-size:var(--text-sm);font-weight:550;user-select:none;-webkit-user-select:none}
+.thinkbox summary::-webkit-details-marker{display:none}
+.thinkbox summary:hover{color:var(--ink)}
+.thinkbox summary svg{width:14px;height:14px;transition:transform var(--fast) var(--ease)}
+.thinkbox[open] summary svg{transform:rotate(90deg)}
+.thinkbox.live summary span{background:linear-gradient(90deg,var(--dim) 30%,var(--ink) 50%,var(--dim) 70%) 0 0/200% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;animation:chat-shimmer 1.6s linear infinite}
+.thinkbody{margin-top:6px;padding:2px 0 2px 12px;border-left:2px solid var(--line-strong);color:var(--dim);font-size:var(--text-md);
+  line-height:1.55;white-space:pre-wrap;max-height:360px;overflow-y:auto}
+.cursor{display:inline-block;width:7px;height:1.05em;margin-top:2px;vertical-align:-2px;border-radius:2px;background:var(--accent);
+  animation:chat-blink 1s steps(2) infinite}
+
+/* tool calls: one compact row each, expanding to arguments and result */
+.tool{margin:8px 0;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);overflow:hidden;font-size:var(--text-sm)}
+.tool .thead{appearance:none;display:flex;align-items:center;gap:8px;width:100%;min-width:0;padding:6px 8px 6px 10px;border:0;background:none;
+  color:inherit;font:inherit;text-align:left;cursor:pointer}
+.tool .thead:hover{background:var(--raised)}
+.tool .thead:focus-visible{outline-offset:-2px}
+.tool .ticon{display:inline-flex;flex:0 0 auto;color:var(--dimmer)}
+.tool .ticon svg{width:14px;height:14px}
+.tool .tname{flex:0 0 auto;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 var(--text-sm) var(--mono);color:var(--ink)}
+.tool .targs{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--text-sm) var(--mono);color:var(--dim)}
+.tool .tstat{flex:0 0 auto}
+.tool.running .tstat{background:var(--accent-soft);color:var(--accent)}
+.tool.ok .tstat{background:var(--ok-soft);color:var(--ok)}
+.tool.fail{border-color:var(--bad)}
+.tool.fail .tstat{background:var(--bad-soft);color:var(--bad)}
+.tool .caret{display:inline-flex;flex:0 0 auto;color:var(--dimmer);transition:transform var(--fast) var(--ease)}
+.tool .caret svg{width:14px;height:14px}
+.tool.open .caret{transform:rotate(90deg)}
+.tool .tbody{display:none;padding:10px;border-top:1px solid var(--line)}
+.tool.open .tbody{display:block}
+.tool .blk+.blk{margin-top:10px}
+.blbl{display:block;margin-bottom:5px;font-size:var(--text-xs);font-weight:600;color:var(--dim)}
+.tool pre{max-height:260px;overflow:auto;padding:9px 11px;border-radius:var(--radius-sm);background:var(--code-bg);color:var(--code-ink);
+  font:var(--text-xs)/1.55 var(--mono);white-space:pre-wrap;word-break:break-word}
+
+/* approval: a warning notice with the arguments to edit before allowing */
+.approval.notice{flex-direction:column;align-items:stretch;gap:10px;margin:10px 0;font-size:var(--text-md)}
+.approval .ahead{display:flex;align-items:center;gap:8px;min-width:0}
+.approval .ai{display:inline-flex;color:var(--warn)}
+.approval .as{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.approval pre{max-height:280px;overflow:auto;margin:0 0 10px;padding:10px 12px;border-radius:var(--radius-sm);background:var(--code-bg);color:var(--code-ink);
+  font:var(--text-sm)/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
+.approval .diffadd{color:color-mix(in srgb,var(--ok) 55%,var(--code-ink))}
+.approval .diffdel{color:color-mix(in srgb,var(--bad) 55%,var(--code-ink))}
+.approval .a-args{min-height:64px;max-height:280px;background:var(--code-bg);color:var(--code-ink);border-color:var(--code-line)}
+.approval .a-argerr{margin-top:6px;font-size:var(--text-sm);color:var(--bad)}
+.approval .a-always{font-size:var(--text-sm);color:var(--dim)}
+.approval .actions{display:flex;justify-content:flex-end;gap:6px;margin:0}
+.approval .resolved{display:flex;align-items:center;gap:6px;font-size:var(--text-sm);font-weight:600}
+.approval .resolved svg{width:15px;height:15px}
+.approval .resolved.allow{color:var(--ok)}
+.approval .resolved.deny{color:var(--bad)}
+
+/* rendered markdown */
+.bubble .atext>:first-child,.bubble .md-block:first-child>:first-child{margin-top:0}
+.bubble p{margin:0 0 10px}
+.bubble p:last-child{margin-bottom:0}
+.bubble ul,.bubble ol{margin:0 0 10px;padding-left:22px}
+.bubble li{margin:3px 0}
+.bubble strong{font-weight:650}
+.bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{margin:18px 0 8px;font-weight:650;letter-spacing:-.01em;line-height:1.3}
+.bubble h1{font-size:1.3em}
+.bubble h2{font-size:1.18em}
+.bubble h3{font-size:1.06em}
+.bubble h4,.bubble h5,.bubble h6{font-size:1em;color:var(--dim)}
+.bubble a{color:var(--accent);text-decoration:underline;text-decoration-color:var(--accent-soft);text-underline-offset:2px}
+.bubble a:hover{text-decoration-color:var(--accent)}
+.bubble del{opacity:.6}
+.bubble blockquote{margin:10px 0;padding:2px 14px;border-left:3px solid var(--line-strong);color:var(--dim)}
+.bubble hr{margin:16px 0;border:0;border-top:1px solid var(--line)}
+.bubble li.task{list-style:none;margin-left:-20px}
+.bubble li.task input{margin-right:7px;vertical-align:-2px}
+.bubble code{font-size:.86em}
+.bubble pre{margin:10px 0;padding:12px 14px;overflow-x:auto;border-radius:var(--radius-md);background:var(--code-bg);color:var(--code-ink);font:var(--text-sm)/1.6 var(--mono)}
+.bubble pre code{padding:0;background:none;font-size:inherit;color:inherit}
+.bubble .md-tablewrap{margin:12px 0;overflow-x:auto}
+.bubble table.md-table{width:100%;border-collapse:collapse;font-size:var(--text-md);font-variant-numeric:tabular-nums}
+.bubble table.md-table th,.bubble table.md-table td{padding:7px 11px;border:1px solid var(--line);text-align:left}
+.bubble table.md-table th{background:var(--panel);font-weight:600}
+.bubble .codeblock{margin:12px 0;overflow:hidden;border:1px solid var(--code-line);border-radius:var(--radius-md);background:var(--code-bg);color:var(--code-ink)}
+.bubble .cbhead{display:flex;align-items:center;gap:6px;min-height:34px;padding:4px 6px 4px 12px;border-bottom:1px solid var(--code-line)}
+.bubble .cblang{margin-right:auto;font:var(--text-xs)/1 var(--mono);color:color-mix(in srgb,var(--code-ink) 60%,transparent)}
+.bubble .cbtoggle{display:inline-flex;gap:2px;padding:2px;border-radius:var(--radius-sm);background:var(--code-line)}
+.bubble .cbview,.bubble .cbcopy{appearance:none;height:24px;padding:0 9px;border:0;border-radius:5px;background:none;color:color-mix(in srgb,var(--code-ink) 60%,transparent);
+  font:550 var(--text-xs)/1 var(--font);cursor:pointer;transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.bubble .cbcopy{border:1px solid color-mix(in srgb,var(--code-ink) 18%,transparent)}
+.bubble .cbview:hover,.bubble .cbcopy:hover{color:var(--code-ink);background:var(--code-line)}
+.bubble .cbview.active{color:var(--code-ink);background:color-mix(in srgb,var(--code-ink) 16%,transparent)}
+.bubble .codeblock pre{margin:0;border:0;border-radius:0;background:transparent}
+/* the Preview renders content the model wrote, which assumes a white page in either theme */
+.bubble .cbcanvas{position:relative;background:#fff}
+.bubble .cbframe{display:block;width:100%;height:420px;min-height:160px;max-height:80vh;border:0;resize:vertical;overflow:auto;background:#fff}
+
+/* citations and the Sources panel */
+.bubble .cite-mark{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;margin:0 1px;padding:0 4px;
+  border:0;border-radius:999px;background:var(--accent-soft);color:var(--accent);font:650 10.5px/1 var(--font);vertical-align:2px;cursor:pointer}
+.bubble .cite-mark:hover{background:var(--accent);color:var(--accent-ink)}
+.sources{margin-top:12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface);font-size:var(--text-sm)}
+.sources summary{display:flex;align-items:center;gap:7px;padding:8px 12px;list-style:none;cursor:pointer;color:var(--dim);font-weight:600;user-select:none}
+.sources summary::-webkit-details-marker{display:none}
+.sources summary::before{content:"";width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(-45deg);transition:transform var(--fast) var(--ease)}
+.sources[open] summary::before{transform:rotate(45deg)}
+.src-list{display:flex;flex-direction:column;gap:6px;padding:8px 12px 10px;border-top:1px solid var(--line)}
+.src-row{padding:6px 8px;border-radius:var(--radius-sm);transition:background var(--base) var(--ease)}
+.src-row.pulse{background:var(--accent-soft)}
+.src-n{margin-right:6px;font:650 var(--text-xs) var(--mono);color:var(--accent)}
+.src-meta{display:inline-flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.src-file{font-weight:600;color:var(--ink)}
+.src-range{font:var(--text-xs) var(--mono);color:var(--dimmer)}
+.src-snippet{margin-top:3px;color:var(--dim);line-height:1.5;white-space:pre-wrap;word-break:break-word}
+
+/* ── the composer ── */
+#chat-foot{flex:0 0 auto;padding:8px 24px 12px}
+.composer{max-width:780px;margin:0 auto}
+.queuebar{display:none;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.queuebar .qtag{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.queuebar .qtag b{font-weight:600;color:var(--ink)}
+.attach-row{display:none;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.attach-chip{display:flex;align-items:center;gap:7px;max-width:260px;padding:3px 3px 3px 8px;border:1px solid var(--line);border-radius:var(--radius-md);
+  background:var(--surface);font-size:var(--text-sm)}
+.attach-chip img{display:block;width:30px;height:30px;object-fit:cover;border-radius:var(--radius-sm)}
+.attach-chip .att-ico{display:inline-flex;color:var(--dim)}
+.attach-chip .att-ico svg{width:15px;height:15px}
+.attach-chip .att-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attach-chip .att-tag{flex:0 0 auto;height:20px}
+.attach-chip .att-x{width:24px;height:24px;color:var(--dim)}
+.attach-chip .att-x svg{width:13px;height:13px}
+.attach-chip .att-x:hover{color:var(--bad)}
+.attach-chip.pulse{animation:chat-pulse .5s var(--ease) 2;border-color:var(--accent)}
+.composer-field{position:relative;border:1px solid var(--line-strong);border-radius:var(--radius-lg);background:var(--surface);box-shadow:var(--shadow);
+  transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.composer-field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.composer.dragover .composer-field{border-color:var(--accent);border-style:dashed}
+#chat-box-wrap{position:relative}
+#chat-box{display:block;width:100%;min-height:46px;max-height:200px;padding:12px 14px 2px;border:0;outline:0;resize:none;background:transparent;
+  color:var(--ink);font:var(--text-lg)/1.5 var(--font)}
+#chat-box::placeholder{color:var(--dimmer)}
+#chat-box:focus-visible{outline:none}
+.cf-row{display:flex;align-items:center;gap:2px;padding:4px 6px 6px}
+.cf-row .spacer{flex:1 1 auto}
+#chat-attach-btn,#chat-mic-btn{color:var(--dim)}
+#chat-attach-btn:hover,#chat-mic-btn:hover{color:var(--ink)}
+#chat-mic-btn{user-select:none;-webkit-user-select:none;touch-action:none}
+#chat-mic-btn.recording{color:var(--bad);background:var(--bad-soft);animation:chat-pulse 1.1s var(--ease) infinite}
+#chat-mic-btn.busy{opacity:.6;cursor:progress}
+#chat-send,#chat-stop{gap:5px;padding:0 12px}
+#chat-send svg,#chat-stop svg{width:14px;height:14px}
+
+/* the # picker, above the message box */
+.mentionpop{position:absolute;left:6px;right:6px;bottom:calc(100% + 8px);z-index:40;display:none;max-height:min(46vh,320px);overflow-y:auto;padding:4px;
+  background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius-md);box-shadow:var(--shadow-lg)}
+.mentionpop.open{display:block;animation:chat-pop-in var(--fast) var(--ease)}
+.mention-sec-title{padding:7px 9px 3px;font-size:var(--text-xs);font-weight:600;color:var(--dimmer)}
+.mention-row{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:var(--radius-sm);cursor:pointer}
+.mention-row:hover,.mention-row.active{background:var(--raised)}
+.mention-ico{display:inline-flex;flex:0 0 auto;color:var(--dim)}
+.mention-ico svg{width:14px;height:14px}
+.mention-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-md)}
+.mention-tag{flex:0 0 auto;font-size:var(--text-xs);color:var(--dimmer)}
+.mention-empty{padding:9px;font-size:var(--text-sm);color:var(--dim)}
+
+/* the toolbar: Prompt, Sampling, the adapter, the adapters table and Thinking; popovers open above it */
+.chat-toolbar{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:2px 4px;margin-top:6px}
+.chat-toolbar .tb{gap:6px;padding:0 8px;color:var(--dim)}
+.chat-toolbar .tb:hover,.chat-toolbar .tb.on,.chat-toolbar .tb[aria-pressed="true"]{color:var(--ink)}
+.chat-toolbar .tb.on{background:var(--raised)}
+.chat-toolbar .tb .dot{width:7px;height:7px}
+#chat-sampling.armed .dot{animation:chat-pulse 1.6s var(--ease) infinite}
+#chat-adapter{width:auto;max-width:210px;height:28px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background-color:transparent;border-color:transparent;color:var(--dim)}
+#chat-adapter:hover{border-color:var(--line-strong);color:var(--ink)}
+#chat-adapter option:disabled{color:var(--dimmer)}
+#adapters-manage{color:var(--dim)}
+#adapters-manage svg{width:15px;height:15px}
+.samplepop{position:absolute;left:0;bottom:calc(100% + 8px);z-index:40;display:none;width:min(340px,100%);max-height:min(70vh,560px);overflow-y:auto;
+  padding:14px 16px;background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);font-size:var(--text-md)}
+.samplepop.open{display:block;animation:chat-pop-in var(--fast) var(--ease)}
+.samplepop h4{margin:0;font-size:var(--text-sm);font-weight:600;color:var(--ink)}
+.samplepop .note{font-size:var(--text-xs);color:var(--dim);line-height:1.45}
+.samp-head-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.samp-scope-row,.samprow,.samp-adv .seed-row{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+.samp-scope-row{padding-bottom:10px;border-bottom:1px solid var(--line)}
+.samp-scope-row label,.samprow label,.samp-adv .seed-row label{flex:0 0 88px;font-size:var(--text-sm);color:var(--ink)}
+.samp-scope-row .select{flex:1 1 auto;width:auto}
+.samprow input[type=range]{flex:1 1 auto;min-width:0}
+.samp-val{flex:0 0 40px;text-align:right;font:var(--text-sm) var(--mono);font-variant-numeric:tabular-nums;color:var(--ink)}
+.samp-val.auto{color:var(--dimmer)}
+.samp-adv{margin:2px 0 12px}
+.samp-adv>summary{display:inline-flex;align-items:center;gap:5px;padding:2px 0 8px;list-style:none;cursor:pointer;font-size:var(--text-sm);font-weight:600;color:var(--dim)}
+.samp-adv>summary::-webkit-details-marker{display:none}
+.samp-adv>summary:hover{color:var(--ink)}
+.samp-adv>summary svg{width:13px;height:13px;transition:transform var(--fast) var(--ease)}
+.samp-adv[open]>summary svg{transform:rotate(90deg)}
+.samp-adv .seed-row .input{flex:1 1 auto;font-family:var(--mono)}
+.samppop-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px}
+.sysprompt-pop h4{margin-bottom:8px}
+#sysprompt-text{min-height:110px;font-size:var(--text-md)}
+.sysprompt-foot-row{display:flex;align-items:center;justify-content:space-between;margin:6px 0}
+.sysprompt-foot-row .note{font-variant-numeric:tabular-nums}
+.sysprompt-presets{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.sysprompt-preset-row{display:flex;align-items:center;gap:6px;margin:0 0 6px}
+#sysprompt-preset-select{flex:1 1 auto;width:auto;min-width:0}
+
+/* the quiet line under the composer: the connection, then the decode rate, first token and context fill */
+.chat-meta{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 14px;margin-top:4px;padding:0 4px;
+  font-size:var(--text-xs);color:var(--dimmer);font-variant-numeric:tabular-nums}
+.chat-conn{display:flex;align-items:center;gap:7px;flex:1 1 240px;min-width:0}
+.chat-conn .dot{width:7px;height:7px}
+#chat-status-line{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#chat-perf{display:flex;gap:12px;flex:0 0 auto}
+#chat-perf .pf-item:empty{display:none}
+#chat-perf .pf-item.warn{color:var(--warn)}
+#chat-perf .pf-item.bad{color:var(--bad)}
+
+/* ── the adapter routing table, a sheet at the right ── */
+#adapters-overlay{position:fixed;inset:0;z-index:150;display:none;justify-content:flex-end;background:var(--overlay)}
+#adapters-overlay.open{display:flex;animation:fade var(--base) var(--ease)}
+#adapters-panel{display:flex;flex-direction:column;width:min(520px,100%);height:100%;background:var(--panel);border-left:1px solid var(--line-strong);box-shadow:var(--shadow-lg)}
+.ad-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+.ad-head h2{flex:1 1 auto;margin:0;font-size:var(--text-lg);font-weight:650}
+#adapters-body{flex:1 1 auto;overflow-y:auto;padding:14px 16px 24px}
+.ad-note{margin:0 0 14px;font-size:var(--text-sm);color:var(--dim);line-height:1.5}
+.ad-sec-title{margin:0 0 8px;font-size:var(--text-xs);font-weight:600;color:var(--dim)}
+.ad-row{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface)}
+.ad-row.incompatible .ad-row-main{opacity:.55}
+.ad-row.selected{border-color:var(--accent);background:var(--accent-soft)}
+.ad-row-main{flex:1 1 auto;min-width:0}
+.ad-row-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ad-row-id{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-md);font-weight:600}
+.ad-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:var(--raised);color:var(--dim);font-size:var(--text-xs);font-weight:600}
+.ad-badge.mounted{background:var(--ok-soft);color:var(--ok)}
+.ad-badge.selected{background:var(--accent-soft);color:var(--accent)}
+.ad-meta{margin-top:3px;font-size:var(--text-xs);line-height:1.5;color:var(--dimmer)}
+.ad-meta b{font-weight:600;color:var(--dim);font-variant-numeric:tabular-nums}
+.ad-why{margin-top:3px;font-size:var(--text-xs);color:var(--dimmer)}
+.ad-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex:0 0 auto}
+.ad-actions button{appearance:none;display:inline-flex;align-items:center;height:28px;padding:0 10px;border:1px solid var(--line-strong);border-radius:var(--radius-sm);
+  background:var(--raised);color:var(--ink);font:inherit;font-size:var(--text-sm);font-weight:550;cursor:pointer;white-space:nowrap}
+.ad-actions button:hover:not(:disabled){border-color:var(--dimmer)}
+.ad-actions button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.ad-actions button:disabled{opacity:.5;cursor:default}
+.ad-stack-chk{display:inline-flex;align-items:center;gap:5px;font-size:var(--text-xs);color:var(--dim);cursor:pointer}
+.ad-stack-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface)}
+.ad-stack-bar .lbl{font-size:var(--text-sm);color:var(--dim)}
+.ad-stack-bar .expr{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--text-sm) var(--mono)}
+
+/* ── the assistant's spotlight: never a modal (no focus trap, clicks pass through), gone on any input ── */
+#assistant-spotlight{position:fixed;inset:0;z-index:95;pointer-events:none;opacity:0;transform:scale(.98);
+  transition:opacity var(--base) var(--ease),transform var(--base) var(--ease)}
+#assistant-spotlight.show{opacity:1;transform:none}
+#assistant-spotlight .asr-ring{position:fixed;border-radius:var(--radius-md);box-shadow:0 0 0 3px var(--accent),0 0 0 9999px var(--overlay);
+  transition:left var(--base) var(--ease),top var(--base) var(--ease),width var(--base) var(--ease),height var(--base) var(--ease)}
+#assistant-spotlight .asr-pop{position:fixed;max-width:min(320px,80vw);padding:10px 14px;background:var(--panel);border:1px solid var(--line-strong);
+  border-radius:var(--radius-md);box-shadow:var(--shadow-lg);color:var(--ink);font-size:var(--text-md);line-height:1.4}
+
+/* ── narrow screens: the sidebar is a drawer behind the top bar's button ── */
+@media (max-width:760px){
+  #chat-sidebar{position:fixed;top:0;bottom:0;left:0;z-index:120;width:min(320px,86vw);padding-top:16px;background:var(--surface);
+    border-right:1px solid var(--line-strong);transform:translateX(-100%);visibility:hidden;
+    transition:transform var(--base) var(--ease),visibility 0s linear var(--base)}
+  #chat-sidebar.drawer-open{transform:none;visibility:visible;box-shadow:var(--shadow-lg);transition:transform var(--base) var(--ease)}
+  #chat-drawer-backdrop.open{display:block;position:fixed;inset:0;z-index:110;background:var(--overlay);animation:fade var(--fast) var(--ease)}
+  .sess .sacts{position:static;transform:none;padding:0 4px 0 0;background:none;opacity:1;pointer-events:auto}
+  #chat-adapter{max-width:150px}
+  #chat-thread{padding:18px 16px 8px;gap:18px}
+  #chat-hello{padding:8vh 16px 16px}
+  #chat-hello-chips{grid-template-columns:minmax(0,1fr)}
+  #chat-foot{padding:6px 10px 10px}
+  .msg.user{max-width:88%}
+  .msg .bubble{font-size:var(--text-md)}
+  .samplepop{width:100%}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .cursor,.thinkbox.live summary span,#chat-sampling.armed .dot,#chat-mic-btn.recording,.attach-chip.pulse,
+  .samplepop.open,.mentionpop.open,.sess-export-menu,#adapters-overlay.open,#chat-drawer-backdrop.open{animation:none}
+  .thinkbox.live summary span{color:var(--dim);background:none}
+  #chat-sidebar,#chat-sidebar.drawer-open,.sess,.sess .sacts,.msg-actions,.maction,.tool .caret,.thinkbox summary svg,.samp-adv>summary svg,
+  .composer-field,.src-row,.sources summary::before,#assistant-spotlight,#assistant-spotlight .asr-ring{transition:none}
+}
 `;
