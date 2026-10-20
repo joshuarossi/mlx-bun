@@ -212,6 +212,7 @@ async function renderListBody(seq: number): Promise<void> {
     '<div class="mem-search"><input class="input" type="search" id="mem-search" placeholder="Search memory" aria-label="Search memory" autocomplete="off"></div>' +
     '<div id="mem-list">' + loadingHtml("Loading the articles") + "</div>";
   await renderArticleLists("", seq);
+  if (!isCurrentView(seq)) return; // a newer view replaced the list, its search field included
   const search = $("mem-search") as HTMLInputElement;
   let debounce: ReturnType<typeof setTimeout> | undefined;
   search.addEventListener("input", () => {

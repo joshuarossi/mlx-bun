@@ -86,10 +86,11 @@ test("a slower earlier view never overwrites the newer one, and nothing renders 
   const gates = new Map<string, () => void>();
   const gated = (key: string, body: unknown) => new Promise<Response>((resolve) => { gates.set(key, () => resolve(Response.json(body))); });
   const release = (key: string) => { gates.get(key)!(); gates.delete(key); };
+  let gateList = false;
   globalThis.fetch = (async (input: string) => {
     const url = String(input);
     if (url.endsWith("/status")) return Response.json({ ok: true, enabled: true, status: { root: "/vault", exists: true, articleCount: 2, referenceCount: 0, isGitRepo: true, recentArticles: [] } });
-    if (url.endsWith("/list")) return Response.json({ ok: true, articles: ["Slow_one", "Fast_one"], reference: [] });
+    if (url.endsWith("/list")) { const list = { ok: true, articles: ["Slow_one", "Fast_one"], reference: [] }; return gateList ? gated("list", list) : Response.json(list); }
     if (url.includes("/article?name=Slow_one")) return gated("slow", { ok: true, content: "# Slow one\n\nThe slow article's text." });
     if (url.includes("/article?")) return Response.json({ ok: true, content: "# Fast one\n\nThe fast article's text." });
     if (url.includes("/links?")) return Response.json({ ok: true, outbound: [], inbound: [] });
@@ -141,6 +142,20 @@ test("a slower earlier view never overwrites the newer one, and nothing renders 
     await settle();
     expect(seen).toHaveLength(reported);
     expect(panel.isOpen()).toBe(false);
+    // The list superseded while its articles load (a provenance chip): the article stays, and the list's late
+    // answer neither wires a search field that is gone, failing the earlier open(), nor reports.
+    gateList = true;
+    const slowList = panel.open();
+    await settle();
+    await panel.open("Fast_one");
+    expect(seen.at(-1)).toBe("article: Fast one");
+    const afterArticle = seen.length;
+    release("list");
+    await expect(slowList).resolves.toBeUndefined();
+    await settle();
+    expect(seen).toHaveLength(afterArticle);
+    expect(title()).toBe("Fast one");
+    expect(body()).toContain("The fast article's text.");
   } finally { document.removeEventListener("mlx-panel-changed", record); panel.remove(); globalThis.fetch = saved; }
 });
 
