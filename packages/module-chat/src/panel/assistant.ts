@@ -172,7 +172,7 @@ export function captureUiSnapshot(route: string): UiSnapshot {
     if (!label) continue;
 
     const html = el as HTMLElement;
-    const spotlightId = html.getAttribute("data-spotlight")?.trim() || undefined;
+    const spotlightId = html.getAttribute("data-spotlight")?.trim().split(/\s+/)[0] || undefined; // the first id is the canonical one
     const existingRef = html.getAttribute("data-ui-ref");
     const ref = existingRef ?? `ui-${route.replace(/[^a-zA-Z0-9]/g, "_") || "root"}-${index}`;
     if (!existingRef) html.setAttribute("data-ui-ref", ref);
@@ -307,7 +307,7 @@ export function resolveSpotlightTarget(
   // A target is a `data-spotlight` id on the element that owns it (the chat's own controls, a wizard's field, the
   // host's rail), titled by its `data-ui-label`; the panel keeps no table of other pieces' selectors.
   if (request.target) {
-    const targetSelector = `[data-spotlight="${attrEscape(request.target)}"]`;
+    const targetSelector = `[data-spotlight~="${attrEscape(request.target)}"]`; // one element may carry several ids
     const bySpotlightAttr = safeQuery(targetSelector);
     if (bySpotlightAttr) {
       const ref = bySpotlightAttr.getAttribute("data-ui-ref");

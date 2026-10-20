@@ -1463,11 +1463,16 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
   it("resolves a target by the data-spotlight id on the element that owns it, titled by its data-ui-label", () => {
     document.body.innerHTML = '<textarea id="chat-box" data-spotlight="composer" data-ui-label="Message box"></textarea><button data-spotlight="run-now">Go</button>';
     const resolved = resolveSpotlightTarget({ target: "composer" }, null);
-    expect(resolved?.selector).toBe('[data-spotlight="composer"]');
+    expect(resolved?.selector).toBe('[data-spotlight~="composer"]');
     expect(resolved?.title).toBe("Message box");
     // Without a label the id reads as words; without the attribute anywhere the target is unknown.
     expect(resolveSpotlightTarget({ target: "run-now" }, null)?.title).toBe("Run now");
     expect(resolveSpotlightTarget({ target: "composer-x" }, null)).toBeNull();
+    // One element may carry several ids (an alias the server's tool description still advertises).
+    document.body.innerHTML = '<button data-spotlight="model-picker hub-browse" data-ui-label="Active model">Qwen</button>';
+    expect(resolveSpotlightTarget({ target: "hub-browse" }, null)).toMatchObject({ selector: '[data-spotlight~="hub-browse"]', title: "Active model" });
+    expect(resolveSpotlightTarget({ target: "model-picker" }, null)?.title).toBe("Active model");
+    expect(captureUiSnapshot("chat").elements.find((element) => element.spotlightId)?.spotlightId).toBe("model-picker");
   });
 
   it("returns null when nothing resolves (unknown ref/label/selector/target)", () => {
