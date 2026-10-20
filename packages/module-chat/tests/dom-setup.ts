@@ -20,6 +20,7 @@ Object.assign(globalThis, {
   location: win.location,
   localStorage: win.localStorage,
   requestAnimationFrame: win.requestAnimationFrame.bind(win),
+  getComputedStyle: win.getComputedStyle.bind(win),
   cancelAnimationFrame: win.cancelAnimationFrame.bind(win),
   customElements: win.customElements,
   HTMLElement: win.HTMLElement,

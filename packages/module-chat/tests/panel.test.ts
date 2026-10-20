@@ -1362,6 +1362,23 @@ describe("assistant.ts: captureUiSnapshot", () => {
     expect(labels).not.toContain("Inside a closed overlay");
   });
 
+  it("excludes elements a stylesheet hides, as the rail's controls are while it is a closed sheet at phone width", () => {
+    const style = document.createElement("style");
+    style.textContent = ".sheet{visibility:hidden;transform:translateX(-100%)} .gone{display:none}";
+    document.head.append(style);
+    document.body.innerHTML = `
+      <button id="visible">Visible</button>
+      <nav class="sheet"><button>In the closed sheet</button></nav>
+      <div class="gone"><button>Behind a display:none rule</button></div>
+    `;
+    try {
+      const labels = captureUiSnapshot("chat").elements.map((e) => e.label);
+      expect(labels).toContain("Visible");
+      expect(labels).not.toContain("In the closed sheet");
+      expect(labels).not.toContain("Behind a display:none rule");
+    } finally { style.remove(); }
+  });
+
   it("excludes agent chrome (data-ui-chrome=assistant) and the toast container", () => {
     document.body.innerHTML = `
       <button id="real">Real control</button>
@@ -1475,6 +1492,13 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
     expect(hidden.title).toBe("Source model");
     expect(showSpotlight(hidden)).toBe(false);
     expect(document.getElementById("assistant-spotlight")?.classList.contains("show") ?? false).toBe(false);
+    // Hidden by a stylesheet rather than an attribute (the rail as a closed sheet at phone width): the same answer.
+    const sheetStyle = document.createElement("style");
+    sheetStyle.textContent = ".sheet{visibility:hidden;transform:translateX(-100%)}";
+    document.head.append(sheetStyle);
+    document.body.innerHTML = '<nav class="sheet"><button data-spotlight="model-picker" data-ui-label="Active model">Qwen</button></nav>';
+    expect(showSpotlight(resolveSpotlightTarget({ target: "model-picker" }, null)!)).toBe(false);
+    sheetStyle.remove();
     // One element may carry several ids (an alias the server's tool description still advertises).
     document.body.innerHTML = '<button data-spotlight="model-picker hub-browse" data-ui-label="Active model">Qwen</button>';
     expect(resolveSpotlightTarget({ target: "hub-browse" }, null)).toMatchObject({ selector: '[data-spotlight~="hub-browse"]', title: "Active model" });

@@ -445,7 +445,10 @@ async function walkDefault(page: Page) {
     check("the agent answers from the page's context: the page and its controls", await page.waitFor("/looking at .*chat.* page/i.test(window.__text('#chat-thread') || '') && /controls, such as/.test(window.__text('#chat-thread') || '')", 15000));
     await finished();
     await ask("highlight the model picker");
-    check("the agent highlights a control by its spotlight id", await page.waitFor("document.getElementById('assistant-spotlight')?.classList.contains('show') && /served model/i.test(window.__text('#assistant-spotlight .asr-pop-text') || '')", 6000), await page.text("#assistant-spotlight .asr-pop-text") ?? "");
+    // On a phone the rail is a closed sheet: its model button is not on screen, so the spotlight declines and the chat
+    // says so, instead of ringing a spot beyond the viewport's edge.
+    if (phone) check("on a phone the spotlight declines the closed sheet's control, with a toast", await page.waitFor("/Couldn't find that on screen/.test(window.__text('#toasts') || '') && !document.getElementById('assistant-spotlight')?.classList.contains('show')", 6000), await page.text("#toasts") ?? "");
+    else check("the agent highlights a control by its spotlight id", await page.waitFor("document.getElementById('assistant-spotlight')?.classList.contains('show') && /served model/i.test(window.__text('#assistant-spotlight .asr-pop-text') || '')", 6000), await page.text("#assistant-spotlight .asr-pop-text") ?? "");
     await page.shot("agent-spotlight");
     await finished();
   });
