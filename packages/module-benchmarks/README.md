@@ -62,10 +62,13 @@ mismatch, no tolerance), whether the runner judged them comparable, and each tas
 
 ## Panel
 
-`src/panel/index.ts` defines `<mlx-benchmarks-panel>`: one self-contained custom element (shadow DOM, no imports but its
-data protocol's types) that takes `connection = { apiBase, eventsUrl }`, lists the tasks (one whose dataset is missing
-cannot be chosen), starts a run for the chosen tasks and model, shows the running job's progress, the history with
-per-task accuracy, and a comparison of two runs. It polls its own routes and does not read the events URL. The app's
+`src/panel/` defines `<mlx-benchmarks-panel>`: one self-contained custom element (shadow DOM) in `index.ts`, with its
+rules in `style.ts`, importing only its data protocol's types and `@mlx-bun/web-kit` (the base vocabulary goes ahead of
+its own rules in the shadow root). It takes `connection = { apiBase, eventsUrl }` and reaches the routes through
+`createApi(apiBase)`: it lists the tasks with why one cannot run as asked (a task whose dataset is missing cannot be
+chosen), starts a run for the chosen tasks and model, shows the running job's progress, the history with per-task
+accuracy, and a comparison of two runs with the runner's report. It polls its own routes every 5 s while a run is going,
+stops when its page is left, and does not read the events URL. The app's
 web shell (`@mlx-bun/web-shell`) mounts it: the app's browser build imports the manifest's `panel.entry`
 (`@mlx-bun/module-benchmarks/panel`) and gives the shell the manifest's tag, title and path (route `#/benchmarks`)
 with `connection = { apiBase: "/api/benchmarks", eventsUrl: "/api/benchmarks/stream" }`, so the standalone binary
