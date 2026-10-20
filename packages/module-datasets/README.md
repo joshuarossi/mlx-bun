@@ -87,10 +87,19 @@ It passes on Docker Desktop 29.8.0 (linux/arm64, M1 Max) with the pinned image.
 
 ## Panel
 
-`<mlx-datasets-panel>` (`./panel`) owns the existing template-driven wizard, its markup and styles in shadow DOM.
-The shell preserves `/dataset`. It reaches templates, submission and job streams through its `PanelConnection`;
-optional host `ui` hooks provide notifications, publishing and the active model id used to name LLM datasets.
-An unfinished job reconnects and replays its stream after returning to the panel; leaving closes the stream
-without cancelling the managed job. Panel tests cover template escaping, typed inputs, model naming,
-row counts, reconnection and publishing over a remote backend under a URL prefix.
-Pushing a dataset to Hugging Face (`POST /api/dataset/push`) belongs to publishing.
+`<mlx-datasets-panel>` (`./panel`) is the template-driven wizard (template, inputs, generate, done) in shadow DOM:
+`index.ts` is the element, `controller.ts` owns the steps, the requests and the job stream, and `view.ts` the markup,
+the template cards, the typed fields and the panel's own rules after the web kit's base vocabulary. The shell mounts
+it unframed at `/dataset`, so the panel draws its own page heading, step rail and cards. Requests go through the kit's
+client and keep their root paths (`/api/dataset/*`, `/api/jobs/:id/stream`) under whatever prefix the connection's
+`apiBase` sits on; the job stream is the kit's event-stream client. Optional host `ui` hooks provide notifications,
+publishing and the active model id used to name LLM datasets. The chat assistant reads the step rail (`#d-steps`,
+`.s.cur`).
+
+The template grid shows placeholders while it loads, an empty state when the server lists none and a retry when it
+cannot be reached. Leaving the page closes the job stream without cancelling the job; returning while the job is
+unfinished reopens it, and the server's replay rebuilds the log. A dropped connection shows a reconnecting note until
+the next event, a failed job shows its error with a way back to Inputs, and an unreachable server on submit says so in
+place. Panel tests cover template loading, ordering and escaping, typed inputs, model naming, row counts, reconnection
+and replay, failure and recovery, the terminal event and publishing over a remote backend under a URL prefix, with the
+kit's fake `EventSource`. Pushing a dataset to Hugging Face (`POST /api/dataset/push`) belongs to publishing.
