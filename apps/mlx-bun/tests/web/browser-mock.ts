@@ -4,7 +4,7 @@
 // browser's own switch, or a devtools emulation) makes every request fail the way a dead server would, and the
 // socket closes, so the app's unreachable and recovery states can be seen too. `scripts/web-static.ts` bundles this
 // ahead of the app's bundle.
-import { createFakeBackend, type FakeBackendOptions } from "./fake-backend";
+import { createFakeBackend, type FakeBackendOptions, type PageContext } from "./fake-backend";
 
 const ORIGIN = "http://mlx-bun.mock";
 const SCENARIO_KEY = "mlxbun.mock.scenario";
@@ -48,13 +48,13 @@ export function installBrowserMock(options: FakeBackendOptions & { switcher?: bo
     readyState = 0;
     onopen: Handler = null; onmessage: Handler = null; onclose: Handler = null; onerror: Handler = null;
     readonly url: string;
-    #peer: { send(data: string): void; readyState?: number; data: { turn: AbortController | null; session: string | null } };
+    #peer: { send(data: string): void; readyState?: number; data: { turn: AbortController | null; session: string | null; context: PageContext | null } };
     constructor(url: string | URL) {
       super();
       this.url = String(url);
       const self = this;
       this.#peer = {
-        data: { turn: null, session: null },
+        data: { turn: null, session: null, context: null },
         send(data: string) { setTimeout(() => { if (self.readyState === 1) self.#fire("message", new MessageEvent("message", { data })); }, 0); },
       };
       setTimeout(() => {

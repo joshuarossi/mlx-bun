@@ -201,6 +201,21 @@ async function walkDefault(page: Page) {
     else check("tab order runs down the rail's tabs", seen.slice(0, 4).every((s) => s.startsWith("a:")), seen.slice(0, 4).join(" → "));
     const rings = seen.filter((s) => s.includes("!ring") && !s.startsWith("body:"));
     check("keyboard focus is visible on every stop", rings.length === 0, rings.join(", "));
+    if (phone) {
+      // The open sheet is a dialog: Tab after its last control and Shift+Tab before its first stay inside it.
+      await page.click("#nav-menu");
+      await page.waitFor("document.getElementById('nav').classList.contains('open')", 2000);
+      await sleep(150);
+      const inside = () => page.eval<boolean>("document.getElementById('nav').contains(window.__active())");
+      await page.eval("(() => { const items = [...document.querySelectorAll('#nav a[href], #nav button:not([disabled])')]; items[items.length - 1].focus(); })()");
+      await page.key("Tab");
+      check("Tab from the sheet's last control stays inside the sheet", await inside(), JSON.stringify(await page.focused()));
+      await page.eval("document.querySelector('#nav .tab').focus()");
+      await page.key("Tab", { shift: true });
+      check("Shift+Tab from the sheet's first control stays inside the sheet", await inside(), JSON.stringify(await page.focused()));
+      await page.key("Escape");
+      check("Escape closes the sheet and focus returns to the menu button", await page.waitFor("!document.getElementById('nav').classList.contains('open')", 1500) && (await page.focused()).id === "nav-menu", JSON.stringify(await page.focused()));
+    }
   });
 
   await step(`palette ${W}`, async () => {
@@ -235,6 +250,8 @@ async function walkDefault(page: Page) {
     await page.click('#theme-toggle [data-theme-choice="dark"]');
     check("dark theme applies", await page.waitFor("document.documentElement.dataset.theme === 'dark'", 1000));
     await sleep(300);
+    check("the chosen theme reads as pressed and looks different from the others", await page.eval<boolean>(`(() => { const dark = window.__q('#theme-toggle [data-theme-choice="dark"]'), light = window.__q('#theme-toggle [data-theme-choice="light"]');
+      return dark.getAttribute('aria-pressed') === 'true' && light.getAttribute('aria-pressed') === 'false' && getComputedStyle(dark).backgroundColor !== getComputedStyle(light).backgroundColor; })()`));
     await page.shot("settings-dark");
     await page.click('#theme-toggle [data-theme-choice="light"]');
     check("light theme applies", await page.waitFor("document.documentElement.dataset.theme === 'light'", 1000));
@@ -406,6 +423,27 @@ async function walkDefault(page: Page) {
     await page.shot("chat-approved");
     const errors = page.takeErrors();
     check("no console errors in the chat", errors.length === 0, errors.slice(0, 3).join(" | "));
+  });
+
+  await step(`agent ${W}`, async () => {
+    // The app-aware agent: the fake backend answers these prompts with the same frames the real tools send.
+    await page.go("chat");
+    await page.waitFor("window.__q('#chat-box') && !window.__q('#chat-box').disabled", 4000);
+    const finished = () => page.waitFor("!window.__vis('#chat-stop') && !window.__q('#chat-box').disabled", 20000);
+    const ask = async (text: string) => { await page.focus("#chat-box"); await page.type(text); await page.key("Enter"); };
+    await ask("take me to quantize and show me where to start");
+    check("the agent navigates to the page it was asked for", await page.waitFor("location.hash === '#/quantize'", 5000), await page.eval("location.hash"));
+    check("and highlights where to start, with its hint", await page.waitFor("window.__vis('#assistant-spotlight') && document.getElementById('assistant-spotlight').classList.contains('show') && /Start here/.test(window.__text('#assistant-spotlight .asr-pop-text') || '')", 6000), await page.text("#assistant-spotlight .asr-pop-text") ?? "");
+    await page.shot("agent-navigate");
+    await page.go("chat");
+    await finished();
+    await ask("what am I looking at?");
+    check("the agent answers from the page's context: the page and its controls", await page.waitFor("/looking at .*chat.* page/i.test(window.__text('#chat-thread') || '') && /controls, such as/.test(window.__text('#chat-thread') || '')", 15000));
+    await finished();
+    await ask("highlight the model picker");
+    check("the agent highlights a control by its spotlight id", await page.waitFor("document.getElementById('assistant-spotlight')?.classList.contains('show') && /served model/i.test(window.__text('#assistant-spotlight .asr-pop-text') || '')", 6000), await page.text("#assistant-spotlight .asr-pop-text") ?? "");
+    await page.shot("agent-spotlight");
+    await finished();
   });
 
   if (!phone) await step(`offline ${W}`, async () => {
