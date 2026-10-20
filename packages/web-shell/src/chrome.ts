@@ -3,12 +3,15 @@
 // every module panel sits in. Written against the web kit's tokens; a host serves it after `TOKENS_CSS` and
 // `BASE_CSS` (the app builds `/assets/app.css` from the three) or injects it. The panel frame's rules are also
 // injected on first mount so a host that links nothing still gets a readable page.
+/** The width below which the rail is a sheet: the stylesheet's media query, and the shell's, so they cannot drift. */
+export const SHEET_MEDIA = "(max-width:760px)";
+
 export const PANEL_FRAME_CSS = String.raw`
 .shell-panel-scroll{height:100%;overflow-y:auto}
 .shell-panel{max-width:var(--content-w);margin:0 auto;padding:28px 32px 96px;color:var(--ink)}
 .shell-panel-title{font-size:var(--text-2xl);font-weight:650;letter-spacing:-.015em;line-height:1.2;margin:0 0 18px}
 .shell-panel-note{color:var(--dim);font-size:var(--text-md)}
-@media (max-width:760px){.shell-panel{padding:18px 16px 80px}.shell-panel-title{font-size:var(--text-xl)}}
+@media ${SHEET_MEDIA}{.shell-panel{padding:18px 16px 80px}.shell-panel-title{font-size:var(--text-xl)}}
 `;
 
 export const SHELL_CSS = String.raw`
@@ -71,7 +74,7 @@ section[data-route].active{display:block;animation:shell-page-in var(--fast) var
 /* ── narrow screens: top bar, the rail as a sheet ── */
 #nav-backdrop{position:fixed;inset:0;z-index:110;background:var(--overlay);display:none}
 #nav-backdrop.open{display:block}
-@media (max-width:760px){
+@media ${SHEET_MEDIA}{
   #shell{grid-template-columns:minmax(0,1fr);grid-template-rows:var(--topbar-h) minmax(0,1fr)}
   #topbar{display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--surface);border-bottom:1px solid var(--line);min-width:0}
   #topbar .brand{font-weight:650;color:var(--ink);text-decoration:none;font-size:var(--text-lg);letter-spacing:-.01em;margin-right:auto}

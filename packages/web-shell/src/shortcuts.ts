@@ -12,14 +12,20 @@ export interface ShortcutSheet extends Overlay {
 
 export function createShortcutSheet(): ShortcutSheet {
   let trap: FocusTrap | undefined;
+  let focusLater: ReturnType<typeof setTimeout> | undefined;
   const isOpen = () => $("shortcut-overlay").classList.contains("open");
   function open(): void {
+    if (isOpen()) return; // the restore target stays what opened it
     trap?.capture();
     $("shortcut-overlay").classList.add("open");
     $("nav-shortcuts").setAttribute("aria-expanded", "true");
-    setTimeout(() => $("sk-close").focus(), 30);
+    // The close button takes focus once the sheet shows; a close before then cancels it.
+    clearTimeout(focusLater);
+    focusLater = setTimeout(() => { focusLater = undefined; if (isOpen()) $("sk-close")?.focus(); }, 30);
   }
   function close(): void {
+    clearTimeout(focusLater);
+    focusLater = undefined;
     $("shortcut-overlay").classList.remove("open");
     $("nav-shortcuts").setAttribute("aria-expanded", "false");
     trap?.restore();

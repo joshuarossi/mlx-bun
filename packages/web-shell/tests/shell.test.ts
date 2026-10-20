@@ -408,3 +408,47 @@ test("the navigation sheet opens from the menu button and closes on its backdrop
   shell.nav.toggle(); shell.nav.toggle();
   expect(shell.nav.isOpen()).toBe(false);
 });
+
+test("the sheets drop their delayed focus when closed at once, the navigation sheet keeps its restore target on a repeated open and closes when the layout grows past the breakpoint", async () => {
+  shell.start();
+  shell.navigate();
+  const nav = document.getElementById("nav")!, menu = document.getElementById("nav-menu")!, backdrop = document.getElementById("nav-backdrop")!;
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Opened and closed before its delayed focus lands: focus stays where it was, not on a tab in the closed sheet.
+  menu.focus();
+  shell.nav.open();
+  shell.nav.close();
+  await wait(50);
+  expect(document.activeElement).toBe(menu);
+  // The shortcut sheet guards its delayed focus the same way.
+  shell.shortcuts.open();
+  shell.shortcuts.close();
+  await wait(50);
+  expect(document.activeElement).toBe(menu);
+  // Opened from a control on the page, then opened again while open: closing returns to that control, not to the
+  // tab the second call found focused.
+  const page = document.createElement("button");
+  document.body.append(page);
+  page.focus();
+  shell.nav.open();
+  await wait(50);
+  expect(nav.contains(document.activeElement)).toBe(true);
+  shell.nav.open();
+  shell.nav.close();
+  expect(document.activeElement).toBe(page);
+  page.remove();
+  // Open at phone width, then the viewport grows past the breakpoint: the sheet closes and lets go of the keyboard.
+  window.happyDOM.setViewport({ width: 390 });
+  shell.nav.open();
+  expect(shell.nav.isOpen()).toBe(true);
+  window.happyDOM.setViewport({ width: 1024 });
+  await wait(10);
+  expect(shell.nav.isOpen()).toBe(false);
+  expect(backdrop.classList.contains("open")).toBe(false);
+  expect(menu.getAttribute("aria-expanded")).toBe("false");
+  const last = [...nav.querySelectorAll<HTMLElement>("a[href],button:not([disabled])")].at(-1)!;
+  last.focus();
+  const event = new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }) as unknown as Event;
+  last.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(false);
+});

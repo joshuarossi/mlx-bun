@@ -106,26 +106,13 @@ function isHiddenSelf(el: Element): boolean {
 
 function isVisible(el: Element): boolean {
   const html = el as HTMLElement;
-  // offsetParent is the accurate, layout-derived signal in a real browser
-  // (null for display:none, including via a CSS class rule) — the same
-  // test shell.ts's trapFocus already uses elsewhere in this codebase. Only
-  // trust it when it's null: some engines (and fixed-position elements)
-  // report null even when visible, and test environments without real
-  // layout (happy-dom) report `undefined` for every element regardless of
-  // visibility — in both of those cases fall through to the ancestor walk
-  // below rather than either false-negative or false-positive on
-  // offsetParent alone.
-  if (html.offsetParent === null) {
-    const style = (globalThis as { getComputedStyle?: (e: Element) => CSSStyleDeclaration }).getComputedStyle?.(html);
-    if (style && style.position === "fixed") return true;
-  }
   // The engine's own, layout-derived answer where it has one (every current browser): it sees a stylesheet's
-  // display:none on any ancestor, across shadow boundaries, and a visibility:hidden the element inherits, as the
-  // rail's controls do while it is a closed sheet at phone width.
+  // display:none on any ancestor, across shadow boundaries, a visibility:hidden the element inherits, as the
+  // rail's controls do while it is a closed sheet at phone width, and a hidden fixed-position element alike
+  // (offsetParent is null for a fixed element whether or not it shows, so it cannot stand in for this).
   if (typeof html.checkVisibility === "function") return html.checkVisibility({ visibilityProperty: true });
-  // Ancestor walk: catches inline/attribute hidden state on `el` itself or
-  // any ancestor (a closed overlay's contents, a display:none wrapper),
-  // independent of whether offsetParent resolved anything above.
+  // Without one (happy-dom): walk the ancestors for attribute, inline and computed hidden state on `el` itself
+  // or any ancestor (a closed overlay's contents, a display:none wrapper).
   for (let node: Element | null = el; node; node = uiParent(node)) {
     if (isHiddenSelf(node)) return false;
   }
