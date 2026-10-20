@@ -47,6 +47,8 @@ const width = (id: string, fraction: number | null) => { const node = $(id); if 
 
 export function createStatusController() {
   let timer: ReturnType<typeof setInterval> | null = null, libTimer: ReturnType<typeof setInterval> | null = null, fitLoaded = false;
+  /** The page's markup exists (its first visit ran `init`); a refresh from elsewhere (a job finished) waits for it. */
+  let initialized = false;
   const dlRates: Record<string, { bytes: number; t: number }> = {};
 
   async function tick(): Promise<void> {
@@ -146,11 +148,14 @@ export function createStatusController() {
   }
 
   async function loadLibrary(): Promise<void> {
+    if (!initialized) return;
     const answer = await api.get<{ models?: LibraryModel[] }>("/library");
     if (answer.ok === false || !answer.models) return;
+    const body = $("st-lib-body");
+    if (!body) return; // the page was emptied meanwhile
     const models = answer.models;
-    if (!models.length) { $("st-lib-body").innerHTML = '<tr><td colspan="5" class="muted">Nothing is downloaded yet.</td></tr>'; return; }
-    $("st-lib-body").innerHTML = models.slice()
+    if (!models.length) { body.innerHTML = '<tr><td colspan="5" class="muted">Nothing is downloaded yet.</td></tr>'; return; }
+    body.innerHTML = models.slice()
       .sort((a, b) => (b.serving ? 1 : 0) - (a.serving ? 1 : 0) || b.size_bytes - a.size_bytes)
       .map((m) => {
         const a = m.assessment;
@@ -224,6 +229,7 @@ export function createStatusController() {
     init() {
       injectStyles("mlxbun-status-style", STATUS_CSS);
       $("s-status").innerHTML = STATUS_MARKUP;
+      initialized = true;
     },
     enter() {
       void tick();
