@@ -24,6 +24,22 @@ measurement, one accent (`--accent`) for interaction and focus, and semantic col
 state. Code keeps its own dark surface in both themes. Focus rings are visible, motion is short and respects
 `prefers-reduced-motion`, and copy is sentence case.
 
+## Panel conventions
+
+- The kit's classes own their appearance: pick a variant (`.btn.primary`, `.btn.quiet`, `.btn.sm`, `.notice.bad`,
+  `.tag.ok`) instead of restyling a class from a panel. A look the kit lacks is a panel's own class in its own
+  stylesheet; a generic one becomes a kit variant.
+- Layout belongs to the parent: width, grid placement and margins go on the container or a layout class (`.row`,
+  `.grid.cols-2`), never on the kit's controls.
+- Every page has its states: a skeleton or placeholder while loading, an `.empty` state with a next step, a `.notice`
+  for a failure with a Retry where retrying is possible, and a reconnecting note while a stream is down.
+- Every action has a visible outcome and a way back: a disabled control says why in a `.hint`, a destructive one asks,
+  and a wizard's failed step offers a way to the step that caused it.
+- Everything works from the keyboard: real buttons and links, labels on every field, `aria-current`, `aria-expanded`
+  and `aria-pressed` where state is shown, and focus restored when an overlay closes.
+- Transport goes through the kit: `createApi` for JSON, `openEventStream` for a job or metrics stream, `createSocket`
+  for the chat; a panel owns its listeners and streams through `createDisposer` and releases them when it leaves.
+
 ## Tests
 
 `bun test` here covers the client's envelope handling, the stream's normal completion, terminal event, dropped
