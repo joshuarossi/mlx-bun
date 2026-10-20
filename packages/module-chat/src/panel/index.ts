@@ -48,9 +48,11 @@ class ChatPanel extends Base {
   disconnectedCallback() {
     queueMicrotask(() => {
       if (this.isConnected || !this.#controller) return;
-      this.#controller.dispose();
+      // Forget the controller first: whatever teardown does, a panel attached again starts a fresh session on fresh markup.
+      const controller = this.#controller;
       this.#controller = undefined;
       this.#drawer = undefined;
+      controller.dispose();
     });
   }
 

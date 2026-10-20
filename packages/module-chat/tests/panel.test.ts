@@ -180,6 +180,27 @@ describe("chat turn rendering lifecycle", () => {
     expect(byId("chat-queue").textContent).toBe("");
   }
 
+  it("teardown mid-reply closes the socket without rendering into the detached markup, and a reattached panel starts fresh", async () => {
+    const { panel, socket } = mount();
+    socket.emit(ready);
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "A reply that will be cut off." });
+    flushFrames();
+    panel.remove();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the teardown runs in a microtask after the removal
+    expect(socket.closedByClient).toBe(true);
+    expect(FakeWebSocket.instances.length).toBe(1); // nothing reconnected on the way out
+    section().append(panel);
+    panel.enter();
+    const next = FakeWebSocket.last()!;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.emit(ready);
+    expectComposerReady();
+    socket.emit({ type: "text_delta", delta: "late" }); // the old socket's frames reach nothing
+    expect(document.querySelector("#chat-thread")!.textContent).not.toContain("late");
+  });
+
   it("finishes a turn before its queued frame render without touching cleared state", () => {
     const { socket } = mount();
     socket.emit({ type: "turn_start" });
