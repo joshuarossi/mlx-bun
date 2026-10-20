@@ -194,7 +194,7 @@ its execution lease, library invalidation, and port through an attached link,
 so a later isolation step can run the host in another process. The chat (the WebSocket backend, its Pi
 adapter, saved chats and tool approvals) is `@mlx-bun/module-chat`, which runs in the persistent state;
 `web/` owns browser modules, static assets, and compilation.
-Browser code consumes only its own modules and the leaf job protocol.
+Browser code consumes only its own modules, the web shell, the web kit and the leaf job protocol.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
