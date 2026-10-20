@@ -2,11 +2,15 @@
 //
 //   bun apps/mlx-bun/scripts/web-preview.ts [--port 8090] [--scenario default|empty|failing] [--pace 24]
 //
-// The page, bundle and assets are the real ones (`src/web/assets.ts`, built from source when `dist/web/app.js`
-// is missing); every API route, the chat socket and the event streams come from `tests/web/fake-backend.ts`
-// and its fixtures. Nothing here loads a model or MLX. In the chat, a prompt containing `/slow` streams a long
-// reply (to try Stop), `/fail` ends the reply with the protocol's error frame, and `approve` asks for a tool approval.
+// The page, bundle and assets are the real ones (`src/web/assets.ts`; the bundle is rebuilt from source into
+// `dist/web/app.js` first, so the preview never serves a stale build); every API route, the chat socket and the event
+// streams come from `tests/web/fake-backend.ts` and its fixtures. Nothing here loads a model or MLX. In the chat, a
+// prompt containing `/slow` streams a long reply (to try Stop), `/fail` ends the reply with the protocol's error
+// frame, and `approve` asks for a tool approval.
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { createWebHandler } from "../src/web/assets";
+import { buildWebBundle, OUTFILE } from "../src/web/build";
 import { startFakeBackend, type Scenario } from "../tests/web/fake-backend";
 
 function parse(argv: readonly string[]): { port: number; scenario: Scenario; paceMs: number } {
@@ -36,6 +40,8 @@ function parse(argv: readonly string[]): { port: number; scenario: Scenario; pac
 
 if (import.meta.main) {
   const options = parse(process.argv.slice(2));
+  await mkdir(dirname(OUTFILE), { recursive: true });
+  await Bun.write(OUTFILE, await buildWebBundle());
   const web = await createWebHandler();
   const backend = startFakeBackend({ ...options, web });
   console.log(`mlx-bun web preview (${backend.scenario} scenario, no model) at ${backend.url}/`);

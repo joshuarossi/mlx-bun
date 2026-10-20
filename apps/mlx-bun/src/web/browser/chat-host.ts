@@ -4,7 +4,7 @@
 // agent-tools settings render in the settings dialog. The panel knows none of this: a host without a memory panel or a
 // settings dialog leaves the properties out.
 import { initMemoryPanel, memoryToolChip } from "./memory-panel";
-import { renderCodingToolsState, renderToolApprovals, storedCodingToolsPreference } from "./shell";
+import { renderCodingToolsState, renderToolApprovals, storedCodingToolsPreference } from "./app-shell/settings";
 
 export const chatHost = {
   mounted() { initMemoryPanel(); },

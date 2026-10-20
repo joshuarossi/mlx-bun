@@ -19,7 +19,7 @@ test("the generated browser bundle and local shell assets resolve without native
   const html = await shell.text();
   expect(shell.headers.get("content-type")).toBe("text/html; charset=utf-8");
   expect(html).not.toContain("pf-lane");
-  for (const path of ["/assets/app.js", "/assets/hljs.js", "/assets/hljs.css", "/manifest.webmanifest", "/assets/icon.svg"]) {
+  for (const path of ["/assets/app.js", "/assets/app.css", "/assets/hljs.js", "/assets/hljs.css", "/manifest.webmanifest", "/assets/icon.svg"]) {
     const asset = handle(new Request(`http://local${path}`))!;
     expect(asset.status).toBe(200); expect(asset.headers.get("cache-control")).toBe("public, max-age=3600");
     expect((await asset.text()).length).toBeGreaterThan(10);
@@ -27,6 +27,9 @@ test("the generated browser bundle and local shell assets resolve without native
   for (const match of html.matchAll(/(?:src|href)="(\/(?:assets\/[^"?#]+|manifest\.webmanifest))"/g)) {
     expect(handle(new Request(`http://local${match[1]}`))?.status).toBe(200);
   }
+  const css = await handle(new Request("http://local/assets/app.css"))!.text();
+  expect(css).toContain(":root{"); expect(css).toContain("#nav{"); expect(css).toContain(".btn{"); // tokens, chrome and the base vocabulary, in that order
+  expect(css.indexOf(":root{")).toBeLessThan(css.indexOf(".btn{")); expect(css.indexOf(".btn{")).toBeLessThan(css.indexOf("#nav{"));
   const app = await handle(new Request("http://local/assets/app.js"))!.text();
   expect(app).not.toContain("renderLane");
   expect(app).not.toContain("bun:ffi");
@@ -71,6 +74,7 @@ test("a packaged browser bundle is served directly without invoking the source c
   const root = await mkdtemp(join(tmpdir(), "mlx-web-packed-"));
   try {
     await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
+    await symlink(new URL("../../node_modules", import.meta.url).pathname, join(root, "node_modules")); // the stylesheet comes from the installed kit and shell
     await mkdir(join(root, "dist/web"), { recursive: true });
     const packed = "globalThis.packedBrowser = true;";
     await writeFile(join(root, "dist/web/app.js"), packed);

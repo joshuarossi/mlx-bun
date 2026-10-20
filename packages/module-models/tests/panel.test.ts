@@ -69,7 +69,7 @@ test("fit verdict: none without an assessment, red when it does not fit, green a
 });
 
 test("Model Hub: the downloaded list shows an empty state, escapes a malicious repo id everywhere, and offers Serve only for a supported model", () => {
-  expect(render.renderHubLocalHtml([])).toContain("search Hugging Face");
+  expect(render.renderHubLocalHtml([])).toContain("Search Hugging Face");
   const html = render.renderHubLocalHtml([local({ repo_id: '"><script>alert(1)</script>/model' })]);
   expect(html).not.toContain("<script>alert(1)</script>");
   expect(html).toContain("&lt;script&gt;");
@@ -88,11 +88,11 @@ test("the served model comes first and is not offered Serve; a loaded one is tag
   const servingRowEnd = html.indexOf("org/a"); // everything before the second row is the serving row
   expect(html.slice(0, servingRowEnd)).not.toContain("hub-serve-btn");
   expect(html.slice(0, servingRowEnd)).toContain("currently serving");
-  expect(html.match(/class="hub-serve-btn"/g)).toHaveLength(2);
+  expect(html.match(/class="btn sm hub-serve-btn"/g)).toHaveLength(2);
   // Only a model that is loaded but not served carries the loaded tag.
-  expect(html.match(/○ loaded/g)).toHaveLength(1);
-  expect(html.slice(html.indexOf("org/c"))).toContain("○ loaded");
-  expect(render.renderHubLocalHtml([local({ repo_id: '"><script>alert(1)</script>/model' })])).toContain('class="hub-serve-btn" data-repo="&quot;&gt;&lt;script&gt;');
+  expect(html.match(/hub-loaded-tag/g)).toHaveLength(1);
+  expect(html.slice(html.indexOf("org/c"))).toContain("hub-loaded-tag");
+  expect(render.renderHubLocalHtml([local({ repo_id: '"><script>alert(1)</script>/model' })])).toContain('class="btn sm hub-serve-btn" data-repo="&quot;&gt;&lt;script&gt;');
 });
 
 test("Model Hub: search shows an offline note distinct from no results, escapes ids, and marks a repo that is downloading", () => {
@@ -113,11 +113,11 @@ test("adapters: every adapter on disk with what mounting costs, unmount for a mo
   const info = new Map([["tuned", { id: "tuned", path: "/adapters/tuned", rank: 8, scale: 1, size_bytes: 3 * 2 ** 20, mounted_layers: 4, ram_bytes: 2 ** 20 }]]);
   const html = render.renderAdaptersHtml([adapter(), adapter({ id: "foreign", path: "/adapters/foreign", base_model: "org/Other", compatible: false }),
     adapter({ id: "fresh", path: "/adapters/fresh", base_model: null })], info);
-  expect(html).toContain('class="ad-unmount" data-id="tuned"');
-  expect(html).toContain("disk <b>3.0 MB</b>"); expect(html).toContain("RAM <b>1.0 MB</b>");
+  expect(html).toContain('class="btn sm ad-unmount" data-id="tuned"');
+  expect(html).toContain("disk <b>3 MB</b>"); expect(html).toContain("RAM <b>1 MB</b>");
   expect(html).toContain("trained for org/Other, not the served model");
   expect(html).not.toContain('data-id="foreign"');
-  expect(html).toContain('class="ad-mount" data-id="fresh" data-path="/adapters/fresh"');
+  expect(html).toContain('class="btn sm ad-mount" data-id="fresh" data-path="/adapters/fresh"');
   expect(render.renderAdaptersHtml([], new Map())).toContain("No adapters found on disk");
   expect(render.renderAdaptersHtml([adapter({ id: '"><img src=x onerror=1>' })], new Map())).not.toContain("<img");
 });
@@ -164,7 +164,7 @@ test("Serve switches through the route, tells the page, and refreshes what is ru
   await settle();
   expect(changed).toEqual(["changed"]);
   expect(part(panel, "status").textContent).toBe("Now serving org/a");
-  expect(part(panel, "restart").className).toBe("restart");
+  expect(part(panel, "restart").className).toBe("restart notice warn");
   expect(part(panel, "local").textContent).toContain("currently serving");
 });
 

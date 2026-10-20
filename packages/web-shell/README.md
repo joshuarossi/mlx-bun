@@ -1,20 +1,24 @@
 # @mlx-bun/web-shell
 
 The web shell of mlx-bun applications (design: [Modular application](../../ARCHITECTURE.md#modular-application)):
-navigation between pages, hash routing, theme, the Developer switch, the keyboard shortcut sheet, the Escape sweep over
-open overlays, the command palette's chrome, and the mounting of module panels. It is browser code with no workspace
-dependencies and touches no DOM until a host uses it, so the app's browser bundle and a native app's webview load the
-same code. Importing the entry in Bun (package verification, an inventory) is safe.
+navigation between pages, hash routing, theme, the Developer switch, the navigation sheet on narrow screens, the keyboard
+shortcut sheet, the Escape sweep over open overlays, the command palette's chrome, and the mounting of module panels. It
+is browser code over [`@mlx-bun/web-kit`](../web-kit/README.md) (its only dependency) and touches no DOM until a host
+uses it, so the app's browser bundle and a native app's webview load the same code. Importing the entry in Bun
+(package verification, an inventory) is safe.
 
 ## Host contract
 
-The host page supplies the markup and the tokens; the shell drives them.
+The host page supplies the markup and serves the stylesheet; the shell drives them.
 
-- `nav #tabs` holding `a.tab[data-tab]` (add `data-dev` for a developer tool), pages as `section[data-route]` inside
-  `#app`, `#nav-developer` (with `#nav-developer-dot`), `#theme-toggle` buttons (`data-theme-choice`), the shortcut sheet
-  (`#nav-shortcuts`, `#shortcut-overlay`, `#sk-close`) and `#toasts`.
-- Design tokens on `:root` (`--ink`, `--dim`, `--hairline`, `--card`, `--blue`, ...), light values under
-  `[data-theme="light"]`. The shell's panel frame maps them to the names panels use (`--text`, `--line`).
+- `#nav` (the rail) holding `#tabs` with `a.tab[data-tab]` tabs (add `data-dev` for a developer tool; a `.tabs-group`
+  heading marked `data-dev` hides with them), pages as `section[data-route]` inside `#app`, `#nav-developer` (with
+  `#nav-developer-dot`), `#theme-toggle` buttons (`data-theme-choice`, wherever the host puts them), the shortcut sheet
+  (`#nav-shortcuts`, `#shortcut-overlay`, `#sk-close`), `#toasts`, and for narrow screens `#topbar` with `#nav-menu`
+  (opens the rail as a sheet) and `#nav-backdrop`.
+- The stylesheet: the kit's `TOKENS_CSS` and `BASE_CSS`, then this package's `SHELL_CSS` (the rail and top bar, the
+  tabs, the status strip a host fills, dialogs with `.dialog-backdrop` and `.dialog`, toasts, the panel frame). The app
+  serves the three as `/assets/app.css`; the panel frame's rules are also injected on first mount.
 - Preferences are `localStorage` keys `mlxbun.theme` and `mlxbun.developer` (the developer switch defaults on, once,
   when any other `mlxbun.*` key exists, so a returning user keeps their tabs).
 
@@ -22,12 +26,13 @@ The host page supplies the markup and the tokens; the shell drives them.
 const shell = createShell({ routes: [{ id: "chat" }, { id: "status", developer: true }], home: "chat", onRoute });
 shell.mountPanels(panels);            // a tab and a page per module panel
 shell.overlays.add(...);              // what Escape closes, in priority order
-shell.start({ palette, keys });       // theme, service worker, shortcut sheet, keys, hash routing, Developer switch
+shell.start({ palette, keys });       // theme, service worker, shortcut sheet, keys, hash routing, Developer switch, the sheet
 shell.controllers.chat = { init, enter, leave };
 shell.navigate();
 ```
 
-A controller's `init` runs once on a page's first visit, `enter` and `leave` on every show and hide.
+A controller's `init` runs once on a page's first visit, `enter` and `leave` on every show and hide. `shell.nav` opens
+and closes the sheet; navigation and Escape close it.
 
 ## Panels
 
@@ -48,6 +53,11 @@ A manifest's `overlay: true` mounts its element immediately with its connection 
 without a page, route or tab. The host wires its existing companion-overlay controls (such as
 memory's sidebar entry and Escape handler); it stays attached while routes change.
 
+A framed panel sits under its title in a scroll column (`.shell-panel`); its own cards follow. A panel may declare
+`framed: false` to supply its own scroll column, heading and cards. It remains a developer panel by default and
+detaches on navigation; the host's presentation callbacks pass through unchanged. Closing a shell overlay restores
+focus to the original control, including inputs inside a panel's open shadow root.
+
 ## Palette
 
 `createPalette({ sections })` is the overlay: sections of rows, each computed per keystroke, with an optional
@@ -64,7 +74,3 @@ Panel connections may carry optional host `ui` hooks for notifications, inline a
 the current model id and refreshing catalog consumers. The shell passes these through unchanged; a host
 implements only the presentation its installed panels consume. Panel routes are declared paths and stay
 stable when their feature moves into a differently named module.
-
-A panel may declare `framed: false` to supply its own scroll column, heading and cards. It remains a developer
-panel by default and detaches on navigation; the host's presentation callbacks pass through unchanged.
-Closing a shell overlay restores focus to the original control, including inputs inside a panel's open shadow root.

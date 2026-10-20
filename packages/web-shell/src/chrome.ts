@@ -59,7 +59,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font
 .status-line .meter{flex:1 1 40px;margin:0;height:3px}
 #topbar .status-strip{margin:0;padding:0;border:0;background:none;flex-direction:row;align-items:center;gap:8px;min-width:0}
 #topbar .status-strip .model{font-size:var(--text-xs);max-width:40vw;text-align:right}
-#topbar .status-strip .status-line span{display:none}
+#topbar .status-strip .status-line span:not(.dot){display:none}
 #topbar .status-line .meter{display:none}
 
 /* ── the page ── */

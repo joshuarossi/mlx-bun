@@ -55,6 +55,7 @@
     "@mlx-bun/module-transcription": "workspace:*",
     "@mlx-bun/quantize": "workspace:*",
     "@mlx-bun/training": "workspace:*",
+    "@mlx-bun/web-kit": "workspace:*",
     "@mlx-bun/web-shell": "workspace:*",
     "typebox": "1.1.38"
   },

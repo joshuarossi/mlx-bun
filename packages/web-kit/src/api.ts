@@ -22,8 +22,11 @@ export interface ApiRequest {
 /** What a transport failure (no server, a dropped connection) reads as. */
 export const UNREACHABLE = "Could not reach the server.";
 
-/** Fetch JSON into an envelope. Throws only on transport failure; an HTTP failure is reflected in the envelope. */
-export async function requestJson<T extends ApiEnvelope = ApiEnvelope>(url: string, request: ApiRequest = {}, fetchImpl: typeof fetch = fetch): Promise<T> {
+/** Fetch JSON into an envelope. Throws only on transport failure; an HTTP failure is reflected in the envelope. `T` names
+ * the fields the endpoint adds on success. */
+export function requestJson(url: string, request?: ApiRequest, fetchImpl?: typeof fetch): Promise<ApiEnvelope>;
+export function requestJson<T>(url: string, request?: ApiRequest, fetchImpl?: typeof fetch): Promise<ApiEnvelope & T>;
+export async function requestJson<T>(url: string, request: ApiRequest = {}, fetchImpl: typeof fetch = fetch): Promise<ApiEnvelope & T> {
   const { body, headers, method, signal } = request;
   const init: RequestInit = {
     method: method ?? (body === undefined ? "GET" : "POST"),
@@ -40,18 +43,23 @@ export async function requestJson<T extends ApiEnvelope = ApiEnvelope>(url: stri
     data.error = nested.message || JSON.stringify(nested).slice(0, 400);
   }
   if (!response.ok && data.ok === undefined) data = { ...data, ok: false, error: (data.error as string | undefined) || data.message || `HTTP ${response.status}` };
-  return data as T;
+  return data as ApiEnvelope & T;
 }
 
 export interface Api {
   /** The absolute or origin-relative URL a path resolves to: `/library` is a root path on the connection's origin,
    * `history` a path under the module's base. */
   url(path: string): string;
-  /** GET; a transport failure answers `{ ok: false, error: UNREACHABLE }` instead of throwing. */
-  get<T extends ApiEnvelope = ApiEnvelope>(path: string, request?: Omit<ApiRequest, "method" | "body">): Promise<T>;
-  post<T extends ApiEnvelope = ApiEnvelope>(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<T>;
-  del<T extends ApiEnvelope = ApiEnvelope>(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<T>;
-  request<T extends ApiEnvelope = ApiEnvelope>(path: string, request?: ApiRequest): Promise<T>;
+  /** GET; a transport failure answers `{ ok: false, error: UNREACHABLE }` instead of throwing. `T` names the fields
+   * the endpoint adds on success. */
+  get(path: string, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope>;
+  get<T>(path: string, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope & T>;
+  post(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope>;
+  post<T>(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope & T>;
+  del(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope>;
+  del<T>(path: string, body?: unknown, request?: Omit<ApiRequest, "method" | "body">): Promise<ApiEnvelope & T>;
+  request(path: string, request?: ApiRequest): Promise<ApiEnvelope>;
+  request<T>(path: string, request?: ApiRequest): Promise<ApiEnvelope & T>;
 }
 
 /** The client over a module's `apiBase` (`/api/<id>`, or an absolute URL in a native webview). */
@@ -60,20 +68,21 @@ export function createApi(apiBase: string, options: { fetch?: typeof fetch } = {
   let origin = "";
   try { origin = new URL(base).origin; } catch { /* a relative base: this page's own origin */ }
   const url = (path: string): string => path.startsWith("/") ? origin + path : `${base}/${path}`;
-  async function request<T extends ApiEnvelope>(path: string, init: ApiRequest = {}): Promise<T> {
+  async function request<T>(path: string, init: ApiRequest = {}): Promise<ApiEnvelope & T> {
     try { return await requestJson<T>(url(path), init, options.fetch ?? fetch); }
     catch (failure) {
-      if (init.signal?.aborted) return { ok: false, error: "cancelled" } as unknown as T;
-      return { ok: false, error: UNREACHABLE, cause: failure instanceof Error ? failure.message : String(failure) } as unknown as T;
+      if (init.signal?.aborted) return { ok: false, error: "cancelled" } as unknown as ApiEnvelope & T;
+      return { ok: false, error: UNREACHABLE, cause: failure instanceof Error ? failure.message : String(failure) } as unknown as ApiEnvelope & T;
     }
   }
-  return {
+  const api: Api = {
     url,
     request,
-    get: (path, init) => request(path, { ...init, method: "GET" }),
-    post: (path, body, init) => request(path, { ...init, method: "POST", body: body ?? {} }),
-    del: (path, body, init) => request(path, { ...init, method: "DELETE", ...(body !== undefined ? { body } : {}) }),
+    get: <T>(path: string, init?: Omit<ApiRequest, "method" | "body">) => request<T>(path, { ...init, method: "GET" }),
+    post: <T>(path: string, body?: unknown, init?: Omit<ApiRequest, "method" | "body">) => request<T>(path, { ...init, method: "POST", body: body ?? {} }),
+    del: <T>(path: string, body?: unknown, init?: Omit<ApiRequest, "method" | "body">) => request<T>(path, { ...init, method: "DELETE", ...(body !== undefined ? { body } : {}) }),
   };
+  return api;
 }
 
 /** The message of a failed envelope, with a fallback for a success-shaped body a caller still treats as failure. */

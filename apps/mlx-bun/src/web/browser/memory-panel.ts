@@ -1,5 +1,5 @@
 // App host adapter for the installed memory panel. Its controller, markup and article renderer belong to the module.
-import { setMemPanelClose } from "./shell";
+import { setMemPanelClose } from "./app-shell/shell";
 type MemChipHandle = { wrap: HTMLElement; setResult(result: unknown): void };
 type MemoryPanel = HTMLElement & { attachChat(): void; open(article?: string): Promise<void>; close(): void; isOpen(): boolean; toolCard(parent: HTMLElement, tool: string, args: unknown): MemChipHandle | null };
 const panel = () => document.querySelector<MemoryPanel>("mlx-memory-panel");
