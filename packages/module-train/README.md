@@ -65,13 +65,23 @@ in the process that holds the model, through the model host's `adapters` operati
 
 ## Panel
 
-`<mlx-train-panel>` (`./panel`) owns the existing five-step fine-tune wizard, its markup and styles in shadow DOM.
-The shell preserves `/finetune`. It reaches dataset inspection, training submission, metrics and adapter
-merge/export through its `PanelConnection`; optional host `ui` hooks provide notifications, publishing and
-catalog refresh. An unfinished job reconnects and replays its stream after returning to the panel; leaving
-closes the stream without cancelling the managed job. Panel tests cover ORPO defaults and submission,
-loss metrics, reconnection, merge/export and publishing over a remote backend under a URL prefix.
-The adapter mount routes (`/v1/adapters*`) belong to the models module.
+`<mlx-train-panel>` (`./panel`) is the five-step fine-tune wizard (base, dataset, hyperparameters, train, done) in shadow
+DOM: `index.ts` is the element, `controller.ts` owns the steps, the requests and the job stream, and `view.ts` the
+markup, the loss chart and the panel's own rules after the web kit's base vocabulary. The shell mounts it unframed at
+`/finetune`, so the panel draws its own page heading, step rail and cards. Requests go through the kit's client and
+keep their root paths (`/api/model/resolve-folder`, `/api/finetune/*`, `/api/jobs/:id/stream`) under whatever prefix
+the connection's `apiBase` sits on; the job stream is the kit's event-stream client. The loss chart is inline SVG on
+the code surface, training loss in `--ok` and validation loss in `--accent`. Optional host `ui` hooks provide
+notifications, publishing and catalog refresh. The chat assistant reads the step rail (`#f-steps`, `.s.cur`) and
+spotlights `#f-model`.
+
+Leaving the page closes the job stream without cancelling the job; returning while the job is unfinished reopens it,
+and the server's replay rebuilds the log and the chart. A dropped connection shows a reconnecting note until the next
+event, a failed job shows its error with a way back to Hyperparameters, and an unreachable server on submit says so in
+place. Panel tests cover ORPO defaults and submission, the chart, loss metrics, reconnection and replay, failure and
+recovery, the terminal event, merge/export and publishing over a remote backend under a URL prefix, with the kit's fake
+`EventSource`. The adapter mount, merge and export routes (`/v1/adapters*`, `/api/finetune/merge`,
+`/api/finetune/export`) belong to the models module.
 
 ## Tests
 

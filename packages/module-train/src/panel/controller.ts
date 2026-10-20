@@ -1,267 +1,354 @@
+// The fine-tune wizard's state and orchestration: the five steps, dataset inspection, the hyperparameters, submission,
+// the job's event stream with its loss chart, and the done step's merge, export and publish actions. Requests go
+// through the kit's client; the job stream through the kit's event-stream client. Leaving the page closes the stream
+// (the job keeps running on the server); returning while the job is unfinished reopens it, and the server replays the
+// job's events from its first one, so the log and the chart restart with each connection.
+import { $, byType, createApi, createDisposer, errorOf, listen, num, openEventStream, type EventStream } from "@mlx-bun/web-kit";
+import type { JobEvent, PanelConnection } from "../protocol";
+import { BASE, CONFIGURE, DATASET, DONE, METHOD_HINT, RUN, STEPS, chartSvg, datasetHtml, failureHtml, stepsHtml, writtenHtml, type LossPoint, type Method } from "./view";
+
+// The File System Access API's showDirectoryPicker() is not in every lib.dom yet; declare it loosely rather than widen
+// the global Window type project-wide.
 declare global {
   interface Window {
     showDirectoryPicker?: (opts?: { id?: string; mode?: string }) => Promise<{ name: string }>;
   }
 }
-import type { ApiEnvelope, PanelConnection } from "../protocol";
-import { panelTools, esc, num, renderSteps } from "./tools";
-const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
-
 interface FileWithRelPath extends File {
   webkitRelativePath: string;
 }
 
-interface LossPoint { step: number; loss: number | null }
+export interface PanelController {
+  /** Once, on the first connection: the first step. */
+  init(): void;
+  /** On every connection: binds the listeners and reopens the stream of an unfinished job. */
+  enter(): void;
+  /** On every disconnection: removes the listeners and closes the stream without cancelling the job. */
+  leave(): void;
+}
 
-export function createFinetuneController(root: ShadowRoot, connection: () => PanelConnection) {
-  const { $, api, jobStream, toast, pushToHub } = panelTools(root, connection);
-  let streamId: string | null = null, terminal = false, active = true;
-  let step = 0, method: "sft" | "dpo" | "orpo" = "sft", lrTouched = false, rankTouched = false, es: EventSource | null = null, log: string[] = [];
-  let datasetOk = false, adapterPath = "";
-  const trainPts: LossPoint[] = [], valPts: LossPoint[] = [];
+/** The server root a module base sits under (`https://host/prefix/api/train` is `https://host/prefix`). The wizard's
+ * routes keep their shipped root paths (`/api/finetune/*`, `/api/model/resolve-folder`), so they resolve under the same
+ * prefix as the module's base. */
+const serverRoot = (apiBase: string): string => apiBase.replace(/\/api\/[^/]*\/?$/, "");
+const LOG_LINES = 200;
+const DEFAULT_LR: Readonly<Record<Method, number>> = { sft: 0.0002, dpo: 0.00005, orpo: 0.00001 };
 
-  function show(n: number): void {
+export function createFinetuneController(root: ShadowRoot, connection: () => PanelConnection): PanelController {
+  const part = <T extends HTMLElement = HTMLElement>(id: string): T => $(id, root) as T;
+  const input = (id: string) => part<HTMLInputElement>(id);
+  const api = () => createApi(serverRoot(connection().apiBase));
+  const disposer = createDisposer();
+  let active = false, step = BASE;
+  let method: Method = "sft", lrTouched = false, rankTouched = false, datasetOk = false, adapterPath = "";
+  let jobId: string | null = null, terminal = false, stream: EventStream | null = null, dropped = false, log: string[] = [];
+  const trainPoints: LossPoint[] = [], validPoints: LossPoint[] = [];
+
+  /** The host's notification, or the panel's own status line in a host without one. */
+  function notify(message: string, kind: "ok" | "err" = "ok"): void {
+    const ui = connection().ui;
+    if (ui?.notify) { ui.notify(message, kind); return; }
+    const line = part("panel-message");
+    line.textContent = message;
+    line.className = "notice " + (kind === "err" ? "bad" : "ok");
+    line.dataset.kind = kind;
+  }
+
+  function show(n: number, failed = false): void {
     step = n;
-    root.querySelectorAll<HTMLElement>("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep! === n) ? "" : "none");
-    renderSteps($("f-steps"), STEPS, n);
+    for (const card of root.querySelectorAll<HTMLElement>("[data-fstep]")) card.hidden = Number(card.dataset.fstep) !== n;
+    part("f-steps").innerHTML = stepsHtml(STEPS, n, failed);
   }
 
-  // OS folder picker for the base model — resolve by NAME server-side (no
-  // upload, works with the HF cache's symlinked layout). Mirrors Quantize.
-  async function resolveBaseByName(name: string, relPath?: string): Promise<void> {
+  // The base model's folder picker and drag and drop resolve by the folder's name on the server (no upload; the
+  // Hugging Face cache's symlinked layout stays the server's), as the quantize wizard does.
+  async function resolveBaseByName(name: string, relPath = ""): Promise<void> {
     if (!name && !relPath) return;
-    const d = await api("/api/model/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
-      .catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { toast((d.error as string) || "could not locate this folder", "err"); return; }
-    ($("f-model") as HTMLInputElement).value = d.path as string;
+    const out = part("f-base-out");
+    out.innerHTML = '<p class="muted"><span class="skeleton">Locating the folder on disk…</span></p>';
+    const answer = await api().post("api/model/resolve-folder", { folder_name: name, rel_path: relPath });
+    if (!answer.ok) { out.innerHTML = failureHtml("Could not find this folder.", errorOf(answer, "The server could not locate it on disk.")); return; }
+    out.innerHTML = "";
+    input("f-model").value = answer.path as string;
   }
+
   async function pickBaseFolder(): Promise<void> {
     if (window.showDirectoryPicker) {
-      try { const h = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" }); return resolveBaseByName(h.name); }
-      catch { return; }
+      try { const handle = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" }); return resolveBaseByName(handle.name); }
+      catch { return; } // cancelled or denied
     }
-    $("f-folder").click();
+    part("f-folder").click(); // browsers without the File System Access API
+  }
+
+  function datasetChanged(): void {
+    datasetOk = false;
+    part<HTMLButtonElement>("f-next1").disabled = true;
+    part("f-inspect-out").innerHTML = "";
   }
 
   async function inspectDataset(): Promise<void> {
-    const path = ($("f-data") as HTMLInputElement).value.trim();
-    if (!path) { toast("Enter a dataset directory.", "err"); return; }
-    const out = $("f-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
-    const d = await api("/api/finetune/inspect-dataset", { method: "POST", body: { path } }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not read dataset") + "</div>"; datasetOk = false; ($("f-next1") as HTMLButtonElement).disabled = true; return; }
-    datasetOk = true; ($("f-next1") as HTMLButtonElement).disabled = false;
-    out.innerHTML = '<div class="flash ok"><strong>' + num(d.n_train as number) + "</strong> train rows" +
-      (d.n_valid ? " · <strong>" + num(d.n_valid as number) + "</strong> valid rows" : "") +
-      (d.format ? " · format <strong>" + esc(d.format) + "</strong>" : "") + "</div>";
+    const path = input("f-data").value.trim();
+    if (!path) { notify("Enter a dataset directory.", "err"); input("f-data").focus(); return; }
+    const out = part("f-inspect-out"), button = part<HTMLButtonElement>("f-inspect");
+    out.innerHTML = '<p class="muted"><span class="skeleton">Reading the dataset…</span></p>';
+    button.disabled = true;
+    const answer = await api().post("api/finetune/inspect-dataset", { path });
+    button.disabled = false;
+    datasetOk = answer.ok === true;
+    part<HTMLButtonElement>("f-next1").disabled = !datasetOk;
+    out.innerHTML = datasetHtml(answer);
   }
 
-  function setMethod(m: "sft" | "dpo" | "orpo"): void {
-    method = m;
-    $("f-method").querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.classList.toggle("on", b.dataset.v === m));
-    $("f-dpo-extra").style.display = m === "dpo" ? "" : "none";
-    $("f-orpo-extra").style.display = m === "orpo" ? "" : "none";
-    $("f-method-hint").textContent = m === "dpo"
-      ? "Direct Preference Optimization — data is {prompt, chosen, rejected}."
-      : m === "orpo"
-        ? "Odds Ratio Preference Optimization (reference-free) — data is {prompt, chosen, rejected}."
-        : "Supervised fine-tuning — data is messages or prompt+completion.";
-    if (!lrTouched) ($("f-lr") as HTMLInputElement).value = String(m === "dpo" ? 0.00005 : m === "orpo" ? 0.00001 : 0.0002);
-    // ORPO's validated LoRA recipe uses rank 16 (vs 8 for SFT); apply unless edited.
-    if (!rankTouched) ($("f-rank") as HTMLInputElement).value = String(m === "orpo" ? 16 : 8);
+  function setMethod(next: Method): void {
+    method = next;
+    for (const button of part("f-method").querySelectorAll<HTMLButtonElement>("button")) {
+      button.classList.toggle("on", button.dataset.v === next);
+      button.setAttribute("aria-pressed", String(button.dataset.v === next));
+    }
+    part("f-dpo-extra").hidden = next !== "dpo";
+    part("f-orpo-extra").hidden = next !== "orpo";
+    part("f-method-hint").textContent = METHOD_HINT[next];
+    if (!lrTouched) input("f-lr").value = String(DEFAULT_LR[next]);
+    // ORPO's validated LoRA recipe uses rank 16 (8 for SFT and DPO); applied unless edited.
+    if (!rankTouched) input("f-rank").value = String(next === "orpo" ? 16 : 8);
   }
 
-  function collectHP(): Record<string, unknown> {
-    const modules = ($("f-modules") as HTMLInputElement).value.split(",").map((s) => s.trim()).filter(Boolean);
+  function hyperparameters(): Record<string, unknown> {
+    const value = (id: string) => Number(input(id).value);
     const hp: Record<string, unknown> = {
-      model_dir: ($("f-model") as HTMLInputElement).value.trim(),
-      data_dir: ($("f-data") as HTMLInputElement).value.trim(),
+      model_dir: input("f-model").value.trim(),
+      data_dir: input("f-data").value.trim(),
       method,
-      rank: +($("f-rank") as HTMLInputElement).value, scale: +($("f-scale") as HTMLInputElement).value, lora_dropout: +($("f-dropout") as HTMLInputElement).value,
-      target_modules: modules, num_layers: +($("f-layers") as HTMLInputElement).value, iters: +($("f-iters") as HTMLInputElement).value,
-      batch_size: +($("f-batch") as HTMLInputElement).value, learning_rate: +($("f-lr") as HTMLInputElement).value, max_seq_length: +($("f-seq") as HTMLInputElement).value,
+      rank: value("f-rank"), scale: value("f-scale"), lora_dropout: value("f-dropout"),
+      target_modules: input("f-modules").value.split(",").map(name => name.trim()).filter(Boolean),
+      num_layers: value("f-layers"), iters: value("f-iters"), batch_size: value("f-batch"),
+      learning_rate: value("f-lr"), max_seq_length: value("f-seq"),
     };
-    if (method === "dpo") { hp.dpo_beta = +($("f-beta") as HTMLInputElement).value; hp.dpo_lr_schedule = ($("f-sched") as HTMLSelectElement).value; }
+    if (method === "dpo") { hp.dpo_beta = value("f-beta"); hp.dpo_lr_schedule = part<HTMLSelectElement>("f-sched").value; }
     if (method === "orpo") {
-      hp.orpo_lambda = +($("f-orpo-lambda") as HTMLInputElement).value; hp.orpo_lr_schedule = ($("f-orpo-sched") as HTMLSelectElement).value;
-      // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #7: sft_scope only makes sense for ORPO's
-      // monolithic loss (the SFT term needs a scope); default matches the
-      // segmented control's default ("full", paper/TRL chosen-NLL).
-      const scopeBtn = $("f-orpo-scope").querySelector("button.on") as HTMLElement | null;
-      hp.sft_scope = (scopeBtn && scopeBtn.dataset.v) || "full";
+      hp.orpo_lambda = value("f-orpo-lambda"); hp.orpo_lr_schedule = part<HTMLSelectElement>("f-orpo-sched").value;
+      // The SFT scope only applies to ORPO's single loss (its SFT term needs a scope); the default matches the
+      // control's, "full" (the paper's and TRL's chosen-answer loss).
+      hp.sft_scope = part("f-orpo-scope").querySelector<HTMLElement>("button.on")?.dataset.v || "full";
     }
     return hp;
   }
 
-  async function submit(): Promise<void> {
-    const btn = $("f-submit") as HTMLButtonElement; btn.disabled = true;
-    const d = await api("/api/finetune/submit", { method: "POST", body: collectHP() }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { toast((d.error as string) || "could not start training", "err"); return; }
-    adapterPath = (d.adapter_path as string) || "";
-    $("f-out").textContent = adapterPath;
-    $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
-    trainPts.length = 0; valPts.length = 0; log = [];
-    $("f-log").textContent = ""; $("f-bar").style.width = "0%"; $("f-pct").textContent = "0%"; $("f-msg").textContent = "Starting…";
-    $("f-step").textContent = $("f-loss").textContent = $("f-curlr").textContent = $("f-curtps").textContent = "—";
-    drawChart();
-    show(3);
-    attach(d.job_id as string);
+  function progress(fraction: number | null | undefined, message?: string): void {
+    if (fraction != null) {
+      const percent = Math.round(fraction * 100);
+      part("f-bar").style.width = percent + "%";
+      part("f-pct").textContent = percent + "%";
+      part("f-bar").parentElement!.setAttribute("aria-valuenow", String(percent));
+    }
+    if (message) part("f-msg").textContent = message;
   }
 
-  function attach(jobId: string): void {
-    streamId = jobId; terminal = false;
+  function drawChart(): void { part("f-chart").innerHTML = chartSvg(trainPoints, validPoints); }
+
+  /** Forgets what the stream built (the log and the chart): a new connection replays the job from its first event. */
+  function clearReplay(): void {
+    log = []; part("f-log").textContent = "";
+    trainPoints.length = validPoints.length = 0;
+    part("f-leg-val").hidden = true;
+    drawChart();
+  }
+
+  function reconnecting(on: boolean): void { part("f-reconnect").hidden = !on; }
+
+  async function submit(): Promise<void> {
+    const button = part<HTMLButtonElement>("f-submit");
+    button.disabled = true;
+    part("f-submit-out").innerHTML = "";
+    const answer = await api().post("api/finetune/submit", hyperparameters());
+    button.disabled = false;
+    if (!answer.ok) { part("f-submit-out").innerHTML = failureHtml("Could not start training.", errorOf(answer, "The server did not start the job.")); return; }
+    adapterPath = (answer.adapter_path as string) || "";
+    part("f-out").textContent = adapterPath;
+    part("f-merge-out").innerHTML = part("f-exp-out").innerHTML = part("f-push-panel").innerHTML = "";
+    clearReplay();
+    for (const id of ["f-step", "f-loss", "f-curlr", "f-curtps"]) part(id).textContent = "—";
+    part("f-bar").parentElement!.classList.remove("bad");
+    part("f-fail").hidden = true;
+    reconnecting(false);
+    progress(0, "Starting…");
+    show(RUN);
+    attach(answer.job_id as string);
+  }
+
+  function attach(id: string): void {
+    jobId = id; terminal = false;
     if (!active) return;
-    if (es) es.close();
-    es = jobStream(jobId, {
-      log: (e) => { log.push(e.line); $("f-log").textContent = log.slice(-200).join("\n"); $("f-log").scrollTop = $("f-log").scrollHeight; },
-      metric: (e) => {
-        if (e.kind === "val") { valPts.push({ step: e.step, loss: e.loss }); $("f-leg-val").style.display = ""; }
+    stream?.close();
+    clearReplay();
+    dropped = false;
+    reconnecting(false);
+    const dispatch = byType<JobEvent>({
+      log: (event) => {
+        log.push(event.line);
+        const box = part("f-log");
+        box.textContent = log.slice(-LOG_LINES).join("\n");
+        box.scrollTop = box.scrollHeight;
+      },
+      metric: (event) => {
+        if (event.kind === "val") { validPoints.push({ step: event.step, loss: event.loss }); part("f-leg-val").hidden = false; }
         else {
-          trainPts.push({ step: e.step, loss: e.loss });
-          $("f-step").textContent = num(e.step);
-          $("f-loss").textContent = e.loss != null ? e.loss.toFixed(4) : "—";
-          if (e.learning_rate != null) $("f-curlr").textContent = e.learning_rate.toExponential(2);
-          if (e.tokens_per_sec != null) $("f-curtps").textContent = e.tokens_per_sec.toFixed(1);
-          if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
-          if (e.message) $("f-msg").textContent = e.message;
+          trainPoints.push({ step: event.step, loss: event.loss });
+          part("f-step").textContent = num(event.step);
+          part("f-loss").textContent = event.loss != null ? event.loss.toFixed(4) : "—";
+          if (event.learning_rate != null) part("f-curlr").textContent = event.learning_rate.toExponential(2);
+          if (event.tokens_per_sec != null) part("f-curtps").textContent = event.tokens_per_sec.toFixed(1);
+          progress(event.progress, event.message);
         }
         drawChart();
       },
-      stage: (e) => {
-        if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
-        if (e.message) $("f-msg").textContent = e.message;
-        if (e.stage === "done") { if (e.adapter_path) { adapterPath = e.adapter_path; $("f-out").textContent = e.adapter_path; } finish(); }
+      stage: (event) => {
+        progress(event.progress, event.message);
+        if (event.stage === "done") { if (event.adapter_path) setAdapter(event.adapter_path); finish(); }
       },
-      done: () => finish(),
-      failed: (e) => { terminal = true; $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
+      done: (event) => {
+        const path = typeof event.adapter_path === "string" ? event.adapter_path : typeof event.output_dir === "string" ? event.output_dir : "";
+        if (path) setAdapter(path);
+        finish();
+      },
+      failed: (event) => fail(event.error || "The job reported no reason."),
+    });
+    stream = openEventStream<JobEvent>(api().url("api/jobs/" + encodeURIComponent(id) + "/stream"), {
+      // A reconnection replays the job from its first event.
+      open: () => { if (dropped) clearReplay(); dropped = false; reconnecting(false); },
+      // The browser retries on its own; say so until the next event.
+      error: () => { dropped = true; reconnecting(true); },
+      message: (event) => { reconnecting(false); dispatch(event); },
+      end: () => { if (!terminal) fail("The job's event stream ended before the job reported a result."); },
     });
   }
+
+  function setAdapter(path: string): void { adapterPath = path; part("f-out").textContent = path; }
+
   function finish(): void {
     if (terminal) return;
     terminal = true;
-    $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close();
-    if (!adapterPath) adapterPath = ($("f-out").textContent || "").trim();
-    const base = ($("f-model") as HTMLInputElement).value.trim();
-    // prefill the done-step affordances from this run's paths
-    ($("f-merge-a") as HTMLInputElement).value = adapterPath;
-    ($("f-exp-base") as HTMLInputElement).value = base;
-    ($("f-exp-adapter") as HTMLInputElement).value = adapterPath;
-    show(4);
+    stream?.close(); stream = null;
+    reconnecting(false);
+    progress(1);
+    if (!adapterPath) adapterPath = (part("f-out").textContent || "").trim();
+    // The done step's actions start from this run's paths.
+    input("f-merge-a").value = adapterPath;
+    input("f-exp-base").value = input("f-model").value.trim();
+    input("f-exp-adapter").value = adapterPath;
+    show(DONE);
     connection().ui?.catalogChanged?.();
   }
 
+  function fail(error: string): void {
+    if (terminal) return;
+    terminal = true;
+    stream?.close(); stream = null;
+    reconnecting(false);
+    part("f-bar").parentElement!.classList.add("bad");
+    part("f-msg").textContent = "Failed";
+    part("f-fail-msg").textContent = error;
+    part("f-fail").hidden = false;
+    show(RUN, true);
+  }
+
   async function mergeAdapters(): Promise<void> {
-    const a = ($("f-merge-a") as HTMLInputElement).value.trim(), b = ($("f-merge-b") as HTMLInputElement).value.trim();
-    const out = $("f-merge-out");
-    if (!a || !b) { out.innerHTML = '<div class="flash err">Enter both adapter paths.</div>'; return; }
-    out.innerHTML = '<div class="flash"><span class="shimmer">merging…</span></div>';
-    const btn = $("f-merge-go") as HTMLButtonElement; btn.disabled = true;
-    const d = await api("/api/finetune/merge", { method: "POST", body: { adapter_a: a, adapter_b: b } }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "merge failed") + "</div>"; return; }
-    const stats = d.stats && typeof d.stats === "object"
-      ? Object.entries(d.stats as Record<string, unknown>).map(([k, v]) => esc(k) + " " + esc(v)).join(" · ")
-      : (d.stats ? esc(d.stats) : "");
-    out.innerHTML = '<div class="flash ok">Merged → <code>' + esc(d.merged_path || "") + "</code>" + (stats ? "<br>" + stats : "") + "</div>";
-    toast("Adapters merged", "ok");
+    const a = input("f-merge-a").value.trim(), b = input("f-merge-b").value.trim();
+    const out = part("f-merge-out");
+    if (!a || !b) { out.innerHTML = failureHtml("Enter both adapter paths.", ""); return; }
+    out.innerHTML = '<p class="muted"><span class="skeleton">Merging…</span></p>';
+    const button = part<HTMLButtonElement>("f-merge-go");
+    button.disabled = true;
+    const answer = await api().post("api/finetune/merge", { adapter_a: a, adapter_b: b });
+    button.disabled = false;
+    if (!answer.ok) { out.innerHTML = failureHtml("Could not merge.", errorOf(answer, "The server gave no reason.")); return; }
+    out.innerHTML = writtenHtml("Merged into a new adapter:", String(answer.merged_path ?? ""), answer.stats);
+    notify("Adapters merged", "ok");
   }
 
   async function exportModel(): Promise<void> {
-    const base = ($("f-exp-base") as HTMLInputElement).value.trim(), adapter = ($("f-exp-adapter") as HTMLInputElement).value.trim();
-    const out = $("f-exp-out");
-    if (!base || !adapter) { out.innerHTML = '<div class="flash err">Enter a base model and adapter path.</div>'; return; }
-    out.innerHTML = '<div class="flash"><span class="shimmer">exporting…</span></div>';
-    const btn = $("f-exp-go") as HTMLButtonElement; btn.disabled = true;
-    const d = await api("/api/finetune/export", { method: "POST", body: { base_model: base, adapter_path: adapter } }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "export failed") + "</div>"; return; }
-    out.innerHTML = '<div class="flash ok">Exported → <code>' + esc(d.export_path || "") + "</code></div>";
-    toast("Model exported", "ok");
+    const base = input("f-exp-base").value.trim(), adapter = input("f-exp-adapter").value.trim();
+    const out = part("f-exp-out");
+    if (!base || !adapter) { out.innerHTML = failureHtml("Enter a base model and an adapter path.", ""); return; }
+    out.innerHTML = '<p class="muted"><span class="skeleton">Exporting…</span></p>';
+    const button = part<HTMLButtonElement>("f-exp-go");
+    button.disabled = true;
+    const answer = await api().post("api/finetune/export", { base_model: base, adapter_path: adapter });
+    button.disabled = false;
+    if (!answer.ok) { out.innerHTML = failureHtml("Could not export.", errorOf(answer, "The server gave no reason.")); return; }
+    out.innerHTML = writtenHtml("Export manifest written:", String(answer.export_path ?? ""));
+    notify("Model exported", "ok");
   }
 
-  /* inline SVG line plot — themed green (train) / blue (val) */
-  function drawChart(): void {
-    const svg = $("f-chart");
-    const W = 600, H = 200, padL = 8, padR = 8, padT = 12, padB = 12;
-    const all = trainPts.concat(valPts);
-    if (!all.length) { svg.innerHTML = '<text x="300" y="104" text-anchor="middle" fill="var(--dimmer)" font-size="13">waiting for the first metric…</text>'; return; }
-    const losses = all.map((p) => p.loss).filter((x): x is number => x != null && isFinite(x));
-    let minL = Math.min(...losses), maxL = Math.max(...losses);
-    if (minL === maxL) { minL -= 0.5; maxL += 0.5; }
-    const range = maxL - minL || 1;
-    const maxStep = Math.max(...all.map((p) => p.step || 0), 1);
-    const xOf = (s: number) => padL + (s / maxStep) * (W - padL - padR);
-    const yOf = (l: number) => padT + (1 - (l - minL) / range) * (H - padT - padB);
-    const path = (pts: LossPoint[], color: string, fillId: string): string => {
-      if (!pts.length) return "";
-      const d = pts.map((p, i) => (i ? "L" : "M") + xOf(p.step).toFixed(1) + " " + yOf(p.loss ?? 0).toFixed(1)).join(" ");
-      let out = '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-      // soft area fill under the curve
-      const area = d + " L" + xOf(pts[pts.length - 1]!.step).toFixed(1) + " " + (H - padB) + " L" + xOf(pts[0]!.step).toFixed(1) + " " + (H - padB) + " Z";
-      out = '<path d="' + area + '" fill="url(#' + fillId + ')" opacity="0.18"/>' + out;
-      return out;
-    };
-    // gridlines
-    let grid = "";
-    for (let i = 1; i < 4; i++) { const y = padT + (i / 4) * (H - padT - padB); grid += '<line x1="0" y1="' + y.toFixed(1) + '" x2="' + W + '" y2="' + y.toFixed(1) + '" stroke="rgba(255,255,255,.06)" stroke-width="1"/>'; }
-    svg.innerHTML =
-      '<defs>' +
-      '<linearGradient id="gf-train" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#30d158"/><stop offset="1" stop-color="#30d158" stop-opacity="0"/></linearGradient>' +
-      '<linearGradient id="gf-val" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#0a84ff" stop-opacity="0"/></linearGradient>' +
-      '</defs>' + grid +
-      path(valPts, "#0a84ff", "gf-val") +
-      path(trainPts, "#30d158", "gf-train");
+  function publish(): void {
+    const hook = connection().ui?.publish;
+    if (hook) void hook(part("f-push-panel"), { kind: "finetune", source_path: adapterPath || (part("f-out").textContent || "").trim() });
+    else notify("This host has no publishing interface.", "err");
+  }
+
+  function bind(): void {
+    const on = (target: EventTarget, type: string, handler: (event: Event) => void) => disposer.add(listen(target, type, handler));
+    on(part("f-next0"), "click", () => {
+      if (!input("f-model").value.trim()) { notify("Enter a base model path.", "err"); input("f-model").focus(); return; }
+      show(DATASET);
+    });
+    on(part("f-browse"), "click", () => { void pickBaseFolder(); });
+    on(part("f-folder"), "change", (event) => {
+      const picker = event.target as HTMLInputElement;
+      const file = picker.files?.[0] as FileWithRelPath | undefined;
+      picker.value = "";
+      if (file) void resolveBaseByName((file.webkitRelativePath || file.name).split("/")[0]!, file.webkitRelativePath || "");
+    });
+    // A folder dragged onto the field: the directory entry's name, never its contents.
+    const drop = part("f-drop");
+    for (const type of ["dragenter", "dragover"]) on(drop, type, (event) => { event.preventDefault(); drop.classList.add("over"); });
+    for (const type of ["dragleave", "drop"]) on(drop, type, (event) => {
+      event.preventDefault();
+      drop.classList.remove("over");
+      const transfer = (event as DragEvent).dataTransfer;
+      if (type !== "drop" || !transfer) return;
+      for (const item of [...(transfer.items || [])]) {
+        const entry = item.webkitGetAsEntry?.();
+        if (entry?.isDirectory) { void resolveBaseByName(entry.name); return; }
+      }
+      const file = transfer.files?.[0] as FileWithRelPath | undefined;
+      if (file) void resolveBaseByName((file.webkitRelativePath || file.name).split("/")[0]!);
+    });
+    on(part("f-inspect"), "click", () => { void inspectDataset(); });
+    on(part("f-data"), "keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void inspectDataset(); });
+    on(part("f-data"), "input", datasetChanged);
+    on(part("f-next1"), "click", () => { if (datasetOk) show(CONFIGURE); });
+    for (const button of part("f-method").querySelectorAll<HTMLButtonElement>("button")) on(button, "click", () => setMethod(button.dataset.v as Method));
+    const scopes = [...part("f-orpo-scope").querySelectorAll<HTMLButtonElement>("button")];
+    for (const button of scopes) on(button, "click", () => {
+      for (const other of scopes) { other.classList.toggle("on", other === button); other.setAttribute("aria-pressed", String(other === button)); }
+    });
+    on(part("f-lr"), "input", () => { lrTouched = true; });
+    on(part("f-rank"), "input", () => { rankTouched = true; });
+    for (const back of root.querySelectorAll<HTMLElement>("[data-fback]")) on(back, "click", () => show(step - 1));
+    on(part("f-submit"), "click", () => { void submit(); });
+    on(part("f-retry"), "click", () => show(CONFIGURE));
+    on(part("f-merge-go"), "click", () => { void mergeAdapters(); });
+    on(part("f-exp-go"), "click", () => { void exportModel(); });
+    on(part("f-push"), "click", publish);
+    on(part("f-again"), "click", () => {
+      part("f-base-out").innerHTML = part("f-inspect-out").innerHTML = "";
+      part("f-merge-out").innerHTML = part("f-exp-out").innerHTML = part("f-push-panel").innerHTML = "";
+      show(BASE);
+    });
+    disposer.add(() => { stream?.close(); stream = null; });
   }
 
   return {
-    enter() { active = true; if (streamId && !terminal) { log = []; trainPts.length = valPts.length = 0; attach(streamId); } },
-    leave() { active = false; es?.close(); es = null; },
-    init() {
-      show(0);
-      ($("f-next0") as HTMLButtonElement).onclick = () => { if (!($("f-model") as HTMLInputElement).value.trim()) { toast("Enter a base model path.", "err"); return; } show(1); };
-      // OS folder dialog for the base model (native; resolves by name, no upload)
-      ($("f-browse") as HTMLButtonElement).onclick = pickBaseFolder;
-      $("f-folder").addEventListener("change", (e) => {
-        const input = e.target as HTMLInputElement;
-        const f = input.files![0] as FileWithRelPath; input.value = "";
-        if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0]!, f.webkitRelativePath || "");
-      });
-      {
-        const drop = $("f-drop");
-        const hi = (on: boolean) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
-        ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
-        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-          e.preventDefault(); hi(false);
-          const de = e as DragEvent;
-          if (ev !== "drop" || !de.dataTransfer) return;
-          for (const it of [...(de.dataTransfer.items || [])]) {
-            const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
-            if (en && en.isDirectory) return void resolveBaseByName(en.name);
-          }
-          const f = de.dataTransfer.files && de.dataTransfer.files[0] as FileWithRelPath | undefined;
-          if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0]!);
-        }));
-      }
-      ($("f-inspect") as HTMLButtonElement).onclick = inspectDataset;
-      $("f-data").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") inspectDataset(); });
-      $("f-data").addEventListener("input", () => { datasetOk = false; ($("f-next1") as HTMLButtonElement).disabled = true; $("f-inspect-out").innerHTML = ""; });
-      ($("f-next1") as HTMLButtonElement).onclick = () => { if (datasetOk) show(2); };
-      $("f-method").querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.onclick = () => setMethod(b.dataset.v as "sft" | "dpo" | "orpo"));
-      $("f-orpo-scope").querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.onclick = () =>
-        $("f-orpo-scope").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)));
-      $("f-lr").addEventListener("input", () => { lrTouched = true; });
-      $("f-rank").addEventListener("input", () => { rankTouched = true; });
-      root.querySelectorAll<HTMLButtonElement>("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
-      ($("f-submit") as HTMLButtonElement).onclick = submit;
-      ($("f-merge-go") as HTMLButtonElement).onclick = mergeAdapters;
-      ($("f-exp-go") as HTMLButtonElement).onclick = exportModel;
-      ($("f-push") as HTMLButtonElement).onclick = () => pushToHub($("f-push-panel"), { kind: "finetune", source_path: adapterPath || ($("f-out").textContent || "").trim() });
-      ($("f-again") as HTMLButtonElement).onclick = () => {
-        $("f-inspect-out").innerHTML = "";
-        $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
-        show(0);
-      };
+    init() { show(BASE); },
+    enter() {
+      active = true;
+      bind();
+      if (jobId && !terminal) attach(jobId);
+    },
+    leave() {
+      active = false;
+      disposer.dispose();
     },
   };
 }
