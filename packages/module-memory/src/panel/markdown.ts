@@ -1,15 +1,7 @@
-// Built into apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
-//
-// What the app's own pages need from the hand-rolled markdown renderer: `esc`, the memory panel's article rendering
-// (mdToHtml with its Canvas toggle) and the wizards' step indicator. The chat panel (`@mlx-bun/module-chat`) carries
-// its own full renderer (streaming, citations, highlighting), as a self-contained panel does; the memory panel
-// carries this one until memory becomes a module.
-
-/** Escape the four HTML-significant characters. Used on every interpolation
- *  site across the app — the single discipline that keeps user/model text
- *  from ever being interpreted as markup. */
-export const esc = (s: unknown): string =>
-  String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]!);
+// The memory panel's markdown renderer for vault articles: block and inline markdown, escaped first, with the Canvas
+// Preview|Source toggle on HTML and SVG fences. The chat panel (`@mlx-bun/module-chat`) carries its own full renderer
+// (streaming, citations, highlighting), as a self-contained panel does; escaping is the web kit's `esc`.
+import { esc } from "@mlx-bun/web-kit";
 
 /** Allow only safe link targets (http/https/mailto/anchor/relative). */
 export function mdSafeUrl(u: unknown): string | null {
@@ -267,13 +259,4 @@ export function mdToHtml(src: unknown): string {
   }
   closeList();
   return html;
-}
-
-/** Render a step indicator into a container. names[], current index. */
-export function renderSteps(container: HTMLElement, names: string[], cur: number): void {
-  container.innerHTML = names.map((n, i) => {
-    const cls = i === cur ? "cur" : (i < cur ? "done" : "");
-    const arrow = i < names.length - 1 ? '<span class="arrow">&#8594;</span>' : "";
-    return '<span class="s ' + cls + '"><span class="n">' + (i + 1) + "</span>" + esc(n) + "</span>" + arrow;
-  }).join("");
 }

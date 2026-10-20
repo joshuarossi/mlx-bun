@@ -25,12 +25,18 @@ current worker's residency lease for the whole run. It still uses the same Gemma
 model and chunk adapter; it does not substitute the chat model's ordinary generation API.
 
 The `./panel` entry defines `<mlx-memory-panel>`, a persistent companion overlay
-(`panel.overlay: true`) with no route or nav tab. It retains the full-height drawer,
-article/history views, sidebar count, first-run consent and provenance chips. The host
-calls `attachChat()` after its chat sidebar mounts and uses `toolCard`, `open`, `close`
-and `isOpen` through the element. Requests honor `connection.apiBase`, including a remote
-or prefixed URL. The light-DOM panel uses the existing page tokens and optional
-`#chat-memory-entry`, consent/chip hooks and `#toasts`; standalone hosts can omit them.
+(`panel.overlay: true`) with no route or nav tab: a right-hand drawer (full width under the
+top bar on a narrow screen) with the vault status, search, the article list, an article with
+its links and Git history, plus the sidebar count, first-run consent and provenance chips.
+`index.ts` is the element, `memory.ts` the controller, `template.ts` the markup, icons and
+stylesheet, and `markdown.ts` the article renderer with the Canvas preview; they build on
+`@mlx-bun/web-kit`. The host calls `attachChat()` after its chat sidebar mounts and uses
+`toolCard`, `open`, `close` and `isOpen` through the element. Requests go through the kit's
+`createApi(connection.apiBase)`, including a remote or prefixed URL. The light-DOM panel
+injects its stylesheet once, written against the tokens and base classes the host page links,
+and styles by id the chat markup it reaches: `#chat-memory-entry` (with `#chat-memory-count`),
+`#chat-consent` (`.show`), the `.memchip` chips and the `.chip[data-q]` it inserts into
+`#chat-hello-chips`; notifications go to `#toasts`. Standalone hosts can omit all of them.
 One memory panel is mounted per document. Reattachment preserves its chrome listeners.
 
 `src/skills/` is shipped as a package asset and embedded into the standalone binary.
