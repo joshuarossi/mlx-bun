@@ -62,9 +62,14 @@ job fails; performance acceptance stays unreviewed, as in bench-serve.
 
 ## Panel
 
-`src/panel/index.ts` defines `<mlx-metrics-panel>`: one self-contained custom element (shadow DOM, no imports but
-its data protocol's types) that takes `connection = { apiBase, eventsUrl }`, follows the stream, and lists profiles,
-the running job and the history with a Run button. The app's web shell (`@mlx-bun/web-shell`) mounts it: the app's
+`src/panel/` defines `<mlx-metrics-panel>`: one self-contained custom element (shadow DOM) in `index.ts`, with its DOM
+builders in `render.ts` and its rules in `style.ts`, importing only its data protocol's types and `@mlx-bun/web-kit` (the
+base vocabulary goes ahead of its own rules in the shadow root). It takes `connection = { apiBase, eventsUrl }`, follows
+the snapshot stream with the kit's `openEventStream` (a stream with no end event; a dropped connection shows a warning
+until the browser's retry delivers the next snapshot, and an unreadable frame keeps the last good view) and reaches the
+routes through `createApi(apiBase)`. It shows the serving figures with a throughput sparkline, the models, the caches
+with their meters and hit rate, the request timings, and a benchmark card with the plans, Run, the running job and the
+history; while a run is going it polls every 5 s. Leaving its page closes the stream and stops the poll. The app's web shell (`@mlx-bun/web-shell`) mounts it: the app's
 browser build imports the manifest's `panel.entry` (`@mlx-bun/module-metrics/panel`) and gives the shell the manifest's
 tag, title and path (a Metrics tab under Developer, route `#/metrics`) with `connection = { apiBase: "/api/metrics",
 eventsUrl: "/api/metrics/stream" }`, so the standalone binary carries it too and the module serves no script.
