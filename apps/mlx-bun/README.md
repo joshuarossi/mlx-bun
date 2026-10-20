@@ -944,7 +944,12 @@ build script and runtime fallback share `web/build.ts`. Static HTML, manifest, w
 `bun apps/mlx-bun/scripts/web-preview.ts` (`--help`) serves the real page and bundle over a model-free fake backend
 ([`tests/web/fake-backend.ts`](tests/web/fake-backend.ts) and its [fixtures](tests/web/fixtures.ts): every route the
 app reads, a scripted streamed chat reply, job and metrics streams; `--scenario empty|failing` for the fresh-install
-and failure states), for UI work and screenshots on any machine.
+and failure states), for UI work and screenshots on any machine. `bun apps/mlx-bun/scripts/web-walk.ts` (`--help`)
+drives that app in headless Chromium over the same fake backend and reports every check it makes (each route at a
+desktop and a phone width, keyboard order and focus, the palette and overlays, the Models actions, each wizard end to
+end, the chat's stream, Stop, failure and approval paths, going offline and recovering, the failing and empty
+scenarios), with screenshots and a report under `dist/web-walk`; it finds Chromium through `--chromium`, `$CHROMIUM`,
+Playwright's install or Google Chrome.
 
 [Boot tests](tests/web/boot.test.ts) run the built bundle against `app.html` (the shell's tabs and pages, the
 module panels mounted through the shell, the settings dialog's wiring to the chat). [Browser tests](tests/web/browser.test.ts)
