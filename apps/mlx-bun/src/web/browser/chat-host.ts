@@ -20,6 +20,7 @@ export const chatHost = {
   mounted(panel: ChatPanelApi) { initMemoryPanel(panel.companionSlots()); },
   toolCard(parent: HTMLElement, tool: string, args: unknown) { return memoryToolChip(parent, tool || "", args); },
   notify: toast,
+  drawerChanged(open: boolean) { document.getElementById("chat-hamburger")?.setAttribute("aria-expanded", String(open)); },
   app: {
     currentRoute,
     navigate(route: string) { location.hash = "#/" + route; },

@@ -84,8 +84,9 @@ page's address or the host page's markup. Its methods for the host are `newChat`
 `refreshAdapters`, `focusComposer`, `toggleThinking`, `recentChats`, `openSession`, `exportActiveChat`, `companionSlots`,
 the narrow-screen drawer (`toggleDrawer`, `closeDrawer`, `drawerOpen`) and the popovers for the host's Escape sweep
 (`popoverOpen`, `closePopover`). The empty state names the served model from the kit's `HOST_EVENTS.serverStatus`.
-`panel/ui-catalog.ts` names the assistant's route ids (validated in server frames) and spotlight targets: the chat's
-knowledge of this app, which should move to contributions once the shell lists them.
+A spotlight target is a `data-spotlight` id on the element that owns it (the chat's own controls, a wizard's field, the
+host's rail), titled by its `data-ui-label`; `panel/ui-catalog.ts` holds only the route and view ids the server's frames
+name. The panel keeps no table of other pieces' selectors.
 
 The assistant follows open shadow roots when it captures visible controls or resolves spotlight targets, so the job
 modules' encapsulated forms remain available in its page context, and skips controls inside hidden pages or assistant

@@ -16,10 +16,10 @@ const samplingRow = (id: string, label: string, min: number, max: number, step: 
 
 export const MARKUP = `
 <aside id="chat-sidebar" aria-label="Recent chats">
-  <button id="chat-new" class="btn sm" type="button" data-spotlight="new-chat" title="Start a new chat (or type /new)">${ICON.plus}<span>New chat</span></button>
-  <div class="cs-search">${ICON.search}<input class="input sm" type="search" id="chat-sess-search" data-spotlight="session-search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
+  <button id="chat-new" class="btn sm" type="button" data-spotlight="new-chat" data-ui-label="New chat" title="Start a new chat (or type /new)">${ICON.plus}<span>New chat</span></button>
+  <div class="cs-search">${ICON.search}<input class="input sm" type="search" id="chat-sess-search" data-spotlight="session-search" data-ui-label="Search chats" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
   <div id="chat-sessions" class="sesslist"></div>
-  <button id="chat-memory-entry" data-spotlight="memory-entry" type="button" style="display:none" aria-haspopup="dialog" aria-expanded="false">
+  <button id="chat-memory-entry" data-spotlight="memory-entry" data-ui-label="Memory" type="button" style="display:none" aria-haspopup="dialog" aria-expanded="false">
     <span class="mi" aria-hidden="true">${ICON.memory}</span><span class="mt">Memory</span><span class="mcount" id="chat-memory-count">—</span>
   </button>
 </aside>
@@ -53,7 +53,7 @@ export const MARKUP = `
       <div id="chat-attach" class="attach-row"></div>
       <div class="composer-field">
         <div id="chat-box-wrap">
-          <textarea id="chat-box" data-spotlight="composer" rows="1" placeholder="Message the local model" aria-label="Message"></textarea>
+          <textarea id="chat-box" data-spotlight="composer" data-ui-label="Message box" rows="1" placeholder="Message the local model" aria-label="Message"></textarea>
           <div id="chat-mention-pop" class="mentionpop" role="listbox" aria-label="Attach a file or recall a memory"></div>
         </div>
         <div class="cf-row">
@@ -62,12 +62,12 @@ export const MARKUP = `
           <button id="chat-mic-btn" class="btn icon sm quiet" type="button" title="Hold to talk" aria-label="Hold to talk" style="display:none">${ICON.mic}</button>
           <span class="spacer"></span>
           <button id="chat-stop" class="btn sm" type="button" title="Stop the reply" style="display:none">${ICON.stop}<span>Stop</span></button>
-          <button id="chat-send" class="btn primary sm" type="button" data-spotlight="send" title="Send (Enter)">${ICON.send}<span>Send</span></button>
+          <button id="chat-send" class="btn primary sm" type="button" data-spotlight="send" data-ui-label="Send" title="Send (Enter)">${ICON.send}<span>Send</span></button>
         </div>
       </div>
       <div class="chat-toolbar" role="toolbar" aria-label="Chat settings">
         <span id="chat-sysprompt-wrap">
-          <button id="chat-sysprompt" class="btn sm quiet tb" type="button" data-spotlight="prompt-pill" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-sysprompt-pop"
+          <button id="chat-sysprompt" class="btn sm quiet tb" type="button" data-spotlight="prompt-pill" data-ui-label="System prompt" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-sysprompt-pop"
                   title="System prompt: shapes how the assistant replies in this chat"><span class="dot"></span>Prompt</button>
           <div id="chat-sysprompt-pop" class="samplepop sysprompt-pop" role="dialog" aria-label="System prompt">
             <h4>System prompt</h4>
@@ -89,7 +89,7 @@ export const MARKUP = `
           </div>
         </span>
         <span id="chat-sampling-wrap">
-          <button id="chat-sampling" class="btn sm quiet tb" type="button" data-spotlight="sampling-pill" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-sampling-pop"
+          <button id="chat-sampling" class="btn sm quiet tb" type="button" data-spotlight="sampling-pill" data-ui-label="Sampling" aria-haspopup="dialog" aria-expanded="false" aria-controls="chat-sampling-pop"
                   title="Sampling: temperature, top_p, top_k and more"><span class="dot"></span>Sampling</button>
           <div id="chat-sampling-pop" class="samplepop" role="dialog" aria-label="Sampling">
             <div class="samp-head-row"><h4>Sampling</h4><span id="samp-oneshot-chip" class="tag warn" style="display:none">Next message only</span></div>
@@ -123,7 +123,7 @@ export const MARKUP = `
             </div>
           </div>
         </span>
-        <select id="chat-adapter" class="select sm" data-spotlight="adapter-select" title="LoRA adapter for this chat (none is the base model)" aria-label="LoRA adapter">
+        <select id="chat-adapter" class="select sm" data-spotlight="adapter-select" data-ui-label="LoRA adapter" title="LoRA adapter for this chat (none is the base model)" aria-label="LoRA adapter">
           <option value="">No adapter</option>
         </select>
         <button id="adapters-manage" class="btn icon sm quiet" type="button" title="Manage adapters: routing, RAM cost, stacking" aria-label="Manage adapters"
@@ -161,9 +161,11 @@ export interface ServedModel {
 }
 
 /** The empty state's line: which model answers, or what to do when none can. */
-export function helloSubHtml(served: ServedModel): string {
+export function helloSubHtml(served: ServedModel, canNavigate = false): string {
   if (!served.online) return "The model server is not answering. The chat reconnects on its own once it is back.";
-  if (!served.model) return 'No model is serving yet. Choose one on the <a href="#/models">Models page</a>.';
+  if (!served.model) return canNavigate
+    ? 'No model is serving yet. Choose one on the <button type="button" class="link" data-navigate="models">Models page</button>.'
+    : "No model is serving yet. Choose one on the Models page.";
   return `<b class="mono" title="${esc(served.model)}">${esc(shortName(served.model))}</b> is serving. Every token of a reply is generated on this Mac.`;
 }
 

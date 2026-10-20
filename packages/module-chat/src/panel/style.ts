@@ -3,6 +3,8 @@
 // kit's tokens only, so the panel follows the theme. The memory module styles what it draws into the panel (the
 // sidebar entry, the consent card, the provenance chips); these rules only place them.
 export const STYLE = String.raw`
+/* a button that reads as a link, for a sentence that leads somewhere */
+#chat-hello button.link{appearance:none;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--accent);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 /* ── the panel is the page: the recent chats beside the conversation ── */
 mlx-chat-panel{display:flex;height:100%;min-width:0;background:var(--bg);color:var(--ink)}
 @keyframes fade{from{opacity:0}to{opacity:1}}

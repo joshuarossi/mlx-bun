@@ -63,7 +63,7 @@ export const MARKUP = `
   <div class="field">
     <label for="q-model">Model id or path</label>
     <div class="drop" id="q-drop">
-      <input class="input" type="text" id="q-model" data-spotlight="quantize-source" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off" spellcheck="false">
+      <input class="input" type="text" id="q-model" data-spotlight="quantize-source" data-ui-label="Source model" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off" spellcheck="false">
     </div>
     <input type="file" id="q-folder" webkitdirectory directory hidden>
     <p class="hint">Or choose a model folder, or drop one on the field: the server finds it on disk by the folder's name, and nothing is uploaded.</p>

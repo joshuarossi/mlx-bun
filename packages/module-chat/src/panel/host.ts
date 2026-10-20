@@ -65,6 +65,9 @@ export interface ChatHost {
   };
   /** The host's notifications (its toasts); without it the chat shows its notices in its own live region. */
   notify?(message: string, kind?: "ok" | "err"): void;
+  /** The narrow-screen drawer opened or closed (by its trigger, its backdrop, Escape or navigation), for the host's
+   * own trigger to reflect. */
+  drawerChanged?(open: boolean): void;
   /** The host's pages: without it the chat is the only page, its own adapters sheet the only view, and the assistant
    * cannot navigate. */
   app?: ChatHostApp;

@@ -106,7 +106,7 @@ export const MARKUP = `
   <div class="field">
     <label for="f-model">Model directory or repository id</label>
     <div class="drop" id="f-drop">
-      <input class="input" type="text" id="f-model" data-spotlight="finetune-base" placeholder="mlx-community/Qwen3-8B-4bit" autocomplete="off" spellcheck="false">
+      <input class="input" type="text" id="f-model" data-spotlight="finetune-base" data-ui-label="Base model" placeholder="mlx-community/Qwen3-8B-4bit" autocomplete="off" spellcheck="false">
     </div>
     <input type="file" id="f-folder" webkitdirectory directory hidden>
     <p class="hint">Or choose a model folder, or drop one on the field: the server finds it on disk by the folder's name, and nothing is uploaded.</p>

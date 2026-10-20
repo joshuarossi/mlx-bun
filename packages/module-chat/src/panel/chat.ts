@@ -114,7 +114,7 @@ export function createChatController(port: ChatPort): ChatController {
   function showServed(next: ServedModel): void {
     served = next;
     const sub = $("chat-hello-sub"), note = $("chat-hello-note");
-    if (sub) sub.innerHTML = helloSubHtml(next);
+    if (sub) sub.innerHTML = helloSubHtml(next, !!port.host?.app);
     const text = helloNoteText(next);
     if (note) { note.hidden = !text; note.textContent = text ?? ""; }
   }
@@ -372,6 +372,11 @@ export function createChatController(port: ChatPort): ChatController {
       wireCanvasToggle(thread());
       appContext = createAppContext(send, port.host?.app, disposer);
       disposer.add(onHostEvent(HOST_EVENTS.serverStatus, (detail) => { if (detail) showServed(detail); }));
+      // The greeting's "Models page" goes where the host's navigation goes.
+      $("chat-hello").addEventListener("click", (event) => {
+        const route = (event.target as Element).closest("[data-navigate]")?.getAttribute("data-navigate");
+        if (route) port.host?.app?.navigate(route);
+      });
       void refreshAdapters(port.api);
       port.host?.mounted?.(port.element);
     },

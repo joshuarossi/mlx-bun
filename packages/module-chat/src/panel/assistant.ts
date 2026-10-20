@@ -25,7 +25,7 @@ export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../protocol";
 //     machinery — those are for real modals; this overlay must never behave
 //     like one.
 
-import { getSpotlightTarget, isViewId, ROUTE_LABELS, type ViewId } from "./ui-catalog";
+import { isViewId, ROUTE_LABELS, type ViewId } from "./ui-catalog";
 
 /** UI controls may live inside a mounted module's open shadow root. */
 export function queryUiElements(selector: string, root: Document | ShadowRoot = document): Element[] {
@@ -304,18 +304,17 @@ export function resolveSpotlightTarget(
     }
   }
 
+  // A target is a `data-spotlight` id on the element that owns it (the chat's own controls, a wizard's field, the
+  // host's rail), titled by its `data-ui-label`; the panel keeps no table of other pieces' selectors.
   if (request.target) {
-    const meta = getSpotlightTarget(request.target);
-    if (meta && safeQuery(meta.selector)) {
-      return { selector: meta.selector, title: meta.label, message: request.message };
-    }
     const targetSelector = `[data-spotlight="${attrEscape(request.target)}"]`;
     const bySpotlightAttr = safeQuery(targetSelector);
     if (bySpotlightAttr) {
       const ref = bySpotlightAttr.getAttribute("data-ui-ref");
+      const words = request.target.replace(/-/g, " ");
       return {
         selector: ref ? `[data-ui-ref="${attrEscape(ref)}"]` : targetSelector,
-        title: bySpotlightAttr.getAttribute("data-ui-label") ?? request.label ?? request.target,
+        title: bySpotlightAttr.getAttribute("data-ui-label") ?? request.label ?? words.charAt(0).toUpperCase() + words.slice(1),
         message: request.message,
       };
     }

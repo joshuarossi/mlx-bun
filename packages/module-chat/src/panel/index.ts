@@ -24,6 +24,8 @@ class ChatPanel extends Base {
   host: ChatHost | undefined;
   #controller: ChatController | undefined;
   #drawer: FocusTrap | undefined;
+  /** Between `enter()` and `leave()`: the page shows, so a dropped socket reconnects. */
+  #showing = false;
 
   connectedCallback() {
     if (this.#controller) return;
@@ -35,7 +37,7 @@ class ChatPanel extends Base {
     this.#controller = createChatController({
       host: this.host, element: this,
       api: createApi(this.connection?.apiBase ?? "/api/chat"),
-      isActive: () => !!this.closest("section")?.classList.contains("active"),
+      isActive: () => this.#showing,
       closeDrawer: () => this.closeDrawer(),
     });
     this.#controller.init();
@@ -53,9 +55,9 @@ class ChatPanel extends Base {
   }
 
   /** The chat page is shown: connect if the socket is down, focus the composer, refresh the adapter list. */
-  enter() { this.#controller?.enter(); }
+  enter() { this.#showing = true; this.#controller?.enter(); }
   /** The chat page is hidden: the socket stays up, since closing it would drop a turn in flight. */
-  leave() { this.#controller?.leave(); }
+  leave() { this.#showing = false; this.#controller?.leave(); }
 
   /** Start a fresh chat (the old one stays on disk). */
   newChat() { this.#controller?.newChat(); }
@@ -83,19 +85,17 @@ class ChatPanel extends Base {
     this.#drawer.capture();
     $("chat-sidebar").classList.add("drawer-open");
     $("chat-drawer-backdrop").classList.add("open");
-    this.#drawerTrigger()?.setAttribute("aria-expanded", "true");
+    this.host?.drawerChanged?.(true);
     setTimeout(() => { $("chat-sess-search")?.focus(); }, 30);
   }
   closeDrawer() {
     if (!this.#drawer) return;
     $("chat-sidebar").classList.remove("drawer-open");
     $("chat-drawer-backdrop").classList.remove("open");
-    this.#drawerTrigger()?.setAttribute("aria-expanded", "false");
+    this.host?.drawerChanged?.(false);
     this.#drawer.restore();
   }
   drawerOpen(): boolean { return !!this.#drawer && $("chat-sidebar").classList.contains("drawer-open"); }
-  /** The host's control that opens the drawer, if it has one (it names the sidebar in `aria-controls`). */
-  #drawerTrigger(): Element | null { return document.querySelector('[aria-controls="chat-sidebar"]'); }
 
   /** Where a companion attaches in the chat's markup: the sidebar entry and its count, the first-run consent card and
    * its two actions, and the greeting's suggestion chips. The chat keeps their ids; the elements exist once attached. */

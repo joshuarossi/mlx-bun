@@ -57,13 +57,13 @@
     <div class="nav-foot">
       <!-- The status strip: the served model, whether the server answers, and a background download. -->
       <div class="status-strip" id="nav-status">
-        <button class="model" id="nav-model" data-spotlight="model-picker" type="button" title="The served model. Opens the Models page.">connecting…</button>
+        <button class="model" id="nav-model" data-spotlight="model-picker" data-ui-label="Active model" type="button" title="The served model. Opens the Models page.">connecting…</button>
         <div class="status-line" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></div>
         <div class="status-line" id="nav-download" style="display:none" title="A more capable model is downloading in the background">
           <span class="dot accent"></span><span id="nav-download-text"></span><div class="meter"><i id="nav-download-bar"></i></div>
         </div>
       </div>
-      <button class="nav-item" id="nav-developer" data-spotlight="developer-toggle" type="button" role="switch" aria-checked="false"
+      <button class="nav-item" id="nav-developer" data-spotlight="developer-toggle" data-ui-label="Developer toggle" type="button" role="switch" aria-checked="false"
               title="Show the developer tools: Quantize, Fine-tune, Datasets, Benchmarks, Metrics and Status">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
         <span>Developer tools</span><span class="nd-dot" id="nav-developer-dot" aria-hidden="true"></span>

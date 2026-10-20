@@ -1439,13 +1439,14 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
     expect(resolved?.selector).toBe('[data-ui-ref="ui-chat-3"]');
   });
 
-  it("resolves by a curated catalog target id when nothing else matches", () => {
-    document.body.innerHTML = '<button id="chat-box">unused</button><textarea id="chat-box-real"></textarea>';
-    // "composer" catalog target points at #chat-box specifically.
-    document.body.innerHTML = '<textarea id="chat-box"></textarea>';
+  it("resolves a target by the data-spotlight id on the element that owns it, titled by its data-ui-label", () => {
+    document.body.innerHTML = '<textarea id="chat-box" data-spotlight="composer" data-ui-label="Message box"></textarea><button data-spotlight="run-now">Go</button>';
     const resolved = resolveSpotlightTarget({ target: "composer" }, null);
-    expect(resolved?.selector).toBe("#chat-box");
+    expect(resolved?.selector).toBe('[data-spotlight="composer"]');
     expect(resolved?.title).toBe("Message box");
+    // Without a label the id reads as words; without the attribute anywhere the target is unknown.
+    expect(resolveSpotlightTarget({ target: "run-now" }, null)?.title).toBe("Run now");
+    expect(resolveSpotlightTarget({ target: "composer-x" }, null)).toBeNull();
   });
 
   it("returns null when nothing resolves (unknown ref/label/selector/target)", () => {
@@ -1531,7 +1532,7 @@ describe("ui-catalog.ts: route/view validation", () => {
 
   it("isViewId accepts the known overlay views and rejects unknowns", () => {
     expect(isViewId("memory-panel")).toBe(true);
-    expect(isViewId("hub-panel")).toBe(true);
+    expect(isViewId("hub-panel")).toBe(false); // the hub overlay is gone; Models is a page
     expect(isViewId("nonexistent")).toBe(false);
   });
 
@@ -1561,7 +1562,7 @@ describe("assistant controls inside module shadow roots", () => {
     expect(snapshot.elements.map(element => element.label)).toEqual(["Source checkpoint","Continue"]);
     const input=snapshot.elements[0]!;
     expect(resolveSpotlightTarget({ref:input.ref},snapshot)?.selector).toBe(input.selector);
-    expect(resolveSpotlightTarget({target:"quantize-source"},null)).toMatchObject({selector:"#q-model"});
+    expect(resolveSpotlightTarget({target:"quantize-source"},null)).toMatchObject({selector:'[data-ui-ref="ui-quantize-0"]', title: "Quantize source"}); // the snapshot's ref wins for the element it captured
     expect(resolveSpotlightTarget({selector:"#q-model"},null)).not.toBeNull();
   });
   it("keeps hidden hosts and content/assistant chrome excluded across shadow boundaries", () => {
