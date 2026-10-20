@@ -2,9 +2,9 @@
 // Requests go through the kit's client; the job stream through the kit's event-stream client. Leaving the page closes
 // the stream (the job keeps running on the server); returning while the job is unfinished reopens it, and the server
 // replays the job's events from its first one, so the log restarts with each connection.
-import { $, byType, createApi, createDisposer, errorOf, listen, openEventStream, type EventStream } from "@mlx-bun/web-kit";
+import { $, byType, createApi, createDisposer, emitHostEvent, errorOf, HOST_EVENTS, listen, openEventStream, type EventStream } from "@mlx-bun/web-kit";
 import type { JobEvent, PanelConnection } from "../protocol";
-import { BITS_HINT, CONFIGURE, DONE, RUN, SOURCE, STEPS, failureHtml, inspectionHtml, stepsHtml } from "./view";
+import { BITS_HINT, CONFIGURE, DONE, RUN, SOURCE, STEPS, failureHtml, inspectionHtml, railStep, stepsHtml, type WizardStep } from "./view";
 
 // The File System Access API's showDirectoryPicker() is not in every lib.dom yet; declare it loosely rather than widen
 // the global Window type project-wide.
@@ -24,6 +24,8 @@ export interface PanelController {
   enter(): void;
   /** On every disconnection: removes the listeners and closes the stream without cancelling the job. */
   leave(): void;
+  /** The rail's current step, or null before the first step is shown. */
+  currentStep(): WizardStep | null;
 }
 
 /** The server root a module base sits under (`https://host/prefix/api/quantize` is `https://host/prefix`). The wizard's
@@ -55,6 +57,8 @@ export function createQuantizeController(root: ShadowRoot, connection: () => Pan
     step = n;
     for (const card of root.querySelectorAll<HTMLElement>("[data-qstep]")) card.hidden = Number(card.dataset.qstep) !== n;
     part("q-steps").innerHTML = stepsHtml(STEPS, n, failed);
+    // A host that describes the page (the chat assistant) re-reads the step; the event leaves the shadow root.
+    emitHostEvent(HOST_EVENTS.panelChanged, undefined, root.host, { bubbles: true, composed: true });
   }
 
   // The folder picker and drag and drop: the browser cannot reveal an absolute path and the Hugging Face cache keeps
@@ -243,5 +247,6 @@ export function createQuantizeController(root: ShadowRoot, connection: () => Pan
       active = false;
       disposer.dispose();
     },
+    currentStep: () => railStep(part("q-steps")),
   };
 }

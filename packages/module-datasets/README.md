@@ -93,8 +93,9 @@ the template cards, the typed fields and the panel's own rules after the web kit
 it unframed at `/dataset`, so the panel draws its own page heading, step rail and cards. Requests go through the kit's
 client and keep their root paths (`/api/dataset/*`, `/api/jobs/:id/stream`) under whatever prefix the connection's
 `apiBase` sits on; the job stream is the kit's event-stream client. Optional host `ui` hooks provide notifications,
-publishing and the active model id used to name LLM datasets. The chat assistant reads the step rail (`#d-steps`,
-`.s.cur`).
+publishing and the active model id used to name LLM datasets. The element's `currentStep()` reads its own step rail
+(`#d-steps`, `.s.cur`), and every step it shows raises the kit's `HOST_EVENTS.panelChanged` from the element, so a host
+can describe the page (the app hands the step to the chat's assistant).
 
 The template grid shows placeholders while it loads, an empty state when the server lists none and a retry when it
 cannot be reached. Leaving the page closes the job stream without cancelling the job; returning while the job is

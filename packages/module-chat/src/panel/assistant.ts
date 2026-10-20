@@ -8,8 +8,9 @@ export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../protocol";
 //
 //  1. captureUiSnapshot() — a structured DOM snapshot (visible interactive
 //     elements + labeled regions), capped at ~120, agent chrome excluded.
-//     Sent to the server as a `context` ClientMessage on route/step change
-//     (see chat.ts) and returned by the `get_current_app_context` tool.
+//     Sent to the server as a `context` ClientMessage when the host reports a
+//     route, view or step change (see app-context.ts) and returned by the
+//     `get_current_app_context` tool.
 //  2. resolveSpotlightTarget() — turns a spotlight_ui tool's loose
 //     {ref|label|selector|target} request into a concrete element, in
 //     exactly PortfolioManager's resolution order (ref from the last
@@ -24,13 +25,7 @@ export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../protocol";
 //     machinery — those are for real modals; this overlay must never behave
 //     like one.
 
-import { getSpotlightTarget, isViewId, ROUTE_LABELS, type RouteId, type ViewId } from "./ui-catalog";
-
-const STEP_CONTAINER_BY_ROUTE: Partial<Record<RouteId, string>> = {
-  quantize: "q-steps",
-  finetune: "f-steps",
-  dataset: "d-steps",
-};
+import { getSpotlightTarget, isViewId, ROUTE_LABELS, type ViewId } from "./ui-catalog";
 
 /** UI controls may live inside a mounted module's open shadow root. */
 export function queryUiElements(selector: string, root: Document | ShadowRoot = document): Element[] {
@@ -46,21 +41,6 @@ function uiParent(element: Element): Element | null {
   if (element.parentElement) return element.parentElement;
   const root = element.getRootNode();
   return "host" in root ? (root as ShadowRoot).host : null;
-}
-
-export function currentWizardStep(route: string): WizardStep | null {
-  const containerId = STEP_CONTAINER_BY_ROUTE[route as RouteId];
-  if (!containerId) return null;
-  const container = queryUiElements(`[id="${containerId}"]`)[0];
-  if (!container) return null;
-  const spans = [...container.querySelectorAll(".s")];
-  if (spans.length === 0) return null;
-  const curIdx = spans.findIndex((s) => s.classList.contains("cur"));
-  const cur = spans[curIdx] ?? spans[0]!;
-  const label = cur.querySelector(".n")
-    ? (cur.textContent || "").replace(/^\d+/, "").trim()
-    : (cur.textContent || "").trim();
-  return { index: curIdx < 0 ? 0 : curIdx, count: spans.length, label };
 }
 
 const INTERACTIVE_SELECTOR = [
@@ -178,7 +158,7 @@ function elementLabel(el: Element): string {
 }
 
 /** Build the ~120-cap snapshot of the CURRENT DOM. `route` is whatever
- *  chat.ts's currentRoute()/overlay-name is at capture time — stamped onto
+ *  the host's current route/overlay-name is at capture time — stamped onto
  *  the snapshot and used to derive stable per-route refs. */
 export function captureUiSnapshot(route: string): UiSnapshot {
   const nodes = queryUiElements(INTERACTIVE_SELECTOR);
@@ -429,7 +409,7 @@ export function showSpotlight(resolved: ResolvedSpotlight): boolean {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Ambient context frame builder (chat.ts calls this on route/step change)
+   Ambient context frame builder (app-context.ts calls this on every change)
    ──────────────────────────────────────────────────────────────────── */
 
 export interface AppContext {
@@ -439,13 +419,15 @@ export interface AppContext {
   snapshot: UiSnapshot;
 }
 
-/** Build the full context payload chat.ts pushes as a `context` frame.
+/** Build the full context payload app-context.ts pushes as a `context` frame.
  *  `viewOverride` names an open overlay (memory/hub/adapters panel) when one
  *  is open on top of the current route — routes and views are otherwise
- *  the same "where is the user" concept from the tool's point of view. */
-export function buildAppContext(route: string, viewOverride?: string | null): AppContext {
+ *  the same "where is the user" concept from the tool's point of view.
+ *  `wizardStep` is the host's answer for the route's wizard (its rail's
+ *  current step), or null when the page shows none. */
+export function buildAppContext(route: string, viewOverride?: string | null, wizardStep?: WizardStep | null): AppContext {
   const view = viewOverride && isViewId(viewOverride) ? viewOverride : undefined;
-  const step = currentWizardStep(route) ?? undefined;
+  const step = wizardStep ?? undefined;
   return {
     route,
     ...(view ? { view } : {}),

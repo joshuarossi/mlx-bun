@@ -1,19 +1,31 @@
 // The fine-tune wizard's markup, its loss chart and its own rules. The vocabulary (page, cards, fields, the step rail,
 // notices, progress, stats, the log) is the kit's BASE_CSS, which index.ts puts ahead of STYLE in the shadow root;
-// colours and sizes come from the tokens. The ids are the controller's, the chat assistant's (`f-steps`, `f-model`)
-// and the tests'.
+// colours and sizes come from the tokens. The ids are the controller's, the chat assistant's spotlight target
+// (`f-model`) and the tests'; the step rail (`f-steps`) is what `railStep` reads for the element's `currentStep()`.
 import { esc, num } from "@mlx-bun/web-kit";
 
 export const STEPS = ["Base", "Dataset", "Hyperparameters", "Train", "Done"] as const;
 export const BASE = 0, DATASET = 1, CONFIGURE = 2, RUN = 3, DONE = 4;
 
-/** The step rail. Each step carries the kit's `.step` (with `.current`/`.done`) and the `.s` (with `.cur`) the chat
- * assistant reads to tell where the wizard is. */
+/** The step rail. Each step carries the kit's `.step` (with `.current`/`.done`) and the `.s` (with `.cur`) that
+ * `railStep` reads to tell a host where the wizard is. */
 export function stepsHtml(names: readonly string[], current: number, failed = false): string {
   return names.map((name, index) => {
     const state = index === current ? " current cur" + (failed ? " failed" : "") : index < current ? " done" : "";
     return `<li class="step s${state}"${index === current ? ' aria-current="step"' : ""}><span class="n">${index + 1}</span>${esc(name)}</li>`;
   }).join("");
+}
+
+/** Where the wizard is, as a host describes the page: the current step of a rail `stepsHtml` drew (its index, the
+ * number of steps and its name), or null before the rail is drawn. */
+export interface WizardStep { index: number; count: number; label: string }
+export function railStep(rail: HTMLElement): WizardStep | null {
+  const steps = [...rail.querySelectorAll(".s")];
+  if (!steps.length) return null;
+  const index = Math.max(0, steps.findIndex((step) => step.classList.contains("cur")));
+  const current = steps[index]!;
+  const text = (current.textContent || "").trim();
+  return { index, count: steps.length, label: current.querySelector(".n") ? text.replace(/^\d+/, "").trim() : text };
 }
 
 export type Method = "sft" | "dpo" | "orpo";

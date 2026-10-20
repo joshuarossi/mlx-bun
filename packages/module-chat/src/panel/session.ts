@@ -3,18 +3,18 @@
 // closes the socket: a turn in flight survives a visit elsewhere. After an unexpected close it reconnects, but only
 // while the chat page is showing; otherwise the next `connect()` (the page is entered again) does. Each connection
 // starts on a fresh server session, so the session remembers which saved chat it was in (from `sessions` frames)
-// and reopens it on the next `ready`. A served-model change (the host's `mlx-model-changed`) reconnects at once
-// when no turn is in flight, so the capabilities `ready` reports describe the model that will answer.
+// and reopens it on the next `ready`. A served-model change (the host's `HOST_EVENTS.modelChanged`) reconnects at
+// once when no turn is in flight, so the capabilities `ready` reports describe the model that will answer.
 //
 // There is no client-side heartbeat: the socket's own close tells the session the server went away.
-import { createSocket, listen, type SocketStatus } from "@mlx-bun/web-kit";
+import { createSocket, HOST_EVENTS, onHostEvent, type Api, type SocketStatus } from "@mlx-bun/web-kit";
 import type { ClientMessage, ServerMessage } from "../protocol";
 
 export type { SocketStatus };
 
 export interface ChatSessionOptions {
-  /** The socket URL; defaults to `/ws/chat` on this page's host. */
-  url?: string | (() => string);
+  /** The socket URL (`chatSocketUrl`), read on every connection. */
+  url: string | (() => string);
   onFrame(frame: ServerMessage): void;
   onStatus(status: SocketStatus): void;
   /** The chat page is showing: a dropped connection reconnects only then. */
@@ -33,9 +33,12 @@ export interface ChatSession {
   close(): void;
 }
 
-/** The module's socket on this page's host (`mount: "root"`, so the path is the shipped one). */
-export function chatSocketUrl(): string {
-  return (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws/chat";
+/** The module's socket (`mount: "root"`, so the path is the shipped one) on the origin of the connection's `apiBase`:
+ * this page's own for a relative base, the server's in a native webview. */
+export function chatSocketUrl(api: Api): string {
+  const url = new URL(api.url("/ws/chat"), document.baseURI);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
 }
 
 /** What the composer's status line says about the connection, and the state its dot shows. */
@@ -53,7 +56,7 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
   let activePath: string | null = null;
   let resumePath: string | null = null;
   const socket = createSocket<ServerMessage, ClientMessage>({
-    url: options.url ?? chatSocketUrl,
+    url: options.url,
     shouldReconnect: () => options.isActive(),
     onStatus(status) {
       if (status === "connecting") resumePath = activePath;
@@ -70,7 +73,7 @@ export function createChatSession(options: ChatSessionOptions): ChatSession {
       }
     },
   });
-  const stopListening = listen(window, "mlx-model-changed", () => {
+  const stopListening = onHostEvent(HOST_EVENTS.modelChanged, () => {
     if (!options.busy() && socket.connected) socket.reconnect();
   });
   return {

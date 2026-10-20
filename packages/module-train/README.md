@@ -72,8 +72,9 @@ markup, the loss chart and the panel's own rules after the web kit's base vocabu
 keep their root paths (`/api/model/resolve-folder`, `/api/finetune/*`, `/api/jobs/:id/stream`) under whatever prefix
 the connection's `apiBase` sits on; the job stream is the kit's event-stream client. The loss chart is inline SVG on
 the code surface, training loss in `--ok` and validation loss in `--accent`. Optional host `ui` hooks provide
-notifications, publishing and catalog refresh. The chat assistant reads the step rail (`#f-steps`, `.s.cur`) and
-spotlights `#f-model`.
+notifications, publishing and catalog refresh. The element's `currentStep()` reads its own step rail (`#f-steps`,
+`.s.cur`), and every step it shows raises the kit's `HOST_EVENTS.panelChanged` from the element, so a host can describe
+the page (the app hands the step to the chat's assistant, which spotlights `#f-model`).
 
 Leaving the page closes the job stream without cancelling the job; returning while the job is unfinished reopens it,
 and the server's replay rebuilds the log and the chart. A dropped connection shows a reconnecting note until the next

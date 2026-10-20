@@ -232,21 +232,34 @@ function wireRowActions(state: AdaptersPanelState, send: Send, api: Api): void {
   if (clear) clear.onclick = () => { state.stackPicks.clear(); renderAdaptersBody(state, send, api); };
 }
 
+// Told when the sheet opens or closes (the assistant reports it as the current view).
+let onToggle: (() => void) | undefined;
+
+/** The sheet is open (the assistant's `adapters-panel` view). */
+export function adaptersPanelOpen(): boolean {
+  return !!$("adapters-overlay")?.classList.contains("open");
+}
+
 function openPanel(state: AdaptersPanelState, send: Send, api: Api): void {
   if (trap) trap.capture();
   $("adapters-overlay").classList.add("open");
   $("adapters-manage").setAttribute("aria-expanded", "true");
   $("adapters-close")?.focus();
+  onToggle?.();
   void refreshAdaptersPanel(state, send, api);
 }
 export function closeAdaptersPanel(): void {
+  const wasOpen = adaptersPanelOpen();
   $("adapters-overlay").classList.remove("open");
   $("adapters-manage").setAttribute("aria-expanded", "false");
   if (trap) trap.restore();
+  if (wasOpen) onToggle?.();
 }
 
-/** Wires the adapters button and the table's close controls. Escape closes it through the host's sweep. */
-export function initAdaptersPanel(state: AdaptersPanelState, send: Send, api: Api): void {
+/** Wires the adapters button and the table's close controls. Escape closes it through the host's sweep. `toggled` is
+ * called after the sheet opens or closes. */
+export function initAdaptersPanel(state: AdaptersPanelState, send: Send, api: Api, toggled?: () => void): void {
+  onToggle = toggled;
   const btn = $("adapters-manage");
   if (!btn) return;
   trap = trapFocus($("adapters-panel"), () => $("adapters-overlay").classList.contains("open"));

@@ -52,18 +52,18 @@ export function mountPanels(panels: readonly ShellPanel[]): void {
   }
 }
 
-/** Presentation the embedding app supplies to the job panels that consume it. */
+/** Presentation the embedding app supplies to its panels: the shell's toasts to every panel, and to the job panels
+ * publishing with the served model's id or a catalog refresh. */
 export function connectPanels(panels: readonly ShellPanel[]): ShellPanel[] {
   return panels.map(panel => {
-    if (!["mlx-quantize-panel", "mlx-train-panel", "mlx-datasets-panel"].includes(panel.tag)) return panel;
+    const job = ["mlx-quantize-panel", "mlx-train-panel", "mlx-datasets-panel"].includes(panel.tag);
     return { ...panel, connection: { ...panel.connection, ui: {
       notify: toast,
-      publish: pushToHub,
-      ...(panel.tag === "mlx-datasets-panel" ? { modelId: () => activeModelId || undefined } : { catalogChanged: () => {
+      ...(!job ? {} : { publish: pushToHub, ...(panel.tag === "mlx-datasets-panel" ? { modelId: () => activeModelId || undefined } : { catalogChanged: () => {
         const status = controllers.status;
         if (status?.refreshLibrary) (status.refreshLibrary as () => void)();
         chatPanel()?.refreshAdapters();
-      } }),
+      } }) }),
     } } };
   });
 }

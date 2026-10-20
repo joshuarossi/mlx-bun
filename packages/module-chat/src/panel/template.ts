@@ -1,8 +1,9 @@
 // The panel's markup: the recent-chats sidebar, the conversation with its empty state, the composer, the adapter
 // routing table's sheet and the narrow-screen drawer's backdrop. It is light DOM on the host page, so it uses the web
 // kit's base vocabulary (`.btn`, `.input`, `.select`, `.tag`, `.dot`, `.notice`) directly. The ids are the panel's
-// public surface: the host and the memory module reach the sidebar entry, the consent card and the suggestion chips
-// by id, and the assistant snapshots the controls. `data-spotlight` marks the controls the assistant can point at;
+// public surface: the element hands the sidebar entry, the consent card and the suggestion chips to a companion
+// (`companionSlots()`), and the assistant snapshots the controls. `#chat-notice` is the chat's own live region for
+// notices in a host without toasts. `data-spotlight` marks the controls the assistant can point at;
 // `data-ui-chrome="content"` keeps the rendered conversation out of that snapshot (a link in a message is untrusted
 // content, not app chrome).
 import { esc, shortName } from "@mlx-bun/web-kit";
@@ -18,7 +19,7 @@ export const MARKUP = `
   <button id="chat-new" class="btn sm" type="button" data-spotlight="new-chat" title="Start a new chat (or type /new)">${ICON.plus}<span>New chat</span></button>
   <div class="cs-search">${ICON.search}<input class="input sm" type="search" id="chat-sess-search" data-spotlight="session-search" placeholder="Search chats" aria-label="Search chats" autocomplete="off"></div>
   <div id="chat-sessions" class="sesslist"></div>
-  <button id="chat-memory-entry" data-spotlight="memory-entry" type="button" style="display:none" aria-haspopup="dialog" aria-controls="mem-overlay" aria-expanded="false">
+  <button id="chat-memory-entry" data-spotlight="memory-entry" type="button" style="display:none" aria-haspopup="dialog" aria-expanded="false">
     <span class="mi" aria-hidden="true">${ICON.memory}</span><span class="mt">Memory</span><span class="mcount" id="chat-memory-count">—</span>
   </button>
 </aside>
@@ -46,6 +47,7 @@ export const MARKUP = `
     <div id="chat-thread" role="log" aria-live="polite" aria-atomic="false" aria-label="Conversation" data-ui-chrome="content"></div>
   </div>
   <div id="chat-foot">
+    <div id="chat-notice" role="status" aria-live="polite" hidden></div>
     <div class="queuebar" id="chat-queue" aria-live="polite"></div>
     <div class="composer">
       <div id="chat-attach" class="attach-row"></div>

@@ -148,7 +148,7 @@ test("opening the metrics route mounts the panel through the shell with its conn
   expect(localStorage.getItem("mlxbun.developer")).toBe("1"); // a deep link into a developer page turns the switch on
   const panel = document.querySelector("#s-metrics mlx-metrics-panel") as HTMLElement & { connection?: unknown };
   expect(panel).not.toBeNull();
-  expect(panel.connection).toEqual({ apiBase: "/api/metrics", eventsUrl: "/api/metrics/stream" });
+  expect(panel.connection).toEqual({ apiBase: "/api/metrics", eventsUrl: "/api/metrics/stream", ui: { notify: expect.any(Function) } }); // every panel gets the shell's toasts
   expect(FakeEventSource.urls).toEqual(["/api/metrics/stream"]);
   expect(requests.filter(url => url.startsWith("/api/metrics/")).sort()).toEqual(["/api/metrics/bench", "/api/metrics/bench/profiles", "/api/metrics/history"]);
   expect(requests).not.toContain("/api/metrics/panel.js");
@@ -168,7 +168,7 @@ test("opening the benchmarks route mounts its panel through the shell, which rea
   expect(activePages()).toEqual(["benchmarks"]);
   const panel = document.querySelector("#s-benchmarks mlx-benchmarks-panel") as HTMLElement & { connection?: unknown };
   expect(panel).not.toBeNull();
-  expect(panel.connection).toEqual({ apiBase: "/api/benchmarks", eventsUrl: "" }); // benchmarks serves no event stream
+  expect(panel.connection).toEqual({ apiBase: "/api/benchmarks", eventsUrl: "", ui: { notify: expect.any(Function) } }); // benchmarks serves no event stream
   expect(requests.filter(url => url.startsWith("/api/benchmarks/")).sort()).toEqual(["/api/benchmarks/jobs", "/api/benchmarks/runs", "/api/benchmarks/tasks"]);
   expect(requests).not.toContain("/api/benchmarks/panel.js");
 });
@@ -254,6 +254,39 @@ test("the app's side of the chat panel is wired: memory attaches to its sidebar,
   const box = document.getElementById("settings-coding-tools") as HTMLInputElement;
   box.checked = false; box.dispatchEvent(new window.Event("change"));
   expect(socket.sent.at(-1)).toEqual({ type: "set_coding_tools", enabled: false });
+});
+
+test("the chat's host contract: memory takes the chat's slots, notices are the shell's toasts, and the assistant hears the routes, the wizards' steps and the memory drawer", async () => {
+  boot("#/chat");
+  const settle = () => new Promise(resolve => setTimeout(resolve, 10));
+  type Context = { route: string; view?: string; step?: { index: number; count: number; label: string } };
+  const socket = FakeWebSocket.last!;
+  socket.readyState = 1;
+  const contexts = () => socket.sent.filter(frame => frame.type === "context").map(frame => frame.context as Context);
+  socket.emit({ type: "ready", model: "test-model", vision: false, audio: false, thinking: false, genDefaults: { temperature: null, topP: null, topK: null } });
+  expect(contexts().at(-1)).toMatchObject({ route: "chat" });
+  // Memory styles the slots the chat handed it by its own classes; the ids stay the chat's.
+  expect(["chat-memory-entry", "chat-memory-count", "chat-consent"].map(id => document.getElementById(id)!.className)).toEqual(["mem-entry", "mcount mem-entry-count", "mem-consent"]);
+  // The chat's notices are the shell's toasts, not its own fallback.
+  socket.emit({ type: "error", message: "The model worker exited." });
+  expect(document.getElementById("toasts")!.textContent).toContain("The model worker exited.");
+  expect(document.getElementById("chat-notice")!.hidden).toBe(true);
+  // The assistant navigates through the host, and the wizard the page mounts reports its step.
+  socket.emit({ type: "ui_navigate", route: "quantize" });
+  await settle();
+  expect(activePages()).toEqual(["quantize"]);
+  expect(contexts().at(-1)).toEqual(expect.objectContaining({ route: "quantize", step: { index: 0, count: 4, label: "Source" } }));
+  // The memory drawer is the host's view, however it opens and closes.
+  const memory = document.querySelector("mlx-memory-panel") as HTMLElement & { open(): Promise<void>; close(): void };
+  await memory.open();
+  await settle();
+  expect(contexts().at(-1)).toMatchObject({ route: "quantize", view: "memory-panel" });
+  memory.close();
+  await settle();
+  expect(contexts().at(-1)!.view).toBeUndefined();
+  location.hash = "#/chat"; window.dispatchEvent(new window.Event("hashchange"));
+  expect(contexts().at(-1)).toMatchObject({ route: "chat" });
+  expect(contexts().at(-1)!.step).toBeUndefined();
 });
 
 test("the hamburger in the nav opens the panel's drawer, and Escape closes the drawer and the panel's popovers in turn", () => {

@@ -2,17 +2,18 @@
 // page, keeps it attached while another page shows (a turn in flight and the socket survive a visit elsewhere) and
 // tells it when its page is shown (`enter`) and hidden (`leave`). It renders into the light DOM with its own markup
 // and stylesheet over the web kit's tokens and base vocabulary, which the host page links; what lives beside it on
-// the host page (memory's sidebar entry, the settings dialog's agent-tools section) is wired through the `host`
-// property (`ChatHost`). It talks to the module's socket (`/ws/chat`) and routes (`/api/sessions/*`,
-// `/api/settings/tool-approvals`), which keep their shipped root paths on the connection's origin.
+// the host page (memory's sidebar entry, the settings dialog's agent-tools section, the host's toasts and pages) is
+// wired through the `host` property (`ChatHost`), and `companionSlots()` says where a companion attaches in its markup.
+// It talks to the module's socket (`/ws/chat`) and routes (`/api/sessions/*`, `/api/settings/tool-approvals`), which
+// keep their shipped root paths on the connection's origin.
 import { $, createApi, injectStyles, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
 import { createChatController, type ChatController } from "./chat";
-import type { ChatHost } from "./host";
+import type { ChatHost, CompanionSlots } from "./host";
 import { closeTopPopover, hasOpenPopover } from "./popovers";
 import { STYLE } from "./style";
 import { MARKUP } from "./template";
 
-export type { ChatHost, ToolCardHandle } from "./host";
+export type { ChatHost, ChatHostApp, ChatPanelElement, CompanionSlots, ToolCardHandle } from "./host";
 
 // Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
@@ -95,6 +96,19 @@ class ChatPanel extends Base {
   drawerOpen(): boolean { return !!this.#drawer && $("chat-sidebar").classList.contains("drawer-open"); }
   /** The host's control that opens the drawer, if it has one (it names the sidebar in `aria-controls`). */
   #drawerTrigger(): Element | null { return document.querySelector('[aria-controls="chat-sidebar"]'); }
+
+  /** Where a companion attaches in the chat's markup: the sidebar entry and its count, the first-run consent card and
+   * its two actions, and the greeting's suggestion chips. The chat keeps their ids; the elements exist once attached. */
+  companionSlots(): CompanionSlots {
+    return {
+      entry: $("chat-memory-entry") as HTMLButtonElement,
+      count: $("chat-memory-count"),
+      consent: $("chat-consent"),
+      consentYes: $("chat-consent-yes") as HTMLButtonElement,
+      consentSkip: $("chat-consent-skip") as HTMLButtonElement,
+      chips: $("chat-hello-chips"),
+    };
+  }
 
   /** The popovers (sampling, system prompt, adapter table) for the host's Escape sweep. */
   popoverOpen(): boolean { return hasOpenPopover(); }

@@ -8,7 +8,7 @@
 //   sessions.ts     the recent-chats sidebar, search and export
 //   composer/       the message box, attachments, `#` picker, popovers, adapter select, status and perf line
 //   app-context.ts  the app-aware assistant's context pushes, navigation and spotlight
-import { $, createDisposer, errorOf, listen, type Api } from "@mlx-bun/web-kit";
+import { $, createDisposer, errorOf, HOST_EVENTS, onHostEvent, type Api } from "@mlx-bun/web-kit";
 import type { ClientMessage, HistoryItem, ServerMessage } from "../protocol";
 import { AdaptersPanelState, initAdaptersPanel } from "./adapters-panel";
 import { createAppContext, type AppContext } from "./app-context";
@@ -21,10 +21,10 @@ import {
   addMsgActions, addUserMessage, dropRegenerate, newSiblingInfo, renderHistory, renderSiblingToggle, startEdit,
   switchSiblingTarget, type SiblingInfo,
 } from "./history";
-import { toast, type ChatHost } from "./host";
+import { bindNotices, toast, type ChatHost, type ChatPanelElement } from "./host";
 import { wireCanvasToggle } from "./markdown";
 import type { Citation } from "./rag";
-import { createChatSession, statusCopy, type SocketStatus } from "./session";
+import { chatSocketUrl, createChatSession, statusCopy, type SocketStatus } from "./session";
 import { createSidebar, type Sidebar } from "./sessions";
 import { helloNoteText, helloSubHtml, type ServedModel } from "./template";
 import {
@@ -36,8 +36,8 @@ import { initVoiceInput } from "./voice";
 /** What the controller needs from its element and host. */
 export interface ChatPort {
   readonly host: ChatHost | undefined;
-  /** The panel element the markup lives in. */
-  readonly element: HTMLElement;
+  /** The panel element the markup lives in (handed to the host's `mounted`). */
+  readonly element: ChatPanelElement;
   /** The JSON client over the module's connection; the routes it reads are root paths on that origin. */
   readonly api: Api;
   /** The chat page is the one showing (a dropped connection reconnects only then). */
@@ -68,6 +68,8 @@ const NOT_CONNECTED = "Not connected to the model server yet. Reconnecting…";
 
 export function createChatController(port: ChatPort): ChatController {
   const disposer = createDisposer();
+  // The panel's notices go to the host's toasts, or to its own live region in a host without them.
+  disposer.add(bindNotices(port.host));
   const composer = new ComposerState();
   const adapters = new AdaptersPanelState();
   const scroller = createScroller(() => $("chat-scroll"));
@@ -88,6 +90,7 @@ export function createChatController(port: ChatPort): ChatController {
   let appContext: AppContext | undefined;
 
   const session = createChatSession({
+    url: () => chatSocketUrl(port.api),
     onFrame: handle,
     onStatus: showStatus,
     isActive: () => port.isActive(),
@@ -340,7 +343,7 @@ export function createChatController(port: ChatPort): ChatController {
       const select = $("chat-adapter") as HTMLSelectElement;
       // The routing table and the quick select share one notion of what this chat has selected.
       select.onchange = () => { adapters.selectedSpec = select.value || null; adapters.stackPicks.clear(); void onSelectAdapter(select, send, port.api); };
-      initAdaptersPanel(adapters, send, port.api);
+      initAdaptersPanel(adapters, send, port.api, () => appContext?.push());
       initSampling(composer, send, disposer);
       initSystemPrompt(composer, send, disposer);
       sidebar = createSidebar(port.api, {
@@ -367,8 +370,8 @@ export function createChatController(port: ChatPort): ChatController {
       initVoiceInput($("chat-mic-btn") as HTMLButtonElement, box, port.api);
       thread().addEventListener("click", copyCode);
       wireCanvasToggle(thread());
-      appContext = createAppContext(send, disposer);
-      disposer.add(listen(window, "mlx-server-status", (event) => { const detail = (event as CustomEvent<ServedModel>).detail; if (detail) showServed(detail); }));
+      appContext = createAppContext(send, port.host?.app, disposer);
+      disposer.add(onHostEvent(HOST_EVENTS.serverStatus, (detail) => { if (detail) showServed(detail); }));
       void refreshAdapters(port.api);
       port.host?.mounted?.(port.element);
     },

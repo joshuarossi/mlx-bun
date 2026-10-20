@@ -1,11 +1,12 @@
 // `<mlx-memory-panel>`: the memory overlay as a companion panel. The shell mounts it at boot without a route or tab, and
-// it stays attached beside the chat. It renders into the light DOM (the chat's sidebar entry, consent card and tool
-// chips live in the chat panel's markup), injects its stylesheet into the page once, and reaches the module's routes
-// through `connection.apiBase`. The host calls `attachChat()` once the chat's markup exists, `open(article)`, `close()`,
-// `isOpen()`, and `toolCard(parent, tool, args)` to draw a memory tool call.
+// it stays attached beside the chat. It renders into the light DOM (the sidebar entry, consent card and greeting chips
+// it fills are slots in the chat's markup, which the host hands it), injects its stylesheet into the page once, reaches
+// the module's routes through `connection.apiBase` and notifies through `connection.ui.notify`. The host calls
+// `attachChat(slots)` with the chat's slots once its markup exists, `open(article)`, `close()`, `isOpen()`, and
+// `toolCard(parent, tool, args)` to draw a memory tool call.
 import { injectStyles } from "@mlx-bun/web-kit";
 import type { PanelConnection } from "../protocol";
-import { initMemoryPanel, attachChat, openMemPanel, closeMemPanel, isMemPanelOpen, isMemoryToolName, memoryToolChip, setApiBase, type MemChipHandle } from "./memory";
+import { initMemoryPanel, attachChat, openMemPanel, closeMemPanel, isMemPanelOpen, isMemoryToolName, memoryToolChip, setConnection, type ChatSlots, type MemChipHandle } from "./memory";
 import { STYLE, TEMPLATE } from "./template";
 export * from "./memory";
 
@@ -17,10 +18,10 @@ export class MemoryPanel extends BaseElement {
   connectedCallback(): void {
     injectStyles("mlx-memory-panel-style", STYLE);
     if (!this.querySelector("#mem-overlay")) this.innerHTML = TEMPLATE;
-    setApiBase(this.connection?.apiBase ?? "/api/memory");
+    setConnection(this.connection ?? { apiBase: "/api/memory", eventsUrl: "" });
     initMemoryPanel();
   }
-  attachChat(): void { attachChat(); }
+  attachChat(slots: ChatSlots): void { attachChat(slots); }
   open(article?: string): Promise<void> { return openMemPanel(article); }
   close(): void { closeMemPanel(); }
   isOpen(): boolean { return isMemPanelOpen(); }

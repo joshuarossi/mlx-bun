@@ -1,18 +1,18 @@
 // The quantize panel under happy-dom, over a remote backend under a URL prefix: requests are recorded by a fake fetch
 // and job streams are the kit's FakeEventSource, so each test decides when an event arrives or the connection drops.
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
-import { UNREACHABLE } from "@mlx-bun/web-kit";
+import { HOST_EVENTS, UNREACHABLE } from "@mlx-bun/web-kit";
 import { FakeEventSource } from "@mlx-bun/web-kit/testing";
 import { GlobalWindow } from "happy-dom";
 const window = new GlobalWindow({ url: "http://host/" });
-const globals = ["window", "document", "location", "HTMLElement", "customElements", "EventSource", "fetch"] as const;
+const globals = ["window", "document", "location", "HTMLElement", "customElements", "CustomEvent", "EventSource", "fetch"] as const;
 const saved = new Map(globals.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 const requests: { url: string; body?: Record<string, unknown> }[] = [];
 let answers = new Map<string, unknown>();
 const notify: string[] = [], published: unknown[] = [];
 let changed = 0;
 beforeAll(async () => {
- Object.assign(globalThis, { window, document: window.document, location: window.location, HTMLElement: window.HTMLElement, customElements: window.customElements, EventSource: FakeEventSource,
+ Object.assign(globalThis, { window, document: window.document, location: window.location, HTMLElement: window.HTMLElement, customElements: window.customElements, CustomEvent: window.CustomEvent, EventSource: FakeEventSource,
   fetch: async (url: string, init?: RequestInit) => {
    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
    requests.push({ url, body });
@@ -24,15 +24,16 @@ beforeAll(async () => {
 afterAll(() => { for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis, name, descriptor) : delete (globalThis as Record<string, unknown>)[name]; });
 afterEach(() => { document.body.replaceChildren(); requests.length = notify.length = published.length = 0; FakeEventSource.reset(); answers.clear(); changed = 0; });
 const settle = () => new Promise(resolve => setTimeout(resolve, 5));
+type Wizard = HTMLElement & { currentStep(): { index: number; count: number; label: string } | null };
 const mount = async () => {
- const panel = document.createElement("mlx-quantize-panel") as HTMLElement & { connection: unknown };
+ const panel = document.createElement("mlx-quantize-panel") as Wizard & { connection: unknown };
  panel.connection = { apiBase: "https://backend/tenant/api/quantize", eventsUrl: "", ui: { notify: (text: string) => notify.push(text), publish: (_container: HTMLElement, source: unknown) => published.push(source), modelId: () => "served-model", catalogChanged: () => changed++ } };
  document.body.append(panel); await settle(); return panel;
 };
 const part = (panel: HTMLElement, id: string) => panel.shadowRoot!.getElementById(id)! as HTMLElement;
 const value = (panel: HTMLElement, id: string, text: string) => { (part(panel, id) as HTMLInputElement).value = text; };
 const click = async (element: HTMLElement) => { element.click(); await settle(); };
-/** The step the rail marks current (as the chat assistant reads it, from `.s.cur`), and whether it is marked failed. */
+/** The step the rail marks current (as `currentStep()` reads it, from `.s.cur`), and whether it is marked failed. */
 const rail = (panel: HTMLElement) => { const current = part(panel, "q-steps").querySelector(".s.cur")!; return { current: current.textContent!.replace(/^\d+/, ""), failed: current.classList.contains("failed") }; };
 const shown = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll<HTMLElement>("[data-qstep]")].filter(card => !card.hidden).map(card => card.dataset.qstep);
 /** Inspects a supported model and continues to Configure; submissions answer job ids q1, q2, … */
@@ -169,4 +170,21 @@ test("a dropped connection shows a reconnecting note until the next event, and t
  stream.emit({ type: "log", line: "[load] loading weights" }); stream.emit({ type: "log", line: "[calibrate] measuring" });
  expect(part(panel, "q-log").textContent).toBe("[load] loading weights\n[calibrate] measuring");
  expect(FakeEventSource.instances).toHaveLength(1); expect(stream.closed).toBe(false);
+});
+
+test("currentStep() reads the element's own rail, and each step it shows raises the host's panel-changed event", async () => {
+ jobs(); const seen: unknown[] = [];
+ const record = (event: Event) => seen.push((event.target as Wizard).currentStep()?.label);
+ document.addEventListener(HOST_EVENTS.panelChanged, record);
+ try {
+  expect((document.createElement("mlx-quantize-panel") as Wizard).currentStep()).toBeNull(); // no rail before it attaches
+  const panel = await mount();
+  expect(panel.currentStep()).toEqual({ index: 0, count: 4, label: "Source" });
+  await toConfigure(panel);
+  expect(panel.currentStep()).toEqual({ index: 1, count: 4, label: "Configure" });
+  await click(part(panel, "q-submit"));
+  const stream = FakeEventSource.last()!; stream.open(); stream.emit({ type: "done", ts: 1, output_dir: "/models/out" });
+  expect(panel.currentStep()).toEqual({ index: 3, count: 4, label: "Done" });
+  expect(seen).toEqual(["Source", "Configure", "Run", "Done"]);
+ } finally { document.removeEventListener(HOST_EVENTS.panelChanged, record); }
 });

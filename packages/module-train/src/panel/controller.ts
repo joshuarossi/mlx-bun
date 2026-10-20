@@ -3,9 +3,9 @@
 // through the kit's client; the job stream through the kit's event-stream client. Leaving the page closes the stream
 // (the job keeps running on the server); returning while the job is unfinished reopens it, and the server replays the
 // job's events from its first one, so the log and the chart restart with each connection.
-import { $, byType, createApi, createDisposer, errorOf, listen, num, openEventStream, type EventStream } from "@mlx-bun/web-kit";
+import { $, byType, createApi, createDisposer, emitHostEvent, errorOf, HOST_EVENTS, listen, num, openEventStream, type EventStream } from "@mlx-bun/web-kit";
 import type { JobEvent, PanelConnection } from "../protocol";
-import { BASE, CONFIGURE, DATASET, DONE, METHOD_HINT, RUN, STEPS, chartSvg, datasetHtml, failureHtml, stepsHtml, writtenHtml, type LossPoint, type Method } from "./view";
+import { BASE, CONFIGURE, DATASET, DONE, METHOD_HINT, RUN, STEPS, chartSvg, datasetHtml, failureHtml, railStep, stepsHtml, writtenHtml, type LossPoint, type Method, type WizardStep } from "./view";
 
 // The File System Access API's showDirectoryPicker() is not in every lib.dom yet; declare it loosely rather than widen
 // the global Window type project-wide.
@@ -25,6 +25,8 @@ export interface PanelController {
   enter(): void;
   /** On every disconnection: removes the listeners and closes the stream without cancelling the job. */
   leave(): void;
+  /** The rail's current step, or null before the first step is shown. */
+  currentStep(): WizardStep | null;
 }
 
 /** The server root a module base sits under (`https://host/prefix/api/train` is `https://host/prefix`). The wizard's
@@ -58,6 +60,8 @@ export function createFinetuneController(root: ShadowRoot, connection: () => Pan
     step = n;
     for (const card of root.querySelectorAll<HTMLElement>("[data-fstep]")) card.hidden = Number(card.dataset.fstep) !== n;
     part("f-steps").innerHTML = stepsHtml(STEPS, n, failed);
+    // A host that describes the page (the chat assistant) re-reads the step; the event leaves the shadow root.
+    emitHostEvent(HOST_EVENTS.panelChanged, undefined, root.host, { bubbles: true, composed: true });
   }
 
   // The base model's folder picker and drag and drop resolve by the folder's name on the server (no upload; the
@@ -350,5 +354,6 @@ export function createFinetuneController(root: ShadowRoot, connection: () => Pan
       active = false;
       disposer.dispose();
     },
+    currentStep: () => railStep(part("f-steps")),
   };
 }

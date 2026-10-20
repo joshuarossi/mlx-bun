@@ -1,7 +1,8 @@
 // The overlay's markup, its icons and its stylesheet. The panel renders into the light DOM, so the stylesheet is injected
 // into the page once (`injectStyles`) and written against the web kit's tokens and base vocabulary, which the host page
-// links. Besides the drawer it styles what memory draws into the chat panel's markup by id: the sidebar entry
-// (`#chat-memory-entry`), the consent card (`#chat-consent`) and the provenance chips (`.memchip`) in the thread.
+// links. Besides the drawer it styles, by the classes memory adds to them, the chat's slots it takes: the sidebar entry
+// (`.mem-entry`, its count `.mem-entry-count`) and the consent card (`.mem-consent`); and the provenance chips
+// (`.memchip`) it draws in the thread.
 
 const svg = (paths: string, cls = ""): string =>
   `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
@@ -132,16 +133,16 @@ button.mem-link-chip:hover{background:var(--accent-soft);color:var(--accent)}
 .mem-diff .diffdel{background:var(--bad-soft);color:color-mix(in srgb,var(--bad) 62%,var(--code-ink))}
 
 /* ── the chat sidebar's entry: a quiet row with the article count ── */
-#chat-memory-entry{appearance:none;display:flex;align-items:center;gap:10px;width:100%;margin-top:auto;padding:7px 10px;border:0;border-radius:var(--radius-md);
+.mem-entry{appearance:none;display:flex;align-items:center;gap:10px;width:100%;margin-top:auto;padding:7px 10px;border:0;border-radius:var(--radius-md);
   background:none;color:var(--dim);font:inherit;font-size:var(--text-md);font-weight:550;text-align:left;cursor:pointer;
   transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-#chat-memory-entry:hover,#chat-memory-entry[aria-expanded="true"]{background:var(--raised);color:var(--ink)}
-#chat-memory-entry .mi{display:inline-flex;justify-content:center;width:16px;flex:0 0 auto;color:var(--accent)}
-#chat-memory-entry svg{width:16px;height:16px}
-#chat-memory-entry .mt{flex:1 1 auto;min-width:0}
-#chat-memory-count{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:var(--raised);color:var(--dim);
+.mem-entry:hover,.mem-entry[aria-expanded="true"]{background:var(--raised);color:var(--ink)}
+.mem-entry .mi{display:inline-flex;justify-content:center;width:16px;flex:0 0 auto;color:var(--accent)}
+.mem-entry svg{width:16px;height:16px}
+.mem-entry .mt{flex:1 1 auto;min-width:0}
+.mem-entry-count{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:999px;background:var(--raised);color:var(--dim);
   font-family:var(--font);font-size:var(--text-xs);font-weight:600;font-variant-numeric:tabular-nums;flex:0 0 auto}
-#chat-memory-entry:hover #chat-memory-count,#chat-memory-entry[aria-expanded="true"] #chat-memory-count{background:var(--panel)}
+.mem-entry:hover .mem-entry-count,.mem-entry[aria-expanded="true"] .mem-entry-count{background:var(--panel)}
 
 /* ── the provenance chip: a compact row (what memory was read) that opens to the result ── */
 .memchip{display:block;width:fit-content;max-width:100%;margin:8px 0;border-radius:999px;background:var(--accent-soft);color:var(--ink);font-size:var(--text-sm)}
@@ -161,17 +162,17 @@ button.mem-link-chip:hover{background:var(--accent-soft);color:var(--accent)}
 .memchip.fail .mcicon{color:var(--bad)}
 
 /* ── the consent card in the chat's greeting: an offer, never a modal ── */
-#chat-consent{display:none;align-items:center;gap:10px 12px;flex-wrap:wrap;max-width:640px;margin:22px auto 0;padding:10px 12px;text-align:left;
+.mem-consent{display:none;align-items:center;gap:10px 12px;flex-wrap:wrap;max-width:640px;margin:22px auto 0;padding:10px 12px;text-align:left;
   border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface);color:var(--dim);font-size:var(--text-md);line-height:1.45}
-#chat-consent.show{display:flex}
-#chat-consent .cc-icon{display:inline-flex;flex:0 0 auto;color:var(--accent)}
-#chat-consent .cc-icon svg{width:16px;height:16px}
-#chat-consent .cc-text{flex:1 1 260px;min-width:0}
-#chat-consent .cc-text b{color:var(--ink);font-weight:600}
-#chat-consent .cc-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
+.mem-consent.show{display:flex}
+.mem-consent .cc-icon{display:inline-flex;flex:0 0 auto;color:var(--accent)}
+.mem-consent .cc-icon svg{width:16px;height:16px}
+.mem-consent .cc-text{flex:1 1 260px;min-width:0}
+.mem-consent .cc-text b{color:var(--ink);font-weight:600}
+.mem-consent .cc-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
 
 @media (prefers-reduced-motion:reduce){
   #mem-overlay.open,#mem-panel{animation:none}
-  .mem-art,.mem-hist-entry,#chat-memory-entry,.memchip .mccaret,button.mem-link-chip,.mem-article-render .cbcopy,.mem-article-render .cbview{transition:none}
+  .mem-art,.mem-hist-entry,.mem-entry,.memchip .mccaret,button.mem-link-chip,.mem-article-render .cbcopy,.mem-article-render .cbview{transition:none}
 }
 `;

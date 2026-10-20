@@ -1,10 +1,25 @@
 // The memory overlay's controller: the drawer (status, search, the article list, an article with its links and git
-// history), the sidebar entry and the consent card it wires into the chat panel's markup, the personalised greeting
-// chips, and the provenance chips the chat host draws for memory tools. It renders into the light DOM and reaches the
-// module's routes (`/api/memory/*`) through the web kit's client over the connection's `apiBase`.
+// history), the sidebar entry and the consent card it wires into the slots the chat hands it (`ChatSlots`), the
+// personalised greeting chips, and the provenance chips the chat host draws for memory tools. It renders into the light
+// DOM, reaches the module's routes (`/api/memory/*`) through the web kit's client over the connection's `apiBase`, and
+// sends its notices to the connection's `ui.notify`.
 import { $, createApi, el, esc, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
+import type { PanelConnection } from "../protocol";
 import { mdToHtml, wireCanvasToggle } from "./markdown";
 import { ICONS } from "./template";
+
+/** Where memory attaches in a chat's markup (the chat element's `companionSlots()`): the sidebar entry
+ * (`#chat-memory-entry`) and its count (`#chat-memory-count`), the first-run consent card (`#chat-consent`) with its
+ * actions (`#chat-consent-yes`, `#chat-consent-skip`), and the greeting's suggestion chips (`#chat-hello-chips`). The
+ * chat owns them; memory adds its classes (`mem-entry`, `mem-entry-count`, `mem-consent`) and wiring. */
+export interface ChatSlots {
+  entry: HTMLButtonElement;
+  count: HTMLElement;
+  consent: HTMLElement;
+  consentYes: HTMLButtonElement;
+  consentSkip: HTMLButtonElement;
+  chips: HTMLElement;
+}
 
 /* ────────────────────────────────────────────────────────────────────
    REST response shapes (the module's `routes.ts` `jsonOk()` bodies). Each extends the client's envelope.
@@ -38,18 +53,18 @@ type InitResp = ApiEnvelope & { result?: { root: string; gitInitialized: boolean
    resolve under it; `/v1/...` paths on its origin.
    ──────────────────────────────────────────────────────────────────── */
 
-let api: Api = createApi("/api/memory");
-export function setApiBase(base: string): void { api = createApi(base); }
+let connection: PanelConnection = { apiBase: "/api/memory", eventsUrl: "" };
+let api: Api = createApi(connection.apiBase);
+/** The element's connection: the client's base and the host's notifications. */
+export function setConnection(next: PanelConnection): void { connection = next; api = createApi(next.apiBase); }
 
-/** A toast in the host page's `#toasts` container (its live region); a page without one shows none. */
-function toast(message: string, kind: "" | "ok" | "err" = "", ms = 4200): void {
-  const container = document.getElementById("toasts");
-  if (!container) return;
-  const item = el("div", "toast " + kind, container);
-  item.setAttribute("role", kind === "err" ? "alert" : "status");
-  item.textContent = message;
-  setTimeout(() => { item.classList.add("leaving"); setTimeout(() => item.remove(), 240); }, ms);
+/** A notice through the host's `ui.notify`; a host without one shows none. */
+function toast(message: string, kind: "ok" | "err"): void {
+  connection.ui?.notify?.(message, kind);
 }
+
+/** The chat's slots, once a chat is attached. */
+let slots: ChatSlots | null = null;
 
 const errorText = (envelope: ApiEnvelope, fallback: string): string =>
   (typeof envelope.error === "string" && envelope.error) || (typeof envelope.message === "string" && envelope.message) || fallback;
@@ -93,7 +108,7 @@ export function isMemPanelOpen(): boolean {
 
 export function closeMemPanel(): void {
   $("mem-overlay").classList.remove("open");
-  $("chat-memory-entry")?.setAttribute("aria-expanded", "false");
+  slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
 }
 
@@ -102,7 +117,7 @@ export function closeMemPanel(): void {
 export async function openMemPanel(articleName?: string): Promise<void> {
   panelTrap.capture();
   $("mem-overlay").classList.add("open");
-  $("chat-memory-entry")?.setAttribute("aria-expanded", "true");
+  slots?.entry.setAttribute("aria-expanded", "true");
   if (articleName) await showArticle(articleName);
   else await showList();
   setTimeout(() => { if (isMemPanelOpen()) (document.getElementById("mem-search") ?? document.getElementById("mem-close"))?.focus(); }, 30);
@@ -372,14 +387,13 @@ function diffToHtml(diff: string): string {
 
 export async function refreshSidebarEntry(): Promise<void> {
   const st = await fetchStatus(true);
-  const entry = document.getElementById("chat-memory-entry");
-  if (!entry) return;
-  const count = document.getElementById("chat-memory-count");
+  if (!slots) return;
+  const { entry, count } = slots;
   entry.style.display = "";
   // No vault yet: the entry stays reachable (opening it offers to set memory up) and its count reads as an invitation,
   // so it never looks like a broken zero.
   const ready = st.ok && st.enabled && st.status;
-  if (count) count.textContent = ready ? String(st.status!.articleCount) : "Set up";
+  count.textContent = ready ? String(st.status!.articleCount) : "Set up";
   entry.title = ready ? `Memory: ${st.status!.articleCount} article${st.status!.articleCount === 1 ? "" : "s"}` : "Set up memory";
 }
 
@@ -453,10 +467,10 @@ export function memoryToolChip(parent: HTMLElement, tool: string, args: unknown)
 
 interface AdapterAvailable { id: string; compatible?: boolean }
 
-/** Inserts the chips with the chat's own `.chip[data-q]` contract: the chat delegates one click listener on
- *  `#chat-hello-chips`, so inserted chips send their question with no wiring here. */
+/** Inserts the chips with the chat's own `.chip[data-q]` contract: the chat delegates one click listener on its chips
+ *  slot, so inserted chips send their question with no wiring here. */
 export async function personalizeHeroChips(): Promise<void> {
-  const container = document.getElementById("chat-hello-chips");
+  const container = slots?.chips;
   if (!container) return;
   const extra: string[] = [];
 
@@ -488,12 +502,12 @@ function isConsentDismissed(): boolean {
 }
 function dismissConsent(): void {
   try { localStorage.setItem(CONSENT_DISMISSED_KEY, "1"); } catch { /* storage is unavailable: the card just hides */ }
-  document.getElementById("chat-consent")?.classList.remove("show");
+  slots?.consent.classList.remove("show");
 }
 
 /** Shows the consent card when there is no vault yet and it was never dismissed. Called once when the chat attaches. */
 export async function maybeShowConsentCard(): Promise<void> {
-  const card = document.getElementById("chat-consent");
+  const card = slots?.consent;
   if (!card) return;
   if (isConsentDismissed()) return;
   const st = await fetchStatus();
@@ -501,11 +515,9 @@ export async function maybeShowConsentCard(): Promise<void> {
   card.classList.add("show");
 }
 
-function wireConsentCard(): void {
-  const skip = document.getElementById("chat-consent-skip") as HTMLButtonElement | null;
-  const yes = document.getElementById("chat-consent-yes") as HTMLButtonElement | null;
-  if (skip) skip.onclick = dismissConsent;
-  if (yes) yes.onclick = async () => {
+function wireConsentCard({ consentSkip: skip, consentYes: yes }: ChatSlots): void {
+  skip.onclick = dismissConsent;
+  yes.onclick = async () => {
     yes.disabled = true;
     const d = await api.post<InitResp>("init");
     yes.disabled = false;
@@ -520,7 +532,7 @@ function wireConsentCard(): void {
 
 /* ────────────────────────────────────────────────────────────────────
    Init: the drawer's chrome (close, back, the focus trap, a click on the scrim) once per overlay; `attachChat` wires
-   what lives in the chat panel's markup once that markup exists.
+   the chat's slots once its markup exists.
    ──────────────────────────────────────────────────────────────────── */
 
 let initializedOverlay: HTMLElement | undefined;
@@ -531,8 +543,7 @@ export function initMemoryPanel(): void {
   initializedOverlay = overlay;
   cachedStatus = null;
   panelTrap = trapFocus(overlay, isMemPanelOpen);
-  const entry = document.getElementById("chat-memory-entry") as HTMLButtonElement | null;
-  if (entry) entry.onclick = () => openMemPanel();
+  if (slots) slots.entry.onclick = () => openMemPanel();
   ($("mem-close") as HTMLButtonElement).onclick = closeMemPanel;
   ($("mem-back") as HTMLButtonElement).onclick = () => showList();
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeMemPanel(); });
@@ -550,10 +561,16 @@ export function initMemoryPanel(): void {
   });
 }
 
-export function attachChat(): void {
-  const entry = document.getElementById("chat-memory-entry");
-  if (entry) entry.onclick = () => openMemPanel();
-  wireConsentCard();
+/** Takes the chat's slots: memory's classes on the elements it styles, the entry and the consent card wired, and the
+ *  entry's count, the consent card and the personalised chips filled from the vault's status. */
+export function attachChat(chat: ChatSlots): void {
+  slots = chat;
+  chat.entry.classList.add("mem-entry");
+  chat.count.classList.add("mem-entry-count");
+  chat.consent.classList.add("mem-consent");
+  chat.entry.setAttribute("aria-controls", "mem-overlay"); // the drawer the entry opens is memory's
+  chat.entry.onclick = () => openMemPanel();
+  wireConsentCard(chat);
   void refreshSidebarEntry();
   void personalizeHeroChips();
   void maybeShowConsentCard();

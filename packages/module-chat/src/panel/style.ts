@@ -227,7 +227,14 @@ mlx-chat-panel{display:flex;height:100%;min-width:0;background:var(--bg);color:v
 .src-snippet{margin-top:3px;color:var(--dim);line-height:1.5;white-space:pre-wrap;word-break:break-word}
 
 /* ── the composer ── */
-#chat-foot{flex:0 0 auto;padding:8px 24px 12px}
+#chat-foot{position:relative;flex:0 0 auto;padding:8px 24px 12px}
+/* the chat's own notice in a host without toasts: a quiet line floating just above the composer for a few seconds */
+#chat-notice{position:absolute;left:24px;right:24px;bottom:100%;z-index:2;width:fit-content;max-width:560px;margin:0 auto;padding:6px 12px;
+  border:1px solid var(--line-strong);border-radius:var(--radius-md);background:var(--panel);color:var(--ink);box-shadow:var(--shadow);
+  font-size:var(--text-sm);line-height:1.45;pointer-events:none;animation:chat-pop-in var(--fast) var(--ease)}
+#chat-notice[hidden]{display:none}
+#chat-notice[data-kind="ok"]{box-shadow:inset 3px 0 0 var(--ok),var(--shadow)}
+#chat-notice[data-kind="err"]{box-shadow:inset 3px 0 0 var(--bad),var(--shadow)}
 .composer{max-width:780px;margin:0 auto}
 .queuebar{display:none;flex-wrap:wrap;gap:6px;margin:0 0 8px}
 .queuebar .qtag{max-width:100%;overflow:hidden;text-overflow:ellipsis}
@@ -389,7 +396,7 @@ mlx-chat-panel{display:flex;height:100%;min-width:0;background:var(--bg);color:v
 
 @media (prefers-reduced-motion:reduce){
   .cursor,.thinkbox.live summary span,#chat-sampling.armed .dot,#chat-mic-btn.recording,.attach-chip.pulse,
-  .samplepop.open,.mentionpop.open,.sess-export-menu,#adapters-overlay.open,#chat-drawer-backdrop.open{animation:none}
+  .samplepop.open,.mentionpop.open,.sess-export-menu,#adapters-overlay.open,#chat-drawer-backdrop.open,#chat-notice{animation:none}
   .thinkbox.live summary span{color:var(--dim);background:none}
   #chat-sidebar,#chat-sidebar.drawer-open,.sess,.sess .sacts,.msg-actions,.maction,.tool .caret,.thinkbox summary svg,.samp-adv>summary svg,
   .composer-field,.src-row,.sources summary::before,#assistant-spotlight,#assistant-spotlight .asr-ring{transition:none}

@@ -1,7 +1,7 @@
 // DOM-level tests of the chat panel's browser code (`src/panel/*`): the markdown renderer's streaming parity with a
-// one-shot render, the turn lifecycle through the real element, the composer's queue, attachments, mention picker
-// and adapter table, chat-with-files retrieval, the assistant's snapshot and spotlight resolution, and the route
-// catalog. Model-free and server-free: happy-dom provides document and window (see ./dom-setup.ts, imported first for
+// one-shot render, the turn lifecycle through the real element, the host contract (notices, the host's pages for the
+// assistant, the kit's host events, the companion slots), the composer's queue, attachments, mention picker and adapter
+// table, chat-with-files retrieval, the assistant's snapshot and spotlight resolution, and the route catalog. Model-free and server-free: happy-dom provides document and window (see ./dom-setup.ts, imported first for
 // its side effect of installing globals before any panel module runs), and the lifecycle tests run the element on the
 // web kit's `FakeWebSocket` and `fakeFetch` (`@mlx-bun/web-kit/testing`) with requestAnimationFrame captured and, where
 // a reconnect is timed, Bun's fake timers.
@@ -16,7 +16,9 @@ import {
   captureCanvasViewStates, highlightIn, isCanvasFence, linkifyCitations, makeFrameScheduler, mdCodeBlock, mdToHtml,
   renderBlocksIncremental, restoreCanvasViewStates, splitBlocks, wireCanvasToggle, type BlockState,
 } from "../src/panel/markdown";
-import { createApi } from "@mlx-bun/web-kit";
+import { createApi, emitHostEvent, HOST_EVENTS } from "@mlx-bun/web-kit";
+import type { ChatHost, ChatHostApp, CompanionSlots } from "../src/panel/host";
+import type { WizardStep } from "../src/protocol";
 import { renderQueue } from "../src/panel/composer";
 import { renderAdapterOptionsHtml, type AdapterInfo } from "../src/panel/composer";
 import {
@@ -128,7 +130,7 @@ describe("chat turn rendering lifecycle", () => {
   // decides when the streamed text renders. The chat socket has no client-side heartbeat: a dropped server shows up
   // as the socket's own close, which the session reports and reconnects from (the last test pins that no ping or
   // timer-driven frame is ever sent).
-  type Panel = HTMLElement & { enter(): void; leave(): void };
+  type Panel = HTMLElement & { enter(): void; leave(): void; host?: ChatHost; companionSlots(): CompanionSlots };
   const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
   let frames: FrameRequestCallback[] = [];
   let restoreFakes: () => void = () => {};
@@ -136,9 +138,14 @@ describe("chat turn rendering lifecycle", () => {
   const byId = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
   const send = () => byId<HTMLButtonElement>("chat-send"), stop = () => byId("chat-stop");
   const section = () => byId("s-chat");
+  // What the host's `notify` received (the default host of `mount`).
+  let notices: { message: string; kind?: "ok" | "err" }[] = [];
+  const notify = (message: string, kind?: "ok" | "err") => { notices.push({ message, kind }); };
+  const contexts = (socket: FakeWebSocket) => socket.sentOfType("context").map(frame => frame.context as { route: string; view?: string; step?: WizardStep });
 
   beforeEach(() => {
-    document.body.innerHTML = '<div id="toasts"></div><section data-route="chat" id="s-chat" class="active"></section>';
+    document.body.innerHTML = '<section data-route="chat" id="s-chat" class="active"></section>';
+    notices = [];
     localStorage.clear();
     FakeWebSocket.reset();
     frames = [];
@@ -152,9 +159,10 @@ describe("chat turn rendering lifecycle", () => {
     globalThis.requestAnimationFrame = originalRequestAnimationFrame;
   });
 
-  /** Attaches the panel as the shell does (append, then enter) and opens its socket. */
-  function mount(): { panel: Panel; socket: FakeWebSocket } {
+  /** Attaches the panel as the shell does (set its host, append, then enter) and opens its socket. */
+  function mount(host: ChatHost = { notify }): { panel: Panel; socket: FakeWebSocket } {
     const panel = document.createElement("mlx-chat-panel") as Panel;
+    panel.host = host;
     section().append(panel);
     panel.enter();
     const socket = FakeWebSocket.last()!;
@@ -245,7 +253,8 @@ describe("chat turn rendering lifecycle", () => {
     socket.emit({ type: "text_delta", delta: "Half an answer" });
     socket.emit({ type: "error", message: "The model worker exited." });
     expect(document.querySelector("#chat-thread .agent-error")!.textContent).toContain("The model worker exited.");
-    expect(byId("toasts").textContent).toContain("The model worker exited.");
+    expect(notices).toContainEqual({ message: "The model worker exited.", kind: "err" });
+    expect(byId("chat-notice").hidden).toBe(true); // the host's toast, not the panel's own
     expectComposerReady();
     expect(document.querySelector(".msg.assistant .atext")!.textContent).toBe("Half an answer"); // what streamed stays
 
@@ -303,7 +312,7 @@ describe("chat turn rendering lifecycle", () => {
     expect(first.sentOfType("set_coding_tools")).toHaveLength(1);
 
     // A served-model change reconnects at once (no turn in flight).
-    window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: "mlx-community/Other-4bit" }));
+    emitHostEvent(HOST_EVENTS.modelChanged, "mlx-community/Other-4bit");
     expect(first.closedByClient).toBe(true);
     expect(FakeWebSocket.live).toHaveLength(1);
     const second = FakeWebSocket.last()!;
@@ -332,7 +341,7 @@ describe("chat turn rendering lifecycle", () => {
 
     // A model change mid-turn does not reconnect under the turn.
     third.emit({ type: "turn_start" });
-    window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: "mlx-community/Third-4bit" }));
+    emitHostEvent(HOST_EVENTS.modelChanged, "mlx-community/Third-4bit");
     expect(FakeWebSocket.instances).toHaveLength(3);
     third.emit({ type: "turn_end" });
   });
@@ -346,6 +355,118 @@ describe("chat turn rendering lifecycle", () => {
     expect(socket.sent).toHaveLength(sent);
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(FakeWebSocket.live).toEqual([socket]);
+  });
+
+  it("a host without notify: the notice shows in the chat's own live region for about four seconds", () => {
+    jest.useFakeTimers();
+    const { socket } = mount({});
+    const notice = byId("chat-notice");
+    expect(notice.hidden).toBe(true);
+    expect([notice.getAttribute("role"), notice.getAttribute("aria-live")]).toEqual(["status", "polite"]);
+    socket.emit({ type: "error", message: "The model worker exited." });
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toBe("The model worker exited.");
+    expect(notice.dataset.kind).toBe("err");
+    jest.advanceTimersByTime(4199);
+    expect(notice.hidden).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(notice.hidden).toBe(true);
+    expect(notice.textContent).toBe("");
+    expect(document.getElementById("toasts")).toBeNull();
+  });
+
+  /** A host's pages as `host.app` reports them, with a way to say they changed. */
+  function fakeApp(route: string): ChatHostApp & { route: string; view: string | null; step: WizardStep | null; navigated: string[]; changed(): void } {
+    const listeners = new Set<() => void>();
+    const app = {
+      route, view: null as string | null, step: null as WizardStep | null, navigated: [] as string[],
+      currentRoute: () => app.route,
+      navigate(next: string) { app.navigated.push(next); app.route = next; app.changed(); },
+      currentView: () => app.view,
+      wizardStep: () => app.step,
+      onChange(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+      changed() { for (const listener of [...listeners]) listener(); },
+    };
+    return app;
+  }
+
+  it("the assistant's context is the host's: its route, view and wizard step, pushed whenever the host says they changed", () => {
+    const app = fakeApp("quantize");
+    const { socket } = mount({ notify, app });
+    socket.emit(ready);
+    expect(contexts(socket).at(-1)).toMatchObject({ route: "quantize" });
+    expect(contexts(socket).at(-1)!.step).toBeUndefined();
+    app.step = { index: 1, count: 4, label: "Configure" };
+    app.changed();
+    expect(contexts(socket).at(-1)).toMatchObject({ route: "quantize", step: { index: 1, count: 4, label: "Configure" } });
+    app.view = "memory-panel";
+    app.changed();
+    expect(contexts(socket).at(-1)!.view).toBe("memory-panel");
+    // The page address is the host's business: the chat no longer follows it.
+    const sent = contexts(socket).length;
+    window.dispatchEvent(new Event("hashchange"));
+    expect(contexts(socket)).toHaveLength(sent);
+    // The chat's own adapters sheet is a view too, under the host's overlay.
+    app.view = null;
+    byId("adapters-manage").click();
+    expect(contexts(socket).at(-1)!.view).toBe("adapters-panel");
+    byId("adapters-close").click();
+    expect(contexts(socket).at(-1)!.view).toBeUndefined();
+    expect(contexts(socket)).toHaveLength(sent + 2);
+  });
+
+  it("navigation and routed spotlights go through the host's navigate", () => {
+    const app = fakeApp("finetune");
+    const { socket } = mount({ notify, app });
+    socket.emit(ready);
+    socket.emit({ type: "ui_navigate", route: "quantize" });
+    expect(app.navigated).toEqual(["quantize"]);
+    expect(contexts(socket).at(-1)).toMatchObject({ route: "quantize" });
+    // A spotlight on another page navigates first and points once the host reports the change and a frame has passed.
+    socket.emit({ type: "ui_spotlight", route: "chat", target: "composer", message: "Type here" });
+    expect(app.navigated).toEqual(["quantize", "chat"]);
+    expect(document.getElementById("assistant-spotlight")?.classList.contains("show") ?? false).toBe(false);
+    flushFrames();
+    expect(document.getElementById("assistant-spotlight")!.classList.contains("show")).toBe(true);
+    expect(notices).toEqual([]);
+  });
+
+  it("a host without pages: the chat is the only route, its adapters sheet the only view, and navigation is refused", () => {
+    const { socket } = mount();
+    socket.emit(ready);
+    expect(contexts(socket).at(-1)).toMatchObject({ route: "chat" });
+    expect(contexts(socket).at(-1)!.view).toBeUndefined();
+    socket.emit({ type: "ui_navigate", route: "quantize" });
+    expect(notices.at(-1)).toEqual({ message: "This host cannot navigate.", kind: "err" });
+    socket.emit({ type: "ui_spotlight", route: "quantize", target: "quantize-source" });
+    expect(notices.at(-1)).toEqual({ message: "This host cannot navigate.", kind: "err" });
+    socket.emit({ type: "ui_spotlight", route: "chat", target: "composer" });
+    expect(document.getElementById("assistant-spotlight")!.classList.contains("show")).toBe(true);
+    byId("adapters-manage").click();
+    expect(contexts(socket).at(-1)).toMatchObject({ route: "chat", view: "adapters-panel" });
+  });
+
+  it("hears the host's status through the kit's events: the greeting names the served model", () => {
+    mount();
+    emitHostEvent(HOST_EVENTS.serverStatus, { model: "mlx-community/Served-4bit", online: true, download: { repoId: "org/Next-4bit", percent: 40 } });
+    expect(byId("chat-hello-sub").textContent).toContain("Served-4bit");
+    expect(byId("chat-hello-note").textContent).toContain("40%");
+    emitHostEvent(HOST_EVENTS.serverStatus, { model: null, online: false, download: null });
+    expect(byId("chat-hello-sub").textContent).toContain("not answering");
+  });
+
+  it("hands the host its companion slots once mounted: the chat's own elements, by their ids", () => {
+    let slots: CompanionSlots | undefined;
+    const panel = document.createElement("mlx-chat-panel") as Panel;
+    panel.host = { mounted: (element) => { slots = element.companionSlots(); } };
+    section().append(panel);
+    expect(slots).toBeDefined();
+    expect(Object.fromEntries(Object.entries(slots!).map(([name, element]) => [name, element.id]))).toEqual({
+      entry: "chat-memory-entry", count: "chat-memory-count", consent: "chat-consent", consentYes: "chat-consent-yes",
+      consentSkip: "chat-consent-skip", chips: "chat-hello-chips",
+    });
+    for (const element of Object.values(slots!)) expect(panel.contains(element)).toBe(true);
+    expect(panel.companionSlots().entry).toBe(slots!.entry);
   });
 });
 
@@ -1388,22 +1509,15 @@ describe("assistant.ts: buildAppContext + ambientLine", () => {
     expect(ctx.view).toBeUndefined();
   });
 
-  it("derives the wizard step from the DOM's step-indicator markup", () => {
-    document.body.innerHTML = `
-      <div id="q-steps">
-        <span class="s done"><span class="n">1</span>Source</span>
-        <span class="s cur"><span class="n">2</span>Configure</span>
-        <span class="s"><span class="n">3</span>Run</span>
-        <span class="s"><span class="n">4</span>Done</span>
-      </div>
-    `;
-    const ctx = buildAppContext("quantize", null);
-    expect(ctx.step).toEqual({ index: 1, count: 4, label: "Configure" });
+  it("carries the wizard step the host reports, and reads none from the page", () => {
+    document.body.innerHTML = `<ol id="q-steps"><li class="s cur"><span class="n">2</span>Configure</li></ol>`;
+    expect(buildAppContext("quantize", null).step).toBeUndefined();
+    expect(buildAppContext("quantize", null, null).step).toBeUndefined();
+    expect(buildAppContext("quantize", null, { index: 1, count: 4, label: "Configure" }).step).toEqual({ index: 1, count: 4, label: "Configure" });
   });
 
   it("ambientLine renders the compact one-liner from a built context", () => {
-    document.body.innerHTML = `<div id="q-steps"><span class="s"></span><span class="s cur"><span class="n">2</span>Configure</span><span class="s"></span><span class="s"></span></div>`;
-    const ctx = buildAppContext("quantize", null);
+    const ctx = buildAppContext("quantize", null, { index: 1, count: 4, label: "Configure" });
     expect(ambientLine(ctx)).toBe("[user is on: Quantize · step 2/4]");
   });
 });
@@ -1439,13 +1553,12 @@ describe("the panel entry outside a browser", () => {
 
 describe("assistant controls inside module shadow roots", () => {
   beforeEach(() => { document.body.replaceChildren(); });
-  it("captures the visible wizard step and controls and resolves their spotlight targets", () => {
+  it("captures the visible controls and resolves their spotlight targets", () => {
     const panel = document.createElement("div");document.body.append(panel);
     const root = panel.attachShadow({mode:"open"});
     root.innerHTML = '<div class="steps" id="q-steps"><span class="s done"><span class="n">1</span>Source</span><span class="s cur"><span class="n">2</span>Configure</span></div><label id="source-label">Source checkpoint</label><input id="q-model" data-spotlight="quantize-source" aria-labelledby="source-label"><div style="display:none"><button>Hidden step</button></div><button>Continue</button>';
     const snapshot=captureUiSnapshot("quantize");
     expect(snapshot.elements.map(element => element.label)).toEqual(["Source checkpoint","Continue"]);
-    expect(buildAppContext("quantize",null).step).toEqual({index:1,count:2,label:"Configure"});
     const input=snapshot.elements[0]!;
     expect(resolveSpotlightTarget({ref:input.ref},snapshot)?.selector).toBe(input.selector);
     expect(resolveSpotlightTarget({target:"quantize-source"},null)).toMatchObject({selector:"#q-model"});

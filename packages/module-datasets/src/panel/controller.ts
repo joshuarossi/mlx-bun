@@ -3,11 +3,11 @@
 // event-stream client. Leaving the page closes the stream (the job keeps running on the server); returning while the job
 // is unfinished reopens it, and the server replays the job's events from its first one, so the log restarts with each
 // connection.
-import { $, byType, createApi, createDisposer, errorOf, listen, num, openEventStream, type EventStream } from "@mlx-bun/web-kit";
+import { $, byType, createApi, createDisposer, emitHostEvent, errorOf, HOST_EVENTS, listen, num, openEventStream, type EventStream } from "@mlx-bun/web-kit";
 import type { JobEvent, PanelConnection } from "../protocol";
 import {
-  DONE, INPUTS, RUN, STEPS, TEMPLATE, TEMPLATES_EMPTY, TEMPLATES_LOADING, failureHtml, fieldsHtml, stepsHtml, templatesFailedHtml, templatesHtml,
-  type DatasetTemplate,
+  DONE, INPUTS, RUN, STEPS, TEMPLATE, TEMPLATES_EMPTY, TEMPLATES_LOADING, failureHtml, fieldsHtml, railStep, stepsHtml, templatesFailedHtml, templatesHtml,
+  type DatasetTemplate, type WizardStep,
 } from "./view";
 
 export interface PanelController {
@@ -17,6 +17,8 @@ export interface PanelController {
   enter(): void;
   /** On every disconnection: removes the listeners and closes the stream without cancelling the job. */
   leave(): void;
+  /** The rail's current step, or null before the first step is shown. */
+  currentStep(): WizardStep | null;
 }
 
 /** The server root a module base sits under (`https://host/prefix/api/datasets` is `https://host/prefix`). The wizard's
@@ -44,6 +46,8 @@ export function createDatasetController(root: ShadowRoot, connection: () => Pane
   function show(n: number, failed = false): void {
     for (const card of root.querySelectorAll<HTMLElement>("[data-dstep]")) card.hidden = Number(card.dataset.dstep) !== n;
     part("d-steps").innerHTML = stepsHtml(STEPS, n, failed);
+    // A host that describes the page (the chat assistant) re-reads the step; the event leaves the shadow root.
+    emitHostEvent(HOST_EVENTS.panelChanged, undefined, root.host, { bubbles: true, composed: true });
   }
 
   async function loadTemplates(): Promise<void> {
@@ -209,5 +213,6 @@ export function createDatasetController(root: ShadowRoot, connection: () => Pane
       active = false;
       disposer.dispose();
     },
+    currentStep: () => railStep(part("d-steps")),
   };
 }

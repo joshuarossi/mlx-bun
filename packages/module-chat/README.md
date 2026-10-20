@@ -66,25 +66,32 @@ data protocol it shares with the backend) and the kit. Each file has one job:
 The socket (`/ws/chat`) is one JSON-framed connection per tab. Leaving the page never closes it; after an unexpected
 close it reconnects only while the chat page shows (otherwise on the next `enter()`), settles a reply that was streaming
 and frees the composer, and on the new connection's `ready` reopens the chat it was in and re-asserts this browser's
-settings. A served-model change (`mlx-model-changed`) reconnects at once when no turn is in flight. There is no
-client-side heartbeat: a dead server shows up as the socket's own close. The routes (`/api/sessions/*`,
-`/api/settings/tool-approvals`, and the adapter and memory routes it reads) keep their shipped root paths, resolved on the
-origin of the connection's `apiBase` through the kit's `createApi`.
+settings. A served-model change (the kit's `HOST_EVENTS.modelChanged`, heard through `onHostEvent`) reconnects at once
+when no turn is in flight. There is no client-side heartbeat: a dead server shows up as the socket's own close. The
+socket and the routes (`/api/sessions/*`, `/api/settings/tool-approvals`, and the adapter and memory routes it reads) keep
+their shipped root paths, resolved on the origin of the connection's `apiBase` through the kit's `createApi`.
 
-What the panel needs from its host page, beyond its connection, is the `host` property (`panel/host.ts`, all optional): a
-`mounted` callback (memory attaches its sidebar entry and consent card), a `toolCard` hook (memory's provenance chips),
-and the agent-tools `settings` section of the host's settings dialog. Its methods for the host are `newChat`,
-`copyLastResponse`, `setCodingTools`, `refreshAdapters`, `focusComposer`, `toggleThinking`, `recentChats`, `openSession`,
-`exportActiveChat`, the narrow-screen drawer (`toggleDrawer`, `closeDrawer`, `drawerOpen`) and the popovers for the
-host's Escape sweep (`popoverOpen`, `closePopover`). The empty state names the served model from the host's
-`mlx-server-status` event. The host page also supplies a `#toasts` container and, for the assistant, its own routes,
-overlays and spotlight targets (`panel/ui-catalog.ts` names them: the chat's knowledge of this app, which should move to
-contributions once the shell lists them).
+What the panel needs from its host page, beyond its connection, is the `host` property (`ChatHost` in `panel/host.ts`,
+all optional): a `mounted(panel)` callback, where a companion attaches through `panel.companionSlots()` (the sidebar
+entry and its count, the consent card and its two actions, the greeting's chips: elements the chat keeps by id); a
+`toolCard` hook (memory's provenance chips); the agent-tools `settings` section of the host's settings dialog;
+`notify(message, kind)`, the host's toasts, without which a notice shows for about four seconds in the chat's own
+`#chat-notice` live region beside the composer; and `app`, the host's pages for the assistant: `currentRoute()`,
+`navigate(route)`, `currentView()` (the host's overlay, such as `memory-panel`), `wizardStep()` and `onChange(listener)`,
+which the host calls when the route, view or step changed. Without `app` the chat is the only route, its own adapters
+sheet (`adapters-panel`) the only view, and `ui_navigate` says the host cannot navigate; the panel never reads the
+page's address or the host page's markup. Its methods for the host are `newChat`, `copyLastResponse`, `setCodingTools`,
+`refreshAdapters`, `focusComposer`, `toggleThinking`, `recentChats`, `openSession`, `exportActiveChat`, `companionSlots`,
+the narrow-screen drawer (`toggleDrawer`, `closeDrawer`, `drawerOpen`) and the popovers for the host's Escape sweep
+(`popoverOpen`, `closePopover`). The empty state names the served model from the kit's `HOST_EVENTS.serverStatus`.
+`panel/ui-catalog.ts` names the assistant's route ids (validated in server frames) and spotlight targets: the chat's
+knowledge of this app, which should move to contributions once the shell lists them.
 
 The assistant follows open shadow roots when it captures visible controls or resolves spotlight targets, so the job
-modules' encapsulated forms remain available in its page context. Its wizard-step observer rebinds on navigation as
-the shell mounts those panels, and skips controls inside hidden pages or assistant chrome. Routed spotlight requests
-wait for navigation and layout before resolving a control, including a panel's first visit or return after detachment.
+modules' encapsulated forms remain available in its page context, and skips controls inside hidden pages or assistant
+chrome. It pushes the page's context on every `ready` and every change the host reports (and when its adapters sheet
+opens or closes), never on a timer. Routed spotlight requests navigate through the host and wait for its change and a
+laid-out frame before resolving a control, including a panel's first visit or return after detachment.
 
 ## Tests
 
@@ -99,7 +106,9 @@ loopback SSE, transcripts in app-supplied paths), [session-search](tests/session
 [tool-approvals](tests/tool-approvals.test.ts), [web-tools](tests/web-tools.test.ts), [routes](tests/routes.test.ts), and
 [panel](tests/panel.test.ts) (happy-dom: markdown streaming parity; the turn lifecycle through the real element on the
 kit's fake socket, covering normal completion, Stop, an upstream error, a dropped connection and its resume, socket
-cleanup across reconnects, and the absence of a heartbeat; composer, mentions, adapters, retrieval, the assistant). The app's boot test
+cleanup across reconnects, and the absence of a heartbeat; the host contract: notices with and without `notify`, the
+assistant's context and navigation with and without `app`, the kit's host events, the companion slots; composer,
+mentions, adapters, retrieval, the assistant). The app's boot test
 ([boot](../../apps/mlx-bun/tests/web/boot.test.ts)) runs the built bundle against `app.html` and covers the panel mounted
 by the shell, its host side and its drawer. The opt-in
 [real-weights test](../../apps/mlx-bun/tests/engine/chat-native.test.ts) (`MLX_BUN_APP_TEST_MODEL=<snapshot directory>`)

@@ -5,7 +5,7 @@
 import { BASE_CSS, shadowStyles } from "@mlx-bun/web-kit";
 import type { PanelConnection } from "../protocol";
 import { createFinetuneController, type PanelController } from "./controller";
-import { MARKUP, STYLE } from "./view";
+import { MARKUP, STYLE, type WizardStep } from "./view";
 
 // Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
@@ -33,6 +33,10 @@ export class TrainPanel extends Base {
     this.#controller.enter();
   }
   disconnectedCallback() { this.#controller.leave(); }
+
+  /** Where the wizard is, read from its own step rail: the current step's index, the number of steps and its name, or
+   * null before the first step shows. Every change raises the kit's `HOST_EVENTS.panelChanged` from the element. */
+  currentStep(): WizardStep | null { return this.#controller.currentStep(); }
 }
 
 if (typeof customElements !== "undefined" && !customElements.get("mlx-train-panel")) customElements.define("mlx-train-panel", TrainPanel);

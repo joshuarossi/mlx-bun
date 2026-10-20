@@ -82,8 +82,9 @@ panel's own rules after the web kit's base vocabulary. The shell mounts it unfra
 draws its own page heading, step rail and cards. Requests go through the kit's client and keep their root paths
 (`/api/quantize/*`, `/api/jobs/:id/stream`) under whatever prefix the connection's `apiBase` sits on; the job stream is
 the kit's event-stream client. Optional host `ui` hooks provide notifications, publishing and catalog refresh;
-without `notify` the panel shows messages in its own status line. The chat assistant reads the step rail
-(`#q-steps`, `.s.cur`) and spotlights `#q-model`.
+without `notify` the panel shows messages in its own status line. The element's `currentStep()` reads its own step
+rail (`#q-steps`, `.s.cur`), and every step it shows raises the kit's `HOST_EVENTS.panelChanged` from the element, so a
+host can describe the page (the app hands the step to the chat's assistant, which spotlights `#q-model`).
 
 Leaving the page closes the job stream without cancelling the job; returning while the job is unfinished reopens it,
 and the server's replay rebuilds the log. A dropped connection shows a reconnecting note until the next event, a failed
