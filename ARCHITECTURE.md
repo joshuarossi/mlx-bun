@@ -297,6 +297,15 @@ others; pages that have not moved into modules stay in the host's own browser co
 its own scroll column, heading and cards declares `framed: false`; its developer visibility and connection lifetime
 remain the ordinary panel's. Optional `PanelConnection.ui` hooks supply the host's notifications, artifact publication,
 active model identity and catalog-consumer refresh; panels do not import host implementations.
+The seams, each a typed contract one side can be replaced behind: a panel and its server share only the module's
+`protocol.ts` and meet through `PanelConnection.apiBase` and `eventsUrl`; a panel and its host share the `ui` hooks,
+the element's own methods (the chat's `host` property and `companionSlots()`, a wizard's `currentStep()`, memory's
+`attachChat(slots)`), and the kit's host events (`HOST_EVENTS`: server status, model changed, server recovered,
+models changed, panel changed), so a panel never reads the page address, never reaches the host page's elements and
+never names another module's panel (the gate scans panel code for all three); a panel and the visual system share
+the kit's token names and class vocabulary; the shell and a host page share the ids in the shell's host contract and
+the stylesheet order; and every piece reaches the server through the kit's clients, so a fake (the kit's `testing`
+entry, the app's fake backend, the in-page mock) stands in for the server in tests and previews.
 Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 

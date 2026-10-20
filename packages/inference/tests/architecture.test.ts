@@ -161,6 +161,33 @@ function runtimeCode(source: ts.SourceFile): { text: string; line: number }[] {
 
 /** Model-identity branches: `instanceof <model class>`, comparing or pattern-matching
  * a model type string, and model-scoped runtime flags. */
+/** The seams a module's panel keeps: it never reads or sets the page address (the host navigates through the hooks it
+ * hands the panel), never reaches the host page's own elements (the rail, the top bar, the toasts, the dialogs), and
+ * never names another module's panel element; each crossing goes through its connection, its host property or the
+ * kit's host events. Comments are not scanned. */
+function panelSeamChecks(source: ts.SourceFile, packageName: string): { text: string; line: number }[] {
+  const found: { text: string; line: number }[] = [];
+  const add = (node: ts.Node, text: string) => found.push({ text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+  const ownTag = `mlx-${packageName.replace(/^@mlx-bun\/module-/, "")}-panel`;
+  const hostIds = /^(toasts|nav|nav-[a-z-]+|topbar(-[a-z-]+)?|tabs(-[a-z-]+)?|settings-[a-z-]+|shortcut-[a-z-]+|sk-[a-z-]+|theme-toggle|hf-[a-z-]+|app|shell)$/;
+  const isLocation = (node: ts.Node): boolean => (ts.isIdentifier(node) && node.text === "location") ||
+    (ts.isPropertyAccessExpression(node) && node.name.text === "location" && ts.isIdentifier(node.expression) && ["window", "globalThis", "self"].includes(node.expression.text));
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAccessExpression(node) && isLocation(node.expression) && ["hash", "href", "search", "pathname", "assign", "replace"].includes(node.name.text))
+      add(node, `panel code never reads or sets the page address (location.${node.name.text}); the host navigates`);
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.arguments.length === 1 && ts.isStringLiteralLike(node.arguments[0]!)) {
+      const method = node.expression.name.text, argument = node.arguments[0]!.text;
+      const id = method === "getElementById" ? argument : method === "querySelector" || method === "querySelectorAll" ? argument.match(/^#([a-z0-9-]+)$/i)?.[1] : undefined;
+      if (id !== undefined && hostIds.test(id)) add(node, `panel code never reaches the host page's elements (#${id}); use the hooks the host hands the panel`);
+    }
+    if (ts.isStringLiteralLike(node) && /^mlx-[a-z]+-panel$/.test(node.text) && node.text !== ownTag)
+      add(node, `panel code never names another module's panel (${node.text}); the host composes panels`);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 function identityChecks(source: ts.SourceFile): { text: string; line: number }[] {
   const found: { text: string; line: number }[] = [];
   const add = (node: ts.Node, text: string) =>
@@ -360,6 +387,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
         violations.push(`${relative(root, file)}:${line}: app-core has no runtime exports (${text})`);
     if (isModuleProtocol(file, owner) && references(source).length)
       violations.push(`${relative(root, file)}: a module's data protocol imports nothing`);
+    if (inModulePanel(file, owner))
+      for (const { text, line } of panelSeamChecks(source, owner.name))
+        violations.push(`${relative(root, file)}:${line}: ${text}`);
     if (owner.app && relative(owner.source, file) === "jobs/protocol.ts" && references(source).length)
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
@@ -1992,6 +2022,27 @@ test("the web shell is browser code that imports only its own files and the web 
     expect(mentions(await inspectWorkspaces(root), "browser may import only browser modules, the web shell, the web kit and data protocols")).toBe(true);
     manifest("apps/example", "example-host", { ...host, "@mlx-bun/web-shell": "", "@mlx-bun/web-kit": "" });
     write("apps/example/src/web/browser/main.ts", 'import { kit } from "@mlx-bun/web-kit"; export const start = () => kit;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+  } finally { cleanup(); }
+});
+
+test("panel code keeps its seams: no page address, no host page elements, no other module's panel", async () => {
+  const { root, write, cleanup } = moduleWorkspace();
+  try {
+    const panel = "packages/module-a/src/panel/index.ts";
+    const cases: [string, string][] = [
+      ['export const go = () => { location.hash = "#/models"; };', "panel code never reads or sets the page address (location.hash); the host navigates"],
+      ['export const where = () => window.location.href;', "panel code never reads or sets the page address (location.href); the host navigates"],
+      ['export const t = () => document.getElementById("toasts");', "panel code never reaches the host page's elements (#toasts); use the hooks the host hands the panel"],
+      ['export const n = () => document.querySelector("#nav-model");', "panel code never reaches the host page's elements (#nav-model); use the hooks the host hands the panel"],
+      ['export const other = document.querySelector("mlx-chat-panel");', "panel code never names another module's panel (mlx-chat-panel); the host composes panels"],
+    ];
+    for (const [code, message] of cases) {
+      write(panel, code);
+      expect(mentions(await inspectWorkspaces(root), `${panel}:1: ${message}`)).toBe(true);
+    }
+    // Its own element, its own ids and a comment that names the address are the panel's business.
+    write(panel, '// navigation used to go through location.hash\nexport const own = () => [document.querySelector("mlx-a-panel"), document.getElementById("a-steps"), customElements.get("mlx-a-panel")];');
     expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { cleanup(); }
 });
