@@ -1,4 +1,4 @@
-import { sequenceLogitsOperation, logitsFromHiddenPadM, sequenceLogProbabilities as seqLogp } from "@mlx-bun/inference/scoring";
+import { sequenceLogitsOperation, logitsFromHiddenPadM, sequenceLogProbabilitiesFromHidden } from "@mlx-bun/inference/scoring";
 export { logitsFromHiddenPadM } from "@mlx-bun/inference/scoring";
 // Training losses: masked cross-entropy (SFT) and DPO.
 //
@@ -275,10 +275,8 @@ function branchLogp(
   // input row valid length = min(len, L) - 1 (last token dropped from inputs).
   const inputValid = validLen.map((v) => Math.max(0, Math.min(v, L) - 1));
   try {
-    const logits = trainForward(model, inputIds, inputValid);
-    const lp = seqLogp(logits, ids, mask);
-    logits.dispose();
-    return lp;
+    using hidden = trainForwardHidden(model, inputIds, inputValid);
+    return sequenceLogProbabilitiesFromHidden(model, hidden, ids, mask);
   } finally {
     inputIds.dispose();
   }
