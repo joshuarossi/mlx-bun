@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { GlobalWindow } from "happy-dom";
 const win = new GlobalWindow({ url: "http://localhost/" });
-Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement, customElements: win.customElements, localStorage: win.localStorage });
+Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement, customElements: win.customElements, localStorage: win.localStorage, CustomEvent: win.CustomEvent, Event: win.Event });
 const { MemoryPanel } = await import("../src/panel");
 type ChatSlots = import("../src/panel").ChatSlots;
 afterAll(async () => { await win.happyDOM.close(); });
@@ -17,11 +17,18 @@ test("the persistent overlay honors its connection and reconnects without duplic
     const wizard = document.createElement("div");
     const input = document.createElement("input");
     wizard.attachShadow({ mode: "open" }).append(input); document.body.append(wizard); input.focus();
+    // The host that describes the page hears the drawer open and close through the kit's panel-changed event.
+    let changes = 0;
+    document.addEventListener("mlx-panel-changed", () => { changes++; });
     await panel.open();
+    expect(changes).toBe(1);
     expect(requests).toEqual(["http://remote.test/prefix/api/memory/status"]);
     expect(panel.isOpen()).toBe(true);
     expect(document.querySelector("#mem-empty-init")).not.toBeNull();
     panel.close();
+    expect(changes).toBe(2);
+    panel.close(); // already closed: nothing to report
+    expect(changes).toBe(2);
     expect(wizard.shadowRoot!.activeElement).toBe(input);
     wizard.remove();
     panel.remove(); document.body.append(panel);

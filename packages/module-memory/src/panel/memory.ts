@@ -3,7 +3,7 @@
 // personalised greeting chips, and the provenance chips the chat host draws for memory tools. It renders into the light
 // DOM, reaches the module's routes (`/api/memory/*`) through the web kit's client over the connection's `apiBase`, and
 // sends its notices to the connection's `ui.notify`.
-import { $, createApi, el, esc, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
+import { $, createApi, el, emitHostEvent, esc, HOST_EVENTS, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
 import type { PanelConnection } from "../protocol";
 import { mdToHtml, wireCanvasToggle } from "./markdown";
 import { ICONS } from "./template";
@@ -107,17 +107,29 @@ export function isMemPanelOpen(): boolean {
 }
 
 export function closeMemPanel(): void {
-  $("mem-overlay").classList.remove("open");
+  const overlay = $("mem-overlay");
+  if (!overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
   slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
+  changed(overlay);
+}
+
+/** The drawer opened or closed: the host that describes the page (the chat's assistant) hears it through the kit's
+ * panel-changed event, synchronously, however the drawer was opened or closed. */
+function changed(overlay: HTMLElement): void {
+  emitHostEvent(HOST_EVENTS.panelChanged, undefined, overlay, { bubbles: true, composed: true });
 }
 
 /** Opens the drawer. `articleName` jumps straight to that article (the provenance chips and the link chips use it);
  *  omitted, it shows the list. */
 export async function openMemPanel(articleName?: string): Promise<void> {
   panelTrap.capture();
-  $("mem-overlay").classList.add("open");
+  const overlay = $("mem-overlay");
+  const wasOpen = overlay.classList.contains("open");
+  overlay.classList.add("open");
   slots?.entry.setAttribute("aria-expanded", "true");
+  if (!wasOpen) changed(overlay);
   if (articleName) await showArticle(articleName);
   else await showList();
   setTimeout(() => { if (isMemPanelOpen()) (document.getElementById("mem-search") ?? document.getElementById("mem-close"))?.focus(); }, 30);

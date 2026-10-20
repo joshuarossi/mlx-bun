@@ -25,7 +25,7 @@ current worker's residency lease for the whole run. It still uses the same Gemma
 model and chunk adapter; it does not substitute the chat model's ordinary generation API.
 
 The `./panel` entry defines `<mlx-memory-panel>`, a persistent companion overlay
-(`panel.overlay: true`) with no route or nav tab: a right-hand drawer (full width under the
+(`panel.overlay: true`) with no route or nav tab, raising the kit's panel-changed event as it opens and closes: a right-hand drawer (full width under the
 top bar on a narrow screen) with the vault status, search, the article list, an article with
 its links and Git history, plus the sidebar count, first-run consent and provenance chips.
 `index.ts` is the element, `memory.ts` the controller, `template.ts` the markup, icons and
