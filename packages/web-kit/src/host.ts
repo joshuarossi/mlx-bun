@@ -20,6 +20,8 @@ export interface HostEventMap {
   "mlx-server-recovered": undefined;
   /** The served model or the mounted adapters changed in a panel; the host re-reads the server's identity. */
   "mlx-models-changed": undefined;
+  /** A panel's visible state changed (a wizard moved to another step); a host that describes the page re-reads it. */
+  "mlx-panel-changed": undefined;
 }
 
 export const HOST_EVENTS = {
@@ -27,6 +29,7 @@ export const HOST_EVENTS = {
   modelChanged: "mlx-model-changed",
   serverRecovered: "mlx-server-recovered",
   modelsChanged: "mlx-models-changed",
+  panelChanged: "mlx-panel-changed",
 } as const satisfies Record<string, keyof HostEventMap>;
 
 export function emitHostEvent<K extends keyof HostEventMap>(name: K, detail?: HostEventMap[K], target: EventTarget = window, init: EventInit = {}): void {
