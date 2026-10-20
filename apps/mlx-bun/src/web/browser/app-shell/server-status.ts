@@ -3,7 +3,7 @@
 // in the navigation rail and its compact twin in the top bar. Other parts of the page read `activeModelId` or
 // listen for `mlx-model-changed` (the served model switched: the chat reconnects to read the new model's
 // capabilities) and `mlx-server-status` (every poll's summary, for a panel that wants to describe the download).
-import { createApi, percent, shortName } from "@mlx-bun/web-kit";
+import { createApi, emitHostEvent, HOST_EVENTS, onHostEvent, percent, shortName, type ServerStatusDetail } from "@mlx-bun/web-kit";
 
 export interface DownloadInfo {
   state: string;
@@ -12,11 +12,7 @@ export interface DownloadInfo {
   receivedBytes?: number;
 }
 
-export interface ServerStatus {
-  model: string | null;
-  online: boolean;
-  download: { repoId: string; percent: number } | null;
-}
+export type ServerStatus = ServerStatusDetail;
 
 export let activeModelId: string | null = null;
 let lastOnline: boolean | null = null;
@@ -72,7 +68,7 @@ export async function pollIdentity(): Promise<void> {
     renderModel(activeModelId, false);
     renderConnection(false);
     lastOnline = false;
-    window.dispatchEvent(new CustomEvent<ServerStatus>("mlx-server-status", { detail: { model: activeModelId, online: false, download: null } }));
+    emitHostEvent(HOST_EVENTS.serverStatus, { model: activeModelId, online: false, download: null });
     return;
   }
   // The server marks the current model; a server that predates residency lists the served one first.
@@ -84,10 +80,10 @@ export async function pollIdentity(): Promise<void> {
   renderModel(next, true);
   renderConnection(true);
   const download = renderDownload(downloads.downloads ?? []);
-  if (switched) window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: next }));
-  if (lastOnline === false) window.dispatchEvent(new CustomEvent("mlx-server-recovered"));
+  if (switched) emitHostEvent(HOST_EVENTS.modelChanged, next);
+  if (lastOnline === false) emitHostEvent(HOST_EVENTS.serverRecovered);
   lastOnline = true;
-  window.dispatchEvent(new CustomEvent<ServerStatus>("mlx-server-status", { detail: { model: next, online: true, download } }));
+  emitHostEvent(HOST_EVENTS.serverStatus, { model: next, online: true, download });
 }
 
 /** The strip's model label opens the Models page; a switch or an adapter change made there re-reads the served
@@ -97,7 +93,7 @@ export function initServerStatus(): void {
     const button = byId(id);
     if (button) button.onclick = () => { location.hash = "#/models"; };
   }
-  document.addEventListener("mlx-models-changed", () => { void pollIdentity(); });
+  onHostEvent(HOST_EVENTS.modelsChanged, () => { void pollIdentity(); }, document);
   void pollIdentity();
   setInterval(() => { void pollIdentity(); }, 4000);
 }

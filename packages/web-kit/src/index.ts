@@ -9,3 +9,4 @@ export { createApi, requestJson, errorOf, UNREACHABLE, type Api, type ApiEnvelop
 export { openEventStream, byType, type EventStream, type EventStreamHandlers, type EventStreamOptions } from "./stream";
 export { createSocket, type SocketClient, type SocketOptions, type SocketStatus } from "./socket";
 export { num, gb, mb, bytes, ms, uptime, rate, percent, tokens, relativeTime, shortName } from "./format";
+export { HOST_EVENTS, emitHostEvent, onHostEvent, type HostEventMap, type ServerStatusDetail, type PanelUi } from "./host";

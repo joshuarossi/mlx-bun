@@ -8,7 +8,7 @@
 // (`/api/hub/search`) with Download and live progress (`/downloads`); and the adapters on disk
 // (`/v1/adapters/available`, `/v1/adapters`) with Mount and Unmount. Nothing downloads, serves or mounts without an
 // explicit click. The routes keep their shipped root paths, so requests go to the origin `connection.apiBase` names.
-import { BASE_CSS, createApi, errorOf, shadowStyles, type Api, type ApiEnvelope } from "@mlx-bun/web-kit";
+import { BASE_CSS, createApi, emitHostEvent, errorOf, HOST_EVENTS, shadowStyles, type Api, type ApiEnvelope } from "@mlx-bun/web-kit";
 import type { AvailableAdapterRow, DownloadInfo, HubLocalRow, HubSearchRow, LibraryRow, MountedAdapterRow, PanelConnection } from "../protocol";
 import { esc, renderAdaptersHtml, renderHubLocalHtml, renderHubSearchHtml, renderServingHtml, type Running } from "./render";
 import { STYLE } from "./style";
@@ -17,7 +17,7 @@ export { esc, fitVerdict, renderAdaptersHtml, renderHubLocalHtml, renderHubSearc
 export type { Running } from "./render";
 
 /** Fired (bubbling, composed) on the element whenever the served model or the mounted adapters changed, so the page around it can refresh what it shows. */
-export const MODELS_CHANGED = "mlx-models-changed";
+export const MODELS_CHANGED = HOST_EVENTS.modelsChanged;
 
 // Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
@@ -77,7 +77,7 @@ class ModelsPanel extends Base {
     status.textContent = text;
     status.className = "status notice" + (kind === "ok" ? " ok" : kind === "err" ? " bad" : "");
   }
-  #changed() { this.dispatchEvent(new CustomEvent(MODELS_CHANGED, { bubbles: true, composed: true })); }
+  #changed() { emitHostEvent(HOST_EVENTS.modelsChanged, undefined, this, { bubbles: true, composed: true }); }
 
   /** Reloads the downloaded models and the adapters. */
   async refresh(): Promise<void> {
