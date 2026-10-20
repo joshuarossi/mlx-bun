@@ -75,8 +75,10 @@ section[data-route].active{display:block;animation:shell-page-in var(--fast) var
   #shell{grid-template-columns:minmax(0,1fr);grid-template-rows:var(--topbar-h) minmax(0,1fr)}
   #topbar{display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--surface);border-bottom:1px solid var(--line);min-width:0}
   #topbar .brand{font-weight:650;color:var(--ink);text-decoration:none;font-size:var(--text-lg);letter-spacing:-.01em;margin-right:auto}
-  #nav{position:fixed;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:120;transform:translateX(-100%);transition:transform var(--base) var(--ease);border-right:1px solid var(--line-strong)}
-  #nav.open{transform:none;box-shadow:var(--shadow-lg)}
+  /* Closed, the rail is off-screen and hidden, so its links leave the tab order; visibility flips after the slide. */
+  #nav{position:fixed;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:120;transform:translateX(-100%);visibility:hidden;
+    transition:transform var(--base) var(--ease),visibility 0s var(--base);border-right:1px solid var(--line-strong)}
+  #nav.open{transform:none;visibility:visible;transition:transform var(--base) var(--ease),visibility 0s;box-shadow:var(--shadow-lg)}
 }
 @media (min-width:761px){#nav-menu,#nav-backdrop,#chat-hamburger{display:none!important}}
 

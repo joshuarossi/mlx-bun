@@ -241,6 +241,8 @@ export function createShell(options: ShellOptions): Shell {
     if (menu) menu.onclick = () => nav.toggle();
     const backdrop = document.getElementById("nav-backdrop");
     if (backdrop) backdrop.onclick = () => nav.close();
+    // A tap on a tab closes the sheet even when it is the current page's (no hash change, so no navigation).
+    navElement()?.addEventListener("click", (e) => { if ((e.target as Element).closest(".tab")) nav.close(); });
   }
 
   function markUnavailable(id: string): void {

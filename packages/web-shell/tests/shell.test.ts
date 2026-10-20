@@ -381,6 +381,9 @@ test("the navigation sheet opens from the menu button and closes on its backdrop
   go("#/tools");
   expect(shell.nav.isOpen()).toBe(false);
   expect(active()).toEqual(["tools"]);
+  shell.nav.open();
+  document.querySelector<HTMLElement>('.tab[data-tab="tools"]')!.click(); // the current page's tab: no navigation, still closes
+  expect(shell.nav.isOpen()).toBe(false);
   shell.nav.toggle(); shell.nav.toggle();
   expect(shell.nav.isOpen()).toBe(false);
 });
