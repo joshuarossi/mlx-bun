@@ -50,6 +50,16 @@ to repeat it. Use the existing workflow instead of inventing a new one:
    using the published latest release tag. Verify the live docs and installer before
    reporting the release complete. Report partial publication precisely if a channel fails.
 
+For npm recovery, registry reads can return `404` after a successful upload while
+[publish-time scanning](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/) runs.
+Wait for real registry metadata and compare `dist.integrity` with the prepared
+archive before reporting the package available. Do not rebuild or republish an
+accepted upload, or infer missing credentials from that `404`. If npm requests
+browser two-factor authentication, run the affected operation in an interactive
+TTY; authentication can recur per operation. Keep authentication in Terminal or
+npm's browser flow; never request codes in chat. These are recovery steps; the
+current publisher does not automatically wait for scanning or provide a TTY.
+
 ## Ownership and verification
 
 Architecture owns dependency direction and documentation policy. Package
