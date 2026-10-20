@@ -88,6 +88,9 @@ export function createChatController(port: ChatPort): ChatController {
   let served: ServedModel | null = null;
   let sidebar: Sidebar | undefined;
   let appContext: AppContext | undefined;
+  /** Set by `dispose()` before anything is torn down: the socket's final close and any late frame then render nothing
+   * into markup that may already be detached. */
+  let disposed = false;
 
   const session = createChatSession({
     url: () => chatSocketUrl(port.api),
@@ -100,6 +103,7 @@ export function createChatController(port: ChatPort): ChatController {
   const send = (frame: ClientMessage): boolean => session.send(frame);
 
   function showStatus(status: SocketStatus): void {
+    if (disposed) return;
     const copy = statusCopy(status);
     const line = $("chat-status-line"), dot = $("chat-conn-dot");
     if (line) line.textContent = copy.text;
@@ -231,6 +235,7 @@ export function createChatController(port: ChatPort): ChatController {
   }
 
   function handle(frame: ServerMessage): void {
+    if (disposed) return;
     switch (frame.type) {
       case "ready": onReady(frame); break;
       case "coding_tools": port.host?.settings?.codingTools(frame.active, frame.pending); break;
@@ -387,7 +392,7 @@ export function createChatController(port: ChatPort): ChatController {
       void refreshAdapters(port.api);
     },
     leave() { /* the socket stays open: closing it would drop a turn in flight */ },
-    dispose() { disposer.dispose(); },
+    dispose() { disposed = true; disposer.dispose(); },
     newChat,
     copyLastResponse() {
       if (!lastAssistant) { toast("There is no reply to copy yet.", "err"); return; }

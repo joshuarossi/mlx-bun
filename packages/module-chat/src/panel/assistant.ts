@@ -97,6 +97,10 @@ function isHiddenSelf(el: Element): boolean {
   if (inline === "none") return true;
   const inlineVis = html.style?.visibility;
   if (inlineVis === "hidden" || inlineVis === "collapse") return true;
+  // A stylesheet rule hides it (the rail as a closed sheet at phone width, a media query's display:none): the
+  // computed style says so where the engine computes one.
+  const computed = (globalThis as { getComputedStyle?: (e: Element) => CSSStyleDeclaration }).getComputedStyle?.(html);
+  if (computed && (computed.display === "none" || computed.visibility === "hidden" || computed.visibility === "collapse")) return true;
   return false;
 }
 
@@ -115,6 +119,10 @@ function isVisible(el: Element): boolean {
     const style = (globalThis as { getComputedStyle?: (e: Element) => CSSStyleDeclaration }).getComputedStyle?.(html);
     if (style && style.position === "fixed") return true;
   }
+  // The engine's own, layout-derived answer where it has one (every current browser): it sees a stylesheet's
+  // display:none on any ancestor, across shadow boundaries, and a visibility:hidden the element inherits, as the
+  // rail's controls do while it is a closed sheet at phone width.
+  if (typeof html.checkVisibility === "function") return html.checkVisibility({ visibilityProperty: true });
   // Ancestor walk: catches inline/attribute hidden state on `el` itself or
   // any ancestor (a closed overlay's contents, a display:none wrapper),
   // independent of whether offsetParent resolved anything above.
@@ -172,7 +180,7 @@ export function captureUiSnapshot(route: string): UiSnapshot {
     if (!label) continue;
 
     const html = el as HTMLElement;
-    const spotlightId = html.getAttribute("data-spotlight")?.trim() || undefined;
+    const spotlightId = html.getAttribute("data-spotlight")?.trim().split(/\s+/)[0] || undefined; // the first id is the canonical one
     const existingRef = html.getAttribute("data-ui-ref");
     const ref = existingRef ?? `ui-${route.replace(/[^a-zA-Z0-9]/g, "_") || "root"}-${index}`;
     if (!existingRef) html.setAttribute("data-ui-ref", ref);
@@ -307,7 +315,7 @@ export function resolveSpotlightTarget(
   // A target is a `data-spotlight` id on the element that owns it (the chat's own controls, a wizard's field, the
   // host's rail), titled by its `data-ui-label`; the panel keeps no table of other pieces' selectors.
   if (request.target) {
-    const targetSelector = `[data-spotlight="${attrEscape(request.target)}"]`;
+    const targetSelector = `[data-spotlight~="${attrEscape(request.target)}"]`; // one element may carry several ids
     const bySpotlightAttr = safeQuery(targetSelector);
     if (bySpotlightAttr) {
       const ref = bySpotlightAttr.getAttribute("data-ui-ref");
@@ -372,11 +380,15 @@ export function showSpotlight(resolved: ResolvedSpotlight): boolean {
   // it was valid at resolve time, but "return false → toast" is the right
   // failure mode here too, never a throw.
   const target = safeQuery(resolved.selector) as HTMLElement | null;
-  if (!target) return false;
+  // A control that exists but is not showing (a wizard step other than the current one, a closed overlay) cannot be
+  // pointed at: a ring around nothing would land in the page's corner. The caller's toast says so instead.
+  if (!target || !isVisible(target)) return false;
+  // Showing, but laid out beyond the viewport (a sheet slid off-screen): there is nothing on screen to ring.
+  const rect = target.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0 && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight)) return false;
 
   dismissSpotlight();
   const overlay = ensureOverlayEl();
-  const rect = target.getBoundingClientRect();
   const ring = overlay.querySelector(".asr-ring") as HTMLElement;
   const pop = overlay.querySelector(".asr-pop") as HTMLElement;
   const popText = overlay.querySelector(".asr-pop-text") as HTMLElement;

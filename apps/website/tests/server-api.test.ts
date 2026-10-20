@@ -50,7 +50,10 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   expect(admin.length).toBeGreaterThan(8);
   expect(admin).toContain("GET /admin/events implemented [served if (options.events || options.memory)]");
   expect(admin.some(row => /\/admin\/served?\b/.test(row))).toBe(false);
-  expect(appWorker).toEqual([...serve.slice(0, 13), ...admin, ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
+  // The admin rows sit behind the web app's own rows (the page, its assets and the legacy redirects), however many there are.
+  const cut = appWorker.indexOf(admin[0]!);
+  expect(cut).toBeGreaterThan(8);
+  expect(appWorker).toEqual([...serve.slice(0, cut), ...admin, ...serve.slice(cut).filter(row => !/^GET \/health/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
   // The chat module runs in the persistent state, so the transcription-only host and the isolation worker (whose state is a stub) do not upgrade its socket.

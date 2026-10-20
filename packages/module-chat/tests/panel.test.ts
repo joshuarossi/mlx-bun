@@ -37,7 +37,7 @@ import {
   retrieve, shouldRetrieve, tokenize, toCitations, type Chunk, type Citation,
 } from "../src/panel/rag";
 import {
-  ambientLine, buildAppContext, captureUiSnapshot, resolveSpotlightTarget, type UiSnapshot,
+  ambientLine, buildAppContext, captureUiSnapshot, resolveSpotlightTarget, showSpotlight, type UiSnapshot,
 } from "../src/panel/assistant";
 import { isRouteId, isViewId, resolveRouteId, ROUTE_IDS } from "../src/panel/ui-catalog";
 
@@ -179,6 +179,27 @@ describe("chat turn rendering lifecycle", () => {
     expect(document.querySelector("#chat-thread .cursor")).toBeNull();
     expect(byId("chat-queue").textContent).toBe("");
   }
+
+  it("teardown mid-reply closes the socket without rendering into the detached markup, and a reattached panel starts fresh", async () => {
+    const { panel, socket } = mount();
+    socket.emit(ready);
+    socket.emit({ type: "turn_start" });
+    socket.emit({ type: "text_delta", delta: "A reply that will be cut off." });
+    flushFrames();
+    panel.remove();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the teardown runs in a microtask after the removal
+    expect(socket.closedByClient).toBe(true);
+    expect(FakeWebSocket.instances.length).toBe(1); // nothing reconnected on the way out
+    section().append(panel);
+    panel.enter();
+    const next = FakeWebSocket.last()!;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.emit(ready);
+    expectComposerReady();
+    socket.emit({ type: "text_delta", delta: "late" }); // the old socket's frames reach nothing
+    expect(document.querySelector("#chat-thread")!.textContent).not.toContain("late");
+  });
 
   it("finishes a turn before its queued frame render without touching cleared state", () => {
     const { socket } = mount();
@@ -1341,6 +1362,23 @@ describe("assistant.ts: captureUiSnapshot", () => {
     expect(labels).not.toContain("Inside a closed overlay");
   });
 
+  it("excludes elements a stylesheet hides, as the rail's controls are while it is a closed sheet at phone width", () => {
+    const style = document.createElement("style");
+    style.textContent = ".sheet{visibility:hidden;transform:translateX(-100%)} .gone{display:none}";
+    document.head.append(style);
+    document.body.innerHTML = `
+      <button id="visible">Visible</button>
+      <nav class="sheet"><button>In the closed sheet</button></nav>
+      <div class="gone"><button>Behind a display:none rule</button></div>
+    `;
+    try {
+      const labels = captureUiSnapshot("chat").elements.map((e) => e.label);
+      expect(labels).toContain("Visible");
+      expect(labels).not.toContain("In the closed sheet");
+      expect(labels).not.toContain("Behind a display:none rule");
+    } finally { style.remove(); }
+  });
+
   it("excludes agent chrome (data-ui-chrome=assistant) and the toast container", () => {
     document.body.innerHTML = `
       <button id="real">Real control</button>
@@ -1442,11 +1480,30 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
   it("resolves a target by the data-spotlight id on the element that owns it, titled by its data-ui-label", () => {
     document.body.innerHTML = '<textarea id="chat-box" data-spotlight="composer" data-ui-label="Message box"></textarea><button data-spotlight="run-now">Go</button>';
     const resolved = resolveSpotlightTarget({ target: "composer" }, null);
-    expect(resolved?.selector).toBe('[data-spotlight="composer"]');
+    expect(resolved?.selector).toBe('[data-spotlight~="composer"]');
     expect(resolved?.title).toBe("Message box");
     // Without a label the id reads as words; without the attribute anywhere the target is unknown.
     expect(resolveSpotlightTarget({ target: "run-now" }, null)?.title).toBe("Run now");
     expect(resolveSpotlightTarget({ target: "composer-x" }, null)).toBeNull();
+    // A target that exists but is hidden (another wizard step, a closed overlay) cannot be pointed at: the spotlight
+    // declines, and the caller toasts, instead of drawing a ring in the page's corner.
+    document.body.innerHTML = '<section hidden><input data-spotlight="quantize-source" data-ui-label="Source model"></section>';
+    const hidden = resolveSpotlightTarget({ target: "quantize-source" }, null)!;
+    expect(hidden.title).toBe("Source model");
+    expect(showSpotlight(hidden)).toBe(false);
+    expect(document.getElementById("assistant-spotlight")?.classList.contains("show") ?? false).toBe(false);
+    // Hidden by a stylesheet rather than an attribute (the rail as a closed sheet at phone width): the same answer.
+    const sheetStyle = document.createElement("style");
+    sheetStyle.textContent = ".sheet{visibility:hidden;transform:translateX(-100%)}";
+    document.head.append(sheetStyle);
+    document.body.innerHTML = '<nav class="sheet"><button data-spotlight="model-picker" data-ui-label="Active model">Qwen</button></nav>';
+    expect(showSpotlight(resolveSpotlightTarget({ target: "model-picker" }, null)!)).toBe(false);
+    sheetStyle.remove();
+    // One element may carry several ids (an alias the server's tool description still advertises).
+    document.body.innerHTML = '<button data-spotlight="model-picker hub-browse" data-ui-label="Active model">Qwen</button>';
+    expect(resolveSpotlightTarget({ target: "hub-browse" }, null)).toMatchObject({ selector: '[data-spotlight~="hub-browse"]', title: "Active model" });
+    expect(resolveSpotlightTarget({ target: "model-picker" }, null)?.title).toBe("Active model");
+    expect(captureUiSnapshot("chat").elements.find((element) => element.spotlightId)?.spotlightId).toBe("model-picker");
   });
 
   it("returns null when nothing resolves (unknown ref/label/selector/target)", () => {

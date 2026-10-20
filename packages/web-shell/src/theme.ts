@@ -13,8 +13,11 @@ function effectiveTheme(choice: string): "dark" | "light" {
 }
 function applyTheme(choice: string): void {
   document.documentElement.setAttribute("data-theme", effectiveTheme(choice));
-  document.querySelectorAll<HTMLButtonElement>("#theme-toggle button").forEach((b) =>
-    b.classList.toggle("active", b.dataset.themeChoice === choice));
+  document.querySelectorAll<HTMLButtonElement>("#theme-toggle button").forEach((b) => {
+    const on = b.dataset.themeChoice === choice;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", String(on)); // the kit's segmented control shows the pressed one
+  });
 }
 export function setTheme(choice: string): void {
   localStorage.setItem(THEME_KEY, choice);
@@ -22,7 +25,7 @@ export function setTheme(choice: string): void {
 }
 /** The choice the toggle currently shows as active ("auto" when none). */
 export function themeChoice(): string {
-  const active = document.querySelector<HTMLButtonElement>("#theme-toggle button.active");
+  const active = document.querySelector<HTMLButtonElement>('#theme-toggle button[aria-pressed="true"]');
   return (active && active.dataset.themeChoice) || "auto";
 }
 /** auto, then dark, then light, then auto again. */

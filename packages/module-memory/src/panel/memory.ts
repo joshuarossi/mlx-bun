@@ -3,7 +3,7 @@
 // personalised greeting chips, and the provenance chips the chat host draws for memory tools. It renders into the light
 // DOM, reaches the module's routes (`/api/memory/*`) through the web kit's client over the connection's `apiBase`, and
 // sends its notices to the connection's `ui.notify`.
-import { $, createApi, el, esc, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
+import { $, createApi, el, emitHostEvent, esc, HOST_EVENTS, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
 import type { PanelConnection } from "../protocol";
 import { mdToHtml, wireCanvasToggle } from "./markdown";
 import { ICONS } from "./template";
@@ -107,13 +107,24 @@ export function isMemPanelOpen(): boolean {
 }
 
 export function closeMemPanel(): void {
-  $("mem-overlay").classList.remove("open");
+  const overlay = $("mem-overlay");
+  if (!overlay.classList.contains("open")) return;
+  overlay.classList.remove("open");
   slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
+  changed();
+}
+
+/** The drawer closed, or rendered its list or an article (on opening too): the host that describes the page (the
+ * chat's assistant) hears it through the kit's panel-changed event, synchronously, once the view it will describe is
+ * showing, however the drawer got there. */
+function changed(): void {
+  emitHostEvent(HOST_EVENTS.panelChanged, undefined, $("mem-overlay"), { bubbles: true, composed: true });
 }
 
 /** Opens the drawer. `articleName` jumps straight to that article (the provenance chips and the link chips use it);
- *  omitted, it shows the list. */
+ *  omitted, it shows the list. The view raises the change once it is rendered, so a host's snapshot never describes
+ *  the view the drawer last showed. */
 export async function openMemPanel(articleName?: string): Promise<void> {
   panelTrap.capture();
   $("mem-overlay").classList.add("open");
@@ -259,7 +270,7 @@ async function showList(): Promise<void> {
   setBack(false);
   $("mem-title").textContent = "Memory";
   $("mem-body").scrollTop = 0;
-  await renderListBody();
+  try { await renderListBody(); } finally { changed(); }
 }
 
 /* ────────────────────────────────────────────────────────────────────
@@ -288,7 +299,10 @@ async function showArticle(name: string): Promise<void> {
   const body = $("mem-body");
   body.innerHTML = loadingHtml("Loading the article");
   body.scrollTop = 0;
+  try { await renderArticle(name, body); } finally { changed(); }
+}
 
+async function renderArticle(name: string, body: HTMLElement): Promise<void> {
   const [artRes, linksRes] = await Promise.all([
     api.get<ArticleResp>("article?name=" + encodeURIComponent(name)),
     api.get<LinksResp>("links?name=" + encodeURIComponent(name)),

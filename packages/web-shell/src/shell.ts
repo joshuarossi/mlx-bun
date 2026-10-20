@@ -3,7 +3,7 @@
 // `a.tab[data-tab]` tabs and, optionally, group headings marked `data-dev`; pages as `section[data-route]` inside
 // `#app`; `#nav-developer`; `#nav-menu` and `#nav-backdrop` for the sheet); the shell drives it and adds a tab and a
 // page for every module panel.
-import { $ } from "@mlx-bun/web-kit";
+import { $, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
 import { createOverlays, type Overlays } from "./overlays";
 import { buildPanelPage, type ShellPanel } from "./panels";
 import { initTheme } from "./theme";
@@ -134,20 +134,31 @@ export function createShell(options: ShellOptions): Shell {
 
   /* ── The navigation sheet (narrow screens). ── */
   const navElement = () => document.getElementById("nav");
+  // Open, the sheet is a dialog over the page: Tab and Shift+Tab stay inside it, and closing it returns focus to
+  // whatever opened it (the menu button, or the shortcut's focus), never to the page behind the backdrop.
+  let sheetTrap: FocusTrap | undefined;
   const nav: NavSheet = {
     isOpen: () => !!navElement()?.classList.contains("open"),
     open() {
-      navElement()?.classList.add("open");
+      const element = navElement();
+      if (!element) return;
+      sheetTrap ??= trapFocus(element, () => nav.isOpen());
+      sheetTrap.capture();
+      element.classList.add("open");
       document.getElementById("nav-backdrop")?.classList.add("open");
       document.getElementById("nav-menu")?.setAttribute("aria-expanded", "true");
-      setTimeout(() => navElement()?.querySelector<HTMLElement>(".tab.active, .tab")?.focus(), 30);
+      setTimeout(() => element.querySelector<HTMLElement>(".tab.active, .tab")?.focus(), 30);
     },
     close() {
       if (!nav.isOpen()) return;
-      navElement()?.classList.remove("open");
+      const element = navElement();
+      element?.classList.remove("open");
       document.getElementById("nav-backdrop")?.classList.remove("open");
       const menu = document.getElementById("nav-menu");
-      if (menu) { menu.setAttribute("aria-expanded", "false"); if (navElement()?.contains(document.activeElement)) menu.focus(); }
+      menu?.setAttribute("aria-expanded", "false");
+      const inside = !!element?.contains(document.activeElement);
+      sheetTrap?.restore();
+      if (inside && element?.contains(document.activeElement)) menu?.focus();
     },
     toggle() { nav.isOpen() ? nav.close() : nav.open(); },
   };

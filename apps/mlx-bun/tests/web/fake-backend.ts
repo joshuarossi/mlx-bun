@@ -17,7 +17,10 @@ export interface FakeBackendOptions {
   paceMs?: number;
 }
 
-type ChatSocket = { send(data: string): void; readyState?: number; data: { turn: AbortController | null; session: string | null } };
+type ChatSocket = { send(data: string): void; readyState?: number; data: { turn: AbortController | null; session: string | null; context?: PageContext | null } };
+
+/** What the browser last told the agent about its page (the chat's `context` frame), as the app-aware tools read it. */
+export type PageContext = { route?: string; view?: string; step?: { index: number; count: number; label: string }; snapshot?: { elements?: { label?: string }[] } };
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
@@ -29,6 +32,36 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) 
 /** Splits a reply into word-sized deltas, keeping whitespace with the word before it. */
 export function deltas(text: string): string[] {
   return text.match(/\S+\s*|\s+/g) ?? [];
+}
+
+const WIZARD_START: Record<string, { label: string; target: string }> = {
+  quantize: { label: "Quantize", target: "quantize-source" }, finetune: { label: "Fine-tune", target: "finetune-base" }, dataset: { label: "Build Dataset", target: "" }, status: { label: "Status", target: "" },
+};
+
+/** The app-aware agent's answer to a prompt about the page, or null for an ordinary prompt: the frames to send first
+ * (`ui_navigate`, `ui_spotlight`) and the text that follows. Mirrors what the real agent's navigate_app, spotlight_ui
+ * and get_current_app_context tools produce, without a model. */
+export function agentReply(text: string, context: PageContext | null): { frames: object[]; text: string } | null {
+  const go = text.match(/\b(?:take me to|go to|open|show me)\b.*?\b(quantize|fine-?tune|finetune|dataset|status)\b/i);
+  if (go) {
+    const route = go[1]!.toLowerCase().replace("fine-tune", "finetune");
+    const page = WIZARD_START[route]!;
+    const frames: object[] = [{ type: "ui_navigate", route }];
+    if (page.target) frames.push({ type: "ui_spotlight", route, target: page.target, message: "Start here." });
+    return { frames, text: `Opened **${page.label}**${page.target ? " and highlighted where to start: the model field." : "."}` };
+  }
+  if (/\b(highlight|point (?:at|to)|where is)\b/i.test(text)) {
+    return { frames: [{ type: "ui_spotlight", target: "hub-browse", message: "The served model. Click it for the Models page." }], text: "Highlighted the served model in the rail: click it to open the Models page." };
+  }
+  if (/what am i looking at|what(?:'s| is) on (?:my |the )?screen|describe (?:this|the) (?:page|screen)/i.test(text)) {
+    if (!context) return { frames: [], text: "I have not received the page's context yet." };
+    const labels = (context.snapshot?.elements ?? []).map((element) => element.label).filter((label): label is string => !!label);
+    const where = context.view === "memory-panel" ? "the memory drawer, open over the " : "";
+    const step = context.step ? ` at step ${context.step.index + 1} of ${context.step.count} (${context.step.label})` : "";
+    const controls = labels.length ? ` I can see ${labels.length} controls, such as ${labels.slice(0, 4).join(", ")}.` : "";
+    return { frames: [], text: `You are looking at ${where}**${context.route ?? "chat"}** page${step}.${controls}` };
+  }
+  return null;
 }
 
 /** An SSE body that writes each event with the given pacing and ends with `event: end`. */
@@ -107,6 +140,14 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
       socket.send(JSON.stringify({ type: "context", tokens: 1_842, contextWindow: 32_768, percent: 5.6 }));
     };
     send({ type: "turn_start" });
+    // The app-aware agent: a request to go somewhere navigates and highlights where to start, a request to point
+    // highlights the rail's model button, and a question about the screen is answered from the page's last context.
+    const agentic = agentReply(text, socket.data.context ?? null);
+    if (agentic) {
+      for (const frame of agentic.frames) { send(frame); await sleep(paceMs * 4, signal); if (signal.aborted) return finish(); }
+      for (const delta of deltas(agentic.text)) { send({ type: "text_delta", delta }); await sleep(paceMs, signal); if (signal.aborted) return finish(); }
+      return finish();
+    }
     const script = fixtures.scriptedReply;
     const long = /\/slow\b/.test(text);
     for (const piece of script.thinking) { send({ type: "thinking_delta", delta: piece }); await sleep(paceMs * 4, signal); if (signal.aborted) return finish(); }
@@ -191,7 +232,10 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
         case "list_sessions":
           socket.send(JSON.stringify({ type: "sessions", items: empty ? [] : fixtures.sessions, activePath: socket.data.session ?? undefined }));
           break;
-        default: break; // set_thinking, set_sampling, set_system_prompt, set_adapter, approval, context, switch_sibling: accepted silently
+        case "context":
+          socket.data.context = (frame as { context?: PageContext }).context ?? null;
+          break;
+        default: break; // set_thinking, set_sampling, set_system_prompt, set_adapter, approval, switch_sibling: accepted silently
       }
     },
     close(socket: ChatSocket) { socket.data.turn?.abort(); },
@@ -204,7 +248,7 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
     const method = request.method;
     const body = async () => (method === "GET" || method === "HEAD" ? {} : await request.json().catch(() => ({}))) as Record<string, unknown>;
     if (path === "/ws/chat") {
-      if (server?.upgrade(request, { data: { turn: null, session: null } })) return new Response(null);
+      if (server?.upgrade(request, { data: { turn: null, session: null, context: null } })) return new Response(null);
       return new Response("expected a WebSocket upgrade", { status: 426 });
     }
     if (path === "/dag") return new Response("not found", { status: 404 });
@@ -302,7 +346,7 @@ export function createFakeBackend(options: FakeBackendOptions = {}) {
 /** Runs the fake backend behind a static web handler on a real listener; returns the URL and a `stop`. */
 export function startFakeBackend(options: FakeBackendOptions & { port?: number; hostname?: string; web?: (request: Request) => Response | null } = {}) {
   const backend = createFakeBackend(options);
-  const server = Bun.serve<{ turn: AbortController | null; session: string | null }>({
+  const server = Bun.serve<{ turn: AbortController | null; session: string | null; context: PageContext | null }>({
     hostname: options.hostname ?? "127.0.0.1",
     port: options.port ?? 0,
     idleTimeout: 0,

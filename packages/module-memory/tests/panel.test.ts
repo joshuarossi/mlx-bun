@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { GlobalWindow } from "happy-dom";
 const win = new GlobalWindow({ url: "http://localhost/" });
-Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement, customElements: win.customElements, localStorage: win.localStorage });
+Object.assign(globalThis, { window: win, document: win.document, HTMLElement: win.HTMLElement, customElements: win.customElements, localStorage: win.localStorage, CustomEvent: win.CustomEvent, Event: win.Event });
 const { MemoryPanel } = await import("../src/panel");
 type ChatSlots = import("../src/panel").ChatSlots;
 afterAll(async () => { await win.happyDOM.close(); });
@@ -17,11 +17,18 @@ test("the persistent overlay honors its connection and reconnects without duplic
     const wizard = document.createElement("div");
     const input = document.createElement("input");
     wizard.attachShadow({ mode: "open" }).append(input); document.body.append(wizard); input.focus();
+    // The host that describes the page hears the drawer open and close through the kit's panel-changed event.
+    let changes = 0;
+    document.addEventListener("mlx-panel-changed", () => { changes++; });
     await panel.open();
+    expect(changes).toBe(1);
     expect(requests).toEqual(["http://remote.test/prefix/api/memory/status"]);
     expect(panel.isOpen()).toBe(true);
     expect(document.querySelector("#mem-empty-init")).not.toBeNull();
     panel.close();
+    expect(changes).toBe(2);
+    panel.close(); // already closed: nothing to report
+    expect(changes).toBe(2);
     expect(wizard.shadowRoot!.activeElement).toBe(input);
     wizard.remove();
     panel.remove(); document.body.append(panel);
@@ -35,6 +42,42 @@ test("the persistent overlay honors its connection and reconnects without duplic
     expect(panel.isOpen()).toBe(false);
     expect(requests).toHaveLength(1);
   } finally { panel.remove(); globalThis.fetch = saved; }
+});
+
+test("the panel-changed event follows the view it describes: the article a chip opens, the list on reopen, a row and Back", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = (async (input: string) => {
+    const url = String(input);
+    if (url.endsWith("/status")) return Response.json({ ok: true, enabled: true, status: { root: "/vault", exists: true, articleCount: 1, referenceCount: 0, isGitRepo: true, recentArticles: [{ article: "Travel_plans", mtimeMs: Date.now() }] } });
+    if (url.endsWith("/list")) return Response.json({ ok: true, articles: ["Travel_plans"], reference: [] });
+    if (url.includes("/article?")) return Response.json({ ok: true, content: "# Travel plans\n\nLisbon in May." });
+    if (url.includes("/links?")) return Response.json({ ok: true, outbound: [], inbound: [] });
+    return Response.json({ ok: false });
+  }) as typeof fetch;
+  const panel = new MemoryPanel();
+  panel.connection = { apiBase: "http://remote.test/api/memory", eventsUrl: "" };
+  document.body.append(panel);
+  // What the drawer shows at the moment each change is raised: that is what a host's snapshot describes.
+  const seen: string[] = [];
+  const showing = () => !panel.isOpen() ? "closed"
+    : panel.querySelector("#mem-panel")!.classList.contains("reading") ? `article: ${panel.querySelector("#mem-title")!.textContent}`
+    : `list${panel.querySelector("#mem-search") ? " with its search" : ""}`;
+  const record = () => { seen.push(showing()); };
+  document.addEventListener("mlx-panel-changed", record);
+  try {
+    await panel.open("Travel_plans"); // a provenance chip
+    expect(seen).toEqual(["article: Travel plans"]);
+    panel.close();
+    await panel.open(); // the sidebar entry: the list, not the article the drawer last showed
+    expect(seen).toEqual(["article: Travel plans", "closed", "list with its search"]);
+    (panel.querySelector(".mem-art") as HTMLElement).click();
+    await settle();
+    expect(seen.at(-1)).toBe("article: Travel plans");
+    (panel.querySelector("#mem-back") as HTMLElement).click();
+    await settle();
+    expect(seen.at(-1)).toBe("list with its search");
+    expect(seen).toHaveLength(5);
+  } finally { document.removeEventListener("mlx-panel-changed", record); panel.remove(); globalThis.fetch = saved; }
 });
 
 test("attachChat works on the slots it is handed: memory's classes and wiring on them, its notices through ui.notify", async () => {

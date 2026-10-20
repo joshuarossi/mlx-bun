@@ -9,7 +9,7 @@ import { toast } from "@mlx-bun/web-shell";
 import type { ChatPanelApi } from "./app-shell/chat-panel";
 import { renderCodingToolsState, renderToolApprovals, storedCodingToolsPreference } from "./app-shell/settings";
 import { currentRoute } from "./app-shell/shell";
-import { initMemoryPanel, isMemoryOpen, memoryToolChip, onMemoryToggle } from "./memory-panel";
+import { initMemoryPanel, isMemoryOpen, memoryToolChip } from "./memory-panel";
 
 /** The wizard each route mounts; the element reads its own step rail. */
 const WIZARDS: Readonly<Record<string, string>> = { quantize: "mlx-quantize-panel", finetune: "mlx-train-panel", dataset: "mlx-datasets-panel" };
@@ -29,9 +29,10 @@ export const chatHost = {
       const tag = WIZARDS[currentRoute()];
       return (tag ? document.querySelector<Wizard>(tag)?.currentStep?.() : null) ?? null;
     },
-    /** The route (the address), a panel's visible state (a wizard's step) and the memory drawer. */
+    /** The route (the address) and a panel's visible state (a wizard's step, the memory drawer), which panels raise
+     * through the kit's panel-changed event. */
     onChange(listener: () => void): () => void {
-      const removers = [listen(window, "hashchange", listener), onHostEvent(HOST_EVENTS.panelChanged, listener, document), onMemoryToggle(listener)];
+      const removers = [listen(window, "hashchange", listener), onHostEvent(HOST_EVENTS.panelChanged, listener, document)];
       return () => { for (const remove of removers) remove(); };
     },
   },
