@@ -1,14 +1,28 @@
-import { $, el, toast, trapFocus, type FocusTrap } from "./dom";
-import { api } from "./dom";
-import type { ApiEnvelope } from "../protocol";
-import { esc, mdToHtml, wireCanvasToggle } from "./markdown";
+// The memory overlay's controller: the drawer (status, search, the article list, an article with its links and git
+// history), the sidebar entry and the consent card it wires into the slots the chat hands it (`ChatSlots`), the
+// personalised greeting chips, and the provenance chips the chat host draws for memory tools. It renders into the light
+// DOM, reaches the module's routes (`/api/memory/*`) through the web kit's client over the connection's `apiBase`, and
+// sends its notices to the connection's `ui.notify`.
+import { $, createApi, el, esc, relativeTime, trapFocus, type Api, type ApiEnvelope, type FocusTrap } from "@mlx-bun/web-kit";
+import type { PanelConnection } from "../protocol";
+import { mdToHtml, wireCanvasToggle } from "./markdown";
+import { ICONS } from "./template";
+
+/** Where memory attaches in a chat's markup (the chat element's `companionSlots()`): the sidebar entry
+ * (`#chat-memory-entry`) and its count (`#chat-memory-count`), the first-run consent card (`#chat-consent`) with its
+ * actions (`#chat-consent-yes`, `#chat-consent-skip`), and the greeting's suggestion chips (`#chat-hello-chips`). The
+ * chat owns them; memory adds its classes (`mem-entry`, `mem-entry-count`, `mem-consent`) and wiring. */
+export interface ChatSlots {
+  entry: HTMLButtonElement;
+  count: HTMLElement;
+  consent: HTMLElement;
+  consentYes: HTMLButtonElement;
+  consentSkip: HTMLButtonElement;
+  chips: HTMLElement;
+}
 
 /* ────────────────────────────────────────────────────────────────────
-   REST response shapes (mirrors apps/mlx-bun/src/server/memory-routes.ts's
-   jsonOk() bodies — frontend-only types since these are HTTP JSON envelopes,
-   not part of the typed WS contract in packages/module-chat/src/protocol.ts). Each extends ApiEnvelope (api()'s
-   generic constraint, api.ts) via intersection, per that file's own
-   doc-comment convention.
+   REST response shapes (the module's `routes.ts` `jsonOk()` bodies). Each extends the client's envelope.
    ──────────────────────────────────────────────────────────────────── */
 
 interface VaultStatusBody {
@@ -34,33 +48,58 @@ type HistoryResp = ApiEnvelope & { name?: string; isGitRepo?: boolean; entries?:
 type DiffResp = ApiEnvelope & { name?: string; rev?: string; diff?: string };
 type InitResp = ApiEnvelope & { result?: { root: string; gitInitialized: boolean }; status?: VaultStatusBody };
 
-async function getJson<T extends ApiEnvelope>(path: string): Promise<T> {
-  return api<T>(path);
+/* ────────────────────────────────────────────────────────────────────
+   The client over the connection's base (`/api/memory`, or an absolute URL in a native webview). Module paths
+   resolve under it; `/v1/...` paths on its origin.
+   ──────────────────────────────────────────────────────────────────── */
+
+let connection: PanelConnection = { apiBase: "/api/memory", eventsUrl: "" };
+let api: Api = createApi(connection.apiBase);
+/** The element's connection: the client's base and the host's notifications. */
+export function setConnection(next: PanelConnection): void { connection = next; api = createApi(next.apiBase); }
+
+/** A notice through the host's `ui.notify`; a host without one shows none. */
+function toast(message: string, kind: "ok" | "err"): void {
+  connection.ui?.notify?.(message, kind);
+}
+
+/** The chat's slots, once a chat is attached. */
+let slots: ChatSlots | null = null;
+
+const errorText = (envelope: ApiEnvelope, fallback: string): string =>
+  (typeof envelope.error === "string" && envelope.error) || (typeof envelope.message === "string" && envelope.message) || fallback;
+const display = (name: string): string => (name.startsWith("Reference/") ? name.slice("Reference/".length) : name).replace(/_/g, " ");
+const loadingHtml = (label: string): string =>
+  '<div class="mem-loading" role="status" aria-label="' + esc(label) + '"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>';
+
+/** Enter and Space activate a row that acts as a button. */
+function activate(row: HTMLElement, run: () => void): void {
+  row.addEventListener("click", run);
+  row.addEventListener("keydown", (e) => {
+    const key = (e as KeyboardEvent).key;
+    if (key === "Enter" || key === " ") { e.preventDefault(); run(); }
+  });
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Cached status — the panel, the sidebar entry, the hero chips, and the
-   consent card all need "is memory enabled + how many articles" without
-   each firing their own /api/memory/status round trip.
+   Cached status: the drawer, the sidebar entry, the greeting chips and the consent card all need "is memory set up,
+   and how many articles" without each asking `status` again.
    ──────────────────────────────────────────────────────────────────── */
 
 let cachedStatus: StatusResp | null = null;
 
 async function fetchStatus(force = false): Promise<StatusResp> {
   if (cachedStatus && !force) return cachedStatus;
-  const d = await getJson<StatusResp>("/api/memory/status").catch((): StatusResp => ({ ok: false, enabled: false }));
+  const d = await api.get<StatusResp>("status");
   cachedStatus = d;
   return d;
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Panel open/close + focus trap (same mechanism as the HF modal / drawer)
+   Open and close, with a focus trap
    ──────────────────────────────────────────────────────────────────── */
 
 let panelTrap: FocusTrap;
-type View = { kind: "list" } | { kind: "article"; name: string; historyOpen?: boolean };
-let currentView: View = { kind: "list" };
-let lastListScroll = 0;
 
 export function isMemPanelOpen(): boolean {
   const ov = $("mem-overlay");
@@ -69,78 +108,73 @@ export function isMemPanelOpen(): boolean {
 
 export function closeMemPanel(): void {
   $("mem-overlay").classList.remove("open");
-  $("chat-memory-entry")?.setAttribute("aria-expanded", "false");
+  slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
 }
 
-/** Opens the panel. `articleName` jumps straight to that article's view
- *  (used by provenance chips and link-chip navigation); omitted opens/keeps
- *  the list view. */
+/** Opens the drawer. `articleName` jumps straight to that article (the provenance chips and the link chips use it);
+ *  omitted, it shows the list. */
 export async function openMemPanel(articleName?: string): Promise<void> {
   panelTrap.capture();
   $("mem-overlay").classList.add("open");
-  $("chat-memory-entry")?.setAttribute("aria-expanded", "true");
+  slots?.entry.setAttribute("aria-expanded", "true");
   if (articleName) await showArticle(articleName);
   else await showList();
-  setTimeout(() => { const s = $("mem-search") as HTMLInputElement | null; if (s) s.focus(); }, 30);
+  setTimeout(() => { if (isMemPanelOpen()) (document.getElementById("mem-search") ?? document.getElementById("mem-close"))?.focus(); }, 30);
 }
 
 function setBack(show: boolean): void {
   $("mem-back").classList.toggle("show", show);
+  $("mem-back").closest(".mem-head")?.classList.toggle("back", show);
+  $("mem-panel").classList.toggle("reading", show);
 }
 
 /* ────────────────────────────────────────────────────────────────────
    Status strip
    ──────────────────────────────────────────────────────────────────── */
 
-function relDate(ms: number | undefined): string {
-  if (!ms) return "—";
-  const days = (Date.now() - ms) / 86_400_000;
-  if (days < 1) return "today";
-  if (days < 2) return "yesterday";
-  if (days < 30) return Math.floor(days) + "d ago";
-  try { return new Date(ms).toLocaleDateString(); } catch { return "—"; }
-}
-
 function renderStatusStrip(st: VaultStatusBody): void {
-  const lastArticle = st.recentArticles[0];
+  const last = st.recentArticles[0];
   $("mem-status").innerHTML =
-    '<span class="mem-stat"><b>' + st.articleCount + '</b> article' + (st.articleCount === 1 ? "" : "s") + "</span>" +
-    '<span class="mem-stat">last touched <b>' + esc(relDate(lastArticle && lastArticle.mtimeMs)) + "</b></span>" +
-    '<span class="mem-stat">' + (st.isGitRepo ? "git-tracked" : "not a git repo") + "</span>";
+    '<span class="tag num">' + st.articleCount + " article" + (st.articleCount === 1 ? "" : "s") + "</span>" +
+    (last ? '<span class="tag">Updated ' + esc(relativeTime(last.mtimeMs)) + "</span>" : "") +
+    (st.isGitRepo ? '<span class="tag ok">Git-tracked</span>' : '<span class="tag warn" title="Changes to the vault are not versioned">Not a git repository</span>');
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   List view: status + search + article/reference lists
+   List view: search and the article and reference lists
    ──────────────────────────────────────────────────────────────────── */
 
 function emptyVaultHtml(root: string): string {
   return (
-    '<div class="mem-empty">' +
-    "<p>No memory vault yet at <code>" + esc(root) + "</code>.</p>" +
-    '<p style="margin-top:8px">Memory is a local, git-tracked wiki the assistant reads from (never writes to during chat) — nightly synthesis is what updates it.</p>' +
-    '<div class="mcta"><button class="btn primary sm" id="mem-empty-init">Set up memory</button></div>' +
+    '<div class="empty mem-empty">' +
+    "<h3>No memory vault yet</h3>" +
+    "<p>Memory is a local, git-tracked wiki at <code>" + esc(root) + "</code>. The assistant reads it during chats and never writes to it; " +
+    "nightly synthesis keeps it up to date.</p>" +
+    '<div id="mem-init-error"></div>' +
+    '<div class="actions"><button class="btn primary" id="mem-empty-init" type="button">Set up memory</button></div>' +
     "</div>"
   );
 }
 
-function articleRowHtml(name: string, excerpt?: string, icon = "📄"): string {
-  const display = name.startsWith("Reference/") ? name.slice("Reference/".length) : name;
+function articleRowHtml(name: string, excerpt?: string): string {
+  const reference = name.startsWith("Reference/");
   return (
-    '<div class="mem-art" data-article="' + esc(name) + '" tabindex="0" role="button">' +
-    '<span class="mem-art-ico" aria-hidden="true">' + esc(icon) + "</span>" +
-    '<div style="min-width:0;flex:1 1 auto">' +
-    '<div class="mem-art-name">' + esc(display.replace(/_/g, " ")) + "</div>" +
-    (excerpt ? '<div class="mem-art-excerpt">' + esc(excerpt) + "</div>" : "") +
-    "</div></div>"
+    '<div class="list-row mem-art" data-article="' + esc(name) + '" tabindex="0" role="button">' +
+    '<span class="mem-art-ico" title="' + (reference ? "Reference" : "Article") + '">' + (reference ? ICONS.reference : ICONS.article) + "</span>" +
+    '<div class="list-main"><div class="list-name mem-art-name">' + esc(display(name)) + "</div>" +
+    (excerpt ? '<div class="list-meta mem-art-excerpt">' + esc(excerpt) + "</div>" : "") +
+    '</div><span class="mem-art-go">' + ICONS.caret() + "</span></div>"
   );
+}
+
+function sectionHtml(title: string, count: number | null, rows: string): string {
+  return '<div class="mem-sec"><div class="mem-sec-title">' + esc(title) + (count !== null ? ' <span class="count">' + count + "</span>" : "") + "</div>" + rows + "</div>";
 }
 
 function wireArticleRows(container: HTMLElement): void {
   container.querySelectorAll<HTMLElement>(".mem-art").forEach((row) => {
-    const open = () => { const name = row.dataset.article; if (name) showArticle(name); };
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") open(); });
+    activate(row, () => { const name = row.dataset.article; if (name) void showArticle(name); });
   });
 }
 
@@ -148,15 +182,16 @@ async function renderListBody(): Promise<void> {
   const body = $("mem-body");
   const st = await fetchStatus();
   if (!st.enabled || !st.status) {
+    $("mem-status").innerHTML = "";
     body.innerHTML = emptyVaultHtml(st.root || "~/.mlx-bun/wiki");
-    const btn = $("mem-empty-init") as HTMLButtonElement | null;
-    if (btn) btn.onclick = () => runInit(body);
+    const btn = document.getElementById("mem-empty-init") as HTMLButtonElement | null;
+    if (btn) btn.onclick = () => runInit(btn);
     return;
   }
   renderStatusStrip(st.status);
   body.innerHTML =
-    '<input type="search" id="mem-search" placeholder="Search articles…" aria-label="Search memory" autocomplete="off">' +
-    '<div id="mem-list"></div>';
+    '<div class="mem-search"><input class="input" type="search" id="mem-search" placeholder="Search memory" aria-label="Search memory" autocomplete="off"></div>' +
+    '<div id="mem-list">' + loadingHtml("Loading the articles") + "</div>";
   await renderArticleLists("");
   const search = $("mem-search") as HTMLInputElement;
   let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -169,45 +204,49 @@ async function renderListBody(): Promise<void> {
 async function renderArticleLists(query: string): Promise<void> {
   const listEl = $("mem-list");
   if (!query) {
-    const d = await getJson<ListResp>("/api/memory/list").catch((): ListResp => ({ ok: false }));
-    if (!d.ok) { listEl.innerHTML = '<div class="mem-list-empty">Couldn\'t load the vault contents.</div>'; return; }
+    const d = await api.get<ListResp>("list");
+    if (!d.ok) {
+      listEl.innerHTML = '<div class="notice bad" role="alert"><span><b>Could not load the vault.</b> ' + esc(errorText(d, "The server did not say why.")) +
+        '</span><span class="actions"><button class="btn sm" type="button" id="mem-list-retry">Retry</button></span></div>';
+      ($("mem-list-retry") as HTMLButtonElement).onclick = () => { void renderArticleLists(""); };
+      return;
+    }
     const articles = d.articles || [], reference = d.reference || [];
     listEl.innerHTML =
-      '<div class="mem-sec"><div class="mem-sec-title">Articles</div>' +
-      (articles.length
-        ? articles.map((a) => articleRowHtml(a)).join("")
-        : '<div class="mem-list-empty">No articles yet — nightly synthesis writes here after a few conversations.</div>') +
-      "</div>" +
-      // Reference/ docs are clearly separated — mlx-bun's own
-      // docs, not personal memory.
-      (reference.length
-        ? '<div class="mem-sec"><div class="mem-sec-title">Reference</div>' +
-          reference.map((r) => articleRowHtml(r, undefined, "📘")).join("") + "</div>"
-        : "");
+      sectionHtml("Articles", articles.length || null, articles.length
+        ? '<div class="list">' + articles.map((a) => articleRowHtml(a)).join("") + "</div>"
+        : '<p class="mem-note">No articles yet. Nightly synthesis writes them after a few conversations.</p>') +
+      // Reference/ docs are mlx-bun's own documentation, not personal memory, so they get their own section.
+      (reference.length ? sectionHtml("Reference", reference.length, '<div class="list">' + reference.map((r) => articleRowHtml(r)).join("") + "</div>") : "");
     wireArticleRows(listEl);
     return;
   }
-  const d = await getJson<SearchResp>("/api/memory/search?q=" + encodeURIComponent(query)).catch((): SearchResp => ({ ok: false }));
-  if (!d.ok || !d.summaries || !d.summaries.length) {
-    listEl.innerHTML = '<div class="mem-list-empty">No matches for “' + esc(query) + '”.</div>';
+  const d = await api.get<SearchResp>("search?q=" + encodeURIComponent(query));
+  if (!d.ok) {
+    listEl.innerHTML = '<p class="mem-note bad" role="alert">Search failed: ' + esc(errorText(d, "the server did not say why")) + ". Try again in a moment.</p>";
+    return;
+  }
+  if (!d.summaries || !d.summaries.length) {
+    listEl.innerHTML = '<p class="mem-note">No matches for “' + esc(query) + "”. Try fewer or different words.</p>";
     return;
   }
   const hitsByArticle = new Map<string, SearchHit>();
   for (const h of d.hits || []) if (!hitsByArticle.has(h.article)) hitsByArticle.set(h.article, h);
-  listEl.innerHTML =
-    '<div class="mem-sec"><div class="mem-sec-title">' + d.summaries.length + " match" + (d.summaries.length === 1 ? "" : "es") + "</div>" +
-    d.summaries.map((s) => articleRowHtml(s.article, hitsByArticle.get(s.article)?.excerpt, s.article.startsWith("Reference/") ? "📘" : "📄")).join("") +
-    "</div>";
+  listEl.innerHTML = sectionHtml(d.summaries.length === 1 ? "1 match" : d.summaries.length + " matches", null,
+    '<div class="list">' + d.summaries.map((s) => articleRowHtml(s.article, hitsByArticle.get(s.article)?.excerpt)).join("") + "</div>");
   wireArticleRows(listEl);
 }
 
-async function runInit(body: HTMLElement): Promise<void> {
-  body.innerHTML = '<div class="mem-empty"><p><span class="shimmer">setting up your local memory vault…</span></p></div>';
-  const d = await api<InitResp>("/api/memory/init", { method: "POST" }).catch((): InitResp => ({ ok: false, error: "request failed" }));
+async function runInit(button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  button.textContent = "Setting up…";
+  const d = await api.post<InitResp>("init");
   if (!d.ok) {
-    toast("Couldn't set up memory: " + (d.error || "unknown error"), "err");
+    button.disabled = false;
+    button.textContent = "Try again";
+    const slot = document.getElementById("mem-init-error");
+    if (slot) slot.innerHTML = '<div class="notice bad" role="alert"><span><b>Could not set up memory.</b> ' + esc(errorText(d, "The server did not say why.")) + "</span></div>";
     cachedStatus = null;
-    await renderListBody();
     return;
   }
   toast("Memory vault created", "ok");
@@ -217,7 +256,6 @@ async function runInit(body: HTMLElement): Promise<void> {
 }
 
 async function showList(): Promise<void> {
-  currentView = { kind: "list" };
   setBack(false);
   $("mem-title").textContent = "Memory";
   $("mem-body").scrollTop = 0;
@@ -225,57 +263,52 @@ async function showList(): Promise<void> {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Article view: rendered content + links line + History toggle
+   Article view: the rendered page, its links, and its history
    ──────────────────────────────────────────────────────────────────── */
 
 function linksLineHtml(outbound: string[], inbound: string[]): string {
   if (!outbound.length && !inbound.length) return "";
   const row = (label: string, names: string[]) => names.length
     ? '<div class="mem-links-row"><span class="lbl">' + label + "</span>" +
-      names.map((n) => '<button class="mem-link-chip" type="button" data-article="' + esc(n) + '">' + esc(n.replace(/_/g, " ")) + "</button>").join("") +
+      names.map((n) => '<button class="tag mem-link-chip" type="button" data-article="' + esc(n) + '">' + esc(display(n)) + "</button>").join("") +
       "</div>"
     : "";
-  return '<div class="mem-links">' + row("links to", outbound) + row("linked from", inbound) + "</div>";
+  return '<div class="mem-links">' + row("Links to", outbound) + row("Linked from", inbound) + "</div>";
 }
 
 function wireLinkChips(container: HTMLElement): void {
   container.querySelectorAll<HTMLButtonElement>(".mem-link-chip").forEach((btn) => {
-    btn.addEventListener("click", () => { const name = btn.dataset.article; if (name) showArticle(name); });
+    btn.addEventListener("click", () => { const name = btn.dataset.article; if (name) void showArticle(name); });
   });
 }
 
 async function showArticle(name: string): Promise<void> {
-  currentView = { kind: "article", name };
   setBack(true);
-  const display = name.startsWith("Reference/") ? name.slice("Reference/".length) : name;
-  $("mem-title").textContent = display.replace(/_/g, " ");
+  $("mem-title").textContent = display(name);
   const body = $("mem-body");
-  body.innerHTML = '<p class="mem-list-empty"><span class="shimmer">loading article…</span></p>';
+  body.innerHTML = loadingHtml("Loading the article");
   body.scrollTop = 0;
 
   const [artRes, linksRes] = await Promise.all([
-    getJson<ArticleResp>("/api/memory/article?name=" + encodeURIComponent(name)).catch((): ArticleResp => ({ ok: false })),
-    getJson<LinksResp>("/api/memory/links?name=" + encodeURIComponent(name)).catch((): LinksResp => ({ ok: false })),
+    api.get<ArticleResp>("article?name=" + encodeURIComponent(name)),
+    api.get<LinksResp>("links?name=" + encodeURIComponent(name)),
   ]);
   if (!artRes.ok || artRes.content == null) {
-    body.innerHTML = '<div class="mem-list-empty">Couldn\'t load “' + esc(display) + '”.</div>';
+    body.innerHTML = '<div class="notice bad" role="alert"><span><b>Could not open “' + esc(display(name)) + "”.</b> " +
+      esc(errorText(artRes, "It may have been renamed or removed.")) + "</span></div>";
     return;
   }
 
   body.innerHTML =
-    '<div class="mem-art-head">' +
-    '<div class="mem-art-tabs">' +
-    '<button class="mem-art-tab active" id="mem-tab-view" type="button">Article</button>' +
-    '<button class="mem-art-tab" id="mem-tab-history" type="button">History</button>' +
-    "</div></div>" +
+    '<div class="seg mem-tabs" role="group" aria-label="Article view">' +
+    '<button class="on" id="mem-tab-view" type="button" aria-pressed="true">Article</button>' +
+    '<button id="mem-tab-history" type="button" aria-pressed="false">History</button>' +
+    "</div>" +
     '<div id="mem-art-view">' +
-    // data-ui-chrome="content": rendered vault-article markdown (synthesized
-    // from past conversations, not app-authored UI) can contain arbitrary
-    // links — excluded from captureUiSnapshot for the same reason chat-thread
-    // is (see assistant.ts's isAgentChrome doc comment: that snapshot is
-    // re-served to the model verbatim as trusted UI state).
+    // data-ui-chrome="content": a vault article is synthesized from past conversations, not app-authored UI, and can
+    // hold arbitrary links, so the assistant's UI snapshot leaves it out (as it does the chat thread).
     '<div class="mem-article-render" data-ui-chrome="content">' + mdToHtml(artRes.content) + "</div>" +
-    linksLineHtml((linksRes.outbound || []), (linksRes.inbound || [])) +
+    linksLineHtml(linksRes.outbound || [], linksRes.inbound || []) +
     "</div>" +
     '<div id="mem-art-history" style="display:none"></div>';
 
@@ -285,8 +318,10 @@ async function showArticle(name: string): Promise<void> {
 }
 
 async function switchArticleTab(tab: "view" | "history", name?: string): Promise<void> {
-  $("mem-tab-view").classList.toggle("active", tab === "view");
-  $("mem-tab-history").classList.toggle("active", tab === "history");
+  for (const [id, on] of [["mem-tab-view", tab === "view"], ["mem-tab-history", tab === "history"]] as const) {
+    $(id).classList.toggle("on", on);
+    $(id).setAttribute("aria-pressed", String(on));
+  }
   $("mem-art-view").style.display = tab === "view" ? "" : "none";
   $("mem-art-history").style.display = tab === "history" ? "" : "none";
   if (tab === "history" && name) await renderHistoryPane(name);
@@ -294,92 +329,80 @@ async function switchArticleTab(tab: "view" | "history", name?: string): Promise
 
 async function renderHistoryPane(name: string): Promise<void> {
   const pane = $("mem-art-history");
-  if (pane.dataset.loaded === name) return; // cheap: don't re-fetch on every tab click
-  pane.innerHTML = '<p class="mem-list-empty"><span class="shimmer">loading history…</span></p>';
-  const d = await getJson<HistoryResp>("/api/memory/history?name=" + encodeURIComponent(name)).catch((): HistoryResp => ({ ok: false }));
+  if (pane.dataset.loaded === name) return; // loaded once per article view
+  pane.innerHTML = loadingHtml("Loading the history");
+  const d = await api.get<HistoryResp>("history?name=" + encodeURIComponent(name));
   if (!d.ok || !d.entries) {
-    pane.innerHTML = '<div class="mem-list-empty">No history available (not a git-tracked vault, or nothing committed yet).</div>';
+    pane.innerHTML = '<p class="mem-note">No history available: the vault is not a git repository, or nothing has been committed yet.</p>';
     return;
   }
   if (!d.entries.length) {
-    pane.innerHTML = '<div class="mem-list-empty">No commits touch this article yet.</div>';
+    pane.innerHTML = '<p class="mem-note">No commits touch this article yet.</p>';
     return;
   }
   pane.dataset.loaded = name;
   pane.innerHTML =
+    '<div class="list mem-hist">' +
     d.entries.map((e) =>
-      '<div class="mem-hist-entry" data-hash="' + esc(e.hash) + '" tabindex="0" role="button">' +
-      '<span class="mem-hist-subject">' + esc(e.subject || "(no subject)") + "</span>" +
-      '<span class="mem-hist-date">' + esc(e.date) + "</span>" +
-      '<span class="mem-hist-hash">' + esc(e.hash.slice(0, 7)) + "</span>" +
+      '<div class="list-row mem-hist-entry" data-hash="' + esc(e.hash) + '" tabindex="0" role="button">' +
+      '<span class="mem-hist-ico">' + ICONS.commit + "</span>" +
+      '<div class="list-main"><div class="list-name mem-hist-subject">' + esc(e.subject || "(no subject)") + "</div>" +
+      '<div class="list-meta"><span class="mem-hist-date num">' + esc(e.date) + '</span> · <span class="mem-hist-hash">' + esc(e.hash.slice(0, 7)) + "</span></div></div>" +
       "</div>",
-    ).join("") + '<div class="mem-diff" id="mem-diff-body" style="display:none"></div>';
+    ).join("") + "</div>" +
+    '<div class="mem-diff" id="mem-diff-body" style="display:none" aria-live="polite"></div>';
   pane.querySelectorAll<HTMLElement>(".mem-hist-entry").forEach((row) => {
-    const open = async () => {
-      pane.querySelectorAll(".mem-hist-entry").forEach((r) => r.classList.remove("active"));
-      row.classList.add("active");
+    activate(row, async () => {
+      pane.querySelectorAll(".mem-hist-entry").forEach((r) => { r.classList.remove("selected"); r.removeAttribute("aria-current"); });
+      row.classList.add("selected");
+      row.setAttribute("aria-current", "true");
       const hash = row.dataset.hash!;
       const diffEl = $("mem-diff-body");
       diffEl.style.display = "";
-      diffEl.textContent = "loading diff…";
-      const dr = await getJson<DiffResp>(
-        "/api/memory/diff?name=" + encodeURIComponent(name) + "&rev=" + encodeURIComponent(hash),
-      ).catch((): DiffResp => ({ ok: false }));
-      diffEl.innerHTML = dr.ok && dr.diff ? diffToHtml(dr.diff) : '<span class="diffctx">Couldn\'t load this diff.</span>';
-    };
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") open(); });
+      diffEl.innerHTML = '<span class="diffctx">Loading the diff…</span>';
+      const dr = await api.get<DiffResp>("diff?name=" + encodeURIComponent(name) + "&rev=" + encodeURIComponent(hash));
+      diffEl.innerHTML = dr.ok && dr.diff ? diffToHtml(dr.diff) : '<span class="diffctx">Could not load this diff: ' + esc(errorText(dr, "the server did not say why")) + ".</span>";
+    });
   });
 }
 
-/** Render a `git show` unified diff as an added/removed-lines block, matching
- *  the existing code-panel visual language (.diffadd/.diffdel, same classes
- *  the approval card's edit-diff view uses). Line-oriented and escaped —
- *  never trusts diff content as markup. */
+/** A `git show` unified diff as added and removed lines. Line-oriented and escaped: diff content is never markup. */
 function diffToHtml(diff: string): string {
   return diff
+    .replace(/\n$/, "")
     .split("\n")
     .map((line) => {
       if (line.startsWith("+++") || line.startsWith("---")) return '<span class="diffctx">' + esc(line) + "</span>";
       if (line.startsWith("@@")) return '<span class="diffhunk">' + esc(line) + "</span>";
       if (line.startsWith("+")) return '<span class="diffadd">' + esc(line) + "</span>";
       if (line.startsWith("-")) return '<span class="diffdel">' + esc(line) + "</span>";
-      return '<span class="diffctx">' + esc(line) + "</span>";
+      return '<span class="diffctx">' + (esc(line) || " ") + "</span>";
     })
-    .join("\n");
+    .join("");
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Sidebar entry (article count, quiet — not a nav tab)
+   Sidebar entry: a quiet row with the article count, not a navigation tab
    ──────────────────────────────────────────────────────────────────── */
 
 export async function refreshSidebarEntry(): Promise<void> {
   const st = await fetchStatus(true);
-  const entry = $("chat-memory-entry");
-  if (!entry) return;
-  if (!st.ok || !st.enabled || !st.status) {
-    // No vault yet: keep the entry reachable (opening it shows the
-    // "set up memory" empty state) but the count reads as an invite, not
-    // a stat, so it never looks like a broken zero.
-    entry.style.display = "";
-    $("chat-memory-count").textContent = "set up";
-    return;
-  }
+  if (!slots) return;
+  const { entry, count } = slots;
   entry.style.display = "";
-  $("chat-memory-count").textContent = String(st.status.articleCount);
+  // No vault yet: the entry stays reachable (opening it offers to set memory up) and its count reads as an invitation,
+  // so it never looks like a broken zero.
+  const ready = st.ok && st.enabled && st.status;
+  count.textContent = ready ? String(st.status!.articleCount) : "Set up";
+  entry.title = ready ? `Memory: ${st.status!.articleCount} article${st.status!.articleCount === 1 ? "" : "s"}` : "Set up memory";
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Provenance chips — rendered by chat.ts in place of the
-   generic wrench tool card for any memory_ or reference_ tool call.
+   Provenance chips: what the chat host draws in place of its generic tool card for a memory_ or reference_ tool.
    ──────────────────────────────────────────────────────────────────── */
 
-// Kept in sync with MEMORY_TOOL_NAMES/REFERENCE_TOOL_NAMES (src/memory/tools.ts)
-// by a literal list rather than an import: this module must stay
-// server-code-free (bundler-enforced, see chat.ts's header comment), so it
-// can't import a value from src/memory/tools.ts even though the identifiers
-// are the same. tests/web/browser.test.ts cross-checks this list against the
-// real export so drift is caught at test time instead of silently.
+// Kept in sync with MEMORY_TOOL_NAMES/REFERENCE_TOOL_NAMES (the module's tools.ts) as a literal list, since panel code
+// imports only panel files; apps/mlx-bun/tests/web/browser.test.ts cross-checks it against the real export.
 export const MEMORY_CHIP_TOOL_NAMES = [
   "memory_resolve", "memory_category", "memory_read", "memory_section",
   "memory_links", "memory_infobox", "memory_list", "memory_status", "memory_search",
@@ -390,11 +413,9 @@ export function isMemoryToolName(tool: string): boolean {
   return (MEMORY_CHIP_TOOL_NAMES as readonly string[]).includes(tool);
 }
 
-/** Best-effort article name out of a memory tool call's args (every memory_*
- *  tool takes some form of `article`/`name`/`category`/`query`) — used only
- *  for the chip's label and as the target for "open in Memory panel"; never
- *  trusted for anything security-sensitive. */
-function articleNameFromArgs(tool: string, args: unknown): string | null {
+/** Best-effort article name from a memory tool call's arguments (`article`, `name`, `category` or `query`): only the
+ *  chip's label and the "Open in Memory" target, never trusted for anything else. */
+function articleNameFromArgs(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   const a = args as Record<string, unknown>;
   const cand = a.article ?? a.name ?? a.category ?? a.query;
@@ -402,39 +423,33 @@ function articleNameFromArgs(tool: string, args: unknown): string | null {
 }
 
 function chipVerb(tool: string): string {
-  if (tool === "memory_search" || tool === "reference_search") return "searched";
-  if (tool === "memory_links") return "traced links from";
-  if (tool === "memory_list" || tool === "memory_status" || tool === "reference_list") return "checked";
-  return "read";
+  if (tool === "memory_search" || tool === "reference_search") return "Searched";
+  if (tool === "memory_links") return "Traced links from";
+  if (tool === "memory_list" || tool === "memory_status" || tool === "reference_list") return "Checked";
+  return "Read";
 }
 
-/** Builds the collapsed citation-chip DOM node for a memory/reference tool
- *  call, appended into the assistant bubble in place of the generic .tool
- *  wrench card (chat.ts dispatches on isMemoryToolName() before falling
- *  back to its own toolCard()). Returns handles chat.ts needs to update the
- *  chip as tool_update/tool_end frames arrive, mirroring ToolCardState's
- *  shape closely enough that the call sites read the same way. */
+/** The handle the chat keeps for a chip while the tool's frames arrive; it toggles `.fail` on the wrap itself. */
 export interface MemChipHandle {
   wrap: HTMLElement;
   setResult(result: unknown): void;
 }
 
+/** Draws the collapsed chip for a memory or reference tool call into `parent` (the assistant's bubble). */
 export function memoryToolChip(parent: HTMLElement, tool: string, args: unknown): MemChipHandle {
-  const articleName = articleNameFromArgs(tool, args);
+  const articleName = articleNameFromArgs(args);
   const wrap = el("div", "memchip", parent);
-  const label = articleName
-    ? "<b>" + chipVerb(tool) + "</b> " + esc(articleName.replace(/_/g, " "))
-    : "<b>" + chipVerb(tool) + "</b> memory";
+  const label = "<b>" + chipVerb(tool) + "</b> " + (articleName ? esc(articleName.replace(/_/g, " ")) : "memory");
   wrap.innerHTML =
-    '<div class="mchead"><span class="mcicon" aria-hidden="true">◆</span>' +
-    '<span class="mclabel">' + label + "</span>" +
-    '<span class="mccaret">›</span></div>' +
+    '<button class="mchead" type="button" aria-expanded="false">' + ICONS.memory("mcicon") +
+    '<span class="mclabel">' + label + "</span>" + ICONS.caret("mccaret") + "</button>" +
     '<div class="mcbody"><pre class="mcresult"></pre>' +
-    (articleName ? '<button class="mcopen" type="button">Open in Memory</button>' : "") +
+    (articleName ? '<button class="btn sm mcopen" type="button">Open in Memory</button>' : "") +
     "</div>";
-  wrap.querySelector(".mchead")!.addEventListener("click", () => wrap.classList.toggle("open"));
+  const head = wrap.querySelector(".mchead") as HTMLButtonElement;
+  head.addEventListener("click", () => head.setAttribute("aria-expanded", String(wrap.classList.toggle("open"))));
   const openBtn = wrap.querySelector(".mcopen") as HTMLButtonElement | null;
-  if (openBtn && articleName) openBtn.onclick = (e) => { e.stopPropagation(); openMemPanel(articleName); };
+  if (openBtn && articleName) openBtn.onclick = (e) => { e.stopPropagation(); void openMemPanel(articleName); };
   const resultEl = wrap.querySelector(".mcresult") as HTMLElement;
   return {
     wrap,
@@ -446,84 +461,67 @@ export function memoryToolChip(parent: HTMLElement, tool: string, args: unknown)
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Personalized hero chips — replaces the 4 static chips with
-   one drawn from a real article + one adapter offer when either backend
-   signal is available; falls back to the existing static chips otherwise
-   (never fewer chips than today, never a broken/empty row).
+   Personalised greeting chips: up to two drawn from a real article and a compatible adapter, ahead of the chat's
+   static ones, which stay when neither signal is available.
    ──────────────────────────────────────────────────────────────────── */
 
 interface AdapterAvailable { id: string; compatible?: boolean }
 
-/** Swaps in up to 2 personalized chips ahead of the static ones, using the
- *  SAME .chip class + data-q click contract chat.ts already wires up (see
- *  chat.ts's `#chat-hello .chip` listener) — so no new click-handling path
- *  is needed for these chips to actually send a message. */
+/** Inserts the chips with the chat's own `.chip[data-q]` contract: the chat delegates one click listener on its chips
+ *  slot, so inserted chips send their question with no wiring here. */
 export async function personalizeHeroChips(): Promise<void> {
-  const container = $("chat-hello-chips");
+  const container = slots?.chips;
   if (!container) return;
   const extra: string[] = [];
 
   const st = await fetchStatus();
   if (st.ok && st.enabled && st.status && st.status.recentArticles.length) {
-    const name = st.status.recentArticles[0]!.article;
-    const display = name.replace(/_/g, " ");
-    extra.push(
-      '<button class="chip" data-q="' + esc("What do you remember about " + display + "?") + '">Ask about ' + esc(display) + "</button>",
-    );
+    const name = display(st.status.recentArticles[0]!.article);
+    extra.push('<button class="chip" data-q="' + esc("What do you remember about " + name + "?") + '">Ask about ' + esc(name) + "</button>");
   }
 
-  try {
-    const d = await getJson<{ adapters?: AdapterAvailable[] }>("/v1/adapters/available");
-    const compatible = (d.adapters || []).find((a) => a.compatible !== false);
-    if (compatible) {
-      extra.push(
-        '<button class="chip" data-q="' + esc("Can you try answering with the " + compatible.id + " adapter?") + '">Try the ' + esc(compatible.id) + " adapter</button>",
-      );
-    }
-  } catch { /* adapters are optional personalization — no adapter list is not an error */ }
+  // Adapters are optional personalisation: no adapter list is not an error.
+  const d = await api.get<{ adapters?: AdapterAvailable[] }>("/v1/adapters/available");
+  const compatible = (d.adapters || []).find((a) => a.compatible !== false);
+  if (compatible) {
+    extra.push('<button class="chip" data-q="' + esc("Can you try answering with the " + compatible.id + " adapter?") + '">Try the ' + esc(compatible.id) + " adapter</button>");
+  }
 
-  if (!extra.length) return; // keep the existing static chips exactly as they are
-  // No per-chip click wiring needed: chat.ts's init() binds ONE delegated
-  // listener on #chat-hello-chips (not per-.chip), so newly-inserted nodes
-  // work for free regardless of init() vs. this async call's ordering.
+  if (!extra.length) return; // keep the static chips exactly as they are
   container.insertAdjacentHTML("afterbegin", extra.join(""));
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Consent card — first run only, never auto-creates the vault.
+   Consent card: first run only; it never creates the vault on its own.
    ──────────────────────────────────────────────────────────────────── */
 
 const CONSENT_DISMISSED_KEY = "mlxbun.memoryConsentDismissed";
 
 function isConsentDismissed(): boolean {
-  return localStorage.getItem(CONSENT_DISMISSED_KEY) === "1";
+  try { return localStorage.getItem(CONSENT_DISMISSED_KEY) === "1"; } catch { return false; }
 }
 function dismissConsent(): void {
-  localStorage.setItem(CONSENT_DISMISSED_KEY, "1");
-  $("chat-consent").classList.remove("show");
+  try { localStorage.setItem(CONSENT_DISMISSED_KEY, "1"); } catch { /* storage is unavailable: the card just hides */ }
+  slots?.consent.classList.remove("show");
 }
 
-/** Shows the consent card iff there's no vault yet and it's never been
- *  dismissed. Called once after the first status fetch (chat.ts's init,
- *  alongside personalizeHeroChips) — never polled/re-shown mid-session. */
+/** Shows the consent card when there is no vault yet and it was never dismissed. Called once when the chat attaches. */
 export async function maybeShowConsentCard(): Promise<void> {
-  const card = $("chat-consent");
+  const card = slots?.consent;
   if (!card) return;
   if (isConsentDismissed()) return;
   const st = await fetchStatus();
-  if (st.ok && st.enabled) return; // vault already exists — nothing to consent to
+  if (st.ok && st.enabled) return; // a vault exists: nothing to consent to
   card.classList.add("show");
 }
 
-function wireConsentCard(): void {
-  const skip = $("chat-consent-skip") as HTMLButtonElement | null;
-  const yes = $("chat-consent-yes") as HTMLButtonElement | null;
-  if (skip) skip.onclick = dismissConsent;
-  if (yes) yes.onclick = async () => {
+function wireConsentCard({ consentSkip: skip, consentYes: yes }: ChatSlots): void {
+  skip.onclick = dismissConsent;
+  yes.onclick = async () => {
     yes.disabled = true;
-    const d = await api<InitResp>("/api/memory/init", { method: "POST" }).catch((): InitResp => ({ ok: false, error: "request failed" }));
+    const d = await api.post<InitResp>("init");
     yes.disabled = false;
-    if (!d.ok) { toast("Couldn't set up memory: " + (d.error || "unknown error"), "err"); return; }
+    if (!d.ok) { toast("Could not set up memory: " + errorText(d, "the server did not say why") + ". Try again, or run mlx-bun memory init in a terminal.", "err"); return; }
     dismissConsent();
     cachedStatus = null;
     toast("Memory vault created", "ok");
@@ -533,34 +531,47 @@ function wireConsentCard(): void {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Init — wires the sidebar entry, panel chrome (close/back/focus-trap/
-   Escape), and the consent card. Call once at chat controller init.
+   Init: the drawer's chrome (close, back, the focus trap, a click on the scrim) once per overlay; `attachChat` wires
+   the chat's slots once its markup exists.
    ──────────────────────────────────────────────────────────────────── */
+
+let initializedOverlay: HTMLElement | undefined;
 
 export function initMemoryPanel(): void {
   const overlay = $("mem-overlay");
   if (initializedOverlay === overlay) return;
   initializedOverlay = overlay;
   cachedStatus = null;
-  panelTrap = trapFocus($("mem-overlay"), isMemPanelOpen);
-  const entry = $("chat-memory-entry") as HTMLButtonElement;
-  if (entry) entry.onclick = () => openMemPanel();
+  panelTrap = trapFocus(overlay, isMemPanelOpen);
+  if (slots) slots.entry.onclick = () => openMemPanel();
   ($("mem-close") as HTMLButtonElement).onclick = closeMemPanel;
   ($("mem-back") as HTMLButtonElement).onclick = () => showList();
-  $("mem-overlay").addEventListener("click", (e) => { if (e.target === $("mem-overlay")) closeMemPanel(); });
-  // Canvas v1: same Preview|Source toggle as the chat
-  // thread, shared via markdown.ts — mem-body is the stable ancestor whose
-  // innerHTML gets replaced per article, same delegation pattern as chat.ts.
-  wireCanvasToggle($("mem-body"));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeMemPanel(); });
+  const body = $("mem-body");
+  // The article's code blocks: Preview and Source for HTML and SVG fences, and Copy, delegated on the stable body.
+  wireCanvasToggle(body);
+  body.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest?.(".cbcopy") as HTMLElement | null;
+    const code = btn?.closest(".codeblock")?.querySelector("code");
+    if (!btn || !code || !navigator.clipboard) return;
+    navigator.clipboard.writeText(code.textContent || "").then(() => {
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = "Copy"; }, 1200);
+    }).catch(() => {});
+  });
 }
 
-let initializedOverlay: HTMLElement | undefined;
-export function attachChat(): void {
-  const entry = $("chat-memory-entry");
-  if (entry) entry.onclick = () => openMemPanel();
-  wireConsentCard();
+/** Takes the chat's slots: memory's classes on the elements it styles, the entry and the consent card wired, and the
+ *  entry's count, the consent card and the personalised chips filled from the vault's status. */
+export function attachChat(chat: ChatSlots): void {
+  slots = chat;
+  chat.entry.classList.add("mem-entry");
+  chat.count.classList.add("mem-entry-count");
+  chat.consent.classList.add("mem-consent");
+  chat.entry.setAttribute("aria-controls", "mem-overlay"); // the drawer the entry opens is memory's
+  chat.entry.onclick = () => openMemPanel();
+  wireConsentCard(chat);
   void refreshSidebarEntry();
   void personalizeHeroChips();
   void maybeShowConsentCard();
 }
-

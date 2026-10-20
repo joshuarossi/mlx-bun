@@ -1,30 +1,45 @@
 // `<mlx-models-panel>`: the module's web panel as one self-contained custom element. It imports only its data protocol
-// (types) and its own render and style files, draws into its own shadow root and reaches the backend only through
-// `connection`, so any host (the web shell, a native webview) mounts it the same way: create the element, set
-// `connection`, append it.
+// (types), its own render and style files and the web kit, draws into its own shadow root and reaches the backend
+// only through `connection`, so any host (the web shell, a native webview) mounts it the same way: create the
+// element, set `connection`, append it.
 //
-// Three sections over the module's routes: the downloaded models (`/api/hub/local`, with which one is served and which are
-// loaded from `/library`) and a Serve action; Hugging Face search (`/api/hub/search`) with Download and live progress
-// (`/downloads`); and the adapters on disk (`/v1/adapters/available`, `/v1/adapters`) with Mount and Unmount. Nothing
-// downloads, serves or mounts without an explicit click. The routes keep their shipped root paths, so requests go to the
-// origin `connection.apiBase` names (an absolute URL in a native webview, this page's own origin when it is relative).
+// Four sections over the module's routes: what is serving now (from `/library`); the downloaded models
+// (`/api/hub/local`, with which one is served and which are loaded) and a Serve action; Hugging Face search
+// (`/api/hub/search`) with Download and live progress (`/downloads`); and the adapters on disk
+// (`/v1/adapters/available`, `/v1/adapters`) with Mount and Unmount. Nothing downloads, serves or mounts without an
+// explicit click. The routes keep their shipped root paths, so requests go to the origin `connection.apiBase` names.
+import { BASE_CSS, createApi, emitHostEvent, errorOf, HOST_EVENTS, shadowStyles, type Api, type ApiEnvelope } from "@mlx-bun/web-kit";
 import type { AvailableAdapterRow, DownloadInfo, HubLocalRow, HubSearchRow, LibraryRow, MountedAdapterRow, PanelConnection } from "../protocol";
-import { esc, renderAdaptersHtml, renderHubLocalHtml, renderHubSearchHtml, type Running } from "./render";
+import { esc, renderAdaptersHtml, renderHubLocalHtml, renderHubSearchHtml, renderServingHtml, type Running } from "./render";
 import { STYLE } from "./style";
 
-export { esc, fitVerdict, renderAdaptersHtml, renderHubLocalHtml, renderHubSearchHtml } from "./render";
+export { esc, fitVerdict, renderAdaptersHtml, renderHubLocalHtml, renderHubSearchHtml, renderServingHtml } from "./render";
 export type { Running } from "./render";
 
 /** Fired (bubbling, composed) on the element whenever the served model or the mounted adapters changed, so the page around it can refresh what it shows. */
-export const MODELS_CHANGED = "mlx-models-changed";
+export const MODELS_CHANGED = HOST_EVENTS.modelsChanged;
 
 // Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
 
-type Envelope = { ok?: boolean; error?: string | { message?: string }; [key: string]: unknown };
+const MARKUP =
+  '<div class="status notice" id="status" role="status"></div>' +
+  '<div class="restart notice warn" id="restart"></div>' +
+  '<section class="section"><h3 class="section-title">Serving now</h3><div class="card" id="serving"><div class="serving"><span class="skeleton">Loading the served model…</span></div></div></section>' +
+  '<section class="section"><h3 class="section-title">Downloaded <span class="count" id="local-count"></span></h3>' +
+  '<p class="card-note" style="margin-bottom:10px">Fit is predicted for this Mac. Serving a model loads it beside the running ones when it fits; otherwise the least recently used one is unloaded with its saved state, and switching back resumes it.</p>' +
+  '<div class="list skeletons" id="local"><div class="list-row"><span class="skeleton" style="width:46%"></span></div><div class="list-row"><span class="skeleton" style="width:38%"></span></div></div></section>' +
+  '<section class="section"><h3 class="section-title">Find a model</h3>' +
+  '<input class="input search" type="search" id="query" placeholder="Search Hugging Face for MLX models" aria-label="Search Hugging Face for MLX models" autocomplete="off">' +
+  '<div id="results"><p class="card-note">Type to search Hugging Face. Downloads land in the Hugging Face cache and appear above when they finish.</p></div>' +
+  '<p class="hint offline" id="offline" style="display:none">You are offline, or Hugging Face is unreachable. Search needs a network connection; downloaded models work offline.</p></section>' +
+  '<section class="section"><h3 class="section-title">Adapters</h3>' +
+  '<p class="card-note" style="margin-bottom:10px">Every LoRA adapter found on disk. Mounting loads it into the served model\'s memory; the chat picks which mounted adapter a turn uses.</p>' +
+  '<div class="list skeletons" id="adapters"><div class="list-row"><span class="skeleton" style="width:30%"></span></div></div></section>';
 
 class ModelsPanel extends Base {
   #connection: PanelConnection | undefined;
+  #api: Api | undefined;
   #shadow: ShadowRoot;
   #inFlight = new Set<string>();
   #pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -34,19 +49,9 @@ class ModelsPanel extends Base {
   constructor() {
     super();
     this.#shadow = this.attachShadow({ mode: "open" });
-    const style = document.createElement("style");
-    style.textContent = STYLE;
     const body = document.createElement("div");
-    body.innerHTML =
-      '<div class="status" id="status" role="status"></div>' +
-      '<div class="restart" id="restart"></div>' +
-      '<section><h3>Downloaded</h3><p class="note">Fit is predicted for this Mac, not a generic guess. Serving a model loads it beside the running ones when it fits; ' +
-      'otherwise the least recently used one is unloaded with its saved state, and switching back resumes it.</p><div id="local"></div></section>' +
-      '<section><h3>Search Hugging Face</h3><input type="search" id="query" placeholder="Search MLX models…" aria-label="Search Hugging Face for MLX models" autocomplete="off">' +
-      '<div id="results"><div class="hub-empty">Type to search Hugging Face for MLX models.</div></div>' +
-      '<p class="offline" id="offline" style="display:none">You\'re offline (or Hugging Face is unreachable) — search needs a network connection, but your downloaded models still work fully offline.</p></section>' +
-      '<section><h3>Adapters</h3><p class="note">Every adapter found on disk. Mounting loads it into the served model\'s memory; the chat picks which mounted adapter a turn uses.</p><div id="adapters"></div></section>';
-    this.#shadow.append(style, body);
+    body.innerHTML = MARKUP;
+    this.#shadow.append(shadowStyles(STYLE, BASE_CSS), body);
     this.#part("query").addEventListener("input", () => {
       clearTimeout(this.#searchTimer);
       const query = (this.#part("query") as HTMLInputElement).value.trim();
@@ -57,6 +62,7 @@ class ModelsPanel extends Base {
   get connection(): PanelConnection | undefined { return this.#connection; }
   set connection(value: PanelConnection | undefined) {
     this.#connection = value;
+    this.#api = value ? createApi(value.apiBase) : undefined;
     if (this.isConnected && value) void this.refresh();
   }
 
@@ -64,48 +70,43 @@ class ModelsPanel extends Base {
   disconnectedCallback() { this.#stopPolling(); clearTimeout(this.#searchTimer); }
 
   #part(id: string): HTMLElement { return this.#shadow.getElementById(id)!; }
-
-  /** Where a route lives: at its shipped root path on the origin the connection names (relative to this page when the base is). */
-  #url(path: string): string {
-    let origin = "";
-    try { origin = new URL(this.#connection!.apiBase).origin; } catch { /* a relative base: this page's own origin */ }
-    return origin + path;
-  }
-
-  async #call<T extends Envelope>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(this.#url(path), init);
-    const text = await response.text();
-    let body: Envelope;
-    try { body = text ? JSON.parse(text) : {}; } catch { body = { ok: false, error: text.slice(0, 400) || `HTTP ${response.status}` }; }
-    if (body.error && typeof body.error === "object") body.error = body.error.message ?? JSON.stringify(body.error).slice(0, 400);
-    if (!response.ok && body.ok === undefined) body = { ...body, ok: false, error: (body.error as string) || `HTTP ${response.status}` };
-    return body as T;
-  }
-  #post<T extends Envelope>(path: string, body: unknown) { return this.#call<T>(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
+  get #client(): Api { return this.#api ?? createApi("/api/models"); }
 
   #say(text: string, kind: "" | "ok" | "err" = "") {
     const status = this.#part("status");
     status.textContent = text;
-    status.className = "status" + (kind ? " " + kind : "");
+    status.className = "status notice" + (kind === "ok" ? " ok" : kind === "err" ? " bad" : "");
   }
-  #changed() { this.dispatchEvent(new CustomEvent(MODELS_CHANGED, { bubbles: true, composed: true })); }
+  #changed() { emitHostEvent(HOST_EVENTS.modelsChanged, undefined, this, { bubbles: true, composed: true }); }
 
   /** Reloads the downloaded models and the adapters. */
   async refresh(): Promise<void> {
-    this.#part("restart").className = "restart";
+    this.#part("restart").className = "restart notice warn";
     await Promise.all([this.#loadLocal(), this.#loadAdapters()]);
     if (this.#inFlight.size) this.#startPolling();
   }
 
   async #loadLocal() {
     const target = this.#part("local");
-    target.innerHTML = '<div class="hub-empty">loading…</div>';
-    try {
-      const [local, library] = await Promise.all([this.#call<Envelope & { models?: HubLocalRow[] }>("/api/hub/local"), this.#call<Envelope & { models?: LibraryRow[] }>("/library").catch(() => ({} as Envelope & { models?: LibraryRow[] }))]);
-      const running = new Map<string, Running>((library.models ?? []).map(row => [row.repo_id, { serving: row.serving, resident: row.resident }]));
-      target.innerHTML = renderHubLocalHtml(local.models ?? [], running);
-      target.querySelectorAll<HTMLButtonElement>(".hub-serve-btn").forEach(button => { button.onclick = () => { void this.#serve(button.dataset.repo ?? "", button); }; });
-    } catch { target.innerHTML = '<div class="hub-empty">Could not reach the server.</div>'; }
+    const [local, library] = await Promise.all([
+      this.#client.get<ApiEnvelope & { models?: HubLocalRow[] }>("/api/hub/local"),
+      this.#client.get<ApiEnvelope & { models?: LibraryRow[] }>("/library"),
+    ]);
+    if (local.ok === false) {
+      target.className = "";
+      target.innerHTML = `<div class="notice bad"><b>Could not load the downloaded models.</b> ${esc(errorOf(local))}<span class="actions"><button type="button" class="btn sm retry">Retry</button></span></div>`;
+      target.querySelector<HTMLButtonElement>(".retry")!.onclick = () => { void this.refresh(); };
+      this.#part("serving").innerHTML = renderServingHtml([], false);
+      return;
+    }
+    const rows = library.models ?? [];
+    const running = new Map<string, Running>(rows.map(row => [row.repo_id, { serving: row.serving, resident: row.resident }]));
+    const models = local.models ?? [];
+    this.#part("serving").innerHTML = renderServingHtml(rows);
+    this.#part("local-count").textContent = models.length ? String(models.length) : "";
+    target.className = models.length ? "list" : "";
+    target.innerHTML = renderHubLocalHtml(models, running);
+    target.querySelectorAll<HTMLButtonElement>(".hub-serve-btn").forEach(button => { button.onclick = () => { void this.#serve(button.dataset.repo ?? "", button); }; });
   }
 
   async #serve(repo: string, button: HTMLButtonElement) {
@@ -113,11 +114,11 @@ class ModelsPanel extends Base {
     button.disabled = true;
     const label = button.textContent;
     button.textContent = "Loading…";
-    const answer = await this.#post<Envelope & { restart_required?: boolean; command?: string }>("/api/hub/serve", { model: repo }).catch((): Envelope & { restart_required?: boolean; command?: string } => ({ ok: false, error: "request failed" }));
+    const answer = await this.#client.post<ApiEnvelope & { restart_required?: boolean; command?: string }>("/api/hub/serve", { model: repo });
     button.disabled = false;
     button.textContent = label;
     if (answer.ok) {
-      this.#part("restart").className = "restart";
+      this.#part("restart").className = "restart notice warn";
       this.#say("Now serving " + repo, "ok");
       this.#changed();
       await this.#loadLocal();
@@ -125,15 +126,15 @@ class ModelsPanel extends Base {
       return;
     }
     if (answer.restart_required && answer.command) { this.#showRestart(repo, answer.command); return; }
-    this.#say("Couldn't switch models: " + ((answer.error as string) || "unknown error"), "err");
+    this.#say("Couldn't switch models: " + errorOf(answer, "unknown error"), "err");
   }
 
   /** A host that serves one model cannot swap: the restart command stays visible long enough to copy. */
   #showRestart(repo: string, command: string) {
     const strip = this.#part("restart");
-    strip.innerHTML = `<p>Switching to <strong>${esc(repo)}</strong> needs a restart — this server holds one model and cannot swap. Restarting takes about a second and your sessions are preserved on disk, exactly as they are now.</p>` +
-      `<div class="hub-cmd"><code>${esc(command)}</code><button type="button" class="hub-copy-btn" data-cmd="${esc(command)}">Copy</button></div>`;
-    strip.className = "restart show";
+    strip.innerHTML = `<p>Switching to <b>${esc(repo)}</b> needs a restart: this server holds one model and cannot swap. Restarting takes about a second, and your chats stay on disk as they are.</p>` +
+      `<div class="hub-cmd"><code>${esc(command)}</code><button type="button" class="btn sm hub-copy-btn" data-cmd="${esc(command)}">Copy</button></div>`;
+    strip.className = "restart notice warn show";
     const copy = strip.querySelector<HTMLButtonElement>(".hub-copy-btn")!;
     copy.onclick = () => {
       void navigator.clipboard?.writeText(command).then(() => { copy.textContent = "Copied"; setTimeout(() => { copy.textContent = "Copy"; }, 1200); }).catch(() => {});
@@ -144,12 +145,16 @@ class ModelsPanel extends Base {
   async search(query: string): Promise<void> {
     const results = this.#part("results");
     this.#lastQuery = query;
-    if (!query) { results.innerHTML = '<div class="hub-empty">Type to search Hugging Face for MLX models.</div>'; return; }
-    results.innerHTML = '<div class="hub-empty">searching…</div>';
-    const answer = await this.#call<Envelope & { offline?: boolean; results?: HubSearchRow[] }>("/api/hub/search?q=" + encodeURIComponent(query))
-      .catch((): Envelope & { offline?: boolean; results?: HubSearchRow[] } => ({ ok: false, offline: true, results: [] }));
+    if (!query) {
+      results.innerHTML = '<p class="card-note">Type to search Hugging Face. Downloads land in the Hugging Face cache and appear above when they finish.</p>';
+      this.#part("offline").style.display = "none";
+      return;
+    }
+    results.innerHTML = '<p class="card-note"><span class="skeleton">Searching Hugging Face…</span></p>';
+    const answer = await this.#client.get<ApiEnvelope & { offline?: boolean; results?: HubSearchRow[] }>("/api/hub/search?q=" + encodeURIComponent(query));
     if (this.#lastQuery !== query) return;
-    const offline = !!answer.offline;
+    const offline = answer.ok === false || !!answer.offline;
+    results.className = !offline && (answer.results ?? []).length ? "list" : "";
     results.innerHTML = renderHubSearchHtml(answer.results ?? [], offline, this.#inFlight);
     results.querySelectorAll<HTMLButtonElement>(".hub-download-btn").forEach(button => { button.onclick = () => { void this.#download(button.dataset.repo ?? "", button); }; });
     this.#part("offline").style.display = offline ? "" : "none";
@@ -159,17 +164,17 @@ class ModelsPanel extends Base {
     if (!repo) return;
     button.disabled = true;
     button.textContent = "Starting…";
-    const answer = await this.#post<Envelope>("/api/hub/download", { repo }).catch((): Envelope => ({ ok: false, error: "request failed" }));
+    const answer = await this.#client.post<ApiEnvelope>("/api/hub/download", { repo });
     if (!answer.ok) {
       button.disabled = false;
       button.textContent = "Download";
-      this.#say("Couldn't start download: " + ((answer.error as string) || "unknown error"), "err");
+      this.#say("Couldn't start the download: " + errorOf(answer, "unknown error"), "err");
       return;
     }
     this.#inFlight.add(repo);
     this.#say("Downloading " + repo, "ok");
     const actions = button.closest(".hub-row")?.querySelector(".hub-row-actions");
-    if (actions) actions.innerHTML = '<span class="hub-dl-tag">downloading…</span>';
+    if (actions) actions.innerHTML = '<span class="tag accent hub-dl-tag">downloading…</span>';
     this.#startPolling();
   }
 
@@ -178,8 +183,9 @@ class ModelsPanel extends Base {
 
   /** One step over the transfers' rows: progress on each search row, and the tag a finished or failed one settles on. */
   async pollDownloads(): Promise<void> {
-    let downloads: DownloadInfo[] = [];
-    try { downloads = ((await (await fetch(this.#url("/downloads"))).json()) as { downloads?: DownloadInfo[] }).downloads ?? []; } catch { return; }
+    const answer = await this.#client.get<ApiEnvelope & { downloads?: DownloadInfo[] }>("/downloads");
+    if (answer.ok === false) return;
+    const downloads = answer.downloads ?? [];
     let active = false;
     for (const download of downloads) {
       if (download.state === "active") { active = true; this.#inFlight.add(download.repoId); }
@@ -187,14 +193,14 @@ class ModelsPanel extends Base {
       if (!actions) continue;
       if (download.state === "active") {
         // No total yet means the listing and disk preflight are still running.
-        actions.innerHTML = `<span class="hub-dl-tag">${download.totalBytes ? Math.floor((download.receivedBytes / download.totalBytes) * 100) + "%" : "preparing…"}</span>`;
+        actions.innerHTML = `<span class="tag accent hub-dl-tag">${download.totalBytes ? Math.floor((download.receivedBytes / download.totalBytes) * 100) + "%" : "preparing…"}</span>`;
       } else if (download.state === "done") {
         const finished = this.#inFlight.delete(download.repoId);
-        actions.innerHTML = '<span class="hub-dl-tag done">done — reload to serve</span>';
+        actions.innerHTML = '<span class="tag ok hub-dl-tag done">done — reload to serve</span>';
         if (finished) void this.#loadLocal();
       } else {
         this.#inFlight.delete(download.repoId);
-        actions.innerHTML = `<span class="hub-dl-tag error">${esc(download.error || "download failed")}</span>`;
+        actions.innerHTML = `<span class="tag bad hub-dl-tag error">${esc(download.error || "download failed")}</span>`;
       }
     }
     // A transfer that finished and dropped out of the tracker's rolling window still needs its stale tag cleared.
@@ -204,21 +210,28 @@ class ModelsPanel extends Base {
 
   async #loadAdapters() {
     const target = this.#part("adapters");
-    try {
-      const [available, mounted] = await Promise.all([this.#call<Envelope & { adapters?: AvailableAdapterRow[] }>("/v1/adapters/available"), this.#call<Envelope & { adapters?: MountedAdapterRow[] }>("/v1/adapters")]);
-      if (available.error || mounted.error) { target.innerHTML = `<div class="hub-empty">${esc(String(available.error ?? mounted.error))}</div>`; return; }
-      target.innerHTML = renderAdaptersHtml(available.adapters ?? [], new Map((mounted.adapters ?? []).map(adapter => [adapter.id, adapter])));
-      target.querySelectorAll<HTMLButtonElement>(".ad-mount").forEach(button => { button.onclick = () => { void this.#mount(button); }; });
-      target.querySelectorAll<HTMLButtonElement>(".ad-unmount").forEach(button => { button.onclick = () => { void this.#unmount(button); }; });
-    } catch { target.innerHTML = '<div class="hub-empty">Could not reach the server.</div>'; }
+    const [available, mounted] = await Promise.all([
+      this.#client.get<ApiEnvelope & { adapters?: AvailableAdapterRow[] }>("/v1/adapters/available"),
+      this.#client.get<ApiEnvelope & { adapters?: MountedAdapterRow[] }>("/v1/adapters"),
+    ]);
+    if (available.ok === false || mounted.ok === false || available.error || mounted.error) {
+      target.className = "";
+      target.innerHTML = `<div class="notice bad">${esc(errorOf(available.ok === false || available.error ? available : mounted))}</div>`;
+      return;
+    }
+    const rows = available.adapters ?? [];
+    target.className = rows.length ? "list" : "";
+    target.innerHTML = renderAdaptersHtml(rows, new Map((mounted.adapters ?? []).map(adapter => [adapter.id, adapter])));
+    target.querySelectorAll<HTMLButtonElement>(".ad-mount").forEach(button => { button.onclick = () => { void this.#mount(button); }; });
+    target.querySelectorAll<HTMLButtonElement>(".ad-unmount").forEach(button => { button.onclick = () => { void this.#unmount(button); }; });
   }
 
   async #mount(button: HTMLButtonElement) {
     const { id, path } = button.dataset as { id: string; path: string };
     button.disabled = true;
     button.textContent = "Mounting…";
-    const answer = await this.#post<Envelope>("/v1/adapters", { id, path }).catch((): Envelope => ({ ok: false, error: "request failed" }));
-    if (answer.error || answer.ok === false) { this.#say("adapter: " + String(answer.error ?? "mount failed"), "err"); button.disabled = false; button.textContent = "Mount"; return; }
+    const answer = await this.#client.post<ApiEnvelope>("/v1/adapters", { id, path });
+    if (answer.error || answer.ok === false) { this.#say("adapter: " + errorOf(answer, "mount failed"), "err"); button.disabled = false; button.textContent = "Mount"; return; }
     this.#say("Mounted " + id, "ok");
     this.#changed();
     await this.#loadAdapters();
@@ -227,8 +240,8 @@ class ModelsPanel extends Base {
   async #unmount(button: HTMLButtonElement) {
     const id = button.dataset.id!;
     button.disabled = true;
-    const answer = await this.#call<Envelope>("/v1/adapters/" + encodeURIComponent(id), { method: "DELETE" }).catch((): Envelope => ({ ok: false, error: "request failed" }));
-    if (answer.error || answer.ok === false) { this.#say("adapter: " + String(answer.error ?? "unmount failed"), "err"); button.disabled = false; return; }
+    const answer = await this.#client.del<ApiEnvelope>("/v1/adapters/" + encodeURIComponent(id));
+    if (answer.error || answer.ok === false) { this.#say("adapter: " + errorOf(answer, "unmount failed"), "err"); button.disabled = false; return; }
     this.#say("Unmounted " + id, "ok");
     this.#changed();
     await this.#loadAdapters();

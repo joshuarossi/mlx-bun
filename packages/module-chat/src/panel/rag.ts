@@ -4,8 +4,8 @@
 // A small, dependency-free, pure BM25 retriever over attached-file text —
 // matching optiq Lab's shipped v1 shape (the task's explicit target): chunk
 // per-file, tokenize, score chunks against the outgoing message, return the
-// top-K with enough metadata (filename + char range) for composer.ts to
-// build a cited context block and chat.ts to render a Sources panel.
+// top-K with enough metadata (filename + char range) for the composer to
+// build a cited context block and turn.ts to render a Sources panel.
 //
 // No network, no embeddings, no external deps — this is the "dependency-
 // free BM25 proves the v1 needs no vector infra" bet from the beat matrix.
@@ -92,7 +92,7 @@ export function chunkText(fileId: number, fileName: string, text: string): Chunk
 }
 
 /** Chunk every attached text file (name/text pairs) into one flat list,
- *  independently per file (chunks never span files) — the shape composer.ts
+ *  independently per file (chunks never span files) — the shape composer/attachments.ts
  *  feeds from ComposerState.attachments. */
 export function chunkFiles(files: { id: number; name: string; text: string }[]): Chunk[] {
   const out: Chunk[] = [];
@@ -221,7 +221,7 @@ export function shouldRetrieve(totalChars: number): boolean {
   return totalChars > INLINE_THRESHOLD_CHARS;
 }
 
-/** One numbered citation as composer.ts will inject it and chat.ts will
+/** One numbered citation as the composer will inject it and turn.ts will
  *  reference by index — `n` is the 1-based [n] marker shown to the model
  *  and rendered back to the user. */
 export interface Citation {
@@ -233,8 +233,8 @@ export interface Citation {
 }
 
 /** Build the numbered [1]..[K] citation list from a scored top-K result.
- *  Pure — shared by composer.ts (building the outgoing context block) and
- *  chat.ts/tests (rendering the Sources panel from the same shape). */
+ *  Pure — shared by the composer (building the outgoing context block) and
+ *  turn.ts/tests (rendering the Sources panel from the same shape). */
 export function toCitations(top: ScoredChunk[]): Citation[] {
   return top.map((s, i) => ({
     n: i + 1,
@@ -249,7 +249,7 @@ export function toCitations(top: ScoredChunk[]): Citation[] {
  *  when in retrieval mode: each citation numbered [n] with filename+range,
  *  then ONE instruction line asking the model to cite sources with [n]
  *  markers when used. Plain text (this goes into the outgoing prompt, not
- *  HTML) — chat.ts/markdown.ts handle rendering [n] markers back as links
+ *  HTML) — turn.ts/markdown.ts handle rendering [n] markers back as links
  *  separately, from the citation map, not from parsing this block. */
 export function buildContextBlock(citations: Citation[]): string {
   if (!citations.length) return "";

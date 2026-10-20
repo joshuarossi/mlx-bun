@@ -18,6 +18,9 @@
     "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
     "test": "bun test"
   },
+  "dependencies": {
+    "@mlx-bun/web-kit": "workspace:*"
+  },
   "devDependencies": {
     "happy-dom": "20.10.6"
   },

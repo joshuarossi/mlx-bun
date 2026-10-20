@@ -24,7 +24,8 @@
     "@mlx-bun/app-core": "workspace:*",
     "@mlx-bun/hub": "workspace:*",
     "@mlx-bun/inference": "workspace:*",
-    "@mlx-bun/training": "workspace:*"
+    "@mlx-bun/training": "workspace:*",
+    "@mlx-bun/web-kit": "workspace:*"
   },
   "devDependencies": {
     "@mlx-bun/app-host": "workspace:*",

@@ -4,9 +4,11 @@
 // is held → finish on release → transcript inserted at the caret. Works
 // with ANY served chat model: transcription is the Whisper companion, not
 // the chat model's audio input. Shown only when `ready.transcription` is
-// true (composer.ts updateAttachHint).
+// true (composer/attachments.ts updateAttachHint). The routes are the
+// transcription module's root paths, resolved on the connection's origin.
 
-import { $, toast } from "./dom";
+import type { Api } from "@mlx-bun/web-kit";
+import { toast } from "./host";
 
 const SAMPLE_RATE = 16_000;
 const CHUNK_SECONDS = 0.25;
@@ -24,9 +26,10 @@ interface Take {
 
 let take: Take | null = null;
 let starting = false;
+let url: (path: string) => string = (path) => path;
 
 async function postChunk(id: string, pcm: Float32Array): Promise<void> {
-  const r = await fetch(`/v1/audio/sessions/${id}/audio`, {
+  const r = await fetch(url(`/v1/audio/sessions/${id}/audio`), {
     method: "POST", headers: { "content-type": "audio/pcm;rate=16000" },
     body: new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer),
   });
@@ -47,11 +50,11 @@ async function begin(btn: HTMLButtonElement): Promise<void> {
   starting = true;
   btn.classList.add("busy");
   try {
-    const r = await fetch("/v1/audio/sessions", {
+    const r = await fetch(url("/v1/audio/sessions"), {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ vad: true, vad_min_speech_ms: 120, temperature: 0 }),
     });
-    if (!r.ok) throw new Error(r.status === 503 ? "no Whisper model on this server" : `session failed (${r.status})`);
+    if (!r.ok) throw new Error(r.status === 503 ? "this server has no Whisper model" : `the session could not start (${r.status})`);
     const { id } = await r.json() as { id: string };
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
     const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -72,7 +75,7 @@ async function begin(btn: HTMLButtonElement): Promise<void> {
     take = t;
     btn.classList.add("recording");
   } catch (e) {
-    toast(`Voice input failed: ${(e as Error).message}`, "err");
+    toast(`Voice input failed: ${(e as Error).message}.`, "err");
   } finally {
     starting = false;
     btn.classList.remove("busy");
@@ -92,14 +95,14 @@ async function end(btn: HTMLButtonElement, box: HTMLTextAreaElement): Promise<vo
     flush(t);
     await t.sending;
     if (t.failed) throw new Error(t.failed);
-    const r = await fetch(`/v1/audio/sessions/${t.id}/finish`, { method: "POST" });
+    const r = await fetch(url(`/v1/audio/sessions/${t.id}/finish`), { method: "POST" });
     if (!r.ok) throw new Error(`transcription failed (${r.status})`);
     const body = await r.json() as { text: string; mlx_bun?: { vad?: { speech: boolean } } };
     const text = (body.text || "").trim();
-    if (!text) { toast(body.mlx_bun?.vad?.speech === false ? "No speech detected" : "Nothing transcribed", ""); return; }
+    if (!text) { toast(body.mlx_bun?.vad?.speech === false ? "No speech detected. Hold the mic button while you talk." : "Nothing was transcribed. Try again a little closer to the mic.", ""); return; }
     insertAtCaret(box, text);
   } catch (e) {
-    toast(`Voice input failed: ${(e as Error).message}`, "err");
+    toast(`Voice input failed: ${(e as Error).message}.`, "err");
   } finally {
     btn.classList.remove("busy");
   }
@@ -120,9 +123,10 @@ function insertAtCaret(box: HTMLTextAreaElement, text: string): void {
 }
 
 /** Wire hold-to-talk on `btn`: pointer hold, or Space/Enter held while focused. */
-export function initVoiceInput(btn: HTMLButtonElement, box: HTMLTextAreaElement): void {
+export function initVoiceInput(btn: HTMLButtonElement, box: HTMLTextAreaElement, api: Api): void {
   if (!btn) return;
-  if (!navigator.mediaDevices?.getUserMedia) { btn.title = "Microphone capture needs a secure context (https or localhost)"; }
+  url = api.url;
+  if (!navigator.mediaDevices?.getUserMedia) { btn.title = "The microphone needs a secure page (https or localhost)"; }
   btn.addEventListener("pointerdown", (e) => { e.preventDefault(); btn.setPointerCapture(e.pointerId); void begin(btn); });
   const release = () => { void end(btn, box); };
   btn.addEventListener("pointerup", release);
@@ -136,6 +140,4 @@ export function initVoiceInput(btn: HTMLButtonElement, box: HTMLTextAreaElement)
     if ((e.key === " " || e.key === "Enter") && keyHeld) { e.preventDefault(); keyHeld = false; release(); }
   });
   btn.addEventListener("blur", () => { if (keyHeld) { keyHeld = false; release(); } });
-  // expose for tests / the palette
-  ($ as unknown as { voice?: unknown }).voice = { begin: () => begin(btn), end: () => end(btn, box) };
 }

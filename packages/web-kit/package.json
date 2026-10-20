@@ -1,0 +1,31 @@
+{
+  "name": "@mlx-bun/web-kit",
+  "version": "1.0.0",
+  "description": "The browser kit mlx-bun panels and shells build with: design tokens, base styles, DOM helpers, the JSON API client, event-stream and socket clients, formatters, and deterministic fakes for tests",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "happy-dom": "20.10.6"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

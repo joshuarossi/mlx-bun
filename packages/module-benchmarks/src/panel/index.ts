@@ -1,58 +1,56 @@
-// `<mlx-benchmarks-panel>`: the module's web panel as one self-contained custom
-// element. It imports only its data protocol (types), draws into its own
-// shadow root and reaches the backend only through `connection`, so any host
-// (the web shell, a native webview) mounts it the same way: create the element,
-// set `connection`, append it.
-import type { BenchmarkComparison, BenchmarkJob, BenchmarkTasks, EvalHistoryEntry, PanelConnection } from "../protocol";
+// `<mlx-benchmarks-panel>`: the module's web panel as one self-contained custom element. It imports only its data
+// protocol (types), its own style file and the web kit, draws into its own shadow root and reaches the backend only
+// through `connection`, so any host (the web shell, a native webview) mounts it the same way: create the element, set
+// `connection`, append it.
+//
+// Three cards over the module's routes: Evaluate (the tasks from `tasks`, the model, Run, and the running job from
+// `jobs`), History (`runs`, with per-task accuracy) and Compare (`compare`, the runner's paired report). It polls while
+// a run is going and stops when its page is left; it does not read the events URL.
+import { BASE_CSS, createApi, createDisposer, errorOf, h, percent, shadowStyles, type Api, type Child, type Disposer } from "@mlx-bun/web-kit";
+import type { BenchmarkComparison, BenchmarkJob, BenchmarkTask, BenchmarkTasks, EvalHistoryEntry, PanelConnection } from "../protocol";
+import { STYLE } from "./style";
 
 const TAG = "mlx-benchmarks-panel";
+const POLL_MS = 5000;
 
-const STYLE = `
-:host { display: block; color: var(--text, CanvasText); font: 14px/1.45 system-ui, sans-serif; }
-section { margin: 0 0 18px; }
-h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--dim, GrayText); }
-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-th, td { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line, #8883); white-space: nowrap; }
-th { font-weight: 600; color: var(--dim, GrayText); font-size: 12px; }
-td.num, th.num { text-align: right; }
-.bad { color: var(--red, #dc2626); } .good { color: var(--green, #16a34a); }
-button, select, input { font: inherit; }
-.note { color: var(--dim, GrayText); font-size: 12px; }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
-label { display: inline-flex; gap: 4px; align-items: center; }
-pre { max-height: 260px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
-`;
-
-const percent = (value: number | null | undefined): string => value === null || value === undefined ? "—" : `${(value * 100).toFixed(2)}%`;
+const accuracy = (value: number | null | undefined): string => percent(value, 2);
 const delta = (value: number | null): string => value === null ? "—" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)} pts`;
+const active = (job: BenchmarkJob) => job.status === "queued" || job.status === "running";
+const runnable = (task: BenchmarkTask) => task.datasets.every(dataset => dataset.present);
 
-type Child = Node | string | null | undefined | false;
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, attributes: Record<string, string> = {}, ...children: Child[]): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
-  for (const child of children) if (child) element.append(child);
-  return element;
+function section(title: string, count: string | null, ...children: Child[]): HTMLElement {
+  return h("section", { class: "section" }, h("h3", { class: "section-title" }, title, count ? h("span", { class: "count" }, count) : null), ...children);
 }
-function table(head: readonly string[], rows: readonly (readonly (string | Node)[])[]): HTMLElement {
-  return h("table", {}, h("thead", {}, h("tr", {}, ...head.map((name, index) => h("th", index ? { class: "num" } : {}, name)))),
-    h("tbody", {}, ...rows.map(row => h("tr", {}, ...row.map((cell, index) => h("td", index ? { class: "num" } : {}, cell))))));
+
+/** A table whose first `textColumns` columns read left and the rest are right-aligned numbers. */
+function table(head: readonly string[], rows: readonly (readonly Child[])[], textColumns = 1): HTMLElement {
+  const cls = (index: number) => index < textColumns ? (index === 0 ? "name" : undefined) : "num";
+  return h("div", { class: "table-wrap" }, h("table", { class: "table" },
+    h("thead", {}, h("tr", {}, ...head.map((name, index) => h("th", { class: index < textColumns ? undefined : "num", scope: "col" }, name)))),
+    h("tbody", {}, ...rows.map(row => h("tr", {}, ...row.map((cell, index) => h("td", { class: cls(index) }, cell)))))));
 }
+
+const failure = (lead: string, message: string, ...actions: HTMLElement[]) =>
+  h("div", { class: "notice bad", role: "alert" }, h("span", {}, h("b", {}, lead), " ", message), actions.length ? h("span", { class: "actions" }, ...actions) : null);
 
 // Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
 const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
 
 class BenchmarksPanel extends Base {
   #connection: PanelConnection | undefined;
+  #api: Api | undefined;
   #shadow: ShadowRoot;
   #root = h("div");
-  #timer: ReturnType<typeof setInterval> | undefined;
+  /** Stops the poll; replaced on every start. */
+  #disposer: Disposer | undefined;
   #tasks: BenchmarkTasks | undefined;
   #history: readonly EvalHistoryEntry[] = [];
   #jobs: readonly BenchmarkJob[] = [];
   #comparison: BenchmarkComparison | undefined;
-  /** Why the last load failed, and why the last action (start, compare) was refused; each clears when it next succeeds. */
-  #loadError = "";
-  #actionError = "";
+  /** Why the last load failed, why the last start and the last comparison were refused; each clears when it next succeeds. */
+  #loadProblem = "";
+  #startProblem = "";
+  #compareProblem = "";
   /** What the user has chosen; kept across redraws. */
   #chosen = new Set<string>();
   #model = "";
@@ -62,7 +60,7 @@ class BenchmarksPanel extends Base {
   constructor() {
     super();
     this.#shadow = this.attachShadow({ mode: "open" });
-    this.#shadow.append(h("style", {}, STYLE), this.#root);
+    this.#shadow.append(shadowStyles(STYLE, BASE_CSS), this.#root);
   }
 
   get connection(): PanelConnection | undefined { return this.#connection; }
@@ -75,102 +73,159 @@ class BenchmarksPanel extends Base {
   disconnectedCallback() { this.#stop(); }
 
   #start() {
+    const connection = this.#connection;
+    if (!connection) { this.#render(); return; }
+    this.#api = createApi(connection.apiBase);
+    const disposer = createDisposer();
+    this.#disposer = disposer;
+    const timer = setInterval(() => { if (this.#jobs.some(active)) void this.refresh(); }, POLL_MS);
+    disposer.add(() => clearInterval(timer));
     void this.refresh();
-    this.#timer = setInterval(() => { if (this.#jobs.some(job => job.status === "queued" || job.status === "running")) void this.refresh(); }, 5000);
     this.#render();
   }
 
   #stop() {
-    if (this.#timer !== undefined) clearInterval(this.#timer);
-    this.#timer = undefined;
+    this.#disposer?.dispose();
+    this.#disposer = undefined;
+    this.#api = undefined;
   }
 
   /** Reloads the tasks, recent jobs and the run history. */
   async refresh(): Promise<void> {
-    const base = this.#connection?.apiBase;
-    if (base === undefined) return;
-    try {
-      const [tasks, history, jobs] = await Promise.all(["/tasks", "/runs", "/jobs"].map(path => fetch(base + path).then(async response => {
-        if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: { message?: string } } | null)?.error?.message ?? `${path} answered ${response.status}`);
-        return response.json();
-      })));
-      this.#tasks = tasks; this.#history = history.runs ?? []; this.#jobs = jobs.jobs ?? []; this.#loadError = "";
-    } catch (failure) { this.#loadError = failure instanceof Error ? failure.message : String(failure); }
+    const api = this.#api;
+    if (!api) return;
+    const [tasks, history, jobs] = await Promise.all([
+      api.get<Partial<BenchmarkTasks>>("tasks"),
+      api.get<{ runs?: EvalHistoryEntry[] }>("runs"),
+      api.get<{ jobs?: BenchmarkJob[] }>("jobs"),
+    ]);
+    if (api !== this.#api) return; // the connection changed or the panel left its page meanwhile
+    const failed = [tasks, history, jobs].find(answer => answer.ok === false);
+    if (failed) this.#loadProblem = errorOf(failed);
+    else {
+      this.#tasks = { tasks: tasks.tasks ?? [], dataDirectory: tasks.dataDirectory ?? "" };
+      this.#history = history.runs ?? [];
+      this.#jobs = jobs.jobs ?? [];
+      this.#loadProblem = "";
+    }
     this.#render();
   }
 
   async #launch() {
-    const base = this.#connection!.apiBase;
+    const api = this.#api;
     const tasks = [...this.#chosen];
-    if (!tasks.length) return;
-    const response = await fetch(`${base}/runs`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tasks, ...(this.#model ? { model: this.#model } : {}) }) });
-    this.#actionError = response.ok ? "" : ((await response.json().catch(() => null))?.error?.message ?? `could not start the run (${response.status})`);
+    if (!api || !tasks.length) return;
+    const answer = await api.post("runs", { tasks, ...(this.#model ? { model: this.#model } : {}) });
+    this.#startProblem = answer.ok === false ? errorOf(answer, "the server refused the run") : "";
     await this.refresh();
   }
 
   async #compare() {
-    if (!this.#base || !this.#candidate) return;
-    const response = await fetch(`${this.#connection!.apiBase}/compare?base=${encodeURIComponent(this.#base)}&candidate=${encodeURIComponent(this.#candidate)}`);
-    const body = await response.json().catch(() => null);
-    this.#actionError = response.ok ? "" : (body?.error?.message ?? `could not compare (${response.status})`);
-    this.#comparison = response.ok ? body : undefined;
+    const api = this.#api;
+    if (!api || !this.#base || !this.#candidate) return;
+    const answer = await api.get<BenchmarkComparison>(`compare?base=${encodeURIComponent(this.#base)}&candidate=${encodeURIComponent(this.#candidate)}`);
+    this.#compareProblem = answer.ok === false ? errorOf(answer, "the runner could not compare them") : "";
+    this.#comparison = answer.ok === false ? undefined : answer;
     this.#render();
   }
 
   #render() {
     const root = h("div");
-    const running = this.#jobs.find(job => job.status === "queued" || job.status === "running");
-    const problem = this.#actionError || this.#loadError;
-    root.append(h("p", { class: problem ? "note bad" : "note" }, problem || (this.#connection ? "" : "No connection set.")));
-
-    const tasks = this.#tasks?.tasks ?? [];
-    const runnable = (task: BenchmarkTasks["tasks"][number]) => task.datasets.every(dataset => dataset.present);
-    const boxes = tasks.map(task => {
-      const box = h("input", { type: "checkbox" });
-      box.checked = this.#chosen.has(task.id);
-      if (!runnable(task)) box.setAttribute("disabled", "");
-      box.addEventListener("change", () => { if (box.checked) this.#chosen.add(task.id); else this.#chosen.delete(task.id); });
-      const missing = task.datasets.filter(dataset => !dataset.present).map(dataset => dataset.name);
-      return h("label", { title: missing.length ? `missing in ${this.#tasks?.dataDirectory}: ${missing.join(", ")}` : task.needsVerifier ? "needs the Docker verifier" : "" }, box, task.id);
-    });
-    const model = h("input", { type: "text", placeholder: "served model", size: "28" });
-    model.value = this.#model;
-    model.addEventListener("input", () => { this.#model = model.value; });
-    const run = h("button", {}, "Run");
-    run.addEventListener("click", () => { void this.#launch(); });
-    if (running || !tasks.length) run.setAttribute("disabled", "");
-    root.append(h("section", {}, h("h3", {}, "Evaluate"),
-      tasks.length ? h("div", { class: "row" }, ...boxes) : h("p", { class: "note" }, "No task list yet."),
-      h("div", { class: "row" }, model, run, running ? h("span", { class: "note" }, `${running.status} ${(running.progress * 100).toFixed(0)}%: ${running.message ?? ""}`) : null),
-      h("p", { class: "note" }, `A run takes the GPU exclusively until it ends. Datasets must already be in ${this.#tasks?.dataDirectory ?? "the module's data directory"}; nothing is downloaded.`)));
-
-    const names = [...new Set(this.#history.flatMap(entry => entry.tasks.map(task => task.task)))];
-    root.append(h("section", {}, h("h3", {}, "History"),
-      this.#history.length ? table(["run", "when", "model", "result", ...names], this.#history.slice(0, 10).map(entry => [
-        entry.id, entry.startedAt.replace("T", " ").slice(0, 16), entry.model.repo ?? entry.model.path.split("/").at(-1) ?? "",
-        h("span", { class: entry.complete ? "good" : "bad" }, entry.complete ? "complete" : "incomplete"),
-        ...names.map(name => percent(entry.tasks.find(task => task.task === name)?.accuracy))]))
-        : h("p", { class: "note" }, "No finished runs yet.")));
-
-    if (this.#history.length > 1) {
-      const pick = (current: string, apply: (id: string) => void) => {
-        const select = h("select", {}, h("option", { value: "" }, "choose a run"), ...this.#history.map(entry => h("option", { value: entry.id }, entry.id)));
-        select.value = current;
-        select.addEventListener("change", () => apply(select.value));
-        return select;
-      };
-      const compare = h("button", {}, "Compare");
-      compare.addEventListener("click", () => { void this.#compare(); });
-      const result = this.#comparison;
-      root.append(h("section", {}, h("h3", {}, "Compare"),
-        h("div", { class: "row" }, pick(this.#base, id => { this.#base = id; }), "against", pick(this.#candidate, id => { this.#candidate = id; }), compare),
-        result ? h("div", {}, h("p", { class: result.comparable ? "note good" : "note bad" }, result.comparable ? "Complete and comparable: no differences flagged." : "Differences or problems flagged; the runner's report follows."),
-          table(["task", "base", "candidate", "difference"], result.tasks.map(task => [task.task, percent(task.base), percent(task.candidate), delta(task.delta)])),
-          h("pre", {}, result.markdown)) : null));
-    }
+    if (this.#loadProblem) {
+      const retry = h("button", { class: "btn sm", type: "button" }, "Retry");
+      retry.addEventListener("click", () => { void this.refresh(); });
+      root.append(h("div", { class: "load-notice" }, failure("Could not load the benchmarks:", this.#loadProblem, retry)));
+    } else if (!this.#connection) root.append(h("p", { class: "card-note load-notice" }, "Not connected to a server yet."));
+    root.append(this.#evaluate(), this.#historySection());
+    if (this.#history.length > 1) root.append(this.#compareSection());
     this.#root.replaceWith(root);
     this.#root = root;
+  }
+
+  #evaluate(): HTMLElement {
+    const running = this.#jobs.find(active);
+    const tasks = this.#tasks?.tasks ?? [];
+    const directory = this.#tasks?.dataDirectory || "the module's data directory";
+    const run = h("button", { class: "btn primary", type: "button" }, "Run");
+    const sync = () => { run.disabled = !!running || !tasks.length || !this.#chosen.size; };
+    run.addEventListener("click", () => { void this.#launch(); });
+
+    let list: HTMLElement;
+    if (!this.#tasks) {
+      list = h("div", { class: "tasks loading", "aria-hidden": "true" }, h("span", { class: "skeleton" }), h("span", { class: "skeleton" }), h("span", { class: "skeleton" }));
+    } else if (!tasks.length) {
+      list = h("p", { class: "card-note" }, "The runner lists no tasks yet.");
+    } else {
+      list = h("div", { class: "tasks", role: "group", "aria-label": "Tasks to evaluate" }, ...tasks.map(task => {
+        const box = h("input", { type: "checkbox", disabled: !runnable(task) });
+        box.checked = this.#chosen.has(task.id) && runnable(task);
+        box.addEventListener("change", () => { if (box.checked) this.#chosen.add(task.id); else this.#chosen.delete(task.id); sync(); });
+        const missing = task.datasets.filter(dataset => !dataset.present).map(dataset => dataset.name);
+        const reason = missing.length ? `Dataset missing: ${missing.join(", ")}` : task.needsVerifier ? "Needs the Docker verifier" : "";
+        return h("label", { class: missing.length ? "check task unavailable" : "check task",
+          title: missing.length ? `missing in ${this.#tasks?.dataDirectory}: ${missing.join(", ")}` : task.needsVerifier ? "needs the Docker verifier" : undefined },
+        box, h("span", { class: "task-main" }, h("span", { class: "task-name" }, task.id), reason ? h("span", { class: "hint" }, reason) : null));
+      }));
+    }
+    sync();
+
+    const model = h("input", { class: "input", type: "text", id: "model", placeholder: "The served model", autocomplete: "off", spellcheck: "false" });
+    model.value = this.#model;
+    model.addEventListener("input", () => { this.#model = model.value; });
+
+    let job: HTMLElement | null = null;
+    if (running) {
+      const fill = h("i");
+      const fraction = Math.max(0, Math.min(1, running.progress));
+      fill.style.width = `${fraction * 100}%`;
+      job = h("div", { class: "job", role: "status" },
+        h("div", { class: "progress", role: "progressbar", "aria-label": "Evaluation progress", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(fraction * 100) }, fill),
+        h("div", { class: "progress-meta" }, h("span", {}, running.message ?? "Starting…"), h("span", {}, `${running.status} ${(fraction * 100).toFixed(0)}%`)));
+    }
+
+    return section("Evaluate", null, h("div", { class: "card evaluate" },
+      list,
+      h("div", { class: "field run-field" }, h("label", { for: "model" }, "Model"),
+        h("div", { class: "row" }, model, run),
+        h("span", { class: "hint" }, "A local model id or a search; leave it empty to evaluate the served model.")),
+      job,
+      this.#startProblem ? failure("The run did not start:", this.#startProblem) : null,
+      h("p", { class: "card-note" }, `A run takes the GPU exclusively until it ends. Datasets must already be in ${directory}; nothing is downloaded.`)));
+  }
+
+  #historySection(): HTMLElement {
+    if (!this.#history.length) return section("History", null, h("div", { class: "empty" }, this.#tasks ? "No finished runs yet." : "Loading the run history…"));
+    const names = [...new Set(this.#history.flatMap(entry => entry.tasks.map(task => task.task)))];
+    return section("History", String(this.#history.length), h("div", { class: "card table-card" },
+      table(["run", "when", "model", "result", ...names], this.#history.slice(0, 10).map(entry => [
+        entry.id, entry.startedAt.replace("T", " ").slice(0, 16), entry.model.repo ?? entry.model.path.split("/").at(-1) ?? "",
+        h("span", { class: entry.complete ? "tag ok" : "tag bad", title: entry.problems.join("; ") || undefined }, entry.complete ? "complete" : "incomplete"),
+        ...names.map(name => accuracy(entry.tasks.find(task => task.task === name)?.accuracy))]), 4)));
+  }
+
+  #compareSection(): HTMLElement {
+    const button = h("button", { class: "btn", type: "button" }, "Compare");
+    const sync = () => { button.disabled = !this.#base || !this.#candidate; };
+    const pick = (id: string, label: string, current: string, apply: (value: string) => void) => {
+      const select = h("select", { class: "select", id }, h("option", { value: "" }, "Choose a run"),
+        ...this.#history.map(entry => h("option", { value: entry.id }, entry.label && entry.label !== entry.id ? `${entry.id} · ${entry.label}` : entry.id)));
+      select.value = current;
+      select.addEventListener("change", () => { apply(select.value); sync(); });
+      return h("div", { class: "field" }, h("label", { for: id }, label), select);
+    };
+    button.addEventListener("click", () => { void this.#compare(); });
+    sync();
+    const result = this.#comparison;
+    return section("Compare", null, h("div", { class: "card" },
+      h("div", { class: "compare-row" }, pick("base", "Base run", this.#base, value => { this.#base = value; }),
+        pick("candidate", "Candidate run", this.#candidate, value => { this.#candidate = value; }), button),
+      this.#compareProblem ? failure("Could not compare these runs:", this.#compareProblem) : null,
+      result ? h("div", { class: "compare-result" },
+        h("div", { class: result.comparable ? "notice ok" : "notice warn", role: "status" }, result.comparable
+          ? "Complete and comparable: no differences flagged."
+          : "Differences or problems flagged; the runner's report follows."),
+        table(["task", "base", "candidate", "difference"], result.tasks.map(task => [task.task, accuracy(task.base), accuracy(task.candidate), delta(task.delta)])),
+        h("pre", { class: "log" }, result.markdown)) : null));
   }
 }
 

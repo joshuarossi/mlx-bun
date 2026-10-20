@@ -63,7 +63,7 @@ async function verifyModel(executable: string, cachedModel: string, scratch: str
     const request = (path: string, options: RequestInit = {}) => fetch(new URL(path, base), {
       ...options, signal: AbortSignal.timeout(120000),
     });
-    for (const path of ["/", "/assets/app.js", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
+    for (const path of ["/", "/assets/app.js", "/assets/app.css", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
       const response = await request(path); assert.equal(response.status, 200, path);
       assert((await response.text()).length > 0, path);
     }

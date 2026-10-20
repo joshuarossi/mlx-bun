@@ -194,7 +194,7 @@ its execution lease, library invalidation, and port through an attached link,
 so a later isolation step can run the host in another process. The chat (the WebSocket backend, its Pi
 adapter, saved chats and tool approvals) is `@mlx-bun/module-chat`, which runs in the persistent state;
 `web/` owns browser modules, static assets, and compilation.
-Browser code consumes only its own modules and the leaf job protocol.
+Browser code consumes only its own modules, the web shell, the web kit and the leaf job protocol.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
@@ -280,9 +280,13 @@ glob. Modules never import each other; cross-module needs go through core
 services. One module's contributions to another (memory's tools in chat, a
 module's settings in the shell) go through a `registry` core service: the
 contributor registers a declared extension and the consumer lists what is
-registered, so neither names the other. The web shell (navigation, routing,
-theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
-host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
+registered, so neither names the other. Browser code is two packages below the hosts. `@mlx-bun/web-kit` is the kit
+panels and shells build with: the design tokens and base styles (one copy of the visual system), DOM helpers, the one
+JSON API client, the event-stream and socket clients, and formatters; it has no workspace dependencies and touches no
+DOM at import. A module's panel may import it, a module's server code never does, so the browser bundle holds one
+transport layer and one stylesheet instead of a copy per panel. The web shell (navigation, routing,
+theme, the command palette's chrome, panel mounting) is `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included: it depends only on the web kit, takes the panels to mount as plain
 `{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
 page, creating the element on first visit. A companion `overlay` panel (memory) mounts immediately without a route or tab. A `workspace` panel (the chat) is the product's own page: it fills the page
 without a card, leads the tabs, stays outside the Developer switch and stays attached while another page shows, hearing
@@ -293,6 +297,15 @@ others; pages that have not moved into modules stay in the host's own browser co
 its own scroll column, heading and cards declares `framed: false`; its developer visibility and connection lifetime
 remain the ordinary panel's. Optional `PanelConnection.ui` hooks supply the host's notifications, artifact publication,
 active model identity and catalog-consumer refresh; panels do not import host implementations.
+The seams, each a typed contract one side can be replaced behind: a panel and its server share only the module's
+`protocol.ts` and meet through `PanelConnection.apiBase` and `eventsUrl`; a panel and its host share the `ui` hooks,
+the element's own methods (the chat's `host` property and `companionSlots()`, a wizard's `currentStep()`, memory's
+`attachChat(slots)`), and the kit's host events (`HOST_EVENTS`: server status, model changed, server recovered,
+models changed, panel changed), so a panel never reads the page address, never reaches the host page's elements and
+never names another module's panel (the gate scans panel code for all three); a panel and the visual system share
+the kit's token names and class vocabulary; the shell and a host page share the ids in the shell's host contract and
+the stylesheet order; and every piece reaches the server through the kit's clients, so a fake (the kit's `testing`
+entry, the app's fake backend, the in-page mock) stands in for the server in tests and previews.
 Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
@@ -377,10 +390,12 @@ the host's automatic choice (`pickDefault`), which the app supplies from the sel
   entry points reached from `execution/` or `generation/`. Code that breaks them is
   listed per file in `seamRatchet`, whose counts may only fall; the table is empty,
   so any finding fails the gate with the paved road in its message.
-- Panel code imports only panel files and its `protocol.ts`, which imports
-  nothing; this generalizes the browser rule for `chat/` and `jobs/`.
-- `web-shell` is browser code with no workspace dependencies and no imports beyond its own files; no module imports
-  it (a panel is handed its connection, not the shell), and an app's browser code may import it.
+- Panel code imports only panel files, its `protocol.ts` (which imports
+  nothing) and `@mlx-bun/web-kit`; this generalizes the browser rule for `chat/` and `jobs/`. A module's
+  server code never imports the web kit: it is browser code, and only the panel runs in a browser.
+- `web-kit` is browser code with no workspace dependencies and no imports beyond its own files. `web-shell` is
+  browser code that imports only its own files and the web kit; no module imports the shell (a panel is handed its
+  connection, not the shell), and an app's browser code may import both.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
   kinds and storage paths (an identical entry in two modules is one shared entry);
   every `requires` satisfied.

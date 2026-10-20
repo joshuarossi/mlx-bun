@@ -19,7 +19,7 @@ const reset = () => {
 reset();
 const fakeFetch = (async (url: string, init?: RequestInit) => {
   requests.push({ url, init });
-  const json = (body: unknown, ok = true) => ({ ok, status: ok ? 200 : 400, json: async () => body });
+  const json = (body: unknown, ok = true) => Response.json(body, { status: ok ? 200 : 400 });
   if (init?.method === "POST") return json(answers.start.body, answers.start.ok);
   if (url.includes("/compare")) return json(answers.compare.body, answers.compare.ok);
   if (url.endsWith("/tasks")) return json(tasks);
@@ -49,7 +49,8 @@ const mount = () => {
 const fire = (node: EventTarget, type: string) => node.dispatchEvent(new window.Event(type) as unknown as Event);
 const settle = () => new Promise(resolve => setTimeout(resolve, 5));
 const buttons = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("button")];
-const text = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("p, h3, tr, .row, pre")].map(node => node.textContent).join("\n");
+const text = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("p, h3, tr, .row, pre, .notice, .empty")].map(node => node.textContent).join("\n");
+const progress = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll(".progress-meta span")].map(node => node.textContent);
 const rows = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("tr")].map(row => [...row.querySelectorAll("th, td")].map(cell => cell.textContent).join(" | "));
 
 test("the element registers under the manifest's tag and loads the tasks, history and jobs named by its connection", async () => {
@@ -91,7 +92,8 @@ test("history lists each run with its per-task accuracy; a running job disables 
   expect(rows(panel)).toContain("r2 | 2026-09-29 12:00 | mlx-community/Qwen2.5-0.5B-Instruct-4bit | complete | 50.00%");
   expect(rows(panel)).toContain("r1 | 2026-09-29 12:00 | mlx-community/Qwen2.5-0.5B-Instruct-4bit | incomplete | 42.00%");
   expect(buttons(panel).find(button => button.textContent === "Run")!.hasAttribute("disabled")).toBe(true);
-  expect(text(panel)).toContain("running 50%: mmlu 25/970");
+  expect(progress(panel)).toEqual(["mmlu 25/970", "running 50%"]);
+  expect(panel.shadowRoot!.querySelector<HTMLElement>(".progress i")!.style.width).toBe("50%");
   jobs = [];
   answers.start = { ok: false, body: { error: { message: "no local model matches \"org/none\"" } } };
   await panel.refresh();
@@ -131,7 +133,7 @@ test("text from the server is drawn as text, never as markup", async () => {
 });
 
 test("a failing route is reported instead of an empty panel", async () => {
-  const failing = (async () => ({ ok: false, status: 503, json: async () => ({ error: { message: "the evaluation runner needs a source checkout" } }) })) as unknown as typeof fetch;
+  const failing = (async () => Response.json({ error: { message: "the evaluation runner needs a source checkout" } }, { status: 503 })) as unknown as typeof fetch;
   const before = globalThis.fetch;
   Object.assign(globalThis, { fetch: failing });
   try {

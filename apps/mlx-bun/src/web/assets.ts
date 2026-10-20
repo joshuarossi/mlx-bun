@@ -1,3 +1,12 @@
+import { BASE_CSS, TOKENS_CSS } from "@mlx-bun/web-kit";
+import { SHELL_CSS } from "@mlx-bun/web-shell";
+
+/** The page's stylesheet: the web kit's tokens and base vocabulary, then the shell's chrome. Built from the packages'
+ * own sources at startup, so one copy of the visual system reaches the page, every module panel and a native webview. */
+export function webStylesheet(): string {
+  return `${TOKENS_CSS}\n${BASE_CSS}\n${SHELL_CSS}`;
+}
+
 /** Owns the browser's static files. The application mounts this alongside
  * HTTP and WebSocket handlers; creating it neither opens a socket nor imports
  * an inference engine. Prepack supplies generated JS; source checkouts build
@@ -18,6 +27,7 @@ export async function createWebHandler() {
   const files: Record<string, { body: string; type: string; cache?: string }> = {
     "/": { body: html, type: "text/html; charset=utf-8" },
     "/assets/app.js": { body: app, type: "text/javascript; charset=utf-8", cache },
+    "/assets/app.css": { body: webStylesheet(), type: "text/css; charset=utf-8", cache },
     "/assets/hljs.js": { body: highlight, type: "text/javascript; charset=utf-8", cache },
     "/assets/hljs.css": { body: theme, type: "text/css; charset=utf-8", cache },
     "/manifest.webmanifest": { body: manifest, type: "application/manifest+json; charset=utf-8", cache },

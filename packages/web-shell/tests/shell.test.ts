@@ -19,9 +19,11 @@ function freshWindow(): void {
 beforeAll(async () => { freshWindow(); api = await import("../src"); });
 
 const PAGE = `
-<nav>
+<button id="nav-menu" aria-controls="nav" aria-expanded="false"></button>
+<nav id="nav">
   <div id="tabs">
     <a class="tab" href="#/home" data-tab="home">Home</a>
+    <div class="tabs-group" id="tabs-tools" data-dev>Tools</div>
     <a class="tab" href="#/tools" data-tab="tools" data-dev>Tools</a>
     <a class="tab" href="#/map" data-tab="map" data-dev>Map</a>
   </div>
@@ -35,6 +37,7 @@ const PAGE = `
   <section data-route="tools" id="s-tools"></section>
   <section data-route="map" id="s-map"></section>
 </div>
+<div id="nav-backdrop"></div>
 <div id="toasts"></div>`;
 
 let shell: Shell;
@@ -89,16 +92,20 @@ test("navigation shows the page the hash names, falls back to the home page, and
   expect(events.filter(e => e.startsWith("route "))).toEqual(["route home", "route tools", "route home", "route tools"]);
 });
 
-test("the Developer switch hides developer tabs, defaults on only for a returning user, and a deep link turns it on", () => {
+test("the Developer switch hides developer tabs and their group heading, defaults on only for a returning user, and a deep link turns it on", () => {
   shell.start();
   expect(shell.isDeveloperMode()).toBe(false);
   expect(tab("tools").style.display).toBe("none");
+  expect(document.getElementById("tabs-tools")!.style.display).toBe("none");
   expect(tab("home").style.display).toBe("");
   expect(document.getElementById("nav-developer")!.getAttribute("aria-checked")).toBe("false");
   go("#/map");
   expect(shell.isDeveloperMode()).toBe(true);
   expect(localStorage.getItem("mlxbun.developer")).toBe("1");
   expect(tab("map").style.display).toBe("");
+  expect(document.getElementById("tabs-tools")!.style.display).toBe("");
+  expect(tab("map").getAttribute("aria-current")).toBe("page");
+  expect(tab("home").getAttribute("aria-current")).toBeNull();
   document.getElementById("nav-developer")!.click();
   expect(shell.isDeveloperMode()).toBe(false);
   expect(tab("map").style.display).toBe("none");
@@ -353,4 +360,30 @@ test("closing a shell overlay restores focus to the input inside a module panel'
   expect(root.activeElement).toBeNull();
   press({key:"Escape"});
   expect(root.activeElement).toBe(input);
+});
+
+test("the navigation sheet opens from the menu button and closes on its backdrop, on Escape and on navigation", () => {
+  shell.start();
+  shell.navigate();
+  const nav = document.getElementById("nav")!, menu = document.getElementById("nav-menu")!, backdrop = document.getElementById("nav-backdrop")!;
+  expect(shell.nav.isOpen()).toBe(false);
+  menu.click();
+  expect(nav.classList.contains("open")).toBe(true);
+  expect(backdrop.classList.contains("open")).toBe(true);
+  expect(menu.getAttribute("aria-expanded")).toBe("true");
+  backdrop.click();
+  expect(shell.nav.isOpen()).toBe(false);
+  expect(menu.getAttribute("aria-expanded")).toBe("false");
+  shell.nav.open();
+  press({ key: "Escape" });
+  expect(shell.nav.isOpen()).toBe(false);
+  shell.nav.open();
+  go("#/tools");
+  expect(shell.nav.isOpen()).toBe(false);
+  expect(active()).toEqual(["tools"]);
+  shell.nav.open();
+  document.querySelector<HTMLElement>('.tab[data-tab="tools"]')!.click(); // the current page's tab: no navigation, still closes
+  expect(shell.nav.isOpen()).toBe(false);
+  shell.nav.toggle(); shell.nav.toggle();
+  expect(shell.nav.isOpen()).toBe(false);
 });

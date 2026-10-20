@@ -25,13 +25,22 @@ current worker's residency lease for the whole run. It still uses the same Gemma
 model and chunk adapter; it does not substitute the chat model's ordinary generation API.
 
 The `./panel` entry defines `<mlx-memory-panel>`, a persistent companion overlay
-(`panel.overlay: true`) with no route or nav tab. It retains the full-height drawer,
-article/history views, sidebar count, first-run consent and provenance chips. The host
-calls `attachChat()` after its chat sidebar mounts and uses `toolCard`, `open`, `close`
-and `isOpen` through the element. Requests honor `connection.apiBase`, including a remote
-or prefixed URL. The light-DOM panel uses the existing page tokens and optional
-`#chat-memory-entry`, consent/chip hooks and `#toasts`; standalone hosts can omit them.
-One memory panel is mounted per document. Reattachment preserves its chrome listeners.
+(`panel.overlay: true`) with no route or nav tab: a right-hand drawer (full width under the
+top bar on a narrow screen) with the vault status, search, the article list, an article with
+its links and Git history, plus the sidebar count, first-run consent and provenance chips.
+`index.ts` is the element, `memory.ts` the controller, `template.ts` the markup, icons and
+stylesheet, and `markdown.ts` the article renderer with the Canvas preview; they build on
+`@mlx-bun/web-kit`. The host calls `attachChat(slots)` with the chat's `ChatSlots` (the chat
+element's `companionSlots()`: the sidebar entry and its count, the consent card and its two
+actions, the greeting's chips) after the chat mounts, and uses `toolCard`, `open`, `close` and
+`isOpen` through the element. Memory reaches only the elements it is handed: it adds its own
+classes (`.mem-entry`, `.mem-entry-count`, `.mem-consent` with `.show`), which its stylesheet
+targets, beside the `.memchip` chips and the `.chip[data-q]` it inserts into the chips slot.
+Requests go through the kit's `createApi(connection.apiBase)`, including a remote or prefixed
+URL, and notices through `connection.ui.notify` (none without it). The light-DOM panel injects
+its stylesheet once, written against the tokens and base classes the host page links.
+Standalone hosts can omit the chat and the hook. One memory panel is mounted per document.
+Reattachment preserves its chrome listeners.
 
 `src/skills/` is shipped as a package asset and embedded into the standalone binary.
 `bun test` exercises the original domain expectations, temporary vaults and real Git,

@@ -41,9 +41,11 @@ lazily, so a host that only serves the routes never loads the fit code. `upload 
 
 ## Panel
 
-`<mlx-models-panel>` (`./panel`, shadow DOM, no imports outside this package): the downloaded models with which one is served
-and which are loaded, Serve; Hugging Face search with Download and live progress; the adapters on disk with Mount and
-Unmount. It fires `mlx-models-changed` when the served model or the mounted adapters changed. The chat's adapter selector
+`<mlx-models-panel>` (`./panel`, shadow DOM, built on [`@mlx-bun/web-kit`](../web-kit/README.md)'s styles, API client
+and formatters; `src/panel/{index,render,style}.ts` are the element, its markup and its stylesheet): what is serving now,
+the downloaded models with which are loaded and Serve, Hugging Face search with Download and live progress, and the
+adapters on disk with Mount and Unmount. It shows the Hub offline, a failed load and a `restart_required` serve as
+notices with a retry. It fires `mlx-models-changed` when the served model or the mounted adapters changed. The chat's adapter selector
 (which mounted adapter a turn uses) is the chat's, not this panel's.
 
 ## Tests

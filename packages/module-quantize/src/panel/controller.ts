@@ -1,10 +1,13 @@
-import type { ApiEnvelope, PanelConnection } from "../protocol";
-import { panelTools, esc, num, renderSteps } from "./tools";
-const STEPS = ["Source", "Configure", "Run", "Done"];
+// The quantize wizard's state and orchestration: the four steps, inspection, submission and the job's event stream.
+// Requests go through the kit's client; the job stream through the kit's event-stream client. Leaving the page closes
+// the stream (the job keeps running on the server); returning while the job is unfinished reopens it, and the server
+// replays the job's events from its first one, so the log restarts with each connection.
+import { $, byType, createApi, createDisposer, emitHostEvent, errorOf, HOST_EVENTS, listen, openEventStream, type EventStream } from "@mlx-bun/web-kit";
+import type { JobEvent, PanelConnection } from "../protocol";
+import { BITS_HINT, CONFIGURE, DONE, RUN, SOURCE, STEPS, failureHtml, inspectionHtml, railStep, stepsHtml, type WizardStep } from "./view";
 
-// The File System Access API's showDirectoryPicker() isn't in lib.dom yet
-// in all TS configs; declare it loosely rather than widen the global Window
-// type project-wide.
+// The File System Access API's showDirectoryPicker() is not in every lib.dom yet; declare it loosely rather than widen
+// the global Window type project-wide.
 declare global {
   interface Window {
     showDirectoryPicker?: (opts?: { id?: string; mode?: string }) => Promise<{ name: string }>;
@@ -14,150 +17,236 @@ interface FileWithRelPath extends File {
   webkitRelativePath: string;
 }
 
-export function createQuantizeController(root: ShadowRoot, connection: () => PanelConnection) {
-  const { $, api, jobStream, toast, pushToHub } = panelTools(root, connection);
-  let streamId: string | null = null, terminal = false, active = true;
-  let step = 0, bits = 4, gs = 64, mode: "uniform" | "mixed" = "uniform", bpw = 5, jobId: string | null = null, es: EventSource | null = null, log: string[] = [];
+export interface PanelController {
+  /** Once, on the first connection: the first step. */
+  init(): void;
+  /** On every connection: binds the listeners and reopens the stream of an unfinished job. */
+  enter(): void;
+  /** On every disconnection: removes the listeners and closes the stream without cancelling the job. */
+  leave(): void;
+  /** The rail's current step, or null before the first step is shown. */
+  currentStep(): WizardStep | null;
+}
 
-  function show(n: number): void {
+/** The server root a module base sits under (`https://host/prefix/api/quantize` is `https://host/prefix`). The wizard's
+ * routes keep their shipped root paths, so they resolve under the same prefix as the module's base. */
+const serverRoot = (apiBase: string): string => apiBase.replace(/\/api\/[^/]*\/?$/, "");
+const LOG_LINES = 200;
+
+export function createQuantizeController(root: ShadowRoot, connection: () => PanelConnection): PanelController {
+  const part = <T extends HTMLElement = HTMLElement>(id: string): T => $(id, root) as T;
+  const api = () => createApi(serverRoot(connection().apiBase));
+  const disposer = createDisposer();
+  let active = false, step = SOURCE;
+  let bits = 4, groupSize = 64, mode: "uniform" | "mixed" = "uniform", bpw = 5;
+  let jobId: string | null = null, terminal = false, stream: EventStream | null = null, dropped = false, log: string[] = [];
+
+  const modelId = () => part<HTMLInputElement>("q-model").value.trim();
+
+  /** The host's notification, or the panel's own status line in a host without one. */
+  function notify(message: string, kind: "ok" | "err" = "ok"): void {
+    const ui = connection().ui;
+    if (ui?.notify) { ui.notify(message, kind); return; }
+    const line = part("panel-message");
+    line.textContent = message;
+    line.className = "notice " + (kind === "err" ? "bad" : "ok");
+    line.dataset.kind = kind;
+  }
+
+  function show(n: number, failed = false): void {
     step = n;
-    root.querySelectorAll<HTMLElement>("[data-qstep]").forEach((d) => d.style.display = (+d.dataset.qstep! === n) ? "" : "none");
-    renderSteps($("q-steps"), STEPS, n);
-  }
-  function seg(container: HTMLElement, onPick: (v: string, b: HTMLButtonElement) => void): void {
-    container.querySelectorAll<HTMLButtonElement>("button").forEach((b) =>
-      b.addEventListener("click", () => {
-        container.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
-        b.classList.add("on"); onPick(b.dataset.v || "", b);
-      }));
+    for (const card of root.querySelectorAll<HTMLElement>("[data-qstep]")) card.hidden = Number(card.dataset.qstep) !== n;
+    part("q-steps").innerHTML = stepsHtml(STEPS, n, failed);
+    // A host that describes the page (the chat assistant) re-reads the step; the event leaves the shadow root.
+    emitHostEvent(HOST_EVENTS.panelChanged, undefined, root.host, { bubbles: true, composed: true });
   }
 
-  // --- OS folder picker / drag-drop -> real on-disk snapshot path ---
-  // The browser can't reveal an absolute path, and the HF cache uses symlinked
-  // snapshots over a blobs/ store — so we DON'T read any files. We only take the
-  // picked folder's NAME (which encodes the repo id) and let the server
-  // reconstruct the snapshot path it owns. No upload, no "config.json" hunt.
-  async function resolveByName(name: string, relPath?: string): Promise<void> {
+  // The folder picker and drag and drop: the browser cannot reveal an absolute path and the Hugging Face cache keeps
+  // snapshots as symlinks over a blob store, so nothing is read. Only the folder's name (which encodes the repository
+  // id) goes to the server, which finds the snapshot it owns.
+  async function resolveByName(name: string, relPath = ""): Promise<void> {
     if (!name && !relPath) return;
-    const out = $("q-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">locating on disk…</span></div>';
-    const d = await api("/api/quantize/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
-      .catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not locate this folder on the server") + "</div>"; return; }
-    ($("q-model") as HTMLInputElement).value = d.path as string;
-    inspect();
+    const out = part("q-inspect-out");
+    part("q-continue").hidden = true;
+    out.innerHTML = '<p class="muted"><span class="skeleton">Locating the folder on disk…</span></p>';
+    const answer = await api().post("api/quantize/resolve-folder", { folder_name: name, rel_path: relPath });
+    if (!answer.ok) { out.innerHTML = failureHtml("Could not find this folder.", errorOf(answer, "The server could not locate it on disk.")); return; }
+    part<HTMLInputElement>("q-model").value = answer.path as string;
+    await inspect();
   }
+
   async function pickFolder(): Promise<void> {
-    // Native OS folder dialog with no "upload N files" prompt; we only read the
-    // folder's .name, never its contents.
+    // The native folder dialog, without the browser's "upload N files" prompt; only the folder's name is read.
     if (window.showDirectoryPicker) {
-      try {
-        const handle = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" });
-        return resolveByName(handle.name);
-      } catch { return; } // user cancelled / denied
+      try { const handle = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" }); return resolveByName(handle.name); }
+      catch { return; } // cancelled or denied
     }
-    $("q-folder").click(); // fallback for browsers without the File System Access API
+    part("q-folder").click(); // browsers without the File System Access API
   }
 
   async function inspect(): Promise<void> {
-    const id = ($("q-model") as HTMLInputElement).value.trim();
-    if (!id) { toast("Enter a model id or path first.", "err"); return; }
-    const out = $("q-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
-    const btn = $("q-inspect") as HTMLButtonElement; btn.disabled = true;
-    const d = await api("/api/quantize/inspect", { method: "POST", body: { model_id: id } }).catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not inspect this model") + "</div>"; return; }
-    // inspectModel returns support: boolean (packages/module-quantize/src/inspect.ts); size_gb
-    // can be 0 when a direct path bypasses the registry — hide it then.
-    const supported = d.support === true;
-    const cls = supported ? "ok" : "err";
-    out.innerHTML =
-      '<div class="flash ' + cls + '"><strong>' + esc(d.arch || d.model_id || id) + "</strong>" +
-      (d.size_gb ? " · " + (+d.size_gb).toFixed(2) + " GB" : "") +
-      " · " + (supported ? "supported" : "not quantizable") + "</div>" +
-      '<div class="btnrow"><button class="btn primary" id="q-continue">Continue</button></div>';
-    ($("q-continue") as HTMLButtonElement).onclick = () => show(1);
+    const id = modelId();
+    if (!id) { notify("Enter a model id or path first.", "err"); part("q-model").focus(); return; }
+    const out = part("q-inspect-out"), button = part<HTMLButtonElement>("q-inspect");
+    part("q-continue").hidden = true;
+    out.innerHTML = '<p class="muted"><span class="skeleton">Inspecting the model…</span></p>';
+    button.disabled = true;
+    const answer = await api().post("api/quantize/inspect", { model_id: id });
+    button.disabled = false;
+    out.innerHTML = inspectionHtml(answer, id);
+    part("q-continue").hidden = !(answer.ok && answer.support === true);
   }
 
+  function progress(fraction: number | null | undefined, message?: string): void {
+    if (fraction != null) {
+      const percent = Math.round(fraction * 100);
+      part("q-bar").style.width = percent + "%";
+      part("q-pct").textContent = percent + "%";
+      part("q-bar").parentElement!.setAttribute("aria-valuenow", String(percent));
+    }
+    if (message) part("q-msg").textContent = message;
+  }
+
+  function clearLog(): void { log = []; part("q-log").textContent = ""; }
+
+  function reconnecting(on: boolean): void { part("q-reconnect").hidden = !on; }
+
   async function submit(): Promise<void> {
-    const id = ($("q-model") as HTMLInputElement).value.trim();
-    const btn = $("q-submit") as HTMLButtonElement; btn.disabled = true;
-    const body: Record<string, unknown> = { model_id: id, bits, group_size: gs };
+    const body: Record<string, unknown> = { model_id: modelId(), bits, group_size: groupSize };
     if (mode === "mixed") { body.target_bpw = bpw; body.candidate_bits = [4, 8]; }
-    const d = await api("/api/quantize/submit", { method: "POST", body })
-      .catch((): ApiEnvelope => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { toast((d.error as string) || "could not start quantize", "err"); return; }
-    jobId = (d.job_id as string) || null;
-    $("q-push-panel").innerHTML = "";
-    $("q-out").textContent = (d.output_dir as string) || "";
-    log = []; $("q-log").textContent = ""; $("q-bar").style.width = "0%"; $("q-pct").textContent = "0%"; $("q-msg").textContent = "Starting…";
-    show(2);
-    attach(jobId!);
+    const button = part<HTMLButtonElement>("q-submit");
+    button.disabled = true;
+    part("q-submit-out").innerHTML = "";
+    const answer = await api().post("api/quantize/submit", body);
+    button.disabled = false;
+    if (!answer.ok) { part("q-submit-out").innerHTML = failureHtml("Could not start quantizing.", errorOf(answer, "The server did not start the job.")); return; }
+    part("q-push-panel").innerHTML = "";
+    part("q-out").textContent = (answer.output_dir as string) || "";
+    clearLog();
+    part("q-bar").parentElement!.classList.remove("bad");
+    part("q-fail").hidden = true;
+    reconnecting(false);
+    progress(0, "Starting…");
+    show(RUN);
+    attach(answer.job_id as string);
   }
 
   function attach(id: string): void {
-    streamId = id; terminal = false;
+    jobId = id; terminal = false;
     if (!active) return;
-    if (es) es.close();
-    es = jobStream(id, {
-      log: (e) => { log.push(e.line); $("q-log").textContent = log.slice(-200).join("\n"); $("q-log").scrollTop = $("q-log").scrollHeight; },
-      stage: (e) => {
-        if (e.progress != null) { const p = Math.round(e.progress * 100); $("q-bar").style.width = p + "%"; $("q-pct").textContent = p + "%"; }
-        if (e.message) $("q-msg").textContent = e.message;
-        if (e.stage === "done") { if (e.output_dir) $("q-out").textContent = e.output_dir; finish(); }
+    stream?.close();
+    clearLog();
+    dropped = false;
+    reconnecting(false);
+    const dispatch = byType<JobEvent>({
+      log: (event) => {
+        log.push(event.line);
+        const box = part("q-log");
+        box.textContent = log.slice(-LOG_LINES).join("\n");
+        box.scrollTop = box.scrollHeight;
       },
-      done: () => finish(),
-      failed: (e) => { terminal = true; $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
+      stage: (event) => {
+        progress(event.progress, event.message);
+        if (event.stage === "done") { if (event.output_dir) part("q-out").textContent = event.output_dir; finish(); }
+      },
+      done: (event) => { if (typeof event.output_dir === "string" && event.output_dir) part("q-out").textContent = event.output_dir; finish(); },
+      failed: (event) => fail(event.error || "The job reported no reason."),
+    });
+    stream = openEventStream<JobEvent>(api().url("api/jobs/" + encodeURIComponent(id) + "/stream"), {
+      // A reconnection replays the job from its first event.
+      open: () => { if (dropped) clearLog(); dropped = false; reconnecting(false); },
+      // The browser retries on its own; say so until the next event.
+      error: () => { dropped = true; reconnecting(true); },
+      message: (event) => { reconnecting(false); dispatch(event); },
+      end: () => { if (!terminal) fail("The job's event stream ended before the job reported a result."); },
     });
   }
+
   function finish(): void {
     if (terminal) return;
     terminal = true;
-    $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3);
+    stream?.close(); stream = null;
+    reconnecting(false);
+    progress(1);
+    show(DONE);
     connection().ui?.catalogChanged?.();
   }
 
-  return {
-    enter() { active = true; if (streamId && !terminal) { log = [];  attach(streamId); } },
-    leave() { active = false; es?.close(); es = null; },
-    init() {
-      show(0);
-      ($("q-inspect") as HTMLButtonElement).onclick = inspect;
-      $("q-model").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") inspect(); });
-      // OS folder dialog (native; resolves by folder name, no upload)
-      ($("q-browse") as HTMLButtonElement).onclick = pickFolder;
-      $("q-folder").addEventListener("change", (e) => {
-        const input = e.target as HTMLInputElement;
-        const f = input.files![0] as FileWithRelPath; input.value = "";
-        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0]!, f.webkitRelativePath || "");
+  function fail(error: string): void {
+    if (terminal) return;
+    terminal = true;
+    stream?.close(); stream = null;
+    reconnecting(false);
+    part("q-bar").parentElement!.classList.add("bad");
+    part("q-msg").textContent = "Failed";
+    part("q-fail-msg").textContent = error;
+    part("q-fail").hidden = false;
+    show(RUN, true);
+  }
+
+  function publish(): void {
+    const hook = connection().ui?.publish;
+    if (hook) void hook(part("q-push-panel"), { kind: "quantize", job_id: jobId || undefined });
+    else notify("This host has no publishing interface.", "err");
+  }
+
+  function bind(): void {
+    const on = (target: EventTarget, type: string, handler: (event: Event) => void) => disposer.add(listen(target, type, handler));
+    const seg = (id: string, pick: (value: string) => void) => {
+      const buttons = [...part(id).querySelectorAll<HTMLButtonElement>("button")];
+      for (const button of buttons) on(button, "click", () => {
+        for (const other of buttons) { other.classList.toggle("on", other === button); other.setAttribute("aria-pressed", String(other === button)); }
+        pick(button.dataset.v ?? "");
       });
-      // drag a folder onto the box — use the directory entry's NAME (no read)
-      const drop = $("q-drop");
-      const hi = (on: boolean) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
-      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
-      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); hi(false);
-        const de = e as DragEvent;
-        if (ev !== "drop" || !de.dataTransfer) return;
-        for (const it of [...(de.dataTransfer.items || [])]) {
-          const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
-          if (en && en.isDirectory) return void resolveByName(en.name);
-        }
-        const f = de.dataTransfer.files && de.dataTransfer.files[0] as FileWithRelPath | undefined;
-        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0]!);
-      }));
-      seg($("q-bits"), (v) => { bits = +v; $("q-bits-hint").textContent = v === "4"
-        ? "4-bit · ~4× smaller than bf16 · the recommended default for local serving."
-        : "8-bit · ~2× smaller than bf16 · highest fidelity quant."; });
-      seg($("q-gs"), (v) => { gs = +v; });
-      seg($("q-mode"), (v) => { mode = v as "uniform" | "mixed"; $("q-bpw-field").style.display = v === "mixed" ? "" : "none"; });
-      $("q-bpw").addEventListener("input", (e) => { bpw = +(e.target as HTMLInputElement).value; $("q-bpw-val").textContent = bpw.toFixed(1); });
-      root.querySelectorAll<HTMLButtonElement>("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
-      ($("q-submit") as HTMLButtonElement).onclick = submit;
-      ($("q-push") as HTMLButtonElement).onclick = () => pushToHub($("q-push-panel"), { kind: "quantize", job_id: jobId || undefined });
-      ($("q-again") as HTMLButtonElement).onclick = () => { $("q-inspect-out").innerHTML = ""; $("q-push-panel").innerHTML = ""; show(0); };
+    };
+    on(part("q-inspect"), "click", () => { void inspect(); });
+    on(part("q-model"), "keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void inspect(); });
+    on(part("q-browse"), "click", () => { void pickFolder(); });
+    on(part("q-folder"), "change", (event) => {
+      const input = event.target as HTMLInputElement;
+      const file = input.files?.[0] as FileWithRelPath | undefined;
+      input.value = "";
+      if (file) void resolveByName((file.webkitRelativePath || file.name).split("/")[0]!, file.webkitRelativePath || "");
+    });
+    // A folder dragged onto the field: the directory entry's name, never its contents.
+    const drop = part("q-drop");
+    for (const type of ["dragenter", "dragover"]) on(drop, type, (event) => { event.preventDefault(); drop.classList.add("over"); });
+    for (const type of ["dragleave", "drop"]) on(drop, type, (event) => {
+      event.preventDefault();
+      drop.classList.remove("over");
+      const transfer = (event as DragEvent).dataTransfer;
+      if (type !== "drop" || !transfer) return;
+      for (const item of [...(transfer.items || [])]) {
+        const entry = item.webkitGetAsEntry?.();
+        if (entry?.isDirectory) { void resolveByName(entry.name); return; }
+      }
+      const file = transfer.files?.[0] as FileWithRelPath | undefined;
+      if (file) void resolveByName((file.webkitRelativePath || file.name).split("/")[0]!);
+    });
+    on(part("q-continue"), "click", () => show(CONFIGURE));
+    seg("q-bits", (value) => { bits = Number(value); part("q-bits-hint").textContent = BITS_HINT[value] ?? ""; });
+    seg("q-gs", (value) => { groupSize = Number(value); });
+    seg("q-mode", (value) => { mode = value === "mixed" ? "mixed" : "uniform"; part("q-bpw-field").hidden = mode !== "mixed"; });
+    on(part("q-bpw"), "input", (event) => { bpw = Number((event.target as HTMLInputElement).value); part("q-bpw-val").textContent = bpw.toFixed(1); });
+    for (const back of root.querySelectorAll<HTMLElement>("[data-qback]")) on(back, "click", () => show(step - 1));
+    on(part("q-submit"), "click", () => { void submit(); });
+    on(part("q-retry"), "click", () => show(CONFIGURE));
+    on(part("q-push"), "click", publish);
+    on(part("q-again"), "click", () => { part("q-inspect-out").innerHTML = ""; part("q-push-panel").innerHTML = ""; part("q-continue").hidden = true; show(SOURCE); });
+    disposer.add(() => { stream?.close(); stream = null; });
+  }
+
+  return {
+    init() { show(SOURCE); },
+    enter() {
+      active = true;
+      bind();
+      if (jobId && !terminal) attach(jobId);
     },
+    leave() {
+      active = false;
+      disposer.dispose();
+    },
+    currentStep: () => railStep(part("q-steps")),
   };
 }

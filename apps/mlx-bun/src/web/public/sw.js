@@ -19,10 +19,11 @@
 //
 // Versioned by CACHE_NAME so a deploy invalidates old shells; bump the
 // suffix here if the shell file set changes.
-const CACHE_NAME = "mlxbun-shell-monorepo-v1";
+const CACHE_NAME = "mlxbun-shell-monorepo-v2";
 const SHELL_FILES = [
   "/",
   "/assets/app.js",
+  "/assets/app.css",
   "/assets/hljs.js",
   "/assets/hljs.css",
 ];

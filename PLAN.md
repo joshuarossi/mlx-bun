@@ -169,8 +169,8 @@ Migration gaps stay required work in the feature table.
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
   - [ ] (d) Memory module migration under validation (moved as is; the memory feature stays deferred).
-    Datasets, quantize, benchmarks, train, models and chat landed. Datasets', quantize's and train's
-    browser pages are still legacy pages that become panels the web shell mounts. Memory reaches chat
+    Datasets, quantize, benchmarks, train, models and chat landed. Every module's browser page is a panel
+    on `@mlx-bun/web-kit`, mounted by the web shell. Memory reaches chat
     through `registry` (`chat.tool`, `chat.guidance`); its panel owns the memory entry, consent card and
     provenance chips, wired through the chat panel's `host`. The chat panel owns its markdown
     renderer, hold-to-talk mic (calling transcription over HTTP), and the assistant's app catalog, which

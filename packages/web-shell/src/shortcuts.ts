@@ -1,5 +1,4 @@
-import { $ } from "./dom";
-import { trapFocus, type FocusTrap } from "./focus";
+import { $, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
 import type { Overlay } from "./overlays";
 
 /** The keyboard shortcut sheet (Cmd/Ctrl+/). The host page carries `#shortcut-overlay` (with the close button

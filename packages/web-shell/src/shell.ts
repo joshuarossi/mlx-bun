@@ -1,7 +1,9 @@
-// The shell: navigation between pages, hash routing, the Developer switch, panel mounting, and the global
-// keyboard bindings. The host page supplies the markup (`nav #tabs` with `a.tab[data-tab]` tabs, `section[data-route]`
-// pages inside `#app`, `#nav-developer`); the shell drives it and adds a tab and a page for every module panel.
-import { $ } from "./dom";
+// The shell: navigation between pages, hash routing, the Developer switch, the navigation sheet on narrow screens,
+// panel mounting, and the global keyboard bindings. The host page supplies the markup (`#nav` holding `#tabs` with
+// `a.tab[data-tab]` tabs and, optionally, group headings marked `data-dev`; pages as `section[data-route]` inside
+// `#app`; `#nav-developer`; `#nav-menu` and `#nav-backdrop` for the sheet); the shell drives it and adds a tab and a
+// page for every module panel.
+import { $ } from "@mlx-bun/web-kit";
 import { createOverlays, type Overlays } from "./overlays";
 import { buildPanelPage, type ShellPanel } from "./panels";
 import { initTheme } from "./theme";
@@ -40,23 +42,31 @@ export interface ShellStart {
   keys?(event: KeyboardEvent): boolean;
 }
 
+/** The navigation rail as a sheet on narrow screens (`#nav.open`), opened by `#nav-menu` and closed by its backdrop,
+ * Escape, or any navigation. On wide screens the rail is always visible and these are no-ops in effect. */
+export interface NavSheet {
+  open(): void;
+  close(): void;
+  toggle(): void;
+  isOpen(): boolean;
+}
+
 export interface Shell {
   /** Page controllers by route id; hosts fill it before the first navigation. */
   readonly controllers: Partial<Record<string, RouteController>>;
   /** What Escape closes. */
   readonly overlays: Overlays;
   readonly shortcuts: ShortcutSheet;
+  readonly nav: NavSheet;
   currentRoute(): string;
   /** Shows the page the hash names (toggling pages and tabs, running controllers). */
   navigate(): void;
   /** Adds a tab and a page for each module panel. Call before `start`. */
   mountPanels(panels: readonly ShellPanel[]): void;
-  /** Sets up theme, the service worker, the shortcut sheet, key bindings, hash routing and the Developer switch. */
+  /** Sets up theme, the service worker, the shortcut sheet, key bindings, hash routing, the Developer switch and the sheet. */
   start(options?: ShellStart): void;
   isDeveloperMode(): boolean;
   setDeveloperMode(on: boolean): void;
-  /** Recomputes the tab row's scroll-edge fades. */
-  updateTabFades(): void;
   /** Hides a route's tab for good (a page the build does not carry); the host decides what its page shows instead. */
   markUnavailable(id: string): void;
   /** Navigation targets for the (non-workspace) panels mounted so far. */
@@ -79,7 +89,7 @@ export function createShell(options: ShellOptions): Shell {
     return hasRoute(h) ? h : options.home;
   }
 
-  /* ── Developer switch: the product page is the home route; developer routes collapse behind one nav switch.
+  /* ── Developer switch: the product pages are always listed; developer tools collapse behind one switch.
      Persisted; default OFF for a fresh browser, but ON (once) when any other pre-existing mlxbun.* localStorage key is
      found, so a returning user never has tabs yanked away. Deep links still work: entering a developer route with the
      switch off flips it on. ── */
@@ -101,18 +111,18 @@ export function createShell(options: ShellOptions): Shell {
     localStorage.setItem(DEV_KEY, on ? "1" : "0");
     return on;
   }
-  /** Reflect developer mode into the DOM: developer-tab visibility and the switch's pressed state. A tab whose page
-   * the host marked unavailable (`markUnavailable`, e.g. a diagram that is not shipped) stays hidden regardless. */
+  /** Reflect developer mode into the DOM: the visibility of developer tabs and their group headings, and the switch's
+   * state. A tab whose page the host marked unavailable (`markUnavailable`, e.g. a diagram that is not shipped) stays
+   * hidden regardless. */
   function applyDeveloperMode(on: boolean): void {
-    document.querySelectorAll<HTMLElement>("nav .tab[data-dev]").forEach((t) => {
-      if (t.dataset.unavailable === "1") { t.style.display = "none"; return; }
-      t.style.display = on ? "" : "none";
+    document.querySelectorAll<HTMLElement>("#nav [data-dev], nav [data-dev]").forEach((item) => {
+      if (item.dataset.unavailable === "1") { item.style.display = "none"; return; }
+      item.style.display = on ? "" : "none";
     });
     const btn = $("nav-developer");
     if (btn) btn.setAttribute("aria-checked", on ? "true" : "false");
     const dot = document.getElementById("nav-developer-dot");
     if (dot) dot.classList.toggle("on", on);
-    updateTabFades();
   }
   function setDeveloperMode(on: boolean): void {
     localStorage.setItem(DEV_KEY, on ? "1" : "0");
@@ -121,6 +131,26 @@ export function createShell(options: ShellOptions): Shell {
   function ensureDeveloperModeFor(route: string): void {
     if (routes.find((r) => r.id === route)?.developer && !isDeveloperMode()) setDeveloperMode(true);
   }
+
+  /* ── The navigation sheet (narrow screens). ── */
+  const navElement = () => document.getElementById("nav");
+  const nav: NavSheet = {
+    isOpen: () => !!navElement()?.classList.contains("open"),
+    open() {
+      navElement()?.classList.add("open");
+      document.getElementById("nav-backdrop")?.classList.add("open");
+      document.getElementById("nav-menu")?.setAttribute("aria-expanded", "true");
+      setTimeout(() => navElement()?.querySelector<HTMLElement>(".tab.active, .tab")?.focus(), 30);
+    },
+    close() {
+      if (!nav.isOpen()) return;
+      navElement()?.classList.remove("open");
+      document.getElementById("nav-backdrop")?.classList.remove("open");
+      const menu = document.getElementById("nav-menu");
+      if (menu) { menu.setAttribute("aria-expanded", "false"); if (navElement()?.contains(document.activeElement)) menu.focus(); }
+    },
+    toggle() { nav.isOpen() ? nav.close() : nav.open(); },
+  };
 
   /* ── Router: toggles section[data-route]; lazily inits each controller. ── */
   function navigate(): void {
@@ -138,17 +168,13 @@ export function createShell(options: ShellOptions): Shell {
         if (c && c.leave) c.leave();
       }
     });
-    document.querySelectorAll<HTMLElement>("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === route));
+    document.querySelectorAll<HTMLElement>("#nav .tab, nav .tab").forEach((t) => {
+      const active = t.dataset.tab === route;
+      t.classList.toggle("active", active);
+      if (active) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current");
+    });
+    nav.close();
     options.onRoute?.(route);
-  }
-
-  /** The tab row scrolls with its scrollbar hidden, so overflow read as clipped text: toggle .fade-r/.fade-l so the
-   * CSS mask signals "more this way" only when true. */
-  function updateTabFades(): void {
-    const t = $("tabs");
-    const over = t.scrollWidth - t.clientWidth > 1;
-    t.classList.toggle("fade-r", over && t.scrollLeft + t.clientWidth < t.scrollWidth - 1);
-    t.classList.toggle("fade-l", over && t.scrollLeft > 1);
   }
 
   function mountPanels(panels: readonly ShellPanel[]): void {
@@ -205,23 +231,27 @@ export function createShell(options: ShellOptions): Shell {
     registerServiceWorker();
     shortcuts.init();
     overlays.add(shortcuts);
+    overlays.add(nav);
     bindKeys(startOptions);
     window.addEventListener("hashchange", navigate);
-    $("tabs").addEventListener("scroll", updateTabFades, { passive: true });
-    window.addEventListener("resize", updateTabFades);
-    updateTabFades();
     applyDeveloperMode(isDeveloperMode());
     const btn = $("nav-developer");
     if (btn) btn.onclick = () => setDeveloperMode(!isDeveloperMode());
+    const menu = document.getElementById("nav-menu");
+    if (menu) menu.onclick = () => nav.toggle();
+    const backdrop = document.getElementById("nav-backdrop");
+    if (backdrop) backdrop.onclick = () => nav.close();
+    // A tap on a tab closes the sheet even when it is the current page's (no hash change, so no navigation).
+    navElement()?.addEventListener("click", (e) => { if ((e.target as Element).closest(".tab")) nav.close(); });
   }
 
   function markUnavailable(id: string): void {
-    const tab = document.querySelector<HTMLElement>(`nav .tab[data-tab="${id}"]`);
+    const tab = document.querySelector<HTMLElement>(`.tab[data-tab="${id}"]`);
     if (tab) { tab.dataset.unavailable = "1"; tab.style.display = "none"; }
   }
 
   return {
-    controllers, overlays, shortcuts, currentRoute, navigate, mountPanels, start, isDeveloperMode, setDeveloperMode,
-    updateTabFades, markUnavailable, panelTargets: () => panelTitles,
+    controllers, overlays, shortcuts, nav, currentRoute, navigate, mountPanels, start, isDeveloperMode, setDeveloperMode,
+    markUnavailable, panelTargets: () => panelTitles,
   };
 }

@@ -1,9 +1,10 @@
 // Module panels: each installed module's web panel is a self-contained custom element (`mlx-<id>-panel`) that
-// receives a `PanelConnection` and imports nothing outside its module. The host imports each panel's entry when it
-// builds its browser bundle (that defines the element) and hands the shell one `ShellPanel` per panel; the shell
-// gives it a navigation tab and a page, creates the element on first visit, and keeps it connected only while its
-// page is shown.
-import { el, injectStyles } from "./dom";
+// receives a `PanelConnection` and imports nothing outside its module and the web kit. The host imports each panel's
+// entry when it builds its browser bundle (that defines the element) and hands the shell one `ShellPanel` per panel;
+// the shell gives it a navigation tab and a page, creates the element on first visit, and keeps it connected only
+// while its page is shown.
+import { el, injectStyles } from "@mlx-bun/web-kit";
+import { PANEL_FRAME_CSS } from "./chrome";
 
 /** What a panel is told about its backend: the same shape as `@mlx-bun/app-core`'s `PanelConnection`. */
 export interface PanelConnection {
@@ -18,7 +19,6 @@ export interface PanelConnection {
     modelId?(): string | undefined;
     catalogChanged?(): void;
   };
-
 }
 
 /** One panel to mount: a module manifest's `panel` (`tag`, `title`, `path`; `@mlx-bun/app-core`'s `PanelSpec` is
@@ -73,23 +73,10 @@ export function panelRouteId(panel: Pick<ShellPanel, "path">): string {
   return panel.path.replace(/^\/+/, "");
 }
 
-const STYLE = `
-/* The frame every module panel sits in. Panels style themselves inside their shadow root from the tokens below, which
-   this frame maps from the host page's design tokens (--ink, --hairline, ...). */
-.shell-panel-scroll{height:100%;overflow-y:auto}
-.shell-panel{max-width:1180px;margin:0 auto;padding:46px 28px 120px;
-  --text:var(--ink,CanvasText);--line:var(--hairline,rgba(128,128,128,.3))}
-.shell-panel-title{font-size:clamp(26px,3.6vw,46px);font-weight:700;letter-spacing:-.026em;line-height:1.06;margin-bottom:26px}
-.shell-panel-body{background:var(--card,transparent);border:1px solid var(--hairline,rgba(128,128,128,.3));
-  border-radius:20px;padding:22px 24px}
-.shell-panel-note{color:var(--dim,GrayText);font-size:14px}
-@media (max-width:760px){.shell-panel{padding:34px 18px 100px}}
-`;
-
 /** Builds a panel's tab and page (the page's section is not attached to the outlet here) and returns the pieces the
- * router needs. */
+ * router needs. A framed panel sits in a scroll column under its title; the panel's own cards follow. */
 export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchorElement; section: HTMLElement; controller: { enter(): void; leave(): void } } {
-  injectStyles("mlxbun-shell-panel-style", STYLE);
+  injectStyles("mlxbun-shell-panel-style", PANEL_FRAME_CSS);
   const id = panelRouteId(panel);
   const tab = document.createElement("a");
   tab.className = "tab";
@@ -101,7 +88,8 @@ export function buildPanelPage(panel: ShellPanel): { id: string; tab: HTMLAnchor
   const section = document.createElement("section");
   section.dataset.route = id;
   section.id = "s-" + id;
-  // A workspace fills the page itself; any other panel sits in a titled card.
+  section.setAttribute("aria-label", panel.title);
+  // A workspace fills the page itself; any other panel sits under its title in a scroll column.
   let body: HTMLElement = section;
   if (!panel.workspace && panel.framed !== false) {
     const scroll = el("div", "shell-panel-scroll", section);

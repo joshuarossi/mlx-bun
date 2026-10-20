@@ -15,3 +15,8 @@ export function closeTopPopover(): boolean {
   for (const id of ORDER) if (isOpen(id)) { closers[id]!(); return true; }
   return false;
 }
+
+/** Closes every open popover but `keep`, so opening one never stacks it on another. */
+export function closeOtherPopovers(keep: PopoverId): void {
+  for (const id of ORDER) if (id !== keep && isOpen(id)) closers[id]!();
+}

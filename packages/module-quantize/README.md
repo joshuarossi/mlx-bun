@@ -76,9 +76,18 @@ real weights. The spawned CLI (native MLX blocked) and the real job child are ex
 
 ## Panel
 
-`<mlx-quantize-panel>` (`./panel`) owns the existing four-step wizard, its markup and styles in shadow DOM.
-The shell mounts it at `/quantize`. It reaches inspection, submission and the job stream through its
-`PanelConnection`; optional host `ui` hooks provide notifications, publishing and catalog refresh.
-An unfinished job reconnects and replays its stream after returning to the panel; leaving closes the stream
-without cancelling the managed job. Panel tests cover inspection, mixed-precision submission, progress,
-reconnection and publishing over a remote backend under a URL prefix.
+`<mlx-quantize-panel>` (`./panel`) is the four-step wizard (source, configure, run, done) in shadow DOM: `index.ts` is
+the element, `controller.ts` owns the steps, the requests and the job stream, and `view.ts` the markup and the
+panel's own rules after the web kit's base vocabulary. The shell mounts it unframed at `/quantize`, so the panel
+draws its own page heading, step rail and cards. Requests go through the kit's client and keep their root paths
+(`/api/quantize/*`, `/api/jobs/:id/stream`) under whatever prefix the connection's `apiBase` sits on; the job stream is
+the kit's event-stream client. Optional host `ui` hooks provide notifications, publishing and catalog refresh;
+without `notify` the panel shows messages in its own status line. The element's `currentStep()` reads its own step
+rail (`#q-steps`, `.s.cur`), and every step it shows raises the kit's `HOST_EVENTS.panelChanged` from the element, so a
+host can describe the page (the app hands the step to the chat's assistant, which spotlights `#q-model`).
+
+Leaving the page closes the job stream without cancelling the job; returning while the job is unfinished reopens it,
+and the server's replay rebuilds the log. A dropped connection shows a reconnecting note until the next event, a failed
+job shows its error with a way back to Configure, and an unreachable server on submit says so in place. Panel tests cover
+inspection, mixed-precision submission, progress, reconnection and replay, failure and recovery, the terminal event,
+an unreachable server and publishing over a remote backend under a URL prefix, with the kit's fake `EventSource`.

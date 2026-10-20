@@ -1,8 +1,7 @@
 // Command palette (Cmd/Ctrl+K): a filterable overlay of sections. The shell owns the chrome, keyboard navigation and
 // the debounced remote lookups; the host supplies what is searchable as sections (commands, recorded chats, message
 // hits). Built entirely with createElement and its own injected styles, and lazily on first open.
-import { el, injectStyles } from "./dom";
-import { trapFocus, type FocusTrap } from "./focus";
+import { el, esc, injectStyles, trapFocus, type FocusTrap } from "@mlx-bun/web-kit";
 import type { Overlay } from "./overlays";
 
 export interface PaletteRow {
@@ -66,40 +65,27 @@ const DEBOUNCE_MS = 200;
 
 function injectPaletteStyles(): void {
   injectStyles(STYLE_ID, `
-#palette-overlay{position:fixed;inset:0;z-index:900;display:none;
-  align-items:flex-start;justify-content:center;padding-top:12vh;
-  background:rgba(0,0,0,.45);backdrop-filter:blur(2px);}
-#palette-overlay.open{display:flex;}
-@media (prefers-reduced-motion:no-preference){
-  #palette-overlay.open .palette-box{animation:palette-in .15s ease-out;}
-}
-@keyframes palette-in{from{opacity:0;transform:translateY(-6px) scale(.98);}to{opacity:1;transform:none;}}
-.palette-box{width:min(560px,92vw);max-height:70vh;display:flex;flex-direction:column;
-  background:var(--bg,#000);border:1px solid var(--hairline-strong,rgba(255,255,255,.28));
-  border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden;}
-.palette-input-row{border-bottom:1px solid var(--hairline,rgba(255,255,255,.14));padding:4px 4px;}
-#palette-input{width:100%;box-sizing:border-box;background:transparent;border:0;outline:0;
-  color:var(--ink,#fff);font-size:15px;padding:12px 14px;}
-#palette-input::placeholder{color:var(--dimmer,#515154);}
-.palette-list{overflow-y:auto;flex:1;padding:6px;}
-.palette-section-hdr{font-size:11px;color:var(--dim,#86868b);text-transform:uppercase;
-  letter-spacing:.04em;padding:8px 10px 4px;}
-.palette-row{display:flex;align-items:center;justify-content:space-between;gap:8px;
-  padding:9px 10px;border-radius:8px;cursor:pointer;color:var(--ink,#fff);font-size:13.5px;}
-.palette-row:hover,.palette-row.active{background:var(--card-hover,rgba(255,255,255,.08));}
-.palette-row .prow-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.palette-row .prow-snippet{color:var(--dim,#86868b);font-size:11.5px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;margin-top:1px;}
-.palette-row .prow-main{min-width:0;flex:1;}
-.palette-row .prow-hint{color:var(--dimmer,#515154);font-size:11px;font-family:var(--mono,monospace);
-  flex:0 0 auto;}
-.palette-empty{color:var(--dim,#86868b);font-size:13px;padding:16px 10px;text-align:center;}
-.palette-row mark{background:rgba(255,214,10,.35);color:inherit;border-radius:2px;}
+#palette-overlay{position:fixed;inset:0;z-index:900;display:none;align-items:flex-start;justify-content:center;padding:10vh 16px 16px;background:var(--overlay,rgba(0,0,0,.5))}
+#palette-overlay.open{display:flex}
+@media (prefers-reduced-motion:no-preference){#palette-overlay.open .palette-box{animation:palette-in var(--fast,120ms) var(--ease,ease-out)}}
+@keyframes palette-in{from{opacity:0;transform:translateY(-6px) scale(.985)}to{opacity:1;transform:none}}
+.palette-box{width:min(560px,100%);max-height:70vh;display:flex;flex-direction:column;background:var(--panel,#1a1e24);border:1px solid var(--line-strong,rgba(255,255,255,.17));
+  border-radius:var(--radius-lg,14px);box-shadow:var(--shadow-lg,0 24px 64px rgba(0,0,0,.5));overflow:hidden}
+.palette-input-row{border-bottom:1px solid var(--line,rgba(255,255,255,.08));padding:4px}
+#palette-input{width:100%;box-sizing:border-box;background:transparent;border:0;outline:0;color:var(--ink,#e9ecef);font-size:var(--text-lg,15px);padding:12px 14px}
+#palette-input::placeholder{color:var(--dimmer,#6e7782)}
+.palette-list{overflow-y:auto;flex:1;padding:6px}
+.palette-section-hdr{font-size:var(--text-xs,11.5px);font-weight:600;color:var(--dimmer,#6e7782);letter-spacing:.03em;padding:8px 10px 4px}
+.palette-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-radius:var(--radius-md,10px);cursor:pointer;color:var(--ink,#e9ecef);font-size:var(--text-md,13.5px)}
+.palette-row:hover,.palette-row.active{background:var(--raised,rgba(255,255,255,.08))}
+.palette-row.active{box-shadow:inset 2px 0 0 var(--accent,#5b9cff)}
+.palette-row .prow-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.palette-row .prow-snippet{color:var(--dim,#a4acb6);font-size:var(--text-xs,11.5px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.palette-row .prow-main{min-width:0;flex:1}
+.palette-row .prow-hint{color:var(--dimmer,#6e7782);font-size:var(--text-xs,11.5px);font-family:var(--mono,monospace);flex:0 0 auto}
+.palette-empty{color:var(--dim,#a4acb6);font-size:var(--text-md,13.5px);padding:16px 10px;text-align:center}
+.palette-row mark{background:var(--warn-soft,rgba(246,196,83,.3));color:inherit;border-radius:2px}
 `);
-}
-
-function esc(s: unknown): string {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" } as Record<string, string>)[c]!);
 }
 
 interface Entry { section: number; row: PaletteRow }

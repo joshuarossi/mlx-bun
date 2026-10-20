@@ -21,7 +21,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@mlx-bun/app-core": "workspace:*"
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/web-kit": "workspace:*"
   },
   "devDependencies": {
     "@mlx-bun/app-host": "workspace:*",

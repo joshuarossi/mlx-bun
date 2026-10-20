@@ -1,28 +1,19 @@
 // The web panel as a browser would run it: a custom element that takes a
 // connection, draws the streamed snapshot into its shadow root, and starts and
 // lists benchmark runs through the module's routes. happy-dom stands in for
-// the browser; EventSource and fetch are fakes recording what the panel asks.
+// the browser; EventSource (the web kit's fake) and fetch are fakes recording what the panel asks.
 import { afterEach, beforeAll, expect, test } from "bun:test";
+import { FakeEventSource } from "@mlx-bun/web-kit/testing";
 import { GlobalWindow } from "happy-dom";
 import { createMetricsStore } from "../src/store";
 import type { BenchHistoryEntry, MetricsSnapshot } from "../src/protocol";
 import { RECORDED } from "./support";
 
-class FakeEventSource {
-  static instances: FakeEventSource[] = [];
-  listeners = new Map<string, ((event: unknown) => void)[]>();
-  closed = false;
-  constructor(readonly url: string) { FakeEventSource.instances.push(this); }
-  addEventListener(type: string, listener: (event: unknown) => void) { this.listeners.set(type, [...this.listeners.get(type) ?? [], listener]); }
-  close() { this.closed = true; }
-  emit(type: string, data?: string) { for (const listener of this.listeners.get(type) ?? []) listener({ data }); }
-}
-
 const requests: { url: string; init?: RequestInit }[] = [];
 let benchJobs: object[] = [], history: BenchHistoryEntry[] = [], startResponse: { ok: boolean; body: unknown } = { ok: true, body: {} };
 const fakeFetch = (async (url: string, init?: RequestInit) => {
   requests.push({ url, init });
-  const json = (body: unknown, ok = true) => ({ ok, status: ok ? 200 : 400, json: async () => body });
+  const json = (body: unknown, ok = true) => Response.json(body, { status: ok ? 200 : 400 });
   if (init?.method === "POST") return json(startResponse.body, startResponse.ok);
   if (url.endsWith("/history")) return json({ runs: history });
   if (url.endsWith("/bench/profiles")) return json({ profiles: [{ name: "quick", path: "/p/quick.json", scope: "scoped", models: ["qwen"] }] });
@@ -37,7 +28,7 @@ beforeAll(async () => {
     EventSource: FakeEventSource, fetch: fakeFetch, MessageEvent: window.MessageEvent, Node: window.Node });
   await import("../src/panel");
 });
-afterEach(() => { document.body.replaceChildren(); FakeEventSource.instances.length = 0; requests.length = 0; benchJobs = []; history = []; startResponse = { ok: true, body: {} }; });
+afterEach(() => { document.body.replaceChildren(); FakeEventSource.reset(); requests.length = 0; benchJobs = []; history = []; startResponse = { ok: true, body: {} }; });
 
 const snapshot = (): MetricsSnapshot => { const store = createMetricsStore({ now: () => 5_000 }); for (const event of RECORDED) store.apply(event); return store.snapshot(); };
 const mount = () => {
@@ -47,10 +38,11 @@ const mount = () => {
   return panel;
 };
 const settle = () => new Promise(resolve => setTimeout(resolve, 5));
-const shadowText = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("p, h3, .tile, tr, .cache, .row")].map(node => node.textContent).join("\n");
-/** Table rows as their cells joined by " | ", tiles as "value label". */
+const shadowText = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("p, h3, .stat, tr, .cache, .row, .notice")].map(node => node.textContent).join("\n");
+/** Table rows as their cells joined by " | ", stat cards as "value label", cache meters as "label | use". */
 const cells = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll("tr")].map(row => [...row.querySelectorAll("th, td")].map(cell => cell.textContent).join(" | "));
-const tiles = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll(".tile")].map(tile => [...tile.children].map(child => child.textContent).join(" "));
+const tiles = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll(".stat")].map(tile => [...tile.children].map(child => child.textContent).join(" "));
+const usages = (panel: HTMLElement) => [...panel.shadowRoot!.querySelectorAll(".cache .usage-head")].map(row => [...row.children].map(child => child.textContent).join(" | "));
 
 test("the element registers under the manifest's tag and connects the stream named by its connection", () => {
   expect(customElements.get("mlx-metrics-panel")).toBeDefined();
@@ -62,13 +54,13 @@ test("the element registers under the manifest's tag and connects the stream nam
 test("a streamed snapshot renders throughput, batch occupancy, queue, models, caches and request timings", async () => {
   const panel = mount();
   expect(shadowText(panel)).toContain("Waiting for the first snapshot");
-  FakeEventSource.instances[0]!.emit("snapshot", JSON.stringify(snapshot()));
+  FakeEventSource.instances[0]!.emit(snapshot(), "snapshot");
   // The last throughput sample; the scheduler left with its model, so no batch reading; the request counter.
   expect(tiles(panel)).toEqual(["512.0 tok/s throughput", "— batch rows", "— queued", "3 requests finished"]);
   const rows = cells(panel);
-  expect(rows).toContain("org/chat | unloaded | 900 ms | 500 ms | — | 381 MB | 0 KB | 0 KB");
-  expect(rows).toContain("org/other | resident | 600 ms | — | 1.10 s | 858 MB | 0 KB | 0 KB");
-  expect(rows).toContain("org/broken | failed | — | — | — | 0 KB | 0 KB | 0 KB");
+  expect(rows).toContain("org/chat | unloaded | 900 ms | 500 ms | — | 381 MB | 0 B | 0 B");
+  expect(rows).toContain("org/other | resident | 600 ms | — | 1.10 s | 858 MB | 0 B | 0 B");
+  expect(rows).toContain("org/broken | failed | — | — | — | 0 B | 0 B | 0 B");
   expect(rows).toContain(" | p50 | p95 | max");
   expect(rows).toContain("queue wait | 10 ms | 50 ms | 50 ms");
   expect(rows).toContain("time to first token | 40 ms | 120 ms | 120 ms");
@@ -83,32 +75,33 @@ test("cache usage renders with hit rate and capacity while the model is resident
   const store = createMetricsStore({ now: () => 5_000 });
   for (const event of RECORDED.slice(0, 11)) store.apply(event);
   const panel = mount();
-  FakeEventSource.instances[0]!.emit("snapshot", JSON.stringify(store.snapshot()));
-  const text = shadowText(panel);
-  expect(text).toContain("org/chat · prefix cache 5 MB of 7.45 GB · hit rate 75% (3 of 4 lookups)");
-  expect(text).toContain("org/chat · batch KV 29 MB of 954 MB");
+  FakeEventSource.instances[0]!.emit(store.snapshot(), "snapshot");
+  expect([...panel.shadowRoot!.querySelectorAll(".cache .card-title")].map(node => node.textContent)).toEqual(["org/chat"]);
+  expect(usages(panel)).toEqual(["Prefix cache | 5 MB of 7.45 GB", "Batch KV | 29 MB of 954 MB"]);
+  expect(panel.shadowRoot!.querySelector(".cache .hit")!.textContent).toBe("Hit rate 75% (3 of 4 lookups)");
   expect(tiles(panel).slice(1, 3)).toEqual(["3 / 4 batch rows", "2 queued"]);
-  expect(panel.shadowRoot!.querySelectorAll(".bar i").length).toBe(2);
+  expect(panel.shadowRoot!.querySelectorAll(".meter i").length).toBe(2);
 });
 
 test("text from the server is drawn as text, never as markup", async () => {
   const hostile = snapshot() as unknown as { models: { model: string }[] };
   const panel = mount();
-  FakeEventSource.instances[0]!.emit("snapshot", JSON.stringify({ ...hostile, models: [{ ...hostile.models[0], model: "<img src=x onerror=alert(1)>" }] }));
+  FakeEventSource.instances[0]!.emit({ ...hostile, models: [{ ...hostile.models[0], model: "<img src=x onerror=alert(1)>" }] }, "snapshot");
   expect(panel.shadowRoot!.querySelector("img")).toBeNull();
   expect(shadowText(panel)).toContain("<img src=x onerror=alert(1)>");
 });
 
 test("a broken frame or a dropped stream is reported without discarding the last good snapshot", () => {
   const panel = mount(), source = FakeEventSource.instances[0]!;
-  source.emit("snapshot", JSON.stringify(snapshot()));
-  source.emit("snapshot", "{nope");
-  expect(shadowText(panel)).toContain("unreadable snapshot");
+  source.emit(snapshot(), "snapshot");
+  source.emit("{nope", "snapshot");
+  expect(shadowText(panel)).toContain("A snapshot could not be read; showing the last good one.");
   expect(shadowText(panel)).toContain("Models");
-  source.emit("error");
-  expect(shadowText(panel)).toContain("stream interrupted; retrying");
-  source.emit("snapshot", JSON.stringify(snapshot()));
-  expect(shadowText(panel)).not.toContain("stream interrupted");
+  source.fail();
+  expect(panel.shadowRoot!.querySelector(".notice.warn")!.textContent).toBe("The metrics stream dropped; reconnecting…");
+  expect(shadowText(panel)).toContain("Models");
+  source.emit(snapshot(), "snapshot");
+  expect(shadowText(panel)).not.toContain("stream dropped");
 });
 
 test("the benchmark section lists profiles and history, and Run posts the chosen profile", async () => {
