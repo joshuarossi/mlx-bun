@@ -25,8 +25,10 @@ export function commands(): PaletteAction[] {
     { label: "Browse models", run() { location.hash = "#/models"; } },
     { label: "Keyboard shortcuts", hint: "⌘/", run() { shell.shortcuts.toggle(); } },
     { label: "Export this chat", when: onChat, async run() { await chatPanel()?.exportActiveChat("md"); } },
-    // One entry per module panel the shell mounted.
+    // One entry per module panel the shell mounted, then the app's own pages (a deep link flips developer tools on).
     ...shell.panelTargets().map(({ id, title }): PaletteAction => ({ label: `Open ${title}`, run() { location.hash = "#/" + id; } })),
+    { label: "Open Status", run() { location.hash = "#/status"; } },
+    { label: "Open Routes", run() { location.hash = "#/routes"; } },
   ];
 }
 

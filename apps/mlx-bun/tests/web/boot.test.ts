@@ -178,7 +178,8 @@ test("Cmd+K opens the palette with the commands, the panel's among them, and Esc
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }) as unknown as Event);
   const labels = () => [...document.querySelectorAll("#palette-overlay .prow-label")].map(node => node.textContent);
   expect(labels()).toEqual(["New chat", "Toggle thinking", "Toggle theme", "Toggle developer tools", "Open memory", "Open settings", "Browse models",
-    "Keyboard shortcuts", "Export this chat", "Open Benchmarks", "Open Build Dataset", "Open Metrics", "Open Models", "Open Quantize", "Open Fine-tune"]);
+    "Keyboard shortcuts", "Export this chat", "Open Benchmarks", "Open Build Dataset", "Open Metrics", "Open Models", "Open Quantize", "Open Fine-tune",
+    "Open Status", "Open Routes"]);
   document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event);
   expect(document.getElementById("palette-overlay")!.classList.contains("open")).toBe(false);
 });
