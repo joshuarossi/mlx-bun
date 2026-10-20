@@ -112,24 +112,23 @@ export function closeMemPanel(): void {
   overlay.classList.remove("open");
   slots?.entry.setAttribute("aria-expanded", "false");
   panelTrap.restore();
-  changed(overlay);
+  changed();
 }
 
-/** The drawer opened or closed: the host that describes the page (the chat's assistant) hears it through the kit's
- * panel-changed event, synchronously, however the drawer was opened or closed. */
-function changed(overlay: HTMLElement): void {
-  emitHostEvent(HOST_EVENTS.panelChanged, undefined, overlay, { bubbles: true, composed: true });
+/** The drawer closed, or rendered its list or an article (on opening too): the host that describes the page (the
+ * chat's assistant) hears it through the kit's panel-changed event, synchronously, once the view it will describe is
+ * showing, however the drawer got there. */
+function changed(): void {
+  emitHostEvent(HOST_EVENTS.panelChanged, undefined, $("mem-overlay"), { bubbles: true, composed: true });
 }
 
 /** Opens the drawer. `articleName` jumps straight to that article (the provenance chips and the link chips use it);
- *  omitted, it shows the list. */
+ *  omitted, it shows the list. The view raises the change once it is rendered, so a host's snapshot never describes
+ *  the view the drawer last showed. */
 export async function openMemPanel(articleName?: string): Promise<void> {
   panelTrap.capture();
-  const overlay = $("mem-overlay");
-  const wasOpen = overlay.classList.contains("open");
-  overlay.classList.add("open");
+  $("mem-overlay").classList.add("open");
   slots?.entry.setAttribute("aria-expanded", "true");
-  if (!wasOpen) changed(overlay);
   if (articleName) await showArticle(articleName);
   else await showList();
   setTimeout(() => { if (isMemPanelOpen()) (document.getElementById("mem-search") ?? document.getElementById("mem-close"))?.focus(); }, 30);
@@ -271,7 +270,7 @@ async function showList(): Promise<void> {
   setBack(false);
   $("mem-title").textContent = "Memory";
   $("mem-body").scrollTop = 0;
-  await renderListBody();
+  try { await renderListBody(); } finally { changed(); }
 }
 
 /* ────────────────────────────────────────────────────────────────────
@@ -300,7 +299,10 @@ async function showArticle(name: string): Promise<void> {
   const body = $("mem-body");
   body.innerHTML = loadingHtml("Loading the article");
   body.scrollTop = 0;
+  try { await renderArticle(name, body); } finally { changed(); }
+}
 
+async function renderArticle(name: string, body: HTMLElement): Promise<void> {
   const [artRes, linksRes] = await Promise.all([
     api.get<ArticleResp>("article?name=" + encodeURIComponent(name)),
     api.get<LinksResp>("links?name=" + encodeURIComponent(name)),
