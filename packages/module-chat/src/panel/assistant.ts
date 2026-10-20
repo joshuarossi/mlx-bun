@@ -372,7 +372,9 @@ export function showSpotlight(resolved: ResolvedSpotlight): boolean {
   // it was valid at resolve time, but "return false → toast" is the right
   // failure mode here too, never a throw.
   const target = safeQuery(resolved.selector) as HTMLElement | null;
-  if (!target) return false;
+  // A control that exists but is not showing (a wizard step other than the current one, a closed overlay) cannot be
+  // pointed at: a ring around nothing would land in the page's corner. The caller's toast says so instead.
+  if (!target || !isVisible(target)) return false;
 
   dismissSpotlight();
   const overlay = ensureOverlayEl();

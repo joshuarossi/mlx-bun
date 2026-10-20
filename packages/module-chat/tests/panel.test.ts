@@ -37,7 +37,7 @@ import {
   retrieve, shouldRetrieve, tokenize, toCitations, type Chunk, type Citation,
 } from "../src/panel/rag";
 import {
-  ambientLine, buildAppContext, captureUiSnapshot, resolveSpotlightTarget, type UiSnapshot,
+  ambientLine, buildAppContext, captureUiSnapshot, resolveSpotlightTarget, showSpotlight, type UiSnapshot,
 } from "../src/panel/assistant";
 import { isRouteId, isViewId, resolveRouteId, ROUTE_IDS } from "../src/panel/ui-catalog";
 
@@ -1468,6 +1468,13 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
     // Without a label the id reads as words; without the attribute anywhere the target is unknown.
     expect(resolveSpotlightTarget({ target: "run-now" }, null)?.title).toBe("Run now");
     expect(resolveSpotlightTarget({ target: "composer-x" }, null)).toBeNull();
+    // A target that exists but is hidden (another wizard step, a closed overlay) cannot be pointed at: the spotlight
+    // declines, and the caller toasts, instead of drawing a ring in the page's corner.
+    document.body.innerHTML = '<section hidden><input data-spotlight="quantize-source" data-ui-label="Source model"></section>';
+    const hidden = resolveSpotlightTarget({ target: "quantize-source" }, null)!;
+    expect(hidden.title).toBe("Source model");
+    expect(showSpotlight(hidden)).toBe(false);
+    expect(document.getElementById("assistant-spotlight")?.classList.contains("show") ?? false).toBe(false);
     // One element may carry several ids (an alias the server's tool description still advertises).
     document.body.innerHTML = '<button data-spotlight="model-picker hub-browse" data-ui-label="Active model">Qwen</button>';
     expect(resolveSpotlightTarget({ target: "hub-browse" }, null)).toMatchObject({ selector: '[data-spotlight~="hub-browse"]', title: "Active model" });
