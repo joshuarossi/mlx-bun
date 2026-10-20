@@ -269,8 +269,12 @@ test("theme: the saved choice is applied, choices persist, and cycling goes auto
   expect([api.themeChoice(), localStorage.getItem("mlxbun.theme")]).toEqual(["auto", "auto"]);
   api.cycleTheme();
   expect([api.themeChoice(), document.documentElement.getAttribute("data-theme")]).toEqual(["dark", "dark"]);
+  // The chosen button reads as pressed, which is what the kit's segmented control highlights.
+  const pressed = () => [...document.querySelectorAll("#theme-toggle button")].map((b) => b.getAttribute("aria-pressed"));
+  expect(pressed()).toEqual(["false", "true", "false"]);
   (document.querySelector('#theme-toggle button[data-theme-choice="light"]') as HTMLElement).click();
   expect(localStorage.getItem("mlxbun.theme")).toBe("light");
+  expect(pressed()).toEqual(["false", "false", "true"]);
 });
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -384,6 +388,23 @@ test("the navigation sheet opens from the menu button and closes on its backdrop
   shell.nav.open();
   document.querySelector<HTMLElement>('.tab[data-tab="tools"]')!.click(); // the current page's tab: no navigation, still closes
   expect(shell.nav.isOpen()).toBe(false);
+  // Open, the sheet keeps keyboard focus: Tab from its last control and Shift+Tab from its first stay inside it.
+  menu.focus();
+  shell.nav.open();
+  const tab = (target: HTMLElement, shiftKey: boolean) => {
+    const event = new window.KeyboardEvent("keydown", { key: "Tab", shiftKey, bubbles: true, cancelable: true }) as unknown as Event;
+    target.focus();
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const focusable = [...nav.querySelectorAll<HTMLElement>("a[href],button:not([disabled])")];
+  const first = focusable[0]!, last = focusable[focusable.length - 1]!;
+  expect(tab(last, false)).toBe(true);
+  expect(nav.contains(document.activeElement)).toBe(true);
+  expect(tab(first, true)).toBe(true);
+  expect(nav.contains(document.activeElement)).toBe(true);
+  shell.nav.close();
+  expect(document.activeElement).toBe(menu); // focus returns to what opened it
   shell.nav.toggle(); shell.nav.toggle();
   expect(shell.nav.isOpen()).toBe(false);
 });
