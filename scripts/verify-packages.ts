@@ -120,7 +120,7 @@ try {
       throw new Error("Installed microphone helper failed help: " + check.stderr.toString());
     const { createWebHandler } = await import("./node_modules/mlx-bun/src/web/assets.ts");
     const handle = await createWebHandler();
-    for (const path of ["/", "/assets/app.js", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
+    for (const path of ["/", "/assets/app.js", "/assets/app.css", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
       const response = handle(new Request("http://local" + path));
       if (response?.status !== 200 || !(await response.text()).length) throw new Error("Missing packed asset: " + path);
     }
