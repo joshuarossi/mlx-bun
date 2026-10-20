@@ -1370,12 +1370,18 @@ describe("assistant.ts: captureUiSnapshot", () => {
       <button id="visible">Visible</button>
       <nav class="sheet"><button>In the closed sheet</button></nav>
       <div class="gone"><button>Behind a display:none rule</button></div>
+      <button style="position:fixed;display:none">Hidden fixed control</button>
+      <div class="gone"><button style="position:fixed">Fixed control in a hidden wrapper</button></div>
     `;
+    // A browser reports no offsetParent for a fixed-position element, showing or not: that must not pass it.
+    document.querySelectorAll<HTMLElement>('[style*="fixed"]').forEach((fixed) => Object.defineProperty(fixed, "offsetParent", { get: () => null, configurable: true }));
     try {
       const labels = captureUiSnapshot("chat").elements.map((e) => e.label);
       expect(labels).toContain("Visible");
       expect(labels).not.toContain("In the closed sheet");
       expect(labels).not.toContain("Behind a display:none rule");
+      expect(labels).not.toContain("Hidden fixed control");
+      expect(labels).not.toContain("Fixed control in a hidden wrapper");
     } finally { style.remove(); }
   });
 
@@ -1499,6 +1505,10 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
     document.body.innerHTML = '<nav class="sheet"><button data-spotlight="model-picker" data-ui-label="Active model">Qwen</button></nav>';
     expect(showSpotlight(resolveSpotlightTarget({ target: "model-picker" }, null)!)).toBe(false);
     sheetStyle.remove();
+    // A hidden fixed-position target (no offsetParent either way): declined all the same.
+    document.body.innerHTML = '<button data-spotlight="fab" data-ui-label="Floating action" style="position:fixed;display:none">+</button>';
+    Object.defineProperty(document.querySelector("[data-spotlight]")!, "offsetParent", { get: () => null, configurable: true });
+    expect(showSpotlight(resolveSpotlightTarget({ target: "fab" }, null)!)).toBe(false);
     // One element may carry several ids (an alias the server's tool description still advertises).
     document.body.innerHTML = '<button data-spotlight="model-picker hub-browse" data-ui-label="Active model">Qwen</button>';
     expect(resolveSpotlightTarget({ target: "hub-browse" }, null)).toMatchObject({ selector: '[data-spotlight~="hub-browse"]', title: "Active model" });
