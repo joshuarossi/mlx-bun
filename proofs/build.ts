@@ -1,3 +1,13 @@
+/** Each source's imports that are themselves sources, as source paths. */
+export function localImports(sources: ReadonlyMap<string, string>): Map<string, string[]> {
+  return new Map([...sources].map(([file, source]) => [file,
+    [...source.matchAll(/^import\s+([^\n]+)/gm)]
+      .flatMap(match => match[1]!.split(/\s+/))
+      .map(name => name.replaceAll(".", "/") + ".lean")
+      .filter(path => sources.has(path)),
+  ]));
+}
+
 /** Build each proof only after its local imports succeed. Wait for every active
  * check before returning, including failures, so temporary output can be removed. */
 export async function buildProofs(
@@ -8,12 +18,7 @@ export async function buildProofs(
   if (!Number.isSafeInteger(jobs) || jobs < 1 || jobs > 64) {
     throw new Error("Proof build jobs must be an integer from 1 to 64.");
   }
-  const imports = new Map([...sources].map(([file, source]) => [file,
-    [...source.matchAll(/^import\s+([^\n]+)/gm)]
-      .flatMap(match => match[1]!.split(/\s+/))
-      .map(name => name.replaceAll(".", "/") + ".lean")
-      .filter(path => sources.has(path)),
-  ]));
+  const imports = localImports(sources);
   const pending = new Set(sources.keys());
   const complete = new Set<string>();
   type Outcome = { file: string; ok: true } | { file: string; ok: false; error: unknown };

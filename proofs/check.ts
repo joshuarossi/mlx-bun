@@ -1,10 +1,10 @@
-/** CPU-only: LEAN=/path/to/lean bun proofs/check.ts [--self-test] [--jobs 1..64].
+/** CPU-only: LEAN=/path/to/lean bun proofs/check.ts [--self-test] [--jobs 1..64] [--full].
  * Lake resolves the pinned FloatLib/mathlib proof dependencies in proofs/.
  * No MLX import. */
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
-import { buildProofs } from "./build.ts";
+import { buildProofs, localImports } from "./build.ts";
+import { accepted, auditedText, cacheBase, isLoadChooser, leanArgs, leanEnv, moduleKeys } from "./checker.ts";
 import { checkScalarCopySourceBinding } from "./kernels/copy/ScalarCopySourceBinding.ts";
 import { checkGeneralCopy2DHostBinding } from "./kernels/copy/GeneralCopy2DHostBinding.ts";
 import { checkM1MaxSingleTokenEntry } from "./models/qwen/M1MaxSingleTokenEntryBinding.ts";
@@ -6754,61 +6754,10 @@ function checkSource(name: string, source: string, expected: string): void {
   }
 }
 
-// Definition-only and import-only modules are allowed. Reject custom axiom
-// declarations even when unused, and audit every theorem's transitive dependencies,
-// including private helpers and newly added theorems.
-const audit = `
-namespace MlxProofAxiomAudit
-open Lean Elab Command
-
--- Each local declaration is traversed once across all theorem roots. Imported
--- declarations retain Lean's own precomputed transitive axiom collection.
-private partial def visit (env : Environment) (root name : Name) : StateRefT NameSet CommandElabM Unit := do
-  if (← get).contains name then return
-  modify fun seen => seen.insert name
-  if (env.getModuleIdxFor? name).isSome then
-    for axiomName in (← collectAxioms name) do
-      unless #[\`propext, \`Classical.choice, \`Quot.sound].contains axiomName do
-        throwError "Forbidden axiom {axiomName} in {root}"
-    return
-  let expression (value : Expr) := value.getUsedConstants.forM (visit env root)
-  -- Match Lean.Util.CollectAxioms, including types, opaque bodies, recursors
-  -- and inductive constructors. Consult the checked kernel environment.
-  match env.checked.get.find? name with
-  | some (.axiomInfo value) =>
-    unless #[\`propext, \`Classical.choice, \`Quot.sound].contains name do
-      throwError "Forbidden axiom {name} in {root}"
-    expression value.type
-  | some (.defnInfo value) => expression value.type *> expression value.value
-  | some (.thmInfo value) => expression value.type *> expression value.value
-  | some (.opaqueInfo value) => expression value.type *> expression value.value
-  | some (.ctorInfo value) => expression value.type
-  | some (.recInfo value) => expression value.type
-  | some (.inductInfo value) => expression value.type *> value.ctors.forM (visit env root)
-  | some (.quotInfo _) | none => pure ()
-
-end MlxProofAxiomAudit
-open Lean Elab Command in
-run_cmd do
-  let env ← getEnv
-  let declaredAxioms := env.constants.foldStage2 (fun ns name info =>
-    if info.isAxiom then ns.push name else ns) (#[] : Array Name)
-  for name in declaredAxioms do
-    unless #[\`propext, \`Classical.choice, \`Quot.sound].contains name do
-      throwError "Forbidden axiom declaration {name}"
-  let names := env.constants.foldStage2 (fun ns name info =>
-    if info.isTheorem then ns.push name else ns) (#[] : Array Name)
-  (names.forM fun name => MlxProofAxiomAudit.visit env name name).run' ({} : NameSet)
-  logInfo m!"Axiom audit passed: {names.size} theorems"
-`;
-
-async function run(args: string[], leanPath?: string, library?: string) {
-  const child = Bun.spawn([lean, ...(library ? ["--load-dynlib", library] : []), ...args], {
+async function run(args: string[], leanPath?: string) {
+  const child = Bun.spawn([lean, ...args], {
     cwd: root.pathname, stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, ...(leanPath ? {
-      LEAN_PATH: [leanPath, dependencyPath].filter(Boolean).join(delimiter),
-      HOST_STREAM_DIR: join(leanPath, ".host-stream"),
-    } : {}) },
+    env: { ...process.env, ...(leanPath ? leanEnv(leanPath, dependencyPath) : {}) },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
@@ -7007,33 +6956,65 @@ await checkHostTsSourceBinding({ selfTest: process.argv.includes("--self-test") 
 await checkLoadDataBinding(undefined, process.argv.includes("--self-test"));
 await checkKernelSourceBinding({ selfTest: process.argv.includes("--self-test") });
 
-const dir = await mkdtemp(join(tmpdir(), "mlx-bun-proof-"));
+// A run starts from a clone of the last run's directory and reuses each module
+// whose key (checker.ts, toolchain, dependencies, its text and its imports' keys)
+// is unchanged; --full starts empty. The directory, with the keys of the modules
+// that passed, becomes the next run's starting point.
+const cacheRoot = new URL(".lake/check-cache/", import.meta.url).pathname;
+const cached = join(cacheRoot, "build");
+const manifest = (directory: string) => join(directory, ".check-manifest.json");
+await mkdir(cacheRoot, { recursive: true });
+const dir = await mkdtemp(join(cacheRoot, "run-"));
+let previous: Record<string, string> = {};
+if (!process.argv.includes("--full") && await Bun.file(manifest(cached)).exists()) {
+  const clone = Bun.spawnSync(["/bin/cp", "-cR", cached + "/", dir]);
+  if (clone.exitCode !== 0) throw new Error(`Could not clone the last check: ${clone.stderr}`);
+  previous = await Bun.file(manifest(dir)).json();
+}
 async function checkProof(name: string, text: string, build = false, library?: string) {
   const path = join(dir, name);
   await mkdir(dirname(path), { recursive: true });
-  await Bun.write(path, `import Lean\n${text}\n${audit}`);
-  return run(["-R", dir, ...(build ? ["-o", path.replace(/\.lean$/, ".olean")] : []), path], dir, library);
+  await Bun.write(path, auditedText(text));
+  return run(leanArgs(dir, path, build, library), dir);
 }
 
+let passed: Record<string, string> | undefined;
+let reused = 0;
 try {
   const jobsIndex = process.argv.indexOf("--jobs");
   const jobs = jobsIndex < 0 ? 1 : Number(process.argv[jobsIndex + 1]);
   const proofSources = new Map(await Promise.all(proofFiles.map(async file =>
     [file, await Bun.file(new URL(file, import.meta.url)).text()] as const)));
+  const base = cacheBase([version.output, dependencyPath, ...await Promise.all(
+    ["checker.ts", "lean-toolchain", "lakefile.toml", "lake-manifest.json", "host/load/native.ts"]
+      .map(file => Bun.file(new URL(file, import.meta.url)).text()))]);
+  const keys = moduleKeys(proofSources, localImports(proofSources), base);
+  const library = join(dir, ".native-load", "libloadproof.dylib");
+  const reusable = new Set<string>();
+  for (const file of proofFiles) {
+    if (previous[file] === keys.get(file) && await Bun.file(join(dir, file.replace(/\.lean$/, ".olean"))).exists()) {
+      reusable.add(file);
+    }
+  }
+  if (!await Bun.file(library).exists()) reusable.delete("host/load/Native.lean");
+  // Nothing that is not reused may be imported.
+  for await (const olean of new Bun.Glob("**/*.olean").scan({ cwd: dir })) {
+    if (!reusable.has(olean.replace(/\.olean$/, ".lean"))) await rm(join(dir, olean));
+  }
   let loadNative: string | undefined;
+  if (reusable.has("host/load/Native.lean")) loadNative = library;
+  else await rm(join(dir, ".native-load"), { recursive: true, force: true });
+  passed = Object.fromEntries([...reusable].map(file => [file, keys.get(file)!]));
   await buildProofs(proofSources, jobs, async (file, source) => {
+    if (reusable.has(file)) { reused++; return; }
     console.log(`Checking ${file}...`);
-    // Native evaluation chooses explicit states only. Every generated equality
-    // is checked by the kernel below, under the same axiom audit as other proofs.
-    const loadChooser = (file.startsWith("host/load/") &&
-      /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary|host_cache_boundary|load_boundary_carriers)\s/m.test(source)) ||
-      /^(?:host_micro_chunk|host_micro_states|host_micro_states_group|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
+    const loadChooser = isLoadChooser(file, source);
     if (loadChooser && !loadNative) {
       throw new Error(`Load state chooser must import host.load.Native: ${file}`);
     }
     const result = await checkProof(file, source, true, loadChooser ? loadNative : undefined);
     process.stdout.write(result.output);
-    if (result.code !== 0 || result.output.includes("sorryAx") || !result.output.includes("Axiom audit passed:")) {
+    if (!accepted(result.output, result.code)) {
       throw new Error(`Lean did not establish ${file} without forbidden assumptions.`);
     }
     if (file === "host/load/Native.lean") {
@@ -7044,6 +7025,7 @@ try {
         outputDir: join(dir, ".native-load"), jobs: Math.min(jobs, 2),
       });
     }
+    passed![file] = keys.get(file)!;
   });
 
   if (process.argv.includes("--self-test")) {
@@ -7372,9 +7354,16 @@ end Host.Load.Run.Full.Cached
     console.log("Negative checks passed: source drift, false claims, custom axioms, native computation, unaudited additions, proof holes, wrong graph carriers/edges, wrong input provenance, and wrong subdivided source endpoints rejected.");
   }
 } finally {
-  await rm(dir, { recursive: true, force: true });
+  if (passed) {
+    await Bun.write(manifest(dir), JSON.stringify(passed));
+    await rm(cached, { recursive: true, force: true });
+    await rename(dir, cached);
+  } else {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 console.log(`Checked ${proofFiles.length} proof modules.`);
+if (reused) console.log(`Reused ${reused} modules unchanged since an earlier check; --full rechecks every module.`);
 console.log("Permitted axioms: propext, Classical.choice, Quot.sound. No native proof evaluation.");
 console.log("Host TypeScript frontend: 35 executed decode-route files are embedded verbatim; the kernel checks that Lean's own lexer and type-erasing parser accept each whole file, and that the parsed MlxArray.shape getter is the expected AST. No TypeScript semantics or Bun transpiler correspondence is established yet.");
 console.log("Mathematical scope: conditional one-token M1 Max Qwen inference covers quantized embedding, 48 Delta and 16 attention layers, final normalization, all 248320 logits, logsumexp, greedy selection and cache feedback through 262144 steps. Parameter and primitive contracts derive intermediate finiteness and ranges, including a 2^18 logit bound. Error budgets compare with a real-valued reference consuming the same emitted tokens; independent exact-real token agreement requires winner margins. A useful final accuracy guarantee remains open. Prefill, batching and adapters are outside this result.");
