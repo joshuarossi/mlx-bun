@@ -1,6 +1,7 @@
 import metal.Logic
 import metal.Launch
 import metal.tests.Elab
+import metal.Gpu
 
 namespace Metal.Kernels.DownFold
 open Metal Metal.Core Inference.Contracts.Mlx
@@ -269,4 +270,405 @@ theorem lane_last (ctx : Ctx) (l s g : Nat) (xs : List Val) (t : Thread) (h : La
     exact tail n _ _ _ (by simp [Thread.set, h5])
   · simp only [hl0, decide_false, Bool.false_eq_true, ite_false, afterStore]
     exact tail (n + 1) _ _ _ (by simp [Thread.set, h5])
+/-! ## A SIMD-group -/
+
+section Simd
+variable (s g : Nat) (ctxOf : Fin 32 → Ctx)
+
+def ctxAt (i : Nat) : Ctx := if h : i < 32 then ctxOf ⟨i, h⟩ else ctxOf 0
+
+def start (l : Fin 32) : Thread := ⟨ctxOf l, fun _ => none, [.block body], .running⟩
+
+/-- The shared state after lanes `0 … i-1` have run to the first `simd_sum`. -/
+def afterStarts (sh : Shared) : Nat → Shared
+  | 0 => sh
+  | i + 1 =>
+    let p := afterStarts sh i
+    { p with log := ((List.range 16).map fun x => entry (ctxAt ctxOf i) p 0 (offset i s g + x) false).reverse ++ p.log }
+
+theorem afterStarts_regions (sh : Shared) : ∀ i, (afterStarts s g ctxOf sh i).regions = sh.regions
+  | 0 => rfl
+  | i + 1 => afterStarts_regions sh i
+theorem afterStarts_bytes (sh : Shared) : ∀ i, (afterStarts s g ctxOf sh i).bytes = sh.bytes
+  | 0 => rfl
+  | i + 1 => afterStarts_bytes sh i
+
+theorem simd_starts (hlane : ∀ l : Fin 32, Lane (ctxOf l) l s g) (sh : Shared)
+    (r0 : sh.regions 0 = some partialRegion) :
+    ∃ U : Fin 32 → Thread, ((List.ofFn (start ctxOf)).mapM (runThread C 11)).run sh =
+      some (List.ofFn U, afterStarts s g ctxOf sh 32) ∧
+      ∀ l : Fin 32, AtSum (ctxOf l) l s g (vals (sh.bytes 0) (offset l s g)) 0 (U l) := by
+  have spec := fun l : Fin 32 => lane_start C (ctxOf l) l s g (hlane l) (afterStarts s g ctxOf sh l)
+    (by rw [afterStarts_regions]; exact r0) 3
+  choose U hU using spec
+  refine ⟨U, mapM_ofFn_run (start ctxOf) (runThread C 11) U (afterStarts s g ctxOf sh) (fun l => ?_), fun l => ?_⟩
+  · have h := (hU l).1
+    simp only [afterStarts, ctxAt, l.isLt, dite_true]
+    exact h
+  · have h := (hU l).2
+    rwa [afterStarts_bytes] at h
+/-- The shared state after all lanes ran iteration `k` from `sh`: lane 0's store. -/
+def afterIter (sh : Shared) (k : Nat) (y : BF) (i : Nat) : Shared :=
+  if i = 0 then sh else afterStore (ctxOf 0) sh 0 s g k y
+
+theorem afterStore_regions (ctx : Ctx) (sh : Shared) (l k : Nat) (y : BF) :
+    (afterStore ctx sh l s g k y).regions = sh.regions := by
+  unfold afterStore; split <;> rfl
+
+theorem afterIter_regions (sh : Shared) (k : Nat) (y : BF) (i : Nat) :
+    (afterIter s g ctxOf sh k y i).regions = sh.regions := by
+  unfold afterIter; split
+  · rfl
+  · exact afterStore_regions s g _ _ _ _ _
+
+theorem afterIter_step (sh : Shared) (k : Nat) (y : BF) (l : Fin 32) :
+    afterStore (ctxOf l) (afterIter s g ctxOf sh k y l) l s g k y = afterIter s g ctxOf sh k y (l + 1) := by
+  by_cases h : (l : Nat) = 0
+  · have hl : l = 0 := Fin.ext h
+    subst hl; simp [afterIter]
+  · simp [afterIter, h, afterStore]
+
+theorem simd_next (hlane : ∀ l : Fin 32, Lane (ctxOf l) l s g) (k : Nat) (hk : k + 1 < 4)
+    (T : Fin 32 → Thread) (xs : Fin 32 → List Val) (hT : ∀ l, AtSum (ctxOf l) l s g (xs l) k (T l))
+    (hx : ∀ l, k + 1 < (xs l).length) (y : Float32) (sh : Shared) (r1 : sh.regions 1 = some outRegion) :
+    ∃ U : Fin 32 → Thread, ((List.ofFn fun l => { T l with status := .running }.set 6 (.f32 y)).mapM (runThread C 11)).run sh =
+      some (List.ofFn U, afterStore (ctxOf 0) sh 0 s g k (C.narrow y)) ∧
+      ∀ l, AtSum (ctxOf l) l s g (xs l) (k + 1) (U l) := by
+  have spec := fun l : Fin 32 => lane_next C (ctxOf l) l s g (xs l) k (T l) (hlane l) (hT l) hk (hx l) y
+    (afterIter s g ctxOf sh k (C.narrow y) l) (by rw [afterIter_regions]; exact r1) 1
+  choose U hU using spec
+  refine ⟨U, ?_, fun l => (hU l).2⟩
+  have := mapM_ofFn_run (fun l => { T l with status := .running }.set 6 (.f32 y)) (runThread C 11) U
+    (afterIter s g ctxOf sh k (C.narrow y)) (fun l => by rw [← afterIter_step]; exact (hU l).1)
+  rw [show afterIter s g ctxOf sh _ _ 0 = sh from if_pos rfl,
+    show afterIter s g ctxOf sh _ _ 32 = afterStore (ctxOf 0) sh 0 s g _ _ from if_neg (by decide)] at this
+  exact this
+
+theorem simd_last (hlane : ∀ l : Fin 32, Lane (ctxOf l) l s g)
+    (T : Fin 32 → Thread) (xs : Fin 32 → List Val) (hT : ∀ l, AtSum (ctxOf l) l s g (xs l) 3 (T l))
+    (y : Float32) (sh : Shared) (r1 : sh.regions 1 = some outRegion) :
+    ∃ U : Fin 32 → Thread, ((List.ofFn fun l => { T l with status := .running }.set 6 (.f32 y)).mapM (runThread C 11)).run sh =
+      some (List.ofFn U, afterStore (ctxOf 0) sh 0 s g 3 (C.narrow y)) ∧ ∀ l, (U l).status = .done := by
+  have spec := fun l : Fin 32 => lane_last C (ctxOf l) l s g (xs l) (T l) (hlane l) (hT l) y
+    (afterIter s g ctxOf sh 3 (C.narrow y) l) (by rw [afterIter_regions]; exact r1) 0
+  choose U hU using spec
+  refine ⟨U, ?_, fun l => (hU l).2⟩
+  have := mapM_ofFn_run (fun l => { T l with status := .running }.set 6 (.f32 y)) (runThread C 11) U
+    (afterIter s g ctxOf sh 3 (C.narrow y)) (fun l => by rw [← afterIter_step]; exact (hU l).1)
+  rw [show afterIter s g ctxOf sh _ _ 0 = sh from if_pos rfl,
+    show afterIter s g ctxOf sh _ _ 32 = afterStore (ctxOf 0) sh 0 s g _ _ from if_neg (by decide)] at this
+  exact this
+/-- Float `k` of the float4 at byte `o`. -/
+def cell (memory : ByteMemory.Bytes) (o k : Nat) : Float32 :=
+  Val.ofF32Bits (bytesWord ((((List.range 16).map fun j => memory (o + j)).drop (4 * k)).take 4))
+
+theorem vals_get (memory : ByteMemory.Bytes) (o k : Nat) (hk : k < 4) :
+    (vals memory o)[k]? = some (.f32 (cell memory o k)) := by
+  simp [vals, cell, Val.ofWord, hk]
+
+theorem vals_length (memory : ByteMemory.Bytes) (o : Nat) : (vals memory o).length = 4 := by simp [vals]
+
+/-- The sum of column `col s g + k` over the 32 rows. -/
+def colSum (memory : ByteMemory.Bytes) (k : Nat) : Float32 := C.simdSum fun l => cell memory (offset l s g) k
+
+theorem status_of (ctx : Ctx) (l : Nat) (memory : ByteMemory.Bytes) (k : Nat) (hk : k < 4) (t : Thread)
+    (h : AtSum ctx l s g (vals memory (offset l s g)) k t) :
+    t.status = .collective 1 6 .sum .f32 (.f32 (cell memory (offset l s g) k)) 0 := by
+  obtain ⟨v, hv, hs⟩ := h.status
+  rw [vals_get memory _ k hk] at hv
+  rw [hs, ← Option.some.inj hv]
+
+/-- The whole SIMD-group: four sums, lane 0 storing each. -/
+theorem simd_run (hlane : ∀ l : Fin 32, Lane (ctxOf l) l s g) (sh : Shared)
+    (r0 : sh.regions 0 = some partialRegion) (r1 : sh.regions 1 = some outRegion) :
+    ∃ U : Fin 32 → Thread, (runSimd C 11 5 (List.ofFn (start ctxOf))).run sh = some (List.ofFn U,
+      afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStarts s g ctxOf sh 32)
+        0 s g 0 (C.narrow (colSum C s g (sh.bytes 0) 0))) 0 s g 1 (C.narrow (colSum C s g (sh.bytes 0) 1)))
+        0 s g 2 (C.narrow (colSum C s g (sh.bytes 0) 2))) 0 s g 3 (C.narrow (colSum C s g (sh.bytes 0) 3))) ∧
+      ∀ l, (U l).status = .done := by
+  have rs1 := r1
+  obtain ⟨U0, h0, a0⟩ := simd_starts C s g ctxOf hlane sh r0
+  rw [runSimd_sum C 11 4 _ U0 _ _ 1 6 0 (fun l => cell (sh.bytes 0) (offset l s g) 0) h0
+    (fun l => status_of s g _ l _ 0 (by decide) _ (a0 l)), List.map_ofFn]
+  have r1' : (afterStarts s g ctxOf sh 32).regions 1 = some outRegion := by rw [afterStarts_regions]; exact r1
+  obtain ⟨U1, h1, a1⟩ := simd_next C s g ctxOf hlane 0 (by decide) U0 _ a0 (fun l => by simp [vals_length])
+    (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 0) _ r1'
+  simp only [Function.comp_def]
+  rw [runSimd_sum C 11 3 _ U1 _ _ 1 6 0 (fun l => cell (sh.bytes 0) (offset l s g) 1) h1
+    (fun l => status_of s g _ l _ 1 (by decide) _ (a1 l)), List.map_ofFn]
+  obtain ⟨U2, h2, a2⟩ := simd_next C s g ctxOf hlane 1 (by decide) U1 _ a1 (fun l => by simp [vals_length])
+    (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 1)
+    (afterStore (ctxOf 0) (afterStarts s g ctxOf sh 32) 0 s g 0 (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 0)))
+    (by rw [afterStore_regions s g]; exact r1')
+  simp only [Function.comp_def]
+  rw [runSimd_sum C 11 2 _ U2 _ _ 1 6 0 (fun l => cell (sh.bytes 0) (offset l s g) 2) h2
+    (fun l => status_of s g _ l _ 2 (by decide) _ (a2 l)), List.map_ofFn]
+  obtain ⟨U3, h3, a3⟩ := simd_next C s g ctxOf hlane 2 (by decide) U2 _ a2 (fun l => by simp [vals_length])
+    (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 2)
+    (afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStarts s g ctxOf sh 32) 0 s g 0
+      (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 0))) 0 s g 1
+      (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 1)))
+    (by rw [afterStore_regions s g, afterStore_regions s g]; exact r1')
+  simp only [Function.comp_def]
+  rw [runSimd_sum C 11 1 _ U3 _ _ 1 6 0 (fun l => cell (sh.bytes 0) (offset l s g) 3) h3
+    (fun l => status_of s g _ l _ 3 (by decide) _ (a3 l)), List.map_ofFn]
+  obtain ⟨U4, h4, a4⟩ := simd_last C s g ctxOf hlane U3 _ a3
+    (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 3)
+    (afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStore (ctxOf 0) (afterStarts s g ctxOf sh 32) 0 s g 0
+      (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 0))) 0 s g 1
+      (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 1))) 0 s g 2
+      (C.narrow (C.simdSum fun l => cell (sh.bytes 0) (offset l s g) 2)))
+    (by rw [afterStore_regions s g, afterStore_regions s g, afterStore_regions s g]; exact r1')
+  simp only [Function.comp_def]
+  rw [runSimd_blocked C 11 0 _ (List.ofFn U4) _ _ h4 (fun t ht => by
+    obtain ⟨i, rfl⟩ := List.mem_ofFn.mp ht; simp [a4 i, blocked])]
+  exact ⟨U4, rfl, a4⟩
+end Simd
+/-! ## The grid -/
+
+/-- The bf16 output of column `c` (= `32g + 4s + k`). -/
+def outValue (P : ByteMemory.Bytes) (c : Nat) : BF := C.narrow (colSum C (c % 32 / 4) (c / 32) P (c % 4))
+
+/-- The thread that writes column `c`: lane 0 of its SIMD-group. -/
+def owner (c : Nat) : Nat := c / 32 * 256 + 32 * (c % 32 / 4)
+
+def Good (e : Access) : Prop :=
+  (e.region = 0 ∧ e.write = false) ∨ (e.region = 1 ∧ e.write = true ∧ e.thread = owner (e.byte / 2))
+
+/-- Columns `0 … n-1` are written, the input is intact, and every access so far is a read of
+`partial` or a write by its column's owner. -/
+structure Inv (regions : Nat → Option Region) (P : ByteMemory.Bytes) (n : Nat) (sh : Shared) : Prop where
+  regions : sh.regions = regions
+  input : sh.bytes 0 = P
+  epochs : sh.deviceEpoch = 0 ∧ sh.groupEpoch = 0
+  out : ∀ c < n, ∀ i < 2, sh.bytes 1 (2 * c + i) = (wordBytes 2 (Val.bf16Bits (outValue C P c))).getD i 0
+  log : ∀ e ∈ sh.log, Good e
+theorem writeBytes_outside (memory : ByteMemory.Bytes) (o : Nat) (bytes : List (BitVec 8)) (b : Nat)
+    (h : b < o ∨ o + bytes.length ≤ b) : writeBytes memory o bytes b = memory b := by
+  unfold writeBytes; split
+  · omega
+  · rfl
+
+theorem writeBytes_inside (memory : ByteMemory.Bytes) (o : Nat) (bytes : List (BitVec 8)) (i : Nat)
+    (h : i < bytes.length) : writeBytes memory o bytes (o + i) = bytes.getD i 0 := by
+  unfold writeBytes; rw [if_pos (by omega)]; congr 1; omega
+
+/-- Lane 0's store of iteration `k` keeps the invariant's facts about everything else. -/
+theorem afterStore_zero (ctx : Ctx) (sh : Shared) (s g k : Nat) (y : BF) :
+    afterStore ctx sh 0 s g k y = { sh with
+      log := ((List.range 2).map fun i => entry ctx sh 1 ((col s g + k) * 2 + i) true).reverse ++ sh.log,
+      bytes := fun region => if region = 1 then writeBytes (sh.bytes region) ((col s g + k) * 2)
+        (wordBytes 2 (Val.bf16Bits y)) else sh.bytes region } := by
+  simp [afterStore]
+
+theorem afterStarts_epochs (s g : Nat) (ctxOf : Fin 32 → Ctx) (sh : Shared) : ∀ i,
+    (afterStarts s g ctxOf sh i).deviceEpoch = sh.deviceEpoch ∧ (afterStarts s g ctxOf sh i).groupEpoch = sh.groupEpoch
+  | 0 => ⟨rfl, rfl⟩
+  | i + 1 => afterStarts_epochs s g ctxOf sh i
+
+theorem afterStarts_log (s g : Nat) (ctxOf : Fin 32 → Ctx) (sh : Shared) (hsh : ∀ e ∈ sh.log, Good e) :
+    ∀ i, ∀ e ∈ (afterStarts s g ctxOf sh i).log, Good e
+  | 0 => hsh
+  | i + 1 => by
+    intro e he
+    simp only [afterStarts, List.mem_append, List.mem_reverse, List.mem_map, List.mem_range] at he
+    rcases he with ⟨x, _, rfl⟩ | he
+    · left; exact ⟨rfl, rfl⟩
+    · exact afterStarts_log s g ctxOf sh hsh i e he
+theorem simd_inv (R : Nat → Option Region) (hR0 : R 0 = some partialRegion) (hR1 : R 1 = some outRegion)
+    (P : ByteMemory.Bytes) (s g : Nat) (hs : s < 8) (hg : g < 160) (ctxOf : Fin 32 → Ctx)
+    (hlane : ∀ l : Fin 32, Lane (ctxOf l) l s g) (hthread : (ctxOf 0).thread = g * 256 + 32 * s)
+    (sh : Shared) (hI : Inv C R P (32 * g + 4 * s) sh) :
+    ∃ lanes sh', (runSimd C 11 5 (List.ofFn (start ctxOf))).run sh = some (lanes, sh') ∧
+      Inv C R P (32 * g + 4 * s + 4) sh' ∧ ∀ t ∈ lanes, t.status = .done := by
+  obtain ⟨U, hrun, hdone⟩ := simd_run C s g ctxOf hlane sh (by rw [hI.regions]; exact hR0) (by rw [hI.regions]; exact hR1)
+  refine ⟨_, _, hrun, ?_, fun t ht => by obtain ⟨i, rfl⟩ := List.mem_ofFn.mp ht; exact hdone i⟩
+  have hc : col s g = 32 * g + 4 * s := by unfold col; ring
+  have e0 := (afterStarts_epochs s g ctxOf sh 32)
+  constructor
+  · simp only [afterStore_regions s g, afterStarts_regions]; exact hI.regions
+  · simp only [afterStore_zero, afterStarts_bytes]; simpa using hI.input
+  · simp only [afterStore_zero]; exact ⟨e0.1.trans hI.epochs.1, e0.2.trans hI.epochs.2⟩
+  · intro c hcn i hi
+    simp only [afterStore_zero, if_true, afterStarts_bytes, hI.input]
+    have hlen : ∀ w, (wordBytes 2 w).length = 2 := by simp [wordBytes]
+    by_cases h0 : c < 32 * g + 4 * s
+    · rw [writeBytes_outside _ ((col s g + 3) * 2) _ _ (by simp [hlen]; omega),
+        writeBytes_outside _ ((col s g + 2) * 2) _ _ (by simp [hlen]; omega),
+        writeBytes_outside _ ((col s g + 1) * 2) _ _ (by simp [hlen]; omega),
+        writeBytes_outside _ ((col s g + 0) * 2) _ _ (by simp [hlen]; omega)]
+      exact hI.out c h0 i hi
+    · obtain ⟨k, hk, rfl⟩ : ∃ k, k < 4 ∧ c = 32 * g + 4 * s + k := ⟨c - (32 * g + 4 * s), by omega, by omega⟩
+      have hv : ∀ k < 4, C.narrow (colSum C s g P k) = outValue C P (32 * g + 4 * s + k) := by
+        intro k hk; unfold outValue
+        rw [show (32 * g + 4 * s + k) % 32 / 4 = s by omega, show (32 * g + 4 * s + k) / 32 = g by omega,
+          show (32 * g + 4 * s + k) % 4 = k by omega]
+      rcases (by omega : k = 0 ∨ k = 1 ∨ k = 2 ∨ k = 3) with rfl | rfl | rfl | rfl
+      · rw [writeBytes_outside _ ((col s g + 3) * 2) _ _ (by simp [hlen]; omega)]
+        rw [writeBytes_outside _ ((col s g + 2) * 2) _ _ (by simp [hlen]; omega)]
+        rw [writeBytes_outside _ ((col s g + 1) * 2) _ _ (by simp [hlen]; omega)]
+        rw [show 2 * (32 * g + 4 * s + 0) + i = (col s g + 0) * 2 + i by rw [hc]; ring,
+          writeBytes_inside _ _ _ i (by simp [hlen]; omega), hv 0 (by decide)]
+      · rw [writeBytes_outside _ ((col s g + 3) * 2) _ _ (by simp [hlen]; omega)]
+        rw [writeBytes_outside _ ((col s g + 2) * 2) _ _ (by simp [hlen]; omega)]
+        rw [show 2 * (32 * g + 4 * s + 1) + i = (col s g + 1) * 2 + i by rw [hc]; ring,
+          writeBytes_inside _ _ _ i (by simp [hlen]; omega), hv 1 (by decide)]
+      · rw [writeBytes_outside _ ((col s g + 3) * 2) _ _ (by simp [hlen]; omega)]
+        rw [show 2 * (32 * g + 4 * s + 2) + i = (col s g + 2) * 2 + i by rw [hc]; ring,
+          writeBytes_inside _ _ _ i (by simp [hlen]; omega), hv 2 (by decide)]
+      · rw [show 2 * (32 * g + 4 * s + 3) + i = (col s g + 3) * 2 + i by rw [hc]; ring,
+          writeBytes_inside _ _ _ i (by simp [hlen]; omega), hv 3 (by decide)]
+  · intro e he
+    have hown : ∀ k < 4, ∀ x < 2, owner (((col s g + k) * 2 + x) / 2) = g * 256 + 32 * s := by
+      intro k hk x hx; unfold owner col; omega
+    have store : ∀ k < 4, ∀ x < 2, ∀ (d gr : Nat),
+        Good ⟨(ctxOf 0).thread, (ctxOf 0).group, 1, (col s g + k) * 2 + x, true, d, gr⟩ := by
+      intro k hk x hx d gr; right; exact ⟨rfl, rfl, by simp only [hthread, hown k hk x hx]⟩
+    simp only [afterStore_zero, entry, List.mem_append, List.mem_reverse, List.mem_map, List.mem_range] at he
+    rcases he with ⟨x, hx, rfl⟩ | ⟨x, hx, rfl⟩ | ⟨x, hx, rfl⟩ | ⟨x, hx, rfl⟩ | he
+    · exact store 3 (by decide) x hx _ _
+    · exact store 2 (by decide) x hx _ _
+    · exact store 1 (by decide) x hx _ _
+    · exact store 0 (by decide) x hx _ _
+    · exact afterStarts_log s g ctxOf sh hI.log 32 e he
+/-- The launch: grid [8·C = 40960], threadgroup [256], `partial` [1, 32, 5120] f32 and `out` [1, 5120] bf16. -/
+def launch (P O : ByteMemory.Bytes) : Launch :=
+  ⟨core, (40960, 1, 1), (256, 1, 1), [⟨.device, 655360, 16, P⟩, ⟨.device, 10240, 16, O⟩]⟩
+
+theorem launch_group (P O : ByteMemory.Bytes) : (launch P O).group = (256, 1, 1) := rfl
+theorem launch_groups (P O : ByteMemory.Bytes) : (launch P O).groups = (160, 1, 1) := by
+  simp only [Launch.groups, Launch.group, launch]; decide
+
+theorem threads_length (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) :
+    ((launch P O).threads fuse g 0 0).length = 256 := by
+  simp only [Launch.threads, launch_group, launch_groups, List.length_map, List.length_range]
+  simp [launch]; omega
+
+/-- Thread `32 s + l` of threadgroup `g`. -/
+theorem thread_get (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) (i : Nat) (hi : i < 256)
+    (h : i < ((launch P O).threads fuse g 0 0).length) :
+    ((launch P O).threads fuse g 0 0)[i] = { ((launch P O).threads fuse g 0 0)[i] with
+      locals := fun _ => none, frames := [.block body], status := .running } ∧
+    ((launch P O).threads fuse g 0 0)[i].ctx.thread = g * 256 + i ∧
+    ((launch P O).threads fuse g 0 0)[i].ctx.coord .threadIndexInSimdgroup = u32 (i % 32) ∧
+    ((launch P O).threads fuse g 0 0)[i].ctx.coord .simdgroupIndexInThreadgroup = u32 (i / 32) ∧
+    ((launch P O).threads fuse g 0 0)[i].ctx.coord .threadgroupPositionInGrid = u32x3 g 0 0 := by
+  simp only [Launch.threads, launch_group, launch_groups, List.getElem_map, List.getElem_range]
+  simp [launch, core]
+  all_goals omega
+/-- The contexts of SIMD-group `s` of threadgroup `g`. -/
+def ctxs (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) (s : Fin 8) (l : Fin 32) : Ctx :=
+  ((launch P O).threads fuse g 0 0)[32 * s.val + l.val]'(by rw [threads_length P O fuse g hg]; omega) |>.ctx
+
+theorem chunks_eq (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) :
+    Launch.chunks 32 ((launch P O).threads fuse g 0 0) = List.ofFn fun s => List.ofFn (start (ctxs P O fuse g hg s)) := by
+  have hl := threads_length P O fuse g hg
+  apply List.ext_getElem
+  · simp [Launch.chunks, hl, ceilDiv]
+  · intro s h1 h2
+    simp only [List.length_ofFn] at h2
+    simp only [List.getElem_ofFn]
+    apply List.ext_getElem
+    · simp [Launch.chunks, hl]; omega
+    · intro l h3 h4
+      simp only [List.length_ofFn] at h4
+      simp only [Launch.chunks, List.getElem_map, List.getElem_range, List.getElem_take, List.getElem_drop, List.getElem_ofFn]
+      have := (thread_get P O fuse g hg (s * 32 + l) (by omega) (by rw [hl]; omega)).1
+      rw [this]
+      simp only [start, ctxs, Nat.mul_comm s 32]
+
+theorem ctxs_lane (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) (s : Fin 8) (l : Fin 32) :
+    Lane (ctxs P O fuse g hg s l) l s g := by
+  have h := thread_get P O fuse g hg (32 * s.val + l.val) (by omega) (by rw [threads_length P O fuse g hg]; omega)
+  refine ⟨?_, ?_, h.2.2.2.2, l.isLt, s.isLt, hg⟩
+  · simp only [ctxs, h.2.2.1]; congr 1; omega
+  · simp only [ctxs, h.2.2.2.1]; congr 1; omega
+
+theorem ctxs_thread (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) (s : Fin 8) :
+    (ctxs P O fuse g hg s 0).thread = g * 256 + 32 * s := by
+  have h := thread_get P O fuse g hg (32 * s.val) (by omega) (by rw [threads_length P O fuse g hg]; omega)
+  simp only [ctxs, Fin.val_zero, Nat.add_zero]; exact h.2.1
+theorem launch_r0 (P O : ByteMemory.Bytes) : (launch P O).regions 0 = some partialRegion := by
+  simp [Launch.regions, launch, partialRegion]
+theorem launch_r1 (P O : ByteMemory.Bytes) : (launch P O).regions 1 = some outRegion := by
+  simp [Launch.regions, launch, outRegion]
+
+theorem group_inv (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (g : Nat) (hg : g < 160) (sh : Shared)
+    (hI : Inv C (launch P O).regions P (32 * g) sh) :
+    ∃ sh', (runGroup C 11 5 1 (Launch.chunks 32 ((launch P O).threads fuse g 0 0))).run sh = some ((), sh') ∧
+      Inv C (launch P O).regions P (32 * g + 32) sh' := by
+  rw [chunks_eq P O fuse g hg]
+  obtain ⟨us, sh', hrun, hI', hdone⟩ := mapM_ofFn_inv (fun s => List.ofFn (start (ctxs P O fuse g hg s))) (runSimd C 11 5)
+    (fun j sh => Inv C (launch P O).regions P (32 * g + 4 * j) sh) (fun lanes => ∀ t ∈ lanes, t.status = .done)
+    (fun j sh hj => by
+      have := simd_inv C (launch P O).regions (launch_r0 P O) (launch_r1 P O) P j g j.isLt hg (ctxs P O fuse g hg j)
+        (ctxs_lane P O fuse g hg j) (ctxs_thread P O fuse g hg j) sh hj
+      rwa [show 32 * g + 4 * (j.val + 1) = 32 * g + 4 * j.val + 4 by ring]) sh (by simpa using hI)
+  refine ⟨sh', ?_, by simpa using hI'⟩
+  have hall : (us.flatten.all fun t => isDone t.status) = true := by
+    simp only [List.all_eq_true, List.mem_flatten]
+    rintro t ⟨lanes, hl, ht⟩
+    simp [hdone lanes hl t ht, isDone]
+  simp only [runGroup, StateT.run_bind, hrun]
+  show Option.bind (some (us, sh')) _ = _
+  simp only [Option.bind_some]
+  rw [if_pos hall]
+  rfl
+theorem resetGroup_id (P O : ByteMemory.Bytes) (garbage : Garbage) (g : Nat) (bytes : Nat → ByteMemory.Bytes) :
+    (launch P O).resetGroup garbage g bytes = bytes := by
+  funext region
+  simp [Launch.resetGroup, Launch.groupArrays, launch, core]
+  omega
+
+theorem launch_run (P O : ByteMemory.Bytes) (fuse : Nat → Bool) (garbage : Garbage) :
+    ∃ r, runLaunch C fuse (launch P O) garbage 11 5 1 = some r ∧
+      (∀ e ∈ r.log, Good e) ∧ ∀ c < 5120, ∀ i < 2, r.buffers 1 (2 * c + i) = (wordBytes 2 (Val.bf16Bits (outValue C P c))).getD i 0 := by
+  simp only [runLaunch, launch_groups]
+  obtain ⟨sh', hrun, hI⟩ := forM_inv (fun x : Nat × Nat × Nat => (do
+      modify fun (sh : Shared) => { sh with bytes := (launch P O).resetGroup garbage (x.1 + x.2.1 * 160 + x.2.2 * 160 * 1) sh.bytes }
+      runGroup C 11 5 1 (Launch.chunks 32 ((launch P O).threads fuse x.1 x.2.1 x.2.2)) : M Unit))
+    (fun j sh => Inv C (launch P O).regions P (32 * j) sh)
+    ((List.range (160 * 1 * 1)).map fun g => (g % 160, g / 160 % 1, g / (160 * 1))) 0 (fun j hj sh hI => by
+      simp only [List.length_map, List.length_range] at hj
+      simp only [List.getElem_map, List.getElem_range, Nat.zero_add] at hI ⊢
+      rw [show j % 160 = j from Nat.mod_eq_of_lt (by omega), show j / 160 % 1 = 0 by omega, show j / (160 * 1) = 0 by omega]
+      obtain ⟨sh2, h2, hI2⟩ := group_inv C P O fuse j (by omega) sh hI
+      refine ⟨sh2, ?_, by rwa [show 32 * (j + 1) = 32 * j + 32 by ring]⟩
+      simp only [StateT.run_bind, resetGroup_id]
+      exact h2) ((launch P O).initial garbage) ⟨rfl, rfl, ⟨rfl, rfl⟩, fun c hc => by omega, fun e he => by simp [Launch.initial] at he⟩
+  refine ⟨_, by rw [hrun]; rfl, hI.log, fun c hc i hi => hI.out c (by simpa using hc) i hi⟩
+theorem race_free (P O : ByteMemory.Bytes) (r : Result) (h : ∀ e ∈ r.log, Good e) : RaceFree (launch P O) r := by
+  intro a ha b hb hc
+  obtain ⟨hreg, hbyte, hthr, hw, _⟩ := hc
+  rcases h a ha with ⟨ra, wa⟩ | ⟨ra, wa, ta⟩ <;> rcases h b hb with ⟨rb, wb⟩ | ⟨rb, wb, tb⟩
+  · simp [wa, wb] at hw
+  · omega
+  · omega
+  · exact hthr (by rw [ta, tb, hbyte])
+
+/-- Output byte `b` of `out`: byte `b % 2` of the bf16 word of column `b / 2`. -/
+def expected (P : ByteMemory.Bytes) (b : Nat) : BitVec 8 :=
+  if b < 10240 then (wordBytes 2 (Val.bf16Bits (outValue C P (b / 2)))).getD (b % 2) 0 else 0
+
+/-- **The GPU runs the down-fold kernel as specified.** Under the GPU assumption, MLX's launch of the
+exact assembled text on any `partial` buffer produces `out` with every column `c` equal to the
+bf16 narrowing of the SIMD sum of the 32 floats of column `c`. -/
+theorem gpu_output (G : Gpu C) (hmax : 256 ≤ G.maxThreads Metal.Elab.Tests.downFoldText) (P : ByteMemory.Bytes) :
+    G.execute Metal.Elab.Tests.downFoldText (40960, 1, 1) (256, 1, 1) [⟨.device, 655360, 16, P⟩] [10240] =
+      some [expected C P] := by
+  apply G.runs_as_modeled _ core _ _ _ _ 11 5 1 _ compile_eq (by simpa using hmax)
+  intro initial garbage
+  obtain ⟨r, hr, hlog, hout⟩ := launch_run C P (initial 0) (G.fusion Metal.Elab.Tests.downFoldText) garbage
+  have hL : (⟨core, (40960, 1, 1), (256, 1, 1), buffers [⟨.device, 655360, 16, P⟩] [10240] 16 initial⟩ : Launch) =
+      launch P (initial 0) := rfl
+  refine ⟨r, by rw [hL]; exact hr, by rw [hL]; exact race_free P (initial 0) r hlog, ?_⟩
+  simp only [outputs, List.zipIdx, List.map_cons, List.map_nil, List.cons.injEq, and_true]
+  funext b
+  unfold expected
+  split
+  · rename_i hb
+    have := hout (b / 2) (by omega) (b % 2) (by omega)
+    rw [show 2 * (b / 2) + b % 2 = b by omega] at this
+    simpa using this
+  · rfl
 end Metal.Kernels.DownFold

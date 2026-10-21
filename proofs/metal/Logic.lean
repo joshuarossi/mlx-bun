@@ -264,4 +264,41 @@ theorem mapM_ofFn_run {α β : Type} : ∀ {n : Nat} (T : Fin n → α) (f : α 
     simp only [Option.bind_eq_bind, Option.bind_some]
     rw [show S 1 = S (0 + 1) from rfl, ih]
     rfl
+/-- Running a list in order preserves an invariant indexed by position. -/
+theorem mapM_ofFn_inv {α β : Type} : ∀ {n : Nat} (T : Fin n → α) (f : α → M β) (I : Nat → Shared → Prop)
+    (Q : β → Prop), (∀ i : Fin n, ∀ sh, I i sh → ∃ u sh', (f (T i)).run sh = some (u, sh') ∧ I (i + 1) sh' ∧ Q u) →
+    ∀ sh, I 0 sh → ∃ us sh', ((List.ofFn T).mapM f).run sh = some (us, sh') ∧ I n sh' ∧ ∀ u ∈ us, Q u
+  | 0, _, _, _, _, _, sh, h0 => ⟨[], sh, rfl, h0, by simp⟩
+  | n + 1, T, f, I, Q, h, sh, h0 => by
+    obtain ⟨u, sh1, hr, h1, hq⟩ := h 0 sh h0
+    obtain ⟨us, sh', hr', hn, hqs⟩ := mapM_ofFn_inv (fun i : Fin n => T i.succ) f (fun j => I (j + 1)) Q
+      (fun i sh hi => by simpa [Nat.add_assoc] using h i.succ sh hi) sh1 h1
+    refine ⟨u :: us, sh', ?_, hn, ?_⟩
+    · rw [List.ofFn_succ, List.mapM_cons]
+      simp only [StateT.run_bind] at hr' ⊢
+      rw [hr]
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      rw [hr']
+      rfl
+    · intro v hv
+      rcases List.mem_cons.mp hv with rfl | hv
+      · exact hq
+      · exact hqs v hv
+
+/-- `forM` over `xs` in order preserves an invariant indexed by position. -/
+theorem forM_inv {α : Type} (f : α → M Unit) (I : Nat → Shared → Prop) :
+    ∀ (xs : List α) (k : Nat), (∀ i (hi : i < xs.length), ∀ sh, I (k + i) sh →
+      ∃ sh', (f xs[i]).run sh = some ((), sh') ∧ I (k + i + 1) sh') →
+    ∀ sh, I k sh → ∃ sh', (xs.forM f).run sh = some ((), sh') ∧ I (k + xs.length) sh'
+  | [], k, _, sh, h0 => ⟨sh, rfl, by simpa using h0⟩
+  | x :: xs, k, h, sh, h0 => by
+    obtain ⟨sh1, hr, h1⟩ := h 0 (by simp) sh (by simpa using h0)
+    obtain ⟨sh', hr', hn⟩ := forM_inv f I xs (k + 1) (fun i hi sh hi' => by
+      have := h (i + 1) (by simp; omega) sh (by simpa [Nat.add_assoc, Nat.add_comm 1] using hi')
+      simpa [Nat.add_assoc, Nat.add_comm 1] using this) sh1 h1
+    refine ⟨sh', ?_, by simpa [Nat.add_assoc, Nat.add_comm 1] using hn⟩
+    have hr0 : (f x).run sh = some ((), sh1) := hr
+    show (f x >>= fun _ => xs.forM f).run sh = _
+    rw [StateT.run_bind, hr0]
+    exact hr'
 end Metal
