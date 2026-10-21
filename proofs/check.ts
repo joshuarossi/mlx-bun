@@ -121,6 +121,7 @@ import { checkMlxSdpaScoreSourceBinding } from "./kernels/attention/MlxSdpaScore
 import { checkHostTsSourceBinding } from "./host/ts/SourceBinding.ts";
 import { checkLoadDataBinding } from "./host/load/DataBinding.ts";
 import { checkKernelSourceBinding } from "./host/mlx/KernelSourceBinding.ts";
+import { checkMetalAssembleSourceBinding } from "./metal/AssembleSourceBinding.ts";
 import { buildLoadNative } from "./host/load/native.ts";
 
 const root = new URL("../", import.meta.url);
@@ -6739,6 +6740,28 @@ const proofFiles = [
   "host/simgraph/tpl/ordinary/Stages7.lean",
   "host/simgraph/tpl/ordinary/Stages8.lean",
   "host/simgraph/tpl/ordinary/Stages9.lean",
+  "metal/Token.lean",
+  "metal/Syntax.lean",
+  "metal/Lexer.lean",
+  "metal/Preprocess.lean",
+  "metal/Parser.lean",
+  "metal/Frontend.lean",
+  "metal/Core.lean",
+  "metal/Types.lean",
+  "metal/Value.lean",
+  "metal/Run.lean",
+  "metal/Launch.lean",
+  "metal/Logic.lean",
+  "metal/Assemble.lean",
+  "metal/Builtins.lean",
+  "metal/Elab.lean",
+  "metal/Gpu.lean",
+  "metal/kernels/DownFold.lean",
+  "metal/tests/Lex.lean",
+  "metal/tests/Parse.lean",
+  "metal/tests/Assemble.lean",
+  "metal/tests/Frontend.lean",
+  "metal/tests/Elab.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({
@@ -6955,6 +6978,7 @@ await checkMlxSdpaScoreSourceBinding({ selfTest: process.argv.includes("--self-t
 await checkHostTsSourceBinding({ selfTest: process.argv.includes("--self-test") });
 await checkLoadDataBinding(undefined, process.argv.includes("--self-test"));
 await checkKernelSourceBinding({ selfTest: process.argv.includes("--self-test") });
+await checkMetalAssembleSourceBinding({ selfTest: process.argv.includes("--self-test") });
 
 // A run starts from a clone of the last run's directory and reuses each module
 // whose key (checker.ts, toolchain, dependencies, its text and its imports' keys)
