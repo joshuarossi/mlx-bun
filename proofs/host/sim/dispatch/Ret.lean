@@ -1,0 +1,43 @@
+import host.sim.dispatch.Ret2
+import host.sim.dispatch.Ret3
+namespace Host.Ts.Sim.Disp
+open Host.Ts Host.Ts.Sim
+
+/-! # Dispatch of `.ret v` by the top frame (an empty stack runs the next job) -/
+
+section
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+  {s t : St F.S} {S : SSrv} {C : CSrv} {P : JSP F}
+
+def okRet (P : JSP F) (s : St F.S) (n : Nat) (v : Val) : List Frame → Bool
+  | [] => true
+  | f :: fs => match f with
+    | .e x => okRetE P s n v x
+    | .c x => okRetC P s n v x
+    | .l x => okRetL P s n v x
+    | .a x => okRetA P s n v x
+    | .s x => okRetS P s v x
+    | .lp x => okRetLp P s n v x
+    | .b x => okRetB P s n v x
+    | .k x => okRetK P s n v fs x
+
+theorem simRet {okBack : F.S → Arg → Bool} {okCall0 : F.S → Name → List Arg → Bool} (hF : FfiSim F FR okCall0 okBack) (hFR : FRLaws FR) (hK : Kp P K)
+    (hN : NativeFacts F FR P) (h : Rel F FR M ν K s S t C) {v : Val} (hc : s.ctl = .ret v)
+    (hn : s.next + margin < Sim.bound) (hok : okRet P s S.tab.length v s.stack = true) :
+    MSim (PX F FR M ν K S C) S C (step F s) (step F t) := by
+  cases hs : s.stack with
+  | nil => exact MSim.toX (step_ret_empty h hc hs hn)
+  | cons f fs =>
+    rw [hs] at hok
+    cases f with
+    | e x => exact simRetE hF hFR hK hN h hc hs hn hok
+    | c x => exact simRetC hF hK h hc hs hn hok
+    | l x => exact simRetL hF hK h hc hs hn hok
+    | a x => exact simRetA hF hFR hK hN h hc hs hn hok
+    | s x => exact simRetS hF hFR hK h hc hs hn hok
+    | lp x => exact simRetLp hF hFR hK hN h hc hs hn hok
+    | b x => exact simRetB hF hFR hK hN h hc hs hn hok
+    | k x => exact simRetK hF hFR hK h hc hs hn hok
+
+end
+end Host.Ts.Sim.Disp
