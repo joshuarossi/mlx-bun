@@ -14,8 +14,12 @@ theorem map_cons_join {α β γ : Type} (f : α → γ) (g : β → γ)
     (head : f a = g b) (tail : as.map f = bs.map g) :
     (a::as).map f = (b::bs).map g := congrArg₂ List.cons head tail
 
-private def proof (name : Lean.Name) (ty value : Lean.Expr) : TermElabM Unit :=
-  addDecl (.thmDecl {name,levelParams := [],type := ty,value})
+-- `addDecl` keeps a kernel-rejected theorem as an axiom; restoring the
+-- environment keeps a rejected candidate out of it.
+private def proof (name : Lean.Name) (ty value : Lean.Expr) : TermElabM Unit := do
+  let saved ← getEnv
+  try addDecl (.thmDecl {name,levelParams := [],type := ty,value})
+  catch ex => setEnv saved; throw ex
 
 /-- Stage the same cache-carrier list equality one pair at a time. Each
 candidate head is checked by kernel conversion; only ordinary list
