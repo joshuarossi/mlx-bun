@@ -173,7 +173,10 @@ Open:
       The sensitivity reading there is provisional and awaits independent review. Decision
       (Josh): whether to build a MOSS-owned attention kernel that keeps the reference's bf16
       softmax numerators without holding the float32 scores (the measured form reproduces
-      the reference's attention far more closely but did not change the failures). Exit:
+      the reference's attention far more closely but did not change the failures). Decision
+      (Josh): publishing the PyTorch oracle runner (`~/oracles/moss-image/oracle.py`)
+      externally, pinned by hash, so the comparison is reproducible without this machine, as
+      ARCHITECTURE's result rules ask. Exit:
       each passes its bound, or Josh records a decision.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet

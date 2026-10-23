@@ -334,7 +334,7 @@ takes transformers' torch fallback for linear attention) and diffusers 0.38.0's
 `AutoencoderKLFlux2`, torch 2.9.1 on the CPU, Python 3.12.13 (accelerate 1.15.0,
 safetensors 0.9.0rc1, numpy 2.5.4). That reference runs outside every checkout
 from `~/oracles/moss-image` (current script SHA-256
-`169181b7455d365a1f1a318665bc01b6d743c5c419a5c0f981d5a6aab91c0759`, frozen
+`819be50d03524a6df268e61c3eb54a313ecbf79a32c3efd2e3ab48bc7163f7f7`, frozen
 requirements `937e32db24ba825eff0f431eed77af44f00a50c33ff254b6b249c90f864089da`)
 and writes
 safetensors captures: the tokenized prompts and hidden states, the schedule, its
@@ -348,17 +348,25 @@ not read: the gated norm's intermediates one operation at a time
 (`block-steps`), the guided velocity at each of the reference's own trajectory
 states (`teacher`), every DiT block's output on the CPU and MPS (`dit-blocks`),
 the timestep embedding and modulations one operation at a time (`time-steps`),
-and the text refiner one operation at a time (`text-steps`). Earlier versions of the script wrote the captures. The test's
-captures came from versions whose later changes only added the device option and
-stages. Against the copy kept from before the `delta` stage (`oracle.py.before-delta`,
-SHA-256 `208ab2fda4a09ae6709a427d1eb276d1e2678ff80e8fc944aa3c5f559cb45c2d`), the
-current script removes no line but its stage list and dispatch table. Of the
+and the text refiner one operation at a time (`text-steps`, optionally on another
+implementation's input projection). Earlier versions of the script wrote the
+captures. The copy kept from before the `delta` stage (`oracle.py.before-delta`,
+SHA-256 `208ab2fda4a09ae6709a427d1eb276d1e2678ff80e8fc944aa3c5f559cb45c2d`) holds
+every line of the current script's encode, schedule, noise, dit, sample and vae
+stages: the current script removes no line from it but its stage list and dispatch
+table. That covers the stages behind the test's other captures, not the version
+that wrote the `delta` and `gated-norm` captures, which was not hashed. Of the
 diagnostics, `23c1265aab78771b5fbc2fda8d0f95153b84c32e9e88c55c57c3f734a8f783f8`
 wrote `gated-norm-steps`, `bc3312f13665a4d582fa24021a38b7adf7af887dec160990a8a4582153c250ff`
 wrote `time-steps`, `c98ca6a3feb3ceba3030a27de148c01bf55f77aec07d89be9b795659d2fbcd98`
 wrote SFT's CPU `dit-blocks`, both MPS `dit-blocks` captures and the `block-steps`
-captures of blocks 1, 11, 31 and 41, and the current script wrote `text-steps`. The versions that wrote block 22's `block-steps`
-captures, `teacher` and Base's CPU `dit-blocks` were not hashed. Before anything is read for a comparison the test computes the
+captures of blocks 1, 11, 31 and 41, `169181b7455d365a1f1a318665bc01b6d743c5c419a5c0f981d5a6aab91c0759`
+wrote `text-steps`, and the current script wrote `text-steps-on-mlxbun-proj-49dc3083`
+(the reference refiner on our input projection, given with `--input`). The versions that wrote block 22's `block-steps`
+captures, `teacher` and Base's CPU `dit-blocks` were not hashed. The runner exists
+only on this machine, so these instructions do not yet meet ARCHITECTURE's rule that
+inputs and procedure be reproducible without a machine-local archive; publishing the
+runner externally, pinned by hash, is a decision for Josh. Before anything is read for a comparison the test computes the
 SHA-256 of every snapshot file and capture it reads and fails unless each equals
 its pin for that revision, and fails if any file in a snapshot directory a loader
 reads is unpinned (an extra index or shard could be selected). Hugging Face cache
@@ -444,8 +452,10 @@ Re-measured at `93172a60`, with the projection fix in place:
   In the refiner's two attention calls the form differs on 59 and 9 of 70,656
   elements, against 13,163 and 12,759 for `sdpa`.
 - On the whole model each block's own error fell from a mean of 4.5e-4 to 3.0e-4
-  (Base, 84 block runs). Teacher-forced velocities stayed in the same ranges,
-  moving both ways by up to a quarter per step. The failures are the same checks:
+  (Base, 84 block runs). Teacher-forced velocities stayed in the same ranges and
+  moved both ways per step: guided errors by up to 24%, unconditional by up to 19%,
+  and conditional by up to 37% (SFT step 6, 1.63e-2 to 2.23e-2). The failures are
+  the same checks:
   Base trajectory step 7 moved from 7.8e-2 to 6.6e-2, and SFT's from 1.44e-1 to
   1.96e-1.
 - The MLX peak in the DiT stages read 9.98 GiB against 9.76, and the teacher-forced
@@ -456,15 +466,27 @@ Re-measured at `93172a60`, with the projection fix in place:
 Keeping the reference's bf16 store without holding the scores would take a
 MOSS-owned attention kernel. Whether to build one is a decision for Josh.
 
-In the text refiner, on the reference's own inputs (`text-steps`), every operation
-but attention matches to summation order: at most 80 elements of a projection
-differ, and the norms, RoPE, SITU and residuals match exactly. The refined text the
-joint blocks receive is 2.08e-3 from the reference's. Chained from our own input
-projection, with the bf16-numerator attention, the refiner's first block still ends
-1.05e-3 from the reference. The projection's 33 differing elements (2.2e-5 relative)
-grow to 1,806 in the next projection (2.1e-4), and on through attention and the
-feed-forward, about 48 times within one block. Those remaining differences are
-matmul summation order.
+In the text refiner (`text-steps`), on the reference's own input to each operation,
+the norms, RoPE, SITU and residuals match exactly, the projections differ on at most
+80 elements each, and attention on about 18%. Every differing projection element
+lies within 2.4 units of float32 accumulation error (2^-24 times the sum of the
+terms' magnitudes) of a bf16 rounding midpoint, where an extra rounding or a
+misplaced bias would leave elements far outside that band. Against the exact
+product plus bias rounded once, ours misses 28 to 66 elements per projection, about
+what a sequential float32 sum misses (29 to 66). The reference misses 9 to 18, about
+what a pairwise float32 sum misses (7 to 21). These differences are consistent with
+float32 accumulation order; that does not show it is their only cause.
+
+The refined text the joint blocks receive is 2.08e-3 (Base) and 1.97e-3 (SFT) from
+the reference's. The reference's own refiner, run on our input projection (which
+differs from its own on 33 and 24 of 70,656 elements, about 2e-5 relative), ends
+1.93e-3 and 2.14e-3 from itself. Our refiner on the reference's projection ends
+2.13e-3 and 2.12e-3 from it, or 1.69e-3 and 1.74e-3 with the bf16-numerator
+attention. Input differences of this size grow into the whole observed difference
+in the reference's own arithmetic, and our arithmetic adds a difference of about the
+same size. In Base's first refiner block, chained from our projection with the
+bf16-numerator attention, the relative error rose from 2.2e-5 to 1.05e-3, an
+observed ratio of about 48.
 
 Linear-attention bounds, fixed before their first comparison: transformers'
 `l2norm` within 1 bf16 ulp per element, `Qwen3_5RMSNormGated` within 1 bf16 ulp,
