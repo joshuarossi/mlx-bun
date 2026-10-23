@@ -99,7 +99,8 @@
     "./execution/request-policy": "./src/execution/request-policy.ts",
     "./models/diffusion-gemma/vision": "./src/models/diffusion-gemma/vision.ts",
     "./input/tool-call": "./src/input/tool-call.ts",
-    "./models/profile": "./src/models/profile.ts"
+    "./models/profile": "./src/models/profile.ts",
+    "./models/moss-image": "./src/models/moss-image/index.ts"
   },
   "files": [
     "src",

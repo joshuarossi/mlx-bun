@@ -38,8 +38,8 @@ export class MossJointAttention {
   dispose(): void { for (const linear of [this.q, this.k, this.v, this.o]) linear.dispose(); }
 }
 
-/** Text-refiner attention: one fused qkv projection (with bias) split in thirds, and the output projection. */
-export class MossTextAttention {
+/** Text-refiner attention (`_TextBlock`): one fused qkv projection (with bias) split in thirds, and the output projection. */
+export class MossRefinerAttention {
   constructor(readonly qkv: MossLinear, readonly proj: MossLinear, readonly qNorm: MossRmsNorm, readonly kNorm: MossRmsNorm,
     readonly rope: MossRope, readonly heads: number) {}
 
@@ -69,7 +69,7 @@ export class MossJointFeedForward {
 }
 
 /** Text-refiner feed-forward: separate up and gate projections (with biases), SITU, down. */
-export class MossTextFeedForward {
+export class MossRefinerFeedForward {
   constructor(readonly up: MossLinear, readonly gate: MossLinear, readonly down: MossLinear, readonly activation: MossSitu) {}
 
   forward(y: MlxArray): MlxArray {
@@ -112,9 +112,9 @@ export class MossJointBlock {
 }
 
 /** A text-refiner block (`_TextBlock`): unmodulated pre-norm attention and feed-forward. */
-export class MossTextBlock {
-  constructor(readonly norm1: MossRmsNorm, readonly attention: MossTextAttention,
-    readonly norm2: MossRmsNorm, readonly feedForward: MossTextFeedForward) {}
+export class MossRefinerBlock {
+  constructor(readonly norm1: MossRmsNorm, readonly attention: MossRefinerAttention,
+    readonly norm2: MossRmsNorm, readonly feedForward: MossRefinerFeedForward) {}
 
   /** `x` `[1, L, dim]` (borrowed) to an owned `[1, L, dim]`. */
   forward(x: MlxArray, tables: MossRopeTables): MlxArray {

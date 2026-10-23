@@ -13,7 +13,7 @@ import { Weights } from "../../artifacts/weights";
 import type { ImageDenoiser } from "../../contracts/mlx/image-generation";
 import {
   MossJointAttention, MossJointBlock, MossJointFeedForward, MossLatentEmbedder, MossLatentHead, MossModulation,
-  MossTextAttention, MossTextBlock, MossTextFeedForward, MossTimestepEmbedder, MossTokenSequence,
+  MossRefinerAttention, MossRefinerBlock, MossRefinerFeedForward, MossTimestepEmbedder, MossTokenSequence,
 } from "./blocks";
 import { MossRmsNorm, MossSitu, bindMossLinear, type MossLinear } from "./layers";
 import { MossRope } from "./rope";
@@ -57,7 +57,7 @@ export class MossImageTransformer implements ImageDenoiser {
   readonly rope: MossRope;
   readonly latentEmbedder: MossLatentEmbedder;
   readonly textProjection: MossLinear;
-  readonly textBlocks: readonly MossTextBlock[];
+  readonly textBlocks: readonly MossRefinerBlock[];
   readonly timestepEmbedder: MossTimestepEmbedder;
   readonly modulation: MossModulation;
   readonly sequence = new MossTokenSequence();
@@ -86,11 +86,11 @@ export class MossImageTransformer implements ImageDenoiser {
     this.rope = new MossRope(config.dim / config.numHeads, config.ropeBase);
     this.latentEmbedder = new MossLatentEmbedder(linear("video_embedder"));
     this.textProjection = linear("text_embedder.proj");
-    const textBlock = (prefix: string) => new MossTextBlock(
+    const textBlock = (prefix: string) => new MossRefinerBlock(
       norm(`${prefix}.norm1`),
-      new MossTextAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
+      new MossRefinerAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
       norm(`${prefix}.norm2`),
-      new MossTextFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
+      new MossRefinerFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
     this.textBlocks = [textBlock("text_embedder.blocks.0"), textBlock("text_embedder.blocks.1")];
     this.timestepEmbedder = new MossTimestepEmbedder(linear("time_embedding.0"), linear("time_embedding.2"), config.freqDim);
     this.modulation = new MossModulation(linear("shared_block_modulation"), linear("video_head_modulation"), config.dim);
