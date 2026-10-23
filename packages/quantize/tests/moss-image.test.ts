@@ -35,9 +35,10 @@ function tensor(name: string, shape: number[], dtype = Dtype.bfloat16, scale = 0
 const ones = (name: string, width: number) => tensor(name, [width], Dtype.bfloat16, 0.1);
 
 const DIT = { dim: 64, ffn_dim: 32, num_heads: 2, num_layers: 2, text_dim: 64, freq_dim: 32, latent_channels: 32, rope_base: 10000 };
+// The linear-attention value heads are the real conditioner's 128 wide: the gated norm's summation order is verified for that width.
 const TEXT = { model_type: "qwen3_5_text", hidden_size: 64, num_hidden_layers: 2, layer_types: ["linear_attention", "full_attention"],
   num_attention_heads: 2, num_key_value_heads: 1, head_dim: 32, rms_norm_eps: 1e-6, vocab_size: 64, intermediate_size: 64,
-  full_attention_interval: 2, linear_num_key_heads: 2, linear_key_head_dim: 32, linear_num_value_heads: 4, linear_value_head_dim: 32,
+  full_attention_interval: 2, linear_num_key_heads: 2, linear_key_head_dim: 32, linear_num_value_heads: 4, linear_value_head_dim: 128,
   linear_conv_kernel_dim: 4, rope_parameters: { rope_theta: 1e7, partial_rotary_factor: 0.25, rope_type: "default" }, tie_word_embeddings: false };
 
 function transformerTensors(): NamedTensor[] {
@@ -66,10 +67,10 @@ function textEncoderTensors(): NamedTensor[] {
   const mlp = (p: string) => [tensor(`${p}.mlp.gate_proj.weight`, [64, 64]), tensor(`${p}.mlp.up_proj.weight`, [64, 64]), tensor(`${p}.mlp.down_proj.weight`, [64, 64])];
   const delta = "language_model.layers.0", attention = "language_model.layers.1";
   out.push(ones(`${delta}.input_layernorm.weight`, 64), ones(`${delta}.post_attention_layernorm.weight`, 64), ...mlp(delta),
-    tensor(`${delta}.linear_attn.in_proj_qkv.weight`, [256, 64]), tensor(`${delta}.linear_attn.in_proj_z.weight`, [128, 64]),
+    tensor(`${delta}.linear_attn.in_proj_qkv.weight`, [640, 64]), tensor(`${delta}.linear_attn.in_proj_z.weight`, [512, 64]),
     tensor(`${delta}.linear_attn.in_proj_b.weight`, [4, 64]), tensor(`${delta}.linear_attn.in_proj_a.weight`, [4, 64]),
-    tensor(`${delta}.linear_attn.conv1d.weight`, [256, 1, 4]), tensor(`${delta}.linear_attn.A_log`, [4], Dtype.float32),
-    tensor(`${delta}.linear_attn.dt_bias`, [4]), ones(`${delta}.linear_attn.norm.weight`, 32), tensor(`${delta}.linear_attn.out_proj.weight`, [64, 128]));
+    tensor(`${delta}.linear_attn.conv1d.weight`, [640, 1, 4]), tensor(`${delta}.linear_attn.A_log`, [4], Dtype.float32),
+    tensor(`${delta}.linear_attn.dt_bias`, [4]), ones(`${delta}.linear_attn.norm.weight`, 128), tensor(`${delta}.linear_attn.out_proj.weight`, [64, 512]));
   out.push(ones(`${attention}.input_layernorm.weight`, 64), ones(`${attention}.post_attention_layernorm.weight`, 64), ...mlp(attention),
     tensor(`${attention}.self_attn.q_proj.weight`, [128, 64]), tensor(`${attention}.self_attn.k_proj.weight`, [32, 64]),
     tensor(`${attention}.self_attn.v_proj.weight`, [32, 64]), tensor(`${attention}.self_attn.o_proj.weight`, [64, 64]),
