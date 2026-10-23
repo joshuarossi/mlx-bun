@@ -79,7 +79,7 @@ test("the family imports no other family's modules and no shared layer implement
 /** The kernels the family added, each one file bound by exactly one of its layers (ARCHITECTURE: "Add a kernel as one file in
  * `kernels/` bound by exactly one layer"). */
 const OWNED_KERNELS = [
-  { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situ", layer: "MossSitu" },
+  { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situFor", layer: "MossSitu" },
   { kernel: "kernels/gated-delta-float32", file: "models/moss-image/text-layers.ts", call: "gatedDeltaFloat32", layer: "MossTextDeltaRecurrence" },
 ] as const;
 

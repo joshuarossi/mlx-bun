@@ -8,6 +8,7 @@
 // thing a forward reads.
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import { Dtype } from "@mlx-bun/mlx/ffi";
 import { loadModelConfig, type ModelConfig } from "../../artifacts/config";
 import { Weights } from "../../artifacts/weights";
 import type { ImageDenoiser } from "../../contracts/mlx/image-generation";
@@ -85,7 +86,8 @@ export class MossImageTransformer implements ImageDenoiser {
     const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
     const linear = (path: string): MossLinear => own(bindMossLinear(weights, modelConfig, path));
     const norm = (path: string) => new MossRmsNorm(weights.tensor(`${path}.weight`), NORM_EPS);
-    const activation = new MossSitu();
+    // The DiT runs in bf16, as the embedders cast it: the activation binds its kernel for that dtype.
+    const activation = new MossSitu(Dtype.bfloat16);
     this.rope = own(new MossRope(config.dim / config.numHeads, config.ropeBase));
     try {
       this.latentEmbedder = new MossLatentEmbedder(linear("video_embedder"));

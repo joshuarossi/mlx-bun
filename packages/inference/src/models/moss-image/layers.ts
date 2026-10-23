@@ -3,10 +3,11 @@
 // component's `Weights` (which frees them); a layer frees only what it made.
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
+import type { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { quantFor, type ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
-import { situ } from "../../kernels/situ";
+import { situFor } from "../../kernels/situ";
 
 /** A dense projection without a bias, `x @ w.T`. Owns the transposed view it makes. */
 export class MossDenseLinear {
@@ -85,10 +86,18 @@ export class MossRmsNorm {
   }
 }
 
-/** The SITU activation over `hidden` and `gate`, consuming both. */
+/** The SITU activation over `hidden` and `gate`, consuming both. The activations' dtype is fixed by the graph that builds
+ * it; the kernel specialized to it is bound here, once. */
 export class MossSitu {
+  readonly #situ: (hidden: MlxArray, gate: MlxArray) => MlxArray;
+
+  /** `dtype`: the dtype of every `hidden` and `gate` this layer will see. */
+  constructor(dtype: Dtype) {
+    this.#situ = situFor(dtype);
+  }
+
   forward(hidden: MlxArray, gate: MlxArray): MlxArray {
-    const out = situ(hidden, gate);
+    const out = this.#situ(hidden, gate);
     hidden.dispose(); gate.dispose();
     return out;
   }

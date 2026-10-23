@@ -11,7 +11,7 @@ import { expect, test } from "bun:test";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { situ } from "../../src/kernels/situ";
+import { situFor } from "../../src/kernels/situ";
 import { timestepSinusoid } from "../../src/models/moss-image/blocks";
 import { parseQuantization } from "../../src/artifacts/config";
 import { MossDenseBiasedLinear, MossDenseLinear, MossQuantizedBiasedLinear, MossQuantizedLinear, storedAffineSpec } from "../../src/models/moss-image/layers";
@@ -28,9 +28,31 @@ const close = (actual: Float32Array, expected: ArrayLike<number>, tolerance: num
 test("the SITU kernel computes (4 tanh(g/4) sigmoid(g)) (25 tanh(h/25))", () => {
   const h = ramp(256, 0.3, 60), g = ramp(256, 1.1, 12);
   using hidden = MlxArray.fromFloat32(h, [256]), gate = MlxArray.fromFloat32(g, [256]);
-  using out = situ(hidden, gate);
+  using out = situFor(Dtype.float32)(hidden, gate);
   const expected = Array.from(h, (x, i) => 4 * Math.tanh(g[i]! / 4) / (1 + Math.exp(-g[i]!)) * 25 * Math.tanh(x / 25));
   close(out.toFloat32(), expected, 1e-5);
+});
+
+test("the SITU kernel stores each operation's float32 result in bf16 for bf16 inputs, as the reference's eager bf16 tensors do", () => {
+  const n = 65536;
+  let seed = 0x9e3779b9;
+  const uniform = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed + 0.5) / 2 ** 32; };
+  const h = Float32Array.from({ length: n }, () => bf16(40 * (uniform() - 0.5))), g = Float32Array.from({ length: n }, () => bf16(16 * (uniform() - 0.5)));
+  using h32 = MlxArray.fromFloat32(h, [n]), g32 = MlxArray.fromFloat32(g, [n]);
+  using hidden = h32.astype(Dtype.bfloat16), gate = g32.astype(Dtype.bfloat16);
+  using out = situFor(Dtype.bfloat16)(hidden, gate);
+  using wide = out.astype(Dtype.float32);
+  const actual = wide.toFloat32();
+  // Every operation of `_situ` computed in float32 and stored in bf16: this sequence reproduces the reference's outputs
+  // on the captured block-22 activations exactly.
+  const stored = (v: number) => bf16(Math.fround(v));
+  let differing = 0;
+  for (let i = 0; i < n; i++) {
+    const gated = stored(stored(4 * stored(Math.tanh(stored(g[i]! / 4)))) * stored(1 / (1 + Math.exp(-g[i]!))));
+    const clamped = stored(25 * stored(Math.tanh(stored(h[i]! / 25))));
+    if (actual[i] !== stored(gated * clamped)) differing++;
+  }
+  expect(differing).toBe(0);
 });
 
 test("the projection forms compute x @ w.T (+ bias), dense and affine-quantized", () => {
