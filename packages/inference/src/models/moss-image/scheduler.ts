@@ -2,7 +2,7 @@
 // flow-matching grid snapped to the nearest noise level of the training grid,
 // then diffusers' FlowMatchEulerDiscreteScheduler with no further shift and a
 // terminal 0. Every value is computed with float32 rounding at the reference's
-// operation boundaries (torch.linspace's two-sided float32 recurrence, the
+// operation boundaries (torch.linspace's two-sided fused float32 steps, the
 // float32 shift, searchsorted and the nearest-neighbour test), so the levels
 // equal the reference's bit for bit.
 
@@ -10,8 +10,10 @@ import type { FlowMatchingSchedule } from "../../contracts/mlx/image-generation"
 
 const f32 = Math.fround;
 
-/** torch.linspace(start, end, count) in float32 (CPU kernel: the step in float32,
- * the first half counted up from start, the second half down from end). */
+/** torch.linspace(start, end, count) in float32 as its CPU kernel computes it: the
+ * step in float32, the first half counted up from start and the second half down
+ * from end, each `start + step * i` one fused multiply-add (one rounding of the
+ * exact product and sum; torch 2.9.1's arm64 build contracts it). */
 function linspace(start: number, end: number, count: number): Float32Array {
   const out = new Float32Array(count);
   if (count === 1) { out[0] = start; return out; }
@@ -19,7 +21,7 @@ function linspace(start: number, end: number, count: number): Float32Array {
   const step = f32(f32(e - s) / (count - 1));
   const halfway = Math.floor(count / 2);
   for (let i = 0; i < count; i++)
-    out[i] = i < halfway ? f32(s + f32(step * i)) : f32(e - f32(step * (count - i - 1)));
+    out[i] = i < halfway ? f32(s + step * i) : f32(e - step * (count - i - 1));
   return out;
 }
 
