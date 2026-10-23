@@ -468,14 +468,17 @@ MOSS-owned attention kernel. Whether to build one is a decision for Josh.
 
 In the text refiner (`text-steps`), on the reference's own input to each operation,
 the norms, RoPE, SITU and residuals match exactly, the projections differ on at most
-80 elements each, and attention on about 18%. Every differing projection element
-lies within 2.4 units of float32 accumulation error (2^-24 times the sum of the
-terms' magnitudes) of a bf16 rounding midpoint, where an extra rounding or a
-misplaced bias would leave elements far outside that band. Against the exact
-product plus bias rounded once, ours misses 28 to 66 elements per projection, about
-what a sequential float32 sum misses (29 to 66). The reference misses 9 to 18, about
-what a pairwise float32 sum misses (7 to 21). These differences are consistent with
-float32 accumulation order; that does not show it is their only cause.
+80 elements each, and attention on about 18%. For all 11 refiner projections of
+both models (`projection-ties`), each compared with the exact product plus bias
+rounded once, directly, to bf16: every element where ours and the reference differ
+has both outputs within 3.5 units of float32 accumulation error (2^-24 times the sum
+of the terms' magnitudes) of the exact value, beyond one bf16 rounding. In most of
+them the two outputs are the exact value's two bf16 neighbours. Ours misses the
+exact rounding on 14 to 74 elements per projection, about as often as a sequential
+float32 sum, except in the 8,192-wide down projections, where it misses fewer (22 to
+32 against 34 to 53). The reference misses 3 to 30, about as often as a pairwise
+float32 sum (2 to 24). These differences are consistent with float32 accumulation
+order; the measurement does not exclude other causes.
 
 The refined text the joint blocks receive is 2.08e-3 (Base) and 1.97e-3 (SFT) from
 the reference's. The reference's own refiner, run on our input projection (which
