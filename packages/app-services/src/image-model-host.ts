@@ -79,6 +79,8 @@ function waitTurn(previous: Promise<void>, signal: AbortSignal | undefined): Pro
 interface Slot {
   readonly id: ModelId;
   readonly directory: string;
+  /** The operations its catalog entry declares (always `image`). */
+  readonly operations: readonly ModelOperation[];
   /** The catalog's size until the pipeline opens, then what a run holds at once. */
   bytes: number;
   opened: Opened | null;
@@ -164,17 +166,22 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
     slot.timer = timers.setTimeout(() => { slot.timer = null; if (slot.leases === 0 && dispose(slot)) log(`[image] ${slot.id} unloaded (idle)`); }, seconds * 1000);
   };
 
+  /** The slot for `id`, refusing an operation its model does not declare on every acquisition, a known slot included. */
   async function slotFor(id: ModelId, need: readonly ModelOperation[]): Promise<Slot> {
-    const existing = slots.get(id);
-    if (existing) return existing;
+    const slot = slots.get(id) ?? await newSlot(id);
+    for (const operation of need)
+      if (!slot.operations.includes(operation)) throw new ModelHostFailure("does-not-fit", `${slot.id} does not declare the ${operation} operation`);
+    return slot;
+  }
+
+  async function newSlot(id: ModelId): Promise<Slot> {
     const entry = options.configured?.id === id
       ? { id, directory: options.configured.directory, bytes: 0, operations: ["image"] as readonly ModelOperation[] }
       : listed.get(id) ?? await catalog.find(id);
-    for (const operation of ["image" as const, ...need])
-      if (!entry.operations.includes(operation)) throw new ModelHostFailure("does-not-fit", `${entry.id} does not declare the ${operation} operation`);
+    if (!entry.operations.includes("image")) throw new ModelHostFailure("does-not-fit", `${entry.id} does not declare the image operation`);
     const known = slots.get(entry.id);
     if (known) return known;
-    const slot: Slot = { id: entry.id, directory: entry.directory, bytes: entry.bytes, opened: null, loading: null, leases: 0, timer: null,
+    const slot: Slot = { id: entry.id, directory: entry.directory, operations: entry.operations, bytes: entry.bytes, opened: null, loading: null, leases: 0, timer: null,
       loads: 0, unloads: 0, lastLoadMs: 0, lastUsedAt: 0 };
     slots.set(entry.id, slot);
     if (id !== entry.id) slots.set(id, slot);

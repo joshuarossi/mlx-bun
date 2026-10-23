@@ -224,6 +224,9 @@ test("acquire rejects a model that does not declare image and an id the catalog 
   await expect(host.acquire("org/chat")).rejects.toMatchObject({ code: "does-not-fit" } satisfies Partial<ModelHostError>);
   await expect(host.acquire("missing")).rejects.toThrow('no model matching "missing"');
   await expect(host.acquire("org/image", { need: ["generate"] })).rejects.toMatchObject({ code: "does-not-fit" });
+  // The same holds once the model has a slot: an operation it does not declare is refused on every acquisition.
+  (await host.acquire("org/image", { need: ["image"] })).release();
+  await expect(host.acquire("org/image", { need: ["generate"] })).rejects.toMatchObject({ code: "does-not-fit", message: "org/image does not declare the generate operation" });
   const configured = setup({ configured: { id: "mine", directory: "/elsewhere" } }, []);
   (await configured.host.acquire("mine")).release();
   expect(configured.events[0]).toBe("open /elsewhere");
