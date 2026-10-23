@@ -39,14 +39,14 @@
 //
 // ADJUDICATED by independent review (2026-10-23): the last DiT block's text rows
 // feed no later operation and are reported, not held; its image rows hold the
-// original bounds. Every other check holds its original bounds. Two remain
-// unresolved and fail here until investigated: Base's block 22 at step 4 (worst
-// token, row 40, below the 0.999 cosine bound; float32 attention does not
-// explain it) and trajectory steps 5 to 7 beyond the original bounds. The
-// review's proposed experiments: block 22 alone on identical captured block-21
-// inputs and modulation, comparing its norm, projections, RoPE, attention, SITU
-// and residual outputs; and each step's velocity on identical reference
-// trajectory states. The rule "relative error <= SPREAD_FACTOR times the
+// original bounds. Every other check holds its original bounds; every check that
+// fails them is unresolved (the results file lists each as `adjudicated.unresolved`)
+// and none is waived. The review's two experiments (block 22 alone on identical
+// captured block-21 inputs and modulation; each step's velocity on the reference's
+// own trajectory states), the first divergences they led to, the two operations
+// found rounded differently from the reference (SITU's per-operation bf16 stores,
+// the one-row projections' single rounding) and the checks still failing are in
+// the package README. The rule "relative error <= SPREAD_FACTOR times the
 // reference's own MPS-vs-CPU relative error" is recorded as an investigative
 // bound beside the original verdict and is not asserted.
 //
@@ -302,7 +302,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     const originalFailures = checks.filter(check => check.original && !check.original.pass).map(check => check.stage);
     const execution = runStatus({ inputsVerified, tests: TESTS, completed, failures });
     writeFileSync(resultsPath, JSON.stringify({ status: execution.status, acceptance: "pending", execution, originalCriteria: ORIGINAL, delta: DELTA,
-      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7"] },
+      adjudicated: { lastBlockTextRows: "reported", unresolved: failures },
       investigative: { spreadFactor: SPREAD_FACTOR },
       implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },
       inputs: { revision: basename(snapshot), verified: inputsVerified, ...(inputs.error ? { error: inputs.error } : {}),
