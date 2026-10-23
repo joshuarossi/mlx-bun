@@ -29,7 +29,10 @@
 // (`&quiet=1` changes what `/health` reports without a line, like a reading the stream has not delivered yet).
 // FAKE_WORKER_WEIGHTS={"<model id or *>":bytes} is the weights `/stats` reports (`admission.weights_bytes`).
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id, the image form (`{ kind: "image", model }`)
-// its model's id; `POST /v1/images/*` answers with the launch kind that reached it.
+// its model's id; `POST /v1/images/*` answers with the launch kind that reached it. An image request whose prompt contains `hold`
+// waits until FAKE_WORKER_IMAGE_GATE=<path> exists (events: image started, image finished). In the image form, image runs and
+// `POST /admin/lease` take one lock in turn, as the real image worker's runs and execution lease do; every form records lease and
+// lease released.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
@@ -90,6 +93,16 @@ const HELLO_FRAMES = [
   sse(chunk({ content: " the worker." }, null)), sse({ ...chunk({}, "stop"), usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }), "data: [DONE]\n\n",
 ];
 const crash = (code: number) => setTimeout(() => process.exit(code), 30);
+/** The image form's execution lock (FIFO): resolves to its release once every earlier holder has released. Other forms never wait. */
+let lockTail: Promise<void> = Promise.resolve();
+const lock = async (): Promise<() => void> => {
+  if (launch.kind !== "image") return () => {};
+  const previous = lockTail;
+  let unlock!: () => void;
+  lockTail = new Promise(resolve => { unlock = resolve; });
+  await previous;
+  return unlock;
+};
 const hold = (request: Request, first: Uint8Array, entry: Seen) => new Response(new ReadableStream<Uint8Array>({
   start(controller) {
     controller.enqueue(first);
@@ -106,9 +119,13 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   if (path === "/health") return Response.json({ status: "ok", state: draining ? "draining" : "ready", model: current, pid: process.pid, in_flight: inFlight, leases: leases.size,
     ...(memory ? { memory: { active_bytes: memory[0], cache_bytes: memory[1], peak_bytes: memory[2], working_set_bytes: memory[3] ?? 0 } } : {}) });
   if (path === "/admin/lease") {
+    const unlock = await lock();
     const lease = {};
     leases.add(lease);
-    const release = () => { leases.delete(lease); };
+    event("lease");
+    let released = false;
+    const release = () => { if (released) return; released = true; leases.delete(lease); unlock(); event("lease released"); };
+    if (request.signal.aborted) { release(); return new Response(null, { status: 499 }); }
     request.signal.addEventListener("abort", release, { once: true });
     return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode("leased\n")); }, cancel: release }),
       { headers: { "content-type": "application/octet-stream" } });
@@ -189,7 +206,16 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       ...(process.env.FAKE_WORKER_WEIGHTS ? { weights_bytes: (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)[modelId] ?? (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)["*"] } : {}) }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
   if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
-  if (path.startsWith("/v1/images/") && request.method === "POST") return Response.json({ created: 1, data: [], model: current, kind: launch.kind ?? "model" });
+  if (path.startsWith("/v1/images/") && request.method === "POST") {
+    const body = await request.json().catch(() => ({})) as { prompt?: unknown };
+    const unlock = await lock();
+    try {
+      event("image started");
+      if (typeof body.prompt === "string" && body.prompt.includes("hold")) await gateOpen(process.env.FAKE_WORKER_IMAGE_GATE);
+      event("image finished");
+    } finally { unlock(); }
+    return Response.json({ created: 1, data: [], model: current, kind: launch.kind ?? "model" });
+  }
   if (path === "/v1/chat/completions" && request.method === "POST") {
     entry.raw = await request.text();
     let body: { stream?: boolean; messages?: { role: string; content: unknown }[] };

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import type { AppModule, JobService } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { ClientMessage, ServerMessage } from "@mlx-bun/module-chat";
 import { parseCommand } from "../src/cli/args";
@@ -757,6 +758,64 @@ test("an image request naming a local image model by exact id starts that model'
     expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId ?? launch.argv?.[1]} ${launch.stageBudgetBytes ?? "-"}`)).toEqual([
       "model org/model -", "image org/poster 1000", "image org/picture 1000", `app ${whisper.path} -`]);
   } finally {
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
+test("a GPU-exclusive job and an image run never overlap: the job waits for the image run in flight, and an image request during the job waits for the job", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-lease-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const picture = record(root, "org/picture", 5e7);
+  const eventsFile = join(root, "events.jsonl"), gate = join(root, "image-gate");
+  /** The image worker's events (its runs and its execution lease) and the job's, in the order they happened. */
+  const timeline: string[] = [];
+  const workerEvents = () => existsSync(eventsFile) ? readFileSync(eventsFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as { event: string; model: string })
+    .filter(entry => entry.model === "org/picture" && (entry.event.startsWith("image ") || entry.event.startsWith("lease"))).map(entry => entry.event) : [];
+  // A module whose job holds the GPU exclusively until the test releases it, as a managed job's runner would.
+  let jobs!: JobService;
+  const finish = Promise.withResolvers<void>();
+  const probe: AppModule<"jobs"> = { id: "probe", title: "Probe", summary: "An exclusive job", requires: ["jobs"],
+    jobs: [{ kind: "probe-exclusive", isolation: "task", gpu: "exclusive" }],
+    activate: ({ services }) => { jobs = services.jobs; return { jobs: { "probe-exclusive": async () => { timeline.push("job running"); await finish.promise; timeline.push("job finished"); } } }; } };
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, async () => startIsolatedServer(record(root, "org/model"), options, { modules: [probe], entry,
+    env: { ...workerEnv, FAKE_WORKER_EVENTS: eventsFile, FAKE_WORKER_IMAGE_GATE: gate },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? [picture] : [], notice() {}, log() {}, error() {} }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const generate = (prompt: string) => fetch(new URL("/v1/images/generations", base), { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt }) }).then(async response => { timeline.push(`answered ${prompt}`); return response.json(); });
+  try {
+    // (a) An image run is in flight in the image worker when the job starts: the job waits for it.
+    const held = generate("hold");
+    await until(() => workerEvents().includes("image started"), "the image run");
+    const job = await jobs.submit({ kind: "probe-exclusive", config: {} });
+    await Bun.sleep(300);
+    const whileRunning = [...timeline];
+    writeFileSync(gate, "");
+    await held;
+    await until(() => timeline.includes("job running"), "the job");
+    // (b) The job holds the GPU when an image request arrives: the request waits for the job.
+    const during = generate("a cat");
+    await Bun.sleep(300);
+    const whileJob = [...timeline];
+    finish.resolve();
+    await during;
+    await until(async () => (await jobs.get(job.id))?.status === "done", "the job's end");
+    // The job did not start while the image run was in flight, and the request made during the job was not answered before it ended.
+    // (The first answer travels back while the job may already run: the worker's own order shows the run ended before the lease.)
+    expect(whileRunning).toEqual([]);
+    expect(whileJob.filter(entry => entry !== "answered hold")).toEqual(["job running"]);
+    expect(timeline.filter(entry => entry !== "answered hold")).toEqual(["job running", "job finished", "answered a cat"]);
+    expect(workerEvents()).toEqual(["image started", "image finished", "lease", "lease released", "image started", "image finished"]);
+  } finally {
+    finish.resolve();
     await running.close();
     leftover = workerDirs(tmp);
     rmSync(root, { recursive: true, force: true });

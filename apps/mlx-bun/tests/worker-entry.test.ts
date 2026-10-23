@@ -618,6 +618,73 @@ test("an image worker serves only the model it was started for: a request naming
   } finally { socket.remove(); }
 });
 
+test("an image worker's runs and its execution lease take one lock: a managed job's lease waits for the run in flight, and a run waits for a held lease", async () => {
+  // The real image companion composition and admin surface; only the pipeline backend (and the native library) are stand-ins.
+  const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { EventEmitter } from "node:events";
+    const app = ${JSON.stringify(app)};
+    const until = async (check, what) => { const end = Date.now() + 10000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
+    const order = [];
+    let gate;
+    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
+    mock.module(${JSON.stringify(backend)}, () => ({ nativeImageBackend: { async load() {
+      return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16,
+        stageBytes: { conditioner: 1, denoiser: 1, decoder: 1 },
+        async generate() {
+          order.push("run started");
+          await gate?.promise;
+          order.push("run finished");
+          return { width: 16, height: 16, pixels: new Uint8Array(16 * 16 * 3), seed: 1, steps: 1, guidance: 1, timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } };
+        },
+        dispose() {} };
+    } } }));
+    const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
+    const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
+    const socketPath = process.env.WORKER_SOCKET;
+    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 3, modelType: "SomeImagePipeline" }, stageBudgetBytes: 1000 };
+    let push, end;
+    const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
+    push(encodeLaunch(launch) + "\\n");
+    const written = [];
+    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter() });
+    await until(() => written.length === 1, "the ready line");
+    const answered = [];
+    const post = () => fetch("http://worker/v1/images/generations", { method: "POST", unix: socketPath, headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a cat", size: "16x16" }) }).then(async response => { answered.push(response.status); return response; });
+    // (a) A run is in flight when the job asks for the lease: the lease waits for the run to end.
+    gate = Promise.withResolvers();
+    const first = post();
+    await until(() => order.includes("run started"), "the run");
+    const job = new AbortController();
+    const lease = fetch("http://worker/admin/lease", { method: "POST", unix: socketPath, signal: job.signal }).then(response => { order.push("leased"); return response; });
+    await Bun.sleep(100);
+    order.push("run released");
+    gate.resolve();
+    assert.equal((await lease).status, 200);
+    await first;
+    // (b) The job holds the lease when a request arrives: the run waits for the job to let go.
+    gate = undefined;
+    const second = post();
+    await Bun.sleep(100);
+    order.push("job released");
+    job.abort();
+    await second;
+    assert.deepEqual(order, ["run started", "run released", "run finished", "leased", "job released", "run started", "run finished"]);
+    assert.deepEqual(answered, [200, 200]);
+    end();
+    assert.equal(await exited, 0);
+  `;
+  const socket = socketDir();
+  try {
+    const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
+    expect([result.code, result.stderr]).toEqual([0, ""]);
+    expect(existsSync(socket.socketPath)).toBe(false);
+  } finally { socket.remove(); }
+});
+
 test("the app form composes the real app over the socket with private storage: persistent routes, synthesis on the memory task model, dataset loopback to the same socket, streaming, and client aborts", async () => {
   const script = `
     import { mock } from "bun:test";
