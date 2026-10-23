@@ -257,7 +257,7 @@ dependencies). A host implements them once and every module depends only on them
 
 | Service | Owns |
 | --- | --- |
-| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. `serve` holds each model in its own worker process (the parent runs this same manager over workers and loads nothing; `--in-process` loads them in the serving process). Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`, and `adapters` on a model that mounts LoRA adapters: list, mount, unmount, merge under the model's execution lease, in the process that holds the model), never for a model family. A host that holds several models can switch which one answers requests that name none (`serve`). |
+| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. `serve` holds each model in its own worker process (the parent runs this same manager over workers and loads nothing; `--in-process` loads them in the serving process). Companions (Whisper, the text-to-image model) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`, `image`, and `adapters` on a model that mounts LoRA adapters: list, mount, unmount, merge under the model's execution lease, in the process that holds the model), never for a model family. A host that holds several models can switch which one answers requests that name none (`serve`). |
 | `jobs` | Persisted job state, task and child-process lifetimes, the GPU lease (`exclusive` jobs drain models first). |
 | `storage` | A module's declared entries under `MLX_BUN_HOME`; nothing else is written by default. |
 | `catalog` | Local models and adapters (with what the index knows of each: capabilities, quantization, sizes, support tier, snapshot), fit estimates, downloads (awaited, or started to outlive the caller), re-indexing, publishing, registering outputs. It announces `catalog.changed`. |
@@ -315,7 +315,11 @@ file, `src/modules.ts`, the only file that names module packages, plus the
 implementations of the core services. The ones hosts share are the host library
 `@mlx-bun/app-services`: the Whisper model host over a catalog (lazy load, idle
 unload, pinning, the host's execution lock around decoding, and a hook that
-lets a host that also generates make room first), the registry-backed catalog, storage
+lets a host that also generates make room first), the image model host with the
+same residency (one run per pipeline at a time under that lock, and the host's own
+choice to release each stage per run when a pipeline's stages exceed its byte
+budget), both behind one `modelHost` that answers each call by the operation the
+model declares, the registry-backed catalog, storage
 entries under `MLX_BUN_HOME`, verb parsing and help from manifests, route
 mounting, module activation and verb running. A host adds only its own execution
 lock and serving; `apps/mlx-bun` also owns the generation side of `modelHost`
@@ -329,7 +333,7 @@ persistent state does, on the listener that answers the browser; the model compo
 is build-time; a user setting may disable an installed module at start.
 
 The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app state (`AppState.events`), so the
-model loader, the Whisper host and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
+model loader, the companion hosts (Whisper, image) and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
 request from the run's own stats and samples the gateway and caches) publish into the bus the modules subscribe to.
 A module's scoped bus publishes only its own `<id>.*` events, never a core type. A module that requires `jobs`
 (datasets, metrics, benchmarks) or declares `placement: "app"` (models: it drives the serving host's residency and reaches a model only through

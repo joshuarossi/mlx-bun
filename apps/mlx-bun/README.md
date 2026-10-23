@@ -146,9 +146,9 @@ GPU can wire, as `/fit` does, when the device does not say); a model that is not
 its weights plus the KV and prefill working set of an 8k context (`residency/resident-estimate.ts`,
 the `/fit` model) and, once loaded, what it
 reports it holds (weights, projected KV, RAM prefix cache), floored by the process's measured
-MLX active memory. A runtime that plans its own memory is served alone. The Whisper companion
-counts against the budget and, when it loads, drains a chat model to make room;
-`--whisper-resident` pins it (it is never a victim).
+MLX active memory. A runtime that plans its own memory is served alone. The companions
+(Whisper, the image model) count against the budget and, when they load, drain a chat model to make room;
+`--whisper-resident` pins Whisper (it is never a victim).
 
 `server/model-routes.ts` routes by the request's `model`: an exact local id (the ids
 `GET /v1/models` lists) leases that model, and the response body holds the lease until
@@ -159,7 +159,7 @@ server started with until `POST /api/hub/serve` (the Models panel) or another
 switch makes a different one current; naming a model in a request never changes it. `GET /v1/models`
 lists every local model with `resident` and `current` (the models module's `/library` marks `serving` and `resident` from the host's own residency); `GET /stats`
 adds `models` (budget, resident bytes, each resident model's bytes, leases and last use).
-Managed jobs and Whisper decoding pause every resident model (`pauseAll`) and hold back new
+Managed jobs, Whisper decoding and image runs pause every resident model (`pauseAll`) and hold back new
 loads meanwhile. The host publishes `model.load` (with `resumed` when saved state was found),
 `model.unload` (reason `evicted` or `requested`, whether the flush was durable) and `model.memory`
 on the app's `events` bus, and each unit's engine publishes its request timings and samples through
@@ -302,6 +302,9 @@ request and drained like a chat model when memory is short.
 Its worker preserves `--whisper-idle-unload` and `--whisper-resident`; a ready
 worker can release idle Whisper weights. `/v1/models` lists the configured companion
 before it starts, keeps its resolved id, and reports its weights' actual residency.
+The first downloaded text-to-image model is a worker of its own too (the `image` launch
+form, `startImageHost`), started on the first image request and drained the same way;
+like Whisper's, it holds no execution lease, and `/v1/models` does not list it.
 
 **Readiness.** The listener binds after the startup model's worker reports ready (up
 to 15 minutes for large models, as main), so startup succeeds or fails the way the
@@ -324,8 +327,8 @@ each worker's execution lease.
 over worker units: a model-scoped POST is leased to the worker of the model its body
 names (the lease lasts until the response ends, so a stream is never cut by an
 eviction), anything else is the current model's, `GET /v1/models` and
-`/stats` add residency, and `/v1/audio/*` and `/admin/transcription/*` go to Whisper's
-worker. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
+`/stats` add residency, `/v1/audio/*` and `/admin/transcription/*` go to Whisper's
+worker, and `/v1/images/*` to the image model's. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
 the hop-by-hop headers are stripped, bodies stream through unchanged, a client abort
 aborts the proxied request (`499`), and a worker that cannot take a request answers
 `502 { error: { type: "engine_unavailable", state } }`. `POST /v1/responses` goes
@@ -1331,6 +1334,20 @@ test](tests/engine/voice.test.ts) and the opt-in [transcription
 test](tests/engine/transcription.test.ts) run real weights through this app, and the
 opt-in [transcription parity test](tests/engine/transcription-parity.test.ts) checks the
 served transcripts against the oracle.
+
+## Text-to-image
+
+Image generation is the images module's (`POST /v1/images/generations`, the `mlx-bun image`
+verb). A text-to-image model is never the served chat model: automatic selection skips
+it, and `mlx-bun serve <image model>` refuses before loading anything (`ImageModelServeError`).
+It is served beside the chat model, as Whisper is. The host library's image model host leases the
+first downloaded model that declares `image`, and the in-process composition gives it the
+same execution lock and admission as Whisper: its pipeline opens on the first request, each
+run pauses every resident model, a load first makes room in the budget, and its bytes count
+against it. When a pipeline's stages together exceed the image host's byte budget (half of
+physical memory by default), each run releases every stage after its output, so one stage is
+resident at a time; otherwise the stages stay open while the pipeline does. Under isolation it
+is a companion worker of its own (see the isolated composition above).
 
 ## Metrics and performance
 
