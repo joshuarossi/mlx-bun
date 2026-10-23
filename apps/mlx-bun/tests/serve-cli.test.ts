@@ -896,7 +896,8 @@ test("the transcription-only server preloads on request, serves audio and discov
       const index = await (await fetch(base + "/v1")).json();
       assert.equal(index.mode, "transcription");
       assert.deepEqual(index.endpoints, ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload", "POST /v1/audio/sessions",
-        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "GET /v1/models", "GET /health", "GET /stats"]);
+        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "POST /v1/images/generations",
+        "GET /v1/models", "GET /health", "GET /stats"]);
       const unloaded = await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json();
       assert.deepEqual({ ...unloaded, last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 0, last_load_ms: 0, idle_unload_sec: 5 });
       // No chat model, no web app, no chat completions, no chat socket (no module here declares one): 404s, never a placeholder.
