@@ -183,7 +183,9 @@ export function decodePixels(decoder: ImageLatentDecoder, latents: MlxArray): { 
   using scaled = ops.mulScalar(clipped, 255);
   using rounded = ops.round(scaled);
   using bytes = rounded.astype(Dtype.uint8);
-  return { pixels: new Uint8Array(bytes.rawBytes()), width, height };
+  // Elementwise operations keep a transposed input's layout; the raw read needs row-major memory.
+  using rowMajor = ops.contiguous(bytes);
+  return { pixels: new Uint8Array(rowMajor.rawBytes()), width, height };
 }
 
 export interface ImageGenerationOptions {
