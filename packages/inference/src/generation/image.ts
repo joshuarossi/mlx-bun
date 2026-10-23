@@ -142,11 +142,13 @@ export interface DenoiseOptions {
 
 /** Flow-matching Euler sampling from `latents` (borrowed) down the schedule's
  * noise levels: per step `x + (sigma_next - sigma) * v` in float32, `v` from the
- * request's guidance step. Returns owned, evaluated latents; on cancellation or
- * failure every intermediate is freed. */
-export function denoiseLatents(
+ * request's guidance step. Each evaluated step yields to the event loop, so a
+ * cancellation from a timer, a disconnect or a signal handler is seen before the
+ * next one. Returns owned, evaluated latents; on cancellation or failure every
+ * intermediate is freed. */
+export async function denoiseLatents(
   step: GuidanceStep, schedule: FlowMatchingSchedule, latents: MlxArray, options: DenoiseOptions,
-): { latents: MlxArray; steps: number } {
+): Promise<{ latents: MlxArray; steps: number }> {
   const sigmas = schedule.sigmas(options.steps);
   const total = sigmas.length - 1;
   let x = ops.copyOf(latents);
@@ -158,10 +160,11 @@ export function denoiseLatents(
       using dt = MlxArray.fromFloat32(new Float32Array([next - sigma]), []);
       using change = ops.mul(dt, velocity);
       const updated = ops.add(x, change);
-      updated.eval();
+      try { updated.eval(); } catch (error) { updated.dispose(); throw error; }
       x.dispose();
       x = updated;
       options.onStep?.(i + 1, total);
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     return { latents: x, steps: total };
   } catch (error) {
@@ -238,7 +241,7 @@ export async function generateImage(
     const step = guidanceFor(denoiser, conditioning, resolved);
     using noise = options.latents ? ops.copyOf(options.latents)
       : initialLatents(pipeline.latentChannels, pipeline.pixelsPerLatent, resolved.width, resolved.height, resolved.seed);
-    const denoised = denoiseLatents(step, pipeline.schedule, noise, {
+    const denoised = await denoiseLatents(step, pipeline.schedule, noise, {
       steps: resolved.steps, signal: options.signal,
       onStep: (step, steps) => report({ stage: "denoiser", step, steps }),
     });

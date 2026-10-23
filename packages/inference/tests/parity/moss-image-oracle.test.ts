@@ -296,7 +296,7 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
         calls++;
         return step.velocity(x, t);
       } };
-      const result = denoiseLatents(observed, schedule, noise, { steps: 8, onStep: done => seen.push(done) });
+      const result = await denoiseLatents(observed, schedule, noise, { steps: 8, onStep: done => seen.push(done) });
       using final = result.latents;
       expect(result.steps).toBe(8);
       expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);

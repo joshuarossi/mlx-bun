@@ -2,7 +2,8 @@
 // contracts are all generation reads, so small fakes drive every path. Stage
 // order and release, guided and conditional steps, the Euler arithmetic,
 // validation before any stage opens, cancellation and failure at each stage
-// (stages released, nothing left allocated), and the pixel postprocess on a
+// (stages released, nothing left allocated), a timer's cancellation reaching the
+// denoising loop, an update that fails to evaluate, and the pixel postprocess on a
 // decoder whose output is a transposed view.
 import { expect, test } from "bun:test";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
@@ -118,11 +119,60 @@ test("the Euler steps integrate the velocity down the schedule in float32", asyn
   using latents = MlxArray.fromFloat32(Float32Array.from([0.25, -1.5, 2, 3]), [1, 1, 2, 2]);
   using context = MlxArray.fromFloat32(new Float32Array(4), [1, 1, 4]);
   const done: number[] = [];
-  const result = denoiseLatents(new ConditionalVelocity(denoiser, context), schedule, latents, { steps: 4, onStep: step => done.push(step) });
+  const result = await denoiseLatents(new ConditionalVelocity(denoiser, context), schedule, latents, { steps: 4, onStep: step => done.push(step) });
   using final = result.latents;
   // Velocity 1 from sigma 1 to 0: x - 1.
   expect(Array.from(final.toFloat32())).toEqual([-0.75, -2.5, 1, 2]);
   expect(done).toEqual([1, 2, 3, 4]);
+});
+
+test("a cancellation from a timer reaches the denoising loop between steps, not after it", async () => {
+  const denoiser: ImageDenoiser = { latentChannels: CHANNELS, pixelsPerLatent: PIXELS, depth: DEPTH,
+    velocity(latents) {
+      // A step that keeps the thread busy, as an evaluated DiT pass does.
+      const end = performance.now() + 2;
+      while (performance.now() < end) { /* busy */ }
+      return ops.zeros(latents.shape, Dtype.float32);
+    },
+    dispose() {} };
+  using latents = MlxArray.fromFloat32(new Float32Array(4), [1, 1, 2, 2]);
+  using context = MlxArray.fromFloat32(new Float32Array(4), [1, 1, 4]);
+  const abort = new AbortController();
+  setTimeout(() => abort.abort(new Error("cancelled by a timer")), 0);
+  let steps = 0;
+  await expect(denoiseLatents(new ConditionalVelocity(denoiser, context), schedule, latents,
+    { steps: 100, signal: abort.signal, onStep: () => { steps++; } })).rejects.toThrow("cancelled by a timer");
+  expect(steps).toBeLessThan(100);
+});
+
+test("a step whose update fails to evaluate frees that update as well as the latents it replaces", async () => {
+  // MLX evaluation failures cannot be provoked on demand, so a child process substitutes the operations generation uses.
+  const script = `
+    import { mock } from "bun:test";
+    const allocated = [];
+    class FakeArray {
+      disposed = false;
+      constructor(label) { this.label = label; allocated.push(this); }
+      static fromFloat32() { return new FakeArray("dt"); }
+      eval() { if (this.label === "updated") throw new Error("injected evaluation failure"); }
+      dispose() { this.disposed = true; }
+      [Symbol.dispose]() { this.dispose(); }
+    }
+    mock.module(${JSON.stringify(import.meta.resolve("@mlx-bun/mlx/array"))}, () => ({ MlxArray: FakeArray }));
+    mock.module(${JSON.stringify(import.meta.resolve("@mlx-bun/mlx/ffi"))}, () => ({ Dtype: {} }));
+    mock.module(${JSON.stringify(import.meta.resolve("@mlx-bun/mlx/ops"))}, () => ({
+      copyOf: () => new FakeArray("copy"), mul: () => new FakeArray("change"), add: () => new FakeArray("updated") }));
+    const { denoiseLatents } = await import(${JSON.stringify(import.meta.resolve("../../src/generation/image"))});
+    const schedule = { sigmas: n => Float32Array.from({ length: n + 1 }, (_, i) => 1 - i / n), timestep: sigma => sigma };
+    let error;
+    try { await denoiseLatents({ velocity: () => new FakeArray("velocity") }, schedule, new FakeArray("borrowed"), { steps: 1 }); }
+    catch (caught) { error = String(caught); }
+    console.log(JSON.stringify({ error, undisposed: allocated.filter(array => !array.disposed && array.label !== "borrowed").map(array => array.label) }));
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], { cwd: new URL("../../", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect([code, err.trim()]).toEqual([0, ""]);
+  expect(JSON.parse(out.trim())).toEqual({ error: "Error: injected evaluation failure", undisposed: [] });
 });
 
 test("an invalid request is refused before any stage opens", async () => {
