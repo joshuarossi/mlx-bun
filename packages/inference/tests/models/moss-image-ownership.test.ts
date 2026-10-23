@@ -2,8 +2,9 @@
 // layers. These checks hold the parts of that a parser can see; each says what
 // it checks and no more, and review reads the source beside them:
 // - the family's files import no other family's modules and no shared `layers/`;
-// - the kernel it added (`kernels/situ.ts`) is imported by one file and called
-//   only inside one layer class, `MossSitu`;
+// - it binds only the kernels it added, and each (`kernels/situ.ts`,
+//   `kernels/gated-delta-float32.ts`) is imported by one file and called only
+//   inside one layer class (`MossSitu`, `MossTextDeltaRecurrence`);
 // - its graph files (DiT, conditioner, VAE decoder) import neither MLX ops nor
 //   kernels (an import check, not a proof that no numeric code is there);
 // - no method body of its layers and graphs branches on a field fixed at
@@ -13,7 +14,7 @@
 // A family test, not a repository-wide ban: other families keep their own composition.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
 
 const source = resolve(import.meta.dir, "../../src");
@@ -75,27 +76,39 @@ test("the family imports no other family's modules and no shared layer implement
   expect(foreign).toEqual([]);
 });
 
-test("kernels/situ.ts is imported by one file and called only inside MossSitu", () => {
-  const importers: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".ts") && imports(path).includes("kernels/situ")) importers.push(relative(source, path));
-    }
-  };
-  walk(source);
-  expect(importers).toEqual(["models/moss-image/layers.ts"]);
-  const layers = parse(join(family, "layers.ts"));
-  const callers: string[] = [];
-  const visit = (node: ts.Node, owner: string | undefined) => {
-    const next = ts.isClassDeclaration(node) && node.name ? node.name.text : owner;
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "situ") callers.push(owner ?? "(module scope)");
-    ts.forEachChild(node, child => visit(child, next));
-  };
-  visit(layers, undefined);
-  expect(callers).toEqual(["MossSitu"]);
+/** The kernels the family added, each one file bound by exactly one of its layers (ARCHITECTURE: "Add a kernel as one file in
+ * `kernels/` bound by exactly one layer"). */
+const OWNED_KERNELS = [
+  { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situ", layer: "MossSitu" },
+  { kernel: "kernels/gated-delta-float32", file: "models/moss-image/text-layers.ts", call: "gatedDeltaFloat32", layer: "MossTextDeltaRecurrence" },
+] as const;
+
+/** Every `.ts` file under `src/`. */
+function sourceFiles(dir = source): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? sourceFiles(join(dir, entry.name)) : entry.name.endsWith(".ts") ? [join(dir, entry.name)] : []);
+}
+
+test("the family binds only the kernels it owns, never one another layer binds", () => {
+  const bound = readdirSync(family).filter(name => name.endsWith(".ts"))
+    .flatMap(name => imports(join(family, name)).filter(target => target.startsWith("kernels/")).map(target => `${name} -> ${target}`));
+  expect(bound.sort()).toEqual(OWNED_KERNELS.map(owned => `${basename(owned.file)} -> ${owned.kernel}`).sort());
 });
+
+for (const owned of OWNED_KERNELS) {
+  test(`${owned.kernel}.ts is imported by one file and called only inside ${owned.layer}`, () => {
+    const importers = sourceFiles().filter(path => imports(path).includes(owned.kernel)).map(path => relative(source, path));
+    expect(importers).toEqual([owned.file]);
+    const callers: string[] = [];
+    const visit = (node: ts.Node, owner: string | undefined) => {
+      const next = ts.isClassDeclaration(node) && node.name ? node.name.text : owner;
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === owned.call) callers.push(owner ?? "(module scope)");
+      ts.forEachChild(node, child => visit(child, next));
+    };
+    visit(parse(join(source, owned.file)), undefined);
+    expect(callers).toEqual([owned.layer]);
+  });
+}
 
 test("the graph files import neither MLX ops nor kernels", () => {
   const numeric = GRAPH_FILES.flatMap(name => imports(join(family, name))

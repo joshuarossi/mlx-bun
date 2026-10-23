@@ -3,7 +3,10 @@
 // the four projection forms and the dense forms' ownership of their transposed
 // view, the four-axis RoPE (frequencies, coordinates and rotation), the
 // timestep sinusoid, the conditioner's (1 + gamma) float32 norm and its partial
-// rotary embedding.
+// rotary embedding, its bf16 l2norm and gated norm (host replays of torch's
+// per-operation rounding), and the float32 gated delta kernel (float64
+// equivalence only; its float32 rounding is measured against the reference in
+// tests/parity/moss-image-oracle.test.ts).
 import { expect, test } from "bun:test";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
@@ -13,7 +16,8 @@ import { timestepSinusoid } from "../../src/models/moss-image/blocks";
 import { parseQuantization } from "../../src/artifacts/config";
 import { MossDenseBiasedLinear, MossDenseLinear, MossQuantizedBiasedLinear, MossQuantizedLinear, storedAffineSpec } from "../../src/models/moss-image/layers";
 import { MossRope, mossRopeBands, mossRopeCoordinates } from "../../src/models/moss-image/rope";
-import { MossTextRmsNorm, MossTextRope } from "../../src/models/moss-image/text-layers";
+import { MossTextGatedNorm, MossTextL2Norm, MossTextRmsNorm, MossTextRope } from "../../src/models/moss-image/text-layers";
+import { gatedDeltaFloat32 } from "../../src/kernels/gated-delta-float32";
 
 const ramp = (n: number, phase: number, scale = 1) => Float32Array.from({ length: n }, (_, i) => scale * Math.sin(i * 0.37 + phase));
 const close = (actual: Float32Array, expected: ArrayLike<number>, tolerance: number) => {
@@ -185,4 +189,83 @@ test("a projection binds as the checkpoint stores it, and inconsistent quantizat
   expect(() => storedAffineSpec(weights(["p.kept.scales", "p.kept.biases"]), config(table), "p.kept")).toThrow("no entry for it");
   expect(() => storedAffineSpec(weights(["p.scales", "p.biases"]), config({ bits: 4, group_size: 32, mode: "mxfp4" }), "p")).toThrow("affine only");
   expect(() => storedAffineSpec(weights(["p.scales"]), config(table), "p")).toThrow("no .biases");
+});
+
+/** A host replay of one torch operation on bf16 values: the float32 result, stored in bf16. */
+const stored = (value: number) => bf16(Math.fround(value));
+
+test("the conditioner's l2norm replays torch's bf16 operations one by one, which rounding once in float32 does not", () => {
+  const width = 128, rows = 8, xs = Float32Array.from(ramp(rows * width, 0.4, 3), bf16);
+  using x32 = MlxArray.fromFloat32(xs, [rows, width]);
+  using x = x32.astype(Dtype.bfloat16);
+  using out = new MossTextL2Norm().forward(x);
+  using wide = out.astype(Dtype.float32);
+  const actual = wide.toFloat32(), perOperation: number[] = [], roundedOnce: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    const row = xs.slice(r * width, (r + 1) * width);
+    // x * x, .sum(-1), + 1e-6, rsqrt, x * inv: each computed in float32 and stored in bf16.
+    const sum = stored(row.reduce((acc, v) => acc + stored(v * v), 0));
+    const inverse = stored(1 / Math.sqrt(stored(sum + Math.fround(1e-6))));
+    for (const v of row) perOperation.push(stored(v * inverse));
+    const wideInverse = 1 / Math.sqrt(row.reduce((acc, v) => acc + v * v, 0) + 1e-6);
+    for (const v of row) roundedOnce.push(bf16(v * wideInverse));
+  }
+  expect(Array.from(actual)).toEqual(perOperation);
+  // The replay is sensitive to the order: rounding only at the end gives different values on this input.
+  expect(perOperation.filter((v, i) => v !== roundedOnce[i]).length).toBeGreaterThan(0);
+});
+
+test("the conditioner's gated norm replays Qwen3_5RMSNormGated: float32 normalization stored in bf16, the bf16 weight, then silu(gate) in float32", () => {
+  const width = 128, rows = 4;
+  const xs = Float32Array.from(ramp(rows * width, 0.2, 2), bf16), gates = Float32Array.from(ramp(rows * width, 1.3, 4), bf16);
+  const weights = Float32Array.from(ramp(width, 0.7, 0.5), v => bf16(1 + v));
+  using x32 = MlxArray.fromFloat32(xs, [rows, width]), g32 = MlxArray.fromFloat32(gates, [rows, width]), w32 = MlxArray.fromFloat32(weights, [width]);
+  using x = x32.astype(Dtype.bfloat16), gate = g32.astype(Dtype.bfloat16), weight = w32.astype(Dtype.bfloat16);
+  using out = new MossTextGatedNorm(weight, 1e-6).forward(x, gate);
+  using wide = out.astype(Dtype.float32);
+  const actual = wide.toFloat32(), expected: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    const row = xs.slice(r * width, (r + 1) * width);
+    const inverse = Math.fround(1 / Math.sqrt(Math.fround(Math.fround(row.reduce((acc, v) => acc + v * v, 0) / width) + Math.fround(1e-6))));
+    for (let i = 0; i < width; i++) {
+      const weighted = stored(weights[i]! * stored(row[i]! * inverse)), g = gates[r * width + i]!;
+      expected.push(bf16(weighted * Math.fround(g / (1 + Math.exp(-g)))));
+    }
+  }
+  // Float32 transcendentals and summation order may move a value by one bf16 step at a rounding boundary.
+  let differing = 0;
+  for (let i = 0; i < expected.length; i++) {
+    if (actual[i] === expected[i]) continue;
+    differing++;
+    expect(Math.abs(actual[i]! - expected[i]!)).toBeLessThanOrEqual(Math.abs(expected[i]!) * 2 ** -7);
+  }
+  expect(differing).toBeLessThanOrEqual(expected.length / 100);
+});
+
+test("the float32 gated delta kernel computes the sequential recurrence (float64 host equivalence only; float32 rounding against the reference is the opt-in oracle comparison's)", () => {
+  const B = 1, T = 7, Hk = 1, Hv = 2, Dk = 32, Dv = 4;
+  const q = ramp(B * T * Hk * Dk, 0.1, 0.3), k = ramp(B * T * Hk * Dk, 0.9, 0.3), v = ramp(B * T * Hv * Dv, 1.7);
+  const decay = Float32Array.from(ramp(B * T * Hv, 0.5, 0.2), x => Math.fround(0.75 + x)), beta = Float32Array.from(ramp(B * T * Hv, 2.1, 0.3), x => Math.fround(0.5 + x));
+  using qa = MlxArray.fromFloat32(q, [B, T, Hk, Dk]), ka = MlxArray.fromFloat32(k, [B, T, Hk, Dk]), va = MlxArray.fromFloat32(v, [B, T, Hv, Dv]);
+  using da = MlxArray.fromFloat32(decay, [B, T, Hv]), ba = MlxArray.fromFloat32(beta, [B, T, Hv]);
+  using y = gatedDeltaFloat32(qa, ka, va, da, ba);
+  expect(y.dtype).toBe(Dtype.float32);
+  const actual = y.toFloat32(), expected = new Float64Array(B * T * Hv * Dv);
+  for (let hv = 0; hv < Hv; hv++) {
+    const hk = Math.floor(hv / (Hv / Hk)), state = Array.from({ length: Dv }, () => new Float64Array(Dk));
+    for (let t = 0; t < T; t++) {
+      const kt = (d: number) => k[(t * Hk + hk) * Dk + d]!, qt = (d: number) => q[(t * Hk + hk) * Dk + d]!;
+      const g = decay[t * Hv + hv]!, b = beta[t * Hv + hv]!;
+      for (let dv = 0; dv < Dv; dv++) {
+        const s = state[dv]!;
+        let memory = 0;
+        for (let d = 0; d < Dk; d++) { s[d]! *= g; memory += s[d]! * kt(d); }
+        const delta = (v[(t * Hv + hv) * Dv + dv]! - memory) * b;
+        let out = 0;
+        for (let d = 0; d < Dk; d++) { s[d]! += kt(d) * delta; out += s[d]! * qt(d); }
+        expected[(t * Hv + hv) * Dv + dv] = out;
+      }
+    }
+  }
+  close(actual, expected, 1e-5);
 });

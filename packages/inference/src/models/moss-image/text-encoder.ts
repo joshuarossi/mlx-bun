@@ -14,8 +14,8 @@ import { ChatTemplate } from "../../input/chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "../../input/tokenizer";
 import { bindMossLinear, storedAffineSpec, type MossLinear } from "./layers";
 import {
-  MossQuantizedTextEmbedding, MossTextAttention, MossTextAttentionLayer, MossTextDeltaLayer, MossTextDeltaMixer,
-  MossTextEmbedding, MossTextGatedNorm, MossTextMlp, MossTextRmsNorm, MossTextRope,
+  MossQuantizedTextEmbedding, MossTextAttention, MossTextAttentionLayer, MossTextDeltaLayer, MossTextDeltaMixer, MossTextDeltaRecurrence,
+  MossTextEmbedding, MossTextGatedNorm, MossTextLogDecay, MossTextMlp, MossTextRmsNorm, MossTextRope,
 } from "./text-layers";
 
 /** The reference tokenizer call's `max_length`: prompts are truncated to it. */
@@ -66,7 +66,8 @@ export class MossImageConditioner implements ImageConditioner {
           const mixer = `${prefix}.linear_attn`;
           layers.push(new MossTextDeltaLayer(norm(`${prefix}.input_layernorm`),
             own(new MossTextDeltaMixer(linear(`${mixer}.in_proj_qkv`), linear(`${mixer}.in_proj_z`), linear(`${mixer}.in_proj_b`), linear(`${mixer}.in_proj_a`),
-              linear(`${mixer}.out_proj`), weights.tensor(`${mixer}.conv1d.weight`), weights.tensor(`${mixer}.A_log`), weights.tensor(`${mixer}.dt_bias`),
+              linear(`${mixer}.out_proj`), weights.tensor(`${mixer}.conv1d.weight`),
+              new MossTextDeltaRecurrence(new MossTextLogDecay(weights.tensor(`${mixer}.A_log`), weights.tensor(`${mixer}.dt_bias`)), t.linearKeyHeadDim),
               new MossTextGatedNorm(weights.tensor(`${mixer}.norm.weight`), eps), deltaShape)),
             norm(`${prefix}.post_attention_layernorm`), mlp(`${prefix}.mlp`)));
         } else if (kind === "full_attention") {
