@@ -40,7 +40,7 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   /** Whether `id` is an exact id this host can serve (the ids `/v1/models` lists), resident or not. */
   serves(id: string): Promise<boolean>;
   /** The companion model (Whisper for audio, an image model for images) that answers this path, when it is one of its own; the router leases it like
-   * any model. `named` reads the request's JSON body once and answers its string `model` (undefined for a read): a companion whose requests name
+   * any model. `named` reads the request's JSON body once and answers its string `model` (undefined for a request without a body): a companion whose requests name
    * their model asks it, and the buffered body is then forwarded unchanged; one that never asks (audio uploads) streams through unread. */
   companion?(pathname: string, named: () => Promise<string | undefined>): Promise<string | undefined>;
   /** The configured transcription companion, including before its worker starts. */
@@ -186,8 +186,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       if (request.method === "GET" && pathname === "/health")
         return await active()?.routes.handle(request) ?? Response.json({ status: "ok" });
       let body: Uint8Array<ArrayBuffer> | undefined;
-      const named = async () => ["GET", "HEAD"].includes(request.method) ? undefined
-        : modelField(body ??= new Uint8Array(await request.arrayBuffer()));
+      const named = async () => request.body === null ? undefined : modelField(body ??= new Uint8Array(await request.arrayBuffer()));
       const companion = await options.companion?.(pathname, named);
       // A body read for its `model` goes on as the same bytes.
       const forwarded = body ? new Request(request.url, { method: request.method, headers: request.headers, body, signal: request.signal }) : request;
