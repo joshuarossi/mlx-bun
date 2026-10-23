@@ -84,3 +84,5 @@ export type {
 } from "./sensitivity";
 
 export { loadLlmCalibration } from "./calibration";
+export { quantizeMossImageDir, mossImageTransformerPredicate, mossImageTextEncoderPredicate } from "./moss-image";
+export type { QuantizeMossImageOptions, QuantizeMossImageResult } from "./moss-image";
