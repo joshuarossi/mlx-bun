@@ -49,8 +49,9 @@
 // LINEAR ATTENTION bounds (`DELTA`), fixed before the first comparison against the
 // `delta` captures, which hold transformers' own l2norm, F.softplus and
 // torch_chunk_gated_delta_rule outputs on seeded bf16 inputs at lengths around the
-// 64-token chunk boundary, and two real layers' linear attention on a 23-token
-// and a 203-token prompt. The recurrence here steps token by token in float32;
+// 64-token chunk boundary, Qwen3_5RMSNormGated on seeded bf16 values
+// (`gated-norm`, its bound fixed with that capture), and two real layers' linear
+// attention on a 23-token and a 203-token prompt. The recurrence here steps token by token in float32;
 // the reference solves 64-token chunks in float32 (cumulative log-decays, exp of
 // their differences, a triangular solve). The softplus here is logaddexp(x, 0)
 // below torch's threshold, where torch computes log1p(exp(x)). These checks
@@ -105,6 +106,8 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
       "sample-8-mps.safetensors": "9054abae6e9a7c728a3d0a992f46f7e17605db5581d415c2022ece923dcdf093",
       "delta.json": "5ed696c58db8008643e4bd02cfa8e53b2cfc90966dab0755830c5589191093d9",
       "delta.safetensors": "9a3535ea24f3fad9a1a5fc7c3f01a794d315da035108ae6fed86b75dd0e64fef",
+      "gated-norm.json": "07200b37b3636bdd16c44afe04c91d9c80d460364f726ebf4af135e5bad78452",
+      "gated-norm.safetensors": "567fa19e7089195ddbc088ad71cb6a8cd8dc651c8274e3b65dae5d10617b4149",
     },
   },
   "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9": {
@@ -137,6 +140,8 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
       "sample-8-mps.safetensors": "3c0a72b2c53f2afe4370423398f3412101c6830183d53bb481b59c40a1c177b4",
       "delta.json": "c0d93d859fe19c023c13d3be8bcdb550453a1492a98856c54207233cdb9f9f9d",
       "delta.safetensors": "9a3535ea24f3fad9a1a5fc7c3f01a794d315da035108ae6fed86b75dd0e64fef",
+      "gated-norm.json": "07200b37b3636bdd16c44afe04c91d9c80d460364f726ebf4af135e5bad78452",
+      "gated-norm.safetensors": "567fa19e7089195ddbc088ad71cb6a8cd8dc651c8274e3b65dae5d10617b4149",
     },
   },
 };
@@ -151,6 +156,9 @@ const SPREAD_FACTOR = 2;
 const DELTA = {
   /** bf16 ulps of the reference value, every element. */
   l2NormUlps: 1,
+  /** The gated norm (Qwen3_5RMSNormGated) on seeded bf16 values: bf16 ulps of the reference value, every element. Fixed with
+   * its capture, before its first comparison. */
+  gatedNormUlps: 1,
   /** float32 ulps of the reference value, every element. */
   softplusUlps: 4,
   logDecayUlps: 8,
@@ -407,6 +415,16 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       recordDelta(`${tag} delta rule (bf16)`, whole, `relative <= ${DELTA.rule.relative}, every row's cosine >= ${DELTA.rule.minCosine}`,
         whole.relative <= DELTA.rule.relative && whole.minCosine >= DELTA.rule.minCosine);
       console.log(`  ${tag} delta rule: ${format(ulpDistance(values(out), host("delta", at("out")), ulpBf16))}`);
+    }
+    // The gated norm alone, on the reference's seeded bf16 values and gates with layer 0's weight.
+    const normMeta = JSON.parse(readFileSync(join(captures, "gated-norm.json"), "utf8")) as { eps: number; lengths: number[] };
+    using normWeight = device("gated-norm", "weight");
+    const gatedNorm = new MossTextGatedNorm(normWeight, normMeta.eps);
+    for (const length of normMeta.lengths) {
+      using hidden = device("gated-norm", `L${length}.hidden`), gate = device("gated-norm", `L${length}.gate`);
+      using ours = gatedNorm.forward(hidden, gate);
+      const measured = ulpDistance(values(ours), host("gated-norm", `L${length}.out`), ulpBf16);
+      recordDelta(`L=${length} gated norm (bf16)`, measured, `within ${DELTA.gatedNormUlps} bf16 ulp`, measured.maxUlps <= DELTA.gatedNormUlps);
     }
     // Real layers: each linear attention on the hidden states it received for the 23- and 203-token prompts.
     const textDir = join(snapshot, "text_encoder"), config = await loadModelConfig(textDir), weights = await Weights.open(textDir);
