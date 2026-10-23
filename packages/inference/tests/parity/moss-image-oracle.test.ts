@@ -11,11 +11,15 @@
 // backend (`dit-mps`, `sample-8-mps`). Each comparison feeds both sides
 // identical inputs.
 //
-// INPUTS are verified before any comparison: the SHA-256 of every snapshot file
-// and capture the comparisons read is computed from its bytes and must equal
-// the pins below for that revision; a revision without pins, or any mismatch,
-// fails the run. A Hugging Face cache symlink's target name is recorded as
-// provenance only (a filename claim, not a verification of the bytes).
+// INPUTS are verified before anything is read for a comparison: the SHA-256 of
+// every snapshot file and capture the comparisons read is computed from its bytes
+// and must equal the pins below for that revision, and every file in a snapshot
+// directory a loader reads must be pinned (an unpinned index or shard could be
+// selected in place of the pinned bytes). A revision without pins, a mismatch or
+// an unpinned file fails the run. A Hugging Face cache symlink's target name is
+// recorded as provenance only (a filename claim, not a verification of the bytes).
+// The results file says whether the run completed: a test that stopped before
+// recording all its checks leaves the status `incomplete`, never a pass.
 //
 // ORIGINAL criteria, fixed before the first run, from the arithmetic each stage does:
 // - token ids and the schedule: exact.
@@ -65,11 +69,12 @@
 //   MLX_BUN_MOSS_IMAGE_ORACLE=<the reference's capture directory for that snapshot>
 // Neither set skips; one alone fails.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { SafetensorsFile } from "../../src/artifacts/safetensors";
-import { fileSha256, optInAll } from "./real-weight-inputs";
+import { compare, meets, runStatus, ulpBf16, ulpDistance, ulpFloat32, unpinnedEntries, verifyPinned, type Bounds, type Stats, type UlpStats, type Verification } from "./moss-image-oracle-checks";
+import { optInAll } from "./real-weight-inputs";
 
 const OPT_IN = ["MLX_BUN_MOSS_IMAGE_SNAPSHOT", "MLX_BUN_MOSS_IMAGE_ORACLE"] as const;
 const opted = optInAll(process.env, OPT_IN, "MOSS-Image oracle comparison");
@@ -79,6 +84,7 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
   "85975793d8b3d432f1b6e27f352abaa4c2a4c0d3": {
     snapshot: {
       "scheduler/scheduler_config.json": "707322832cc507dfb8c51c0e0cd04d44ee2d30a9b036b6f3c47d6c17aa71adf0",
+      "scheduler/pipeline_moss_image.py": "1dac1aca9feb1bfdfc727a401e4b67d61a505d3190706d1b7d2d784f88678b31",
       "text_encoder/config.json": "b31ee18a242bcfcccbe740f825f6b1d3ae231b0655eeecb5de3e98d504b7d68c",
       "text_encoder/model.safetensors.index.json": "0af6fa3fa36ba8dcbb6b7ad0325a36c5b1b69862a9a1f1486b1b80385bd8f5ee",
       "text_encoder/model-00001-of-00004.safetensors": "abfaa3d3a8612508c85ee8f6da9c734b862f10298b903765c4ad384177c32b0b",
@@ -89,6 +95,7 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
       "tokenizer/tokenizer_config.json": "bee8eba30f0eb4af73c0fe2cd06d0f89b657d7819941c438157ec42f7c80ea87",
       "tokenizer/chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
       "transformer/config.json": "3291c3a1c7adc22b8182a0de25ca8ec97474d72715ce84adbab09cc0be24f666",
+      "transformer/pipeline_moss_image.py": "1dac1aca9feb1bfdfc727a401e4b67d61a505d3190706d1b7d2d784f88678b31",
       "transformer/diffusion_pytorch_model.safetensors.index.json": "b609327fc75dbe5080e7e095d8b727d74d728b4f98e8b047133b0082cfa2fb03",
       "transformer/diffusion_pytorch_model-00001-of-00003.safetensors": "ae085fba123b6df67daf90aa9698fadee60c73e45bcaf3f3043d15f34e7a1804",
       "transformer/diffusion_pytorch_model-00002-of-00003.safetensors": "806e876d80c7fba560663a3a95580e6c7033da3f9ea3c52765245ef0e1818f75",
@@ -113,6 +120,7 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
   "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9": {
     snapshot: {
       "scheduler/scheduler_config.json": "707322832cc507dfb8c51c0e0cd04d44ee2d30a9b036b6f3c47d6c17aa71adf0",
+      "scheduler/pipeline_moss_image.py": "1dac1aca9feb1bfdfc727a401e4b67d61a505d3190706d1b7d2d784f88678b31",
       "text_encoder/config.json": "b31ee18a242bcfcccbe740f825f6b1d3ae231b0655eeecb5de3e98d504b7d68c",
       "text_encoder/model.safetensors.index.json": "0af6fa3fa36ba8dcbb6b7ad0325a36c5b1b69862a9a1f1486b1b80385bd8f5ee",
       "text_encoder/model-00001-of-00004.safetensors": "abfaa3d3a8612508c85ee8f6da9c734b862f10298b903765c4ad384177c32b0b",
@@ -123,6 +131,7 @@ const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string,
       "tokenizer/tokenizer_config.json": "bee8eba30f0eb4af73c0fe2cd06d0f89b657d7819941c438157ec42f7c80ea87",
       "tokenizer/chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
       "transformer/config.json": "3291c3a1c7adc22b8182a0de25ca8ec97474d72715ce84adbab09cc0be24f666",
+      "transformer/pipeline_moss_image.py": "1dac1aca9feb1bfdfc727a401e4b67d61a505d3190706d1b7d2d784f88678b31",
       "transformer/diffusion_pytorch_model.safetensors.index.json": "b609327fc75dbe5080e7e095d8b727d74d728b4f98e8b047133b0082cfa2fb03",
       "transformer/diffusion_pytorch_model-00001-of-00003.safetensors": "e40d3444940a0b0fd7cd45ba7959a5bd3d5efd7ddf87aae5ce4d87ce8aa03d01",
       "transformer/diffusion_pytorch_model-00002-of-00003.safetensors": "d106da790ec2924ffd8af04b4ffa8f8de281a974b58e55649c3ec596dc8ef033",
@@ -170,9 +179,6 @@ const DELTA = {
   mixer: { relative: 1e-2, minCosine: 0.9999 },
 } as const;
 
-interface Stats { relative: number; maxAbs: number; minCosine: number; meanCosine: number }
-interface UlpStats { total: number; mismatches: number; maxUlps: number }
-interface Bounds { relative: number; minCosine: number; meanCosine?: number }
 interface Check {
   stage: string;
   measured: Stats | UlpStats;
@@ -184,45 +190,14 @@ interface Check {
   referenceSpread?: Stats;
 }
 
-/** Relative Frobenius error, max |a - b|, and the cosine of each row over `width` values, over rows [from, to). */
-function compare(actual: Float32Array, expected: Float32Array, width: number, from = 0, to = expected.length / width): Stats {
-  expect(actual.length).toBe(expected.length);
-  let diff = 0, norm = 0, maxAbs = 0, minCosine = 1, cosines = 0;
-  for (let r = from; r < to; r++) {
-    let dot = 0, na = 0, nb = 0;
-    for (let i = r * width; i < (r + 1) * width; i++) {
-      const a = actual[i]!, b = expected[i]!;
-      diff += (a - b) ** 2; norm += b * b; maxAbs = Math.max(maxAbs, Math.abs(a - b));
-      dot += a * b; na += a * a; nb += b * b;
-    }
-    const cosine = dot / Math.sqrt(na * nb || 1);
-    minCosine = Math.min(minCosine, cosine); cosines += cosine;
-  }
-  return { relative: Math.sqrt(diff / norm), maxAbs, minCosine, meanCosine: cosines / (to - from) };
-}
-
-const word = new Uint32Array(1), single = new Float32Array(word.buffer);
-/** The float32 spacing above |v|. */
-const ulpFloat32 = (v: number) => { single[0] = Math.abs(v); word[0] = word[0]! + 1; return single[0]! - Math.abs(v) || 2 ** -149; };
-/** The bf16 spacing above |v| (a bf16 value). */
-const ulpBf16 = (v: number) => { single[0] = Math.abs(v); word[0] = (word[0]! & 0xffff0000) + 0x10000; return single[0]! - Math.abs(v) || 2 ** -133; };
-/** How many elements differ, and the largest difference in units of `ulp` at the reference value. */
-function ulpDistance(actual: Float32Array, expected: Float32Array, ulp: (v: number) => number): UlpStats {
-  expect(actual.length).toBe(expected.length);
-  let mismatches = 0, maxUlps = 0;
-  for (let i = 0; i < expected.length; i++) {
-    const d = Math.abs(actual[i]! - expected[i]!);
-    if (d > 0) { mismatches++; maxUlps = Math.max(maxUlps, d / ulp(expected[i]!)); }
-  }
-  return { total: expected.length, mismatches, maxUlps };
-}
-
-const meets = (stats: Stats, bounds: Bounds) => stats.relative <= bounds.relative && stats.minCosine >= bounds.minCosine &&
-  (bounds.meanCosine === undefined || stats.meanCosine >= bounds.meanCosine);
-const format = (measured: Stats | UlpStats) => "maxUlps" in measured
+const format = (measured: Stats | UlpStats) => ("maxUlps" in measured
   ? `${measured.mismatches}/${measured.total} elements differ, at most ${measured.maxUlps.toFixed(3)} ulp`
   : `relative ${measured.relative.toExponential(3)}, max |diff| ${measured.maxAbs.toExponential(3)}, ` +
-    `cosine min ${measured.minCosine.toFixed(6)} mean ${measured.meanCosine.toFixed(6)}`;
+    `cosine min ${measured.minCosine.toFixed(6)} mean ${measured.meanCosine.toFixed(6)}`) +
+  (measured.nonFinite ? `, ${measured.nonFinite} NON-FINITE` : "");
+
+/** The tests in this file, by name: a run is complete only when each has recorded all its checks. */
+const TESTS = ["schedule", "conditioner", "linear attention", "DiT stages", "trajectory"] as const;
 
 describe("MOSS-Image against the PyTorch reference (adjudicated criteria; acceptance pending)", async () => {
   // A describe body always runs to collect its tests: without the opt-in, register one visible skip and read nothing.
@@ -248,25 +223,27 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
 
   const checks: Check[] = [];
   const exact: { stage: string; pass: boolean }[] = [];
-  const verified: { snapshot: Record<string, string>; captures: Record<string, string>; hubBlobNames: Record<string, string> } =
-    { snapshot: {}, captures: {}, hubBlobNames: {} };
+  /** The tests that recorded every check they make (whatever the verdicts). */
+  const completed = new Set<string>();
+  const inputs: { snapshot?: Verification; captures?: Verification; unpinned: string[]; error?: string } = { unpinned: [] };
   let inputsVerified = false;
 
   beforeAll(async () => {
-    const revision = basename(snapshot), pinned = PINS[revision];
-    if (!pinned) throw new Error(`${revision} has no pins (pinned revisions: ${Object.keys(PINS).join(", ")})`);
-    const mismatched: string[] = [];
-    for (const [where, root, pins] of [["snapshot", snapshot, pinned.snapshot], ["captures", captures, pinned.captures]] as const) {
-      for (const [file, expected] of Object.entries(pins)) {
-        const path = join(root, file), actual = await fileSha256(path);
-        verified[where][file] = actual;
-        if (actual !== expected) mismatched.push(`${where}/${file}: ${actual}, pinned ${expected}`);
-        // Provenance only: the cache names a blob after its hash, but the name is not the bytes.
-        if (where === "snapshot" && lstatSync(path).isSymbolicLink()) verified.hubBlobNames[file] = basename(readlinkSync(path));
-      }
+    try {
+      const revision = basename(snapshot), pinned = PINS[revision];
+      if (!pinned) throw new Error(`${revision} has no pins (pinned revisions: ${Object.keys(PINS).join(", ")})`);
+      inputs.snapshot = await verifyPinned(snapshot, pinned.snapshot);
+      inputs.captures = await verifyPinned(captures, pinned.captures);
+      // Every file in a snapshot directory a loader reads must be pinned: an unpinned index or shard could be selected.
+      inputs.unpinned = unpinnedEntries(snapshot, pinned.snapshot);
+      const problems = [...inputs.snapshot.mismatched.map(item => `snapshot/${item}`), ...inputs.captures.mismatched.map(item => `captures/${item}`),
+        ...inputs.unpinned.map(file => `snapshot/${file}: not pinned, in a directory a loader reads`)];
+      if (problems.length) throw new Error(`inputs differ from the pins:\n${problems.join("\n")}`);
+      inputsVerified = true;
+    } catch (error) {
+      inputs.error = error instanceof Error ? error.message : String(error);
+      throw error;
     }
-    if (mismatched.length) throw new Error(`inputs differ from the pins:\n${mismatched.join("\n")}`);
-    inputsVerified = true;
   }, 1_800_000);
 
   const files = new Map<string, SafetensorsFile>();
@@ -323,42 +300,49 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: import.meta.dir }).stdout.toString().trim();
     const failures = checks.filter(check => !check.asserted.pass).map(check => check.stage).concat(exact.filter(item => !item.pass).map(item => item.stage));
     const originalFailures = checks.filter(check => check.original && !check.original.pass).map(check => check.stage);
-    writeFileSync(resultsPath, JSON.stringify({ status: "acceptance pending", originalCriteria: ORIGINAL, delta: DELTA,
-      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7"] },
+    const execution = runStatus({ inputsVerified, tests: TESTS, completed, failures });
+    writeFileSync(resultsPath, JSON.stringify({ status: execution.status, acceptance: "pending", execution, originalCriteria: ORIGINAL, delta: DELTA,
+      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7", "gated norm"] },
       investigative: { spreadFactor: SPREAD_FACTOR },
       implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },
-      inputs: { revision: basename(snapshot), verified: inputsVerified, sha256: { snapshot: verified.snapshot, captures: verified.captures },
-        provenanceOnly: { hubBlobNames: verified.hubBlobNames } },
-      reference: existsSync(join(captures, "encode.json")) ? JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")).versions : null,
+      inputs: { revision: basename(snapshot), verified: inputsVerified, ...(inputs.error ? { error: inputs.error } : {}),
+        sha256: { snapshot: inputs.snapshot?.sha256 ?? {}, captures: inputs.captures?.sha256 ?? {} }, unpinned: inputs.unpinned,
+        provenanceOnly: { hubBlobNames: inputs.snapshot?.provenanceOnly ?? {} } },
+      reference: inputsVerified ? JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")).versions : null,
       exact, checks, failures, originalFailures }, null, 2));
-    console.log(`asserted criteria not met by: ${failures.length ? failures.join("; ") : "none"}`);
+    if (execution.status === "incomplete")
+      console.log(`INCOMPLETE: ${inputsVerified ? "" : "inputs not verified; "}tests that did not record all their checks: ${execution.incomplete.join(", ") || "none"}`);
+    console.log(`asserted criteria not met by the checks recorded: ${failures.length ? failures.join("; ") : "none"}`);
     console.log(`results written to ${resultsPath}`);
   });
 
-  const encodeMeta = JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")) as { positive: { text: string }; negative: { text: string } };
-  const schedule = new MossImageSchedule(parseMossImageScheduleConfig(JSON.parse(readFileSync(join(snapshot, "scheduler/scheduler_config.json"), "utf8"))));
+  // Read only after the inputs are verified.
+  const encodeMeta = () => JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")) as { positive: { text: string }; negative: { text: string } };
+  const schedule = () => new MossImageSchedule(parseMossImageScheduleConfig(JSON.parse(readFileSync(join(snapshot, "scheduler/scheduler_config.json"), "utf8"))));
   const transformerConfig = () => parseMossTransformerConfig(JSON.parse(readFileSync(join(snapshot, "transformer/config.json"), "utf8")));
 
   test("the schedule's noise levels and timesteps equal the reference's (original criterion: exact)", () => {
     expect(inputsVerified).toBe(true);
+    const levels = schedule(), compared: [number[], number[]][] = [];
     for (const steps of [8, 50]) {
-      const sigmas = Array.from(schedule.sigmas(steps)), expected = Array.from(host(`schedule-${steps}`, "sigmas"));
-      const timesteps = sigmas.slice(0, -1).map(sigma => schedule.timestep(sigma)), expectedTimesteps = Array.from(host(`schedule-${steps}`, "timesteps"));
-      const pass = sigmas.join() === expected.join() && timesteps.join() === expectedTimesteps.join();
-      exact.push({ stage: `schedule ${steps} steps`, pass });
-      expect(sigmas).toEqual(expected);
-      expect(timesteps).toEqual(expectedTimesteps);
+      const sigmas = Array.from(levels.sigmas(steps)), expected = Array.from(host(`schedule-${steps}`, "sigmas"));
+      const timesteps = sigmas.slice(0, -1).map(sigma => levels.timestep(sigma)), expectedTimesteps = Array.from(host(`schedule-${steps}`, "timesteps"));
+      exact.push({ stage: `schedule ${steps} steps`, pass: sigmas.join() === expected.join() && timesteps.join() === expectedTimesteps.join() });
+      compared.push([sigmas, expected], [timesteps, expectedTimesteps]);
     }
+    completed.add("schedule");
+    for (const [ours, reference] of compared) expect(ours).toEqual(reference);
   });
 
   test("the conditioner's tokens equal the reference's and its hidden states agree (original criteria)", async () => {
     expect(inputsVerified).toBe(true);
     const from = checks.length;
     ffi.resetPeakMemory();
+    const prompts = encodeMeta();
     const conditioner = await MossImageConditioner.open(join(snapshot, "text_encoder"), join(snapshot, "tokenizer"));
     try {
       for (const role of ["positive", "negative"] as const) {
-        const text = encodeMeta[role].text, tokens = conditioner.tokens(text), expected = Array.from(host("encode", `${role}_ids`));
+        const text = prompts[role].text, tokens = conditioner.tokens(text), expected = Array.from(host("encode", `${role}_ids`));
         exact.push({ stage: `conditioner ${role} token ids`, pass: tokens.join() === expected.join() });
         expect(tokens).toEqual(expected);
         using hidden = conditioner.encode(text);
@@ -369,6 +353,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       ffi.clearCache();
     }
     console.log(`conditioner peak ${(ffi.peakMemory() / 2 ** 30).toFixed(2)} GiB`);
+    completed.add("conditioner");
     assertRecorded(from);
   }, 600_000);
 
@@ -450,6 +435,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       weights.dispose();
       ffi.clearCache();
     }
+    completed.add("linear attention");
     assertRecorded(from);
   }, 900_000);
 
@@ -518,6 +504,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       ffi.clearCache();
     }
     console.log(`DiT peak ${(ffi.peakMemory() / 2 ** 30).toFixed(2)} GiB`);
+    completed.add("DiT stages");
     assertRecorded(from);
   }, 1_200_000);
 
@@ -549,7 +536,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
         calls++;
         return step.velocity(x, t);
       } };
-      const result = await denoiseLatents(observed, schedule, noise, { steps: 8, onStep: done => seen.push(done) });
+      const result = await denoiseLatents(observed, schedule(), noise, { steps: 8, onStep: done => seen.push(done) });
       using final = result.latents;
       expect(result.steps).toBe(8);
       expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -558,6 +545,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       dit.dispose();
       ffi.clearCache();
     }
+    completed.add("trajectory");
     assertRecorded(from);
   }, 1_800_000);
 });
