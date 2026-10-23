@@ -21,6 +21,32 @@ test("a host that serves Whisper implements modelHost, catalog, storage and even
   await services.whisper.close(); await bare.whisper.close();
 });
 
+test("the modelHost binding answers each companion operation from its own host: Whisper for transcribe, the image host for image", async () => {
+  const image: CatalogEntry = { id: "org/picture", kind: "model", directory: "/p", bytes: 1, operations: ["image"] };
+  const both: ModelCatalog = { ...catalog, list: async () => [entry, image], find: async query => [entry, image].find(item => item.id === query) ?? entry };
+  const opened: string[] = [];
+  const services = createHostServices({ catalog: both, log() {}, imageBackend: { async load(directory) {
+    opened.push(directory);
+    return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16,
+      stageBytes: { conditioner: 1, denoiser: 1, decoder: 1 }, generate: async () => { throw new Error("unused"); }, dispose() { opened.push(`dispose ${directory}`); } };
+  } } });
+  const models = services.bindings.modelHost!({ moduleId: "echo" } as never) as typeof services.companions;
+  expect(models).toBe(services.companions);
+  expect(await models.defaultFor("transcribe")).toBe("org/whisper");
+  expect(await models.defaultFor("image")).toBe("org/picture");
+  const lease = await models.acquire("org/picture", { need: ["image"] });
+  expect(lease.operations.image!.pixelsPerLatent).toBe(16);
+  expect(services.image.resident().map(model => model.id)).toEqual(["org/picture"]);
+  expect(services.whisper.resident()).toEqual([]);
+  lease.release();
+  // A configured snapshot is the image default and needs no catalog entry.
+  const configured = createHostServices({ catalog, log() {}, image: { modelDir: "/dir/picture", modelId: "mine", resident: true } });
+  expect(await configured.companions.defaultFor("image")).toBe("mine");
+  expect(configured.image.policy.pinned).toEqual(["mine"]);
+  await services.companions.close(); await configured.companions.close();
+  expect(opened).toEqual(["/p", "dispose /p"]);
+});
+
 test("activation refuses what these hosts do not serve yet, stopping what it activated", async () => {
   const services = createHostServices({ catalog }), events: string[] = [];
   const loaded = await activateModules([module({}, events)], services);

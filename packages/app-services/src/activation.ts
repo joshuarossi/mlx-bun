@@ -43,6 +43,6 @@ export async function runVerb(input: { program: string; spec: CliVerbSpec; modul
       stdout: text => { process.stdout.write(text); }, stderr: text => { process.stderr.write(text); } });
   } finally {
     process.off("SIGINT", stop); process.off("SIGTERM", stop);
-    try { await loaded.stop(); } finally { try { await input.services.whisper.close(); } finally { input.services.events.close(); } }
+    try { await loaded.stop(); } finally { try { await input.services.companions.close(); } finally { input.services.events.close(); } }
   }
 }
