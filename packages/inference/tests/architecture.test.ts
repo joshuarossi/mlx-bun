@@ -515,7 +515,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
 //                    forward, head or capture there.
 //   hot-path-read    a runtime flag, env read, `deviceArchitecture()`, `globalThis` access or `instanceof` of a class
 //                    from `layers/`, `state/` or `models/`, inside a forward/decode/verify/prefill/attend/append/recur/
-//                    step body, any function in inference `layers/` and `kernels/` and training `kernels/`, and (in
+//                    step/encode/velocity body, any function in inference `layers/` and `kernels/` and training `kernels/`, and (in
 //                    inference `models/`, `execution/`, `generation/`, `state/`, `scoring/`) any same-file helper a hot
 //                    function calls. Construction, acceptance, the loader, `runtime/` and the app's engine load path
 //                    are exempt; profiling hooks are exempt by name.
@@ -857,7 +857,7 @@ function declaredClasses(sources: ReadonlyMap<string, ts.SourceFile>, roots: rea
 }
 
 /** Functions on the hot path, by name, and the ones where composition facts are read. */
-const hotPrefix = /^(forward|decode|verify|prefill|attend|append|recur|step)/;
+const hotPrefix = /^(forward|decode|verify|prefill|attend|append|recur|step|encode|velocity)/;
 const settledName = /(Accepts|Eligible)$/;
 const settledStatics = new Set(["build", "load", "create"]);
 const flagReaders = new Set(["runtimeFlag", "runtimeValue", "runtimeNumber", "runtimeConfig"]);
@@ -1361,6 +1361,8 @@ test("the composition rules fire, honor their exemptions, stay silent on the pav
     };
     const hotBodies = (read: string) => "export class Layer {\n" +
       `  forward(x: unknown) { return ${read}; }\n  #decodeRows(x: unknown) { return ${read}; }\n` +
+      // The image stage operations (`ImageConditioner.encode`, `ImageDenoiser.velocity`) are forwards too.
+      `  encode(x: unknown) { return ${read}; }\n  velocity(x: unknown) { return ${read}; }\n` +
       `  constructor() { this.verify = (x: unknown) => ${read}; }\n}\n` +
       `export function prefillChunk(x: unknown) { return ${read}; }\nexport const attend = (x: unknown) => ${read};\n` +
       `export const rows = { appendDecode(x: unknown) { return ${read}; }, recurWindow: (x: unknown) => [x].map(() => ${read}) };\n` +
@@ -1377,8 +1379,8 @@ test("the composition rules fire, honor their exemptions, stay silent on the pav
       write("apps/mlx-bun/src/engine/model-serving.ts", hotBodies(read));
       for (const file of loaders) write(file, hotBodies(read));
       const findings = (await seamFindings(root)).filter(item => item.rule === "hot-path-read");
-      expect(findings.filter(item => item.file === inference("generation/hot.ts")).map(item => item.text), read).toEqual(Array(8).fill(text));
-      expect(findings.filter(item => item.file === "apps/mlx-bun/src/engine/model-serving.ts").map(item => item.text), read).toEqual(Array(8).fill(text));
+      expect(findings.filter(item => item.file === inference("generation/hot.ts")).map(item => item.text), read).toEqual(Array(10).fill(text));
+      expect(findings.filter(item => item.file === "apps/mlx-bun/src/engine/model-serving.ts").map(item => item.text), read).toEqual(Array(10).fill(text));
       // The loader, runtime/ and the app's engine load path read composition facts; so do construction, acceptance,
       // other names and module scope.
       expect(findings.filter(item => loaders.includes(item.file)), read).toEqual([]);
