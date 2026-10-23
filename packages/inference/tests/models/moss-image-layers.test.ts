@@ -226,7 +226,7 @@ test("the conditioner's gated norm replays Qwen3_5RMSNormGated: float32 normaliz
   const actual = wide.toFloat32(), expected: number[] = [];
   for (let r = 0; r < rows; r++) {
     const row = xs.slice(r * width, (r + 1) * width);
-    const inverse = Math.fround(1 / Math.sqrt(Math.fround(Math.fround(row.reduce((acc, v) => acc + v * v, 0) / width) + Math.fround(1e-6))));
+    const inverse = Math.fround(1 / Math.fround(Math.sqrt(Math.fround(Math.fround(row.reduce((acc, v) => acc + v * v, 0) / width) + Math.fround(1e-6)))));
     for (let i = 0; i < width; i++) {
       const weighted = stored(weights[i]! * stored(row[i]! * inverse)), g = gates[r * width + i]!;
       expected.push(bf16(weighted * Math.fround(g / (1 + Math.exp(-g)))));

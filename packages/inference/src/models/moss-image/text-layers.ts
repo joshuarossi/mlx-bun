@@ -20,6 +20,15 @@ function inFloat(x: MlxArray, fn: (wide: MlxArray) => MlxArray): MlxArray {
   return out.astype(x.dtype);
 }
 
+/** torch's CPU SiLU on float32 values (borrowed), in the form its kernel computes: `x / (1 + exp(-x))`. Returns an owned array. */
+function torchSilu(x: MlxArray): MlxArray {
+  using negative = ops.neg(x);
+  using exponential = ops.exp(negative);
+  using one = ops.scalarLike(1, exponential);
+  using denominator = ops.add(one, exponential);
+  return ops.div(x, denominator);
+}
+
 /** A float32 value (borrowed) rounded to `dtype` and widened back: the result of one torch operation on bf16 tensors,
  * which computes in float32 and stores in the input dtype. */
 function stored(wide: MlxArray, dtype: Dtype): MlxArray {
@@ -70,9 +79,11 @@ export class MossTextRmsNorm {
   dispose(): void { this.#scale.dispose(); }
 }
 
-/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight, as torch runs it: normalize in float32 and
- * store in the input dtype, multiply by the weight (bf16 by bf16, stored again), then multiply by `silu(gate)` in float32
- * and store once. */
+/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight, as the pinned torch runs it: normalize in
+ * float32 (rsqrt as a square root, then its reciprocal) and store in the input dtype, multiply by the weight (bf16 by bf16,
+ * stored again), then multiply by `silu(gate)` in float32 (`x / (1 + exp(-x))`) and store once. The variance's float32 sum
+ * follows MLX's reduction order, not torch's, so a value at a bf16 rounding boundary can land one step apart; the
+ * reference comparison counts those. */
 export class MossTextGatedNorm {
   constructor(readonly weight: MlxArray, readonly eps: number) {}
 
@@ -84,14 +95,17 @@ export class MossTextGatedNorm {
     using variance = ops.meanAxis(squares, -1, true);
     using eps = ops.scalarLike(this.eps, variance);
     using shifted = ops.add(variance, eps);
-    using inverse = ops.rsqrt(shifted);
+    // torch's float32 rsqrt: a square root, then its reciprocal.
+    using root = ops.sqrt(shifted);
+    using one = ops.scalarLike(1, root);
+    using inverse = ops.div(one, root);
     using normalizedWide = ops.mul(wide, inverse);
     using normalized = stored(normalizedWide, dtype);
     using weight = this.weight.astype(Dtype.float32);
     using weightedWide = ops.mul(weight, normalized);
     using weighted = stored(weightedWide, dtype);
     using gateWide = gate.astype(Dtype.float32);
-    using activated = ops.silu(gateWide);
+    using activated = torchSilu(gateWide);
     using gated = ops.mul(weighted, activated);
     return gated.astype(dtype);
   }
@@ -282,7 +296,7 @@ export class MossTextDeltaMixer {
     using mixed = this.qkv.forward(x);
     using padded = ops.pad(mixed, [[0, 0], [kernel - 1, 0], [0, 0]]);
     using convolved = ops.conv1d(padded, this.#conv, 1, 0, 1, channels);
-    using activated = inFloat(convolved, wide => ops.silu(wide));
+    using activated = inFloat(convolved, torchSilu);
     const [qFlat, kFlat, vFlat] = ops.split(activated, [keyHeads * keyDim, 2 * keyHeads * keyDim], -1);
     using qs = qFlat!, ks = kFlat!, vs = vFlat!;
     using qHeads = ops.reshape(qs, [1, length, keyHeads, keyDim]), kHeads = ops.reshape(ks, [1, length, keyHeads, keyDim]);
@@ -308,7 +322,7 @@ export class MossTextMlp {
 
   forward(x: MlxArray): MlxArray {
     using g = this.gate.forward(x);
-    using activated = inFloat(g, wide => ops.silu(wide));
+    using activated = inFloat(g, torchSilu);
     using u = this.up.forward(x);
     using hidden = ops.mul(activated, u);
     return this.down.forward(hidden);
