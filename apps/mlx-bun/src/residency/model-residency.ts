@@ -137,6 +137,14 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
     waiters.add(wake);
     if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
   });
+  /** Wait until every pending close or load settles (their failures are their owners'), or reject when the signal aborts
+   * first: the waiter gives up its turn; the work it waited on goes on. */
+  const settled = (pending: readonly (Promise<unknown> | undefined)[], signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const abort = () => reject(signal!.reason);
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener("abort", abort, { once: true });
+    void Promise.all(pending.map(work => work?.catch(() => {}))).then(() => { signal?.removeEventListener("abort", abort); resolve(); });
+  });
 
   const held = (slot: Slot<U>) => slot.unit ? slot.unit.bytes() : slot.loading ? slot.entry.bytes : 0;
   /** Bytes in use by everyone but `except`: the estimates, floored by what the process measurably holds. */
@@ -355,8 +363,9 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
       try {
         // A model that is draining is on its way out: wait for it, then pause the ones that stay. A model that is loading
         // (no new load starts once `paused` is raised) is on its way in: wait for it too, so it is paused before the job runs.
-        await Promise.all([...slots.values()].map(slot => slot.closing?.catch(() => {})));
-        await Promise.all([...slots.values()].map(slot => slot.loading?.catch(() => {})));
+        // A cancelled job stops waiting at once and lowers the gate; it never cancels a close or load another owner started.
+        await settled([...slots.values()].map(slot => slot.closing), signal);
+        await settled([...slots.values()].map(slot => slot.loading), signal);
         // A stable order, so two pausers never wait on each other.
         for (const slot of [...slots.values()].filter(slot => slot.unit && !slot.closing).sort((a, b) => a.id < b.id ? -1 : 1))
           held.push(await slot.unit!.pause(signal));

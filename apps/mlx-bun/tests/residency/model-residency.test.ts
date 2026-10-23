@@ -365,6 +365,32 @@ test("pausing waits for a model that is loading and pauses it once it arrives, s
   expect(f.units.get("a")!.paused).toBe(0);
 });
 
+test("a pause cancelled while a model is still loading gives up at once, lets other loads proceed, and leaves that load to finish on its own", async () => {
+  const f = fixture({ a: 2 * GB, b: 2 * GB }, { budget: 10 * GB });
+  const gate = Promise.withResolvers<void>();
+  f.loadGate.set("a", gate.promise);
+  const loading = f.host.acquire("a");
+  await tick();
+  const job = new AbortController();
+  let outcome = "pending";
+  const pause = f.host.pauseAll(job.signal).then(resource => { outcome = "granted"; return resource; }, (error: unknown) => {
+    outcome = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+  });
+  await tick();
+  job.abort(new Error("job cancelled"));
+  await tick();
+  // The cancelled job no longer holds the gate: it has given up, and another model loads while the first is still starting.
+  expect(outcome).toBe("rejected: job cancelled");
+  const other = await f.host.acquire("b");
+  expect(f.loads).toEqual(["a", "b"]);
+  other.release();
+  // The startup the job waited on was not its own: it finishes and serves its request, unpaused.
+  gate.resolve();
+  (await loading).release();
+  await pause;
+  expect([f.units.get("a")!.paused, f.units.get("b")!.paused]).toEqual([0, 0]);
+});
+
 test("close drains every resident model including pinned ones, waits for a load in flight, and then refuses work", async () => {
   const f = fixture({ a: 2 * GB, b: 2 * GB }, { budget: 10 * GB, pinned: ["a"] });
   (await f.host.acquire("a")).release();
