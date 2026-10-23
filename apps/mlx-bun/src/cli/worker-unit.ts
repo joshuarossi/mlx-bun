@@ -77,9 +77,15 @@ async function imageLaunch(context: WorkerUnitContext, record: ModelRecord, sock
 /** The operation a worker serves, and how it is launched for it. */
 const LAUNCHES = { generate: chatLaunch, transcribe: transcriptionLaunch, image: imageLaunch } as const;
 export type WorkerOperation = keyof typeof LAUNCHES;
-/** Whether a worker of the operation serves a connection-owned execution lease (`/admin/lease`) that a managed job holds: a chat
- * worker's engine lock and an image worker's run lock. The transcription-only app has none. */
-const LEASED: Readonly<Record<WorkerOperation, boolean>> = { generate: true, transcribe: false, image: true };
+/** How a managed job pauses a worker: through its connection-owned execution lease (`/admin/lease`), which waits for its work in
+ * flight and holds back new work until released. */
+const leased = (supervisor: WorkerSupervisor) => (signal?: AbortSignal) => supervisor.acquireExecutionLease(signal ?? new AbortController().signal);
+/** A worker with no execution lease is not paused. */
+const unpaused = () => () => Promise.resolve({ dispose() {} } as DisposableResource);
+/** Each operation's pause, bound to a worker when it is built: a chat worker's engine lock and an image worker's run lock are leased;
+ * the transcription-only app has no lease. */
+const PAUSES: Readonly<Record<WorkerOperation, (supervisor: WorkerSupervisor) => (signal?: AbortSignal) => Promise<DisposableResource>>> =
+  { generate: leased, transcribe: unpaused, image: leased };
 
 /** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
  * its memory readings to `measure`. A worker that is gone measures nothing: its replacement will need what it did. */
@@ -183,9 +189,8 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",
-    // A job needs the GPU to itself: the worker's own execution lease, which waits for its work in flight and holds back new work
-    // until released. The Whisper worker has none and is not paused.
-    pause: signal => LEASED[operation] ? supervisor.acquireExecutionLease(signal ?? new AbortController().signal) : Promise.resolve({ dispose() {} } as DisposableResource),
+    // A job needs the GPU to itself: the pause this worker's operation has (its execution lease; the Whisper worker has none).
+    pause: PAUSES[operation](supervisor),
     close: () => closing ??= (async () => {
       stopEvents.abort();
       const drained = performance.now();

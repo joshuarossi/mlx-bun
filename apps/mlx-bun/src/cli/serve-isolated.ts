@@ -73,8 +73,9 @@ interface CompanionServing {
   find(id: string): Promise<ModelRecord | undefined>;
   /** What its worker is charged until it reports its own memory. */
   bytes(record: ModelRecord): Promise<number>;
-  /** Its requests name their checkpoint in the JSON body's `model`; others (audio uploads) are never read for one. */
-  named: boolean;
+  /** The checkpoint a request on this operation's paths is served with, given a reader of its JSON body's `model` (an audio upload
+   * is never read for one). */
+  pick(named: () => Promise<string | undefined>): Promise<ModelRecord | undefined>;
 }
 
 /** Isolated composition: the persistent state and the startup model's worker first, the listener
@@ -181,8 +182,10 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     /** How each companion operation is served: Whisper's one checkpoint, and every image model by exact id. */
     const companions: Readonly<Record<CompanionOperation, CompanionServing>> = {
       transcribe: { default: whisperRecord, find: async id => { const record = await whisperRecord(); return record?.repoId === id ? record : undefined; },
-        bytes: async record => record.sizeBytes, named: false },
-      image: { default: imageRecord, find: id => imageModels.find(id), bytes: async record => (await imageStaging(record)).bytes, named: true },
+        bytes: async record => record.sizeBytes, pick: whisperRecord },
+      image: { default: imageRecord, find: id => imageModels.find(id), bytes: async record => (await imageStaging(record)).bytes,
+        // The local image model whose exact id the body names (the rule chat routing follows), else the default.
+        pick: async named => { const id = await named(); return (id !== undefined ? await imageModels.find(id) : undefined) ?? await imageRecord(); } },
     };
     const companionOperations = Object.keys(companions) as CompanionOperation[];
     const source: ResidencySource<WorkerUnit> = {
@@ -228,8 +231,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       companion: async (pathname, named) => {
         const operation = companionOperations.find(each => COMPANION_PATHS[each].some(prefix => pathname.startsWith(prefix)));
         if (!operation) return undefined;
-        const serving = companions[operation], id = serving.named ? await named() : undefined;
-        return ((id !== undefined ? await serving.find(id) : undefined) ?? await serving.default())?.repoId;
+        return (await companions[operation].pick(named))?.repoId;
       } });
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,
