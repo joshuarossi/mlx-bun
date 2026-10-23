@@ -11,18 +11,16 @@
 // its output is evaluated (one stage resident at a time); otherwise the stages
 // stay open between runs until the pipeline is released. Runs reach a pipeline
 // one at a time, and every run goes through the host's `exclusive` wrapper, so
-// a host that also generates never overlaps it on the GPU.
-import { totalmem } from "node:os";
+// a host that also generates never overlaps it on the GPU. The rule and its
+// default budget are image-stages.ts's, which the isolated parent charges by.
 import type {
   AcquireOptions, CatalogEntry, EventBus, ImageOperation, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats, ModelUnloadReason,
   ResidencyPlan, ResidencyPolicy, ResidentModel,
 } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "./failure";
 import { nativeImageBackend, type ImageBackend, type LoadedImagePipeline } from "./image-backend";
+import { defaultStageBudgetBytes, stageResidency } from "./image-stages";
 import type { Exclusive } from "./whisper-model-host";
-
-/** The share of physical memory a pipeline's stages may hold together before each run releases them one by one. */
-export const DEFAULT_STAGE_BUDGET_FRACTION = 0.5;
 
 export interface ImageModelHostOptions {
   /** Resolves ids and paths to snapshot directories, and lists what is local. */
@@ -131,7 +129,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
   const catalog = options.catalog, backend = options.backend ?? nativeImageBackend, exclusive: Exclusive = options.exclusive ?? (fn => fn());
   const log = options.log ?? (line => console.log(line)), timers = options.timers ?? realTimers, now = options.now ?? (() => performance.now());
   const idleUnloadSec = Math.max(0, options.idleUnloadSec ?? 0);
-  const stageBudgetBytes = options.stageBudgetBytes ?? Math.floor(totalmem() * DEFAULT_STAGE_BUDGET_FRACTION);
+  const stageBudgetBytes = options.stageBudgetBytes ?? defaultStageBudgetBytes();
   const slots = new Map<ModelId, Slot>();
   /** What the catalog listed when the default was resolved, so leasing it does not look it up again. */
   const listed = new Map<ModelId, CatalogEntry>();
@@ -196,9 +194,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
         try {
           const pipeline = await backend.load(slot.directory);
           try {
-            const stages = Object.values(pipeline.stageBytes), total = stages.reduce((sum, bytes) => sum + bytes, 0);
-            const releaseStages = total > stageBudgetBytes;
-            opened = { pipeline, releaseStages, bytes: releaseStages ? Math.max(0, ...stages) : total, tail: Promise.resolve() };
+            opened = { pipeline, ...stageResidency(Object.values(pipeline.stageBytes), stageBudgetBytes), tail: Promise.resolve() };
             // A host that also generates makes room first: it may drain a chat model before a stage loads its weights.
             if (opened.bytes > 0) await options.admit?.(opened.bytes);
           } catch (error) { pipeline.dispose(); throw error; }

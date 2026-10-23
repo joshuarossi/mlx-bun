@@ -9,13 +9,15 @@
 // flushes its saved state durably and exits (the worker gets the CLI's shutdown budget, never a
 // kill first), and naming it again spawns a worker that resumes from that state. Requests route
 // by their `model` (server/model-routes.ts) and forward over the worker's socket; a crash
-// respawns that worker with its model while the app stays up. Whisper and the image model are each a companion worker of
-// its own, which can be pinned. Each worker's events are relayed onto this process's bus.
+// respawns that worker with its model while the app stays up. Whisper and each image model are a companion worker of
+// their own, which can be pinned; an image worker serves only the model it was started for. Each worker's events are
+// relayed onto this process's bus.
 // Nothing here imports the engine or a native module.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppModule, ModelOperation } from "@mlx-bun/app-core";
+import { defaultStageBudgetBytes, pipelineComponentBytes, stageResidency } from "@mlx-bun/app-services/portable";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
@@ -52,6 +54,8 @@ export interface IsolatedServeHooks {
   records?(): readonly ModelRecord[];
   /** The checkpoints that may answer a companion operation (Whisper for `transcribe`, an image model for `image`), instead of the registry's. */
   companions?(operation: CompanionOperation): readonly ModelRecord[];
+  /** The image hosts' stage budget, instead of the default share of physical memory. */
+  stageBudgetBytes?: number;
 }
 
 /** The operations a companion worker answers beside the chat models, each from its own checkpoint. */
@@ -61,6 +65,17 @@ const COMPANION_PATHS: Readonly<Record<CompanionOperation, readonly string[]>> =
   transcribe: ["/v1/audio/", "/admin/transcription/"],
   image: ["/v1/images/"],
 };
+/** How the host serves each companion operation's checkpoints, one worker per checkpoint. */
+interface CompanionServing {
+  /** The checkpoint a request is served with when it names none of this operation's by exact id. */
+  default(): Promise<ModelRecord | undefined>;
+  /** The checkpoint with exactly this id that a worker of this operation may serve. */
+  find(id: string): Promise<ModelRecord | undefined>;
+  /** What its worker is charged until it reports its own memory. */
+  bytes(record: ModelRecord): Promise<number>;
+  /** Its requests name their checkpoint in the JSON body's `model`; others (audio uploads) are never read for one. */
+  named: boolean;
+}
 
 /** Isolated composition: the persistent state and the startup model's worker first, the listener
  * once that worker serves, so startup fails the way the in-process composition does when the model cannot load. */
@@ -119,7 +134,9 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   try {
     const { thisMachine } = await import("@mlx-bun/inference/execution/fit");
     const machine = thisMachine();
-    const context: WorkerUnitContext = { options, startup: model, socketDir, publish: event => state.events.publish(event), notice,
+    // One stage budget for every image worker: its host's staging decision and this host's charge for it.
+    const stageBudgetBytes = hooks.stageBudgetBytes ?? defaultStageBudgetBytes();
+    const context: WorkerUnitContext = { options, startup: model, socketDir, stageBudgetBytes, publish: event => state.events.publish(event), notice,
       ...(hooks.entry ? { entry: hooks.entry } : {}), ...(hooks.restarts ? { restarts: hooks.restarts } : {}), ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}), ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}),
       ...(hooks.log ? { log: hooks.log } : {}), ...(hooks.error ? { error: hooks.error } : {}) };
@@ -141,11 +158,23 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       }
       return (await companionList("transcribe"))[0];
     })();
-    // The image companion: the first downloaded text-to-image model, looked up once like Whisper.
+    // The image companions: every downloaded text-to-image model by its exact id, each in a worker of its own that serves it
+    // alone; the first is the default, looked up once like Whisper. A worker is charged what one run holds under the stage rule
+    // its host applies, from the snapshot's component files (this process reads no weights); a snapshot whose components
+    // cannot be read is charged its whole size.
+    const imageModels = createRecordIndex(() => companionList("image"));
     let image: Promise<ModelRecord | undefined> | undefined;
     const imageRecord = () => image ??= (async () => (await companionList("image"))[0])();
-    /** The checkpoint each companion operation is served with. */
-    const companions: Readonly<Record<CompanionOperation, () => Promise<ModelRecord | undefined>>> = { transcribe: whisperRecord, image: imageRecord };
+    const imageRunBytes = async (record: ModelRecord) => {
+      const components = Object.values(await pipelineComponentBytes(record.path).catch(() => ({})));
+      return components.length ? stageResidency(components, stageBudgetBytes).bytes : record.sizeBytes;
+    };
+    /** How each companion operation is served: Whisper's one checkpoint, and every image model by exact id. */
+    const companions: Readonly<Record<CompanionOperation, CompanionServing>> = {
+      transcribe: { default: whisperRecord, find: async id => { const record = await whisperRecord(); return record?.repoId === id ? record : undefined; },
+        bytes: async record => record.sizeBytes, named: false },
+      image: { default: imageRecord, find: id => imageModels.find(id), bytes: imageRunBytes, named: true },
+    };
     const companionOperations = Object.keys(companions) as CompanionOperation[];
     const source: ResidencySource<WorkerUnit> = {
       async resolve(id) {
@@ -153,20 +182,20 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
         // A config the fit model cannot read leaves the checkpoint's own size as the estimate.
         if (chat) return { id, bytes: await estimateRecordBytes(chat, { budgetBytes, cache: options.cache, machine }).catch(() => chat.sizeBytes), operations: ["generate"], role: "primary" };
         for (const operation of companionOperations) {
-          const companion = await companions[operation]();
-          if (companion && companion.repoId === id) return { id, bytes: companion.sizeBytes, operations: [operation], role: "companion" };
+          const companion = await companions[operation].find(id);
+          if (companion) return { id, bytes: await companions[operation].bytes(companion), operations: [operation], role: "companion" };
         }
         return undefined;
       },
       async load(entry) {
         const operation = entry.operations[0] as CompanionOperation | "generate";
-        const record = operation === "generate" ? (await chatModels.find(entry.id))! : (await companions[operation]())!;
+        const record = operation === "generate" ? (await chatModels.find(entry.id))! : (await companions[operation].find(entry.id))!;
         return spawnWorkerUnit(context, record, entry.role ?? "primary", entry.bytes, operation);
       },
     };
-    const companionFor = (operation: ModelOperation) => (companions as Partial<Record<ModelOperation, () => Promise<ModelRecord | undefined>>>)[operation];
+    const companionFor = (operation: ModelOperation) => (companions as Partial<Record<ModelOperation, CompanionServing>>)[operation];
     residency = createResidencyHost<WorkerUnit>({ source, budgetBytes, events: state.events,
-      defaultFor: async operation => operation === "generate" ? current : (await companionFor(operation)?.())?.repoId,
+      defaultFor: async operation => operation === "generate" ? current : (await companionFor(operation)?.default())?.repoId,
       async serve(id, signal) {
         if (!await chatModels.find(id)) throw new ResidencyError("not-found", `${id} is not a local model; download it first`);
         (await residency.acquire(id, { ...(signal ? { signal } : {}), need: ["generate"] })).release();
@@ -185,16 +214,18 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const models = createModelRoutes({ host: residency, current: () => current,
       serves: async id => !!await chatModels.find(id),
       transcription: async () => (await whisperRecord())?.repoId,
-      // Audio requests belong to the Whisper worker and image requests to the image worker; each loads on first use and drains a chat model when
-      // memory is short.
-      companion: async pathname => {
+      // Audio requests belong to the Whisper worker; an image request to the worker of the local image model its body names by exact
+      // id (the rule chat routing follows), else the default's. Each loads on first use and drains a chat model when memory is short.
+      companion: async (pathname, named) => {
         const operation = companionOperations.find(each => COMPANION_PATHS[each].some(prefix => pathname.startsWith(prefix)));
-        return operation ? (await companions[operation]())?.repoId : undefined;
+        if (!operation) return undefined;
+        const serving = companions[operation], id = serving.named ? await named() : undefined;
+        return ((id !== undefined ? await serving.find(id) : undefined) ?? await serving.default())?.repoId;
       } });
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,
       modelId: model.repoId, startedAt: Date.now() });
-    const invalidateLibrary = () => { chatModels.invalidate(); };
+    const invalidateLibrary = () => { chatModels.invalidate(); imageModels.invalidate(); };
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among themselves; the proxy takes every remaining path.
     const routes: RouteGroup = { handle: async request => await persistent.jobs.handle(request) ??

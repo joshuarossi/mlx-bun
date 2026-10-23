@@ -36,6 +36,8 @@ export interface WorkerUnitContext {
   startup: ModelRecord;
   /** A private directory (0700) the host removes; one socket per worker. */
   socketDir: string;
+  /** The stage budget an image worker's host applies (`@mlx-bun/app-services` `stageResidency`), the same one the host charges it by. */
+  stageBudgetBytes: number;
   publish(event: AppEvent): void;
   entry?: string;
   restarts?: Partial<WorkerRestartBudget>;
@@ -66,9 +68,10 @@ function transcriptionLaunch(context: WorkerUnitContext, record: ModelRecord, so
     ...(whisper?.idleUnloadSec !== undefined ? ["--whisper-idle-unload", String(whisper.idleUnloadSec)] : [])] };
 }
 
-/** A text-to-image model runs the image companion composition on its socket (`serve-host.ts` `startImageHost`). */
-function imageLaunch(_context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
-  return { kind: "image" as const, version: WORKER_PROTOCOL_VERSION, socketPath, model: record };
+/** A text-to-image model runs the image companion composition on its socket (`serve-host.ts` `startImageHost`), serving that model only,
+ * with the stage budget its charge assumed. */
+function imageLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
+  return { kind: "image" as const, version: WORKER_PROTOCOL_VERSION, socketPath, model: record, stageBudgetBytes: context.stageBudgetBytes };
 }
 
 /** The operation a worker serves, and how it is launched for it. */
@@ -135,8 +138,9 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
   context.notice(`${role === "primary" ? "engine" : "companion"} worker pid ${supervisor.pid} ready for ${record.repoId} in ${readyMs.toFixed(0)} ms (socket ${supervisor.socketPath})`);
 
   // What the worker reports of the model it loaded: its weights, whether saved state was found for it, and (both roles) the
-  // MLX memory its process holds, which residency counts from now on in place of the estimate.
-  let weightsBytes = role === "companion" ? record.sizeBytes : 0, resumed = false, measured: WorkerMemory | undefined;
+  // MLX memory its process holds, which residency counts from now on in place of the estimate. A companion reports no weights:
+  // what it was charged stands for them (a Whisper checkpoint's size, what one image run holds).
+  let weightsBytes = role === "companion" ? estimate : 0, resumed = false, measured: WorkerMemory | undefined;
   try {
     const response = await supervisor.fetch("http://engine/health", { signal: AbortSignal.timeout(5_000) });
     measured = parseMemoryHealth(await response.json());

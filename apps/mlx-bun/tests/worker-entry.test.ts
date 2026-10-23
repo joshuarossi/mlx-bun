@@ -504,10 +504,13 @@ test("the image form hands the socket hooks to the image companion composition: 
   const picture = { repoId: "org/picture", path: "/unused/picture", modelType: "SomeImagePipeline", expertsBytes: 0 } as ModelRecord;
   const events: string[] = [], written: string[] = [], errors: string[] = [];
   const host = fakeHost(events);
-  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture };
-  // The form carries the snapshot the parent resolved and nothing else; it needs the model like the model form.
+  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture, stageBudgetBytes: 1_000 };
+  // The form carries the snapshot the parent resolved and the stage budget it charged the worker by; it needs both.
   expect(parseWorkerLaunch(encodeLaunch(launch))).toEqual(launch as never);
   expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, model: undefined }))).toThrow("worker launch needs model.repoId and model.path");
+  for (const stageBudgetBytes of [undefined, 0, "1000"])
+    expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, stageBudgetBytes }))).toThrow("worker launch needs stageBudgetBytes, the image host's stage budget");
+  const budgets: number[] = [];
   let push!: (text: string) => void, end!: () => void;
   const stdin = new ReadableStream<Uint8Array>({ start(controller) {
     push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => { try { controller.close(); } catch { /* closed */ } };
@@ -518,11 +521,12 @@ test("the image form hands the socket hooks to the image companion composition: 
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.socketPath } as RequestInit);
   try {
     const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter(),
-      image: (model, hooks) => host.start(model, {} as ServeOptions, hooks) });
+      image: (model, serving, hooks) => { budgets.push(serving.stageBudgetBytes); return host.start(model, {} as ServeOptions, hooks); } });
     await until(() => written.length === 1, "the ready line");
     expect(JSON.parse(written[0]!.slice(WORKER_MESSAGE_PREFIX.length))).toMatchObject({ type: "ready", socketPath: socket.socketPath, modelId: "org/picture", version: WORKER_PROTOCOL_VERSION });
     const { model, hooks } = host.calls[0]!;
     expect([model, hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain]).toEqual([picture, socket.socketPath, "function", "function"]);
+    expect(budgets).toEqual([1_000]);
     expect(await (await get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/picture" });
     expect((await get("/admin/lease", { method: "POST" })).status).toBe(404);
     end();

@@ -12,7 +12,7 @@ test("a restarting worker reserves its reload estimate until the replacement rep
   const root = mkdtempSync(join(tmpdir(), "mlx-worker-memory-"));
   const record = { repoId: "org/model", path: root, sizeBytes: 100 } as ModelRecord;
   const unit = await spawnWorkerUnit({
-    options: parseServeOptions(parseCommand("serve", [])), startup: record, socketDir: root,
+    options: parseServeOptions(parseCommand("serve", [])), startup: record, socketDir: root, stageBudgetBytes: 1_000,
     entry: fileURLToPath(new URL("./fake-worker.ts", import.meta.url)),
     env: { FAKE_WORKER_MEMORY: JSON.stringify({ "*": [250, 50, 350, 1000] }) },
     restarts: { max: 1, windowMs: 60_000, delayMs: 500 }, publish() {}, notice() {}, log() {}, error() {},

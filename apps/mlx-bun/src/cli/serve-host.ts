@@ -13,6 +13,7 @@ import { leasedAdapters } from "../residency/leased-adapters";
 import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-estimate";
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
+import type { CatalogEntry, ModelCatalog } from "@mlx-bun/app-core";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import pkgJson from "../../package.json" with { type: "json" };
@@ -426,15 +427,33 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
   } catch (error) { await cleanup?.(); throw error; }
 }
 
+/** The image worker's catalog: the snapshot it was started for, under its exact id, and no other model (the parent gives each
+ * image model a worker of its own and charges it). Downloads and the rest stay the registry catalog's. */
+function servingOnly(model: ModelRecord, catalog: ModelCatalog): ModelCatalog {
+  const own: CatalogEntry = { id: model.repoId, kind: "model", directory: model.path, bytes: model.sizeBytes, operations: ["image"] };
+  return { ...catalog,
+    list: async filter => filter?.kind === "adapter" ? [] : [own],
+    resolve: async id => id === own.id ? own : undefined,
+    async find(query) {
+      if (query === own.id) return own;
+      throw new Error(`${query} is not served by this image worker, which serves ${own.id}; name an exact local image model id`);
+    } };
+}
+
 /** Image companion composition (the isolated server's image worker, `cli/worker-entry.ts`): the installed modules'
- * routes on the parent's Unix socket over the host library's services, with this snapshot as the `image` default; no
- * chat model, prompt cache, jobs or web app. The pipeline opens on the first request and follows the image host's
- * residency. The hooks are the worker's: the admin surface ahead of the routes, and its close ahead of the modules'. */
-export async function startImageHost(model: ModelRecord, hooks: Pick<ModelHostHooks, "routes" | "beforeDrain"> & { unix: string }): Promise<RunningApp> {
-  const [{ createHostServices, createModuleRoutes, createModuleSockets }, { startServer }] = await Promise.all([
+ * routes on the parent's Unix socket over the host library's services, with this snapshot as the `image` default and the
+ * only model it serves; no chat model, prompt cache, jobs or web app. The pipeline opens on the first request and follows
+ * the image host's residency under the given stage budget. The hooks are the worker's: the admin surface ahead of the
+ * routes, and its close ahead of the modules'. */
+export async function startImageHost(model: ModelRecord, serving: { stageBudgetBytes: number },
+  hooks: Pick<ModelHostHooks, "routes" | "beforeDrain"> & { unix: string }): Promise<RunningApp> {
+  const [{ createHostServices, createModuleRoutes, createModuleSockets, createRegistryCatalog }, { startServer }] = await Promise.all([
     import("@mlx-bun/app-services"), import("../server/start"),
   ]);
-  const moduleHost = createHostServices({ image: { modelDir: model.path, modelId: model.repoId } });
+  // This worker serves its snapshot alone, under the stage budget the parent charged it by: the catalog its modules and image host
+  // resolve through knows no other model, so a request naming another loads nothing here.
+  const moduleHost = createHostServices({ image: { modelDir: model.path, modelId: model.repoId, stageBudgetBytes: serving.stageBudgetBytes },
+    catalog: servingOnly(model, createRegistryCatalog()) });
   let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
   // The modules stop first (runs in flight are joined), then the pipeline releases.
   const close = async () => {
