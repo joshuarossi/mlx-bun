@@ -80,32 +80,40 @@ export class MossImageTransformer implements ImageDenoiser {
   constructor(readonly weights: Weights, modelConfig: ModelConfig, readonly config: MossTransformerConfig) {
     this.latentChannels = config.latentChannels;
     this.depth = config.numLayers;
-    const linear = (path: string): MossLinear => bindMossLinear(weights, modelConfig, path);
+    // Every layer bound so far that holds arrays of its own, so a binding that fails partway frees what the ones before it hold.
+    const built: { dispose(): void }[] = [];
+    const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
+    const linear = (path: string): MossLinear => own(bindMossLinear(weights, modelConfig, path));
     const norm = (path: string) => new MossRmsNorm(weights.tensor(`${path}.weight`), NORM_EPS);
     const activation = new MossSitu();
-    this.rope = new MossRope(config.dim / config.numHeads, config.ropeBase);
-    this.latentEmbedder = new MossLatentEmbedder(linear("video_embedder"));
-    this.textProjection = linear("text_embedder.proj");
-    const textBlock = (prefix: string) => new MossRefinerBlock(
-      norm(`${prefix}.norm1`),
-      new MossRefinerAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
-      norm(`${prefix}.norm2`),
-      new MossRefinerFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
-    this.textBlocks = [textBlock("text_embedder.blocks.0"), textBlock("text_embedder.blocks.1")];
-    this.timestepEmbedder = new MossTimestepEmbedder(linear("time_embedding.0"), linear("time_embedding.2"), config.freqDim);
-    this.modulation = new MossModulation(linear("shared_block_modulation"), linear("video_head_modulation"), config.dim);
-    const blocks: MossJointBlock[] = [];
-    for (let i = 0; i < config.numLayers; i++) {
-      const prefix = `layers.${i}`;
-      blocks.push(new MossJointBlock(
+    this.rope = own(new MossRope(config.dim / config.numHeads, config.ropeBase));
+    try {
+      this.latentEmbedder = new MossLatentEmbedder(linear("video_embedder"));
+      this.textProjection = linear("text_embedder.proj");
+      const textBlock = (prefix: string) => new MossRefinerBlock(
         norm(`${prefix}.norm1`),
-        new MossJointAttention(linear(`${prefix}.proj.q`), linear(`${prefix}.proj.k`), linear(`${prefix}.proj.v`), linear(`${prefix}.proj.o`),
-          norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
+        new MossRefinerAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
         norm(`${prefix}.norm2`),
-        new MossJointFeedForward(linear(`${prefix}.proj.ffn_up_gate`), linear(`${prefix}.proj.ffn_down`), activation)));
+        new MossRefinerFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
+      this.textBlocks = [textBlock("text_embedder.blocks.0"), textBlock("text_embedder.blocks.1")];
+      this.timestepEmbedder = new MossTimestepEmbedder(linear("time_embedding.0"), linear("time_embedding.2"), config.freqDim);
+      this.modulation = new MossModulation(linear("shared_block_modulation"), linear("video_head_modulation"), config.dim);
+      const blocks: MossJointBlock[] = [];
+      for (let i = 0; i < config.numLayers; i++) {
+        const prefix = `layers.${i}`;
+        blocks.push(new MossJointBlock(
+          norm(`${prefix}.norm1`),
+          new MossJointAttention(linear(`${prefix}.proj.q`), linear(`${prefix}.proj.k`), linear(`${prefix}.proj.v`), linear(`${prefix}.proj.o`),
+            norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
+          norm(`${prefix}.norm2`),
+          new MossJointFeedForward(linear(`${prefix}.proj.ffn_up_gate`), linear(`${prefix}.proj.ffn_down`), activation)));
+      }
+      this.blocks = blocks;
+      this.head = new MossLatentHead(norm("final_norm_video"), linear("final_linear_video"));
+    } catch (error) {
+      for (const layer of built.reverse()) layer.dispose();
+      throw error;
     }
-    this.blocks = blocks;
-    this.head = new MossLatentHead(norm("final_norm_video"), linear("final_linear_video"));
   }
 
   velocity(latents: MlxArray, timestep: number, context: MlxArray, skip: ReadonlySet<number> = new Set()): MlxArray {

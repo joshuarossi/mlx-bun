@@ -1,9 +1,10 @@
 // The diffusers pipeline layout through the artifact readers and the family
 // registry: model_index.json parsing and its malformed forms, component
 // lookup, config loading that leaves config.json snapshots unchanged, the
-// MOSS-Image family's role, the openers' refusals, diffusers shard names, and
-// a pipeline opened from a synthetic snapshot (configs and headers only; no
-// stage loads).
+// MOSS-Image family's role, the openers' refusals, diffusers shard names, a
+// pipeline opened from a synthetic snapshot (configs and headers only; no stage
+// loads), and the graphs' lifetimes when construction or the conditioner's
+// last evaluation fails.
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import { parsePipelineIndex, pipelineComponentDir, readPipelineIndex } from "../
 import { ShardedSafetensors } from "../../src/artifacts/safetensors";
 import { UnsupportedModelLoadError, openImagePipeline, openModel } from "../../src/models/factory";
 import { familyOf } from "../../src/models/families";
+import { MossImageConditioner } from "../../src/models/moss-image/text-encoder";
 import { isImageModelType, isTranscriptionModelType, supportTier } from "../../src/models/support";
 
 const root = mkdtempSync(join(tmpdir(), "mlx-moss-artifacts-"));
@@ -155,4 +157,79 @@ test("a snapshot whose components disagree is refused when opened", async () => 
     .rejects.toThrow("transformer latent_channels 16 != VAE latent_channels 2 x patch 2^2");
   await expect(openImagePipeline(snapshot("text-mismatch", { transformer: { text_dim: 32 } })))
     .rejects.toThrow("text encoder hidden_size 24 != transformer text_dim 32");
+});
+
+test("a graph whose construction fails partway frees every array its layers already made before the weights are released", async () => {
+  // A child process wraps every MLX operation and array factory to see what construction allocates; each graph gets weights that
+  // run out a few layers in.
+  const script = `
+    import { mock } from "bun:test";
+    const opsPath = ${JSON.stringify(import.meta.resolve("@mlx-bun/mlx/ops"))};
+    const actual = await import(opsPath);
+    const { MlxArray } = await import(${JSON.stringify(import.meta.resolve("@mlx-bun/mlx/array"))});
+    let created = [];
+    const track = (label, out) => {
+      for (const array of Array.isArray(out) ? out : [out]) {
+        if (!array || typeof array.dispose !== "function") continue;
+        const entry = { label, disposed: false }, dispose = array.dispose.bind(array);
+        array.dispose = () => { entry.disposed = true; dispose(); };
+        created.push(entry);
+      }
+      return out;
+    };
+    mock.module(opsPath, () => Object.fromEntries(Object.entries(actual).map(([name, fn]) =>
+      [name, typeof fn === "function" ? (...args) => track(name, fn(...args)) : fn])));
+    const moss = await import(${JSON.stringify(import.meta.resolve("../../src/models/moss-image/index"))});
+    /** Weights holding these tensors (zeros of the given shapes) and nothing else. */
+    const weights = shapes => {
+      const tensors = Object.fromEntries(Object.entries(shapes).map(([name, shape]) =>
+        [name, MlxArray.fromFloat32(new Float32Array(shape.reduce((a, b) => a * b, 1)), shape)]));
+      return { has: name => name in tensors, tensor(name) { if (!(name in tensors)) throw new Error("missing " + name); return tensors[name]; }, dispose() {} };
+    };
+    const factories = ["fromFloat32", "fromInt32"].map(name => { const make = MlxArray[name]; return [name, make]; });
+    const leaks = {};
+    for (const [graph, shapes, build] of [
+      ["transformer", { "video_embedder.weight": [8, 8] },
+        w => new moss.MossImageTransformer(w, { quantization: null }, moss.parseMossTransformerConfig({ dim: 8, num_heads: 1, freq_dim: 2, latent_channels: 8 }))],
+      ["conditioner", { "language_model.embed_tokens.weight": [50, 8], "language_model.layers.0.input_layernorm.weight": [8],
+        "language_model.layers.0.linear_attn.in_proj_qkv.weight": [24, 8] },
+        w => new moss.MossImageConditioner(w, { quantization: null, text: { rmsNormEps: 1e-6, headDim: 4, partialRotaryFactor: 0.5,
+          ropeParameters: { full_attention: { ropeTheta: 10000 } }, numAttentionHeads: 2, numKeyValueHeads: 1, linearNumKeyHeads: 2,
+          linearNumValueHeads: 2, linearKeyHeadDim: 4, linearValueHeadDim: 4, layerTypes: ["linear_attention"], numHiddenLayers: 1 } }, null, null)],
+      ["decoder", { "bn.running_mean": [8], "bn.running_var": [8], "post_quant_conv.weight": [8, 8, 1, 1], "post_quant_conv.bias": [8] },
+        w => new moss.Flux2VaeDecoder(w, moss.parseFlux2VaeConfig({ latent_channels: 2, patch_size: [2, 2], decoder_block_out_channels: [32, 32],
+          block_out_channels: [32, 32], up_block_types: ["UpDecoderBlock2D", "UpDecoderBlock2D"], norm_num_groups: 32 }))],
+    ]) {
+      const w = weights(shapes);
+      created = [];
+      for (const [name, make] of factories) MlxArray[name] = (...args) => track(name, make.call(MlxArray, ...args));
+      let error;
+      try { build(w); } catch (caught) { error = String(caught); }
+      for (const [name, make] of factories) MlxArray[name] = make;
+      if (!error?.includes("missing")) throw new Error(graph + " did not fail on a missing tensor: " + error);
+      if (!created.length) throw new Error(graph + " made nothing before failing; the test would prove nothing");
+      leaks[graph] = created.filter(entry => !entry.disposed).map(entry => entry.label);
+    }
+    console.log(JSON.stringify(leaks));
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], { cwd: new URL("../../", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect([code, err.trim()]).toEqual([0, ""]);
+  expect(JSON.parse(out.trim())).toEqual({ transformer: [], conditioner: [], decoder: [] });
+});
+
+test("the conditioner frees its final norm's output when evaluating it fails", () => {
+  const disposed: string[] = [];
+  const fake = (label: string, fails = false) => ({
+    eval() { if (fails) throw new Error("injected evaluation failure"); },
+    dispose() { disposed.push(label); },
+    [Symbol.dispose]() { this.dispose(); },
+  });
+  // The conditioner's own encode over stand-in layers: the embedding's output feeds no layers, and the final norm's fails to evaluate.
+  const conditioner = Object.assign(Object.create(MossImageConditioner.prototype) as MossImageConditioner, {
+    template: { render: () => "a cat" }, tokenizer: { encode: () => [1, 2] }, layers: [],
+    embedding: { forward: () => fake("embedded") }, rope: { tables: () => ({ [Symbol.dispose]() {} }) }, norm: { forward: () => fake("normed", true) },
+  });
+  expect(() => conditioner.encode("a cat")).toThrow("injected evaluation failure");
+  expect(disposed.sort()).toEqual(["embedded", "normed"]);
 });

@@ -43,40 +43,48 @@ export class MossImageConditioner implements ImageConditioner {
 
   constructor(readonly weights: Weights, config: ModelConfig, readonly tokenizer: LoadedTokenizer, readonly template: ChatTemplate) {
     const t = config.text, eps = t.rmsNormEps;
-    const linear = (path: string): MossLinear => bindMossLinear(weights, config, path);
-    const norm = (path: string) => new MossTextRmsNorm(weights.tensor(`${path}.weight`), eps);
+    // Every layer bound so far that holds arrays of its own, so a binding that fails partway frees what the ones before it hold.
+    const built: { dispose(): void }[] = [];
+    const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
+    const linear = (path: string): MossLinear => own(bindMossLinear(weights, config, path));
+    const norm = (path: string) => own(new MossTextRmsNorm(weights.tensor(`${path}.weight`), eps));
     const mlp = (prefix: string) => new MossTextMlp(linear(`${prefix}.gate_proj`), linear(`${prefix}.up_proj`), linear(`${prefix}.down_proj`));
-    const embedding = `${PREFIX}.embed_tokens`, embeddingSpec = storedAffineSpec(weights, config, embedding);
-    this.embedding = embeddingSpec
-      ? new MossQuantizedTextEmbedding(weights.tensor(`${embedding}.weight`), weights.tensor(`${embedding}.scales`),
-        weights.tensor(`${embedding}.biases`), embeddingSpec)
-      : new MossTextEmbedding(weights.tensor(`${embedding}.weight`));
-    this.rope = new MossTextRope(Math.trunc(t.headDim * t.partialRotaryFactor), t.ropeParameters.full_attention!.ropeTheta);
-    const attentionShape = { heads: t.numAttentionHeads, kvHeads: t.numKeyValueHeads, headDim: t.headDim };
-    const deltaShape = { keyHeads: t.linearNumKeyHeads, valueHeads: t.linearNumValueHeads, keyDim: t.linearKeyHeadDim, valueDim: t.linearValueHeadDim };
-    const layers: (MossTextDeltaLayer | MossTextAttentionLayer)[] = [];
-    if (t.layerTypes.length !== t.numHiddenLayers) throw new Error(`text encoder config: ${t.layerTypes.length} layer_types for ${t.numHiddenLayers} layers`);
-    for (let i = 0; i < t.numHiddenLayers; i++) {
-      const prefix = `${PREFIX}.layers.${i}`, kind = t.layerTypes[i];
-      if (kind === "linear_attention") {
-        const mixer = `${prefix}.linear_attn`;
-        layers.push(new MossTextDeltaLayer(norm(`${prefix}.input_layernorm`),
-          new MossTextDeltaMixer(linear(`${mixer}.in_proj_qkv`), linear(`${mixer}.in_proj_z`), linear(`${mixer}.in_proj_b`), linear(`${mixer}.in_proj_a`),
-            linear(`${mixer}.out_proj`), weights.tensor(`${mixer}.conv1d.weight`), weights.tensor(`${mixer}.A_log`), weights.tensor(`${mixer}.dt_bias`),
-            new MossTextGatedNorm(weights.tensor(`${mixer}.norm.weight`), eps), deltaShape),
-          norm(`${prefix}.post_attention_layernorm`), mlp(`${prefix}.mlp`)));
-      } else if (kind === "full_attention") {
-        const attention = `${prefix}.self_attn`;
-        layers.push(new MossTextAttentionLayer(norm(`${prefix}.input_layernorm`),
-          new MossTextAttention(linear(`${attention}.q_proj`), linear(`${attention}.k_proj`), linear(`${attention}.v_proj`), linear(`${attention}.o_proj`),
-            norm(`${attention}.q_norm`), norm(`${attention}.k_norm`), this.rope, attentionShape),
-          norm(`${prefix}.post_attention_layernorm`), mlp(`${prefix}.mlp`)));
-      } else {
-        throw new Error(`text encoder config: layer ${i} has unknown type ${String(kind)}`);
+    try {
+      const embedding = `${PREFIX}.embed_tokens`, embeddingSpec = storedAffineSpec(weights, config, embedding);
+      this.embedding = embeddingSpec
+        ? new MossQuantizedTextEmbedding(weights.tensor(`${embedding}.weight`), weights.tensor(`${embedding}.scales`),
+          weights.tensor(`${embedding}.biases`), embeddingSpec)
+        : new MossTextEmbedding(weights.tensor(`${embedding}.weight`));
+      this.rope = new MossTextRope(Math.trunc(t.headDim * t.partialRotaryFactor), t.ropeParameters.full_attention!.ropeTheta);
+      const attentionShape = { heads: t.numAttentionHeads, kvHeads: t.numKeyValueHeads, headDim: t.headDim };
+      const deltaShape = { keyHeads: t.linearNumKeyHeads, valueHeads: t.linearNumValueHeads, keyDim: t.linearKeyHeadDim, valueDim: t.linearValueHeadDim };
+      const layers: (MossTextDeltaLayer | MossTextAttentionLayer)[] = [];
+      if (t.layerTypes.length !== t.numHiddenLayers) throw new Error(`text encoder config: ${t.layerTypes.length} layer_types for ${t.numHiddenLayers} layers`);
+      for (let i = 0; i < t.numHiddenLayers; i++) {
+        const prefix = `${PREFIX}.layers.${i}`, kind = t.layerTypes[i];
+        if (kind === "linear_attention") {
+          const mixer = `${prefix}.linear_attn`;
+          layers.push(new MossTextDeltaLayer(norm(`${prefix}.input_layernorm`),
+            own(new MossTextDeltaMixer(linear(`${mixer}.in_proj_qkv`), linear(`${mixer}.in_proj_z`), linear(`${mixer}.in_proj_b`), linear(`${mixer}.in_proj_a`),
+              linear(`${mixer}.out_proj`), weights.tensor(`${mixer}.conv1d.weight`), weights.tensor(`${mixer}.A_log`), weights.tensor(`${mixer}.dt_bias`),
+              new MossTextGatedNorm(weights.tensor(`${mixer}.norm.weight`), eps), deltaShape)),
+            norm(`${prefix}.post_attention_layernorm`), mlp(`${prefix}.mlp`)));
+        } else if (kind === "full_attention") {
+          const attention = `${prefix}.self_attn`;
+          layers.push(new MossTextAttentionLayer(norm(`${prefix}.input_layernorm`),
+            new MossTextAttention(linear(`${attention}.q_proj`), linear(`${attention}.k_proj`), linear(`${attention}.v_proj`), linear(`${attention}.o_proj`),
+              norm(`${attention}.q_norm`), norm(`${attention}.k_norm`), this.rope, attentionShape),
+            norm(`${prefix}.post_attention_layernorm`), mlp(`${prefix}.mlp`)));
+        } else {
+          throw new Error(`text encoder config: layer ${i} has unknown type ${String(kind)}`);
+        }
       }
+      this.layers = layers;
+      this.norm = norm(`${PREFIX}.norm`);
+    } catch (error) {
+      for (const layer of built.reverse()) layer.dispose();
+      throw error;
     }
-    this.layers = layers;
-    this.norm = norm(`${PREFIX}.norm`);
   }
 
   /** The prompt's token ids: the user turn rendered with the generation prompt
@@ -98,7 +106,7 @@ export class MossImageConditioner implements ImageConditioner {
         h.eval();
       }
       const out = this.norm.forward(h);
-      out.eval();
+      try { out.eval(); } catch (error) { out.dispose(); throw error; }
       return out;
     } finally {
       h.dispose();
@@ -111,4 +119,3 @@ export class MossImageConditioner implements ImageConditioner {
     this.weights.dispose();
   }
 }
-

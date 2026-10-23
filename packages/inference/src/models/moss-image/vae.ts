@@ -107,39 +107,48 @@ export class Flux2VaeDecoder implements ImageLatentDecoder {
   }
 
   constructor(readonly weights: Weights, readonly config: Flux2VaeConfig) {
-    const conv = (path: string) => new Flux2Conv2d(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`));
+    // Every layer bound so far that holds arrays of its own (the clamp first: a field holding two), so a binding that fails
+    // partway frees what the ones before it hold.
+    const built: { dispose(): void }[] = [this.clamp];
+    const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
+    const conv = (path: string) => own(new Flux2Conv2d(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`)));
     const norm = (path: string) => new Flux2GroupNorm(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`), config.normNumGroups, NORM_EPS);
-    const linear = (path: string) => new MossDenseBiasedLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`));
+    const linear = (path: string) => own(new MossDenseBiasedLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`)));
     const resnet = (path: string, inChannels: number, outChannels: number): Flux2DecoderLayer => inChannels === outChannels
       ? new Flux2ResnetBlock(norm(`${path}.norm1`), conv(`${path}.conv1`), norm(`${path}.norm2`), conv(`${path}.conv2`), this.activation)
       : new Flux2ShortcutResnetBlock(norm(`${path}.norm1`), conv(`${path}.conv1`), norm(`${path}.norm2`), conv(`${path}.conv2`),
         conv(`${path}.conv_shortcut`), this.activation);
-    this.denormalize = new Flux2LatentDenormalization(weights.tensor("bn.running_mean"), weights.tensor("bn.running_var"), config.batchNormEps);
-    this.unpatchify = new Flux2Unpatchify(config.patch);
-    this.postQuantConv = conv("post_quant_conv");
-    const channels = [...config.decoderBlockOutChannels].reverse();
-    const top = channels[0]!;
-    this.convIn = conv("decoder.conv_in");
-    const attention = "decoder.mid_block.attentions.0";
-    this.midBlock = [
-      resnet("decoder.mid_block.resnets.0", top, top),
-      new Flux2MidAttention(norm(`${attention}.group_norm`), linear(`${attention}.to_q`), linear(`${attention}.to_k`),
-        linear(`${attention}.to_v`), linear(`${attention}.to_out.0`)),
-      resnet("decoder.mid_block.resnets.1", top, top),
-    ];
-    const upBlocks: Flux2DecoderLayer[][] = [];
-    let inChannels = top;
-    for (let i = 0; i < channels.length; i++) {
-      const prefix = `decoder.up_blocks.${i}`, outChannels = channels[i]!;
-      const block: Flux2DecoderLayer[] = [];
-      for (let j = 0; j <= config.layersPerBlock; j++) block.push(resnet(`${prefix}.resnets.${j}`, j === 0 ? inChannels : outChannels, outChannels));
-      if (i < channels.length - 1) block.push(new Flux2Upsample(conv(`${prefix}.upsamplers.0.conv`)));
-      upBlocks.push(block);
-      inChannels = outChannels;
+    try {
+      this.denormalize = own(new Flux2LatentDenormalization(weights.tensor("bn.running_mean"), weights.tensor("bn.running_var"), config.batchNormEps));
+      this.unpatchify = new Flux2Unpatchify(config.patch);
+      this.postQuantConv = conv("post_quant_conv");
+      const channels = [...config.decoderBlockOutChannels].reverse();
+      const top = channels[0]!;
+      this.convIn = conv("decoder.conv_in");
+      const attention = "decoder.mid_block.attentions.0";
+      this.midBlock = [
+        resnet("decoder.mid_block.resnets.0", top, top),
+        new Flux2MidAttention(norm(`${attention}.group_norm`), linear(`${attention}.to_q`), linear(`${attention}.to_k`),
+          linear(`${attention}.to_v`), linear(`${attention}.to_out.0`)),
+        resnet("decoder.mid_block.resnets.1", top, top),
+      ];
+      const upBlocks: Flux2DecoderLayer[][] = [];
+      let inChannels = top;
+      for (let i = 0; i < channels.length; i++) {
+        const prefix = `decoder.up_blocks.${i}`, outChannels = channels[i]!;
+        const block: Flux2DecoderLayer[] = [];
+        for (let j = 0; j <= config.layersPerBlock; j++) block.push(resnet(`${prefix}.resnets.${j}`, j === 0 ? inChannels : outChannels, outChannels));
+        if (i < channels.length - 1) block.push(new Flux2Upsample(conv(`${prefix}.upsamplers.0.conv`)));
+        upBlocks.push(block);
+        inChannels = outChannels;
+      }
+      this.upBlocks = upBlocks;
+      this.normOut = norm("decoder.conv_norm_out");
+      this.convOut = conv("decoder.conv_out");
+    } catch (error) {
+      for (const layer of built.reverse()) layer.dispose();
+      throw error;
     }
-    this.upBlocks = upBlocks;
-    this.normOut = norm("decoder.conv_norm_out");
-    this.convOut = conv("decoder.conv_out");
   }
 
   decode(latents: MlxArray): MlxArray {
