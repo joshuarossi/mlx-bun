@@ -353,8 +353,10 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
       paused++;
       const held: DisposableResource[] = [];
       try {
-        // A model that is draining is on its way out: wait for it, then pause the ones that stay.
+        // A model that is draining is on its way out: wait for it, then pause the ones that stay. A model that is loading
+        // (no new load starts once `paused` is raised) is on its way in: wait for it too, so it is paused before the job runs.
         await Promise.all([...slots.values()].map(slot => slot.closing?.catch(() => {})));
+        await Promise.all([...slots.values()].map(slot => slot.loading?.catch(() => {})));
         // A stable order, so two pausers never wait on each other.
         for (const slot of [...slots.values()].filter(slot => slot.unit && !slot.closing).sort((a, b) => a.id < b.id ? -1 : 1))
           held.push(await slot.unit!.pause(signal));

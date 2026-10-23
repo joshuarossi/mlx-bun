@@ -342,6 +342,29 @@ test("pausing waits for a model that is draining instead of pausing it, so a job
   expect(f.loads).toEqual(["a", "b"]);
 });
 
+test("pausing waits for a model that is loading and pauses it once it arrives, so a job never runs beside a worker that was starting", async () => {
+  const f = fixture({ a: 2 * GB }, { budget: 10 * GB });
+  const gate = Promise.withResolvers<void>();
+  f.loadGate.set("a", gate.promise);
+  const loading = f.host.acquire("a");
+  await tick();
+  expect(f.loads).toEqual(["a"]);
+  let paused = false;
+  const pause = f.host.pauseAll().then(resource => { paused = true; return resource; });
+  await tick();
+  // The job is not granted the GPU while a model it could not pause is still on its way.
+  expect(paused).toBe(false);
+  gate.resolve();
+  const resource = await pause;
+  const lease = await loading;
+  // The model that arrived is paused before the job holds the GPU, and stays paused until the job lets go.
+  expect(f.units.get("a")!.paused).toBe(1);
+  expect(f.log).toEqual(["load a", "pause a"]);
+  lease.release();
+  resource.dispose();
+  expect(f.units.get("a")!.paused).toBe(0);
+});
+
 test("close drains every resident model including pinned ones, waits for a load in flight, and then refuses work", async () => {
   const f = fixture({ a: 2 * GB, b: 2 * GB }, { budget: 10 * GB, pinned: ["a"] });
   (await f.host.acquire("a")).release();

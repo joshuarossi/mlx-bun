@@ -992,6 +992,58 @@ test("a GPU-exclusive job and an image run never overlap: the job waits for the 
   expect(leftover).toEqual([]);
 }, 60_000);
 
+test("a GPU-exclusive job submitted while an image worker is still starting waits for it and leases it before running, so the image run never overlaps the job", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-startup-lease-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const picture = record(root, "org/picture", 5e7);
+  const eventsFile = join(root, "events.jsonl"), ready = join(root, "image-ready");
+  /** The job's steps and the image answer, in the order they happened. */
+  const timeline: string[] = [];
+  const workerEvents = () => existsSync(eventsFile) ? readFileSync(eventsFile, "utf8").trim().split("\n").map(line => JSON.parse(line) as { event: string; model: string })
+    .filter(entry => entry.model === "org/picture").map(entry => entry.event) : [];
+  let jobs!: JobService;
+  const finish = Promise.withResolvers<void>();
+  const probe: AppModule<"jobs"> = { id: "probe", title: "Probe", summary: "An exclusive job", requires: ["jobs"],
+    jobs: [{ kind: "probe-exclusive", isolation: "task", gpu: "exclusive" }],
+    activate: ({ services }) => { jobs = services.jobs; return { jobs: { "probe-exclusive": async () => { timeline.push("job running"); await finish.promise; timeline.push("job finished"); } } }; } };
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, async () => startIsolatedServer(record(root, "org/model"), options, { modules: [probe], entry,
+    env: { ...workerEnv, FAKE_WORKER_EVENTS: eventsFile, FAKE_WORKER_IMAGE_READY_GATE: ready },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? [picture] : [], notice() {}, log() {}, error() {} }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  try {
+    // (c) The image request starts the image worker, and the job arrives while that worker is still loading.
+    const image = fetch(new URL("/v1/images/generations", base), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a cat" }) }).then(async response => { timeline.push("answered a cat"); return response.json(); });
+    await until(() => workerEvents().includes("loading"), "the image worker's start");
+    const job = await jobs.submit({ kind: "probe-exclusive", config: {} });
+    await Bun.sleep(300);
+    // The job is not granted the GPU while the worker it could not yet pause is starting.
+    const whileStarting = [...timeline];
+    writeFileSync(ready, "");
+    await until(() => timeline.includes("job running"), "the job");
+    finish.resolve();
+    await image;
+    await until(async () => (await jobs.get(job.id))?.status === "done", "the job's end");
+    expect(whileStarting).toEqual([]);
+    // Once the worker is up, the job runs only while it holds that worker's lease, and the lease and the image run take the
+    // worker's lock in turn. Either may take it first: the request that started the worker and the job both waited for it.
+    const order = workerEvents().filter(event => event.startsWith("image ") || event.startsWith("lease"));
+    expect([["lease", "lease released", "image started", "image finished"], ["image started", "image finished", "lease", "lease released"]]).toContainEqual(order);
+  } finally {
+    finish.resolve();
+    writeFileSync(ready, "");
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
 test("workers report their measured MLX memory and the host's residency counts it in place of the estimate: the default budget comes from the device working set the first worker reports, and admission and eviction follow the measured bytes", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-measured-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));

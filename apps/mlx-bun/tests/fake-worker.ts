@@ -32,7 +32,7 @@
 // its model's id; `POST /v1/images/*` answers with the launch kind that reached it. An image request whose prompt contains `hold`
 // waits until FAKE_WORKER_IMAGE_GATE=<path> exists (events: image started, image finished). In the image form, image runs and
 // `POST /admin/lease` take one lock in turn, as the real image worker's runs and execution lease do; every form records lease and
-// lease released.
+// lease released. FAKE_WORKER_IMAGE_READY_GATE=<path> holds the image form's ready line until the path exists, like a slow weights load.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
@@ -54,6 +54,7 @@ if (process.env.FAKE_WORKER_FAIL === "start" || process.env.FAKE_WORKER_FAIL_MOD
 console.log(`loading ${modelId}`);
 event("loading");
 if (process.env.FAKE_WORKER_LOAD_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_LOAD_MS));
+if (launch.kind === "image") while (process.env.FAKE_WORKER_IMAGE_READY_GATE && !existsSync(process.env.FAKE_WORKER_IMAGE_READY_GATE)) await Bun.sleep(10);
 
 interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }
 const seen: Seen[] = [];
