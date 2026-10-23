@@ -164,14 +164,14 @@ Library, family, quantizer, image host and `@mlx-bun/module-images` landed with
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Resolve or decide the two checks that keep acceptance open (the review adjudicated
-      only the last block's text rows): Base's block 22 at step 4 (row 40, cosine
-      0.998336 against the reference's own worst 0.999552; next: block 22 alone on
-      identical captured block-21 inputs and modulation, comparing norm, projections, RoPE,
-      attention, SITU and residual outputs); trajectory steps 5 to 7 beyond the original
-      bounds (next: each step's velocity on identical reference trajectory states, to
-      separate local error from accumulated drift). Exit: each passes its bound, or Josh
-      records a decision.
+- [ ] Resolve or decide every check that fails the original bounds (the review adjudicated
+      only the last block's text rows). At `8d021027`: Base trajectory steps 6 and 7; SFT
+      block 41's image rows at step 4 and trajectory steps 5 to 7. The review's two
+      experiments ran; the SITU and one-row projection fixes they led to, the earlier and
+      newly introduced failures, the not-adopted attention experiment and the measured
+      sensitivity are in the [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
+      The sensitivity reading there is provisional and awaits independent review. Exit:
+      each passes its bound, or Josh records a decision.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.

@@ -334,18 +334,23 @@ takes transformers' torch fallback for linear attention) and diffusers 0.38.0's
 `AutoencoderKLFlux2`, torch 2.9.1 on the CPU, Python 3.12.13 (accelerate 1.15.0,
 safetensors 0.9.0rc1, numpy 2.5.4). That reference runs outside every checkout
 from `~/oracles/moss-image` (script SHA-256
-`23c1265aab78771b5fbc2fda8d0f95153b84c32e9e88c55c57c3f734a8f783f8`, frozen
+`bc3312f13665a4d582fa24021a38b7adf7af887dec160990a8a4582153c250ff`, frozen
 requirements `937e32db24ba825eff0f431eed77af44f00a50c33ff254b6b249c90f864089da`;
 earlier captures were written by earlier versions of the script, whose changes
-only added the device option and the `delta` and `gated-norm-steps` stages) and writes
+only added the device option and the `delta`, `gated-norm-steps`, `block-steps`,
+`teacher`, `dit-blocks` and `time-steps` stages) and writes
 safetensors captures: the tokenized prompts and hidden states, the schedule, its
 own seeded noise (an input here: equal seeds do not give equal noise across
 backends), DiT stage outputs at steps 0 and 4 of 8 with and without block 22, the
 8-step guided trajectory at 256x256, decoded pixels, the same DiT stages and
 trajectory on its MPS backend as a measure of its own variation, and the
-conditioner's linear attention (`delta`, `gated-norm`, and the gated norm's
-intermediates one operation at a time, `gated-norm-steps`, a diagnostic the test
-does not read). Before anything is read for a comparison the test computes the
+conditioner's linear attention (`delta`, `gated-norm`). Diagnostics the test does
+not read: the gated norm's intermediates one operation at a time
+(`gated-norm-steps`), one DiT block's intermediates on given inputs
+(`block-steps`), the guided velocity at each of the reference's own trajectory
+states (`teacher`), every DiT block's output on the CPU and MPS (`dit-blocks`),
+and the timestep embedding and modulations one operation at a time
+(`time-steps`). Before anything is read for a comparison the test computes the
 SHA-256 of every snapshot file and capture it reads and fails unless each equals
 its pin for that revision, and fails if any file in a snapshot directory a loader
 reads is unpinned (an extra index or shard could be selected). Hugging Face cache
@@ -368,13 +373,51 @@ transposed MLX view in storage order.
 
 Independent review adjudicated one exception: the last DiT block's text rows feed
 no later operation, so they are reported and its image rows hold the original
-bounds. Every other check holds the original bounds, so two checks fail and keep
-acceptance open: Base's block 22 at step 4 and trajectory steps 5 to 7. The
-review's proposed experiments are block 22 alone on identical captured block-21
-inputs and modulation, comparing its norm, projections, RoPE, attention, SITU and
-residual outputs, and each step's velocity on identical reference trajectory
-states. "Each step within twice the reference's MPS-vs-CPU relative error" is
-recorded as an investigative bound, not asserted.
+bounds. Every other check holds the original bounds, and every check that fails
+them stays unresolved; none is waived. "Each step within twice the reference's
+MPS-vs-CPU relative error" is recorded as an investigative bound, not asserted.
+
+The review proposed two experiments, and both ran:
+
+- Block 22 alone, Base, step 4 (at `f823478d`), on the reference's captured
+  block-21 output and modulation: its output within 2.2e-4 relative and row 40 at
+  cosine 0.999999. The largest intermediate differences were attention and SITU,
+  each about 1.2e-3. The reference's own block 22 on our block-21 output gave row
+  40 0.998637, against our 0.998330, so the failure came in with the input.
+- Teacher forcing: our guided velocity at each of the reference's 8 trajectory
+  states. At `f823478d` the conditional and unconditional velocities were within
+  0.7% to 2.3% relative and the guided within 2.2% to 7.2%. Guidance 3 weights the
+  conditional difference three times and the unconditional twice.
+
+The first divergences they led to found two operations rounded differently from
+the reference. Both are fixed in kernels bound by one MOSS layer each:
+
+- SITU (`f823478d`): the reference evaluates `_situ` as eager bf16 operations,
+  each computed in float32 and stored in bf16. MLX's bf16 operations differed on
+  31% of block 22's captured activations. `kernels/situ` now stores after each
+  operation in the activation dtype the DiT binds at construction (bf16). It
+  reproduces every captured element.
+- One-row projections (`63164fae`): the timestep embedding and both modulations
+  project a single bf16 row. The reference adds the bias to the float32 product
+  and stores once; MLX's one-row `addmm` stores the product in bf16 first. On the
+  reference's captured inputs our outputs equalled a host replay of that double
+  rounding on every element and differed from the reference on 25% to 52% of
+  them; the first divergence was `time_embedding.0`, with the sinusoid and SiLU
+  exact. `kernels/row-projection` reads the stored bf16 weights, accumulates and
+  adds the bias in float32 and stores once. At all 8 timesteps the projections
+  now differ on at most 4 elements each, consistent with summation order. Each
+  block's own error, on the reference's input to it, fell from a mean of 1.4e-3
+  to 4.5e-4 relative (84 block runs, Base, which includes our modulation path).
+  The MLX peak in the DiT stages stays 9.76 GiB, and the teacher-forced runs'
+  footprint stays 10.99 GB. Widening the weights to float32 per call instead
+  added 0.17 GiB of MLX peak and 0.69 GB of footprint, so it was not kept.
+
+Storing attention's softmax numerators in bf16 was tried and not adopted. On the
+captured block-22 attention it cut mismatching elements from 171,070 to 576 of
+857,088. On top of `f823478d` its teacher-forced guided errors moved both ways.
+Base step 1 improved from 4.1% to 2.6%, step 6 worsened from 6.2% to 7.0%, and SFT
+steps 0 to 2 worsened. It also raised the teacher-forced footprint from 10.99 to
+11.49 GB at 256x256. It was not re-measured after the projection fix.
 
 Linear-attention bounds, fixed before their first comparison: transformers'
 `l2norm` within 1 bf16 ulp per element, `Qwen3_5RMSNormGated` within 1 bf16 ulp,
@@ -403,18 +446,20 @@ torch's vectorized CPU reduction). The gated norm sums that way now. The bounds
 did not change.
 
 Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
-`cf3451b2` with no local changes, Base `85975793` and SFT `f972bd4b`, inputs
-verified (17 snapshot files and 13 captures, nothing unpinned), every test complete:
+`8d021027` with only this README and PLAN modified (measurements identical to
+`63164fae` and `d2cd03ef`), Base
+`85975793` and SFT `f972bd4b`, inputs verified (17 snapshot files and 13 captures,
+nothing unpinned), every test complete:
 
-| Check | Base | SFT | Reference MPS vs CPU |
+| Check | Base | SFT | Reference MPS vs CPU (Base / SFT) |
 |---|---|---|---|
 | token ids, schedule (8 and 50 steps) | exact | exact | |
 | conditioner, positive / negative (relative, min cosine) | 1.53e-2 0.99952 / 2.22e-2 0.99932 | the same (the same files) | |
-| velocity step 0 / 4 (relative) | 8.3e-3 / 2.0e-2 | 1.04e-2 / 1.76e-2 | 8.7e-3 / 2.4e-2 (Base) |
-| block 22 step 4, worst token cosine | 0.998336 (row 40), not met | 0.999828 | 0.999552 (Base) |
-| block 41, image rows (min cosine, step 0 / 4) | 0.99945 / 0.99900 | 0.99904 / 0.99942 | 0.99850 / 0.99886 (Base) |
+| velocity step 0 / 4 (relative) | 6.9e-3 / 1.72e-2 | 9.1e-3 / 1.95e-2 | 8.7e-3 / 2.4e-2; 1.00e-2 / 2.8e-2 |
+| block 22 step 4, worst token cosine | 0.999610 | 0.999826 | 0.999552 / 0.999083 |
+| block 41, image rows (min cosine, step 0 / 4) | 0.99949 / 0.99949 | 0.99942 / 0.99838, step 4 not met | 0.99850 / 0.99886; 0.99850 / 0.99804 |
 | block 41, text rows | reported (adjudicated) | reported | |
-| trajectory step 5 / 6 / 7 (relative) | 6.7e-2 / 1.25e-1 / 1.25e-1, not met (cosine 0.9931 / 0.9827 / 0.9829) | 8.0e-2 / 1.46e-1 / 1.46e-1, not met | 4.2e-2 / 1.02e-1 / 1.01e-1 (Base) |
+| trajectory step 5 / 6 / 7 (relative) | 3.6e-2 / 7.8e-2 / 7.8e-2, steps 6 and 7 not met (cosine 0.9904 / 0.9905) | 7.9e-2 / 1.44e-1 / 1.44e-1, not met (cosine 0.9928 / 0.9684 / 0.9685) | 4.2e-2 / 1.02e-1 / 1.01e-1; 5.2e-2 / 1.09e-1 / 1.09e-1 |
 | l2norm, 8 lengths | every element equal | equal | |
 | softplus / log-decay, 8 lengths | at most 4 / 5 float32 ulps | the same | |
 | recurrence from identical float32 inputs | 2.3e-7 to 1.6e-6 relative | the same | |
@@ -425,10 +470,41 @@ verified (17 snapshot files and 13 captures, nothing unpinned), every test compl
 
 The conditioner's previous binding (the shared delta and gated-norm kernels)
 measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer
-captures. Base's trajectory exceeds the original bound from step 5 by up to 1.61 times the reference's own cross-backend spread.
-Acceptance stays open until the two remaining failures are resolved or decided. Not
-covered: other prompts, sizes and step counts, the decoded 8-step images against
-each other beyond the VAE comparison, and performance.
+captures. The failures under the original bounds at each tree since every test
+completed (earlier runs also failed linear-attention checks, fixed as described
+above):
+
+| Tree | Base | SFT |
+|---|---|---|
+| `cf3451b2` | block 22 step 4; trajectory 5, 6, 7 | trajectory 5, 6, 7 |
+| `f823478d` (SITU) | block 22 step 4; block 41 image rows step 4 (new); trajectory 6, 7 | block 41 image rows steps 0 and 4 (new); trajectory 5, 6, 7 |
+| `63164fae` to `8d021027` (one-row projections) | trajectory 6, 7 | block 41 image rows step 4; trajectory 5, 6, 7 |
+
+With the projection fix, teacher-forced conditional and unconditional velocities
+are within 0.6% to 2.2% and guided within 2.0% to 6.7% (`63164fae`). Sensitivity,
+measured on that tree:
+
+- Two forms of the one-row projections that reproduce the reference equally (the
+  committed kernel, and MLX's float32 `addmm` rounded once) differ by one bf16
+  spacing in a few elements of each projection. Their trajectories differ from each
+  other at step 7 by 7.6e-2 (Base) and 1.08e-1 (SFT). Each differs from the
+  reference by 7.8e-2 and 6.3e-2 (Base) and 1.44e-1 and 9.9e-2 (SFT), and the
+  reference's MPS run differs from its CPU run by 1.01e-1 and 1.09e-1. With the
+  float32 `addmm` form, SFT step 5 met its bound; with the kernel it does not.
+- Mid-chain, the worst image row falls far below 0.999 on both sides (the test
+  holds blocks 21, 22 and 41). At step 4 ours reaches 0.941 (Base, block 32) and
+  0.811 (SFT, block 35); the reference's MPS run reaches 0.976 and 0.718. Ours
+  falls below 0.999 in 14 to 18 of the 42 blocks, the reference's MPS run in 16
+  to 19.
+
+This reading is provisional, awaits independent review and is not a decision. The
+late trajectory steps and the worst-row cosines move by about as much under perturbations of one bf16
+spacing as they currently differ from the reference. That shows sensitivity. It
+does not show that the remaining failures are harmless, that output quality is
+acceptable, or that no implementation error remains, and no bound changes.
+Acceptance stays open until each remaining failure is resolved or decided. Not
+covered: other prompts, sizes and step counts, image quality, the decoded 8-step
+images against each other beyond the VAE comparison, and performance.
 
 ### Packed Qwen Trellis parity
 
@@ -1356,7 +1432,10 @@ composed from kernels, and its graphs arrange them:
   truncated to 4096 tokens, with no token cache. The vision tower is never read.
 - DiT (`transformer`, `blocks`, `rope`, `layers`): 42 joint blocks over
   [image, text] tokens under one shared timestep modulation, the two-block text
-  refiner, four-axis rotary embedding and the SITU activation (`kernels/situ`).
+  refiner, four-axis rotary embedding and the SITU activation (`kernels/situ`,
+  each operation stored in bf16 as the reference's eager tensors are). The
+  timestep embedding and modulations project one row with `kernels/row-projection`
+  (float32 accumulation and bias, one rounding, as the reference's `Linear` does).
 - decoder (`vae`, `vae-layers`): the FLUX.2 VAE decode path in float32 after the
   batch-norm de-normalization and the 2x2 unpatchify.
 - schedule (`scheduler`): the shifted grid snapped to the training grid, float32
@@ -1372,8 +1451,9 @@ Written graph files for one model on one machine are follow-up work once
 profiling chooses their bindings. `@mlx-bun/quantize`'s `quantizeMossImageDir`
 builds a local MLX artifact ([quantize README](../quantize/README.md)). The
 [ownership test](tests/models/moss-image-ownership.test.ts) holds the family to
-its own layers: no imports of other families or shared `layers/`, the SITU kernel
-called only inside `MossSitu`, graph files that import neither MLX operations nor
+its own layers: no imports of other families or shared `layers/`, each of its
+kernels called only inside one layer (`MossDenseRowLinear`, `MossSitu`,
+`MossTextDeltaRecurrence`), graph files that import neither MLX operations nor
 kernels, and no method that branches on a field fixed at construction.
 
 Memory, measured on the M4 Pro (24 GB) on 2026-10-23, Base, 4 steps, seed 1, each
