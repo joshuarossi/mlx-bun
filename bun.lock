@@ -165,6 +165,18 @@
         "happy-dom": "20.10.6",
       },
     },
+    "packages/module-images": {
+      "name": "@mlx-bun/module-images",
+      "version": "1.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "fast-png": "^8.0.0",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
+      },
+    },
     "packages/module-memory": {
       "name": "@mlx-bun/module-memory",
       "version": "1.0.0",
@@ -551,6 +563,8 @@
     "@mlx-bun/module-chat": ["@mlx-bun/module-chat@workspace:packages/module-chat"],
 
     "@mlx-bun/module-datasets": ["@mlx-bun/module-datasets@workspace:packages/module-datasets"],
+
+    "@mlx-bun/module-images": ["@mlx-bun/module-images@workspace:packages/module-images"],
 
     "@mlx-bun/module-memory": ["@mlx-bun/module-memory@workspace:packages/module-memory"],
 
