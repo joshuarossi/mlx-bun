@@ -9,6 +9,7 @@ import type { EngineCapability, ModelFamily, ModelGraph } from "./family";
 import { GEMMA4_FAMILY } from "./gemma4/family";
 import { GLM52_FAMILY } from "./glm52/family";
 import { MINICPM5_FAMILY } from "./minicpm5/family";
+import { MOSS_IMAGE_FAMILY } from "./moss-image/family";
 import { QWEN35_FAMILY, QWEN3_FAMILY, QWEN3_MOE_FAMILY } from "./qwen/families";
 import { GENERIC_MODEL_TYPES, remapModelType } from "./universal/archs";
 import { UNIVERSAL_FAMILY } from "./universal/family";
@@ -24,6 +25,7 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = Object.freeze([
   QWEN3_FAMILY,
   QWEN3_MOE_FAMILY,
   WHISPER_FAMILY,
+  MOSS_IMAGE_FAMILY,
   MINICPM5_FAMILY,
   UNIVERSAL_FAMILY,
 ]);
@@ -52,7 +54,7 @@ export function familyForGraph(graph: ModelGraph): ModelFamily | null {
 
 /** What the engine can do independent of any model. */
 const BASE_CAPABILITIES = [
-  "autoregressive", "colibri-container", "diffusion", "encoder-decoder",
+  "autoregressive", "colibri-container", "diffusion", "encoder-decoder", "flow-matching",
   "mixed-precision-kv", "native-mtp", "safetensors", "vision-sidecar",
 ] as const satisfies readonly EngineCapability[];
 

@@ -34,6 +34,7 @@ import {
 } from "../artifacts/glm52/memory";
 import { UniversalDenseModel } from "./universal/dense";
 import { WhisperModel } from "./whisper/model";
+import { openMossImagePipeline } from "./moss-image/pipeline";
 import { genericArgsFor } from "./universal/archs";
 import { familyForGraph } from "./families";
 import { resolveComposition } from "./composition";
@@ -41,6 +42,7 @@ import { bindGraphCaches } from "./cache-composition";
 import { phaseRowLimit } from "./graph";
 import type { Composition } from "../contracts/portable/composition";
 import type { Cache } from "../contracts/mlx/cache";
+import type { TextToImagePipeline } from "../contracts/mlx/image-generation";
 import {
   GraphTable,
   ModelImplementationRegistry,
@@ -231,6 +233,27 @@ export async function openWhisperModel(
   }
 }
 
+
+/** The image pipeline each text-to-image family's graph opens, keyed by graph.
+ * A family that declares `generatesImages` lists its opener here. */
+const IMAGE_PIPELINES: Readonly<Record<ModelGraph, (modelDir: string, config: ModelConfig) => Promise<TextToImagePipeline>>> = Object.freeze({
+  "moss-image": openMossImagePipeline,
+});
+
+/** Open a text-to-image pipeline snapshot through the same profile resolution as
+ * text models. No stage loads here: each opens on first use (see
+ * `TextToImagePipeline`), so the caller decides what is resident. Throws an
+ * UnsupportedModelLoadError for a model whose family does not generate images. */
+export async function openImagePipeline(
+  modelDir: string, options: { readonly profiles?: ResolveModelProfileOptions } = {},
+): Promise<{ pipeline: TextToImagePipeline; profile: ResolvedModelProfile; config: ModelConfig }> {
+  const config = await loadModelConfig(modelDir);
+  const profile = resolveModelProfile(config, options.profiles);
+  const open = profile.profile.execution.loop === "flow-matching" ? IMAGE_PIPELINES[profile.profile.execution.graph] : undefined;
+  if (!open) throw new UnsupportedModelLoadError(profile, `${modelDir} is not a text-to-image model (profile ${profile.profile.id})`);
+  return { pipeline: await open(modelDir, config), profile, config };
+}
+
 /**
  * Artifact-aware construction. GLM-5.2's Colibri snapshot has no ordinary
  * model.safetensors.index.json, so it must bypass Weights.open and use its
@@ -318,11 +341,21 @@ const speechLoader: ArtifactLoader = {
   },
 };
 
+const imageLoader: ArtifactLoader = {
+  async open({ modelDir, profile }) {
+    throw new UnsupportedModelLoadError(profile, `${modelDir} is a text-to-image model (${profile.profile.id}); open it with ` +
+      "openImagePipeline — it has no chat/completion loop");
+  },
+  create(_weights, _config, profile) {
+    throw new UnsupportedModelLoadError(profile, `${profile.profile.id} is a text-to-image pipeline; open it with openImagePipeline`);
+  },
+};
+
 /** Artifact loading follows declared table facts, including streamed weights
  * and the separate speech operation. It never selects by a model predicate. */
 const ARTIFACT_LOADERS: Readonly<Record<ModelLoader, Readonly<Record<GenerationLoop, ArtifactLoader>>>> = {
-  safetensors: { autoregressive: residentLoader, diffusion: residentLoader, "encoder-decoder": speechLoader },
-  colibri: { autoregressive: streamedLoader, diffusion: streamedLoader, "encoder-decoder": speechLoader },
+  safetensors: { autoregressive: residentLoader, diffusion: residentLoader, "encoder-decoder": speechLoader, "flow-matching": imageLoader },
+  colibri: { autoregressive: streamedLoader, diffusion: streamedLoader, "encoder-decoder": speechLoader, "flow-matching": imageLoader },
 };
 
 /** Construct the binding named by a validated profile for `composition`, which
