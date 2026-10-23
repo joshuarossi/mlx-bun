@@ -27,8 +27,10 @@ function stored(wide: MlxArray, dtype: Dtype): MlxArray {
   return rounded.astype(Dtype.float32);
 }
 
-/** transformers' `l2norm` (`x * rsqrt((x * x).sum(-1) + 1e-6)`) on a bf16 tensor as torch runs it: each of the five
- * operations computed in float32 and stored in the input dtype (the sum accumulated in float32, stored once). */
+/** transformers' `l2norm` (`x * rsqrt((x * x).sum(-1) + 1e-6)`) on a bf16 tensor as the pinned torch runs it: each
+ * operation computed in float32 and stored in the input dtype (the sum accumulated in float32, stored once), with
+ * `rsqrt` a square root stored in bf16 and then its reciprocal stored in bf16. Measured against the reference's own
+ * l2norm outputs: that sequence matches every element, a once-rounded rsqrt about a fifth of them. */
 export class MossTextL2Norm {
   /** `x` `[..., D]` (borrowed) to an owned normalization in `x`'s dtype. */
   forward(x: MlxArray): MlxArray {
@@ -41,7 +43,10 @@ export class MossTextL2Norm {
     using eps = ops.scalarLike(1e-6, sum);
     using shiftedWide = ops.add(sum, eps);
     using shifted = stored(shiftedWide, dtype);
-    using inverseWide = ops.rsqrt(shifted);
+    using rootWide = ops.sqrt(shifted);
+    using root = stored(rootWide, dtype);
+    using one = ops.scalarLike(1, root);
+    using inverseWide = ops.div(one, root);
     using inverse = stored(inverseWide, dtype);
     using unit = ops.mul(wide, inverse);
     return unit.astype(dtype);

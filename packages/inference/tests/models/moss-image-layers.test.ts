@@ -203,9 +203,9 @@ test("the conditioner's l2norm replays torch's bf16 operations one by one, which
   const actual = wide.toFloat32(), perOperation: number[] = [], roundedOnce: number[] = [];
   for (let r = 0; r < rows; r++) {
     const row = xs.slice(r * width, (r + 1) * width);
-    // x * x, .sum(-1), + 1e-6, rsqrt, x * inv: each computed in float32 and stored in bf16.
+    // x * x, .sum(-1), + 1e-6, rsqrt (a square root, then its reciprocal), x * inv: each computed in float32 and stored in bf16.
     const sum = stored(row.reduce((acc, v) => acc + stored(v * v), 0));
-    const inverse = stored(1 / Math.sqrt(stored(sum + Math.fround(1e-6))));
+    const inverse = stored(1 / stored(Math.sqrt(stored(sum + Math.fround(1e-6)))));
     for (const v of row) perOperation.push(stored(v * inverse));
     const wideInverse = 1 / Math.sqrt(row.reduce((acc, v) => acc + v * v, 0) + 1e-6);
     for (const v of row) roundedOnce.push(bf16(v * wideInverse));
