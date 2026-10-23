@@ -94,3 +94,29 @@ test("a local model directory bypasses registry and fit; missing weights report 
     await expect(resolveModelAuto(directory, { ...dependencies, scanSnapshot: async () => null })).rejects.toThrow("no weights");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("automatic selection never picks a text-to-image model as the chat model, even when it is the only one cached", async () => {
+  const picture = model("org/picture", 5000, "MOSSImagePipeline"), chat = model("chat");
+  const run = selection([picture, chat]);
+  expect((await resolveModelAuto(null, run.dependencies)).m).toBe(chat);
+  expect(run.assessed).toEqual(["chat"]);
+  // With only an image model cached there is no chat model yet: the starter is fetched as on an empty cache.
+  const alone = selection([picture]);
+  expect((await resolveModelAuto(null, alone.dependencies)).m.repoId).toBe(STARTER_REPO_ID);
+  expect(alone.downloads).toEqual([STARTER_REPO_ID]);
+  expect(alone.assessed).toEqual([STARTER_REPO_ID]);
+  // Naming it explicitly still resolves it, for the caller to refuse with its own message.
+  expect((await resolveModelAuto("picture", alone.dependencies)).m).toBe(picture);
+});
+
+test("a pipeline directory (a model_index.json and no config.json) resolves like a model directory", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "mlx-selection-"));
+  writeFileSync(join(directory, "model_index.json"), "{}");
+  try {
+    const selected = model("local-picture", 1, "MOSSImagePipeline");
+    const dependencies = { registry: () => { throw new Error("must not open registry"); },
+      scanSnapshot: async (path: string) => { expect(path).toBe(directory); return selected; } };
+    expect(await resolveModelAuto(directory, dependencies)).toEqual({ m: selected, picked: false });
+    await expect(resolveModelAuto(directory, { ...dependencies, scanSnapshot: async () => null })).rejects.toThrow("has model_index.json but no weights");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

@@ -1,6 +1,6 @@
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
-import { isTranscriptionModelType } from "@mlx-bun/inference/models/support";
+import { isImageModelType, isTranscriptionModelType } from "@mlx-bun/inference/models/support";
 import { parseCommand, type CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
 import { storagePath } from "../storage/paths";
@@ -423,6 +423,17 @@ export class StartupCancelledError extends Error {
   constructor() { super("startup cancelled by signal"); this.name = "StartupCancelledError"; }
 }
 
+/** runServe's rejection, before anything loads, when the model to serve is a text-to-image model: it has no chat loop to
+ * serve. It is served beside a chat model instead. */
+export class ImageModelServeError extends Error {
+  readonly code = "image-model-not-servable";
+  constructor(readonly model: string) {
+    super(`${model} is a text-to-image model, not a chat model. Start \`mlx-bun serve\` with a chat model (or none, to pick one): ` +
+      "the image model is served beside it through POST /v1/images/generations. To generate one image without a server, use `mlx-bun image`.");
+    this.name = "ImageModelServeError";
+  }
+}
+
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<ServedApp> {
   let options = parseServeOptions(args);
   const deps = { ...defaults, ...supplied };
@@ -446,6 +457,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     selection = await deps.resolve(options.query, {}, startup.signal);
     // A signal that landed during selection must not start a native load.
     startup.signal.throwIfAborted();
+    if (isImageModelType(selection.m.modelType)) throw new ImageModelServeError(selection.m.repoId);
     if (isTranscriptionModelType(selection.m.modelType)) {
       // Main: a Whisper checkpoint as the main model starts the transcription-only server.
       deps.log(`Serving ${selection.m.repoId} as a transcription-only server${options.whisper?.preload ? " (loading the weights first)" : ""}`);

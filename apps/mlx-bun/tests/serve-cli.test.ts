@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { browserUrl, focusTabScript, installShutdownHandlers, openChatUi, parseServeOptions, probeServer, resolveServingLimits, runServe, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, focusTabScript, ImageModelServeError, installShutdownHandlers, openChatUi, parseServeOptions, probeServer, resolveServingLimits, runServe, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 import { decodeLaunch, encodeLaunch } from "../src/jobs/worker-process";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
@@ -236,6 +236,20 @@ test("--whisper-model resolves like the main model and refuses a non-Whisper che
     .rejects.toThrow("--whisper-model chat resolved to org/chat (model_type qwen3), not a Whisper checkpoint");
   expect(run.starts).toHaveLength(1);
   expect(run.signals.listenerCount("SIGINT")).toBe(0);
+});
+
+test("a text-to-image model named as the served model is refused before anything loads, saying how image models are served", async () => {
+  const run = runtime();
+  const picture = { repoId: "OpenMOSS-Team/MOSS-Image-SFT", path: "/picture", modelType: "MOSSImagePipeline" } as ModelRecord;
+  const refused = runServe(parseCommand("serve", ["MOSS-Image"]), { ...run.dependencies, resolve: async () => ({ m: picture, picked: false }) });
+  await expect(refused).rejects.toBeInstanceOf(ImageModelServeError);
+  await expect(refused).rejects.toMatchObject({ code: "image-model-not-servable", model: "OpenMOSS-Team/MOSS-Image-SFT" });
+  await expect(refused).rejects.toThrow("POST /v1/images/generations");
+  await expect(refused).rejects.toThrow("`mlx-bun image`");
+  expect(run.steps).toEqual([]);
+  expect([run.starts, run.transcriptionStarts, run.opens]).toEqual([[], [], []]);
+  expect(run.signals.listenerCount("SIGINT")).toBe(0);
+  expect(run.signals.listenerCount("SIGTERM")).toBe(0);
 });
 
 test("interactive startup opens the bound port and graceful shutdown drains exactly once", async () => {
