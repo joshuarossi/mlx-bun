@@ -44,9 +44,11 @@ the VAE, tokenizer, scheduler and index. It refuses anything but a full-precisio
 layout before writing, and publishes the directory atomically. A
 [synthetic snapshot test](tests/moss-image.test.ts) loads the output through the family's graphs
 against the full-precision graphs. On Base `85975793` (2026-10-23, M4 Pro), 8-bit group 64 took
-35 s and wrote 14.3 GB (DiT 5.3 GB, conditioner 8.7 GB, 8.5 bits per quantized weight);
-against the bf16 graphs from identical inputs the conditioner's hidden states differ by
-2.5e-2 / 3.4e-2 relative (minimum token cosine 0.9989), the velocity by 8.5e-3 at step 0 and
+35 s and wrote 15.31 GB (14.26 GiB: DiT 5.71 GB, conditioner 9.35 GB, VAE 0.25 GB; 8.5 bits
+per quantized weight). Measured with the conditioner's earlier linear-attention layers (tree
+`4c527080`, before they were rewritten to the reference's dtypes), against the bf16 graphs
+from identical inputs the conditioner's hidden states differ by 2.5e-2 / 3.4e-2 relative
+(minimum token cosine 0.9986), the velocity by 8.5e-3 at step 0 and
 1.9e-2 at step 4, the 8-step trajectory by 1.17e-1, and the decoded 256x256 image by
 29.9 dB PSNR. Those are this graph's quantization error, measured separately from the
 reference comparison; no quality evaluation has been run.

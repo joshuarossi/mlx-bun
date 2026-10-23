@@ -325,62 +325,96 @@ This covers these checkpoints and clips only: no other Whisper size, no non-WAV
 input (AudioToolbox decoding), no oracle for word timestamps or the streaming run
 (main only), no Whisper batching, and no performance. Raw references remain external.
 
-### MOSS-Image comparison (acceptance pending review)
+### MOSS-Image comparison (acceptance pending)
 
 [`moss-image-oracle.test.ts`](tests/parity/moss-image-oracle.test.ts) compares
 the MOSS-Image stages with the external PyTorch reference: the snapshot's own
-`pipeline_moss_image.py` with transformers 5.12.1's `Qwen3_5Model` and diffusers
-0.38.0's `AutoencoderKLFlux2`, torch 2.9.1 on the CPU, Python 3.12.13 (accelerate
-1.15.0, safetensors 0.9.0rc1, numpy 2.5.4). That reference runs outside every
-checkout from `~/oracles/moss-image` (script SHA-256
-`208ab2fda4a09ae6709a427d1eb276d1e2678ff80e8fc944aa3c5f559cb45c2d`, frozen
+`pipeline_moss_image.py` with transformers 5.12.1's `Qwen3_5Model` (on the CPU it
+takes transformers' torch fallback for linear attention) and diffusers 0.38.0's
+`AutoencoderKLFlux2`, torch 2.9.1 on the CPU, Python 3.12.13 (accelerate 1.15.0,
+safetensors 0.9.0rc1, numpy 2.5.4). That reference runs outside every checkout
+from `~/oracles/moss-image` (script SHA-256
+`7105613cfde4b67061490fef123e4a3cc7c88d9be9ebe098a3026797b415d3f1`, frozen
 requirements `937e32db24ba825eff0f431eed77af44f00a50c33ff254b6b249c90f864089da`;
-the Base CPU captures were written before the script gained its device option,
-which leaves the CPU path unchanged) and writes safetensors captures: the
-tokenized prompts and hidden states, the schedule, its own seeded noise (an input
-here: equal seeds do not give equal noise across backends), DiT stage outputs at
-steps 0 and 4 of 8 with and without block 22, the 8-step guided trajectory at
-256x256, decoded pixels, and the same DiT stages and trajectory on its MPS backend
-as a measure of its own variation. Opt in with `MLX_BUN_MOSS_IMAGE_SNAPSHOT` and
+the stages before `delta` were written by earlier versions of the script whose
+changes only added the device option and the `delta` stage) and writes
+safetensors captures: the tokenized prompts and hidden states, the schedule, its
+own seeded noise (an input here: equal seeds do not give equal noise across
+backends), DiT stage outputs at steps 0 and 4 of 8 with and without block 22, the
+8-step guided trajectory at 256x256, decoded pixels, the same DiT stages and
+trajectory on its MPS backend as a measure of its own variation, and the
+conditioner's linear attention (`delta`, `gated-norm`). Before any comparison the
+test computes the SHA-256 of every snapshot file and capture it reads and fails
+unless each equals its pin for that revision; Hugging Face cache symlink names
+are recorded as provenance only. Opt in with `MLX_BUN_MOSS_IMAGE_SNAPSHOT` and
 `MLX_BUN_MOSS_IMAGE_ORACLE`; `MLX_BUN_MOSS_IMAGE_RESULTS` names the results file
-(each check's measurement, its verdict under both criteria, the snapshot revision,
-reference versions and capture SHA-256s). The VAE has its own comparison in
+(each check's measurement and verdicts, the verified hashes, the implementation's
+commit and modified files). The VAE has its own comparison in
 [`moss-image-vae.test.ts`](tests/models/moss-image-vae.test.ts).
 
 Original criteria, fixed before the first run: token ids and the schedule exact;
 hidden states and every DiT stage output relative Frobenius error <= 3e-2,
 per-token cosine >= 0.999 and mean cosine >= 0.9995; each trajectory step relative
-error <= 6e-2 and cosine >= 0.995; the decoder within 1e-5 before decoding and, after it, a
-maximum of 1e-3, a mean of 1e-4 and no pixel off by more than one level. The first runs exposed two calculation bugs, fixed in the code, not the
+error <= 6e-2 and cosine >= 0.995; the decoder within 1e-5 before decoding and,
+after it, a maximum of 1e-3, a mean of 1e-4 and no pixel off by more than one
+level. The first runs exposed two calculation bugs, fixed in the code, not the
 bounds: the schedule rounded `torch.linspace`'s product separately (the reference
 fuses it), moving two noise levels by one float32 ulp, and the test read a
-transposed MLX view in storage order. Revised criteria, applied after measurement
-and pending review: intermediate DiT blocks hold relative error and mean cosine
-and report their worst token beside the reference's own MPS-vs-CPU spread (the
-worst token moves between backends); the last block holds its image rows and
-reports its text rows, which feed no later operation (the reference's two backends
-reach a minimum cosine of 0.978 there); each trajectory step is held to at most
-twice the reference's MPS-vs-CPU relative error (a judgment, not derived).
+transposed MLX view in storage order.
+
+Independent review adjudicated one exception: the last DiT block's text rows feed
+no later operation, so they are reported and its image rows hold the original
+bounds. Every other check holds the original bounds, so two checks fail and keep
+acceptance open: Base's block 22 at step 4 and trajectory steps 5 to 7. The
+review's proposed experiments are block 22 alone on identical captured block-21
+inputs and modulation, comparing its norm, projections, RoPE, attention, SITU and
+residual outputs, and each step's velocity on identical reference trajectory
+states. "Each step within twice the reference's MPS-vs-CPU relative error" is
+recorded as an investigative bound, not asserted.
+
+Linear-attention bounds, fixed before their first comparison: transformers'
+`l2norm` within 1 bf16 ulp per element, `Qwen3_5RMSNormGated` within 1 bf16 ulp,
+softplus within 4 and the log-decay within 8 float32 ulps, the recurrence from the
+reference's own float32 inputs within 1e-4 relative, the whole rule within 4e-3
+relative with every row's cosine at least 0.99999, and a real layer's linear
+attention within 1e-2 with every token's cosine at least 0.9999. The captures hold
+seeded bf16 inputs at lengths 1, 63, 64, 65, 127, 128, 129 and 300 (around the
+64-token chunk) and layers 0 and 30 on a 23-token and a 203-token prompt. The
+first run (`dc3e85ab`) failed the l2norm at every length (about a fifth of the
+elements, up to 3 ulps); host replays against the captures showed torch computes
+a bf16 `rsqrt` as a square root and then a reciprocal, each stored in bf16, and
+that sequence matches every captured element. The second run (`615f8167`) missed
+the gated norm on 7 elements; replays showed torch's SiLU is `x / (1 + exp(-x))`
+and its float32 `rsqrt` a square root and then a reciprocal. Both are in the
+layers now; the bounds did not change.
 
 Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
-`4c527080`, Base `85975793` and SFT `f972bd4b`:
+`0ba290b6`, Base `85975793` and SFT `f972bd4b`, inputs verified:
 
-| Check | Base | SFT | Reference MPS vs CPU (Base) |
+| Check | Base | SFT | Reference MPS vs CPU |
 |---|---|---|---|
 | token ids, schedule (8 and 50 steps) | exact | exact | |
-| conditioner, positive / negative (relative, min cosine) | 1.60e-2 0.99947 / 2.27e-2 0.99921 | 1.60e-2 0.99947 / 2.27e-2 0.99921 (the same files) | |
-| velocity step 0 (relative) | 8.3e-3 | 1.04e-2 | 8.7e-3 |
-| velocity step 4 (relative) | 2.0e-2 | 1.76e-2 | 2.4e-2 |
-| block 22 step 4, worst token cosine | 0.998336 (row 40), original bound not met | met | 0.999552 |
-| block 41, all rows (min cosine) | 0.99526 / 0.99073, original bound not met | 0.98523 / 0.99368, not met | 0.99675 / 0.97784 |
-| trajectory step 5 / 6 / 7 (relative) | 6.7e-2 / 1.25e-1 / 1.25e-1, original bound not met | 8.0e-2 / 1.46e-1 / 1.46e-1, not met | 4.2e-2 / 1.02e-1 / 1.01e-1 |
+| conditioner, positive / negative (relative, min cosine) | 1.53e-2 0.99952 / 2.24e-2 0.99932 | the same (the same files) | |
+| velocity step 0 / 4 (relative) | 8.3e-3 / 2.0e-2 | 1.04e-2 / 1.76e-2 | 8.7e-3 / 2.4e-2 (Base) |
+| block 22 step 4, worst token cosine | 0.998336 (row 40), not met | 0.999828 | 0.999552 (Base) |
+| block 41, image rows (min cosine, step 0 / 4) | 0.99945 / 0.99900 | 0.99904 / 0.99942 | 0.99850 / 0.99886 (Base) |
+| block 41, text rows | reported (adjudicated) | reported | |
+| trajectory step 5 / 6 / 7 (relative) | 6.7e-2 / 1.25e-1 / 1.25e-1, not met (cosine 0.9931 / 0.9827 / 0.9829) | 8.0e-2 / 1.46e-1 / 1.46e-1, not met | 4.2e-2 / 1.02e-1 / 1.01e-1 (Base) |
+| l2norm, 8 lengths | every element equal | equal | |
+| softplus / log-decay, 8 lengths | at most 4 / 5 float32 ulps | the same | |
+| recurrence from identical float32 inputs | 2.3e-7 to 1.6e-6 relative | the same | |
+| whole rule (bf16), 8 lengths | at most 8.8e-5 relative, min row cosine 0.9999986 | the same | |
+| gated norm, 8 lengths | 12 of 3,592,192 elements differ; 2 ulps at length 128, not met | the same | |
+| layers 0 / 30, 23- and 203-token prompts | 8.5e-5, 7.2e-5 / 3.1e-4, 5.4e-4 relative | the same | |
 | VAE (unpatched max, image max, pixels off by more than 1 level) | 0, 2.5e-5, 0 | | |
 
-Unresolved: Base's row-40 token at block 22, step 4 differs more than the
-reference's own worst token there (float32 attention moves it only to 0.99864, so
-its cause is not identified); and from step 5 the trajectory exceeds the original
-bound, by up to 1.23 times (Base) the reference's own cross-backend spread. Every
-check passes the revised criteria; none of this is accepted until reviewed. Not
+The conditioner's previous binding (the shared delta and gated-norm kernels)
+measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer
+captures. The gated norm's remaining elements follow the variance's float32
+summation order: MLX's GPU reduction does not follow torch's, and no simple order
+tried on the host reproduced it exactly. Base's trajectory exceeds the original
+bound from step 5 by up to 1.61 times the reference's own cross-backend spread.
+Acceptance stays open until the three failures are resolved or decided. Not
 covered: other prompts, sizes and step counts, the decoded 8-step images against
 each other beyond the VAE comparison, and performance.
 
@@ -1297,9 +1331,16 @@ composed from kernels, and its graphs arrange them:
 
 - conditioner (`text-encoder`, `text-layers`): the Qwen3.5-9B language model as
   transformers runs it (`Qwen3_5Model` without a head): float32 `(1 + gamma)`
-  norms, the gated RMS norm kernel, partial rotary embedding, the gated delta
-  recurrence kernel from a zero state, and gated attention, run once over the
-  prompt rendered with the tokenizer's chat template (thinking enabled),
+  norms, partial rotary embedding, gated attention, and linear attention in
+  the CPU reference's dtypes and order: q and k l2-normalized with bf16
+  operations, the gated norm's float32 normalization stored in bf16 before its
+  bf16 weight and float32 `silu(gate)`, the log-decay in float32, and the
+  recurrence in float32 from a zero state (`kernels/gated-delta-float32`, bound
+  by `MossTextDeltaRecurrence` alone). Two operations differ from the
+  reference's and are measured against it: the recurrence steps token by token
+  where the reference solves 64-token chunks with cumulative log-decays, and
+  softplus is `logaddexp(x, 0)` where the reference computes `log1p(exp(x))`.
+  The conditioner runs once over the prompt rendered with the tokenizer's chat template (thinking enabled),
   truncated to 4096 tokens, with no token cache. The vision tower is never read.
 - DiT (`transformer`, `blocks`, `rope`, `layers`): 42 joint blocks over
   [image, text] tokens under one shared timestep modulation, the two-block text

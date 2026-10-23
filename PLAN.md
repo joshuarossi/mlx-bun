@@ -164,13 +164,15 @@ Library, family, quantizer, image host and `@mlx-bun/module-images` landed with
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Josh decides the oracle comparison's revised criteria (intermediate blocks'
-      worst token reported, the last block's text rows reported, each trajectory step
-      held to twice the reference's MPS-vs-CPU spread) and the two mismatches they
-      leave: Base's row-40 token at block 22, step 4 (cosine 0.998336 against the
-      reference's own worst 0.999552; cause unidentified) and trajectory steps 5 to 7
-      beyond the original bound. Exit: a recorded decision, and the test's bounds or an
-      investigation following it.
+- [ ] Resolve or decide the three checks that keep acceptance open (the review adjudicated
+      only the last block's text rows): Base's block 22 at step 4 (row 40, cosine
+      0.998336 against the reference's own worst 0.999552; next: block 22 alone on
+      identical captured block-21 inputs and modulation, comparing norm, projections, RoPE,
+      attention, SITU and residual outputs); trajectory steps 5 to 7 beyond the original
+      bounds (next: each step's velocity on identical reference trajectory states, to
+      separate local error from accumulated drift); and the conditioner's gated norm, 12
+      of 3,592,192 elements apart, 2 bf16 ulps at length 128, from the variance's float32
+      summation order. Exit: each passes its bound, or Josh records a decision.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.
@@ -183,11 +185,14 @@ Open:
       An isolated image model keeps its first staging decision and charge while the server
       runs, as a chat model keeps its first estimate, so a snapshot that grows on disk while
       served is undercharged until its worker reports measured memory or the server restarts.
-- [ ] q8 has numerical error measurements only; no quality evaluation, and no 4-bit
-      artifact has been built or measured.
+- [ ] q8 has numerical error measurements only, taken with the conditioner's earlier
+      linear-attention layers; no quality evaluation, and no 4-bit artifact has been built
+      or measured.
 - [ ] Decision (Josh): `DenseLinear` never disposes its transposed weight view, so a
       released model's weight buffers wait for garbage collection; whether that delays
       memory release when residency evicts a model is unmeasured. Not changed here.
+      The review judged it a real lifetime defect to fix separately, with graph-owner
+      cleanup and release measured after GPU synchronization.
 
 ## Split the app into modules
 
