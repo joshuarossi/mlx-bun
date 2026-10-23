@@ -309,16 +309,18 @@ Each downloaded text-to-image model is a worker of its own too (the `image` laun
 form, `startImageHost`), started on the first image request routed to it and drained the
 same way. It serves only that model: its catalog knows no other id, so a request naming
 another opens nothing there and answers `404` (`model_not_found`) naming the model it serves.
-It is charged what one run holds under its host's stage rule (`stageResidency` in
-`@mlx-bun/app-services`): this process picks the stage budget (half of physical memory,
-the in-process image host's default) and sends it in the launch record, and reads the stage
-bytes from the snapshot's files (each component its `model_index.json` declares, summed over
-its `*.safetensors` files; components without weights do not count). Components that together
-exceed the budget are charged at the largest one, otherwise at their sum. A snapshot whose
-components cannot be read is charged its whole size. A charge larger than the budget follows
-the residency rule for any oversized model. The files can hold tensors a stage never loads, so
-the worker's own decision can differ from this charge only when the budget falls between the
-two totals; its measured memory counts once it reports more than the charge. Unlike Whisper's,
+Its staging is decided once, by this process, which admits the charge: the stage budget is
+half of physical memory (the in-process image host's default), and the stage bytes are read
+from the snapshot's files (each component its `model_index.json` declares, summed over its
+`*.safetensors` files; components without weights do not count). Components that together
+exceed the budget are released one by one per run and charged at the largest one, otherwise
+kept open and charged at their sum (`stageResidency` in `@mlx-bun/app-services`). The launch
+record carries that decision (`releaseStages`), and the worker's image host applies it as made,
+whatever its own stage bytes total, so what one run keeps open (the largest stage, or all of
+them) never exceeds the charge while each stage loads no more than its component's files hold.
+A snapshot whose components cannot be read is charged its whole size, with its stages kept
+open. A charge larger than the budget follows the residency rule for any oversized model. Its
+measured memory counts once it reports more than the charge. Unlike Whisper's,
 it serves an execution lease (`/admin/lease`): its image runs and the lease take one lock in
 turn, so a managed job waits for the image run in flight and an image request that arrives
 during the job runs after it. Its runs pause no chat worker, and `/v1/models` does not list it.
@@ -1363,11 +1365,13 @@ It is served beside the chat model, as Whisper is. The host library's image mode
 first downloaded model that declares `image`, and the in-process composition gives it the
 same execution lock and admission as Whisper: its pipeline opens on the first request, each
 run pauses every resident model, a load first makes room in the budget, and its bytes count
-against it. When a pipeline's stages together exceed the image host's byte budget (half of
-physical memory by default), each run releases every stage after its output, so one stage is
-resident at a time; otherwise the stages stay open while the pipeline does. Under isolation
-each image model is a companion worker of its own that serves only that model, picked by the
-request's exact `model` id and charged what one run holds; its runs take that worker's execution
+against it. When the bytes its pipeline's stages load together exceed the stage budget (half of
+physical memory), each run releases every stage after its output, so one stage is resident at a
+time; otherwise the stages stay open while the pipeline does. The image host applies the stage
+rule its composition gives it: in-process that budget rule over the stage bytes its admission
+also counts. Under isolation each image model is a companion worker of its own that serves only
+that model, picked by the request's exact `model` id, staged as the serving process decided from
+the snapshot's files and charged what one run holds under that decision; its runs take that worker's execution
 lock, which a managed job leases (see the isolated composition above).
 
 ## Metrics and performance
