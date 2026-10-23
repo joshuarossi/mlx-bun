@@ -5,8 +5,8 @@
 // timestep sinusoid, the conditioner's (1 + gamma) float32 norm and its partial
 // rotary embedding.
 import { expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, activeMemory, clearCache } from "@mlx-bun/mlx/ffi";
+import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
+import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { situ } from "../../src/kernels/situ";
 import { timestepSinusoid } from "../../src/models/moss-image/blocks";
@@ -55,7 +55,7 @@ test("the projection forms compute x @ w.T (+ bias), dense and affine-quantized"
   } finally { q.packed.dispose(); q.scales.dispose(); q.biases?.dispose(); }
 });
 
-test("a dense projection frees only its transposed view: the borrowed weight stays valid, and its buffer is released with both", () => {
+test("a dense projection frees only its transposed view: the borrowed weight stays valid, and its buffer is released with both", async () => {
   const ws = ramp(16, 0.4);
   using w = MlxArray.fromFloat32(ws, [4, 4]);
   using x = MlxArray.fromFloat32(ramp(4, 2), [1, 4]);
@@ -65,18 +65,22 @@ test("a dense projection frees only its transposed view: the borrowed weight sta
   layer.dispose(); // a second dispose is a no-op
   expect(Array.from(w.toFloat32())).toEqual(Array.from(ws));
   expect(lazy.toFloat32().length).toBe(4);
-  // The view alone keeps a released weight's buffer: dispose returns it.
-  clearCache();
-  const elements = 1 << 20;
-  const big = MlxArray.fromFloat32(new Float32Array(elements).fill(0.5), [1024, 1024]);
+  // The view alone keeps a released weight's buffer: dispose returns it. Buffers return when their command buffers
+  // complete, so each reading waits for the GPU stream (and, for the release, polls briefly).
+  const settled = () => { synchronize(gpuStream); clearCache(); return activeMemory(); };
+  const elements = 1 << 22, bytes = elements * 4; // 16 MiB, far above incidental allocations
+  const big = MlxArray.fromFloat32(new Float32Array(elements).fill(0.5), [2048, 2048]);
   big.eval();
   const holder = new MossDenseLinear(big);
-  { using input = MlxArray.fromFloat32(new Float32Array(1024), [1, 1024]); using y = holder.forward(input); y.eval(); }
-  const held = activeMemory();
+  { using input = MlxArray.fromFloat32(new Float32Array(2048), [1, 2048]); using y = holder.forward(input); y.eval(); }
+  const held = settled();
   big.dispose();
-  expect(activeMemory()).toBe(held);
+  await Bun.sleep(20);
+  expect(held - settled()).toBeLessThan(bytes); // still held by the view
   holder.dispose();
-  expect(held - activeMemory()).toBeGreaterThanOrEqual(elements * 4);
+  const deadline = performance.now() + 2000;
+  while (held - settled() < bytes && performance.now() < deadline) await Bun.sleep(5);
+  expect(held - settled()).toBeGreaterThanOrEqual(bytes);
 });
 
 test("the RoPE frequencies equal the reference's float32 bands for a 128-dim head", () => {

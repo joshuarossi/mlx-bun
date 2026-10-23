@@ -55,6 +55,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import type { SafetensorsFile } from "../../src/artifacts/safetensors";
 import { fileSha256, optInAll } from "./real-weight-inputs";
 
 const OPT_IN = ["MLX_BUN_MOSS_IMAGE_SNAPSHOT", "MLX_BUN_MOSS_IMAGE_ORACLE"] as const;
@@ -109,7 +110,7 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
   const { Dtype } = await import("@mlx-bun/mlx/ffi");
   const ffi = await import("@mlx-bun/mlx/ffi");
   const ops = await import("@mlx-bun/mlx/ops");
-  const { SafetensorsFile } = await import("../../src/artifacts/safetensors");
+  const { SafetensorsFile: Safetensors } = await import("../../src/artifacts/safetensors");
   const { MossImageSchedule, parseMossImageScheduleConfig } = await import("../../src/models/moss-image/scheduler");
   const { MossImageConditioner } = await import("../../src/models/moss-image/text-encoder");
   const { MossImageTransformer, parseMossTransformerConfig } = await import("../../src/models/moss-image/transformer");
@@ -118,10 +119,10 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
 
   const checks: Check[] = [];
   const exact: { stage: string; pass: boolean }[] = [];
-  const files = new Map<string, InstanceType<typeof SafetensorsFile>>();
+  const files = new Map<string, SafetensorsFile>();
   const capture = (file: string) => {
     let opened = files.get(file);
-    if (!opened) { opened = SafetensorsFile.open(join(captures, `${file}.safetensors`)); files.set(file, opened); }
+    if (!opened) { opened = Safetensors.open(join(captures, `${file}.safetensors`)); files.set(file, opened); }
     return opened;
   };
   /** A captured tensor as float32 host values (bf16 widened exactly). */

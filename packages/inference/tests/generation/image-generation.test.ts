@@ -5,8 +5,8 @@
 // (stages released, nothing left allocated), and the pixel postprocess on a
 // decoder whose output is a transposed view.
 import { expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype, activeMemory, clearCache } from "@mlx-bun/mlx/ffi";
+import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
+import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type {
   FlowMatchingSchedule, ImageConditioner, ImageDenoiser, ImageLatentDecoder, TextToImagePipeline,
@@ -72,13 +72,17 @@ function fakePipeline(faults: Faults = {}) {
   return { pipeline, events, encoded, calls };
 }
 
-/** Runs `body` and checks that nothing it allocated is still active afterwards. */
+/** Active bytes once the GPU stream has finished and released what it held. */
+function settled(): number { synchronize(gpuStream); clearCache(); return activeMemory(); }
+
+/** Runs `body` and checks that nothing it allocated is still active afterwards. Buffers return when their command
+ * buffers complete, so the check waits (bounded) for the count to settle. */
 async function leakFree(body: () => Promise<unknown>): Promise<void> {
-  clearCache();
-  const before = activeMemory();
+  const before = settled();
   await body().catch(() => {});
-  clearCache();
-  expect(activeMemory() - before).toBeLessThan(4096);
+  const deadline = performance.now() + 2000;
+  while (settled() - before >= 4096 && performance.now() < deadline) await Bun.sleep(5);
+  expect(settled() - before).toBeLessThan(4096);
 }
 
 test("each stage opens, runs and is released before the next opens", async () => {
