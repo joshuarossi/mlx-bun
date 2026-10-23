@@ -86,9 +86,13 @@ test("the one-row projection adds the bias to the float32 product and rounds onc
   const inner = 3072, out = 3072;
   let seed = 0x2545f491;
   const uniform = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed + 0.5) / 2 ** 32; };
-  const xs = Float32Array.from({ length: inner }, () => bf16(6 * (uniform() - 0.5)));
-  const ws = Float32Array.from({ length: out * inner }, () => bf16(0.1 * (uniform() - 0.5)));
-  const bs = Float32Array.from({ length: out }, () => bf16(2 * (uniform() - 0.5)));
+  // bf16 values, rounded in place (ties to even) so the 9.4M weights cost no per-value allocation.
+  const bf16Values = (length: number, scale: number) => {
+    const values = Float32Array.from({ length }, () => scale * (uniform() - 0.5)), bits = new Uint32Array(values.buffer);
+    for (let i = 0; i < length; i++) bits[i] = (bits[i]! + 0x7fff + ((bits[i]! >>> 16) & 1)) & 0xffff0000;
+    return values;
+  };
+  const xs = bf16Values(inner, 6), ws = bf16Values(out * inner, 0.1), bs = bf16Values(out, 2);
   using x32 = MlxArray.fromFloat32(xs, [1, inner]), w32 = MlxArray.fromFloat32(ws, [out, inner]), b32 = MlxArray.fromFloat32(bs, [out]);
   using x = x32.astype(Dtype.bfloat16), w = w32.astype(Dtype.bfloat16), b = b32.astype(Dtype.bfloat16);
   const layer = new MossDenseRowLinear(w, b);
@@ -116,20 +120,28 @@ test("the one-row projection adds the bias to the float32 product and rounds onc
   expect(roundedTwice).toBeGreaterThan(out / 1000);
 });
 
-test("a one-row projection binds the rounding-once form only when it is dense and biased, and refuses a width its kernel cannot take", () => {
+test("a one-row projection binds the rounding-once form only when it is dense and biased, at any width, and refuses a mismatched bias", () => {
   using w = MlxArray.fromFloat32(ramp(128 * 8, 0.3), [8, 128]), b = MlxArray.fromFloat32(ramp(8, 0.6), [8]);
-  using narrow = MlxArray.fromFloat32(ramp(64 * 8, 0.3), [8, 64]);
+  // 40 wide: a partial stride and a partial group of four in the kernel's loop.
+  const ns = ramp(40 * 8, 0.7, 0.5).map(bf16), xs = ramp(40, 1.3, 2).map(bf16), bs = Float32Array.from(ramp(8, 0.6), bf16);
+  using n32 = MlxArray.fromFloat32(ns, [8, 40]), x32 = MlxArray.fromFloat32(xs, [1, 40]), b32 = MlxArray.fromFloat32(bs, [8]);
+  using narrow = n32.astype(Dtype.bfloat16), row = x32.astype(Dtype.bfloat16), narrowBias = b32.astype(Dtype.bfloat16);
+  using wrongBias = MlxArray.fromFloat32(ramp(4, 0.1), [4]);
   const q = ops.quantize(w, 64, 8);
   try {
-    const tensors: Record<string, MlxArray> = { "d.weight": w, "d.bias": b, "n.weight": w, "q.weight": q.packed, "q.scales": q.scales, "q.biases": q.biases!, "q.bias": b, "r.weight": narrow, "r.bias": b };
+    const tensors: Record<string, MlxArray> = { "d.weight": w, "d.bias": b, "n.weight": w, "q.weight": q.packed, "q.scales": q.scales, "q.biases": q.biases!, "q.bias": b,
+      "r.weight": narrow, "r.bias": narrowBias, "m.weight": w, "m.bias": wrongBias };
     const weights = { has: (name: string) => name in tensors, tensor: (name: string) => tensors[name]! } as unknown as Parameters<typeof bindMossRowLinear>[0];
     const config = { quantization: parseQuantization({ bits: 8, group_size: 64 }) } as unknown as Parameters<typeof bindMossRowLinear>[1];
-    const bound = (["d", "n", "q"] as const).map(path => bindMossRowLinear(weights, config, path));
+    const bound = (["d", "n", "q", "r"] as const).map(path => bindMossRowLinear(weights, config, path));
     expect(bound[0]).toBeInstanceOf(MossDenseRowLinear);
     expect(bound[1]).toBeInstanceOf(MossDenseLinear);
     expect(bound[2]).toBeInstanceOf(MossQuantizedBiasedLinear);
+    { using y = bound[3]!.forward(row); using wide = y.astype(Dtype.float32);
+      const expected = Array.from({ length: 8 }, (_, o) => { let dot = 0; for (let k = 0; k < 40; k++) dot += xs[k]! * ns[o * 40 + k]!; return bf16(dot + bs[o]!); });
+      expect(Array.from(wide.toFloat32())).toEqual(expected); }
     for (const layer of bound) layer.dispose();
-    expect(() => bindMossRowLinear(weights, config, "r")).toThrow("K a multiple of 128");
+    expect(() => bindMossRowLinear(weights, config, "m")).toThrow("need w [N, K] and bias [N]");
   } finally { q.packed.dispose(); q.scales.dispose(); q.biases?.dispose(); }
 });
 

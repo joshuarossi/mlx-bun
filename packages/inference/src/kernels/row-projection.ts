@@ -7,12 +7,12 @@
 // accumulation without a widened copy of them.
 //
 //   x     [1, K]  one row
-//   w     [N, K]  as stored, K a multiple of 128
+//   w     [N, K]  as stored
 //   bias  [N]
 //   y     [1, N]
-// One simdgroup per output: each lane sums four adjacent products per 128-wide
-// stride, then the lanes are summed. Products of bf16 values are exact in float32,
-// so only that summation order differs from the reference's.
+// One simdgroup per output: each lane sums up to four adjacent products per
+// 128-wide stride, then the lanes are summed. Products of bf16 values are exact in
+// float32, so only that summation order differs from the reference's.
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Dtype } from "@mlx-bun/mlx/ffi";
@@ -25,7 +25,7 @@ const SOURCE = String.raw`
     auto row = w + n * K;
     float sum = 0.0f;
     for (int base = lane * per_lane; base < K; base += 32 * per_lane) {
-      for (int i = 0; i < per_lane; ++i) {
+      for (int i = 0; i < per_lane && base + i < K; ++i) {
         sum += static_cast<float>(x[base + i]) * static_cast<float>(row[base + i]);
       }
     }
@@ -42,8 +42,8 @@ let kernel: MetalKernel | undefined;
  * takes a borrowed `[1, K]` row and returns an owned `[1, N]` result in the weights' dtype. */
 export function rowProjection(w: MlxArray, bias: MlxArray): (x: MlxArray) => MlxArray {
   const [N, K] = w.shape as [number, number];
-  if (w.shape.length !== 2 || K % 128 || bias.shape.length !== 1 || bias.shape[0] !== N)
-    throw new Error(`row projection: need w [N, K] with K a multiple of 128 and bias [N], got w [${w.shape}] and bias [${bias.shape}]`);
+  if (w.shape.length !== 2 || bias.shape.length !== 1 || bias.shape[0] !== N)
+    throw new Error(`row projection: need w [N, K] and bias [N], got w [${w.shape}] and bias [${bias.shape}]`);
   const dtype: Dtype = w.dtype;
   kernel ??= new MetalKernel({
     name: "mlx_bun_row_projection",
