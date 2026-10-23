@@ -10,7 +10,8 @@ import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { situ } from "../../src/kernels/situ";
 import { timestepSinusoid } from "../../src/models/moss-image/blocks";
-import { MossDenseBiasedLinear, MossDenseLinear, MossQuantizedBiasedLinear, MossQuantizedLinear } from "../../src/models/moss-image/layers";
+import { parseQuantization } from "../../src/artifacts/config";
+import { MossDenseBiasedLinear, MossDenseLinear, MossQuantizedBiasedLinear, MossQuantizedLinear, storedAffineSpec } from "../../src/models/moss-image/layers";
 import { MossRope, mossRopeBands, mossRopeCoordinates } from "../../src/models/moss-image/rope";
 import { MossTextRmsNorm, MossTextRope } from "../../src/models/moss-image/text-layers";
 
@@ -165,4 +166,23 @@ test("the conditioner's partial rotary embedding rotates the first dims of each 
     }
     for (let d = rotary; d < head; d++) expect(actual[p * head + d]).toBe(values[p * head + d]!);
   }
+});
+
+test("a projection binds as the checkpoint stores it, and inconsistent quantization metadata fails", () => {
+  const weights = (names: string[]) => ({ has: (name: string) => names.includes(name) }) as unknown as Parameters<typeof storedAffineSpec>[0];
+  const config = (quantization: Record<string, unknown> | undefined) =>
+    ({ quantization: parseQuantization(quantization) }) as unknown as Parameters<typeof storedAffineSpec>[1];
+  const table = { bits: 8, group_size: 64, "p.explicit": { bits: 4 }, "p.kept": false };
+  // Stored quantized under the table's default or its own entry; stored dense with no entry of its own (a shape the quantizer skipped).
+  expect(storedAffineSpec(weights(["p.weight", "p.scales", "p.biases"]), config(table), "p")).toMatchObject({ bits: 8, groupSize: 64, mode: "affine" });
+  expect(storedAffineSpec(weights(["p.explicit.scales", "p.explicit.biases"]), config(table), "p.explicit")).toMatchObject({ bits: 4 });
+  expect(storedAffineSpec(weights(["p.weight"]), config(table), "p")).toBeNull();
+  expect(storedAffineSpec(weights(["p.kept.weight"]), config(table), "p.kept")).toBeNull();
+  expect(storedAffineSpec(weights(["p.weight"]), config(undefined), "p")).toBeNull();
+  // Inconsistent metadata never downgrades silently.
+  expect(() => storedAffineSpec(weights(["p.explicit.weight"]), config(table), "p.explicit")).toThrow("quantizes it but the checkpoint stores it dense");
+  expect(() => storedAffineSpec(weights(["p.scales", "p.biases"]), config(undefined), "p")).toThrow("no entry for it");
+  expect(() => storedAffineSpec(weights(["p.kept.scales", "p.kept.biases"]), config(table), "p.kept")).toThrow("no entry for it");
+  expect(() => storedAffineSpec(weights(["p.scales", "p.biases"]), config({ bits: 4, group_size: 32, mode: "mxfp4" }), "p")).toThrow("affine only");
+  expect(() => storedAffineSpec(weights(["p.scales"]), config(table), "p")).toThrow("no .biases");
 });

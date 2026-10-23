@@ -7,12 +7,12 @@
 // them in order. The vision tower (`visual.*`) is never read.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { loadModelConfig, quantFor, type ModelConfig } from "../../artifacts/config";
+import { loadModelConfig, type ModelConfig } from "../../artifacts/config";
 import { Weights } from "../../artifacts/weights";
 import type { ImageConditioner } from "../../contracts/mlx/image-generation";
 import { ChatTemplate } from "../../input/chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "../../input/tokenizer";
-import { bindMossLinear, type MossLinear } from "./layers";
+import { bindMossLinear, storedAffineSpec, type MossLinear } from "./layers";
 import {
   MossQuantizedTextEmbedding, MossTextAttention, MossTextAttentionLayer, MossTextDeltaLayer, MossTextDeltaMixer,
   MossTextEmbedding, MossTextGatedNorm, MossTextMlp, MossTextRmsNorm, MossTextRope,
@@ -46,7 +46,7 @@ export class MossImageConditioner implements ImageConditioner {
     const linear = (path: string): MossLinear => bindMossLinear(weights, config, path);
     const norm = (path: string) => new MossTextRmsNorm(weights.tensor(`${path}.weight`), eps);
     const mlp = (prefix: string) => new MossTextMlp(linear(`${prefix}.gate_proj`), linear(`${prefix}.up_proj`), linear(`${prefix}.down_proj`));
-    const embedding = `${PREFIX}.embed_tokens`, embeddingSpec = quantFor(config.quantization, embedding);
+    const embedding = `${PREFIX}.embed_tokens`, embeddingSpec = storedAffineSpec(weights, config, embedding);
     this.embedding = embeddingSpec
       ? new MossQuantizedTextEmbedding(weights.tensor(`${embedding}.weight`), weights.tensor(`${embedding}.scales`),
         weights.tensor(`${embedding}.biases`), embeddingSpec)

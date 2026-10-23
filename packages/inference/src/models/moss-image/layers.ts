@@ -45,14 +45,31 @@ export class MossQuantizedBiasedLinear {
 
 export type MossLinear = MossDenseLinear | MossDenseBiasedLinear | MossQuantizedLinear | MossQuantizedBiasedLinear;
 
-/** The projection the artifact stores at `path`, bound once by a family graph's
- * constructor: quantized when the component's quantization table covers the
- * path (affine, so `.biases` is required), dense otherwise; biased when the
- * checkpoint holds `.bias`. */
-export function bindMossLinear(weights: Weights, config: ModelConfig, path: string): MossLinear {
+/** The affine spec of a module the checkpoint stores quantized (it holds `.scales`),
+ * or null for one stored dense (mlx-lm's convention: a module the quantizer
+ * skipped for its shape has no table entry of its own). Inconsistent metadata
+ * fails: an explicit table entry quantizing a module stored dense, a stored
+ * module the table does not cover, a mode other than affine, missing `.biases`. */
+export function storedAffineSpec(weights: Weights, config: ModelConfig, path: string): ops.QuantSpec | null {
+  if (!weights.has(`${path}.scales`)) {
+    const explicit = config.quantization?.perLayer.get(path);
+    if (explicit && explicit.mode !== "none") throw new Error(`${path}: the quantization table quantizes it but the checkpoint stores it dense`);
+    return null;
+  }
   const spec = quantFor(config.quantization, path);
+  if (!spec) throw new Error(`${path}: stored quantized but the quantization table has no entry for it`);
+  if (spec.mode !== "affine") throw new Error(`${path}: ${spec.mode} quantization is not bound here (affine only)`);
+  if (!weights.has(`${path}.biases`)) throw new Error(`${path}: affine-quantized but the checkpoint has no .biases`);
+  return spec;
+}
+
+/** The projection the artifact stores at `path`, bound once by a family graph's
+ * constructor: affine-quantized or dense as stored (`storedAffineSpec`), biased
+ * when the checkpoint holds `.bias`. */
+export function bindMossLinear(weights: Weights, config: ModelConfig, path: string): MossLinear {
   const weight = weights.tensor(`${path}.weight`);
   const bias = weights.has(`${path}.bias`) ? weights.tensor(`${path}.bias`) : null;
+  const spec = storedAffineSpec(weights, config, path);
   if (!spec) return bias ? new MossDenseBiasedLinear(weight, bias) : new MossDenseLinear(weight);
   const scales = weights.tensor(`${path}.scales`), biases = weights.tensor(`${path}.biases`);
   return bias ? new MossQuantizedBiasedLinear(weight, scales, biases, spec, bias) : new MossQuantizedLinear(weight, scales, biases, spec);
