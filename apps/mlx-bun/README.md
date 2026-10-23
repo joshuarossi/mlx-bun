@@ -159,8 +159,10 @@ server started with until `POST /api/hub/serve` (the Models panel) or another
 switch makes a different one current; naming a model in a request never changes it. `GET /v1/models`
 lists every local model with `resident` and `current` (the models module's `/library` marks `serving` and `resident` from the host's own residency); `GET /stats`
 adds `models` (budget, resident bytes, each resident model's bytes, leases and last use).
-Managed jobs, Whisper decoding and image runs pause every resident model (`pauseAll`) and hold back new
-loads meanwhile. The host publishes `model.load` (with `resumed` when saved state was found),
+In-process, managed jobs, Whisper decoding and image runs pause every resident model (`pauseAll`) and hold back new
+loads meanwhile. Under isolation a managed job does the same over the chat and image workers (the Whisper
+worker has no execution lease and is not paused), and Whisper decoding and image runs, each in its own
+worker, pause no chat worker. The host publishes `model.load` (with `resumed` when saved state was found),
 `model.unload` (reason `evicted` or `requested`, whether the flush was durable) and `model.memory`
 on the app's `events` bus, and each unit's engine publishes its request timings and samples through
 `engine/telemetry.ts`; the persistent services' `modelHost` (`served-model-host.ts`) leases the
@@ -213,7 +215,7 @@ worker's own event stream, NDJSON) ahead of the routes on
 the socket only: a TCP listener answers 404 for all of them, and `/engine`
 under `--in-process` is 404 too. In the app form its `/health` replaces
 discovery's, and the transcription-only app, which has no execution lease, has
-no `/admin/lease` route (404). The memory route (see
+no `/admin/lease` route (404). The image form's lease is the lock its image runs take. The memory route (see
 [Memory synthesis](#memory-synthesis)) is the model form's: the app form's
 synthesis runs in the app itself, so there it is 404.
 
@@ -316,8 +318,10 @@ exceed the budget are charged at the largest one, otherwise at their sum. A snap
 components cannot be read is charged its whole size. A charge larger than the budget follows
 the residency rule for any oversized model. The files can hold tensors a stage never loads, so
 the worker's own decision can differ from this charge only when the budget falls between the
-two totals; its measured memory counts once it reports more than the charge. Like Whisper's,
-it holds no execution lease, and `/v1/models` does not list it.
+two totals; its measured memory counts once it reports more than the charge. Unlike Whisper's,
+it serves an execution lease (`/admin/lease`): its image runs and the lease take one lock in
+turn, so a managed job waits for the image run in flight and an image request that arrives
+during the job runs after it. Its runs pause no chat worker, and `/v1/models` does not list it.
 
 **Readiness.** The listener binds after the startup model's worker reports ready (up
 to 15 minutes for large models, as main), so startup succeeds or fails the way the
@@ -333,8 +337,8 @@ downloads, sessions, memory (the vault and the synthesis pipeline; its task
 model is the current worker's), the chat module's tool approvals, and the models module (library, hub, adapters
 and cache cleanup, which protects each resident model's reported snapshot uses) live here and survive worker restarts. The chat module runs in this process and reaches the model through the served model host over this listener's
 proxy, so web chat works under isolation (main answered 501 on `/ws/chat`); its
-`local` model is the current one. Managed jobs pause every resident worker through
-each worker's execution lease.
+`local` model is the current one. Managed jobs pause every resident chat and image worker
+through that worker's execution lease; the Whisper worker has none and is not paused.
 
 **Routing and proxying.** `server/model-routes.ts` is the same router as in-process,
 over worker units: a model-scoped POST is leased to the worker of the model its body
@@ -1363,7 +1367,8 @@ against it. When a pipeline's stages together exceed the image host's byte budge
 physical memory by default), each run releases every stage after its output, so one stage is
 resident at a time; otherwise the stages stay open while the pipeline does. Under isolation
 each image model is a companion worker of its own that serves only that model, picked by the
-request's exact `model` id and charged what one run holds (see the isolated composition above).
+request's exact `model` id and charged what one run holds; its runs take that worker's execution
+lock, which a managed job leases (see the isolated composition above).
 
 ## Metrics and performance
 
