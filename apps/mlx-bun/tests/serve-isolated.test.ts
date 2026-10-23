@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -696,6 +696,66 @@ test("image requests start the image companion's own worker in the image form be
     expect(listed).not.toContain("org/picture");
     const launched = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { kind?: string; model?: { repoId: string } });
     expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId}`)).toEqual(["model org/model", "image org/picture"]);
+  } finally {
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
+test("an image request naming a local image model by exact id starts that model's own worker, charged what one run holds under the stage budget it is launched with; any other name reaches the default image worker; audio is never routed by its body", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-images-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  /** An image record over a pipeline snapshot whose components hold safetensors files of these sizes (the tokenizer holds none). */
+  const pipeline = (id: string, components: Record<string, number>) => {
+    const image = record(root, id, 1e9);
+    mkdirSync(join(image.path, "tokenizer"), { recursive: true });
+    const index: Record<string, unknown> = { _class_name: "SomeImagePipeline", tokenizer: ["library", "Tokenizer"] };
+    for (const [name, bytes] of Object.entries(components)) {
+      index[name] = ["library", "Component"];
+      mkdirSync(join(image.path, name));
+      writeFileSync(join(image.path, name, "model.safetensors"), new Uint8Array(bytes));
+    }
+    writeFileSync(join(image.path, "model_index.json"), JSON.stringify(index));
+    return image;
+  };
+  // The stage budget is 1000 bytes: the default's 900 bytes of stages stay open (a run holds all of them); the second's 1200
+  // exceed it, so each run holds its largest stage, 700.
+  const picture = pipeline("org/picture", { text_encoder: 300, transformer: 500, vae: 100 });
+  const poster = pipeline("org/poster", { text_encoder: 700, transformer: 400, vae: 100 });
+  const whisper = record(root, "org/whisper", 5e7);
+  const tmp = privateTmp(root);
+  const launches = join(root, "launches.jsonl");
+  const running = await inTmp(tmp, async () => startIsolatedServer(record(root, "org/model"), options, { modules: client => installedModules("state", { ...stateModuleSettings(options), memory: { client } }), taskSnapshot: () => locateTaskModel(MEMORY_TASK_MODEL), entry, env: { ...workerEnv, FAKE_WORKER_RECORD: launches },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? [picture, poster] : [whisper], stageBudgetBytes: 1_000, notice() {}, log() {}, error() {} }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
+  const generate = async (body: Record<string, unknown>) => ((await (await get("/v1/images/generations", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "a cat", ...body }) })).json()) as Record<string, unknown>);
+  const charged = async () => Object.fromEntries(((await (await get("/stats")).json()) as { models: { resident: { id: string; bytes: number }[] } }).models.resident.map(model => [model.id, model.bytes]));
+  try {
+    // The second image model by its exact id: its own worker in the image form, charged its largest stage.
+    expect(await generate({ model: "org/poster" })).toEqual({ created: 1, data: [], model: "org/poster", kind: "image" });
+    expect(await charged()).toEqual({ "org/model": 1, "org/poster": 700 });
+    // No name, a name that is not an exact local id, and an unknown id all reach the default image model's worker, which keeps its stages open.
+    for (const body of [{}, { model: "poster" }, { model: "org/unknown" }, { model: "org/model" }])
+      expect(await generate(body)).toEqual({ created: 1, data: [], model: "org/picture", kind: "image" });
+    expect(await charged()).toEqual({ "org/model": 1, "org/poster": 700, "org/picture": 900 });
+    expect(await generate({ model: "org/poster" })).toMatchObject({ model: "org/poster" });
+    // Audio is Whisper's whatever its body names.
+    const audio = await get("/v1/audio/transcriptions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "org/poster" }) });
+    // (The fake Whisper worker names itself by the directory it was launched with.)
+    expect((await audio.json() as { model?: string }).model).toBe(whisper.path);
+    expect((await charged())["org/whisper"]).toBe(5e7);
+    // One worker per image model, each launched with its model and the budget its charge assumed.
+    const launched = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { kind?: string; model?: { repoId: string }; argv?: string[]; stageBudgetBytes?: number });
+    expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId ?? launch.argv?.[1]} ${launch.stageBudgetBytes ?? "-"}`)).toEqual([
+      "model org/model -", "image org/poster 1000", "image org/picture 1000", `app ${whisper.path} -`]);
   } finally {
     await running.close();
     leftover = workerDirs(tmp);

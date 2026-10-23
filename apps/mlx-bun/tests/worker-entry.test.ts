@@ -537,6 +537,68 @@ test("the image form hands the socket hooks to the image companion composition: 
   } finally { console.error = error; end(); socket.remove(); }
 });
 
+test("an image worker serves only the model it was started for: a request naming any other is refused without opening anything, and its own runs stage under the budget the launch carries", async () => {
+  // The real image companion composition over the socket; only the pipeline backend (and the native library) are stand-ins.
+  const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { EventEmitter } from "node:events";
+    const app = ${JSON.stringify(app)};
+    const until = async (check, what) => { const end = Date.now() + 10000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
+    const opened = [], runs = [];
+    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
+    mock.module(${JSON.stringify(backend)}, () => ({ nativeImageBackend: { async load(directory) {
+      opened.push(directory);
+      return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16,
+        stageBytes: { conditioner: 600, denoiser: 300, decoder: 100 },
+        async generate(request, options) { runs.push(options.releaseStages);
+          return { width: 16, height: 16, pixels: new Uint8Array(16 * 16 * 3), seed: 1, steps: 1, guidance: 1, timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } }; },
+        dispose() {} };
+    } } }));
+    const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
+    const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
+    const socketPath = process.env.WORKER_SOCKET, stageBudgetBytes = Number(process.env.STAGE_BUDGET);
+    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 1000, modelType: "SomeImagePipeline" }, stageBudgetBytes };
+    let push, end;
+    const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
+    push(encodeLaunch(launch) + "\\n");
+    const written = [];
+    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter() });
+    await until(() => written.length === 1, "the ready line");
+    const post = body => fetch("http://worker/v1/images/generations", { method: "POST", unix: socketPath, headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a cat", size: "16x16", ...body }) });
+    // Another local model, a query, and this model's own directory are not its exact id: refused, nothing opened.
+    for (const model of ["org/poster", "picture", "/models/picture"]) {
+      const refused = await post({ model });
+      assert.equal(refused.status, 404);
+      assert.deepEqual((await refused.json()).error, { type: "model_not_found",
+        message: model + " is not served by this image worker, which serves org/picture; name an exact local image model id" });
+    }
+    assert.deepEqual(opened, []);
+    // No name, or its own exact id: its own snapshot opens (and, idle after each run, is released) under the launch's budget.
+    for (const body of [{}, { model: "org/picture" }]) {
+      const served = await post(body);
+      assert.equal(served.status, 200);
+      assert.equal((await served.json()).mlx_bun.model, "org/picture");
+    }
+    assert.deepEqual(opened, ["/models/picture", "/models/picture"]);
+    console.error(JSON.stringify(runs));
+    end();
+    assert.equal(await exited, 0);
+  `;
+  const socket = socketDir();
+  try {
+    // 1000 bytes of stages: a 500 byte budget releases each stage per run; a 2000 byte budget keeps them open.
+    for (const [budget, release] of [[500, true], [2_000, false]] as const) {
+      const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, STAGE_BUDGET: String(budget), HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
+      expect([result.code, result.stderr.trim()]).toEqual([0, JSON.stringify([release, release])]);
+      expect(result.stdout).toContain(release ? "(one stage resident at a time)" : "(stages kept open)");
+      expect(existsSync(socket.socketPath)).toBe(false);
+    }
+  } finally { socket.remove(); }
+});
+
 test("the app form composes the real app over the socket with private storage: persistent routes, synthesis on the memory task model, dataset loopback to the same socket, streaming, and client aborts", async () => {
   const script = `
     import { mock } from "bun:test";
