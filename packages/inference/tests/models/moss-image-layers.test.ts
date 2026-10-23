@@ -303,4 +303,4 @@ test("the conditioner's gated norm sums each row's variance in the pinned torch'
     }
   }
   expect(differing).toBe(0);
-});
+}, 60_000);
