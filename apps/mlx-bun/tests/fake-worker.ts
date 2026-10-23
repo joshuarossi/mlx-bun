@@ -28,7 +28,8 @@
 // and the event stream carries it as a `worker.memory` line at connect and whenever `/fake/measure?active=&cache=&peak=` changes it
 // (`&quiet=1` changes what `/health` reports without a line, like a reading the stream has not delivered yet).
 // FAKE_WORKER_WEIGHTS={"<model id or *>":bytes} is the weights `/stats` reports (`admission.weights_bytes`).
-// The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
+// The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id, the image form (`{ kind: "image", model }`)
+// its model's id; `POST /v1/images/*` answers with the launch kind that reached it.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
@@ -188,6 +189,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       ...(process.env.FAKE_WORKER_WEIGHTS ? { weights_bytes: (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)[modelId] ?? (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)["*"] } : {}) }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
   if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
+  if (path.startsWith("/v1/images/") && request.method === "POST") return Response.json({ created: 1, data: [], model: current, kind: launch.kind ?? "model" });
   if (path === "/v1/chat/completions" && request.method === "POST") {
     entry.raw = await request.text();
     let body: { stream?: boolean; messages?: { role: string; content: unknown }[] };

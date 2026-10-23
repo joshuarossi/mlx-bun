@@ -1,14 +1,16 @@
 // The worker half of runtime isolation, reached only through the parent's
 // spawn helper (jobs/worker-process.ts): the launch record arrives as the
 // first stdin line, the ready line leaves on stdout, and the end of stdin
-// means the parent is gone. No flag selects it. Two launch forms, both
+// means the parent is gone. No flag selects it. Three launch forms, each
 // carrying the app's package version (a record with another one exits 2):
 // - model (the isolated server's worker, one per resident model): only the model-scoped host (serve-host.ts) over the
 //   parent's Unix socket, with the persistent services stubbed because the
 //   parent owns them, plus the memory task model the parent's synthesis calls
 //   through the admin surface (only the default worker is ever asked);
 // - app: the whole app, composed by `runServe` from serve arguments exactly as
-//   the CLI composes it, listening on the parent's socket instead of TCP.
+//   the CLI composes it, listening on the parent's socket instead of TCP;
+// - image: the isolated server's text-to-image companion, the image companion
+//   composition (serve-host.ts `startImageHost`) over the parent's socket.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
@@ -18,7 +20,7 @@ import { createWorkerRoutes } from "../server/worker-routes";
 import type { CommandArgs } from "./args";
 // The app form's composition loads only when a launch asks for it.
 import type { ServeDependencies, ServedApp, SignalPort, startModelServer, startTranscriptionServer } from "./serve";
-import { startModelHost } from "./serve-host";
+import { startImageHost, startModelHost } from "./serve-host";
 import { createServedModelHost } from "./served-model-host";
 import type { ServeOptions } from "./serve-options";
 import type { AppState, ModelHostLink, RouteGroup } from "./serve-state";
@@ -30,7 +32,9 @@ export interface ModelWorkerLaunch { kind?: "model"; version: string; socketPath
 /** The app form: serve arguments as the CLI takes them (`["--model", model, ...]`),
  * validated by `validateAppLaunchArgv` and composed by `runServe` on the socket. */
 export interface AppWorkerLaunch { kind: "app"; version: string; socketPath: string; argv: string[] }
-export type WorkerLaunch = ModelWorkerLaunch | AppWorkerLaunch;
+/** The image form: the text-to-image snapshot the parent resolved, served as its `image` default. */
+export interface ImageWorkerLaunch { kind: "image"; version: string; socketPath: string; model: ModelRecord }
+export type WorkerLaunch = ModelWorkerLaunch | AppWorkerLaunch | ImageWorkerLaunch;
 
 export function parseWorkerLaunch(text: string): WorkerLaunch {
   let value: unknown;
@@ -46,10 +50,11 @@ export function parseWorkerLaunch(text: string): WorkerLaunch {
       throw new Error("worker launch needs argv, the serve arguments");
     return { kind: "app", version, socketPath, argv: record.argv as string[] };
   }
-  if (record.kind !== undefined && record.kind !== "model") throw new Error(`worker launch kind ${JSON.stringify(record.kind)} is unknown`);
+  if (record.kind !== undefined && record.kind !== "model" && record.kind !== "image") throw new Error(`worker launch kind ${JSON.stringify(record.kind)} is unknown`);
   const model = record.model as Partial<ModelRecord> | undefined;
   if (!model || typeof model !== "object" || typeof model.repoId !== "string" || typeof model.path !== "string")
     throw new Error("worker launch needs model.repoId and model.path");
+  if (record.kind === "image") return { kind: "image", version, socketPath, model: model as ModelRecord };
   const options = record.options as Partial<ServeOptions> | undefined;
   if (!options || typeof options !== "object" || !options.cache || !options.request || typeof options.capacity !== "number")
     throw new Error("worker launch needs resolved serve options");
@@ -110,6 +115,8 @@ export interface WorkerEntryPorts {
   /** Internal (tests): stand-ins for the app form's selection, compositions,
    * and log; a stand-in composition still receives the socket hooks. */
   app?: Partial<AppWorkerDependencies>;
+  /** Internal (tests): a stand-in for the image form's composition; it still receives the socket hooks. */
+  image?: typeof startImageHost;
 }
 
 const defaults: WorkerEntryPorts = { stdin: Bun.stdin.stream(), write: line => { process.stdout.write(line + "\n"); }, signals: process };
@@ -140,6 +147,7 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   }
   const parentLeft = () => (async () => { while ((await readLine()) !== null) { /* nothing else is expected on stdin */ } })().catch(() => {});
   if (launch.kind === "app") return runAppWorker(launch, args!, ports, parentLeft());
+  if (launch.kind === "image") return runImageWorker(launch, ports, parentLeft());
   const link: { current?: ModelHostLink } = {};
   // Main's memory task model, loaded by the first call and kept until this
   // worker stops: the admin surface runs each call under the host's execution
@@ -184,6 +192,33 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
     };
     ports.signals.on("SIGTERM", stop); ports.signals.on("SIGINT", stop);
     void parentLeft().finally(stop);
+  });
+}
+
+/** The image form: the image companion composition on the parent's socket behind an admin surface with readiness, drain
+ * and memory but no execution lease (as the transcription-only app's), ready once it serves, closed once when the parent
+ * signals or leaves. */
+async function runImageWorker(launch: ImageWorkerLaunch, ports: WorkerEntryPorts, parentLeft: Promise<void>): Promise<number> {
+  const memoryNow = await processMemory();
+  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}) });
+  let host: Awaited<ReturnType<typeof startImageHost>>;
+  try {
+    host = await (ports.image ?? startImageHost)(launch.model, { unix: launch.socketPath, routes: routes => admin.wrap(routes), beforeDrain: () => admin.close() });
+  } catch (error) {
+    console.error(`worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  ports.write(formatWorkerMessage({ type: "ready", socketPath: launch.socketPath, modelId: launch.model.repoId, pid: process.pid, version: WORKER_PROTOCOL_VERSION }));
+  return new Promise<number>(resolve => {
+    let closing = false;
+    const stop = () => {
+      if (closing) return;
+      closing = true;
+      ports.signals.removeListener("SIGTERM", stop); ports.signals.removeListener("SIGINT", stop);
+      host.close().then(() => resolve(0), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
+    };
+    ports.signals.on("SIGTERM", stop); ports.signals.on("SIGINT", stop);
+    void parentLeft.finally(stop);
   });
 }
 

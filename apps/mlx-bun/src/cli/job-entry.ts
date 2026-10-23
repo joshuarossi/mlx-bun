@@ -14,7 +14,7 @@ async function resolveRunner(kind: string): Promise<{ runner: JobRunner; release
   const loaded = await loadModules([owner], { services: { catalog: host.bindings.catalog, storage: host.bindings.storage,
     jobs: () => ({ submit: () => Promise.reject(new Error("a job child submits no jobs")), get: async () => undefined, list: async () => [],
       cancel: async () => {}, events: () => (async function* () {})() }) } });
-  return { runner: loaded.jobs.get(kind)!.runner as unknown as JobRunner, release: async () => { try { await loaded.stop(); } finally { await host.whisper.close(); } } };
+  return { runner: loaded.jobs.get(kind)!.runner as unknown as JobRunner, release: async () => { try { await loaded.stop(); } finally { await host.companions.close(); } } };
 }
 
 /** The job host spawns this child as the leader of its own process group

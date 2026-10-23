@@ -61,7 +61,7 @@ export async function startTranscribeServer(input: ServeInput = {}): Promise<Run
   const closeServices = async () => {
     const errors: unknown[] = [];
     try { await loaded?.stop(); } catch (error) { errors.push(error); }
-    try { await services.whisper.close(); } catch (error) { errors.push(error); }
+    try { await services.companions.close(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, "transcription cleanup failed");
   };
   try {

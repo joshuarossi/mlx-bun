@@ -37,7 +37,8 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   current(): string;
   /** Whether `id` is an exact id this host can serve (the ids `/v1/models` lists), resident or not. */
   serves(id: string): Promise<boolean>;
-  /** The companion model (Whisper) that answers this path, when it is one of its own; the router leases it like any model. */
+  /** The companion model (Whisper for audio, the image model for images) that answers this path, when it is one of its own; the router leases it like
+   * any model. */
   companion?(pathname: string): Promise<string | undefined>;
   /** The configured transcription companion, including before its worker starts. */
   transcription?(): Promise<string | undefined>;
@@ -123,7 +124,8 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         // `/v1/models/{id}` lists that one model; `/v1/models` lists them all.
         const filter = decodeURIComponent(pathname.slice("/v1/models/".length)) || null;
         const own = filter === null ? undefined : options.host.peek(filter);
-        if (own && !own.operations.includes("transcribe")) return own.routes.handle(request);
+        // A chat model answers for itself; a companion (Whisper, an image model) is listed by this host.
+        if (own?.operations.includes("generate")) return own.routes.handle(request);
         const base = await listing(request, "/v1/models");
         if (!base) return null;
         // A unit that cannot answer (a worker that is down) is the answer, not something to decorate.
@@ -142,12 +144,13 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
             resident: false, capabilities: { transcription: true, translation: true, chat_completions: false } });
         }
         const resident = residentIds(), current = options.current();
-        // Every resident model answers for itself; the rest are listed as the registry knows them.
+        // Every resident model listed here answers for itself (chat models and the transcription companion; an image companion is not
+        // listed); the rest are listed as the registry knows them.
         const full = await Promise.all([...resident].map(async id => {
           const unit = host.peek(id);
           const companion = unit?.operations.includes("transcribe");
           const path = companion ? "/v1/models" : `/v1/models/${encodeURIComponent(id)}`;
-          const entry = unit ? await unit.routes.handle(new Request(new URL(path, request.url))) : null;
+          const entry = unit && (companion || unit.operations.includes("generate")) ? await unit.routes.handle(new Request(new URL(path, request.url))) : null;
           const rows = entry?.ok ? ((await entry.json()) as { data?: Record<string, unknown>[] }).data : undefined;
           const row = companion ? rows?.find(row => row.transcription === true) : rows?.[0];
           return [id, row ? { ...row, id } : undefined] as const;

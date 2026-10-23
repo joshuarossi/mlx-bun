@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { startModelServer, validateAppLaunchArgv, type AppSocketHooks, type RunningApp, type ServeOptions } from "../src/cli/serve";
-import { runWorkerEntry, type AppWorkerDependencies } from "../src/cli/worker-entry";
+import { parseWorkerLaunch, runWorkerEntry, type AppWorkerDependencies } from "../src/cli/worker-entry";
 import { encodeLaunch, spawnWorker, WorkerExitedError, WORKER_MESSAGE_PREFIX, WORKER_PROTOCOL_VERSION } from "../src/jobs/worker-process";
 import { startServer } from "../src/server/start";
 
@@ -497,6 +497,40 @@ test("a Whisper checkpoint in the app form hands the socket hooks to the transcr
     expect(existsSync(run.socketPath)).toBe(false);
     expect(run.errors).toEqual([]);
   } finally { run.cleanup(); }
+});
+
+test("the image form hands the socket hooks to the image companion composition: ready once it serves, an admin surface without a lease, one close when the parent leaves", async () => {
+  const socket = socketDir();
+  const picture = { repoId: "org/picture", path: "/unused/picture", modelType: "SomeImagePipeline", expertsBytes: 0 } as ModelRecord;
+  const events: string[] = [], written: string[] = [], errors: string[] = [];
+  const host = fakeHost(events);
+  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture };
+  // The form carries the snapshot the parent resolved and nothing else; it needs the model like the model form.
+  expect(parseWorkerLaunch(encodeLaunch(launch))).toEqual(launch as never);
+  expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, model: undefined }))).toThrow("worker launch needs model.repoId and model.path");
+  let push!: (text: string) => void, end!: () => void;
+  const stdin = new ReadableStream<Uint8Array>({ start(controller) {
+    push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => { try { controller.close(); } catch { /* closed */ } };
+  } });
+  push(encodeLaunch(launch) + "\n");
+  const error = console.error;
+  console.error = (message: unknown) => { errors.push(String(message)); };
+  const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.socketPath } as RequestInit);
+  try {
+    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter(),
+      image: (model, hooks) => host.start(model, {} as ServeOptions, hooks) });
+    await until(() => written.length === 1, "the ready line");
+    expect(JSON.parse(written[0]!.slice(WORKER_MESSAGE_PREFIX.length))).toMatchObject({ type: "ready", socketPath: socket.socketPath, modelId: "org/picture", version: WORKER_PROTOCOL_VERSION });
+    const { model, hooks } = host.calls[0]!;
+    expect([model, hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain]).toEqual([picture, socket.socketPath, "function", "function"]);
+    expect(await (await get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/picture" });
+    expect((await get("/admin/lease", { method: "POST" })).status).toBe(404);
+    end();
+    expect(await exited).toBe(0);
+    expect(events).toEqual(["start org/picture", "app close", "producers close", "engine close"]);
+    expect(existsSync(socket.socketPath)).toBe(false);
+    expect(errors).toEqual([]);
+  } finally { console.error = error; end(); socket.remove(); }
 });
 
 test("the app form composes the real app over the socket with private storage: persistent routes, synthesis on the memory task model, dataset loopback to the same socket, streaming, and client aborts", async () => {

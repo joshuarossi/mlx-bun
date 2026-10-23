@@ -671,6 +671,39 @@ test("a model that does not fit the budget drains the least recently used worker
   expect(leftover).toEqual([]);
 }, 60_000);
 
+test("image requests start the image companion's own worker in the image form beside the chat model and reach it, not the chat worker; it is not listed as a chat model", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const records = [record(root, "org/model")];
+  const picture = record(root, "org/picture", 5e7);
+  const tmp = privateTmp(root);
+  const launches = join(root, "launches.jsonl");
+  const running = await inTmp(tmp, async () => startIsolatedServer(records[0]!, options, { modules: client => installedModules("state", { ...stateModuleSettings(options), memory: { client } }), taskSnapshot: () => locateTaskModel(MEMORY_TASK_MODEL), entry, env: { ...workerEnv, FAKE_WORKER_RECORD: launches },
+    records: () => records, companions: operation => operation === "image" ? [picture] : [], notice() {}, log() {}, error() {} }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
+  const residents = async () => ((await (await get("/engine")).json()) as { workers: { id: string; role: string }[] }).workers;
+  try {
+    expect((await residents()).map(worker => worker.id)).toEqual(["org/model"]);
+    const image = await get("/v1/images/generations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: "a cat" }) });
+    expect(await image.json()).toEqual({ created: 1, data: [], model: "org/picture", kind: "image" });
+    expect((await residents()).map(worker => `${worker.id}:${worker.role}`)).toEqual(["org/model:primary", "org/picture:companion"]);
+    const listed = ((await (await get("/v1/models")).json()) as { data: { id: string }[] }).data.map(entry => entry.id);
+    expect(listed).not.toContain("org/picture");
+    const launched = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { kind?: string; model?: { repoId: string } });
+    expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId}`)).toEqual(["model org/model", "image org/picture"]);
+  } finally {
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
 test("workers report their measured MLX memory and the host's residency counts it in place of the estimate: the default budget comes from the device working set the first worker reports, and admission and eviction follow the measured bytes", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-measured-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));

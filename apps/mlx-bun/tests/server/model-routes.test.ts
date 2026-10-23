@@ -253,6 +253,30 @@ test("isolated discovery lists the configured companion before loading, preserve
   await f.host.close();
 });
 
+test("an image companion answers its own paths through the router, holding its lease until the body ends, and never answers a model listing", async () => {
+  const f = fixture({ chat: GB, "org/picture": GB });
+  (await f.host.acquire("chat")).release();
+  const routes = createModelRoutes({ host: f.host, current: () => "chat", serves: async id => id === "chat",
+    companion: async pathname => pathname.startsWith("/v1/images/") ? "org/picture" : undefined });
+  const companion = await f.host.acquire("org/picture"); companion.release();
+  Object.defineProperty(companion.unit, "operations", { value: ["image"] });
+  const asked: string[] = [];
+  companion.unit.routes.handle = async request => {
+    asked.push(new URL(request.url).pathname);
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"data":[]}')); controller.close(); } }));
+  };
+  const leases = () => f.host.resident().find(model => model.id === "org/picture")!.leases;
+  const image = (await routes.handle(post("/v1/images/generations", { prompt: "a cat" })))!;
+  expect(leases()).toBe(1);
+  expect(await image.json()).toEqual({ data: [] });
+  expect(leases()).toBe(0);
+  await routes.handle(get("/v1/models"));
+  await routes.handle(get("/v1/models/org%2Fpicture"));
+  expect(asked).toEqual(["/v1/images/generations"]);
+  expect(f.received.filter(item => item.path.startsWith("/v1/images/"))).toEqual([]);
+  await f.host.close();
+});
+
 test("everything else model-scoped belongs to the current model; a change holds it resident, and an unmatched path falls through", async () => {
   const f = fixture({ a: 2 * GB, b: 2 * GB });
   (await f.host.acquire("a")).release(); (await f.host.acquire("b")).release();

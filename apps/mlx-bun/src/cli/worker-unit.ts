@@ -66,6 +66,15 @@ function transcriptionLaunch(context: WorkerUnitContext, record: ModelRecord, so
     ...(whisper?.idleUnloadSec !== undefined ? ["--whisper-idle-unload", String(whisper.idleUnloadSec)] : [])] };
 }
 
+/** A text-to-image model runs the image companion composition on its socket (`serve-host.ts` `startImageHost`). */
+function imageLaunch(_context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
+  return { kind: "image" as const, version: WORKER_PROTOCOL_VERSION, socketPath, model: record };
+}
+
+/** The operation a worker serves, and how it is launched for it. */
+const LAUNCHES = { generate: chatLaunch, transcribe: transcriptionLaunch, image: imageLaunch } as const;
+export type WorkerOperation = keyof typeof LAUNCHES;
+
 /** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
  * its memory readings to `measure`. A worker that is gone measures nothing: its replacement will need what it did. */
 function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) => void, measure: (memory: WorkerMemory | undefined) => void, signal: AbortSignal): void {
@@ -101,14 +110,15 @@ function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) =>
   })();
 }
 
-/** Spawn a worker for `record` and resolve once it serves; a worker that fails to start rejects and leaves nothing behind. */
-export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelRecord, role: ModelRole, estimate: number): Promise<WorkerUnit> {
+/** Spawn a worker for `record` serving `operation` and resolve once it serves; a worker that fails to start rejects and leaves nothing behind. */
+export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelRecord, role: ModelRole, estimate: number,
+  operation: WorkerOperation = "generate"): Promise<WorkerUnit> {
   const socketPath = join(context.socketDir, `worker-${++sockets}.sock`);
   const started = performance.now();
   const budget = context.graceMs ?? shutdownTimeoutMs();
   const supervisor = superviseWorker({
     entry: context.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)), socketPath,
-    launch: role === "primary" ? chatLaunch(context, record, socketPath) : transcriptionLaunch(context, record, socketPath),
+    launch: LAUNCHES[operation](context, record, socketPath),
     ...(context.restarts ? { restarts: context.restarts } : {}),
     ...(context.env ? { env: context.env } : {}),
     ...(context.readyTimeoutMs !== undefined ? { readyTimeoutMs: context.readyTimeoutMs } : {}),
@@ -141,7 +151,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
   }
   const stopEvents = new AbortController();
   relayEvents(supervisor, context.publish, memory => { measured = memory; }, stopEvents.signal);
-  const operations: readonly ModelOperation[] = role === "primary" ? ["generate"] : ["transcribe"];
+  const operations: readonly ModelOperation[] = [operation];
   const currentMemory = () => supervisor.state === "ready" ? measured : undefined;
   let closing: Promise<UnitClosed> | undefined;
   return {
@@ -166,7 +176,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",
-    // A job needs the GPU to itself: the worker's own execution lease. Whisper's decode is brief and holds its own lock.
+    // A job needs the GPU to itself: the worker's own execution lease. A companion worker (Whisper, an image model) has none and is not paused.
     pause: signal => role === "primary" ? supervisor.acquireExecutionLease(signal ?? new AbortController().signal) : Promise.resolve({ dispose() {} } as DisposableResource),
     close: () => closing ??= (async () => {
       stopEvents.abort();

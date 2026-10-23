@@ -5,8 +5,9 @@
 // never evicts it, and leases it for `generate`: a wire request (OpenAI, Anthropic or
 // Responses) sent to the host's listener, over its Unix socket when it has one. A serving
 // host whose residency can evict supplies `hold`, and each lease holds the model resident
-// through it until released. The composition may lend companion operations from its
-// existing host; consumers get the same service for both without taking over its lifecycle.
+// through it until released. The composition may lend its companion hosts (every operation
+// but `generate`: `transcribe`, `image`), which answer any other model by the operation it
+// declares; consumers get the same service for all of them without taking over their lifecycle.
 import type { AcquireOptions, AdapterOperation, ModelHost, ModelId, ModelLease, ModelOperation, ModelOperations, ModelStats, ResidentModel } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "@mlx-bun/app-services/portable";
 
@@ -28,7 +29,8 @@ export interface ServedHostLink {
   resident?(): readonly ResidentModel[];
   /** The served model's adapter operation: each call holds the model resident and runs under its execution lease, in the process that holds it. */
   readonly adapters?: AdapterOperation;
-  /** Operations and residency owned by the composition's companion host. The forwarding service borrows it. */
+  /** Operations and residency owned by the composition's companion hosts (`HostServices.companions`): every model but the served one, and every
+   * operation but `generate`, is theirs. The forwarding service borrows them. */
   readonly companions?: ModelHost;
 }
 
