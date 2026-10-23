@@ -765,6 +765,72 @@ test("an image request naming a local image model by exact id starts that model'
   expect(leftover).toEqual([]);
 }, 60_000);
 
+test("a respawned image worker launches with the staging decision its charge was made under, even after the library reports its snapshot changed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-restage-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  // Room for one image worker beside the chat model, so serving the second drains the first.
+  options.modelBudgetBytes = 1_200;
+  /** Writes an image snapshot whose components hold safetensors files of these sizes. */
+  const write = (image: ModelRecord, components: Record<string, number>) => {
+    mkdirSync(join(image.path, "tokenizer"), { recursive: true });
+    const index: Record<string, unknown> = { _class_name: "SomeImagePipeline", tokenizer: ["library", "Tokenizer"] };
+    for (const [name, bytes] of Object.entries(components)) {
+      index[name] = ["library", "Component"];
+      mkdirSync(join(image.path, name), { recursive: true });
+      writeFileSync(join(image.path, name, "model.safetensors"), new Uint8Array(bytes));
+    }
+    writeFileSync(join(image.path, "model_index.json"), JSON.stringify(index));
+  };
+  const picture = record(root, "org/picture", 1e9), poster = record(root, "org/poster", 1e9);
+  // Under the 1000 byte stage budget both snapshots' 1200 bytes of stages are released one by one: the picture is charged 600.
+  write(picture, { text_encoder: 600, transformer: 500, vae: 100 });
+  write(poster, { text_encoder: 700, transformer: 400, vae: 100 });
+  const tmp = privateTmp(root);
+  const launches = join(root, "launches.jsonl");
+  let publish!: (event: { type: "catalog.changed"; at: number }) => void;
+  const running = await inTmp(tmp, async () => startIsolatedServer(record(root, "org/model"), options, { entry, env: { ...workerEnv, FAKE_WORKER_RECORD: launches },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? [picture, poster] : [], stageBudgetBytes: 1_000,
+    // What a finished download or rescan publishes.
+    observe: bus => { publish = event => (bus as unknown as { publish(event: unknown): void }).publish(event); }, notice() {}, log() {}, error() {} }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const generate = async (model: string) => ((await (await fetch(new URL("/v1/images/generations", base), { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt: "a cat", model }) })).json()) as Record<string, unknown>);
+  const charged = async () => Object.fromEntries(((await (await fetch(new URL("/stats", base))).json()) as { models: { resident: { id: string; bytes: number }[] } }).models.resident.map(model => [model.id, model.bytes]));
+  const pictureLaunches = () => readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { model?: { repoId: string }; releaseStages?: boolean })
+    .filter(launch => launch.model?.repoId === "org/picture").map(launch => launch.releaseStages);
+  try {
+    expect(await generate("org/picture")).toMatchObject({ model: "org/picture" });
+    expect((await charged())["org/picture"]).toBe(600);
+    // The chat model is used after it, so the picture's worker is the one drained to make room.
+    await (await fetch(new URL("/v1/chat/completions", base), { method: "POST", body: JSON.stringify({ model: "org/model", messages: [{ role: "user", content: "hi" }] }) })).json();
+    // The snapshot shrinks on disk (900 bytes of stages, which would now fit the stage budget) and the library reports it.
+    write(picture, { text_encoder: 300, transformer: 500, vae: 100 });
+    publish({ type: "catalog.changed", at: Date.now() });
+    // Serving the poster drains the picture's worker, and the picture is then served by a new one.
+    expect(await generate("org/poster")).toMatchObject({ model: "org/poster" });
+    expect(Object.keys(await charged())).not.toContain("org/picture");
+    expect(await generate("org/picture")).toMatchObject({ model: "org/picture" });
+    // (`/stats` is the current model's: serve it again before reading the charge.)
+    await (await fetch(new URL("/v1/chat/completions", base), { method: "POST", body: JSON.stringify({ model: "org/model", messages: [{ role: "user", content: "hi" }] }) })).json();
+    // The host keeps a model's first charge for as long as it serves (chat models keep their first estimate the same way), so the
+    // new worker launches with the decision that charge was made under. Deciding again from the shrunk files would keep every
+    // stage open, 900 bytes against a 600 byte charge.
+    const charge = (await charged())["org/picture"]!;
+    expect([pictureLaunches(), charge]).toEqual([[true, true], 600]);
+    const files = [300, 500, 100];
+    expect(pictureLaunches().at(-1) ? Math.max(...files) : files.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThanOrEqual(charge);
+  } finally {
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
 test("what the real image worker holds for a snapshot never exceeds what the parent charged it, even when the stage budget falls between the bytes its stages load and its weight files", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-bound-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));

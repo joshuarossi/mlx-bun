@@ -180,6 +180,9 @@ Open:
 - [ ] Serving gaps: `/v1/models` does not list image models. In isolated serving an image
       run pauses no chat worker (in-process it pauses every resident model), and the Whisper
       worker, as on main, has no execution lease, so a GPU-exclusive job does not pause it.
+      An isolated image model keeps its first staging decision and charge while the server
+      runs, as a chat model keeps its first estimate, so a snapshot that grows on disk while
+      served is undercharged until its worker reports measured memory or the server restarts.
 - [ ] q8 has numerical error measurements only; no quality evaluation, and no 4-bit
       artifact has been built or measured.
 - [ ] Decision (Josh): `DenseLinear` never disposes its transposed weight view, so a
