@@ -283,7 +283,7 @@ this process loads no native module: it reports them on `/health` (`memory`) and
 `worker.memory` line in its `/admin/events` stream at connect, on each second it changed,
 and after every finished request (the line is consumed here, never republished on the
 bus). A worker counts as active plus cache bytes from its first report (never below the
-weights it reported (the checkpoint size for a transcription companion): MLX maps weights
+weights it reported, or for a companion what it was charged: MLX maps weights
 lazily, so a worker that has not run yet reads low),
 in place of the `/fit` estimate, which stands only before that report (a model that has not
 loaded yet needs its estimate) and again while the worker is down. Before it decides who
@@ -302,9 +302,22 @@ request and drained like a chat model when memory is short.
 Its worker preserves `--whisper-idle-unload` and `--whisper-resident`; a ready
 worker can release idle Whisper weights. `/v1/models` lists the configured companion
 before it starts, keeps its resolved id, and reports its weights' actual residency.
-The first downloaded text-to-image model is a worker of its own too (the `image` launch
-form, `startImageHost`), started on the first image request and drained the same way;
-like Whisper's, it holds no execution lease, and `/v1/models` does not list it.
+Whisper's worker is charged its checkpoint's size.
+Each downloaded text-to-image model is a worker of its own too (the `image` launch
+form, `startImageHost`), started on the first image request routed to it and drained the
+same way. It serves only that model: its catalog knows no other id, so a request naming
+another opens nothing there and answers `404` (`model_not_found`) naming the model it serves.
+It is charged what one run holds under its host's stage rule (`stageResidency` in
+`@mlx-bun/app-services`): this process picks the stage budget (half of physical memory,
+the in-process image host's default) and sends it in the launch record, and reads the stage
+bytes from the snapshot's files (each component its `model_index.json` declares, summed over
+its `*.safetensors` files; components without weights do not count). Components that together
+exceed the budget are charged at the largest one, otherwise at their sum. A snapshot whose
+components cannot be read is charged its whole size. A charge larger than the budget follows
+the residency rule for any oversized model. The files can hold tensors a stage never loads, so
+the worker's own decision can differ from this charge only when the budget falls between the
+two totals; its measured memory counts once it reports more than the charge. Like Whisper's,
+it holds no execution lease, and `/v1/models` does not list it.
 
 **Readiness.** The listener binds after the startup model's worker reports ready (up
 to 15 minutes for large models, as main), so startup succeeds or fails the way the
@@ -328,7 +341,9 @@ over worker units: a model-scoped POST is leased to the worker of the model its 
 names (the lease lasts until the response ends, so a stream is never cut by an
 eviction), anything else is the current model's, `GET /v1/models` and
 `/stats` add residency, `/v1/audio/*` and `/admin/transcription/*` go to Whisper's
-worker, and `/v1/images/*` to the image model's. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
+worker, and `/v1/images/*` to the worker of the local image model whose exact id the JSON
+body's `model` names (the chat rule), anything else to the default image model's (the first
+downloaded); the body reaches that worker unchanged. Audio requests are never read for a model. `server/proxy-routes.ts` is one route group mounted after the persistent groups:
 the hop-by-hop headers are stripped, bodies stream through unchanged, a client abort
 aborts the proxied request (`499`), and a worker that cannot take a request answers
 `502 { error: { type: "engine_unavailable", state } }`. `POST /v1/responses` goes
@@ -1346,8 +1361,9 @@ same execution lock and admission as Whisper: its pipeline opens on the first re
 run pauses every resident model, a load first makes room in the budget, and its bytes count
 against it. When a pipeline's stages together exceed the image host's byte budget (half of
 physical memory by default), each run releases every stage after its output, so one stage is
-resident at a time; otherwise the stages stay open while the pipeline does. Under isolation it
-is a companion worker of its own (see the isolated composition above).
+resident at a time; otherwise the stages stay open while the pipeline does. Under isolation
+each image model is a companion worker of its own that serves only that model, picked by the
+request's exact `model` id and charged what one run holds (see the isolated composition above).
 
 ## Metrics and performance
 
