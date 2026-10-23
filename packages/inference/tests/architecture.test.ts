@@ -72,8 +72,8 @@ const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/
 /** The family registry lists one record per family (`models/families.ts`); the role predicates of
  * `models/support.ts` (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only
  * ones consumers may use, and a per-family structural predicate must not reappear as an export. */
-const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal)\w*Config$/i;
-const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
+const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal|Moss)\w*Config$/i;
+const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal|moss)/i;
 
 // Modular application (ARCHITECTURE.md): `app-core` holds the contracts, `app-host`
 // (and later service implementations) the host side, `module-<id>` the features.
@@ -211,7 +211,7 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
         (typeName(node.expression.expression) || (ts.isCallExpression(node.expression.expression) &&
           ts.isPropertyAccessExpression(node.expression.expression.expression) && typeName(node.expression.expression.expression.expression))))
       add(node, "matching a model type");
-    if (ts.isStringLiteralLike(node) && /^MLX_BUN_(QWEN|GEMMA|MINICPM|LLAMA|GLM|DIFFUSION)/.test(node.text))
+    if (ts.isStringLiteralLike(node) && /^MLX_BUN_(QWEN|GEMMA|MINICPM|LLAMA|GLM|DIFFUSION|MOSS)/.test(node.text))
       add(node, `model-scoped flag ${node.text}`);
     if (ts.isImportSpecifier(node) && familyPredicate.test((node.propertyName ?? node.name).text))
       add(node, `family predicate ${(node.propertyName ?? node.name).text}`);
@@ -532,9 +532,9 @@ type RatchetTable = Partial<Record<RatchetRule, Record<string, number>>>;
  * model- or storage-shaped reaches it through a contract. */
 const schedulerCore = new Set(["scheduler", "coordinator", "engine", "session", "admission", "cancellation", "tasks", "plan"]
   .map(name => `execution/${name}.ts`));
-const modelEnvFlag = /^MLX_BUN_\w*(GEMMA|QWEN|MINICPM|LLAMA|GLM|DIFFUSION|UNIVERSAL)/;
+const modelEnvFlag = /^MLX_BUN_\w*(GEMMA|QWEN|MINICPM|LLAMA|GLM|DIFFUSION|UNIVERSAL|MOSS)/;
 const equality = [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken];
-const familyName = /^(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
+const familyName = /^(gemma|qwen|minicpm|llama|glm|diffusion|universal|moss)/i;
 const nameChecks = ["startsWith", "endsWith", "includes", "match", "test", "indexOf", "search", "exec"];
 
 /** `instanceof X` for every identifier X, and the calls that test a repo id or a display name for a family word. */
@@ -1235,6 +1235,64 @@ test("the ratchet fires for each seam rule, ignores the owners, and only ever ti
     const gone = checkRatchet([], { "cache-class": { "packages/inference/src/scoring/full.ts": 1 } });
     expect(gone.reminders).toEqual(["cache-class packages/inference/src/scoring/full.ts: 0 now, delete the allowlist entry (was 1)"]);
     expect(gone.failures).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("MOSS-Image is a family like the others: routing on its name, class, predicate or flag outside its directory is caught", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-moss-identity-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = { name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts", "./models": "./src/models/index.ts",
+    "./models/support": "./src/models/support.ts" }, dependencies: { "@mlx-bun/mlx": "workspace:*",
+    "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } };
+  const rules = async (file: string) => (await seamFindings(root)).filter(item => item.file === file).map(item => item.rule);
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify(inference));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/models/index.ts", 'export * from "./support";');
+    write("packages/inference/src/models/support.ts",
+      "export const isImageModelType = (type: string) => !!type; export const isMossImageConfig = (config: object) => !!config;");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    for (const name of ["inference", "mlx"]) symlinkSync(resolve(root, `packages/${name}`), resolve(root, `node_modules/@mlx-bun/${name}`));
+    // The paved road: the server asks the registry-level role predicate, the family's own directory names itself.
+    const server = "apps/mlx-bun/src/server/images.ts", scheduler = "packages/inference/src/execution/plan.ts";
+    write(server, 'import { isImageModelType } from "@mlx-bun/inference/models/support"; export const route = (t: string) => isImageModelType(t);');
+    write(scheduler, "export const plan = 1;");
+    write("packages/inference/src/models/moss-image/family.ts",
+      'export const own = (c: { modelType: string }, id: string) => [c.modelType === "MOSSImagePipeline", id.includes("MOSS-Image"), process.env.MLX_BUN_MOSS_STAGED];');
+    expect(await seamFindings(root)).toEqual([]);
+    expect(await inspectWorkspaces(root)).toEqual([]);
+
+    // Routing on the repo id or a display name, in the server and in scheduling.
+    const routing = {
+      substring: 'export const route = (id: string) => id.includes("MOSS-Image") ? "image" : "chat";',
+      regex: 'export const route = (id: string) => /moss-image/i.test(id);',
+      comparison: 'export const route = (kind: string) => kind === "moss-image";',
+      switch: 'export const route = (k: string) => { switch (k) { case "moss_image": return 1; default: return 0; } };',
+    };
+    for (const [label, code] of Object.entries(routing)) {
+      write(server, code);
+      expect(await rules(server), label).toEqual(["family-identity"]);
+      write(scheduler, code);
+      expect(await rules(scheduler), label).toEqual(["family-identity"]);
+    }
+    write(scheduler, "export const plan = 1;");
+    // A class named for the family, and a family-scoped env flag, outside models/.
+    write(scheduler, "export const staged = (m: object, Moss: new () => object) => m instanceof Moss;");
+    expect(await rules(scheduler)).toEqual(["model-class"]);
+    write(scheduler, "export const plan = 1;");
+    write(server, "export const staged = () => [process.env.MLX_BUN_MOSS_STAGED, process.env.MLX_BUN_IMAGE_STEPS];");
+    expect(await rules(server)).toEqual(["model-env-flag"]);
+    // The app boundary names the same patterns.
+    write(server, 'export const flag = (r: { flag(name: string): boolean }) => r.flag("MLX_BUN_MOSS_IMAGE_FAST");');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("model-scoped flag MLX_BUN_MOSS_IMAGE_FAST"))).toBe(true);
+    write(server, 'import { isMossImageConfig } from "@mlx-bun/inference/models/support"; export const route = isMossImageConfig;');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("family predicate isMossImageConfig"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
