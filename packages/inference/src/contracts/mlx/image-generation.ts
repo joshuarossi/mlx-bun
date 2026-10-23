@@ -18,7 +18,7 @@ export interface ImageDenoiser {
   readonly depth: number;
   /** `latents` `[1, C, h, w]` float32 and `context` (a conditioner's output) are
    * borrowed. Returns an owned, lazy float32 `[1, C, h, w]` velocity. Blocks in
-   * `skip` are not run. Throws a RangeError for a block outside `[0, depth)`. */
+   * `skip` (each in `[0, depth)`; `resolveImageRequest` checks a request's) are not run. */
   velocity(latents: MlxArray, timestep: number, context: MlxArray, skip?: ReadonlySet<number>): MlxArray;
   dispose(): void;
 }

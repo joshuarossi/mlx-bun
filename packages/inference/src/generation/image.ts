@@ -93,52 +93,75 @@ export function initialLatents(channels: number, pixelsPerLatent: number, width:
   return ops.randomNormal([1, channels, height / pixelsPerLatent, width / pixelsPerLatent], Dtype.float32, 0, 1, key);
 }
 
+/** One velocity prediction per denoising step. Chosen once per request
+ * (`guidanceFor`); returns an owned float32 `[1, C, h, w]`. */
+export interface GuidanceStep {
+  velocity(latents: MlxArray, timestep: number): MlxArray;
+}
+
+/** The conditional prediction alone (guidance scale 1). */
+export class ConditionalVelocity implements GuidanceStep {
+  constructor(readonly denoiser: ImageDenoiser, readonly positive: MlxArray) {}
+  velocity(latents: MlxArray, timestep: number): MlxArray {
+    return this.denoiser.velocity(latents, timestep, this.positive);
+  }
+}
+
+/** Classifier-free guidance, `uncond + scale * (cond - uncond)` in float32, the
+ * unconditional branch skipping `skip` (skip-layer guidance on the negative branch). */
+export class GuidedVelocity implements GuidanceStep {
+  readonly #skip: ReadonlySet<number>;
+  constructor(readonly denoiser: ImageDenoiser, readonly positive: MlxArray, readonly negative: MlxArray,
+    readonly scale: number, skip: readonly number[]) {
+    this.#skip = new Set(skip);
+  }
+  velocity(latents: MlxArray, timestep: number): MlxArray {
+    using conditional = this.denoiser.velocity(latents, timestep, this.positive);
+    using unconditional = this.denoiser.velocity(latents, timestep, this.negative, this.#skip);
+    using delta = ops.sub(conditional, unconditional);
+    using scaled = ops.mulScalar(delta, this.scale);
+    return ops.add(unconditional, scaled);
+  }
+}
+
+/** The step a request runs: guided when its conditioning holds a negative branch
+ * (guidance other than 1), else the conditional prediction alone. */
+export function guidanceFor(denoiser: ImageDenoiser, conditioning: ImageConditioning,
+  request: Pick<ResolvedImageRequest, "guidance" | "uncondSkipLayers">): GuidanceStep {
+  return conditioning.negative
+    ? new GuidedVelocity(denoiser, conditioning.positive, conditioning.negative, request.guidance, request.uncondSkipLayers)
+    : new ConditionalVelocity(denoiser, conditioning.positive);
+}
+
 export interface DenoiseOptions {
   readonly steps: number;
-  readonly guidance: number;
-  readonly uncondSkipLayers: readonly number[];
   readonly signal?: AbortSignal;
   /** Called after each completed step. */
   readonly onStep?: (done: number, total: number) => void;
 }
 
 /** Flow-matching Euler sampling from `latents` (borrowed) down the schedule's
- * noise levels: per step the conditional velocity, combined with the
- * unconditional one as `uncond + guidance * (cond - uncond)` when guidance is
- * not 1 (the unconditional branch skips `uncondSkipLayers`), then
- * `x + (sigma_next - sigma) * v`, all in float32. Returns owned, evaluated
- * latents; on cancellation or failure every intermediate is freed. */
+ * noise levels: per step `x + (sigma_next - sigma) * v` in float32, `v` from the
+ * request's guidance step. Returns owned, evaluated latents; on cancellation or
+ * failure every intermediate is freed. */
 export function denoiseLatents(
-  denoiser: ImageDenoiser, schedule: FlowMatchingSchedule, latents: MlxArray,
-  conditioning: Pick<ImageConditioning, "positive" | "negative">, options: DenoiseOptions,
+  step: GuidanceStep, schedule: FlowMatchingSchedule, latents: MlxArray, options: DenoiseOptions,
 ): { latents: MlxArray; steps: number } {
-  const guided = options.guidance !== 1;
-  if (guided && !conditioning.negative) throw new Error("guided denoising needs the negative conditioning");
   const sigmas = schedule.sigmas(options.steps);
   const total = sigmas.length - 1;
-  const skip = new Set(options.uncondSkipLayers);
   let x = ops.copyOf(latents);
   try {
-    for (let step = 0; step < total; step++) {
+    for (let i = 0; i < total; i++) {
       checkAborted(options.signal);
-      const sigma = sigmas[step]!, next = sigmas[step + 1]!;
-      const timestep = schedule.timestep(sigma);
-      let prediction = denoiser.velocity(x, timestep, conditioning.positive);
-      if (guided) {
-        using uncond = denoiser.velocity(x, timestep, conditioning.negative!, skip);
-        using delta = ops.sub(prediction, uncond);
-        prediction.dispose();
-        using scaled = ops.mulScalar(delta, options.guidance);
-        prediction = ops.add(uncond, scaled);
-      }
-      using velocity = prediction;
+      const sigma = sigmas[i]!, next = sigmas[i + 1]!;
+      using velocity = step.velocity(x, schedule.timestep(sigma));
       using dt = MlxArray.fromFloat32(new Float32Array([next - sigma]), []);
       using change = ops.mul(dt, velocity);
       const updated = ops.add(x, change);
       updated.eval();
       x.dispose();
       x = updated;
-      options.onStep?.(step + 1, total);
+      options.onStep?.(i + 1, total);
     }
     return { latents: x, steps: total };
   } catch (error) {
@@ -151,8 +174,7 @@ export function denoiseLatents(
  * `round(clip(image / 2 + 0.5, 0, 1) * 255)`. */
 export function decodePixels(decoder: ImageLatentDecoder, latents: MlxArray): { pixels: Uint8Array; width: number; height: number } {
   using image = decoder.decode(latents);
-  const [, height, width, channels] = image.shape as [number, number, number, number];
-  if (channels !== 3) throw new Error(`a latent decoder must return RGB, got ${channels} channels`);
+  const height = image.shape[1]!, width = image.shape[2]!;
   using half = ops.mulScalar(image, 0.5);
   using offset = ops.scalarLike(0.5, half);
   using shifted = ops.add(half, offset);
@@ -207,11 +229,11 @@ export async function generateImage(
     report({ stage: "denoiser", step: 0 });
     started = performance.now();
     opened.add("denoiser");
-    const denoiser = await pipeline.denoiser();
+    const step = guidanceFor(await pipeline.denoiser(), conditioning, resolved);
     using noise = options.latents ? ops.copyOf(options.latents)
       : initialLatents(pipeline.latentChannels, pipeline.pixelsPerLatent, resolved.width, resolved.height, resolved.seed);
-    const denoised = denoiseLatents(denoiser, pipeline.schedule, noise, conditioning, {
-      steps: resolved.steps, guidance: resolved.guidance, uncondSkipLayers: resolved.uncondSkipLayers, signal: options.signal,
+    const denoised = denoiseLatents(step, pipeline.schedule, noise, {
+      steps: resolved.steps, signal: options.signal,
       onStep: (step, steps) => report({ stage: "denoiser", step, steps }),
     });
     latents = denoised.latents;
