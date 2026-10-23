@@ -171,8 +171,9 @@ Open:
       attention, SITU and residual outputs); trajectory steps 5 to 7 beyond the original
       bounds (next: each step's velocity on identical reference trajectory states, to
       separate local error from accumulated drift); and the conditioner's gated norm, 12
-      of 3,592,192 elements apart, 2 bf16 ulps at length 128, from the variance's float32
-      summation order. Exit: each passes its bound, or Josh records a decision.
+      of 3,592,192 elements apart, 2 bf16 ulps at length 128, cause not established
+      (candidates: the variance's float32 summation order; float32 exp, square root or
+      division results). Exit: each passes its bound, or Josh records a decision.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.

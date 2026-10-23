@@ -20,7 +20,9 @@ function inFloat(x: MlxArray, fn: (wide: MlxArray) => MlxArray): MlxArray {
   return out.astype(x.dtype);
 }
 
-/** torch's CPU SiLU on float32 values (borrowed), in the form its kernel computes: `x / (1 + exp(-x))`. Returns an owned array. */
+/** SiLU on float32 values (borrowed) as `x / (1 + exp(-x))`: against the reference's captured outputs this form mismatched
+ * fewer elements than `x * sigmoid(x)`, so it is preferred by that evidence; that torch computes it this way is inferred,
+ * not read. Returns an owned array. */
 function torchSilu(x: MlxArray): MlxArray {
   using negative = ops.neg(x);
   using exponential = ops.exp(negative);
@@ -36,10 +38,10 @@ function stored(wide: MlxArray, dtype: Dtype): MlxArray {
   return rounded.astype(Dtype.float32);
 }
 
-/** transformers' `l2norm` (`x * rsqrt((x * x).sum(-1) + 1e-6)`) on a bf16 tensor as the pinned torch runs it: each
- * operation computed in float32 and stored in the input dtype (the sum accumulated in float32, stored once), with
- * `rsqrt` a square root stored in bf16 and then its reciprocal stored in bf16. Measured against the reference's own
- * l2norm outputs: that sequence matches every element, a once-rounded rsqrt about a fifth of them. */
+/** transformers' `l2norm` (`x * rsqrt((x * x).sum(-1) + 1e-6)`) on a bf16 tensor: each operation computed in float32 and
+ * stored in the input dtype (the sum accumulated in float32, stored once), with `rsqrt` a square root stored in bf16 and
+ * then its reciprocal stored in bf16. That sequence reproduces every element of the pinned reference's captured l2norm
+ * outputs (a once-rounded rsqrt mismatched about a fifth); torch's internal steps are inferred from that match. */
 export class MossTextL2Norm {
   /** `x` `[..., D]` (borrowed) to an owned normalization in `x`'s dtype. */
   forward(x: MlxArray): MlxArray {
@@ -79,11 +81,10 @@ export class MossTextRmsNorm {
   dispose(): void { this.#scale.dispose(); }
 }
 
-/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight, as the pinned torch runs it: normalize in
- * float32 (rsqrt as a square root, then its reciprocal) and store in the input dtype, multiply by the weight (bf16 by bf16,
- * stored again), then multiply by `silu(gate)` in float32 (`x / (1 + exp(-x))`) and store once. The variance's float32 sum
- * follows MLX's reduction order, not torch's, so a value at a bf16 rounding boundary can land one step apart; the
- * reference comparison counts those. */
+/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight: normalize in float32 (rsqrt as a square root,
+ * then its reciprocal) and store in the input dtype, multiply by the weight (bf16 by bf16, stored again), then multiply by
+ * `silu(gate)` in float32 and store once. Not bit-identical to the reference: its comparison counts the elements that
+ * differ, and their cause is not established. */
 export class MossTextGatedNorm {
   constructor(readonly weight: MlxArray, readonly eps: number) {}
 
@@ -95,7 +96,7 @@ export class MossTextGatedNorm {
     using variance = ops.meanAxis(squares, -1, true);
     using eps = ops.scalarLike(this.eps, variance);
     using shifted = ops.add(variance, eps);
-    // torch's float32 rsqrt: a square root, then its reciprocal.
+    // rsqrt as a square root, then its reciprocal: the form host replays against the reference favoured.
     using root = ops.sqrt(shifted);
     using one = ops.scalarLike(1, root);
     using inverse = ops.div(one, root);

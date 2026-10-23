@@ -381,12 +381,14 @@ attention within 1e-2 with every token's cosine at least 0.9999. The captures ho
 seeded bf16 inputs at lengths 1, 63, 64, 65, 127, 128, 129 and 300 (around the
 64-token chunk) and layers 0 and 30 on a 23-token and a 203-token prompt. The
 first run (`dc3e85ab`) failed the l2norm at every length (about a fifth of the
-elements, up to 3 ulps); host replays against the captures showed torch computes
-a bf16 `rsqrt` as a square root and then a reciprocal, each stored in bf16, and
-that sequence matches every captured element. The second run (`615f8167`) missed
-the gated norm on 7 elements; replays showed torch's SiLU is `x / (1 + exp(-x))`
-and its float32 `rsqrt` a square root and then a reciprocal. Both are in the
-layers now; the bounds did not change.
+elements, up to 3 ulps). Host replays against the captures found that a bf16
+`rsqrt` computed as a square root and then a reciprocal, each stored in bf16,
+reproduces every captured element (that torch computes it so is inferred from the
+match). The second run (`615f8167`) missed the gated norm on 7 elements; replays
+with SiLU as `x / (1 + exp(-x))` and float32 `rsqrt` as a square root and then a
+reciprocal mismatched fewer elements than the alternatives tried, so the layers
+use those forms, preferred by that evidence and not established as torch's. The
+bounds did not change.
 
 Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
 `0ba290b6`, Base `85975793` and SFT `f972bd4b`, inputs verified:
@@ -410,9 +412,11 @@ Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
 
 The conditioner's previous binding (the shared delta and gated-norm kernels)
 measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer
-captures. The gated norm's remaining elements follow the variance's float32
-summation order: MLX's GPU reduction does not follow torch's, and no simple order
-tried on the host reproduced it exactly. Base's trajectory exceeds the original
+captures. The gated norm's residual is measured (12 elements, at most 2 bf16
+ulps); its cause is not established. Candidates are the variance's float32
+summation order (MLX's GPU reduction against torch's CPU one) and float32 exp,
+square root or division results an ulp apart; host replays of 15 summation
+orders left 6 to 26 mismatches, which neither confirms nor rules out either. Base's trajectory exceeds the original
 bound from step 5 by up to 1.61 times the reference's own cross-backend spread.
 Acceptance stays open until the three failures are resolved or decided. Not
 covered: other prompts, sizes and step counts, the decoded 8-step images against
