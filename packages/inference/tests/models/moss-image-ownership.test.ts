@@ -2,9 +2,10 @@
 // layers. These checks hold the parts of that a parser can see; each says what
 // it checks and no more, and review reads the source beside them:
 // - the family's files import no other family's modules and no shared `layers/`;
-// - it binds only the kernels it added, and each (`kernels/situ.ts`,
-//   `kernels/gated-delta-float32.ts`) is imported by one file and called only
-//   inside one layer class (`MossSitu`, `MossTextDeltaRecurrence`);
+// - it binds only the kernels it added, and each (`kernels/row-projection.ts`,
+//   `kernels/situ.ts`, `kernels/gated-delta-float32.ts`) is imported by one file
+//   and called only inside one layer class (`MossDenseRowLinear`, `MossSitu`,
+//   `MossTextDeltaRecurrence`);
 // - its graph files (DiT, conditioner, VAE decoder) import neither MLX ops nor
 //   kernels (an import check, not a proof that no numeric code is there);
 // - no method body of its layers and graphs branches on a field fixed at
@@ -79,6 +80,7 @@ test("the family imports no other family's modules and no shared layer implement
 /** The kernels the family added, each one file bound by exactly one of its layers (ARCHITECTURE: "Add a kernel as one file in
  * `kernels/` bound by exactly one layer"). */
 const OWNED_KERNELS = [
+  { kernel: "kernels/row-projection", file: "models/moss-image/layers.ts", call: "rowProjection", layer: "MossDenseRowLinear" },
   { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situFor", layer: "MossSitu" },
   { kernel: "kernels/gated-delta-float32", file: "models/moss-image/text-layers.ts", call: "gatedDeltaFloat32", layer: "MossTextDeltaRecurrence" },
 ] as const;

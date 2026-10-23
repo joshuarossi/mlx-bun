@@ -1,6 +1,6 @@
 // MOSS-Image's own layers against host-double references written from the
 // formulas in this file, never from the layers' own operations: the SITU kernel,
-// the four projection forms and the dense forms' ownership of their transposed
+// the projection forms (and the one-row form's single rounding) and the dense forms' ownership of their transposed
 // view, the four-axis RoPE (frequencies, coordinates and rotation), the
 // timestep sinusoid, the conditioner's (1 + gamma) float32 norm and its partial
 // rotary embedding, its bf16 l2norm and gated norm (host replays of torch's
@@ -14,7 +14,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { situFor } from "../../src/kernels/situ";
 import { timestepSinusoid } from "../../src/models/moss-image/blocks";
 import { parseQuantization } from "../../src/artifacts/config";
-import { MossDenseBiasedLinear, MossDenseLinear, MossQuantizedBiasedLinear, MossQuantizedLinear, storedAffineSpec } from "../../src/models/moss-image/layers";
+import { MossDenseBiasedLinear, MossDenseLinear, MossDenseRowLinear, MossQuantizedBiasedLinear, MossQuantizedLinear, bindMossRowLinear, storedAffineSpec } from "../../src/models/moss-image/layers";
 import { MossRope, mossRopeBands, mossRopeCoordinates } from "../../src/models/moss-image/rope";
 import { MossTextGatedNorm, MossTextL2Norm, MossTextRmsNorm, MossTextRope } from "../../src/models/moss-image/text-layers";
 import { gatedDeltaFloat32 } from "../../src/kernels/gated-delta-float32";
@@ -79,6 +79,57 @@ test("the projection forms compute x @ w.T (+ bias), dense and affine-quantized"
     const quantizedBiased = new MossQuantizedBiasedLinear(q.packed, q.scales, q.biases!, spec, b);
     { using y = quantized.forward(x); close(y.toFloat32(), reference(deq, null), 1e-4); }
     { using y = quantizedBiased.forward(x); close(y.toFloat32(), reference(deq, bs), 1e-4); }
+  } finally { q.packed.dispose(); q.scales.dispose(); q.biases?.dispose(); }
+});
+
+test("the one-row projection adds the bias to the float32 product and rounds once to bf16, as the reference's single-row Linear does", () => {
+  const inner = 3072, out = 3072;
+  let seed = 0x2545f491;
+  const uniform = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed + 0.5) / 2 ** 32; };
+  const xs = Float32Array.from({ length: inner }, () => bf16(6 * (uniform() - 0.5)));
+  const ws = Float32Array.from({ length: out * inner }, () => bf16(0.1 * (uniform() - 0.5)));
+  const bs = Float32Array.from({ length: out }, () => bf16(2 * (uniform() - 0.5)));
+  using x32 = MlxArray.fromFloat32(xs, [1, inner]), w32 = MlxArray.fromFloat32(ws, [out, inner]), b32 = MlxArray.fromFloat32(bs, [out]);
+  using x = x32.astype(Dtype.bfloat16), w = w32.astype(Dtype.bfloat16), b = b32.astype(Dtype.bfloat16);
+  const layer = new MossDenseRowLinear(w, b);
+  using y = layer.forward(x);
+  layer.dispose();
+  expect(y.dtype).toBe(Dtype.bfloat16);
+  using wide = y.astype(Dtype.float32);
+  const actual = wide.toFloat32();
+  // Bounds fixed before comparing: the exact product plus the bias, rounded once. The layer's float32 accumulation
+  // order may move a result across a rounding boundary, so at most 1 in 1000 elements may differ, each by one bf16
+  // spacing; rounding the product before adding the bias must exceed that. That is what MLX's one-row addmm, the
+  // layer this replaces, does: it differed on 942 of these 3072 elements, and on 25% to 52% of the captured ones.
+  const spacing = (v: number) => 2 ** (Math.floor(Math.log2(Math.abs(v))) - 7);
+  let differing = 0, roundedTwice = 0;
+  for (let o = 0; o < out; o++) {
+    let dot = 0;
+    for (let k = 0; k < inner; k++) dot += xs[k]! * ws[o * inner + k]!;
+    const once = bf16(dot + bs[o]!);
+    if (bf16(bf16(dot) + bs[o]!) !== once) roundedTwice++;
+    if (actual[o] === once) continue;
+    differing++;
+    expect(Math.abs(actual[o]! - once)).toBeLessThanOrEqual(spacing(once));
+  }
+  expect(differing).toBeLessThanOrEqual(out / 1000);
+  expect(roundedTwice).toBeGreaterThan(out / 1000);
+});
+
+test("a one-row projection binds the rounding-once form only when it is dense and biased, and refuses a width its kernel cannot take", () => {
+  using w = MlxArray.fromFloat32(ramp(128 * 8, 0.3), [8, 128]), b = MlxArray.fromFloat32(ramp(8, 0.6), [8]);
+  using narrow = MlxArray.fromFloat32(ramp(64 * 8, 0.3), [8, 64]);
+  const q = ops.quantize(w, 64, 8);
+  try {
+    const tensors: Record<string, MlxArray> = { "d.weight": w, "d.bias": b, "n.weight": w, "q.weight": q.packed, "q.scales": q.scales, "q.biases": q.biases!, "q.bias": b, "r.weight": narrow, "r.bias": b };
+    const weights = { has: (name: string) => name in tensors, tensor: (name: string) => tensors[name]! } as unknown as Parameters<typeof bindMossRowLinear>[0];
+    const config = { quantization: parseQuantization({ bits: 8, group_size: 64 }) } as unknown as Parameters<typeof bindMossRowLinear>[1];
+    const bound = (["d", "n", "q"] as const).map(path => bindMossRowLinear(weights, config, path));
+    expect(bound[0]).toBeInstanceOf(MossDenseRowLinear);
+    expect(bound[1]).toBeInstanceOf(MossDenseLinear);
+    expect(bound[2]).toBeInstanceOf(MossQuantizedBiasedLinear);
+    for (const layer of bound) layer.dispose();
+    expect(() => bindMossRowLinear(weights, config, "r")).toThrow("K a multiple of 128");
   } finally { q.packed.dispose(); q.scales.dispose(); q.biases?.dispose(); }
 });
 
