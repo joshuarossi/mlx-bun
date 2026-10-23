@@ -214,6 +214,21 @@ describe("Registry diffusers pipelines", () => {
     } finally { rmSync(hub, { recursive: true, force: true }); }
   });
 
+  test("a quantized pipeline reports the quantization its model components declare, mixed when they differ", async () => {
+    const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));
+    try {
+      const q8 = JSON.stringify({ quantization: { bits: 8, group_size: 64, mode: "affine" } });
+      pipeline(hub, "q8", index, { ...components, transformer: { ...components.transformer, "config.json": q8 }, text_encoder: { ...components.text_encoder, "config.json": q8 } });
+      pipeline(hub, "mixed", index, { ...components, transformer: { ...components.transformer, "config.json": q8 },
+        text_encoder: { ...components.text_encoder, "config.json": JSON.stringify({ quantization: { bits: 4, group_size: 64 } }) } });
+      const reg = new Registry(":memory:");
+      expect(await reg.scan(hub)).toBe(2);
+      expect(reg.resolve("test/q8")).toMatchObject({ quantBits: 8, quantGroupSize: 64, quantMode: "affine" });
+      expect(reg.resolve("test/mixed")).toMatchObject({ quantBits: null, quantGroupSize: null, quantMode: "mixed" });
+      reg.close();
+    } finally { rmSync(hub, { recursive: true, force: true }); }
+  });
+
   test("a snapshot with a root config.json is read as before, even beside a model_index.json", async () => {
     const hub = makeHub();
     try {

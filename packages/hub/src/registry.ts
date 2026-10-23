@@ -587,7 +587,9 @@ const PIPELINE_INDEX = "model_index.json";
  *  subdirectory; `[null, null]` declares an absent optional component. A
  *  component whose directory holds a config.json is a model and must hold
  *  safetensors weights; the others (scheduler, tokenizer) need none. The record's
- *  size is every component's safetensors bytes. A malformed index, a declared
+ *  size is every component's safetensors bytes; its quantization is the one its
+ *  model components' configs declare (`mixed` when they declare different ones,
+ *  none when no component is quantized). A malformed index, a declared
  *  component that is missing, a model component without weights, or a snapshot
  *  with no weights at all is not indexed. */
 async function scanPipelineSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
@@ -602,6 +604,7 @@ async function scanPipelineSnapshot(dir: string, repoId: string): Promise<ModelR
   if (typeof className !== "string" || !className) return null;
   let sizeBytes = 0;
   let hasWeights = false;
+  const quantizations: { bits: number | null; groupSize: number | null; mode: string }[] = [];
   for (const [name, entry] of Object.entries(index as Record<string, unknown>)) {
     if (name.startsWith("_")) continue;
     if (!Array.isArray(entry) || entry.length !== 2) return null;
@@ -615,12 +618,20 @@ async function scanPipelineSnapshot(dir: string, repoId: string): Promise<ModelR
     }
     const weights = files.filter((f) => f.endsWith(".safetensors"));
     if (files.includes("config.json") && weights.length === 0) return null;
+    if (files.includes("config.json")) {
+      let config: Record<string, unknown>;
+      try { config = await Bun.file(join(dir, name, "config.json")).json(); } catch { return null; }
+      const quant = (config.quantization ?? config.quantization_config) as { bits?: number; group_size?: number; mode?: string } | undefined;
+      if (quant) quantizations.push({ bits: quant.bits ?? null, groupSize: quant.group_size ?? null, mode: quant.mode ?? "affine" });
+    }
     for (const f of weights) {
       hasWeights = true;
       try { sizeBytes += statSync(join(dir, name, f)).size; } catch {}
     }
   }
   if (!hasWeights) return null;
+  const first = quantizations[0];
+  const agreed = first && quantizations.every(q => q.bits === first.bits && q.groupSize === first.groupSize && q.mode === first.mode);
   return {
     path: dir,
     repoId,
@@ -629,9 +640,9 @@ async function scanPipelineSnapshot(dir: string, repoId: string): Promise<ModelR
     sidecarBytes: 0,
     expertsBytes: 0,
     sizeBytes,
-    quantBits: null,
-    quantGroupSize: null,
-    quantMode: null,
+    quantBits: agreed ? first.bits : null,
+    quantGroupSize: agreed ? first.groupSize : null,
+    quantMode: first ? (agreed ? first.mode : "mixed") : null,
     hasVisionSidecar: false,
     visionConfigType: null,
     hasAudioConfig: false,
