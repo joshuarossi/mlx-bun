@@ -36,8 +36,8 @@ export interface WorkerUnitContext {
   startup: ModelRecord;
   /** A private directory (0700) the host removes; one socket per worker. */
   socketDir: string;
-  /** The stage budget an image worker's host applies (`@mlx-bun/app-services` `stageResidency`), the same one the host charges it by. */
-  stageBudgetBytes: number;
+  /** Whether an image worker for this record releases each stage per run: the decision the host charged it by, which its image host applies as made. */
+  imageStaging(record: ModelRecord): Promise<boolean>;
   publish(event: AppEvent): void;
   entry?: string;
   restarts?: Partial<WorkerRestartBudget>;
@@ -69,9 +69,9 @@ function transcriptionLaunch(context: WorkerUnitContext, record: ModelRecord, so
 }
 
 /** A text-to-image model runs the image companion composition on its socket (`serve-host.ts` `startImageHost`), serving that model only,
- * with the stage budget its charge assumed. */
-function imageLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
-  return { kind: "image" as const, version: WORKER_PROTOCOL_VERSION, socketPath, model: record, stageBudgetBytes: context.stageBudgetBytes };
+ * under the staging decision its charge assumed. */
+async function imageLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath: string) {
+  return { kind: "image" as const, version: WORKER_PROTOCOL_VERSION, socketPath, model: record, releaseStages: await context.imageStaging(record) };
 }
 
 /** The operation a worker serves, and how it is launched for it. */
@@ -124,7 +124,7 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
   const budget = context.graceMs ?? shutdownTimeoutMs();
   const supervisor = superviseWorker({
     entry: context.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)), socketPath,
-    launch: LAUNCHES[operation](context, record, socketPath),
+    launch: await LAUNCHES[operation](context, record, socketPath),
     ...(context.restarts ? { restarts: context.restarts } : {}),
     ...(context.env ? { env: context.env } : {}),
     ...(context.readyTimeoutMs !== undefined ? { readyTimeoutMs: context.readyTimeoutMs } : {}),

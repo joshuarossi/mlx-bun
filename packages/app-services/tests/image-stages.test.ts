@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_STAGE_BUDGET_FRACTION, defaultStageBudgetBytes, pipelineComponentBytes, stageResidency } from "../src";
+import { DEFAULT_STAGE_BUDGET_FRACTION, defaultStageBudgetBytes, fixedStageRule, pipelineComponentBytes, stageBudgetRule, stageResidency } from "../src";
 import * as portable from "../src/portable";
 
 /** A pipeline snapshot whose components hold `*.safetensors` files of the given sizes (an empty list: a weightless component). */
@@ -45,8 +45,13 @@ test("one run holds every stage while they fit the budget together, and only the
     // Over the budget, each run releases every stage after its output: it holds the largest.
     expect(stageResidency(stages, 899)).toEqual({ releaseStages: true, bytes: 500 });
     expect(stageResidency([], 1)).toEqual({ releaseStages: false, bytes: 0 });
+    // The rules a composer gives an image host: the budget rule decides by the stage bytes it is shown, a fixed rule applies a
+    // decision made elsewhere and reports what the stages hold under it.
+    expect([stageBudgetRule(899)(stages), stageBudgetRule(900)(stages)]).toEqual([stageResidency(stages, 899), stageResidency(stages, 900)]);
+    expect([fixedStageRule(true)(stages), fixedStageRule(false)(stages)]).toEqual([{ releaseStages: true, bytes: 500 }, { releaseStages: false, bytes: 900 }]);
   } finally { remove(); }
   // The default budget is the share of physical memory the image host uses, and the isolated parent reaches the rule without a model host.
   expect(defaultStageBudgetBytes()).toBe(Math.floor((await import("node:os")).totalmem() * DEFAULT_STAGE_BUDGET_FRACTION));
-  expect([portable.defaultStageBudgetBytes, portable.pipelineComponentBytes, portable.stageResidency]).toEqual([defaultStageBudgetBytes, pipelineComponentBytes, stageResidency]);
+  expect([portable.defaultStageBudgetBytes, portable.pipelineComponentBytes, portable.stageResidency, portable.stageBudgetRule, portable.fixedStageRule])
+    .toEqual([defaultStageBudgetBytes, pipelineComponentBytes, stageResidency, stageBudgetRule, fixedStageRule]);
 });

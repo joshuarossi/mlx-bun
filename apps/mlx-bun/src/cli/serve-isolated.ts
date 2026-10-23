@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppModule, ModelOperation } from "@mlx-bun/app-core";
-import { defaultStageBudgetBytes, pipelineComponentBytes, stageResidency } from "@mlx-bun/app-services/portable";
+import { defaultStageBudgetBytes, pipelineComponentBytes, stageResidency, type StageResidency } from "@mlx-bun/app-services/portable";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerRestartBudget } from "../jobs/worker-supervisor";
 import { createWorkerMemoryClient } from "../server/memory-completion-client";
@@ -54,7 +54,7 @@ export interface IsolatedServeHooks {
   records?(): readonly ModelRecord[];
   /** The checkpoints that may answer a companion operation (Whisper for `transcribe`, an image model for `image`), instead of the registry's. */
   companions?(operation: CompanionOperation): readonly ModelRecord[];
-  /** The image hosts' stage budget, instead of the default share of physical memory. */
+  /** The stage budget image workers' staging is decided under, instead of the default share of physical memory. */
   stageBudgetBytes?: number;
 }
 
@@ -134,9 +134,24 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   try {
     const { thisMachine } = await import("@mlx-bun/inference/execution/fit");
     const machine = thisMachine();
-    // One stage budget for every image worker: its host's staging decision and this host's charge for it.
+    // An image worker's staging is decided here, once per snapshot, from its component weight files (this process reads no
+    // weights) under one stage budget: the worker is charged what one run holds under that decision, and the decision travels
+    // in its launch record for its image host to apply as made. The charge bounds what the worker holds as long as each stage's
+    // weight bytes are at most its component's weight files (a stage loads some of its component's tensors): a staged run then
+    // holds at most the largest component file, an unstaged one at most their sum. A snapshot whose components cannot be read
+    // is charged its whole size, with its stages kept open.
     const stageBudgetBytes = hooks.stageBudgetBytes ?? defaultStageBudgetBytes();
-    const context: WorkerUnitContext = { options, startup: model, socketDir, stageBudgetBytes, publish: event => state.events.publish(event), notice,
+    const imageStagings = new Map<string, Promise<StageResidency>>();
+    const imageStaging = (record: ModelRecord) => {
+      let decided = imageStagings.get(record.repoId);
+      if (!decided) imageStagings.set(record.repoId, decided = (async () => {
+        const components = Object.values(await pipelineComponentBytes(record.path).catch(() => ({})));
+        return components.length ? stageResidency(components, stageBudgetBytes) : { releaseStages: false, bytes: record.sizeBytes };
+      })());
+      return decided;
+    };
+    const context: WorkerUnitContext = { options, startup: model, socketDir, imageStaging: async record => (await imageStaging(record)).releaseStages,
+      publish: event => state.events.publish(event), notice,
       ...(hooks.entry ? { entry: hooks.entry } : {}), ...(hooks.restarts ? { restarts: hooks.restarts } : {}), ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}), ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}),
       ...(hooks.log ? { log: hooks.log } : {}), ...(hooks.error ? { error: hooks.error } : {}) };
@@ -159,21 +174,15 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       return (await companionList("transcribe"))[0];
     })();
     // The image companions: every downloaded text-to-image model by its exact id, each in a worker of its own that serves it
-    // alone; the first is the default, looked up once like Whisper. A worker is charged what one run holds under the stage rule
-    // its host applies, from the snapshot's component files (this process reads no weights); a snapshot whose components
-    // cannot be read is charged its whole size.
+    // alone, charged under its staging decision (above); the first is the default, looked up once like Whisper.
     const imageModels = createRecordIndex(() => companionList("image"));
     let image: Promise<ModelRecord | undefined> | undefined;
     const imageRecord = () => image ??= (async () => (await companionList("image"))[0])();
-    const imageRunBytes = async (record: ModelRecord) => {
-      const components = Object.values(await pipelineComponentBytes(record.path).catch(() => ({})));
-      return components.length ? stageResidency(components, stageBudgetBytes).bytes : record.sizeBytes;
-    };
     /** How each companion operation is served: Whisper's one checkpoint, and every image model by exact id. */
     const companions: Readonly<Record<CompanionOperation, CompanionServing>> = {
       transcribe: { default: whisperRecord, find: async id => { const record = await whisperRecord(); return record?.repoId === id ? record : undefined; },
         bytes: async record => record.sizeBytes, named: false },
-      image: { default: imageRecord, find: id => imageModels.find(id), bytes: imageRunBytes, named: true },
+      image: { default: imageRecord, find: id => imageModels.find(id), bytes: async record => (await imageStaging(record)).bytes, named: true },
     };
     const companionOperations = Object.keys(companions) as CompanionOperation[];
     const source: ResidencySource<WorkerUnit> = {

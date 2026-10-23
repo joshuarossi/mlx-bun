@@ -6,20 +6,20 @@
 // this host reports its bytes as resident and, given `admit`, asks that host to
 // make room before the first stage of an opened pipeline can load.
 //
-// The host decides stage residency once per opened pipeline: when the stages'
-// weights together exceed `stageBudgetBytes`, every run releases each stage once
-// its output is evaluated (one stage resident at a time); otherwise the stages
-// stay open between runs until the pipeline is released. Runs reach a pipeline
-// one at a time, and every run goes through the host's `exclusive` wrapper, so
-// a host that also generates never overlaps it on the GPU. The rule and its
-// default budget are image-stages.ts's, which the isolated parent charges by.
+// The host settles stage residency once per opened pipeline by the stage rule
+// its composer gives it (image-stages.ts; default the budget rule over a share
+// of physical memory): either every run releases each stage once its output is
+// evaluated (one stage resident at a time), or the stages stay open between
+// runs until the pipeline is released. Runs reach a pipeline one at a time, and
+// every run goes through the host's `exclusive` wrapper, so a host that also
+// generates never overlaps it on the GPU.
 import type {
   AcquireOptions, CatalogEntry, EventBus, ImageOperation, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats, ModelUnloadReason,
   ResidencyPlan, ResidencyPolicy, ResidentModel,
 } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "./failure";
 import { nativeImageBackend, type ImageBackend, type LoadedImagePipeline } from "./image-backend";
-import { defaultStageBudgetBytes, stageResidency } from "./image-stages";
+import { defaultStageBudgetBytes, stageBudgetRule, type StageRule } from "./image-stages";
 import type { Exclusive } from "./whisper-model-host";
 
 export interface ImageModelHostOptions {
@@ -31,9 +31,9 @@ export interface ImageModelHostOptions {
   idleUnloadSec?: number;
   /** Start with the configured model pinned. */
   resident?: boolean;
-  /** Bytes an opened pipeline's stages may hold together; above it each run releases every stage after its output.
-   * Default `DEFAULT_STAGE_BUDGET_FRACTION` of physical memory. */
-  stageBudgetBytes?: number;
+  /** Decides, from an opened pipeline's stage bytes, whether each run releases every stage after its output and what a run holds.
+   * Default the budget rule over `DEFAULT_STAGE_BUDGET_FRACTION` of physical memory. */
+  stages?: StageRule;
   /** Wraps every run (the full server passes the generation gateway's exclusive lock). */
   exclusive?: Exclusive;
   /** Called with the bytes a run will hold at once before an opened pipeline loads a stage, so a host that also generates can make room first. */
@@ -129,7 +129,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
   const catalog = options.catalog, backend = options.backend ?? nativeImageBackend, exclusive: Exclusive = options.exclusive ?? (fn => fn());
   const log = options.log ?? (line => console.log(line)), timers = options.timers ?? realTimers, now = options.now ?? (() => performance.now());
   const idleUnloadSec = Math.max(0, options.idleUnloadSec ?? 0);
-  const stageBudgetBytes = options.stageBudgetBytes ?? defaultStageBudgetBytes();
+  const stages = options.stages ?? stageBudgetRule(defaultStageBudgetBytes());
   const slots = new Map<ModelId, Slot>();
   /** What the catalog listed when the default was resolved, so leasing it does not look it up again. */
   const listed = new Map<ModelId, CatalogEntry>();
@@ -194,7 +194,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
         try {
           const pipeline = await backend.load(slot.directory);
           try {
-            opened = { pipeline, ...stageResidency(Object.values(pipeline.stageBytes), stageBudgetBytes), tail: Promise.resolve() };
+            opened = { pipeline, ...stages(Object.values(pipeline.stageBytes)), tail: Promise.resolve() };
             // A host that also generates makes room first: it may drain a chat model before a stage loads its weights.
             if (opened.bytes > 0) await options.admit?.(opened.bytes);
           } catch (error) { pipeline.dispose(); throw error; }

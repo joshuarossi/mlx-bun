@@ -14,7 +14,8 @@ export type { CompanionHost, CompanionModelHost, CompanionModelHostOptions } fro
 export { nativeImageBackend } from "./image-backend";
 export type { ImageBackend, ImageRunOptions, LoadedImagePipeline } from "./image-backend";
 export { createImageModelHost } from "./image-model-host";
-export { DEFAULT_STAGE_BUDGET_FRACTION, defaultStageBudgetBytes, pipelineComponentBytes, stageResidency } from "./image-stages";
+export { DEFAULT_STAGE_BUDGET_FRACTION, defaultStageBudgetBytes, fixedStageRule, pipelineComponentBytes, stageBudgetRule, stageResidency } from "./image-stages";
+export type { StageResidency, StageRule } from "./image-stages";
 export type { ImageModelHost, ImageModelHostOptions } from "./image-model-host";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";

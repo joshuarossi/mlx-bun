@@ -705,7 +705,7 @@ test("image requests start the image companion's own worker in the image form be
   expect(leftover).toEqual([]);
 }, 60_000);
 
-test("an image request naming a local image model by exact id starts that model's own worker, charged what one run holds under the stage budget it is launched with; any other name reaches the default image worker; audio is never routed by its body", async () => {
+test("an image request naming a local image model by exact id starts that model's own worker, charged what one run holds under the staging decision it is launched with; any other name reaches the default image worker; audio is never routed by its body", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-images-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
   options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
@@ -753,10 +753,10 @@ test("an image request naming a local image model by exact id starts that model'
     // (The fake Whisper worker names itself by the directory it was launched with.)
     expect((await audio.json() as { model?: string }).model).toBe(whisper.path);
     expect((await charged())["org/whisper"]).toBe(5e7);
-    // One worker per image model, each launched with its model and the budget its charge assumed.
-    const launched = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { kind?: string; model?: { repoId: string }; argv?: string[]; stageBudgetBytes?: number });
-    expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId ?? launch.argv?.[1]} ${launch.stageBudgetBytes ?? "-"}`)).toEqual([
-      "model org/model -", "image org/poster 1000", "image org/picture 1000", `app ${whisper.path} -`]);
+    // One worker per image model, each launched with its model and the staging decision its charge assumed.
+    const launched = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as { kind?: string; model?: { repoId: string }; argv?: string[]; releaseStages?: boolean });
+    expect(launched.map(launch => `${launch.kind ?? "model"} ${launch.model?.repoId ?? launch.argv?.[1]} ${launch.releaseStages ?? "-"}`)).toEqual([
+      "model org/model -", "image org/poster true", "image org/picture false", `app ${whisper.path} -`]);
   } finally {
     await running.close();
     leftover = workerDirs(tmp);

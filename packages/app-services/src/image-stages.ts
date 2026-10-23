@@ -1,10 +1,12 @@
 // What one run of a text-to-image pipeline holds at once, under the stage
-// residency the image model host applies (image-model-host.ts): when the
-// stages' weights together exceed the stage budget, every run releases each
-// stage after its output, so a run holds the largest one; otherwise the stages
-// stay open and a run holds all of them. The isolated parent, which loads no
-// native module, charges an image worker by the same rule and budget from the
-// snapshot's files. Nothing here loads a model.
+// residency the image model host applies (image-model-host.ts): a run that
+// releases each stage after its output holds the largest stage; otherwise the
+// stages stay open and a run holds all of them. Whether to release them is a
+// stage rule the composer gives the host: the budget rule (release when the
+// stages together exceed a byte budget) where the host's own admission counts
+// the same stage bytes, or a decision made elsewhere. The isolated parent,
+// which loads no native module, makes that decision from the snapshot's files,
+// charges the worker by it and sends it to the worker. Nothing here loads a model.
 import { readdirSync, statSync } from "node:fs";
 import { totalmem } from "node:os";
 import { join } from "node:path";
@@ -17,12 +19,29 @@ export function defaultStageBudgetBytes(): number {
   return Math.floor(totalmem() * DEFAULT_STAGE_BUDGET_FRACTION);
 }
 
-/** The residency of stages holding `stageBytes` under `budgetBytes`: whether each run releases them one by one (they
- * together exceed the budget), and the bytes one run holds at once (the largest stage when released, else all of them). */
-export function stageResidency(stageBytes: readonly number[], budgetBytes: number): { readonly releaseStages: boolean; readonly bytes: number } {
-  const total = stageBytes.reduce((sum, bytes) => sum + bytes, 0);
-  const releaseStages = total > budgetBytes;
-  return { releaseStages, bytes: releaseStages ? Math.max(0, ...stageBytes) : total };
+/** Whether each run releases its stages one by one, and the bytes one run holds at once. */
+export interface StageResidency { readonly releaseStages: boolean; readonly bytes: number }
+/** How a host decides a pipeline's stage residency from its stages' weight bytes. */
+export type StageRule = (stageBytes: readonly number[]) => StageResidency;
+
+/** What one run holds under a decision: the largest stage when the stages are released one by one, else all of them. */
+function held(stageBytes: readonly number[], releaseStages: boolean): StageResidency {
+  return { releaseStages, bytes: releaseStages ? Math.max(0, ...stageBytes) : stageBytes.reduce((sum, bytes) => sum + bytes, 0) };
+}
+
+/** The residency of stages holding `stageBytes` under `budgetBytes`: released one by one when they together exceed it. */
+export function stageResidency(stageBytes: readonly number[], budgetBytes: number): StageResidency {
+  return held(stageBytes, stageBytes.reduce((sum, bytes) => sum + bytes, 0) > budgetBytes);
+}
+
+/** The budget rule: `stageResidency` under `budgetBytes`. */
+export function stageBudgetRule(budgetBytes: number): StageRule {
+  return stageBytes => stageResidency(stageBytes, budgetBytes);
+}
+
+/** A decision made elsewhere, applied as made: the host only reports what its stages hold under it. */
+export function fixedStageRule(releaseStages: boolean): StageRule {
+  return stageBytes => held(stageBytes, releaseStages);
 }
 
 /** The weight bytes of each component of a pipeline snapshot that holds weights: the sizes of the `*.safetensors` files in

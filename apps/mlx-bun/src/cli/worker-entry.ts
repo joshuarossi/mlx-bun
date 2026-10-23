@@ -14,7 +14,7 @@
 //   its runs under an execution lock the parent's managed jobs lease.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { Exclusive } from "@mlx-bun/app-services";
-import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
+import { createEventHub, createModuleSockets, fixedStageRule } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import type { WorkerMemory } from "../jobs/worker-memory";
@@ -35,9 +35,9 @@ export interface ModelWorkerLaunch { kind?: "model"; version: string; socketPath
 /** The app form: serve arguments as the CLI takes them (`["--model", model, ...]`),
  * validated by `validateAppLaunchArgv` and composed by `runServe` on the socket. */
 export interface AppWorkerLaunch { kind: "app"; version: string; socketPath: string; argv: string[] }
-/** The image form: the text-to-image snapshot the parent resolved, the only model this worker serves, and the stage budget
- * its host applies (the one the parent charged the worker by). */
-export interface ImageWorkerLaunch { kind: "image"; version: string; socketPath: string; model: ModelRecord; stageBudgetBytes: number }
+/** The image form: the text-to-image snapshot the parent resolved, the only model this worker serves, and the parent's
+ * staging decision for it (whether each run releases every stage), which the parent charged the worker by and its host applies. */
+export interface ImageWorkerLaunch { kind: "image"; version: string; socketPath: string; model: ModelRecord; releaseStages: boolean }
 export type WorkerLaunch = ModelWorkerLaunch | AppWorkerLaunch | ImageWorkerLaunch;
 
 export function parseWorkerLaunch(text: string): WorkerLaunch {
@@ -59,9 +59,8 @@ export function parseWorkerLaunch(text: string): WorkerLaunch {
   if (!model || typeof model !== "object" || typeof model.repoId !== "string" || typeof model.path !== "string")
     throw new Error("worker launch needs model.repoId and model.path");
   if (record.kind === "image") {
-    if (typeof record.stageBudgetBytes !== "number" || !(record.stageBudgetBytes > 0))
-      throw new Error("worker launch needs stageBudgetBytes, the image host's stage budget");
-    return { kind: "image", version, socketPath, model: model as ModelRecord, stageBudgetBytes: record.stageBudgetBytes };
+    if (typeof record.releaseStages !== "boolean") throw new Error("worker launch needs releaseStages, the parent's staging decision");
+    return { kind: "image", version, socketPath, model: model as ModelRecord, releaseStages: record.releaseStages };
   }
   const options = record.options as Partial<ServeOptions> | undefined;
   if (!options || typeof options !== "object" || !options.cache || !options.request || typeof options.capacity !== "number")
@@ -239,7 +238,7 @@ async function runImageWorker(launch: ImageWorkerLaunch, ports: WorkerEntryPorts
     acquireExecutionLease: signal => lock.acquire(signal) });
   let host: Awaited<ReturnType<typeof startImageHost>>;
   try {
-    host = await (ports.image ?? startImageHost)(launch.model, { stageBudgetBytes: launch.stageBudgetBytes, exclusive: lock.exclusive },
+    host = await (ports.image ?? startImageHost)(launch.model, { stages: fixedStageRule(launch.releaseStages), exclusive: lock.exclusive },
       { unix: launch.socketPath, routes: routes => admin.wrap(routes), beforeDrain: () => admin.close() });
   } catch (error) {
     console.error(`worker startup failed: ${error instanceof Error ? error.message : String(error)}`);

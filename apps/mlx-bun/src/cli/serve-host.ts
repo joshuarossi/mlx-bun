@@ -14,7 +14,7 @@ import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-e
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
 import type { CatalogEntry, ModelCatalog } from "@mlx-bun/app-core";
-import type { Exclusive } from "@mlx-bun/app-services";
+import type { Exclusive, StageRule } from "@mlx-bun/app-services";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import pkgJson from "../../package.json" with { type: "json" };
@@ -215,7 +215,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   try {
     const [{ startServer }, { createModelRoutes },
-      { createHostServices, createModuleRoutes, declaredOperations }] = await Promise.all([
+      { createHostServices, createModuleRoutes, declaredOperations, defaultStageBudgetBytes, stageBudgetRule }] = await Promise.all([
       import("../server/start"), import("../server/model-routes"),
       import("@mlx-bun/app-services"),
     ]);
@@ -242,9 +242,10 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     // it never overlaps generation, and a load first makes room in the budget.
     // The text-to-image companion (the images module's `image` leases) is the
     // first downloaded image model, under the same lock and admission; its
-    // stages stay open or are released per run by its own byte budget. Modules
+    // stages stay open or are released per run by the budget rule over the
+    // bytes its stages load, the bytes its admission asks room for. Modules
     // reach both through the companions, by the operation a model declares.
-    const moduleHost = createHostServices({ whisper: options.whisper, events: state.events,
+    const moduleHost = createHostServices({ whisper: options.whisper, image: { stages: stageBudgetRule(defaultStageBudgetBytes()) }, events: state.events,
       exclusive: async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } },
       admit: bytes => residency.makeRoom(bytes) });
     const whisperInfo = async () => {
@@ -444,17 +445,17 @@ function servingOnly(model: ModelRecord, catalog: ModelCatalog): ModelCatalog {
 /** Image companion composition (the isolated server's image worker, `cli/worker-entry.ts`): the installed modules'
  * routes on the parent's Unix socket over the host library's services, with this snapshot as the `image` default and the
  * only model it serves; no chat model, prompt cache, jobs or web app. The pipeline opens on the first request and follows
- * the image host's residency under the given stage budget, each run inside the given execution lock (the worker's, which
- * its admin surface leases to a managed job). The hooks are the worker's: the admin surface ahead of the routes, and its
+ * the image host's residency under the given stage rule (the worker's: the parent's decision, applied as made), each run
+ * inside the given execution lock (the worker's, which its admin surface leases to a managed job). The hooks are the worker's: the admin surface ahead of the routes, and its
  * close ahead of the modules'. */
-export async function startImageHost(model: ModelRecord, serving: { stageBudgetBytes: number; exclusive: Exclusive },
+export async function startImageHost(model: ModelRecord, serving: { stages: StageRule; exclusive: Exclusive },
   hooks: Pick<ModelHostHooks, "routes" | "beforeDrain"> & { unix: string }): Promise<RunningApp> {
   const [{ createHostServices, createModuleRoutes, createModuleSockets, createRegistryCatalog }, { startServer }] = await Promise.all([
     import("@mlx-bun/app-services"), import("../server/start"),
   ]);
-  // This worker serves its snapshot alone, under the stage budget the parent charged it by: the catalog its modules and image host
+  // This worker serves its snapshot alone, staged as the parent decided when it charged it: the catalog its modules and image host
   // resolve through knows no other model, so a request naming another loads nothing here.
-  const moduleHost = createHostServices({ image: { modelDir: model.path, modelId: model.repoId, stageBudgetBytes: serving.stageBudgetBytes },
+  const moduleHost = createHostServices({ image: { modelDir: model.path, modelId: model.repoId, stages: serving.stages },
     catalog: servingOnly(model, createRegistryCatalog()), exclusive: serving.exclusive });
   let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
   // The modules stop first (runs in flight are joined), then the pipeline releases.

@@ -9,6 +9,7 @@ import { createCompanionModelHost, type CompanionModelHost } from "./companion-m
 import { createEventHub, type EventHub } from "./events";
 import type { ImageBackend } from "./image-backend";
 import { createImageModelHost, type ImageModelHost } from "./image-model-host";
+import type { StageRule } from "./image-stages";
 import { createStorage } from "./storage";
 import type { WhisperBackend } from "./whisper-backend";
 import { createWhisperModelHost, type Exclusive, type WhisperModelHost } from "./whisper-model-host";
@@ -29,8 +30,8 @@ export interface ImageServing {
   modelId?: string;
   idleUnloadSec?: number;
   resident?: boolean;
-  /** Bytes a pipeline's stages may hold together before each run releases them one by one; default a share of physical memory. */
-  stageBudgetBytes?: number;
+  /** How the image host decides whether each run releases a pipeline's stages one by one; default the budget rule over a share of physical memory. */
+  stages?: StageRule;
 }
 
 export interface HostServicesOptions {
@@ -87,7 +88,7 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...configured(imagePolicy),
     ...(imagePolicy?.idleUnloadSec !== undefined ? { idleUnloadSec: imagePolicy.idleUnloadSec } : {}),
     ...(imagePolicy?.resident ? { resident: true } : {}),
-    ...(imagePolicy?.stageBudgetBytes !== undefined ? { stageBudgetBytes: imagePolicy.stageBudgetBytes } : {}),
+    ...(imagePolicy?.stages ? { stages: imagePolicy.stages } : {}),
     ...(options.imageBackend ? { backend: options.imageBackend } : {}),
   });
   // A configured checkpoint need not be in the catalog: its operation is the one it was configured for.

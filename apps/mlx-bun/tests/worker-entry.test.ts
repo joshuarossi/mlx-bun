@@ -504,13 +504,13 @@ test("the image form hands the socket hooks to the image companion composition: 
   const picture = { repoId: "org/picture", path: "/unused/picture", modelType: "SomeImagePipeline", expertsBytes: 0 } as ModelRecord;
   const events: string[] = [], written: string[] = [], errors: string[] = [];
   const host = fakeHost(events);
-  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture, stageBudgetBytes: 1_000 };
-  // The form carries the snapshot the parent resolved and the stage budget it charged the worker by; it needs both.
+  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture, releaseStages: true };
+  // The form carries the snapshot the parent resolved and the staging decision it charged the worker by; it needs both.
   expect(parseWorkerLaunch(encodeLaunch(launch))).toEqual(launch as never);
   expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, model: undefined }))).toThrow("worker launch needs model.repoId and model.path");
-  for (const stageBudgetBytes of [undefined, 0, "1000"])
-    expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, stageBudgetBytes }))).toThrow("worker launch needs stageBudgetBytes, the image host's stage budget");
-  const budgets: number[] = [];
+  for (const releaseStages of [undefined, 0, "true"])
+    expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, releaseStages }))).toThrow("worker launch needs releaseStages, the parent's staging decision");
+  const decided: unknown[] = [];
   let exclusive!: Exclusive;
   let push!: (text: string) => void, end!: () => void;
   const stdin = new ReadableStream<Uint8Array>({ start(controller) {
@@ -522,12 +522,13 @@ test("the image form hands the socket hooks to the image companion composition: 
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.socketPath } as RequestInit);
   try {
     const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter(),
-      image: (model, serving, hooks) => { budgets.push(serving.stageBudgetBytes); exclusive = serving.exclusive; return host.start(model, {} as ServeOptions, hooks); } });
+      image: (model, serving, hooks) => { decided.push(serving.stages([300, 500, 100])); exclusive = serving.exclusive; return host.start(model, {} as ServeOptions, hooks); } });
     await until(() => written.length === 1, "the ready line");
     expect(JSON.parse(written[0]!.slice(WORKER_MESSAGE_PREFIX.length))).toMatchObject({ type: "ready", socketPath: socket.socketPath, modelId: "org/picture", version: WORKER_PROTOCOL_VERSION });
     const { model, hooks } = host.calls[0]!;
     expect([model, hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain]).toEqual([picture, socket.socketPath, "function", "function"]);
-    expect(budgets).toEqual([1_000]);
+    // The host's stage rule is the parent's decision, applied as made whatever the stages weigh.
+    expect(decided).toEqual([{ releaseStages: true, bytes: 500 }]);
     expect(await (await get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/picture" });
     // A held lease (a managed job's) keeps the next image run waiting until the connection lets go.
     const job = new AbortController(), order: string[] = [];
@@ -556,7 +557,7 @@ test("the image form hands the socket hooks to the image companion composition: 
   } finally { console.error = error; end(); socket.remove(); }
 });
 
-test("an image worker serves only the model it was started for: a request naming any other is refused without opening anything, and its own runs stage under the budget the launch carries", async () => {
+test("an image worker serves only the model it was started for: a request naming any other is refused without opening anything, and its own runs stage as the launch decided", async () => {
   // The real image companion composition over the socket; only the pipeline backend (and the native library) are stand-ins.
   const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
   const script = `
@@ -577,8 +578,8 @@ test("an image worker serves only the model it was started for: a request naming
     } } }));
     const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
     const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
-    const socketPath = process.env.WORKER_SOCKET, stageBudgetBytes = Number(process.env.STAGE_BUDGET);
-    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 1000, modelType: "SomeImagePipeline" }, stageBudgetBytes };
+    const socketPath = process.env.WORKER_SOCKET, releaseStages = process.env.RELEASE_STAGES === "1";
+    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 1000, modelType: "SomeImagePipeline" }, releaseStages };
     let push, end;
     const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
     push(encodeLaunch(launch) + "\\n");
@@ -608,9 +609,9 @@ test("an image worker serves only the model it was started for: a request naming
   `;
   const socket = socketDir();
   try {
-    // 1000 bytes of stages: a 500 byte budget releases each stage per run; a 2000 byte budget keeps them open.
-    for (const [budget, release] of [[500, true], [2_000, false]] as const) {
-      const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, STAGE_BUDGET: String(budget), HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
+    // The worker applies the launch's decision: each stage released per run, or every stage kept open.
+    for (const release of [true, false]) {
+      const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, RELEASE_STAGES: release ? "1" : "0", HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
       expect([result.code, result.stderr.trim()]).toEqual([0, JSON.stringify([release, release])]);
       expect(result.stdout).toContain(release ? "(one stage resident at a time)" : "(stages kept open)");
       expect(existsSync(socket.socketPath)).toBe(false);
@@ -644,7 +645,7 @@ test("an image worker's runs and its execution lease take one lock: a managed jo
     const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
     const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
     const socketPath = process.env.WORKER_SOCKET;
-    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 3, modelType: "SomeImagePipeline" }, stageBudgetBytes: 1000 };
+    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 3, modelType: "SomeImagePipeline" }, releaseStages: false };
     let push, end;
     const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
     push(encodeLaunch(launch) + "\\n");
