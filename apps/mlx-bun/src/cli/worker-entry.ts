@@ -10,9 +10,12 @@
 // - app: the whole app, composed by `runServe` from serve arguments exactly as
 //   the CLI composes it, listening on the parent's socket instead of TCP;
 // - image: the isolated server's text-to-image companion, one per image model, the image companion
-//   composition (serve-host.ts `startImageHost`) over the parent's socket, serving that model only.
+//   composition (serve-host.ts `startImageHost`) over the parent's socket, serving that model only,
+//   its runs under an execution lock the parent's managed jobs lease.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
+import type { Exclusive } from "@mlx-bun/app-services";
 import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
+import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import type { WorkerMemory } from "../jobs/worker-memory";
 import { ResponseStore } from "../server/responses";
@@ -200,15 +203,43 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   });
 }
 
-/** The image form: the image companion composition on the parent's socket behind an admin surface with readiness, drain
- * and memory but no execution lease (as the transcription-only app's), ready once it serves, closed once when the parent
- * signals or leaves. */
+/** The image form's execution lock: image runs (the image host's `exclusive`) and the parent's connection-owned lease
+ * (`/admin/lease`, which a managed job holds) take it one at a time, in order, so a job waits for the run in flight and a run
+ * waits for the job. An acquisition aborted while it waits gives up its turn without overtaking anyone. */
+function executionLock(): { acquire(signal?: AbortSignal): Promise<DisposableResource>; exclusive: Exclusive } {
+  let tail: Promise<void> = Promise.resolve();
+  const acquire = (signal?: AbortSignal): Promise<DisposableResource> => {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    const previous = tail;
+    let unlock!: () => void;
+    tail = new Promise(resolve => { unlock = resolve; });
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const abort = () => { if (settled) return; settled = true; void previous.then(unlock); reject(signal!.reason); };
+      signal?.addEventListener("abort", abort, { once: true });
+      void previous.then(() => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", abort);
+        let released = false;
+        resolve({ dispose() { if (!released) { released = true; unlock(); } } });
+      });
+    });
+  };
+  return { acquire, exclusive: async (fn, signal) => { const lease = await acquire(signal); try { return await fn(); } finally { lease.dispose(); } } };
+}
+
+/** The image form: the image companion composition on the parent's socket behind an admin surface with readiness, drain,
+ * memory and an execution lease over the image runs (a managed job holds it, as it holds a chat worker's), ready once it
+ * serves, closed once when the parent signals or leaves. */
 async function runImageWorker(launch: ImageWorkerLaunch, ports: WorkerEntryPorts, parentLeft: Promise<void>): Promise<number> {
   const memoryNow = await processMemory();
-  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}) });
+  const lock = executionLock();
+  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}),
+    acquireExecutionLease: signal => lock.acquire(signal) });
   let host: Awaited<ReturnType<typeof startImageHost>>;
   try {
-    host = await (ports.image ?? startImageHost)(launch.model, { stageBudgetBytes: launch.stageBudgetBytes },
+    host = await (ports.image ?? startImageHost)(launch.model, { stageBudgetBytes: launch.stageBudgetBytes, exclusive: lock.exclusive },
       { unix: launch.socketPath, routes: routes => admin.wrap(routes), beforeDrain: () => admin.close() });
   } catch (error) {
     console.error(`worker startup failed: ${error instanceof Error ? error.message : String(error)}`);

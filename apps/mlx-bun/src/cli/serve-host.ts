@@ -14,6 +14,7 @@ import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-e
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
 import type { CatalogEntry, ModelCatalog } from "@mlx-bun/app-core";
+import type { Exclusive } from "@mlx-bun/app-services";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import pkgJson from "../../package.json" with { type: "json" };
@@ -443,9 +444,10 @@ function servingOnly(model: ModelRecord, catalog: ModelCatalog): ModelCatalog {
 /** Image companion composition (the isolated server's image worker, `cli/worker-entry.ts`): the installed modules'
  * routes on the parent's Unix socket over the host library's services, with this snapshot as the `image` default and the
  * only model it serves; no chat model, prompt cache, jobs or web app. The pipeline opens on the first request and follows
- * the image host's residency under the given stage budget. The hooks are the worker's: the admin surface ahead of the
- * routes, and its close ahead of the modules'. */
-export async function startImageHost(model: ModelRecord, serving: { stageBudgetBytes: number },
+ * the image host's residency under the given stage budget, each run inside the given execution lock (the worker's, which
+ * its admin surface leases to a managed job). The hooks are the worker's: the admin surface ahead of the routes, and its
+ * close ahead of the modules'. */
+export async function startImageHost(model: ModelRecord, serving: { stageBudgetBytes: number; exclusive: Exclusive },
   hooks: Pick<ModelHostHooks, "routes" | "beforeDrain"> & { unix: string }): Promise<RunningApp> {
   const [{ createHostServices, createModuleRoutes, createModuleSockets, createRegistryCatalog }, { startServer }] = await Promise.all([
     import("@mlx-bun/app-services"), import("../server/start"),
@@ -453,7 +455,7 @@ export async function startImageHost(model: ModelRecord, serving: { stageBudgetB
   // This worker serves its snapshot alone, under the stage budget the parent charged it by: the catalog its modules and image host
   // resolve through knows no other model, so a request naming another loads nothing here.
   const moduleHost = createHostServices({ image: { modelDir: model.path, modelId: model.repoId, stageBudgetBytes: serving.stageBudgetBytes },
-    catalog: servingOnly(model, createRegistryCatalog()) });
+    catalog: servingOnly(model, createRegistryCatalog()), exclusive: serving.exclusive });
   let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
   // The modules stop first (runs in flight are joined), then the pipeline releases.
   const close = async () => {

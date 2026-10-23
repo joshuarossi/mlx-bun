@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { EventEmitter } from "node:events";
-import { createModuleSockets } from "@mlx-bun/app-services";
+import { createModuleSockets, type Exclusive } from "@mlx-bun/app-services";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -499,7 +499,7 @@ test("a Whisper checkpoint in the app form hands the socket hooks to the transcr
   } finally { run.cleanup(); }
 });
 
-test("the image form hands the socket hooks to the image companion composition: ready once it serves, an admin surface without a lease, one close when the parent leaves", async () => {
+test("the image form hands the socket hooks to the image companion composition: ready once it serves, an admin surface whose lease and the image runs take one lock in turn, one close when the parent leaves", async () => {
   const socket = socketDir();
   const picture = { repoId: "org/picture", path: "/unused/picture", modelType: "SomeImagePipeline", expertsBytes: 0 } as ModelRecord;
   const events: string[] = [], written: string[] = [], errors: string[] = [];
@@ -511,6 +511,7 @@ test("the image form hands the socket hooks to the image companion composition: 
   for (const stageBudgetBytes of [undefined, 0, "1000"])
     expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, stageBudgetBytes }))).toThrow("worker launch needs stageBudgetBytes, the image host's stage budget");
   const budgets: number[] = [];
+  let exclusive!: Exclusive;
   let push!: (text: string) => void, end!: () => void;
   const stdin = new ReadableStream<Uint8Array>({ start(controller) {
     push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => { try { controller.close(); } catch { /* closed */ } };
@@ -521,14 +522,32 @@ test("the image form hands the socket hooks to the image companion composition: 
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.socketPath } as RequestInit);
   try {
     const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter(),
-      image: (model, serving, hooks) => { budgets.push(serving.stageBudgetBytes); return host.start(model, {} as ServeOptions, hooks); } });
+      image: (model, serving, hooks) => { budgets.push(serving.stageBudgetBytes); exclusive = serving.exclusive; return host.start(model, {} as ServeOptions, hooks); } });
     await until(() => written.length === 1, "the ready line");
     expect(JSON.parse(written[0]!.slice(WORKER_MESSAGE_PREFIX.length))).toMatchObject({ type: "ready", socketPath: socket.socketPath, modelId: "org/picture", version: WORKER_PROTOCOL_VERSION });
     const { model, hooks } = host.calls[0]!;
     expect([model, hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain]).toEqual([picture, socket.socketPath, "function", "function"]);
     expect(budgets).toEqual([1_000]);
     expect(await (await get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/picture" });
-    expect((await get("/admin/lease", { method: "POST" })).status).toBe(404);
+    // A held lease (a managed job's) keeps the next image run waiting until the connection lets go.
+    const job = new AbortController(), order: string[] = [];
+    const lease = await get("/admin/lease", { method: "POST", signal: job.signal });
+    expect([lease.status, new TextDecoder().decode((await lease.body!.getReader().read()).value)]).toEqual([200, "leased\n"]);
+    expect(await (await get("/health")).json()).toMatchObject({ leases: 1 });
+    const run = exclusive(async () => { order.push("run"); });
+    await Bun.sleep(100);
+    order.push("job released");
+    job.abort();
+    await run;
+    // A run in flight keeps a lease request waiting until the run ends.
+    let finish!: () => void;
+    const inFlight = exclusive(() => new Promise<void>(resolve => { finish = () => { order.push("run finished"); resolve(); }; }));
+    const next = get("/admin/lease", { method: "POST" }).then(response => { order.push("leased"); return response; });
+    await Bun.sleep(100);
+    finish();
+    await inFlight;
+    await (await next).body!.cancel();
+    expect(order).toEqual(["job released", "run", "run finished", "leased"]);
     end();
     expect(await exited).toBe(0);
     expect(events).toEqual(["start org/picture", "app close", "producers close", "engine close"]);

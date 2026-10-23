@@ -77,6 +77,9 @@ function imageLaunch(context: WorkerUnitContext, record: ModelRecord, socketPath
 /** The operation a worker serves, and how it is launched for it. */
 const LAUNCHES = { generate: chatLaunch, transcribe: transcriptionLaunch, image: imageLaunch } as const;
 export type WorkerOperation = keyof typeof LAUNCHES;
+/** Whether a worker of the operation serves a connection-owned execution lease (`/admin/lease`) that a managed job holds: a chat
+ * worker's engine lock and an image worker's run lock. The transcription-only app has none. */
+const LEASED: Readonly<Record<WorkerOperation, boolean>> = { generate: true, transcribe: false, image: true };
 
 /** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
  * its memory readings to `measure`. A worker that is gone measures nothing: its replacement will need what it did. */
@@ -180,8 +183,9 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",
-    // A job needs the GPU to itself: the worker's own execution lease. A companion worker (Whisper, an image model) has none and is not paused.
-    pause: signal => role === "primary" ? supervisor.acquireExecutionLease(signal ?? new AbortController().signal) : Promise.resolve({ dispose() {} } as DisposableResource),
+    // A job needs the GPU to itself: the worker's own execution lease, which waits for its work in flight and holds back new work
+    // until released. The Whisper worker has none and is not paused.
+    pause: signal => LEASED[operation] ? supervisor.acquireExecutionLease(signal ?? new AbortController().signal) : Promise.resolve({ dispose() {} } as DisposableResource),
     close: () => closing ??= (async () => {
       stopEvents.abort();
       const drained = performance.now();
