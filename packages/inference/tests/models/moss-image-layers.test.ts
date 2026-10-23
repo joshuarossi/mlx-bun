@@ -232,7 +232,7 @@ test("the conditioner's gated norm replays Qwen3_5RMSNormGated: float32 normaliz
       expected.push(bf16(weighted * Math.fround(g / (1 + Math.exp(-g)))));
     }
   }
-  // Float32 transcendentals and summation order may move a value by one bf16 step at a rounding boundary.
+  // Float32 transcendentals (exp in SiLU) and this replay's exact sum may move a value by one bf16 step at a rounding boundary.
   let differing = 0;
   for (let i = 0; i < expected.length; i++) {
     if (actual[i] === expected[i]) continue;
@@ -268,4 +268,39 @@ test("the float32 gated delta kernel computes the sequential recurrence (float64
     }
   }
   close(actual, expected, 1e-5);
+});
+
+test("the conditioner's gated norm sums each row's variance in the pinned torch's order, so it equals a host replay of that order exactly", () => {
+  const width = 128, rows = 16384, total = rows * width;
+  // Deterministic, roughly normal bf16 values; gates large enough that silu(g) = g exactly in float32, so only the variance's
+  // summation order can move an output.
+  let seed = 0x2545f491;
+  const uniform = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed + 0.5) / 2 ** 32; };
+  const normal = () => Math.sqrt(-2 * Math.log(uniform())) * Math.cos(2 * Math.PI * uniform());
+  const xs = Float32Array.from({ length: total }, () => bf16(normal()));
+  const gates = Float32Array.from({ length: total }, () => bf16(40 + uniform()));
+  const weights = Float32Array.from({ length: width }, () => bf16(1 + 0.1 * normal()));
+  using x32 = MlxArray.fromFloat32(xs, [rows, width]), g32 = MlxArray.fromFloat32(gates, [rows, width]), w32 = MlxArray.fromFloat32(weights, [width]);
+  using x = x32.astype(Dtype.bfloat16), gate = g32.astype(Dtype.bfloat16), weight = w32.astype(Dtype.bfloat16);
+  using out = new MossTextGatedNorm(weight, 1e-6).forward(x, gate);
+  using wide = out.astype(Dtype.float32);
+  const actual = wide.toFloat32();
+  /** torch's order: four 4-lane accumulators (value i into accumulator floor(i / 4) % 4, lane i % 4), then the accumulators
+   * lane by lane, then the lanes, each in order. */
+  const torchSum = (row: Float32Array) => {
+    const accumulators = Array.from({ length: 4 }, () => [0, 0, 0, 0]);
+    for (let i = 0; i < width; i++) accumulators[Math.floor(i / 4) % 4]![i % 4] = Math.fround(accumulators[Math.floor(i / 4) % 4]![i % 4]! + Math.fround(row[i]! * row[i]!));
+    const lanes = [0, 1, 2, 3].map(l => accumulators.reduce((sum, accumulator) => Math.fround(sum + accumulator[l]!), 0));
+    return lanes.reduce((sum, lane) => Math.fround(sum + lane), 0);
+  };
+  let differing = 0;
+  for (let r = 0; r < rows; r++) {
+    const row = xs.subarray(r * width, (r + 1) * width);
+    const inverse = Math.fround(1 / Math.fround(Math.sqrt(Math.fround(Math.fround(torchSum(row) / width) + Math.fround(1e-6)))));
+    for (let i = 0; i < width; i++) {
+      const g = gates[r * width + i]!, weighted = stored(weights[i]! * stored(row[i]! * inverse));
+      if (actual[r * width + i] !== bf16(weighted * Math.fround(g / Math.fround(1 + Math.exp(-g))))) differing++;
+    }
+  }
+  expect(differing).toBe(0);
 });

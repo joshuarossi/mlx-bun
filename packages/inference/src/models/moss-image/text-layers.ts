@@ -81,19 +81,47 @@ export class MossTextRmsNorm {
   dispose(): void { this.#scale.dispose(); }
 }
 
-/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight: normalize in float32 (rsqrt as a square root,
- * then its reciprocal) and store in the input dtype, multiply by the weight (bf16 by bf16, stored again), then multiply by
- * `silu(gate)` in float32 and store once. Not bit-identical to the reference: its comparison counts the elements that
- * differ, and their cause is not established. */
-export class MossTextGatedNorm {
-  constructor(readonly weight: MlxArray, readonly eps: number) {}
+/** The float32 sum of each 128-value row of `squares` (borrowed, `[..., 128]`) in the order that reproduces the pinned
+ * torch's CPU sum bit for bit on every captured row: four 4-lane accumulators (value `i` into accumulator `floor(i / 4) % 4`,
+ * lane `i % 4`), each lane summing its eight values in turn, then the accumulators added lane by lane in order and the
+ * four lanes in order. That this is torch's vectorized reduction is inferred from the match. Each step is one float32 add,
+ * so MLX's own reduction order plays no part. Returns an owned `[..., 1]`. */
+function torchRowSum128(squares: MlxArray): MlxArray {
+  const leading = squares.shape.slice(0, -1), rows = leading.reduce((a, b) => a * b, 1);
+  using blocks = ops.reshape(squares, [rows, 8, 4, 4]);
+  const block = (k: number) => blocks.slice([0, k, 0, 0], [rows, k + 1, 4, 4]);
+  let lanes = block(0);
+  for (let k = 1; k < 8; k++) { using previous = lanes; using next = block(k); lanes = ops.add(previous, next); }
+  using accumulators = lanes;
+  const accumulator = (g: number) => accumulators.slice([0, 0, g, 0], [rows, 1, g + 1, 4]);
+  let combined = accumulator(0);
+  for (let g = 1; g < 4; g++) { using previous = combined; using next = accumulator(g); combined = ops.add(previous, next); }
+  using perLane = combined;
+  const lane = (l: number) => perLane.slice([0, 0, 0, l], [rows, 1, 1, l + 1]);
+  let total = lane(0);
+  for (let l = 1; l < 4; l++) { using previous = total; using next = lane(l); total = ops.add(previous, next); }
+  using sum = total;
+  return ops.reshape(sum, [...leading, 1]);
+}
 
-  /** `x` and `gate` equal-shaped `[..., D]` (borrowed). */
+/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight: the variance in float32 summed in the pinned
+ * torch's order (`torchRowSum128`), normalize in float32 (rsqrt as a square root, then its reciprocal) and store in the
+ * input dtype, multiply by the weight (bf16 by bf16, stored again), then multiply by `silu(gate)` in float32 and store
+ * once. Rows are 128 values wide, the conditioner's value heads: the summation order is verified only for that width. */
+export class MossTextGatedNorm {
+  constructor(readonly weight: MlxArray, readonly eps: number) {
+    if (weight.shape.length !== 1 || weight.shape[0] !== 128)
+      throw new RangeError(`gated norm: rows of ${weight.shape.join("x")}; the summation order is verified for 128`);
+  }
+
+  /** `x` and `gate` equal-shaped `[..., 128]` (borrowed). */
   forward(x: MlxArray, gate: MlxArray): MlxArray {
     const dtype = x.dtype;
     using wide = x.astype(Dtype.float32);
     using squares = ops.square(wide);
-    using variance = ops.meanAxis(squares, -1, true);
+    using sum = torchRowSum128(squares);
+    using count = ops.scalarLike(128, sum);
+    using variance = ops.div(sum, count);
     using eps = ops.scalarLike(this.eps, variance);
     using shifted = ops.add(variance, eps);
     // rsqrt as a square root, then its reciprocal: the form host replays against the reference favoured.
