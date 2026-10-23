@@ -5,10 +5,17 @@
 // wrote its tensors as safetensors captures: the tokenized prompts and the
 // encoder's hidden states, the schedule, its own seeded noise (equal seeds do
 // not give equal noise across backends, so the noise is an input here), DiT
-// stage outputs at two timesteps with and without the skipped block, and an
-// 8-step guided trajectory; and, as a measure of its own variation, the same
-// DiT stages and trajectory on its MPS backend (`dit-mps`, `sample-8-mps`).
-// Each comparison feeds both sides identical inputs.
+// stage outputs at two timesteps with and without the skipped block, an 8-step
+// guided trajectory, and the conditioner's linear attention (`delta`); and, as a
+// measure of its own variation, the same DiT stages and trajectory on its MPS
+// backend (`dit-mps`, `sample-8-mps`). Each comparison feeds both sides
+// identical inputs.
+//
+// INPUTS are verified before any comparison: the SHA-256 of every snapshot file
+// and capture the comparisons read is computed from its bytes and must equal
+// the pins below for that revision; a revision without pins, or any mismatch,
+// fails the run. A Hugging Face cache symlink's target name is recorded as
+// provenance only (a filename claim, not a verification of the bytes).
 //
 // ORIGINAL criteria, fixed before the first run, from the arithmetic each stage does:
 // - token ids and the schedule: exact.
@@ -26,33 +33,38 @@
 //   layout), which made the velocity look uncorrelated; reads are row-major now,
 //   and generation/image.ts makes decoded pixels contiguous before its raw read.
 //
-// REVISED criteria (applied after measurement; acceptance pending the owner's
-// review; every check still reports its ORIGINAL verdict):
-// - intermediate DiT blocks: relative error and mean cosine held; the worst
-//   token is reported beside the reference's own MPS-vs-CPU spread instead of
-//   held to 0.999. Justification: the worst token moves between backends (the
-//   reference's MPS run is worst at image rows 134 and 116, this graph at row
-//   40). UNRESOLVED: at block 22, step 4 this graph's worst token (row 40) has
-//   cosine 0.998336 where the reference's own worst is 0.999552; float32
-//   attention moves it only to 0.99864, so its cause is not identified.
-// - the last block: held on its image rows; its text rows (which feed no later
-//   operation) are reported. Justification: data flow, and the reference
-//   disagrees with itself there (MPS vs CPU min cosine 0.978 at step 4).
-// - the trajectory: each step held to at most SPREAD_FACTOR times the
-//   reference's own MPS-vs-CPU relative error at that step. Justification: the
-//   reference's two backends separate by 4.2e-2 at step 5 and 1.0e-1 by step 6,
-//   past the original bound. UNRESOLVED: steps 5 to 7 exceed the original bound
-//   here too (6.7e-2, 1.25e-1, 1.25e-1); the factor 2 is a judgment, not derived.
+// ADJUDICATED by independent review (2026-10-23): the last DiT block's text rows
+// feed no later operation and are reported, not held; its image rows hold the
+// original bounds. Every other check holds its original bounds. Two remain
+// unresolved and fail here until investigated: Base's block 22 at step 4 (worst
+// token, row 40, below the 0.999 cosine bound; float32 attention does not
+// explain it) and trajectory steps 5 to 7 beyond the original bounds. The
+// review's proposed experiments: block 22 alone on identical captured block-21
+// inputs and modulation, comparing its norm, projections, RoPE, attention, SITU
+// and residual outputs; and each step's velocity on identical reference
+// trajectory states. The rule "relative error <= SPREAD_FACTOR times the
+// reference's own MPS-vs-CPU relative error" is recorded as an investigative
+// bound beside the original verdict and is not asserted.
 //
-// Every run writes its checks, verdicts under both criteria and the input pins
-// to MLX_BUN_MOSS_IMAGE_RESULTS (default: moss-image-oracle-results.json in the
-// system temporary directory).
+// LINEAR ATTENTION bounds (`DELTA`), fixed before the first comparison against the
+// `delta` captures, which hold transformers' own l2norm, F.softplus and
+// torch_chunk_gated_delta_rule outputs on seeded bf16 inputs at lengths around the
+// 64-token chunk boundary, and two real layers' linear attention on a 23-token
+// and a 203-token prompt. The recurrence here steps token by token in float32;
+// the reference solves 64-token chunks in float32 (cumulative log-decays, exp of
+// their differences, a triangular solve). The softplus here is logaddexp(x, 0)
+// below torch's threshold, where torch computes log1p(exp(x)). These checks
+// measure both differences against the reference's float32 outputs.
+//
+// Every run writes its checks, verdicts, verified input hashes, provenance and
+// the implementation's commit to MLX_BUN_MOSS_IMAGE_RESULTS (default:
+// moss-image-oracle-results.json in the system temporary directory).
 // Opt in with both of
 //   MLX_BUN_MOSS_IMAGE_SNAPSHOT=<a MOSS-Image snapshot directory>
 //   MLX_BUN_MOSS_IMAGE_ORACLE=<the reference's capture directory for that snapshot>
 // Neither set skips; one alone fails.
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { SafetensorsFile } from "../../src/artifacts/safetensors";
@@ -61,21 +73,106 @@ import { fileSha256, optInAll } from "./real-weight-inputs";
 const OPT_IN = ["MLX_BUN_MOSS_IMAGE_SNAPSHOT", "MLX_BUN_MOSS_IMAGE_ORACLE"] as const;
 const opted = optInAll(process.env, OPT_IN, "MOSS-Image oracle comparison");
 
+/** The files of each pinned revision that the comparisons read, and the reference's captures for it: SHA-256 of their bytes. */
+const PINS: Readonly<Record<string, { readonly snapshot: Readonly<Record<string, string>>; readonly captures: Readonly<Record<string, string>> }>> = {
+  "85975793d8b3d432f1b6e27f352abaa4c2a4c0d3": {
+    snapshot: {
+      "scheduler/scheduler_config.json": "707322832cc507dfb8c51c0e0cd04d44ee2d30a9b036b6f3c47d6c17aa71adf0",
+      "text_encoder/config.json": "b31ee18a242bcfcccbe740f825f6b1d3ae231b0655eeecb5de3e98d504b7d68c",
+      "text_encoder/model.safetensors.index.json": "0af6fa3fa36ba8dcbb6b7ad0325a36c5b1b69862a9a1f1486b1b80385bd8f5ee",
+      "text_encoder/model-00001-of-00004.safetensors": "abfaa3d3a8612508c85ee8f6da9c734b862f10298b903765c4ad384177c32b0b",
+      "text_encoder/model-00002-of-00004.safetensors": "9112637fa6bf4d07bafd6ae268852b18d3d0c1242f4ee901c5579006e5bd4894",
+      "text_encoder/model-00003-of-00004.safetensors": "956f1ef51d0cfe610b0d22987c0b7821c36e3ce228abceccef523518bcf079dc",
+      "text_encoder/model-00004-of-00004.safetensors": "9e21d20e8adde88c3e0b65d4a0d251f143d98ee9d52db36b4348361091e4e208",
+      "tokenizer/tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer/tokenizer_config.json": "bee8eba30f0eb4af73c0fe2cd06d0f89b657d7819941c438157ec42f7c80ea87",
+      "tokenizer/chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+      "transformer/config.json": "3291c3a1c7adc22b8182a0de25ca8ec97474d72715ce84adbab09cc0be24f666",
+      "transformer/diffusion_pytorch_model.safetensors.index.json": "b609327fc75dbe5080e7e095d8b727d74d728b4f98e8b047133b0082cfa2fb03",
+      "transformer/diffusion_pytorch_model-00001-of-00003.safetensors": "ae085fba123b6df67daf90aa9698fadee60c73e45bcaf3f3043d15f34e7a1804",
+      "transformer/diffusion_pytorch_model-00002-of-00003.safetensors": "806e876d80c7fba560663a3a95580e6c7033da3f9ea3c52765245ef0e1818f75",
+      "transformer/diffusion_pytorch_model-00003-of-00003.safetensors": "5f319b72c40324294007c270d78112425627b537fcd8769b3c00f9f070e506a9",
+    },
+    captures: {
+      "encode.json": "e76f6baf6681ad1d75c4503a545f9f2d49900bed566b0dc1d76d4373f6b503bf",
+      "encode.safetensors": "8d4fb0dda2c92b40b09ca1601fd385f30550a49eb49942235bbeb6ff58124122",
+      "schedule-8.safetensors": "0081c117fcbbaf074a8992535e4869df1356a942403a5926984e989047bb411c",
+      "schedule-50.safetensors": "d3c9c2dc93d29da5af446789ece7122c9993254830ba0a2648da3e38bce46698",
+      "noise.safetensors": "3855b5b7d668b749fb5e855c79b9668d6891816f3d76f407e1471e17cc7a5b4e",
+      "dit.safetensors": "c29012904c494a087ae6e08fb997ea3c6231fcb845b622081a5f63bc455c00b1",
+      "dit-mps.safetensors": "cd37e58473024ddd1d9494f729c2447221dc82eda9b41e733067713187643b82",
+      "sample-8.safetensors": "c38907e0e6b17c314d0cd81b9f61dccb837890c9bd28016dace337c32d02c22e",
+      "sample-8-mps.safetensors": "9054abae6e9a7c728a3d0a992f46f7e17605db5581d415c2022ece923dcdf093",
+      "delta.json": "5ed696c58db8008643e4bd02cfa8e53b2cfc90966dab0755830c5589191093d9",
+      "delta.safetensors": "9a3535ea24f3fad9a1a5fc7c3f01a794d315da035108ae6fed86b75dd0e64fef",
+    },
+  },
+  "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9": {
+    snapshot: {
+      "scheduler/scheduler_config.json": "707322832cc507dfb8c51c0e0cd04d44ee2d30a9b036b6f3c47d6c17aa71adf0",
+      "text_encoder/config.json": "b31ee18a242bcfcccbe740f825f6b1d3ae231b0655eeecb5de3e98d504b7d68c",
+      "text_encoder/model.safetensors.index.json": "0af6fa3fa36ba8dcbb6b7ad0325a36c5b1b69862a9a1f1486b1b80385bd8f5ee",
+      "text_encoder/model-00001-of-00004.safetensors": "abfaa3d3a8612508c85ee8f6da9c734b862f10298b903765c4ad384177c32b0b",
+      "text_encoder/model-00002-of-00004.safetensors": "9112637fa6bf4d07bafd6ae268852b18d3d0c1242f4ee901c5579006e5bd4894",
+      "text_encoder/model-00003-of-00004.safetensors": "956f1ef51d0cfe610b0d22987c0b7821c36e3ce228abceccef523518bcf079dc",
+      "text_encoder/model-00004-of-00004.safetensors": "9e21d20e8adde88c3e0b65d4a0d251f143d98ee9d52db36b4348361091e4e208",
+      "tokenizer/tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer/tokenizer_config.json": "bee8eba30f0eb4af73c0fe2cd06d0f89b657d7819941c438157ec42f7c80ea87",
+      "tokenizer/chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+      "transformer/config.json": "3291c3a1c7adc22b8182a0de25ca8ec97474d72715ce84adbab09cc0be24f666",
+      "transformer/diffusion_pytorch_model.safetensors.index.json": "b609327fc75dbe5080e7e095d8b727d74d728b4f98e8b047133b0082cfa2fb03",
+      "transformer/diffusion_pytorch_model-00001-of-00003.safetensors": "e40d3444940a0b0fd7cd45ba7959a5bd3d5efd7ddf87aae5ce4d87ce8aa03d01",
+      "transformer/diffusion_pytorch_model-00002-of-00003.safetensors": "d106da790ec2924ffd8af04b4ffa8f8de281a974b58e55649c3ec596dc8ef033",
+      "transformer/diffusion_pytorch_model-00003-of-00003.safetensors": "11f637ab17c7093344a6110a1e87ffda8e56558dc55183d8e790222cfcdcf52d",
+    },
+    captures: {
+      "encode.json": "1e07a7dcba95a80bfecb141ba9b1f129ee4954435a5bebe080ee013453124f15",
+      "encode.safetensors": "8d4fb0dda2c92b40b09ca1601fd385f30550a49eb49942235bbeb6ff58124122",
+      "schedule-8.safetensors": "0081c117fcbbaf074a8992535e4869df1356a942403a5926984e989047bb411c",
+      "schedule-50.safetensors": "d3c9c2dc93d29da5af446789ece7122c9993254830ba0a2648da3e38bce46698",
+      "noise.safetensors": "3855b5b7d668b749fb5e855c79b9668d6891816f3d76f407e1471e17cc7a5b4e",
+      "dit.safetensors": "c8d1115251904d74ff6fbd016227c31247048cee9f42aa0486b83ec98e782dea",
+      "dit-mps.safetensors": "aaf662162eeaf34a92c6867cba7a6215ab18f2547eee96cff5a580abbfe1c7d4",
+      "sample-8.safetensors": "d4ea36617636b350a75240b84f8f7cfb65e801a94bf0a7bd15f446563f40dcea",
+      "sample-8-mps.safetensors": "3c0a72b2c53f2afe4370423398f3412101c6830183d53bb481b59c40a1c177b4",
+      "delta.json": "c0d93d859fe19c023c13d3be8bcdb550453a1492a98856c54207233cdb9f9f9d",
+      "delta.safetensors": "9a3535ea24f3fad9a1a5fc7c3f01a794d315da035108ae6fed86b75dd0e64fef",
+    },
+  },
+};
+
 const ORIGINAL = {
   hidden: { relative: 3e-2, minCosine: 0.999, meanCosine: 0.9995 },
   trajectory: { relative: 6e-2, minCosine: 0.995 },
 } as const;
-/** Revised after measurement; see the header. */
+/** Investigative only (see the header). */
 const SPREAD_FACTOR = 2;
+/** Linear attention bounds, fixed before the first comparison (see the header). */
+const DELTA = {
+  /** bf16 ulps of the reference value, every element. */
+  l2NormUlps: 1,
+  /** float32 ulps of the reference value, every element. */
+  softplusUlps: 4,
+  logDecayUlps: 8,
+  /** The recurrence's float32 outputs from the reference's own float32 inputs: relative Frobenius error, every length. */
+  recurrenceRelative: 1e-4,
+  /** The whole rule's bf16 outputs from the bf16 inputs. */
+  rule: { relative: 4e-3, minCosine: 0.99999 },
+  /** A real layer's linear attention on its real input. */
+  mixer: { relative: 1e-2, minCosine: 0.9999 },
+} as const;
 
 interface Stats { relative: number; maxAbs: number; minCosine: number; meanCosine: number }
+interface UlpStats { total: number; mismatches: number; maxUlps: number }
 interface Bounds { relative: number; minCosine: number; meanCosine?: number }
 interface Check {
   stage: string;
-  measured: Stats;
-  original: Bounds & { pass: boolean };
-  /** The criterion actually asserted when it is not the original. */
-  revised?: { criterion: string; pass: boolean };
+  measured: Stats | UlpStats;
+  /** The criterion asserted and its verdict. */
+  asserted: { criterion: string; pass: boolean };
+  /** The original bounds' verdict, for checks the original criteria cover. */
+  original?: Bounds & { pass: boolean };
+  investigative?: { criterion: string; pass: boolean };
   referenceSpread?: Stats;
 }
 
@@ -96,12 +193,30 @@ function compare(actual: Float32Array, expected: Float32Array, width: number, fr
   return { relative: Math.sqrt(diff / norm), maxAbs, minCosine, meanCosine: cosines / (to - from) };
 }
 
+const word = new Uint32Array(1), single = new Float32Array(word.buffer);
+/** The float32 spacing above |v|. */
+const ulpFloat32 = (v: number) => { single[0] = Math.abs(v); word[0] = word[0]! + 1; return single[0]! - Math.abs(v) || 2 ** -149; };
+/** The bf16 spacing above |v| (a bf16 value). */
+const ulpBf16 = (v: number) => { single[0] = Math.abs(v); word[0] = (word[0]! & 0xffff0000) + 0x10000; return single[0]! - Math.abs(v) || 2 ** -133; };
+/** How many elements differ, and the largest difference in units of `ulp` at the reference value. */
+function ulpDistance(actual: Float32Array, expected: Float32Array, ulp: (v: number) => number): UlpStats {
+  expect(actual.length).toBe(expected.length);
+  let mismatches = 0, maxUlps = 0;
+  for (let i = 0; i < expected.length; i++) {
+    const d = Math.abs(actual[i]! - expected[i]!);
+    if (d > 0) { mismatches++; maxUlps = Math.max(maxUlps, d / ulp(expected[i]!)); }
+  }
+  return { total: expected.length, mismatches, maxUlps };
+}
+
 const meets = (stats: Stats, bounds: Bounds) => stats.relative <= bounds.relative && stats.minCosine >= bounds.minCosine &&
   (bounds.meanCosine === undefined || stats.meanCosine >= bounds.meanCosine);
-const format = (stats: Stats) => `relative ${stats.relative.toExponential(3)}, max |diff| ${stats.maxAbs.toExponential(3)}, ` +
-  `cosine min ${stats.minCosine.toFixed(6)} mean ${stats.meanCosine.toFixed(6)}`;
+const format = (measured: Stats | UlpStats) => "maxUlps" in measured
+  ? `${measured.mismatches}/${measured.total} elements differ, at most ${measured.maxUlps.toFixed(3)} ulp`
+  : `relative ${measured.relative.toExponential(3)}, max |diff| ${measured.maxAbs.toExponential(3)}, ` +
+    `cosine min ${measured.minCosine.toFixed(6)} mean ${measured.meanCosine.toFixed(6)}`;
 
-describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance pending review)", async () => {
+describe("MOSS-Image against the PyTorch reference (adjudicated criteria; acceptance pending)", async () => {
   // A describe body always runs to collect its tests: without the opt-in, register one visible skip and read nothing.
   if (!opted) { test.skip(`needs ${OPT_IN.join(" and ")}`, () => {}); return; }
   const snapshot = opted.MLX_BUN_MOSS_IMAGE_SNAPSHOT, captures = opted.MLX_BUN_MOSS_IMAGE_ORACLE;
@@ -111,14 +226,41 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
   const ffi = await import("@mlx-bun/mlx/ffi");
   const ops = await import("@mlx-bun/mlx/ops");
   const { SafetensorsFile: Safetensors } = await import("../../src/artifacts/safetensors");
+  const { loadModelConfig } = await import("../../src/artifacts/config");
+  const { Weights } = await import("../../src/artifacts/weights");
+  const { gatedDeltaFloat32 } = await import("../../src/kernels/gated-delta-float32");
+  const { bindMossLinear } = await import("../../src/models/moss-image/layers");
   const { MossImageSchedule, parseMossImageScheduleConfig } = await import("../../src/models/moss-image/scheduler");
   const { MossImageConditioner } = await import("../../src/models/moss-image/text-encoder");
+  const { MossTextDeltaMixer, MossTextDeltaRecurrence, MossTextGatedNorm, MossTextL2Norm, MossTextLogDecay } =
+    await import("../../src/models/moss-image/text-layers");
   const { MossImageTransformer, parseMossTransformerConfig } = await import("../../src/models/moss-image/transformer");
   const { denoiseLatents, guidanceFor } = await import("../../src/generation/image");
   type Array = InstanceType<typeof MlxArray>;
 
   const checks: Check[] = [];
   const exact: { stage: string; pass: boolean }[] = [];
+  const verified: { snapshot: Record<string, string>; captures: Record<string, string>; hubBlobNames: Record<string, string> } =
+    { snapshot: {}, captures: {}, hubBlobNames: {} };
+  let inputsVerified = false;
+
+  beforeAll(async () => {
+    const revision = basename(snapshot), pinned = PINS[revision];
+    if (!pinned) throw new Error(`${revision} has no pins (pinned revisions: ${Object.keys(PINS).join(", ")})`);
+    const mismatched: string[] = [];
+    for (const [where, root, pins] of [["snapshot", snapshot, pinned.snapshot], ["captures", captures, pinned.captures]] as const) {
+      for (const [file, expected] of Object.entries(pins)) {
+        const path = join(root, file), actual = await fileSha256(path);
+        verified[where][file] = actual;
+        if (actual !== expected) mismatched.push(`${where}/${file}: ${actual}, pinned ${expected}`);
+        // Provenance only: the cache names a blob after its hash, but the name is not the bytes.
+        if (where === "snapshot" && lstatSync(path).isSymbolicLink()) verified.hubBlobNames[file] = basename(readlinkSync(path));
+      }
+    }
+    if (mismatched.length) throw new Error(`inputs differ from the pins:\n${mismatched.join("\n")}`);
+    inputsVerified = true;
+  }, 1_800_000);
+
   const files = new Map<string, SafetensorsFile>();
   const capture = (file: string) => {
     let opened = files.get(file);
@@ -141,39 +283,47 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
   };
   /** A captured tensor on the device in its stored dtype. */
   const device = (file: string, name: string): Array => {
-    const source = capture(file), info = source.tensors.get(name)!;
+    const source = capture(file), info = source.tensors.get(name);
+    if (!info) throw new Error(`${file}.safetensors has no ${name}`);
     const dtype = { F32: Dtype.float32, BF16: Dtype.bfloat16, I32: Dtype.int32 }[info.dtype as "F32" | "BF16" | "I32"];
     return MlxArray.fromBytesCopy(source.view(name), info.shape, dtype);
   };
   // A transposed view keeps its layout through a cast; read row-major memory.
   const values = (array: Array) => { using wide = array.astype(Dtype.float32); using rowMajor = ops.contiguous(wide); return rowMajor.toFloat32(); };
 
-  /** Record a check under the original bounds and, when given, assert the revised criterion instead (and say so). */
-  const record = (stage: string, stats: Stats, original: Bounds, revised?: { criterion: string; pass: boolean }, referenceSpread?: Stats) => {
-    const check: Check = { stage, measured: stats, original: { ...original, pass: meets(stats, original) }, ...(revised ? { revised } : {}),
-      ...(referenceSpread ? { referenceSpread } : {}) };
+  const report = (check: Check) => {
     checks.push(check);
-    console.log(`${stage}: ${format(stats)} | ORIGINAL ${check.original.pass ? "met" : "NOT MET"}` +
-      (revised ? ` | revised (${revised.criterion}) ${revised.pass ? "met" : "NOT MET"}` : "") +
-      (referenceSpread ? `\n  reference MPS vs CPU: ${format(referenceSpread)}` : ""));
-    if (revised) expect(revised.pass, `${stage}: ${revised.criterion}`).toBe(true);
-    else expect(check.original.pass, `${stage}: original bounds`).toBe(true);
+    console.log(`${check.stage}: ${format(check.measured)} | ${check.asserted.criterion}: ${check.asserted.pass ? "met" : "NOT MET"}` +
+      (check.original && check.asserted.criterion !== "original bounds" ? ` | ORIGINAL ${check.original.pass ? "met" : "NOT MET"}` : "") +
+      (check.investigative ? ` | investigative (${check.investigative.criterion}) ${check.investigative.pass ? "met" : "not met"}` : "") +
+      (check.referenceSpread ? `\n  reference MPS vs CPU: ${format(check.referenceSpread)}` : ""));
   };
+  /** A check the original criteria cover: asserted against them unless the review adjudicated otherwise. */
+  const record = (stage: string, stats: Stats, original: Bounds,
+    extra: { adjudicated?: { criterion: string; pass: boolean }; investigative?: { criterion: string; pass: boolean }; referenceSpread?: Stats } = {}) => {
+    const verdict = meets(stats, original);
+    report({ stage, measured: stats, original: { ...original, pass: verdict }, asserted: extra.adjudicated ?? { criterion: "original bounds", pass: verdict },
+      ...(extra.investigative ? { investigative: extra.investigative } : {}), ...(extra.referenceSpread ? { referenceSpread: extra.referenceSpread } : {}) });
+  };
+  /** A linear attention check against its `DELTA` bound. */
+  const recordDelta = (stage: string, measured: Stats | UlpStats, criterion: string, pass: boolean) => report({ stage, measured, asserted: { criterion, pass } });
+  /** Every check a test recorded holds its asserted criterion (all are recorded first, so one failure hides none). */
+  const assertRecorded = (from: number) =>
+    expect(checks.slice(from).filter(check => !check.asserted.pass).map(check => `${check.stage}: ${check.asserted.criterion}`)).toEqual([]);
 
   afterAll(async () => {
-    const pins: Record<string, unknown> = {
-      snapshot: { path: snapshot, revision: basename(snapshot) },
-      reference: JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")).versions,
-      captures: Object.fromEntries(await Promise.all([...files.keys()].map(async file =>
-        [`${file}.safetensors`, await fileSha256(join(captures, `${file}.safetensors`))] as const))),
-    };
-    const originalFailures = checks.filter(check => !check.original.pass).map(check => check.stage)
-      .concat(exact.filter(item => !item.pass).map(item => item.stage));
-    const revisedFailures = checks.filter(check => check.revised && !check.revised.pass).map(check => check.stage);
-    writeFileSync(resultsPath, JSON.stringify({ status: "acceptance pending review", originalCriteria: ORIGINAL,
-      revisedCriteria: { spreadFactor: SPREAD_FACTOR, intermediateWorstToken: "reported", lastBlockTextRows: "reported" },
-      pins, exact, checks, originalFailures, revisedFailures }, null, 2));
-    console.log(`ORIGINAL criteria not met by: ${originalFailures.length ? originalFailures.join("; ") : "none"}`);
+    const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: import.meta.dir }).stdout.toString().trim();
+    const failures = checks.filter(check => !check.asserted.pass).map(check => check.stage).concat(exact.filter(item => !item.pass).map(item => item.stage));
+    const originalFailures = checks.filter(check => check.original && !check.original.pass).map(check => check.stage);
+    writeFileSync(resultsPath, JSON.stringify({ status: "acceptance pending", originalCriteria: ORIGINAL, delta: DELTA,
+      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7"] },
+      investigative: { spreadFactor: SPREAD_FACTOR },
+      implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },
+      inputs: { revision: basename(snapshot), verified: inputsVerified, sha256: { snapshot: verified.snapshot, captures: verified.captures },
+        provenanceOnly: { hubBlobNames: verified.hubBlobNames } },
+      reference: existsSync(join(captures, "encode.json")) ? JSON.parse(readFileSync(join(captures, "encode.json"), "utf8")).versions : null,
+      exact, checks, failures, originalFailures }, null, 2));
+    console.log(`asserted criteria not met by: ${failures.length ? failures.join("; ") : "none"}`);
     console.log(`results written to ${resultsPath}`);
   });
 
@@ -182,6 +332,7 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
   const transformerConfig = () => parseMossTransformerConfig(JSON.parse(readFileSync(join(snapshot, "transformer/config.json"), "utf8")));
 
   test("the schedule's noise levels and timesteps equal the reference's (original criterion: exact)", () => {
+    expect(inputsVerified).toBe(true);
     for (const steps of [8, 50]) {
       const sigmas = Array.from(schedule.sigmas(steps)), expected = Array.from(host(`schedule-${steps}`, "sigmas"));
       const timesteps = sigmas.slice(0, -1).map(sigma => schedule.timestep(sigma)), expectedTimesteps = Array.from(host(`schedule-${steps}`, "timesteps"));
@@ -193,6 +344,8 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
   });
 
   test("the conditioner's tokens equal the reference's and its hidden states agree (original criteria)", async () => {
+    expect(inputsVerified).toBe(true);
+    const from = checks.length;
     ffi.resetPeakMemory();
     const conditioner = await MossImageConditioner.open(join(snapshot, "text_encoder"), join(snapshot, "tokenizer"));
     try {
@@ -208,14 +361,89 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
       ffi.clearCache();
     }
     console.log(`conditioner peak ${(ffi.peakMemory() / 2 ** 30).toFixed(2)} GiB`);
+    assertRecorded(from);
   }, 600_000);
 
-  test("the DiT's stages agree from identical inputs (revised criteria for intermediate blocks, pending review)", async () => {
+  test("the conditioner's linear attention agrees with the reference's at chunk boundaries and on real layers (bounds fixed before the first run)", async () => {
+    expect(inputsVerified).toBe(true);
+    const from = checks.length;
+    const meta = JSON.parse(readFileSync(join(captures, "delta.json"), "utf8")) as
+      { lengths: number[]; layers: number[]; tokens: Record<string, number>; shape: { key_heads: number; value_heads: number; key_dim: number; value_dim: number } };
+    const { key_heads: keyHeads, value_heads: valueHeads, key_dim: keyDim, value_dim: valueDim } = meta.shape;
+    using aLog = device("delta", "A_log"), dtBias = device("delta", "dt_bias");
+    const logDecay = new MossTextLogDecay(aLog, dtBias), norm = new MossTextL2Norm(), rule = new MossTextDeltaRecurrence(logDecay, keyDim);
+    const scale = Math.fround(1 / Math.sqrt(keyDim));
+    for (const length of meta.lengths) {
+      const at = (name: string) => `L${length}.${name}`, tag = `L=${length}`;
+      using q = device("delta", at("q")), k = device("delta", at("k")), v = device("delta", at("v"));
+      using a = device("delta", at("a")), b = device("delta", at("b"));
+      for (const [name, x] of [["q", q], ["k", k]] as const) {
+        using ours = norm.forward(x);
+        const measured = ulpDistance(values(ours), host("delta", at(`${name}_norm`)), ulpBf16);
+        recordDelta(`${tag} ${name} l2norm (bf16)`, measured, `within ${DELTA.l2NormUlps} bf16 ulp`, measured.maxUlps <= DELTA.l2NormUlps);
+      }
+      // The softplus input exactly as the reference forms it: a.float() + dt_bias, in float32.
+      using aWide = a.astype(Dtype.float32), dtWide = dtBias.astype(Dtype.float32);
+      using x = ops.add(aWide, dtWide);
+      using softplus = logDecay.softplus(x);
+      const softplusMeasured = ulpDistance(values(softplus), host("delta", at("softplus")), ulpFloat32);
+      recordDelta(`${tag} softplus (float32)`, softplusMeasured, `within ${DELTA.softplusUlps} float32 ulps`, softplusMeasured.maxUlps <= DELTA.softplusUlps);
+      using g = logDecay.forward(a);
+      const gMeasured = ulpDistance(values(g), host("delta", at("g")), ulpFloat32);
+      recordDelta(`${tag} log-decay (float32)`, gMeasured, `within ${DELTA.logDecayUlps} float32 ulps`, gMeasured.maxUlps <= DELTA.logDecayUlps);
+      // The recurrence alone, from the reference's own float32 inputs (its normalized q and k, v, beta and g).
+      using qNorm = device("delta", at("q_norm")), kNorm = device("delta", at("k_norm")), betaRef = device("delta", at("beta")), gRef = device("delta", at("g"));
+      using qWide = qNorm.astype(Dtype.float32), kWide = kNorm.astype(Dtype.float32), vWide = v.astype(Dtype.float32), betaWide = betaRef.astype(Dtype.float32);
+      using qScaled = ops.mulScalar(qWide, scale);
+      using decay = ops.exp(gRef);
+      using y32 = gatedDeltaFloat32(qScaled, kWide, vWide, decay, betaWide);
+      const recurrence = compare(values(y32), host("delta", at("out_f32")), valueDim);
+      recordDelta(`${tag} recurrence from identical float32 inputs`, recurrence, `relative <= ${DELTA.recurrenceRelative}`, recurrence.relative <= DELTA.recurrenceRelative);
+      using y16 = y32.astype(Dtype.bfloat16);
+      console.log(`  ${tag} recurrence outputs stored in bf16: ${format(ulpDistance(values(y16), host("delta", at("out")), ulpBf16))}`);
+      // The whole rule from the bf16 inputs.
+      using out = rule.forward(q, k, v, a, b);
+      const whole = compare(values(out), host("delta", at("out")), valueDim);
+      recordDelta(`${tag} delta rule (bf16)`, whole, `relative <= ${DELTA.rule.relative}, every row's cosine >= ${DELTA.rule.minCosine}`,
+        whole.relative <= DELTA.rule.relative && whole.minCosine >= DELTA.rule.minCosine);
+      console.log(`  ${tag} delta rule: ${format(ulpDistance(values(out), host("delta", at("out")), ulpBf16))}`);
+    }
+    // Real layers: each linear attention on the hidden states it received for the 23- and 203-token prompts.
+    const textDir = join(snapshot, "text_encoder"), config = await loadModelConfig(textDir), weights = await Weights.open(textDir);
+    try {
+      for (const layer of meta.layers) {
+        const p = `language_model.layers.${layer}.linear_attn`, linear = (name: string) => bindMossLinear(weights, config, `${p}.${name}`);
+        const mixer = new MossTextDeltaMixer(linear("in_proj_qkv"), linear("in_proj_z"), linear("in_proj_b"), linear("in_proj_a"), linear("out_proj"),
+          weights.tensor(`${p}.conv1d.weight`), new MossTextDeltaRecurrence(new MossTextLogDecay(weights.tensor(`${p}.A_log`), weights.tensor(`${p}.dt_bias`)), keyDim),
+          new MossTextGatedNorm(weights.tensor(`${p}.norm.weight`), config.text.rmsNormEps), { keyHeads, valueHeads, keyDim, valueDim });
+        try {
+          for (const prompt of Object.keys(meta.tokens)) {
+            using flat = device("delta", `${prompt}.layer${layer}.input`);
+            using input = ops.reshape(flat, [1, ...flat.shape]);
+            using output = mixer.forward(input);
+            const stats = compare(values(output), host("delta", `${prompt}.layer${layer}.output`), flat.shape.at(-1)!);
+            recordDelta(`layer ${layer} linear attention, ${meta.tokens[prompt]}-token prompt`, stats,
+              `relative <= ${DELTA.mixer.relative}, every token's cosine >= ${DELTA.mixer.minCosine}`,
+              stats.relative <= DELTA.mixer.relative && stats.minCosine >= DELTA.mixer.minCosine);
+          }
+        } finally { mixer.dispose(); }
+      }
+    } finally {
+      weights.dispose();
+      ffi.clearCache();
+    }
+    assertRecorded(from);
+  }, 900_000);
+
+  test("the DiT's stages agree from identical inputs (original criteria; the last block's text rows adjudicated)", async () => {
+    expect(inputsVerified).toBe(true);
+    const from = checks.length;
     ffi.resetPeakMemory();
     const dit = await MossImageTransformer.open(join(snapshot, "transformer"), transformerConfig());
     const spreadFile = existsSync(join(captures, "dit-mps.safetensors")) ? "dit-mps" : null;
     const spread = (name: string, width: number, from = 0, to?: number) =>
       spreadFile ? compare(host(spreadFile, name), host("dit", name), width, from, to) : undefined;
+    const spreadOf = (stats: Stats | undefined) => stats ? { referenceSpread: stats } : {};
     try {
       const timesteps = host("schedule-8", "timesteps");
       using latents = device("noise", "latents");
@@ -244,34 +472,40 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
           if ([0, 21, 22].includes(i)) {
             const stats = compare(values(x), host("dit", name), 3072);
             record(`${tag} block ${i}`, stats, ORIGINAL.hidden, {
-              criterion: "relative and mean cosine; worst token reported",
-              pass: stats.relative <= ORIGINAL.hidden.relative && stats.meanCosine >= ORIGINAL.hidden.meanCosine,
-            }, spread(name, 3072));
+              investigative: { criterion: "relative and mean cosine; worst token beside the reference's spread",
+                pass: stats.relative <= ORIGINAL.hidden.relative && stats.meanCosine >= ORIGINAL.hidden.meanCosine },
+              ...spreadOf(spread(name, 3072)),
+            });
           }
           if (i === dit.blocks.length - 1) {
             const ours = values(x), reference = host("dit", name);
             record(`${tag} block ${i} all rows`, compare(ours, reference, 3072), ORIGINAL.hidden, {
-              criterion: "image rows held (next check); text rows reported", pass: true }, spread(name, 3072));
-            const imageRows = compare(ours, reference, 3072, 0, tokens);
-            record(`${tag} block ${i} image rows`, imageRows, ORIGINAL.hidden, undefined, spread(name, 3072, 0, tokens));
+              adjudicated: { criterion: "text rows reported, image rows held (review)", pass: true },
+              ...spreadOf(spread(name, 3072)),
+            });
+            record(`${tag} block ${i} image rows`, compare(ours, reference, 3072, 0, tokens), ORIGINAL.hidden,
+              spreadOf(spread(name, 3072, 0, tokens)));
           }
         }
         x.dispose();
         using velocity = dit.velocity(latents, timestep, context);
-        record(`${tag} velocity`, compare(values(velocity), host("dit", `${tag}.velocity`), tokens), ORIGINAL.hidden, undefined,
-          spread(`${tag}.velocity`, tokens));
+        record(`${tag} velocity`, compare(values(velocity), host("dit", `${tag}.velocity`), tokens), ORIGINAL.hidden,
+          spreadOf(spread(`${tag}.velocity`, tokens)));
         using skipped = dit.velocity(latents, timestep, context, new Set([22]));
         record(`${tag} velocity, block 22 skipped`, compare(values(skipped), host("dit", `${tag}_skip22.velocity`), tokens), ORIGINAL.hidden,
-          undefined, spread(`${tag}_skip22.velocity`, tokens));
+          spreadOf(spread(`${tag}_skip22.velocity`, tokens)));
       }
     } finally {
       dit.dispose();
       ffi.clearCache();
     }
     console.log(`DiT peak ${(ffi.peakMemory() / 2 ** 30).toFixed(2)} GiB`);
+    assertRecorded(from);
   }, 1_200_000);
 
-  test("the 8-step guided trajectory agrees from identical noise and conditioning (revised criterion, pending review)", async () => {
+  test("the 8-step guided trajectory agrees from identical noise and conditioning (original criteria)", async () => {
+    expect(inputsVerified).toBe(true);
+    const from = checks.length;
     const dit = await MossImageTransformer.open(join(snapshot, "transformer"), transformerConfig());
     try {
       using noise = device("noise", "latents");
@@ -283,10 +517,11 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
       const trajectoryStep = (index: number, ours: Float32Array) => {
         const name = `step${index}`, stats = compare(ours, host("sample-8", name), tokens);
         const spread = calibrated ? compare(host("sample-8-mps", name), host("sample-8", name), tokens) : undefined;
-        record(`trajectory step ${index}`, stats, ORIGINAL.trajectory, spread
-          ? { criterion: `relative <= ${SPREAD_FACTOR}x the reference's MPS-vs-CPU relative (${(SPREAD_FACTOR * spread.relative).toExponential(3)})`,
-            pass: stats.relative <= SPREAD_FACTOR * spread.relative }
-          : undefined, spread);
+        record(`trajectory step ${index}`, stats, ORIGINAL.trajectory, spread ? {
+          investigative: { criterion: `relative <= ${SPREAD_FACTOR}x the reference's MPS-vs-CPU relative (${(SPREAD_FACTOR * spread.relative).toExponential(3)})`,
+            pass: stats.relative <= SPREAD_FACTOR * spread.relative },
+          referenceSpread: spread,
+        } : {});
       };
       const seen: number[] = [];
       let calls = 0;
@@ -305,5 +540,6 @@ describe("MOSS-Image against the PyTorch reference (revised criteria, acceptance
       dit.dispose();
       ffi.clearCache();
     }
+    assertRecorded(from);
   }, 1_800_000);
 });
