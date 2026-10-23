@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { AppModule, JobService } from "@mlx-bun/app-core";
@@ -763,6 +763,109 @@ test("an image request naming a local image model by exact id starts that model'
     rmSync(root, { recursive: true, force: true });
   }
   expect(leftover).toEqual([]);
+}, 60_000);
+
+test("what the real image worker holds for a snapshot never exceeds what the parent charged it, even when the stage budget falls between the bytes its stages load and its weight files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-bound-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  /** A safetensors file holding these tensors (name to bytes). */
+  const safetensors = (tensors: Record<string, number>) => {
+    const header: Record<string, unknown> = {};
+    let offset = 0;
+    for (const [name, bytes] of Object.entries(tensors)) { header[name] = { dtype: "U8", shape: [bytes], data_offsets: [offset, offset + bytes] }; offset += bytes; }
+    const json = new TextEncoder().encode(JSON.stringify(header));
+    const file = new Uint8Array(8 + json.length + offset);
+    new DataView(file.buffer).setBigUint64(0, BigInt(json.length), true);
+    file.set(json, 8);
+    return file;
+  };
+  // Each component's weight file also holds tensors its stage never loads (`unused.*`): the stages load 400 + 450 + 100 = 950 bytes,
+  // the files hold more than 1500. The budget, 1000 bytes, falls between the two totals.
+  const picture = record(root, "org/picture", 1e9);
+  const components = { text_encoder: { "used.weight": 400, "unused.weight": 300 }, transformer: { "used.weight": 450, "unused.weight": 50 },
+    vae: { "used.weight": 100, "unused.weight": 200 } };
+  const index: Record<string, unknown> = { _class_name: "SomeImagePipeline", tokenizer: ["library", "Tokenizer"] };
+  mkdirSync(join(picture.path, "tokenizer"), { recursive: true });
+  for (const [name, tensors] of Object.entries(components)) {
+    index[name] = ["library", "Component"];
+    mkdirSync(join(picture.path, name));
+    writeFileSync(join(picture.path, name, "model.safetensors"), safetensors(tensors));
+  }
+  writeFileSync(join(picture.path, "model_index.json"), JSON.stringify(index));
+  const budget = 1_000;
+  // The parent's charge and the launch it sends, over the fake worker.
+  const tmp = privateTmp(root);
+  const launches = join(root, "launches.jsonl");
+  const running = await inTmp(tmp, async () => startIsolatedServer(record(root, "org/model"), options, { entry, env: { ...workerEnv, FAKE_WORKER_RECORD: launches },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? [picture] : [], stageBudgetBytes: budget, notice() {}, log() {}, error() {} }));
+  let charge: number, launch: Record<string, unknown>;
+  try {
+    const base = new URL(`http://127.0.0.1:${running.port}`);
+    await (await fetch(new URL("/v1/images/generations", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt: "a cat" }) })).json();
+    const stats = await (await fetch(new URL("/stats", base))).json() as { models: { resident: { id: string; bytes: number }[] } };
+    charge = stats.models.resident.find(model => model.id === "org/picture")!.bytes;
+    launch = readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(JSON.parse(line).launch) as Record<string, unknown>).find(entry => entry.kind === "image")!;
+  } finally { await running.close(); }
+  // The real image worker composition run with that launch; its pipeline backend reports, per stage, the bytes of the tensors the
+  // stage loads (`used.*`) from the same files, and records whether each run releases its stages.
+  const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
+  const socket = join(root, "worker.sock");
+  const script = `
+    import { mock } from "bun:test";
+    import { readFileSync } from "node:fs";
+    import { EventEmitter } from "node:events";
+    const app = ${JSON.stringify(app)};
+    const used = file => {
+      const bytes = readFileSync(file), length = Number(new DataView(bytes.buffer, bytes.byteOffset).getBigUint64(0, true));
+      const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + length)));
+      return Object.entries(header).filter(([name]) => name.startsWith("used.")).reduce((sum, [, tensor]) => sum + tensor.data_offsets[1] - tensor.data_offsets[0], 0);
+    };
+    const runs = [];
+    let stageBytes;
+    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
+    mock.module(${JSON.stringify(backend)}, () => ({ nativeImageBackend: { async load(directory) {
+      stageBytes = { conditioner: used(directory + "/text_encoder/model.safetensors"), denoiser: used(directory + "/transformer/model.safetensors"),
+        decoder: used(directory + "/vae/model.safetensors") };
+      return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16, stageBytes,
+        async generate(request, options) { runs.push(options.releaseStages);
+          return { width: 16, height: 16, pixels: new Uint8Array(16 * 16 * 3), seed: 1, steps: 1, guidance: 1, timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } }; },
+        dispose() {} };
+    } } }));
+    const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
+    const { encodeLaunch } = await import(app + "src/jobs/worker-process.ts");
+    const launch = { ...JSON.parse(process.env.LAUNCH), socketPath: process.env.WORKER_SOCKET };
+    let push, end;
+    const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
+    push(encodeLaunch(launch) + "\\n");
+    const written = [];
+    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter() });
+    while (written.length === 0) await Bun.sleep(5);
+    const response = await fetch("http://worker/v1/images/generations", { method: "POST", unix: launch.socketPath, headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "a cat", size: "16x16" }) });
+    console.error("HELD " + JSON.stringify({ status: response.status, runs, stageBytes }));
+    end();
+    await exited;
+  `;
+  try {
+    const result = await runChild(script, { LAUNCH: JSON.stringify(launch), WORKER_SOCKET: socket, HOME: root, MLX_BUN_HOME: join(root, "home") });
+    const line = result.stderr.split("\n").find(entry => entry.startsWith("HELD "));
+    expect(line, result.stderr).toBeDefined();
+    const held = JSON.parse(line!.slice("HELD ".length)) as { status: number; runs: boolean[]; stageBytes: Record<string, number> };
+    expect(held.status).toBe(200);
+    const stages = Object.values(held.stageBytes), native = stages.reduce((sum, bytes) => sum + bytes, 0);
+    const files = Object.keys(components).reduce((sum, name) => sum + statSync(join(picture.path, name, "model.safetensors")).size, 0);
+    // The boundary this test is about: the budget falls strictly between what the stages load and what the files hold.
+    expect([native, native < budget, budget < files]).toEqual([950, true, true]);
+    // What one run of the worker keeps open: the largest stage when it releases them per run, else all of them.
+    expect(held.runs).toHaveLength(1);
+    const runHolds = held.runs[0] ? Math.max(...stages) : native;
+    expect(runHolds, `the worker (releaseStages: ${held.runs[0]}) holds ${runHolds} bytes per run; the parent charged ${charge}`).toBeLessThanOrEqual(charge);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }, 60_000);
 
 test("a GPU-exclusive job and an image run never overlap: the job waits for the image run in flight, and an image request during the job waits for the job", async () => {
