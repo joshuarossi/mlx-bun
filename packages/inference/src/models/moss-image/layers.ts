@@ -8,54 +8,55 @@ import { quantFor, type ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { situ } from "../../kernels/situ";
 
-/** A dense projection, `x @ w.T (+ bias)`. Owns the transposed view it makes. */
+/** A dense projection without a bias, `x @ w.T`. Owns the transposed view it makes. */
 export class MossDenseLinear {
   readonly #wT: MlxArray;
-
-  constructor(readonly w: MlxArray, readonly bias: MlxArray | null) {
-    this.#wT = ops.transposeAxes(w, [1, 0]);
-  }
-
-  static load(weights: Weights, path: string): MossDenseLinear {
-    return new MossDenseLinear(weights.tensor(`${path}.weight`), weights.has(`${path}.bias`) ? weights.tensor(`${path}.bias`) : null);
-  }
-
+  constructor(readonly w: MlxArray) { this.#wT = ops.transposeAxes(w, [1, 0]); }
   /** `x` borrowed; returns an owned result. */
-  forward(x: MlxArray): MlxArray {
-    return this.bias ? ops.addmm(this.bias, x, this.#wT) : ops.matmul(x, this.#wT);
-  }
-
-  dispose(): void {
-    this.#wT.dispose();
-  }
+  forward(x: MlxArray): MlxArray { return ops.matmul(x, this.#wT); }
+  dispose(): void { this.#wT.dispose(); }
 }
 
-/** An MLX affine-quantized projection (`.weight` packed, `.scales`, `.biases`,
- * optional `.bias`). Holds only borrowed tensors. */
+/** A dense projection with a bias, `bias + x @ w.T`. Owns the transposed view it makes. */
+export class MossDenseBiasedLinear {
+  readonly #wT: MlxArray;
+  constructor(readonly w: MlxArray, readonly bias: MlxArray) { this.#wT = ops.transposeAxes(w, [1, 0]); }
+  forward(x: MlxArray): MlxArray { return ops.addmm(this.bias, x, this.#wT); }
+  dispose(): void { this.#wT.dispose(); }
+}
+
+/** An MLX affine-quantized projection without a bias (`.weight` packed, `.scales`, `.biases`). Holds only borrowed tensors. */
 export class MossQuantizedLinear {
-  constructor(readonly w: MlxArray, readonly scales: MlxArray, readonly biases: MlxArray | null,
-    readonly spec: ops.QuantSpec, readonly bias: MlxArray | null) {}
-
-  /** The spec comes from the component config's `quantization` table entry for `path`. */
-  static load(weights: Weights, path: string, config: ModelConfig): MossQuantizedLinear {
-    const spec = quantFor(config.quantization, path);
-    if (!spec) throw new Error(`${path}: the quantization table has no entry for a quantized projection`);
-    return new MossQuantizedLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.scales`),
-      weights.has(`${path}.biases`) ? weights.tensor(`${path}.biases`) : null, spec,
-      weights.has(`${path}.bias`) ? weights.tensor(`${path}.bias`) : null);
-  }
-
-  forward(x: MlxArray): MlxArray {
-    const out = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
-    if (!this.bias) return out;
-    using product = out;
-    return ops.add(product, this.bias);
-  }
-
+  constructor(readonly w: MlxArray, readonly scales: MlxArray, readonly biases: MlxArray, readonly spec: ops.QuantSpec) {}
+  forward(x: MlxArray): MlxArray { return ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true); }
   dispose(): void {}
 }
 
-export type MossLinear = MossDenseLinear | MossQuantizedLinear;
+/** An MLX affine-quantized projection with an additive `.bias`. Holds only borrowed tensors. */
+export class MossQuantizedBiasedLinear {
+  constructor(readonly w: MlxArray, readonly scales: MlxArray, readonly biases: MlxArray, readonly spec: ops.QuantSpec,
+    readonly bias: MlxArray) {}
+  forward(x: MlxArray): MlxArray {
+    using product = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    return ops.add(product, this.bias);
+  }
+  dispose(): void {}
+}
+
+export type MossLinear = MossDenseLinear | MossDenseBiasedLinear | MossQuantizedLinear | MossQuantizedBiasedLinear;
+
+/** The projection the artifact stores at `path`, bound once by a family graph's
+ * constructor: quantized when the component's quantization table covers the
+ * path (affine, so `.biases` is required), dense otherwise; biased when the
+ * checkpoint holds `.bias`. */
+export function bindMossLinear(weights: Weights, config: ModelConfig, path: string): MossLinear {
+  const spec = quantFor(config.quantization, path);
+  const weight = weights.tensor(`${path}.weight`);
+  const bias = weights.has(`${path}.bias`) ? weights.tensor(`${path}.bias`) : null;
+  if (!spec) return bias ? new MossDenseBiasedLinear(weight, bias) : new MossDenseLinear(weight);
+  const scales = weights.tensor(`${path}.scales`), biases = weights.tensor(`${path}.biases`);
+  return bias ? new MossQuantizedBiasedLinear(weight, scales, biases, spec, bias) : new MossQuantizedLinear(weight, scales, biases, spec);
+}
 
 /** RMS normalization with a learned gain: statistics in float32, the normalized
  * value in the input dtype times the gain (the reference `_RMSNorm`). */

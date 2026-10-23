@@ -12,7 +12,7 @@ import { Weights } from "../../artifacts/weights";
 import type { ImageConditioner } from "../../contracts/mlx/image-generation";
 import { ChatTemplate } from "../../input/chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "../../input/tokenizer";
-import { MossDenseLinear, MossQuantizedLinear, type MossLinear } from "./layers";
+import { bindMossLinear, type MossLinear } from "./layers";
 import {
   MossQuantizedTextEmbedding, MossTextAttention, MossTextAttentionLayer, MossTextDeltaLayer, MossTextDeltaMixer,
   MossTextEmbedding, MossTextGatedNorm, MossTextMlp, MossTextRmsNorm, MossTextRope,
@@ -43,14 +43,13 @@ export class MossImageConditioner implements ImageConditioner {
 
   constructor(readonly weights: Weights, config: ModelConfig, readonly tokenizer: LoadedTokenizer, readonly template: ChatTemplate) {
     const t = config.text, eps = t.rmsNormEps;
-    const linear = (path: string): MossLinear => quantFor(config.quantization, path)
-      ? MossQuantizedLinear.load(weights, path, config) : MossDenseLinear.load(weights, path);
+    const linear = (path: string): MossLinear => bindMossLinear(weights, config, path);
     const norm = (path: string) => new MossTextRmsNorm(weights.tensor(`${path}.weight`), eps);
     const mlp = (prefix: string) => new MossTextMlp(linear(`${prefix}.gate_proj`), linear(`${prefix}.up_proj`), linear(`${prefix}.down_proj`));
     const embedding = `${PREFIX}.embed_tokens`, embeddingSpec = quantFor(config.quantization, embedding);
     this.embedding = embeddingSpec
       ? new MossQuantizedTextEmbedding(weights.tensor(`${embedding}.weight`), weights.tensor(`${embedding}.scales`),
-        weights.has(`${embedding}.biases`) ? weights.tensor(`${embedding}.biases`) : null, embeddingSpec)
+        weights.tensor(`${embedding}.biases`), embeddingSpec)
       : new MossTextEmbedding(weights.tensor(`${embedding}.weight`));
     this.rope = new MossTextRope(Math.trunc(t.headDim * t.partialRotaryFactor), t.ropeParameters.full_attention!.ropeTheta);
     const attentionShape = { heads: t.numAttentionHeads, kvHeads: t.numKeyValueHeads, headDim: t.headDim };

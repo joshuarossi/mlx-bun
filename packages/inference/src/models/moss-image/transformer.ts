@@ -8,14 +8,14 @@
 // thing a forward reads.
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import { loadModelConfig, quantFor, type ModelConfig } from "../../artifacts/config";
+import { loadModelConfig, type ModelConfig } from "../../artifacts/config";
 import { Weights } from "../../artifacts/weights";
 import type { ImageDenoiser } from "../../contracts/mlx/image-generation";
 import {
   MossJointAttention, MossJointBlock, MossJointFeedForward, MossLatentEmbedder, MossLatentHead, MossModulation,
   MossTextAttention, MossTextBlock, MossTextFeedForward, MossTimestepEmbedder, MossTokenSequence,
 } from "./blocks";
-import { MossDenseLinear, MossQuantizedLinear, MossRmsNorm, MossSitu, type MossLinear } from "./layers";
+import { MossRmsNorm, MossSitu, bindMossLinear, type MossLinear } from "./layers";
 import { MossRope } from "./rope";
 
 /** `transformer/config.json`. */
@@ -80,8 +80,7 @@ export class MossImageTransformer implements ImageDenoiser {
   constructor(readonly weights: Weights, modelConfig: ModelConfig, readonly config: MossTransformerConfig) {
     this.latentChannels = config.latentChannels;
     this.depth = config.numLayers;
-    const linear = (path: string): MossLinear => quantFor(modelConfig.quantization, path)
-      ? MossQuantizedLinear.load(weights, path, modelConfig) : MossDenseLinear.load(weights, path);
+    const linear = (path: string): MossLinear => bindMossLinear(weights, modelConfig, path);
     const norm = (path: string) => new MossRmsNorm(weights.tensor(`${path}.weight`), NORM_EPS);
     const activation = new MossSitu();
     this.rope = new MossRope(config.dim / config.numHeads, config.ropeBase);

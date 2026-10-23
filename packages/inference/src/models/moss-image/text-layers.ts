@@ -67,12 +67,11 @@ export class MossTextEmbedding {
   forward(ids: MlxArray): MlxArray { return ops.takeAxis(this.table, ids, 0); }
 }
 
-/** An MLX affine-quantized embedding table: the rows dequantized. */
+/** An MLX affine-quantized embedding table (packed rows, scales and biases): the looked-up rows dequantized. */
 export class MossQuantizedTextEmbedding {
-  constructor(readonly table: MlxArray, readonly scales: MlxArray, readonly biases: MlxArray | null, readonly spec: ops.QuantSpec) {}
+  constructor(readonly table: MlxArray, readonly scales: MlxArray, readonly biases: MlxArray, readonly spec: ops.QuantSpec) {}
   forward(ids: MlxArray): MlxArray {
-    using rows = ops.takeAxis(this.table, ids, 0), scaleRows = ops.takeAxis(this.scales, ids, 0);
-    using biasRows = this.biases ? ops.takeAxis(this.biases, ids, 0) : null;
+    using rows = ops.takeAxis(this.table, ids, 0), scaleRows = ops.takeAxis(this.scales, ids, 0), biasRows = ops.takeAxis(this.biases, ids, 0);
     return ops.dequantize(rows, scaleRows, biasRows, this.spec);
   }
 }
