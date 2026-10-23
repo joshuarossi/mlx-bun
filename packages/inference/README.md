@@ -1340,6 +1340,13 @@ footprint is not explained.
 | q8, stages kept, 1024x1024 | 21.34 GB | 9.95 GB | 22.20 GiB |
 | bf16, stages released, 1024x1024 | 18.42 GB | 10.77 GB | 14.80 GiB |
 
+One run at the model card's defaults (bf16 Base, 1024x1024, 50 steps, stages
+released, seed 7) through `mlx-bun image` completed in 715 s: 6.8 s encoding, 693 s
+denoising (13.9 s a step, two DiT passes each under guidance) and 14.6 s decoding.
+Its OS peak footprint was 18.48 GB and its maximum resident set 8.98 GB, while swap
+in use grew from 6.2 to 9.0 GB. That is one run on a machine that was not idle, not
+a performance figure.
+
 ## Speculative generation
 
 `bun --no-env-file scripts/bench-mtp.ts --help` describes the paired MTP

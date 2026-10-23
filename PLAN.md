@@ -177,8 +177,9 @@ Open:
 - [ ] Memory on 24 GB: every measured run completed while the machine swapped, and the
       near-constant 18.4 GB process footprint under staging is unexplained. Exit: an
       explanation and a quiet-machine measurement of process footprint, RSS and MLX peak.
-- [ ] Serving gaps: `/v1/models` does not list image models, and in isolated serving the
-      image worker takes no execution lease (a GPU-exclusive job does not pause it).
+- [ ] Serving gaps: `/v1/models` does not list image models. In isolated serving an image
+      run pauses no chat worker (in-process it pauses every resident model), and the Whisper
+      worker, as on main, has no execution lease, so a GPU-exclusive job does not pause it.
 - [ ] q8 has numerical error measurements only; no quality evaluation, and no 4-bit
       artifact has been built or measured.
 - [ ] Decision (Josh): `DenseLinear` never disposes its transposed weight view, so a
