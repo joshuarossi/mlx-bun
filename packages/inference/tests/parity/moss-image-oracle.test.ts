@@ -302,7 +302,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     const originalFailures = checks.filter(check => check.original && !check.original.pass).map(check => check.stage);
     const execution = runStatus({ inputsVerified, tests: TESTS, completed, failures });
     writeFileSync(resultsPath, JSON.stringify({ status: execution.status, acceptance: "pending", execution, originalCriteria: ORIGINAL, delta: DELTA,
-      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7", "gated norm"] },
+      adjudicated: { lastBlockTextRows: "reported", unresolved: ["block 22 at step 4 (Base)", "trajectory steps 5 to 7"] },
       investigative: { spreadFactor: SPREAD_FACTOR },
       implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },
       inputs: { revision: basename(snapshot), verified: inputsVerified, ...(inputs.error ? { error: inputs.error } : {}),

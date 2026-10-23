@@ -334,19 +334,23 @@ takes transformers' torch fallback for linear attention) and diffusers 0.38.0's
 `AutoencoderKLFlux2`, torch 2.9.1 on the CPU, Python 3.12.13 (accelerate 1.15.0,
 safetensors 0.9.0rc1, numpy 2.5.4). That reference runs outside every checkout
 from `~/oracles/moss-image` (script SHA-256
-`7105613cfde4b67061490fef123e4a3cc7c88d9be9ebe098a3026797b415d3f1`, frozen
+`23c1265aab78771b5fbc2fda8d0f95153b84c32e9e88c55c57c3f734a8f783f8`, frozen
 requirements `937e32db24ba825eff0f431eed77af44f00a50c33ff254b6b249c90f864089da`;
-the stages before `delta` were written by earlier versions of the script whose
-changes only added the device option and the `delta` stage) and writes
+earlier captures were written by earlier versions of the script, whose changes
+only added the device option and the `delta` and `gated-norm-steps` stages) and writes
 safetensors captures: the tokenized prompts and hidden states, the schedule, its
 own seeded noise (an input here: equal seeds do not give equal noise across
 backends), DiT stage outputs at steps 0 and 4 of 8 with and without block 22, the
 8-step guided trajectory at 256x256, decoded pixels, the same DiT stages and
 trajectory on its MPS backend as a measure of its own variation, and the
-conditioner's linear attention (`delta`, `gated-norm`). Before any comparison the
-test computes the SHA-256 of every snapshot file and capture it reads and fails
-unless each equals its pin for that revision; Hugging Face cache symlink names
-are recorded as provenance only. Opt in with `MLX_BUN_MOSS_IMAGE_SNAPSHOT` and
+conditioner's linear attention (`delta`, `gated-norm`, and the gated norm's
+intermediates one operation at a time, `gated-norm-steps`, a diagnostic the test
+does not read). Before anything is read for a comparison the test computes the
+SHA-256 of every snapshot file and capture it reads and fails unless each equals
+its pin for that revision, and fails if any file in a snapshot directory a loader
+reads is unpinned (an extra index or shard could be selected). Hugging Face cache
+symlink names are recorded as provenance only. A run whose test stops before
+recording all its checks is labelled `incomplete`. Opt in with `MLX_BUN_MOSS_IMAGE_SNAPSHOT` and
 `MLX_BUN_MOSS_IMAGE_ORACLE`; `MLX_BUN_MOSS_IMAGE_RESULTS` names the results file
 (each check's measurement and verdicts, the verified hashes, the implementation's
 commit and modified files). The VAE has its own comparison in
@@ -388,15 +392,24 @@ match). The second run (`615f8167`) missed the gated norm on 7 elements; replays
 with SiLU as `x / (1 + exp(-x))` and float32 `rsqrt` as a square root and then a
 reciprocal mismatched fewer elements than the alternatives tried, so the layers
 use those forms, preferred by that evidence and not established as torch's. The
-bounds did not change.
+third run (`0ba290b6`) still missed the gated norm on 12 of 3,592,192 elements
+(2 ulps at length 128). The `gated-norm-steps` intermediates showed every one
+first diverging at the float32 variance; the squares and the division by 128 are
+exact, so only the summation order could differ, and one order reproduces torch's
+variance on all 28,064 rows bit for bit: four 4-lane accumulators (value `i` into
+accumulator `floor(i / 4) % 4`, lane `i % 4`), each lane summing in turn, then the
+accumulators lane by lane and the lanes, in order (inferred from that match to be
+torch's vectorized CPU reduction). The gated norm sums that way now. The bounds
+did not change.
 
 Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
-`0ba290b6`, Base `85975793` and SFT `f972bd4b`, inputs verified:
+`cf3451b2` with no local changes, Base `85975793` and SFT `f972bd4b`, inputs
+verified (17 snapshot files and 13 captures, nothing unpinned), every test complete:
 
 | Check | Base | SFT | Reference MPS vs CPU |
 |---|---|---|---|
 | token ids, schedule (8 and 50 steps) | exact | exact | |
-| conditioner, positive / negative (relative, min cosine) | 1.53e-2 0.99952 / 2.24e-2 0.99932 | the same (the same files) | |
+| conditioner, positive / negative (relative, min cosine) | 1.53e-2 0.99952 / 2.22e-2 0.99932 | the same (the same files) | |
 | velocity step 0 / 4 (relative) | 8.3e-3 / 2.0e-2 | 1.04e-2 / 1.76e-2 | 8.7e-3 / 2.4e-2 (Base) |
 | block 22 step 4, worst token cosine | 0.998336 (row 40), not met | 0.999828 | 0.999552 (Base) |
 | block 41, image rows (min cosine, step 0 / 4) | 0.99945 / 0.99900 | 0.99904 / 0.99942 | 0.99850 / 0.99886 (Base) |
@@ -406,19 +419,14 @@ Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
 | softplus / log-decay, 8 lengths | at most 4 / 5 float32 ulps | the same | |
 | recurrence from identical float32 inputs | 2.3e-7 to 1.6e-6 relative | the same | |
 | whole rule (bf16), 8 lengths | at most 8.8e-5 relative, min row cosine 0.9999986 | the same | |
-| gated norm, 8 lengths | 12 of 3,592,192 elements differ; 2 ulps at length 128, not met | the same | |
+| gated norm, 8 lengths | every element equal | equal | |
 | layers 0 / 30, 23- and 203-token prompts | 8.5e-5, 7.2e-5 / 3.1e-4, 5.4e-4 relative | the same | |
 | VAE (unpatched max, image max, pixels off by more than 1 level) | 0, 2.5e-5, 0 | | |
 
 The conditioner's previous binding (the shared delta and gated-norm kernels)
 measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer
-captures. The gated norm's residual is measured (12 elements, at most 2 bf16
-ulps); its cause is not established. Candidates are the variance's float32
-summation order (MLX's GPU reduction against torch's CPU one) and float32 exp,
-square root or division results an ulp apart; host replays of 15 summation
-orders left 6 to 26 mismatches, which neither confirms nor rules out either. Base's trajectory exceeds the original
-bound from step 5 by up to 1.61 times the reference's own cross-backend spread.
-Acceptance stays open until the three failures are resolved or decided. Not
+captures. Base's trajectory exceeds the original bound from step 5 by up to 1.61 times the reference's own cross-backend spread.
+Acceptance stays open until the two remaining failures are resolved or decided. Not
 covered: other prompts, sizes and step counts, the decoded 8-step images against
 each other beyond the VAE comparison, and performance.
 
