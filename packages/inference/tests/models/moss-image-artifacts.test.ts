@@ -5,7 +5,7 @@
 // a pipeline opened from a synthetic snapshot (configs and headers only; no
 // stage loads).
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadModelConfig } from "../../src/artifacts/config";
@@ -138,6 +138,12 @@ test("a pipeline opens from its configs, reports what each stage holds, and load
     expect([pipeline.latentChannels, pipeline.pixelsPerLatent, pipeline.depth]).toEqual([8, 4, 3]);
     // Only the tensors each stage reads: the derived RoPE bands, the vision tower and the encoder are excluded.
     expect(pipeline.stageBytes).toEqual({ conditioner: 24 * 4, denoiser: 32 * 32 * 4, decoder: 32 * 2 * 9 * 4 });
+    // Each stage holds less than its own component's files (headers and unread tensors), never more.
+    const files = (component: string) => readdirSync(join(root, "synthetic", component)).filter(file => file.endsWith(".safetensors"))
+      .reduce((sum, file) => sum + statSync(join(root, "synthetic", component, file)).size, 0);
+    const components = { conditioner: "text_encoder", denoiser: "transformer", decoder: "vae" } as const;
+    for (const [stage, component] of Object.entries(components))
+      expect(pipeline.stageBytes[stage as keyof typeof components]).toBeLessThan(files(component));
     // The reference's eight levels, exact float32 values (0.463 is the float above f32(0.463): torch's fused linspace step).
     expect(Array.from(pipeline.schedule.sigmas(8))).toEqual([1, 0.9679999947547913, 0.9259999990463257, 0.8709999918937683,
       0.7910000085830688, 0.6710000038146973, 0.46300002932548523, 0.024000000208616257, 0]);

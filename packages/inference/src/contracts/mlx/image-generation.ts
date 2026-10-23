@@ -51,7 +51,8 @@ export interface TextToImagePipeline {
   readonly pixelsPerLatent: number;
   /** The denoiser's block count, known before it opens. */
   readonly depth: number;
-  /** Weight bytes each stage holds while open. */
+  /** Weight bytes each stage holds while open: the bytes of the tensors it reads from its own component's safetensors
+   * files, so never more than those files' size (a host that loads no native code charges a pipeline from the files). */
   readonly stageBytes: Readonly<Record<ImageStage, number>>;
   conditioner(): Promise<ImageConditioner>;
   denoiser(): Promise<ImageDenoiser>;
