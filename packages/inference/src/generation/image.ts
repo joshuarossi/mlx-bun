@@ -219,19 +219,23 @@ export async function generateImage(
   let conditioning: ImageConditioning | null = null;
   let latents: MlxArray | null = null;
   try {
-    checkAborted(options.signal);
     report({ stage: "conditioner" });
+    checkAborted(options.signal);
     let started = performance.now();
     opened.add("conditioner");
-    conditioning = encodeConditioning(await pipeline.conditioner(), resolved);
+    const conditioner = await pipeline.conditioner();
+    checkAborted(options.signal);
+    conditioning = encodeConditioning(conditioner, resolved);
     const encodeMs = performance.now() - started;
     finish("conditioner");
 
-    checkAborted(options.signal);
     report({ stage: "denoiser", step: 0 });
+    checkAborted(options.signal);
     started = performance.now();
     opened.add("denoiser");
-    const step = guidanceFor(await pipeline.denoiser(), conditioning, resolved);
+    const denoiser = await pipeline.denoiser();
+    checkAborted(options.signal);
+    const step = guidanceFor(denoiser, conditioning, resolved);
     using noise = options.latents ? ops.copyOf(options.latents)
       : initialLatents(pipeline.latentChannels, pipeline.pixelsPerLatent, resolved.width, resolved.height, resolved.seed);
     const denoised = denoiseLatents(step, pipeline.schedule, noise, {
@@ -244,11 +248,13 @@ export async function generateImage(
     conditioning = null;
     finish("denoiser");
 
-    checkAborted(options.signal);
     report({ stage: "decoder" });
+    checkAborted(options.signal);
     started = performance.now();
     opened.add("decoder");
-    const { pixels, width, height } = decodePixels(await pipeline.decoder(), latents);
+    const decoder = await pipeline.decoder();
+    checkAborted(options.signal);
+    const { pixels, width, height } = decodePixels(decoder, latents);
     const decodeMs = performance.now() - started;
     finish("decoder");
     return {
