@@ -147,3 +147,86 @@ test("scan indexes plain model directories beside the hub; an exact id wins over
     } finally { reg.close(); }
   } finally { rmSync(hub, { recursive: true, force: true }); rmSync(models, { recursive: true, force: true }); }
 });
+
+describe("Registry diffusers pipelines", () => {
+  /** A pipeline snapshot shaped like a diffusers repo: weighted model components, a scheduler and a tokenizer without weights. */
+  function pipeline(hub: string, repo: string, index: Record<string, unknown>, components: Record<string, Record<string, number | string>>): string {
+    const dir = join(hub, `models--test--${repo}`, "snapshots", "abc123");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "model_index.json"), JSON.stringify(index));
+    for (const [name, files] of Object.entries(components)) {
+      mkdirSync(join(dir, name));
+      for (const [file, content] of Object.entries(files))
+        writeFileSync(join(dir, name, file), typeof content === "number" ? new Uint8Array(content) : content);
+    }
+    return dir;
+  }
+  const index = { _class_name: "SomeImagePipeline", _diffusers_version: "0.38.0", scheduler: ["diffusers", "SomeScheduler"],
+    text_encoder: ["transformers", "SomeEncoder"], tokenizer: ["transformers", "SomeTokenizer"], transformer: ["diffusers", "SomeTransformer"],
+    vae: ["diffusers", "SomeAutoencoder"], safety_checker: [null, null] };
+  const components = {
+    scheduler: { "scheduler_config.json": "{}" },
+    text_encoder: { "config.json": "{}", "model-00001-of-00002.safetensors": 300, "model-00002-of-00002.safetensors": 200, "model.safetensors.index.json": "{}" },
+    tokenizer: { "tokenizer.json": "{}", "tokenizer_config.json": "{}" },
+    transformer: { "config.json": "{}", "diffusion_pytorch_model.safetensors": 400 },
+    vae: { "config.json": "{}", "diffusion_pytorch_model.safetensors": 50 },
+  };
+
+  test("a pipeline snapshot is indexed under its class, sized by its components' weights", async () => {
+    const hub = makeHub();
+    try {
+      const dir = pipeline(hub, "image-pipeline", index, components);
+      writeFileSync(join(dir, "README.md"), "---\nlicense: apache-2.0\n---\n");
+      const reg = new Registry(":memory:");
+      expect(await reg.scan(hub)).toBe(3);
+      expect(reg.resolve("image-pipeline")).toMatchObject({ path: dir, repoId: "test/image-pipeline", modelType: "SomeImagePipeline", sizeBytes: 950,
+        sidecarBytes: 0, expertsBytes: 0, paramCount: null, quantBits: null, hasVisionSidecar: false, hasToolTemplate: false, license: "apache-2.0" });
+      reg.close();
+    } finally { rmSync(hub, { recursive: true, force: true }); }
+  });
+
+  test("a pipeline index without a string _class_name, or a malformed one, is not indexed", async () => {
+    const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));
+    try {
+      const { _class_name: _, ...unnamed } = index;
+      pipeline(hub, "unnamed", unnamed, components);
+      pipeline(hub, "numbered", { ...index, _class_name: 7 }, components);
+      pipeline(hub, "bad-entry", { ...index, vae: "diffusers" }, components);
+      const broken = pipeline(hub, "broken-json", index, components);
+      writeFileSync(join(broken, "model_index.json"), "{");
+      const reg = new Registry(":memory:");
+      expect(await reg.scan(hub)).toBe(0);
+      expect(reg.list()).toEqual([]);
+      reg.close();
+    } finally { rmSync(hub, { recursive: true, force: true }); }
+  });
+
+  test("a pipeline whose model component has no weights, whose declared component is missing, or that holds no weights is not indexed", async () => {
+    const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));
+    try {
+      pipeline(hub, "no-transformer-weights", index, { ...components, transformer: { "config.json": "{}" } });
+      const { vae: _, ...withoutVae } = components;
+      pipeline(hub, "missing-vae", index, withoutVae);
+      pipeline(hub, "weightless", { _class_name: "SomeImagePipeline", scheduler: ["diffusers", "SomeScheduler"] }, { scheduler: components.scheduler });
+      const reg = new Registry(":memory:");
+      expect(await reg.scan(hub)).toBe(0);
+      reg.close();
+    } finally { rmSync(hub, { recursive: true, force: true }); }
+  });
+
+  test("a snapshot with a root config.json is read as before, even beside a model_index.json", async () => {
+    const hub = makeHub();
+    try {
+      const plain = new Registry(":memory:");
+      await plain.scan(hub);
+      const before = plain.list().map(({ scannedAt: _, ...record }) => record);
+      plain.close();
+      writeFileSync(join(hub, "models--test--big-bf16", "snapshots", "def456", "model_index.json"), JSON.stringify({ _class_name: "SomeImagePipeline" }));
+      const reg = new Registry(":memory:");
+      expect(await reg.scan(hub)).toBe(2);
+      expect(reg.list().map(({ scannedAt: _, ...record }) => record)).toEqual(before);
+      expect(reg.resolve("big").modelType).toBe("llama");
+      reg.close();
+    } finally { rmSync(hub, { recursive: true, force: true }); }
+  });
+});
