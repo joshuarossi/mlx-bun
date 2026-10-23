@@ -1,10 +1,11 @@
 // The companion hosts (one per non-chat operation: Whisper for `transcribe`, the
 // image host for `image`) behind one `ModelHost`. Each call goes to the host of
 // the operation the model declares: the operation a caller needs, else the one
-// the catalog entry declares; a default the composite answered or a configured
-// checkpoint is remembered, so a synchronous call (pin, stats) reaches its host
-// too. Nothing here names a model: the composition supplies the hosts by
-// operation, and each keeps its own residency, lock and lifecycle.
+// the catalog entry declares; a default the composite answered, a configured
+// checkpoint or a lease a host granted (not one it refused) is remembered, so a
+// synchronous call (pin, stats, unload) reaches its host too. Nothing here names
+// a model: the composition supplies the hosts by operation, and each keeps its
+// own residency, lock and lifecycle.
 import type { AcquireOptions, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats, ResidencyPolicy, ResidentModel } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "./failure";
 
@@ -35,12 +36,8 @@ export function createCompanionModelHost(options: CompanionModelHostOptions): Co
   const learnedHost = (id: ModelId) => { const operation = learned.get(id); return operation ? options.hosts[operation] : undefined; };
   const holding = (id: ModelId) => learnedHost(id) ?? hosts.find(host => host.resident().some(model => model.id === id));
 
-  /** The host for `id`: one serving an operation the caller needs, else the one it resolved to before, else the catalog's word. */
-  async function hostFor(id: ModelId, need: readonly ModelOperation[] = []): Promise<CompanionHost> {
-    for (const operation of need) {
-      const host = options.hosts[operation];
-      if (host) { learned.set(id, operation); return host; }
-    }
+  /** The host for `id` from what it resolved to before, else the catalog's word (which is remembered: the model declares it). */
+  async function hostFor(id: ModelId): Promise<CompanionHost> {
     const known = learnedHost(id);
     if (known) return known;
     const entry = await options.catalog.find(id);
@@ -59,7 +56,14 @@ export function createCompanionModelHost(options: CompanionModelHostOptions): Co
         idleUnloadSec: policies.reduce((least, policy) => Math.min(least, policy.idleUnloadSec), Number.POSITIVE_INFINITY) };
     },
     async acquire(id: ModelId, acquire: AcquireOptions = {}): Promise<ModelLease> {
-      return (await hostFor(id, acquire.need)).acquire(id, acquire);
+      // A host serving an operation the caller needs is asked first; it is remembered for the model only once it grants the
+      // lease, under the id asked for and the one it answered with, so a refused request leaves later calls where they were.
+      const operation = (acquire.need ?? []).find(each => options.hosts[each]);
+      if (!operation) return (await hostFor(id)).acquire(id, acquire);
+      const lease = await options.hosts[operation]!.acquire(id, acquire);
+      learned.set(id, operation);
+      learned.set(lease.model.id, operation);
+      return lease;
     },
     async defaultFor(operation) {
       const id = await options.hosts[operation]?.defaultFor(operation);

@@ -5,12 +5,12 @@ import type { CatalogEntry, ModelCatalog, ModelOperation, ResidentModel } from "
 import { createCompanionModelHost, type CompanionHost } from "../src";
 
 /** A host that records each call it answers and holds what it was asked to acquire. */
-function fakeHost(operation: ModelOperation, calls: string[], defaultId?: string): CompanionHost {
+function fakeHost(operation: ModelOperation, calls: string[], defaultId?: string, refuses: (id: string) => boolean = () => false): CompanionHost {
   const held = new Set<string>(), pinned = new Set<string>();
   const model = (id: string): ResidentModel => ({ id, role: "companion", state: "ready", operations: [operation], bytes: 1, pinned: pinned.has(id), leases: 0, lastUsedAt: 0 });
   return {
     get policy() { return { budgetBytes: Number.POSITIVE_INFINITY, pinned: [...pinned], idleUnloadSec: operation === "image" ? 30 : 0 }; },
-    async acquire(id, options) { calls.push(`${operation} acquire ${id} ${options?.need?.join("+") ?? "-"}`); held.add(id); return { model: model(id), loadMs: 0, operations: {}, release() {} }; },
+    async acquire(id, options) { calls.push(`${operation} acquire ${id} ${options?.need?.join("+") ?? "-"}`); if (refuses(id)) throw new Error(`${id} does not declare the ${operation} operation`); held.add(id); return { model: model(id), loadMs: 0, operations: {}, release() {} }; },
     async defaultFor(asked) { return asked === operation ? defaultId : undefined; },
     async plan(id) { calls.push(`${operation} plan ${id}`); return { fits: true, requiredBytes: 1, freeBytes: Infinity, evict: [] }; },
     async serve() { throw new Error("unused"); },
@@ -35,7 +35,9 @@ const catalog = (finds: string[]): Pick<ModelCatalog, "find"> => ({ async find(q
 
 function setup(known: Record<string, ModelOperation> = {}) {
   const calls: string[] = [], finds: string[] = [];
-  const host = createCompanionModelHost({ hosts: { transcribe: fakeHost("transcribe", calls, "org/audio"), image: fakeHost("image", calls, "org/picture") },
+  // The image host refuses a model whose catalog entry does not declare `image`, as the real one does.
+  const declares = (id: string, operation: ModelOperation) => entries.find(entry => entry.id === id)?.operations.includes(operation) ?? true;
+  const host = createCompanionModelHost({ hosts: { transcribe: fakeHost("transcribe", calls, "org/audio"), image: fakeHost("image", calls, "org/picture", id => !declares(id, "image")) },
     catalog: catalog(finds), known });
   return { host, calls, finds };
 }
@@ -97,4 +99,15 @@ test("residency is every host's; stats and unload reach the host holding the mod
   await expect(host.serve("org/picture")).rejects.toMatchObject({ code: "not-switchable" });
   await host.close();
   expect(calls.slice(2)).toEqual(["image unload org/picture", "transcribe close", "image close"]);
+});
+
+test("a lease another host refuses changes nothing: the model's later calls still reach the host that holds it", async () => {
+  const { host, calls } = setup();
+  (await host.acquire("org/audio", { need: ["transcribe"] })).release();
+  // Asking for an operation the model does not declare reaches that operation's host, which refuses it.
+  await expect(host.acquire("org/audio", { need: ["image"] })).rejects.toThrow("org/audio does not declare the image operation");
+  expect(host.stats("org/audio").resident).toBe(true);
+  await host.unload("org/audio");
+  expect(calls).toEqual(["transcribe acquire org/audio transcribe", "image acquire org/audio image", "transcribe unload org/audio"]);
+  expect(host.resident().map(model => model.id)).toEqual([]);
 });
