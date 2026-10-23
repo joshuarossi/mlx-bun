@@ -145,7 +145,7 @@ Inside `packages/inference/src/`:
 | Owner | Responsibility |
 | --- | --- |
 | `contracts/portable/` | Backend-independent inference graph, state, output, and scheduling interfaces. No platform imports. |
-| `contracts/mlx/` | Tensor, attention, cache, position, weight-source, and forward-work interfaces. May reference the MLX binding and portable contracts. |
+| `contracts/mlx/` | Tensor, attention, cache, position, weight-source, forward-work and text-to-image stage interfaces. May reference the MLX binding and portable contracts. |
 | `runtime/` | Shared configuration scopes, resource ownership helpers, tracing context, and bundled native paths. No model or scheduling dependencies. |
 | `kernels/` | Numerical operations and their input layouts. No concrete cache, artifact loader, model, or scheduler imports. |
 | `artifacts/` | Configuration, weights, formats, auxiliary checkpoint files, expert storage/residency, and conversion of artifact layouts into kernel descriptors. |
@@ -155,7 +155,7 @@ Inside `packages/inference/src/`:
 | `sampling/` | Sampling policy, processors, constraints, and draft sampling. |
 | `adapters/` | Loading and mounting adapter weights through named target interfaces. |
 | `models/` | Family records and profiles; written graph files for models and hardware, and each family's generic graph; the composition resolver (`composition`) and the selection tables the loader picks a graph from (`factory`); drafter loaders; the Neural Engine programs the shipped compositions load (`ane-install`). |
-| `generation/` | Autoregressive, denoising, fill, and speculative methods, and the phase dispatch (`phase-dispatch`) that resolves the operation a graph built for the phase and rows its caller names. `bindings/` connects concrete graphs to those methods. |
+| `generation/` | Autoregressive, denoising, fill, and speculative methods, flow-matching text-to-image generation over the stage contracts (`image`), and the phase dispatch (`phase-dispatch`) that resolves the operation a graph built for the phase and rows its caller names. `bindings/` connects concrete graphs to those methods. |
 | `scoring/`, `embeddings/`, `transcription/` | Operations consuming graphs and caller-supplied inputs. |
 | `execution/` | Admission, the plan from declared capabilities, the batch groups that call the graph's phases for the rows they batched, sessions, coordination, and fit estimates: the one component that decides at run time. |
 | `index.ts` | High-level public entry point consuming these components. |
@@ -385,7 +385,7 @@ the host's automatic choice (`pickDefault`), which the app supplies from the sel
   `models/`, and scheduler-core imports beyond contracts and runtime; and the
   composition rules: a graph class that extends a graph or reads `super.` of one, a
   runtime flag, env read, `deviceArchitecture()`, `globalThis` access or layer, cache
-  or model `instanceof` inside a forward, read, append or kernel body (construction,
+  or model `instanceof` inside a forward, read, append or kernel body, or a text-to-image stage operation (`encode`, `velocity`) (construction,
   acceptance and the loader are exempt; profiling hooks and the two compile-context
   queries, `isCompiledTrace` and `isShapelessTracing`, which ask whether the graph is
   being recorded rather than run, by name), a

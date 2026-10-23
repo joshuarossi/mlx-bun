@@ -1337,8 +1337,8 @@ served transcripts against the oracle.
 
 ## Text-to-image
 
-Image generation is the images module's (`POST /v1/images/generations`, the `mlx-bun image`
-verb). A text-to-image model is never the served chat model: automatic selection skips
+Image generation is the images module's ([`@mlx-bun/module-images`](../../packages/module-images/README.md):
+`POST /v1/images/generations` and the `mlx-bun image` verb). A text-to-image model is never the served chat model: automatic selection skips
 it, and `mlx-bun serve <image model>` refuses before loading anything (`ImageModelServeError`).
 It is served beside the chat model, as Whisper is. The host library's image model host leases the
 first downloaded model that declares `image`, and the in-process composition gives it the

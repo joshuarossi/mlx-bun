@@ -11,6 +11,7 @@ loads and builds its graphs for. Inference never quantizes; this package never s
 | `sensitivity` | Exact per-layer KL sensitivity on calibration text |
 | `calibration` | Calibration sample loading and tokenization |
 | `drafter` | Quantize a released DeepSpec (`Gemma4DSparkModel`) drafter: every matmul weight and gather table, `confidence_head` kept bf16, then a load smoke through the drafter loader |
+| `moss-image` | Quantize a MOSS-Image snapshot (Base or SFT) into a local MLX pipeline directory: the DiT's joint-block projections and the conditioner's projections and token embedding at the requested affine bits, the rest kept or copied |
 | `rotate`, `weight-transform` | Rotation and fold plans for Llama and Qwen families before quantization |
 | `trellis` | Trellis state packing, interleaving, and the host decoder. The 1MAD codebook and word geometry are imported from the inference kernels, which own the packed format |
 | `trellis-quantizer` | `quantizeTrellisModelDir`: fold an HF-layout Qwen3.5-family checkpoint (γ + R1), code every MLP tensor with the Trellis (QTIP TCQ, L=12, 1MAD, T=256, tail-biting) and write the packed format the inference kernels serve; the rest keeps the shipped-compact affine tiers. `turboquant_fold.json` records the R1 seed and the final-norm gain the fold moved into the head, the residual basis a drafter reads through the graph |
@@ -33,6 +34,22 @@ is the entry point for a whole checkpoint; it needs a real one.
 (the confidence head's sigmoid is compared against thresholds, so it stays bf16); drafter numerics move
 acceptance, never correctness, so gate the result with `scripts/drafter-ab.ts`. A [synthetic DeepSpec
 checkpoint test](tests/drafter.test.ts) covers the policy and refusals; a released drafter is not run here.
+
+`quantizeMossImageDir(sourceDirectory, outputDirectory, { bits, groupSize })` applies the
+quantizer per pipeline component. It quantizes the DiT's 252 joint-block projections
+(`layers.N.proj.*`; the embedders, timestep MLP, modulations, text refiner and video head
+stay bf16, the allocation unsloth's MOSS-Image INT8 release uses) and the conditioner's
+projections and token embedding (its DeltaNet `in_proj_a`/`in_proj_b` stay bf16), and copies
+the VAE, tokenizer, scheduler and index. It refuses anything but a full-precision MOSS-Image
+layout before writing, and publishes the directory atomically. A
+[synthetic snapshot test](tests/moss-image.test.ts) loads the output through the family's graphs
+against the full-precision graphs. On Base `85975793` (2026-10-23, M4 Pro), 8-bit group 64 took
+35 s and wrote 14.3 GB (DiT 5.3 GB, conditioner 8.7 GB, 8.5 bits per quantized weight);
+against the bf16 graphs from identical inputs the conditioner's hidden states differ by
+2.5e-2 / 3.4e-2 relative (minimum token cosine 0.9989), the velocity by 8.5e-3 at step 0 and
+1.9e-2 at step 4, the 8-step trajectory by 1.17e-1, and the decoded 256x256 image by
+29.9 dB PSNR. Those are this graph's quantization error, measured separately from the
+reference comparison; no quality evaluation has been run.
 
 `quantizeTrellisModelDir(sourceDirectory, outputDirectory, options)` produces a packed
 Trellis artifact from a full-precision `model.language_model.*` checkpoint (Qwen3.8-27B

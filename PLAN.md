@@ -158,6 +158,33 @@ Migration gaps stay required work in the feature table.
 - [ ] (capability reporting) `/v1/models` reports DiffusionGemma with `vision: false` (as main)
   though image requests succeed.
 
+## Text-to-image (MOSS-Image)
+
+Library, family, quantizer, image host and `@mlx-bun/module-images` landed with
+their evidence in the [inference README](packages/inference/README.md#text-to-image).
+Open:
+
+- [ ] Josh decides the oracle comparison's revised criteria (intermediate blocks'
+      worst token reported, the last block's text rows reported, each trajectory step
+      held to twice the reference's MPS-vs-CPU spread) and the two mismatches they
+      leave: Base's row-40 token at block 22, step 4 (cosine 0.998336 against the
+      reference's own worst 0.999552; cause unidentified) and trajectory steps 5 to 7
+      beyond the original bound. Exit: a recorded decision, and the test's bounds or an
+      investigation following it.
+- [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
+      M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
+      machine. Exit: the files and their numbers.
+- [ ] Memory on 24 GB: every measured run completed while the machine swapped, and the
+      near-constant 18.4 GB process footprint under staging is unexplained. Exit: an
+      explanation and a quiet-machine measurement of process footprint, RSS and MLX peak.
+- [ ] Serving gaps: `/v1/models` does not list image models, and in isolated serving the
+      image worker takes no execution lease (a GPU-exclusive job does not pause it).
+- [ ] q8 has numerical error measurements only; no quality evaluation, and no 4-bit
+      artifact has been built or measured.
+- [ ] Decision (Josh): `DenseLinear` never disposes its transposed weight view, so a
+      released model's weight buffers wait for garbage collection; whether that delays
+      memory release when residency evicts a model is unmeasured. Not changed here.
+
 ## Split the app into modules
 
 - [ ] Split `apps/mlx-bun` into modules on core services, as the repository split into apps and
