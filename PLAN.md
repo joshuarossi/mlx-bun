@@ -164,21 +164,15 @@ Library, family, quantizer, image host and `@mlx-bun/module-images` are implemen
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Resolve every check that fails the original bounds (the review adjudicated
-      only the last block's text rows). At `6e1d329a`, both Base and SFT fail trajectory
-      steps 6 and 7, and the corrected spatial-token cosine also fails at step 5.
-      All consumed DiT stage checks pass. The review's two
-      experiments ran; the SITU and one-row projection fixes they led to, the earlier and
-      newly introduced failures, the attention experiments and the measured
-      sensitivity are in the [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
-      Independent review accepted the evidence of sensitivity without accepting the
-      remaining differences. The tiled MOSS attention kernel keeps bf16 softmax
-      numerators without holding the scores. The single complete-pipeline image
-      comparison is recorded; full-model acceptance across prompts and configurations
-      and performance qualification remain open. Exit:
-      each passes its bound. Record exact tensor mismatch counts separately;
-      passing a tolerance is not bit parity. The official OpenMOSS engine remains
-      the full-model reference; Python tooling stays external.
+- [ ] Qualify the applied MLX bindings against pinned MFLUX, with exact comparisons
+      of conditioning, every denoiser output and latent update, and final pixels for
+      Base and SFT. The production component graphs match the pinned cases exactly;
+      complete-pipeline qualification is pending. Include the
+      advertised 1024x1024/50-step configuration before claiming parity there.
+      Retain the original CPU comparison assertions and historical failures in the
+      [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
+      No output-error allowance substitutes for the exact MLX target. Python stays
+      external. Exit: the declared configurations pass their exact gates.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.

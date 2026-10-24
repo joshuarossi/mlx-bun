@@ -173,21 +173,14 @@ export async function denoiseLatents(
   }
 }
 
-/** Decode latents (borrowed) to RGB bytes with the reference postprocess:
- * `round(clip(image / 2 + 0.5, 0, 1) * 255)`. */
+/** Decode latents through the decoder's bound numerical and pixel operations.
+ * The returned RGB bytes are independent of both owned native arrays. */
 export function decodePixels(decoder: ImageLatentDecoder, latents: MlxArray): { pixels: Uint8Array; width: number; height: number } {
   using image = decoder.decode(latents);
-  const height = image.shape[1]!, width = image.shape[2]!;
-  using half = ops.mulScalar(image, 0.5);
-  using offset = ops.scalarLike(0.5, half);
-  using shifted = ops.add(half, offset);
-  using zero = ops.scalarLike(0, shifted), one = ops.scalarLike(1, shifted);
-  using clipped = ops.clip(shifted, zero, one);
-  using scaled = ops.mulScalar(clipped, 255);
-  using rounded = ops.round(scaled);
-  using bytes = rounded.astype(Dtype.uint8);
-  // Elementwise operations keep a transposed input's layout; the raw read needs row-major memory.
-  using rowMajor = ops.contiguous(bytes);
+  using pixels = decoder.pixels(image);
+  const height = pixels.shape[1]!, width = pixels.shape[2]!;
+  // A pixel operation may return a strided view; raw reads require row-major storage.
+  using rowMajor = ops.contiguous(pixels);
   return { pixels: new Uint8Array(rowMajor.rawBytes()), width, height };
 }
 

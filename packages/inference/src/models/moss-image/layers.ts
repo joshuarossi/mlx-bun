@@ -7,7 +7,8 @@ import type { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { quantFor, type ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
-import { rowProjection } from "../../kernels/row-projection";
+import { compiledSilu } from "../../kernels/silu";
+import type { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { situFor } from "../../kernels/situ";
 
 /** A dense projection without a bias, `x @ w.T`. Owns the transposed view it makes. */
@@ -25,16 +26,6 @@ export class MossDenseBiasedLinear {
   constructor(readonly w: MlxArray, readonly bias: MlxArray) { this.#wT = ops.transposeAxes(w, [1, 0]); }
   forward(x: MlxArray): MlxArray { return ops.addmm(this.bias, x, this.#wT); }
   dispose(): void { this.#wT.dispose(); }
-}
-
-/** A dense projection with a bias applied to one row (the timestep embedding and the modulations), rounded once as
- * eager torch rounds it (`kernels/row-projection`, bound at construction). Holds only borrowed tensors. */
-export class MossDenseRowLinear {
-  readonly #project: (x: MlxArray) => MlxArray;
-  constructor(readonly w: MlxArray, readonly bias: MlxArray) { this.#project = rowProjection(w, bias); }
-  /** `x` a borrowed `[1, K]` row; returns an owned `[1, N]` result. */
-  forward(x: MlxArray): MlxArray { return this.#project(x); }
-  dispose(): void {}
 }
 
 /** An MLX affine-quantized projection without a bias (`.weight` packed, `.scales`, `.biases`). Holds only borrowed tensors. */
@@ -92,13 +83,6 @@ export function bindMossLinear(weights: Weights, config: ModelConfig, path: stri
   return bias ? new MossQuantizedBiasedLinear(weight, scales, biases, spec, bias) : new MossQuantizedLinear(weight, scales, biases, spec);
 }
 
-/** A projection the graph applies to one row, bound like `bindMossLinear` except that a dense biased one takes the
- * single-row form that rounds once (`MossDenseRowLinear`). */
-export function bindMossRowLinear(weights: Weights, config: ModelConfig, path: string): MossLinear {
-  if (storedAffineSpec(weights, config, path) || !weights.has(`${path}.bias`)) return bindMossLinear(weights, config, path);
-  return new MossDenseRowLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`));
-}
-
 /** RMS normalization with a learned gain: statistics in float32, the normalized
  * value in the input dtype times the gain (the reference `_RMSNorm`). */
 export class MossRmsNorm {
@@ -124,4 +108,13 @@ export class MossSitu {
     try { return this.#situ(hidden, gate); }
     finally { hidden.dispose(); gate.dispose(); }
   }
+}
+
+/** Native MLX SiLU compiled without changing the input dtype. Owns its trace. */
+export class MossSilu {
+  readonly #compiled: CompiledFunction;
+  constructor() { this.#compiled = compiledSilu(); }
+  /** Input borrowed; result owned. */
+  forward(x: MlxArray): MlxArray { return this.#compiled.apply([x])[0]!; }
+  dispose(): void { this.#compiled.dispose(); }
 }

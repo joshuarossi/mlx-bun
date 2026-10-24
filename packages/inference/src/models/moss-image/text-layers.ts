@@ -1,142 +1,71 @@
-// The layers of MOSS-Image's conditioner, the Qwen3.5-9B language model the
-// pipeline runs once per prompt (transformers' Qwen3_5TextModel, no head, no
-// cache): each does one job in the reference's dtypes and order and binds the
-// kernels it owns. Projections and gains are borrowed from the component's
-// `Weights`; a layer frees only what it made.
-
+// MOSS's Qwen3.5 conditioner layers with the pinned MFLUX operation order.
+// All numerical choices are fixed by construction; borrowed weights remain
+// owned by the conditioner's Weights instance.
 import { MlxArray } from "@mlx-bun/mlx/array";
+import type { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { gatedDeltaFloat32 } from "../../kernels/gated-delta-float32";
-import type { MossLinear } from "./layers";
+import { gatedDeltaChunked } from "../../kernels/gated-delta-chunked";
+import { causalDepthwiseConv } from "../../kernels/causal-depthwise-conv";
+import { compiledSoftplus } from "../../kernels/softplus";
+import type { MossLinear, MossSilu } from "./layers";
 
-const f32 = Math.fround;
-
-/** `x` (borrowed) through a float32 function, cast back to `x`'s dtype once:
- * how torch applies an activation to a bf16 tensor. */
-function inFloat(x: MlxArray, fn: (wide: MlxArray) => MlxArray): MlxArray {
-  using wide = x.astype(Dtype.float32);
-  using out = fn(wide);
-  return out.astype(x.dtype);
-}
-
-/** SiLU on float32 values (borrowed) as `x / (1 + exp(-x))`: against the reference's captured outputs this form mismatched
- * fewer elements than `x * sigmoid(x)`, so it is preferred by that evidence; that torch computes it this way is inferred,
- * not read. Returns an owned array. */
-function torchSilu(x: MlxArray): MlxArray {
-  using negative = ops.neg(x);
-  using exponential = ops.exp(negative);
-  using one = ops.scalarLike(1, exponential);
-  using denominator = ops.add(one, exponential);
-  return ops.div(x, denominator);
-}
-
-/** A float32 value (borrowed) rounded to `dtype` and widened back: the result of one torch operation on bf16 tensors,
- * which computes in float32 and stores in the input dtype. */
-function stored(wide: MlxArray, dtype: Dtype): MlxArray {
-  using rounded = wide.astype(dtype);
-  return rounded.astype(Dtype.float32);
-}
-
-/** transformers' `l2norm` (`x * rsqrt((x * x).sum(-1) + 1e-6)`) on a bf16 tensor: each operation computed in float32 and
- * stored in the input dtype (the sum accumulated in float32, stored once), with `rsqrt` a square root stored in bf16 and
- * then its reciprocal stored in bf16. That sequence reproduces every element of the pinned reference's captured l2norm
- * outputs (a once-rounded rsqrt mismatched about a fifth); torch's internal steps are inferred from that match. */
-export class MossTextL2Norm {
-  /** `x` `[..., D]` (borrowed) to an owned normalization in `x`'s dtype. */
+/** Explicit float32 RMS normalization, with a mean followed by rsqrt. */
+export class MossFloat32RmsNorm {
+  constructor(readonly eps: number) {}
   forward(x: MlxArray): MlxArray {
-    const dtype = x.dtype;
     using wide = x.astype(Dtype.float32);
-    using squaresWide = ops.square(wide);
-    using squares = stored(squaresWide, dtype);
-    using sumWide = ops.sumAxis(squares, -1, true);
-    using sum = stored(sumWide, dtype);
-    using eps = ops.scalarLike(1e-6, sum);
-    using shiftedWide = ops.add(sum, eps);
-    using shifted = stored(shiftedWide, dtype);
-    using rootWide = ops.sqrt(shifted);
-    using root = stored(rootWide, dtype);
-    using one = ops.scalarLike(1, root);
-    using inverseWide = ops.div(one, root);
-    using inverse = stored(inverseWide, dtype);
-    using unit = ops.mul(wide, inverse);
-    return unit.astype(dtype);
+    using squares = ops.square(wide);
+    using mean = ops.meanAxis(squares, -1, true);
+    using epsilon = ops.scalarLike(this.eps, mean);
+    using shifted = ops.add(mean, epsilon);
+    using inverse = ops.rsqrt(shifted);
+    return ops.mul(wide, inverse);
   }
 }
 
-/** `Qwen3_5RMSNorm`: normalize in float32, scale by `1 + gamma` in float32, cast once. */
+/** Qwen's q/k unit normalization in float32, without bf16 intermediate stores. */
+export class MossTextL2Norm {
+  forward(x: MlxArray): MlxArray {
+    using wide = x.astype(Dtype.float32);
+    using square = ops.mul(wide, wide);
+    using sum = ops.sumAxis(square, -1, true);
+    using eps = ops.scalarLike(1e-6, sum);
+    using shifted = ops.add(sum, eps);
+    using inverse = ops.rsqrt(shifted);
+    return ops.mul(wide, inverse);
+  }
+}
+
+/** Normalize and apply Qwen's stored (1 + gamma) gain in float32, then cast once. */
 export class MossTextRmsNorm {
   readonly #scale: MlxArray;
-
-  constructor(gamma: MlxArray, readonly eps: number) {
+  constructor(gamma: MlxArray, readonly normalization: Pick<MossFloat32RmsNorm, "forward">) {
     using wide = gamma.astype(Dtype.float32);
     using one = ops.scalarLike(1, wide);
     this.#scale = ops.add(one, wide);
   }
-
   forward(x: MlxArray): MlxArray {
-    return inFloat(x, wide => ops.rmsNorm(wide, this.#scale, this.eps));
+    using normalized = this.normalization.forward(x);
+    using scaled = ops.mul(normalized, this.#scale);
+    return scaled.astype(x.dtype);
   }
-
   dispose(): void { this.#scale.dispose(); }
 }
 
-/** The float32 sum of each 128-value row of `squares` (borrowed, `[..., 128]`) in the order that reproduces the pinned
- * torch's CPU sum bit for bit on every captured row: four 4-lane accumulators (value `i` into accumulator `floor(i / 4) % 4`,
- * lane `i % 4`), each lane summing its eight values in turn, then the accumulators added lane by lane in order and the
- * four lanes in order. That this is torch's vectorized reduction is inferred from the match. Each step is one float32 add,
- * so MLX's own reduction order plays no part. Returns an owned `[..., 1]`. */
-function torchRowSum128(squares: MlxArray): MlxArray {
-  const leading = squares.shape.slice(0, -1), rows = leading.reduce((a, b) => a * b, 1);
-  using blocks = ops.reshape(squares, [rows, 8, 4, 4]);
-  const block = (k: number) => blocks.slice([0, k, 0, 0], [rows, k + 1, 4, 4]);
-  let lanes = block(0);
-  for (let k = 1; k < 8; k++) { using previous = lanes; using next = block(k); lanes = ops.add(previous, next); }
-  using accumulators = lanes;
-  const accumulator = (g: number) => accumulators.slice([0, 0, g, 0], [rows, 1, g + 1, 4]);
-  let combined = accumulator(0);
-  for (let g = 1; g < 4; g++) { using previous = combined; using next = accumulator(g); combined = ops.add(previous, next); }
-  using perLane = combined;
-  const lane = (l: number) => perLane.slice([0, 0, 0, l], [rows, 1, 1, l + 1]);
-  let total = lane(0);
-  for (let l = 1; l < 4; l++) { using previous = total; using next = lane(l); total = ops.add(previous, next); }
-  using sum = total;
-  return ops.reshape(sum, [...leading, 1]);
-}
-
-/** `Qwen3_5RMSNormGated` on bf16 values with the checkpoint's bf16 weight: the variance in float32 summed in the pinned
- * torch's order (`torchRowSum128`), normalize in float32 (rsqrt as a square root, then its reciprocal) and store in the
- * input dtype, multiply by the weight (bf16 by bf16, stored again), then multiply by `silu(gate)` in float32 and store
- * once. Rows are 128 values wide, the conditioner's value heads: the summation order is verified only for that width. */
+/** Normalize in float32, round to the input dtype, multiply the stored gain,
+ * then multiply float32 SiLU(gate) and cast back to the input dtype. */
 export class MossTextGatedNorm {
-  constructor(readonly weight: MlxArray, readonly eps: number) {
-    if (weight.shape.length !== 1 || weight.shape[0] !== 128)
-      throw new RangeError(`gated norm: rows of ${weight.shape.join("x")}; the summation order is verified for 128`);
-  }
-
-  /** `x` and `gate` equal-shaped `[..., 128]` (borrowed). */
+  constructor(readonly weight: MlxArray, readonly normalization: Pick<MossFloat32RmsNorm, "forward">,
+    readonly activation: Pick<MossSilu, "forward">) {}
   forward(x: MlxArray, gate: MlxArray): MlxArray {
-    const dtype = x.dtype;
-    using wide = x.astype(Dtype.float32);
-    using squares = ops.square(wide);
-    using sum = torchRowSum128(squares);
-    using count = ops.scalarLike(128, sum);
-    using variance = ops.div(sum, count);
-    using eps = ops.scalarLike(this.eps, variance);
-    using shifted = ops.add(variance, eps);
-    // rsqrt as a square root, then its reciprocal: the form host replays against the reference favoured.
-    using root = ops.sqrt(shifted);
-    using one = ops.scalarLike(1, root);
-    using inverse = ops.div(one, root);
-    using normalizedWide = ops.mul(wide, inverse);
-    using normalized = stored(normalizedWide, dtype);
-    using weight = this.weight.astype(Dtype.float32);
-    using weightedWide = ops.mul(weight, normalized);
-    using weighted = stored(weightedWide, dtype);
+    using normalizedWide = this.normalization.forward(x);
+    using normalized = normalizedWide.astype(x.dtype);
+    using weighted = ops.mul(this.weight, normalized);
     using gateWide = gate.astype(Dtype.float32);
-    using activated = torchSilu(gateWide);
+    using activated = this.activation.forward(gateWide);
     using gated = ops.mul(weighted, activated);
-    return gated.astype(dtype);
+    return gated.astype(x.dtype);
   }
 }
 
@@ -155,51 +84,10 @@ export class MossQuantizedTextEmbedding {
   }
 }
 
-/** cos/sin `[1, L, 1, rotaryDims]` bf16. Owned. */
-export interface MossTextRopeTables extends Disposable {
-  readonly cos: MlxArray;
-  readonly sin: MlxArray;
-}
-
-/** `Qwen3_5TextRotaryEmbedding` for a text-only prompt (the three position
- * streams are equal, so interleaved mRoPE is plain RoPE) and its partial
- * rotate-half application to the first `rotaryDims` of each head. */
+/** Native partial RoPE on borrowed [B,H,L,D] arrays. */
 export class MossTextRope {
-  readonly #invFreq: Float32Array;
-
-  constructor(readonly rotaryDims: number, base: number) {
-    this.#invFreq = Float32Array.from({ length: rotaryDims / 2 }, (_, k) => f32(1 / f32(Math.pow(base, f32((2 * k) / rotaryDims)))));
-  }
-
-  /** Positions `0 .. length - 1`: `freqs = position * inv_freq` in float32, `cat(freqs, freqs)`, cos/sin cast to bf16. */
-  tables(length: number): MossTextRopeTables {
-    const dims = this.rotaryDims, half = dims / 2;
-    const cos = new Float32Array(length * dims), sin = new Float32Array(length * dims);
-    for (let position = 0; position < length; position++)
-      for (let k = 0; k < half; k++) {
-        const angle = f32(position * this.#invFreq[k]!), c = Math.cos(angle), s = Math.sin(angle);
-        cos[position * dims + k] = c; cos[position * dims + half + k] = c;
-        sin[position * dims + k] = s; sin[position * dims + half + k] = s;
-      }
-    const table = (values: Float32Array) => { using wide = MlxArray.fromFloat32(values, [1, length, 1, dims]); return wide.astype(Dtype.bfloat16); };
-    const c = table(cos), s = table(sin);
-    return { cos: c, sin: s, [Symbol.dispose]() { c.dispose(); s.dispose(); } };
-  }
-
-  /** `x` `[1, L, H, D]` (borrowed): the first `rotaryDims` rotated, the rest passed through. Owned result. */
-  apply(x: MlxArray, tables: MossTextRopeTables): MlxArray {
-    const [b, l, h, d] = x.shape as [number, number, number, number], dims = this.rotaryDims, half = dims / 2;
-    using rot = x.slice([0, 0, 0, 0], [b, l, h, dims]);
-    using pass = x.slice([0, 0, 0, dims], [b, l, h, d]);
-    using first = rot.slice([0, 0, 0, 0], [b, l, h, half]);
-    using second = rot.slice([0, 0, 0, half], [b, l, h, dims]);
-    using negated = ops.neg(second);
-    using rotated = ops.concatAxis([negated, first], -1);
-    using direct = ops.mul(rot, tables.cos);
-    using turned = ops.mul(rotated, tables.sin);
-    using embedded = ops.add(direct, turned);
-    return ops.concatAxis([embedded, pass], -1);
-  }
+  constructor(readonly rotaryDims: number, readonly base: number) {}
+  apply(x: MlxArray): MlxArray { return ops.rope(x, this.rotaryDims, this.base, 0, null); }
 }
 
 export interface MossTextAttentionShape {
@@ -216,7 +104,7 @@ export class MossTextAttention {
     readonly qNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly kNorm: Pick<MossTextRmsNorm, "forward" | "dispose">,
     readonly rope: Pick<MossTextRope, "apply">, readonly shape: MossTextAttentionShape) {}
 
-  forward(x: MlxArray, tables: MossTextRopeTables): MlxArray {
+  forward(x: MlxArray): MlxArray {
     const { heads, kvHeads, headDim } = this.shape, length = x.shape[1]!;
     using packed = this.q.forward(x);
     using perHead = ops.reshape(packed, [1, length, heads, 2 * headDim]);
@@ -225,13 +113,13 @@ export class MossTextAttention {
     using keyFlat = this.k.forward(x), valueFlat = this.v.forward(x);
     using key = ops.reshape(keyFlat, [1, length, kvHeads, headDim]), value = ops.reshape(valueFlat, [1, length, kvHeads, headDim]);
     using qn = this.qNorm.forward(q), kn = this.kNorm.forward(key);
-    using qr = this.rope.apply(qn, tables), kr = this.rope.apply(kn, tables);
-    using qt = ops.transposeAxes(qr, [0, 2, 1, 3]), kt = ops.transposeAxes(kr, [0, 2, 1, 3]), vt = ops.transposeAxes(value, [0, 2, 1, 3]);
-    using attended = ops.sdpa(qt, kt, vt, Math.pow(headDim, -0.5), "causal");
+    using qt = ops.transposeAxes(qn, [0, 2, 1, 3]), kt = ops.transposeAxes(kn, [0, 2, 1, 3]), vt = ops.transposeAxes(value, [0, 2, 1, 3]);
+    using qr = this.rope.apply(qt), kr = this.rope.apply(kt);
+    using attended = ops.sdpa(qr, kr, vt, headDim ** -0.5, "causal");
     using merged = ops.transposeAxes(attended, [0, 2, 1, 3]);
     using flat = ops.reshape(merged, [1, length, heads * headDim]);
     using gateFlat = ops.reshape(g, [1, length, heads * headDim]);
-    using sig = inFloat(gateFlat, wide => ops.sigmoid(wide));
+    using sig = ops.sigmoid(gateFlat);
     using gated = ops.mul(flat, sig);
     return this.o.forward(gated);
   }
@@ -246,23 +134,11 @@ export interface MossDeltaShape {
   readonly valueDim: number;
 }
 
-/** The step log-decay `g = -exp(A_log) * softplus(a + dt_bias)` in float32, as `Qwen3_5GatedDeltaNet` computes it from
- * bf16 `a`, `A_log` and `dt_bias`. */
+/** -exp(A_log) * compiled softplus(a + dt_bias), entirely float32. */
 export class MossTextLogDecay {
-  /** `aLog` and `dtBias` `[Hv]` (borrowed). */
-  constructor(readonly aLog: MlxArray, readonly dtBias: MlxArray) {}
-
-  /** torch's `softplus` on float32 `x` (borrowed): `x` above its threshold of 20; below it torch computes
-   * `log1p(exp(x))` and this computes `logaddexp(x, 0)` (MLX binds no log1p here): not the same operations, so the two
-   * can differ in float32 rounding, which the reference comparison measures. Returns an owned float32 array. */
-  softplus(x: MlxArray): MlxArray {
-    using zero = ops.scalarLike(0, x), threshold = ops.scalarLike(20, x);
-    using smooth = ops.logaddexp(x, zero);
-    using above = ops.greater(x, threshold);
-    return ops.where(above, x, smooth);
-  }
-
-  /** `a` `[1, L, Hv]` (borrowed) to the owned float32 log-decay `[1, L, Hv]`. */
+  readonly #softplus: CompiledFunction;
+  constructor(readonly aLog: MlxArray, readonly dtBias: MlxArray) { this.#softplus = compiledSoftplus(); }
+  softplus(x: MlxArray): MlxArray { return this.#softplus.apply([x])[0]!; }
   forward(a: MlxArray): MlxArray {
     using aLog = this.aLog.astype(Dtype.float32), dtBias = this.dtBias.astype(Dtype.float32), aWide = a.astype(Dtype.float32);
     using rate = ops.exp(aLog);
@@ -271,39 +147,39 @@ export class MossTextLogDecay {
     using softplus = this.softplus(x);
     return ops.mul(negRate, softplus);
   }
+  dispose(): void { this.#softplus.dispose(); }
 }
 
-/** The gated delta rule as transformers' `torch_chunk_gated_delta_rule` runs it on a whole prompt from a zero state, in its
- * dtypes and operation order up to the recurrence: q and k l2-normalized in bf16 (`MossTextL2Norm`); q, k, v and beta
- * (`sigmoid(b)` stored in bf16) widened to float32; q scaled by `keyDim ** -0.5` in float32; the float32 log-decay
- * (`MossTextLogDecay`); the result stored in the input dtype once. The recurrence differs in order: the reference solves
- * it in 64-token chunks (cumulative log-decays, `exp` of their differences, a triangular solve), while
- * `kernels/gated-delta-float32` steps token by token with each step's `exp(g)`. Both are float32, algebraically equal,
- * and differ in rounding; the reference comparison measures by how much. */
+/** Repeat each key head consecutively, including the identity repeat. */
+function repeatHeads(x: MlxArray, heads: number): MlxArray {
+  const [batch, length, sourceHeads, width] = x.shape as [number, number, number, number];
+  if (heads % sourceHeads) throw new RangeError("value head count must be a multiple of key head count");
+  using expanded = ops.reshape(x, [batch, length, sourceHeads, 1, width]);
+  using repeated = ops.broadcastTo(expanded, [batch, length, sourceHeads, heads / sourceHeads, width]);
+  return ops.reshape(repeated, [batch, length, heads, width]);
+}
+
+/** Normalize repeated q/k heads in float32, keep beta and log-decay in
+ * float32, run the chunked rule from zero state, then cast to v's dtype. */
 export class MossTextDeltaRecurrence {
-  readonly #norm = new MossTextL2Norm();
-  /** torch's `1 / (Dk ** 0.5)`, applied to float32 values. */
-  readonly #scale: number;
-
-  /** `keyDim` a multiple of 32 (the kernel's lanes). */
-  constructor(readonly logDecay: Pick<MossTextLogDecay, "forward">, keyDim: number) {
-    if (keyDim % 32 !== 0) throw new RangeError(`delta recurrence: key head size ${keyDim} is not a multiple of 32`);
-    this.#scale = f32(1 / Math.sqrt(keyDim));
-  }
-
-  /** `q`, `k` `[1, L, Hk, Dk]` and `v` `[1, L, Hv, Dv]` from the convolution, `a` and `b` `[1, L, Hv]` from their
-   * projections, all in the input dtype (borrowed); returns the owned outputs `[1, L, Hv, Dv]` in that dtype. */
+  constructor(readonly logDecay: Pick<MossTextLogDecay, "forward" | "dispose">,
+    readonly normalization: Pick<MossTextL2Norm, "forward">) {}
   forward(q: MlxArray, k: MlxArray, v: MlxArray, a: MlxArray, b: MlxArray): MlxArray {
-    using qNormal = this.#norm.forward(q), kNormal = this.#norm.forward(k);
-    using qWide = qNormal.astype(Dtype.float32), kWide = kNormal.astype(Dtype.float32), vWide = v.astype(Dtype.float32);
-    using qScaled = ops.mulScalar(qWide, this.#scale);
-    using beta = inFloat(b, wide => ops.sigmoid(wide));
-    using betaWide = beta.astype(Dtype.float32);
+    using qRepeated = repeatHeads(q, v.shape[2]!), kRepeated = repeatHeads(k, v.shape[2]!);
+    using qNormal = this.normalization.forward(qRepeated), kNormal = this.normalization.forward(kRepeated);
+    using vWide = v.astype(Dtype.float32), bWide = b.astype(Dtype.float32);
+    using beta = ops.sigmoid(bWide);
     using g = this.logDecay.forward(a);
-    using decay = ops.exp(g);
-    using y = gatedDeltaFloat32(qScaled, kWide, vWide, decay, betaWide);
-    return y.astype(v.dtype);
+    using output = gatedDeltaChunked(qNormal, kNormal, vWide, g, beta);
+    return output.astype(v.dtype);
   }
+  dispose(): void { this.logDecay.dispose(); }
+}
+
+/** The ordered causal-convolution kernel's sole owning layer. Weight borrowed. */
+export class MossTextCausalConv {
+  constructor(readonly weight: MlxArray) {}
+  forward(x: MlxArray): MlxArray { return causalDepthwiseConv(x, this.weight); }
 }
 
 /** `Qwen3_5GatedDeltaNet` over a whole prompt from a zero state: the qkv, z, b
@@ -311,22 +187,15 @@ export class MossTextDeltaRecurrence {
  * rule (`MossTextDeltaRecurrence`), the gated norm with z, and the output
  * projection. */
 export class MossTextDeltaMixer {
-  readonly #conv: MlxArray;
-
-  /** `convWeight` is the checkpoint's `[C, 1, K]`; the layer keeps its own `[C, K, 1]` copy. */
   constructor(readonly qkv: MossLinear, readonly z: MossLinear, readonly b: MossLinear, readonly a: MossLinear, readonly out: MossLinear,
-    convWeight: MlxArray, readonly recurrence: Pick<MossTextDeltaRecurrence, "forward">, readonly norm: Pick<MossTextGatedNorm, "forward">, readonly shape: MossDeltaShape) {
-    using moved = ops.transposeAxes(convWeight, [0, 2, 1]);
-    this.#conv = ops.contiguous(moved);
-  }
+    readonly conv: Pick<MossTextCausalConv, "forward">, readonly recurrence: Pick<MossTextDeltaRecurrence, "forward" | "dispose">,
+    readonly norm: Pick<MossTextGatedNorm, "forward">, readonly shape: MossDeltaShape, readonly activation: Pick<MossSilu, "forward">) {}
 
   forward(x: MlxArray): MlxArray {
     const { keyHeads, valueHeads, keyDim, valueDim } = this.shape, length = x.shape[1]!;
-    const channels = this.#conv.shape[0]!, kernel = this.#conv.shape[1]!;
     using mixed = this.qkv.forward(x);
-    using padded = ops.pad(mixed, [[0, 0], [kernel - 1, 0], [0, 0]]);
-    using convolved = ops.conv1d(padded, this.#conv, 1, 0, 1, channels);
-    using activated = inFloat(convolved, torchSilu);
+    using convolved = this.conv.forward(mixed);
+    using activated = this.activation.forward(convolved);
     const [qFlat, kFlat, vFlat] = ops.split(activated, [keyHeads * keyDim, 2 * keyHeads * keyDim], -1);
     using qs = qFlat!, ks = kFlat!, vs = vFlat!;
     using qHeads = ops.reshape(qs, [1, length, keyHeads, keyDim]), kHeads = ops.reshape(ks, [1, length, keyHeads, keyDim]);
@@ -342,17 +211,17 @@ export class MossTextDeltaMixer {
 
   dispose(): void {
     for (const linear of [this.qkv, this.z, this.b, this.a, this.out]) linear.dispose();
-    this.#conv.dispose();
+    this.recurrence.dispose();
   }
 }
 
-/** `Qwen3_5MLP`: `down(silu(gate(x)) * up(x))`, SiLU applied as torch applies it to bf16. */
+/** Qwen MLP: down(compiled SiLU(gate(x)) * up(x)), preserving the activation dtype. */
 export class MossTextMlp {
-  constructor(readonly gate: MossLinear, readonly up: MossLinear, readonly down: MossLinear) {}
+  constructor(readonly gate: MossLinear, readonly up: MossLinear, readonly down: MossLinear, readonly activation: Pick<MossSilu, "forward">) {}
 
   forward(x: MlxArray): MlxArray {
     using g = this.gate.forward(x);
-    using activated = inFloat(g, torchSilu);
+    using activated = this.activation.forward(g);
     using u = this.up.forward(x);
     using hidden = ops.mul(activated, u);
     return this.down.forward(hidden);
@@ -366,8 +235,7 @@ export class MossTextDeltaLayer {
   constructor(readonly inputNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mixer: Pick<MossTextDeltaMixer, "forward" | "dispose">,
     readonly postNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mlp: Pick<MossTextMlp, "forward" | "dispose">) {}
 
-  /** `_tables` is the attention layers' input; a linear-attention layer reads no positions. */
-  forward(x: MlxArray, _tables: MossTextRopeTables): MlxArray {
+  forward(x: MlxArray): MlxArray {
     using normed = this.inputNorm.forward(x);
     using mixed = this.mixer.forward(normed);
     using h = ops.add(x, mixed);
@@ -384,9 +252,9 @@ export class MossTextAttentionLayer {
   constructor(readonly inputNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly attention: Pick<MossTextAttention, "forward" | "dispose">,
     readonly postNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mlp: Pick<MossTextMlp, "forward" | "dispose">) {}
 
-  forward(x: MlxArray, tables: MossTextRopeTables): MlxArray {
+  forward(x: MlxArray): MlxArray {
     using normed = this.inputNorm.forward(x);
-    using attended = this.attention.forward(normed, tables);
+    using attended = this.attention.forward(normed);
     using h = ops.add(x, attended);
     using normed2 = this.postNorm.forward(h);
     using fed = this.mlp.forward(normed2);

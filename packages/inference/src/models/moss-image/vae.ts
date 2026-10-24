@@ -1,21 +1,17 @@
-// The FLUX.2 VAE decoder MOSS-Image ships (diffusers AutoencoderKLFlux2,
-// decode path only), the family's generic graph for its VAE: batch-norm
-// de-normalization of the patched latents, the 2x2 unpatchify, the post-quant
-// convolution and the decoder (conv_in; the mid block's resnet, attention and
-// resnet; one up block per decoder channel count, each `layers_per_block + 1`
-// resnets and, on all but the last, an upsampler; GroupNorm, SiLU, conv_out),
-// then the pipeline's clamp to [-1, 1]. Float32 throughout, channels-last
-// inside. The constructor binds one layer per checkpoint module the config
-// declares; `decode` runs them in order.
-
+// The MOSS FLUX.2 VAE graph. Layers own dtype conversion, layouts and numerical
+// operations. decode returns raw bf16 NHWC output; pixels owns normalization
+// and uint8 conversion. Source weights are consumed into detached bf16 buffers.
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Weights } from "../../artifacts/weights";
 import { openDiffusersShards } from "../../artifacts/diffusers-shards";
 import type { ImageLatentDecoder } from "../../contracts/mlx/image-generation";
-import { MossDenseBiasedLinear } from "./layers";
+import { MossDenseBiasedLinear, MossSilu } from "./layers";
+import { Flux2VaeWeights, flux2DecoderTensor, type Flux2VaeWeightSource } from "./vae-weights";
 import {
-  Flux2Conv2d, Flux2GroupNorm, Flux2ImageClamp, Flux2LatentDenormalization, Flux2MidAttention, Flux2ResnetBlock,
-  Flux2ShortcutResnetBlock, Flux2Silu, Flux2Unpatchify, Flux2Upsample, type Flux2DecoderLayer,
+  Flux2Conv2d, Flux2SpatialConv, Flux2PostQuantConv, Flux2GroupNorm, Flux2SpatialNorm,
+  Flux2LatentInput, Flux2LatentDenormalization, Flux2Unpatchify,
+  Flux2MidAttention, Flux2ResnetBlock, Flux2ShortcutResnetBlock, Flux2Upsample,
+  Flux2ImageLayout, Flux2Pixels, type Flux2DecoderLayer,
 } from "./vae-layers";
 
 /** `vae/config.json` fields the decode path reads. */
@@ -83,54 +79,58 @@ export function parseFlux2VaeConfig(raw: Record<string, unknown>): Flux2VaeConfi
 const NORM_EPS = 1e-6;
 
 export class Flux2VaeDecoder implements ImageLatentDecoder {
+  readonly weights: Flux2VaeWeights;
+  readonly input = new Flux2LatentInput();
   readonly denormalize: Flux2LatentDenormalization;
   readonly unpatchify: Flux2Unpatchify;
-  readonly postQuantConv: Flux2Conv2d;
-  readonly convIn: Flux2Conv2d;
-  /** Resnet, attention, resnet. */
+  readonly postQuantConv: Flux2PostQuantConv;
+  readonly convIn: Flux2SpatialConv;
   readonly midBlock: readonly Flux2DecoderLayer[];
-  /** Per up block, in execution order: its resnets, then its upsampler (all but the last block). */
   readonly upBlocks: readonly (readonly Flux2DecoderLayer[])[];
-  readonly normOut: Flux2GroupNorm;
-  readonly activation = new Flux2Silu();
-  readonly convOut: Flux2Conv2d;
-  readonly clamp = new Flux2ImageClamp();
+  readonly normOut: Flux2SpatialNorm;
+  readonly activation: MossSilu;
+  readonly convOut: Flux2SpatialConv;
+  readonly imageLayout = new Flux2ImageLayout();
+  readonly pixelLayer = new Flux2Pixels();
+  // Register resource owners once. Composite blocks borrow their leaf layers;
+  // this inventory also frees leaves from a constructor that stops mid-block.
+  readonly #owned: { dispose(): void }[] = [];
+  #disposed = false;
 
-  /** The decode path's tensors: the decoder, the post-quant convolution and the batch-norm statistics. */
-  static usesTensor(name: string): boolean {
-    return name.startsWith("decoder.") || name.startsWith("post_quant_conv.") || name.startsWith("bn.");
-  }
+  static usesTensor(name: string): boolean { return flux2DecoderTensor(name); }
 
   static async open(dir: string, config: Flux2VaeConfig): Promise<Flux2VaeDecoder> {
-    const weights = await Weights.open(dir, { openShards: openDiffusersShards });
-    try { return new Flux2VaeDecoder(weights, config); }
-    catch (error) { weights.dispose(); throw error; }
+    const source = await Weights.open(dir, { openShards: openDiffusersShards });
+    // The constructor consumes source on both success and failure.
+    return new Flux2VaeDecoder(source, config);
   }
 
-  constructor(readonly weights: Weights, readonly config: Flux2VaeConfig) {
-    // Every layer bound so far that holds arrays of its own (the clamp first: a field holding two), so a binding that fails
-    // partway frees what the ones before it hold.
-    const built: { dispose(): void }[] = [this.clamp];
-    const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
-    const conv = (path: string) => own(new Flux2Conv2d(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`)));
-    const norm = (path: string) => new Flux2GroupNorm(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`), config.normNumGroups, NORM_EPS);
-    const linear = (path: string) => own(new MossDenseBiasedLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.bias`)));
+  /** Consumes source. On failure no source maps, cast buffers, or bound views
+   * remain owned by this construction. */
+  constructor(source: Flux2VaeWeightSource, readonly config: Flux2VaeConfig) {
+    this.weights = Flux2VaeWeights.from(source);
+    const own = <T extends { dispose(): void }>(layer: T): T => { this.#owned.push(layer); return layer; };
+    const tensor = (path: string) => this.weights.tensor(path);
+    const conv = (path: string) => own(new Flux2Conv2d(tensor(`${path}.weight`), tensor(`${path}.bias`)));
+    const norm = (path: string) => new Flux2GroupNorm(tensor(`${path}.weight`), tensor(`${path}.bias`), config.normNumGroups, NORM_EPS);
+    const linear = (path: string) => own(new MossDenseBiasedLinear(tensor(`${path}.weight`), tensor(`${path}.bias`)));
     const resnet = (path: string, inChannels: number, outChannels: number): Flux2DecoderLayer => inChannels === outChannels
       ? new Flux2ResnetBlock(norm(`${path}.norm1`), conv(`${path}.conv1`), norm(`${path}.norm2`), conv(`${path}.conv2`), this.activation)
       : new Flux2ShortcutResnetBlock(norm(`${path}.norm1`), conv(`${path}.conv1`), norm(`${path}.norm2`), conv(`${path}.conv2`),
         conv(`${path}.conv_shortcut`), this.activation);
     try {
-      this.denormalize = own(new Flux2LatentDenormalization(weights.tensor("bn.running_mean"), weights.tensor("bn.running_var"), config.batchNormEps));
+      this.activation = own(new MossSilu());
+      this.denormalize = own(new Flux2LatentDenormalization(tensor("bn.running_mean"), tensor("bn.running_var"), config.batchNormEps));
       this.unpatchify = new Flux2Unpatchify(config.patch);
-      this.postQuantConv = conv("post_quant_conv");
+      this.postQuantConv = new Flux2PostQuantConv(conv("post_quant_conv"));
       const channels = [...config.decoderBlockOutChannels].reverse();
       const top = channels[0]!;
-      this.convIn = conv("decoder.conv_in");
+      this.convIn = new Flux2SpatialConv(conv("decoder.conv_in"));
       const attention = "decoder.mid_block.attentions.0";
       this.midBlock = [
         resnet("decoder.mid_block.resnets.0", top, top),
         new Flux2MidAttention(norm(`${attention}.group_norm`), linear(`${attention}.to_q`), linear(`${attention}.to_k`),
-          linear(`${attention}.to_v`), linear(`${attention}.to_out.0`)),
+          linear(`${attention}.to_v`), linear(`${attention}.to_out.0`), top),
         resnet("decoder.mid_block.resnets.1", top, top),
       ];
       const upBlocks: Flux2DecoderLayer[][] = [];
@@ -144,37 +144,53 @@ export class Flux2VaeDecoder implements ImageLatentDecoder {
         inChannels = outChannels;
       }
       this.upBlocks = upBlocks;
-      this.normOut = norm("decoder.conv_norm_out");
-      this.convOut = conv("decoder.conv_out");
+      this.normOut = new Flux2SpatialNorm(norm("decoder.conv_norm_out"));
+      this.convOut = new Flux2SpatialConv(conv("decoder.conv_out"));
     } catch (error) {
-      for (const layer of built.reverse()) layer.dispose();
+      for (const layer of this.#owned.reverse()) layer.dispose();
+      this.#owned.length = 0;
+      this.weights.dispose();
       throw error;
     }
   }
 
+  /** Borrowed float32 packed NCHW latents to owned raw bf16 NHWC output. */
   decode(latents: MlxArray): MlxArray {
-    using denormalized = this.denormalize.forward(latents);
+    using input = this.input.forward(latents);
+    using denormalized = this.denormalize.forward(input);
     using unpatched = this.unpatchify.forward(denormalized);
     using quantized = this.postQuantConv.forward(unpatched);
     let x = this.convIn.forward(quantized);
     try {
-      for (const layer of this.midBlock) { using previous = x; x = layer.forward(previous); }
-      for (const block of this.upBlocks)
-        for (const layer of block) { using previous = x; x = layer.forward(previous); }
+      for (const layer of this.midBlock) {
+        const next = layer.forward(x);
+        x.dispose();
+        x = next;
+      }
+      for (const block of this.upBlocks) {
+        for (const layer of block) {
+          const next = layer.forward(x);
+          x.dispose();
+          x = next;
+        }
+      }
       using normed = this.normOut.forward(x);
       using activated = this.activation.forward(normed);
       using image = this.convOut.forward(activated);
-      return this.clamp.forward(image);
+      return this.imageLayout.forward(image);
     } finally {
       x.dispose();
     }
   }
 
+  /** Borrows decode's raw NHWC output; returns owned NHWC uint8 pixels. */
+  pixels(image: MlxArray): MlxArray { return this.pixelLayer.forward(image); }
+
   dispose(): void {
-    this.denormalize.dispose();
-    for (const layer of [...this.midBlock, ...this.upBlocks.flat()]) layer.dispose();
-    for (const conv of [this.postQuantConv, this.convIn, this.convOut]) conv.dispose();
-    this.clamp.dispose();
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const layer of [...this.#owned].reverse()) layer.dispose();
+    this.#owned.length = 0;
     this.weights.dispose();
   }
 }

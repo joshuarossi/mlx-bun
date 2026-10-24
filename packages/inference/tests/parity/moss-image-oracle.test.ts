@@ -55,11 +55,13 @@
 // torch_chunk_gated_delta_rule outputs on seeded bf16 inputs at lengths around the
 // 64-token chunk boundary, Qwen3_5RMSNormGated on seeded bf16 values
 // (`gated-norm`, its bound fixed with that capture), and two real layers' linear
-// attention on a 23-token and a 203-token prompt. The recurrence here steps token by token in float32;
-// the reference solves 64-token chunks in float32 (cumulative log-decays, exp of
-// their differences, a triangular solve). The softplus here is logaddexp(x, 0)
-// below torch's threshold, where torch computes log1p(exp(x)). These checks
-// measure both differences against the reference's float32 outputs.
+// attention on a 23-token and a 203-token prompt. The original implementation
+// stepped token by token in float32. Its replacement follows MFLUX's 64-token
+// matrix-squaring solve; the pinned PyTorch reference uses its own triangular
+// solve. Both use cumulative log-decays and exp of their differences. Softplus
+// now uses compiled logaddexp(x, 0); torch computes log1p(exp(x)) below its
+// threshold. All original bounds below still measure these differences against
+// the same frozen PyTorch outputs. Replacing the implementation waives nothing.
 //
 // Every run writes its checks, verdicts, verified input hashes, provenance and
 // the implementation's commit to MLX_BUN_MOSS_IMAGE_RESULTS (default:
@@ -211,11 +213,11 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
   const { SafetensorsFile: Safetensors } = await import("../../src/artifacts/safetensors");
   const { loadModelConfig } = await import("../../src/artifacts/config");
   const { Weights } = await import("../../src/artifacts/weights");
-  const { gatedDeltaFloat32 } = await import("../../src/kernels/gated-delta-float32");
-  const { bindMossLinear } = await import("../../src/models/moss-image/layers");
+  const { gatedDeltaChunked } = await import("../../src/kernels/gated-delta-chunked");
+  const { MossSilu, bindMossLinear } = await import("../../src/models/moss-image/layers");
   const { MossImageSchedule, parseMossImageScheduleConfig } = await import("../../src/models/moss-image/scheduler");
   const { MossImageConditioner } = await import("../../src/models/moss-image/text-encoder");
-  const { MossTextDeltaMixer, MossTextDeltaRecurrence, MossTextGatedNorm, MossTextL2Norm, MossTextLogDecay } =
+  const { MossFloat32RmsNorm, MossTextCausalConv, MossTextDeltaMixer, MossTextDeltaRecurrence, MossTextGatedNorm, MossTextL2Norm, MossTextLogDecay } =
     await import("../../src/models/moss-image/text-layers");
   const { MossImageTransformer, parseMossTransformerConfig } = await import("../../src/models/moss-image/transformer");
   const { denoiseLatents, guidanceFor } = await import("../../src/generation/image");
@@ -367,14 +369,20 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       { lengths: number[]; layers: number[]; tokens: Record<string, number>; shape: { key_heads: number; value_heads: number; key_dim: number; value_dim: number } };
     const { key_heads: keyHeads, value_heads: valueHeads, key_dim: keyDim, value_dim: valueDim } = meta.shape;
     using aLog = device("delta", "A_log"), dtBias = device("delta", "dt_bias");
-    const logDecay = new MossTextLogDecay(aLog, dtBias), norm = new MossTextL2Norm(), rule = new MossTextDeltaRecurrence(logDecay, keyDim);
-    const scale = Math.fround(1 / Math.sqrt(keyDim));
+    const logDecay = new MossTextLogDecay(aLog, dtBias), norm = new MossTextL2Norm(), rule = new MossTextDeltaRecurrence(logDecay, norm);
+    using ruleOwner = { [Symbol.dispose]: () => rule.dispose() };
+    const activation = new MossSilu();
+    using activationOwner = { [Symbol.dispose]: () => activation.dispose() };
+    using headIndices = MlxArray.fromInt32(Int32Array.from({ length: valueHeads }, (_, h) => Math.floor(h / (valueHeads / keyHeads))), [valueHeads]);
     for (const length of meta.lengths) {
       const at = (name: string) => `L${length}.${name}`, tag = `L=${length}`;
       using q = device("delta", at("q")), k = device("delta", at("k")), v = device("delta", at("v"));
       using a = device("delta", at("a")), b = device("delta", at("b"));
       for (const [name, x] of [["q", q], ["k", k]] as const) {
-        using ours = norm.forward(x);
+        // The production norm now returns float32. Retain the legacy bf16
+        // checkpoint comparison and its original one-ulp bound explicitly.
+        using normalized = norm.forward(x);
+        using ours = normalized.astype(Dtype.bfloat16);
         const measured = ulpDistance(values(ours), host("delta", at(`${name}_norm`)), ulpBf16);
         recordDelta(`${tag} ${name} l2norm (bf16)`, measured, `within ${DELTA.l2NormUlps} bf16 ulp`, measured.maxUlps <= DELTA.l2NormUlps);
       }
@@ -390,9 +398,10 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       // The recurrence alone, from the reference's own float32 inputs (its normalized q and k, v, beta and g).
       using qNorm = device("delta", at("q_norm")), kNorm = device("delta", at("k_norm")), betaRef = device("delta", at("beta")), gRef = device("delta", at("g"));
       using qWide = qNorm.astype(Dtype.float32), kWide = kNorm.astype(Dtype.float32), vWide = v.astype(Dtype.float32), betaWide = betaRef.astype(Dtype.float32);
-      using qScaled = ops.mulScalar(qWide, scale);
-      using decay = ops.exp(gRef);
-      using y32 = gatedDeltaFloat32(qScaled, kWide, vWide, decay, betaWide);
+      // Repeat the captured normalized heads without normalizing them again.
+      // The new kernel scales q internally and takes log-decay, not exp(g).
+      using qRepeated = ops.takeAxis(qWide, headIndices, 2), kRepeated = ops.takeAxis(kWide, headIndices, 2);
+      using y32 = gatedDeltaChunked(qRepeated, kRepeated, vWide, gRef, betaWide);
       const recurrence = compare(values(y32), host("delta", at("out_f32")), valueDim);
       recordDelta(`${tag} recurrence from identical float32 inputs`, recurrence, `relative <= ${DELTA.recurrenceRelative}`, recurrence.relative <= DELTA.recurrenceRelative);
       using y16 = y32.astype(Dtype.bfloat16);
@@ -407,7 +416,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     // The gated norm alone, on the reference's seeded bf16 values and gates with layer 0's weight.
     const normMeta = JSON.parse(readFileSync(join(captures, "gated-norm.json"), "utf8")) as { eps: number; lengths: number[] };
     using normWeight = device("gated-norm", "weight");
-    const gatedNorm = new MossTextGatedNorm(normWeight, normMeta.eps);
+    const gatedNorm = new MossTextGatedNorm(normWeight, new MossFloat32RmsNorm(normMeta.eps), activation);
     for (const length of normMeta.lengths) {
       using hidden = device("gated-norm", `L${length}.hidden`), gate = device("gated-norm", `L${length}.gate`);
       using ours = gatedNorm.forward(hidden, gate);
@@ -420,8 +429,10 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       for (const layer of meta.layers) {
         const p = `language_model.layers.${layer}.linear_attn`, linear = (name: string) => bindMossLinear(weights, config, `${p}.${name}`);
         const mixer = new MossTextDeltaMixer(linear("in_proj_qkv"), linear("in_proj_z"), linear("in_proj_b"), linear("in_proj_a"), linear("out_proj"),
-          weights.tensor(`${p}.conv1d.weight`), new MossTextDeltaRecurrence(new MossTextLogDecay(weights.tensor(`${p}.A_log`), weights.tensor(`${p}.dt_bias`)), keyDim),
-          new MossTextGatedNorm(weights.tensor(`${p}.norm.weight`), config.text.rmsNormEps), { keyHeads, valueHeads, keyDim, valueDim });
+          new MossTextCausalConv(weights.tensor(`${p}.conv1d.weight`)),
+          new MossTextDeltaRecurrence(new MossTextLogDecay(weights.tensor(`${p}.A_log`), weights.tensor(`${p}.dt_bias`)), norm),
+          new MossTextGatedNorm(weights.tensor(`${p}.norm.weight`), new MossFloat32RmsNorm(config.text.rmsNormEps), activation),
+          { keyHeads, valueHeads, keyDim, valueDim }, activation);
         try {
           for (const prompt of Object.keys(meta.tokens)) {
             using flat = device("delta", `${prompt}.layer${layer}.input`);

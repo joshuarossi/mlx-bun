@@ -7,7 +7,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { mossAttention } from "../../kernels/moss-attention";
-import type { MossLinear, MossRmsNorm, MossSitu } from "./layers";
+import type { MossLinear, MossRmsNorm, MossSitu, MossSilu } from "./layers";
 import type { MossRope, MossRopeTables } from "./rope";
 
 /** Unmasked attention over borrowed equal `[B, H, N, D]` bf16 arrays.
@@ -17,7 +17,7 @@ export interface MossAttentionOperation {
   forward(q: MlxArray, k: MlxArray, v: MlxArray): MlxArray;
 }
 
-/** The MOSS bf16-numerator kernel's sole owning layer. Holds no tensors;
+/** The native MLX self-attention kernel's sole owning layer. Holds no tensors;
  * the graph binds it once and supplies it to joint and refiner attention. */
 export class MossAttention implements MossAttentionOperation {
   readonly #attend: (q: MlxArray, k: MlxArray, v: MlxArray) => MlxArray;
@@ -166,21 +166,19 @@ export function timestepSinusoid(timestep: number, freqDim: number): Float32Arra
 
 /** `time_embedding`: the sinusoid (bf16) through a projection, SiLU and a second projection. */
 export class MossTimestepEmbedder {
-  constructor(readonly inProj: MossLinear, readonly outProj: MossLinear, readonly freqDim: number) {}
+  constructor(readonly inProj: MossLinear, readonly outProj: MossLinear, readonly freqDim: number,
+    readonly activation: Pick<MossSilu, "forward" | "dispose">) {}
 
   /** The timestep's `[1, dim]` bf16 embedding. Owned. */
   forward(timestep: number): MlxArray {
     using sinusoid = MlxArray.fromFloat32(timestepSinusoid(timestep, this.freqDim), [1, this.freqDim]);
     using narrow = sinusoid.astype(Dtype.bfloat16);
     using hidden = this.inProj.forward(narrow);
-    // nn.SiLU on bf16 computes in float and rounds once.
-    using wide = hidden.astype(Dtype.float32);
-    using activated = ops.silu(wide);
-    using rounded = activated.astype(Dtype.bfloat16);
-    return this.outProj.forward(rounded);
+    using activated = this.activation.forward(hidden);
+    return this.outProj.forward(activated);
   }
 
-  dispose(): void { this.inProj.dispose(); this.outProj.dispose(); }
+  dispose(): void { this.inProj.dispose(); this.outProj.dispose(); this.activation.dispose(); }
 }
 
 /** What one timestep's modulation layer produces. Owned; disposing frees every part. */

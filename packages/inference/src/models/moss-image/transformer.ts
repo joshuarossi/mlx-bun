@@ -17,7 +17,7 @@ import {
   MossAttention, MossJointAttention, MossJointBlock, MossJointFeedForward, MossLatentEmbedder, MossLatentHead, MossModulation,
   MossRefinerAttention, MossRefinerBlock, MossRefinerFeedForward, MossTimestepEmbedder, MossTokenSequence,
 } from "./blocks";
-import { MossRmsNorm, MossSitu, bindMossLinear, bindMossRowLinear, type MossLinear } from "./layers";
+import { MossRmsNorm, MossSitu, MossSilu, bindMossLinear, type MossLinear } from "./layers";
 import { MossRope } from "./rope";
 
 /** `transformer/config.json`. */
@@ -86,8 +86,6 @@ export class MossImageTransformer implements ImageDenoiser {
     const built: { dispose(): void }[] = [];
     const own = <T extends { dispose(): void }>(layer: T): T => { built.push(layer); return layer; };
     const linear = (path: string): MossLinear => own(bindMossLinear(weights, modelConfig, path));
-    // The timestep embedding and the modulations project one row.
-    const rowLinear = (path: string): MossLinear => own(bindMossRowLinear(weights, modelConfig, path));
     const norm = (path: string) => new MossRmsNorm(weights.tensor(`${path}.weight`), NORM_EPS);
     // The DiT runs in bf16, as the embedders cast it: the activation binds its kernel for that dtype.
     const activation = new MossSitu(Dtype.bfloat16);
@@ -102,8 +100,8 @@ export class MossImageTransformer implements ImageDenoiser {
         norm(`${prefix}.norm2`),
         new MossRefinerFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
       this.textBlocks = [textBlock("text_embedder.blocks.0"), textBlock("text_embedder.blocks.1")];
-      this.timestepEmbedder = new MossTimestepEmbedder(rowLinear("time_embedding.0"), rowLinear("time_embedding.2"), config.freqDim);
-      this.modulation = new MossModulation(rowLinear("shared_block_modulation"), rowLinear("video_head_modulation"), config.dim);
+      this.timestepEmbedder = new MossTimestepEmbedder(linear("time_embedding.0"), linear("time_embedding.2"), config.freqDim, own(new MossSilu()));
+      this.modulation = new MossModulation(linear("shared_block_modulation"), linear("video_head_modulation"), config.dim);
       const blocks: MossJointBlock[] = [];
       for (let i = 0; i < config.numLayers; i++) {
         const prefix = `layers.${i}`;

@@ -170,9 +170,9 @@ test("a pipeline opens from its configs, reports what each stage holds, and load
     const components = { conditioner: "text_encoder", denoiser: "transformer", decoder: "vae" } as const;
     for (const [stage, component] of Object.entries(components))
       expect(pipeline.stageBytes[stage as keyof typeof components]).toBeLessThan(files(component));
-    // The reference's eight levels, exact float32 values (0.463 is the float above f32(0.463): torch's fused linspace step).
+    // MFLUX constructs and snaps in float64 before storing float32 levels.
     expect(Array.from(pipeline.schedule.sigmas(8))).toEqual([1, 0.9679999947547913, 0.9259999990463257, 0.8709999918937683,
-      0.7910000085830688, 0.6710000038146973, 0.46300002932548523, 0.024000000208616257, 0]);
+      0.7910000085830688, 0.6710000038146973, 0.46299999952316284, 0.024000000208616257, 0]);
   } finally { pipeline.dispose(); }
 });
 
@@ -254,9 +254,6 @@ test("a graph whose construction fails partway frees every array its layers alre
         w => new moss.MossImageConditioner(w, { quantization: null, text: { rmsNormEps: 1e-6, headDim: 4, partialRotaryFactor: 0.5,
           ropeParameters: { full_attention: { ropeTheta: 10000 } }, numAttentionHeads: 2, numKeyValueHeads: 1, linearNumKeyHeads: 2,
           linearNumValueHeads: 2, linearKeyHeadDim: 4, linearValueHeadDim: 4, layerTypes: ["linear_attention"], numHiddenLayers: 1 } }, null, null)],
-      ["decoder", { "bn.running_mean": [8], "bn.running_var": [8], "post_quant_conv.weight": [8, 8, 1, 1], "post_quant_conv.bias": [8] },
-        w => new moss.Flux2VaeDecoder(w, moss.parseFlux2VaeConfig({ latent_channels: 2, patch_size: [2, 2], decoder_block_out_channels: [32, 32],
-          block_out_channels: [32, 32], up_block_types: ["UpDecoderBlock2D", "UpDecoderBlock2D"], norm_num_groups: 32 }))],
     ]) {
       const w = weights(shapes);
       created = [];
@@ -273,7 +270,9 @@ test("a graph whose construction fails partway frees every array its layers alre
   const child = Bun.spawn([process.execPath, "--eval", script], { cwd: new URL("../../", import.meta.url).pathname, stdout: "pipe", stderr: "pipe" });
   const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   expect([code, err.trim()]).toEqual([0, ""]);
-  expect(JSON.parse(out.trim())).toEqual({ transformer: [], conditioner: [], decoder: [] });
+  // The decoder's consumed/cast weight port and partial construction are
+  // covered in moss-image-vae-mlx.test.ts with real detached bf16 buffers.
+  expect(JSON.parse(out.trim())).toEqual({ transformer: [], conditioner: [] });
 });
 
 test("the conditioner frees its final norm's output when evaluating it fails", () => {

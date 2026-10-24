@@ -25,9 +25,13 @@ export interface ImageDenoiser {
 
 /** Image latents to pixels. */
 export interface ImageLatentDecoder {
-  /** `latents` `[1, C, h, w]` float32 is borrowed. Returns an owned, lazy float32
-   * `[1, h * p, w * p, 3]` image in `[-1, 1]` (`p` = pixels per latent). */
+  /** `latents` `[1, C, h, w]` float32 is borrowed. Returns an owned, lazy raw
+   * image for this decoder's bound `pixels` operation. The decoder owns the raw
+   * image's layout and dtype; callers pass it unchanged to `pixels`. */
   decode(latents: MlxArray): MlxArray;
+  /** `image`, produced by `decode`, is borrowed. Returns owned, lazy RGB uint8
+   * `[1, h * p, w * p, 3]` pixels. Owns scaling, clipping and rounding policy. */
+  pixels(image: MlxArray): MlxArray;
   dispose(): void;
 }
 

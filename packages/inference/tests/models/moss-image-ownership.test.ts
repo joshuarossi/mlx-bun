@@ -2,10 +2,8 @@
 // layers. These checks hold the parts of that a parser can see; each says what
 // it checks and no more, and review reads the source beside them:
 // - the family's files import no other family's modules and no shared `layers/`;
-// - it binds only the kernels it added, and each (`kernels/row-projection.ts`,
-//   `kernels/situ.ts`, `kernels/gated-delta-float32.ts`, `kernels/moss-attention.ts`) is imported by one file
-//   and called only inside one layer class (`MossDenseRowLinear`, `MossSitu`,
-//   `MossTextDeltaRecurrence`, `MossAttention`);
+// - it binds only the kernels in OWNED_KERNELS, each imported by one file and
+//   called only inside its owning layer class;
 // - its graph files (DiT, conditioner, VAE decoder) import neither MLX ops nor
 //   kernels (an import check, not a proof that no numeric code is there);
 // - no method body of its layers and graphs branches on a field fixed at
@@ -80,9 +78,11 @@ test("the family imports no other family's modules and no shared layer implement
 /** The kernels the family added, each one file bound by exactly one of its layers (ARCHITECTURE: "Add a kernel as one file in
  * `kernels/` bound by exactly one layer"). */
 const OWNED_KERNELS = [
-  { kernel: "kernels/row-projection", file: "models/moss-image/layers.ts", call: "rowProjection", layer: "MossDenseRowLinear" },
+  { kernel: "kernels/silu", file: "models/moss-image/layers.ts", call: "compiledSilu", layer: "MossSilu" },
   { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situFor", layer: "MossSitu" },
-  { kernel: "kernels/gated-delta-float32", file: "models/moss-image/text-layers.ts", call: "gatedDeltaFloat32", layer: "MossTextDeltaRecurrence" },
+  { kernel: "kernels/gated-delta-chunked", file: "models/moss-image/text-layers.ts", call: "gatedDeltaChunked", layer: "MossTextDeltaRecurrence" },
+  { kernel: "kernels/causal-depthwise-conv", file: "models/moss-image/text-layers.ts", call: "causalDepthwiseConv", layer: "MossTextCausalConv" },
+  { kernel: "kernels/softplus", file: "models/moss-image/text-layers.ts", call: "compiledSoftplus", layer: "MossTextLogDecay" },
   { kernel: "kernels/moss-attention", file: "models/moss-image/blocks.ts", call: "mossAttention", layer: "MossAttention" },
 ] as const;
 
@@ -120,16 +120,17 @@ test("the graph files import neither MLX ops nor kernels", () => {
   expect(numeric).toEqual([]);
 });
 
-test("the transformer graph constructs attention; joint and refiner layers accept its binding", () => {
-  const constructors: string[] = [];
+test("the transformer constructs attention and each component graph owns its shared SiLU", () => {
+  const constructors: Record<string, string[]> = { MossAttention: [], MossSilu: [] };
   for (const file of familyFiles()) {
     const visit = (node: ts.Node) => {
-      if (ts.isNewExpression(node) && node.expression.getText() === "MossAttention") constructors.push(basename(file));
+      if (ts.isNewExpression(node)) constructors[node.expression.getText()]?.push(basename(file));
       ts.forEachChild(node, visit);
     };
     visit(parse(file));
   }
-  expect(constructors).toEqual(["transformer.ts"]);
+  for (const files of Object.values(constructors)) files.sort();
+  expect(constructors).toEqual({ MossAttention: ["transformer.ts"], MossSilu: ["text-encoder.ts", "transformer.ts", "vae.ts"] });
 });
 
 test("no layer or graph method branches on a field fixed at construction", () => {

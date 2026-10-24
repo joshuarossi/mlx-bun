@@ -6,8 +6,9 @@ const PIPELINE_CLASS = "MOSSImagePipeline";
 
 /** MOSS-Image (OpenMOSS): a 42-block joint-attention DiT over FLUX.2 VAE
  * latents, conditioned on Qwen3.5-9B hidden states. A text-to-image pipeline,
- * opened through `openImagePipeline`, never the token loop. No oracle backs a
- * bit-exact claim: numerics are measured against the external PyTorch reference. */
+ * opened through `openImagePipeline`, never the token loop. Exact comparisons
+ * target pinned MFLUX configurations; the family retains measured fidelity
+ * while full-pipeline qualification is incomplete. */
 export const MOSS_IMAGE_FAMILY = defineFamily({
   graph: "moss-image",
   accepts: config => config.modelType === PIPELINE_CLASS,

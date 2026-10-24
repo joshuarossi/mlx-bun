@@ -3,8 +3,7 @@
 // order and release, guided and conditional steps, the Euler arithmetic,
 // validation before any stage opens, cancellation and failure at each stage
 // (stages released, nothing left allocated), a timer's cancellation reaching the
-// denoising loop, an update that fails to evaluate, and the pixel postprocess on a
-// decoder whose output is a transposed view.
+// denoising loop, an update that fails to evaluate, and the decoder-owned pixel operation on a transposed uint8 view.
 import { expect, test } from "bun:test";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
@@ -23,7 +22,7 @@ const schedule: FlowMatchingSchedule = {
   timestep: sigma => sigma * 1000,
 };
 
-interface Faults { encode?: boolean; velocityAt?: number; decode?: boolean; abortAt?: (progress: ImageGenerationProgress) => boolean }
+interface Faults { encode?: boolean; velocityAt?: number; decode?: boolean; pixels?: boolean; abortAt?: (progress: ImageGenerationProgress) => boolean }
 
 /** A pipeline of fakes that records what was opened, released, encoded and asked of the denoiser. */
 function fakePipeline(faults: Faults = {}) {
@@ -56,6 +55,10 @@ function fakePipeline(faults: Faults = {}) {
       if (faults.decode) throw new Error("decode failed");
       const [, , h, w] = latents.shape as [number, number, number, number];
       return ops.zeros([1, h * PIXELS, w * PIXELS, 3], Dtype.float32);
+    },
+    pixels(image) {
+      if (faults.pixels) throw new Error("pixels failed");
+      return MlxArray.fromBytesCopy(new Uint8Array(image.size).fill(128), image.shape, Dtype.uint8);
     },
     dispose() { events.push("dispose:decoder"); },
   };
@@ -221,6 +224,8 @@ test("a failing stage rejects with its error, releases what opened and leaves no
     [{ velocityAt: 3 }, "velocity failed", ["open:conditioner", "release:conditioner", "open:denoiser", "release:denoiser"]],
     [{ decode: true }, "decode failed",
       ["open:conditioner", "release:conditioner", "open:denoiser", "release:denoiser", "open:decoder", "release:decoder"]],
+    [{ pixels: true }, "pixels failed",
+      ["open:conditioner", "release:conditioner", "open:denoiser", "release:denoiser", "open:decoder", "release:decoder"]],
   ] as const) {
     const { pipeline, events } = fakePipeline(faults);
     await leakFree(async () => {
@@ -230,21 +235,23 @@ test("a failing stage rejects with its error, releases what opened and leaves no
   }
 });
 
-test("pixels follow the reference postprocess and are read row-major from a transposed decoder output", () => {
-  // Values chosen at the rounding points: -1, -0.5, 0, 0.5, 1 and one beyond the clamp.
-  const values = [-1, -0.5, 0, 0.5, 1, 2];
+test("generation delegates pixel policy and reads the returned uint8 view in row-major order", () => {
+  let raw: MlxArray | undefined;
   const decoder: ImageLatentDecoder = {
-    decode: () => {
-      // Build [1, W=2, H=1, 3] and transpose to [1, H=1, W=2, 3]: a view whose storage order differs from its logical order.
-      using columns = MlxArray.fromFloat32(Float32Array.from(values), [1, 2, 1, 3]);
+    decode: () => raw = ops.zeros([1, 3, 2, 3], Dtype.bfloat16),
+    pixels(image) {
+      expect(image).toBe(raw!);
+      // The decoder owns both the raw layout and pixel policy. These pixels are
+      // deliberately unrelated to the zero raw image, and have nontrivial strides.
+      using columns = MlxArray.fromBytesCopy(Uint8Array.from({ length: 18 }, (_, i) => i), [1, 3, 2, 3], Dtype.uint8);
       return ops.transposeAxes(columns, [0, 2, 1, 3]);
     },
     dispose() {},
   };
   using latents = ops.zeros([1, 1, 1, 1], Dtype.float32);
   const { pixels, width, height } = decodePixels(decoder, latents);
-  expect([width, height]).toEqual([2, 1]);
-  expect(Array.from(pixels)).toEqual([0, 64, 128, 191, 255, 255]);
+  expect([width, height]).toEqual([3, 2]);
+  expect(Array.from(pixels)).toEqual([0, 1, 2, 6, 7, 8, 12, 13, 14, 3, 4, 5, 9, 10, 11, 15, 16, 17]);
 });
 
 test("seeded noise repeats for a seed and differs across seeds", () => {

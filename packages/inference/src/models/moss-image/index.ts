@@ -13,3 +13,4 @@ export * from "./blocks";
 export * from "./rope";
 export * from "./text-layers";
 export * from "./vae-layers";
+export * from "./vae-weights";

@@ -1,35 +1,21 @@
-// MOSSImageScheduler (the snapshot's pipeline_moss_image.py): a shifted
-// flow-matching grid snapped to the nearest noise level of the training grid,
-// then diffusers' FlowMatchEulerDiscreteScheduler with no further shift and a
-// terminal 0. Every value is computed with float32 rounding at the reference's
-// operation boundaries (torch.linspace's two-sided fused float32 steps, the
-// float32 shift, searchsorted and the nearest-neighbour test), so the levels
-// equal the reference's bit for bit.
-
+// The pinned MFLUX schedule: build and snap in float64, then store the
+// completed levels in float32. Timesteps multiply those stored levels in float32.
 import type { FlowMatchingSchedule } from "../../contracts/mlx/image-generation";
 
 const f32 = Math.fround;
 
-/** torch.linspace(start, end, count) in float32 as its CPU kernel computes it: the
- * step in float32, the first half counted up from start and the second half down
- * from end, each `start + step * i` one fused multiply-add (one rounding of the
- * exact product and sum; torch 2.9.1's arm64 build contracts it). */
-function linspace(start: number, end: number, count: number): Float32Array {
-  const out = new Float32Array(count);
-  if (count === 1) { out[0] = start; return out; }
-  const s = f32(start), e = f32(end);
-  const step = f32(f32(e - s) / (count - 1));
-  const halfway = Math.floor(count / 2);
-  for (let i = 0; i < count; i++)
-    out[i] = i < halfway ? f32(s + step * i) : f32(e - step * (count - i - 1));
-  return out;
+function linspace(start: number, end: number, count: number): Float64Array {
+  const values = new Float64Array(count);
+  if (count === 1) { values[0] = start; return values; }
+  const step = (end - start) / (count - 1);
+  for (let i = 0; i < count; i++) values[i] = start + i * step;
+  values[count - 1] = end;
+  return values;
 }
 
-/** `shift * v / (1 + (shift - 1) * v)` over `linspace(1, shift / (total + shift - 1), count)`. */
-function grid(count: number, shift: number, total: number): Float32Array {
-  const values = linspace(1, shift / (total + shift - 1), count);
-  const s = f32(shift), s1 = f32(shift - 1);
-  return values.map(v => f32(f32(s * v) / f32(1 + f32(s1 * v))));
+function grid(count: number, shift: number, total: number): Float64Array {
+  return linspace(1, shift / (total + shift - 1), count)
+    .map(value => shift * value / (1 + (shift - 1) * value));
 }
 
 export interface MossImageScheduleConfig {
@@ -50,7 +36,7 @@ export function parseMossImageScheduleConfig(raw: Record<string, unknown>): Moss
 }
 
 export class MossImageSchedule implements FlowMatchingSchedule {
-  readonly #training: Float32Array;
+  readonly #training: Float64Array;
 
   constructor(readonly config: MossImageScheduleConfig) {
     this.#training = grid(config.numTrainTimesteps, config.trainingShift, config.numTrainTimesteps).reverse();
@@ -65,10 +51,13 @@ export class MossImageSchedule implements FlowMatchingSchedule {
       while (upper < total && training[upper]! < sigma) upper++;
       upper = Math.min(upper, total - 1);
       const lower = Math.max(upper - 1, 0);
-      const nearest = Math.abs(f32(sigma - training[lower]!)) <= Math.abs(f32(training[upper]! - sigma)) ? lower : upper;
+      const nearest = Math.abs(sigma - training[lower]!) <= Math.abs(training[upper]! - sigma) ? lower : upper;
       const level = training[nearest]!;
-      if (levels.at(-1) !== level) levels.push(level);
+      levels.push(level);
     }
+    const distinct = new Set(levels).size;
+    if (distinct !== steps)
+      throw new RangeError(`MOSS-Image cannot run ${steps} steps: the training grid gives only ${distinct} distinct steps. Use fewer steps.`);
     levels.push(0);
     return Float32Array.from(levels);
   }

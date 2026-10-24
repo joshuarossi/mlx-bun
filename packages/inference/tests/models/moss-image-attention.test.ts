@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, clearCache, peakMemory, resetPeakMemory, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -6,23 +7,70 @@ import { MossAttention, MossJointAttention, MossRefinerAttention } from "../../s
 import { MossDenseLinear, MossRmsNorm, type MossLinear } from "../../src/models/moss-image/layers";
 import { MossRope } from "../../src/models/moss-image/rope";
 
-// A full score matrix is intentional in this small test reference only. Its
-// operation order is the external bf16-numerator experiment's, independently
-// of the kernel's two passes and reductions.
-function reference(q: MlxArray, k: MlxArray, v: MlxArray, roundNumerator = true, roundDenominator = false): MlxArray {
-  using q32 = q.astype(Dtype.float32), k32 = k.astype(Dtype.float32), v32 = v.astype(Dtype.float32);
-  using kt = ops.transposeAxes(k32, [0, 1, 3, 2]);
-  using dots = ops.matmul(q32, kt);
-  using scores = ops.mulScalar(dots, Math.fround(Math.pow(q.shape[3]!, -0.5)));
-  using peak = ops.maxAxis(scores, -1, true);
-  using shifted = ops.sub(scores, peak);
-  using numerators = ops.exp(shifted);
-  using rounded = numerators.astype(roundNumerator ? Dtype.bfloat16 : Dtype.float32);
-  using stored = rounded.astype(Dtype.float32);
-  using denominator = ops.sumAxis(roundDenominator ? stored : numerators, -1, true);
-  using weighted = ops.matmul(stored, v32);
-  using divided = ops.div(weighted, denominator);
-  return divided.astype(Dtype.bfloat16);
+// Independent Python MLX 0.32.2, the pinned MFLUX engine's attention binding.
+// Regenerate with the same integer LCG below, float32 -> bf16 inputs, then
+// mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5).
+// Digests cover every output widened exactly to little-endian float32. Odd
+// head widths use native fallback arithmetic with intermediate bf16 stores;
+// host-double softmax is not their bitwise reference.
+const NATIVE_DIGESTS: Record<string, string> = {
+  "1,1,1,1": "c34fde18c1b8ec18aa9dd952cdbbcce00cf0505358e6cfcce5a6fe795e1d019b",
+  "1,2,3,7": "a0a20d26646dd7dcd72bc8563f1c41ebe3c6b7d7066a6c6ee8699bfc4bc1d476",
+  "2,3,7,33": "5cfb60c84e85176479a94bf7bef8e97f24f97b347568953e1ef2c30eac5ceaec",
+  "1,2,31,128": "387cb7f82b030c4516ac394bc3025d610aca5608d0aaa0c57d47d943a8120fef",
+  "1,2,32,128": "5ea2c59bf6d40219d56f01b53499a2aff609261609509a1bd856cdb45b5ddb17",
+  "1,2,33,128": "dff98dce9ce69c3bc0aa8d7af48caa437e0881fb9ada26c2a2c3a20f334c13f6",
+  "1,1,127,128": "8c5e8143b82c04570356fefbdec6974e8e929a33719ea0750e247f9fedb11900",
+  "1,1,128,128": "89b3eab23df7261c2956080ee4626a3513e59469f1dc33d6b034b974e0d29492",
+  "1,1,129,128": "fa3cda882697b28009c7eef8033674184955d07626075b4ec0d57965b58452cc",
+  "1,1,279,128": "a81466f79a7e942cc04587b710887f0a629d98a03152219745712a4b88a45833",
+  "1,1,513,128": "0773f6158e276b9c5c7e295ec941ad76edab4c71cd4f1273f2ed559b82c8bd27",
+  "1,2,65,136": "bf24d4e285670144a0a944c5bfd849a0a9c4d19e99777113e3a1aba8cff50966",
+  "1,1,67,257": "50530670b37a20a0f910fb448577e74e55c7ffc3828df4af484a13c719e7f790",
+  "peaked": "6b83b51efbe466121ce859333c079fdd699befd881c7a2bc37f8f3ee4237c40a",
+  "final-max": "caf1bb2a25135dcdaa3d4b6c95ef99643e93a4ac424704ebcbecd039cfaedc44"
+};
+
+function exactNative(actual: MlxArray, name: string): void {
+  expect(actual.dtype).toBe(Dtype.bfloat16);
+  const values = host(actual);
+  expect(values.every(Number.isFinite)).toBe(true);
+  expect(createHash("sha256").update(new Uint8Array(values.buffer, values.byteOffset, values.byteLength)).digest("hex"))
+    .toBe(NATIVE_DIGESTS[name]!);
+}
+
+/** Nearest bf16 value, with ties to even. */
+function bf16(value: number): number {
+  const bits = new Uint32Array(new Float32Array([value]).buffer)[0]!;
+  return new Float32Array(new Uint32Array([(bits + 0x7fff + ((bits >>> 16) & 1)) & 0xffff0000]).buffer)[0]!;
+}
+
+// Independent host-double softmax(Q K^T / sqrt(D)) V, with only the final
+// result stored in bf16. Reading the inputs is the only native work here.
+function reference(q: MlxArray, k: MlxArray, v: MlxArray): { shape: number[]; values: Float32Array } {
+  const shape = q.shape, [batch, heads, length, dim] = shape as [number, number, number, number];
+  const qs = host(q), ks = host(k), vs = host(v), values = new Float32Array(qs.length);
+  const scores = new Float64Array(length), scale = 1 / Math.sqrt(dim);
+  for (let b = 0; b < batch; b++) for (let h = 0; h < heads; h++) {
+    const base = (b * heads + h) * length * dim;
+    for (let row = 0; row < length; row++) {
+      let peak = -Infinity;
+      for (let key = 0; key < length; key++) {
+        let dot = 0;
+        for (let d = 0; d < dim; d++) dot += qs[base + row * dim + d]! * ks[base + key * dim + d]!;
+        scores[key] = dot * scale;
+        peak = Math.max(peak, scores[key]!);
+      }
+      let denominator = 0;
+      for (let key = 0; key < length; key++) { scores[key] = Math.exp(scores[key]! - peak); denominator += scores[key]!; }
+      for (let d = 0; d < dim; d++) {
+        let weighted = 0;
+        for (let key = 0; key < length; key++) weighted += scores[key]! * vs[base + key * dim + d]!;
+        values[base + row * dim + d] = bf16(weighted / denominator);
+      }
+    }
+  }
+  return { shape, values };
 }
 
 function input(shape: number[], seed: number, scale = 1): MlxArray {
@@ -41,20 +89,20 @@ function host(x: MlxArray): Float32Array {
   return contiguous.toFloat32();
 }
 
-function close(actual: MlxArray, expected: MlxArray): void {
+function close(actual: MlxArray, expected: { shape: number[]; values: Float32Array }): void {
   expect(actual.shape).toEqual(expected.shape);
   expect(actual.dtype).toBe(Dtype.bfloat16);
-  const a = host(actual), b = host(expected);
+  const a = host(actual), b = expected.values;
+  expect(a.length).toBe(b.length);
   let error = 0, norm = 0;
   for (let i = 0; i < a.length; i++) {
     expect(Number.isFinite(a[i])).toBe(true);
     error += (a[i]! - b[i]!) ** 2;
     norm += b[i]! ** 2;
   }
-  // A float32 QK reduction can move an exponential across a bf16 midpoint.
-  // After multiplication by V, cancellation can amplify that into several
-  // output ulps. Check relative error, including each query, rather than
-  // assuming the only rounding difference is the final bf16 store.
+  // Native float32 reductions can cross a bf16 midpoint; cancellation in the
+  // weighted sum can amplify this. Keep the existing whole-output and per-query
+  // relative bounds. The separate analytical case requires exact bf16 words.
   const dim = actual.shape.at(-1)!;
   for (let row = 0; row < a.length; row += dim) {
     let rowError = 0, rowNorm = 0;
@@ -74,59 +122,38 @@ for (const [batch, heads, length, dim] of [
   [1, 1, 279, 128], [1, 1, 513, 128],
   [1, 2, 65, 136], [1, 1, 67, 257],
 ] as const) {
-  test(`MOSS attention agrees with the float32/bf16-numerator reference at [${batch},${heads},${length},${dim}]`, () => {
+  test(`MOSS attention matches Python MLX exactly at [${batch},${heads},${length},${dim}]`, () => {
     const shape = [batch, heads, length, dim];
     using q = input(shape, 11, 2), k = input(shape, 23, 2), v = input(shape, 37);
     using actual = new MossAttention(dim).forward(q, k, v);
-    using expected = reference(q, k, v);
-    close(actual, expected);
+    expect(actual.shape).toEqual(shape);
+    exactNative(actual, shape.join(","));
+    // MOSS's 128-wide heads also retain the independent real-number check.
+    if (dim === 128) close(actual, reference(q, k, v));
   });
 }
 
-test("MOSS attention stays within one bf16 spacing at float32 rounding midpoints", () => {
+test("MOSS attention matches Python MLX exactly on peaked scores", () => {
   const shape = [1, 1, 19, 8];
   using q = input(shape, 73, 4), k = input(shape, 91, 4), v = input(shape, 121, 3);
-  using expected = reference(q, k, v);
-  using noStore = reference(q, k, v, false);
-  using roundedDenominator = reference(q, k, v, true, true);
-  const b = host(expected);
-  expect(host(noStore).some((value, i) => value !== b[i])).toBe(true);
-  expect(host(roundedDenominator).some((value, i) => value !== b[i])).toBe(true);
   using actual = new MossAttention(8).forward(q, k, v);
-  const a = host(actual);
-  // Different float32 reductions can shift the denominator by one ulp and
-  // place the quotient on opposite sides of a bf16 midpoint. The resulting
-  // adjacent bf16 values are allowed here; the analytical case below rejects
-  // either incorrect numerator/denominator rounding rule independently.
-  const actualBits = new Uint32Array(a.buffer, a.byteOffset, a.length);
-  const expectedBits = new Uint32Array(b.buffer, b.byteOffset, b.length);
-  const ordered = (bits: number) => bits & 0x8000 ? 0x8000 - (bits & 0x7fff) : 0x8000 + bits;
-  for (let i = 0; i < a.length; i++) {
-    expect(Number.isFinite(a[i])).toBe(true);
-    expect(Math.abs(ordered(actualBits[i]! >>> 16) - ordered(expectedBits[i]! >>> 16))).toBeLessThanOrEqual(1);
-  }
+  exactNative(actual, "peaked");
 });
 
-test("MOSS attention's analytical two-key case rejects both incorrect rounding rules", () => {
+test("MOSS attention's analytical two-key case stores sigmoid(-1), rejecting the old numerator rounding", () => {
   const shape = [1, 1, 2, 1];
   using q32 = MlxArray.fromFloat32(new Float32Array([1, 1]), shape);
   using k32 = MlxArray.fromFloat32(new Float32Array([0, 1]), shape);
   using v32 = MlxArray.fromFloat32(new Float32Array([1, 0]), shape);
   using q = q32.astype(Dtype.bfloat16), k = k32.astype(Dtype.bfloat16), v = v32.astype(Dtype.bfloat16);
-  // exp(-1) rounds to 0.3671875 in bf16. Dividing that stored numerator by
-  // 1 + exp(-1) gives 0.26843557, below the bf16 midpoint 0.2685546875.
-  // Omitting the store gives 0.26894142; summing stored numerators gives
-  // 0.26857143. Both lie above the midpoint, well beyond float32 roundoff.
-  const correct = new Float32Array([0.267578125, 0.267578125]);
-  const wrong = new Float32Array([0.26953125, 0.26953125]);
+  // exp(0) / (exp(0) + exp(1)) = sigmoid(-1), whose nearest bf16 is
+  // 0.26953125. The removed bf16-numerator rule produced 0.267578125.
+  const correct = new Float32Array([0.26953125, 0.26953125]);
+  expect(bf16(1 / (1 + Math.exp(1)))).toBe(correct[0]!);
   using actual = new MossAttention(1).forward(q, k, v);
-  using expected = reference(q, k, v);
-  using noStore = reference(q, k, v, false);
-  using roundedDenominator = reference(q, k, v, true, true);
+  const expected = reference(q, k, v);
   expect(host(actual)).toEqual(correct);
-  expect(host(expected)).toEqual(correct);
-  expect(host(noStore)).toEqual(wrong);
-  expect(host(roundedDenominator)).toEqual(wrong);
+  expect(expected.values).toEqual(correct);
 });
 
 test("MOSS attention uses the final maximum even when it occurs at the last key", () => {
@@ -136,9 +163,8 @@ test("MOSS attention uses the final maximum even when it occurs at the last key"
   for (let i = 0; i < values.length; i++) values[i] = (Math.floor(i / dim) - length / 2) * 10;
   using k32 = MlxArray.fromFloat32(values, shape);
   using k = k32.astype(Dtype.bfloat16);
-  using expected = reference(q, k, v);
   using actual = new MossAttention(dim).forward(q, k, v);
-  close(actual, expected);
+  exactNative(actual, "final-max");
 });
 
 test("MOSS attention reads transposed, sliced and broadcast strides", () => {
@@ -150,7 +176,7 @@ test("MOSS attention reads transposed, sliced and broadcast strides", () => {
   using vs = input([1, 1, dim, length], 41);
   using vt = ops.transposeAxes(vs, [0, 1, 3, 2]);
   using v = ops.broadcastTo(vt, [batch, heads, length, dim]);
-  using expected = reference(q, k, v);
+  const expected = reference(q, k, v);
   using actual = new MossAttention(dim).forward(q, k, v);
   close(actual, expected);
 });
@@ -160,42 +186,39 @@ test("MOSS attention retains lazy input storage after every input handle is disp
   const build = (length: number) => {
     using qs = input([1, length, 2, 128], 17), ks = input([1, length, 2, 128], 19), vs = input([1, length, 2, 128], 29);
     using q = ops.transposeAxes(qs, [0, 2, 1, 3]), k = ops.transposeAxes(ks, [0, 2, 1, 3]), v = ops.transposeAxes(vs, [0, 2, 1, 3]);
-    using expected = reference(q, k, v);
-    const values = host(expected); // no reference graph may keep the inputs alive for the kernel
-    return { actual: layer.forward(q, k, v), values };
+    const expected = reference(q, k, v); // host values keep no native input storage alive
+    return { actual: layer.forward(q, k, v), expected };
   };
   // The same binding handles changing N without retaining tensors between calls.
   for (const length of [5, 37, 1, 17]) {
     const result = build(length);
     using actual = result.actual;
-    using wide = MlxArray.fromFloat32(result.values, [1, 2, length, 128]);
-    using expected = wide.astype(Dtype.bfloat16);
-    close(actual, expected);
+    close(actual, result.expected);
   }
 });
 
 test("MOSS attention rejects incompatible shapes and dtypes without consuming inputs", () => {
-  expect(() => new MossAttention(0)).toThrow("head dimension");
-  expect(() => new MossAttention(1.5)).toThrow("head dimension");
+  expect(() => new MossAttention(0)).toThrow("head width");
+  expect(() => new MossAttention(1.5)).toThrow("head width");
   const layer = new MossAttention(128);
   using q = input([1, 1, 3, 128], 11);
   for (const shape of [[1, 1, 4, 128], [1, 2, 3, 128], [1, 1, 3, 64], [3, 128]]) {
     using bad = input(shape, 13);
-    expect(() => layer.forward(q, bad, q)).toThrow("need equal nonempty");
+    expect(() => layer.forward(q, bad, q)).toThrow("equal [B,H,N,D]");
     if (shape.length !== 4 || shape[3] !== 128)
-      expect(() => layer.forward(bad, bad, bad)).toThrow("need equal nonempty");
+      expect(() => layer.forward(bad, bad, bad)).toThrow("equal [B,H,N,D]");
   }
   using empty = q.slice([0, 0, 0, 0], [1, 1, 0, 128]);
-  expect(() => layer.forward(empty, empty, empty)).toThrow("need equal nonempty");
+  expect(() => layer.forward(empty, empty, empty)).toThrow("equal [B,H,N,D]");
   using wide = q.astype(Dtype.float32);
-  expect(() => layer.forward(wide, q, q)).toThrow("must be bfloat16");
-  expect(() => layer.forward(q, wide, q)).toThrow("must be bfloat16");
-  expect(() => layer.forward(q, q, wide)).toThrow("must be bfloat16");
+  expect(() => layer.forward(wide, q, q)).toThrow("bf16 inputs");
+  expect(() => layer.forward(q, wide, q)).toThrow("bf16 inputs");
+  expect(() => layer.forward(q, q, wide)).toThrow("bf16 inputs");
   expect(host(q).length).toBe(3 * 128);
 });
 
 test("joint and refiner attention compose the same MOSS attention layer", () => {
-  const dim = 16, heads = 2, length = 5;
+  const dim = 256, heads = 2, length = 5;
   const identity = Float32Array.from({ length: dim * dim }, (_, i) => +(Math.floor(i / dim) === i % dim));
   using w32 = MlxArray.fromFloat32(identity, [dim, dim]);
   using w = w32.astype(Dtype.bfloat16);
@@ -217,9 +240,10 @@ test("joint and refiner attention compose the same MOSS attention layer", () => 
     using normalized = norm.forward(h);
     using rotated = rope.apply(normalized, tables);
     using qk = ops.transposeAxes(rotated, [0, 2, 1, 3]), v = ops.transposeAxes(h, [0, 2, 1, 3]);
-    using attended = reference(qk, qk, v);
-    using transposed = ops.transposeAxes(attended, [0, 2, 1, 3]);
-    using expected = ops.reshape(transposed, [1, length, dim]);
+    const attended = reference(qk, qk, v), values = new Float32Array(length * dim), headDim = dim / heads;
+    for (let n = 0; n < length; n++) for (let h = 0; h < heads; h++) for (let d = 0; d < headDim; d++)
+      values[n * dim + h * headDim + d] = attended.values[(h * length + n) * headDim + d]!;
+    const expected = { shape: [1, length, dim], values };
     using a = joint.forward(x, tables), b = refiner.forward(x, tables);
     close(a, expected); close(b, expected);
     expect(calls).toBe(2);
