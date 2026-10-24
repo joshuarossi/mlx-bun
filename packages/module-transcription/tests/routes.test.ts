@@ -254,6 +254,7 @@ describe("audio route responses", () => {
 
 /** The real service over the real Whisper model host and a fake runtime: sessions exercise the service's own lifecycle. */
 function sessionService(beforeLoad?: () => Promise<void>) {
+  let disposals = 0;
   const runtime: TranscriptionRuntime = {
     async load() {
       await beforeLoad?.();
@@ -267,20 +268,21 @@ function sessionService(beforeLoad?: () => Promise<void>) {
             async feed(samples: Float32Array) { fed += samples.length; segments.push({ ...RESULT.segments[segments.length % 2]!, id: segments.length }); },
             async finish() { return { text: ` fed ${fed}`, segments, language: options.language ?? "en" }; } };
         },
-        dispose() {},
+        dispose() { disposals++; },
       };
     },
     vad() { throw new Error("no vad in this test"); },
     async decodeAudio(bytes) { return new Float32Array(bytes.length / 2); },
   };
   const { host, service } = stack(runtime, { idleUnloadSec: 0 });
-  return { service, host, close: async () => { await service.close(); await host.close(); } };
+  return { service, host, get disposals() { return disposals; }, close: async () => { await service.close(); await host.close(); } };
 }
 
 describe("streaming sessions", () => {
   test("an aborted session-create request never registers an unreachable session or retains its weights", async () => {
     const loading = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    const { service, host, close } = sessionService(async () => { loading.resolve(); await release.promise; });
+    const setup = sessionService(async () => { loading.resolve(); await release.promise; });
+    const { service, host, close } = setup;
     const routes = audioRoutes(service);
     const controller = new AbortController();
     const request = post("/v1/audio/sessions", { signal: controller.signal });
@@ -292,12 +294,15 @@ describe("streaming sessions", () => {
       expect((await response)!.status).toBe(499);
       expect(service.sessionCount).toBe(0);
       expect(service.resident).toBe(false);
-      expect(service.stats.unloads).toBe(1);
-      expect(host.stats("org/whisper").unloads).toBe(1);
+      // Cancellation abandons the pending load before publishing residency.
+      // Its returned weights are disposed, without counting a resident unload.
+      expect(service.stats.unloads).toBe(0);
+      expect(host.stats("org/whisper")).toMatchObject({ loads: 0, unloads: 0 });
     } finally {
       release.resolve();
       await response;
       await close();
+      expect(setup.disposals).toBe(1);
     }
   });
 

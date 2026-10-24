@@ -248,10 +248,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     // bytes its stages load, the bytes its admission asks room for. Modules
     // reach both through the companions, by the operation a model declares.
     const companionOperations = hooks.oneModel ? [] : ["transcribe", "image"] as const;
+    const exclusive: Exclusive = async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } };
     const moduleHost = createHostServices({ operations: companionOperations, whisper: options.whisper, image: { stages: stageBudgetRule(defaultStageBudgetBytes()) }, events: state.events,
-      exclusive: async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } },
-      reserve: (owner, signal) => residency.reserve(owner, signal),
-      admit: bytes => residency.makeRoom(bytes) });
+      exclusive, loadExclusive: exclusive, reserve: (owner, signal) => residency.reserve(owner, signal) });
     const whisperInfo = async () => {
       const id = await moduleHost.whisper.defaultFor("transcribe");
       return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
@@ -298,7 +297,6 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     let current = first.id;
     residency = createResidencyHost<ServingUnit>({ source, budgetBytes, events: state.events,
       ...(memory ? { measured: () => memory.activeMemory() } : {}),
-      external: () => moduleHost.whisper.resident().reduce((sum, model) => sum + model.bytes, 0),
       defaultFor: async operation => operation === "generate" ? current : undefined,
       // Switching: the models this host may load; a caller's own context and an expert-offload process hold one model and never switch.
       ...(input.models ? { async serve(id: string, signal: AbortSignal | undefined) {

@@ -41,10 +41,11 @@ export interface HostServicesOptions {
   image?: ImageServing;
   /** The host's exclusive lock around decoding and image runs; without one they run at once. */
   exclusive?: Exclusive;
-  /** Coordinates lazy companion weight loads as well as decode when the composition supplies a worker lease. */
+  /** Coordinates lazy companion weight loads as well as decode through the host's execution lease. */
   loadExclusive?: Exclusive;
   /** Makes room for Whisper before it loads; see `WhisperModelHostOptions.admit`. */
   admit?: (bytes: number) => Promise<void>;
+  /** Owns pending and resident bytes for every companion sharing the host's memory budget. */
   reserve?: ReserveModel;
   /** Test seams. */
   backend?: WhisperBackend;
@@ -87,6 +88,7 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     } };
   const events = options.events ?? createEventHub();
   const shared = { catalog, ...(options.exclusive ? { exclusive: options.exclusive } : {}),
+    ...(options.reserve ? { reserve: options.reserve } : {}),
     ...(options.log ? { log: options.log } : {}), events };
   const configured = (policy: { modelDir?: string; modelId?: string } | undefined) =>
     policy?.modelDir ? { configured: { id: policy.modelId ?? policy.modelDir, directory: policy.modelDir } } : {};
@@ -108,7 +110,6 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...(imagePolicy?.resident ? { resident: true } : {}),
     ...(imagePolicy?.stages ? { stages: imagePolicy.stages } : {}),
     ...(options.imageBackend ? { backend: options.imageBackend } : {}),
-    ...(options.reserve ? { reserve: options.reserve } : {}),
   });
   // A configured checkpoint need not be in the catalog: its operation is the one it was configured for.
   const known: Record<ModelId, ModelOperation> = {};
