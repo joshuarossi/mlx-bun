@@ -119,9 +119,9 @@ export class MossSitu {
     this.#situ = situFor(dtype);
   }
 
+  /** Consumes both inputs on success or failure; the caller owns the result. */
   forward(hidden: MlxArray, gate: MlxArray): MlxArray {
-    const out = this.#situ(hidden, gate);
-    hidden.dispose(); gate.dispose();
-    return out;
+    try { return this.#situ(hidden, gate); }
+    finally { hidden.dispose(); gate.dispose(); }
   }
 }

@@ -91,7 +91,12 @@ export class MossRefinerFeedForward {
   constructor(readonly up: MossLinear, readonly gate: MossLinear, readonly down: MossLinear, readonly activation: Pick<MossSitu, "forward">) {}
 
   forward(y: MlxArray): MlxArray {
-    using activated = this.activation.forward(this.up.forward(y), this.gate.forward(y));
+    const hidden = this.up.forward(y);
+    let gate: MlxArray;
+    try { gate = this.gate.forward(y); }
+    catch (error) { hidden.dispose(); throw error; }
+    // Both projections transfer to the activation only after they succeed.
+    using activated = this.activation.forward(hidden, gate);
     return this.down.forward(activated);
   }
 
