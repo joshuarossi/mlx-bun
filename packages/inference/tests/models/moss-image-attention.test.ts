@@ -72,6 +72,7 @@ for (const [batch, heads, length, dim] of [
   [1, 2, 31, 128], [1, 2, 32, 128], [1, 2, 33, 128],
   [1, 1, 127, 128], [1, 1, 128, 128], [1, 1, 129, 128],
   [1, 1, 279, 128], [1, 1, 513, 128],
+  [1, 2, 65, 136], [1, 1, 67, 257],
 ] as const) {
   test(`MOSS attention agrees with the float32/bf16-numerator reference at [${batch},${heads},${length},${dim}]`, () => {
     const shape = [batch, heads, length, dim];
@@ -82,7 +83,7 @@ for (const [batch, heads, length, dim] of [
   });
 }
 
-test("MOSS attention rounds the numerator before V but sums unrounded exponentials", () => {
+test("MOSS attention stays within one bf16 spacing at float32 rounding midpoints", () => {
   const shape = [1, 1, 19, 8];
   using q = input(shape, 73, 4), k = input(shape, 91, 4), v = input(shape, 121, 3);
   using expected = reference(q, k, v);
@@ -92,7 +93,40 @@ test("MOSS attention rounds the numerator before V but sums unrounded exponentia
   expect(host(noStore).some((value, i) => value !== b[i])).toBe(true);
   expect(host(roundedDenominator).some((value, i) => value !== b[i])).toBe(true);
   using actual = new MossAttention(8).forward(q, k, v);
-  expect(host(actual)).toEqual(b);
+  const a = host(actual);
+  // Different float32 reductions can shift the denominator by one ulp and
+  // place the quotient on opposite sides of a bf16 midpoint. The resulting
+  // adjacent bf16 values are allowed here; the analytical case below rejects
+  // either incorrect numerator/denominator rounding rule independently.
+  const actualBits = new Uint32Array(a.buffer, a.byteOffset, a.length);
+  const expectedBits = new Uint32Array(b.buffer, b.byteOffset, b.length);
+  const ordered = (bits: number) => bits & 0x8000 ? 0x8000 - (bits & 0x7fff) : 0x8000 + bits;
+  for (let i = 0; i < a.length; i++) {
+    expect(Number.isFinite(a[i])).toBe(true);
+    expect(Math.abs(ordered(actualBits[i]! >>> 16) - ordered(expectedBits[i]! >>> 16))).toBeLessThanOrEqual(1);
+  }
+});
+
+test("MOSS attention's analytical two-key case rejects both incorrect rounding rules", () => {
+  const shape = [1, 1, 2, 1];
+  using q32 = MlxArray.fromFloat32(new Float32Array([1, 1]), shape);
+  using k32 = MlxArray.fromFloat32(new Float32Array([0, 1]), shape);
+  using v32 = MlxArray.fromFloat32(new Float32Array([1, 0]), shape);
+  using q = q32.astype(Dtype.bfloat16), k = k32.astype(Dtype.bfloat16), v = v32.astype(Dtype.bfloat16);
+  // exp(-1) rounds to 0.3671875 in bf16. Dividing that stored numerator by
+  // 1 + exp(-1) gives 0.26843557, below the bf16 midpoint 0.2685546875.
+  // Omitting the store gives 0.26894142; summing stored numerators gives
+  // 0.26857143. Both lie above the midpoint, well beyond float32 roundoff.
+  const correct = new Float32Array([0.267578125, 0.267578125]);
+  const wrong = new Float32Array([0.26953125, 0.26953125]);
+  using actual = new MossAttention(1).forward(q, k, v);
+  using expected = reference(q, k, v);
+  using noStore = reference(q, k, v, false);
+  using roundedDenominator = reference(q, k, v, true, true);
+  expect(host(actual)).toEqual(correct);
+  expect(host(expected)).toEqual(correct);
+  expect(host(noStore)).toEqual(wrong);
+  expect(host(roundedDenominator)).toEqual(wrong);
 });
 
 test("MOSS attention uses the final maximum even when it occurs at the last key", () => {
