@@ -165,18 +165,17 @@ their evidence in the [inference README](packages/inference/README.md#text-to-im
 Open:
 
 - [ ] Resolve or decide every check that fails the original bounds (the review adjudicated
-      only the last block's text rows). At `8d021027`: Base trajectory steps 6 and 7; SFT
-      block 41's image rows at step 4 and trajectory steps 5 to 7. The review's two
+      only the last block's text rows). At `6e1d329a`, both Base and SFT fail trajectory
+      steps 6 and 7, and the corrected spatial-token cosine also fails at step 5.
+      All consumed DiT stage checks pass. The review's two
       experiments ran; the SITU and one-row projection fixes they led to, the earlier and
-      newly introduced failures, the not-adopted attention experiment and the measured
+      newly introduced failures, the attention experiments and the measured
       sensitivity are in the [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
-      The sensitivity reading there is provisional and awaits independent review. Decision
-      (Josh): whether to build a MOSS-owned attention kernel that keeps the reference's bf16
-      softmax numerators without holding the float32 scores (the measured form reproduces
-      the reference's attention far more closely but did not change the failures). Decision
-      (Josh): publishing the PyTorch oracle runner (`~/oracles/moss-image/oracle.py`)
-      externally, pinned by hash, so the comparison is reproducible without this machine, as
-      ARCHITECTURE's result rules ask. Exit:
+      Independent review accepted the evidence of sensitivity without accepting the
+      remaining differences. The tiled MOSS attention kernel keeps bf16 softmax
+      numerators without holding the scores. The single complete-pipeline image
+      comparison is recorded; full-model acceptance across prompts and configurations
+      and performance qualification remain open. Exit:
       each passes its bound, or Josh records a decision.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
@@ -184,20 +183,13 @@ Open:
 - [ ] Memory on 24 GB: every measured run completed while the machine swapped, and the
       near-constant 18.4 GB process footprint under staging is unexplained. Exit: an
       explanation and a quiet-machine measurement of process footprint, RSS and MLX peak.
-- [ ] Serving gaps: `/v1/models` does not list image models. In isolated serving an image
-      run pauses no chat worker (in-process it pauses every resident model), and the Whisper
-      worker, as on main, has no execution lease, so a GPU-exclusive job does not pause it.
+- [ ] Serving gaps: `/v1/models` does not list image models.
       An isolated image model keeps its first staging decision and charge while the server
       runs, as a chat model keeps its first estimate, so a snapshot that grows on disk while
       served is undercharged until its worker reports measured memory or the server restarts.
 - [ ] q8 has numerical error measurements only, taken with the conditioner's earlier
       linear-attention layers; no quality evaluation, and no 4-bit artifact has been built
       or measured.
-- [ ] Decision (Josh): `DenseLinear` never disposes its transposed weight view, so a
-      released model's weight buffers wait for garbage collection; whether that delays
-      memory release when residency evicts a model is unmeasured. Not changed here.
-      The review judged it a real lifetime defect to fix separately, with graph-owner
-      cleanup and release measured after GPU synchronization.
 
 ## Split the app into modules
 

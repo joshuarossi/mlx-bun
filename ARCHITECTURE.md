@@ -312,16 +312,18 @@ packages; publishing them is a separate licensing decision.
 **Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`
 installs one; a native app installs what it wants. Each host has one composition
 file, `src/modules.ts`, the only file that names module packages, plus the
-implementations of the core services. The ones hosts share are the host library
-`@mlx-bun/app-services`: the Whisper model host over a catalog (lazy load, idle
-unload, pinning, the host's execution lock around decoding, and a hook that
-lets a host that also generates make room first), the image model host with the
+implementations of the core services. `@mlx-bun/app-services` implements the
+shared services: the Whisper model host over a catalog (lazy load, idle
+unload, pinning and the host's execution lock around loading and decoding),
+the image model host with the
 same residency (one run per pipeline at a time under that lock, and the host's own
 choice to release each stage per run when a pipeline's stages exceed its byte
-budget), both behind one `modelHost` that answers each call by the operation the
-model declares, the registry-backed catalog, storage
+budget). Companion admission owns reservations for pending and resident bytes;
+the shared residency owner can wait for leases or reclaim idle, unpinned models.
+Both sit behind one `modelHost` that answers each call by the operation the
+model declares. The library also provides the registry-backed catalog, storage
 entries under `MLX_BUN_HOME`, verb parsing and help from manifests, route
-mounting, module activation and verb running. A host adds only its own execution
+mounting, module activation and verb running. A host adds its own execution
 lock and serving; `apps/mlx-bun` also owns the generation side of `modelHost`
 (`src/residency/model-residency.ts`: residency by memory fit over serving units, with
 `src/server/model-routes.ts` routing requests by model id). A module's manifest is also importable alone

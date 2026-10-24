@@ -364,9 +364,8 @@ captures of blocks 1, 11, 31 and 41, `169181b7455d365a1f1a318665bc01b6d743c5c419
 wrote `text-steps`, and the current script wrote `text-steps-on-mlxbun-proj-49dc3083`
 (the reference refiner on our input projection, given with `--input`). The versions that wrote block 22's `block-steps`
 captures, `teacher` and Base's CPU `dit-blocks` were not hashed. The runner exists
-only on this machine, so these instructions do not yet meet ARCHITECTURE's rule that
-inputs and procedure be reproducible without a machine-local archive; publishing the
-runner externally, pinned by hash, is a decision for Josh. Before anything is read for a comparison the test computes the
+only on this machine. The comparisons below used that external runner; this PR
+does not add Python tooling to the repository. Before anything is read for a comparison the test computes the
 SHA-256 of every snapshot file and capture it reads and fails unless each equals
 its pin for that revision, and fails if any file in a snapshot directory a loader
 reads is unpinned (an extra index or shard could be selected). Hugging Face cache
@@ -386,6 +385,13 @@ level. The first runs exposed two calculation bugs, fixed in the code, not the
 bounds: the schedule rounded `torch.linspace`'s product separately (the reference
 fuses it), moving two noise levels by one float32 ulp, and the test read a
 transposed MLX view in storage order.
+
+The latent cosine calculation was corrected at `6e1d329a`. Latents are
+`[1, 128, H, W]`; the earlier contiguous-row comparison measured each channel
+across its spatial positions. The results retain those historical channel
+cosines and add `spatial tokens` checks across the 128 channels at each position,
+using the same original bounds. Relative Frobenius error is unaffected by this
+axis correction.
 
 Independent review adjudicated one exception: the last DiT block's text rows feed
 no later operation, so they are reported and its image rows hold the original
@@ -434,8 +440,8 @@ the reference. Both are fixed in kernels bound by one MOSS layer each:
   11.68 GB, so it was not kept. These runs shared the machine with other work; they
   are not quiet-machine figures and say nothing about headroom on 24 GB.
 
-Storing attention's softmax numerators in bf16 before multiplying V was tried and
-is not adopted. On Base's captured block-22 attention at step 4, a host replay of
+An earlier full-matrix experiment stored attention's softmax numerators in bf16
+before multiplying V. On Base's captured block-22 attention at step 4, a host replay of
 that form (float32 scores and products, the numerators stored in bf16, the float32
 sum divided out) missed 576 of 857,088 elements where MLX's `sdpa` misses 171,070.
 The GPU experiment of the same form misses 1,339 there. On top of `f823478d` its
@@ -463,8 +469,27 @@ Re-measured at `93172a60`, with the projection fix in place:
   scores; at the default 1024x1024 one float32 copy of them is about 1.6 GB
   (computed, not measured).
 
-Keeping the reference's bf16 store without holding the scores would take a
-MOSS-owned attention kernel. Whether to build one is a decision for Josh.
+The current graph binds `MossAttention` to the new `kernels/moss-attention`
+kernel. The tiled binding at `b3524639` uses 64-query/32-key tiles and float32
+SIMD matrix accumulation. Its first pass finds the final row maxima; its second
+recomputes scores with `precise::exp`, stores the numerators in bf16 for the
+product with V and accumulates the unrounded exponentials in a float32
+denominator. It holds no score matrix and uses at most 10 KiB of threadgroup
+workspace. Kernel SHA-256:
+`78684fa18021b5e8789238bc35ff5cf2c731b41dcd068e4b6ae67ff794c582a0`.
+
+Across the same 20 captured QKV inputs the tiled kernel differs on 40,321 of
+17,141,760 elements (0.235%), compared with 24,944 (0.146%) for its serial
+predecessor and 40,369 for the full-matrix experiment. At `[1, 24, 4119, 128]`,
+nonpaired screening measured a median 93.31 ms for the tiled kernel, 875.84 ms
+for the serial kernel and 33.82 ms for MLX SDPA. All three measured 25,313,280
+bytes of additional peak allocation, including the 25,307,136-byte output.
+These measurements qualify neither serving performance nor full-model fidelity.
+The 22 synthetic tests include arbitrary strides and head widths through 257.
+A two-key analytical case independently distinguishes bf16 numerators and the
+unrounded denominator from both incorrect rounding forms. A separate case allows
+one bf16 spacing where a one-ulp denominator difference crosses a rounding
+midpoint. The full-model bounds are unchanged.
 
 In the text refiner (`text-steps`), on the reference's own input to each operation,
 the norms, RoPE, SITU and residuals match exactly, the projections differ on at most
@@ -518,27 +543,75 @@ torch's vectorized CPU reduction). The gated norm sums that way now. The bounds
 did not change.
 
 Results on 2026-10-23, Apple M4 Pro, macOS 27.2, Bun 1.4.2, MLX 0.32.2, tree
-`8d021027` with only this README and PLAN modified (measurements identical to
-`63164fae` and `d2cd03ef`), Base
-`85975793` and SFT `f972bd4b`, inputs verified (17 snapshot files and 13 captures,
-nothing unpinned), every test complete:
+`6e1d329a` with only documentation modified, Base `85975793` and SFT `f972bd4b`:
+each run verified all 17 snapshot files and 13 captures, found nothing unpinned,
+completed all 104 measurements and four exact checks, and recorded no nonfinite
+value. Each suite passed four tests and failed its trajectory test.
 
-| Check | Base | SFT | Reference MPS vs CPU (Base / SFT) |
-|---|---|---|---|
-| token ids, schedule (8 and 50 steps) | exact | exact | |
-| conditioner, positive / negative (relative, min cosine) | 1.53e-2 0.99952 / 2.22e-2 0.99932 | the same (the same files) | |
-| velocity step 0 / 4 (relative) | 6.9e-3 / 1.72e-2 | 9.1e-3 / 1.95e-2 | 8.7e-3 / 2.4e-2; 1.00e-2 / 2.8e-2 |
-| block 22 step 4, worst token cosine | 0.999610 | 0.999826 | 0.999552 / 0.999083 |
-| block 41, image rows (min cosine, step 0 / 4) | 0.99949 / 0.99949 | 0.99942 / 0.99838, step 4 not met | 0.99850 / 0.99886; 0.99850 / 0.99804 |
-| block 41, text rows | reported (adjudicated) | reported | |
-| trajectory step 5 / 6 / 7 (relative) | 3.6e-2 / 7.8e-2 / 7.8e-2, steps 6 and 7 not met (cosine 0.9904 / 0.9905) | 7.9e-2 / 1.44e-1 / 1.44e-1, not met (cosine 0.9928 / 0.9684 / 0.9685) | 4.2e-2 / 1.02e-1 / 1.01e-1; 5.2e-2 / 1.09e-1 / 1.09e-1 |
-| l2norm, 8 lengths | every element equal | equal | |
-| softplus / log-decay, 8 lengths | at most 4 / 5 float32 ulps | the same | |
-| recurrence from identical float32 inputs | 2.3e-7 to 1.6e-6 relative | the same | |
-| whole rule (bf16), 8 lengths | at most 8.8e-5 relative, min row cosine 0.9999986 | the same | |
-| gated norm, 8 lengths | every element equal | equal | |
-| layers 0 / 30, 23- and 203-token prompts | 8.5e-5, 7.2e-5 / 3.1e-4, 5.4e-4 relative | the same | |
-| VAE (unpatched max, image max, pixels off by more than 1 level) | 0, 2.5e-5, 0 | | |
+| Check | Base | SFT |
+|---|---|---|
+| token ids, schedule (8 and 50 steps) | exact | exact |
+| conditioner, positive / negative (relative, min cosine) | 1.53e-2, 0.99952 / 2.22e-2, 0.99932 | the same files and results |
+| velocity step 0 / 4 (relative) | 7.15e-3 / 1.38e-2 | 7.94e-3 / 1.76e-2 |
+| velocity step 0 / 4 (min spatial-token cosine) | 0.999943 / 0.999707 | 0.999943 / 0.999333 |
+| block 22 step 4, worst token cosine | 0.999222 | 0.999882 |
+| block 41, image rows (min cosine, step 0 / 4) | 0.999266 / 0.999583 | 0.999275 / 0.999175 |
+| block 41, text rows | reported (adjudicated) | reported |
+| trajectory step 5 / 6 / 7 (relative) | 0.031109 / 0.066333 / 0.065978; steps 6 and 7 fail | 0.044398 / 0.090371 / 0.090094; steps 6 and 7 fail |
+| trajectory step 5 / 6 / 7 (historical min channel cosine) | 0.998864 / 0.994324 / 0.994408; steps 6 and 7 fail | 0.998150 / 0.989956 / 0.989953; steps 6 and 7 fail |
+| trajectory step 5 / 6 / 7 (min spatial-token cosine) | 0.990695 / 0.984964 / 0.984926; all three fail | 0.986277 / 0.945533 / 0.945488; all three fail |
+| l2norm and gated norm, 8 lengths | every element equal | equal |
+| softplus / log-decay, 8 lengths | at most 4 / 5 float32 ulps | the same |
+| recurrence from identical float32 inputs | 2.3e-7 to 1.6e-6 relative | the same |
+| whole rule (bf16), 8 lengths | at most 8.8e-5 relative, min row cosine 0.9999986 | the same |
+| layers 0 / 30, 23- and 203-token prompts | 8.5e-5, 7.2e-5 / 3.1e-4, 5.4e-4 relative | the same |
+
+Full result files under `~/oracles/moss-image/results` are
+`base-85975793-tiled-6e1d329a-r11.json` (SHA-256
+`3abc9d13362ba76966e4ad21b061a546f08aa36d95b92db3b4771fa1e778e066`) and
+`sft-f972bd4b-tiled-6e1d329a-r11.json` (SHA-256
+`204b38f68bb06d89b8647f13163d2c2dd01e482f5c264999085247a6e0dc8b7e`).
+MLX peaks were 14.80 GiB for conditioning and 9.77 GiB for DiT. Wall times were
+33.41 s and 77.06 s, with process peak footprints about 16.2 GB. These runs
+shared a swapping machine with other work and are not performance comparisons.
+
+The separate VAE suites passed 8/8 for each model with unchanged decoder code.
+Unpatched reference latents matched exactly; maximum image errors were
+2.453e-5 and 1.413e-5, with no pixel differing by more than one level. Those
+decodes use reference noise and reference final latents. They establish decoder
+agreement on identical inputs, not agreement of the complete generated images.
+
+A complete-pipeline comparison at `509729c3` used the same pinned noise tensor,
+prompt, 256x256 size, eight steps, guidance 3 and unconditional skip block 22.
+It ran the candidate with reference conditioning and with its own conditioner,
+then decoded each final latent and the CPU reference's final latent with the
+same validated decoder:
+
+| Same-decoder comparison | Base | SFT |
+|---|---|---|
+| reference conditioning, RGB mean / maximum error in 0–255 levels | 2.22964 / 66 | 2.83560 / 102 |
+| own conditioning, RGB mean / maximum error | 2.47082 / 65 | 4.78242 / 173 |
+| own conditioning, RGB PSNR | 37.82868 dB | 30.02824 dB |
+| own conditioning, final latent relative error / min spatial-token cosine | 0.07028764 / 0.98733405 | 0.16208197 / 0.80992252 |
+
+The own-conditioning trajectories fail the original spatial-token bounds at
+steps 5–7 for Base and 4–7 for SFT. Both image pairs preserve the fox and snow
+composition on visual inspection, with local fur and snow differences. This
+single case establishes neither general image quality nor acceptable error.
+There is no whole-generation image threshold; the identical-input decoder's
+one-level bound does not apply to different generated latents.
+
+Teacher forcing on all eight reference states per model measured conditional and
+unconditional relative errors of 0.59%–2.87%, and guided errors of 2.03%–7.24%.
+The guided error equals `3 * conditional error - 2 * unconditional error`
+exactly on all 16 states. This measures the contributions of conditioning and
+guidance without attributing every remaining difference to a specific operation.
+The external evidence under `/tmp/moss-diag/output-r12` records inputs,
+reproduction commands, image files and source hashes. The combined source hash
+is `90faea4830688bb617128d121dc6fe621df8f0fe11e418514b3b2d3a0bbad602`;
+`base-analysis.json` and `sft-analysis.json` have SHA-256
+`31f2be3512dc40c3a0e8e80a708be543c2de0b90cd8e154ef147c7bc95c28747` and
+`7902c5be3719aae7ac442149fb1b6a2c1e3ced71c4e5b6d2e2c2fe75a6de9ced`.
 
 The conditioner's previous binding (the shared delta and gated-norm kernels)
 measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer
@@ -551,6 +624,8 @@ above):
 | `cf3451b2` | block 22 step 4; trajectory 5, 6, 7 | trajectory 5, 6, 7 |
 | `f823478d` (SITU) | block 22 step 4; block 41 image rows step 4 (new); trajectory 6, 7 | block 41 image rows steps 0 and 4 (new); trajectory 5, 6, 7 |
 | `63164fae` to `8d021027` (one-row projections) | trajectory 6, 7 | block 41 image rows step 4; trajectory 5, 6, 7 |
+| serial bounded attention, `bf4c888d` plus changes later committed in `1742bf2c` | trajectory 6, 7 | block 41 image rows step 4; trajectory 5, 6, 7 |
+| `6e1d329a` (tiled attention and spatial-token checks) | trajectory 6, 7; spatial-token cosine also fails at 5 | trajectory 6, 7; spatial-token cosine also fails at 5 |
 
 With the projection fix, teacher-forced conditional and unconditional velocities
 are within 0.6% to 2.2% and guided within 2.0% to 6.7% (`63164fae`). Sensitivity,
@@ -569,14 +644,16 @@ measured on that tree:
   falls below 0.999 in 14 to 18 of the 42 blocks, the reference's MPS run in 16
   to 19.
 
-This reading is provisional, awaits independent review and is not a decision. The
-late trajectory steps and the worst-row cosines move by about as much under perturbations of one bf16
+Independent review accepted these measurements as evidence of sensitivity. It
+did not accept the remaining full-model differences. The late trajectory steps
+and the worst-row cosines move by about as much under perturbations of one bf16
 spacing as they currently differ from the reference. That shows sensitivity. It
 does not show that the remaining failures are harmless, that output quality is
 acceptable, or that no implementation error remains, and no bound changes.
 Acceptance stays open until each remaining failure is resolved or decided. Not
-covered: other prompts, sizes and step counts, image quality, the decoded 8-step
-images against each other beyond the VAE comparison, and performance.
+covered: other prompts, sizes and step counts, a general image-quality acceptance
+criterion, and performance. The single complete-pipeline image comparison above
+does not close those gaps.
 
 ### Packed Qwen Trellis parity
 
@@ -1460,9 +1537,12 @@ of latents at one timestep) and an `ImageLatentDecoder` (latents to RGB in
 [-1, 1]), with the noise levels of a `FlowMatchingSchedule`. Each contract states
 its tensor shapes, dtypes and ownership. A `TextToImagePipeline` opens each stage
 on first use and frees its weights on `release`, so a caller can hold one stage
-at a time. `openImagePipeline` (`@mlx-bun/inference/models`) opens a pipeline
-snapshot through the family registry and loads no weights; `openModel` refuses
-one with an `UnsupportedModelLoadError` naming `openImagePipeline`.
+at a time. `openImagePipeline` (`@mlx-bun/inference/models`) selects a pipeline
+graph through the family's `GraphTable` and loads no stage weights. Callers can
+choose a shipped graph by name or supply their own graph function without family
+registration. The image loader binds `loadPipelineConfig` and the diffusers shard
+adapter explicitly. Existing `config.json` and safetensors readers are unchanged;
+`openModel` does not inspect an image pipeline's `model_index.json`.
 
 `generation/image` runs a request over those contracts and names no family.
 `resolveImageRequest` applies the pipeline's defaults and validates every field
@@ -1508,6 +1588,9 @@ composed from kernels, and its graphs arrange them:
   each operation stored in bf16 as the reference's eager tensors are). The
   timestep embedding and modulations project one row with `kernels/row-projection`
   (float32 accumulation and bias, one rounding, as the reference's `Linear` does).
+  The graph supplies `MossAttention` to the joint and refiner attention layers
+  through `MossAttentionOperation`; it binds the new bounded-memory bf16-numerator
+  attention kernel. Projections are supplied through the `MossLinear` contract.
 - decoder (`vae`, `vae-layers`): the FLUX.2 VAE decode path in float32 after the
   batch-norm de-normalization and the 2x2 unpatchify.
 - schedule (`scheduler`): the shifted grid snapped to the training grid, float32
@@ -1524,12 +1607,12 @@ profiling chooses their bindings. `@mlx-bun/quantize`'s `quantizeMossImageDir`
 builds a local MLX artifact ([quantize README](../quantize/README.md)). The
 [ownership test](tests/models/moss-image-ownership.test.ts) holds the family to
 its own layers: no imports of other families or shared `layers/`, each of its
-kernels called only inside one layer (`MossDenseRowLinear`, `MossSitu`,
+kernels called only inside one layer (`MossAttention`, `MossDenseRowLinear`, `MossSitu`,
 `MossTextDeltaRecurrence`), graph files that import neither MLX operations nor
 kernels, and no method that branches on a field fixed at construction.
 
-Memory, measured on the M4 Pro (24 GB) on 2026-10-23, Base, 4 steps, seed 1, each
-workload in its own process. The OS columns are the process's peak memory
+Memory before the bounded attention binding, measured on the M4 Pro (24 GB) on
+2026-10-23, Base, 4 steps, seed 1, each workload in its own process. The OS columns are the process's peak memory
 footprint and maximum resident set from `/usr/bin/time -l`; the MLX column is the
 allocator's peak. The machine was swapping throughout (8.5 to 12.2 GB of swap in
 use, and macOS grew the swap file from 10 to 13 GB), so these runs show completion
@@ -1545,7 +1628,7 @@ footprint is not explained.
 | q8, stages kept, 1024x1024 | 21.34 GB | 9.95 GB | 22.20 GiB |
 | bf16, stages released, 1024x1024 | 18.42 GB | 10.77 GB | 14.80 GiB |
 
-One run at the model card's defaults (bf16 Base, 1024x1024, 50 steps, stages
+Before that binding, one run at the model card's defaults (bf16 Base, 1024x1024, 50 steps, stages
 released, seed 7) through `mlx-bun image` completed in 715 s: 6.8 s encoding, 693 s
 denoising (13.9 s a step, two DiT passes each under guidance) and 14.6 s decoding.
 Its OS peak footprint was 18.48 GB and its maximum resident set 8.98 GB, while swap
