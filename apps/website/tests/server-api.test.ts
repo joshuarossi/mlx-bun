@@ -205,7 +205,7 @@ test("an unrecognized composition shape fails", () => {
   // The app launch form's socket hooks: the admin wrap, passed by both runServe compositions.
   expect(() => serverApiReference(mutate("cli/worker-entry.ts", "routes: (routes: RouteGroup) => admin.wrap(routes)", "routes: (routes: RouteGroup) => routes")))
     .toThrow(/^cli\/worker-entry\.ts:\d+: unrecognized composition shape; expected `routes: model => admin\.wrap\(model\)` over createWorkerRoutes/);
-  expect(() => serverApiReference(mutate("cli/worker-entry.ts", "startTranscription(model, options, socket(model, false))", "startTranscription(model, options, {})")))
+  expect(() => serverApiReference(mutate("cli/worker-entry.ts", "startTranscription(model, options, { ...socket(model, false), exclusive: transcriptionLock.exclusive })", "startTranscription(model, options, {})")))
     .toThrow(/^cli\/worker-entry\.ts:\d+: unrecognized composition shape; expected runServe's startTranscription to pass socket\(…\) to startTranscriptionServer/);
 });
 

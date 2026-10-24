@@ -2,7 +2,7 @@
 // implements (the companion model hosts, the registry-backed catalog, storage),
 // module activation, and running a module's CLI verb. A host adds its own
 // execution lock and serving; this is the part a second host would copy.
-import type { ModelCatalog, ModelId, ModelOperation } from "@mlx-bun/app-core";
+import type { ModelCatalog, ModelId, ModelOperation, ReserveModel } from "@mlx-bun/app-core";
 import type { ServiceBindings } from "@mlx-bun/app-host";
 import { createRegistryCatalog, type CatalogHub } from "./catalog";
 import { createCompanionModelHost, type CompanionModelHost } from "./companion-model-host";
@@ -35,12 +35,17 @@ export interface ImageServing {
 }
 
 export interface HostServicesOptions {
+  /** Companion operations this composition serves. A worker supplies only its own operations. */
+  operations?: readonly ModelOperation[];
   whisper?: WhisperServing;
   image?: ImageServing;
   /** The host's exclusive lock around decoding and image runs; without one they run at once. */
   exclusive?: Exclusive;
-  /** Makes room for a companion about to load; see `WhisperModelHostOptions.admit`. */
+  /** Coordinates lazy companion weight loads as well as decode when the composition supplies a worker lease. */
+  loadExclusive?: Exclusive;
+  /** Makes room for Whisper before it loads; see `WhisperModelHostOptions.admit`. */
   admit?: (bytes: number) => Promise<void>;
+  reserve?: ReserveModel;
   /** Test seams. */
   backend?: WhisperBackend;
   imageBackend?: ImageBackend;
@@ -68,9 +73,20 @@ export interface HostServices {
 /** The core services a host that serves companion models implements: `modelHost` (Whisper for `transcribe`, the image host for
  * `image`), `catalog`, `storage` and `events`. Nothing loads until a module leases a model. */
 export function createHostServices(options: HostServicesOptions = {}): HostServices {
-  const catalog = options.catalog ?? createRegistryCatalog(options.hub ? { hub: options.hub } : {});
+  const operations = options.operations ?? ["transcribe", "image"];
+  const source = options.catalog ?? createRegistryCatalog(options.hub ? { hub: options.hub } : {});
+  const supports = (entry: { operations: readonly ModelOperation[] }) => entry.operations.some(operation => operations.includes(operation));
+  // A model-scoped catalog cannot open a different operation through an explicit directory.
+  const catalog: ModelCatalog = options.operations === undefined ? source : { ...source,
+    list: async filter => (await source.list(filter)).filter(supports),
+    resolve: async id => { const entry = await source.resolve(id); return entry && supports(entry) ? entry : undefined; },
+    find: async query => {
+      const entry = await source.find(query);
+      if (!supports(entry)) throw new Error(`${query} declares no operation served by this host`);
+      return entry;
+    } };
   const events = options.events ?? createEventHub();
-  const shared = { catalog, ...(options.exclusive ? { exclusive: options.exclusive } : {}), ...(options.admit ? { admit: options.admit } : {}),
+  const shared = { catalog, ...(options.exclusive ? { exclusive: options.exclusive } : {}),
     ...(options.log ? { log: options.log } : {}), events };
   const configured = (policy: { modelDir?: string; modelId?: string } | undefined) =>
     policy?.modelDir ? { configured: { id: policy.modelId ?? policy.modelDir, directory: policy.modelDir } } : {};
@@ -81,6 +97,8 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...(policy?.idleUnloadSec !== undefined ? { idleUnloadSec: policy.idleUnloadSec } : {}),
     ...(policy?.resident ? { resident: true } : {}),
     ...(options.backend ? { backend: options.backend } : {}),
+    ...(options.admit ? { admit: options.admit } : {}),
+    ...(options.loadExclusive ? { loadExclusive: options.loadExclusive } : {}),
   });
   const imagePolicy = options.image;
   const image = createImageModelHost({
@@ -90,12 +108,14 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...(imagePolicy?.resident ? { resident: true } : {}),
     ...(imagePolicy?.stages ? { stages: imagePolicy.stages } : {}),
     ...(options.imageBackend ? { backend: options.imageBackend } : {}),
+    ...(options.reserve ? { reserve: options.reserve } : {}),
   });
   // A configured checkpoint need not be in the catalog: its operation is the one it was configured for.
   const known: Record<ModelId, ModelOperation> = {};
   for (const [operation, served] of [["transcribe", configured(policy).configured], ["image", configured(imagePolicy).configured]] as const)
     if (served) known[served.id] = operation;
-  const companions = createCompanionModelHost({ hosts: { transcribe: whisper, image }, catalog, known });
+  const companions = createCompanionModelHost({ hosts: { ...(operations.includes("transcribe") ? { transcribe: whisper } : {}),
+    ...(operations.includes("image") ? { image } : {}) }, catalog, known });
   return { whisper, image, companions, catalog, events, bindings: { modelHost: () => companions, catalog: () => catalog, storage: createStorage(options.storageRoot),
     events: scope => events.scoped(scope) } };
 }

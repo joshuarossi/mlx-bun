@@ -42,25 +42,27 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   /** The companion model (Whisper for audio, an image model for images) that answers this path, when it is one of its own; the router leases it like
    * any model. `named` reads the request's JSON body once and answers its string `model` (undefined for a request without a body): a companion whose requests name
    * their model asks it, and the buffered body is then forwarded unchanged; one that never asks (audio uploads) streams through unread. */
-  companion?(pathname: string, named: () => Promise<string | undefined>): Promise<string | undefined>;
+  companion?(pathname: string, named: () => Promise<string | undefined>): Promise<string | Response | undefined>;
+  /** A companion request's parent-owned execution lease. Release may drain cancelled work before resuming peers. */
+  companionExecution?(unit: U, signal: AbortSignal): Promise<{ dispose(): void | Promise<void> } | undefined>;
   /** The configured transcription companion, including before its worker starts. */
   transcription?(): Promise<string | undefined>;
 }
 
 /** A response that keeps its lease until the body has ended, been cancelled, or failed. */
-function holding(response: Response, release: () => void): Response {
-  if (!response.body) { release(); return response; }
+function holding(response: Response, release: () => Promise<void>): Response {
+  if (!response.body) { void release(); return response; }
   const reader = response.body.getReader();
   let done = false;
-  const finish = () => { if (!done) { done = true; release(); } };
+  const finish = async () => { if (!done) { done = true; await release(); } };
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const chunk = await reader.read();
-        if (chunk.done) { finish(); controller.close(); } else controller.enqueue(chunk.value);
-      } catch (error) { finish(); controller.error(error); }
+        if (chunk.done) { await finish(); controller.close(); } else controller.enqueue(chunk.value);
+      } catch (error) { await finish(); controller.error(error); }
     },
-    cancel(reason) { finish(); return reader.cancel(reason).catch(() => {}); },
+    async cancel(reason) { try { await reader.cancel(reason).catch(() => {}); } finally { await finish(); } },
   });
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
@@ -91,15 +93,22 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
   const residentIds = () => new Set(host.resident().filter(model => model.state === "ready").map(model => model.id));
 
   /** Lease `id`, run `serve` on its unit, and hold the lease until the response has been delivered. */
-  async function leased(id: string, request: Request, serve: (unit: U, lease: { release(): void }) => Promise<Response | null>): Promise<Response | null> {
+  async function leased(id: string, request: Request, serve: (unit: U, lease: { release(): void }) => Promise<Response | null>, companion = false): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     let lease;
     try { lease = await host.acquire(id, { signal: request.signal }); }
     catch (error) { return unavailable(error, path, request.signal); }
+    let execution: { dispose(): void | Promise<void> } | undefined;
+    let released: Promise<void> | undefined;
+    const release = () => released ??= (async () => { try { await execution?.dispose(); } finally { lease.release(); } })();
     try {
+      if (companion) execution = await options.companionExecution?.(lease.unit, request.signal);
+      request.signal.throwIfAborted();
       const response = await serve(lease.unit, lease);
-      return response ? holding(response, () => lease.release()) : (lease.release(), null);
-    } catch (error) { lease.release(); return errorResponse(error, path, undefined, request.signal); }
+      if (response?.body) return holding(response, release);
+      await release();
+      return response;
+    } catch (error) { await release(); return errorResponse(error, path, undefined, request.signal); }
   }
 
   return {
@@ -188,9 +197,11 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       let body: Uint8Array<ArrayBuffer> | undefined;
       const named = async () => request.body === null ? undefined : modelField(body ??= new Uint8Array(await request.arrayBuffer()));
       const companion = await options.companion?.(pathname, named);
+      // Recognized but unavailable companions are an answer, never chat fallthrough.
+      if (companion instanceof Response) return companion;
       // A body read for its `model` goes on as the same bytes.
       const forwarded = body ? new Request(request.url, { method: request.method, headers: request.headers, body, signal: request.signal }) : request;
-      if (companion !== undefined) return leased(companion, forwarded, served => served.routes.handle(forwarded));
+      if (companion !== undefined) return leased(companion, forwarded, served => served.routes.handle(forwarded), true);
       // Everything else model-scoped is the current model's, when one is resident: a read answers as it is, and
       // a change (flushing a cache) holds the model resident until it is done.
       const unit = active();

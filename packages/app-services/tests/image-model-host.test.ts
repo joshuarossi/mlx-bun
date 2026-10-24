@@ -190,7 +190,9 @@ test("stages that fit the budget stay open between runs; stages that exceed it a
   kept.release();
   // A budget below the 900 bytes: each run releases every stage after its output; at most the largest stage is held.
   const admitted: number[] = [];
-  const tight = setup({ stages: stageBudgetRule(899), admit: async bytes => { admitted.push(bytes); } });
+  const tight = setup({ stages: stageBudgetRule(899), reserve: async owner => {
+    admitted.push(owner.model().bytes); return { changed() {}, release() {} };
+  } });
   const lease = await tight.host.acquire("org/image");
   const run = lease.operations.image!.generate({ prompt: "tight" });
   (await tight.started(1)).finish();
@@ -247,7 +249,7 @@ test("an open failure surfaces as load-failed with the library's message; a refu
   const failing = setup({ backend: { load: async () => { throw new Error("transformer latent_channels 3 != VAE latent_channels 4"); } } });
   await expect(failing.host.acquire("org/image")).rejects.toMatchObject({ code: "load-failed", message: "transformer latent_channels 3 != VAE latent_channels 4" });
   expect(failing.host.resident()).toEqual([]);
-  const refused = setup({ stages: stageBudgetRule(1), admit: async () => { throw new Error("no room"); } });
+  const refused = setup({ stages: stageBudgetRule(1), reserve: async () => { throw new Error("no room"); } });
   await expect(refused.host.acquire("org/image")).rejects.toMatchObject({ code: "load-failed", message: "no room" });
   expect(refused.events).toEqual(["open /models/org/image", "dispose /models/org/image"]);
 });

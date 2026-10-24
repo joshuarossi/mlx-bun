@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppEvent, ModelOperation, ModelOperations, ModelRole } from "@mlx-bun/app-core";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { heldBytes, parseMemoryHealth, parseMemoryLine, type WorkerMemory } from "../jobs/worker-memory";
 import { WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import { superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
@@ -80,13 +79,6 @@ export type WorkerOperation = keyof typeof LAUNCHES;
 /** How a managed job pauses a worker: through its connection-owned execution lease (`/admin/lease`), which waits for its work in
  * flight and holds back new work until released. */
 const leased = (supervisor: WorkerSupervisor) => (signal?: AbortSignal) => supervisor.acquireExecutionLease(signal ?? new AbortController().signal);
-/** A worker with no execution lease is not paused. */
-const unpaused = () => () => Promise.resolve({ dispose() {} } as DisposableResource);
-/** Each operation's pause, bound to a worker when it is built: a chat worker's engine lock and an image worker's run lock are leased;
- * the transcription-only app has no lease. */
-const PAUSES: Readonly<Record<WorkerOperation, (supervisor: WorkerSupervisor) => (signal?: AbortSignal) => Promise<DisposableResource>>> =
-  { generate: leased, transcribe: unpaused, image: leased };
-
 /** Publish what the worker's engine publishes on its own bus (the worker's load and unload are the host's to report), and hand
  * its memory readings to `measure`. A worker that is gone measures nothing: its replacement will need what it did. */
 function relayEvents(supervisor: WorkerSupervisor, publish: (event: AppEvent) => void, measure: (memory: WorkerMemory | undefined) => void, signal: AbortSignal): void {
@@ -189,8 +181,8 @@ export async function spawnWorkerUnit(context: WorkerUnitContext, record: ModelR
     memory: () => ({ weightsBytes, kvBytes: 0, prefixCacheBytes: 0 }),
     operationsFor: () => (role === "primary" ? { generate: (request: Request) => forwardToWorker(supervisor, request), adapters: workerAdapters(supervisor) } : {}) as Partial<ModelOperations>,
     broken: () => supervisor.state === "exhausted" || supervisor.state === "closed",
-    // A job needs the GPU to itself: the pause this worker's operation has (its execution lease; the Whisper worker has none).
-    pause: PAUSES[operation](supervisor),
+    // Each worker exposes an execution lease; a parent job or image run can drain and pause it.
+    pause: leased(supervisor),
     close: () => closing ??= (async () => {
       stopEvents.abort();
       const drained = performance.now();

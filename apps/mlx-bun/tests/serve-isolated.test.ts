@@ -705,7 +705,26 @@ test("image requests start the image companion's own worker in the image form be
   expect(leftover).toEqual([]);
 }, 60_000);
 
-test("an image request naming a local image model by exact id starts that model's own worker, charged what one run holds under the staging decision it is launched with; any other name reaches the default image worker; audio is never routed by its body", async () => {
+test("recognized image routes with no local companion never fall through to the chat worker, including explicit directories", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-no-image-")), tmp = privateTmp(root);
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const launches = join(root, "launches.jsonl");
+  const running = await inTmp(tmp, () => startIsolatedServer(record(root, "org/model"), options, { entry,
+    env: { ...workerEnv, FAKE_WORKER_RECORD: launches }, records: () => [record(root, "org/model")], companions: () => [], notice() {}, log() {}, error() {} }));
+  try {
+    for (const model of [undefined, "/local/image", "org/model", "unknown"]) {
+      const response = await fetch(`http://127.0.0.1:${running.port}/v1/images/generations`, { method: "POST", body: JSON.stringify({ prompt: "cat", model }) });
+      expect(response.status).toBe(model === undefined ? 503 : 404);
+      expect(await response.json()).toMatchObject({ error: { type: model === undefined ? "model_unavailable" : "model_not_found" } });
+    }
+    expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(1);
+    const { seen } = await (await fetch(`http://127.0.0.1:${running.port}/fake/seen`)).json() as { seen: { path: string }[] };
+    expect(seen.some(request => request.path.startsWith("/v1/images/"))).toBe(false);
+  } finally { await running.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("an image request naming an exact local id starts its admitted worker; unknown names are refused by the parent; audio is never routed by its body", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-images-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
   options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
@@ -743,9 +762,9 @@ test("an image request naming a local image model by exact id starts that model'
     // The second image model by its exact id: its own worker in the image form, charged its largest stage.
     expect(await generate({ model: "org/poster" })).toEqual({ created: 1, data: [], model: "org/poster", kind: "image" });
     expect(await charged()).toEqual({ "org/model": 1, "org/poster": 700 });
-    // No name, a name that is not an exact local id, and an unknown id all reach the default image model's worker, which keeps its stages open.
-    for (const body of [{}, { model: "poster" }, { model: "org/unknown" }, { model: "org/model" }])
-      expect(await generate(body)).toEqual({ created: 1, data: [], model: "org/picture", kind: "image" });
+    expect(await generate({})).toEqual({ created: 1, data: [], model: "org/picture", kind: "image" });
+    for (const model of ["poster", "org/unknown", "org/model", picture.path])
+      expect(await generate({ model })).toMatchObject({ error: { type: "model_not_found" } });
     expect(await charged()).toEqual({ "org/model": 1, "org/poster": 700, "org/picture": 900 });
     expect(await generate({ model: "org/poster" })).toMatchObject({ model: "org/poster" });
     // Audio is Whisper's whatever its body names.
@@ -934,6 +953,100 @@ test("what the real image worker holds for a snapshot never exceeds what the par
   }
 }, 60_000);
 
+test("parent image leases exclude chat, other images and audio, gate new workers, and drain aborts before resuming peers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-coordination-")), tmp = privateTmp(root);
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const pictures = ["org/picture", "org/poster", "org/new"].map(id => record(root, id));
+  const whisper = record(root, "org/whisper");
+  const eventsFile = join(root, "events.jsonl"), imageGate = join(root, "image-gate"), chatGate = join(root, "chat-gate"),
+    audioGate = join(root, "audio-gate"), cancelGate = join(root, "cancel-gate");
+  const events = () => !existsSync(eventsFile) ? [] : readFileSync(eventsFile, "utf8").trim().split("\n")
+    .filter(Boolean).map(line => JSON.parse(line) as { event: string; model: string });
+  const count = (name: string, model?: string) => events().filter(event => event.event === name && (model === undefined || event.model === model)).length;
+  const running = await inTmp(tmp, () => startIsolatedServer(record(root, "org/model"), options, { entry,
+    env: { ...workerEnv, FAKE_WORKER_EVENTS: eventsFile, FAKE_WORKER_COORDINATE: "1", FAKE_WORKER_IMAGE_GATE: imageGate,
+      FAKE_WORKER_CHAT_GATE: chatGate, FAKE_WORKER_AUDIO_GATE: audioGate, FAKE_WORKER_CANCEL_GATE: cancelGate },
+    records: () => [record(root, "org/model")], companions: operation => operation === "image" ? pictures : [whisper], notice() {}, log() {}, error() {} }));
+  const post = (path: string, body: unknown, signal?: AbortSignal) => fetch(`http://127.0.0.1:${running.port}${path}`,
+    { method: "POST", body: JSON.stringify(body), ...(signal ? { signal } : {}) }).then(async response => { await response.text(); return response.status; });
+  const image = (model: string, prompt = "go", signal?: AbortSignal) => post("/v1/images/generations", { model, prompt }, signal);
+  const chat = (prompt: string) => post("/v1/chat/completions", { messages: [{ role: "user", content: prompt }] });
+  const audio = (prompt: string) => post("/v1/audio/transcriptions", { prompt });
+  try {
+    await image("org/picture"); await image("org/poster"); await audio("go");
+    // Chat already running: the image must wait for the parent's pause to drain it.
+    const firstChat = chat("hold");
+    await until(() => count("chat started") === 1, "chat starts");
+    const imagesBefore = count("image started");
+    const afterChat = image("org/picture");
+    await Bun.sleep(60);
+    expect(count("image started")).toBe(imagesBefore);
+    writeFileSync(chatGate, "");
+    expect(await firstChat).toBe(200); expect(await afterChat).toBe(200);
+
+    // Image already running: resident peers stay paused and a third image cannot even start loading.
+    const held = image("org/picture", "hold");
+    await until(() => count("image started") === imagesBefore + 2, "image starts");
+    const nextChat = chat("go"), nextImage = image("org/poster"), coldImage = image("org/new"), nextAudio = audio("go");
+    await Bun.sleep(60);
+    expect(count("chat started")).toBe(1);
+    expect(count("audio started")).toBe(1);
+    expect(count("image started", "org/poster")).toBe(1);
+    expect(count("loading", "org/new")).toBe(0);
+    writeFileSync(imageGate, "");
+    expect(await held).toBe(200);
+    expect(await Promise.all([nextChat, nextImage, coldImage, nextAudio])).toEqual([200, 200, 200, 200]);
+
+    // An audio decode in flight also drains through its worker's execution contract.
+    const heldAudio = audio("hold");
+    await until(() => count("audio started") === 3, "audio starts");
+    const beforeAudioImage = count("image started");
+    const afterAudio = image("org/picture");
+    await Bun.sleep(60); expect(count("image started")).toBe(beforeAudioImage);
+    writeFileSync(audioGate, "");
+    expect(await heldAudio).toBe(200); expect(await afterAudio).toBe(200);
+
+    // Disconnect while a worker is still cleaning up: neither a competing run
+    // nor the next image enters until the chosen worker's lock can be drained.
+    rmSync(imageGate);
+    const controller = new AbortController();
+    const cancelled = image("org/picture", "hold", controller.signal).catch(error => error.name);
+    await until(() => count("image started") === beforeAudioImage + 2, "cancellable image starts");
+    controller.abort();
+    expect(await cancelled).toBe("AbortError");
+    const beforeChat = count("chat started");
+    const afterAbort = chat("go");
+    await Bun.sleep(60);
+    expect(count("chat started")).toBe(beforeChat);
+    writeFileSync(cancelGate, "");
+    expect(await afterAbort).toBe(200);
+    expect(await image("org/picture", "fail")).toBe(500);
+    expect(await chat("go")).toBe(200);
+    expect(await image("org/poster")).toBe(200);
+
+    // Check actual run intervals across processes, not just request response order.
+    const active = new Set<string>();
+    for (const event of events()) {
+      if (!/^(image|chat|audio) (started|finished)$/.test(event.event)) continue;
+      const imageRun = event.event.startsWith("image ");
+      if (event.event.endsWith("started")) {
+        if (imageRun) expect(active.size).toBe(0);
+        else expect([...active].some(key => key.startsWith("image:"))).toBe(false);
+        active.add(`${event.event.split(" ")[0]}:${event.model}`);
+      } else active.delete(`${event.event.split(" ")[0]}:${event.model}`);
+    }
+    expect(active.size).toBe(0);
+  } finally {
+    for (const gate of [imageGate, chatGate, audioGate, cancelGate]) writeFileSync(gate, "");
+    await running.close();
+    expect(workerDirs(tmp)).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("a GPU-exclusive job and an image run never overlap: the job waits for the image run in flight, and an image request during the job waits for the job", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-image-lease-"));
   const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
@@ -982,7 +1095,8 @@ test("a GPU-exclusive job and an image run never overlap: the job waits for the 
     expect(whileRunning).toEqual([]);
     expect(whileJob.filter(entry => entry !== "answered hold")).toEqual(["job running"]);
     expect(timeline.filter(entry => entry !== "answered hold")).toEqual(["job running", "job finished", "answered a cat"]);
-    expect(workerEvents()).toEqual(["image started", "image finished", "lease", "lease released", "image started", "image finished"]);
+    expect(workerEvents()).toEqual(["image started", "image finished", "lease", "lease released", "lease", "lease released",
+      "image started", "image finished", "lease", "lease released"]);
   } finally {
     finish.resolve();
     await running.close();
@@ -1033,7 +1147,7 @@ test("a GPU-exclusive job submitted while an image worker is still starting wait
     // Once the worker is up, the job runs only while it holds that worker's lease, and the lease and the image run take the
     // worker's lock in turn. Either may take it first: the request that started the worker and the job both waited for it.
     const order = workerEvents().filter(event => event.startsWith("image ") || event.startsWith("lease"));
-    expect([["lease", "lease released", "image started", "image finished"], ["image started", "image finished", "lease", "lease released"]]).toContainEqual(order);
+    expect(order).toEqual(["lease", "lease released", "image started", "image finished", "lease", "lease released"]);
   } finally {
     finish.resolve();
     writeFileSync(ready, "");

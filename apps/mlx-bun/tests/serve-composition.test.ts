@@ -8,6 +8,14 @@ import { dirname, relative, resolve } from "node:path";
 // oracle for the composed CLI behavior.
 const app = new URL("../", import.meta.url).pathname;
 
+test("model modules are selected by the operations their composition serves", async () => {
+  const { installedModules } = await import("../src/modules");
+  expect((await installedModules({ operations: [] })).map(module => module.id)).toEqual([]);
+  expect((await installedModules({ operations: ["transcribe"] })).map(module => module.id)).toEqual(["transcription"]);
+  expect((await installedModules({ operations: ["image"] })).map(module => module.id)).toEqual(["images"]);
+  expect((await installedModules({ operations: ["transcribe", "image"] })).map(module => module.id)).toEqual(["transcription", "images"]);
+});
+
 async function runChild(script: string, env: Record<string, string> = {}) {
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
     env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", ...env } });

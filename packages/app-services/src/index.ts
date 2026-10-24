@@ -5,6 +5,7 @@ export type { CompanionInfoOptions } from "./companion-info-routes";
 export { MODEL_LAYOUT, mlxBunHome, openModelRegistry, userHome } from "./home";
 export { activateModules, runVerb } from "./activation";
 export { createEventHub } from "./events";
+export { createExecutionLock } from "./execution-lock";
 export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
 export { CatalogFailure, ModelHostFailure } from "./failure";
 export { createHostServices } from "./host";

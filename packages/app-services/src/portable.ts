@@ -5,6 +5,7 @@
 // image worker's staging by them). The package index adds the companion model hosts (Whisper, image).
 export { activateModules, runVerb } from "./activation";
 export { createEventHub } from "./events";
+export { createExecutionLock } from "./execution-lock";
 export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
 export { createRegistryCatalog } from "./catalog";
 export type { CatalogHub, RegistryCatalogOptions } from "./catalog";

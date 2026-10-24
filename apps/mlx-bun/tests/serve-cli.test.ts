@@ -910,13 +910,14 @@ test("the transcription-only server preloads on request, serves audio and discov
       const index = await (await fetch(base + "/v1")).json();
       assert.equal(index.mode, "transcription");
       assert.deepEqual(index.endpoints, ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload", "POST /v1/audio/sessions",
-        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "POST /v1/images/generations",
+        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id",
         "GET /v1/models", "GET /health", "GET /stats"]);
       const unloaded = await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json();
       assert.deepEqual({ ...unloaded, last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 0, last_load_ms: 0, idle_unload_sec: 5 });
       // No chat model, no web app, no chat completions, no chat socket (no module here declares one): 404s, never a placeholder.
       for (const path of ["/", "/v1/chat/completions", "/api/hub/local", "/ws/chat"]) assert.equal((await fetch(base + path, { method: path === "/" ? "GET" : "POST" })).status, 404);
       assert.equal((await fetch(base + "/ws/chat")).status, 404);
+      assert.equal((await fetch(base + "/v1/images/generations", { method: "POST", body: JSON.stringify({ model: "/local/image", prompt: "cat" }) })).status, 404);
       assert.throws(() => running.downloads.start("org/x"), /owns no downloads/);
     } finally { await running.close(); }
     assert.deepEqual(events, ["load /unused/whisper", "close /unused/whisper"]);

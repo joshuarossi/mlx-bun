@@ -42,6 +42,8 @@ export interface WhisperModelHostOptions {
   resident?: boolean;
   /** Wraps every decode call (the full server passes the generation gateway's exclusive lock). */
   exclusive?: Exclusive;
+  /** Optional load lease for a worker whose parent can pause it before its lazy weights have loaded. Admission runs first. */
+  loadExclusive?: Exclusive;
   /** Called with the bytes a checkpoint needs before it loads, so a host that also generates can make room (drain a model) first. */
   admit?: (bytes: number) => Promise<void>;
   /** Real weights by default. */
@@ -185,7 +187,10 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
         let loaded: LoadedWhisper;
         publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "started" });
         // A host that also generates makes room first: it may drain a chat model to fit this checkpoint.
-        try { if (slot.bytes > 0) await options.admit?.(slot.bytes); loaded = await backend.load(slot.directory); }
+        try {
+          if (slot.bytes > 0) await options.admit?.(slot.bytes);
+          loaded = await (options.loadExclusive ?? (fn => fn()))(() => backend.load(slot.directory));
+        }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "failed", error: message });

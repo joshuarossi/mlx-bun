@@ -244,7 +244,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
 /** Main's `serve <whisper checkpoint>`: the transcription-only host has no
  * chat model, jobs, downloads, or web app, so no persistent state is composed. */
 export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions,
-  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
+  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain" | "exclusive"> = {}): Promise<RunningApp> {
   return (await import("./serve-host")).startTranscriptionHost(model, options, hooks);
 }
 

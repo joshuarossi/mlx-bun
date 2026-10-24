@@ -59,7 +59,10 @@ if (launch.kind === "image") while (process.env.FAKE_WORKER_IMAGE_READY_GATE && 
 interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }
 const seen: Seen[] = [];
 const leases = new Set<object>();
-const gateOpen = async (path: string | undefined) => { while (path && !existsSync(path)) await Bun.sleep(10); };
+const gateOpen = async (path: string | undefined, signal?: AbortSignal) => {
+  while (path && !existsSync(path)) { signal?.throwIfAborted(); await Bun.sleep(10); }
+  signal?.throwIfAborted();
+};
 const heldMemory = new Set<() => void>(), memoryJoins = new Set<Promise<void>>();
 let taskSnapshot: string | undefined;
 let draining = false, inFlight = 0, responseCount = 0;
@@ -97,13 +100,30 @@ const crash = (code: number) => setTimeout(() => process.exit(code), 30);
 /** The image form's execution lock (FIFO): resolves to its release once every earlier holder has released. Other forms never wait. */
 let lockTail: Promise<void> = Promise.resolve();
 const lock = async (): Promise<() => void> => {
-  if (launch.kind !== "image") return () => {};
+  if (launch.kind !== "image" && process.env.FAKE_WORKER_COORDINATE !== "1") return () => {};
   const previous = lockTail;
   let unlock!: () => void;
   lockTail = new Promise(resolve => { unlock = resolve; });
   await previous;
   return unlock;
 };
+/** Opt-in fake execution for cross-worker coordination tests. Real kernels are never imported. */
+async function task(request: Request, kind: string, prompt: unknown, answer: () => Response): Promise<Response> {
+  const unlock = await lock();
+  try {
+    if (request.signal.aborted) return new Response(null, { status: 499 });
+    event(`${kind} started`);
+    try {
+      if (typeof prompt === "string" && prompt.includes("hold")) await gateOpen(process.env[`FAKE_WORKER_${kind.toUpperCase()}_GATE`], request.signal);
+      if (prompt === "fail") throw new Error("fake run failed");
+      return answer();
+    } catch (error) {
+      // Cancellation may take time to drain. The parent must retain exclusion until it does.
+      if (request.signal.aborted) await gateOpen(process.env.FAKE_WORKER_CANCEL_GATE);
+      return Response.json({ error: String(error) }, { status: request.signal.aborted ? 499 : 500 });
+    } finally { event(`${kind} finished`); }
+  } finally { unlock(); }
+}
 const hold = (request: Request, first: Uint8Array, entry: Seen) => new Response(new ReadableStream<Uint8Array>({
   start(controller) {
     controller.enqueue(first);
@@ -206,16 +226,15 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     admission: { enforced_context_tokens: 2048, max_safe_context: 8192,
       ...(process.env.FAKE_WORKER_WEIGHTS ? { weights_bytes: (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)[modelId] ?? (JSON.parse(process.env.FAKE_WORKER_WEIGHTS) as Record<string, number>)["*"] } : {}) }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
-  if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
+  if (path.startsWith("/v1/audio/") && request.method === "POST") {
+    const answer = () => Response.json({ text: "fake transcript", model: current });
+    if (process.env.FAKE_WORKER_COORDINATE !== "1") return answer();
+    const body = await request.json().catch(() => ({})) as { prompt?: unknown };
+    return task(request, "audio", body.prompt, answer);
+  }
   if (path.startsWith("/v1/images/") && request.method === "POST") {
     const body = await request.json().catch(() => ({})) as { prompt?: unknown };
-    const unlock = await lock();
-    try {
-      event("image started");
-      if (typeof body.prompt === "string" && body.prompt.includes("hold")) await gateOpen(process.env.FAKE_WORKER_IMAGE_GATE);
-      event("image finished");
-    } finally { unlock(); }
-    return Response.json({ created: 1, data: [], model: current, kind: launch.kind ?? "model" });
+    return task(request, "image", body.prompt, () => Response.json({ created: 1, data: [], model: current, kind: launch.kind ?? "model" }));
   }
   if (path === "/v1/chat/completions" && request.method === "POST") {
     entry.raw = await request.text();
@@ -223,6 +242,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     try { body = JSON.parse(entry.raw) as typeof body; } catch { return Response.json({ error: { message: "invalid JSON body", type: "invalid_request_error" } }, { status: 400 }); }
     entry.body = body;
     const prompt = userText(body);
+    if (!body.stream && process.env.FAKE_WORKER_COORDINATE === "1") return task(request, "chat", prompt, () => Response.json({ model: current }));
     if (!body.stream) return Response.json({ id: "chatcmpl-fake", object: "chat.completion", created: 1, model: current,
       choices: [{ index: 0, message: { role: "assistant", content: `echo: ${prompt}` }, finish_reason: "stop" }],
       usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } });

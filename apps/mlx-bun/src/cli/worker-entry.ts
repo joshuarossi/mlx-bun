@@ -14,7 +14,7 @@
 //   its runs under an execution lock the parent's managed jobs lease.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { Exclusive } from "@mlx-bun/app-services";
-import { createEventHub, createModuleSockets, fixedStageRule } from "@mlx-bun/app-services/portable";
+import { createEventHub, createExecutionLock, createModuleSockets, fixedStageRule } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import type { WorkerMemory } from "../jobs/worker-memory";
@@ -202,38 +202,12 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   });
 }
 
-/** The image form's execution lock: image runs (the image host's `exclusive`) and the parent's connection-owned lease
- * (`/admin/lease`, which a managed job holds) take it one at a time, in order, so a job waits for the run in flight and a run
- * waits for the job. An acquisition aborted while it waits gives up its turn without overtaking anyone. */
-function executionLock(): { acquire(signal?: AbortSignal): Promise<DisposableResource>; exclusive: Exclusive } {
-  let tail: Promise<void> = Promise.resolve();
-  const acquire = (signal?: AbortSignal): Promise<DisposableResource> => {
-    if (signal?.aborted) return Promise.reject(signal.reason);
-    const previous = tail;
-    let unlock!: () => void;
-    tail = new Promise(resolve => { unlock = resolve; });
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const abort = () => { if (settled) return; settled = true; void previous.then(unlock); reject(signal!.reason); };
-      signal?.addEventListener("abort", abort, { once: true });
-      void previous.then(() => {
-        if (settled) return;
-        settled = true;
-        signal?.removeEventListener("abort", abort);
-        let released = false;
-        resolve({ dispose() { if (!released) { released = true; unlock(); } } });
-      });
-    });
-  };
-  return { acquire, exclusive: async (fn, signal) => { const lease = await acquire(signal); try { return await fn(); } finally { lease.dispose(); } } };
-}
-
 /** The image form: the image companion composition on the parent's socket behind an admin surface with readiness, drain,
  * memory and an execution lease over the image runs (a managed job holds it, as it holds a chat worker's), ready once it
  * serves, closed once when the parent signals or leaves. */
 async function runImageWorker(launch: ImageWorkerLaunch, ports: WorkerEntryPorts, parentLeft: Promise<void>): Promise<number> {
   const memoryNow = await processMemory();
-  const lock = executionLock();
+  const lock = createExecutionLock();
   const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}),
     acquireExecutionLease: signal => lock.acquire(signal) });
   let host: Awaited<ReturnType<typeof startImageHost>>;
@@ -292,14 +266,15 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
   const link: { current?: ModelHostLink } = {};
   let modelId: string | undefined;
   const memoryNow = await processMemory();
-  // One admin surface for the model the app serves; the transcription-only app has no execution lease.
+  const transcriptionLock = createExecutionLock();
+  // The transcription companion exposes the same execution contract as other workers.
   const socket = (model: ModelRecord, lease: boolean) => {
     modelId = model.repoId;
-    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}), ...(lease ? {
-      acquireExecutionLease(signal: AbortSignal) {
+    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}), acquireExecutionLease(signal: AbortSignal) {
+        if (!lease) return transcriptionLock.acquire(signal);
         if (!link.current) return Promise.reject(new Error("no model host is attached"));
         return link.current.acquireExecutionLease(signal);
-      } } : {}) });
+      } });
     return { unix: launch.socketPath, routes: (routes: RouteGroup) => admin.wrap(routes), beforeDrain: () => admin.close() };
   };
   try {
@@ -311,7 +286,7 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
         // `mlx-bun compile-ane --quiet` before every model load), never to the serving process.
         installAne: async () => {},
         start: (model, options) => start(model, options, { ...socket(model, true), link }),
-        startTranscription: (model, options) => startTranscription(model, options, socket(model, false)),
+        startTranscription: (model, options) => startTranscription(model, options, { ...socket(model, false), exclusive: transcriptionLock.exclusive }),
         // The app listens on the socket, so `--port` names no listener to check (the parent may serve it).
         interactive: false, probe: async () => null, open() {}, signals, exit: code => exit.resolve(code),
       });

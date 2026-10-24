@@ -1,5 +1,5 @@
 import type { MemoryModuleOptions } from "@mlx-bun/module-memory";
-import type { AppModule } from "@mlx-bun/app-core";
+import type { AppModule, ModelOperation } from "@mlx-bun/app-core";
 import { manifest as benchmarks } from "@mlx-bun/module-benchmarks/manifest";
 import { manifest as chat } from "@mlx-bun/module-chat/manifest";
 import { manifest as datasets } from "@mlx-bun/module-datasets/manifest";
@@ -21,7 +21,8 @@ export const manifests: readonly Omit<AppModule, "activate">[] = [transcription,
 /** Where a module activates: `state` is the app's persistent services (job runners, sockets, storage, the served
  * model's wire: modules that require `jobs` or declare sockets), `model` the model host's (Whisper and image leases,
  * the catalog). A CLI verb's host names its verb's module instead: a selection by manifest. */
-export type ModuleScope = "state" | "model";
+export type ModuleScope = "state" | "model" | { operations: readonly ModelOperation[] };
+const modelOperations: Readonly<Record<string, readonly ModelOperation[]>> = { transcription: ["transcribe"], images: ["image"] };
 
 /** What the app decides for a module beyond its services: the chat's read-only policy and working directory. */
 export interface ModuleSettings {
@@ -46,7 +47,8 @@ const loaders: Record<string, (settings: ModuleSettings) => Promise<AppModule>> 
 /** The installed modules of a scope (or of a manifest selection), in activation order; a module's code loads only when selected. */
 export async function installedModules(scope: ModuleScope | ((manifest: Omit<AppModule, "activate">) => boolean) = "model", settings: ModuleSettings = {}): Promise<readonly AppModule[]> {
   const select = typeof scope === "function" ? scope
-    : (manifest: Omit<AppModule, "activate">) => (manifest.placement ?? (manifest.requires.includes("jobs") || (manifest.sockets?.length ?? 0) > 0 ? "app" : "model")) === (scope === "state" ? "app" : "model");
+    : (manifest: Omit<AppModule, "activate">) => (manifest.placement ?? (manifest.requires.includes("jobs") || (manifest.sockets?.length ?? 0) > 0 ? "app" : "model")) === (scope === "state" ? "app" : "model") &&
+      (typeof scope === "string" || (modelOperations[manifest.id] ?? []).every(operation => scope.operations.includes(operation)));
   return Promise.all(manifests.filter(select).map(manifest => loaders[manifest.id]!(settings)));
 }
 

@@ -67,7 +67,7 @@ const COMPANION_PATHS: Readonly<Record<CompanionOperation, readonly string[]>> =
 };
 /** How the host serves each companion operation's checkpoints, one worker per checkpoint. */
 interface CompanionServing {
-  /** The checkpoint a request is served with when it names none of this operation's by exact id. */
+  /** The checkpoint a request is served with when it names no model. */
   default(): Promise<ModelRecord | undefined>;
   /** The checkpoint with exactly this id that a worker of this operation may serve. */
   find(id: string): Promise<ModelRecord | undefined>;
@@ -184,8 +184,8 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       transcribe: { default: whisperRecord, find: async id => { const record = await whisperRecord(); return record?.repoId === id ? record : undefined; },
         bytes: async record => record.sizeBytes, pick: whisperRecord },
       image: { default: imageRecord, find: id => imageModels.find(id), bytes: async record => (await imageStaging(record)).bytes,
-        // The local image model whose exact id the body names (the rule chat routing follows), else the default.
-        pick: async named => { const id = await named(); return (id !== undefined ? await imageModels.find(id) : undefined) ?? await imageRecord(); } },
+        // An explicit image id must resolve exactly. Only an unnamed request uses the default.
+        pick: async named => { const id = await named(); return id !== undefined ? await imageModels.find(id) : await imageRecord(); } },
     };
     const companionOperations = Object.keys(companions) as CompanionOperation[];
     const source: ResidencySource<WorkerUnit> = {
@@ -226,12 +226,27 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const models = createModelRoutes({ host: residency, current: () => current,
       serves: async id => !!await chatModels.find(id),
       transcription: async () => (await whisperRecord())?.repoId,
-      // Audio requests belong to the Whisper worker; an image request to the worker of the local image model its body names by exact
-      // id (the rule chat routing follows), else the default's. Each loads on first use and drains a chat model when memory is short.
+      // Audio requests belong to the Whisper worker; an image request must name an exact local image id or omit the model for
+      // the default. Each loads on first use and drains a chat model when memory is short.
       companion: async (pathname, named) => {
         const operation = companionOperations.find(each => COMPANION_PATHS[each].some(prefix => pathname.startsWith(prefix)));
         if (!operation) return undefined;
-        return (await companions[operation].pick(named))?.repoId;
+        const record = await companions[operation].pick(named);
+        if (record) return record.repoId;
+        const explicit = operation === "image" ? await named() : undefined;
+        return Response.json({ error: { type: explicit === undefined ? "model_unavailable" : "model_not_found",
+          message: explicit === undefined ? `No local model is available for ${operation}; download one with mlx-bun get.`
+            : `${explicit} is not an exact local image model id served by this host` } }, { status: explicit === undefined ? 503 : 404 });
+      },
+      companionExecution: async (unit, signal) => {
+        if (!unit.operations.includes("image")) return undefined;
+        const pause = await residency.pauseAll(signal, unit.id);
+        return { async dispose() {
+          // A cancelled proxy may return before the worker finishes cancelling.
+          // Drain its run lock before allowing another process to execute.
+          try { if (unit.supervisor.state === "ready") (await unit.pause()).dispose(); }
+          finally { pause.dispose(); }
+        } };
       } });
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ workers: () => workers(), current: () => current, models, responses,

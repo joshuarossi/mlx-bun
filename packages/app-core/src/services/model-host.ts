@@ -24,6 +24,22 @@ export interface ResidentModel {
   readonly uses?: readonly string[];
 }
 
+/** A model owned by another host that shares this composition's memory budget.
+ * The owner reports pending loads as loading, and refuses unload while leased. */
+export interface ResidencyParticipant {
+  model(): ResidentModel;
+  unload(): Promise<void>;
+}
+
+/** Charges a participant before it loads weights. The owner signals lease/pin/state
+ * changes, and releases the charge only after disposing the model, including on failure. */
+export interface ResidencyReservation {
+  changed(): void;
+  release(): void;
+}
+
+export type ReserveModel = (owner: ResidencyParticipant, signal?: AbortSignal) => Promise<ResidencyReservation>;
+
 export interface ResidencyPolicy {
   /** Bytes all resident models may use together; a load that would exceed it evicts first. */
   readonly budgetBytes: number;
@@ -168,9 +184,8 @@ export interface GeneratedImage {
   readonly timings: { readonly encodeMs: number; readonly denoiseMs: number; readonly decodeMs: number };
 }
 
-/** The `image` operation. Each run takes its host's execution lease: where one host also generates, it never overlaps
- * generation; where image runs live in a process of their own, that lease keeps them apart from the jobs that hold it, not
- * from generation in other processes. An aborted signal rejects the run and frees what it held. */
+/** The `image` operation. Each run takes its host's execution lease. An isolated composition also leases execution
+ * in the parent, pausing competing workers until the run has drained. An aborted signal rejects the run and frees what it held. */
 export interface ImageOperation {
   readonly defaults: ImageDefaults;
   readonly pixelsPerLatent: number;

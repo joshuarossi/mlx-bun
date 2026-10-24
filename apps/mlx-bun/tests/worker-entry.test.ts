@@ -473,7 +473,7 @@ test("the app form refuses nested isolation, a missing model, arguments the CLI 
   expect(() => validateAppLaunchArgv(["--model", "org/model", "--isolate"])).not.toThrow();
 });
 
-test("a Whisper checkpoint in the app form hands the socket hooks to the transcription-only host, whose admin surface has no lease", async () => {
+test("a Whisper checkpoint in the app form exposes a lease over its transcription wrapper without loading a chat host", async () => {
   const events: string[] = [];
   const host = fakeHost(events);
   let started = false;
@@ -488,7 +488,15 @@ test("a Whisper checkpoint in the app form hands the socket hooks to the transcr
     expect(run.logs).toEqual(["Serving org/whisper as a transcription-only server", "POST /v1/audio/transcriptions over the Unix socket (released after every take; loads on first request)"]);
     expect(await (await run.get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/whisper" });
     const lease = await run.get("/admin/lease", { method: "POST" });
-    expect([lease.status, await lease.json()]).toEqual([404, { error: { message: "Not found" } }]);
+    expect(lease.status).toBe(200);
+    const exclusive = (hooks as typeof hooks & { exclusive: import("@mlx-bun/app-services").Exclusive }).exclusive;
+    let ran = false;
+    const decode = exclusive(async () => { ran = true; });
+    await Bun.sleep(20);
+    expect(ran).toBe(false);
+    await lease.body!.cancel();
+    await decode;
+    expect(ran).toBe(true);
     const report = await (await run.get("/admin/drain", { method: "POST" })).json() as Record<string, unknown>;
     expect([report.drained, report.state]).toEqual([true, "draining"]);
     expect(events).not.toContain("lease");
@@ -827,7 +835,10 @@ test("the app form composes the real app over the socket with private storage: p
     assert.equal(JSON.parse(whisper.written[0].slice(WORKER_MESSAGE_PREFIX.length)).modelId, "org/whisper");
     assert.deepEqual((await (await whisper.get("/v1/models")).json()).data.map(row => [row.id, row.transcription]), [["org/whisper", true]]);
     assert.equal((await (await whisper.get("/health")).json()).status, "ok");
-    assert.equal((await whisper.get("/admin/lease", { method: "POST" })).status, 404);
+    const whisperLease = await whisper.get("/admin/lease", { method: "POST" });
+    assert.equal(whisperLease.status, 200);
+    await whisperLease.body.cancel();
+    assert.equal((await whisper.get("/v1/images/generations", { method: "POST", body: JSON.stringify({ prompt: "cat", model: "/local/image" }) })).status, 404);
     assert.equal((await whisper.get("/", {})).status, 404);
     whisper.signals.emit("SIGTERM");
     assert.equal(await whisper.exited, 0);

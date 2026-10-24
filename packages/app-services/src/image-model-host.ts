@@ -3,8 +3,8 @@
 // released right after the last one by default (`idleUnloadSec` > 0 keeps it for
 // that long; a pinned model stays). Opening reads configs only; each stage loads
 // its weights during a run. The memory budget is the app's generation host's:
-// this host reports its bytes as resident and, given `admit`, asks that host to
-// make room before the first stage of an opened pipeline can load.
+// this host reserves its pending and resident bytes through the composition
+// before the first stage of an opened pipeline can load.
 //
 // The host settles stage residency once per opened pipeline by the stage rule
 // its composer gives it (image-stages.ts; default the budget rule over a share
@@ -15,7 +15,7 @@
 // generates never overlaps it on the GPU.
 import type {
   AcquireOptions, CatalogEntry, EventBus, ImageOperation, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats, ModelUnloadReason,
-  ResidencyPlan, ResidencyPolicy, ResidentModel,
+  ResidencyPlan, ResidencyPolicy, ResidentModel, ReserveModel, ResidencyReservation,
 } from "@mlx-bun/app-core";
 import { ModelHostFailure } from "./failure";
 import { nativeImageBackend, type ImageBackend, type LoadedImagePipeline } from "./image-backend";
@@ -36,8 +36,8 @@ export interface ImageModelHostOptions {
   stages?: StageRule;
   /** Wraps every run (the full server passes the generation gateway's exclusive lock). */
   exclusive?: Exclusive;
-  /** Called with the bytes a run will hold at once before an opened pipeline loads a stage, so a host that also generates can make room first. */
-  admit?: (bytes: number) => Promise<void>;
+  /** Owns the pending and resident charge, and can reclaim an idle pipeline. A host sharing a memory budget supplies this. */
+  reserve?: ReserveModel;
   /** Real weights by default. */
   backend?: ImageBackend;
   log?: (line: string) => void;
@@ -66,13 +66,14 @@ interface Opened {
 }
 
 /** Settles with `previous`, or rejects with the signal's reason once it aborts first. */
-function waitTurn(previous: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+function waitTurn<T>(previous: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return previous;
-  signal.throwIfAborted();
+  if (signal.aborted) { void previous.catch(() => {}); return Promise.reject(signal.reason); }
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
-    void previous.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+    void previous.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); });
   });
 }
 
@@ -85,6 +86,8 @@ interface Slot {
   bytes: number;
   opened: Opened | null;
   loading: Promise<Opened> | null;
+  loadingAbort: AbortController | null;
+  reservation: ResidencyReservation | undefined;
   leases: number;
   timer: unknown;
   loads: number;
@@ -151,6 +154,8 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
     const started = now();
     slot.opened.pipeline.dispose();
     slot.opened = null;
+    slot.reservation?.release();
+    slot.reservation = undefined;
     if (reason) {
       slot.unloads++;
       publish({ type: "model.unload", at: Date.now(), model: slot.id, reason, drainMs: now() - started, flushed: false });
@@ -181,7 +186,8 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
     if (!entry.operations.includes("image")) throw new ModelHostFailure("does-not-fit", `${entry.id} does not declare the image operation`);
     const known = slots.get(entry.id);
     if (known) return known;
-    const slot: Slot = { id: entry.id, directory: entry.directory, operations: entry.operations, bytes: entry.bytes, opened: null, loading: null, leases: 0, timer: null,
+    const slot: Slot = { id: entry.id, directory: entry.directory, operations: entry.operations, bytes: entry.bytes, opened: null, loading: null,
+      loadingAbort: null, reservation: undefined, leases: 0, timer: null,
       loads: 0, unloads: 0, lastLoadMs: 0, lastUsedAt: 0 };
     slots.set(entry.id, slot);
     if (id !== entry.id) slots.set(id, slot);
@@ -194,6 +200,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
     if (slot.opened) return { loadMs: 0, opened: slot.opened };
     const waitStart = now();
     if (!slot.loading) {
+      const loadingAbort = slot.loadingAbort = new AbortController();
       slot.loading = (async () => {
         const t0 = now();
         let opened: Opened;
@@ -202,15 +209,19 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
           const pipeline = await backend.load(slot.directory);
           try {
             opened = { pipeline, ...stages(Object.values(pipeline.stageBytes)), tail: Promise.resolve() };
-            // A host that also generates makes room first: it may drain a chat model before a stage loads its weights.
-            if (opened.bytes > 0) await options.admit?.(opened.bytes);
-          } catch (error) { pipeline.dispose(); throw error; }
+            slot.bytes = opened.bytes;
+            loadingAbort.signal.throwIfAborted();
+            // Publish the owned charge before any stage loads weights. The owner
+            // exposes its leases and pin state to the shared residency policy.
+            if (options.reserve) slot.reservation = await options.reserve({ model: () => resident(slot), unload: () => host.unload(slot.id) }, loadingAbort.signal);
+            loadingAbort.signal.throwIfAborted();
+          } catch (error) { pipeline.dispose(); slot.reservation?.release(); slot.reservation = undefined; throw error; }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "failed", error: message });
           throw new ModelHostFailure("load-failed", message, { cause: error });
         }
-        if (closed) { opened.pipeline.dispose(); throw closedError(); }
+        if (closed) { opened.pipeline.dispose(); slot.reservation?.release(); slot.reservation = undefined; throw closedError(); }
         slot.opened = opened;
         slot.bytes = opened.bytes;
         slot.loads++;
@@ -219,14 +230,14 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
         publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "finished", ms: slot.lastLoadMs, weightsBytes: slot.bytes });
         publish({ type: "model.memory", at: Date.now(), model: slot.id, weightsBytes: slot.bytes, kvBytes: 0, prefixCacheBytes: 0 });
         return opened;
-      })().finally(() => { slot.loading = null; });
+      })().finally(() => { slot.loading = null; slot.loadingAbort = null; slot.reservation?.changed(); });
     }
     const opened = await slot.loading;
     return { loadMs: now() - waitStart, opened };
   }
 
   const resident = (slot: Slot): ResidentModel => ({ id: slot.id, role: "companion", state: slot.loading && !slot.opened ? "loading" : "ready",
-    operations: ["image"], bytes: slot.bytes, pinned: isPinned(slot.id), leases: slot.leases, lastUsedAt: slot.lastUsedAt });
+    operations: ["image"], bytes: slot.bytes, pinned: isPinned(slot.id), leases: slot.leases, lastUsedAt: slot.lastUsedAt, uses: [slot.directory] });
 
   const host: ImageModelHost = {
     get policy(): ResidencyPolicy { return { budgetBytes: Number.POSITIVE_INFINITY, pinned: [...pinnedIds], idleUnloadSec }; },
@@ -240,10 +251,16 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
       slot.leases++;
       let opened: Opened, loadMs: number;
       try {
-        ({ opened, loadMs } = await ensureOpened(slot));
+        ({ opened, loadMs } = await waitTurn(ensureOpened(slot), acquireOptions.signal));
         acquireOptions.signal?.throwIfAborted();
-      } catch (error) { slot.leases--; armIdle(slot, acquireOptions.keepAliveSec); throw error; }
-      slot.lastUsedAt = Date.now();
+      } catch (error) {
+        slot.leases--;
+        if (!slot.leases) slot.loadingAbort?.abort(error);
+        slot.reservation?.changed();
+        armIdle(slot, acquireOptions.keepAliveSec);
+        throw error;
+      }
+      slot.lastUsedAt = now();
       let released = false;
       return {
         model: resident(slot), loadMs, operations: { image: imageOperation(opened, exclusive) },
@@ -251,7 +268,8 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
           if (released) return;
           released = true;
           slot.leases--;
-          slot.lastUsedAt = Date.now();
+          slot.lastUsedAt = now();
+          slot.reservation?.changed();
           armIdle(slot, acquireOptions.keepAliveSec);
         },
       };
@@ -283,8 +301,8 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
       if (dispose(slot, "requested")) log(`[image] ${slot.id} unloaded`);
     },
 
-    pin(id) { pinnedIds.add(id); const slot = slots.get(id); if (slot) cancelTimer(slot); },
-    unpin(id) { pinnedIds.delete(id); },
+    pin(id) { pinnedIds.add(id); const slot = slots.get(id); if (slot) { cancelTimer(slot); slot.reservation?.changed(); } },
+    unpin(id) { pinnedIds.delete(id); slots.get(id)?.reservation?.changed(); },
     resident: () => [...new Set(slots.values())].filter(slot => slot.opened).map(resident),
 
     stats(id): ModelStats {
@@ -303,6 +321,7 @@ export function createImageModelHost(options: ImageModelHostOptions): ImageModel
       if (closing) return closing;
       closed = true;
       const all = [...new Set(slots.values())];
+      for (const slot of all) slot.loadingAbort?.abort(closedError());
       const release = () => { for (const slot of all) dispose(slot, null); };
       const loading = all.flatMap(slot => slot.loading ? [slot.loading.catch(() => undefined)] : []);
       if (!loading.length) { release(); return closing = Promise.resolve(); }
