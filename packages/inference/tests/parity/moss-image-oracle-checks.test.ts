@@ -9,11 +9,31 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compare, meets, runStatus, ulpBf16, ulpDistance, ulpFloat32, unpinnedEntries, verifyPinned } from "./moss-image-oracle-checks";
+import { compare, compareSpatial, meets, runStatus, ulpBf16, ulpDistance, ulpFloat32, unpinnedEntries, verifyPinned } from "./moss-image-oracle-checks";
 
 const root = mkdtempSync(join(tmpdir(), "mlx-moss-oracle-checks-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+test("spatial-token cosine detects a channel-scale error hidden by channel cosines", () => {
+  // Two channels, two spatial positions. Scaling only the second channel
+  // preserves each channel's direction but changes both spatial tokens.
+  const actual = new Float32Array([1, 2, 30, 40]);
+  const expected = new Float32Array([1, 2, 3, 4]);
+  const historical = compare(actual, expected, 2);
+  const spatial = compareSpatial(actual, expected, 2);
+  const cosines = [91 / Math.sqrt(901 * 10), 164 / Math.sqrt(1604 * 20)];
+  expect(historical.minCosine).toBeCloseTo(1, 14);
+  expect(spatial.minCosine).toBeCloseTo(Math.min(...cosines), 14);
+  expect(spatial.meanCosine).toBeCloseTo((cosines[0]! + cosines[1]!) / 2, 14);
+  expect(spatial.relative).toBeCloseTo(historical.relative, 14);
+  expect(spatial.maxAbs).toBe(historical.maxAbs);
+  expect(meets(spatial, { relative: 10, minCosine: 0.999 })).toBe(false);
+  expect(compareSpatial(expected, expected, 2).minCosine).toBeCloseTo(1, 14);
+  expect(compareSpatial(new Float32Array([1, 2, NaN, 4]), expected, 2).nonFinite).toBe(1);
+  expect(() => compareSpatial(actual, expected, 0)).toThrow(RangeError);
+  expect(() => compareSpatial(actual, expected, 3)).toThrow(RangeError);
+});
 
 test("a non-finite value is a mismatch at an infinite distance, on either side, and fails every bound", () => {
   for (const ulp of [ulpBf16, ulpFloat32]) {

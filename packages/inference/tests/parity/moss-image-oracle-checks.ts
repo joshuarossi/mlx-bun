@@ -35,6 +35,22 @@ export function compare(actual: Float32Array, expected: Float32Array, width: num
   return { relative: Math.sqrt(diff / norm), maxAbs, minCosine, meanCosine: cosines / (to - from), nonFinite };
 }
 
+/** Compare `[1, C, H, W]` latents by spatial token, with each cosine over C
+ * channels. The ordinary contiguous-row comparison measures channels over
+ * space instead; historical results retain that separate measurement. */
+export function compareSpatial(actual: Float32Array, expected: Float32Array, channels: number): Stats {
+  if (!Number.isSafeInteger(channels) || channels <= 0 || expected.length % channels !== 0 || actual.length !== expected.length)
+    throw new RangeError("spatial comparison needs equal channel-first tensors and a positive channel count");
+  const positions = expected.length / channels;
+  const transpose = (values: Float32Array) => {
+    const rows = new Float32Array(values.length);
+    for (let position = 0; position < positions; position++)
+      for (let channel = 0; channel < channels; channel++) rows[position * channels + channel] = values[channel * positions + position]!;
+    return rows;
+  };
+  return compare(transpose(actual), transpose(expected), channels);
+}
+
 /** Within `bounds`, with no non-finite value. */
 export const meets = (stats: Stats, bounds: Bounds) => stats.nonFinite === 0 && stats.relative <= bounds.relative &&
   stats.minCosine >= bounds.minCosine && (bounds.meanCosine === undefined || stats.meanCosine >= bounds.meanCosine);

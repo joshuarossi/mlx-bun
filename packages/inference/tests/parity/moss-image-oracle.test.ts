@@ -73,7 +73,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { SafetensorsFile } from "../../src/artifacts/safetensors";
-import { compare, meets, runStatus, ulpBf16, ulpDistance, ulpFloat32, unpinnedEntries, verifyPinned, type Bounds, type Stats, type UlpStats, type Verification } from "./moss-image-oracle-checks";
+import { compare, compareSpatial, meets, runStatus, ulpBf16, ulpDistance, ulpFloat32, unpinnedEntries, verifyPinned, type Bounds, type Stats, type UlpStats, type Verification } from "./moss-image-oracle-checks";
 import { optInAll } from "./real-weight-inputs";
 
 const OPT_IN = ["MLX_BUN_MOSS_IMAGE_SNAPSHOT", "MLX_BUN_MOSS_IMAGE_ORACLE"] as const;
@@ -304,6 +304,8 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     writeFileSync(resultsPath, JSON.stringify({ status: execution.status, acceptance: "pending", execution, originalCriteria: ORIGINAL, delta: DELTA,
       adjudicated: { lastBlockTextRows: "reported", unresolved: failures },
       investigative: { spreadFactor: SPREAD_FACTOR },
+      cosineAxes: { hidden: "token over features", legacyLatents: "channel over spatial positions",
+        spatialLatents: "spatial token over channels (checks named spatial tokens)" },
       implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },
       inputs: { revision: basename(snapshot), verified: inputsVerified, ...(inputs.error ? { error: inputs.error } : {}),
         sha256: { snapshot: inputs.snapshot?.sha256 ?? {}, captures: inputs.captures?.sha256 ?? {} }, unpinned: inputs.unpinned,
@@ -453,7 +455,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
       using latents = device("noise", "latents");
       using flat = device("encode", "positive_embeds");
       using context = ops.reshape(flat, [1, ...flat.shape]);
-      const height = latents.shape[2]!, width = latents.shape[3]!, tokens = height * width;
+      const height = latents.shape[2]!, width = latents.shape[3]!, tokens = height * width, channels = latents.shape[1]!;
       for (const step of [0, 4]) {
         const tag = `t${step}`, timestep = timesteps[step]!;
         using time = dit.timestepEmbedder.forward(timestep);
@@ -495,9 +497,13 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
         using velocity = dit.velocity(latents, timestep, context);
         record(`${tag} velocity`, compare(values(velocity), host("dit", `${tag}.velocity`), tokens), ORIGINAL.hidden,
           spreadOf(spread(`${tag}.velocity`, tokens)));
+        record(`${tag} velocity spatial tokens`, compareSpatial(values(velocity), host("dit", `${tag}.velocity`), channels), ORIGINAL.hidden,
+          spreadOf(spreadFile ? compareSpatial(host(spreadFile, `${tag}.velocity`), host("dit", `${tag}.velocity`), channels) : undefined));
         using skipped = dit.velocity(latents, timestep, context, new Set([22]));
         record(`${tag} velocity, block 22 skipped`, compare(values(skipped), host("dit", `${tag}_skip22.velocity`), tokens), ORIGINAL.hidden,
           spreadOf(spread(`${tag}_skip22.velocity`, tokens)));
+        record(`${tag} velocity, block 22 skipped spatial tokens`, compareSpatial(values(skipped), host("dit", `${tag}_skip22.velocity`), channels), ORIGINAL.hidden,
+          spreadOf(spreadFile ? compareSpatial(host(spreadFile, `${tag}_skip22.velocity`), host("dit", `${tag}_skip22.velocity`), channels) : undefined));
       }
     } finally {
       dit.dispose();
@@ -527,6 +533,10 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
             pass: stats.relative <= SPREAD_FACTOR * spread.relative },
           referenceSpread: spread,
         } : {});
+        // Retain the historical channel cosines above, and independently hold
+        // the spatial-token cosines to the same original trajectory bounds.
+        record(`trajectory step ${index} spatial tokens`, compareSpatial(ours, host("sample-8", name), noise.shape[1]!), ORIGINAL.trajectory,
+          calibrated ? { referenceSpread: compareSpatial(host("sample-8-mps", name), host("sample-8", name), noise.shape[1]!) } : {});
       };
       const seen: number[] = [];
       let calls = 0;
