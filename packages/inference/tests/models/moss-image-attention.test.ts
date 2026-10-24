@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
-import { Dtype, activeMemory, clearCache, peakMemory, resetPeakMemory, synchronize } from "@mlx-bun/mlx/ffi";
+import { Dtype, MLX_VERSION, activeMemory, clearCache, deviceArchitecture, peakMemory, resetPeakMemory, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MossAttention, MossJointAttention, MossRefinerAttention } from "../../src/models/moss-image/blocks";
 import { MossDenseLinear, MossRmsNorm, type MossLinear } from "../../src/models/moss-image/layers";
 import { MossRope } from "../../src/models/moss-image/rope";
 
-// Independent Python MLX 0.32.2, the pinned MFLUX engine's attention binding.
+// Independent Python MLX 0.32.2 on applegpu_g16s (M4 Pro), the pinned MFLUX
+// engine's attention binding. Native reductions are device-dependent. These
+// recorded bits qualify that device, as the repository's synthetic digests do;
+// they are not a cross-device numerical contract. The independent host-double
+// checks below run on every device with their original numerical bounds.
 // Regenerate with the same integer LCG below, float32 -> bf16 inputs, then
 // mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5).
 // Digests cover every output widened exactly to little-endian float32. Odd
@@ -30,6 +34,7 @@ const NATIVE_DIGESTS: Record<string, string> = {
   "peaked": "6b83b51efbe466121ce859333c079fdd699befd881c7a2bc37f8f3ee4237c40a",
   "final-max": "caf1bb2a25135dcdaa3d4b6c95ef99643e93a4ac424704ebcbecd039cfaedc44"
 };
+const recordedDevice = MLX_VERSION === "0.32.2" && deviceArchitecture() === "applegpu_g16s";
 
 function exactNative(actual: MlxArray, name: string): void {
   expect(actual.dtype).toBe(Dtype.bfloat16);
@@ -122,18 +127,22 @@ for (const [batch, heads, length, dim] of [
   [1, 1, 279, 128], [1, 1, 513, 128],
   [1, 2, 65, 136], [1, 1, 67, 257],
 ] as const) {
-  test(`MOSS attention matches Python MLX exactly at [${batch},${heads},${length},${dim}]`, () => {
+  test.skipIf(!recordedDevice)(`MOSS attention matches Python MLX 0.32.2 on applegpu_g16s at [${batch},${heads},${length},${dim}]`, () => {
     const shape = [batch, heads, length, dim];
     using q = input(shape, 11, 2), k = input(shape, 23, 2), v = input(shape, 37);
     using actual = new MossAttention(dim).forward(q, k, v);
     expect(actual.shape).toEqual(shape);
     exactNative(actual, shape.join(","));
-    // MOSS's 128-wide heads also retain the independent real-number check.
-    if (dim === 128) close(actual, reference(q, k, v));
+  });
+  if (dim === 128) test(`MOSS attention agrees with host-double softmax at [${batch},${heads},${length},${dim}]`, () => {
+    const shape = [batch, heads, length, dim];
+    using q = input(shape, 11, 2), k = input(shape, 23, 2), v = input(shape, 37);
+    using actual = new MossAttention(dim).forward(q, k, v);
+    close(actual, reference(q, k, v));
   });
 }
 
-test("MOSS attention matches Python MLX exactly on peaked scores", () => {
+test.skipIf(!recordedDevice)("MOSS attention matches Python MLX 0.32.2 on applegpu_g16s on peaked scores", () => {
   const shape = [1, 1, 19, 8];
   using q = input(shape, 73, 4), k = input(shape, 91, 4), v = input(shape, 121, 3);
   using actual = new MossAttention(8).forward(q, k, v);
@@ -156,7 +165,7 @@ test("MOSS attention's analytical two-key case stores sigmoid(-1), rejecting the
   expect(expected.values).toEqual(correct);
 });
 
-test("MOSS attention uses the final maximum even when it occurs at the last key", () => {
+test.skipIf(!recordedDevice)("MOSS attention matches Python MLX 0.32.2 on applegpu_g16s with the maximum at the last key", () => {
   const length = 65, dim = 32, shape = [1, 1, length, dim];
   using q = input(shape, 5, 3), v = input(shape, 7);
   const values = new Float32Array(length * dim);
