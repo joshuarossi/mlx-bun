@@ -20,7 +20,7 @@
 import { copyFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
-import { ShardedSafetensors } from "@mlx-bun/inference/artifacts";
+import { loadPipelineConfig, openDiffusersShards, Weights } from "@mlx-bun/inference/artifacts";
 import { isImageModelType } from "@mlx-bun/inference/models/support";
 import { writeAtomicDirectory } from "./atomic-output";
 import { quantizeModelDir, type QuantizeResult } from "./quantizer";
@@ -56,7 +56,7 @@ function copyComponent(source: string, destination: string): void {
 
 /** Quantize the snapshot at `srcDir` into `outDir` (which must not exist or be empty). */
 export async function quantizeMossImageDir(srcDir: string, outDir: string, opts: QuantizeMossImageOptions): Promise<QuantizeMossImageResult> {
-  const config = await loadModelConfig(srcDir);
+  const config = await loadPipelineConfig(srcDir);
   if (!isImageModelType(config.modelType))
     throw new Error(`quantizeMossImageDir: ${srcDir} is not a text-to-image pipeline snapshot`);
   for (const [component, tensor] of [["transformer", "layers.0.proj.q.weight"], ["text_encoder", "language_model.embed_tokens.weight"]] as const) {
@@ -64,7 +64,7 @@ export async function quantizeMossImageDir(srcDir: string, outDir: string, opts:
     if (componentConfig.quantization)
       throw new Error(`quantizeMossImageDir: ${component} is already quantized; start from the full-precision release`);
     // The tensor names from the shard index or the single file alike: an unsupported layout must fail, not convert.
-    const shards = await ShardedSafetensors.open(join(srcDir, component));
+    const shards = await openDiffusersShards(join(srcDir, component));
     const present = shards.tensorToFile.has(tensor);
     for (const file of shards.files.values()) file.mmap.unmap();
     if (!present) throw new Error(`quantizeMossImageDir: ${component} has no ${tensor}; this is not the MOSS-Image layout`);
@@ -75,7 +75,8 @@ export async function quantizeMossImageDir(srcDir: string, outDir: string, opts:
     copyFileSync(join(srcDir, "model_index.json"), join(staging, "model_index.json"));
     for (const component of ["vae", "tokenizer", "scheduler"]) copyComponent(join(srcDir, component), join(staging, component));
     const transformer = await quantizeModelDir(join(srcDir, "transformer"), join(staging, "transformer"),
-      { bits: opts.bits, groupSize: opts.groupSize, quantizePredicate: mossImageTransformerPredicate }, progress("transformer"));
+      { bits: opts.bits, groupSize: opts.groupSize, quantizePredicate: mossImageTransformerPredicate,
+        openWeights: directory => Weights.open(directory, { openShards: openDiffusersShards }) }, progress("transformer"));
     const textEncoder = await quantizeModelDir(join(srcDir, "text_encoder"), join(staging, "text_encoder"),
       { bits: opts.bits, groupSize: opts.groupSize, quantizePredicate: mossImageTextEncoderPredicate }, progress("text_encoder"));
     return { transformer, textEncoder };

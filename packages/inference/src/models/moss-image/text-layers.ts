@@ -213,7 +213,8 @@ export interface MossTextAttentionShape {
  * the sigmoid output gate and the output projection. */
 export class MossTextAttention {
   constructor(readonly q: MossLinear, readonly k: MossLinear, readonly v: MossLinear, readonly o: MossLinear,
-    readonly qNorm: MossTextRmsNorm, readonly kNorm: MossTextRmsNorm, readonly rope: MossTextRope, readonly shape: MossTextAttentionShape) {}
+    readonly qNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly kNorm: Pick<MossTextRmsNorm, "forward" | "dispose">,
+    readonly rope: Pick<MossTextRope, "apply">, readonly shape: MossTextAttentionShape) {}
 
   forward(x: MlxArray, tables: MossTextRopeTables): MlxArray {
     const { heads, kvHeads, headDim } = this.shape, length = x.shape[1]!;
@@ -285,7 +286,7 @@ export class MossTextDeltaRecurrence {
   readonly #scale: number;
 
   /** `keyDim` a multiple of 32 (the kernel's lanes). */
-  constructor(readonly logDecay: MossTextLogDecay, keyDim: number) {
+  constructor(readonly logDecay: Pick<MossTextLogDecay, "forward">, keyDim: number) {
     if (keyDim % 32 !== 0) throw new RangeError(`delta recurrence: key head size ${keyDim} is not a multiple of 32`);
     this.#scale = f32(1 / Math.sqrt(keyDim));
   }
@@ -314,7 +315,7 @@ export class MossTextDeltaMixer {
 
   /** `convWeight` is the checkpoint's `[C, 1, K]`; the layer keeps its own `[C, K, 1]` copy. */
   constructor(readonly qkv: MossLinear, readonly z: MossLinear, readonly b: MossLinear, readonly a: MossLinear, readonly out: MossLinear,
-    convWeight: MlxArray, readonly recurrence: MossTextDeltaRecurrence, readonly norm: MossTextGatedNorm, readonly shape: MossDeltaShape) {
+    convWeight: MlxArray, readonly recurrence: Pick<MossTextDeltaRecurrence, "forward">, readonly norm: Pick<MossTextGatedNorm, "forward">, readonly shape: MossDeltaShape) {
     using moved = ops.transposeAxes(convWeight, [0, 2, 1]);
     this.#conv = ops.contiguous(moved);
   }
@@ -362,8 +363,8 @@ export class MossTextMlp {
 
 /** A linear-attention decoder layer: pre-norm Gated DeltaNet and MLP, each residual. */
 export class MossTextDeltaLayer {
-  constructor(readonly inputNorm: MossTextRmsNorm, readonly mixer: MossTextDeltaMixer,
-    readonly postNorm: MossTextRmsNorm, readonly mlp: MossTextMlp) {}
+  constructor(readonly inputNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mixer: Pick<MossTextDeltaMixer, "forward" | "dispose">,
+    readonly postNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mlp: Pick<MossTextMlp, "forward" | "dispose">) {}
 
   /** `_tables` is the attention layers' input; a linear-attention layer reads no positions. */
   forward(x: MlxArray, _tables: MossTextRopeTables): MlxArray {
@@ -380,8 +381,8 @@ export class MossTextDeltaLayer {
 
 /** A full-attention decoder layer: pre-norm gated attention and MLP, each residual. */
 export class MossTextAttentionLayer {
-  constructor(readonly inputNorm: MossTextRmsNorm, readonly attention: MossTextAttention,
-    readonly postNorm: MossTextRmsNorm, readonly mlp: MossTextMlp) {}
+  constructor(readonly inputNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly attention: Pick<MossTextAttention, "forward" | "dispose">,
+    readonly postNorm: Pick<MossTextRmsNorm, "forward" | "dispose">, readonly mlp: Pick<MossTextMlp, "forward" | "dispose">) {}
 
   forward(x: MlxArray, tables: MossTextRopeTables): MlxArray {
     using normed = this.inputNorm.forward(x);

@@ -5,7 +5,7 @@
 
 import { loadModelConfig, type ModelConfig } from "../../artifacts/config";
 import { pipelineComponentDir, readPipelineIndex } from "../../artifacts/pipeline-index";
-import { ShardedSafetensors } from "../../artifacts/safetensors";
+import { openDiffusersShards } from "../../artifacts/diffusers-shards";
 import type {
   ImageConditioner, ImageDenoiser, ImageLatentDecoder, TextToImagePipeline,
 } from "../../contracts/mlx/image-generation";
@@ -22,7 +22,7 @@ export const MOSS_IMAGE_DEFAULTS: ImageGenerationDefaults = Object.freeze({
 
 /** Bytes of the tensors in a component directory whose names pass `include`. */
 async function componentBytes(dir: string, include: (name: string) => boolean): Promise<number> {
-  const shards = await ShardedSafetensors.open(dir);
+  const shards = await openDiffusersShards(dir);
   try {
     let bytes = 0;
     for (const name of shards.tensorNames) if (include(name)) { const info = shards.info(name); bytes += info.end - info.begin; }

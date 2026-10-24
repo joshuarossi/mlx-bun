@@ -11,9 +11,10 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { loadModelConfig, type ModelConfig } from "../../artifacts/config";
 import { Weights } from "../../artifacts/weights";
+import { openDiffusersShards } from "../../artifacts/diffusers-shards";
 import type { ImageDenoiser } from "../../contracts/mlx/image-generation";
 import {
-  MossJointAttention, MossJointBlock, MossJointFeedForward, MossLatentEmbedder, MossLatentHead, MossModulation,
+  MossAttention, MossJointAttention, MossJointBlock, MossJointFeedForward, MossLatentEmbedder, MossLatentHead, MossModulation,
   MossRefinerAttention, MossRefinerBlock, MossRefinerFeedForward, MossTimestepEmbedder, MossTokenSequence,
 } from "./blocks";
 import { MossRmsNorm, MossSitu, bindMossLinear, bindMossRowLinear, type MossLinear } from "./layers";
@@ -73,7 +74,7 @@ export class MossImageTransformer implements ImageDenoiser {
 
   static async open(dir: string, config: MossTransformerConfig): Promise<MossImageTransformer> {
     const modelConfig = await loadModelConfig(dir);
-    const weights = await Weights.open(dir);
+    const weights = await Weights.open(dir, { openShards: openDiffusersShards });
     try { return new MossImageTransformer(weights, modelConfig, config); }
     catch (error) { weights.dispose(); throw error; }
   }
@@ -92,11 +93,12 @@ export class MossImageTransformer implements ImageDenoiser {
     const activation = new MossSitu(Dtype.bfloat16);
     this.rope = own(new MossRope(config.dim / config.numHeads, config.ropeBase));
     try {
+      const attention = new MossAttention(config.dim / config.numHeads);
       this.latentEmbedder = new MossLatentEmbedder(linear("video_embedder"));
       this.textProjection = linear("text_embedder.proj");
       const textBlock = (prefix: string) => new MossRefinerBlock(
         norm(`${prefix}.norm1`),
-        new MossRefinerAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
+        new MossRefinerAttention(linear(`${prefix}.qkv`), linear(`${prefix}.proj`), norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads, attention),
         norm(`${prefix}.norm2`),
         new MossRefinerFeedForward(linear(`${prefix}.ffn_up`), linear(`${prefix}.ffn_gate`), linear(`${prefix}.ffn_down`), activation));
       this.textBlocks = [textBlock("text_embedder.blocks.0"), textBlock("text_embedder.blocks.1")];
@@ -108,7 +110,7 @@ export class MossImageTransformer implements ImageDenoiser {
         blocks.push(new MossJointBlock(
           norm(`${prefix}.norm1`),
           new MossJointAttention(linear(`${prefix}.proj.q`), linear(`${prefix}.proj.k`), linear(`${prefix}.proj.v`), linear(`${prefix}.proj.o`),
-            norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads),
+            norm(`${prefix}.q_norm`), norm(`${prefix}.k_norm`), this.rope, config.numHeads, attention),
           norm(`${prefix}.norm2`),
           new MossJointFeedForward(linear(`${prefix}.proj.ffn_up_gate`), linear(`${prefix}.proj.ffn_down`), activation)));
       }

@@ -6,21 +6,36 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import { mossAttention } from "../../kernels/moss-attention";
 import type { MossLinear, MossRmsNorm, MossSitu } from "./layers";
 import type { MossRope, MossRopeTables } from "./rope";
 
-/** Attention over `[1, N, dim]` q/k/v (consumed): per-head RMS norms on q and k,
- * the four-axis rotation on both, SDPA at `head_dim ** -0.5`, heads merged. */
-function attend(q: MlxArray, k: MlxArray, v: MlxArray, qNorm: MossRmsNorm, kNorm: MossRmsNorm,
-  rope: MossRope, tables: MossRopeTables, heads: number): MlxArray {
+/** Unmasked attention over borrowed equal `[B, H, N, D]` bf16 arrays.
+ * Returns an owned lazy result of that shape and dtype; retains no input
+ * handles after the call. The returned graph retains their storage. */
+export interface MossAttentionOperation {
+  forward(q: MlxArray, k: MlxArray, v: MlxArray): MlxArray;
+}
+
+/** The MOSS bf16-numerator kernel's sole owning layer. Holds no tensors;
+ * the graph binds it once and supplies it to joint and refiner attention. */
+export class MossAttention implements MossAttentionOperation {
+  readonly #attend: (q: MlxArray, k: MlxArray, v: MlxArray) => MlxArray;
+  constructor(headDim: number) { this.#attend = mossAttention(headDim); }
+  forward(q: MlxArray, k: MlxArray, v: MlxArray): MlxArray { return this.#attend(q, k, v); }
+}
+
+/** Attention over `[1, N, dim]` q/k/v (borrowed): per-head RMS norms on q and k,
+ * the four-axis rotation on both, the bound attention, heads merged. */
+function attend(q: MlxArray, k: MlxArray, v: MlxArray, qNorm: Pick<MossRmsNorm, "forward">, kNorm: Pick<MossRmsNorm, "forward">,
+  rope: Pick<MossRope, "apply">, tables: MossRopeTables, heads: number, attention: MossAttentionOperation): MlxArray {
   const [batch, length, dim] = q.shape as [number, number, number];
   const shape = [batch, length, heads, dim / heads];
-  const split = (x: MlxArray) => { const out = ops.reshape(x, shape); x.dispose(); return out; };
-  using qh = split(q), kh = split(k), vh = split(v);
+  using qh = ops.reshape(q, shape), kh = ops.reshape(k, shape), vh = ops.reshape(v, shape);
   using qn = qNorm.forward(qh), kn = kNorm.forward(kh);
   using qr = rope.apply(qn, tables), kr = rope.apply(kn, tables);
   using qt = ops.transposeAxes(qr, [0, 2, 1, 3]), kt = ops.transposeAxes(kr, [0, 2, 1, 3]), vt = ops.transposeAxes(vh, [0, 2, 1, 3]);
-  using attended = ops.sdpa(qt, kt, vt, Math.pow(dim / heads, -0.5), "");
+  using attended = attention.forward(qt, kt, vt);
   using merged = ops.transposeAxes(attended, [0, 2, 1, 3]);
   return ops.reshape(merged, [batch, length, dim]);
 }
@@ -28,10 +43,12 @@ function attend(q: MlxArray, k: MlxArray, v: MlxArray, qNorm: MossRmsNorm, kNorm
 /** Joint-block attention: separate bias-free q, k, v projections and the output projection. */
 export class MossJointAttention {
   constructor(readonly q: MossLinear, readonly k: MossLinear, readonly v: MossLinear, readonly o: MossLinear,
-    readonly qNorm: MossRmsNorm, readonly kNorm: MossRmsNorm, readonly rope: MossRope, readonly heads: number) {}
+    readonly qNorm: Pick<MossRmsNorm, "forward">, readonly kNorm: Pick<MossRmsNorm, "forward">, readonly rope: Pick<MossRope, "apply">, readonly heads: number,
+    readonly attention: MossAttentionOperation) {}
 
   forward(y: MlxArray, tables: MossRopeTables): MlxArray {
-    using attended = attend(this.q.forward(y), this.k.forward(y), this.v.forward(y), this.qNorm, this.kNorm, this.rope, tables, this.heads);
+    using q = this.q.forward(y), k = this.k.forward(y), v = this.v.forward(y);
+    using attended = attend(q, k, v, this.qNorm, this.kNorm, this.rope, tables, this.heads, this.attention);
     return this.o.forward(attended);
   }
 
@@ -40,14 +57,15 @@ export class MossJointAttention {
 
 /** Text-refiner attention (`_TextBlock`): one fused qkv projection (with bias) split in thirds, and the output projection. */
 export class MossRefinerAttention {
-  constructor(readonly qkv: MossLinear, readonly proj: MossLinear, readonly qNorm: MossRmsNorm, readonly kNorm: MossRmsNorm,
-    readonly rope: MossRope, readonly heads: number) {}
+  constructor(readonly qkv: MossLinear, readonly proj: MossLinear, readonly qNorm: Pick<MossRmsNorm, "forward">, readonly kNorm: Pick<MossRmsNorm, "forward">,
+    readonly rope: Pick<MossRope, "apply">, readonly heads: number, readonly attention: MossAttentionOperation) {}
 
   forward(y: MlxArray, tables: MossRopeTables): MlxArray {
     using fused = this.qkv.forward(y);
     const dim = fused.shape.at(-1)! / 3;
-    const [q, k, v] = ops.split(fused, [dim, 2 * dim], -1);
-    using attended = attend(q!, k!, v!, this.qNorm, this.kNorm, this.rope, tables, this.heads);
+    const parts = ops.split(fused, [dim, 2 * dim], -1);
+    using q = parts[0]!, k = parts[1]!, v = parts[2]!;
+    using attended = attend(q, k, v, this.qNorm, this.kNorm, this.rope, tables, this.heads, this.attention);
     return this.proj.forward(attended);
   }
 
@@ -56,7 +74,7 @@ export class MossRefinerAttention {
 
 /** Joint-block feed-forward: one up-and-gate projection (hidden first, gate second), SITU, down. */
 export class MossJointFeedForward {
-  constructor(readonly upGate: MossLinear, readonly down: MossLinear, readonly activation: MossSitu) {}
+  constructor(readonly upGate: MossLinear, readonly down: MossLinear, readonly activation: Pick<MossSitu, "forward">) {}
 
   forward(y: MlxArray): MlxArray {
     using upGate = this.upGate.forward(y);
@@ -70,7 +88,7 @@ export class MossJointFeedForward {
 
 /** Text-refiner feed-forward: separate up and gate projections (with biases), SITU, down. */
 export class MossRefinerFeedForward {
-  constructor(readonly up: MossLinear, readonly gate: MossLinear, readonly down: MossLinear, readonly activation: MossSitu) {}
+  constructor(readonly up: MossLinear, readonly gate: MossLinear, readonly down: MossLinear, readonly activation: Pick<MossSitu, "forward">) {}
 
   forward(y: MlxArray): MlxArray {
     using activated = this.activation.forward(this.up.forward(y), this.gate.forward(y));
@@ -89,8 +107,8 @@ export interface MossBlockModulation {
 
 /** A joint image+text block (`_Block`): modulated attention and feed-forward, gated residuals. */
 export class MossJointBlock {
-  constructor(readonly norm1: MossRmsNorm, readonly attention: MossJointAttention,
-    readonly norm2: MossRmsNorm, readonly feedForward: MossJointFeedForward) {}
+  constructor(readonly norm1: Pick<MossRmsNorm, "forward">, readonly attention: Pick<MossJointAttention, "forward" | "dispose">,
+    readonly norm2: Pick<MossRmsNorm, "forward">, readonly feedForward: Pick<MossJointFeedForward, "forward" | "dispose">) {}
 
   /** `x` `[1, N, dim]` (borrowed) to an owned `[1, N, dim]`. */
   forward(x: MlxArray, tables: MossRopeTables, mod: MossBlockModulation): MlxArray {
@@ -113,8 +131,8 @@ export class MossJointBlock {
 
 /** A text-refiner block (`_TextBlock`): unmodulated pre-norm attention and feed-forward. */
 export class MossRefinerBlock {
-  constructor(readonly norm1: MossRmsNorm, readonly attention: MossRefinerAttention,
-    readonly norm2: MossRmsNorm, readonly feedForward: MossRefinerFeedForward) {}
+  constructor(readonly norm1: Pick<MossRmsNorm, "forward">, readonly attention: Pick<MossRefinerAttention, "forward" | "dispose">,
+    readonly norm2: Pick<MossRmsNorm, "forward">, readonly feedForward: Pick<MossRefinerFeedForward, "forward" | "dispose">) {}
 
   /** `x` `[1, L, dim]` (borrowed) to an owned `[1, L, dim]`. */
   forward(x: MlxArray, tables: MossRopeTables): MlxArray {
@@ -225,7 +243,7 @@ export class MossTokenSequence {
 /** The video head: final norm, the head modulation, the final projection, and
  * the tokens back to `[1, C, h, w]` float32. */
 export class MossLatentHead {
-  constructor(readonly norm: MossRmsNorm, readonly proj: MossLinear) {}
+  constructor(readonly norm: Pick<MossRmsNorm, "forward">, readonly proj: MossLinear) {}
 
   forward(tokens: MlxArray, mod: MossTimestepModulation, height: number, width: number): MlxArray {
     using normed = this.norm.forward(tokens);

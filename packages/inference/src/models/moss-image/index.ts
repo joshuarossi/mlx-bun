@@ -1,7 +1,7 @@
 // The MOSS-Image family's public components: its pipeline opener, graphs
 // (DiT, conditioner, VAE decoder), schedule and layers, for callers composing
 // their own arrangement. The loader's opener is `openImagePipeline` in
-// `models/factory.ts`.
+// `models/image-factory.ts`.
 export * from "./family";
 export * from "./pipeline";
 export * from "./scheduler";

@@ -3,6 +3,8 @@ export * from "./glm52-config";
 export * from "./weights";
 export * from "./safetensors";
 export * from "./pipeline-index";
+export * from "./pipeline-config";
+export * from "./diffusers-shards";
 export { MmapFile } from "./mmap";
 export * from "./expert-offload";
 export * from "./expert-offload-build";

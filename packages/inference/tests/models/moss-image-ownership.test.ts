@@ -3,9 +3,9 @@
 // it checks and no more, and review reads the source beside them:
 // - the family's files import no other family's modules and no shared `layers/`;
 // - it binds only the kernels it added, and each (`kernels/row-projection.ts`,
-//   `kernels/situ.ts`, `kernels/gated-delta-float32.ts`) is imported by one file
+//   `kernels/situ.ts`, `kernels/gated-delta-float32.ts`, `kernels/moss-attention.ts`) is imported by one file
 //   and called only inside one layer class (`MossDenseRowLinear`, `MossSitu`,
-//   `MossTextDeltaRecurrence`);
+//   `MossTextDeltaRecurrence`, `MossAttention`);
 // - its graph files (DiT, conditioner, VAE decoder) import neither MLX ops nor
 //   kernels (an import check, not a proof that no numeric code is there);
 // - no method body of its layers and graphs branches on a field fixed at
@@ -83,6 +83,7 @@ const OWNED_KERNELS = [
   { kernel: "kernels/row-projection", file: "models/moss-image/layers.ts", call: "rowProjection", layer: "MossDenseRowLinear" },
   { kernel: "kernels/situ", file: "models/moss-image/layers.ts", call: "situFor", layer: "MossSitu" },
   { kernel: "kernels/gated-delta-float32", file: "models/moss-image/text-layers.ts", call: "gatedDeltaFloat32", layer: "MossTextDeltaRecurrence" },
+  { kernel: "kernels/moss-attention", file: "models/moss-image/blocks.ts", call: "mossAttention", layer: "MossAttention" },
 ] as const;
 
 /** Every `.ts` file under `src/`. */
@@ -117,6 +118,18 @@ test("the graph files import neither MLX ops nor kernels", () => {
     .filter(target => target === "@mlx-bun/mlx/ops" || target.startsWith("kernels/"))
     .map(target => `${name} -> ${target}`));
   expect(numeric).toEqual([]);
+});
+
+test("the transformer graph constructs attention; joint and refiner layers accept its binding", () => {
+  const constructors: string[] = [];
+  for (const file of familyFiles()) {
+    const visit = (node: ts.Node) => {
+      if (ts.isNewExpression(node) && node.expression.getText() === "MossAttention") constructors.push(basename(file));
+      ts.forEachChild(node, visit);
+    };
+    visit(parse(file));
+  }
+  expect(constructors).toEqual(["transformer.ts"]);
 });
 
 test("no layer or graph method branches on a field fixed at construction", () => {

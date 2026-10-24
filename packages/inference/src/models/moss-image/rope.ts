@@ -50,9 +50,9 @@ export interface MossRopeLayout {
   readonly text: MossRopeTables;
 }
 
-/** Builds and applies the rotation. Tables are kept per (height, width, text
- * length) for the life of the layer: the positive and negative prompts of a
- * request reuse theirs at every step. */
+/** Builds and applies the rotation. Keeps the two most recently used layouts
+ * so a request's positive and negative prompts reuse theirs at every step,
+ * without accumulating tables across requests. */
 export class MossRope {
   readonly #bands: Float32Array;
   readonly #layouts = new Map<string, MossRopeLayout>();
@@ -61,10 +61,17 @@ export class MossRope {
     this.#bands = mossRopeBands(headDim, base);
   }
 
+  /** Borrowed tables, valid until evicted by later layout calls or disposal.
+   * Operations already built from them retain their native storage. */
   layout(height: number, width: number, textLength: number): MossRopeLayout {
     const key = `${height}x${width}+${textLength}`;
-    const cached = this.#layouts.get(key);
-    if (cached) return cached;
+    const layouts = this.#layouts;
+    const cached = layouts.get(key);
+    if (cached) {
+      layouts.delete(key);
+      layouts.set(key, cached);
+      return cached;
+    }
     const coordinates = mossRopeCoordinates(height, width, textLength), bands = this.#bands;
     const positions = coordinates.length / AXES, half = AXES * bands.length, head = 2 * half;
     const cos = new Float32Array(positions * head), sin = new Float32Array(positions * head);
@@ -81,7 +88,13 @@ export class MossRope {
     const tokens = height * width;
     const text = owned(joint.cos.slice([0, tokens, 0, 0], [1, positions, 1, head]), joint.sin.slice([0, tokens, 0, 0], [1, positions, 1, head]));
     const layout = { joint, text };
-    this.#layouts.set(key, layout);
+    layouts.set(key, layout);
+    if (layouts.size > 2) {
+      const [oldest, evicted] = layouts.entries().next().value!;
+      layouts.delete(oldest);
+      evicted.text[Symbol.dispose]();
+      evicted.joint[Symbol.dispose]();
+    }
     return layout;
   }
 

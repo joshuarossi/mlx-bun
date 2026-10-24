@@ -112,10 +112,7 @@ export class ShardedSafetensors {
 
   static async open(modelDir: string): Promise<ShardedSafetensors> {
     const self = new ShardedSafetensors();
-    // diffusers names a pipeline component's weights diffusion_pytorch_model.*.
-    const indexPath = (await Bun.file(`${modelDir}/model.safetensors.index.json`).exists())
-      ? `${modelDir}/model.safetensors.index.json`
-      : `${modelDir}/diffusion_pytorch_model.safetensors.index.json`;
+    const indexPath = `${modelDir}/model.safetensors.index.json`;
     if (await Bun.file(indexPath).exists()) {
       const index = (await Bun.file(indexPath).json()) as {
         weight_map: Record<string, string>;
@@ -129,12 +126,13 @@ export class ShardedSafetensors {
         self.tensorToFile.set(tensor, sf);
       }
     } else {
-      // Single-file artifacts: HF's model.safetensors, mlx-whisper's
-      // weights.safetensors (mlx-community/whisper-*), or a diffusers component's
-      // diffusion_pytorch_model.safetensors.
-      let file = "model.safetensors";
-      for (const candidate of ["model.safetensors", "weights.safetensors", "diffusion_pytorch_model.safetensors"])
-        if (await Bun.file(`${modelDir}/${candidate}`).exists()) { file = candidate; break; }
+      // Single-file artifacts: HF's model.safetensors, or mlx-whisper's
+      // weights.safetensors (mlx-community/whisper-*).
+      const file = (await Bun.file(`${modelDir}/model.safetensors`).exists())
+        ? "model.safetensors"
+        : (await Bun.file(`${modelDir}/weights.safetensors`).exists())
+          ? "weights.safetensors"
+          : "model.safetensors";
       const sf = SafetensorsFile.open(`${modelDir}/${file}`);
       self.files.set(file, sf);
       for (const name of sf.tensors.keys()) self.tensorToFile.set(name, sf);

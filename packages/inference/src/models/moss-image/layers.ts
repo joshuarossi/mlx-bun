@@ -55,7 +55,12 @@ export class MossQuantizedBiasedLinear {
   dispose(): void {}
 }
 
-export type MossLinear = MossDenseLinear | MossDenseBiasedLinear | MossDenseRowLinear | MossQuantizedLinear | MossQuantizedBiasedLinear;
+/** A projection supplied by the graph. Borrows its input, returns an owned
+ * result, and releases its own resources through `dispose`. */
+export interface MossLinear {
+  forward(x: MlxArray): MlxArray;
+  dispose(): void;
+}
 
 /** The affine spec of a module the checkpoint stores quantized (it holds `.scales`),
  * or null for one stored dense (mlx-lm's convention: a module the quantizer

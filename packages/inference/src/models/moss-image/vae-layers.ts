@@ -6,7 +6,7 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { MossDenseBiasedLinear } from "./layers";
+import type { MossLinear } from "./layers";
 
 /** The pipeline's de-normalization of the transformer's patched latents through
  * the VAE's `bn` running statistics: `x * sqrt(running_var + eps) + running_mean`
@@ -110,8 +110,8 @@ export class Flux2Silu {
 }
 
 /** A residual block's convolution branch: GroupNorm, SiLU, conv1, GroupNorm, SiLU, conv2. */
-function residualBranch(x: MlxArray, norm1: Flux2GroupNorm, conv1: Flux2Conv2d, norm2: Flux2GroupNorm, conv2: Flux2Conv2d,
-  activation: Flux2Silu): MlxArray {
+function residualBranch(x: MlxArray, norm1: Pick<Flux2GroupNorm, "forward">, conv1: Pick<Flux2Conv2d, "forward">,
+  norm2: Pick<Flux2GroupNorm, "forward">, conv2: Pick<Flux2Conv2d, "forward">, activation: Pick<Flux2Silu, "forward">): MlxArray {
   using normed1 = norm1.forward(x);
   using activated1 = activation.forward(normed1);
   using hidden = conv1.forward(activated1);
@@ -123,8 +123,9 @@ function residualBranch(x: MlxArray, norm1: Flux2GroupNorm, conv1: Flux2Conv2d, 
 /** `ResnetBlock2D` with equal input and output channels: the branch added to the
  * input (no time embedding, dropout off, output scale 1). */
 export class Flux2ResnetBlock {
-  constructor(readonly norm1: Flux2GroupNorm, readonly conv1: Flux2Conv2d, readonly norm2: Flux2GroupNorm,
-    readonly conv2: Flux2Conv2d, readonly activation: Flux2Silu) {}
+  constructor(readonly norm1: Pick<Flux2GroupNorm, "forward">, readonly conv1: Pick<Flux2Conv2d, "forward" | "dispose">,
+    readonly norm2: Pick<Flux2GroupNorm, "forward">, readonly conv2: Pick<Flux2Conv2d, "forward" | "dispose">,
+    readonly activation: Pick<Flux2Silu, "forward">) {}
 
   /** `x` `[1, H, W, C]` (borrowed) to an owned `[1, H, W, C]`. */
   forward(x: MlxArray): MlxArray {
@@ -138,8 +139,9 @@ export class Flux2ResnetBlock {
 /** `ResnetBlock2D` that changes the channel count: the branch added to the
  * input's 1x1 `conv_shortcut` (no time embedding, dropout off, output scale 1). */
 export class Flux2ShortcutResnetBlock {
-  constructor(readonly norm1: Flux2GroupNorm, readonly conv1: Flux2Conv2d, readonly norm2: Flux2GroupNorm,
-    readonly conv2: Flux2Conv2d, readonly shortcut: Flux2Conv2d, readonly activation: Flux2Silu) {}
+  constructor(readonly norm1: Pick<Flux2GroupNorm, "forward">, readonly conv1: Pick<Flux2Conv2d, "forward" | "dispose">,
+    readonly norm2: Pick<Flux2GroupNorm, "forward">, readonly conv2: Pick<Flux2Conv2d, "forward" | "dispose">,
+    readonly shortcut: Pick<Flux2Conv2d, "forward" | "dispose">, readonly activation: Pick<Flux2Silu, "forward">) {}
 
   /** `x` `[1, H, W, C_in]` (borrowed) to an owned `[1, H, W, C_out]`. */
   forward(x: MlxArray): MlxArray {
@@ -156,8 +158,8 @@ export class Flux2ShortcutResnetBlock {
  * scale `1 / sqrt(C)`, the biased output projection, the input added back
  * (rescale 1). */
 export class Flux2MidAttention {
-  constructor(readonly norm: Flux2GroupNorm, readonly q: MossDenseBiasedLinear, readonly k: MossDenseBiasedLinear,
-    readonly v: MossDenseBiasedLinear, readonly out: MossDenseBiasedLinear) {}
+  constructor(readonly norm: Pick<Flux2GroupNorm, "forward">, readonly q: MossLinear, readonly k: MossLinear,
+    readonly v: MossLinear, readonly out: MossLinear) {}
 
   /** `x` `[1, H, W, C]` (borrowed) to an owned `[1, H, W, C]`. */
   forward(x: MlxArray): MlxArray {
@@ -180,7 +182,7 @@ export class Flux2MidAttention {
 /** `Upsample2D` with a convolution: nearest-neighbour doubling of both spatial
  * axes, then the 3x3 convolution. */
 export class Flux2Upsample {
-  constructor(readonly conv: Flux2Conv2d) {}
+  constructor(readonly conv: Pick<Flux2Conv2d, "forward" | "dispose">) {}
 
   /** `x` `[1, H, W, C]` (borrowed) to an owned `[1, 2H, 2W, C_out]`. */
   forward(x: MlxArray): MlxArray {

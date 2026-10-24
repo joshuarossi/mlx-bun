@@ -3,7 +3,6 @@
 // the OptiQ per-layer quantization map, and kv_config.json when present.
 
 import { dialectFor } from "./config-dialects";
-import { PIPELINE_INDEX_FILE } from "./pipeline-index";
 import {
   parseGlm52Config,
   type Glm52Config,
@@ -203,11 +202,8 @@ export function quantFor(q: QuantizationConfig | null, modulePath: string): Quan
 }
 
 export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
-  // A diffusers pipeline snapshot has no root config.json; its model_index.json
-  // names the pipeline class, which plays the model type's role.
-  const pipeline = !(await Bun.file(`${modelDir}/config.json`).exists()) && await Bun.file(`${modelDir}/${PIPELINE_INDEX_FILE}`).exists();
-  const raw = (await Bun.file(`${modelDir}/${pipeline ? PIPELINE_INDEX_FILE : "config.json"}`).json()) as Record<string, any>;
-  const modelType = pipeline ? raw._class_name : raw.model_type;
+  const raw = (await Bun.file(`${modelDir}/config.json`).json()) as Record<string, any>;
+  const modelType = raw.model_type;
   const dialect = dialectFor(modelType);
   // The converted Colibri artifact keeps stop metadata split across the two
   // HF files. Preserve the old config-only behavior for every other family;

@@ -211,6 +211,33 @@ test("the rotation turns pair (a K + k, a K + k + D/2) by coordinate[a] * band[k
   rope.dispose();
 });
 
+test("RoPE retains two prompt layouts and releases evicted tables without invalidating pending rotations", () => {
+  const rope = new MossRope(16, 10000);
+  const first = rope.layout(1, 2, 1), second = rope.layout(1, 2, 2);
+  using input = MlxArray.fromFloat32(ramp(3 * 16, 0.6), [1, 3, 1, 16]);
+  using pending = rope.apply(input, first.joint);
+  const expected = rope.apply(input, first.joint);
+  const values = expected.toFloat32();
+  expected.dispose();
+  expect(rope.layout(1, 2, 2)).toBe(second);
+  const third = rope.layout(2, 2, 1);
+  for (const tables of [first.joint, first.text]) {
+    expect(() => tables.cos.handle).toThrow("used after dispose");
+    expect(() => tables.sin.handle).toThrow("used after dispose");
+  }
+  expect(Array.from(pending.toFloat32())).toEqual(Array.from(values));
+  // Refreshing the second layout makes the third the next eviction victim.
+  expect(rope.layout(1, 2, 2)).toBe(second);
+  const fourth = rope.layout(2, 3, 3);
+  expect(() => third.joint.cos.handle).toThrow("used after dispose");
+  expect(rope.layout(1, 2, 2)).toBe(second);
+  rope.dispose();
+  for (const layout of [second, fourth]) for (const tables of [layout.joint, layout.text]) {
+    expect(() => tables.cos.handle).toThrow("used after dispose");
+    expect(() => tables.sin.handle).toThrow("used after dispose");
+  }
+});
+
 /** Round a double to the nearest bfloat16 (ties to even), as a number. */
 function bf16(value: number): number {
   const bits = new Uint32Array(new Float32Array([value]).buffer)[0]!;

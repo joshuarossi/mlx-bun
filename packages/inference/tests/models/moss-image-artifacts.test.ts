@@ -10,9 +10,13 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadModelConfig } from "../../src/artifacts/config";
+import { loadPipelineConfig } from "../../src/artifacts/pipeline-config";
+import type { TextToImagePipeline } from "../../src/contracts/mlx/image-generation";
 import { parsePipelineIndex, pipelineComponentDir, readPipelineIndex } from "../../src/artifacts/pipeline-index";
 import { ShardedSafetensors } from "../../src/artifacts/safetensors";
-import { UnsupportedModelLoadError, openImagePipeline, openModel } from "../../src/models/factory";
+import { openDiffusersShards } from "../../src/artifacts/diffusers-shards";
+import { openModel } from "../../src/models/factory";
+import { MLX_IMAGE_GRAPH_TABLES, openImagePipeline } from "../../src/models/image-factory";
 import { familyOf } from "../../src/models/families";
 import { MossImageConditioner } from "../../src/models/moss-image/text-encoder";
 import { isImageModelType, isTranscriptionModelType, supportTier } from "../../src/models/support";
@@ -74,11 +78,11 @@ test("a component lookup names the missing component or config", async () => {
 });
 
 test("a pipeline snapshot's class is its model type; a config.json snapshot loads as before", async () => {
-  const pipeline = join(root, "pipeline");
-  json(join(pipeline, "model_index.json"), INDEX);
-  const config = await loadModelConfig(pipeline);
+  const pipeline = snapshot("pipeline");
+  const config = await loadPipelineConfig(pipeline);
   expect(config.modelType).toBe("MOSSImagePipeline");
   expect(familyOf(config)?.graph).toBe("moss-image");
+  await expect(loadModelConfig(pipeline)).rejects.toThrow("config.json");
   const both = join(root, "both");
   json(join(both, "model_index.json"), INDEX);
   json(join(both, "config.json"), { model_type: "qwen3", hidden_size: 64, num_hidden_layers: 2, num_attention_heads: 2, num_key_value_heads: 1 });
@@ -93,26 +97,46 @@ test("the family declares the image role and nothing else", () => {
   expect(isImageModelType("qwen3_5")).toBe(false);
 });
 
+test.each(["model.safetensors", "weights.safetensors"])("diffusers files cannot shadow an existing %s checkpoint", async filename => {
+  const dir = join(root, `precedence-${filename}`);
+  safetensors(join(dir, filename), { existing: [2] });
+  // Selecting this unrelated index would load a missing shard instead of the
+  // checkpoint that the loader selected before image support was added.
+  json(join(dir, "diffusion_pytorch_model.safetensors.index.json"), { weight_map: { image: "missing.safetensors" } });
+  safetensors(join(dir, "diffusion_pytorch_model.safetensors"), { image: [3] });
+  const shards = await ShardedSafetensors.open(dir);
+  try {
+    expect(shards.tensorNames).toEqual(["existing"]);
+    expect([...shards.files.keys()]).toEqual([filename]);
+  } finally { for (const file of shards.files.values()) file.mmap.unmap(); }
+});
+
 test("the token-model opener refuses an image pipeline and the image opener refuses a token model", async () => {
   const pipeline = join(root, "refusal-pipeline");
   json(join(pipeline, "model_index.json"), INDEX);
-  await expect(openModel(pipeline)).rejects.toBeInstanceOf(UnsupportedModelLoadError);
-  await expect(openModel(pipeline)).rejects.toThrow("openImagePipeline");
+  await expect(openModel(pipeline)).rejects.toThrow("config.json");
   const speech = join(root, "refusal-speech");
   json(join(speech, "config.json"), { model_type: "whisper", n_audio_ctx: 1500 });
-  await expect(openImagePipeline(speech)).rejects.toThrow("is not a text-to-image model");
+  await expect(openImagePipeline(speech)).rejects.toThrow("model_index.json");
 });
 
 test("diffusers shard names are found, sharded and single", async () => {
   const single = join(root, "single");
   safetensors(join(single, "diffusion_pytorch_model.safetensors"), { "a.weight": [2, 2] });
-  expect((await ShardedSafetensors.open(single)).tensorNames).toEqual(["a.weight"]);
+  const singleShards = await openDiffusersShards(single);
+  try { expect(singleShards.tensorNames).toEqual(["a.weight"]); }
+  finally { for (const file of singleShards.files.values()) file.mmap.unmap(); }
+  // Existing loaders never select image weights; only the bound reader does.
+  await expect(ShardedSafetensors.open(single)).rejects.toThrow();
   const sharded = join(root, "sharded");
   safetensors(join(sharded, "diffusion_pytorch_model-00001-of-00002.safetensors"), { "a.weight": [2, 2] });
   safetensors(join(sharded, "diffusion_pytorch_model-00002-of-00002.safetensors"), { "b.weight": [3] });
   json(join(sharded, "diffusion_pytorch_model.safetensors.index.json"), { weight_map: {
     "a.weight": "diffusion_pytorch_model-00001-of-00002.safetensors", "b.weight": "diffusion_pytorch_model-00002-of-00002.safetensors" } });
-  expect((await ShardedSafetensors.open(sharded)).tensorNames).toEqual(["a.weight", "b.weight"]);
+  const indexedShards = await openDiffusersShards(sharded);
+  try { expect(indexedShards.tensorNames).toEqual(["a.weight", "b.weight"]); }
+  finally { for (const file of indexedShards.files.values()) file.mmap.unmap(); }
+  await expect(ShardedSafetensors.open(sharded)).rejects.toThrow();
 });
 
 /** Configs of a small but complete MOSS-Image snapshot, with weight headers sized for the byte budget. */
@@ -150,6 +174,40 @@ test("a pipeline opens from its configs, reports what each stage holds, and load
     expect(Array.from(pipeline.schedule.sigmas(8))).toEqual([1, 0.9679999947547913, 0.9259999990463257, 0.8709999918937683,
       0.7910000085830688, 0.6710000038146973, 0.46300002932548523, 0.024000000208616257, 0]);
   } finally { pipeline.dispose(); }
+});
+
+test("image loading selects a named graph and refuses an absent name without a fallback", async () => {
+  expect(MLX_IMAGE_GRAPH_TABLES["moss-image"]!.generic.id).toBe("moss-image");
+  const dir = snapshot("named-graph");
+  const opened = await openImagePipeline(dir, { graph: "moss-image" });
+  try { expect(opened.profile?.profile.execution.graph).toBe("moss-image"); }
+  finally { opened.pipeline.dispose(); }
+  await expect(openImagePipeline(dir, { graph: "missing-graph" })).rejects.toThrow("no graph named missing-graph");
+});
+
+test("a caller's image graph needs no family registration and supplies its own stage implementations", async () => {
+  const dir = snapshot("caller-graph");
+  json(join(dir, "model_index.json"), { ...INDEX, _class_name: "CallerImagePipeline" });
+  let disposed = false;
+  const fake: TextToImagePipeline = {
+    defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] },
+    latentChannels: 1, pixelsPerLatent: 1, depth: 1, stageBytes: { conditioner: 0, denoiser: 0, decoder: 0 },
+    schedule: { sigmas: () => new Float32Array([1, 0]), timestep: sigma => sigma },
+    async conditioner() { throw new Error("the loader must not open a stage"); },
+    async denoiser() { throw new Error("the loader must not open a stage"); },
+    async decoder() { throw new Error("the loader must not open a stage"); },
+    release() {}, dispose() { disposed = true; },
+  };
+  const opened = await openImagePipeline(dir, { graph: async (directory, config) => {
+    expect(directory).toBe(dir);
+    expect(config.modelType).toBe("CallerImagePipeline");
+    return fake;
+  } });
+  expect(opened.pipeline).toBe(fake);
+  expect(opened.profile).toBeNull();
+  expect(disposed).toBe(false);
+  opened.pipeline.dispose();
+  expect(disposed).toBe(true);
 });
 
 test("a snapshot whose components disagree is refused when opened", async () => {

@@ -10,6 +10,7 @@
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Weights } from "../../artifacts/weights";
+import { openDiffusersShards } from "../../artifacts/diffusers-shards";
 import type { ImageLatentDecoder } from "../../contracts/mlx/image-generation";
 import { MossDenseBiasedLinear } from "./layers";
 import {
@@ -101,7 +102,7 @@ export class Flux2VaeDecoder implements ImageLatentDecoder {
   }
 
   static async open(dir: string, config: Flux2VaeConfig): Promise<Flux2VaeDecoder> {
-    const weights = await Weights.open(dir);
+    const weights = await Weights.open(dir, { openShards: openDiffusersShards });
     try { return new Flux2VaeDecoder(weights, config); }
     catch (error) { weights.dispose(); throw error; }
   }
