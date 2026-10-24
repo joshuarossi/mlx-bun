@@ -45,17 +45,18 @@ noncomputable def errors3 (scaledError : Fin 8 → ℝ) (accError : ℝ) (i : Na
 def left3 (i : Fin 10) : Expr := .input (8+i.val)
 def right3 (i : Fin 10) : Expr :=
   if crossed3 i then .mul (.input (coordinate3 i).val) (.input 18) else .input (coordinate3 i).val
-def expression3 (contracted : Bool) : Expr :=
-  (List.finRange 10).foldl (fun acc i => madd contracted (left3 i) (right3 i) acc) (.input 19)
+-- Contraction sites: term `i` of the three-bit sum is site `i` (each `accum +=` is one site).
+def expression3 (contracted : Nat → Bool) : Expr :=
+  (List.finRange 10).foldl (fun acc i => madd (contracted i.val) (left3 i) (right3 i) acc) (.input 19)
 
-def source3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) : Float32 :=
-  (List.finRange 10).foldl (fun acc i => maddFloat contracted (AffineLift.value (mask3 w i))
+def source3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) : Float32 :=
+  (List.finRange 10).foldl (fun acc i => maddFloat (contracted i.val) (AffineLift.value (mask3 w i))
     (if crossed3 i then FlushToZero.mul (scaled (coordinate3 i)) 256 else scaled (coordinate3 i)) acc) acc
 
-theorem execution3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) :
+theorem execution3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) :
     Arithmetic.evaluate (bind3 w scaled acc) (expression3 contracted) = source3 contracted w scaled acc := by
   unfold expression3 source3
-  rw [evaluate_fold]
+  rw [evaluate_sites _ (fun i : Fin 10 => contracted i.val)]
   have hl (i : Fin 10) : Arithmetic.evaluate (bind3 w scaled acc) (left3 i) = AffineLift.value (mask3 w i) := by
     have := i.isLt
     simp [left3, Arithmetic.evaluate, bind3, show ¬8+i.val < 8 by omega, show 8+i.val < 18 by omega]
@@ -66,10 +67,10 @@ theorem execution3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 
   simp only [hl, hr]
   rfl
 
-theorem ideal3 (contracted : Bool) (w : Fin 3 → BitVec 8) (x : Fin 8 → ℝ) (acc : ℝ) :
+theorem ideal3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (x : Fin 8 → ℝ) (acc : ℝ) :
     Arithmetic.ideal (target3 w x acc) (expression3 contracted) = acc + ∑ i, x i * AffinePacking.field3 w i := by
   unfold expression3
-  rw [ideal_fold]
+  rw [ideal_sites _ (fun i : Fin 10 => contracted i.val)]
   rw [← AffinePacking.qdot3_correct]
   simp [← Fin.sum_univ_def, Fin.sum_univ_succ, left3, right3, crossed3, coordinate3, target3,
     Arithmetic.ideal, mask3, byte3, width3, shift3, inputShift3, AffinePacking.qdot3]
@@ -98,7 +99,7 @@ theorem bind3_error (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc :
       · subst i; simp [real256]
       · simpa only [show ¬i < 19 by omega, ite_false] using ha
 
-theorem error3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32)
+theorem error3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32)
     (target scaledError : Fin 8 → ℝ) (targetAcc accError : ℝ)
     (hx : ∀ i, |real (scaled i) - target i / 2^(inputShift3 i)| ≤ scaledError i)
     (ha : |real acc - targetAcc| ≤ accError)
@@ -127,24 +128,26 @@ noncomputable def errors4 (scaledError : Fin 4 → ℝ) (accError : ℝ) (i : Na
 
 -- The four-bit path groups four products before adding the group to accum;
 -- unlike the three-bit path, it is not ten successive updates of accum.
-def expression4 (contracted : Bool) : Expr :=
-  .add (.input 8) (madd contracted (.input 3) (.input 7)
-    (madd contracted (.input 2) (.input 6) (madd contracted (.input 1) (.input 5) (.mul (.input 0) (.input 4)))))
+-- Contraction sites 0, 1, 2 are the group's three additions in order. Site 0
+-- adds two products, `x₀ F₀ + x₁ F₁`; contracted, the left one is fused.
+def expression4 (contracted : Nat → Bool) : Expr :=
+  .add (.input 8) (madd (contracted 2) (.input 3) (.input 7)
+    (madd (contracted 1) (.input 2) (.input 6) (maddLeft (contracted 0) (.input 0) (.input 4) (.mul (.input 1) (.input 5)))))
 
-def source4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) : Float32 :=
-  FlushToZero.add acc (maddFloat contracted (scaled 3) (AffineLift.value (mask4 w 3))
-    (maddFloat contracted (scaled 2) (AffineLift.value (mask4 w 2))
-      (maddFloat contracted (scaled 1) (AffineLift.value (mask4 w 1))
-        (FlushToZero.mul (scaled 0) (AffineLift.value (mask4 w 0))))))
+def source4 (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) : Float32 :=
+  FlushToZero.add acc (maddFloat (contracted 2) (scaled 3) (AffineLift.value (mask4 w 3))
+    (maddFloat (contracted 1) (scaled 2) (AffineLift.value (mask4 w 2))
+      (maddLeftFloat (contracted 0) (scaled 0) (AffineLift.value (mask4 w 0))
+        (FlushToZero.mul (scaled 1) (AffineLift.value (mask4 w 1))))))
 
-theorem execution4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) :
+theorem execution4 (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) :
     Arithmetic.evaluate (bind4 w scaled acc) (expression4 contracted) = source4 contracted w scaled acc := by
-  simp [expression4, Arithmetic.evaluate, evaluate_madd, bind4, source4]
+  simp [expression4, Arithmetic.evaluate, evaluate_madd, evaluate_maddLeft, bind4, source4]
 
-theorem ideal4 (contracted : Bool) (w : BitVec 16) (x : Fin 4 → ℝ) (acc : ℝ) :
+theorem ideal4 (contracted : Nat → Bool) (w : BitVec 16) (x : Fin 4 → ℝ) (acc : ℝ) :
     Arithmetic.ideal (target4 w x acc) (expression4 contracted) = acc + ∑ i, x i * AffinePacking.field4 w i := by
   rw [← AffinePacking.qdot4_correct]
-  simp [expression4, Arithmetic.ideal, ideal_madd, target4, AffinePacking.qdot4, mask4]
+  simp [expression4, Arithmetic.ideal, ideal_madd, ideal_maddLeft, target4, AffinePacking.qdot4, mask4]
   ring
 
 theorem bind4_error (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
@@ -159,7 +162,7 @@ theorem bind4_error (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
     · simp only [mask4_exact, sub_self, abs_zero, le_refl]
     · exact ha
 
-theorem error4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
+theorem error4 (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
     (target scaledError : Fin 4 → ℝ) (targetAcc accError : ℝ)
     (hx : ∀ i, |real (scaled i) - target i / 2^(4*i.val)| ≤ scaledError i)
     (ha : |real acc - targetAcc| ≤ accError)

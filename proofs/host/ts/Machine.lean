@@ -92,7 +92,12 @@ def readVar (s : MS F) (n : Name) (env : Env) : RS F :=
     | none => .fail "variable cell"
   | none => .bind (getChain F s (.str n) 16 aGlobal) fun
     | some p => .pure (readProp F s (.obj aGlobal) (some p))
-    | none => refErr s (n ++ chars!" is not defined")
+    | none => bif nameEq n (chars!"setImmediate") then
+        -- the host global `setImmediate`, made on each read (identity and `typeof` before a
+        -- read are not modelled; no prototype)
+        let (f, s) := s.allocObj (.fn (.native (.ctl .setImmediate) [])) .null []
+        retS F s (.obj f)
+      else refErr s (n ++ chars!" is not defined")
 
 def writeVar (s : MS F) (n : Name) (env : Env) (v : Val) : RS F :=
   match lookupEnv n env with
@@ -1448,10 +1453,29 @@ def shortStep (s : MS F) : RS F :=
   | _ :: fs => .pure ({ s with stack := fs }.go .short)
   | [] => .fail "optional chain outside a chain"
 
+/-- A `setImmediate` macrotask (`symMacro`). -/
+def Job.isMacro (j : Job) : Bool :=
+  match j.r with
+  | .then_ _ (.sym i) _ _ => Nat.beq i symMacro
+  | _ => false
+
+/-- The first microtask and the queue without it. -/
+def takeMicro : List Job → Option (Job × List Job)
+  | [] => none
+  | j :: js => bif j.isMacro then (takeMicro js).map (fun p => (p.1, j :: p.2)) else some (j, js)
+
+/-- The event loop: the first microtask; a macrotask only once no microtask is queued. -/
+def nextJob (js : List Job) : Option (Job × List Job) :=
+  match takeMicro js with
+  | some p => some p
+  | none => match js with
+    | j :: r => some (j, r)
+    | [] => none
+
 def stepJobs (s : MS F) (v : Val) : RS F :=
-  match s.jobs with
-  | j :: js => runJob F (s.setJobs js) j
-  | [] => .pure (s.go (.halt (.normal v)))
+  match nextJob s.jobs with
+  | some (j, js) => runJob F (s.setJobs js) j
+  | none => .pure (s.go (.halt (.normal v)))
 
 def stepRetImpl (s : MS F) (v : Val) : RS F :=
   match s.stack with

@@ -71,11 +71,12 @@ theorem restart {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {FS : Map 
     rw [SymE.eval_subst] at h1
     exact h1
   · -- heap
+    refine (SlotW.of_w_none rfl).2 ?_
     show SlotOK (M.after σ) (Shift.framedNext M K s1) a h (t.heap.get (M.a (σ.a a)))
     cases hk : K.fr a with
     | none =>
       have hk1 := hunfr a h ha hk
-      have h1 := hr.heap _ _ (hs.heap a h ha hk)
+      have h1 := (SlotW.of_w_none rfl).1 (hr.heap _ _ (hs.heap a h ha hk))
       have hn : Shift.framedNext M K s1 a = none := by simp [Shift.framedNext, hk]
       simp only [SlotOK, hk1] at h1
       simp only [SlotOK, hn, h1, Map.hobj_after]
@@ -84,7 +85,7 @@ theorem restart {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {FS : Map 
       obtain ⟨hfix, o, xs, ho, hkind, hs1⟩ := hs.framed a pre pre' hk
       rw [ho] at ha
       cases ha
-      have h1 := hr.heap _ _ hs1
+      have h1 := (SlotW.of_w_none rfl).1 (hr.heap _ _ hs1)
       rw [hfix]
       simp only [SlotOK, hk] at h1
       obtain ⟨o1, o', he1, ht, ys, hys, ho'⟩ := h1
@@ -117,7 +118,7 @@ theorem restart {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {FS : Map 
     rw [hr.ctl, hs.ctl, Map.ctl_after]
   · -- stack
     rw [hr.stack, hs.stack, List.map_map]
-    exact List.map_congr_left fun f _ => Map.frame_after M σ f
+    exact congrArg (· ++ []) (List.map_congr_left fun f _ => Map.frame_after M σ f)
   · -- jobs
     rw [hr.jobs, hs.jobs, List.map_map]
     exact List.map_congr_left fun j _ => Map.job_after M σ j

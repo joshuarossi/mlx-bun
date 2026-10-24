@@ -1,0 +1,250 @@
+{
+ "doc": "The decode loop template on the prompt route (P.a2818 with a 1-token prompt, full world) at iteration 1's readback call (itemUint32): decode.json's places shifted to the prompt route (host/load/run/prompt/Addr.lean) and P0a's history-dependent places (id counters, compiled functions' #traceId and payloads, computeG's shapeless-trace dims), ghosts (kernel and compiled-closure memo cells, the trace registry, the f32 scratch buffer) and by-key maps (the constraint cache).",
+ "frames": [
+  2673448,
+  12504
+ ],
+ "prompt": {
+  "addr": 2665
+ },
+ "places": [
+  {
+   "name": "offset",
+   "kind": "prop",
+   "key": "offset",
+   "addrs": [
+    2672300,
+    2672305,
+    2672310,
+    2672322,
+    2672331,
+    2672336,
+    2672341,
+    2672353,
+    2672362,
+    2672367,
+    2672372,
+    2672384,
+    2672393,
+    2672398,
+    2672403,
+    2672415,
+    2672424,
+    2672429,
+    2672434,
+    2672446,
+    2672455,
+    2672460,
+    2672465,
+    2672477,
+    2672486,
+    2672491,
+    2672496,
+    2672508,
+    2672517,
+    2672522,
+    2672527,
+    2672539,
+    2672548,
+    2672553,
+    2672558,
+    2672570,
+    2672579,
+    2672584,
+    2672589,
+    2672601,
+    2672610,
+    2672615,
+    2672620,
+    2672632,
+    2672641,
+    2672646,
+    2672651,
+    2672663,
+    2672672,
+    2672677,
+    2672682,
+    2672694,
+    2672703,
+    2672708,
+    2672713,
+    2672725,
+    2672734,
+    2672739,
+    2672744,
+    2672756,
+    2672765,
+    2672770,
+    2672775,
+    2672787
+   ],
+   "value": 3,
+   "var": 9
+  },
+  {
+   "name": "generated",
+   "kind": "cell",
+   "addr": 2673317,
+   "value": null,
+   "var": 10
+  },
+  {
+   "name": "stepIndex",
+   "kind": "cell",
+   "addr": 2975685,
+   "value": null,
+   "var": 11
+  },
+  {
+   "name": "yieldCount",
+   "kind": "cell",
+   "addr": 2591,
+   "value": null,
+   "var": 12
+  },
+  {
+   "name": "record.index",
+   "kind": "prop",
+   "addr": 2827772,
+   "key": "index",
+   "value": null,
+   "var": 13
+  },
+  {
+   "name": "record.token",
+   "kind": "prop",
+   "addr": 2827772,
+   "key": "token",
+   "value": null,
+   "var": 15
+  },
+  {
+   "name": "mlx.tokens[0]",
+   "kind": "token",
+   "index": 0,
+   "var": 14
+  },
+  {
+   "name": "capacity",
+   "kind": "dim",
+   "handles": [
+    25850,
+    25851,
+    26070,
+    26071,
+    26302,
+    26303,
+    26534,
+    26535,
+    26766,
+    26767,
+    26998,
+    26999,
+    27227,
+    27228,
+    27459,
+    27460,
+    27691,
+    27692,
+    27923,
+    27924,
+    28155,
+    28156,
+    28387,
+    28388,
+    28619,
+    28620,
+    28839,
+    28840,
+    29050,
+    29051,
+    29261,
+    29262
+   ],
+   "index": 2,
+   "rank": 4,
+   "value": 256,
+   "var": 16
+  },
+  {
+   "name": "nextTraceId",
+   "kind": "cell",
+   "addr": 1050,
+   "value": null,
+   "var": 20
+  },
+  {
+   "name": "traceCalls",
+   "kind": "cell",
+   "addr": 1054,
+   "value": null,
+   "var": 21
+  },
+  {
+   "name": "computeG #traceId",
+   "kind": "priv",
+   "addr": 2675051,
+   "key": "traceId",
+   "value": null,
+   "var": 22
+  },
+  {
+   "name": "sampler #traceId",
+   "kind": "priv",
+   "addr": 2827158,
+   "key": "traceId",
+   "value": null,
+   "var": 23
+  },
+  {
+   "name": "computeG payload",
+   "kind": "payload",
+   "addr": 18194,
+   "value": null,
+   "var": 24
+  },
+  {
+   "name": "sampler payload",
+   "kind": "payload",
+   "addr": 21993,
+   "value": null,
+   "var": 25
+  },
+  {
+   "name": "computeG trace dim",
+   "kind": "dim",
+   "nodes": [
+    15263,
+    15268,
+    15270,
+    15271,
+    15272
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 26
+  }
+ ],
+ "ghosts": [
+  1834,
+  1852,
+  1824,
+  2001,
+  1993,
+  1958,
+  1959,
+  1897,
+  1898,
+  1906,
+  1281,
+  1279,
+  1401,
+  4941,
+  4841,
+  4842
+ ],
+ "maps": [
+  4910
+ ]
+}

@@ -16,8 +16,21 @@ def Ctx.frameAt (K : Ctx) (a : Nat) (p : List Val × List Val) : Ctx :=
   ⟨fun x => bif Nat.beq x a then some p else K.fr x, K.base, K.base', K.D, K.lo, K.hi⟩
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
+
+theorem SlotW.congr_fr {M : Map} {fr fr' : Nat → Option (List Val × List Val)} {W : Nat → Option WFrame} {a : Nat}
+    {h : HObj} {h' : Option HObj} (e : fr' a = fr a) (hs : SlotW M fr W a h h') : SlotW M fr' W a h h' := by
+  unfold SlotW SlotOK at hs ⊢
+  rw [e]
+  exact hs
+
+theorem SlotW.congr {M : Map} {fr fr' : Nat → Option (List Val × List Val)} {W W' : Nat → Option WFrame}
+    {a : Nat} {h : HObj} {h' : Option HObj} (e : fr' a = fr a) (ew : W' a = W a) (hs : SlotW M fr W a h h') :
+    SlotW M fr' W' a h h' := by
+  unfold SlotW SlotOK at hs ⊢
+  rw [e, ew]
+  exact hs
 
 theorem SlotOK.congr_fr {M : Map} {fr fr' : Nat → Option (List Val × List Val)} {a : Nat} {h : HObj}
     {h' : Option HObj} (e : fr' a = fr a) (hs : SlotOK M fr a h h') : SlotOK M fr' a h h' := by
@@ -25,12 +38,15 @@ theorem SlotOK.congr_fr {M : Map} {fr fr' : Nat → Option (List Val × List Val
   rw [e]
   exact hs
 
-/-- Allocation of an object whose target image is framed by `(pre, pre')` at the new address. -/
-theorem Rel.allocFramed (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : List Val}
-    (hn : s.next < Sim.bound) (hfo : FramedObj M pre pre' o o')
-    (ho : Supp.obj (Present (s.alloc (.obj o)).2) S.tab.length o) :
+/-- Allocation under a context and frames that differ from `K`, `W` only at the new address,
+where the target's new object satisfies `SlotW`. -/
+theorem RelB.allocSlot (h : RelB F FR W stk M ν K s S t C) (o o' : Obj)
+    (fr' : Nat → Option (List Val × List Val)) (W' : Nat → Option WFrame) (hn : s.next < Sim.bound)
+    (ho : Supp.obj (Present (s.alloc (.obj o)).2) S.tab.length o)
+    (hfrA : ∀ a, a ≠ s.next → fr' a = K.fr a) (hWA : ∀ a, a ≠ s.next → W' a = W a)
+    (hslot : SlotW M fr' W' s.next (.obj o) (some (.obj o'))) :
     (t.alloc (.obj o')).1 = M.a (s.alloc (.obj o)).1 ∧
-      Rel F FR M ν (Ctx.frameAt K s.next (pre, pre')) (s.alloc (.obj o)).2 S (t.alloc (.obj o')).2 C := by
+      RelB F FR W' stk M ν ⟨fr', K.base, K.base', K.D, K.lo, K.hi⟩ (s.alloc (.obj o)).2 S (t.alloc (.obj o')).2 C := by
   have hb : Sim.bound = 2 ^ 61 := rfl
   have htn : t.next < 2 ^ 62 := h.tnext hn
   have hs64 : s.next < 2 ^ 64 := by rw [hb] at hn; omega
@@ -40,17 +56,6 @@ theorem Rel.allocFramed (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : L
   have hP' : ∀ a, Present (s.alloc (.obj o)).2 a → a = s.next ∨ Present s a :=
     fun _ hp => Present.of_alloc hs64 hp
   have hle : S.tab.length ≤ S.tab.length := Nat.le_refl _
-  have hfrA : ∀ a, a ≠ s.next → (Ctx.frameAt K s.next (pre, pre')).fr a = K.fr a := by
-    intro a ha
-    show (bif Nat.beq a s.next then some (pre, pre') else K.fr a) = K.fr a
-    have : Nat.beq a s.next = false := by
-      cases e : Nat.beq a s.next
-      · rfl
-      · exact absurd (Nat.eq_of_beq_eq_true e) ha
-    rw [this]; rfl
-  have hfrN : (Ctx.frameAt K s.next (pre, pre')).fr s.next = some (pre, pre') := by
-    show (bif Nat.beq s.next s.next then some (pre, pre') else K.fr s.next) = _
-    rw [Nat.beq_refl]; rfl
   obtain ⟨fresh, hs, hsupp⟩ := h.traceSupp
   refine ⟨hat.symm, ?_⟩
   exact {
@@ -65,11 +70,11 @@ theorem Rel.allocFramed (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : L
       · subst ha
         rw [ite_eq_left rfl] at hg
         obtain rfl := Option.some.inj hg
-        refine (SlotOK.some_iff hfrN).2 ⟨o, o', rfl, ?_, hfo⟩
         rw [hat, alloc_get t _ ht64, ite_eq_left rfl]
+        exact hslot
       · rw [ite_eq_right ha] at hg
         have hne : M.a a ≠ t.next := Nat.ne_of_lt (h.bound a (Present.of_get hg))
-        refine SlotOK.congr_fr (hfrA a ha) ?_
+        refine SlotW.congr (hfrA a ha) (hWA a ha) ?_
         rw [alloc_get t _ ht64, ite_eq_right hne]
         exact h.heap a o0 hg
     next := fun k => by
@@ -104,8 +109,7 @@ theorem Rel.allocFramed (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : L
     framedPresent := fun a p hf => by
       by_cases ha : a = s.next
       · subst ha; exact Present.alloc_next s _ hs64
-      · rw [hfrA a ha] at hf
-        exact hP a (h.framedPresent a p hf)
+      · exact hP a (h.framedPresent a p ((hfrA a ha).symm.trans hf))
     ctl := h.ctl
     stack := h.stack
     jobs := h.jobs
@@ -126,32 +130,83 @@ theorem Rel.allocFramed (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : L
     storesSupp := Supp.stores_mono hP hle h.storesSupp
     traceSupp := ⟨fresh, hs, fun e he => Supp.event_mono hP hle (hsupp e he)⟩ }
 
+
+theorem Ctx.frameAt_ne (K : Ctx) {a b : Nat} (p : List Val × List Val) (hb : b ≠ a) :
+    (Ctx.frameAt K a p).fr b = K.fr b := by
+  show (bif Nat.beq b a then some p else K.fr b) = K.fr b
+  have : Nat.beq b a = false := by
+    cases e : Nat.beq b a
+    · rfl
+    · exact absurd (Nat.eq_of_beq_eq_true e) hb
+  rw [this]; rfl
+
+theorem Ctx.frameAt_eq (K : Ctx) (a : Nat) (p : List Val × List Val) : (Ctx.frameAt K a p).fr a = some p := by
+  show (bif Nat.beq a a then some p else K.fr a) = _
+  rw [Nat.beq_refl]; rfl
+
+/-- The frames `W` with the frame `w` at `a`. -/
+def wAt (W : Nat → Option WFrame) (a : Nat) (w : WFrame) : Nat → Option WFrame :=
+  fun x => bif Nat.beq x a then some w else W x
+
+theorem wAt_ne (W : Nat → Option WFrame) {a b : Nat} (w : WFrame) (hb : b ≠ a) : wAt W a w b = W b := by
+  show (bif Nat.beq b a then some w else W b) = W b
+  have : Nat.beq b a = false := by
+    cases e : Nat.beq b a
+    · rfl
+    · exact absurd (Nat.eq_of_beq_eq_true e) hb
+  rw [this]; rfl
+
+theorem wAt_eq (W : Nat → Option WFrame) (a : Nat) (w : WFrame) : wAt W a w a = some w := by
+  show (bif Nat.beq a a then some w else W a) = _
+  rw [Nat.beq_refl]; rfl
+
+/-- Allocation of an object whose target image is framed by `(pre, pre')` at the new address (no
+frame of `W` there). -/
+theorem RelB.allocFramed (h : RelB F FR W stk M ν K s S t C) (o o' : Obj) {pre pre' : List Val}
+    (hn : s.next < Sim.bound) (hfo : FramedObj M pre pre' o o')
+    (ho : Supp.obj (Present (s.alloc (.obj o)).2) S.tab.length o) (hw : W s.next = none) :
+    (t.alloc (.obj o')).1 = M.a (s.alloc (.obj o)).1 ∧
+      RelB F FR W stk M ν (Ctx.frameAt K s.next (pre, pre')) (s.alloc (.obj o)).2 S (t.alloc (.obj o')).2 C :=
+  RelB.allocSlot h o o' _ W hn ho (fun _ ha => Ctx.frameAt_ne K _ ha) (fun _ _ => rfl)
+    ((SlotW.of_w_none hw).2 ((SlotOK.some_iff (Ctx.frameAt_eq K _ _)).2 ⟨o, o', rfl, rfl, hfo⟩))
+
+/-- Allocation of an object whose target image is the frame `w` at the new address (the
+address framed by `p` in the context, the frame `w` added to `W`). -/
+theorem RelB.allocWide (h : RelB F FR W stk M ν K s S t C) (o o' : Obj) (w : WFrame) (p : List Val × List Val)
+    (hn : s.next < Sim.bound) (ho : Supp.obj (Present (s.alloc (.obj o)).2) S.tab.length o)
+    (hwo : WideOK M w (.obj o) (some (.obj o'))) :
+    (t.alloc (.obj o')).1 = M.a (s.alloc (.obj o)).1 ∧
+      RelB F FR (wAt W s.next w) stk M ν (Ctx.frameAt K s.next p) (s.alloc (.obj o)).2 S (t.alloc (.obj o')).2 C :=
+  RelB.allocSlot h o o' _ _ hn ho (fun _ ha => Ctx.frameAt_ne K _ ha) (fun _ ha => wAt_ne W w ha)
+    ((SlotW.of_wide (Ctx.frameAt_eq K _ _) (wAt_eq W _ w)).2 hwo)
+
 /-- The last-element spread of a framed array `b` into an array literal (`[...acc, ...b]`):
 the new array at `s.next` is framed in the resulting relation; the target's FFI state is unchanged. -/
-theorem step_spread_framed (h : Rel F FR M ν K s S t C) {b : Nat} {acc : List Val} {env : Env}
+theorem step_spread_framedW (h : RelB F FR W stk M ν K s S t C) {b : Nat} {acc : List Val} {env : Env}
     {fs : List Frame} {pre pre' : List Val}
     (hc : s.ctl = .ret (.obj b)) (hst : s.stack = .l (.spread acc [] env) :: fs)
-    (hb : K.fr b = some (pre, pre')) (hn : s.next + margin < Sim.bound) (hp : Present s aArrayProto) :
+    (hb : K.fr b = some (pre, pre')) (hn : s.next + margin < Sim.bound) (hp : Present s aArrayProto)
+    (hwb : W b = none) (hwn : W s.next = none) :
     MSim (fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧
-      Rel F FR M' ν ⟨fun a => bif Nat.beq a s.next then some (acc.reverse ++ pre, M.vals acc.reverse ++ pre')
+      RelB F FR W stk M' ν ⟨fun a => bif Nat.beq a s.next then some (acc.reverse ++ pre, M.vals acc.reverse ++ pre')
         else K.fr a, K.base, K.base', K.D, K.lo, K.hi⟩ s1 S' t1 C' ∧ t1.ffi = t.ffi) S C (step F s) (step F t) := by
   have hn' : s.next < Sim.bound := Nat.lt_of_le_of_lt (Nat.le_add_right _ _) hn
   obtain ⟨e1, e2, hr, _, hf⟩ := h.rfRetFrame hc hst
   obtain ⟨hh, hg⟩ := Present.get (h.framedPresent b _ hb)
-  obtain ⟨o, o', rfl, ht, xs, hk, rfl⟩ := (SlotOK.some_iff hb).1 (h.heap b _ hg)
+  obtain ⟨o, o', rfl, ht, xs, hk, rfl⟩ := (SlotOK.some_iff hb).1 ((SlotW.of_w_none hwb).1 (h.heap b _ hg))
   have hso := h.obj?_supp (obj?_iff.2 hg)
   obtain ⟨kd, pr, ps, pv, ex⟩ := o
   simp only at hk
   subst hk
   have hsoS : ({ s with stack := fs } : St F.S).obj? b = some ⟨.array (pre ++ xs), pr, ps, pv, ex⟩ :=
     obj?_iff.2 hg
-  have htoT : ({ t with stack := fs.map M.frame } : St F.S).obj? (M.a b) =
+  have htoT : ({ t with stack := fs.map M.frame ++ stk } : St F.S).obj? (M.a b) =
       some ⟨.array (pre' ++ M.vals xs), M.val pr, M.props ps, M.privs pv, ex⟩ := obj?_iff.2 ht
   rw [e1, e2]
   show MSim _ S C (spreadElems F { s with stack := fs } (.obj b) (.l (.spread acc [] env))
       fun es => arrayNext F { s with stack := fs } (es.reverse ++ acc) [] env)
-    (spreadElems F { t with stack := fs.map M.frame } (.obj (M.a b)) (.l (.spread (M.vals acc) [] (M.env env)))
-      fun es => arrayNext F { t with stack := fs.map M.frame } (es.reverse ++ M.vals acc) [] (M.env env))
+    (spreadElems F { t with stack := fs.map M.frame ++ stk } (.obj (M.a b)) (.l (.spread (M.vals acc) [] (M.env env)))
+      fun es => arrayNext F { t with stack := fs.map M.frame ++ stk } (es.reverse ++ M.vals acc) [] (M.env env))
   simp only [spreadElems, elemsOf, hsoS, htoT]
   show MSim _ S C (Host.Ts.M.pure _) (Host.Ts.M.pure _)
   -- the new arrays
@@ -176,8 +231,8 @@ theorem step_spread_framed (h : Rel F FR M ν K s S t C) {b : Nat} {acc : List V
     refine ⟨xs, by simp, ?_⟩
     have hI : M.a aArrayProto = aArrayProto := h.intr _ (by decide)
     simp only [Map.obj, Map.val, hI, Map.props, List.map_nil, List.append_assoc]
-  obtain ⟨ea, hr1⟩ := Rel.allocFramed hr _ _ hn' hfo
-    ⟨Supp.vals_mono hPs (Nat.le_refl _) hS, hPs _ hp, fun _ hx => by simp at hx, fun _ hx => by simp at hx⟩
+  obtain ⟨ea, hr1⟩ := RelB.allocFramed hr _ _ hn' hfo
+    ⟨Supp.vals_mono hPs (Nat.le_refl _) hS, hPs _ hp, fun _ hx => by simp at hx, fun _ hx => by simp at hx⟩ hwn
   have hv : Supp.val (Present (({ s with stack := fs } : St F.S).alloc
       (.obj ⟨.array (acc.reverse ++ pre ++ xs), .obj aArrayProto, [], [], true⟩)).2) S.tab.length
       (.obj (({ s with stack := fs } : St F.S).alloc
@@ -187,6 +242,26 @@ theorem step_spread_framed (h : Rel F FR M ν K s S t C) {b : Nat} {acc : List V
   simp only [Map.val] at this
   rw [← ea] at this
   exact MSim.pure ⟨Grow.refl h.srv, this, rfl⟩
+
+/-- `step_spread_framedW` without frames beyond framed arrays. -/
+theorem step_spread_framed {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : Rel F FR M ν K s S t C) {b : Nat} {acc : List Val} {env : Env}
+    {fs : List Frame} {pre pre' : List Val}
+    (hc : s.ctl = .ret (.obj b)) (hst : s.stack = .l (.spread acc [] env) :: fs)
+    (hb : K.fr b = some (pre, pre')) (hn : s.next + margin < Sim.bound) (hp : Present s aArrayProto) :
+    MSim (fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧
+      Rel F FR M' ν ⟨fun a => bif Nat.beq a s.next then some (acc.reverse ++ pre, M.vals acc.reverse ++ pre')
+        else K.fr a, K.base, K.base', K.D, K.lo, K.hi⟩ s1 S' t1 C' ∧ t1.ffi = t.ffi) S C (step F s) (step F t) :=
+  step_spread_framedW h hc hst hb hn hp rfl rfl
+
+/-- `RelB.allocFramed` without frames beyond framed arrays. -/
+theorem Rel.allocFramed {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : Rel F FR M ν K s S t C) (o o' : Obj) {pre pre' : List Val}
+    (hn : s.next < Sim.bound) (hfo : FramedObj M pre pre' o o')
+    (ho : Supp.obj (Present (s.alloc (.obj o)).2) S.tab.length o) :
+    (t.alloc (.obj o')).1 = M.a (s.alloc (.obj o)).1 ∧
+      Rel F FR M ν (Ctx.frameAt K s.next (pre, pre')) (s.alloc (.obj o)).2 S (t.alloc (.obj o')).2 C :=
+  RelB.allocFramed h o o' hn hfo ho rfl
 
 end
 end Host.Ts.Sim.Disp

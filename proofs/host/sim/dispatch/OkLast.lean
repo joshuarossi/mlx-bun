@@ -16,31 +16,82 @@ def StepSimXL (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (ok : St F.S
     ∃ M' t1 C1, interpC (step F t).run C = some (t1, C1) ∧ Ext M M' S.tab.length ∧
       RelX F FR M' ν K s1 S1 t1 C1
 
+/-- `StepSimXL` under the frames `W`. -/
+def StepSimXLW (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (ok : St F.S → SSrv → Bool) (Kp : Ctx → Prop)
+    (W : Nat → Option WFrame) (VBOk : (Nat → F64) → Prop) : Prop :=
+  ∀ M ν K s S t C s1 S1, Kp K → VBOk ν → RelXF F FR W M ν K s S t C →
+    isHalt s.ctl = false → ok s S = true → interpS (step F s).run S = some (s1, S1) →
+    ∃ M' t1 C1, interpC (step F t).run C = some (t1, C1) ∧ Ext M M' S.tab.length ∧
+      RelXF F FR W M' ν K s1 S1 t1 C1
+
+/-- `StepSimXLW` under a target-only stack base, for the steps reading no frame below the source's. -/
+def StepSimXLB (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (ok : St F.S → SSrv → Bool) (Kp : Ctx → Prop)
+    (W : Nat → Option WFrame) (stk : List Frame) (VBOk : (Nat → F64) → Prop) : Prop :=
+  ∀ M ν K s S t C s1 S1, Kp K → VBOk ν → RelXB F FR W stk M ν K s S t C →
+    isHalt s.ctl = false → (stk = [] ∨ localB s = true) → ok s S = true → interpS (step F s).run S = some (s1, S1) →
+    ∃ M' t1 C1, interpC (step F t).run C = some (t1, C1) ∧ Ext M M' S.tab.length ∧
+      RelXB F FR W stk M' ν K s1 S1 t1 C1
+
+theorem StepSimXLB.nil {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop}
+    {W : Nat → Option WFrame} {VBOk : (Nat → F64) → Prop} (h : StepSimXLB F FR ok Kp W [] VBOk) :
+    StepSimXLW F FR ok Kp W VBOk :=
+  fun M ν K s S t C s1 S1 hK hν hr hh hok hs => h M ν K s S t C s1 S1 hK hν hr hh (.inl rfl) hok hs
+
+theorem StepSimXLB.xv {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop}
+    {W : Nat → Option WFrame} {stk : List Frame} {VBOk : (Nat → F64) → Prop} (h : StepSimXLB F FR ok Kp W stk VBOk) :
+    StepSimXVB F FR ok Kp W stk VBOk :=
+  fun M ν K s S t C s1 S1 hK hν hr hh hl hok hs _ => h M ν K s S t C s1 S1 hK hν hr hh hl hok hs
+
+theorem StepSimXLW.xv {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop}
+    {W : Nat → Option WFrame} {VBOk : (Nat → F64) → Prop} (h : StepSimXLW F FR ok Kp W VBOk) :
+    StepSimXVW F FR ok Kp W VBOk :=
+  fun M ν K s S t C s1 S1 hK hν hr hh hok hs _ => h M ν K s S t C s1 S1 hK hν hr hh hok hs
+
 /-- A `StepSimXL` gives the `StepSimXV`. -/
 theorem StepSimXL.xv {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop}
     {VBOk : (Nat → F64) → Prop} (h : StepSimXL F FR ok Kp VBOk) : StepSimXV F FR ok Kp VBOk :=
   fun M ν K s S t C s1 S1 hK hν hr hh hok hs _ => h M ν K s S t C s1 S1 hK hν hr hh hok hs
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {P : JSP F}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {P : JSP F}
 
-/-- **The one-step simulation, for any reached state.** -/
+/-- **The one-step simulation under the frames `W` and a target-only stack base, for any reached
+state.** -/
+theorem stepSimXLB {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}
+    {okBack : F.S → Arg → Bool} {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop}
+    {VBOk : (Nat → F64) → Prop}
+    (hF : FfiSim F FR okCall0 okBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hW : Wp P W) :
+    StepSimXLB F FR (okJS P) (Kp P) W stk VBOk := by
+  intro M ν K s S t C s1 S1 hK hν hr hh hloc hok hs
+  rcases hr with hr | hd
+  · obtain ⟨M', t1, C1, ht, hg, hr1⟩ :=
+      MSim.run (dispatch hF hC (hsmall ν · · · · hν) hFR hL hN hK hW hr hh hok hloc) s1 S1 hs
+    exact ⟨M', t1, C1, ht, hg.ext, hr1⟩
+  · have e := RelDB.step_eq hd
+    obtain ⟨v, v', r, env, fs, hc, _, hstk, hr⟩ := hd
+    rw [e]
+    obtain ⟨M', t1, C1, ht, hg, hr1⟩ := MSim.run (step_ret_block hr hc hstk) s1 S1 hs
+    exact ⟨M', t1, C1, ht, hg.ext, .inl hr1⟩
+
+/-- **The one-step simulation under the frames `W`, for any reached state.** -/
+theorem stepSimXLW {W : Nat → Option WFrame} {okCall0 : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
+    {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} {VBOk : (Nat → F64) → Prop}
+    (hF : FfiSim F FR okCall0 okBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hW : Wp P W) :
+    StepSimXLW F FR (okJS P) (Kp P) W VBOk :=
+  (stepSimXLB (stk := []) hF hC hsmall hFR hL hN hW).nil
+
+/-- **The one-step simulation, for any reached state** (`stepSimXLW` without frames). -/
 theorem stepSimXL {okCall0 : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} {VBOk : (Nat → F64) → Prop}
     (hF : FfiSim F FR okCall0 okBack) (hC : FfiCallSim F FR P.okCall small)
     (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
     (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) :
-    StepSimXL F FR (okJS P) (Kp P) VBOk := by
-  intro M ν K s S t C s1 S1 hK hν hr hh hok hs
-  rcases hr with hr | hd
-  · obtain ⟨M', t1, C1, ht, hg, hr1⟩ :=
-      MSim.run (dispatch hF hC (hsmall ν · · · · hν) hFR hL hN hK hr hh hok) s1 S1 hs
-    exact ⟨M', t1, C1, ht, hg.ext, hr1⟩
-  · have e := RelD.step_eq hd
-    obtain ⟨v, v', r, env, fs, hc, _, hstk, hr⟩ := hd
-    rw [e]
-    obtain ⟨M', t1, C1, ht, hg, hr1⟩ := MSim.run (step_ret_block hr hc hstk) s1 S1 hs
-    exact ⟨M', t1, C1, ht, hg.ext, .inl hr1⟩
+    StepSimXL F FR (okJS P) (Kp P) VBOk :=
+  stepSimXLW hF hC hsmall hFR hL hN Wp.free
 
 /-- `stepSimXL` for the native relation with a kept target property. -/
 theorem stepSimXL_Q {Q : F.S → Prop} {okCall0 : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
@@ -82,8 +133,8 @@ theorem RelX.withQ {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {Q : F.
     {K : Ctx} {s t : St F.S} {S : SSrv} {C : CSrv} (h : RelX F FR M ν K s S t C) (hq : Q t.ffi) :
     RelX F (FRQ FR Q) M ν K s S t C := by
   rcases h with h | ⟨v, v', r, env, fs, hc, htc, hs, h⟩
-  · exact .inl (h.withQ hq)
-  · exact .inr ⟨v, v', r, env, fs, hc, htc, hs, h.withQ hq⟩
+  · exact .inl (Rel.withQ h hq)
+  · exact .inr ⟨v, v', r, env, fs, hc, htc, hs, Rel.withQ h hq⟩
 
 /-- **One step of the load world grows the target's mlx state**, whatever the reached state. -/
 theorem step_ngrow (framed : List Nat) (r : List NumV) {M : Map} {ν : Nat → F64} {K : Ctx}

@@ -41,6 +41,30 @@ theorem madd_bound (input : Nat → Float32) (contracted : Bool) (a b acc : Expr
 
 -- The final expression proves finiteness of every executed prefix. A static
 -- fold retains its source order and the product mass of each actual operand.
+theorem sites_bound (input : Nat → Float32) (contracted : α → Bool) (a b : α → Expr)
+    (mass : α → ℝ) (indices : List α) (acc : Expr) (accMass : ℝ) (count : Nat)
+    (size : count+indices.length ≤ 32)
+    (hf : Arithmetic.Finite input (indices.foldl (fun acc i => madd (contracted i) (a i) (b i) acc) acc))
+    (operands : ∀ i, |real (evaluate input (a i))|+|real (evaluate input (b i))| ≤ (2 : ℝ)^62+2)
+    (products : ∀ i, |real (evaluate input (a i))| * |real (evaluate input (b i))| ≤ mass i)
+    (an : 0 ≤ accMass)
+    (previous : |real (evaluate input acc)| ≤ (1+(count : ℝ)/1048576)*accMass+(count : ℝ)*(2 : ℝ)^(-50 : Int)) :
+    |real (evaluate input (indices.foldl (fun acc i => madd (contracted i) (a i) (b i) acc) acc))| ≤
+      (1+((count+indices.length : Nat) : ℝ)/1048576)*(accMass+(indices.map mass).sum)+
+        ((count+indices.length : Nat) : ℝ)*(2 : ℝ)^(-50 : Int) := by
+  induction indices generalizing acc accMass count with
+  | nil => simpa using previous
+  | cons i rest ih =>
+    have stepFinite :=
+      (ArithmeticDependencies.sites_finite input contracted a b rest (madd (contracted i) (a i) (b i) acc) hf).1
+    have hm : 0 ≤ mass i := (mul_nonneg (abs_nonneg _) (abs_nonneg _)).trans (products i)
+    have step := madd_bound input (contracted i) (a i) (b i) acc stepFinite (operands i) (mass i) accMass count
+      (by simp only [List.length_cons] at size; omega) an (products i) previous
+    have h := ih (madd (contracted i) (a i) (b i) acc) (mass i+accMass) (count+1)
+      (by simp only [List.length_cons] at size; omega) hf (add_nonneg hm an) step
+    simpa only [List.foldl_cons, List.length_cons, List.map_cons, List.sum_cons,
+      Nat.add_assoc, Nat.add_comm 1 rest.length, add_assoc, add_comm (mass i) accMass] using h
+
 theorem fold_bound (input : Nat → Float32) (contracted : Bool) (a b : α → Expr)
     (mass : α → ℝ) (indices : List α) (acc : Expr) (accMass : ℝ) (count : Nat)
     (size : count+indices.length ≤ 32)
@@ -51,17 +75,7 @@ theorem fold_bound (input : Nat → Float32) (contracted : Bool) (a b : α → E
     (previous : |real (evaluate input acc)| ≤ (1+(count : ℝ)/1048576)*accMass+(count : ℝ)*(2 : ℝ)^(-50 : Int)) :
     |real (evaluate input (indices.foldl (fun acc i => madd contracted (a i) (b i) acc) acc))| ≤
       (1+((count+indices.length : Nat) : ℝ)/1048576)*(accMass+(indices.map mass).sum)+
-        ((count+indices.length : Nat) : ℝ)*(2 : ℝ)^(-50 : Int) := by
-  induction indices generalizing acc accMass count with
-  | nil => simpa using previous
-  | cons i rest ih =>
-    have stepFinite := (ArithmeticDependencies.fold_finite input contracted a b rest (madd contracted (a i) (b i) acc) hf).1
-    have hm : 0 ≤ mass i := (mul_nonneg (abs_nonneg _) (abs_nonneg _)).trans (products i)
-    have step := madd_bound input contracted (a i) (b i) acc stepFinite (operands i) (mass i) accMass count
-      (by simp only [List.length_cons] at size; omega) an (products i) previous
-    have h := ih (madd contracted (a i) (b i) acc) (mass i+accMass) (count+1)
-      (by simp only [List.length_cons] at size; omega) hf (add_nonneg hm an) step
-    simpa only [List.foldl_cons, List.length_cons, List.map_cons, List.sum_cons,
-      Nat.add_assoc, Nat.add_comm 1 rest.length, add_assoc, add_comm (mass i) accMass] using h
+        ((count+indices.length : Nat) : ℝ)*(2 : ℝ)^(-50 : Int) :=
+  sites_bound input (fun _ => contracted) a b mass indices acc accMass count size hf operands products an previous
 
 end Inference.Contracts.Mlx.MaddMagnitude

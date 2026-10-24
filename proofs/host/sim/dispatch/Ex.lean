@@ -7,7 +7,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.StmtSim
 Every statement form has a step lemma except `enum` declarations. -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 def okEx (s : St F.S) (st : Stmt) : Bool :=
@@ -20,9 +20,9 @@ def okEx (s : St F.S) (st : Stmt) : Bool :=
   | .enum _ _ _ => false
   | _ => true
 
-theorem simEx (h : Rel F FR M ν K s S t C) {st : Stmt} {env : Env} (hc : s.ctl = .ex st env)
+theorem simEx (h : RelB F FR W stk M ν K s S t C) {st : Stmt} {env : Env} (hc : s.ctl = .ex st env)
     (hn : s.next + margin < Sim.bound) (hok : okEx s st = true) :
-    MSim (PX F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (PX F FR W stk M ν K S C) S C (step F s) (step F t) := by
   cases st with
   | expr e => exact MSim.toX (step_ex_expr h hc)
   | decl kind ds => exact MSim.toX (step_ex_decl h hc)

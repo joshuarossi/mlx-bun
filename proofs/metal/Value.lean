@@ -59,6 +59,13 @@ end Val
 def wordBytes (n w : Nat) : List (BitVec 8) := (List.range n).map fun i => BitVec.ofNat 8 (w / 256 ^ i)
 def bytesWord (bytes : List (BitVec 8)) : Nat := bytes.foldr (fun b w => b.toNat + 256 * w) 0
 
+/-- The 64-bit word of a pointer kept in memory (an element of a thread array of pointers): its
+region · 2^40 + its byte offset. Elaboration never lets a program read that storage as anything but
+a pointer of the same element type, so any injective word serves; a pointer outside the range has
+no encoding (no result). -/
+def ptrWord (p : Ptr) : Option Nat :=
+  if 0 ≤ p.offset ∧ p.offset < 2 ^ 40 ∧ p.region < 2 ^ 24 then some (p.region * 2 ^ 40 + p.offset.toNat) else none
+
 /-- Bytes of a value stored at type `t`. -/
 def encode : Ty → Val → Option (List (BitVec 8))
   | .scalar s, v => do
@@ -69,7 +76,7 @@ def encode : Ty → Val → Option (List (BitVec 8))
       (xs.mapM fun (x : Val) => do let (t, w) ← x.word; if t = s then some (wordBytes s.bytes w) else none).map
         fun (parts : List (List (BitVec 8))) => parts.flatten ++ List.replicate ((Ty.vec s n).bytes - s.bytes * n) 0
     else none
-  | .ptr _ _, .ptr _ => none
+  | .ptr _ e, .ptr p => if p.elem = e then (ptrWord p).map (wordBytes 8) else none
   | _, _ => none
 
 /-- The value of type `t` in `bytes` (at least `t.bytes` of them). -/
@@ -77,7 +84,9 @@ def decode : Ty → List (BitVec 8) → Option Val
   | .scalar s, bytes => some (Val.ofWord s (bytesWord (bytes.take s.bytes)))
   | .vec s n, bytes => some (.vec s ((List.range n).map fun i =>
       Val.ofWord s (bytesWord ((bytes.drop (s.bytes * i)).take s.bytes))))
-  | .ptr _ _, _ => none
+  | .ptr _ e, bytes =>
+    let w := bytesWord (bytes.take 8)
+    some (.ptr ⟨w / 2 ^ 40, ((w % 2 ^ 40 : Nat) : Int), e⟩)
 
 namespace Core
 variable (C : M1Max.Contract)
@@ -198,6 +207,7 @@ def convert (target : Scalar) (a : Val) : Option Val :=
   | .f32, .bf16 x => some (.f32 (C.widen x))
   | .bf16, .f32 x => some (.bf16 (C.narrow x))
   | .f32, .f16 x => some (.f32 (Float16.widen x))
+  | .f16, .f32 x => some (.f16 (C.narrowHalf x))
   | _, _ => none
 
 def bitcast (target : Scalar) (a : Val) : Option Val := do

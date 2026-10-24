@@ -30,8 +30,8 @@ def LinearShape (kind : Projector) (l : GlueLayers.Linear) (steps rows : Nat) : 
       (l.bits = 4 ∧ l.w.shape = [rows, steps * 64]))
 
 noncomputable def projection (kind : Projector) (l : GlueLayers.Linear) : AffineVerifyLinear.Projection steps rows :=
-  if l.bits = 3 then .bits3 ⟨K.affine, fun row => weights3 l.w l.scales l.biases steps row.val⟩
-  else .bits4 ⟨match kind with | .plain => M.row | .affineRow => K.affine,
+  if l.bits = 3 then .bits3 ⟨K.affine 3 steps rows, fun row => weights3 l.w l.scales l.biases steps row.val⟩
+  else .bits4 ⟨match kind with | .plain => M.row | .affineRow => K.affine 4 steps rows,
     fun row => weights4 l.w l.scales l.biases steps row.val⟩
 
 theorem projection_loaded (h : LinearShape kind l steps rows) : Loaded M K (steps := steps) (rows := rows) kind l (projection M K kind l) := by
@@ -47,6 +47,12 @@ structure MlpShape (w : MlpWeights) : Prop where
   gate : w.gateBits = 2 ∨ w.gateBits = 3 ∨ w.gateBits = 4
   up : w.upBits = 2 ∨ w.upBits = 3 ∨ w.upBits = 4
   down : w.downBits = 2 ∨ w.downBits = 3 ∨ w.downBits = 4
+  gateCodes : w.gateCodes.dtype = .uint32 ∧ w.gateCodes.shape = [17408, 160 * w.gateBits]
+  upCodes : w.upCodes.dtype = .uint32 ∧ w.upCodes.shape = [17408, 160 * w.upBits]
+  downCodes : w.downCodes.dtype = .uint32 ∧
+    w.downCodes.shape = if w.downBits = 3 then [10, 17408, 48] else [17408, 160 * w.downBits]
+  scales : w.gateScales.dtype = .float16 ∧ w.gateScales.shape = [17408] ∧ w.upScales.dtype = .float16 ∧
+    w.upScales.shape = [17408] ∧ w.downScales.dtype = .float16 ∧ w.downScales.shape = [17408]
 
 noncomputable def mlp (w : MlpWeights) (h : MlpShape w) : ResidualBlocks.Mlp :=
   ⟨norm K.residual w.norm,
@@ -57,7 +63,8 @@ noncomputable def mlp (w : MlpWeights) (h : MlpShape w) : ResidualBlocks.Mlp :=
       CheckpointTrellis.down w.downBits h.down (codes _ w.downCodes) (trellisScales w.downScales)⟩⟩
 
 theorem mlp_loaded (w : MlpWeights) (h : MlpShape w) : MlpLoaded K (mlp K w h) w :=
-  ⟨vector_holds h.norm, rfl, ⟨rfl, rfl, rfl⟩, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨vector_holds h.norm, rfl, ⟨rfl, rfl, rfl, h.gateCodes, h.upCodes, h.downCodes, h.scales⟩, rfl, rfl, rfl, rfl, rfl, rfl,
+    rfl, rfl⟩
 
 structure DeltaShape (w : DeltaWeights) : Prop where
   inputNorm : VectorShape w.inputNorm 5120

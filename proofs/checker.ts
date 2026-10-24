@@ -72,7 +72,7 @@ export function leanEnv(leanPath: string, dependencyPath: string): Record<string
 export function isLoadChooser(file: string, source: string): boolean {
   return (file.startsWith("host/load/") &&
     /^(?:host_stream|link_chain|run_segment|load_replay_summary|load_state_summary|host_cache_boundary|load_boundary_carriers)\s/m.test(source)) ||
-    /^(?:host_micro_chunk|host_micro_states|host_micro_states_group|host_micro_stream|host_micro_group|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
+    /^(?:host_micro_chunk|host_micro_states|host_micro_states_group|host_micro_stream|host_micro_group|boot_w_micro|boot_ane_bridge|host_sha256_step|host_growth_fragment|host_stop_fragment)\s/m.test(source);
 }
 
 export function accepted(output: string, code: number): boolean {

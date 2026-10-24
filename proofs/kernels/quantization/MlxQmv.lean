@@ -36,17 +36,18 @@ theorem integer_mask4 (w : BitVec 16) (i : Fin 4) : integer (AffineDot.mask4 w i
   simpa only [AffineDot.mask4, AffinePacking.mask16, BitVec.toNat_and, BitVec.toNat_ofNat, Nat.mod_eq_of_lt hm,
     show 2^4-1 = 15 from rfl] using integer_mask w.toNat 4 (4*i.val) (by decide) hs
 
-def source3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) : Float32 :=
-  (List.finRange 10).foldl (fun acc i => maddFloat contracted (integer (AffineDot.mask3 w i))
+def source3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) : Float32 :=
+  (List.finRange 10).foldl (fun acc i => maddFloat (contracted i.val) (integer (AffineDot.mask3 w i))
     (if AffineDot.crossed3 i then FlushToZero.mul (scaled (AffineDot.coordinate3 i)) 256 else scaled (AffineDot.coordinate3 i)) acc) acc
-def source4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) : Float32 :=
-  FlushToZero.add acc (maddFloat contracted (scaled 3) (integer (AffineDot.mask4 w 3))
-    (maddFloat contracted (scaled 2) (integer (AffineDot.mask4 w 2))
-      (maddFloat contracted (scaled 1) (integer (AffineDot.mask4 w 1)) (FlushToZero.mul (scaled 0) (integer (AffineDot.mask4 w 0))))))
+def source4 (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) : Float32 :=
+  FlushToZero.add acc (maddFloat (contracted 2) (scaled 3) (integer (AffineDot.mask4 w 3))
+    (maddFloat (contracted 1) (scaled 2) (integer (AffineDot.mask4 w 2))
+      (maddLeftFloat (contracted 0) (scaled 0) (integer (AffineDot.mask4 w 0))
+        (FlushToZero.mul (scaled 1) (integer (AffineDot.mask4 w 1))))))
 
-theorem source3_eq (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) :
+theorem source3_eq (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32) :
     source3 contracted w scaled acc = AffineDot.source3 contracted w scaled acc := by simp only [source3, integer_mask3, AffineDot.source3]
-theorem source4_eq (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) :
+theorem source4_eq (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32) :
     source4 contracted w scaled acc = AffineDot.source4 contracted w scaled acc := by simp only [source4, integer_mask4, AffineDot.source4]
 
 def dot3 (p : AffineTile.Platform) (x : Fin 16 → BF) (w : Fin 2 → Fin 3 → BitVec 8) : Float32 :=

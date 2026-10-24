@@ -61,24 +61,21 @@ theorem product_bound (divide : Float32 → Float32 → Float32) (division : Div
 
 theorem source_bound (divide : Float32 → Float32 → Float32) (division : DivisionDirectedBounds.Contract divide)
     (x : Fin 4 → BF) (hx : ∀ i, Model.isFinite (x i) = true ∧ |Model.toReal (x i)| ≤ 512)
-    (contracted : Bool) (w : BitVec 16) (acc : Float32)
+    (contracted : Nat → Bool) (w : BitVec 16) (acc : Float32)
     (hf : Arithmetic.Finite (AffineDot.bind4 w (prepared divide x) acc) (AffineDot.expression4 contracted)) :
     |real (AffineDot.source4 contracted w (prepared divide x) acc)| ≤
       (1+(2 : ℝ)^(-20 : Int))*|real acc|+33*(∑ i, |Model.toReal (x i)|)+(2 : ℝ)^(-44 : Int) := by
   let input := AffineDot.bind4 w (prepared divide x) acc
   let a := fun i : Fin 4 => Expr.input i.val
   let b := fun i : Fin 4 => Expr.input (4+i.val)
-  let next := fun i : Fin 3 => (⟨i.val+1, by have := i.isLt; omega⟩ : Fin 4)
   let mass := fun i : Fin 4 => 31*|Model.toReal (x i)|+(2 : ℝ)^(-100 : Int)
-  let first := Expr.mul (a 0) (b 0)
-  let groupExpr := (List.finRange 3).foldl (fun tail i => madd contracted (a (next i)) (b (next i)) tail) first
-  have expressionEq : AffineDot.expression4 contracted = .add (.input 8) groupExpr := by
-    simp only [groupExpr, show List.finRange 3 = [0, 1, 2] from by decide +kernel,
-      List.foldl_cons, List.foldl_nil]
-    rfl
+  let pair := maddLeft (contracted 0) (a 0) (b 0) (.mul (a 1) (b 1))
+  let middle := madd (contracted 1) (a 2) (b 2) pair
+  let groupExpr := madd (contracted 2) (a 3) (b 3) middle
+  have expressionEq : AffineDot.expression4 contracted = .add (.input 8) groupExpr := rfl
   rw [expressionEq] at hf
-  have firstFinite := (ArithmeticDependencies.fold_finite input contracted (fun i => a (next i))
-    (fun i => b (next i)) (List.finRange 3) first hf.2.1).1
+  have middleFinite := (ArithmeticDependencies.madd_finite input _ _ _ _ hf.2.1).2.2
+  have pairFinite := (ArithmeticDependencies.madd_finite input _ _ _ _ middleFinite).2.2
   have aRead (i : Fin 4) : evaluate input (a i) = prepared divide x i := by
     simp only [a, evaluate, input, AffineDot.bind4, dite_eq_left i.isLt]
   have bRead (i : Fin 4) : evaluate input (b i) = AffineLift.value (AffineDot.mask4 w i) := by
@@ -92,27 +89,41 @@ theorem source_bound (divide : Float32 → Float32 → Float32) (division : Divi
   have products (i : Fin 4) : |real (evaluate input (a i))| * |real (evaluate input (b i))| ≤ mass i := by
     rw [aRead, bRead]
     exact product_bound divide division x hx w i
-  have initial : |real (evaluate input first)| ≤ mass 0 := by
-    have raw := firstFinite.2.2
-    change (FlushToZero.flush (evaluate input (a 0))*FlushToZero.flush (evaluate input (b 0))).isFinite = true at raw
+  have initial (i : Fin 4) (finite : Arithmetic.Finite input (.mul (a i) (b i))) :
+      |real (evaluate input (.mul (a i) (b i)))| ≤ mass i := by
+    have raw := finite.2.2
+    change (FlushToZero.flush (evaluate input (a i))*FlushToZero.flush (evaluate input (b i))).isFinite = true at raw
     rw [aRead, bRead, mask_eq] at raw
-    have h := AffineInputMagnitude.rounded_product divide division (x 0)
-      ⟨AffinePacking.field4 w 0, AffinePacking.field4_bound w 0⟩ (shift 0) (hx 0).1 (hx 0).2 raw
-    change |real (FlushToZero.mul (evaluate input (a 0)) (evaluate input (b 0)))| ≤ _
+    have h := AffineInputMagnitude.rounded_product divide division (x i)
+      ⟨AffinePacking.field4 w i, AffinePacking.field4_bound w i⟩ (shift i) (hx i).1 (hx i).2 raw
+    change |real (FlushToZero.mul (evaluate input (a i)) (evaluate input (b i)))| ≤ _
     rw [aRead, bRead, mask_eq]
     exact h
-  have group := MaddMagnitude.fold_bound input contracted (fun i => a (next i)) (fun i => b (next i))
-    (fun i => mass (next i)) (List.finRange 3) first (mass 0) 0 (by simp) hf.2.1
-    (fun i => operands (next i)) (fun i => products (next i)) (by dsimp [mass]; positivity)
-    (by simpa using initial)
-  have massEq : mass 0+((List.finRange 3).map (fun i => mass (next i))).sum =
-      31*(∑ i, |Model.toReal (x i)|)+4*(2 : ℝ)^(-100 : Int) := by
-    simp [mass, next, show List.finRange 3 = [0, 1, 2] from by decide +kernel, Fin.sum_univ_succ]
+  have nonnegative (i : Fin 4) : 0 ≤ mass i := by dsimp [mass]; positivity
+  -- Site 0 adds the first two products; either may be the accumulated operand.
+  have pairBound (c : Bool) (finite : Arithmetic.Finite input (maddLeft c (a 0) (b 0) (.mul (a 1) (b 1)))) :
+      |real (evaluate input (maddLeft c (a 0) (b 0) (.mul (a 1) (b 1))))| ≤
+        (1+((0+1 : Nat) : ℝ)/1048576)*(mass 0+mass 1)+((0+1 : Nat) : ℝ)*(2 : ℝ)^(-50 : Int) := by
+    cases c
+    · rw [maddLeft_false] at finite ⊢
+      rw [add_comm (mass 0)]
+      exact MaddMagnitude.madd_bound input false (a 1) (b 1) _ finite (operands 1) (mass 1) (mass 0) 0 (by decide)
+        (nonnegative 0) (products 1) (by simpa using initial 0 (ArithmeticDependencies.madd_finite input _ _ _ _ finite).2.2)
+    · rw [maddLeft_true] at finite ⊢
+      exact MaddMagnitude.madd_bound input true (a 0) (b 0) _ finite (operands 0) (mass 0) (mass 1) 0 (by decide)
+        (nonnegative 1) (products 0) (by simpa using initial 1 (ArithmeticDependencies.madd_finite input _ _ _ _ finite).2.2)
+  have middleBound := MaddMagnitude.madd_bound input (contracted 1) (a 2) (b 2) pair middleFinite (operands 2)
+    (mass 2) (mass 0+mass 1) 1 (by decide) (add_nonneg (nonnegative 0) (nonnegative 1)) (products 2)
+    (pairBound (contracted 0) pairFinite)
+  have group := MaddMagnitude.madd_bound input (contracted 2) (a 3) (b 3) middle hf.2.1 (operands 3)
+    (mass 3) (mass 2+(mass 0+mass 1)) 2 (by decide)
+    (add_nonneg (nonnegative 2) (add_nonneg (nonnegative 0) (nonnegative 1))) (products 3) middleBound
+  have massEq : mass 3+(mass 2+(mass 0+mass 1)) = 31*(∑ i, |Model.toReal (x i)|)+4*(2 : ℝ)^(-100 : Int) := by
+    simp only [mass, Fin.sum_univ_four]
     ring
   rw [massEq] at group
   have groupBound : |real (evaluate input groupExpr)| ≤ 32*(∑ i, |Model.toReal (x i)|)+(2 : ℝ)^(-45 : Int) := by
     change |real (evaluate input groupExpr)| ≤ _ at group
-    norm_num only [List.length_finRange, Nat.zero_add, Nat.cast_ofNat] at group
     have mn : 0 ≤ ∑ i, |Model.toReal (x i)| := Finset.sum_nonneg (fun _ _ => abs_nonneg _)
     norm_num at group ⊢
     linarith only [group, mn]

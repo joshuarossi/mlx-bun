@@ -1,7 +1,9 @@
-// Floating-point operation inventory of the ten route custom kernels, read from
+// Floating-point operation inventory of the route's custom kernels, read from
 // Apple's Metal compiler output (CPU only: `xcrun metal -S -emit-llvm`, no
 // device). The compiled text is MLX's `metal::utils()` preamble followed by the
-// assembled kernel text stated in tests/Assemble.lean (`text k sig inst`).
+// assembled kernel text stated in tests/Assemble.lean (`text k sig inst`, the ten
+// decode kernels) or tests/Prefill.lean (one instance of each prefill kernel, two
+// of vector_expand).
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +16,16 @@ const preambleSha256 = "bfe14e75bc59019b613107950878a9548ec943f0e4d4b140199addcb
 const preambleHeaders = ["bf16.h", "bf16_math.h", "complex.h", "defines.h", "logging.h", "utils.h"]
   .map(h => `mlx/backend/metal/kernels/${h}`);
 
-export const kernels = [
+export const decodeKernels = [
   "affineRow", "siluRmsHeads", "gatedDeltaStep", "gatedRmsNorm", "residualRmsNorm",
   "gateUp", "downPartial", "downFold", "argmaxPartial", "argmaxFinish",
 ] as const;
+/** tests/Prefill.lean's texts; `vectorExpandK3i` is vector_expand at `ROW_TILE` 128. */
+export const prefillKernels = [
+  "affine3Rows", "affine4Rows", "affineSplitMma", "gateUpCodebookMma", "gateUpMmaWide", "downMmaWide",
+  "downK3iMmaWide", "aneTrellisFill", "aneTrellisFillK3i", "aneWriteHalf", "vectorExpand", "vectorExpandK3i",
+] as const;
+export const kernels = [...decodeKernels, ...prefillKernels] as const;
 
 /** MLX on macOS >= 15 compiles with MTL::MathModeSafe (CompileOptions' default)
  * and MTLCompileOptions' default fp32 functions (fast); on macOS 27 the
@@ -82,34 +90,65 @@ function kernelSources(lean: string) {
   return { source, header };
 }
 
-/** `<k>Signature` and `<k>Instantiation` of tests/Assemble.lean. */
-function assembledParts(lean: string) {
+/** `source k` and `header k` of host/mlx/PrefillKernelSources.lean. */
+function prefillSources(lean: string) {
+  const at = (table: string) => {
+    const i = lean.indexOf(`\ndef ${table} : PrefillKernel → List Char\n`);
+    if (i < 0) throw Error("PrefillKernelSources.lean layout changed");
+    return i;
+  };
+  const sourceAt = at("source"), headerAt = at("header");
+  const source = new Map<string, Buffer>(), header = new Map<string, Buffer>();
+  for (const m of lean.matchAll(/\n  \| \.(\w+) => chars!"/g)) {
+    if (m.index! < sourceAt) continue;
+    const table = m.index! < headerAt ? source : header;
+    if (table.has(m[1]!)) throw Error(`Duplicate ${m[1]} prefill source`);
+    table.set(m[1]!, bytes(leanString(lean, m.index! + m[0].length - 1).value));
+  }
+  return { source, header };
+}
+
+/** `<k>Signature` and `<k>Instantiation` of a test module whose `text` definition is `text`. */
+function signatureParts(lean: string, text: string, file: string) {
   const parts = new Map<string, Buffer>();
   for (const m of lean.matchAll(/^def (\w+(?:Signature|Instantiation)) : List Char :=\n  chars!"/gm)) {
     const { value, end } = leanString(lean, m.index! + m[0].length - 1);
     if (lean[end] !== "\n") throw Error(`${m[1]} is not a bare literal`);
     parts.set(m[1]!, bytes(value));
   }
-  const text = "def text (k : Kernel) (signature instantiation : List Char) : List Char :=\n" +
-    '  sources.header k ++ signature ++ sources.source k ++ chars!"\\n}\\n" ++ instantiation\n';
-  if (!lean.includes(text)) throw Error("tests/Assemble.lean `text` changed");
+  if (!lean.includes(text)) throw Error(`${file} \`text\` changed`);
   return parts;
 }
 
 export interface KernelText { kernel: string; name: string; text: Buffer }
 
+function kernelText(kernel: string, head: Buffer | undefined, body: Buffer | undefined,
+  sig: Buffer | undefined, inst: Buffer | undefined): KernelText {
+  if (!body || !head || !sig || !inst) throw Error(`Missing Lean text for ${kernel}`);
+  const name = /\[\[kernel\]\] void (\w+)\(/.exec(sig.toString("latin1"))?.[1];
+  if (!name) throw Error(`No kernel name in ${kernel}Signature`);
+  return { kernel, name, text: Buffer.concat([head, sig, body, Buffer.from("\n}\n"), inst]) };
+}
+
 /** The assembled kernel texts `text k <k>Signature <k>Instantiation`. */
 export async function kernelTexts(): Promise<KernelText[]> {
   const { source, header } = kernelSources(await Bun.file(new URL("host/mlx/KernelSources.lean", proofs)).text());
-  const parts = assembledParts(await Bun.file(new URL("metal/tests/Assemble.lean", proofs)).text());
-  return kernels.map(kernel => {
-    const body = source.get(kernel), head = header.get(kernel);
-    const sig = parts.get(kernel + "Signature"), inst = parts.get(kernel + "Instantiation");
-    if (!body || !head || !sig || !inst) throw Error(`Missing Lean text for ${kernel}`);
-    const name = /\[\[kernel\]\] void (\w+)\(/.exec(sig.toString("latin1"))?.[1];
-    if (!name) throw Error(`No kernel name in ${kernel}Signature`);
-    return { kernel, name, text: Buffer.concat([head, sig, body, Buffer.from("\n}\n"), inst]) };
-  });
+  const parts = signatureParts(await Bun.file(new URL("metal/tests/Assemble.lean", proofs)).text(),
+    "def text (k : Kernel) (signature instantiation : List Char) : List Char :=\n" +
+      '  sources.header k ++ signature ++ sources.source k ++ chars!"\\n}\\n" ++ instantiation\n', "tests/Assemble.lean");
+  const pre = prefillSources(await Bun.file(new URL("host/mlx/PrefillKernelSources.lean", proofs)).text());
+  const preParts = signatureParts(await Bun.file(new URL("metal/tests/Prefill.lean", proofs)).text(),
+    "def text (k : PrefillKernel) (signature instantiation : List Char) : List Char :=\n" +
+      '  header k ++ signature ++ source k ++ chars!"\\n}\\n" ++ instantiation\n', "tests/Prefill.lean");
+  return [
+    ...decodeKernels.map(kernel => kernelText(kernel, header.get(kernel), source.get(kernel),
+      parts.get(kernel + "Signature"), parts.get(kernel + "Instantiation"))),
+    ...prefillKernels.map(kernel => {
+      const k = kernel === "vectorExpandK3i" ? "vectorExpand" : kernel;
+      return kernelText(kernel, pre.header.get(k), pre.source.get(k), preParts.get(kernel + "Signature"),
+        preParts.get(kernel + "Instantiation"));
+    }),
+  ];
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,12 @@ Used for reachability (`s1 = s2`) and for restart maps (`s1 = T0`, `s2 = T1`).
 
 Native nodes: eager nodes are compared by shape and dtype only (their primitives and
 inputs are never read by the FFI model; only nodes of compiled-closure traces are
-replayed), trace nodes in full. -/
+replayed), trace nodes in full.
+
+A template spec's ghosts (`Ctx.ghosts`: addresses whose content depends on the history)
+are paired but not compared (`W.ghostSeen`), and its by-key maps (`Ctx.byKey`) are
+compared entry by string key, keys on one side only being ghost entries
+(`W.ghostEntries`). Both are empty unless a command passes them. -/
 
 namespace Host.Ts.Sim.Template
 open Lean Meta Host.Ts Host.Load
@@ -90,6 +95,17 @@ structure Ctx where
   traceNodes : Std.HashSet Nat := {}
   /-- Compare every node in full, following inputs. -/
   followIns : Bool := false
+  /-- Also walk eager nodes' primitives, not their inputs (a compaction: the numbers a kept node's primitive mentions
+  are results, as its closedness needs). -/
+  primNums : Bool := false
+  /-- Ghost addresses: paired, their content not compared. -/
+  ghosts : Std.HashSet Nat := {}
+  /-- JavaScript maps compared by key. -/
+  byKey : List Nat := []
+  /-- Heap addresses, handles and nodes below these are paired but not walked (a walk of a footprint). -/
+  heapFrom : Nat := 0
+  handlesFrom : Nat := 0
+  nodesFrom : Nat := 0
 
 structure W where
   sig : Std.HashMap Nat Nat := {}
@@ -113,6 +129,10 @@ structure W where
   nats : Array (Loc × String × Nat × Nat) := #[]
   suffix : Array (Loc × Nat × Nat × List Val) := #[]
   itemsNew : Array (Loc × NumV) := #[]
+  /-- Ghost addresses reached. -/
+  ghostSeen : Array Nat := #[]
+  /-- By-key map entries on one side only (map, key). -/
+  ghostEntries : Array (Nat × String) := #[]
 
 abbrev WM := ReaderT Ctx (StateRefT W IO)
 
@@ -121,34 +141,37 @@ def mism (loc : Loc) (lab msg : String) : WM Unit := modify fun w => { w with mi
 /-! ## Correspondences (state updated in place: `modifyGet`) -/
 
 def pairHeap (a b : Nat) (loc : Loc) (lab : String) : WM Unit := do
+  let walk := a ≥ (← read).heapFrom
   let r ← modifyGet fun w =>
     match w.sig[a]? with
     | some b' => (if b' == b then none else some s!"sigma inconsistent: h{a} -> h{b'} and h{b}", w)
     | none => match w.sigInv[b]? with
       | some a' => (some s!"sigma not injective: h{a'} and h{a} -> h{b}", w)
-      | none => (none, { w with sig := w.sig.insert a b, sigInv := w.sigInv.insert b a, par := w.par.insert a (loc, lab), work := w.work.push (0, a, b) })
+      | none => (none, { w with sig := w.sig.insert a b, sigInv := w.sigInv.insert b a, par := w.par.insert a (loc, lab), work := if walk then w.work.push (0, a, b) else w.work })
   if let some m := r then mism loc lab m
 
 def pairHandle (a b : Nat) (loc : Loc) (lab : String) : WM Unit := do
   if a == 0 && b == 0 then return
   if a == 0 || b == 0 then mism loc lab s!"handle null vs nonnull: {a} {b}"; return
+  let walk := a ≥ (← read).handlesFrom
   let r ← modifyGet fun w =>
     match w.hnd[a]? with
     | some b' => (if b' == b then none else some s!"handle map inconsistent: H{a} -> H{b'} and H{b}", w)
     | none => match w.hndInv[b]? with
       | some a' => (some s!"handle map not injective: H{a'} and H{a} -> H{b}", w)
-      | none => (none, { w with hnd := w.hnd.insert a b, hndInv := w.hndInv.insert b a, hpar := w.hpar.insert a (loc, lab), work := w.work.push (1, a, b) })
+      | none => (none, { w with hnd := w.hnd.insert a b, hndInv := w.hndInv.insert b a, hpar := w.hpar.insert a (loc, lab), work := if walk then w.work.push (1, a, b) else w.work })
   if let some m := r then mism loc lab m
 
 def pairNode (a b : Nat) (loc : Loc) (lab : String) : WM Unit := do
   if a == 0 && b == 0 then return
   if a == 0 || b == 0 then mism loc lab s!"node null vs nonnull: {a} {b}"; return
+  let walk := a ≥ (← read).nodesFrom
   let r ← modifyGet fun w =>
     match w.nod[a]? with
     | some b' => (if b' == b then none else some s!"node map inconsistent: N{a} -> N{b'} and N{b}", w)
     | none => match w.nodInv[b]? with
       | some a' => (some s!"node map not injective: N{a'} and N{a} -> N{b}", w)
-      | none => (none, { w with nod := w.nod.insert a b, nodInv := w.nodInv.insert b a, npar := w.npar.insert a (loc, lab), work := w.work.push (2, a, b) })
+      | none => (none, { w with nod := w.nod.insert a b, nodInv := w.nodInv.insert b a, npar := w.npar.insert a (loc, lab), work := if walk then w.work.push (2, a, b) else w.work })
   if let some m := r then mism loc lab m
 
 def pairRegion (r q : Nat) (loc : Loc) (lab : String) : WM Unit := do
@@ -478,12 +501,10 @@ unsafe def kindCmp (k1 k2 : Kind) (loc : Loc) : WM Unit := do
     unless k.code == k'.code do mism loc "typed" "element kind"
     pairHeap b b' loc "typed.buf"; natCmp o o' loc "typed.off"; natCmp l l' loc "typed.len"
   | .view b o l, .view b' o' l' => do pairHeap b b' loc "view.buf"; natCmp o o' loc "view.off"; natCmp l l' loc "view.len"
-  | .map es, .map es' => do
-    if es.length != es'.length then mism loc "map" s!"map size {es.length} {es'.length}"
-    let mut i := 0
-    for ((k, v), (k', v')) in es.zip es' do
-      valCmp k k' loc s!"map[{i}].key"; valCmp v v' loc s!"map[{i}].val"
-      i := i + 1
+  | .map es, .map es' =>
+    match loc with
+    | .heap a => if c.byKey.contains a then mapByKey a es es' loc else mapPos es es' loc
+    | _ => mapPos es es' loc
   | .set es, .set es' => valsCmp es es' loc "set"
   | .promise p, .promise p' => gw .plain (toExpr p) (toExpr p') loc "promise"
   | .gen g a q, .gen g' a' q' => do
@@ -494,10 +515,33 @@ unsafe def kindCmp (k1 k2 : Kind) (loc : Loc) : WM Unit := do
   | .box v, .box v' => valCmp v v' loc "box"
   | .iter s i md, .iter s' i' md' => do valCmp s s' loc "iter.src"; natCmp i i' loc "iter.i"; natCmp md md' loc "iter.mode"
   | _, _ => mism loc "kind" s!"kind {kindCtor k1} vs {kindCtor k2}"
+where
+  mapPos (es es' : List (Val × Val)) (loc : Loc) : WM Unit := do
+    if es.length != es'.length then mism loc "map" s!"map size {es.length} {es'.length}"
+    let mut i := 0
+    for ((k, v), (k', v')) in es.zip es' do
+      valCmp k k' loc s!"map[{i}].key"; valCmp v v' loc s!"map[{i}].val"
+      i := i + 1
+  mapByKey (a : Nat) (es es' : List (Val × Val)) (loc : Loc) : WM Unit := do
+    let keyOf : Val → Option String := fun | .str cs => some (strOf cs) | _ => none
+    for (k, v) in es do
+      match keyOf k with
+      | some ks => match es'.find? (fun (k', _) => keyOf k' == some ks) with
+        | some (_, v') => valCmp v v' loc s!"map[{ks}]"
+        | none => modify fun w => { w with ghostEntries := w.ghostEntries.push (a, ks) }
+      | none => mism loc "map" "a by-key map with a key that is no string"
+    for (k', _) in es' do
+      match keyOf k' with
+      | some ks => if (es.find? (fun (k, _) => keyOf k == some ks)).isNone then
+          modify fun w => { w with ghostEntries := w.ghostEntries.push (a, ks) }
+      | none => mism loc "map" "a by-key map with a key that is no string"
 
 unsafe def heapStep (a b : Nat) : WM Unit := do
   let c ← read
   let loc := Loc.heap a
+  if c.ghosts.contains a then
+    modify fun w => { w with ghostSeen := w.ghostSeen.push a }
+    return
   match c.s1.heap.get a, c.s2.heap.get b with
   | some (.cell v), some (.cell v') =>
     match v, v' with
@@ -545,6 +589,7 @@ def nodeStep (a b : Nat) : WM Unit := do
         dimCmp d e loc s!"shape[{i}]"
         i := i + 1
       unless x.dtype == y.dtype do mism loc "dtype" s!"dtype {x.dtype} vs {y.dtype}"
+      if c.primNums then gw .plain (toExpr x.prim) (toExpr y.prim) loc "prim"
   | none, none => mism loc "node" "both missing"
   | _, _ => mism loc "node" "missing on one side"
   match m1.items.get a, m2.items.get b with

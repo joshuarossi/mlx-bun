@@ -8,10 +8,11 @@ open Host.Ts Host.Ts.Sim
 `JSP F` fixes what the checked run's acceptance function `okJS` needs beyond the
 source state: the native-call acceptance `okCall` and smallness decider `smallB`
 (of `FfiCallSim`), the renamed handle band
-`[lo, hi)`, the framed addresses, and two predicates on the source native state
+`[lo, hi)`, the framed addresses, two predicates on the source native state
 that the native relation interprets (`isHandle`: a present native handle,
-`isRegion`: a native region the map keeps apart). `Kp P K` ties a run's `Ctx`
-to the parameters. Deciders are `Bool` functions with soundness lemmas
+`isRegion`: a native region the map keeps apart), and the frames beyond framed arrays
+the run may use (`wide`, none by default). `Kp P K` ties a run's `Ctx` to the
+parameters, `Wp P W` its frames. Deciders are `Bool` functions with soundness lemmas
 (`*_sound`); they use structural recursion and `Nat` primitives only. -/
 
 structure JSP (F : Ffi) where
@@ -23,6 +24,8 @@ structure JSP (F : Ffi) where
   framed : List Nat
   isHandle : F.S → Int → Bool
   isRegion : F.S → Nat → Bool
+  /-- Frames beyond framed arrays, by source address (`Wp`). -/
+  wide : List (Nat × WFrame) := []
 
 /-- The run's context agrees with the parameters. -/
 def Kp {F : Ffi} (P : JSP F) (K : Ctx) : Prop :=
@@ -62,6 +65,78 @@ theorem Kp.fr_none (hK : Kp P K) {a : Nat} (h : frB P a = true) : K.fr a = none 
 theorem Kp.fr_some (hK : Kp P K) {a : Nat} (h : frB P a = false) : K.fr a ≠ none := by
   have hm : memB a P.framed = true := by simpa [frB] using h
   exact (hK.2.2 a).2 ((memB_iff a P.framed).1 hm)
+
+/-- The frame the parameters declare at `a`. -/
+def lookupW (a : Nat) : List (Nat × WFrame) → Option WFrame
+  | [] => none
+  | (b, w) :: l => bif Nat.beq a b then some w else lookupW a l
+
+def wideAt (P : JSP F) (a : Nat) : Option WFrame := lookupW a P.wide
+
+/-- The run's frames are among those the parameters declare. With none declared there are none
+(`Wp.noWide`); every `P` admits no frames (`Wp.free`). -/
+def Wp (P : JSP F) (W : Nat → Option WFrame) : Prop := ∀ a w, W a = some w → wideAt P a = some w
+
+theorem Wp.free : Wp P noFrames := fun _ _ h => nomatch h
+
+theorem Wp.none_of {W : Nat → Option WFrame} (hW : Wp P W) {a : Nat} (h : wideAt P a = none) : W a = none := by
+  cases hw : W a with
+  | none => rfl
+  | some w => rw [hW a w hw] at h; cases h
+
+theorem Wp.some_of {W : Nat → Option WFrame} (hW : Wp P W) {a : Nat} {w0 : WFrame} (h : wideAt P a = some w0)
+    {w : WFrame} (hw : W a = some w) : w = w0 := by
+  have := hW a w hw; rw [h] at this; cases this; rfl
+
+/-- No frames are declared. -/
+def noWideB (P : JSP F) : Bool := P.wide.isEmpty
+
+theorem Wp.noWide {W : Nat → Option WFrame} (hW : Wp P W) (h : noWideB P = true) : ∀ a, W a = none := by
+  intro a
+  apply hW.none_of
+  have : P.wide = [] := by
+    unfold noWideB at h
+    cases hl : P.wide with
+    | nil => rfl
+    | cons _ _ => rw [hl] at h; cases h
+  show lookupW a P.wide = none
+  rw [this]; rfl
+
+/-- At `a` no frame is declared, or `a` is unframed. -/
+def nwB (P : JSP F) (a : Nat) : Bool := (wideAt P a).isNone || frB P a
+
+theorem Kp.nw {W : Nat → Option WFrame} (hK : Kp P K) (hW : Wp P W) {a : Nat} (h : nwB P a = true) :
+    W a = none ∨ K.fr a = none := by
+  simp only [nwB, Bool.or_eq_true, Option.isNone_iff_eq_none] at h
+  rcases h with h | h
+  · exact .inl (hW.none_of h)
+  · exact .inr (hK.fr_none h)
+
+/-- Kinds no frame admits (`¬ Wideable`). -/
+def wideableB : Kind → Bool
+  | .ordinary | .map _ | .box _ => true
+  | _ => false
+
+theorem wideableB_sound {k : Kind} (h : wideableB k = false) : ¬ Wideable k := by
+  cases k <;> simp_all [wideableB, Wideable]
+
+/-- `NoW`: `nwB`, or an object of a kind no frame admits. -/
+def nwoB {S' : Type} (P : JSP F) (s : St S') (a : Nat) : Bool :=
+  nwB P a || match s.obj? a with
+    | some o => !wideableB o.kind
+    | none => false
+
+theorem Kp.noW {S' : Type} {s : St S'} {W : Nat → Option WFrame} (hK : Kp P K) (hW : Wp P W) {a : Nat}
+    (h : nwoB P s a = true) : NoW K W s a := by
+  simp only [nwoB, Bool.or_eq_true] at h
+  rcases h with h | h
+  · exact .of_or (hK.nw hW h)
+  · cases ho : s.obj? a with
+    | none => rw [ho] at h; cases h
+    | some o =>
+      rw [ho] at h
+      simp only [Bool.not_eq_true'] at h
+      exact .of_kind ho (wideableB_sound h)
 
 /-- `2 ^ 56` as a literal. -/
 def two56 : Nat := 72057594037927936
@@ -207,22 +282,73 @@ structure NativeFacts (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (P :
   /-- `JSCallback` regions follow their objects. -/
   cb : ∀ M n x y, FR M n x y → ∀ f, cbBase ≤ f → M.region f = cbBase + M.a (f - cbBase)
 
+/-! ## Steps that read no frame below the source's own
+
+Under a target-only stack base (`RelB … stk`, caller frames the source does not hold) a step is
+simulated when it reads none of the frames below the source's: `localB s`. No return or
+abrupt completion reaches an empty source stack (that step would run a job or halt on the source
+and return into the caller's frames on the target), a function boundary is among the frames (the
+scans `nearestGen`, `ctorTop`, `fnTop` stop there), and a `using` declaration has a scope frame
+below it (`addUsing`). `splitSusp`, which stops only at suspension boundaries, needs no condition:
+a source that finds none fails. A stage template runs from its call state (empty stack, a call
+control) to its return state (empty stack, a return or abrupt control); every state between has
+its callee's boundary among its frames. -/
+
+/-- The source step reads no frame below the source's own. -/
+def localB {S' : Type} (s : St S') : Bool :=
+  (match s.stack with
+    | [] => match s.ctl with
+      | .ret _ => false
+      | .abr _ => false
+      | _ => true
+    | fs => fnB fs) &&
+  (match s.stack with
+    | .s (.decl k _ _ _) :: fs => !isUsing k || StmtSim.scopeB fs
+    | _ => true)
+
+theorem localB_nil_ret {S' : Type} {s : St S'} (h : localB s = true) (hs : s.stack = []) {v : Val}
+    (hc : s.ctl = .ret v) : False := by
+  simp [localB, hs, hc] at h
+
+theorem localB_nil_abr {S' : Type} {s : St S'} (h : localB s = true) (hs : s.stack = []) {a : Abrupt}
+    (hc : s.ctl = .abr a) : False := by
+  simp [localB, hs, hc] at h
+
+/-- Below a top frame that is no function boundary there is one. -/
+theorem localB_tail {S' : Type} {s : St S'} (h : localB s = true) {f : Frame} {fs : List Frame}
+    (hs : s.stack = f :: fs) (hf : isFnF f = false) : fnB fs = true := by
+  simp only [localB, hs, Bool.and_eq_true] at h
+  have := h.1
+  simpa [fnB, List.any_cons, hf] using this
+
+theorem localB_ne {S' : Type} {s : St S'} (h : localB s = true) {f : Frame} {fs : List Frame}
+    (hs : s.stack = f :: fs) (hf : isFnF f = false) : fs ≠ [] := by
+  have := localB_tail h hs hf
+  intro he; subst he; simp [fnB] at this
+
+/-- A `using` declaration has a scope frame below it. -/
+theorem localB_using {S' : Type} {s : St S'} (h : localB s = true) {k : DeclKind} {p : Pat}
+    {rest : List (Pat × Option Expr)} {env : Env} {fs : List Frame} (hs : s.stack = .s (.decl k p rest env) :: fs)
+    (hk : isUsing k = true) : StmtSim.scopeB fs = true := by
+  simp only [localB, hs, Bool.and_eq_true] at h
+  simpa [hk] using h.2
+
 /-! ## The postcondition of the dispatcher -/
 
-/-- A step lemma's postcondition with `RelX` for the resulting states. -/
-def PX (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
-    (S : SSrv) (C : CSrv) : Map → SSrv → CSrv → St F.S → St F.S → Prop :=
-  fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ RelX F FR M' ν K s1 S' t1 C'
+/-- A step lemma's postcondition with `RelXF` for the resulting states. -/
+def PX (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map)
+    (ν : Nat → F64) (K : Ctx) (S : SSrv) (C : CSrv) : Map → SSrv → CSrv → St F.S → St F.S → Prop :=
+  fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ RelXB F FR W stk M' ν K s1 S' t1 C'
 
-theorem MSim.toX {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
-    {S : SSrv} {C : CSrv} {m m' : Host.Ts.M (St F.S)} (h : MSim (StepPost F FR M ν K S C) S C m m') :
-    MSim (PX F FR M ν K S C) S C m m' :=
+theorem MSim.toX {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {S : SSrv} {C : CSrv} {m m' : Host.Ts.M (St F.S)} (h : MSim (StepPostB F FR W stk M ν K S C) S C m m') :
+    MSim (PX F FR W stk M ν K S C) S C m m' :=
   MSim.mono h fun _ _ _ _ _ hp => ⟨hp.1, .inl hp.2⟩
 
-theorem MSim.toXD {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+theorem MSim.toXD {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
     {S : SSrv} {C : CSrv} {m m' : Host.Ts.M (St F.S)}
-    (h : MSim (fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ RelD F FR M' ν K s1 S' t1 C') S C m m') :
-    MSim (PX F FR M ν K S C) S C m m' :=
+    (h : MSim (fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ RelDB F FR W stk M' ν K s1 S' t1 C') S C m m') :
+    MSim (PX F FR W stk M ν K S C) S C m m' :=
   MSim.mono h fun _ _ _ _ _ hp => ⟨hp.1, .inr hp.2⟩
 
 end Host.Ts.Sim.Disp

@@ -127,22 +127,19 @@ def ChainHolds : (stages : List DecodeStage.Stage) → List Handles → DecodeCh
   | s :: ss, h :: hs, c => StageHolds s h c.1 ∧ ChainHolds ss hs c.2
   | _, _, _ => False
 
-def DecayOk : DecodeStage.Stage → (Fin 5120 → BF) → Prop
-  | .delta l, x => ∀ h, Model.isFinite (Delta.Decay.biased (l.mixer.a.forward (l.inputNorm.forward x) h) (l.mixer.dtBias h)) = true
-  | .attention _, _ => True
+-- The route's attention q/k/v projections are plain (`PipelineLoaded.attentionProjectors`): their shapes have
+-- no affine_row launch (`AffineRoute`).
+def StagePlain : StageWeights → Prop
+  | .delta _ => True
+  | .attention w => w.qKind = .plain ∧ w.kKind = .plain ∧ w.vKind = .plain
 
--- computeG's reviewed host source needs a finite bf16 a + dt_bias at every
--- Delta layer of the step (model-level range premise).
-def DecayFinite : (stages : List DecodeStage.Stage) → DecodeChain.Caches stages n → (Fin 5120 → BF) →
-    Kernels.Attention.RopeAngles.Inputs → Prop
-  | [], _, _, _ => True
-  | s :: ss, c, x, a =>
-    DecayOk s x ∧
-    DecayFinite ss c.2 (DecodeStage.forward s c.1 x a) a
+def ChainPlain : List StageWeights → Prop
+  | [] => True
+  | w :: ws => StagePlain w ∧ ChainPlain ws
 
 theorem stage (s : DecodeStage.Stage) (w : StageWeights) (hl : StageLoaded M K s w) (c : DecodeStage.Cache s n)
     (h : Handles) (hh : StageHolds s h c) (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (finite : DecayOk s x) :
+    (finite : DecodeStage.Finite s c x (RopeInputConstruction.inputs n)) (plain : StagePlain w) :
     ∃ y h', stageTrace M K n w h xv = some (y, h') ∧
       Row y 5120 (DecodeStage.forward s c x (RopeInputConstruction.inputs n)) ∧
       StageHolds s h' (DecodeStage.cacheAfter s c x (RopeInputConstruction.inputs n)) := by
@@ -163,13 +160,13 @@ theorem stage (s : DecodeStage.Stage) (w : StageWeights) (hl : StageLoaded M K s
       cases h with
       | delta _ _ => exact hh.elim
       | attention kb vb =>
-        obtain ⟨out, kb', vb', e, tout, hk, hv⟩ := attention_layer M K l w hl c kb vb hh.1 hh.2 xv x hx
+        obtain ⟨out, kb', vb', e, tout, hk, hv⟩ := attention_layer M K l w hl c kb vb hh.1 hh.2 xv x hx finite plain
         exact ⟨out, .attention (some kb') (some vb'), by simp only [stageTrace, e, Option.map_some], tout, ⟨hk, hv⟩⟩
 
 theorem chain (stages : List DecodeStage.Stage) (ws : List StageWeights) (hl : ChainLoaded M K stages ws)
     (c : DecodeChain.Caches stages n) (hs : List Handles) (hh : ChainHolds stages hs c)
     (xv : Value) (x : Fin 5120 → BF) (hx : Row xv 5120 x)
-    (finite : DecayFinite stages c x (RopeInputConstruction.inputs n)) :
+    (finite : DecodeChain.Ranges stages c x (RopeInputConstruction.inputs n)) (plain : ChainPlain ws) :
     ∃ y hs', chainTrace M K n ws hs xv = some (y, hs') ∧
       Row y 5120 (DecodeChain.run stages c x (RopeInputConstruction.inputs n)).1 ∧
       ChainHolds stages hs' (DecodeChain.run stages c x (RopeInputConstruction.inputs n)).2 := by
@@ -188,8 +185,8 @@ theorem chain (stages : List DecodeStage.Stage) (ws : List StageWeights) (hl : C
       cases hs with
       | nil => exact hh.elim
       | cons h hs =>
-        obtain ⟨y, h', e1, ty, hy⟩ := stage M K s w hl.1 c.1 h hh.1 xv x hx finite.1
-        obtain ⟨z, hs', e2, tz, hz⟩ := ih ws hl.2 c.2 hs hh.2 y _ ty finite.2
+        obtain ⟨y, h', e1, ty, hy⟩ := stage M K s w hl.1 c.1 h hh.1 xv x hx finite.1 plain.1
+        obtain ⟨z, hs', e2, tz, hz⟩ := ih ws hl.2 c.2 hs hh.2 y _ ty finite.2 plain.2
         refine ⟨z, h' :: hs', ?_, tz, hy, hz⟩
         simp only [chainTrace, e1, Option.bind_eq_bind, Option.bind_some, e2]
         rfl
@@ -301,6 +298,18 @@ theorem stages_loaded (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : 
     37, hd 38, ha 12, hd 39, hd 40, hd 41, ha 13, hd 42, hd 43, hd 44, ha 14, hd 45, hd 46, hd 47, ha 15
 , trivial⟩
 
+theorem stages_plain (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineLoaded M K p w) :
+    ChainPlain (stageWeights w) := by
+  have a : ∀ i, StagePlain (.attention (w.attention i)) := fun i =>
+    ⟨(hl.attentionProjectors i).1, (hl.attentionProjectors i).2.1, (hl.attentionProjectors i).2.2.1⟩
+  exact ⟨
+    trivial, trivial, trivial, a 0, trivial, trivial, trivial, a 1, trivial, trivial, trivial, a 2,
+    trivial, trivial, trivial, a 3, trivial, trivial, trivial, a 4, trivial, trivial, trivial, a 5,
+    trivial, trivial, trivial, a 6, trivial, trivial, trivial, a 7, trivial, trivial, trivial, a 8,
+    trivial, trivial, trivial, a 9, trivial, trivial, trivial, a 10, trivial, trivial, trivial, a 11,
+    trivial, trivial, trivial, a 12, trivial, trivial, trivial, a 13, trivial, trivial, trivial, a 14,
+    trivial, trivial, trivial, a 15, trivial⟩
+
 -- SubmittedGraphForwardScope(embed.encode(ids)), #run over #one, finalNorm,
 -- the AffineRow lm_head (H1), step.ts sampleDevice: reshape [1, V], normalizedArgmax,
 -- itemUint32. Evaluation scopes and command-buffer submission have no
@@ -317,7 +326,7 @@ noncomputable def stepTrace (w : PipelineWeights) (n token : Nat) (hs : List Han
 
 theorem step (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineLoaded M K p w)
     (c : p.graph.Cache n) (hs : List Handles) (hh : ChainHolds p.graph.stages hs c) (token : Fin 248320)
-    (finite : DecayFinite p.graph.stages c (p.embedding.forward token) (RopeInputConstruction.inputs n))
+    (finite : p.graph.Ranges c (p.embedding.forward token) (RopeInputConstruction.inputs n))
     (primitive : Sampling.LogSumExpRanges.Primitives K.sampling)
     (bound : ∀ i, Model.isFinite ((p.run c token (RopeInputConstruction.inputs n)).1 i) = true ∧
       |Model.toReal ((p.run c token (RopeInputConstruction.inputs n)).1 i)| ≤ (2:ℝ)^(23:Nat)) :
@@ -326,9 +335,10 @@ theorem step (p : TokenInference.Pipeline) (w : PipelineWeights) (hl : PipelineL
       ChainHolds p.graph.stages hs' (p.run c token (RopeInputConstruction.inputs n)).2 := by
   obtain ⟨x, e1, tx⟩ := embed M p.embedding w.embedWords w.embedScales w.embedBiases hl.embedding token
   obtain ⟨hidden, hs', e2, th, hh'⟩ := chain M K p.graph.stages (stageWeights w) (stages_loaded M K p w hl) c hs hh
-    x _ tx finite
+    x _ tx finite.chain (stages_plain M K p w hl)
   obtain ⟨h, e3, tn⟩ := GlueAttention.hidden_norm M p.graph.finalNorm hl.finalPlatform hidden w.finalNorm _ th hl.finalNorm
-  obtain ⟨logits, e4, tl⟩ := GlueLayers.project_row M K .affineRow w.head (blocks := 3880) p.graph.output hl.head (by decide) h _ tn
+  obtain ⟨logits, e4, tl⟩ := GlueLayers.project_row M K .affineRow w.head (blocks := 3880) p.graph.output hl.head
+    (fun _ => by unfold AffineRoute; decide) h _ tn finite.output
   have e5 := reshape_some logits [1, 248320] (by rw [tl.2.1]; rfl)
   have fl : Flat { logits with shape := [1, 248320] } [1, 248320] (p.run c token (RopeInputConstruction.inputs n)).1 :=
     ⟨tl.1, rfl, fun j => by exact Row.elems tl j⟩

@@ -1,4 +1,4 @@
-import host.sim.dispatch.DecideProps
+import host.sim.dispatch.DecideExpr
 namespace Host.Ts.Sim.Disp
 open Host.Ts Host.Ts.Sim
 
@@ -14,9 +14,9 @@ variable {F : Ffi} (P : JSP F)
 /-- The `PutOK` condition of `step_ret_paramProps`. -/
 def paramPropsB (s : St F.S) (n : Nat) (o : Val) (ns : List Name) (env : Env) : Bool :=
   match ns with
-  | nm :: _ => match cellVal? F s nm env with
+  | nm :: _ => cellNoWB P env nm && (match cellVal? F s nm env with
     | some x => putB P s n o (.str nm) x
-    | none => true
+    | none => true)
   | [] => true
 
 /-- An iterator result: an ordinary object with an own data property `done` (a fixed bigint if one). -/
@@ -38,14 +38,20 @@ def startB {F : Ffi} (P : JSP F) (body : List Stmt) (env : Env) : Bool :=
   Nat.ble ((blockNames body).length + body.length) two20 && allB (fun x => frB P x.2) env
 
 section
-variable {F : Ffi} {P : JSP F} {K : Ctx}
+variable {F : Ffi} {P : JSP F} {K : Ctx} {W : Nat → Option WFrame} {stk : List Frame}
 
-theorem Kp.paramProps (hK : Kp P K) {s : St F.S} {S : SSrv} {o : Val} {ns : List Name} {env : Env}
+theorem Kp.paramProps (hK : Kp P K) (hW : Wp P W) {s : St F.S} {S : SSrv} {o : Val} {ns : List Name} {env : Env}
     (h : paramPropsB P s S.tab.length o ns env = true) :
-    ∀ n r, ns = n :: r → ∀ x, cellVal? F s n env = some x → PutOK F K s S o (.str n) x := by
+    ∀ n r, ns = n :: r → ∀ x, cellVal? F s n env = some x → PutOK F K W s S o (.str n) x := by
   rintro n r rfl x hx
-  simp only [paramPropsB, hx] at h
-  exact hK.put h
+  simp only [paramPropsB, hx, Bool.and_eq_true] at h
+  exact hK.put hW h.2
+
+theorem Kp.paramCells (hK : Kp P K) (hW : Wp P W) {s : St F.S} {S : SSrv} {o : Val} {ns : List Name} {env : Env}
+    (h : paramPropsB P s S.tab.length o ns env = true) : ∀ n r, ns = n :: r → CellNoW K W env n := by
+  rintro n r rfl
+  simp only [paramPropsB, Bool.and_eq_true] at h
+  exact hK.cellNoW hW h.1
 
 theorem Kp.done (hK : Kp P K) {s : St F.S} {v : Val} (h : doneB P s v = true) :
     ∃ a o dv w e, v = .obj a ∧ s.obj? a = some o ∧ o.kind = .ordinary ∧

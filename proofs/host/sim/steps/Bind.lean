@@ -12,14 +12,14 @@ allocate arrays (`newArray`). -/
 
 namespace StmtSim
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
 /-- A new array (prototype `%Array.prototype%`). -/
-theorem newArray_rel (h : Rel F FR M ν K s S t C) (vs : List Val) (hvs : Supp.vals (Present s) S.tab.length vs)
+theorem newArray_rel (h : RelB F FR W stk M ν K s S t C) (vs : List Val) (hvs : Supp.vals (Present s) S.tab.length vs)
     (hpa : Present s aArrayProto) (hn : s.next < Sim.bound) :
     (newArray t (M.vals vs)).1 = M.a (newArray s vs).1 ∧
-    Rel F FR M ν K (newArray s vs).2 S (newArray t (M.vals vs)).2 C := by
+    RelB F FR W stk M ν K (newArray s vs).2 S (newArray t (M.vals vs)).2 C := by
   have h64 := lt64 h hn
   have hP : ∀ a, Present s a → Present (s.allocObj (.array vs) (.obj aArrayProto) []).2 a :=
     fun _ hp => Present.alloc _ h64 hp
@@ -50,10 +50,10 @@ theorem supp_nthD {A : Nat → Prop} {n : Nat} {vs : List Val} (h : Supp.vals A 
 
 /-- The next element pattern of an array pattern. -/
 theorem arrNext_sim (rest : Option Pat) (env : Env) (mode : BindMode) (kind : DeclKind) :
-    ∀ (ps : List (Option Pat)) (vs : List Val) {s t : St F.S} (_h : Rel F FR M ν K s S t C),
+    ∀ (ps : List (Option Pat)) (vs : List Val) {s t : St F.S} (_h : RelB F FR W stk M ν K s S t C),
     Supp.vals (Present s) S.tab.length vs → Supp.env (Present s) S.tab.length env →
     (rest ≠ none → Present s aArrayProto) → s.next < Sim.bound →
-    MSim (StepPost F FR M ν K S C) S C (arrNext F s ps rest vs env mode kind)
+    MSim (StepPostB F FR W stk M ν K S C) S C (arrNext F s ps rest vs env mode kind)
       (arrNext F t ps rest (M.vals vs) (M.env env) mode kind)
   | [], vs, s, t, h, hvs, he, hpa, hn => by
     cases rest with
@@ -102,8 +102,8 @@ theorem keyOf_isStr {k : Key} {key : PKey} (hk : keyOf k = some key) : ∃ cs, k
   | computed e => cases hk
 
 /-- The lookups an object pattern's next property reads. -/
-def ObjPatOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (src : Val) (ps : List (Key × Pat)) : Prop :=
-  ∀ k p ps' key, ps = (k, p) :: ps' → keyOf k = some key → LookupOK F K s S src key
+def ObjPatOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (src : Val) (ps : List (Key × Pat)) : Prop :=
+  ∀ k p ps' key, ps = (k, p) :: ps' → keyOf k = some key → LookupOK F K W s S src key
 
 /-! ## Object rest elements -/
 
@@ -127,19 +127,19 @@ theorem foldl_defineData_keeps (r : Nat) (hr : r < 2 ^ 64) : ∀ (kvs : List (PK
     exact ⟨by rw [List.foldl_cons, e1, e2], fun b hb => h1 b (hP b hb)⟩
 
 /-- The source of an object rest element is unframed and its own typed-array elements are readable. -/
-def RestOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (src : Val) : Prop :=
-  ∀ a, src = .obj a → K.fr a = none ∧ ∀ o, s.obj? a = some o → ∀ k ∈ ownKeys F s o, TypedOK F K s S o k
+def RestOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (src : Val) : Prop :=
+  ∀ a, src = .obj a → K.fr a = none ∧ ∀ o, s.obj? a = some o → ∀ k ∈ ownKeys F s o, TypedOK F K s S o k ∧ NsOK K W s o k
 
 /-- Results of `restObj`: none, or a new present object with related states. -/
-def RestR (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx) (S : SSrv)
+def RestR (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map) (ν : Nat → F64) (K : Ctx) (S : SSrv)
     (C : CSrv) (s : St F.S) (r r' : Option (Nat × St F.S)) : Prop :=
   (r = none ∧ r' = none) ∨ ∃ o o' s2 t2, r = some (o, s2) ∧ r' = some (o', t2) ∧ o' = M.a o ∧
-    Rel F FR M ν K s2 S t2 C ∧ Present s2 o ∧ ∀ x, Present s x → Present s2 x
+    RelB F FR W stk M ν K s2 S t2 C ∧ Present s2 o ∧ ∀ x, Present s x → Present s2 x
 
-theorem restObj_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (src : Val) (used : List PKey)
+theorem restObj_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (src : Val) (used : List PKey)
     (hsrc : Supp.val (Present s) S.tab.length src) (hused : Supp.keys (Present s) S.tab.length used)
-    (hok : RestOK F K s S src) (hpo : Present s aObjectProto) (hn : s.next + 1 < Sim.bound) :
-    MSim (ReadPost M S C (RestR F FR M ν K S C s)) S C (restObj F s src used)
+    (hok : RestOK F K W s S src) (hpo : Present s aObjectProto) (hn : s.next + 1 < Sim.bound) :
+    MSim (ReadPost M S C (RestR F FR W stk M ν K S C s)) S C (restObj F s src used)
       (restObj F t (M.val src) (used.map M.key)) := by
   cases src
   case obj a =>
@@ -152,7 +152,8 @@ theorem restObj_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBac
       exact ReadPost.pure (.inl ⟨rfl, rfl⟩)
     | some o =>
       rw [h.obj? ho hfr]
-      refine read_bind (dataProps_sim h hF (h.obj?_supp ho) (hty o ho)) ?_
+      refine read_bind (dataProps_sim h hF (h.obj?_supp ho) (fun k hk => (hty o ho k hk).1)
+        (fun k hk => (hty o ho k hk).2)) ?_
       rintro r r' ⟨rfl, hkv⟩
       cases r with
       | none => exact ReadPost.pure (.inl ⟨rfl, rfl⟩)
@@ -192,19 +193,19 @@ theorem restObj_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBac
         obtain ⟨_, hP2⟩ := foldl_defineData_keeps r0 h64 kf (s.allocObj .ordinary (.obj aObjectProto) []).2
         have hal' : (t.allocObj .ordinary (.obj aObjectProto) []).1 = M.a r0 := hal
         refine ReadPost.pure (.inr ⟨r0, _, _, _, rfl, rfl, hal, ?_, hP2 _ hr0, fun x hx => hP2 x (hP1 x hx)⟩)
-        show Rel F FR M ν K _ S (List.foldl _ _ ((M.kvs kvs).filter (fun x => !((used.map M.key).any (keyEq x.1))))) C
+        show RelB F FR W stk M ν K _ S (List.foldl _ _ ((M.kvs kvs).filter (fun x => !((used.map M.key).any (keyEq x.1))))) C
         rw [hfilt, hal']
         exact h2
   all_goals exact ReadPost.pure (.inl ⟨rfl, rfl⟩)
 
 /-- The next property pattern of an object pattern, or its rest element. -/
-theorem objPatNext_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (src : Val)
+theorem objPatNext_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (src : Val)
     (ps : List (Key × Pat)) (rest : Option Pat) (used : List PKey) (env : Env) (mode : BindMode) (kind : DeclKind)
     (hsrc : Supp.val (Present s) S.tab.length src) (hused : Supp.keys (Present s) S.tab.length used)
     (he : Supp.env (Present s) S.tab.length env) (hn : s.next + 1 < Sim.bound)
-    (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K s S src ps)
-    (hrest : ps = [] → rest ≠ none → RestOK F K s S src ∧ Present s aObjectProto) :
-    MSim (StepPost F FR M ν K S C) S C (objPatNext F s src ps rest used env mode kind)
+    (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K W s S src ps)
+    (hrest : ps = [] → rest ≠ none → RestOK F K W s S src ∧ Present s aObjectProto) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (objPatNext F s src ps rest used env mode kind)
       (objPatNext F t (M.val src) ps rest (used.map M.key) (M.env env) mode kind) := by
   match ps with
   | [] =>
@@ -277,11 +278,11 @@ end StmtSim
 open StmtSim
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
 /-- Bind control on both sides. -/
-theorem bindTop (h : Rel F FR M ν K s S t C) {p : Pat} {v : Val} {env : Env} {m : BindMode} {k : DeclKind}
+theorem bindTop (h : RelB F FR W stk M ν K s S t C) {p : Pat} {v : Val} {env : Env} {m : BindMode} {k : DeclKind}
     (hc : s.ctl = .bind p v env m k) :
     step F s = bindStep F s p v env m k ∧ step F t = bindStep F t p (M.val v) (M.env env) m k ∧
       Supp.val (Present s) S.tab.length v ∧ Supp.env (Present s) S.tab.length env := by
@@ -293,10 +294,10 @@ theorem bindTop (h : Rel F FR M ν K s S t C) {p : Pat} {v : Val} {env : Env} {m
 /-! ## Bind control -/
 
 /-- Initializing a binding: the bound address must hold a cell (`hcell`, a source fact). -/
-theorem step_bind_id_init (h : Rel F FR M ν K s S t C) {n : Name} {v : Val} {env : Env} {kind : DeclKind}
+theorem step_bind_id_init (h : RelB F FR W stk M ν K s S t C) {n : Name} {v : Val} {env : Env} {kind : DeclKind}
     (hc : s.ctl = .bind (.id n) v env .init kind) (hn : s.next + margin < Sim.bound)
-    (hcell : ∀ c, lookupEnv n env = some c → (s.cell? c).isSome = true) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hcell : ∀ c, lookupEnv n env = some c → (s.cell? c).isSome = true) (hcn : CellNoW K W env n) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hv, he⟩ := bindTop h hc
   rw [e1, e2]
   cases hl : lookupEnv n env with
@@ -314,15 +315,15 @@ theorem step_bind_id_init (h : Rel F FR M ν K s S t C) {n : Name} {v : Val} {en
         retS F (t.setCell (M.a c) (M.val v)) .undef := by
       simp only [bindStep, lookupEnv_img_some hl]
     rw [es, et]
-    exact MSim.pure ⟨Grow.refl h.srv, (h.setCell v (lt_of_margin hn) (Present.of_get hg) (h.fr_cell hg) hv).ret
+    exact MSim.pure ⟨Grow.refl h.srv, (h.setCell v (lt_of_margin hn) (Present.of_get hg) (h.fr_cell hg (.of_or (hcn c hl))) hv).ret
       .undef trivial⟩
 
 /-- Assigning to an identifier (`writeVar`): an uninitialized or unbound name throws a
 `ReferenceError`. -/
-theorem step_bind_id_assign (h : Rel F FR M ν K s S t C) {n : Name} {v : Val} {env : Env} {kind : DeclKind}
+theorem step_bind_id_assign (h : RelB F FR W stk M ν K s S t C) {n : Name} {v : Val} {env : Env} {kind : DeclKind}
     (hc : s.ctl = .bind (.id n) v env .assign kind) (hn : s.next + margin < Sim.bound)
-    (hP : Present s aReferenceErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hP : Present s aReferenceErrorProto) (hcn : CellNoW K W env n) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hv, he⟩ := bindTop h hc
   rw [e1, e2]
   have hn0 := lt_of_margin hn
@@ -336,7 +337,7 @@ theorem step_bind_id_assign (h : Rel F FR M ν K s S t C) {n : Name} {v : Val} {
     rw [lookupEnv_img_some hl]
     simp only
     have hpc : Present s c := env_lookup_supp he hl
-    rw [cell_img h hpc]
+    rw [cell_img h hpc (.of_or (hcn c hl))]
     cases hw : s.cell? c with
     | none => exact MSim.fail _ _
     | some w =>
@@ -344,35 +345,35 @@ theorem step_bind_id_assign (h : Rel F FR M ν K s S t C) {n : Name} {v : Val} {
       | none => exact refErr_sim h h.intr hn0 hP _
       | some w0 =>
         have hg := cell?_iff.1 hw
-        exact MSim.pure ⟨Grow.refl h.srv, (h.setCell v hn0 hpc (h.fr_cell hg) hv).ret v
+        exact MSim.pure ⟨Grow.refl h.srv, (h.setCell v hn0 hpc (h.fr_cell hg (.of_or (hcn c hl))) hv).ret v
           (Supp.val_mono (fun _ hp => Present.set _ (by have := h.presentBound c hpc; have := lt64 h hn0; omega) hp)
             (Nat.le_refl _) hv)⟩
 
 /-- A pattern with a default: evaluate the default when the value is `undefined`. -/
-theorem step_bind_dflt (h : Rel F FR M ν K s S t C) {q : Pat} {d : Expr} {v : Val} {env : Env}
+theorem step_bind_dflt (h : RelB F FR W stk M ν K s S t C) {q : Pat} {d : Expr} {v : Val} {env : Env}
     {mode : BindMode} {kind : DeclKind} (hc : s.ctl = .bind (.dflt q d) v env mode kind) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hv, he⟩ := bindTop h hc
   rw [e1, e2]
   cases v
   case undef => exact MSim.pure ⟨Grow.refl h.srv, (h.push (.b (.dflt q env mode kind)) he).go (.ev d env) he⟩
   all_goals exact MSim.pure ⟨Grow.refl h.srv, h.go (.bind q _ env mode kind) ⟨hv, he⟩⟩
 
-theorem step_bind_expr (h : Rel F FR M ν K s S t C) {e : Expr} {v : Val} {env : Env}
+theorem step_bind_expr (h : RelB F FR W stk M ν K s S t C) {e : Expr} {v : Val} {env : Env}
     {mode : BindMode} {kind : DeclKind} (hc : s.ctl = .bind (.expr e) v env mode kind) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, _, _⟩ := bindTop h hc
   rw [e1, e2]
   exact MSim.fail _ _
 
 /-- An array pattern: elements of arrays, typed arrays and strings (`hok`: not framed,
 typed-array cells readable), else the value's iterator collected; non-iterables throw. -/
-theorem step_bind_array (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {ps : List (Option Pat)}
+theorem step_bind_array (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {ps : List (Option Pat)}
     {rest : Option Pat} {v : Val} {env : Env} {mode : BindMode} {kind : DeclKind}
     (hc : s.ctl = .bind (.array ps rest) v env mode kind) (hn : s.next + margin < Sim.bound)
     (hok : ElemsOK F K s S v) (hpa : rest ≠ none → Present s aArrayProto)
-    (hP : Present s aTypeErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hP : Present s aTypeErrorProto) (hnw : LookupNoW F K W s v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hv, he⟩ := bindTop h hc
   rw [e1, e2]
   have hn0 := lt_of_margin hn
@@ -385,16 +386,16 @@ theorem step_bind_array (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall o
     cases v
     case obj a =>
       exact iterGet_sim (h.push (.b (.arrSrc ps rest env mode kind)) he) hF (.b (.collectIt []))
-        a 0 (by decide) (fun _ hx => nomatch hx) hv hn0 hP
+        a 0 (by decide) (fun _ hx => nomatch hx) hv hn0 hP (ChainNoW.congr (fun _ => rfl) 16 a hnw)
     all_goals exact typeErr_sim h h.intr hn0 hP _
 
 /-- An object pattern: nullish values throw, else read the first key (or build the rest object). -/
-theorem step_bind_object (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {ps : List (Key × Pat)}
+theorem step_bind_object (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {ps : List (Key × Pat)}
     {rest : Option Pat} {v : Val} {env : Env} {mode : BindMode} {kind : DeclKind}
     (hc : s.ctl = .bind (.object ps rest) v env mode kind) (hn : s.next + margin < Sim.bound)
-    (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K s S v ps)
-    (hrest : ps = [] → rest ≠ none → RestOK F K s S v ∧ Present s aObjectProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K W s S v ps)
+    (hrest : ps = [] → rest ≠ none → RestOK F K W s S v ∧ Present s aObjectProto) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hv, he⟩ := bindTop h hc
   rw [e1, e2]
   have hn0 := lt_of_margin hn
@@ -407,28 +408,28 @@ theorem step_bind_object (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall 
 
 /-! ## Values returning to pattern frames -/
 
-theorem step_ret_bdflt (h : Rel F FR M ν K s S t C) {v : Val} {p : Pat} {env : Env} {mode : BindMode}
+theorem step_ret_bdflt (h : RelB F FR W stk M ν K s S t C) {v : Val} {p : Pat} {env : Env} {mode : BindMode}
     {kind : DeclKind} {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .b (.dflt p env mode kind) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := retTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.bind p v env mode kind) ⟨hv, hf⟩⟩
 
-theorem step_ret_arr (h : Rel F FR M ν K s S t C) {v : Val} {ps : List (Option Pat)} {rest : Option Pat}
+theorem step_ret_arr (h : RelB F FR W stk M ν K s S t C) {v : Val} {ps : List (Option Pat)} {rest : Option Pat}
     {vs : List Val} {env : Env} {mode : BindMode} {kind : DeclKind} {fs : List Frame} (hc : s.ctl = .ret v)
     (hs : s.stack = .b (.arr ps rest vs env mode kind) :: fs) (hn : s.next + margin < Sim.bound)
     (hpa : rest ≠ none → Present s aArrayProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, _, hf⟩ := retTop h hc hs
   rw [e1, e2]
   exact arrNext_sim rest env mode kind ps vs hr hf.1 hf.2 hpa (lt_of_margin hn)
 
 /-- The collected elements of an iterator bound by an array pattern. -/
-theorem step_ret_arrSrc (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
+theorem step_ret_arrSrc (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
     {ps : List (Option Pat)} {rest : Option Pat} {env : Env} {mode : BindMode} {kind : DeclKind}
     {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .b (.arrSrc ps rest env mode kind) :: fs)
     (hn : s.next + margin < Sim.bound) (hok : ElemsOK F K s S v) (hpa : rest ≠ none → Present s aArrayProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := retTop h hc hs
   rw [e1, e2]
   show MSim _ S C (Host.Ts.M.bind (elemsOf F _ v) _) (Host.Ts.M.bind (elemsOf F _ (M.val v)) _)
@@ -439,35 +440,36 @@ theorem step_ret_arrSrc (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall o
   | none => exact MSim.fail _ _
 
 /-- The next property (or the rest element) of an object pattern. -/
-theorem step_ret_obj (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v src : Val}
+theorem step_ret_obj (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v src : Val}
     {ps : List (Key × Pat)} {rest : Option Pat} {used : List PKey} {env : Env} {mode : BindMode} {kind : DeclKind}
     {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .b (.obj src ps rest used env mode kind) :: fs)
-    (hn : s.next + margin < Sim.bound) (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K s S src ps)
-    (hrest : ps = [] → rest ≠ none → RestOK F K s S src ∧ Present s aObjectProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hn : s.next + margin < Sim.bound) (hP : Present s aTypeErrorProto) (hok : ObjPatOK F K W s S src ps)
+    (hrest : ps = [] → rest ≠ none → RestOK F K W s S src ∧ Present s aObjectProto) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, _, hf⟩ := retTop h hc hs
   rw [e1, e2]
   exact objPatNext_sim hr hF src ps rest used env mode kind hf.1 hf.2.1 hf.2.2 (margin_bound hn (by decide)) hP hok hrest
 
 /-- A property's value read for an object pattern: bind its sub-pattern. -/
-theorem step_ret_objVal (h : Rel F FR M ν K s S t C) {v src : Val} {k : PKey} {p : Pat}
+theorem step_ret_objVal (h : RelB F FR W stk M ν K s S t C) {v src : Val} {k : PKey} {p : Pat}
     {ps : List (Key × Pat)} {rest : Option Pat} {used : List PKey} {env : Env} {mode : BindMode}
     {kind : DeclKind} {fs : List Frame} (hc : s.ctl = .ret v)
     (hs : s.stack = .b (.objVal src k p ps rest used env mode kind) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := retTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, (hr.push (.b (.obj src ps rest used env mode kind))
     ⟨hf.1, hf.2.2.1, hf.2.2.2⟩).go (.bind p v env mode kind) ⟨hv, hf.2.2.2⟩⟩
 
 /-- The iterator of a value collected by an array pattern: read its `next`. -/
-theorem step_ret_collectIt (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
-    {acc : List Val} {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .b (.collectIt acc) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+theorem step_ret_collectIt (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
+    {acc : List Val} {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .b (.collectIt acc) :: fs)
+    (hnw : LookupNoW F K W s v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := retTop h hc hs
   rw [e1, e2]
   show MSim _ S C (Host.Ts.M.bind (dataOf F _ v kNext) _) (Host.Ts.M.bind (dataOf F _ (M.val v) kNext) _)
-  refine read_step (dataOf_sim hr hF h.intr hv (k := kNext) trivial (LookupOK.of_plain rfl rfl v)) ?_
+  refine read_step (dataOf_sim hr hF h.intr hv (k := kNext) trivial (LookupOK.of_noW rfl rfl (LookupNoW.congr (fun _ => rfl) hnw))) ?_
   rintro r r' ⟨rfl, hsupp⟩
   cases r with
   | none => exact MSim.fail _ _
@@ -478,17 +480,17 @@ theorem step_ret_collectIt (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCal
 
 /-- An iterator result collected for an array pattern: done gives the array of the collected
 values, else collect `value` and call `next()` again. `hz`: the map keeps bigints' zeroness. -/
-theorem step_ret_collect (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
+theorem step_ret_collect (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
     {v it nx : Val} {acc : List Val} {fs : List Frame} (hc : s.ctl = .ret v)
     (hs : s.stack = .b (.collect acc it nx) :: fs) (hn : s.next + margin < Sim.bound)
-    (hpa : Present s aArrayProto) (hz : ∀ i, (M.big i == 0) = (i == 0)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpa : Present s aArrayProto) (hz : ∀ i, (M.big i == 0) = (i == 0)) (hnw : LookupNoW F K W s v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := retTop h hc hs
   rw [e1, e2]
   obtain ⟨hacc, hit, hnx⟩ := hf
   have hn0 := lt_of_margin hn
   show MSim _ S C (Host.Ts.M.bind (dataOf F _ v kDone) _) (Host.Ts.M.bind (dataOf F _ (M.val v) kDone) _)
-  refine read_step (dataOf_sim hr hF h.intr hv (k := kDone) trivial (LookupOK.of_plain rfl rfl v)) ?_
+  refine read_step (dataOf_sim hr hF h.intr hv (k := kDone) trivial (LookupOK.of_noW rfl rfl (LookupNoW.congr (fun _ => rfl) hnw))) ?_
   rintro d d' ⟨rfl, hd⟩
   have hdv : (d.map M.val).getD .undef = M.val (d.getD .undef) := by cases d <;> rfl
   show MSim _ S C (Host.Ts.M.bind (truthy (d.getD .undef)) _) (Host.Ts.M.bind (truthy ((d.map M.val).getD .undef)) _)
@@ -506,13 +508,13 @@ theorem step_ret_collect (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall 
     obtain ⟨ea, h1⟩ := newArray_rel hr' acc.reverse hacc' hpa hn0
     show MSim _ S' C' (retS F (newArray { s with stack := fs } acc.reverse).2
         (.obj (newArray { s with stack := fs } acc.reverse).1))
-      (retS F (newArray { t with stack := fs.map M.frame } (M.vals acc).reverse).2
-        (.obj (newArray { t with stack := fs.map M.frame } (M.vals acc).reverse).1))
+      (retS F (newArray { t with stack := fs.map M.frame ++ stk } (M.vals acc).reverse).2
+        (.obj (newArray { t with stack := fs.map M.frame ++ stk } (M.vals acc).reverse).1))
     rw [hrev, ea]
     exact MSim.pure ⟨Grow.refl hr'.srv, h1.ret (.obj _) (Present.alloc_next { s with stack := fs } _ (lt64 hr hn0))⟩
   | false =>
     have hv' := Supp.val_mono (fun _ hp => hp) hle hv
-    have hd2 := dataOf_sim hr' hF hr'.intr hv' (k := kValue) trivial (LookupOK.of_plain rfl rfl v)
+    have hd2 := dataOf_sim hr' hF hr'.intr hv' (k := kValue) trivial (LookupOK.of_noW rfl rfl (LookupNoW.congr (fun _ => rfl) hnw))
     rw [← Map.val_agree hA hv] at hd2
     show MSim _ S' C' (Host.Ts.M.bind (dataOf F _ v kValue) _) (Host.Ts.M.bind (dataOf F _ (M.val v) kValue) _)
     refine read_step hd2 ?_
@@ -540,9 +542,9 @@ theorem step_ret_collect (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall 
 
 
 /-- Pattern frames let abrupt completions through. -/
-theorem step_abr_bind (h : Rel F FR M ν K s S t C) {a : Abrupt} {f : BindF} {fs : List Frame}
+theorem step_abr_bind (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {f : BindF} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .b f :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, ha, _⟩ := abrTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.abr a) ha⟩

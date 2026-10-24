@@ -72,7 +72,7 @@ theorem RelJS.toRel {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : M
     {s : St F.S} {S : SSrv} {t : St F.S} {C : CSrv} (h : RelJS F M ν K s S t C)
     (hffi : FR M S.tab.length s.ffi t.ffi) : Rel F FR M ν K s S t C :=
   ⟨h.srv, h.heap, h.next, h.offset, h.room, h.bigFixed, h.bigExt, h.band, h.intr, h.bound, h.inj,
-    h.presentBound, h.framedPresent, h.ctl, h.stack, h.jobs, h.stores, hffi, h.trace, h.heapSupp,
+    h.presentBound, h.framedPresent, h.ctl, by rw [List.append_nil]; exact h.stack, h.jobs, h.stores, hffi, h.trace, h.heapSupp,
     h.ctlSupp, h.stackSupp, h.jobsSupp, h.storesSupp, h.traceSupp⟩
 
 /-! ## Checks for the oracle and the number correspondence of a base relation -/

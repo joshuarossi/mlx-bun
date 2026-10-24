@@ -16,7 +16,7 @@ needs the native calls to be `Lawful` (`FfiLawful`). -/
 namespace BufSim
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool}
   {okBack : F.S → Arg → Bool}
 
@@ -26,11 +26,11 @@ theorem isEmpty_map {α β : Type} (f : α → β) (l : List α) : (l.map f).isE
   cases l <;> rfl
 
 /-- `ptr(view, extra)`: a pointer into the view's buffer (JS or native memory). -/
-theorem _root_.Host.Ts.Sim.step_ffi_ptr (h : Rel F FR M ν K s S t C) {a : Nat} {this : Val}
+theorem _root_.Host.Ts.Sim.step_ffi_ptr (h : RelB F FR W stk M ν K s S t C) {a : Nat} {this : Val}
     {args : List Val} {o : Obj} {data : List Val} (hc : s.ctl = .call (.obj a) this args)
     (ho : s.obj? a = some o) (hk : o.kind = .fn (.native (.ffi .ptr) data)) (hn : s.next < Sim.bound)
-    (hpT : Present s aTypeErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpT : Present s aTypeErrorProto) (hnw : ∀ p, arg args 0 = .obj p → NoW K W s p) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   show MSim _ S C (ffiN F s this args data .ptr) (ffiN F t (M.val this) (M.vals args) (M.vals data) .ptr)
@@ -40,7 +40,10 @@ theorem _root_.Host.Ts.Sim.step_ffi_ptr (h : Rel F FR M ν K s S t C) {a : Nat} 
   | obj p =>
     rw [harg] at hs0
     refine offsetArg_msim M _ fun extra _ => ?_
-    rcases obj?_cases h hs0 with ⟨hs, ht⟩ | ⟨o1, hs, ht⟩ | ⟨o1, o1', es, es', hs, ht, hk1, hk1'⟩
+    rcases obj?_cases h hs0 with ⟨hs, ht⟩ | ⟨o1, hs, ht⟩ | ⟨o1, o1', es, es', hs, ht, hk1, hk1'⟩ |
+      ⟨o1, o1', hs, ht, w1, -, hw, hf⟩
+    rotate_left 3
+    · exact ((hnw p harg).not_wide hs w1 hw hf).elim
     · simp only [hs, ht]
       exact typeErr_sim h _ hn hI hpT
     · have hso := h.obj?_supp hs
@@ -51,7 +54,21 @@ theorem _root_.Host.Ts.Sim.step_ffi_ptr (h : Rel F FR M ν K s S t C) {a : Nat} 
         cases hz : Nat.beq n 0
         · simp only [Bool.cond_false]
           have hpb : Present s b := hso.1
-          rcases obj?_cases h hpb with ⟨hb, hbt⟩ | ⟨ob, hb, hbt⟩ | ⟨ob, ob', es, es', hb, hbt, hkb, hkb'⟩
+          rcases obj?_cases h hpb with ⟨hb, hbt⟩ | ⟨ob, hb, hbt⟩ | ⟨ob, ob', es, es', hb, hbt, hkb, hkb'⟩ |
+            ⟨ob, ob', hb, hbt, w1, w2, -, -⟩
+          rotate_left 3
+          · obtain ⟨kb, prb, psb, pvb, eb⟩ := ob
+            obtain ⟨kb', prb', psb', pvb', eb'⟩ := ob'
+            have e1 : ∀ r o0 l, kb ≠ .extBuf r o0 l := fun r o0 l he => by subst he; exact w1
+            have e2 : ∀ r o0 l, kb' ≠ .extBuf r o0 l := fun r o0 l he => by
+              subst he
+              rcases w2 with w2 | ⟨bs, hbs⟩ | ⟨kk, b', off', n', hbs⟩
+              · exact w2
+              · cases hbs
+              · cases hbs
+            cases kb <;> first | exact (e1 _ _ _ rfl).elim | skip
+            all_goals (cases kb' <;> first | exact (e2 _ _ _ rfl).elim |
+              (simp only [hb, hbt]; exact sim_ret h (.ptr (.js b) (off + extra)) hpb))
           · simp only [hb, hbt]
             exact sim_ret h (.ptr (.js b) (off + extra)) hpb
           · obtain ⟨kb, prb, psb, pvb, eb⟩ := ob
@@ -112,7 +129,7 @@ def MemReadOK (F : Ffi) (K : Ctx) (s : St F.S) (n : Nat) (p : Val) (off : Nat) (
   | .ptr (.ext r) o => ∀ bs, F.read s.ffi r (o + off) k.size = some bs → ReadOK K.lo K.hi n k bs
   | _ => True
 
-theorem readMemP_rel (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {p : Val}
+theorem readMemP_rel (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {p : Val}
     {off : Nat} {k : EltK} {c : Cell} (hok : MemReadOK F K s S.tab.length p off k)
     (hr : readMemP F s p off k = some c) :
     readMemP F t (M.val p) off k = some (M.cell c) ∧ Supp.cell (fun _ => True) S.tab.length c := by
@@ -146,10 +163,10 @@ theorem readMemP_rel (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBa
   | _ => cases hr
 
 /-- `read.X(ptr, off)` for element kind `k`. -/
-theorem rd_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (k : EltK)
+theorem rd_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (k : EltK)
     {args : List Val}
     (hrd : ∀ off, offsetP (arg args 1) = some off → MemReadOK F K s S.tab.length (arg args 0) off k) :
-    MSim (StepPost F FR M ν K S C) S C (ffiN.rd F s args k) (ffiN.rd F t (M.vals args) k) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (ffiN.rd F s args k) (ffiN.rd F t (M.vals args) k) := by
   unfold ffiN.rd
   simp only [arg_vals]
   refine offsetArg_msim M _ fun off hoff => ?_
@@ -163,39 +180,39 @@ theorem rd_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (k
     rw [cellVal_map] at this
     exact this
 
-theorem _root_.Host.Ts.Sim.step_ffi_readU64 (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_ffi_readU64 (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .readU64) data))
     (hrd : ∀ off, offsetP (arg args 1) = some off → MemReadOK F K s S.tab.length (arg args 0) off .u64) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact rd_sim h hF .u64 hrd
 
-theorem _root_.Host.Ts.Sim.step_ffi_readU32 (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_ffi_readU32 (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .readU32) data))
     (hrd : ∀ off, offsetP (arg args 1) = some off → MemReadOK F K s S.tab.length (arg args 0) off .u32) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact rd_sim h hF .u32 hrd
 
-theorem _root_.Host.Ts.Sim.step_ffi_readI32 (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_ffi_readI32 (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .readI32) data))
     (hrd : ∀ off, offsetP (arg args 1) = some off → MemReadOK F K s S.tab.length (arg args 0) off .i32) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact rd_sim h hF .i32 hrd
 
-theorem _root_.Host.Ts.Sim.step_ffi_readF32 (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_ffi_readF32 (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .readF32) data))
     (hrd : ∀ off, offsetP (arg args 1) = some off → MemReadOK F K s S.tab.length (arg args 0) off .f32) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact rd_sim h hF .f32 hrd
 
@@ -204,12 +221,12 @@ theorem _root_.Host.Ts.Sim.step_ffi_readF32 (h : Rel F FR M ν K s S t C) (hF : 
 /-- `toArrayBuffer(ptr, off, len)`: an `ArrayBuffer` over native memory. A number operand
 naming host memory (`hostAddr`) needs the map to fix that region (`hhost`; vacuous when no
 such operand occurs). -/
-theorem _root_.Host.Ts.Sim.step_ffi_toArrayBuffer (h : Rel F FR M ν K s S t C) {a : Nat} {this : Val}
+theorem _root_.Host.Ts.Sim.step_ffi_toArrayBuffer (h : RelB F FR W stk M ν K s S t C) {a : Nat} {this : Val}
     {args : List Val} {o : Obj} {data : List Val} (hc : s.ctl = .call (.obj a) this args)
     (ho : s.obj? a = some o) (hk : o.kind = .fn (.native (.ffi .toArrayBuffer) data))
     (hn : s.next < Sim.bound) (hp14 : Present s aArrayBufferProto)
     (hhost : ∀ x r o, arg args 0 = .num (.lit x) → hostAddr x = some (r, o) → M.region r = r) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   show MSim _ S C (ffiN F s this args data .toArrayBuffer)
@@ -286,10 +303,12 @@ theorem MSim.condH {α β : Type} {P : Map → SSrv → CSrv → α → β → P
   · exact h2 rfl
   · exact h1 rfl
 
-/-- Side condition on an argument passed by pointer: its buffer is `BufOK`. -/
-def ArgBufOK (F : Ffi) (s : St F.S) (n : Nat) : Val → Prop
-  | .ptr (.js b) _ => BufOK F s n b
-  | .obj a => ∀ o, s.obj? a = some o → ∀ k b off len, o.kind = .typed k b off len → BufOK F s n b
+/-- Side condition on an argument passed by pointer: its buffer is `BufOK`, and `NoW` holds at
+the object and the buffer. -/
+def ArgBufOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (n : Nat) : Val → Prop
+  | .ptr (.js b) _ => BufOK F s n b ∧ NoW K W s b
+  | .obj a => NoW K W s a ∧
+      ∀ o, s.obj? a = some o → ∀ k b off len, o.kind = .typed k b off len → BufOK F s n b ∧ NoW K W s b
   | _ => True
 
 /-- A bigint passed as a `bool` parameter keeps its value. -/
@@ -302,12 +321,12 @@ def ArgP (A : Nat → Prop) (M : Map) (ν : Nat → F64) (S : SSrv) (C : CSrv) :
   fun M' S' C' r r' => r' = r.map M'.arg ∧ Grow M ν S C M' S' C' ∧
     ∀ a, r = some a → Supp.arg A S'.tab.length a
 
-theorem jsPtr_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} (o : Nat)
-    (hp : Present s b) (hok : BufOK F s S.tab.length b) :
+theorem jsPtr_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} (o : Nat)
+    (hp : Present s b) (hok : BufOK F s S.tab.length b) (hn : NoW K W s b) :
     MSim (ArgP (Present s) M ν S C) S C
       (Host.Ts.M.pure ((bufBytes F s b).map fun bs => Arg.jsPtr b o (bs.drop o)))
       (Host.Ts.M.pure ((bufBytes F t (M.a b)).map fun bs => Arg.jsPtr (M.a b) o (bs.drop o))) := by
-  obtain ⟨he, hsupp⟩ := bufBytes_exact h hF hp hok
+  obtain ⟨he, hsupp⟩ := bufBytes_exact h hF hp hok hn
   rw [he]
   refine MSim.pure ⟨?_, Grow.refl h.srv, fun a ha => ?_⟩
   · cases bufBytes F s b <;> simp [Map.arg, List.map_drop]
@@ -325,8 +344,8 @@ theorem numUn_arg {A : Nat → Prop} (hs : Srv M ν S C) (op : NUn) (x : NumV) :
   MSim.bind (numUn_simS (A := A) hs op x) fun M' S' C' y y' ⟨h1, h2, h3⟩ =>
     MSim.pure ⟨by rw [h1]; rfl, h2, fun a ha => by cases ha; exact h3⟩
 
-theorem decodeArg_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (ty : List Char)
-    (v : Val) (hv : Supp.val (Present s) S.tab.length v) (hbuf : ArgBufOK F s S.tab.length v)
+theorem decodeArg_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (ty : List Char)
+    (v : Val) (hv : Supp.val (Present s) S.tab.length v) (hbuf : ArgBufOK F K W s S.tab.length v)
     (hbool : BoolOK K ty v) :
     MSim (ArgP (Present s) M ν S C) S C (decodeArg F s ty v) (decodeArg F t ty (M.val v)) := by
   have hs := h.srv
@@ -338,7 +357,7 @@ theorem decodeArg_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okB
   · cases v with
     | ptr m o =>
       cases m with
-      | js b => exact jsPtr_sim h hF o hv hbuf
+      | js b => exact jsPtr_sim h hF o hv hbuf.1 hbuf.2
       | ext r => exact MSim.pure ⟨rfl, Grow.refl hs, fun a ha => by cases ha; trivial⟩
     | null => exact MSim.pure ⟨rfl, Grow.refl hs, fun a ha => by cases ha; trivial⟩
     | undef => exact MSim.pure ⟨rfl, Grow.refl hs, fun a ha => by cases ha; trivial⟩
@@ -349,14 +368,17 @@ theorem decodeArg_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okB
         | some ⟨.typed _ b off _, _, _, _, _⟩ =>
           Host.Ts.M.pure ((bufBytes F t b).map fun bs => Arg.jsPtr b off (bs.drop off))
         | _ => Host.Ts.M.pure none)
-      rcases obj?_cases h hv with ⟨ho, ht⟩ | ⟨o, ho, ht⟩ | ⟨o, o', es, es', ho, ht, hk, hk'⟩
+      rcases obj?_cases h hv with ⟨ho, ht⟩ | ⟨o, ho, ht⟩ | ⟨o, o', es, es', ho, ht, hk, hk'⟩ |
+        ⟨o, o', ho, ht, w1, -, hw, hf⟩
+      rotate_left 3
+      · exact (hbuf.1.not_wide ho w1 hw hf).elim
       · simp only [ho, ht]; exact pure_none
       · have hso := h.obj?_supp ho
         obtain ⟨kd, pr, ps, pv, e⟩ := o
         cases kd with
         | typed k b off len =>
           simp only [ho, ht, Map.obj, Map.kind]
-          exact jsPtr_sim h hF off hso.1 (hbuf _ ho k b off len rfl)
+          exact jsPtr_sim h hF off hso.1 (hbuf.2 _ ho k b off len rfl).1 (hbuf.2 _ ho k b off len rfl).2
         | _ => simp only [ho, ht, Map.obj, Map.kind]; exact pure_none
       · obtain ⟨kd, pr, ps, pv, e⟩ := o
         obtain ⟨kd', pr', ps', pv', e'⟩ := o'
@@ -389,12 +411,12 @@ theorem BufOK.mono {n n' : Nat} {b : Nat} (h : BufOK F s n b) (hn : n ≤ n') : 
     obtain ⟨bs, hr, hbs⟩ := h o ho r off len hk
     exact ⟨bs, hr, bytes_mono hbs hn⟩
 
-theorem ArgBufOK.mono {n n' : Nat} {v : Val} (h : ArgBufOK F s n v) (hn : n ≤ n') : ArgBufOK F s n' v := by
+theorem ArgBufOK.mono {n n' : Nat} {v : Val} (h : ArgBufOK F K W s n v) (hn : n ≤ n') : ArgBufOK F K W s n' v := by
   cases v with
   | ptr m o => cases m with
-    | js b => exact BufOK.mono (F := F) h hn
+    | js b => exact ⟨BufOK.mono (F := F) h.1 hn, h.2⟩
     | ext _ => trivial
-  | obj a => exact fun o ho k b off len hk => BufOK.mono (h o ho k b off len hk) hn
+  | obj a => exact ⟨h.1, fun o ho k b off len hk => ⟨BufOK.mono (h.2 o ho k b off len hk).1 hn, (h.2 o ho k b off len hk).2⟩⟩
   | _ => trivial
 
 /-- The postcondition of `decodeArgs`. -/
@@ -404,17 +426,17 @@ def ArgsP (A : Nat → Prop) (M : Map) (ν : Nat → F64) (S : SSrv) (C : CSrv) 
     ∀ as, r = some as → ∀ a ∈ as, Supp.arg A S'.tab.length a
 
 theorem decodeArgs_sim (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack) :
-    ∀ (ts vs : List Val) {M : Map} {S : SSrv} {C : CSrv}, Rel F FR M ν K s S t C →
+    ∀ (ts vs : List Val) {M : Map} {S : SSrv} {C : CSrv}, RelB F FR W stk M ν K s S t C →
     Supp.vals (Present s) S.tab.length ts → Supp.vals (Present s) S.tab.length vs →
-    (∀ v ∈ vs, ArgBufOK F s S.tab.length v) → (∀ ty v, Val.str ty ∈ ts → v ∈ vs → BoolOK K ty v) →
+    (∀ v ∈ vs, ArgBufOK F K W s S.tab.length v) → (∀ ty v, Val.str ty ∈ ts → v ∈ vs → BoolOK K ty v) →
     MSim (ArgsP (Present s) M ν S C) S C (decodeArgs F s ts vs) (decodeArgs F t (M.vals ts) (M.vals vs))
   | [], [], M, S, C, h, _, _, _, _ => MSim.pure ⟨rfl, Grow.refl h.srv, fun as has a ha => by
       cases has; exact nomatch ha⟩
   | [], _ :: _, M, S, C, h, _, _, _, _ => MSim.pure ⟨rfl, Grow.refl h.srv, fun _ h => nomatch h⟩
   | t0 :: ts, vs, M, S, C, h, hts, hvs, hbuf, hbool => by
     have tail : ∀ (v : Val) (vs' : List Val), Supp.val (Present s) S.tab.length v →
-        ArgBufOK F s S.tab.length v → BoolOK K (match t0 with | .str ty => ty | _ => []) v →
-        Supp.vals (Present s) S.tab.length vs' → (∀ v ∈ vs', ArgBufOK F s S.tab.length v) →
+        ArgBufOK F K W s S.tab.length v → BoolOK K (match t0 with | .str ty => ty | _ => []) v →
+        Supp.vals (Present s) S.tab.length vs' → (∀ v ∈ vs', ArgBufOK F K W s S.tab.length v) →
         (∀ ty v, Val.str ty ∈ ts → v ∈ vs' → BoolOK K ty v) →
         ∀ ty, t0 = .str ty →
         MSim (ArgsP (Present s) M ν S C) S C
@@ -486,9 +508,9 @@ theorem present_setObj (hn : s.next < Sim.bound) (presentBound : ∀ a, Present 
 
 /-- Applying native writes into JS buffers: the target applies the image writes. -/
 theorem applyWrites_rel : ∀ (ws : List (Nat × Nat × List Byte)) {s1 t1 s2 : St F.S},
-    Rel F FR M ν K s1 S t1 C → s1.next < Sim.bound →
+    RelB F FR W stk M ν K s1 S t1 C → s1.next < Sim.bound →
     (∀ w ∈ ws, Supp.bytes (fun _ => True) S.tab.length w.2.2) → applyWrites F s1 ws = some s2 →
-    ∃ t2, applyWrites F t1 (ws.map M.write) = some t2 ∧ Rel F FR M ν K s2 S t2 C ∧
+    ∃ t2, applyWrites F t1 (ws.map M.write) = some t2 ∧ RelB F FR W stk M ν K s2 S t2 C ∧
       s2.next = s1.next ∧ ∀ a, Present s2 a ↔ Present s1 a
   | [], s1, t1, s2, h, _, _, hw => by
     cases hw
@@ -506,7 +528,7 @@ theorem applyWrites_rel : ∀ (ws : List (Nat × Nat × List Byte)) {s1 t1 s2 : 
         have hso := h.obj?_supp ho
         have hbytes : Supp.bytes (Present s1) S.tab.length bytes :=
           bytesA (hsupp (b, off, bytes) (List.mem_cons_self ..))
-        obtain ⟨ht, hr⟩ := Rel.setBuf h hn ho (bs.take off ++ bytes ++ bs.drop (off + len bytes))
+        obtain ⟨ht, hr⟩ := RelB.setBuf h hn ho (bs.take off ++ bytes ++ bs.drop (off + len bytes))
           (bytes_append (bytes_append (bytes_take hso.1 _) hbytes) (bytes_drop hso.1 _))
         have hp : ∀ a, Present (s1.setObj b ⟨.buf (bs.take off ++ bytes ++ bs.drop (off + len bytes)), pr, ps,
             pv, e⟩) a ↔ Present s1 a :=
@@ -575,19 +597,20 @@ theorem argVals_supp {A : Nat → Prop} {n : Nat} : ∀ (tys : List Val) {cargs 
     | _ => exact fun _ h => nomatch h
 
 /-- Side condition of a `JSCallback` invocation on the state that invokes it: the callback's
-`%args` is an unframed array of parameter types for which `ArgValsOK` holds. -/
+`%args` is an unframed array of parameter types for which `ArgValsOK` holds; the callback object is
+unframed. -/
 def CbOK (F : Ffi) (K : Ctx) (s : St F.S) (f : Nat) (cargs : List Arg) : Prop :=
-  ∀ o, s.obj? (f - cbBase) = some o → ∀ ats w e, findProp kCbArgs o.props = some (.data ats w e) →
+  ∀ o, s.obj? (f - cbBase) = some o → K.fr (f - cbBase) = none ∧ ∀ ats w e, findProp kCbArgs o.props = some (.data ats w e) →
     ∃ ta oa tys, ats = .obj ta ∧ s.obj? ta = some oa ∧ oa.kind = .array tys ∧ K.fr ta = none ∧
       ArgValsOK K tys cargs
 
 /-- An invocation of `JSCallback` region `f`. The map must send the callback's region to the
 region of the callback object's image (`hcbr`, a fact about native regions). -/
-theorem ffiCallback_sim (h : Rel F FR M ν K s S t C) {name : Name} {f : Nat} {cargs : List Arg}
+theorem ffiCallback_sim (h : RelB F FR W stk M ν K s S t C) {name : Name} {f : Nat} {cargs : List Arg}
     (hcargs : Supp.args (Present s) S.tab.length cargs)
     (hcbr : cbBase ≤ f → Present s (f - cbBase) → M.region f = cbBase + M.a (f - cbBase))
     (hcb : CbOK F K s f cargs) :
-    MSim (StepPost F FR M ν K S C) S C (ffiCallback F s name f cargs)
+    MSim (StepPostB F FR W stk M ν K S C) S C (ffiCallback F s name f cargs)
       (ffiCallback F t name (M.region f) (cargs.map M.arg)) := by
   unfold ffiCallback
   cases hlt : Nat.blt f cbBase
@@ -605,7 +628,7 @@ theorem ffiCallback_sim (h : Rel F FR M ν K s S t C) {name : Name} {f : Nat} {c
         rw [Bool.eq_false_iff, ne_eq, Nat.blt_eq]; omega
       rw [hlt', Nat.add_sub_cancel_left]
       simp only [Bool.cond_false]
-      obtain ⟨o', ho', -, hprops, -, -⟩ := h.obj?_some ho
+      obtain ⟨o', ho', -, hprops, -, -⟩ := h.obj?_some ho (.of_fr (hcb o ho).1)
       simp only [ho', hprops]
       have hps := (h.obj?_supp ho).2.2.1
       have hfp : ∀ k : List Char, findProp (.str k) (M.props o.props) = (findProp (.str k) o.props).map M.prop :=
@@ -630,7 +653,7 @@ theorem ffiCallback_sim (h : Rel F FR M ν K s S t C) {name : Name} {f : Nat} {c
                 | acc _ _ _ => exact MSim.fail _ _
                 | data rt w3 e3 =>
                   simp only [Option.map_some, Map.prop]
-                  obtain ⟨ta, oa, tys, rfl, hta, htk, hfr, hav⟩ := hcb o ho ats w2 e2 h2
+                  obtain ⟨ta, oa, tys, rfl, hta, htk, hfr, hav⟩ := (hcb o ho).2 ats w2 e2 h2
                   have htt := h.obj? hta hfr
                   obtain ⟨kd, pr, ps, pv, e⟩ := oa
                   simp only at htk
@@ -668,12 +691,12 @@ theorem retVal_supp {A : Nat → Prop} {n : Nat} {ret : Ret} (h : Supp.ret A n r
 
 /-- A native call's completion: buffer writes, the trace event, then the return value or the
 `JSCallback` invocation the call waits for. -/
-theorem ffiDone_sim (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {name : Name} {as : List Arg}
+theorem ffiDone_sim (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {name : Name} {as : List Arg}
     (has : ∀ a ∈ as, Supp.arg (Present s) S.tab.length a)
     (hcbr : ∀ f, cbBase ≤ f → Present s (f - cbBase) → M.region f = cbBase + M.a (f - cbBase))
     {r r' : Option (F.S × Ret × List (Nat × Nat × List Byte))} (hr : CallR FR M S.tab.length r r')
     (hres : ResOK F K s S.tab.length r) :
-    MSim (StepPost F FR M ν K S C) S C (ffiDone F s name as r) (ffiDone F t name (as.map M.arg) r') := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (ffiDone F s name as r) (ffiDone F t name (as.map M.arg) r') := by
   cases r with
   | none => exact MSim.fail _ _
   | some p =>
@@ -711,7 +734,7 @@ structure FfiLawful (F : Ffi) : Prop where
   back : ∀ x a, Lawful (F.back x a)
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool}
   {okBack : F.S → Arg → Bool}
 
@@ -724,17 +747,17 @@ def SymOK (F : Ffi) (K : Ctx) (okCall : F.S → Name → List Arg → Bool) (s :
     ∀ r S2, interpS (F.call s.ffi name as).run S1 = some (r, S2) → ResOK F K s S2.tab.length r
 
 /-- A call of a `dlopen` symbol whose signature is the array `tys` at `ta`. -/
-theorem _root_.Host.Ts.Sim.step_ffi_symbol (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem _root_.Host.Ts.Sim.step_ffi_symbol (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hF : FfiSim F FR okCall okBack) (hL : FfiLawful F) {a : Nat} {this : Val} {args : List Val}
     {o : Obj} {name rt : Name} {ta : Nat} {oa : Obj} {tys : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .symbol) [.str name, .obj ta, .str rt]))
     (hta : s.obj? ta = some oa) (htk : oa.kind = .array tys) (hn : s.next < Sim.bound)
-    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F s S.tab.length v)
+    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F K W s S.tab.length v)
     (hbool : ∀ ty v, Val.str ty ∈ tys → v ∈ args → BoolOK K ty v)
     (hok : SymOK F K okCall s S name tys args)
     (hcbr : ∀ f, cbBase ≤ f → Present s (f - cbBase) → M.region f = cbBase + M.a (f - cbBase)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   have htt : t.obj? (M.a ta) = some (M.obj oa) := h.obj? hta hfr
   have hso : Supp.vals (Present s) S.tab.length tys := by
@@ -778,20 +801,20 @@ holds of the source call (decoded arguments `as`, server `S1` after decoding), s
 the source run like `SymOK`. `hF` is used for native memory reads only. -/
 theorem _root_.Host.Ts.Sim.step_ffi_symbol_small
     {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop}
-    (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+    (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hF : FfiSim F FR okCall okBack) (hC : FfiCallSim F FR okCall small) (hL : FfiLawful F)
     {a : Nat} {this : Val} {args : List Val}
     {o : Obj} {name rt : Name} {ta : Nat} {oa : Obj} {tys : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .symbol) [.str name, .obj ta, .str rt]))
     (hta : s.obj? ta = some oa) (htk : oa.kind = .array tys) (hn : s.next < Sim.bound)
-    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F s S.tab.length v)
+    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F K W s S.tab.length v)
     (hbool : ∀ ty v, Val.str ty ∈ tys → v ∈ args → BoolOK K ty v)
     (hok : SymOK F K okCall s S name tys args)
     (hsmall : ∀ as S1, interpS (decodeArgs F s tys args).run S = some (some as, S1) →
       small ν S1 s.ffi name as)
     (hcbr : ∀ f, cbBase ≤ f → Present s (f - cbBase) → M.region f = cbBase + M.a (f - cbBase)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   have htt : t.obj? (M.a ta) = some (M.obj oa) := h.obj? hta hfr
   have hso : Supp.vals (Present s) S.tab.length tys := by

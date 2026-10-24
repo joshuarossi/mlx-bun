@@ -6,6 +6,7 @@ import contracts.mlx.BFloat16Arithmetic
 import contracts.mlx.BFloat16
 import contracts.mlx.FloatMemory
 import contracts.mlx.Maximum
+import contracts.mlx.Float16
 
 namespace Inference.Contracts.Mlx.M1Max
 open Numerics
@@ -115,6 +116,35 @@ structure Contract where
   widen : BFloat16Arithmetic.Value → Float32
   narrow_model : ∀ x, x.isFinite=true → narrow x=BFloat16.narrow x
   widen_model : ∀ x, Model.isFinite x=true → widen x=BFloat16.widen x
+  -- The stable sigmoids' reciprocal 1/(1 + exp|x|) when exp overflows: a +inf operand as
+  -- the models compute it (x + inf = inf, x / inf the zero of x's sign, narrowing keeps inf),
+  -- and 1/y on every finite y ≥ 1 (above fdiv's divisor domain the exact quotient is below
+  -- 2^-126 and flushes).
+  fdiv_one_model : ∀ y, y.isFinite=true → 1≤real y → fdiv 1 y=FlushToZero.div 1 y
+  fadd_posInf : ∀ x, x.isFinite=true → fadd x Float32.inf=FlushToZero.add x Float32.inf
+  fdiv_posInf : ∀ x, x.isFinite=true → fdiv x Float32.inf=FlushToZero.div x Float32.inf
+  narrow_posInf : narrow Float32.inf=BFloat16.narrow Float32.inf
+  bfadd_posInf : ∀ x, Model.isFinite x=true →
+    bfadd x (Model.posInf FloatFormat.bfloat16)=BFloat16Arithmetic.add x (Model.posInf FloatFormat.bfloat16)
+  bfdiv_posInf : ∀ x, Model.isFinite x=true →
+    bfdiv x (Model.posInf FloatFormat.bfloat16)=BFloat16Arithmetic.div x (Model.posInf FloatFormat.bfloat16)
+  -- `fptrunc float to half`: the hardware's conversion, no model clause.
+  narrowHalf : Float32 → Float16.Value
+  -- simdgroup_multiply_accumulate(D, A, B, C) (metal_simdgroup_matrix:171-176), the hardware's
+  -- SIMD-group operation on the 32 lanes' registers: each lane's two `thread_elements()` of A, B and
+  -- C in, each lane's two of D out (C and D float). Which matrix element each lane element holds is
+  -- the hardware's, not part of the semantics; the kernels' authors assume MLX's layout (steel/gemm/
+  -- mma.h:49-55 `BaseMMAFrag::get_coord`: lane l holds row (l/4 & 4) + (l/2 % 4), columns
+  -- (l/4 & 2)·2 + (l % 2)·2 + {0, 1}) and D = A·B + C. The compiler emits one AIR intrinsic per
+  -- operand type pair, air.simdgroup_matrix_8x8_multiply_accumulate.v64f32.<A>.<B>.v64f32: simdMma
+  -- (.v64f32.v64f32), simdMmaHalfA (A half, .v64f16.v64f32), simdMmaHalfB (B half, .v64f32.v64f16);
+  -- no fpext precedes a half operand. The arithmetic is the hardware's: no model clause.
+  simdMma : (Fin 32 → Fin 2 → Float32) → (Fin 32 → Fin 2 → Float32) → (Fin 32 → Fin 2 → Float32) →
+    Fin 32 → Fin 2 → Float32
+  simdMmaHalfA : (Fin 32 → Fin 2 → Float16.Value) → (Fin 32 → Fin 2 → Float32) → (Fin 32 → Fin 2 → Float32) →
+    Fin 32 → Fin 2 → Float32
+  simdMmaHalfB : (Fin 32 → Fin 2 → Float32) → (Fin 32 → Fin 2 → Float16.Value) → (Fin 32 → Fin 2 → Float32) →
+    Fin 32 → Fin 2 → Float32
 
 /- Device facts of the compute pipelines on this target. `maxThreads name` and
    `executionWidth name` are the maxTotalThreadsPerThreadgroup and

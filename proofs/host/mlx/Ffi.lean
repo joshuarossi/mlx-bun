@@ -719,6 +719,135 @@ def loadSafetensors (s : St) (am sm path : Arg) : R :=
     | none => stuck
   | _, _, _ => stuck
 
+/-! ### Graph operations of the multi-row forwards
+
+MLX operations the prompt's multi-row forwards add (`mlx_matmul`,
+`mlx_less_equal`, `mlx_where`, `mlx_softmax_axis`, `mlx_sum_axis`; MLX v0.32.2
+`ops.cpp`). `Prim` and `infer` are shared with proofs that case on every
+constructor, so a node of one of these operations reuses an operation-name
+constructor (`graphPrim`): `.unary name` over two or three arguments and
+`.binary name` over one, arities no rule of `infer` accepts. A compiled
+closure's replay of such a node is therefore stuck rather than re-inferred
+by an elementwise rule. `name` is the C symbol without `mlx_`; an axis
+operation appends its normalized axis and flag (`axisName`).
+
+Output shapes and dtypes are MLX's, decided without number requests:
+symbolic dimensions must agree syntactically (broadcasting and matmul's
+inner dimension), else the call is stuck. -/
+
+/-- The graph operations the multi-row forwards call. -/
+inductive GraphOp where
+  | matmul | lessEqual | select | softmax | sum
+deriving DecidableEq
+
+/-- An axis operation's node name: `base`, `:`, the axis' decimal digits, `:`, the flag. -/
+def axisName (base : List Char) (axis : Nat) (flag : Bool) : List Char :=
+  base ++ [':'] ++ Nat.toDigits 10 axis ++ [':', bif flag then '1' else '0']
+
+/-- The node primitive of `name` over `arity` arguments (see above). -/
+def graphPrim (name : List Char) (arity : Nat) : Prim :=
+  bif Nat.beq arity 1 then .binary name else .unary name
+
+/-- Right-aligned broadcast of shapes without number requests: equal
+dimensions (syntactically) or a literal 1. -/
+def bcastRev : List Dim → List Dim → Option (List Dim)
+  | [], ys => some ys
+  | xs, [] => some xs
+  | x :: xs, y :: ys =>
+    let d := bif decide (x = y) then some x else bif decide (x = .lit 1) then some y
+      else bif decide (y = .lit 1) then some x else none
+    d.bind fun d => (bcastRev xs ys).map (d :: ·)
+
+def bcastPure (a b : List Dim) : Option (List Dim) := (bcastRev a.reverse b.reverse).map List.reverse
+
+/-- `matmul` (ops.cpp): both operands at least two-dimensional here (the
+one-dimensional forms are not modeled), `a`'s last dimension `b`'s second to
+last, an inexact promoted dtype. A batched `a` against a matrix keeps `a`'s
+leading dimensions; otherwise the leading dimensions broadcast. -/
+def matmulShape (a b : List Dim) (da db : Nat) : Option (List Dim × Nat) :=
+  let dt := promote da db
+  bif Nat.blt (len a) 2 || Nat.blt (len b) 2 || !isInexact dt then none else
+  let k := nthD (.lit 0) a (len a - 1)
+  let kb := nthD (.lit 0) b (len b - 2)
+  let n := nthD (.lit 0) b (len b - 1)
+  bif !decide (k = kb) then none else
+  bif Nat.blt 2 (len a) && Nat.ble (len b) 2 then some (a.take (len a - 1) ++ [n], dt) else
+  (bcastPure (a.take (len a - 2)) (b.take (len b - 2))).map fun batch =>
+    (batch ++ [nthD (.lit 0) a (len a - 2), n], dt)
+
+/-- `sum` over one axis (ops.cpp): signed integers sum in int32 (int64 for
+64-bit), unsigned in uint32 (uint64), bool in int32, inexact types in their own. -/
+def sumDtype (d : Nat) : Nat :=
+  bif Nat.beq d dtBool then dtInt32
+  else bif Nat.ble 5 d && Nat.ble d 7 then dtInt32
+  else bif Nat.ble 1 d && Nat.ble d 3 then dtUint32
+  else d
+
+/-- Shape and dtype of a graph operation over its arguments' shapes and dtypes,
+with the axis and flag of an axis operation (axis unnormalized). -/
+def graphShape (op : GraphOp) (axis : Int) (flag : Bool) : List (List Dim × Nat) → Option (List Dim × Nat)
+  | [(a, da), (b, db)] => match op with
+    | .matmul => matmulShape a b da db
+    | .lessEqual => (bcastPure a b).map (·, dtBool)
+    | _ => none
+  | [(c, _), (x, dx), (y, dy)] => match op with
+    | .select => ((bcastPure c x).bind fun cx => bcastPure cx y).map (·, promote dx dy)
+    | _ => none
+  | [(a, d)] => match op with
+    -- softmax over the last axis: the Softmax primitive, a floating input's dtype
+    | .softmax => (axisOf axis (len a)).bind fun ax =>
+      bif Nat.beq ax (len a - 1) && isFloat d then some (a, d) else none
+    | .sum => (axisOf axis (len a)).bind fun ax =>
+      some (bif flag then setAt a ax (.lit 1) else a.take ax ++ a.drop (ax + 1), sumDtype d)
+    | _ => none
+  | _ => none
+
+def graphName (op : GraphOp) (axis : Nat) (flag : Bool) : List Char :=
+  match op with
+  | .matmul => chars!"matmul"
+  | .lessEqual => chars!"less_equal"
+  | .select => chars!"where"
+  | .softmax => axisName chars!"softmax" axis flag
+  | .sum => axisName chars!"sum_axis" axis flag
+
+/-! The calls are `mlx_matmul(res, a, b, s)`, `mlx_less_equal(res, a, b, s)`,
+`mlx_where(res, cond, x, y, s)`, `mlx_softmax_axis(res, a, axis, precise, s)`
+and `mlx_sum_axis(res, a, axis, keepdims, s)`. `call` reads them through the
+pure functions below on the arguments after `res` and `a` (`rest`), so its
+arm has the shape of the existing ones. -/
+
+/-- The array arguments of a graph operation's call (none: a malformed call). -/
+def graphArrays (op : GraphOp) (a : Arg) (rest : List Arg) : List Arg :=
+  match op, rest with
+  | .matmul, [b, _] | .lessEqual, [b, _] => [a, b]
+  | .select, [x, y, _] => [a, x, y]
+  | .softmax, [_, .bool _, _] | .sum, [_, .bool _, _] => [a]
+  | _, _ => []
+
+/-- The axis argument of an axis operation (the others read none). -/
+def graphAxis (op : GraphOp) (rest : List Arg) : Arg :=
+  match op, rest with
+  | .softmax, [ax, _, _] | .sum, [ax, _, _] => ax
+  | _, _ => .null
+
+/-- The flag of an axis operation (`precise`, `keepdims`). -/
+def graphFlag : List Arg → Bool
+  | [_, .bool f, _] => f
+  | _ => false
+
+def graphOut (s : St) (op : GraphOp) (axis : Int) (rest : List Arg) (ins : List Nat) : Option (List Dim × Nat) :=
+  (shapesOf s ins).bind (graphShape op axis (graphFlag rest))
+
+def graphResult (s : St) (op : GraphOp) (axis : Int) (rest : List Arg) (ins : List Nat) : Option (List Dim) :=
+  (graphOut s op axis rest ins).map Prod.fst
+
+def graphDtype (s : St) (op : GraphOp) (axis : Int) (rest : List Arg) (ins : List Nat) : Option Nat :=
+  (graphOut s op axis rest ins).map Prod.snd
+
+/-- The node primitive, the axis normalized by the first argument `nd`'s rank. -/
+def graphNodePrim (op : GraphOp) (axis : Int) (rest : List Arg) (nd : Node) (ins : List Nat) : Prim :=
+  graphPrim (graphName op ((axisOf axis (len nd.shape)).getD 0) (graphFlag rest)) (len ins)
+
 /-! ### Dispatch -/
 
 /-- Every modeled symbol. -/
@@ -734,6 +863,7 @@ inductive Sym where
   | mapArrayNew | mapArrayFree | mapArrayGet | mapStringNew | mapStringFree | loadSafetensors
   | reshape | transpose | slice | sliceUpdate | sliceDynamic | concat | zeros | astype | arange | contiguous
   | unary | binary | rmsNorm | rope | sdpa | qmm | dequantize | take | conv1d | logsumexp
+  | graph (op : GraphOp)
 
 def symTable : List (List Char × Sym) :=
   [(chars!"mlx_array_new", .arrayNew), (chars!"mlx_array_new_data", .arrayNewData), (chars!"mlx_array_free", .arrayFree),
@@ -773,7 +903,9 @@ def symTable : List (List Char × Sym) :=
    (chars!"mlx_fast_scaled_dot_product_attention", .sdpa), (chars!"mlx_quantized_matmul", .qmm),
    (chars!"mlx_dequantize", .dequantize), (chars!"mlx_take_axis", .take), (chars!"mlx_conv1d", .conv1d),
    (chars!"mlx_logsumexp_axis", .logsumexp)] ++
-  unaryOps.map (·, .unary) ++ binaryOps.map (·, .binary)
+  unaryOps.map (·, .unary) ++ binaryOps.map (·, .binary) ++
+  [(chars!"mlx_matmul", .graph .matmul), (chars!"mlx_less_equal", .graph .lessEqual), (chars!"mlx_where", .graph .select),
+   (chars!"mlx_softmax_axis", .graph .softmax), (chars!"mlx_sum_axis", .graph .sum)]
 
 /-- A binary search tree over the symbols' packed codes. -/
 inductive Bst where
@@ -1054,6 +1186,17 @@ def call (s : St) (name : Name) (args : List Arg) : R :=
   | .logsumexp, [o, a, ax, .bool keep, _] => match arrIns s [a], argInt ax, (argNat a).bind s.node? with
     | some ins, some ax, some nd => match axisOf ax (len nd.shape) with
       | some ax => opOut s o (.logsumexp ax keep) ins
+      | none => stuck
+    | _, _, _ => stuck
+  | .graph op, o :: a :: rest =>
+    match arrIns s (graphArrays op a rest), argInt (graphAxis op rest), (argNat a).bind s.node? with
+    | some ins, some ax, some nd => match slotOf o with
+      | some (b, off, slot) => match graphResult s op ax rest ins, graphDtype s op ax rest ins with
+        | some shape, some dt =>
+          let (n, s) := s.addNode ⟨graphNodePrim op ax rest nd ins, ins, shape, dt⟩
+          let (h, s) := s.setArr slot n
+          okW s status0 [u64Write b off h]
+        | _, _ => stuck
       | none => stuck
     | _, _, _ => stuck
   | _, _ => stuck

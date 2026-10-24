@@ -19,23 +19,23 @@ def BoolsP (K : Ctx) : List Val → List Val → Prop
   | _, _ => True
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool}
   {okBack : F.S → Arg → Bool}
 
 
 theorem decodeArgs_simP (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack) :
-    ∀ (ts vs : List Val) {M : Map} {S : SSrv} {C : CSrv}, Rel F FR M ν K s S t C →
+    ∀ (ts vs : List Val) {M : Map} {S : SSrv} {C : CSrv}, RelB F FR W stk M ν K s S t C →
     Supp.vals (Present s) S.tab.length ts → Supp.vals (Present s) S.tab.length vs →
-    (∀ v ∈ vs, ArgBufOK F s S.tab.length v) → BoolsP K ts vs →
+    (∀ v ∈ vs, ArgBufOK F K W s S.tab.length v) → BoolsP K ts vs →
     MSim (ArgsP (Present s) M ν S C) S C (decodeArgs F s ts vs) (decodeArgs F t (M.vals ts) (M.vals vs))
   | [], [], M, S, C, h, _, _, _, _ => MSim.pure ⟨rfl, Grow.refl h.srv, fun as has a ha => by
       cases has; exact nomatch ha⟩
   | [], _ :: _, M, S, C, h, _, _, _, _ => MSim.pure ⟨rfl, Grow.refl h.srv, fun _ h => nomatch h⟩
   | t0 :: ts, vs, M, S, C, h, hts, hvs, hbuf, hbool => by
     have tail : ∀ (v : Val) (vs' : List Val), Supp.val (Present s) S.tab.length v →
-        ArgBufOK F s S.tab.length v → BoolOK K (match t0 with | .str ty => ty | _ => []) v →
-        Supp.vals (Present s) S.tab.length vs' → (∀ v ∈ vs', ArgBufOK F s S.tab.length v) →
+        ArgBufOK F K W s S.tab.length v → BoolOK K (match t0 with | .str ty => ty | _ => []) v →
+        Supp.vals (Present s) S.tab.length vs' → (∀ v ∈ vs', ArgBufOK F K W s S.tab.length v) →
         BoolsP K ts vs' →
         ∀ ty, t0 = .str ty →
         MSim (ArgsP (Present s) M ν S C) S C
@@ -88,18 +88,18 @@ theorem decodeArgs_simP (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack) :
 
 
 theorem step_ffi_symbolP {okCall0 : F.S → Name → List Arg → Bool}
-    {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+    {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hF : FfiSim F FR okCall0 okBack) (hC : FfiCallSim F FR okCall small) (hL : FfiLawful F) {a : Nat} {this : Val} {args : List Val}
     {o : Obj} {name rt : Name} {ta : Nat} {oa : Obj} {tys : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ffi .symbol) [.str name, .obj ta, .str rt]))
     (hta : s.obj? ta = some oa) (htk : oa.kind = .array tys) (hn : s.next < Sim.bound)
-    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F s S.tab.length v)
+    (hfr : K.fr ta = none) (hbuf : ∀ v ∈ args, ArgBufOK F K W s S.tab.length v)
     (hbool : BoolsP K tys args)
     (hok : SymOK F K okCall s S name tys args)
     (hsm : ∀ as S1, interpS (decodeArgs F s tys args).run S = some (some as, S1) → small ν S1 s.ffi name as)
     (hcbr : ∀ f, cbBase ≤ f → Present s (f - cbBase) → M.region f = cbBase + M.a (f - cbBase)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   have htt : t.obj? (M.a ta) = some (M.obj oa) := h.obj? hta hfr
   have hso : Supp.vals (Present s) S.tab.length tys := by

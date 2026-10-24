@@ -46,12 +46,69 @@ def svzB : Val → Val → Bool
 /-- `MapGetOK`. -/
 def mapGetB {S' : Type} (s : St S') (this k : Val) : Bool :=
   match this with
-  | .obj a => match s.obj? a with
+  | .obj a => nwoB P s a && (match s.obj? a with
     | some o => match o.kind with
       | .map es => allB (fun p => svzB P p.1 k) es
       | _ => true
-    | none => true
+    | none => true)
   | _ => true
+
+/-- `get` on a `mapKeys`-framed map at a string key it holds, not a ghost (`step_map_get_keys`). -/
+def mapGetKeysB {S' : Type} (s : St S') (this k : Val) : Bool :=
+  match this, k with
+  | .obj a, .str cs => match wideAt P a, s.obj? a with
+    | some (.mapKeys gs), some o => match o.kind with
+      | .map es => !frB P a && (StringIndex.firstValue (pack cs) es).isSome && !memB (pack cs) gs
+      | _ => false
+    | _, _ => false
+  | _, _ => false
+
+/-- The map address, string key and source entries of a `Map` call on `this` with key `k`. -/
+def mapStrOf {S' : Type} (s : St S') (this k : Val) : Option (Nat × List Char × List (Val × Val)) :=
+  match this, k with
+  | .obj a, .str cs => match s.obj? a with
+    | some o => match o.kind with
+      | .map es => some (a, cs, es)
+      | _ => none
+    | none => none
+  | _, _ => none
+
+/-- `set` with a string key on an unframed `Map`, a `Map` by key or a memo (`step_map_set`). -/
+def mapSetB {S' : Type} (s : St S') (this k : Val) : Bool :=
+  match mapStrOf s this k with
+  | some (a, _, _) => frB P a || (match wideAt P a with
+    | some (.mapKeys _) => true
+    | some (.memo _) => true
+    | _ => false)
+  | none => false
+
+/-- `set` on an unframed `Map` whose entry keys compare with the key alike (`step_map_set_svz`). -/
+def mapSetSvzB {S' : Type} (s : St S') (this k : Val) : Bool :=
+  match this with
+  | .obj a => frB P a && (match s.obj? a with
+    | some o => match o.kind with
+      | .map es => allB (fun p => svzB P p.1 k) es
+      | _ => false
+    | none => false)
+  | _ => false
+
+/-- `has` with a string key on an unframed `Map`, on a `Map` by key holding it, on a memo when the
+key is no ghost (`step_map_has`). -/
+def mapHasB {S' : Type} (s : St S') (this k : Val) : Bool :=
+  match mapStrOf s this k with
+  | some (a, cs, es) => frB P a || (match wideAt P a with
+    | some (.mapKeys _) => (StringIndex.firstValue (pack cs) es).isSome
+    | some (.memo gs) => !memB (pack cs) gs
+    | _ => false)
+  | none => false
+
+/-- `get` with a string key that is no ghost on a memo, held or not (`step_map_get_memo`). -/
+def mapGetMemoB {S' : Type} (s : St S') (this k : Val) : Bool :=
+  match mapStrOf s this k with
+  | some (a, cs, _) => !frB P a && (match wideAt P a with
+    | some (.memo gs) => !memB (pack cs) gs
+    | _ => false)
+  | none => false
 
 /-- `BigIntOK` (JS-memory pointers rejected). -/
 def bigIntB : Val → Bool
@@ -70,7 +127,7 @@ def bigIntB : Val → Bool
 def entriesB (s : St F.S) (n : Nat) (v : Val) : Bool :=
   match v with
   | .obj a => frB P a && (match s.obj? a with
-    | some o => (match o.kind with
+    | some o => nsAllB P o && (match o.kind with
         | .typed _ _ _ _ => allB (typedB P s n o) (ownKeys F s o)
         | _ => true) && Nat.ble (ownKeys F s o).length two20
     | none => true)
@@ -78,12 +135,16 @@ def entriesB (s : St F.S) (n : Nat) (v : Val) : Bool :=
 
 /-- `HasOwnOK`. -/
 def hasOwnB {S' : Type} (s : St S') (o k : Val) : Bool :=
-  plainElemsB P s o && bfVB P k
+  plainElemsB P s o && bfVB P k && (match o with
+    | .obj a => match s.obj? a with
+      | some ob => nsAllB P ob
+      | none => true
+    | _ => true)
 
 end
 
 section
-variable {F : Ffi} {P : JSP F} {K : Ctx}
+variable {F : Ffi} {P : JSP F} {K : Ctx} {W : Nat → Option WFrame} {stk : List Frame}
 
 theorem Kp.plainElems (hK : Kp P K) {S' : Type} {s : St S'} {v : Val} (h : plainElemsB P s v = true) :
     PlainElemsOK K s v := by
@@ -110,11 +171,133 @@ theorem Kp.svz (hK : Kp P K) {x y : Val} (h : svzB P x y = true) : SvzOK K x y :
     | (intro he; subst he; simp [isNaNB] at h)
     | (simp at h)
 
-theorem Kp.mapGet (hK : Kp P K) {S' : Type} {s : St S'} {this k : Val} (h : mapGetB P s this k = true) :
-    MapGetOK K s this k := by
-  rintro a o es rfl ho hk p hp
-  simp only [mapGetB, ho, hk] at h
-  exact hK.svz (allB_sound h p hp)
+theorem Kp.mapGet (hK : Kp P K) (hW : Wp P W) {S' : Type} {s : St S'} {this k : Val}
+    (h : mapGetB P s this k = true) : MapGetOK K W s this k := by
+  refine ⟨?_, ?_⟩
+  · rintro a o es rfl ho hk p hp
+    simp only [mapGetB, ho, hk, Bool.and_eq_true] at h
+    exact hK.svz (allB_sound h.2 p hp)
+  · rintro a rfl
+    simp only [mapGetB, Bool.and_eq_true] at h
+    exact hK.noW hW h.1
+
+theorem mapGetKeysB_sound {S' : Type} {s : St S'} {this k : Val} (h : mapGetKeysB P s this k = true) :
+    ∃ a cs mo es gs, this = .obj a ∧ k = .str cs ∧ wideAt P a = some (.mapKeys gs) ∧ s.obj? a = some mo ∧
+      mo.kind = .map es ∧ frB P a = false ∧ (StringIndex.firstValue (pack cs) es).isSome = true ∧
+      pack cs ∉ gs := by
+  unfold mapGetKeysB at h
+  split at h
+  · rename_i a cs
+    split at h
+    · rename_i gs o hw ho
+      split at h
+      · rename_i es hk
+        simp only [Bool.and_eq_true, Bool.not_eq_true'] at h
+        refine ⟨a, cs, o, es, gs, rfl, rfl, hw, ho, hk, h.1.1, h.1.2, fun hm => ?_⟩
+        have := (memB_iff _ _).2 hm
+        rw [this] at h
+        exact absurd h.2 (by decide)
+      · cases h
+    · cases h
+  · cases h
+
+theorem mapStrOf_some {S' : Type} {s : St S'} {this k : Val} {a : Nat} {cs : List Char} {es : List (Val × Val)}
+    (h : mapStrOf s this k = some (a, cs, es)) :
+    this = .obj a ∧ k = .str cs ∧ ∃ mo, s.obj? a = some mo ∧ mo.kind = .map es := by
+  unfold mapStrOf at h
+  split at h
+  · split at h
+    · rename_i mo hmo
+      split at h
+      · rename_i es' hk
+        cases h
+        exact ⟨rfl, rfl, mo, hmo, hk⟩
+      · cases h
+    · cases h
+  · cases h
+
+theorem memB_false {c : Nat} {gs : List Nat} (h : (!memB c gs) = true) : c ∉ gs := fun hm => by
+  have := (memB_iff _ _).2 hm
+  rw [this] at h
+  cases h
+
+theorem mapSetB_sound {S' : Type} {s : St S'} {this k : Val} (h : mapSetB P s this k = true) :
+    ∃ a cs es mo, this = .obj a ∧ k = .str cs ∧ s.obj? a = some mo ∧ mo.kind = .map es ∧
+      (frB P a = true ∨ (frB P a = false ∧ ∃ gs, wideAt P a = some (.mapKeys gs) ∨ wideAt P a = some (.memo gs))) := by
+  unfold mapSetB at h
+  cases hm : mapStrOf s this k with
+  | none => rw [hm] at h; cases h
+  | some x =>
+    obtain ⟨a, cs, es⟩ := x
+    rw [hm] at h
+    obtain ⟨rfl, rfl, mo, hmo, hmk⟩ := mapStrOf_some hm
+    refine ⟨a, cs, es, mo, rfl, rfl, hmo, hmk, ?_⟩
+    dsimp only at h
+    cases hf : frB P a with
+    | true => exact .inl rfl
+    | false =>
+      rw [hf, Bool.false_or] at h
+      refine .inr ⟨rfl, ?_⟩
+      split at h
+      · rename_i gs hw; exact ⟨gs, .inl hw⟩
+      · rename_i gs hw; exact ⟨gs, .inr hw⟩
+      · cases h
+
+theorem Kp.mapSetSvz (hK : Kp P K) {S' : Type} {s : St S'} {this k : Val} (h : mapSetSvzB P s this k = true) :
+    ∃ a mo es, this = .obj a ∧ s.obj? a = some mo ∧ mo.kind = .map es ∧ K.fr a = none ∧
+      ∀ p ∈ es, SvzOK K p.1 k := by
+  cases this with
+  | obj a =>
+    simp only [mapSetSvzB, Bool.and_eq_true] at h
+    cases ho : s.obj? a with
+    | none => rw [ho] at h; simp at h
+    | some mo =>
+      rw [ho] at h
+      obtain ⟨kd, pr, ps, pv, e⟩ := mo
+      cases kd with
+      | map es => exact ⟨a, _, es, rfl, ho, rfl, hK.fr_none h.1, fun p hp => hK.svz (allB_sound h.2 p hp)⟩
+      | _ => simp at h
+  | _ => simp [mapSetSvzB] at h
+
+theorem mapHasB_sound {S' : Type} {s : St S'} {this k : Val} (h : mapHasB P s this k = true) :
+    ∃ a cs es mo, this = .obj a ∧ k = .str cs ∧ s.obj? a = some mo ∧ mo.kind = .map es ∧
+      (frB P a = true ∨ (frB P a = false ∧ ∃ gs,
+        (wideAt P a = some (.mapKeys gs) ∧ (StringIndex.firstValue (pack cs) es).isSome = true) ∨
+          (wideAt P a = some (.memo gs) ∧ pack cs ∉ gs))) := by
+  unfold mapHasB at h
+  cases hm : mapStrOf s this k with
+  | none => rw [hm] at h; cases h
+  | some x =>
+    obtain ⟨a, cs, es⟩ := x
+    rw [hm] at h
+    obtain ⟨rfl, rfl, mo, hmo, hmk⟩ := mapStrOf_some hm
+    refine ⟨a, cs, es, mo, rfl, rfl, hmo, hmk, ?_⟩
+    dsimp only at h
+    cases hf : frB P a with
+    | true => exact .inl rfl
+    | false =>
+      rw [hf, Bool.false_or] at h
+      refine .inr ⟨rfl, ?_⟩
+      split at h
+      · rename_i gs hw; exact ⟨gs, .inl ⟨hw, h⟩⟩
+      · rename_i gs hw; exact ⟨gs, .inr ⟨hw, memB_false h⟩⟩
+      · cases h
+
+theorem mapGetMemoB_sound {S' : Type} {s : St S'} {this k : Val} (h : mapGetMemoB P s this k = true) :
+    ∃ a cs es mo gs, this = .obj a ∧ k = .str cs ∧ s.obj? a = some mo ∧ mo.kind = .map es ∧
+      frB P a = false ∧ wideAt P a = some (.memo gs) ∧ pack cs ∉ gs := by
+  unfold mapGetMemoB at h
+  cases hm : mapStrOf s this k with
+  | none => rw [hm] at h; cases h
+  | some x =>
+    obtain ⟨a, cs, es⟩ := x
+    rw [hm] at h
+    obtain ⟨rfl, rfl, mo, hmo, hmk⟩ := mapStrOf_some hm
+    simp only [Bool.and_eq_true, Bool.not_eq_true'] at h
+    obtain ⟨hf, h⟩ := h
+    split at h
+    · rename_i gs hw; exact ⟨a, cs, es, mo, gs, rfl, rfl, hmo, hmk, hf, hw, memB_false h⟩
+    · cases h
 
 theorem Kp.number (hK : Kp P K) {args : List Val} (h : bfVB P (arg args 0) = true) : NumberOK K args :=
   hK.bfBig h
@@ -142,15 +325,15 @@ theorem Kp.bigInt (hK : Kp P K) {next : Nat} {v : Val} (h : bigIntB P v = true) 
       omega
   | _ => trivial
 
-theorem Kp.entries (hK : Kp P K) {s : St F.S} {S : SSrv} {v : Val} (h : entriesB P s S.tab.length v = true) :
-    EntriesOK F K s S v := by
+theorem Kp.entries (hK : Kp P K) (hW : Wp P W) {s : St F.S} {S : SSrv} {v : Val}
+    (h : entriesB P s S.tab.length v = true) : EntriesOK F K W s S v := by
   rintro a rfl
   simp only [entriesB, Bool.and_eq_true] at h
   refine ⟨hK.fr_none h.1, fun o ho => ?_⟩
   have h2 := h.2
   simp only [ho, Bool.and_eq_true] at h2
-  refine ⟨fun k hk => ?_, le20 h2.2⟩
-  have h3 := h2.1
+  refine ⟨fun k hk => ⟨?_, hK.nsOK (s := s) hW h2.1.1 k⟩, le20 h2.2⟩
+  have h3 := h2.1.2
   cases hko : o.kind with
   | typed kk b off n =>
     simp only [hko] at h3
@@ -161,11 +344,15 @@ where
       (hk : ∀ kk b off n, o.kind ≠ .typed kk b off n) : TypedOK F K s S o k :=
     fun kk b off n _ hko => absurd hko (hk kk b off n)
 
-theorem Kp.hasOwn (hK : Kp P K) {S' : Type} {s : St S'} {o k : Val} (h : hasOwnB P s o k = true) :
-    HasOwnOK K s o k := by
+theorem Kp.hasOwn (hK : Kp P K) (hW : Wp P W) {S' : Type} {s : St S'} {o k : Val}
+    (h : hasOwnB P s o k = true) : HasOwnOK K W s o k := by
   simp only [hasOwnB, Bool.and_eq_true] at h
-  have hp := hK.plainElems h.1
-  exact ⟨fun a ha => hp a ha, hK.bfBig h.2⟩
+  have hp := hK.plainElems h.1.1
+  refine ⟨fun a ha => ⟨(hp a ha).1, fun ob hob => ⟨(hp a ha).2 ob hob, ?_⟩⟩, hK.bfBig h.1.2⟩
+  have h3 := h.2
+  subst ha
+  simp only [hob] at h3
+  exact hK.nsAll (S' := S') hW h3
 
 end
 end Host.Ts.Sim.Disp

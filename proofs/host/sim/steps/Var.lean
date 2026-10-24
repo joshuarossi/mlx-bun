@@ -14,16 +14,17 @@ theorem lookupEnv_map (M : Map) (name : Name) (env : Env) :
     cases Nat.beq (pack name) (pack n) <;> simp only [brec, Option.map_some, ih]
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-- An identifier bound to an initialized cell returns its value. -/
-theorem step_id_local (h : Rel F FR M ν K s S t C) {n : Name} {env : Env} {c : Nat} {v : Val}
-    (hc : s.ctl = .ev (.id n) env) (hl : lookupEnv n env = some c) (hv : s.cell? c = some (some v)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+theorem step_id_local (h : RelB F FR W stk M ν K s S t C) {n : Name} {env : Env} {c : Nat} {v : Val}
+    (hc : s.ctl = .ev (.id n) env) (hl : lookupEnv n env = some c) (hv : s.cell? c = some (some v))
+    (hn : NoW K W s c) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have htc : t.ctl = .ev (.id n) (M.env env) := by rw [h.ctl, hc]; rfl
   have hl' : lookupEnv n (M.env env) = some (M.a c) := by rw [lookupEnv_map, hl]; rfl
-  have hv' : t.cell? (M.a c) = some (some (M.val v)) := h.cell? hv
+  have hv' : t.cell? (M.a c) = some (some (M.val v)) := h.cell? hv hn
   have e1 : step F s = retS F s v := by
     simp only [step, hc, evStep, readVar, hl, hv]
   have e2 : step F t = retS F t (M.val v) := by

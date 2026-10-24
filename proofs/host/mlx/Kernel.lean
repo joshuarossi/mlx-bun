@@ -9,6 +9,8 @@ import models.qwen.TrellisMlpParsedPipeline
 import kernels.sampling.NormalizedArgmaxMemory
 import kernels.normalization.GatedRms128TailSource
 import kernels.delta.SiluHeads128Output
+import kernels.sampling.GreedySampling
+import models.qwen.TrellisMlp
 
 namespace Host.Mlx
 open Inference Inference.Contracts.Mlx Inference.Kernels Inference.Layers
@@ -36,15 +38,12 @@ The MLX v0.32.2 contract (ml-explore/mlx@1f8e74e3):
 The body then executes under the M1 Max contract and the output values are
 the final buffer contents.
 
-Each field of `KernelContract` states that contract for one route kernel:
-the M1 Max execution of the body from MLX's placement is an object of that
-kernel's existing heap execution type, whose input storages are attached to
-the decoded input values, and the outputs are the bytes of its output
-regions. Placement (bases, alignment, bounds, disjointness, one shared
-heap), the store schedule and all threadgroup contents are existential: the
-lifting theorems hold for every such execution. The parsed-source theorems
-(`source_execution`, `checked`, `ready`, `source_token`) prove that these
-executions' write programs are the parsed kernel bodies' programs. -/
+Each field of `KernelContract` states one route kernel's launch at value
+level: on inputs encoding the model's operands (and finite where the model's
+range certificates say so), the launch returns outputs encoding the model
+function the route consumes. `KernelGpu.ofGpu` builds the contract from the
+GPU assumption `Metal.Gpu` and proves every field from the kernel's Metal
+source. -/
 
 /-! ## Decoded views and readouts -/
 
@@ -65,12 +64,6 @@ theorem bf_toNat (b : BitVec 16) : bf b.toNat = (Model.ofBits b : BF) := by
 
 theorem f32_toNat (b : BitVec 32) : f32 b.toNat = FloatMemory.decode b := by
   unfold f32; rw [BitVec.ofNat_toNat, BitVec.setWidth_eq]
-
-theorem halfArray_buffer {values : Fin n → BF} (buffer : ArrayStorage.BFBuffer values) (shape : List Nat) :
-    Flat (halfArray buffer.bytes buffer.base shape) shape values :=
-  ⟨rfl, rfl, fun i => by
-    change bf (HalfMemory.load buffer.bytes (buffer.base+2*i.val)).toNat = _
-    rw [bf_toNat]; exact buffer.read_correct i⟩
 
 theorem Flat.row (h : Flat v [1,1,n] f) : Row v n f := Row.mk h.1 h.2.1 h.2.2
 theorem Row.flat (h : Row v n f) : Flat v [1,1,n] f := ⟨h.1, h.2.1, Row.elems h⟩
@@ -159,18 +152,19 @@ def Value.storageByte (v : Value) (b : Nat) : BitVec 8 :=
 def codes (width : Nat) (v : Value) : CheckpointTrellis.Codes width := fun b => v.storageByte b.val
 def trellisScales (v : Value) : CheckpointTrellis.Scales := fun b => v.storageByte b.val
 
+-- The loaded arrays encode the MLP: their bytes are its codes and scales, and their dtypes and shapes are the
+-- checkpoint's (trellis-linear.ts trellisGeometry: row-major uint32 codes [17408, 5120·K/32], the 3-bit down
+-- projection block-interleaved [10, 17408, 48]; checkpoint-trellis.ts float16 scales [17408]).
 structure Trellis (mlp : GateDown) (gc gs uc us dc ds : Value) : Prop where
   gate : CheckpointTrellis.gateUp mlp.gate.width mlp.gate.validWidth (codes _ gc) (trellisScales gs) = mlp.gate
   up : CheckpointTrellis.gateUp mlp.up.width mlp.up.validWidth (codes _ uc) (trellisScales us) = mlp.up
   down : CheckpointTrellis.down mlp.down.width mlp.down.validWidth (codes _ dc) (trellisScales ds) = mlp.down
-
--- The model's MLP with the threadgroup scratch MLX supplies.
-def _root_.Inference.Models.Qwen.WrittenLayers.GateDown.withScratch (mlp : GateDown) (gate : M1Max.WordMemory) (gateBase : Nat) (gateAligned : gateBase%4=0)
-    (gateBounded : gateBase+16384 ≤ 2^64) (down : Nat → M1Max.WordMemory) (downBase : Nat) (downAligned : downBase%4=0)
-    (downBounded : downBase+16384 ≤ 2^64) : GateDown :=
-  { mlp with
-    gatePlatform := { mlp.gatePlatform with before := gate, base := gateBase, aligned := gateAligned, bounded := gateBounded }
-    downPlatform := { mlp.downPlatform with before := down, base := downBase, aligned := downAligned, bounded := downBounded } }
+  gateCodes : gc.dtype = .uint32 ∧ gc.shape = [17408, 160 * mlp.gate.width]
+  upCodes : uc.dtype = .uint32 ∧ uc.shape = [17408, 160 * mlp.up.width]
+  downCodes : dc.dtype = .uint32 ∧
+    dc.shape = if mlp.down.width = 3 then [10, 17408, 48] else [17408, 160 * mlp.down.width]
+  scales : gs.dtype = .float16 ∧ gs.shape = [17408] ∧ us.dtype = .float16 ∧ us.shape = [17408] ∧
+    ds.dtype = .float16 ∧ ds.shape = [17408]
 
 /-! ## The MLX contract for the route's custom kernels -/
 
@@ -180,13 +174,20 @@ def _root_.Inference.Models.Qwen.WrittenLayers.GateDown.withScratch (mlp : GateD
 def trellisActivation (C : M1Max.Contract) (gateBits upBits : Nat) : Activation :=
   if gateBits ≠ upBits then .split C.fastExpAbs else .float C.expNeg
 
+-- The (K steps, N/64 blocks) of the route's affine_row launches: in_proj_qkv,
+-- in_proj_z, out_proj and the lm_head (affine-verify-linear.ts eligibility;
+-- attention projections are plain).
+def AffineRoute (steps blocks : Nat) : Prop := (steps, blocks) ∈ [(10, 160), (10, 96), (12, 80), (10, 3880)]
+
 structure KernelContract (C : M1Max.Contract) where
   -- mlx_fast_metal_kernel_apply on the default GPU stream.
   apply : Kernel → List Value → Config → Option (List Value)
-  -- Metal compiler choices and kernel platforms; they carry no claim beyond
-  -- the platform structures' own primitive contracts.
-  affineContracted : Bool
-  affineTail : Bool
+  -- Metal compiler choices (contraction sites) and the MLX-native logsumexp's
+  -- choices; they carry no claim beyond the platform structures' own primitive contracts.
+  -- affine_row: one text per (bits, K steps, N rows), each with its own choice at
+  -- every site of the tile's dot and at its tail.
+  affineContracted : (bits steps rows : Nat) → Nat → Bool
+  affineTail : (bits steps rows : Nat) → Bool
   headsContracted : Bool
   flags : Delta.Gated.Contraction
   gatedContracted : Bool
@@ -195,79 +196,86 @@ structure KernelContract (C : M1Max.Contract) where
   lseNumerator : Attention.SdpaUpdate.Contraction
   affineRow3 : ∀ {steps blocks : Nat} (p : AffineVerifyLinear.Projection3 steps (4*(blocks*16)))
     (input : Fin (steps*512) → BF) (x w scales biases : Value),
-    p.platform = C.rowPlatform affineContracted affineTail → Row x (steps*512) input → Affine3 p w scales biases →
+    p.platform = C.rowPlatformAt (affineContracted 3 steps (4*(blocks*16))) (affineTail 3 steps (4*(blocks*16))) →
+    Row x (steps*512) input → Affine3 p w scales biases →
+    p.Finite input → AffineRoute steps blocks →
     ∃ y, apply .affineRow [x, w, scales, biases] (affineConfig (steps*512) (4*(blocks*16)) 3) = some [y] ∧
-      ∃ e : AffineMemory.Execution3 p input, y = halfArray e.kernel.stores.memory e.kernel.base [1,1,4*(blocks*16)]
+      Row y (4*(blocks*16)) (p.forward input)
   affineRow4 : ∀ {steps blocks : Nat} (p : AffineVerifyLinear.Projection4 steps (4*(blocks*16)))
     (input : Fin (steps*512) → BF) (x w scales biases : Value),
-    p.platform = C.rowPlatform affineContracted affineTail → Row x (steps*512) input → Affine4 p w scales biases →
+    p.platform = C.rowPlatformAt (affineContracted 4 steps (4*(blocks*16))) (affineTail 4 steps (4*(blocks*16))) →
+    Row x (steps*512) input → Affine4 p w scales biases →
+    p.Finite input → AffineRoute steps blocks →
     ∃ y, apply .affineRow [x, w, scales, biases] (affineConfig (steps*512) (4*(blocks*16)) 4) = some [y] ∧
-      ∃ e : AffineMemory.Execution4 p input, y = halfArray e.kernel.stores.memory e.kernel.base [1,1,4*(blocks*16)]
+      Row y (4*(blocks*16)) (p.forward input)
   siluRmsHeads : ∀ (values : Fin 10240 → BF) (qScale kScale : Fin 128 → BF) (x qs ks : Value),
     Row x 10240 values → GlueAttention.Vector qs 128 qScale → GlueAttention.Vector ks 128 kScale →
+    DeltaHeads.Finite (C.headsPlatform headsContracted) (fun _ : Fin 1 => values) qScale kScale
+      Delta.SiluHeads128Output.width Delta.SiluHeads128Output.epsilon →
     ∃ q k v, apply .siluRmsHeads [x, qs, ks] headsConfig = some [q, k, v] ∧
-      ∃ (input : DeltaHeadsMemory.Input values qScale kScale)
-        (e : DeltaHeadsMemory.Execution input (C.headsPlatform headsContracted) Delta.SiluHeads128Output.width Delta.SiluHeads128Output.epsilon),
-        q = halfArray e.trace.memory (e.geometry.base 0) [1,1,16,128] ∧
-        k = halfArray e.trace.memory (e.geometry.base 1) [1,1,16,128] ∧
-        v = halfArray e.trace.memory (e.geometry.base 2) [1,1,48,128]
-  gatedDeltaStep : ∀ (initial : Delta.GatedDevice.State) (values : Delta.GatedInputs.Values) (q k v g beta s t : Value),
+      let out := DeltaHeads.forward (C.headsPlatform headsContracted) (fun _ : Fin 1 => values) qScale kScale
+        Delta.SiluHeads128Output.width Delta.SiluHeads128Output.epsilon
+      Tensor4 q 1 16 128 (fun _ => out.q 0) ∧ Tensor4 k 1 16 128 (fun _ => out.k 0) ∧ Tensor4 v 1 48 128 (fun _ => out.v 0)
+  -- `reduction`: the tree of the model's recurrence platform for the machine's
+  -- simd_sum (the model's finiteness certificate is stated on that tree).
+  gatedDeltaStep : ∀ (reduce : (Fin 32 → Float32) → Float32) (reduction : FlushedReduction.SimdContract reduce)
+    (initial : Delta.GatedDevice.State) (values : Delta.GatedInputs.Values) (q k v g beta s : Value),
+    reduce = C.simdSum →
     Flat q [1,1,16,128] (Delta.GatedInputs.flatten values.query) → Flat k [1,1,16,128] (Delta.GatedInputs.flatten values.key) →
     Flat v [1,1,48,128] (Delta.GatedInputs.flatten values.value) → FlatF32 g [1,1,48] values.decay →
     Flat beta [1,1,48] values.beta →
     (s.dtype = .float32 ∧ s.shape = [1,48,128,128] ∧ ∀ h r c, f32 (s.elems (Delta.GatedStores.stateIndex h r c)) = initial h r c) →
-    t = ⟨.int32, [1], fun _ => 1⟩ →
-    ∃ y s', apply .gatedDeltaStep [q, k, v, g, beta, s, t] gatedConfig = some [y, s'] ∧
-      ∃ e : Delta.GatedShared.Execution C.simdSum flags initial values,
-        y = halfArray e.stores.memory e.stores.trace.outputBase [1,1,48,128] ∧
-        s' = wordArray .float32 e.stores.memory e.stores.trace.stateBase [1,48,128,128]
+    (∀ h r, Arithmetic.Finite (Delta.Recurrence.bind (initial h r) (values.inputs h r)) (Delta.Gated.outputExpr flags reduction.tree)) →
+    ∃ y s', apply .gatedDeltaStep [q, k, v, g, beta, s, ⟨.int32, [1], fun _ => 1⟩] gatedConfig = some [y, s'] ∧
+      Tensor4 y 1 48 128 (fun _ => Delta.GatedDevice.producedOutput C.simdSum flags initial values.inputs) ∧
+      s'.dtype = .float32 ∧ s'.shape = [1,48,128,128] ∧
+      ∀ h r c, f32 (s'.elems (Delta.GatedStores.stateIndex h r c)) =
+        Delta.GatedDevice.producedState C.simdSum flags initial values.inputs h r c
   gatedRmsNorm : ∀ (x gate : GatedRmsNormDevice.Rows) (weights : Fin 128 → BF) (xv gv wv : Value),
     Flat xv [1,1,48,128] (Delta.GatedInputs.flatten x) → Flat gv [1,1,48,128] (Delta.GatedInputs.flatten gate) →
     GlueAttention.Vector wv 128 weights →
+    (∀ h, GatedRmsNorm.NormFinite (C.gatedPlatform gatedContracted) (x h) weights
+      Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord))) →
+    (∀ h i, GatedRmsNorm.TailFinite (C.gatedPlatform gatedContracted) (BFloat16.widen (gate h i))
+      (BFloat16.widen (GatedRmsNorm.normalized (C.gatedPlatform gatedContracted) (x h) weights
+        Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord)) i))) →
     ∃ out, apply .gatedRmsNorm [xv, gv, wv] gatedNormConfig = some [out] ∧
-      ∃ (input : GatedRmsNormMemory.Input x gate weights)
-        (e : GatedRmsNormMemory.Execution input (C.gatedPlatform gatedContracted) Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord))),
-        out = halfArray e.stores.memory e.base [1,1,48,128]
+      Flat out [1,1,48,128] (Delta.GatedInputs.flatten (fun h => GatedRmsNorm.value (C.gatedPlatform gatedContracted)
+        (x h) (gate h) weights Normalization.GatedRms128TailSource.width (FloatMemory.decode (BitVec.ofNat 32 epsWord))))
   residualRmsNorm : ∀ (left right weight : Fin 5120 → BF) (xv uv wv : Value),
     Row xv 5120 left → Row uv 5120 right → GlueAttention.Vector wv 5120 weight →
+    (∀ i, ResidualRmsNorm.AddFinite (left i) (right i)) →
+    ResidualRmsNorm.NormFinite (C.rmsPlatform 32 (by decide) (by decide) residualContracted) left right weight
+      Blocks.width Blocks.eps →
     ∃ h n, apply .residualRmsNorm [xv, uv, wv] residualConfig = some [h, n] ∧
-      ∃ (input : BinaryMemory.Input left right) (residual : ResidualRmsMemory.Residual input weight)
-        (e : ResidualRmsMemory.Execution residual (C.rmsPlatform 32 (by decide) (by decide) residualContracted)
-          Blocks.width Blocks.eps),
-        h = halfArray e.normalized.trace.memory (2*residual.addition.base) [1,1,5120] ∧
-        n = halfArray e.normalized.trace.memory (2*e.normalized.base) [1,1,5120]
+      Row h 5120 (fun i => ResidualRmsNorm.residual (left i) (right i)) ∧
+      ∀ scratch base, Row n 5120 (ResidualRmsNorm.normalized (C.rmsPlatform 32 (by decide) (by decide) residualContracted)
+        left right weight Blocks.width Blocks.eps scratch base)
   trellis : ∀ (mlp : GateDown) (input : Fin 5120 → BF) (x gc gs uc us dc ds : Value),
-    mlp.gatePlatform.load = C.threadgroupLoad → mlp.gatePlatform.reduce = C.simdSum →
-    mlp.downPlatform.load = C.threadgroupLoad → mlp.downPlatform.reduce = C.simdSum →
+    mlp.gatePlatform.reduce = C.simdSum → mlp.downPlatform.reduce = C.simdSum →
     mlp.activation = trellisActivation C mlp.gate.width mlp.up.width → Trellis mlp gc gs uc us dc ds →
-    Flat x [1,5120] input →
+    Flat x [1,5120] input → TrellisMlp.Finite mlp (Blocks.packed input) →
     ∃ mid part out, apply .gateUp [x, gc, gs, uc, us] (gateUpConfig mlp.gate.width mlp.up.width) = some [mid] ∧
       apply .downPartial [mid, dc, ds] (downConfig mlp.down.width) = some [part] ∧
       apply .downFold [part] foldConfig = some [out] ∧
-      ∃ (gate : M1Max.WordMemory) (gateBase : Nat) (gateAligned : gateBase%4=0) (gateBounded : gateBase+16384 ≤ 2^64)
-        (down : Nat → M1Max.WordMemory) (downBase : Nat) (downAligned : downBase%4=0) (downBounded : downBase+16384 ≤ 2^64)
-        (e : TrellisMlpParsedDown.Execution
-          (mlp.withScratch gate gateBase gateAligned gateBounded down downBase downAligned downBounded) input),
-        Nonempty (TrellisMlpParsedPipeline.GateExecution e) ∧
-        mid = halfArray e.preceding.kernel.middle.memory e.preceding.kernel.middle.base [1,17408] ∧
-        part = wordArray .float32 e.down.memory e.down.partialBase [1,32,5120] ∧
-        out = halfArray e.output.memory e.output.base [1,5120]
+      mid.shape = [1,17408] ∧ Flat out [1,5120] (mlp.forward (Blocks.packed input))
   argmax : ∀ (logits : Fin 248320 → BF) (l s : Value),
     Flat l [1,248320] logits → Flat s [1,1] (fun _ : Fin 1 => Sampling.LogSumExpRanges.value (C.logSumExpPlatform lseSum lseNumerator) logits) →
+    Sampling.LogSumExpRanges.Primitives (C.logSumExpPlatform lseSum lseNumerator) →
+    (∀ i, Model.isFinite (logits i) = true ∧ |Model.toReal (logits i)| ≤ (2:ℝ)^(23:Nat)) →
     ∃ values indices token, apply .argmaxPartial [l, s] partialConfig = some [values, indices] ∧
       apply .argmaxFinish [values, indices] finishConfig = some [token] ∧
-      ∃ (source : ArrayStorage.BFBuffer logits) (lse : Sampling.LogSumExpMemory.Execution (C.logSumExpPlatform lseSum lseNumerator) source)
-        (e : Sampling.NormalizedArgmaxMemory.Execution lse),
-        values = wordArray .float32 e.partials.memory e.layout.scores [1,243] ∧
-        indices = wordArray .uint32 e.partials.memory e.layout.ids [1,243] ∧
-        token = wordArray .uint32 e.memory e.destination [1]
+      token.dtype = .uint32 ∧ token.shape = [1] ∧
+      token.elems 0 = Sampling.GreedySampling.sample (C.logSumExpPlatform lseSum lseNumerator) logits
 
 namespace KernelContract
 variable {C : M1Max.Contract} (K : KernelContract C)
 
 noncomputable def sampling : Sampling.LogSumExpRanges.Platform := C.logSumExpPlatform K.lseSum K.lseNumerator
 noncomputable def residual : RmsNorm.Platform := C.rmsPlatform 32 (by decide) (by decide) K.residualContracted
-noncomputable def affine : Quantization.AffineRow.Platform := C.rowPlatform K.affineContracted K.affineTail
+-- The platform of the affine_row text for `bits`, K = 512·`steps`, N = `rows`.
+noncomputable def affine (bits steps rows : Nat) : Quantization.AffineRow.Platform :=
+  C.rowPlatformAt (K.affineContracted bits steps rows) (K.affineTail bits steps rows)
 noncomputable def heads : Delta.SiluRmsHeads.Platform := C.headsPlatform K.headsContracted
 noncomputable def gated : GatedRmsNorm.Platform := C.gatedPlatform K.gatedContracted
 def activation (_ : KernelContract C) : Nat → Nat → Activation := trellisActivation C

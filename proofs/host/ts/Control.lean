@@ -285,6 +285,12 @@ def ctlN (s : St F.S) (this : Val) (args : List Val) (data : List Val) : CtlN �
   | .alsGetStore => match this with
     | .obj a => retS F s ((s.stores.find? fun (b, _) => Nat.beq a b).elim .undef Prod.snd)
     | _ => typeErr s (chars!"getStore on a non-AsyncLocalStorage")
+  -- a macrotask: a `then_` job marked by `symMacro`, run once no microtask is queued
+  -- (`Machine.lean`, `nextJob`); its derived promise is fresh and never observed
+  | .setImmediate => match arg args 0 with
+    | .obj _ => let (d, s) := newPromise s
+      retS F (enqueue s ⟨.then_ (arg args 0) (.sym symMacro) d s.stores, false, .undef⟩) .undef
+    | _ => typeErr s (chars!"setImmediate callback is not a function")
 where
   gen (mode : Nat) : RS F := match this with
     | .obj g => genResume s g mode (arg args 0)

@@ -61,7 +61,7 @@ theorem signed_increments : ∀ iteration : Fin 2, advance iteration.val=some (i
 theorem offset_bounds (iteration : Fin 2) : 3*iteration.val<2^31 ∧ 8*iteration.val<2^31 := by
   have := iteration.isLt; omega
 
-inductive Runs (h : Header) (contracted : Bool) : Int → Memory → Float32 → List Int → Float32 → Prop where
+inductive Runs (h : Header) (contracted : Nat → Bool) : Int → Memory → Float32 → List Int → Float32 → Prop where
   | stop (ended : condition h index=false) : Runs h contracted index memory acc [] acc
   | next (iteration : Fin 2) (sameIndex : index=(iteration.val:Int)) (entered : condition h index=true)
       (pointers : sourcePointer memory iteration=some current)
@@ -70,18 +70,18 @@ inductive Runs (h : Header) (contracted : Bool) : Int → Memory → Float32 →
       (rest : Runs h contracted next current after visits result) :
       Runs h contracted index memory acc (index::visits) result
 
-def step (contracted : Bool) (memory : Memory) (iteration : Fin 2) (acc : Float32) : Float32 :=
+def step (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 2) (acc : Float32) : Float32 :=
   AffineDot.source3 contracted (bytes (slice memory iteration)) (input (slice memory iteration)) acc
-def result (contracted : Bool) (memory : Memory) (initial : Float32) : Float32 :=
+def result (contracted : Nat → Bool) (memory : Memory) (initial : Float32) : Float32 :=
   (List.finRange 2).foldl (fun acc iteration => step contracted memory iteration acc) initial
 
-theorem step_execution (contracted : Bool) (memory : Memory) (iteration : Fin 2) (acc : Float32) :
+theorem step_execution (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 2) (acc : Float32) :
     AffineDot3Source.executeSource contracted (slice memory iteration) acc=some (step contracted memory iteration acc) :=
   AffineDot3Source.execution contracted (slice memory iteration) acc
 
 attribute [local irreducible] AffineDot3Source.executeSource sourcePointer step
 
-theorem execution (contracted : Bool) (memory : Memory) (initial : Float32)
+theorem execution (contracted : Nat → Bool) (memory : Memory) (initial : Float32)
     (packedRoom : memory.packedBase+6≤2^64) (scaledRoom : memory.scaledBase+16≤2^64) :
     Runs header contracted header.initial memory initial [0,1] (result contracted memory initial) := by
   let a1:=step contracted memory 0 initial
@@ -93,7 +93,7 @@ theorem execution (contracted : Bool) (memory : Memory) (initial : Float32)
   exact .next 0 rfl (by decide) (pointer_slice memory 0 packedRoom scaledRoom)
     (step_execution contracted memory 0 initial) (signed_increments 0) second
 
-theorem parsed_execution (contracted : Bool) (memory : Memory) (initial : Float32)
+theorem parsed_execution (contracted : Nat → Bool) (memory : Memory) (initial : Float32)
     (packedRoom : memory.packedBase+6≤2^64) (scaledRoom : memory.scaledBase+16≤2^64) :
     ∃ h, parseHeader sourceHeader=some h ∧ Runs h contracted h.initial memory initial [0,1]
       (result contracted memory initial) :=

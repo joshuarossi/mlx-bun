@@ -159,7 +159,7 @@ theorem Rel.rebig {F FR FR' M ν K s S t C} {I : Int → Prop} {b : Int → Int}
     ctl := h.ctl.trans (Map.ctl_rebig hb hfree.ctl).symm
     stack := by
       rw [h.stack]
-      exact List.map_congr_left fun f hf => (Map.frame_rebig hb (hfree.stack f hf)).symm
+      exact congrArg (· ++ []) (List.map_congr_left fun f hf => (Map.frame_rebig hb (hfree.stack f hf)).symm)
     jobs := by
       rw [h.jobs]
       exact List.map_congr_left fun j hj => (Map.job_rebig hb (hfree.jobs j hj)).symm

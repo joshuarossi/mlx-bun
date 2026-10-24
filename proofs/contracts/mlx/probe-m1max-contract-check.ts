@@ -90,7 +90,8 @@ export function bfModel(op: number, a: number, b: number): number {
 export const BF_OPS = ["bfadd_model", "bfsub_model", "bfmul_model", "bfdiv_model"] as const;
 const BF_SYM = ["+", "-", "*", "/"];
 
-export type UnaryName = "rsqrt" | "exp" | "fastExp" | "exp2" | "log" | "fastLog" | "fastSin" | "fastCos" | "fabs" | "fastFabs" | "narrow";
+export type UnaryName = "rsqrt" | "exp" | "fastExp" | "exp2" | "log" | "fastLog" | "fastSin" | "fastCos" | "fabs" | "fastFabs" | "narrow"
+  | "addInf" | "divInf" | "recip";
 export const newStat = () => ({ rsqrtMax: 0, rsqrtMin: Infinity, fexpMaxNonpos: 0, expMaxSmall: 0, logMaxAbs: 0, flogMin: Infinity,
   flogMax: -Infinity, sinMax: 0, cosMax: 0 });
 export type Stat = ReturnType<typeof newStat>;
@@ -199,11 +200,32 @@ function checkUnary(n: UnaryName, base: number, lo: number, hi: number, rb: Uint
     }
     c.cases += k; return;
   }
-  if (n === "narrow") { // narrow_model: finite x -> BFloat16.narrow x bitwise
+  if (n === "narrow") { // narrow_model: finite x -> BFloat16.narrow x bitwise; narrow_posInf: +inf -> 0x7f80
     const c = clause("narrow_model"); let k = 0;
     for (let i = lo; i < hi; i++) {
-      const xb = xsU[i - lo]!; if ((xb & 0x7f800000) === 0x7f800000) continue;
+      const xb = xsU[i - lo]!;
+      if (xb === 0x7f800000) { const ci = clause("narrow_posInf"); ci.cases++; if (rb[i] !== 0x7f80) ci.fail(at(i, "want 0x7f80")); }
+      if ((xb & 0x7f800000) === 0x7f800000) continue;
       k++; const w = (xb + 0x7fff + ((xb >>> 16) & 1)) >>> 16; if (rb[i] !== w) c.fail(at(i, `want ${hex(w)}`));
+    }
+    c.cases += k;
+    return;
+  }
+  if (n === "addInf" || n === "divInf") { // FlushToZero.add x inf = inf; FlushToZero.div x inf = the zero of x's sign
+    const c = clause(n === "addInf" ? "fadd_posInf" : "fdiv_posInf"); let k = 0;
+    for (let i = lo; i < hi; i++) {
+      const xb = xsU[i - lo]!; if ((xb & 0x7f800000) === 0x7f800000) continue;
+      k++; const w = n === "addInf" ? 0x7f800000 : (xb & 0x80000000) >>> 0;
+      if (rb[i] !== w) c.fail(at(i, `want ${hex(w)}`));
+    }
+    c.cases += k;
+    return;
+  }
+  if (n === "recip") { // fdiv_one_model: finite y >= 1 -> FlushToZero.div 1 y
+    const c = clause("fdiv_one_model"); let k = 0;
+    for (let i = lo; i < hi; i++) {
+      const y = X(i); if (!(y >= 1) || y === Infinity) continue;
+      k++; const want = divRef(1, y); if (!sameF(r[i]!, want)) c.fail(at(i, `want ${fmtF(bitsOf(want))}`));
     }
     c.cases += k;
   }
@@ -216,6 +238,11 @@ function checkBf16Op(oi: number, a0: number, lo: number, hi: number, r: Uint32Ar
   for (let ra = lo; ra < hi; ra++) {
     const a = a0 + ra; if (!Number.isFinite(BV[a]!)) continue;
     const base = ra * 65536;
+    // bfadd_posInf / bfdiv_posInf: finite a with b = +inf gives +inf / the zero of a's sign.
+    if (oi === 0 || oi === 3) {
+      const ci = clause(oi === 0 ? "bfadd_posInf" : "bfdiv_posInf"), got = r[base + 0x7f80]!, want = oi === 0 ? 0x7f80 : a & 0x8000;
+      ci.cases++; if (got !== want) ci.fail(`${hex(a)} ${sym} 0x7f80 -> ${hex(got)} want ${hex(want)}`);
+    }
     for (let b = 0; b < 65536; b++) {
       // bfdiv_model requires a nonzero flushed divisor (zero or subnormal b is excluded).
       if (!Number.isFinite(BV[b]!) || (oi === 3 && (b & 0x7f80) === 0)) continue;

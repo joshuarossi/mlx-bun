@@ -29,43 +29,43 @@ theorem enterClosure_eq (F : Ffi) (s : St F.S) (f : Func) (cenv : Env) (arrow : 
 /-! ## Lockstep updates -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {S : SSrv} {C : CSrv}
 
 /-- A state update under the relation: related results, growing presence, at most `k` allocations. -/
-structure Adv (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
+structure Adv (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map) (ν : Nat → F64) (K : Ctx)
     (S : SSrv) (C : CSrv) (s s' t' : St F.S) (k : Nat) : Prop where
-  rel : Rel F FR M ν K s' S t' C
+  rel : RelB F FR W stk M ν K s' S t' C
   pres : ∀ a, Present s a → Present s' a
   next : s'.next ≤ s.next + k
   mono : s.next ≤ s'.next
 
-theorem Adv.refl {s t : St F.S} (h : Rel F FR M ν K s S t C) : Adv F FR M ν K S C s s t 0 :=
+theorem Adv.refl {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) : Adv F FR W stk M ν K S C s s t 0 :=
   ⟨h, fun _ hp => hp, Nat.le_refl _, Nat.le_refl _⟩
 
-theorem Adv.trans {s s1 s2 t1 t2 : St F.S} {k1 k2 : Nat} (h1 : Adv F FR M ν K S C s s1 t1 k1)
-    (h2 : Adv F FR M ν K S C s1 s2 t2 k2) : Adv F FR M ν K S C s s2 t2 (k1 + k2) :=
+theorem Adv.trans {s s1 s2 t1 t2 : St F.S} {k1 k2 : Nat} (h1 : Adv F FR W stk M ν K S C s s1 t1 k1)
+    (h2 : Adv F FR W stk M ν K S C s1 s2 t2 k2) : Adv F FR W stk M ν K S C s s2 t2 (k1 + k2) :=
   ⟨h2.rel, fun a hp => h2.pres a (h1.pres a hp), by have := h1.next; have := h2.next; omega,
     Nat.le_trans h1.mono h2.mono⟩
 
-theorem Adv.weaken {s s' t' : St F.S} {k k' : Nat} (h : Adv F FR M ν K S C s s' t' k) (hk : k ≤ k') :
-    Adv F FR M ν K S C s s' t' k' :=
+theorem Adv.weaken {s s' t' : St F.S} {k k' : Nat} (h : Adv F FR W stk M ν K S C s s' t' k) (hk : k ≤ k') :
+    Adv F FR W stk M ν K S C s s' t' k' :=
   ⟨h.rel, h.pres, by have := h.next; omega, h.mono⟩
 
-theorem Adv.lt {s s' t' : St F.S} {k j : Nat} (h : Adv F FR M ν K S C s s' t' k)
+theorem Adv.lt {s s' t' : St F.S} {k j : Nat} (h : Adv F FR W stk M ν K S C s s' t' k)
     (hn : s.next + (k + j) < Sim.bound) : s'.next + j < Sim.bound := by
   have := h.next; omega
 
 /-- Support transported along an update. -/
-theorem Adv.val {s s' t' : St F.S} {k : Nat} (h : Adv F FR M ν K S C s s' t' k) {v : Val}
+theorem Adv.val {s s' t' : St F.S} {k : Nat} (h : Adv F FR W stk M ν K S C s s' t' k) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) : Supp.val (Present s') S.tab.length v :=
   Supp.val_mono h.pres (Nat.le_refl _) hv
 
-theorem Adv.vals {s s' t' : St F.S} {k : Nat} (h : Adv F FR M ν K S C s s' t' k) {vs : List Val}
+theorem Adv.vals {s s' t' : St F.S} {k : Nat} (h : Adv F FR W stk M ν K S C s s' t' k) {vs : List Val}
     (hv : Supp.vals (Present s) S.tab.length vs) : Supp.vals (Present s') S.tab.length vs :=
   Supp.vals_mono h.pres (Nat.le_refl _) hv
 
-theorem Adv.env {s s' t' : St F.S} {k : Nat} (h : Adv F FR M ν K S C s s' t' k) {e : Env}
+theorem Adv.env {s s' t' : St F.S} {k : Nat} (h : Adv F FR W stk M ν K S C s s' t' k) {e : Env}
     (he : Supp.env (Present s) S.tab.length e) : Supp.env (Present s') S.tab.length e :=
   Supp.env_mono h.pres (Nat.le_refl _) he
 
@@ -75,30 +75,30 @@ theorem fn_s64 {s : St F.S} (hn : s.next < Sim.bound) : s.next < 2 ^ 64 := by
   rw [hb] at hn
   omega
 
-theorem adv_alloc {s t : St F.S} (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) (o : HObj)
+theorem adv_alloc {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) (o : HObj)
     (ho : Supp.hobj (Present s) S.tab.length o) :
     (t.alloc (M.hobj o)).1 = M.a (s.alloc o).1 ∧ (s.alloc o).1 = s.next ∧ Present (s.alloc o).2 s.next ∧
-      Adv F FR M ν K S C s (s.alloc o).2 (t.alloc (M.hobj o)).2 1 := by
+      Adv F FR W stk M ν K S C s (s.alloc o).2 (t.alloc (M.hobj o)).2 1 := by
   have hs64 := fn_s64 hn
   have hP : ∀ a, Present s a → Present (s.alloc o).2 a := fun _ hp => Present.alloc _ hs64 hp
   obtain ⟨e, hr⟩ := h.alloc o hn (Supp.hobj_mono hP (Nat.le_refl _) ho)
   exact ⟨e, rfl, Present.alloc_next s _ hs64, hr, hP, Nat.le_refl _, Nat.le_succ _⟩
 
 /-- A new cell: the target allocates the image cell at the image address. -/
-theorem adv_cell {s t : St F.S} (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) (v : Option Val)
+theorem adv_cell {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) (v : Option Val)
     (hv : Supp.hobj (Present s) S.tab.length (.cell v)) :
     (t.alloc (.cell (v.map M.val))).1 = M.a s.next ∧ Present (s.alloc (.cell v)).2 s.next ∧
-      Adv F FR M ν K S C s (s.alloc (.cell v)).2 (t.alloc (.cell (v.map M.val))).2 1 := by
+      Adv F FR W stk M ν K S C s (s.alloc (.cell v)).2 (t.alloc (.cell (v.map M.val))).2 1 := by
   obtain ⟨e1, _, hp, ha⟩ := adv_alloc h hn (.cell v) hv
   exact ⟨e1, hp, ha⟩
 
 /-- An object with an intrinsic prototype: the target allocates the image at the image address. -/
-theorem adv_allocObj {s t : St F.S} (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) (k : Kind)
+theorem adv_allocObj {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) (k : Kind)
     (p : Nat) (ps : Props) (hI : M.a p = p) (hp : Present s p)
     (hk : Supp.kind (Present s) S.tab.length k) (hps : Supp.props (Present s) S.tab.length ps) :
     (t.allocObj (M.kind k) (.obj p) (M.props ps)).1 = M.a s.next ∧
       (s.allocObj k (.obj p) ps).1 = s.next ∧ Present (s.allocObj k (.obj p) ps).2 s.next ∧
-      Adv F FR M ν K S C s (s.allocObj k (.obj p) ps).2 (t.allocObj (M.kind k) (.obj p) (M.props ps)).2 1 := by
+      Adv F FR W stk M ν K S C s (s.allocObj k (.obj p) ps).2 (t.allocObj (M.kind k) (.obj p) (M.props ps)).2 1 := by
   have hs64 := fn_s64 hn
   have hP : ∀ a, Present s a → Present (s.allocObj k (.obj p) ps).2 a := fun _ ha => Present.alloc _ hs64 ha
   have hv : M.val (.obj p) = .obj p := by show Val.obj (M.a p) = .obj p; rw [hI]
@@ -113,9 +113,9 @@ theorem allocCells_cons {S' : Type} (s : St S') (n : Name) (ns : List Name) (env
     allocCells s (n :: ns) env = allocCells (s.alloc (.cell none)).2 ns ((n, s.next) :: env) := rfl
 
 theorem allocCells_adv : ∀ (ns : List Name) (s t : St F.S) (env : Env),
-    Rel F FR M ν K s S t C → s.next + ns.length < Sim.bound → Supp.env (Present s) S.tab.length env →
+    RelB F FR W stk M ν K s S t C → s.next + ns.length < Sim.bound → Supp.env (Present s) S.tab.length env →
     (allocCells t ns (M.env env)).1 = M.env (allocCells s ns env).1 ∧
-    Adv F FR M ν K S C s (allocCells s ns env).2 (allocCells t ns (M.env env)).2 ns.length ∧
+    Adv F FR W stk M ν K S C s (allocCells s ns env).2 (allocCells t ns (M.env env)).2 ns.length ∧
     Supp.env (Present (allocCells s ns env).2) S.tab.length (allocCells s ns env).1
   | [], _, _, _, h, _, he => ⟨rfl, Adv.refl h, he⟩
   | n :: ns, s, t, env, h, hn, he => by
@@ -197,14 +197,14 @@ theorem ecEnv_home {S' : Type} (s : St S') (cenv : Env) {home : Val} (this : Val
   cases home <;> first | exact absurd rfl hu | rfl
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {S : SSrv} {C : CSrv}
 
-theorem ecEnv_adv {s t : St F.S} (h : Rel F FR M ν K s S t C) (hn : s.next + 2 < Sim.bound) (cenv : Env)
+theorem ecEnv_adv {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) (hn : s.next + 2 < Sim.bound) (cenv : Env)
     (arrow : Bool) {home this : Val} (hce : Supp.env (Present s) S.tab.length cenv)
     (hh : Supp.val (Present s) S.tab.length home) (hth : Supp.val (Present s) S.tab.length this) :
     (ecEnv t (M.env cenv) arrow (M.val home) (M.val this)).1 = M.env (ecEnv s cenv arrow home this).1 ∧
-    Adv F FR M ν K S C s (ecEnv s cenv arrow home this).2
+    Adv F FR W stk M ν K S C s (ecEnv s cenv arrow home this).2
       (ecEnv t (M.env cenv) arrow (M.val home) (M.val this)).2 2 ∧
     Supp.env (Present (ecEnv s cenv arrow home this).2) S.tab.length (ecEnv s cenv arrow home this).1 := by
   cases arrow with
@@ -249,12 +249,12 @@ theorem margin_split {s : St F.S} {m : Nat} (hn : s.next + m < Sim.bound) (j : N
 
 /-- Entering a closure: cells for `this`, the home object and the parameter names, then
 the boundary and parameter frames. -/
-theorem enterClosure_sim {s t : St F.S} (h : Rel F FR M ν K s S t C) (f : Func) (cenv : Env)
+theorem enterClosure_sim {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) (f : Func) (cenv : Env)
     (arrow : Bool) {home this : Val} {args : List Val} {b : Boundary} (hn : s.next + 2 ^ 21 < Sim.bound)
     (hlen : (paramNames f).length ≤ 2 ^ 20) (hce : Supp.env (Present s) S.tab.length cenv)
     (hh : Supp.val (Present s) S.tab.length home) (hth : Supp.val (Present s) S.tab.length this)
     (has : Supp.vals (Present s) S.tab.length args) (hb : Supp.bnd (Present s) S.tab.length b) :
-    MSim (StepPost F FR M ν K S C) S C (enterClosure F s f cenv arrow home this args b)
+    MSim (StepPostB F FR W stk M ν K S C) S C (enterClosure F s f cenv arrow home this args b)
       (enterClosure F t f (M.env cenv) arrow (M.val home) (M.val this) (M.vals args) (M.bnd b)) := by
   rw [enterClosure_eq, enterClosure_eq]
   obtain ⟨e1, a1, he1⟩ := ecEnv_adv h (margin_split hn 2 (by decide)) cenv arrow hce hh hth
@@ -272,21 +272,21 @@ end
 /-! ## Function objects -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-- Function objects are never framed: the target holds the image. -/
-theorem Rel.fnObj (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} {c : Code}
+theorem RelB.fnObj (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj} {c : Code}
     (ho : s.obj? a = some o) (hk : o.kind = .fn c) : t.obj? (M.a a) = some (M.obj o) := by
   cases hfr : K.fr a with
   | none => exact h.obj? ho hfr
   | some p =>
     obtain ⟨pre, pre'⟩ := p
-    obtain ⟨_, _, xs, hk', _⟩ := h.obj?_framed ho hfr
+    obtain ⟨_, _, xs, hk', _⟩ := h.obj?_framed ho hfr (h.w_none (.of_kind ho (by rw [hk]; exact id)) hfr)
     rw [hk] at hk'
     cases hk'
 
-theorem Rel.fnCode_supp (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} {c : Code}
+theorem RelB.fnCode_supp (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj} {c : Code}
     (ho : s.obj? a = some o) (hk : o.kind = .fn c) : Supp.code (Present s) S.tab.length c := by
   have := (h.obj?_supp ho).1
   rw [hk] at this
@@ -299,8 +299,8 @@ theorem Map.obj_kind_fn (M : Map) {o : Obj} {c : Code} (hk : o.kind = .fn c) :
   rfl
 
 /-- A non-function object has a non-function target image (framed or not). -/
-theorem Rel.nonFnObj (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj}
-    (ho : s.obj? a = some o) (hk : ∀ c, o.kind ≠ .fn c) :
+theorem RelB.nonFnObj (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj}
+    (ho : s.obj? a = some o) (hk : ∀ c, o.kind ≠ .fn c) (hnw : NoW K W s a) :
     ∃ o', t.obj? (M.a a) = some o' ∧ ∀ c, o'.kind ≠ .fn c := by
   cases hfr : K.fr a with
   | none =>
@@ -309,10 +309,10 @@ theorem Rel.nonFnObj (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj}
     cases hko : o.kind <;> rw [hko] at hc <;> first | exact hk _ hko | cases hc
   | some p =>
     obtain ⟨pre, pre'⟩ := p
-    obtain ⟨o', ht, xs, _, rfl⟩ := h.obj?_framed ho hfr
+    obtain ⟨o', ht, xs, _, rfl⟩ := h.obj?_framed ho hfr (h.w_none hnw hfr)
     exact ⟨_, ht, fun c hc => by cases hc⟩
 
-theorem Rel.callTop (h : Rel F FR M ν K s S t C) {f th : Val} {args : List Val}
+theorem RelB.callTop (h : RelB F FR W stk M ν K s S t C) {f th : Val} {args : List Val}
     (hc : s.ctl = .call f th args) :
     step F s = callStep F s f th args ∧ step F t = callStep F t (M.val f) (M.val th) (M.vals args) ∧
       Supp.val (Present s) S.tab.length f ∧ Supp.val (Present s) S.tab.length th ∧
@@ -322,7 +322,7 @@ theorem Rel.callTop (h : Rel F FR M ν K s S t C) {f th : Val} {args : List Val}
   rw [hc] at hs
   exact ⟨by simp only [step, hc], by simp only [step, htc], hs⟩
 
-theorem Rel.constructTop (h : Rel F FR M ν K s S t C) {f nt : Val} {args : List Val}
+theorem RelB.constructTop (h : RelB F FR W stk M ν K s S t C) {f nt : Val} {args : List Val}
     (hc : s.ctl = .construct f args nt) :
     step F s = constructStep F s f args nt ∧
       step F t = constructStep F t (M.val f) (M.vals args) (M.val nt) ∧
@@ -343,12 +343,12 @@ theorem Map.vals_append (M : Map) (xs ys : List Val) : M.vals (xs ++ ys) = M.val
 /-! ## Calls -/
 
 /-- Calling a closure enters it (`enterClosure` with the `call` boundary). -/
-theorem step_call_closure (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
+theorem step_call_closure (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
     {fn : Func} {cenv : Env} {arrow : Bool} {home : Val}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.closure fn cenv arrow home))
     (hlen : (paramNames fn).length ≤ 2 ^ 20) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, hth, has⟩ := h.callTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -358,10 +358,10 @@ theorem step_call_closure (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {ar
   exact enterClosure_sim h fn cenv arrow (margin_split hn _ (by decide)) hlen hce hh hth has trivial
 
 /-- Calling a bound function calls its target with the bound `this` and arguments first. -/
-theorem step_call_bound (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
+theorem step_call_bound (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
     {tg th0 : Val} {as : List Val}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = some o) (hk : o.kind = .fn (.bound tg th0 as)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, -, has⟩ := h.callTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -374,11 +374,11 @@ theorem step_call_bound (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args
   exact MSim.pure ⟨Grow.refl h.srv, hr⟩
 
 /-- Calling a class constructor without `new` throws a `TypeError`. -/
-theorem step_call_klass (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
+theorem step_call_klass (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
     {ctor : Option Func} {cenv : Env} {par : Val} {inst : List InstMember}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = some o) (hk : o.kind = .fn (.klass ctor cenv par inst))
     (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.callTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -392,22 +392,22 @@ theorem callStep_nonFn (s : St F.S) {a : Nat} {o : Obj} {th : Val} {args : List 
   simp only [callStep, ho]
 
 /-- Calling an object that is not a function throws a `TypeError`. -/
-theorem step_call_nonFn (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
+theorem step_call_nonFn (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = some o) (hk : ∀ c, o.kind ≠ .fn c)
-    (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) (hnw : NoW K W s a) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.callTop hc
-  obtain ⟨o', hto, hk'⟩ := h.nonFnObj ho hk
+  obtain ⟨o', hto, hk'⟩ := h.nonFnObj ho hk hnw
   rw [e1, e2]
   show MSim _ S C (callStep F s (.obj a) th args) (callStep F t (.obj (M.a a)) (M.val th) (M.vals args))
   rw [callStep_nonFn s ho hk, callStep_nonFn t hto hk']
   exact typeErr_sim h h.intr (margin_split hn 0 (Nat.zero_le _)) hP _
 
 /-- Calling a primitive throws a `TypeError`. -/
-theorem step_call_prim (h : Rel F FR M ν K s S t C) {f th : Val} {args : List Val}
+theorem step_call_prim (h : RelB F FR W stk M ν K s S t C) {f th : Val} {args : List Val}
     (hc : s.ctl = .call f th args) (hf : ∀ a, f ≠ .obj a)
     (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.callTop hc
   rw [e1, e2]
   have hm := typeErr_sim h h.intr (margin_split hn 0 (Nat.zero_le _)) hP (chars!"not a function")
@@ -451,7 +451,7 @@ def derivedCtor (F : Ffi) (s : St F.S) (a : Nat) (ctor : Option Func) (cenv : En
   | some fn => enterClosure F s3 fn env true .undef .undef args (.derived tc)
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 theorem constructStep_base (s : St F.S) {a : Nat} {o : Obj} {args : List Val} {nt : Val}
@@ -486,15 +486,15 @@ theorem constructStep_nonFn (s : St F.S) {a : Nat} {o : Obj} {args : List Val} {
 end
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
-theorem derivedCtor_sim (h : Rel F FR M ν K s S t C) {a : Nat} {ctor : Option Func} {cenv : Env}
+theorem derivedCtor_sim (h : RelB F FR W stk M ν K s S t C) {a : Nat} {ctor : Option Func} {cenv : Env}
     {par : Val} {args : List Val} {nt : Val} (hn : s.next + margin < Sim.bound)
     (hlen : ∀ fn, ctor = some fn → (paramNames fn).length ≤ 2 ^ 20) (ha : Present s a)
     (hce : Supp.env (Present s) S.tab.length cenv) (hpar : Supp.val (Present s) S.tab.length par)
     (has : Supp.vals (Present s) S.tab.length args) (hnt : Supp.val (Present s) S.tab.length nt) :
-    MSim (StepPost F FR M ν K S C) S C (derivedCtor F s a ctor cenv par args nt)
+    MSim (StepPostB F FR W stk M ν K S C) S C (derivedCtor F s a ctor cenv par args nt)
       (derivedCtor F t (M.a a) ctor (M.env cenv) (M.val par) (M.vals args) (M.val nt)) := by
   obtain ⟨e1, -, hp1, a1⟩ := adv_alloc h (margin_split hn 0 (Nat.zero_le _)) (.cell none) trivial
   obtain ⟨e2, -, hp2, a2⟩ := adv_alloc a1.rel (a1.lt (margin_split hn (1 + 0) (by decide)))
@@ -538,11 +538,11 @@ theorem derivedCtor_sim (h : Rel F FR M ν K s S t C) {a : Nat} {ctor : Option F
       (a123.lt (margin_split hn (1 + (1 + 1) + 2 ^ 21) (by decide))) (hlen fn rfl) henv trivial trivial
       (a123.vals has) hP1
 
-theorem baseCtor_sim (h : Rel F FR M ν K s S t C) {ctor : Option Func} {cenv : Env}
+theorem baseCtor_sim (h : RelB F FR W stk M ν K s S t C) {ctor : Option Func} {cenv : Env}
     {inst : List InstMember} {args : List Val} {proto : Val} (hn : s.next + margin < Sim.bound)
     (hce : Supp.env (Present s) S.tab.length cenv) (hinst : Supp.insts (Present s) S.tab.length inst)
     (has : Supp.vals (Present s) S.tab.length args) (hpr : Supp.val (Present s) S.tab.length proto) :
-    MSim (StepPost F FR M ν K S C) S C (baseCtor F s ctor cenv inst args proto)
+    MSim (StepPostB F FR W stk M ν K S C) S C (baseCtor F s ctor cenv inst args proto)
       (baseCtor F t ctor (M.env cenv) (inst.map M.inst) (M.vals args) (M.val proto)) := by
   have hso : Supp.hobj (Present s) S.tab.length (.obj ⟨.ordinary, proto, [], [], true⟩) :=
     by
@@ -562,10 +562,10 @@ theorem baseCtor_sim (h : Rel F FR M ν K s S t C) {ctor : Option Func} {cenv : 
   unfold baseCtor
   dsimp only
   rw [e1', e2']
-  have hfin : ∀ (s3 : St F.S) (t3 : St F.S), Rel F FR M ν K s3 S t3 C →
+  have hfin : ∀ (s3 : St F.S) (t3 : St F.S), RelB F FR W stk M ν K s3 S t3 C →
       (∀ a, Present ((s.allocObj .ordinary proto []).2.alloc
         (.cell (some (.obj (s.allocObj .ordinary proto []).1)))).2 a → Present s3 a) →
-      MSim (StepPost F FR M ν K S C) S C
+      MSim (StepPostB F FR W stk M ν K S C) S C
         (Host.Ts.M.pure ((s3.push (.k (.fields (s.allocObj .ordinary proto []).1 inst
           ((nThis, ((s.allocObj .ordinary proto []).2.alloc
             (.cell (some (.obj (s.allocObj .ordinary proto []).1)))).1) :: cenv)))).ret .undef))
@@ -591,13 +591,13 @@ theorem baseCtor_sim (h : Rel F FR M ν K s S t C) {ctor : Option Func} {cenv : 
 /-! ### Construction steps -/
 
 /-- `new` of a closure that is not an arrow function: a fresh `this`, then the closure. -/
-theorem step_construct_closure (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem step_construct_closure (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     {fn : Func} {cenv : Env} {home : Val}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.closure fn cenv false home))
     (hlen : (paramNames fn).length ≤ 2 ^ 20) (hP : Present s aObjectProto)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, has, -⟩ := h.constructTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -613,17 +613,17 @@ theorem step_construct_closure (h : Rel F FR M ν K s S t C) {a : Nat} {args : L
     (a1.lt (margin_split hn (1 + 2 ^ 21) (by decide))) hlen (a1.env hce) trivial hpa (a1.vals has) hpa
 
 /-- `new` of a bound function: construct its target (`new.target` follows it). -/
-theorem step_construct_bound (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem step_construct_bound (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     {tg th0 : Val} {as : List Val}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o) (hk : o.kind = .fn (.bound tg th0 as)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, ha, has, hnt⟩ := h.constructTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
   obtain ⟨htg, -, has0⟩ := h.fnCode_supp ho hk
   rw [e1, e2]
   have fin : ∀ X, Supp.val (Present s) S.tab.length X →
-      MSim (StepPost F FR M ν K S C) S C (Host.Ts.M.pure (s.go (.construct tg (as ++ args) X)))
+      MSim (StepPostB F FR W stk M ν K S C) S C (Host.Ts.M.pure (s.go (.construct tg (as ++ args) X)))
         (Host.Ts.M.pure (t.go (.construct (M.val tg) (M.vals as ++ M.vals args) (M.val X)))) := by
     intro X hX
     have hr := h.go (.construct tg (as ++ args) X) ⟨htg, Supp.vals_append has0 has, hX⟩
@@ -644,12 +644,12 @@ theorem step_construct_bound (h : Rel F FR M ν K s S t C) {a : Nat} {args : Lis
 
 /-- `new` of a derived class: cells for `this`, the class and `new.target`; then the
 explicit constructor (an arrow-like closure) or the parent's construction. -/
-theorem step_construct_derived (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem step_construct_derived (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     {ctor : Option Func} {cenv : Env} {par : Val} {inst : List InstMember}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.klass ctor cenv par inst)) (hpar : par ≠ .null)
     (hlen : ∀ fn, ctor = some fn → (paramNames fn).length ≤ 2 ^ 20) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, ha, has, hnt⟩ := h.constructTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -663,12 +663,12 @@ theorem step_construct_derived (h : Rel F FR M ν K s S t C) {a : Nat} {args : L
 /-- `new` of a base class: the instance's prototype is `newTarget.prototype`; then the
 field initializers and the explicit constructor (if any). -/
 theorem step_construct_base {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
-    (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {a : Nat} {args : List Val} {nt : Val}
+    (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {a : Nat} {args : List Val} {nt : Val}
     {o : Obj} {ctor : Option Func} {cenv : Env} {inst : List InstMember}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.klass ctor cenv .null inst)) (hP : Present s aObjectProto)
-    (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hn : s.next + margin < Sim.bound) (hnw : LookupNoW F K W s nt) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, has, hnt⟩ := h.constructTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -677,7 +677,7 @@ theorem step_construct_base {okCall : F.S → Name → List Arg → Bool} {okBac
   show MSim _ S C (constructStep F s (.obj a) args nt) (constructStep F t (.obj (M.a a)) (M.vals args) (M.val nt))
   rw [constructStep_base s ho hk, constructStep_base t hto hk']
   refine MSim.bind (dataOf_sim h hF h.intr hnt (k := kPrototype) trivial
-    (LookupOK.of_plain (by rfl) (by rfl) nt)) ?_
+    (LookupOK.of_noW (by rfl) (by rfl) hnw)) ?_
   rintro M' S' C' r r' ⟨-, hS, hC, rfl, hsupp⟩
   rw [hS, hC]
   have hpr : M.val (instProto r) = instProto (r.map M.val) ∧ Supp.val (Present s) S.tab.length (instProto r) := by
@@ -689,12 +689,12 @@ theorem step_construct_base {okCall : F.S → Name → List Arg → Bool} {okBac
   exact baseCtor_sim h hn hce hinst has hpr.2
 
 /-- `new` of an arrow function throws a `TypeError`. -/
-theorem step_construct_arrow (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem step_construct_arrow (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     {fn : Func} {cenv : Env} {home : Val}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.closure fn cenv true home))
     (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.constructTop hc
   have hto := h.fnObj ho hk
   have hk' := M.obj_kind_fn hk
@@ -703,22 +703,22 @@ theorem step_construct_arrow (h : Rel F FR M ν K s S t C) {a : Nat} {args : Lis
   exact typeErr_sim h h.intr (margin_split hn 0 (Nat.zero_le _)) hP _
 
 /-- `new` of an object that is not a function throws a `TypeError`. -/
-theorem step_construct_nonFn (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem step_construct_nonFn (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o) (hk : ∀ c, o.kind ≠ .fn c)
-    (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) (hnw : NoW K W s a) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.constructTop hc
-  obtain ⟨o', hto, hk'⟩ := h.nonFnObj ho hk
+  obtain ⟨o', hto, hk'⟩ := h.nonFnObj ho hk hnw
   rw [e1, e2]
   show MSim _ S C (constructStep F s (.obj a) args nt) (constructStep F t (.obj (M.a a)) (M.vals args) (M.val nt))
   rw [constructStep_nonFn s ho hk, constructStep_nonFn t hto hk']
   exact typeErr_sim h h.intr (margin_split hn 0 (Nat.zero_le _)) hP _
 
 /-- `new` of a primitive throws a `TypeError`. -/
-theorem step_construct_prim (h : Rel F FR M ν K s S t C) {f nt : Val} {args : List Val}
+theorem step_construct_prim (h : RelB F FR W stk M ν K s S t C) {f nt : Val} {args : List Val}
     (hc : s.ctl = .construct f args nt) (hf : ∀ a, f ≠ .obj a)
     (hP : Present s aTypeErrorProto) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -⟩ := h.constructTop hc
   rw [e1, e2]
   have hm := typeErr_sim h h.intr (margin_split hn 0 (Nat.zero_le _)) hP (chars!"not a constructor")
@@ -729,21 +729,21 @@ theorem step_construct_prim (h : Rel F FR M ν K s S t C) {f nt : Val} {args : L
 end
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-- A dangling callee: the source step fails (nothing to simulate). -/
-theorem step_call_dangling (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val}
+theorem step_call_dangling (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = none) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, -⟩ := h.callTop hc
   rw [e1]
   simp only [callStep, ho]
   exact MSim.fail _ _
 
-theorem step_construct_dangling (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val}
+theorem step_construct_dangling (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = none) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, -⟩ := h.constructTop hc
   rw [e1]
   simp only [constructStep, ho]
@@ -752,7 +752,7 @@ theorem step_construct_dangling (h : Rel F FR M ν K s S t C) {a : Nat} {args : 
 
 /-- Dispatch to a native callee (`callNative`), on both sides, with the supports
 the builtin simulations need. -/
-theorem Rel.callNativeTop (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
+theorem RelB.callNativeTop (h : RelB F FR W stk M ν K s S t C) {a : Nat} {th : Val} {args : List Val} {o : Obj}
     {n : Native} {data : List Val}
     (hc : s.ctl = .call (.obj a) th args) (ho : s.obj? a = some o) (hk : o.kind = .fn (.native n data)) :
     step F s = callNative F s n data th args ∧
@@ -767,7 +767,7 @@ theorem Rel.callNativeTop (h : Rel F FR M ν K s S t C) {a : Nat} {th : Val} {ar
   · rw [e2]; simp only [callStep, Map.val, hto, hk', Map.code]
 
 /-- Dispatch to a native constructor (`constructNative`), on both sides. -/
-theorem Rel.constructNativeTop (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
+theorem RelB.constructNativeTop (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val} {o : Obj}
     {n : Native} {data : List Val}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o) (hk : o.kind = .fn (.native n data)) :
     step F s = constructNative F s n data args nt ∧

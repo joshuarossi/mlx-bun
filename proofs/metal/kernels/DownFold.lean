@@ -2,6 +2,7 @@ import metal.Logic
 import metal.Launch
 import metal.tests.Elab
 import metal.Gpu
+import metal.Bytes
 
 namespace Metal.Kernels.DownFold
 open Metal Metal.Core Inference.Contracts.Mlx
@@ -443,15 +444,6 @@ structure Inv (regions : Nat → Option Region) (P : ByteMemory.Bytes) (n : Nat)
   epochs : sh.deviceEpoch = 0 ∧ sh.groupEpoch = 0
   out : ∀ c < n, ∀ i < 2, sh.bytes 1 (2 * c + i) = (wordBytes 2 (Val.bf16Bits (outValue C P c))).getD i 0
   log : ∀ e ∈ sh.log, Good e
-theorem writeBytes_outside (memory : ByteMemory.Bytes) (o : Nat) (bytes : List (BitVec 8)) (b : Nat)
-    (h : b < o ∨ o + bytes.length ≤ b) : writeBytes memory o bytes b = memory b := by
-  unfold writeBytes; split
-  · omega
-  · rfl
-
-theorem writeBytes_inside (memory : ByteMemory.Bytes) (o : Nat) (bytes : List (BitVec 8)) (i : Nat)
-    (h : i < bytes.length) : writeBytes memory o bytes (o + i) = bytes.getD i 0 := by
-  unfold writeBytes; rw [if_pos (by omega)]; congr 1; omega
 
 /-- Lane 0's store of iteration `k` keeps the invariant's facts about everything else. -/
 theorem afterStore_zero (ctx : Ctx) (sh : Shared) (s g k : Nat) (y : BF) :
@@ -656,12 +648,12 @@ bf16 narrowing of the SIMD sum of the 32 floats of column `c`. -/
 theorem gpu_output (G : Gpu C) (hmax : 256 ≤ G.maxThreads Metal.Elab.Tests.downFoldText) (P : ByteMemory.Bytes) :
     G.execute Metal.Elab.Tests.downFoldText (40960, 1, 1) (256, 1, 1) [⟨.device, 655360, 16, P⟩] [10240] =
       some [expected C P] := by
-  apply G.runs_as_modeled _ core _ _ _ _ 11 5 1 _ compile_eq (by simpa using hmax)
+  apply G.runs_as_modeled_outputs _ core _ _ _ _ _ compile_eq (by simpa using hmax)
   intro initial garbage
   obtain ⟨r, hr, hlog, hout⟩ := launch_run C P (initial 0) (G.fusion Metal.Elab.Tests.downFoldText) garbage
   have hL : (⟨core, (40960, 1, 1), (256, 1, 1), buffers [⟨.device, 655360, 16, P⟩] [10240] 16 initial⟩ : Launch) =
       launch P (initial 0) := rfl
-  refine ⟨r, by rw [hL]; exact hr, by rw [hL]; exact race_free P (initial 0) r hlog, ?_⟩
+  refine ⟨11, 5, 1, r, by rw [hL]; exact hr, by rw [hL]; exact race_free P (initial 0) r hlog, ?_⟩
   simp only [outputs, List.zipIdx, List.map_cons, List.map_nil, List.cons.injEq, and_true]
   funext b
   unfold expected

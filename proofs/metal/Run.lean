@@ -8,11 +8,15 @@ open Core Inference.Contracts.Mlx
 One deterministic run of a launch. Threads of a threadgroup run one after
 another; a thread stops at a barrier and at a SIMD-group collective. A
 SIMD-group resolves a collective when all 32 lanes reach the same one; a
-threadgroup passes a barrier when all its threads reach the same one.
-Threadgroups run one after another. Anything else — divergent barriers or
-collectives, out-of-bounds or misaligned accesses, writes to constant memory,
-undefined integer operations, operations outside the modeled subset — has no
-result (`none`).
+threadgroup passes a barrier when all its threads reach the same one. The
+collectives are `simd_sum` (the contract's `simdSum` of the lanes' values),
+`simd_shuffle_down` and `simdgroup_multiply_accumulate` (the contract's
+`simdMma`, `simdMmaHalfA` or `simdMmaHalfB` on the lanes' registers: each
+lane's two elements of A, B and C in, of D out; no lane-to-element layout is
+part of the semantics). Threadgroups run one after another. Anything else —
+divergent barriers or collectives, out-of-bounds or misaligned accesses,
+writes to constant memory, undefined integer operations, operations outside
+the modeled subset — has no result (`none`).
 
 Every access to device, constant and threadgroup memory is logged with its
 thread, threadgroup and barrier epoch. `RaceFree` says no two threads access
@@ -289,6 +293,50 @@ def slotOf : Status → Option Nat
   | .collective _ slot .. => some slot
   | _ => none
 
+/-- A lane's two `thread_elements()` of a SIMD-group matrix, as `f` reads each. -/
+def pairOf {α : Type} (f : Val → Option α) : Val → Option (α × α)
+  | .vec _ [x, y] => do pure (← f x, ← f y)
+  | _ => none
+
+def f32Of : Val → Option Float32
+  | .f32 x => some x
+  | _ => none
+
+def f16Of : Val → Option Float16.Value
+  | .f16 x => some x
+  | _ => none
+
+/-- The lanes' registers as the contract's SIMD-group matrix operations take them: lane `l`'s
+element `j`. -/
+def regs {α : Type} (xs : List (α × α)) (d : α) (l : Fin 32) (j : Fin 2) : α :=
+  let p := xs.getD l.val (d, d)
+  if j.val = 0 then p.1 else p.2
+
+/-- A lane's `simdgroup_multiply_accumulate` operands `[A, B, C]`. -/
+def mmaOps : Val → Option (Val × Val × Val)
+  | .vec _ [x, y, z] => some (x, y, z)
+  | _ => none
+
+/-- `simdgroup_multiply_accumulate` on the lanes' `[A, B, C]` operands (`A` of element type `a`,
+`B` of `b`): each lane's `D` elements. -/
+def mma (a b : Scalar) (ops : List (Val × Val × Val)) : Option (Fin 32 → Fin 2 → Float32) := do
+  let cs ← ops.mapM fun o => pairOf f32Of o.2.2
+  let c := regs cs (FloatMemory.decode 0)
+  match a, b with
+  | .f32, .f32 => do
+    let as ← ops.mapM fun o => pairOf f32Of o.1
+    let bs ← ops.mapM fun o => pairOf f32Of o.2.1
+    pure (C.simdMma (regs as (FloatMemory.decode 0)) (regs bs (FloatMemory.decode 0)) c)
+  | .f16, .f32 => do
+    let as ← ops.mapM fun o => pairOf f16Of o.1
+    let bs ← ops.mapM fun o => pairOf f32Of o.2.1
+    pure (C.simdMmaHalfA (regs as (Val.ofF16Bits 0)) (regs bs (FloatMemory.decode 0)) c)
+  | .f32, .f16 => do
+    let as ← ops.mapM fun o => pairOf f32Of o.1
+    let bs ← ops.mapM fun o => pairOf f16Of o.2.1
+    pure (C.simdMmaHalfB (regs as (FloatMemory.decode 0)) (regs bs (Val.ofF16Bits 0)) c)
+  | _, _ => none
+
 /-- Result of a collective in every lane of a full SIMD-group. -/
 def resolve (op : Collective) (s : Scalar) (delta : Nat) (values : List Val) : Option (List Val) :=
   if values.length ≠ 32 then none else
@@ -298,6 +346,10 @@ def resolve (op : Collective) (s : Scalar) (delta : Nat) (values : List Val) : O
     let total := C.simdSum fun i => xs.getD i.val (FloatMemory.decode 0)
     some (List.replicate 32 (.f32 total))
   | .shuffleDown, _ => some ((List.range 32).map fun i => values.getD (if i + delta < 32 then i + delta else i) default)
+  | .mma a b, .f32 => do
+    let ops ← values.mapM mmaOps
+    let d ← mma C a b ops
+    some (List.ofFn fun l => .vec .f32 [.f32 (d l 0), .f32 (d l 1)])
   | _, _ => none
 
 def blocked : Status → Bool

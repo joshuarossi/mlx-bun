@@ -11,7 +11,12 @@ the template variables), `R.lo` (the first renamed handle) and the template's
 unframed present addresses in blocks `R.blk<j>` with `R.ukeys` their
 concatenation. The walk is a choice only; every use is a kernel check.
 `tpl_heap_blocks R : σ, s0, s1` proves `R.hb<j> : HeapImg σ s0 s1 R.blk<j>` by
-`Eq.refl` (kernel evaluation) and composes `R.heapImg : HeapImg σ s0 s1 R.ukeys`. -/
+`Eq.refl` (kernel evaluation) and composes `R.heapImg : HeapImg σ s0 s1 R.ukeys`.
+
+`tpl_restart … (world := w)` walks states of the world `w` (`host.sim.template.World`): the load
+world's projections as above, then the state beyond it (`TWorld.walkExtra`: the bridge and the
+observers under the walk's handle and node maps); a template made with a spec contributes its
+framed arrays, ghosts and by-key maps (`T.frames`, `T.ghosts`, `T.maps`). -/
 
 namespace Host.Ts.Sim.Template
 open Lean Elab Command Meta Host.Ts Host.Load Host.Ts.Stream
@@ -22,18 +27,35 @@ private def addD (name : Lean.Name) (type value : Lean.Expr) : TermElabM Unit :=
 private def listE (ty : Lean.Expr) (xs : List Lean.Expr) : Lean.Expr :=
   xs.foldr (fun x acc => mkApp3 (mkConst ``List.cons [.zero]) ty x acc) (mkApp (mkConst ``List.nil [.zero]) ty)
 
-unsafe def restartCmd (pre base case : Lean.Name) (t1 : Nat) (block : Nat) : TermElabM Unit := do
+/-- A template's list constant `T.<n>` (made with a spec), else `d`. -/
+unsafe def natsConstD (n : Lean.Name) (d : List Nat) : MetaM (List Nat) := do
+  if (← getEnv).contains n then evalConst (List Nat) n else pure d
+
+unsafe def restartCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) (t1 : Nat) (block : Nat)
+    (loopToken : Bool := true) (subst : Option Lean.Name := none) : TermElabM Unit := do
   astTabRef.set (← loadAstTab)
   let t0 ← IO.monoMsNow
-  let (s0, c0, _) ← restore (mkConst (base ++ `s0)) (mkConst (base ++ `S0)) pre
-  let (s1, c1, _) ← restore (mkConst (case ++ Lean.Name.mkSimple s!"s{t1}")) (mkConst (case ++ Lean.Name.mkSimple s!"S{t1}")) pre
+  let (x0, c0, _) ← restoreAny (S := F.S) (mkConst (base ++ `s0)) (mkConst (base ++ `S0)) pre
+  let (x1, c1, _) ← restoreAny (S := F.S) (mkConst (case ++ Lean.Name.mkSimple s!"s{t1}")) (mkConst (case ++ Lean.Name.mkSimple s!"S{t1}")) pre
+  -- the end table de-canonicalized (`subst`: a chain's canonical variables to their defining terms)
+  let c1 ← match subst with
+    | none => pure c1
+    | some n => do let dθ ← evalConst (Nat → SymE) n; pure { c1 with tab := c1.tab.map (·.subst dθ) }
+  let s0 := wd.proj x0; let s1 := wd.proj x1
   let tr ← IO.monoMsNow
   let m0 := s0.aux.ffi.mlx; let m1 := s1.aux.ffi.mlx
   let tab0 := c0.tab.toArray; let tab1 := c1.tab.toArray
   let env ← getEnv
-  let ctx : Ctx := { s1 := s0, s2 := s1, t1 := tab0, t2 := tab1, env, framed := framedArrays, traceNodes := traceNodesOf m0 }
-  let intr := (List.range 40).filter (fun a => (s0.heap.get a).isSome) |>.map fun a => (a, a)
-  let ((), w) ← ((walkRoots intr).run ctx).run {}
+  let framed ← natsConstD (base ++ `frames) framedArrays
+  let ghosts ← natsConstD (base ++ `ghosts) []
+  let maps ← natsConstD (base ++ `maps) []
+  let ctx : Ctx := { s1 := s0, s2 := s1, t1 := tab0, t2 := tab1, env, framed, traceNodes := traceNodesOf m0,
+                     ghosts := ghosts.foldl (·.insert ·) {}, byKey := maps }
+  -- a link (`tpl_link`) also walks from the JavaScript objects the native state names, as collection does,
+  -- so every present address of the start is paired
+  let natR := if loopToken then [] else (nativeHeapRefs m0).map fun a => (a, a)
+  let intr := ((List.range 40).filter (fun a => (s0.heap.get a).isSome) |>.map fun a => (a, a)) ++ natR
+  let ((), w) ← ((do walkRoots intr; wd.walkExtra x0.aux.ffi x1.aux.ffi; drain).run ctx).run {}
   let bad := w.mism.size + w.litDiff.size + w.bigs.size + w.nats.size
   unless bad == 0 do
     let first := (w.mism.toList.take 5).map fun (l, lab, msg) => s!"{l.str} {lab}: {msg} @ {pathOf w l 12}"
@@ -55,10 +77,12 @@ unsafe def restartCmd (pre base case : Lean.Name) (t1 : Nat) (block : Nat) : Ter
     match tab0[r]? with
     | some (.var v) => if !cand.contains v then cand := cand.insert v e1
     | _ => pure ()
-  -- the token read at the cut: its next-iteration value is a fresh end reference (`var 17`)
-  for r in [0:tab0.size] do
-    if decide (tab0[r]? = some (SymE.var 14)) then numP := numP.set r (.ref tab1.size)
-  cand := cand.insert 14 (.var 17)
+  -- the decode loop's restart: the token read at the cut, its next-iteration value a fresh end
+  -- reference (`var 17`); not for a link (`tpl_link`)
+  if loopToken then
+    for r in [0:tab0.size] do
+      if decide (tab0[r]? = some (SymE.var 14)) then numP := numP.set r (.ref tab1.size)
+    cand := cand.insert 14 (.var 17)
   let theta := cand.toList.filter (fun (v, e) => !decide (e = .var v)) |>.mergeSort (fun a b => a.1 ≤ b.1)
   let D := mkAppN (mkConst ``RData.mk) #[toExpr s0.next, toExpr s1.next, toExpr heapP, toExpr hndP,
     toExpr m0.next, toExpr m1.next, toExpr m0.nnext, toExpr m1.nnext, toExpr nodeP, toExpr numP]
@@ -73,17 +97,45 @@ unsafe def restartCmd (pre base case : Lean.Name) (t1 : Nat) (block : Nat) : Ter
   let ren := w.sig.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let renH := w.hnd.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let renN := w.nod.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
-  logInfo m!"tpl_restart {pre}: restore {tr - t0} ms, walk+data {(← IO.monoMsNow) - tr} ms; heap {w.sig.size} ({ren} renamed), handles {w.hnd.size} ({renH} renamed, first {lo}), nodes {w.nod.size} ({renN} renamed), {w.pairs.size} number pairs; θ = {theta.map fun (v, e) => s!"v{v} ↦ {fmtSym e}"}"
+  let ghostLog := if w.ghostSeen.isEmpty && w.ghostEntries.isEmpty then "" else s!"; ghosts {w.ghostSeen.size}, ghost map entries {w.ghostEntries.size}"
+  logInfo m!"tpl_restart {pre}: restore {tr - t0} ms, walk+data {(← IO.monoMsNow) - tr} ms; heap {w.sig.size} ({ren} renamed), handles {w.hnd.size} ({renH} renamed, first {lo}), nodes {w.nod.size} ({renN} renamed), {w.pairs.size} number pairs; θ = {theta.map fun (v, e) => s!"v{v} ↦ {fmtSym e}"}{ghostLog}"
 
-elab "tpl_restart " p:ident " : " b:ident ", " c:ident i:num : command =>
+/-- `restartCmdW` at the load world. -/
+unsafe def restartCmd (pre base case : Lean.Name) (t1 : Nat) (block : Nat) : TermElabM Unit :=
+  restartCmdW lfWorld pre base case t1 block
+
+elab "tpl_restart " p:ident " : " b:ident ", " c:ident i:num os:(tplOpts)? : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+    let os : TplOpts := tplOptsOf (os.map (·.raw))
+    os.check [`world, `subst]
     let ns ← getCurrNamespace
-    unsafe restartCmd (ns ++ p.getId) (ns ++ b.getId) (ns ++ c.getId) i.getNat 0
+    let sub : Option Lean.Name := (os.ident `subst).map (ns ++ ·)
+    match os.ident `world with
+    | none | some `lf => unsafe restartCmd (ns ++ p.getId) (ns ++ b.getId) (ns ++ c.getId) i.getNat 0
+    | some n =>
+      let args := #[toExpr (ns ++ p.getId), toExpr (ns ++ b.getId), toExpr (ns ++ c.getId), toExpr i.getNat, toExpr (0 : Nat),
+        toExpr true, toExpr sub]
+      unsafe inWorld ``restartCmdW (← worldConst n) args
+
+/-- `tpl_link R : T, X i [(world := w)]`: the map from the template `T.s0` into `X.s<i>` as `tpl_restart` chooses
+it (`R.data`, `R.inv`, `R.hinv`, `R.ninv`, `R.theta`, `R.lo`), without the decode loop's token: e.g. a stage
+class template's start into a site template's (`Conv.site_class`'s `Iso`). -/
+elab "tpl_link " p:ident " : " b:ident ", " c:ident i:num os:(tplOpts)? : command =>
+  liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
+    let os : TplOpts := tplOptsOf (os.map (·.raw))
+    os.check [`world]
+    let ns ← getCurrNamespace
+    match os.ident `world with
+    | none | some `lf => unsafe restartCmdW lfWorld (ns ++ p.getId) (ns ++ b.getId) (ns ++ c.getId) i.getNat 0 false
+    | some n =>
+      let args := #[toExpr (ns ++ p.getId), toExpr (ns ++ b.getId), toExpr (ns ++ c.getId), toExpr i.getNat, toExpr (0 : Nat),
+        toExpr false]
+      unsafe inWorld ``restartCmdW (← worldConst n) args
 
 /-! ## Present addresses in group parts
 
-`tpl_keys T` lists, for every occupied 4096-address group of `T.s0`'s heap, its
-unframed present addresses: parts `T.gc<j> : List (Nat × List Nat)` of whole
+`tpl_keys T` lists, for every occupied 4096-address group of `T.s0`'s heap (any world), its
+unframed present addresses (framed: `T.frames` of a template made with a spec, else `framedList`): parts `T.gc<j> : List (Nat × List Nat)` of whole
 groups (at most about 1024 addresses each, `T.gks` their concatenation). It
 proves, by kernel evaluation per chunk, that the parts are exactly the heap's
 groups (`T.groups_check`, `T.gcc<j>`), hence `T.cover`: every unframed present
@@ -120,13 +172,14 @@ private def chunkTy : Lean.Expr := mkApp (mkConst ``List [.zero]) pairTy
 unsafe def keysCmd (pre : Lean.Name) (budget : Nat) : TermElabM Nat := do
   let t0 ← IO.monoMsNow
   let (s0, _, _) ← restore (mkConst (pre ++ `s0)) (mkConst (pre ++ `S0)) pre
+  let framed ← natsConstD (pre ++ `frames) framedArrays
   let groups := PTrie.groups s0.heap
   let mut parts : Array (List (Nat × List Nat)) := #[]
   let mut cur : Array (Nat × List Nat) := #[]
   let mut size := 0
   let mut total := 0
   for gi in groups do
-    let l := (PTrie.groupKeys s0.heap gi).filter fun a => !framedArrays.contains a
+    let l := (PTrie.groupKeys s0.heap gi).filter fun a => !framed.contains a
     if size + l.length > budget && !cur.isEmpty then
       parts := parts.push cur.toList; cur := #[]; size := 0
     cur := cur.push (gi, l); size := size + l.length; total := total + l.length
@@ -150,7 +203,8 @@ elab "tpl_keys " p:ident : command => do
     let n ← unsafe keysCmd pre 1024
     let s0 := mkConst (pre ++ `s0)
     let heapE ← mkAppM ``St.heap #[s0]
-    let frE := mkConst ``framedList
+    -- a template made with a spec frames its own arrays (`T.frames`)
+    let frE := if (← getEnv).contains (pre ++ `frames) then mkConst (pre ++ `frames) else mkConst ``framedList
     let okE ← mkAppM ``groupOK #[heapE, frE]
     -- the parts list the occupied groups
     let lhs ← mkAppM ``BEq.beq #[← mkAppM ``PTrie.groups #[heapE], ← mkAppM ``List.map #[mkConst ``Prod.fst [.zero, .zero] |> fun f => mkApp2 f (mkConst ``Nat) natL, mkConst (pre ++ `gks)]]

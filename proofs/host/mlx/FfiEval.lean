@@ -315,8 +315,8 @@ An FFI kernel node names the kernel object it was applied with, which keeps
 the name, Metal source and header `mlx_fast_metal_kernel_new` received (the
 whole NUL-terminated buffers). It resolves to the route kernel of that name
 only if the source and header are those `KernelSources` assigns the kernel,
-the bodies whose parsed programs the `KernelContract` fields' executions are
-about; a kernel under a route name with another body has no value. -/
+the bodies `KernelGpu.ofGpu` assembles and proves its fields from; a kernel
+under a route name with another body has no value. -/
 
 /-- The Metal source and header of each route kernel. -/
 structure KernelSources where

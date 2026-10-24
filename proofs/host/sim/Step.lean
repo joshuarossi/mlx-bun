@@ -21,9 +21,19 @@ structure FRLaws {F : Ffi} (FR : Map → Nat → F.S → F.S → Prop) : Prop wh
   stable : ∀ M M' n x y, FR M n x y → Ext M M' n → FR M' n x y
   mono : ∀ M n n' x y, FR M n x y → n ≤ n' → FR M n' x y
 
-def StepPost (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
+def StepPostB (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame)
+    (M : Map) (ν : Nat → F64) (K : Ctx) (S : SSrv) (C : CSrv) : Map → SSrv → CSrv → St F.S → St F.S → Prop :=
+  fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ RelB F FR W stk M' ν K s1 S' t1 C'
+
+/-- `StepPostB` without a stack base. -/
+abbrev StepPostW (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (M : Map) (ν : Nat → F64)
+    (K : Ctx) (S : SSrv) (C : CSrv) : Map → SSrv → CSrv → St F.S → St F.S → Prop :=
+  StepPostB F FR W [] M ν K S C
+
+/-- `StepPostW` without frames. -/
+abbrev StepPost (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
     (S : SSrv) (C : CSrv) : Map → SSrv → CSrv → St F.S → St F.S → Prop :=
-  fun M' S' C' s1 t1 => Grow M ν S C M' S' C' ∧ Rel F FR M' ν K s1 S' t1 C'
+  StepPostW F FR noFrames M ν K S C
 
 /-- A step lemma's conclusion gives the target step of `StepSim`. -/
 theorem StepPost.run {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64}

@@ -11,33 +11,33 @@ Expression, call, literal and assignment frames let abrupt completions through
 builtin frames other than `AsyncLocalStorage.run` and `new Promise`. -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {P : JSP F}
 
-theorem step_abr_e (h : Rel F FR M ν K s S t C) {a : Abrupt} {x : ExprF} {fs : List Frame}
+theorem step_abr_e (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {x : ExprF} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .e x :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, ha, _⟩ := abrTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.abr a) ha⟩
 
-theorem step_abr_c (h : Rel F FR M ν K s S t C) {a : Abrupt} {x : CallF} {fs : List Frame}
+theorem step_abr_c (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {x : CallF} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .c x :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, ha, _⟩ := abrTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.abr a) ha⟩
 
-theorem step_abr_l (h : Rel F FR M ν K s S t C) {a : Abrupt} {x : LitF} {fs : List Frame}
+theorem step_abr_l (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {x : LitF} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .l x :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, ha, _⟩ := abrTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.abr a) ha⟩
 
-theorem step_abr_a (h : Rel F FR M ν K s S t C) {a : Abrupt} {x : AsgF} {fs : List Frame}
+theorem step_abr_a (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {x : AsgF} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .a x :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, ha, _⟩ := abrTop h hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, hr.go (.abr a) ha⟩
@@ -49,20 +49,21 @@ def okAbrS (s : St F.S) : StmtF → Bool
   | _ => true
 
 def okAbrLp (P : JSP F) (s : St F.S) (n : Nat) : LoopF → Bool
-  | .forUpd _ _ _ _ names _ => Nat.ble names.length two20
-  | .forOfBody src _ _ p _ _ _ => Nat.ble (patNames p).length two20 && srcIdxB P s n src
+  | .forUpd _ _ _ env names _ => Nat.ble names.length two20 && namesNoWB P env names
+  | .forOfBody src _ _ p _ _ _ => Nat.ble (patNames p).length two20 && srcIdxB P s n src && srcNoWB P s src
   | _ => true
 
-def okAbrK (s : St F.S) : FnF → Bool
+def okAbrK (P : JSP F) (s : St F.S) : FnF → Bool
   | .fn b => match b with
-    | .derived _ => presB s aTypeErrorProto && presB s aReferenceErrorProto
+    | .derived tc => presB s aTypeErrorProto && presB s aReferenceErrorProto && nwB P tc
     | .gen _ => presB s aObjectProto && presB s aFunctionProto
     | _ => true
   | .native nt data => match nt, data with
     | .ctl .alsRun, _ => true
     | .ctl .promiseCtor, [_] => true
     | _, _ => false
-  | .ystarAResume _ _ => presB s aPromiseProto
+  | .ystarResume _ _ => noWideB P
+  | .ystarAResume _ _ => presB s aPromiseProto && noWideB P
   | _ => true
 
 def okAbr (P : JSP F) (s : St F.S) (n : Nat) : List Frame → Bool
@@ -70,15 +71,16 @@ def okAbr (P : JSP F) (s : St F.S) (n : Nat) : List Frame → Bool
   | f :: _ => match f with
     | .s x => okAbrS s x
     | .lp x => okAbrLp P s n x
-    | .k x => okAbrK s x
+    | .k x => okAbrK P s x
     | _ => true
 
 theorem simAbr {okBack : F.S → Arg → Bool} {okCall0 : F.S → Name → List Arg → Bool} (hF : FfiSim F FR okCall0 okBack) (hK : Kp P K)
-    (h : Rel F FR M ν K s S t C) {a : Abrupt} (hc : s.ctl = .abr a)
-    (hn : s.next + margin < Sim.bound) (hok : okAbr P s S.tab.length s.stack = true) :
-    MSim (PX F FR M ν K S C) S C (step F s) (step F t) := by
+    (hW : Wp P W) (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} (hc : s.ctl = .abr a)
+    (hn : s.next + margin < Sim.bound) (hok : okAbr P s S.tab.length s.stack = true)
+    (hloc : stk = [] ∨ localB s = true) :
+    MSim (PX F FR W stk M ν K S C) S C (step F s) (step F t) := by
   cases hs : s.stack with
-  | nil => exact MSim.toX (step_abr_empty h hc hs)
+  | nil => exact MSim.toX (step_abr_empty h (hloc.resolve_right fun hl => localB_nil_abr hl hs hc) hc hs)
   | cons f fs =>
     rw [hs] at hok
     cases f with
@@ -113,12 +115,14 @@ theorem simAbr {okBack : F.S → Arg → Bool} {okCall0 : F.S → Name → List 
     | lp x =>
       simp only [okAbr] at hok
       cases x with
-      | forUpd test update body env names labels => exact MSim.toX (step_abr_forUpd h hc hs hn (le20 hok))
+      | forUpd test update body env names labels =>
+        simp only [okAbrLp, Bool.and_eq_true] at hok
+        exact MSim.toX (step_abr_forUpd h hc hs hn (le20 hok.1) (hK.namesNoW hW hok.2))
       | whileBody c body env labels => exact MSim.toX (step_abr_whileBody h hc hs)
       | doBody body c env labels => exact MSim.toX (step_abr_doBody h hc hs)
       | forOfBody src aw kind p body env labels =>
         simp only [okAbrLp, Bool.and_eq_true] at hok
-        exact MSim.toX (step_abr_forOfBody h hF hc hs hn (le20 hok.1) (hK.srcIdx hok.2))
+        exact MSim.toX (step_abr_forOfBody h hF hc hs hn (le20 hok.1.1) (hK.srcIdx hok.1.2) (hK.srcNoW hW hok.2))
       | close c => exact MSim.toX (step_abr_close h hc hs)
       | _ => exact MSim.toX (step_abr_lp_pass h hc hs rfl)
     | k x =>
@@ -130,7 +134,7 @@ theorem simAbr {okBack : F.S → Arg → Bool} {okCall0 : F.S → Name → List 
         | ctor o => exact MSim.toX (step_abr_fn_ctor h hc hs)
         | derived tc =>
           simp only [okAbrK, Bool.and_eq_true] at hok
-          exact MSim.toX (step_abr_fn_derived h hc hs hok.1 hok.2 hn)
+          exact MSim.toX (step_abr_fn_derived h hc hs hok.1.1 hok.1.2 hn (hK.nw hW hok.2))
         | async p => exact MSim.toX (step_abr_fn_async h hc hs hn)
         | gen g =>
           simp only [okAbrK, Bool.and_eq_true] at hok
@@ -145,8 +149,10 @@ theorem simAbr {okBack : F.S → Arg → Bool} {okCall0 : F.S → Name → List 
         | _ => simp at hok
       | promiseThen p => exact MSim.toX (step_abr_promiseThen h hc hs hn)
       | modules r => exact MSim.toX (step_abr_modules h hc hs)
-      | ystarResume it nx => exact MSim.toX (step_abr_ystarResume h hF hc hs)
-      | ystarAResume it nx => exact MSim.toX (step_abr_ystarAResume h hF hok hc hs hn)
+      | ystarResume it nx => exact MSim.toX (step_abr_ystarResume h hF hc hs (hW.noWide hok))
+      | ystarAResume it nx =>
+        simp only [okAbrK, Bool.and_eq_true] at hok
+        exact MSim.toX (step_abr_ystarAResume h hF hok.1 hc hs hn (hW.noWide hok.2))
       | _ => exact MSim.toX (step_abr_k_pass h hc hs rfl)
 
 end

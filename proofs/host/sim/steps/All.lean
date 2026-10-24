@@ -12,5 +12,6 @@ import host.sim.steps.Call
 import host.sim.steps.Fn
 import host.sim.steps.Async
 import host.sim.steps.Builtins
+import host.sim.steps.MapMemo
 import host.sim.steps.Buf
 import host.sim.steps.FfiJs

@@ -25,12 +25,12 @@ theorem rf_truthyZ (hs : Srv M ν S C) (v : Val) (hz : ∀ i, (M.big i == 0) = (
 end
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {v : Val} {fs : List Frame}
 
-theorem step_retE_logLZ (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {op : LogOp} {b : Expr} {env : Env}
+theorem step_retE_logLZ (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) {op : LogOp} {b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.logL op b env) :: fs) (hz : ∀ i, (M.big i == 0) = (i == 0)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have he : Supp.env (Present s) S.tab.length env := hf
@@ -58,9 +58,9 @@ theorem step_retE_logLZ (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {op : Lo
     rw [rf_isNullish]
     exact MSim.cond _ (rf_rel (hr.go (.ev b env) he)) (rf_ret hr v hv)
 
-theorem step_retE_condZ (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {a b : Expr} {env : Env}
+theorem step_retE_condZ (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) {a b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.cond a b env) :: fs) (hz : ∀ i, (M.big i == 0) = (i == 0)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have he : Supp.env (Present s) S.tab.length env := hf

@@ -23,8 +23,11 @@ ordinary machine steps:
   `@huggingface/tokenizers`, `@mlc-ai/web-xgrammar`, `fast-png`). Their
   real module bodies are not run; a run that called one would throw.
 
-What is not modelled throws an `Error` naming it, so a completed run never
-used it. -/
+The global `setImmediate` is not defined here: the interpreter makes it on a
+read of the undefined global (`readVar`, `Machine.lean`) and runs its callback
+as a macrotask (`ctlN .setImmediate`, `nextJob`). What is not modelled throws
+an `Error` naming it (an undefined global a `ReferenceError`), so a completed
+run never used it. -/
 
 namespace Globals
 def source : String := r##"import * as H from "%host";

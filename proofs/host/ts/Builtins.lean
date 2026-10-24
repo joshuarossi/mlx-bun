@@ -64,7 +64,16 @@ def indexOfL (s : St F.S) (v : Val) : List Val → Nat → M (Option Nat)
   | [], _ => .pure none
   | x :: xs, i => .bind (strictEq F s x v) fun b => bif b then .pure (some i) else indexOfL s v xs (i + 1)
 
-/-- Relative index (`slice`, `at`): negative counts from the end. -/
+/-- The relative index of a number (`slice`, `at`): negative counts from the end. -/
+def relIdxOf (n : Nat) (x : F64) : Nat :=
+  match F64.truncInt x with
+  | some (.ofNat i) => bif Nat.ble i n then i else n
+  | some (.negSucc i) => n - (i + 1)
+  | none => bif F64.lt x (F64.zero false) then 0 else bif F64.isNaN x then 0 else n
+
+/-- Relative index (`slice`, `at`): negative counts from the end. A number reference is
+concretized by the server (`numConc`); on a literal and on every other value this is the
+previous definition (`relIdx_eq_old`, `Sim/InterpAgree.lean`). -/
 def relIdx (n : Nat) (v : Val) (dflt : Nat) : M Nat :=
   match v with
   | .undef => .pure dflt
@@ -72,6 +81,7 @@ def relIdx (n : Nat) (v : Val) (dflt : Nat) : M Nat :=
     | some (.ofNat i) => .pure (bif Nat.ble i n then i else n)
     | some (.negSucc i) => .pure (n - (i + 1))
     | none => .pure (bif F64.lt x (F64.zero false) then 0 else bif F64.isNaN x then 0 else n)
+  | .num (.ref i) => .bind (numConc (.ref i)) fun x => .pure (relIdxOf n x)
   | _ => .fail "relative index from a non-literal"
 
 def joinStr (s : St F.S) (sep : List Char) : List Val → Bool → M (List Char)
@@ -399,6 +409,19 @@ def isSafeInt (x : F64) : Bool :=
   | some i => Nat.ble i.natAbs (2 ^ 53 - 1)
   | none => false
 
+/-- `2 ^ 53 - 1`, the largest safe integer (`F64.ofNat (2 ^ 53 - 1)`), and its negation. -/
+def maxSafe : F64 := .fin false 9007199254740991 0
+def minSafe : F64 := .fin true 9007199254740991 0
+
+/-- `Number.isSafeInteger` of a number through the server: integral (`trunc x = x`) and
+within `±(2 ^ 53 - 1)`, tested in that order. On a literal this is `isSafeInt`
+(`Sim.Disp.safeB_lit`). -/
+def safeB (x : NumV) : M Bool :=
+  .bind (numUn .trunc x) fun r => .bind (numTest .eq r x) fun e =>
+  bif e then .bind (numTest .le x (.lit maxSafe)) fun u =>
+    bif u then numTest .le (.lit minSafe) x else .pure false
+  else .pure false
+
 def parseBig (cs : List Char) : Option Int :=
   match F64.trimWs cs with
   | '-' :: r => (F64.parseIntLit r).map fun n => -(n : Int)
@@ -410,11 +433,12 @@ def numN (s : St F.S) (this : Val) (args : List Val) : NumN → RS F
     | [] => retS F s (.num zeroN)
     | v :: _ => match v with
       | .big i => retS F s (intV i)
-      | .ptr _ _ => .fail "Number of a pointer"
+      -- a `bun:ffi` pointer is a number in Bun: `Number` returns it unchanged
+      | .ptr m off => retS F s (.ptr m off)
       | v => .bind (toNum v) fun
         | some x => retS F s (.num x)
         | none => .fail "Number of an object"
-  | .isSafeInteger => litTest isSafeInt
+  | .isSafeInteger => safeTest
   | .isInteger => litTest fun x => (F64.toInt? x).isSome
   | .isFinite => litTest fun | .fin _ _ _ => true | .zero _ => true | _ => false
   | .isNaN => litTest F64.isNaN
@@ -455,6 +479,12 @@ where
   litTest (f : F64 → Bool) : RS F := match arg args 0 with
     | .num (.lit x) => retS F s (.bool (f x))
     | .num _ => .fail "number predicate of a symbolic number"
+    | _ => retS F s (.bool false)
+  /-- `Number.isSafeInteger`: a literal as `litTest isSafeInt`, a referenced number through
+  the server's tests (`safeB`). -/
+  safeTest : RS F := match arg args 0 with
+    | .num (.lit x) => retS F s (.bool (isSafeInt x))
+    | .num (.ref i) => .bind (safeB (.ref i)) fun b => retS F s (.bool b)
     | _ => retS F s (.bool false)
   str (v : Val) : RS F := .bind (primStr v) fun
     | some cs => retS F s (.str cs)

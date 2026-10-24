@@ -115,6 +115,10 @@ deriving Inhabited
 
 inductive Collective where
   | sum | shuffleDown
+  /-- `simdgroup_multiply_accumulate(D, A, B, C)` with `A` of element type `a`, `B` of `b` (`C`
+  and `D` float): each lane's value is `[A, B, C]`, each its 2-element `thread_elements()`, and
+  its result `D`'s (Run.lean `resolve`). -/
+  | mma (a b : Scalar)
 deriving DecidableEq, Repr, Inhabited
 
 inductive CStmt where

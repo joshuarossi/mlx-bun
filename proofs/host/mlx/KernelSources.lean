@@ -6,7 +6,7 @@ set_option maxHeartbeats 0
 
 /-! Exact UTF-8 source/header bytes passed to the ten route kernel constructors.
 KernelSourceBinding.ts checks these literals against the pinned TypeScript.
-The existing parsed-source bindings check each body's numerical programs. -/
+What each body computes is proved from these bytes (proofs/metal/kernels). -/
 
 def sources : KernelSources where
   source

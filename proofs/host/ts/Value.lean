@@ -117,6 +117,9 @@ def symIterator : Nat := 0
 def symAsyncIterator : Nat := 1
 def symDispose : Nat := 2
 def symAsyncDispose : Nat := 3
+/-- Marks a `setImmediate` macrotask: a `then_` job whose rejection handler is this symbol
+(well-known ids 4…15 are never values; `Symbol()` allocates ids from 16). -/
+def symMacro : Nat := 4
 
 inductive PKey where
   | str (s : List Char)
@@ -241,6 +244,8 @@ inductive FnN where
 inductive CtlN where
   | genNext | genReturn | genThrow | agenNext | agenReturn | agenThrow | promiseCtor | promiseResolve
   | promiseReject | promiseThen | promiseCatch | resolveFn | rejectFn | alsCtor | alsRun | alsGetStore
+  /-- `setImmediate(cb)`: queue `cb()` as a macrotask. -/
+  | setImmediate
 inductive FfiN where
   | dlopen | ptr | readU64 | readU32 | readI32 | readPtr | readF32 | toArrayBuffer | symbol | jsCallback
   | cstring | close

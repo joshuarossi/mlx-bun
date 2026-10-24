@@ -7,17 +7,17 @@ Shared helpers of the value-receiving frames (`rf_*`, also used by `RetC`,
 `RetL`, `RetA`) and the steps of `ret v` with an expression frame on top. -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-! ## Helpers -/
 
 /-- A value returning to the top frame, on both sides. -/
-theorem Rel.rfRetFrame (h : Rel F FR M ν K s S t C) {v : Val} {f : Frame} {fs : List Frame}
+theorem RelB.rfRetFrame (h : RelB F FR W stk M ν K s S t C) {v : Val} {f : Frame} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = f :: fs) :
     step F s = retStep F { s with stack := fs } f v ∧
-    step F t = retStep F { t with stack := fs.map M.frame } (M.frame f) (M.val v) ∧
-    Rel F FR M ν K { s with stack := fs } S { t with stack := fs.map M.frame } C ∧
+    step F t = retStep F { t with stack := fs.map M.frame ++ stk } (M.frame f) (M.val v) ∧
+    RelB F FR W stk M ν K { s with stack := fs } S { t with stack := fs.map M.frame ++ stk } C ∧
     Supp.val (Present s) S.tab.length v ∧ Supp.frame (Present s) S.tab.length f := by
   obtain ⟨hts, hr⟩ := h.pop hs
   have htc : t.ctl = .ret (M.val v) := by rw [h.ctl, hc]; rfl
@@ -27,12 +27,12 @@ theorem Rel.rfRetFrame (h : Rel F FR M ν K s S t C) {v : Val} {f : Frame} {fs :
   rw [hc] at this
   exact this
 
-theorem rf_rel {s' t' : St F.S} (h : Rel F FR M ν K s' S t' C) :
-    MSim (StepPost F FR M ν K S C) S C (Host.Ts.M.pure s') (Host.Ts.M.pure t') :=
+theorem rf_rel {s' t' : St F.S} (h : RelB F FR W stk M ν K s' S t' C) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (Host.Ts.M.pure s') (Host.Ts.M.pure t') :=
   MSim.pure ⟨Grow.refl h.srv, h⟩
 
-theorem rf_ret (h : Rel F FR M ν K s S t C) (v : Val) (hv : Supp.val (Present s) S.tab.length v) :
-    MSim (StepPost F FR M ν K S C) S C (retS F s v) (retS F t (M.val v)) :=
+theorem rf_ret (h : RelB F FR W stk M ν K s S t C) (v : Val) (hv : Supp.val (Present s) S.tab.length v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (retS F s v) (retS F t (M.val v)) :=
   rf_rel (h.ret v hv)
 
 /-- Sequencing a value computation with a step. -/
@@ -40,8 +40,8 @@ theorem rf_bind {α β : Type} {P : Map → SSrv → CSrv → α → β → Prop
     {m' : Host.Ts.M β} {f : α → RS F} {f' : β → RS F}
     (hm : MSim (fun M' S' C' a b => P M' S' C' a b ∧ Grow M ν S C M' S' C') S C m m')
     (hf : ∀ M' S' C' a b, P M' S' C' a b → Grow M ν S C M' S' C' →
-      MSim (StepPost F FR M' ν K S' C') S' C' (f a) (f' b)) :
-    MSim (StepPost F FR M ν K S C) S C (Host.Ts.M.bind m f) (Host.Ts.M.bind m' f') :=
+      MSim (StepPostB F FR W stk M' ν K S' C') S' C' (f a) (f' b)) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (Host.Ts.M.bind m f) (Host.Ts.M.bind m' f') :=
   MSim.bind hm fun M' S' C' a b hab =>
     MSim.mono (hf M' S' C' a b hab.1 hab.2) fun _ _ _ _ _ hp => ⟨hab.2.trans hp.1, hp.2⟩
 
@@ -238,8 +238,8 @@ def BigFixedV (K : Ctx) : Val → Prop
 instance rfDecBigFixedV (K : Ctx) (v : Val) : Decidable (BigFixedV K v) := by
   cases v <;> simp only [BigFixedV] <;> infer_instance
 
-theorem Rel.rfFixBig {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
-    {s t : St F.S} {S : SSrv} {C : CSrv} (h : Rel F FR M ν K s S t C) {v : Val} (hb : BigFixedV K v) :
+theorem RelB.rfFixBig {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : RelB F FR W stk M ν K s S t C) {v : Val} (hb : BigFixedV K v) :
     ∀ i, v = .big i → M.big i = i := by
   intro i hv
   subst hv
@@ -329,25 +329,26 @@ end
 /-! ## Steps through the value helpers -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-- A numeric result returned. -/
-theorem rf_numRet (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {m m' : Host.Ts.M NumV}
+theorem rf_numRet (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) {m m' : Host.Ts.M NumV}
     (hm : MSim (fun M' S' C' r r' => (r' = M'.nv r ∧ Supp.nv (Present s) S'.tab.length r) ∧
       Grow M ν S C M' S' C') S C m m') :
-    MSim (StepPost F FR M ν K S C) S C (Host.Ts.M.bind m fun r => retS F s (.num r))
+    MSim (StepPostB F FR W stk M ν K S C) S C (Host.Ts.M.bind m fun r => retS F s (.num r))
       (Host.Ts.M.bind m' fun r => retS F t (.num r)) :=
   rf_bind hm fun _ _ _ r _ hr g => by
     obtain ⟨rfl, hsupp⟩ := hr
     exact rf_ret (h.grow hFR g) (.num r) hsupp
 
-theorem rf_retBig (h : Rel F FR M ν K s S t C) (r : Int) (hr : M.big r = r) :
-    MSim (StepPost F FR M ν K S C) S C (retS F s (.big r)) (retS F t (.big r)) := by
+theorem rf_retBig (h : RelB F FR W stk M ν K s S t C) (r : Int) (hr : M.big r = r) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (retS F s (.big r)) (retS F t (.big r)) := by
   have := rf_ret h (.big r) trivial
   rwa [show M.val (.big r) = .big r from by show Val.big (M.big r) = _; rw [hr]] at this
 
-theorem rf_typeofStr (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
+theorem rf_typeofStr (h : RelB F FR W stk M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v)
+    (hn : ∀ a, v = .obj a → NoW K W s a) :
     typeofStr t (M.val v) = typeofStr s v := by
   cases v with
   | obj a =>
@@ -355,9 +356,8 @@ theorem rf_typeofStr (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Pre
     obtain ⟨o, hg⟩ := Present.get hv
     cases o with
     | cell c =>
-      have hfr := h.fr_cell hg
-      have ht := h.get hg hfr
-      simp only [typeofStr, St.obj?, hg, ht, Map.hobj]
+      obtain ⟨c', ht⟩ := h.cell_target hg
+      simp only [typeofStr, St.obj?, hg, ht]
     | obj o =>
       cases hfr : K.fr a with
       | none =>
@@ -366,7 +366,7 @@ theorem rf_typeofStr (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Pre
         cases o.kind <;> rfl
       | some p =>
         obtain ⟨pre, pre'⟩ := p
-        obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed (obj?_iff.2 hg) hfr
+        obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed (obj?_iff.2 hg) hfr (h.w_none (hn a rfl) hfr)
         rw [obj?_iff] at ht
         simp only [typeofStr, St.obj?, hg, ht, hk]
         rfl
@@ -517,17 +517,17 @@ theorem rf_addOp_arith (s : St F.S) (a b : Val) (ha : ∀ x, a ≠ .str x) (hb :
 end
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 section
-variable (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+variable (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
   (hn : s.next < Sim.bound)
 include h hn
 
 theorem rf_bigOp (hpT : Present s aTypeErrorProto) (hpR : Present s aRangeErrorProto) (op : BinOp)
     (x y : Int) (hr : BigFixedO K (bigOpRes op x y)) :
-    MSim (StepPost F FR M ν K S C) S C (bigOp F s op x y) (bigOp F t op x y) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (bigOp F s op x y) (bigOp F t op x y) := by
   cases op
   case add | sub | mul =>
     simp only [bigOp]
@@ -558,7 +558,7 @@ omit hn in
 include hFR in
 theorem rf_arithN (op : BinOp) (x y : NumV) (hx : Supp.nv (Present s) S.tab.length x)
     (hy : Supp.nv (Present s) S.tab.length y) :
-    MSim (StepPost F FR M ν K S C) S C (rfArithN s op x y) (rfArithN t op (M.nv x) (M.nv y)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (rfArithN s op x y) (rfArithN t op (M.nv x) (M.nv y)) := by
   cases op
   case exp =>
     cases x with
@@ -576,14 +576,14 @@ theorem rf_arithN (op : BinOp) (x y : NumV) (hx : Supp.nv (Present s) S.tab.leng
     | exact MSim.fail _ _
 
 theorem rf_arithFb (hpT : Present s aTypeErrorProto) (a b : Val) :
-    MSim (StepPost F FR M ν K S C) S C (rfArithFb s a b) (rfArithFb t (M.val a) (M.val b)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (rfArithFb s a b) (rfArithFb t (M.val a) (M.val b)) := by
   cases a <;> cases b <;> first | exact MSim.fail _ _ | exact typeErr_sim h h.intr hn hpT _
 
 include hFR in
 theorem rf_arith (hpT : Present s aTypeErrorProto) (hpR : Present s aRangeErrorProto) (op : BinOp)
     {a b : Val} (ha : Supp.val (Present s) S.tab.length a) (hb : Supp.val (Present s) S.tab.length b)
     (hok : BinBigOK K op a b) :
-    MSim (StepPost F FR M ν K S C) S C (arith F s op a b) (arith F t op (M.val a) (M.val b)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (arith F s op a b) (arith F t op (M.val a) (M.val b)) := by
   by_cases hbig : ∃ x y, a = .big x ∧ b = .big y
   · obtain ⟨x, y, rfl, rfl⟩ := hbig
     show MSim _ S C (bigOp F s op x y) (bigOp F t op (M.big x) (M.big y))
@@ -610,7 +610,7 @@ omit hn in
 include hFR in
 theorem rf_compare {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
     (hb : Supp.val (Present s) S.tab.length b) (le : Bool) (hok : BigFixedV K a ∧ BigFixedV K b) :
-    MSim (StepPost F FR M ν K S C) S C (compare F s a b le) (compare F t (M.val a) (M.val b) le) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (compare F s a b le) (compare F t (M.val a) (M.val b) le) := by
   by_cases hstr : ∃ x y, a = .str x ∧ b = .str y
   · obtain ⟨x, y, rfl, rfl⟩ := hstr
     exact rf_ret h (.bool _) trivial
@@ -629,7 +629,7 @@ theorem rf_compare {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
   have ha' : ∀ i, a ≠ .big i := fun i he => hba ⟨i, he⟩
   have hb' : ∀ i, b ≠ .big i := fun i he => hbb ⟨i, he⟩
   have key : ∀ x y, toNumPure a = x → toNumPure b = y →
-      MSim (StepPost F FR M ν K S C) S C (rfCmpN s le x y) (rfCmpN t le (x.map M.nv) (y.map M.nv)) := by
+      MSim (StepPostB F FR W stk M ν K S C) S C (rfCmpN s le x y) (rfCmpN t le (x.map M.nv) (y.map M.nv)) := by
     intro x y hx hy
     cases x with
     | none => exact MSim.fail _ _
@@ -655,7 +655,7 @@ include hFR in
 theorem rf_addOp (hpT : Present s aTypeErrorProto) (hpR : Present s aRangeErrorProto) {a b : Val}
     (ha : Supp.val (Present s) S.tab.length a) (hb : Supp.val (Present s) S.tab.length b)
     (hok : BinBigOK K .add a b) :
-    MSim (StepPost F FR M ν K S C) S C (addOp F s a b) (addOp F t (M.val a) (M.val b)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (addOp F s a b) (addOp F t (M.val a) (M.val b)) := by
   by_cases hstr : ∃ x y, a = .str x ∧ b = .str y
   · obtain ⟨x, y, rfl, rfl⟩ := hstr
     exact rf_ret h (.str _) trivial
@@ -688,8 +688,9 @@ theorem rf_addOp (hpT : Present s aTypeErrorProto) (hpR : Present s aRangeErrorP
 
 include hFR in
 theorem rf_unaryOp (hpT : Present s aTypeErrorProto) (op : UnOp) {v : Val}
-    (hv : Supp.val (Present s) S.tab.length v) (hok : UnBigOK K op v) :
-    MSim (StepPost F FR M ν K S C) S C (unaryOp F s op v) (unaryOp F t op (M.val v)) := by
+    (hv : Supp.val (Present s) S.tab.length v) (hok : UnBigOK K op v)
+    (hty : op = .typeof → ∀ a, v = .obj a → NoW K W s a) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (unaryOp F s op v) (unaryOp F t op (M.val v)) := by
   cases op
   case neg =>
     rcases v with _ | _ | ⟨_ | _⟩ | x | i | cs | i | a | ⟨m, off⟩
@@ -726,7 +727,7 @@ theorem rf_unaryOp (hpT : Present s aTypeErrorProto) (op : UnOp) {v : Val}
       | exact rf_numRet h hFR (rf_numBin h.srv .bxor _ (.lit _))
   case typeof =>
     show MSim _ S C (retS F s _) (retS F t (.str (typeofStr t (M.val v))))
-    rw [rf_typeofStr h hv]
+    rw [rf_typeofStr h hv (hty rfl)]
     exact rf_ret h (.str _) trivial
   case void => exact rf_ret h .undef trivial
   case delete => exact MSim.fail _ _
@@ -764,11 +765,11 @@ def keyOfVal : Val → Option PKey
   | _ => none
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
 /-- `toKey` of a value without symbolic numbers asks no server. -/
-theorem rf_toKeyLit (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v)
+theorem rf_toKeyLit (h : RelB F FR W stk M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v)
     (hl : NumLitV v) (hb : BigFixedV K v) :
     MSim (ReadPost M S C (fun r r' => r' = r.map M.key ∧ Supp.okey (Present s) S.tab.length r ∧
       r = keyOfVal v)) S C (toKey v) (toKey (M.val v)) := by
@@ -796,11 +797,11 @@ theorem rf_toKeyLit (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Pres
 /-- Element reads of `elemAt`: arrays read are unframed; typed-array cells are `CellRead`. -/
 def ElemAtOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (o : Val) (i : Nat) : Prop :=
   ∀ a, o = .obj a → ∀ ob, s.obj? a = some ob →
-    (∀ es, ob.kind = .array es → K.fr a = none) ∧
+    (∀ es, ob.kind = .array es → K.fr a = none) ∧ (Wideable ob.kind → K.fr a = none) ∧
     ∀ kk b off n, ob.kind = .typed kk b off n → i < n → ∀ bs, bufBytes F s b = some bs →
       CellRead K (Present s) S.tab.length kk (bs.drop (off + i * kk.size))
 
-theorem rf_elemAt (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Val}
+theorem rf_elemAt (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Val}
     (ho : Supp.val (Present s) S.tab.length o) (i : Nat) (hok : ElemAtOK F K s S o i) :
     MSim (ReadPost M S C (ValR M (Present s) S.tab.length)) S C (elemAt F s o i) (elemAt F t (M.val o) i) := by
   cases o with
@@ -811,12 +812,14 @@ theorem rf_elemAt (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
       simp only [elemAt, hob, h.obj?_none ho hob]
       exact ReadPost.pure ⟨rfl, fun _ hv => nomatch hv⟩
     | some ob =>
-      obtain ⟨harr, hty⟩ := hok a rfl ob hob
+      obtain ⟨harr, hwd, hty⟩ := hok a rfl ob hob
       have hso := h.obj?_supp hob
       have hfr : K.fr a = none := by
-        cases hk : ob.kind with
-        | array es => exact harr es hk
-        | _ => exact h.fr_none hob fun es he => by rw [hk] at he; cases he
+        by_cases hw : Wideable ob.kind
+        · exact hwd hw
+        · cases hk : ob.kind with
+          | array es => exact harr es hk
+          | _ => exact h.fr_none hob (fun es he => by rw [hk] at he; cases he) hw
       have ht := h.obj? hob hfr
       obtain ⟨kd, pr, ps, pv, ex⟩ := ob
       simp only [elemAt, hob, ht, Map.obj, Map.kind]
@@ -839,7 +842,8 @@ theorem rf_elemAt (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     · cases hn : nth? cs i <;> rw [hn] at hv <;> cases hv; trivial
   | _ => exact ReadPost.pure ⟨rfl, fun _ hv => nomatch hv⟩
 
-theorem rf_isIndexable (h : Rel F FR M ν K s S t C) {o : Val} (ho : Supp.val (Present s) S.tab.length o) :
+theorem rf_isIndexable (h : RelB F FR W stk M ν K s S t C) {o : Val} (ho : Supp.val (Present s) S.tab.length o)
+    (hw : ∀ a ob, o = .obj a → s.obj? a = some ob → Wideable ob.kind → K.fr a = none) :
     isIndexable F t (M.val o) = isIndexable F s o := by
   cases o with
   | obj a =>
@@ -854,7 +858,8 @@ theorem rf_isIndexable (h : Rel F FR M ν K s S t C) {o : Val} (ho : Supp.val (P
         cases kd <;> rfl
       | some p =>
         obtain ⟨pre, pre'⟩ := p
-        obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed hob hfr
+        have hnw : ¬ Wideable ob.kind := fun hk => by rw [hw a ob rfl hob hk] at hfr; cases hfr
+        obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed hob hfr (h.w_none (.of_kind hob hnw) hfr)
         obtain ⟨kd, pr, ps, pv, ex⟩ := ob
         simp only at hk
         subst hk
@@ -862,17 +867,17 @@ theorem rf_isIndexable (h : Rel F FR M ν K s S t C) {o : Val} (ho : Supp.val (P
   | _ => rfl
 
 /-- Side condition of `getIndex o k`. -/
-def GetIndexOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (o k : Val) : Prop :=
+def GetIndexOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (o k : Val) : Prop :=
   NumLitV k ∧ BigFixedV K k ∧
     match numIndex k with
-    | some i => ElemAtOK F K s S o i ∧ LookupOK F K s S o (.str (F64.natStr i))
-    | none => ∀ key, keyOfVal k = some key → LookupOK F K s S o key
+    | some i => ElemAtOK F K s S o i ∧ LookupOK F K W s S o (.str (F64.natStr i))
+    | none => ∀ key, keyOfVal k = some key → LookupOK F K W s S o key
 
-theorem rf_getIndex (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem rf_getIndex (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     (hn : s.next < Sim.bound) (hP : Present s aTypeErrorProto) {o k : Val}
     (ho : Supp.val (Present s) S.tab.length o) (hk : Supp.val (Present s) S.tab.length k)
-    (hok : GetIndexOK F K s S o k) :
-    MSim (StepPost F FR M ν K S C) S C (getIndex F s o k) (getIndex F t (M.val o) (M.val k)) := by
+    (hok : GetIndexOK F K W s S o k) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (getIndex F s o k) (getIndex F t (M.val o) (M.val k)) := by
   obtain ⟨hl, hb, hrest⟩ := hok
   unfold getIndex
   rw [rf_numIndex hl]
@@ -881,7 +886,7 @@ theorem rf_getIndex (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBac
     rw [hi] at hrest
     obtain ⟨hel, hlk⟩ := hrest
     simp only
-    rw [rf_isIndexable h ho]
+    rw [rf_isIndexable h ho (fun a ob he hob => by subst he; exact (hel a rfl ob hob).2.1)]
     refine MSim.cond _ ?_ (getV_sim h hF h.intr hn hP ho trivial hlk)
     refine MSim.bind (rf_elemAt h hF ho i hel) ?_
     rintro M' S' C' r r' ⟨rfl, rfl, rfl, rfl, hsupp⟩
@@ -905,11 +910,11 @@ end
 string conversion are fixed by the map (and so are bigint results), `instanceof` and
 `in` look up under `LookupOK`, and an `in` key is not a symbolic number. Equality
 needs `BinMapOK` instead. -/
-def BinOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (op : BinOp) (a b : Val) : Prop :=
+def BinOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (op : BinOp) (a b : Val) : Prop :=
   match op with
   | .seq | .sne | .eq | .ne => True
-  | .inst => LookupOK F K s S b kPrototype
-  | .in_ => NumLitV a ∧ BigFixedV K a ∧ ∀ key, keyOfVal a = some key → LookupOK F K s S b key
+  | .inst => LookupOK F K W s S b kPrototype ∧ ∀ x, a = .obj x → ChainNoW K W s 64 x
+  | .in_ => NumLitV a ∧ BigFixedV K a ∧ ∀ key, keyOfVal a = some key → LookupOK F K W s S b key
   | _ => BinBigOK K op a b
 
 /-- What equality needs of the map (a fact about native handles and regions, which only
@@ -925,18 +930,18 @@ def BinMapOK (M : Map) (op : BinOp) (a b : Val) : Prop :=
   | _ => True
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
 /-- Fixed or equal bigints, and equal regions, need nothing of the map. -/
-theorem EqMapOK.of_strict (h : Rel F FR M ν K s S t C) {a b : Val} (hok : StrictOK K a b) :
+theorem EqMapOK.of_strict (h : RelB F FR W stk M ν K s S t C) {a b : Val} (hok : StrictOK K a b) :
     EqMapOK M a b := by
   refine ⟨fun i j hi hj he => ?_, fun r o r' o' hr hr' _ => hok.2 r o r' o' hr hr'⟩
   rcases hok.1 i j hi hj with ⟨hfi, hfj⟩ | rfl
   · rwa [h.bigFixed i hfi, h.bigFixed j hfj] at he
   · rfl
 
-theorem rf_strictEq (h : Rel F FR M ν K s S t C) {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
+theorem rf_strictEq (h : RelB F FR W stk M ν K s S t C) {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
     (hb : Supp.val (Present s) S.tab.length b) (hEq : EqMapOK M a b) :
     MSim (fun M' S' C' r r' => r' = r ∧ Grow M ν S C M' S' C') S C
       (strictEq F s a b) (strictEq F t (M.val a) (M.val b)) :=
@@ -953,7 +958,7 @@ theorem rf_someTail {S : SSrv} {C : CSrv} {m m' : Host.Ts.M Bool}
     obtain ⟨rfl, g⟩ := hr
     exact MSim.pure ⟨rfl, g⟩
 
-theorem rf_looseEq (h : Rel F FR M ν K s S t C) {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
+theorem rf_looseEq (h : RelB F FR W stk M ν K s S t C) {a b : Val} (ha : Supp.val (Present s) S.tab.length a)
     (hb : Supp.val (Present s) S.tab.length b) (hEq : EqMapOK M a b) :
     MSim (fun M' S' C' r r' => r' = r ∧ Grow M ν S C M' S' C') S C (looseEq F s a b)
       (looseEq F t (M.val a) (M.val b)) := by
@@ -976,40 +981,41 @@ theorem rf_looseEq (h : Rel F FR M ν K s S t C) {a b : Val} (ha : Supp.val (Pre
     | (have key := rf_someTail (numTest_sim h.srv .eq (M := M) (S := S) (C := C) (a := x) (b := zeroN))
        exact key)
 
-theorem rf_protoChainHas (h : Rel F FR M ν K s S t C) {p : Nat} (hp : Present s p) :
-    ∀ (f : Nat) (v : Val), Supp.val (Present s) S.tab.length v →
+theorem rf_protoChainHas (h : RelB F FR W stk M ν K s S t C) {p : Nat} (hp : Present s p) :
+    ∀ (f : Nat) (v : Val), Supp.val (Present s) S.tab.length v → (∀ a, v = .obj a → ChainNoW K W s f a) →
       protoChainHas F t (M.a p) f (M.val v) = protoChainHas F s p f v
-  | 0, _, _ => rfl
-  | f + 1, .obj a, ha => by
+  | 0, _, _, _ => rfl
+  | f + 1, .obj a, ha, hc => by
     show protoChainHas F t (M.a p) (f + 1) (.obj (M.a a)) = protoChainHas F s p (f + 1) (.obj a)
     cases ho : s.obj? a with
     | none => simp only [protoChainHas, ho, h.obj?_none ha ho]
     | some o =>
       have hso := h.obj?_supp ho
-      obtain ⟨o', ho', hpr, -⟩ := h.obj?_some ho
+      obtain ⟨hw, -, hcn⟩ := hc a rfl o ho
+      obtain ⟨o', ho', hpr, -⟩ := h.obj?_some ho (.of_or hw)
       simp only [protoChainHas, ho, ho', hpr]
       have hsp : Supp.val (Present s) S.tab.length o.proto := hso.2.1
       cases hq : o.proto with
       | obj q =>
         rw [hq] at hsp
         show (Nat.beq (M.a q) (M.a p) || protoChainHas F t (M.a p) f (M.val (.obj q))) = _
-        rw [beq_map h.inj hsp hp, rf_protoChainHas h hp f (.obj q) hsp]
+        rw [beq_map h.inj hsp hp, rf_protoChainHas h hp f (.obj q) hsp (fun b hb => by cases hb; exact hcn q hq)]
       | _ => rfl
-  | _ + 1, .undef, _ => rfl
-  | _ + 1, .null, _ => rfl
-  | _ + 1, .bool _, _ => rfl
-  | _ + 1, .num _, _ => rfl
-  | _ + 1, .big _, _ => rfl
-  | _ + 1, .str _, _ => rfl
-  | _ + 1, .sym _, _ => rfl
-  | _ + 1, .ptr _ _, _ => rfl
+  | _ + 1, .undef, _, _ => rfl
+  | _ + 1, .null, _, _ => rfl
+  | _ + 1, .bool _, _, _ => rfl
+  | _ + 1, .num _, _, _ => rfl
+  | _ + 1, .big _, _, _ => rfl
+  | _ + 1, .str _, _, _ => rfl
+  | _ + 1, .sym _, _, _ => rfl
+  | _ + 1, .ptr _ _, _, _ => rfl
 
-theorem rf_binOp (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
+theorem rf_binOp (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
     (hn : s.next < Sim.bound) (hpT : Present s aTypeErrorProto)
     (hpR : Present s aRangeErrorProto) (op : BinOp) {a b : Val}
     (ha : Supp.val (Present s) S.tab.length a) (hb : Supp.val (Present s) S.tab.length b)
-    (hok : BinOK F K s S op a b) (hM : BinMapOK M op a b) :
-    MSim (StepPost F FR M ν K S C) S C (binOp F s op a b) (binOp F t op (M.val a) (M.val b)) := by
+    (hok : BinOK F K W s S op a b) (hM : BinMapOK M op a b) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (binOp F s op a b) (binOp F t op (M.val a) (M.val b)) := by
   cases op
   case add => exact rf_addOp h hFR hn hpT hpR ha hb hok
   case lt => exact rf_compare h hFR ha hb false ⟨hok.1, hok.2.1⟩
@@ -1033,7 +1039,7 @@ theorem rf_binOp (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) 
     case obj c =>
       show MSim _ S C (Host.Ts.M.bind (dataOf F s (.obj c) kPrototype) _)
         (Host.Ts.M.bind (dataOf F t (M.val (.obj c)) (M.key kPrototype)) _)
-      refine MSim.bind (dataOf_sim h hF h.intr hb trivial hok) ?_
+      refine MSim.bind (dataOf_sim h hF h.intr hb trivial hok.1) ?_
       rintro M' S' C' r r' ⟨-, hS, hC, rfl, hsupp⟩
       rw [hS, hC]
       rcases r with _ | ⟨_ | _ | _ | _ | _ | _ | _ | q | _⟩
@@ -1041,7 +1047,7 @@ theorem rf_binOp (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) 
         have hq : Present s q := hsupp _ rfl
         show MSim _ S C (retS F s (.bool (protoChainHas F s q 64 a)))
           (retS F t (.bool (protoChainHas F t (M.a q) 64 (M.val a))))
-        rw [rf_protoChainHas h hq 64 a ha]
+        rw [rf_protoChainHas h hq 64 a ha hok.2]
         exact rf_ret h (.bool _) trivial
       all_goals exact typeErr_sim h h.intr hn hpT _
     all_goals exact typeErr_sim h h.intr hn hpT _
@@ -1071,50 +1077,50 @@ end
 /-! ## Steps -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
   {v : Val} {fs : List Frame}
 
-theorem step_retE_binL (h : Rel F FR M ν K s S t C) {op : BinOp} {b : Expr} {env : Env}
+theorem step_retE_binL (h : RelB F FR W stk M ν K s S t C) {op : BinOp} {b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.binL op b env) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   exact rf_rel ((hr.push (.e (.binR op v)) hv).go (.ev b env) hf)
 
-theorem step_retE_const (h : Rel F FR M ν K s S t C) {c : Val}
+theorem step_retE_const (h : RelB F FR W stk M ν K s S t C) {c : Val}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.const c) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, _, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   exact rf_ret hr c hf
 
-theorem step_retE_chain (h : Rel F FR M ν K s S t C)
+theorem step_retE_chain (h : RelB F FR W stk M ν K s S t C)
     (hc : s.ctl = .ret v) (hs : s.stack = .e .chain :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, _⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   exact rf_ret hr v hv
 
-theorem step_retE_seq (h : Rel F FR M ν K s S t C) {b : Expr} {env : Env}
+theorem step_retE_seq (h : RelB F FR W stk M ν K s S t C) {b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.seq b env) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, _, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   exact rf_rel (hr.go (.ev b env) hf)
 
-theorem step_retE_typeof (h : Rel F FR M ν K s S t C)
-    (hc : s.ctl = .ret v) (hs : s.stack = .e .typeof :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+theorem step_retE_typeof (h : RelB F FR W stk M ν K s S t C)
+    (hc : s.ctl = .ret v) (hs : s.stack = .e .typeof :: fs) (hty : ∀ a, v = .obj a → NoW K W s a) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, _⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   show MSim _ S C (retS F _ (.str (typeofStr _ v))) (retS F _ (.str (typeofStr _ (M.val v))))
-  rw [rf_typeofStr hr hv]
+  rw [rf_typeofStr hr hv (fun a ha => NoW.congr (fun _ => rfl) (hty a ha))]
   exact rf_ret hr (.str _) trivial
 
-theorem step_retE_logL (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {op : LogOp} {b : Expr} {env : Env}
+theorem step_retE_logL (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) {op : LogOp} {b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.logL op b env) :: fs) (hb : BigFixedV K v) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have he : Supp.env (Present s) S.tab.length env := hf
@@ -1142,9 +1148,9 @@ theorem step_retE_logL (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {op : Log
     rw [rf_isNullish]
     exact MSim.cond _ (rf_rel (hr.go (.ev b env) he)) (rf_ret hr v hv)
 
-theorem step_retE_cond (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {a b : Expr} {env : Env}
+theorem step_retE_cond (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) {a b : Expr} {env : Env}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.cond a b env) :: fs) (hb : BigFixedV K v) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have he : Supp.env (Present s) S.tab.length env := hf
@@ -1155,17 +1161,17 @@ theorem step_retE_cond (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) {a b : Ex
   rw [g.rfEnv he]
   cases r' <;> exact rf_rel (h'.go (.ev _ env) (Supp.env_mono (fun _ h => h) g.len he))
 
-theorem step_retE_unary (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem step_retE_unary (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hn : s.next < Sim.bound) {op : UnOp} (hc : s.ctl = .ret v) (hs : s.stack = .e (.unary op) :: fs)
-    (hpT : Present s aTypeErrorProto) (hok : UnBigOK K op v) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpT : Present s aTypeErrorProto) (hok : UnBigOK K op v) (hty : op = .typeof → ∀ a, v = .obj a → NoW K W s a) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, _⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
-  exact rf_unaryOp hr hFR hn hpT op hv hok
+  exact rf_unaryOp hr hFR hn hpT op hv hok (fun he a ha => NoW.congr (fun _ => rfl) (hty he a ha))
 
-theorem step_retE_indexL (h : Rel F FR M ν K s S t C) {k : Expr} {env : Env} {opt : Bool}
+theorem step_retE_indexL (h : RelB F FR W stk M ν K s S t C) {k : Expr} {env : Env} {opt : Bool}
     (hc : s.ctl = .ret v) (hs : s.stack = .e (.indexL k env opt) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have he : Supp.env (Present s) S.tab.length env := hf
@@ -1173,10 +1179,10 @@ theorem step_retE_indexL (h : Rel F FR M ν K s S t C) {k : Expr} {env : Env} {o
   rw [rf_isNullish]
   exact MSim.cond _ (rf_rel (hr.go .short trivial)) (rf_rel ((hr.push (.e (.indexR v)) hv).go (.ev k env) he))
 
-theorem step_retE_indexR (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem step_retE_indexR (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     (hn : s.next < Sim.bound) {o : Val} (hc : s.ctl = .ret v) (hs : s.stack = .e (.indexR o) :: fs)
-    (hpT : Present s aTypeErrorProto) (hok : GetIndexOK F K s S o v) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpT : Present s aTypeErrorProto) (hok : GetIndexOK F K W s S o v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have ho : Supp.val (Present s) S.tab.length o := hf
@@ -1184,10 +1190,10 @@ theorem step_retE_indexR (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall 
     | exact typeErr_sim hr hr.intr hn hpT _
     | exact rf_getIndex hr hF hn hpT ho hv hok
 
-theorem step_retE_member (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack)
+theorem step_retE_member (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack)
     (hn : s.next < Sim.bound) {k : PKey} {opt : Bool} (hc : s.ctl = .ret v)
-    (hs : s.stack = .e (.member k opt) :: fs) (hpT : Present s aTypeErrorProto) (hok : LookupOK F K s S v k) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hs : s.stack = .e (.member k opt) :: fs) (hpT : Present s aTypeErrorProto) (hok : LookupOK F K W s S v k) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have hk : Supp.key (Present s) S.tab.length k := hf
@@ -1198,29 +1204,29 @@ theorem step_retE_member (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall 
 end
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
   {v : Val} {fs : List Frame}
 
-theorem step_retE_binR (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
+theorem step_retE_binR (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
     (hn : s.next < Sim.bound) {op : BinOp} {a : Val} (hc : s.ctl = .ret v)
     (hs : s.stack = .e (.binR op a) :: fs) (hpT : Present s aTypeErrorProto)
-    (hpR : Present s aRangeErrorProto) (hok : BinOK F K s S op a v) (hM : BinMapOK M op a v) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpR : Present s aRangeErrorProto) (hok : BinOK F K W s S op a v) (hM : BinMapOK M op a v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   exact rf_binOp hr hF hFR hn hpT hpR op hf hv hok hM
 
-theorem step_retE_priv (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound)
+theorem step_retE_priv (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound)
     {b : Nat} {nm : Name} {opt : Bool} (hc : s.ctl = .ret v) (hs : s.stack = .e (.priv b nm opt) :: fs)
-    (hpT : Present s aTypeErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hpT : Present s aTypeErrorProto) (hpk : PrivOK K W s v nm) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hr, hv, hf⟩ := h.rfRetFrame hc hs
   rw [e1, e2]
   have hb : Present s b := hf
   show MSim _ S C (bif opt && isNullish v then _ else _) (bif opt && isNullish (M.val v) then _ else _)
   rw [rf_isNullish]
-  exact MSim.cond _ (rf_rel (hr.go .short trivial)) (privGetV_sim hr hr.intr hn hpT hv hb)
+  exact MSim.cond _ (rf_rel (hr.go .short trivial)) (privGetV_sim hr hr.intr hn hpT hv hb (PrivOK.congr (fun _ => rfl) hpk))
 
 end
 end Host.Ts.Sim

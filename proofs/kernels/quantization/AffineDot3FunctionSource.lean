@@ -9,14 +9,14 @@ set_option maxRecDepth 10000
 -- Initialization and return belong to the same parsed qdot function as the
 -- four-bit branch. Here the intervening body is the actual byte-based branch,
 -- with two cumulative pointer updates and ten ordered statements per visit.
-structure Execution (contracted tailContracted : Bool) (memory : Memory)
+structure Execution (contracted : Nat → Bool) (tailContracted : Bool) (memory : Memory)
     (scale sum bias resultValue : Float32) : Prop where
   initial : startSource=some 0
   headerParsed : AffineDot4LoopSource.parseHeader sourceHeader=some header
   loop : Runs header contracted header.initial memory 0 [0,1] (result contracted memory 0)
   finish : returned tailContracted scale (result contracted memory 0) sum bias=some resultValue
 
-theorem execution (contracted tailContracted : Bool) (memory : Memory) (scale sum bias : Float32)
+theorem execution (contracted : Nat → Bool) (tailContracted : Bool) (memory : Memory) (scale sum bias : Float32)
     (packedRoom : memory.packedBase+6≤2^64) (scaledRoom : memory.scaledBase+16≤2^64)
     (finite : Arithmetic.Finite (AffineTile.tailBind scale (result contracted memory 0) sum bias)
       (AffineTile.tailExpr tailContracted)) :

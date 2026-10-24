@@ -16,14 +16,18 @@ there is no error recovery and no token is skipped.
 Two C++ ambiguities are decided from what the unit has declared so far
 (`ParseCtx`), never by backtracking over a whole construct:
 - a name followed by `<` starts template arguments only if it is `as_type`,
-  `static_cast`, or a template function defined earlier in the unit
-  (the kernel itself in MLX's instantiation line);
+  `static_cast`, `make_filled_simdgroup_matrix` (also as `metal::…`), or a
+  template function defined earlier in the unit (the kernel itself in MLX's
+  instantiation line);
 - a parenthesis starts a C-style cast only if its tokens up to the next `)`
   are exactly a type, and a statement is a declaration exactly when it starts
   with `constexpr`, `const`, an address space or a type name. Type names are
-  the builtin scalar and vector names, the typedef names MLX's preamble
-  provides (`bfloat16_t`, `uint8_t`, …), `auto`, `void`, and the template type
-  parameters in scope. -/
+  the builtin scalar, vector and SIMD-group matrix names (also after
+  `metal::`), `metal::vec<T, n>`, the typedef names MLX's preamble provides
+  (`bfloat16_t`, `uint8_t`, …), `auto`, `void`, and the template type
+  parameters in scope; `metal::T(e)` and `metal::vec<T, n>(e)` are functional
+  casts. The grammar also covers `&e`, the comma operator in a `for` step,
+  `if constexpr` and `uint` template parameters. -/
 
 abbrev Ts := List Tok
 abbrev R (α : Type) := Option (α × Ts)
@@ -108,12 +112,32 @@ def scalarName : List Char → Bool
   | ['f','l','o','a','t','1','6','_','t'] | ['b','f','l','o','a','t','1','6','_','t'] => true
   | n => vecBase n
 
-def vecSuffix : List Char → Bool
-  | [c] => Nat.ble 50 c.toNat && Nat.ble c.toNat 52
-  | _ :: cs => vecSuffix cs
-  | [] => false
+/-- A `vecBase` name followed by a width 2, 3 or 4 (`float4`, `uint3`), matched
+pattern by pattern so that a name's first characters decide it. -/
+def vecName : List Char → Bool
+  | ['b','o','o','l',d] | ['c','h','a','r',d] | ['u','c','h','a','r',d] | ['s','h','o','r','t',d]
+  | ['u','s','h','o','r','t',d] | ['i','n','t',d] | ['u','i','n','t',d] | ['l','o','n','g',d]
+  | ['u','l','o','n','g',d] | ['h','a','l','f',d] | ['f','l','o','a','t',d] | ['b','f','l','o','a','t',d] =>
+    Nat.ble 50 d.toNat && Nat.ble d.toNat 52
+  | _ => false
 
-def builtinType (n : List Char) : Bool := scalarName n || (vecSuffix n && vecBase n.dropLast)
+/-- The SIMD-group matrix types (metal_simdgroup_matrix:77-80). -/
+def matrixName : List Char → Bool
+  | ['s','i','m','d','g','r','o','u','p','_','f','l','o','a','t','8','x','8']
+  | ['s','i','m','d','g','r','o','u','p','_','h','a','l','f','8','x','8']
+  | ['s','i','m','d','g','r','o','u','p','_','b','f','l','o','a','t','8','x','8'] => true
+  | _ => false
+
+def builtinType (n : List Char) : Bool := scalarName n || vecName n || matrixName n
+
+def metalName : List Char := ['m','e','t','a','l']
+def vecWord : List Char := ['v','e','c']
+
+/-- Function templates of the Metal standard library the route kernels call with
+explicit template arguments. -/
+def builtinTemplate (n : List Char) : Bool :=
+  nameEq n ['a','s','_','t','y','p','e'] ||
+    nameEq n ['m','a','k','e','_','f','i','l','l','e','d','_','s','i','m','d','g','r','o','u','p','_','m','a','t','r','i','x']
 
 /-- What the unit has declared so far. -/
 structure ParseCtx where
@@ -125,7 +149,7 @@ structure ParseCtx where
 def ParseCtx.isType (c : ParseCtx) (n : List Char) : Bool := builtinType n || nameIn n c.types
 
 def ParseCtx.isTemplate (c : ParseCtx) (n : List Char) : Bool :=
-  nameEq n ['a','s','_','t','y','p','e'] || nameIn n c.templates
+  builtinTemplate n || nameIn n c.templates
 
 def isKw : List Char → Bool
   | n => match kwOf n with | some _ => true | none => false
@@ -152,22 +176,42 @@ def qualsLoop : Nat → Bool → Option Space → Ts → Option (Bool × Option 
     | _, _ => some (c, s, .ident n :: ts)
   | _ + 1, c, s, ts => some (c, s, ts)
 
+/-- `metal::vec<e, k>` after `metal::vec`: the element type name and the width. -/
+def vecArgs (c : ParseCtx) : Ts → R (List Char × Option Nat)
+  | .punct ['<'] :: .ident e :: .punct [','] :: .int k false false false :: .punct ['>'] :: ts =>
+    bif c.isType e then some ((e, some k), ts) else none
+  | _ => none
+
+/-- A type name: a type name, or after `metal::` a built-in type name or
+`vec<e, k>` (the name and the `vec` width). -/
+def typeName (c : ParseCtx) : Ts → R (List Char × Option Nat)
+  | .ident m :: .punct [':', ':'] :: .ident n :: ts =>
+    bif nameEq m metalName then
+      (bif nameEq n vecWord then vecArgs c ts else bif builtinType n then some ((n, none), ts) else none)
+    else bif c.isType m then some ((m, none), .punct [':', ':'] :: .ident n :: ts) else none
+  | .ident n :: ts => bif c.isType n then some ((n, none), ts) else none
+  | _ => none
+
 def typeSpec (c : ParseCtx) (ts : Ts) : R TypeSpec :=
   match qualsLoop 4 false none ts with
-  | some (q, s, .ident n :: ts) =>
-    bif c.isType n then
-      match ts with
-      | .punct ['*'] :: ts => some ({ const := q, space := s, name := n, pointer := true }, ts)
-      | ts => some ({ const := q, space := s, name := n }, ts)
-    else none
-  | _ => none
+  | some (q, s, ts) =>
+    match typeName c ts with
+    | some ((n, v), .punct ['*'] :: ts) => some ({ const := q, space := s, name := n, pointer := true, vec := v }, ts)
+    | some ((n, v), ts) => some ({ const := q, space := s, name := n, vec := v }, ts)
+    | none => none
+  | none => none
+
+/-- `metal::` followed by a type name. -/
+def metalType : Ts → Bool
+  | .punct [':', ':'] :: .ident m :: _ => nameEq m vecWord || builtinType m
+  | _ => false
 
 /-- Whether a statement is a declaration. -/
 def startsDecl (c : ParseCtx) : Ts → Bool
-  | .ident n :: _ =>
+  | .ident n :: ts =>
     match kwOf n with
     | some .const_ | some .constexpr_ => true
-    | k => (spaceOf k).isSome || c.isType n
+    | k => (spaceOf k).isSome || c.isType n || (nameEq n metalName && metalType ts)
   | _ => false
 
 /-! ## Expressions and statements -/
@@ -235,19 +279,32 @@ def staticCastP (c : ParseCtx) (r : Rec) : Ts → R Expr
   | _ => none
 
 /-- `T(e)` after the type name. -/
-def functionalCast (r : Rec) (n : List Char) : Ts → R Expr
+def functionalCast (r : Rec) (t : TypeSpec) : Ts → R Expr
   | .punct ['('] :: ts =>
     match r.assign ts with
-    | some (e, .punct [')'] :: ts) => some (.cast .functional { name := n } e, ts)
+    | some (e, .punct [')'] :: ts) => some (.cast .functional t e, ts)
     | _ => none
   | _ => none
 
-/-- `f<…>(…)` from the template arguments. -/
-def templateCall (c : ParseCtx) (r : Rec) (n : List Char) (ts : Ts) : R Expr :=
+/-- `f<…>(…)` from the template arguments, `f` the path `p`. -/
+def templateCall (c : ParseCtx) (r : Rec) (p : List (List Char)) (ts : Ts) : R Expr :=
   bnd (targs c r ts) fun as ts =>
     match ts with
-    | .punct ['('] :: ts => bnd (args r ts) fun es ts => some (.call (.name [n]) as es, ts)
+    | .punct ['('] :: ts => bnd (args r ts) fun es ts => some (.call (.name p) as es, ts)
     | _ => none
+
+/-- `metal::f` for a standard-library function template `f`. -/
+def qualifiedTemplate : List (List Char) → Bool
+  | [m, f] => nameEq m metalName && builtinTemplate f
+  | _ => false
+
+/-- A name and what follows it: a path, then template arguments only after a
+`metal::` function template. -/
+def pathWord (c : ParseCtx) (r : Rec) (n : List Char) (ts : Ts) : R Expr :=
+  bnd (pathLoop loopFuel [n] ts) fun p ts =>
+    match ts with
+    | .punct ['<'] :: _ => bif qualifiedTemplate p then templateCall c r p ts else some (.name p, ts)
+    | ts => some (.name p, ts)
 
 def primaryWord (c : ParseCtx) (r : Rec) (n : List Char) (ts : Ts) : R Expr :=
   match kwOf n with
@@ -256,10 +313,14 @@ def primaryWord (c : ParseCtx) (r : Rec) (n : List Char) (ts : Ts) : R Expr :=
   | some .staticCast => staticCastP c r ts
   | some _ => none
   | none =>
-    bif c.isType n then functionalCast r n ts
+    bif c.isType n then functionalCast r { name := n } ts
     else match c.isTemplate n, ts with
-      | true, .punct ['<'] :: _ => templateCall c r n ts
-      | _, ts => bnd (pathLoop loopFuel [n] ts) fun p ts => some (.name p, ts)
+      | true, .punct ['<'] :: _ => templateCall c r [n] ts
+      | _, ts =>
+        -- `metal::T(e)` and `metal::vec<T, k>(e)` are functional casts.
+        bif nameEq n metalName && metalType ts then
+          bnd (typeName c (.ident n :: ts)) fun t ts => functionalCast r { name := t.1, vec := t.2 } ts
+        else pathWord c r n ts
 
 def primary (c : ParseCtx) (r : Rec) : Ts → R Expr
   | .int v u l h :: ts => some (.int v u l h, ts)
@@ -290,6 +351,7 @@ def un (r : Rec) (op : UnOp) (ts : Ts) : R Expr := bnd (r.unary ts) fun e ts => 
 
 def unaryP (c : ParseCtx) (r : Rec) : Ts → R Expr
   | .punct ['-'] :: ts => un r .neg ts
+  | .punct ['&'] :: ts => un r .addr ts
   | .punct ['!'] :: ts => un r .not ts
   | .punct ['~'] :: ts => un r .bitNot ts
   | .punct ['*'] :: ts => un r .deref ts
@@ -444,11 +506,16 @@ def forCond (r : Rec) : Ts → R (Option Expr)
     | some (e, .punct [';'] :: ts) => some (some e, ts)
     | _ => none
 
+/-- A `for` step: an expression, or two separated by the comma operator. -/
 def forStep (r : Rec) : Ts → R (Option Expr)
   | .punct [')'] :: ts => some (none, ts)
   | ts =>
     match r.assign ts with
     | some (e, .punct [')'] :: ts) => some (some e, ts)
+    | some (e, .punct [','] :: ts) =>
+      match r.assign ts with
+      | some (f, .punct [')'] :: ts) => some (some (.comma e f), ts)
+      | _ => none
     | _ => none
 
 /-- After `for`. -/
@@ -458,16 +525,20 @@ def forP (c : ParseCtx) (r : Rec) : Ts → R Stmt
       bnd (r.stmt ts) fun b ts => some (.loop i k s b, ts)
   | _ => none
 
+/-- After `if (` or `if constexpr (`, building the statement with `mk`. -/
+def ifRest (r : Rec) (mk : Expr → Stmt → Option Stmt → Stmt) (ts : Ts) : R Stmt :=
+  match r.assign ts with
+  | some (c, .punct [')'] :: ts) =>
+    bnd (r.stmt ts) fun t ts =>
+      match ts with
+      | .ident ['e','l','s','e'] :: ts => bnd (r.stmt ts) fun e ts => some (mk c t (some e), ts)
+      | ts => some (mk c t none, ts)
+  | _ => none
+
 /-- After `if`. -/
 def ifP (r : Rec) : Ts → R Stmt
-  | .punct ['('] :: ts =>
-    match r.assign ts with
-    | some (c, .punct [')'] :: ts) =>
-      bnd (r.stmt ts) fun t ts =>
-        match ts with
-        | .ident ['e','l','s','e'] :: ts => bnd (r.stmt ts) fun e ts => some (.ite c t (some e), ts)
-        | ts => some (.ite c t none, ts)
-    | _ => none
+  | .punct ['('] :: ts => ifRest r .ite ts
+  | .ident ['c','o','n','s','t','e','x','p','r'] :: .punct ['('] :: ts => ifRest r .ifConstexpr ts
   | _ => none
 
 /-- After `return`. -/
@@ -552,6 +623,7 @@ def tparam : Ts → R TParam
     bif (ParseCtx.plain {} n) then some (.type n, ts) else none
   | .ident ['i','n','t'] :: .ident n :: ts => bif (ParseCtx.plain {} n) then some (.int n, ts) else none
   | .ident ['b','o','o','l'] :: .ident n :: ts => bif (ParseCtx.plain {} n) then some (.bool n, ts) else none
+  | .ident ['u','i','n','t'] :: .ident n :: ts => bif (ParseCtx.plain {} n) then some (.uint n, ts) else none
   | _ => none
 
 /-- Template parameters after `template <`, through `>`. -/

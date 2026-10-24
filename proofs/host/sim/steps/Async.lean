@@ -27,28 +27,28 @@ private theorem Map.obj_with_kind (M : Map) (o : Obj) (k : Kind) :
   cases o; rfl
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {S : SSrv} {C : CSrv}
 
 /-- What a state update keeps: the relation of the results, presence, and at most `k` allocations. -/
-structure Upd (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
+structure Upd (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map) (ν : Nat → F64) (K : Ctx)
     (S : SSrv) (C : CSrv) (s s' t' : St F.S) (k : Nat) : Prop where
-  rel : Rel F FR M ν K s' S t' C
+  rel : RelB F FR W stk M ν K s' S t' C
   pres : ∀ a, Present s a → Present s' a
   next : s'.next ≤ s.next + k
 
-theorem Upd.refl {s t : St F.S} (h : Rel F FR M ν K s S t C) : Upd F FR M ν K S C s s t 0 :=
+theorem Upd.refl {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) : Upd F FR W stk M ν K S C s s t 0 :=
   ⟨h, fun _ hp => hp, Nat.le_refl _⟩
 
-theorem Upd.trans {s s1 s2 t1 t2 : St F.S} {k1 k2 : Nat} (h1 : Upd F FR M ν K S C s s1 t1 k1)
-    (h2 : Upd F FR M ν K S C s1 s2 t2 k2) : Upd F FR M ν K S C s s2 t2 (k1 + k2) :=
+theorem Upd.trans {s s1 s2 t1 t2 : St F.S} {k1 k2 : Nat} (h1 : Upd F FR W stk M ν K S C s s1 t1 k1)
+    (h2 : Upd F FR W stk M ν K S C s1 s2 t2 k2) : Upd F FR W stk M ν K S C s s2 t2 (k1 + k2) :=
   ⟨h2.rel, fun a hp => h2.pres a (h1.pres a hp), by have := h1.next; have := h2.next; omega⟩
 
-theorem Upd.weaken {s s' t' : St F.S} {k k' : Nat} (h : Upd F FR M ν K S C s s' t' k) (hk : k ≤ k') :
-    Upd F FR M ν K S C s s' t' k' :=
+theorem Upd.weaken {s s' t' : St F.S} {k k' : Nat} (h : Upd F FR W stk M ν K S C s s' t' k) (hk : k ≤ k') :
+    Upd F FR W stk M ν K S C s s' t' k' :=
   ⟨h.rel, h.pres, by have := h.next; omega⟩
 
-theorem Upd.bound {s s' t' : St F.S} {k j : Nat} (h : Upd F FR M ν K S C s s' t' k)
+theorem Upd.bound {s s' t' : St F.S} {k j : Nat} (h : Upd F FR W stk M ν K S C s s' t' k)
     (hn : s.next + (k + j) < Sim.bound) : s'.next + j < Sim.bound := by
   have := h.next; omega
 
@@ -58,33 +58,89 @@ private theorem St.obj?_none_of_cell {S' : Type} {s : St S'} {a : Nat} {v : Opti
     (hg : s.heap.get a = some (.cell v)) : s.obj? a = none := by
   unfold St.obj?; rw [hg]
 
-private theorem Rel.objCases {s t : St F.S} (h : Rel F FR M ν K s S t C) {a : Nat} (hp : Present s a) :
+private theorem RelB.objCases {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {a : Nat} (hp : Present s a) :
     (s.obj? a = none ∧ t.obj? (M.a a) = none) ∨
     (∃ o, s.obj? a = some o ∧ K.fr a = none ∧ t.obj? (M.a a) = some (M.obj o)) ∨
     (∃ o o' xs ys, s.obj? a = some o ∧ t.obj? (M.a a) = some o' ∧ o.kind = .array xs ∧
-      o'.kind = .array ys) := by
+      o'.kind = .array ys) ∨
+    (∃ o o', s.obj? a = some o ∧ t.obj? (M.a a) = some o' ∧ Wideable o.kind ∧ WTarget o'.kind ∧ W a ≠ none) := by
   obtain ⟨ho, hg⟩ := hp.get
   cases ho with
   | cell v =>
-    have hfr := h.fr_cell hg
-    exact .inl ⟨St.obj?_none_of_cell hg, St.obj?_none_of_cell (h.get hg hfr)⟩
+    obtain ⟨v', hv'⟩ := h.cell_target hg
+    exact .inl ⟨St.obj?_none_of_cell hg, St.obj?_none_of_cell hv'⟩
   | obj o =>
     cases hfr : K.fr a with
     | none => exact .inr (.inl ⟨o, obj?_iff.2 hg, rfl, h.obj? (obj?_iff.2 hg) hfr⟩)
     | some p =>
-      obtain ⟨pre, pre'⟩ := p
-      obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed (obj?_iff.2 hg) hfr
-      exact .inr (.inr ⟨o, _, _, _, obj?_iff.2 hg, ht, hk, rfl⟩)
+      cases hw : W a with
+      | none =>
+        obtain ⟨pre, pre'⟩ := p
+        obtain ⟨o', ht, xs, hk, rfl⟩ := h.obj?_framed (obj?_iff.2 hg) hfr hw
+        exact .inr (.inr (.inl ⟨o, _, _, _, obj?_iff.2 hg, ht, hk, rfl⟩))
+      | some w =>
+        obtain ⟨o', ht, hk, hk'⟩ := h.wide_obj hg hfr hw
+        exact .inr (.inr (.inr ⟨o, o', obj?_iff.2 hg, obj?_iff.2 ht, hk, hk', by simp⟩))
 
-/-- Objects of non-array kinds are never framed. -/
-private theorem Rel.fr_of_kind {s t : St F.S} (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj}
-    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) : K.fr a = none := by
+/-- Objects of non-array kinds no frame admits are never framed. -/
+private theorem RelB.fr_of_kind {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj}
+    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) (hw : ¬ Wideable o.kind) : K.fr a = none :=
+  h.fr_none ho hk hw
+
+/-- A non-array object where no frame of `W` matters is not framed. -/
+private theorem RelB.fr_of_or {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj}
+    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) (hw : W a = none ∨ K.fr a = none) : K.fr a = none := by
   cases hfr : K.fr a with
   | none => rfl
   | some p =>
     obtain ⟨pre, pre'⟩ := p
-    obtain ⟨_, _, xs, hk', _⟩ := h.obj?_framed ho hfr
+    obtain ⟨_, _, xs, hk', _⟩ := h.obj?_framed ho hfr (h.w_none (.of_or hw) hfr)
     exact absurd hk' (hk _)
+
+private theorem Wideable.not_promise {k : Kind} (hk : Wideable k) (st : PState) : k ≠ .promise st := by
+  intro he; rw [he] at hk; exact hk
+
+private theorem WTarget.not_promise {k : Kind} (hk : WTarget k) (st : PState) : k ≠ .promise st := by
+  rcases hk with hk | ⟨bs, rfl⟩ | ⟨kk, b, off, n, rfl⟩
+  · exact Wideable.not_promise hk st
+  · intro he; cases he
+  · intro he; cases he
+
+private theorem Wideable.not_gen {k : Kind} (hk : Wideable k) (st : GenState) (b : Bool) (q : List (Nat × Comp)) :
+    k ≠ .gen st b q := by
+  intro he; rw [he] at hk; exact hk
+
+private theorem WTarget.not_gen {k : Kind} (hk : WTarget k) (st : GenState) (b : Bool) (q : List (Nat × Comp)) :
+    k ≠ .gen st b q := by
+  rcases hk with hk | ⟨bs, rfl⟩ | ⟨kk, b', off, n, rfl⟩
+  · exact Wideable.not_gen hk st b q
+  · intro he; cases he
+  · intro he; cases he
+
+private theorem promiseOf_none_of {S' : Type} {s : St S'} {p : Nat} {o : Obj} (h1 : s.obj? p = some o)
+    (hk : ∀ st, o.kind ≠ .promise st) : promiseOf s p = none := by
+  unfold promiseOf; rw [h1]
+  cases hko : o.kind <;> simp_all
+
+private theorem genOf_none_of {S' : Type} {s : St S'} {g : Nat} {o : Obj} (h1 : s.obj? g = some o)
+    (hk : ∀ st b q, o.kind ≠ .gen st b q) : genOf s g = none := by
+  unfold genOf; rw [h1]
+  cases hko : o.kind <;> simp_all
+
+private theorem agenQueue_nil_of {S' : Type} {s : St S'} {g : Nat} {o : Obj} (h1 : s.obj? g = some o)
+    (hk : ∀ st b q, o.kind ≠ .gen st b q) : agenQueue s g = [] := by
+  unfold agenQueue; rw [h1]
+  cases hko : o.kind <;> simp_all
+
+private theorem setGen_of {S' : Type} {s : St S'} {g : Nat} {o : Obj} (h1 : s.obj? g = some o)
+    (hk : ∀ st b q, o.kind ≠ .gen st b q) (st : GenState) : setGen s g st = s := by
+  unfold setGen; rw [h1]
+  cases hko : o.kind <;> simp_all
+
+private theorem setQueue_of {S' : Type} {s : St S'} {g : Nat} {o : Obj} (h1 : s.obj? g = some o)
+    (hk : ∀ st b q, o.kind ≠ .gen st b q) (q : List (Nat × Comp)) : setQueue s g q = s := by
+  unfold setQueue; rw [h1]
+  cases hko : o.kind <;> simp_all
 
 private theorem promiseOf_some {S' : Type} {s : St S'} {p : Nat} {o : Obj} {st : PState}
     (h : promiseOf s p = some (o, st)) : s.obj? p = some o ∧ o.kind = .promise st := by
@@ -111,18 +167,20 @@ private theorem genOf_some {S' : Type} {s : St S'} {g : Nat} {st : GenState} {a 
   · cases h
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
-private theorem Rel.promiseOf_map {p : Nat} (hp : Present s p) :
+private theorem RelB.promiseOf_map {p : Nat} (hp : Present s p) :
     promiseOf t (M.a p) = (promiseOf s p).map fun x => (M.obj x.1, M.pstate x.2) := by
-  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+    ⟨o, o', h1, h2, w1, w2, -⟩
   · simp only [Host.Ts.promiseOf, h1, h2, Option.map_none]
   · simp only [Host.Ts.promiseOf, h1, h2]
     cases hk : o.kind <;> simp [Map.obj, Map.kind, hk]
   · simp only [Host.Ts.promiseOf, h1, h2, k1, k2, Option.map_none]
+  · rw [promiseOf_none_of h1 w1.not_promise, promiseOf_none_of h2 w2.not_promise]; rfl
 
-private theorem Rel.isPromise_map {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
+private theorem RelB.isPromise_map {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
     isPromise t (M.val v) = (isPromise s v).map M.a := by
   cases v with
   | obj a =>
@@ -131,23 +189,27 @@ private theorem Rel.isPromise_map {v : Val} (hv : Supp.val (Present s) S.tab.len
     cases promiseOf s a <;> rfl
   | _ => rfl
 
-private theorem Rel.genOf_map {g : Nat} (hp : Present s g) :
+private theorem RelB.genOf_map {g : Nat} (hp : Present s g) :
     genOf t (M.a g) = (genOf s g).map fun x => (M.gen x.1, x.2) := by
-  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+    ⟨o, o', h1, h2, w1, w2, -⟩
   · simp only [Host.Ts.genOf, h1, h2, Option.map_none]
   · simp only [Host.Ts.genOf, h1, h2]
     cases hk : o.kind <;> simp [Map.obj, Map.kind, hk]
   · simp only [Host.Ts.genOf, h1, h2, k1, k2, Option.map_none]
+  · rw [genOf_none_of h1 w1.not_gen, genOf_none_of h2 w2.not_gen]; rfl
 
-private theorem Rel.agenQueue_map {g : Nat} (hp : Present s g) :
+private theorem RelB.agenQueue_map {g : Nat} (hp : Present s g) :
     agenQueue t (M.a g) = M.queue (agenQueue s g) := by
-  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+  rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+    ⟨o, o', h1, h2, w1, w2, -⟩
   · simp only [Host.Ts.agenQueue, h1, h2]; rfl
   · simp only [Host.Ts.agenQueue, h1, h2]
     cases hk : o.kind <;> simp [Map.obj, Map.kind, hk, Map.queue]
   · simp only [Host.Ts.agenQueue, h1, h2, k1, k2]; rfl
+  · rw [agenQueue_nil_of h1 w1.not_gen, agenQueue_nil_of h2 w2.not_gen]; rfl
 
-private theorem Rel.promiseOf_supp {p : Nat} {o : Obj} {st : PState} (hpo : promiseOf s p = some (o, st)) :
+private theorem RelB.promiseOf_supp {p : Nat} {o : Obj} {st : PState} (hpo : promiseOf s p = some (o, st)) :
     Supp.obj (Present s) S.tab.length o ∧ Supp.pstate (Present s) S.tab.length st := by
   obtain ⟨ho, hk⟩ := promiseOf_some hpo
   have hs := h.obj?_supp ho
@@ -155,14 +217,14 @@ private theorem Rel.promiseOf_supp {p : Nat} {o : Obj} {st : PState} (hpo : prom
   rw [hk] at hk'
   exact ⟨hs, hk'⟩
 
-private theorem Rel.genOf_supp {g : Nat} {st : GenState} {a : Bool} (hgo : genOf s g = some (st, a)) :
+private theorem RelB.genOf_supp {g : Nat} {st : GenState} {a : Bool} (hgo : genOf s g = some (st, a)) :
     Supp.gen (Present s) S.tab.length st := by
   obtain ⟨o, q, ho, hk⟩ := genOf_some hgo
   have hk' := (h.obj?_supp ho).1
   rw [hk] at hk'
   exact hk'.1
 
-private theorem Rel.agenQueue_supp (g : Nat) :
+private theorem RelB.agenQueue_supp (g : Nat) :
     ∀ x ∈ agenQueue s g, Present s x.1 ∧ Supp.comp (Present s) S.tab.length x.2 := by
   intro x hx
   unfold Host.Ts.agenQueue at hx
@@ -176,14 +238,14 @@ private theorem Rel.agenQueue_supp (g : Nat) :
     · cases hx
   · cases hx
 
-private theorem Rel.present_lt {a : Nat} (hp : Present s a) (hn : s.next < Sim.bound) : a < 2 ^ 64 := by
+private theorem RelB.present_lt {a : Nat} (hp : Present s a) (hn : s.next < Sim.bound) : a < 2 ^ 64 := by
   have := h.presentBound a hp
   have hb : Sim.bound = 2 ^ 61 := rfl
   rw [hb] at hn
   omega
 
 /-- Injectivity on present addresses, for address comparisons. -/
-private theorem Rel.beq {a b : Nat} (ha : Present s a) (hb : Present s b) :
+private theorem RelB.beq {a b : Nat} (ha : Present s a) (hb : Present s b) :
     Nat.beq (M.a a) (M.a b) = Nat.beq a b := by
   cases hab : Nat.beq a b with
   | true => rw [Nat.eq_of_beq_eq_true hab]; exact Nat.beq_refl _
@@ -201,17 +263,17 @@ end
 /-! ## Primitive updates -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 theorem upd_setObj {a : Nat} {o : Obj} (hn : s.next < Sim.bound) (ha : Present s a) (hfr : K.fr a = none)
     (ho : Supp.obj (Present s) S.tab.length o) :
-    Upd F FR M ν K S C s (s.setObj a o) (t.setObj (M.a a) (M.obj o)) 0 :=
+    Upd F FR W stk M ν K S C s (s.setObj a o) (t.setObj (M.a a) (M.obj o)) 0 :=
   ⟨h.setObj o hn ha hfr ho, fun _ hp => Present.set _ (h.present_lt ha hn) hp, Nat.le_refl _⟩
 
 theorem upd_setCell {a : Nat} {v : Val} (hn : s.next < Sim.bound) (ha : Present s a) (hfr : K.fr a = none)
     (hv : Supp.val (Present s) S.tab.length v) :
-    Upd F FR M ν K S C s (s.setCell a v) (t.setCell (M.a a) (M.val v)) 0 :=
+    Upd F FR W stk M ν K S C s (s.setCell a v) (t.setCell (M.a a) (M.val v)) 0 :=
   ⟨h.setCell v hn ha hfr hv, fun _ hp => Present.set _ (h.present_lt ha hn) hp, Nat.le_refl _⟩
 
 theorem upd_allocObj {k : Kind} {proto : Val} {props : Props} (hn : s.next < Sim.bound)
@@ -220,7 +282,7 @@ theorem upd_allocObj {k : Kind} {proto : Val} {props : Props} (hn : s.next < Sim
     (t.allocObj (M.kind k) (M.val proto) (M.props props)).1 = M.a (s.allocObj k proto props).1 ∧
       (s.allocObj k proto props).1 = s.next ∧
       Present (s.allocObj k proto props).2 s.next ∧
-      Upd F FR M ν K S C s (s.allocObj k proto props).2 (t.allocObj (M.kind k) (M.val proto) (M.props props)).2 1 := by
+      Upd F FR W stk M ν K S C s (s.allocObj k proto props).2 (t.allocObj (M.kind k) (M.val proto) (M.props props)).2 1 := by
   have hb : Sim.bound = 2 ^ 61 := rfl
   have hs64 : s.next < 2 ^ 64 := by rw [hb] at hn; omega
   have hP : ∀ a, Present s a → Present (s.allocObj k proto props).2 a := fun _ hp => Present.alloc _ hs64 hp
@@ -230,7 +292,7 @@ theorem upd_allocObj {k : Kind} {proto : Val} {props : Props} (hn : s.next < Sim
 
 theorem upd_alloc {o : HObj} (hn : s.next < Sim.bound) (ho : Supp.hobj (Present s) S.tab.length o) :
     (t.alloc (M.hobj o)).1 = M.a (s.alloc o).1 ∧ (s.alloc o).1 = s.next ∧ Present (s.alloc o).2 s.next ∧
-      Upd F FR M ν K S C s (s.alloc o).2 (t.alloc (M.hobj o)).2 1 := by
+      Upd F FR W stk M ν K S C s (s.alloc o).2 (t.alloc (M.hobj o)).2 1 := by
   have hb : Sim.bound = 2 ^ 61 := rfl
   have hs64 : s.next < 2 ^ 64 := by rw [hb] at hn; omega
   have hP : ∀ a, Present s a → Present (s.alloc o).2 a := fun _ hp => Present.alloc _ hs64 hp
@@ -238,11 +300,11 @@ theorem upd_alloc {o : HObj} (hn : s.next < Sim.bound) (ho : Supp.hobj (Present 
   exact ⟨e, rfl, Present.alloc_next s _ hs64, hr, hP, Nat.le_refl _⟩
 
 theorem upd_setJobs (js : List Job) (hjs : ∀ j ∈ js, Supp.job (Present s) S.tab.length j) :
-    Upd F FR M ν K S C s (s.setJobs js) (t.setJobs (js.map M.job)) 0 :=
+    Upd F FR W stk M ν K S C s (s.setJobs js) (t.setJobs (js.map M.job)) 0 :=
   ⟨h.setJobs js hjs, fun _ hp => hp, Nat.le_refl _⟩
 
 theorem upd_enqueue (j : Job) (hj : Supp.job (Present s) S.tab.length j) :
-    Upd F FR M ν K S C s (enqueue s j) (enqueue t (M.job j)) 0 := by
+    Upd F FR W stk M ν K S C s (enqueue s j) (enqueue t (M.job j)) 0 := by
   have e : enqueue t (M.job j) = t.setJobs ((s.jobs ++ [j]).map M.job) := by
     simp only [enqueue, List.map_append, List.map_cons, List.map_nil, ← h.jobs]
   rw [e]
@@ -254,9 +316,9 @@ theorem upd_enqueue (j : Job) (hj : Supp.job (Present s) S.tab.length j) :
 end
 
 theorem upd_enqueueAll (th : Bool) {v : Val} :
-    ∀ (rs : List Reaction) {s t : St F.S}, Rel F FR M ν K s S t C →
+    ∀ (rs : List Reaction) {s t : St F.S}, RelB F FR W stk M ν K s S t C →
       (∀ r ∈ rs, Supp.reaction (Present s) S.tab.length r) → Supp.val (Present s) S.tab.length v →
-      Upd F FR M ν K S C s (enqueueAll s th v rs) (enqueueAll t th (M.val v) (rs.map M.reaction)) 0
+      Upd F FR W stk M ν K S C s (enqueueAll s th v rs) (enqueueAll t th (M.val v) (rs.map M.reaction)) 0
   | [], _, _, h, _, _ => Upd.refl h
   | r :: rs, s, t, h, hrs, hv => by
     have u1 := upd_enqueue h ⟨r, th, v⟩ ⟨hrs r (List.mem_cons_self ..), hv⟩
@@ -271,12 +333,12 @@ private theorem enqueueAll_keeps {S' : Type} (th : Bool) (v : Val) :
 /-! ## Promises -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 theorem upd_settle (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) (th : Bool) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) :
-    Upd F FR M ν K S C s (settle s p th v) (settle t (M.a p) th (M.val v)) 0 := by
+    Upd F FR W stk M ν K S C s (settle s p th v) (settle t (M.a p) th (M.val v)) 0 := by
   unfold settle
   rw [h.promiseOf_map hp]
   cases hpo : promiseOf s p with
@@ -287,7 +349,7 @@ theorem upd_settle (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) (th : 
     obtain ⟨hso, hst⟩ := h.promiseOf_supp hpo
     cases st with
     | pending rs =>
-      have hfr : K.fr p = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he)
+      have hfr : K.fr p = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he) (by rw [hk]; exact id)
       have e : ({ M.obj o with kind := .promise (bif th then .rejected (M.val v) else .fulfilled (M.val v)) } : Obj) =
           M.obj { o with kind := .promise (bif th then .rejected v else .fulfilled v) } := by
         rw [Map.obj_with_kind]; cases th <;> rfl
@@ -304,7 +366,7 @@ theorem upd_settle (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) (th : 
 
 theorem upd_react (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) {r : Reaction}
     (hr : Supp.reaction (Present s) S.tab.length r) :
-    Upd F FR M ν K S C s (react s p r) (react t (M.a p) (M.reaction r)) 0 := by
+    Upd F FR W stk M ν K S C s (react s p r) (react t (M.a p) (M.reaction r)) 0 := by
   unfold react
   rw [h.promiseOf_map hp]
   cases hpo : promiseOf s p with
@@ -315,7 +377,7 @@ theorem upd_react (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) {r : Re
     obtain ⟨hso, hst⟩ := h.promiseOf_supp hpo
     cases st with
     | pending rs =>
-      have hfr : K.fr p = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he)
+      have hfr : K.fr p = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he) (by rw [hk]; exact id)
       have e : ({ M.obj o with kind := .promise (.pending (rs.map M.reaction ++ [M.reaction r])) } : Obj) =
           M.obj { o with kind := .promise (.pending (rs ++ [r])) } := by
         cases o; simp only [Map.obj, Map.kind, Map.pstate, List.map_append, List.map_cons, List.map_nil]
@@ -330,7 +392,7 @@ theorem upd_react (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) {r : Re
 
 theorem upd_resolveP (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) :
-    Upd F FR M ν K S C s (resolveP s p v) (resolveP t (M.a p) (M.val v)) 0 := by
+    Upd F FR W stk M ν K S C s (resolveP s p v) (resolveP t (M.a p) (M.val v)) 0 := by
   unfold resolveP
   rw [h.isPromise_map hv]
   cases hip : isPromise s v with
@@ -353,7 +415,7 @@ theorem upd_newPromise (hpp : Present s aPromiseProto)
     (hn : s.next < Sim.bound) :
     (newPromise t).1 = M.a (newPromise s).1 ∧ (newPromise s).1 = s.next ∧
       Present (newPromise s).2 (newPromise s).1 ∧
-      Upd F FR M ν K S C s (newPromise s).2 (newPromise t).2 1 := by
+      Upd F FR W stk M ν K S C s (newPromise s).2 (newPromise t).2 1 := by
   obtain ⟨e1, e2, hp, u⟩ := upd_allocObj h (k := .promise (.pending [])) (proto := .obj aPromiseProto)
     (props := []) hn (fun _ hr => nomatch hr) hpp (fun _ hx => nomatch hx)
   have e : M.val (.obj aPromiseProto) = .obj aPromiseProto := by
@@ -374,7 +436,7 @@ private theorem isPromise_eq {S' : Type} {s : St S'} {v : Val} {q : Nat} (hip : 
 theorem upd_promiseFor (hpp : Present s aPromiseProto)
     (hn : s.next + 1 < Sim.bound) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
     (promiseFor t (M.val v)).1 = M.a (promiseFor s v).1 ∧ Present (promiseFor s v).2 (promiseFor s v).1 ∧
-      Upd F FR M ν K S C s (promiseFor s v).2 (promiseFor t (M.val v)).2 1 := by
+      Upd F FR W stk M ν K S C s (promiseFor s v).2 (promiseFor t (M.val v)).2 1 := by
   unfold promiseFor
   rw [h.isPromise_map hv]
   cases hip : isPromise s v with
@@ -394,7 +456,7 @@ theorem upd_iterResult (hpo : Present s aObjectProto)
     (hn : s.next < Sim.bound) {v : Val} (hv : Supp.val (Present s) S.tab.length v) (done : Bool) :
     (iterResult t (M.val v) done).1 = M.a (iterResult s v done).1 ∧
       Present (iterResult s v done).2 (iterResult s v done).1 ∧
-      Upd F FR M ν K S C s (iterResult s v done).2 (iterResult t (M.val v) done).2 1 := by
+      Upd F FR W stk M ν K S C s (iterResult s v done).2 (iterResult t (M.val v) done).2 1 := by
   have hps : Supp.props (Present s) S.tab.length
       [(.str ['v','a','l','u','e'], .data v true true), (.str ['d','o','n','e'], .data (.bool done) true true)] := by
     intro x hx
@@ -410,8 +472,11 @@ theorem upd_iterResult (hpo : Present s aObjectProto)
 
 theorem upd_setGen (hn : s.next < Sim.bound) {g : Nat} (hg : Present s g) {st : GenState}
     (hst : Supp.gen (Present s) S.tab.length st) :
-    Upd F FR M ν K S C s (setGen s g st) (setGen t (M.a g) (M.gen st)) 0 := by
-  rcases h.objCases hg with ⟨h1, h2⟩ | ⟨o, h1, hfr, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+    Upd F FR W stk M ν K S C s (setGen s g st) (setGen t (M.a g) (M.gen st)) 0 := by
+  rcases h.objCases hg with ⟨h1, h2⟩ | ⟨o, h1, hfr, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+    ⟨o, o', h1, h2, w1, w2, -⟩
+  rotate_left 3
+  · rw [setGen_of h1 w1.not_gen, setGen_of h2 w2.not_gen]; exact Upd.refl h
   · simp only [setGen, h1, h2]; exact Upd.refl h
   · have hso := h.obj?_supp h1
     cases hk : o.kind with
@@ -430,8 +495,11 @@ theorem upd_setGen (hn : s.next < Sim.bound) {g : Nat} (hg : Present s g) {st : 
 
 theorem upd_setQueue (hn : s.next < Sim.bound) {g : Nat} (hg : Present s g) {q : List (Nat × Comp)}
     (hq : ∀ x ∈ q, Present s x.1 ∧ Supp.comp (Present s) S.tab.length x.2) :
-    Upd F FR M ν K S C s (setQueue s g q) (setQueue t (M.a g) (M.queue q)) 0 := by
-  rcases h.objCases hg with ⟨h1, h2⟩ | ⟨o, h1, hfr, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+    Upd F FR W stk M ν K S C s (setQueue s g q) (setQueue t (M.a g) (M.queue q)) 0 := by
+  rcases h.objCases hg with ⟨h1, h2⟩ | ⟨o, h1, hfr, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+    ⟨o, o', h1, h2, w1, w2, -⟩
+  rotate_left 3
+  · rw [setQueue_of h1 w1.not_gen, setQueue_of h2 w2.not_gen]; exact Upd.refl h
   · simp only [setQueue, h1, h2]; exact Upd.refl h
   · have hso := h.obj?_supp h1
     cases hk : o.kind with
@@ -585,6 +653,60 @@ private theorem nearestGen_map (M : Map) : ∀ fs : List Frame,
       | _ => simp only [List.map_cons, Map.frame, Map.fnF, nearestGen]; exact nearestGen_map M fs
     | _ => simp only [List.map_cons, Map.frame, nearestGen]; exact nearestGen_map M fs
 
+private theorem nearestGen_append (stk : List Frame) : ∀ {xs : List Frame} {x : Nat × Bool},
+    nearestGen xs = some x → nearestGen (xs ++ stk) = some x
+  | [], _, h => by cases h
+  | f :: xs, x, h => by
+    cases f with
+    | k f =>
+      cases f with
+      | fn bd => cases bd <;> first | exact h | simp [nearestGen] at h
+      | _ => exact nearestGen_append stk (xs := xs) (by simpa [nearestGen] using h)
+    | _ => exact nearestGen_append stk (xs := xs) (by simpa [nearestGen] using h)
+
+private theorem splitSusp_append (stk : List Frame) : ∀ {xs acc a : List Frame} {b : Frame} {c : List Frame},
+    splitSusp acc xs = some (a, b, c) → splitSusp acc (xs ++ stk) = some (a, b, c ++ stk)
+  | [], _, _, _, _, h => by cases h
+  | f :: xs, acc, a, b, c, h => by
+    simp only [splitSusp, List.cons_append] at h ⊢
+    cases hb : isSuspBoundary f
+    · rw [hb] at h
+      simp only [Bool.cond_false] at h ⊢
+      exact splitSusp_append stk h
+    · rw [hb] at h
+      simp only [Bool.cond_true, Option.some.injEq, Prod.mk.injEq] at h ⊢
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact ⟨rfl, rfl, rfl⟩
+
+/-- A function boundary frame. -/
+def isFnF : Frame → Bool
+  | .k (.fn _) => true
+  | _ => false
+
+/-- Some frame of the list is a function boundary. -/
+def fnB (fs : List Frame) : Bool := fs.any isFnF
+
+theorem fnB_map (M : Map) (fs : List Frame) : fnB (fs.map M.frame) = fnB fs := by
+  unfold fnB
+  rw [List.any_map]
+  congr 1
+  funext f
+  cases f with
+  | k g => cases g <;> rfl
+  | _ => rfl
+
+/-- `nearestGen` stops at the first function boundary. -/
+theorem nearestGen_append_fn (stk : List Frame) : ∀ {xs : List Frame}, fnB xs = true →
+    nearestGen (xs ++ stk) = nearestGen xs
+  | [], h => by cases h
+  | f :: xs, h => by
+    cases f with
+    | k g =>
+      cases g with
+      | fn bd => cases bd <;> rfl
+      | _ => exact nearestGen_append_fn stk (xs := xs) (by simpa [fnB, isFnF] using h)
+    | _ => exact nearestGen_append_fn stk (xs := xs) (by simpa [fnB, isFnF] using h)
+
 private theorem nearestGen_mem : ∀ {fs : List Frame} {g : Nat} {b : Bool},
     nearestGen fs = some (g, b) → Frame.k (.fn (.gen g)) ∈ fs
   | [], _, _, h => by cases h
@@ -604,31 +726,31 @@ private theorem nearestGen_mem : ∀ {fs : List Frame} {g : Nat} {b : Bool},
 /-! ## Control and stack updates as `Upd` -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 theorem upd_push (f : Frame) (hf : Supp.frame (Present s) S.tab.length f) :
-    Upd F FR M ν K S C s (s.push f) (t.push (M.frame f)) 0 :=
+    Upd F FR W stk M ν K S C s (s.push f) (t.push (M.frame f)) 0 :=
   ⟨h.push f hf, fun _ hp => hp, Nat.le_refl _⟩
 
 theorem upd_ret (v : Val) (hv : Supp.val (Present s) S.tab.length v) :
-    Upd F FR M ν K S C s (s.ret v) (t.ret (M.val v)) 0 :=
+    Upd F FR W stk M ν K S C s (s.ret v) (t.ret (M.val v)) 0 :=
   ⟨h.ret v hv, fun _ hp => hp, Nat.le_refl _⟩
 
 theorem upd_go (c : Ctl) (hc : Supp.ctl (Present s) S.tab.length c) :
-    Upd F FR M ν K S C s (s.go c) (t.go (M.ctl c)) 0 :=
+    Upd F FR W stk M ν K S C s (s.go c) (t.go (M.ctl c)) 0 :=
   ⟨h.go c hc, fun _ hp => hp, Nat.le_refl _⟩
 
 theorem upd_restack (fs : List Frame) (hfs : ∀ f ∈ fs, Supp.frame (Present s) S.tab.length f) :
-    Upd F FR M ν K S C s { s with stack := fs } { t with stack := fs.map M.frame } 0 :=
+    Upd F FR W stk M ν K S C s { s with stack := fs } { t with stack := fs.map M.frame ++ stk } 0 :=
   ⟨h.restack fs hfs, fun _ hp => hp, Nat.le_refl _⟩
 
 theorem upd_setStores (ss : List (Nat × Val)) (hss : Supp.stores (Present s) S.tab.length ss) :
-    Upd F FR M ν K S C s (s.setStores ss) (t.setStores (M.stores ss)) 0 :=
+    Upd F FR W stk M ν K S C s (s.setStores ss) (t.setStores (M.stores ss)) 0 :=
   ⟨h.setStores ss hss, fun _ hp => hp, Nat.le_refl _⟩
 
 /-- Fresh addresses are never framed. -/
-private theorem Rel.fr_above {a : Nat} (ha : s.next ≤ a) : K.fr a = none := by
+private theorem RelB.fr_above {a : Nat} (ha : s.next ≤ a) : K.fr a = none := by
   cases hf : K.fr a with
   | none => rfl
   | some p => exact absurd (h.presentBound _ (h.framedPresent _ _ hf)) (by omega)
@@ -644,13 +766,13 @@ private theorem keeps_allocCells {S' : Type} : ∀ (ns : List Name) (s : St S') 
   | [], s, _ => CtlKeeps.refl s
   | _ :: ns, s, _ => (alloc_keeps s _).trans (keeps_allocCells ns _ _)
 
-theorem upd_allocCells : ∀ (ns : List Name) {s t : St F.S} {env : Env}, Rel F FR M ν K s S t C →
+theorem upd_allocCells : ∀ (ns : List Name) {s t : St F.S} {env : Env}, RelB F FR W stk M ν K s S t C →
     s.next + ns.length < Sim.bound → Supp.env (Present s) S.tab.length env →
     (∀ x ∈ env, K.fr x.2 = none) →
     (allocCells t ns (M.env env)).1 = M.env (allocCells s ns env).1 ∧
       Supp.env (Present (allocCells s ns env).2) S.tab.length (allocCells s ns env).1 ∧
       (∀ x ∈ (allocCells s ns env).1, K.fr x.2 = none) ∧
-      Upd F FR M ν K S C s (allocCells s ns env).2 (allocCells t ns (M.env env)).2 ns.length
+      Upd F FR W stk M ν K S C s (allocCells s ns env).2 (allocCells t ns (M.env env)).2 ns.length
   | [], _, _, _, h, _, he, hf => ⟨rfl, he, hf, Upd.refl h⟩
   | n :: ns, s, t, env, h, hn, he, hf => by
     obtain ⟨e1, e2, hp, u⟩ := upd_alloc h (o := .cell none) (by simp only [List.length_cons] at hn; omega) trivial
@@ -719,9 +841,9 @@ private theorem lookupEnv_some_mem {n : Name} {c : Nat} : ∀ {env : Env}, looku
       exact ⟨(m, a), List.mem_cons_self .., Option.some.inj hl⟩
 
 theorem upd_initFuncs {env : Env} (hfr : ∀ x ∈ env, K.fr x.2 = none) :
-    ∀ (ss : List Stmt) {s t : St F.S}, Rel F FR M ν K s S t C → Present s aFunctionProto →
+    ∀ (ss : List Stmt) {s t : St F.S}, RelB F FR W stk M ν K s S t C → Present s aFunctionProto →
       s.next + ss.length < Sim.bound → Supp.env (Present s) S.tab.length env →
-      Upd F FR M ν K S C s (initFuncs s env ss) (initFuncs t (M.env env) ss) ss.length
+      Upd F FR W stk M ν K S C s (initFuncs s env ss) (initFuncs t (M.env env) ss) ss.length
   | [], s, t, h, _, _, _ => by rw [initFuncs.eq_1, initFuncs.eq_1]; exact Upd.refl h
   | st :: ss, s, t, h, hfp, hn, he => by
     simp only [List.length_cons] at hn
@@ -744,7 +866,7 @@ theorem upd_initFuncs {env : Env} (hfr : ∀ x ∈ env, K.fr x.2 = none) :
           show Val.obj (M.a aFunctionProto) = _; rw [h.intr _ (by decide)]
         rw [ep] at e1 u
         have e1' : (closureObj t f (M.env env) false .undef).1 = M.a (closureObj s f env false .undef).1 := e1
-        have u : Upd F FR M ν K S C s (closureObj s f env false .undef).2
+        have u : Upd F FR W stk M ν K S C s (closureObj s f env false .undef).2
             (closureObj t f (M.env env) false .undef).2 1 := u
         have hp : Present (closureObj s f env false .undef).2 (closureObj s f env false .undef).1 := hp
         have ec : closureObj t f (M.env env) false .undef =
@@ -766,12 +888,12 @@ theorem upd_initFuncs {env : Env} (hfr : ∀ x ∈ env, K.fr x.2 = none) :
       exact (upd_initFuncs hfr ss h hfp (by omega) he).weaken (by simp)
 
 theorem upd_hoist {ss : List Stmt} {env : Env}
-    (hfr : ∀ x ∈ env, K.fr x.2 = none) {s t : St F.S} (h : Rel F FR M ν K s S t C)
+    (hfr : ∀ x ∈ env, K.fr x.2 = none) {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
     (hfp : Present s aFunctionProto) (hn : s.next + ((blockNames ss).length + ss.length) < Sim.bound)
     (he : Supp.env (Present s) S.tab.length env) :
     (hoist t ss (M.env env)).1 = M.env (hoist s ss env).1 ∧
       Supp.env (Present (hoist s ss env).2) S.tab.length (hoist s ss env).1 ∧
-      Upd F FR M ν K S C s (hoist s ss env).2 (hoist t ss (M.env env)).2 ((blockNames ss).length + ss.length) := by
+      Upd F FR W stk M ν K S C s (hoist s ss env).2 (hoist t ss (M.env env)).2 ((blockNames ss).length + ss.length) := by
   unfold hoist
   cases hb : blockNames ss with
   | nil => exact ⟨rfl, he, (Upd.refl h).weaken (Nat.zero_le _)⟩
@@ -785,10 +907,10 @@ theorem upd_hoist {ss : List Stmt} {env : Env}
     exact ⟨rfl, Supp.env_mono u2.pres (Nat.le_refl _) r2, u.trans u2⟩
 
 theorem upd_enterBlock {ss : List Stmt} {env : Env}
-    (hfr : ∀ x ∈ env, K.fr x.2 = none) {s t : St F.S} (h : Rel F FR M ν K s S t C)
+    (hfr : ∀ x ∈ env, K.fr x.2 = none) {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
     (hfp : Present s aFunctionProto) (hn : s.next + ((blockNames ss).length + ss.length) < Sim.bound)
     (he : Supp.env (Present s) S.tab.length env) :
-    Upd F FR M ν K S C s (enterBlock s ss env) (enterBlock t ss (M.env env))
+    Upd F FR W stk M ν K S C s (enterBlock s ss env) (enterBlock t ss (M.env env))
       ((blockNames ss).length + ss.length) := by
   obtain ⟨r1, r2, u⟩ := upd_hoist hfr h hfp hn he
   unfold enterBlock
@@ -806,14 +928,14 @@ def StartOK (K : Ctx) (body : List Stmt) (env : Env) : Prop :=
   (blockNames body).length + body.length ≤ 2 ^ 20 ∧ ∀ x ∈ env, K.fr x.2 = none
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- `iterResult` then `resolveP` of the result into `p`, then `ret undefined` (a settled request). -/
 theorem upd_resolveIter (hpo : Present s aObjectProto)
     (hn : s.next + 1 < Sim.bound) {p : Nat} (hp : Present s p) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) (d : Bool) :
-    Upd F FR M ν K S C s ((resolveP (iterResult s v d).2 p (.obj (iterResult s v d).1)).ret .undef)
+    Upd F FR W stk M ν K S C s ((resolveP (iterResult s v d).2 p (.obj (iterResult s v d).1)).ret .undef)
       ((resolveP (iterResult t (M.val v) d).2 (M.a p) (.obj (iterResult t (M.val v) d).1)).ret .undef) 1 := by
   obtain ⟨e1, hr, u1⟩ := upd_iterResult h hpo (by omega) hv d
   have u2 := upd_resolveP u1.rel (u1.bound (j := 0) (by omega)) (u1.pres _ hp) (v := .obj (iterResult s v d).1) hr
@@ -824,9 +946,9 @@ theorem upd_resolveIter (hpo : Present s aObjectProto)
 theorem upd_agenDrain (hpo : Present s aObjectProto)
     (hfp : Present s aFunctionProto) (hn : s.next + 2 ^ 21 < Sim.bound) {g : Nat} (hg : Present s g)
     (hstart : ∀ body env, genOf s g = some (.start body env, true) → StartOK K body env) :
-    Upd F FR M ν K S C s (agenDrain s g) (agenDrain t (M.a g)) (2 ^ 21) := by
+    Upd F FR W stk M ν K S C s (agenDrain s g) (agenDrain t (M.a g)) (2 ^ 21) := by
   have hs : s.next < Sim.bound := by omega
-  have hdef : Upd F FR M ν K S C s (s.ret .undef) (t.ret .undef) (2 ^ 21) :=
+  have hdef : Upd F FR W stk M ν K S C s (s.ret .undef) (t.ret .undef) (2 ^ 21) :=
     (upd_ret h .undef trivial).weaken (Nat.zero_le _)
   have hqs := h.agenQueue_supp g
   unfold agenDrain
@@ -854,9 +976,9 @@ theorem upd_agenDrain (hpo : Present s aObjectProto)
           | normal v =>
             obtain ⟨hcount, hfr⟩ := hstart body env hgo
             have he : Supp.env (Present s) S.tab.length env := hst
-            have u1 : Upd F FR M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
+            have u1 : Upd F FR W stk M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
               upd_setGen h hs hg (st := .running) trivial
-            have u2 : Upd F FR M ν K S C (setGen s g .running) ((setGen s g .running).push (.k (.fn (.gen g))))
+            have u2 : Upd F FR W stk M ν K S C (setGen s g .running) ((setGen s g .running).push (.k (.fn (.gen g))))
                 ((setGen t (M.a g) .running).push (.k (.fn (.gen (M.a g))))) 0 :=
               upd_push u1.rel (.k (.fn (.gen g))) (u1.pres _ hg)
             have u3 := upd_enterBlock (ss := body) hfr u2.rel (u2.pres _ (u1.pres _ hfp))
@@ -866,9 +988,9 @@ theorem upd_agenDrain (hpo : Present s aObjectProto)
           | abrupt ab =>
             cases ab with
             | ret v =>
-              have u1 : Upd F FR M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
+              have u1 : Upd F FR W stk M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
                 upd_setGen h hs hg (st := .done) trivial
-              have u2 : Upd F FR M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
+              have u2 : Upd F FR W stk M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
                   (setQueue (setGen t (M.a g) .done) (M.a g) (M.queue q)) 0 :=
                 upd_setQueue u1.rel (u1.bound (j := 0) (by omega)) (u1.pres _ hg)
                   (fun x hx => ⟨u1.pres _ (hq' x hx).1, Supp.comp_mono u1.pres (Nat.le_refl _) (hq' x hx).2⟩)
@@ -877,9 +999,9 @@ theorem upd_agenDrain (hpo : Present s aObjectProto)
                 (Supp.val_mono (fun a ha => u2.pres a (u1.pres a ha)) (Nat.le_refl _) hc) true
               exact ((u1.trans u2).trans u3).weaken (by omega)
             | throw v =>
-              have u1 : Upd F FR M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
+              have u1 : Upd F FR W stk M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
                 upd_setGen h hs hg (st := .done) trivial
-              have u2 : Upd F FR M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
+              have u2 : Upd F FR W stk M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
                   (setQueue (setGen t (M.a g) .done) (M.a g) (M.queue q)) 0 :=
                 upd_setQueue u1.rel (u1.bound (j := 0) (by omega)) (u1.pres _ hg)
                   (fun x hx => ⟨u1.pres _ (hq' x hx).1, Supp.comp_mono u1.pres (Nat.le_refl _) (hq' x hx).2⟩)
@@ -891,11 +1013,11 @@ theorem upd_agenDrain (hpo : Present s aObjectProto)
             | cont l => exact hdef
         | suspended su =>
           have hsu : Supp.susp (Present s) S.tab.length su := hst
-          have u1 : Upd F FR M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
+          have u1 : Upd F FR W stk M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
             upd_setGen h hs hg (st := .running) trivial
-          have e : (M.susp su).frames ++ t.stack = (su.frames ++ s.stack).map M.frame := by
-            rw [List.map_append, h.stack]; rfl
-          have u2 : Upd F FR M ν K S C (setGen s g .running) { setGen s g .running with stack := su.frames ++ s.stack }
+          have e : (M.susp su).frames ++ t.stack = (su.frames ++ s.stack).map M.frame ++ stk := by
+            rw [List.map_append, h.stack, List.append_assoc]; rfl
+          have u2 : Upd F FR W stk M ν K S C (setGen s g .running) { setGen s g .running with stack := su.frames ++ s.stack }
               { setGen t (M.a g) .running with stack := (M.susp su).frames ++ t.stack } 0 := by
             rw [e]
             exact upd_restack u1.rel (su.frames ++ s.stack) fun f hf => by
@@ -914,7 +1036,7 @@ theorem upd_agenDrain (hpo : Present s aObjectProto)
             exact ((u1.trans u2).trans (u3.trans u4)).weaken (by omega)
         | running => exact hdef
         | done =>
-          have u1 : Upd F FR M ν K S C s (setQueue s g q) (setQueue t (M.a g) (M.queue q)) 0 :=
+          have u1 : Upd F FR W stk M ν K S C s (setQueue s g q) (setQueue t (M.a g) (M.queue q)) 0 :=
             upd_setQueue h hs hg hq'
           have hc' := Supp.comp_mono u1.pres (Nat.le_refl _) hc
           cases c with
@@ -960,12 +1082,12 @@ private theorem genOf_setGen {S' : Type} (s : St S') (g : Nat) (st : GenState) (
 /-! ## Suspension at `await` and `yield` -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 theorem sim_awaitVal (hpp : Present s aPromiseProto)
     (hn : s.next + 1 < Sim.bound) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
-    MSim (StepPost F FR M ν K S C) S C (awaitVal F s v) (awaitVal F t (M.val v)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (awaitVal F s v) (awaitVal F t (M.val v)) := by
   obtain ⟨e1, hp, u⟩ := upd_promiseFor h hpp hn hv
   have ks := promiseFor_keeps s v
   have kt := promiseFor_keeps t (M.val v)
@@ -973,11 +1095,12 @@ theorem sim_awaitVal (hpp : Present s aPromiseProto)
   unfold awaitVal
   rw [pair_eta (promiseFor s v), pair_eta (promiseFor t (M.val v)), e1]
   dsimp only
-  rw [ks.2.1, kt.2.1, h.stack, splitSusp_map_nil, hst]
+  rw [ks.2.1, kt.2.1, h.stack, hst]
   cases hsp : splitSusp [] s.stack with
   | none => exact MSim.fail _ _
   | some x =>
     obtain ⟨frames, b, rest⟩ := x
+    rw [splitSusp_append stk (by rw [splitSusp_map_nil, hsp]; rfl)]
     obtain ⟨hfr, hb, hrest, hbd⟩ := splitSusp_mem _ _ hsp
     have hsupp : ∀ f ∈ s.stack, Supp.frame (Present (promiseFor s v).2) S.tab.length f :=
       fun f hf => Supp.frame_mono u.pres (Nat.le_refl _) (h.stackSupp f hf)
@@ -995,13 +1118,14 @@ theorem sim_awaitVal (hpp : Present s aPromiseProto)
     · exact MSim.pure ⟨Grow.refl h.srv, u2.rel.ret .undef trivial⟩
 
 theorem sim_yieldResult (hn : s.next < Sim.bound) {r : Val} (hr : Supp.val (Present s) S.tab.length r) :
-    MSim (StepPost F FR M ν K S C) S C (yieldResult F s r) (yieldResult F t (M.val r)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (yieldResult F s r) (yieldResult F t (M.val r)) := by
   unfold yieldResult
-  rw [h.stack, splitSusp_map_nil, h.stores]
+  rw [h.stack, h.stores]
   cases hsp : splitSusp [] s.stack with
   | none => exact MSim.fail _ _
   | some x =>
     obtain ⟨frames, b, rest⟩ := x
+    rw [splitSusp_append stk (by rw [splitSusp_map_nil, hsp]; rfl)]
     obtain ⟨hfr, hb, hrest, hbd⟩ := splitSusp_mem _ _ hsp
     rcases isSuspBoundary_eq hbd with ⟨q, rfl⟩ | ⟨g, rfl⟩
     · exact MSim.fail _ _
@@ -1017,7 +1141,7 @@ theorem sim_yieldResult (hn : s.next < Sim.bound) {r : Val} (hr : Supp.val (Pres
 
 theorem sim_yieldVal (hpo : Present s aObjectProto)
     (hn : s.next + 1 < Sim.bound) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
-    MSim (StepPost F FR M ν K S C) S C (yieldVal F s v) (yieldVal F t (M.val v)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (yieldVal F s v) (yieldVal F t (M.val v)) := by
   obtain ⟨e1, hr, u⟩ := upd_iterResult h hpo (by omega) hv false
   unfold yieldVal
   rw [pair_eta (iterResult s v false), pair_eta (iterResult t (M.val v) false), e1]
@@ -1027,13 +1151,14 @@ theorem sim_yieldVal (hpo : Present s aObjectProto)
 theorem sim_agenYield (hpo : Present s aObjectProto)
     (hfp : Present s aFunctionProto) (hn : s.next + (1 + 2 ^ 21) < Sim.bound) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) :
-    MSim (StepPost F FR M ν K S C) S C (agenYield F s v) (agenYield F t (M.val v)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (agenYield F s v) (agenYield F t (M.val v)) := by
   unfold agenYield
-  rw [h.stack, splitSusp_map_nil]
+  rw [h.stack]
   cases hsp : splitSusp [] s.stack with
   | none => exact MSim.fail _ _
   | some x =>
     obtain ⟨frames, b, rest⟩ := x
+    rw [splitSusp_append stk (by rw [splitSusp_map_nil, hsp]; rfl)]
     obtain ⟨hfr, hb, hrest, hbd⟩ := splitSusp_mem _ _ hsp
     rcases isSuspBoundary_eq hbd with ⟨q, rfl⟩ | ⟨g, rfl⟩
     · exact MSim.fail _ _
@@ -1094,11 +1219,11 @@ end
 
 /-! ## Steps: a value returning to an async frame -/
 
-private theorem Rel.topRet {s t : St F.S} (h : Rel F FR M ν K s S t C) {v : Val} {f : Frame} {fs : List Frame}
+private theorem RelB.topRet {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {v : Val} {f : Frame} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = f :: fs) :
     step F s = retStep F { s with stack := fs } f v ∧
-    step F t = retStep F { t with stack := fs.map M.frame } (M.frame f) (M.val v) ∧
-    Rel F FR M ν K { s with stack := fs } S { t with stack := fs.map M.frame } C ∧
+    step F t = retStep F { t with stack := fs.map M.frame ++ stk } (M.frame f) (M.val v) ∧
+    RelB F FR W stk M ν K { s with stack := fs } S { t with stack := fs.map M.frame ++ stk } C ∧
     Supp.val (Present s) S.tab.length v ∧ Supp.frame (Present s) S.tab.length f := by
   obtain ⟨hts, hr⟩ := h.pop hs
   have htc : t.ctl = .ret (M.val v) := by rw [h.ctl, hc]; rfl
@@ -1112,14 +1237,14 @@ private theorem margin_take {n : Nat} (hn : n + margin < Sim.bound) (k : Nat) (h
   unfold margin at hn; omega
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- `await`: suspend to the nearest async boundary (both kinds of boundary, both promise cases). -/
 theorem step_ret_await (hpp : Present s aPromiseProto)
     {v : Val} {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .k .await :: fs)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   exact sim_awaitVal h1 hpp (margin_take hn 1 (by decide)) hv
@@ -1127,7 +1252,7 @@ theorem step_ret_await (hpp : Present s aPromiseProto)
 /-- Async `yield*`: resumed with a value for the inner `next`. -/
 theorem step_ret_ystarAResume {v it nx : Val} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.ystarAResume it nx) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
   have u1 := upd_push h1 (.k (.ystarAResult it nx)) hf
@@ -1138,7 +1263,7 @@ theorem step_ret_ystarAResume {v it nx : Val} {fs : List Frame}
 /-- Sync `yield*`: resumed with a value for the inner `next`. -/
 theorem step_ret_ystarResume {v it nx : Val} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.ystarResume it nx) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
   have u1 := upd_push h1 (.k (.ystarNext it nx)) hf
@@ -1148,7 +1273,7 @@ theorem step_ret_ystarResume {v it nx : Val} {fs : List Frame}
 /-- Async `yield*` returning: the awaited return value. -/
 theorem step_ret_ystarAReturn {v : Val} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k .ystarAReturn :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, h1.go (.abr (.ret v)) hv⟩
@@ -1156,7 +1281,7 @@ theorem step_ret_ystarAReturn {v : Val} {fs : List Frame}
 /-- A derived promise's callback returned: resolve it. -/
 theorem step_ret_promiseThen {v : Val} {p : Nat} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.promiseThen p) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
   have u := upd_resolveP h1 (margin_take hn 0 (by decide)) hf hv
@@ -1168,14 +1293,15 @@ theorem step_ret_yield_async (hpp : Present s aPromiseProto)
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.yield false) :: fs)
     (hng : nearestGen fs = some (g, b)) (hgo : genOf s g = some (st, true))
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   have hg : Present s g := h1.stackSupp _ (nearestGen_mem hng)
-  have hng' : nearestGen (fs.map M.frame) = some (M.a g, b) := by rw [nearestGen_map, hng]; rfl
-  have hgo' : genOf { t with stack := fs.map M.frame } (M.a g) = some (M.gen st, true) := by
+  have hng' : nearestGen (fs.map M.frame ++ stk) = some (M.a g, b) :=
+    nearestGen_append stk (by rw [nearestGen_map, hng]; rfl)
+  have hgo' : genOf { t with stack := fs.map M.frame ++ stk } (M.a g) = some (M.gen st, true) := by
     rw [h1.genOf_map hg]; exact congrArg (Option.map _) hgo
-  show MSim _ S C (retK F { s with stack := fs } (.yield false) v) (retK F { t with stack := fs.map M.frame } (.yield false) (M.val v))
+  show MSim _ S C (retK F { s with stack := fs } (.yield false) v) (retK F { t with stack := fs.map M.frame ++ stk } (.yield false) (M.val v))
   have hgo1 : genOf { s with stack := fs } g = some (st, true) := hgo
   simp only [retK, Bool.cond_false, hng, hng', hgo1, hgo']
   exact sim_awaitVal (h1.push (.k .ystarIt) trivial) hpp (margin_take hn 1 (by decide)) hv
@@ -1186,12 +1312,13 @@ theorem step_ret_yield_sync (hpo : Present s aObjectProto)
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.yield false) :: fs)
     (hng : nearestGen fs = some (g, b)) (hgo : ∀ st, genOf s g ≠ some (st, true))
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   have hg : Present s g := h1.stackSupp _ (nearestGen_mem hng)
-  have hng' : nearestGen (fs.map M.frame) = some (M.a g, b) := by rw [nearestGen_map, hng]; rfl
-  show MSim _ S C (retK F { s with stack := fs } (.yield false) v) (retK F { t with stack := fs.map M.frame } (.yield false) (M.val v))
+  have hng' : nearestGen (fs.map M.frame ++ stk) = some (M.a g, b) :=
+    nearestGen_append stk (by rw [nearestGen_map, hng]; rfl)
+  show MSim _ S C (retK F { s with stack := fs } (.yield false) v) (retK F { t with stack := fs.map M.frame ++ stk } (.yield false) (M.val v))
   simp only [retK, Bool.cond_false, hng, hng']
   rw [h1.genOf_map hg]
   have hy := sim_yieldVal h1 hpo (margin_take hn 1 (by decide)) hv
@@ -1210,14 +1337,15 @@ theorem step_ret_ystarIt_async (hpo : Present s aObjectProto)
     (hc : s.ctl = .ret v) (hs : s.stack = .k .ystarIt :: fs)
     (hng : nearestGen fs = some (g, b)) (hgo : genOf s g = some (st, true))
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   have hg : Present s g := h1.stackSupp _ (nearestGen_mem hng)
-  have hng' : nearestGen (fs.map M.frame) = some (M.a g, b) := by rw [nearestGen_map, hng]; rfl
-  have hgo' : genOf { t with stack := fs.map M.frame } (M.a g) = some (M.gen st, true) := by
+  have hng' : nearestGen (fs.map M.frame ++ stk) = some (M.a g, b) :=
+    nearestGen_append stk (by rw [nearestGen_map, hng]; rfl)
+  have hgo' : genOf { t with stack := fs.map M.frame ++ stk } (M.a g) = some (M.gen st, true) := by
     rw [h1.genOf_map hg]; exact congrArg (Option.map _) hgo
-  show MSim _ S C (retK F { s with stack := fs } .ystarIt v) (retK F { t with stack := fs.map M.frame } .ystarIt (M.val v))
+  show MSim _ S C (retK F { s with stack := fs } .ystarIt v) (retK F { t with stack := fs.map M.frame ++ stk } .ystarIt (M.val v))
   have hgo1 : genOf { s with stack := fs } g = some (st, true) := hgo
   simp only [retK, hng, hng', hgo1, hgo']
   exact sim_agenYield h1 hpo hfp (margin_take hn _ (by decide)) hv
@@ -1227,24 +1355,26 @@ end
 /-! ## Jobs -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
-theorem sim_runJob (hn : s.next < Sim.bound) {j : Job} (hj : Supp.job (Present s) S.tab.length j) :
-    MSim (StepPost F FR M ν K S C) S C (runJob F s j) (runJob F t (M.job j)) := by
+theorem sim_runJob (hstk : stk = []) (hn : s.next < Sim.bound) {j : Job} (hj : Supp.job (Present s) S.tab.length j) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (runJob F s j) (runJob F t (M.job j)) := by
+  subst hstk
   obtain ⟨r, th, v⟩ := j
   obtain ⟨hr, hv⟩ := hj
   cases r with
   | resume su =>
     have hsu : Supp.susp (Present s) S.tab.length su := hr
     have r1 := (h.restack su.frames hsu.1).setStores su.stores hsu.2
+    simp only [List.append_nil] at r1
     cases th
     · exact MSim.pure ⟨Grow.refl h.srv, r1.go (.ret v) hv⟩
     · exact MSim.pure ⟨Grow.refl h.srv, r1.go (.abr (.throw v)) hv⟩
   | then_ onF onR d st =>
     obtain ⟨hF, hR, hd, hst⟩ := hr
     have key : ∀ f : Val, Supp.val (Present s) S.tab.length f →
-        MSim (StepPost F FR M ν K S C) S C
+        MSim (StepPostB F FR W [] M ν K S C) S C
           (match f with
             | .obj _ => .pure (({ s with stack := [.k (.promiseThen d)] }.setStores st).go (.call f .undef [v]))
             | _ => retS F (bif th then settle s d true v else resolveP s d v) .undef)
@@ -1257,9 +1387,10 @@ theorem sim_runJob (hn : s.next < Sim.bound) {j : Job} (hj : Supp.job (Present s
       · obtain ⟨a, rfl⟩ := ho
         have r1 := (h.restack [.k (.promiseThen d)] fun x hx => by
           rw [List.mem_singleton.1 hx]; exact hd).setStores st hst
+        simp only [List.map_cons, List.map_nil, List.cons_append, List.nil_append] at r1
         exact MSim.pure ⟨Grow.refl h.srv, r1.go (.call (.obj a) .undef [v]) ⟨hf, trivial, fun x hx => by
           rw [List.mem_singleton.1 hx]; exact hv⟩⟩
-      · have hrest : MSim (StepPost F FR M ν K S C) S C
+      · have hrest : MSim (StepPostB F FR W [] M ν K S C) S C
             (retS F (bif th then settle s d true v else resolveP s d v) .undef)
             (retS F (bif th then settle t (M.a d) true (M.val v) else resolveP t (M.a d) (M.val v)) .undef) := by
           cases th
@@ -1291,9 +1422,97 @@ theorem sim_runJob (hn : s.next < Sim.bound) {j : Job} (hj : Supp.job (Present s
     · exact MSim.pure ⟨Grow.refl h.srv, (upd_resolveP h hn hp hv).rel.ret .undef trivial⟩
     · exact MSim.pure ⟨Grow.refl h.srv, (upd_settle h hn hp true hv).rel.ret .undef trivial⟩
 
+omit h in
+/-- The map keeps the `setImmediate` marker (`symMacro` is below the renamed symbols). -/
+theorem isMacro_map (M : Map) (j : Job) : (M.job j).isMacro = j.isMacro := by
+  obtain ⟨r, th, v⟩ := j
+  cases r with
+  | then_ f r' d st =>
+    cases r' with
+    | sym i =>
+      show Nat.beq (bif Nat.blt i 16 then i else M.a (i - 16) + 16) symMacro = Nat.beq i symMacro
+      cases hi : Nat.blt i 16
+      · have hi' : ¬ i < 16 := fun hlt => by rw [Nat.blt_eq.mpr hlt] at hi; cases hi
+        have h1 : Nat.beq (M.a (i - 16) + 16) symMacro = false := by
+          cases e : Nat.beq (M.a (i - 16) + 16) symMacro
+          · rfl
+          · have := Nat.eq_of_beq_eq_true e; simp [symMacro] at this
+        have h2 : Nat.beq i symMacro = false := by
+          cases e : Nat.beq i symMacro
+          · rfl
+          · have := Nat.eq_of_beq_eq_true e; simp [symMacro] at this; omega
+        rw [Bool.cond_false, h1, h2]
+      · rfl
+    | _ => rfl
+  | _ => rfl
+
+omit h in
+theorem takeMicro_map (M : Map) : ∀ js : List Job,
+    takeMicro (js.map M.job) = (takeMicro js).map fun p => (M.job p.1, p.2.map M.job)
+  | [] => rfl
+  | j :: js => by
+    have ih := takeMicro_map M js
+    show (bif (M.job j).isMacro then (takeMicro (js.map M.job)).map (fun p => (p.1, M.job j :: p.2))
+        else some (M.job j, js.map M.job)) =
+      (bif j.isMacro then (takeMicro js).map (fun p => (p.1, j :: p.2)) else some (j, js)).map
+        fun p => (M.job p.1, p.2.map M.job)
+    rw [isMacro_map, ih]
+    cases j.isMacro
+    · rfl
+    · cases takeMicro js <;> rfl
+
+omit h in
+theorem nextJob_map (M : Map) (js : List Job) :
+    nextJob (js.map M.job) = (nextJob js).map fun p => (M.job p.1, p.2.map M.job) := by
+  unfold nextJob
+  rw [takeMicro_map]
+  cases takeMicro js with
+  | some p => rfl
+  | none => cases js <;> rfl
+
+omit h in
+theorem takeMicro_mem : ∀ {js : List Job} {j : Job} {r : List Job}, takeMicro js = some (j, r) →
+    j ∈ js ∧ ∀ x ∈ r, x ∈ js
+  | [], _, _, h => by cases h
+  | k :: ks, j, r, h => by
+    simp only [takeMicro] at h
+    cases hk : k.isMacro
+    · rw [hk, Bool.cond_false, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact ⟨List.mem_cons_self .., fun x hx => List.mem_cons_of_mem _ hx⟩
+    · rw [hk, Bool.cond_true] at h
+      cases ht : takeMicro ks with
+      | none => rw [ht] at h; cases h
+      | some p =>
+        rw [ht] at h
+        simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨rfl, rfl⟩ := h
+        obtain ⟨h1, h2⟩ := takeMicro_mem ht
+        refine ⟨List.mem_cons_of_mem _ h1, fun x hx => ?_⟩
+        rcases List.mem_cons.1 hx with rfl | hx
+        · exact List.mem_cons_self ..
+        · exact List.mem_cons_of_mem _ (h2 x hx)
+
+omit h in
+theorem nextJob_mem {js : List Job} {j : Job} {r : List Job} (h : nextJob js = some (j, r)) :
+    j ∈ js ∧ ∀ x ∈ r, x ∈ js := by
+  unfold nextJob at h
+  cases ht : takeMicro js with
+  | some p => rw [ht] at h; cases h; exact takeMicro_mem ht
+  | none =>
+    rw [ht] at h
+    cases js with
+    | nil => cases h
+    | cons k ks =>
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact ⟨List.mem_cons_self .., fun x hx => List.mem_cons_of_mem _ hx⟩
+
 /-- A value returning to an empty stack: run the next job, or halt. -/
-theorem step_ret_empty {v : Val} (hc : s.ctl = .ret v) (hs : s.stack = []) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+theorem step_ret_empty (hstk : stk = []) {v : Val} (hc : s.ctl = .ret v) (hs : s.stack = [])
+    (hn : s.next + margin < Sim.bound) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
+  subst hstk
   have htc : t.ctl = .ret (M.val v) := by rw [h.ctl, hc]; rfl
   have hts : t.stack = [] := by rw [h.stack, hs]; rfl
   have hv : Supp.val (Present s) S.tab.length v := by have := h.ctlSupp; rw [hc] at this; exact this
@@ -1301,16 +1520,19 @@ theorem step_ret_empty {v : Val} (hc : s.ctl = .ret v) (hs : s.stack = []) (hn :
   have e2 : step F t = stepJobs F t (M.val v) := by simp only [step, htc, stepRet, hts]
   rw [e1, e2]
   unfold stepJobs
-  rw [h.jobs]
-  cases hj : s.jobs with
-  | nil => exact MSim.pure ⟨Grow.refl h.srv, h.go (.halt (.normal v)) hv⟩
-  | cons j js =>
-    have r1 := h.setJobs js fun j' hj' => h.jobsSupp j' (by rw [hj]; exact List.mem_cons_of_mem _ hj')
-    exact sim_runJob r1 (margin_take hn 0 (by decide)) (h.jobsSupp j (by rw [hj]; exact List.mem_cons_self ..))
+  rw [h.jobs, nextJob_map]
+  cases hj : nextJob s.jobs with
+  | none => exact MSim.pure ⟨Grow.refl h.srv, h.go (.halt (.normal v)) hv⟩
+  | some p =>
+    obtain ⟨j, js⟩ := p
+    obtain ⟨hjm, hjs⟩ := nextJob_mem hj
+    have r1 := h.setJobs js fun j' hj' => h.jobsSupp j' (hjs j' hj')
+    exact sim_runJob r1 rfl (margin_take hn 0 (by decide)) (h.jobsSupp j hjm)
 
 /-- An abrupt completion reaching an empty stack halts. -/
-theorem step_abr_empty {a : Abrupt} (hc : s.ctl = .abr a) (hs : s.stack = []) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+theorem step_abr_empty (hstk : stk = []) {a : Abrupt} (hc : s.ctl = .abr a) (hs : s.stack = []) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
+  subst hstk
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
   have hts : t.stack = [] := by rw [h.stack, hs]; rfl
   have ha : Supp.abr (Present s) S.tab.length a := by have := h.ctlSupp; rw [hc] at this; exact this
@@ -1364,18 +1586,18 @@ private theorem genOf_setQueue {S' : Type} (s : St S') (g : Nat) (q : List (Nat 
     | _ => simp only [ho, hk]
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- A builtin called on both sides: the callee is a native function object (never framed). -/
-private theorem Rel.topCall {a : Nat} {this : Val} {args : List Val} {o : Obj} {n : Native} {data : List Val}
+private theorem RelB.topCall {a : Nat} {this : Val} {args : List Val} {o : Obj} {n : Native} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o) (hk : o.kind = .fn (.native n data)) :
     step F s = callNative F s n data this args ∧
     step F t = callNative F t n (M.vals data) (M.val this) (M.vals args) ∧
     Supp.val (Present s) S.tab.length this ∧ Supp.vals (Present s) S.tab.length args ∧
     Supp.vals (Present s) S.tab.length data := by
   have htc : t.ctl = .call (.obj (M.a a)) (M.val this) (M.vals args) := by rw [h.ctl, hc]; rfl
-  have hfr : K.fr a = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he)
+  have hfr : K.fr a = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he) (by rw [hk]; exact id)
   have ho' : t.obj? (M.a a) = some (M.obj o) := h.obj? ho hfr
   have hk' : (M.obj o).kind = .fn (.native n (M.vals data)) := by
     show M.kind o.kind = _; rw [hk]; rfl
@@ -1391,7 +1613,7 @@ theorem sim_agen (hpp : Present s aPromiseProto)
     (hn : s.next + (1 + 2 ^ 21) < Sim.bound) {this : Val} (hthis : Supp.val (Present s) S.tab.length this)
     {c : Comp} (hc : Supp.comp (Present s) S.tab.length c)
     (hstart : ∀ g body env, this = .obj g → genOf s g = some (.start body env, true) → StartOK K body env) :
-    MSim (StepPost F FR M ν K S C) S C (ctlN.agen F s this c) (ctlN.agen F t (M.val this) (M.comp c)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (ctlN.agen F s this c) (ctlN.agen F t (M.val this) (M.comp c)) := by
   have hs : s.next < Sim.bound := by omega
   cases this with
   | obj g =>
@@ -1476,7 +1698,7 @@ private theorem dataOf_own (F : Ffi) {s : St F.S} {a : Nat} {o : Obj} {k : PKey}
   rfl
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- `next`/`return`/`throw` of an async generator: queue the request, start an idle generator. -/
@@ -1487,7 +1709,7 @@ theorem step_call_agen (hpp : Present s aPromiseProto)
     (hf : f = .agenNext ∨ f = .agenReturn ∨ f = .agenThrow)
     (hstart : ∀ g body env, this = .obj g → genOf s g = some (.start body env, true) → StartOK K body env)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hthis, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   have hn' := margin_take hn (1 + 2 ^ 21) (by decide)
@@ -1511,7 +1733,7 @@ theorem step_call_alsGetStore (htp : Present s aTypeErrorProto)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl .alsGetStore) data)) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hthis, -, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   show MSim _ S C (ctlN F s this args data .alsGetStore) (ctlN F t (M.val this) (M.vals args) (M.vals data) .alsGetStore)
@@ -1532,7 +1754,7 @@ theorem step_call_alsRun (htp : Present s aTypeErrorProto)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl .alsRun) data)) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hthis, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   show MSim _ S C (ctlN F s this args data .alsRun) (ctlN F t (M.val this) (M.vals args) (M.vals data) .alsRun)
@@ -1561,7 +1783,7 @@ theorem step_call_promiseResolve (hpp : Present s aPromiseProto)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl .promiseResolve) data)) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   obtain ⟨e, hp, u⟩ := upd_promiseFor h hpp (margin_take hn 1 (by decide)) (Supp.vals_arg hargs 0)
@@ -1575,7 +1797,7 @@ theorem step_call_promiseReject (hpp : Present s aPromiseProto)
     {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl .promiseReject) data)) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   obtain ⟨e, -, hp, u⟩ := upd_newPromise h hpp (margin_take hn 0 (by decide))
@@ -1586,10 +1808,42 @@ theorem step_call_promiseReject (hpp : Present s aPromiseProto)
   rw [arg_map, e]
   exact MSim.pure ⟨Grow.refl h.srv, u2.rel.ret (.obj _) (u2.pres _ hp)⟩
 
+/-- `setImmediate(cb)`: a fresh promise and the macrotask `cb()` (a `then_` job marked by
+`symMacro`), or a `TypeError` for a non-object callback. -/
+theorem step_call_setImmediate (hpp : Present s aPromiseProto) (htp : Present s aTypeErrorProto)
+    {a : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
+    (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
+    (hk : o.kind = .fn (.native (.ctl .setImmediate) data)) (hn : s.next + margin < Sim.bound) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
+  obtain ⟨e1, e2, -, hargs, -⟩ := h.topCall hc ho hk
+  rw [e1, e2]
+  show MSim _ S C (ctlN F s this args data .setImmediate)
+    (ctlN F t (M.val this) (M.vals args) (M.vals data) .setImmediate)
+  have hs0 := Supp.vals_arg hargs 0
+  have hn0 : s.next < Sim.bound := margin_take hn 0 (by decide)
+  simp only [ctlN, arg_map]
+  cases hv : arg args 0 with
+  | obj b =>
+    rw [hv] at hs0
+    obtain ⟨e, -, hp, u⟩ := upd_newPromise h hpp hn0
+    have hj : Supp.job (Present (newPromise s).2) S.tab.length
+        ⟨.then_ (.obj b) (.sym symMacro) (newPromise s).1 (newPromise s).2.stores, false, .undef⟩ :=
+      ⟨⟨u.pres _ hs0, fun h16 => absurd h16 (by decide), hp, u.rel.storesSupp⟩, trivial⟩
+    have u2 := upd_enqueue u.rel _ hj
+    have hJ : M.job ⟨.then_ (.obj b) (.sym symMacro) (newPromise s).1 (newPromise s).2.stores, false, .undef⟩ =
+        ⟨.then_ (.obj (M.a b)) (.sym symMacro) (newPromise t).1 (newPromise t).2.stores, false, .undef⟩ := by
+      show (⟨.then_ (M.val (.obj b)) (M.val (.sym symMacro)) (M.a (newPromise s).1)
+        (M.stores (newPromise s).2.stores), false, M.val .undef⟩ : Job) = _
+      rw [← e, ← u.rel.stores]
+      rfl
+    rw [hJ] at u2
+    exact MSim.pure ⟨Grow.refl h.srv, u2.rel.ret .undef trivial⟩
+  | _ => exact typeErr_sim h h.intr hn0 htp _
+
 theorem sim_thenOn (hpp : Present s aPromiseProto)
     (hn : s.next + 1 < Sim.bound) {p : Nat} (hp : Present s p) {onF onR : Val}
     (hF : Supp.val (Present s) S.tab.length onF) (hR : Supp.val (Present s) S.tab.length onR) :
-    MSim (StepPost F FR M ν K S C) S C (thenOn F s p onF onR) (thenOn F t (M.a p) (M.val onF) (M.val onR)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (thenOn F s p onF onR) (thenOn F t (M.a p) (M.val onF) (M.val onR)) := by
   obtain ⟨e, -, hd, u⟩ := upd_newPromise h hpp (by omega)
   have hst : (newPromise t).2.stores = M.stores (newPromise s).2.stores := u.rel.stores
   have u2 := upd_react u.rel (u.bound (j := 0) (by omega)) (u.pres _ hp)
@@ -1609,7 +1863,7 @@ theorem step_call_promiseThen (hpp : Present s aPromiseProto)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl f) data)) (hf : f = .promiseThen ∨ f = .promiseCatch)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hthis, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   have hs := margin_take hn 0 (by decide)
@@ -1647,7 +1901,7 @@ theorem step_call_resolveFn {a : Nat} {this : Val} {args : List Val} {o : Obj} {
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.ctl f) data)) (hf : f = .resolveFn ∨ f = .rejectFn)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, hargs, hdata⟩ := h.topCall hc ho hk
   rw [e1, e2]
   have hs := margin_take hn 0 (by decide)
@@ -1687,11 +1941,11 @@ theorem step_call_resolveFn {a : Nat} {this : Val} {args : List Val} {o : Obj} {
 /-- `AsyncLocalStorage.run`'s callback returned: pop the store. -/
 theorem step_ret_native_alsRun {v : Val} {data : List Val} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.native (.ctl .alsRun) data) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   show MSim _ S C (retS F ({ s with stack := fs }.setStores s.stores.tail) v)
-    (retS F ({ t with stack := fs.map M.frame }.setStores t.stores.tail) (M.val v))
+    (retS F ({ t with stack := fs.map M.frame ++ stk }.setStores t.stores.tail) (M.val v))
   rw [h.stores, Map.stores_tail]
   have r1 := h1.setStores s.stores.tail fun x hx => h.storesSupp x (List.mem_of_mem_tail hx)
   exact MSim.pure ⟨Grow.refl h.srv, r1.ret v hv⟩
@@ -1699,7 +1953,7 @@ theorem step_ret_native_alsRun {v : Val} {data : List Val} {fs : List Frame}
 /-- `new Promise(executor)`'s executor returned: the promise is the result. -/
 theorem step_ret_native_promiseCtor {v p : Val} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.native (.ctl .promiseCtor) [p]) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, -, hf⟩ := h.topRet hc hs
   rw [e1, e2]
   exact MSim.pure ⟨Grow.refl h.srv, h1.ret p (hf p (List.mem_singleton_self _))⟩
@@ -1707,18 +1961,18 @@ theorem step_ret_native_promiseCtor {v p : Val} {fs : List Frame}
 /-- An abrupt completion through `AsyncLocalStorage.run`: pop the store. -/
 theorem step_abr_native_alsRun {a : Abrupt} {data : List Val} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .k (.native (.ctl .alsRun) data) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨hts, h1⟩ := h.pop hs
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
   have ha : Supp.abr (Present s) S.tab.length a := by have := h.ctlSupp; rw [hc] at this; exact this
   have e1 : step F s = abrStep F { s with stack := fs } (.k (.native (.ctl .alsRun) data)) a := by
     simp only [step, hc, stepAbr, hs]
-  have e2 : step F t = abrStep F { t with stack := fs.map M.frame } (M.frame (.k (.native (.ctl .alsRun) data)))
+  have e2 : step F t = abrStep F { t with stack := fs.map M.frame ++ stk } (M.frame (.k (.native (.ctl .alsRun) data)))
       (M.abr a) := by
     simp only [step, htc, stepAbr, hts]
   rw [e1, e2]
   show MSim _ S C (Host.Ts.M.pure (({ s with stack := fs }.setStores s.stores.tail).go (.abr a)))
-    (Host.Ts.M.pure (({ t with stack := fs.map M.frame }.setStores t.stores.tail).go (.abr (M.abr a))))
+    (Host.Ts.M.pure (({ t with stack := fs.map M.frame ++ stk }.setStores t.stores.tail).go (.abr (M.abr a))))
   rw [h.stores, Map.stores_tail]
   have r1 := h1.setStores s.stores.tail fun x hx => h.storesSupp x (List.mem_of_mem_tail hx)
   exact MSim.pure ⟨Grow.refl h.srv, r1.go (.abr a) ha⟩
@@ -1726,14 +1980,14 @@ theorem step_abr_native_alsRun {a : Abrupt} {data : List Val} {fs : List Frame}
 /-- A derived promise's callback threw: reject it (other completions pass through). -/
 theorem step_abr_promiseThen {a : Abrupt} {p : Nat} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .k (.promiseThen p) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨hts, h1⟩ := h.pop hs
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
   have ha : Supp.abr (Present s) S.tab.length a := by have := h.ctlSupp; rw [hc] at this; exact this
   have hp : Present s p := h.stackSupp (.k (.promiseThen p)) (by rw [hs]; exact List.mem_cons_self ..)
   have e1 : step F s = abrStep F { s with stack := fs } (.k (.promiseThen p)) a := by
     simp only [step, hc, stepAbr, hs]
-  have e2 : step F t = abrStep F { t with stack := fs.map M.frame } (M.frame (.k (.promiseThen p))) (M.abr a) := by
+  have e2 : step F t = abrStep F { t with stack := fs.map M.frame ++ stk } (M.frame (.k (.promiseThen p))) (M.abr a) := by
     simp only [step, htc, stepAbr, hts]
   rw [e1, e2]
   cases a with
@@ -1763,7 +2017,7 @@ private theorem sim_truthy {M : Map} {S : SSrv} {C : CSrv} (hs : Srv M ν S C) (
   | _ => exact MSim.pure ⟨rfl, Grow.refl hs⟩
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- Async `yield*`: the awaited inner result arrives. Its `done` is an own data property of an
@@ -1774,11 +2028,11 @@ theorem step_ret_ystarAResult {okCall : F.S → Name → List Arg → Bool} {okB
     {a : Nat} {o : Obj} {dv it nx : Val} {w e : Bool} {fs : List Frame}
     (hc : s.ctl = .ret (.obj a)) (hs : s.stack = .k (.ystarAResult it nx) :: fs)
     (ho : s.obj? a = some o) (hk : o.kind = .ordinary) (hd : findProp kDone o.props = some (.data dv w e))
-    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
-  have hfr : K.fr a = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he)
+  have hfr : K.fr a = none := h.fr_of_or ho (by intro es he; rw [hk] at he; cases he) (.inl (hW a))
   have ho' : t.obj? (M.a a) = some (M.obj o) := h.obj? ho hfr
   have hso := h.obj?_supp ho
   have hd' : findProp kDone (M.obj o).props = some (.data (M.val dv) w e) := by
@@ -1788,9 +2042,9 @@ theorem step_ret_ystarAResult {okCall : F.S → Name → List Arg → Bool} {okB
   have hdv : Supp.val (Present s) S.tab.length dv := findProp_supp hso.2.2.1 hd
   have hk' : (M.obj o).kind = .ordinary := by show M.kind o.kind = _; rw [hk]; rfl
   show MSim _ S C (retK F { s with stack := fs } (.ystarAResult it nx) (.obj a))
-    (retK F { t with stack := fs.map M.frame } (.ystarAResult (M.val it) (M.val nx)) (.obj (M.a a)))
+    (retK F { t with stack := fs.map M.frame ++ stk } (.ystarAResult (M.val it) (M.val nx)) (.obj (M.a a)))
   simp only [retK]
-  rw [dataOf_own F (s := { s with stack := fs }) ho hk hd, dataOf_own F (s := { t with stack := fs.map M.frame }) ho' hk' hd']
+  rw [dataOf_own F (s := { s with stack := fs }) ho hk hd, dataOf_own F (s := { t with stack := fs.map M.frame ++ stk }) ho' hk' hd']
   show MSim _ S C (Host.Ts.M.bind (truthy dv) _) (Host.Ts.M.bind (truthy (M.val dv)) _)
   refine MSim.bind (sim_truthy h.srv dv fun i hi => h.bigFixed i (hbig i hi)) ?_
   rintro M' S' C' r r' ⟨rfl, hg⟩
@@ -1799,7 +2053,7 @@ theorem step_ret_ystarAResult {okCall : F.S → Name → List Arg → Bool} {okB
   have hva : Val.obj (M.a a) = M'.val (.obj a) := by show _ = Val.obj (M'.a a); rw [hg.ext.a]
   rw [hva]
   refine MSim.bind (dataOf_sim h2 hF hI' (recv := .obj a) (k := kValue) hv trivial
-    (LookupOK.of_plain (by decide) (by decide) _)) ?_
+    (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
   rintro M'' S'' C'' x x' ⟨-, hS, hC, hxx, hx⟩
   rw [hS, hC, hxx]
   have hit : M'.val it = M.val it := Map.val_agree hg.ext.agree' hf.1
@@ -1820,18 +2074,18 @@ parameter properties and fields. -/
 theorem step_ret_superRet (hre : Present s aReferenceErrorProto)
     {v : Val} {tc cls : Nat} {env : Env} {fs : List Frame} {x : Option Val}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.superRet tc cls env) :: fs) (hcell : s.cell? tc = some x)
-    (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hn : s.next + margin < Sim.bound) (htw : W tc = none ∨ K.fr tc = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
   obtain ⟨htc, hcls, henv⟩ := hf
   have hs0 := margin_take hn 0 (by decide)
-  have hcell' : t.cell? (M.a tc) = some (x.map M.val) := h.cell? hcell
-  have hfr : K.fr tc = none := h.fr_cell (cell?_iff.1 hcell)
+  have hcell' : t.cell? (M.a tc) = some (x.map M.val) := h.cell? hcell (.of_or htw)
+  have hfr : K.fr tc = none := h.fr_cell (cell?_iff.1 hcell) (.of_or htw)
   show MSim _ S C (retK F { s with stack := fs } (.superRet tc cls env) v)
-    (retK F { t with stack := fs.map M.frame } (.superRet (M.a tc) (M.a cls) (M.env env)) (M.val v))
+    (retK F { t with stack := fs.map M.frame ++ stk } (.superRet (M.a tc) (M.a cls) (M.env env)) (M.val v))
   have hcell1 : ({ s with stack := fs } : St F.S).cell? tc = some x := hcell
-  have hcell1' : ({ t with stack := fs.map M.frame } : St F.S).cell? (M.a tc) = some (x.map M.val) := hcell'
+  have hcell1' : ({ t with stack := fs.map M.frame ++ stk } : St F.S).cell? (M.a tc) = some (x.map M.val) := hcell'
   simp only [retK, hcell1, hcell1']
   cases x with
   | some y => exact refErr_sim h1 h1.intr hs0 hre _
@@ -1841,7 +2095,11 @@ theorem step_ret_superRet (hre : Present s aReferenceErrorProto)
     have hcls1 : Present ({ s with stack := fs }.setCell tc v) cls := u1.pres _ hcls
     cases v with
     | obj ob =>
-      rcases u1.rel.objCases hcls1 with ⟨k1, k2⟩ | ⟨co, k1, -, k2⟩ | ⟨co, co', xs, ys, k1, k2, k3, k4⟩
+      rcases u1.rel.objCases hcls1 with ⟨k1, k2⟩ | ⟨co, k1, -, k2⟩ | ⟨co, co', xs, ys, k1, k2, k3, k4⟩ |
+        ⟨co, co', k1, k2, k3, -, -⟩
+      rotate_left 3
+      · obtain ⟨kind, proto, props, priv, ext⟩ := co
+        cases kind <;> first | exact k3.elim | (simp only [k1]; exact MSim.fail _ _)
       · simp only [k1, k2]; exact MSim.fail _ _
       · obtain ⟨kind, proto, props, priv, ext⟩ := co
         have hco := u1.rel.obj?_supp k1
@@ -1849,14 +2107,14 @@ theorem step_ret_superRet (hre : Present s aReferenceErrorProto)
         | fn cd =>
           cases cd with
           | klass ctor cenv par inst =>
-            have k2' : ({ t with stack := fs.map M.frame }.setCell (M.a tc) (.obj (M.a ob))).obj? (M.a cls) =
+            have k2' : ({ t with stack := fs.map M.frame ++ stk }.setCell (M.a tc) (.obj (M.a ob))).obj? (M.a cls) =
                 some (M.obj ⟨.fn (.klass ctor cenv par inst), proto, props, priv, ext⟩) := k2
             simp only [k1, k2', Map.obj, Map.kind, Map.code, Map.val, thisEnv_eq]
             obtain ⟨hcenv, hpar, hinst⟩ := hco.1
             obtain ⟨ea, -, hp, u2⟩ := upd_alloc u1.rel (o := .cell (some (.obj ob)))
               (by have := u1.next; exact margin_take (by omega) 0 (by decide))
               (Supp.val_mono u1.pres (Nat.le_refl _) hv)
-            have ea' : (({ t with stack := fs.map M.frame }.setCell (M.a tc) (.obj (M.a ob))).alloc
+            have ea' : (({ t with stack := fs.map M.frame ++ stk }.setCell (M.a tc) (.obj (M.a ob))).alloc
                 (.cell (some (.obj (M.a ob))))).1 =
                 M.a (({ s with stack := fs }.setCell tc (.obj ob)).alloc (.cell (some (.obj ob)))).1 := ea
             rw [ea']
@@ -1884,17 +2142,18 @@ end
 /-! ## `yield*`: iterator protocol frames -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- An iterator result's own `done` read on both sides (an ordinary object's own data property). -/
-private theorem Rel.ownDone {s0 t0 : St F.S} (hheap : s0.heap = s.heap) (hheap' : t0.heap = t.heap)
+private theorem RelB.ownDone {s0 t0 : St F.S} (hheap : s0.heap = s.heap) (hheap' : t0.heap = t.heap)
     {a : Nat} {o : Obj} {dv : Val} {w e : Bool}
-    (ho : s.obj? a = some o) (hk : o.kind = .ordinary) (hd : findProp kDone o.props = some (.data dv w e)) :
+    (ho : s.obj? a = some o) (hk : o.kind = .ordinary) (hd : findProp kDone o.props = some (.data dv w e))
+    (hW : ∀ a, W a = none) :
     dataOf F s0 (.obj a) kDone = Host.Ts.M.pure (some dv) ∧
       dataOf F t0 (.obj (M.a a)) kDone = Host.Ts.M.pure (some (M.val dv)) ∧
       Supp.val (Present s) S.tab.length dv := by
-  have hfr : K.fr a = none := h.fr_of_kind ho (by intro es he; rw [hk] at he; cases he)
+  have hfr : K.fr a = none := h.fr_of_or ho (by intro es he; rw [hk] at he; cases he) (.inl (hW a))
   have ho' : t.obj? (M.a a) = some (M.obj o) := h.obj? ho hfr
   have hso := h.obj?_supp ho
   have hd' : findProp kDone (M.obj o).props = some (.data (M.val dv) w e) := by
@@ -1910,24 +2169,25 @@ private theorem Rel.ownDone {s0 t0 : St F.S} (hheap : s0.heap = s.heap) (hheap' 
 theorem step_ret_ystarIt_sync {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     (hF : FfiSim F FR okCall okBack) {v : Val} {fs : List Frame} {g : Nat} {b : Bool}
     (hc : s.ctl = .ret v) (hs : s.stack = .k .ystarIt :: fs)
-    (hng : nearestGen fs = some (g, b)) (hgo : ∀ st, genOf s g ≠ some (st, true)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hng : nearestGen fs = some (g, b)) (hgo : ∀ st, genOf s g ≠ some (st, true)) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   have hg : Present s g := h1.stackSupp _ (nearestGen_mem hng)
-  have hng' : nearestGen (fs.map M.frame) = some (M.a g, b) := by rw [nearestGen_map, hng]; rfl
-  show MSim _ S C (retK F { s with stack := fs } .ystarIt v) (retK F { t with stack := fs.map M.frame } .ystarIt (M.val v))
+  have hng' : nearestGen (fs.map M.frame ++ stk) = some (M.a g, b) :=
+    nearestGen_append stk (by rw [nearestGen_map, hng]; rfl)
+  show MSim _ S C (retK F { s with stack := fs } .ystarIt v) (retK F { t with stack := fs.map M.frame ++ stk } .ystarIt (M.val v))
   simp only [retK, hng, hng']
   rw [h1.genOf_map hg]
-  have sync : MSim (StepPost F FR M ν K S C) S C
+  have sync : MSim (StepPostB F FR W stk M ν K S C) S C
       (Host.Ts.M.bind (dataOf F { s with stack := fs } v kNext) fun
         | some next => Host.Ts.M.pure (({ s with stack := fs }.push (.k (.ystarNext v next))).go (.call next v [.undef]))
         | none => Host.Ts.M.fail "iterator next accessor")
-      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame } (M.val v) kNext) fun
-        | some next => Host.Ts.M.pure (({ t with stack := fs.map M.frame }.push (.k (.ystarNext (M.val v) next))).go
+      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame ++ stk } (M.val v) kNext) fun
+        | some next => Host.Ts.M.pure (({ t with stack := fs.map M.frame ++ stk }.push (.k (.ystarNext (M.val v) next))).go
             (.call next (M.val v) [.undef]))
         | none => Host.Ts.M.fail "iterator next accessor") := by
-    refine MSim.bind (dataOf_sim h1 hF h1.intr hv (k := kNext) trivial (LookupOK.of_plain (by decide) (by decide) _)) ?_
+    refine MSim.bind (dataOf_sim h1 hF h1.intr hv (k := kNext) trivial (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
     rintro M' S' C' x x' ⟨-, hS, hC, hxx, hx⟩
     rw [hS, hC, hxx]
     cases x with
@@ -1946,13 +2206,13 @@ theorem step_ret_ystarIt_sync {okCall : F.S → Name → List Arg → Bool} {okB
 /-- Async `yield*`: the async iterator arrived; call its `next` and await the result. -/
 theorem step_ret_ystarAIt {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     (hF : FfiSim F FR okCall okBack) {v : Val} {fs : List Frame}
-    (hc : s.ctl = .ret v) (hs : s.stack = .k .ystarAIt :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hc : s.ctl = .ret v) (hs : s.stack = .k .ystarAIt :: fs) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
-  show MSim _ S C (retK F { s with stack := fs } .ystarAIt v) (retK F { t with stack := fs.map M.frame } .ystarAIt (M.val v))
+  show MSim _ S C (retK F { s with stack := fs } .ystarAIt v) (retK F { t with stack := fs.map M.frame ++ stk } .ystarAIt (M.val v))
   simp only [retK]
-  refine MSim.bind (dataOf_sim h1 hF h1.intr hv (k := kNext) trivial (LookupOK.of_plain (by decide) (by decide) _)) ?_
+  refine MSim.bind (dataOf_sim h1 hF h1.intr hv (k := kNext) trivial (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
   rintro M' S' C' x x' ⟨-, hS, hC, hxx, hx⟩
   rw [hS, hC, hxx]
   cases x with
@@ -1967,14 +2227,14 @@ theorem step_ret_ystarNext {okCall : F.S → Name → List Arg → Bool} {okBack
     {a : Nat} {o : Obj} {dv it nx : Val} {w e : Bool} {fs : List Frame}
     (hc : s.ctl = .ret (.obj a)) (hs : s.stack = .k (.ystarNext it nx) :: fs)
     (ho : s.obj? a = some o) (hk : o.kind = .ordinary) (hd : findProp kDone o.props = some (.data dv w e))
-    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
-  obtain ⟨d1, d2, hdv⟩ := h.ownDone (s0 := { s with stack := fs }) (t0 := { t with stack := fs.map M.frame })
-    rfl rfl ho hk hd
+  obtain ⟨d1, d2, hdv⟩ := h.ownDone (s0 := { s with stack := fs }) (t0 := { t with stack := fs.map M.frame ++ stk })
+    rfl rfl ho hk hd hW
   show MSim _ S C (retK F { s with stack := fs } (.ystarNext it nx) (.obj a))
-    (retK F { t with stack := fs.map M.frame } (.ystarNext (M.val it) (M.val nx)) (.obj (M.a a)))
+    (retK F { t with stack := fs.map M.frame ++ stk } (.ystarNext (M.val it) (M.val nx)) (.obj (M.a a)))
   simp only [retK]
   rw [d1, d2]
   show MSim _ S C (Host.Ts.M.bind (truthy dv) _) (Host.Ts.M.bind (truthy (M.val dv)) _)
@@ -1990,9 +2250,9 @@ theorem step_ret_ystarNext {okCall : F.S → Name → List Arg → Bool} {okBack
       (margin_take hn 0 (by decide)) (r := .obj a) hv
     exact StepPost.after hg hy
   · show MSim _ S' C' (Host.Ts.M.bind (dataOf F { s with stack := fs } (.obj a) kValue) _)
-      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame } (M'.val (.obj a)) kValue) _)
+      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame ++ stk } (M'.val (.obj a)) kValue) _)
     refine MSim.bind (dataOf_sim h2 hF h2.intr (recv := .obj a) (k := kValue) hv trivial
-      (LookupOK.of_plain (by decide) (by decide) _)) ?_
+      (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
     rintro M'' S'' C'' x x' ⟨-, hS, hC, hxx, hx⟩
     rw [hS, hC, hxx]
     cases x with
@@ -2006,14 +2266,14 @@ theorem step_ret_ystarAReturned {okCall : F.S → Name → List Arg → Bool} {o
     {a : Nat} {o : Obj} {dv it nx : Val} {w e : Bool} {fs : List Frame}
     (hc : s.ctl = .ret (.obj a)) (hs : s.stack = .k (.ystarAReturned it nx) :: fs)
     (ho : s.obj? a = some o) (hk : o.kind = .ordinary) (hd : findProp kDone o.props = some (.data dv w e))
-    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hbig : ∀ i, dv = .big i → BigFixed K.lo K.hi i) (hn : s.next + margin < Sim.bound) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, hf⟩ := h.topRet hc hs
   rw [e1, e2]
-  obtain ⟨d1, d2, hdv⟩ := h.ownDone (s0 := { s with stack := fs }) (t0 := { t with stack := fs.map M.frame })
-    rfl rfl ho hk hd
+  obtain ⟨d1, d2, hdv⟩ := h.ownDone (s0 := { s with stack := fs }) (t0 := { t with stack := fs.map M.frame ++ stk })
+    rfl rfl ho hk hd hW
   show MSim _ S C (retK F { s with stack := fs } (.ystarAReturned it nx) (.obj a))
-    (retK F { t with stack := fs.map M.frame } (.ystarAReturned (M.val it) (M.val nx)) (.obj (M.a a)))
+    (retK F { t with stack := fs.map M.frame ++ stk } (.ystarAReturned (M.val it) (M.val nx)) (.obj (M.a a)))
   simp only [retK]
   rw [d1, d2]
   show MSim _ S C (Host.Ts.M.bind (truthy dv) _) (Host.Ts.M.bind (truthy (M.val dv)) _)
@@ -2023,7 +2283,7 @@ theorem step_ret_ystarAReturned {okCall : F.S → Name → List Arg → Bool} {o
   have hva : Val.obj (M.a a) = M'.val (.obj a) := by show _ = Val.obj (M'.a a); rw [hg.ext.a]
   rw [hva]
   refine MSim.bind (dataOf_sim h2 hF h2.intr (recv := .obj a) (k := kValue) hv trivial
-    (LookupOK.of_plain (by decide) (by decide) _)) ?_
+    (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
   rintro M'' S'' C'' x x' ⟨-, hS, hC, hxx, hx⟩
   rw [hS, hC, hxx]
   have hit : M'.val it = M.val it := Map.val_agree hg.ext.agree' hf.1
@@ -2043,12 +2303,15 @@ end
 
 /-! ## `yield*` start and `return`/`throw` into a delegated iterator -/
 
-private theorem isIndexable_map {s t : St F.S} (h : Rel F FR M ν K s S t C) {v : Val}
-    (hv : Supp.val (Present s) S.tab.length v) : isIndexable F t (M.val v) = isIndexable F s v := by
+private theorem isIndexable_map {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {v : Val}
+    (hv : Supp.val (Present s) S.tab.length v) (hW : ∀ a, W a = none) : isIndexable F t (M.val v) = isIndexable F s v := by
   cases v with
   | obj a =>
     have hp : Present s a := hv
-    rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩
+    rcases h.objCases hp with ⟨h1, h2⟩ | ⟨o, h1, -, h2⟩ | ⟨o, o', xs, ys, h1, h2, k1, k2⟩ |
+      ⟨o, o', h1, h2, -, -, hwn⟩
+    rotate_left 3
+    · exact absurd (hW a) hwn
     · simp only [Map.val, isIndexable, h1, h2]
     · obtain ⟨k, pr, ps, pv, ex⟩ := o
       simp only [Map.val, isIndexable, h1, h2, Map.obj]
@@ -2060,45 +2323,49 @@ private theorem isIndexable_map {s t : St F.S} (h : Rel F FR M ν K s S t C) {v 
   | _ => rfl
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- `yield*` received its operand: get the (async) iterator. -/
 theorem step_ret_yield_delegate {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     (hF : FfiSim F FR okCall okBack) (htp : Present s aTypeErrorProto) (hai : Present s aArrayIterProto)
     {v : Val} {fs : List Frame} (hc : s.ctl = .ret v) (hs : s.stack = .k (.yield true) :: fs)
-    (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hn : s.next + margin < Sim.bound) (hW : ∀ a, W a = none) (hfn : stk = [] ∨ fnB fs = true) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, hv, -⟩ := h.topRet hc hs
   rw [e1, e2]
   have hs0 := margin_take hn 0 (by decide)
-  show MSim _ S C (retK F { s with stack := fs } (.yield true) v) (retK F { t with stack := fs.map M.frame } (.yield true) (M.val v))
+  show MSim _ S C (retK F { s with stack := fs } (.yield true) v) (retK F { t with stack := fs.map M.frame ++ stk } (.yield true) (M.val v))
   simp only [retK, Bool.cond_true]
-  rw [nearestGen_map]
-  have sync : MSim (StepPost F FR M ν K S C) S C
+  have hng : nearestGen (fs.map M.frame ++ stk) = nearestGen (fs.map M.frame) := by
+    rcases hfn with rfl | hfn
+    · rw [List.append_nil]
+    · exact nearestGen_append_fn stk (by rw [fnB_map]; exact hfn)
+  rw [hng, nearestGen_map]
+  have sync : MSim (StepPostB F FR W stk M ν K S C) S C
       (bif isIndexable F { s with stack := fs } v then
         (Host.Ts.M.pure ((({ s with stack := fs }.allocObj (.iter v 0 0) (.obj aArrayIterProto) []).2.push (.k .ystarIt)).ret
           (.obj ({ s with stack := fs }.allocObj (.iter v 0 0) (.obj aArrayIterProto) []).1)))
        else startIter F ({ s with stack := fs }.push (.k .ystarIt)) v)
-      (bif isIndexable F { t with stack := fs.map M.frame } (M.val v) then
-        (Host.Ts.M.pure ((({ t with stack := fs.map M.frame }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).2.push
-          (.k .ystarIt)).ret (.obj ({ t with stack := fs.map M.frame }.allocObj (.iter (M.val v) 0 0)
+      (bif isIndexable F { t with stack := fs.map M.frame ++ stk } (M.val v) then
+        (Host.Ts.M.pure ((({ t with stack := fs.map M.frame ++ stk }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).2.push
+          (.k .ystarIt)).ret (.obj ({ t with stack := fs.map M.frame ++ stk }.allocObj (.iter (M.val v) 0 0)
             (.obj aArrayIterProto) []).1)))
-       else startIter F ({ t with stack := fs.map M.frame }.push (.k .ystarIt)) (M.val v)) := by
-    rw [isIndexable_map h1 hv]
+       else startIter F ({ t with stack := fs.map M.frame ++ stk }.push (.k .ystarIt)) (M.val v)) := by
+    rw [isIndexable_map h1 hv hW]
     cases isIndexable F { s with stack := fs } v
     · exact getV_sim ((h1.push (.k .ystarIt) trivial).push (.c (.method v [] [] false)) ⟨hv, fun _ hx => nomatch hx⟩)
         hF h1.intr hs0 htp hv (k := .sym symIterator) (fun h => absurd h (by decide))
-        (LookupOK.of_plain (by decide) (by decide) _)
+        (LookupOK.of_plain (by decide) (by decide) hW _)
     · obtain ⟨ea, -, hp, u⟩ := upd_allocObj h1 (k := .iter v 0 0) (proto := .obj aArrayIterProto) (props := [])
         hs0 hv hai (fun _ hx => nomatch hx)
       have ep : M.val (.obj aArrayIterProto) = .obj aArrayIterProto := by
         show Val.obj (M.a aArrayIterProto) = _; rw [h.intr _ (by decide)]
       rw [ep] at ea u
-      have ea' : ({ t with stack := fs.map M.frame }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).1 =
+      have ea' : ({ t with stack := fs.map M.frame ++ stk }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).1 =
           M.a ({ s with stack := fs }.allocObj (.iter v 0 0) (.obj aArrayIterProto) []).1 := ea
-      have u' : Upd F FR M ν K S C { s with stack := fs } ({ s with stack := fs }.allocObj (.iter v 0 0) (.obj aArrayIterProto) []).2
-          ({ t with stack := fs.map M.frame }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).2 1 := u
+      have u' : Upd F FR W stk M ν K S C { s with stack := fs } ({ s with stack := fs }.allocObj (.iter v 0 0) (.obj aArrayIterProto) []).2
+          ({ t with stack := fs.map M.frame ++ stk }.allocObj (.iter (M.val v) 0 0) (.obj aArrayIterProto) []).2 1 := u
       rw [ea']
       exact MSim.pure ⟨Grow.refl h.srv, (u'.rel.push (.k .ystarIt) trivial).ret (.obj _) hp⟩
   cases hng : nearestGen fs with
@@ -2120,14 +2387,14 @@ theorem step_ret_yield_delegate {okCall : F.S → Name → List Arg → Bool} {o
         | obj o =>
           exact getV_sim ((h1.push (.k .ystarAIt) trivial).push (.c (.method (.obj o) [] [] false))
             ⟨hv, fun _ hx => nomatch hx⟩) hF h1.intr hs0 htp hv (k := .sym symAsyncIterator)
-            (fun h => absurd h (by decide)) (LookupOK.of_plain (by decide) (by decide) _)
+            (fun h => absurd h (by decide)) (LookupOK.of_plain (by decide) (by decide) hW _)
         | _ => exact typeErr_sim h1 h1.intr hs0 htp _
 
 /-- `return`/`throw`/`break` reaching a sync `yield*`: close the inner iterator on `return`. -/
 theorem step_abr_ystarResume {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     (hF : FfiSim F FR okCall okBack) {a : Abrupt} {it nx : Val} {fs : List Frame}
-    (hc : s.ctl = .abr a) (hs : s.stack = .k (.ystarResume it nx) :: fs) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hc : s.ctl = .abr a) (hs : s.stack = .k (.ystarResume it nx) :: fs) (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨hts, h1⟩ := h.pop hs
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
   have ha : Supp.abr (Present s) S.tab.length a := by have := h.ctlSupp; rw [hc] at this; exact this
@@ -2135,15 +2402,15 @@ theorem step_abr_ystarResume {okCall : F.S → Name → List Arg → Bool} {okBa
     h.stackSupp _ (by rw [hs]; exact List.mem_cons_self ..)
   have e1 : step F s = abrStep F { s with stack := fs } (.k (.ystarResume it nx)) a := by
     simp only [step, hc, stepAbr, hs]
-  have e2 : step F t = abrStep F { t with stack := fs.map M.frame } (M.frame (.k (.ystarResume it nx))) (M.abr a) := by
+  have e2 : step F t = abrStep F { t with stack := fs.map M.frame ++ stk } (M.frame (.k (.ystarResume it nx))) (M.abr a) := by
     simp only [step, htc, stepAbr, hts]
   rw [e1, e2]
   cases a with
   | ret v =>
     show MSim _ S C (Host.Ts.M.bind (dataOf F { s with stack := fs } it kReturn) _)
-      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame } (M.val it) kReturn) _)
+      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame ++ stk } (M.val it) kReturn) _)
     refine MSim.bind (dataOf_sim h1 hF h1.intr hf.1 (k := kReturn) trivial
-      (LookupOK.of_plain (by decide) (by decide) _)) ?_
+      (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
     rintro M' S' C' x x' ⟨-, hS, hC, hxx, hx⟩
     rw [hS, hC, hxx]
     cases x with
@@ -2162,8 +2429,9 @@ theorem step_abr_ystarResume {okCall : F.S → Name → List Arg → Bool} {okBa
 theorem step_abr_ystarAResume {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
     (hF : FfiSim F FR okCall okBack) (hpp : Present s aPromiseProto)
     {a : Abrupt} {it nx : Val} {fs : List Frame}
-    (hc : s.ctl = .abr a) (hs : s.stack = .k (.ystarAResume it nx) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    (hc : s.ctl = .abr a) (hs : s.stack = .k (.ystarAResume it nx) :: fs) (hn : s.next + margin < Sim.bound)
+    (hW : ∀ a, W a = none) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨hts, h1⟩ := h.pop hs
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
   have ha : Supp.abr (Present s) S.tab.length a := by have := h.ctlSupp; rw [hc] at this; exact this
@@ -2171,20 +2439,20 @@ theorem step_abr_ystarAResume {okCall : F.S → Name → List Arg → Bool} {okB
     h.stackSupp _ (by rw [hs]; exact List.mem_cons_self ..)
   have e1 : step F s = abrStep F { s with stack := fs } (.k (.ystarAResume it nx)) a := by
     simp only [step, hc, stepAbr, hs]
-  have e2 : step F t = abrStep F { t with stack := fs.map M.frame } (M.frame (.k (.ystarAResume it nx))) (M.abr a) := by
+  have e2 : step F t = abrStep F { t with stack := fs.map M.frame ++ stk } (M.frame (.k (.ystarAResume it nx))) (M.abr a) := by
     simp only [step, htc, stepAbr, hts]
   rw [e1, e2]
   cases a with
   | ret v =>
     show MSim _ S C (Host.Ts.M.bind (dataOf F { s with stack := fs } it kReturn) _)
-      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame } (M.val it) kReturn) _)
+      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame ++ stk } (M.val it) kReturn) _)
     refine MSim.bind (dataOf_sim h1 hF h1.intr hf.1 (k := kReturn) trivial
-      (LookupOK.of_plain (by decide) (by decide) _)) ?_
+      (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
     rintro M' S' C' x x' ⟨-, hS, hC, hxx, hx⟩
     rw [hS, hC, hxx]
-    have await : MSim (StepPost F FR M ν K S C) S C
+    have await : MSim (StepPostB F FR W stk M ν K S C) S C
         (awaitVal F ({ s with stack := fs }.push (.k .ystarAReturn)) v)
-        (awaitVal F ({ t with stack := fs.map M.frame }.push (.k .ystarAReturn)) (M.val v)) :=
+        (awaitVal F ({ t with stack := fs.map M.frame ++ stk }.push (.k .ystarAReturn)) (M.val v)) :=
       sim_awaitVal (h1.push (.k .ystarAReturn) trivial) hpp (margin_take hn 1 (by decide)) ha
     cases x with
     | none => exact await
@@ -2196,9 +2464,9 @@ theorem step_abr_ystarAResume {okCall : F.S → Name → List Arg → Bool} {okB
       | _ => exact await
   | throw e =>
     show MSim _ S C (Host.Ts.M.bind (dataOf F { s with stack := fs } it (.str chars!"throw")) _)
-      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame } (M.val it) (.str chars!"throw")) _)
+      (Host.Ts.M.bind (dataOf F { t with stack := fs.map M.frame ++ stk } (M.val it) (.str chars!"throw")) _)
     refine MSim.bind (dataOf_sim h1 hF h1.intr hf.1 (k := .str chars!"throw") trivial
-      (LookupOK.of_plain (by decide) (by decide) _)) ?_
+      (LookupOK.of_plain (by decide) (by decide) hW _)) ?_
     rintro M' S' C' x x' ⟨-, hS, hC, hxx, hx⟩
     rw [hS, hC, hxx]
     cases x with
@@ -2267,19 +2535,19 @@ private theorem NoStart.alloc {s : St S'} {g : Nat} (h : NoStart s g) (o : HObj)
 end
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- Completing the head request of an async generator, then draining it. -/
 theorem upd_agenComplete (hpo : Present s aObjectProto) (hfp : Present s aFunctionProto)
     (hn : s.next + (1 + 2 ^ 21) < Sim.bound) {g : Nat} (hg : Present s g) {c : Comp}
     (hc : Supp.comp (Present s) S.tab.length c) :
-    Upd F FR M ν K S C s (agenComplete F s g c) (agenComplete F t (M.a g) (M.comp c)) (1 + 2 ^ 21) := by
+    Upd F FR W stk M ν K S C s (agenComplete F s g c) (agenComplete F t (M.a g) (M.comp c)) (1 + 2 ^ 21) := by
   have hs : s.next < Sim.bound := by omega
   have hg64 : g < 2 ^ 64 := h.present_lt hg hs
   have hgs : g < s.next := h.presentBound g hg
   have hb : Sim.bound = 2 ^ 61 := rfl
-  have u1 : Upd F FR M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 := upd_setGen h hs hg (st := .done) trivial
+  have u1 : Upd F FR W stk M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 := upd_setGen h hs hg (st := .done) trivial
   have ns1 : NoStart (setGen s g .done) g := fun body env a hgo => by
     rw [genOf_setGen _ _ _ hg64] at hgo
     cases hx : genOf s g <;> rw [hx] at hgo <;> cases hgo
@@ -2295,7 +2563,7 @@ theorem upd_agenComplete (hpo : Present s aObjectProto) (hfp : Present s aFuncti
     have hp : Present (setGen s g .done) p := (hqs _ (List.mem_cons_self ..)).1
     rw [Map.queue_cons]
     dsimp only
-    have u2 : Upd F FR M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
+    have u2 : Upd F FR W stk M ν K S C (setGen s g .done) (setQueue (setGen s g .done) g q)
         (setQueue (setGen t (M.a g) .done) (M.a g) (M.queue q)) 0 :=
       upd_setQueue u1.rel (u1.bound (j := 0) (by omega)) (u1.pres _ hg) fun x hx => hqs x (List.mem_cons_of_mem _ hx)
     have ns2 : NoStart (setQueue (setGen s g .done) g q) g := fun body env a hgo => by
@@ -2303,8 +2571,8 @@ theorem upd_agenComplete (hpo : Present s aObjectProto) (hfp : Present s aFuncti
     have hP2 : ∀ a, Present s a → Present (setQueue (setGen s g .done) g q) a := fun a ha => u2.pres a (u1.pres a ha)
     have hn2 : (setQueue (setGen s g .done) g q).next ≤ s.next := by have := u1.next; have := u2.next; omega
     have hp64 : p < 2 ^ 64 := u2.rel.present_lt (u2.pres _ hp) (by omega)
-    have drain : ∀ {s3 t3 : St F.S}, Upd F FR M ν K S C (setQueue (setGen s g .done) g q) s3 t3 1 → NoStart s3 g →
-        Upd F FR M ν K S C s (agenDrain s3 g) (agenDrain t3 (M.a g)) (1 + 2 ^ 21) := by
+    have drain : ∀ {s3 t3 : St F.S}, Upd F FR W stk M ν K S C (setQueue (setGen s g .done) g q) s3 t3 1 → NoStart s3 g →
+        Upd F FR W stk M ν K S C s (agenDrain s3 g) (agenDrain t3 (M.a g)) (1 + 2 ^ 21) := by
       intro s3 t3 u3 ns3
       have u4 := upd_agenDrain u3.rel (u3.pres _ (hP2 _ hpo)) (u3.pres _ (hP2 _ hfp))
         (by have := u3.next; omega) (u3.pres _ (hP2 _ hg)) (fun body env hgo => absurd hgo (ns3 body env true))
@@ -2312,7 +2580,7 @@ theorem upd_agenComplete (hpo : Present s aObjectProto) (hfp : Present s aFuncti
     have hc2 := Supp.comp_mono hP2 (Nat.le_refl _) hc
     have hsq : (setQueue (setGen s g .done) g q).next < 2 ^ 64 := by omega
     have iter : ∀ {v : Val}, Supp.val (Present (setQueue (setGen s g .done) g q)) S.tab.length v →
-        Upd F FR M ν K S C s
+        Upd F FR W stk M ν K S C s
           (agenDrain (resolveP (iterResult (setQueue (setGen s g .done) g q) v true).2 p
             (.obj (iterResult (setQueue (setGen s g .done) g q) v true).1)) g)
           (agenDrain (resolveP (iterResult (setQueue (setGen t (M.a g) .done) (M.a g) (M.queue q)) (M.val v) true).2
@@ -2338,11 +2606,11 @@ theorem upd_agenComplete (hpo : Present s aObjectProto) (hfp : Present s aFuncti
 
 end
 
-private theorem Rel.topAbr {s t : St F.S} (h : Rel F FR M ν K s S t C) {a : Abrupt} {f : Frame} {fs : List Frame}
+private theorem RelB.topAbr {s t : St F.S} (h : RelB F FR W stk M ν K s S t C) {a : Abrupt} {f : Frame} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = f :: fs) :
     step F s = abrStep F { s with stack := fs } f a ∧
-    step F t = abrStep F { t with stack := fs.map M.frame } (M.frame f) (M.abr a) ∧
-    Rel F FR M ν K { s with stack := fs } S { t with stack := fs.map M.frame } C ∧
+    step F t = abrStep F { t with stack := fs.map M.frame ++ stk } (M.frame f) (M.abr a) ∧
+    RelB F FR W stk M ν K { s with stack := fs } S { t with stack := fs.map M.frame ++ stk } C ∧
     Supp.abr (Present s) S.tab.length a ∧ Supp.frame (Present s) S.tab.length f := by
   obtain ⟨hts, hr⟩ := h.pop hs
   have htc : t.ctl = .abr (M.abr a) := by rw [h.ctl, hc]; rfl
@@ -2353,13 +2621,13 @@ private theorem Rel.topAbr {s t : St F.S} (h : Rel F FR M ν K s S t C) {a : Abr
   exact this
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- An async function's body completed normally: resolve its promise with `undefined`. -/
 theorem step_ret_fn_async {v : Val} {p : Nat} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.fn (.async p)) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, -, hp⟩ := h.topRet hc hs
   have hp : Present s p := hp
   rw [e1, e2]
@@ -2370,22 +2638,22 @@ theorem step_ret_fn_async {v : Val} {p : Nat} {fs : List Frame}
 theorem step_ret_fn_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctionProto)
     {v : Val} {g : Nat} {fs : List Frame}
     (hc : s.ctl = .ret v) (hs : s.stack = .k (.fn (.gen g)) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, -, hg⟩ := h.topRet hc hs
   have hg : Present s g := hg
   rw [e1, e2]
   have hs0 := margin_take hn 0 (by decide)
-  show MSim _ S C (boundaryRet F { s with stack := fs } (.gen g)) (boundaryRet F { t with stack := fs.map M.frame } (.gen (M.a g)))
+  show MSim _ S C (boundaryRet F { s with stack := fs } (.gen g)) (boundaryRet F { t with stack := fs.map M.frame ++ stk } (.gen (M.a g)))
   unfold boundaryRet
   dsimp only
   rw [h1.genOf_map hg]
-  have sync : MSim (StepPost F FR M ν K S C) S C
+  have sync : MSim (StepPostB F FR W stk M ν K S C) S C
       (retS F (iterResult (setGen { s with stack := fs } g .done) .undef true).2
         (.obj (iterResult (setGen { s with stack := fs } g .done) .undef true).1))
-      (retS F (iterResult (setGen { t with stack := fs.map M.frame } (M.a g) .done) .undef true).2
-        (.obj (iterResult (setGen { t with stack := fs.map M.frame } (M.a g) .done) .undef true).1)) := by
-    have u1 : Upd F FR M ν K S C { s with stack := fs } (setGen { s with stack := fs } g .done)
-        (setGen { t with stack := fs.map M.frame } (M.a g) .done) 0 := upd_setGen h1 hs0 hg (st := .done) trivial
+      (retS F (iterResult (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) .undef true).2
+        (.obj (iterResult (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) .undef true).1)) := by
+    have u1 : Upd F FR W stk M ν K S C { s with stack := fs } (setGen { s with stack := fs } g .done)
+        (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) 0 := upd_setGen h1 hs0 hg (st := .done) trivial
     obtain ⟨ea, hr, u2⟩ := upd_iterResult u1.rel (u1.pres _ hpo) (u1.bound (j := 0) (margin_take hn 0 (by decide)))
       (v := .undef) trivial true
     rw [show M.val .undef = .undef from rfl] at ea u2
@@ -2404,7 +2672,7 @@ theorem step_ret_fn_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctio
 /-- `return`/`throw` leaving an async function: settle its promise. -/
 theorem step_abr_fn_async {a : Abrupt} {p : Nat} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .k (.fn (.async p)) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, ha, hp⟩ := h.topAbr hc hs
   have hp : Present s p := hp
   rw [e1, e2]
@@ -2423,25 +2691,25 @@ theorem step_abr_fn_async {a : Abrupt} {p : Nat} {fs : List Frame}
 theorem step_abr_fn_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctionProto)
     {a : Abrupt} {g : Nat} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .k (.fn (.gen g)) :: fs) (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, ha, hg⟩ := h.topAbr hc hs
   have hg : Present s g := hg
   rw [e1, e2]
   have hs0 := margin_take hn 0 (by decide)
-  have u1 : Upd F FR M ν K S C { s with stack := fs } (setGen { s with stack := fs } g .done)
-      (setGen { t with stack := fs.map M.frame } (M.a g) .done) 0 := upd_setGen h1 hs0 hg (st := .done) trivial
+  have u1 : Upd F FR W stk M ν K S C { s with stack := fs } (setGen { s with stack := fs } g .done)
+      (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) 0 := upd_setGen h1 hs0 hg (st := .done) trivial
   cases a with
   | ret v =>
     show MSim _ S C (boundaryAbr F { s with stack := fs } (.gen g) (.ret v))
-      (boundaryAbr F { t with stack := fs.map M.frame } (.gen (M.a g)) (.ret (M.val v)))
+      (boundaryAbr F { t with stack := fs.map M.frame ++ stk } (.gen (M.a g)) (.ret (M.val v)))
     unfold boundaryAbr
     dsimp only
     rw [h1.genOf_map hg]
-    have sync : MSim (StepPost F FR M ν K S C) S C
+    have sync : MSim (StepPostB F FR W stk M ν K S C) S C
         (retS F (iterResult (setGen { s with stack := fs } g .done) v true).2
           (.obj (iterResult (setGen { s with stack := fs } g .done) v true).1))
-        (retS F (iterResult (setGen { t with stack := fs.map M.frame } (M.a g) .done) (M.val v) true).2
-          (.obj (iterResult (setGen { t with stack := fs.map M.frame } (M.a g) .done) (M.val v) true).1)) := by
+        (retS F (iterResult (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) (M.val v) true).2
+          (.obj (iterResult (setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done) (M.val v) true).1)) := by
       obtain ⟨ea, hr, u2⟩ := upd_iterResult u1.rel (u1.pres _ hpo) (u1.bound (j := 0) (margin_take hn 0 (by decide)))
         (Supp.val_mono u1.pres (Nat.le_refl _) ha) true
       rw [ea]
@@ -2457,13 +2725,13 @@ theorem step_abr_fn_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctio
           (c := .abrupt (.ret v)) ha).rel⟩
   | throw e =>
     show MSim _ S C (boundaryAbr F { s with stack := fs } (.gen g) (.throw e))
-      (boundaryAbr F { t with stack := fs.map M.frame } (.gen (M.a g)) (.throw (M.val e)))
+      (boundaryAbr F { t with stack := fs.map M.frame ++ stk } (.gen (M.a g)) (.throw (M.val e)))
     unfold boundaryAbr
     dsimp only
     rw [h1.genOf_map hg]
-    have sync : MSim (StepPost F FR M ν K S C) S C
+    have sync : MSim (StepPostB F FR W stk M ν K S C) S C
         (Host.Ts.M.pure ((setGen { s with stack := fs } g .done).go (.abr (.throw e))))
-        (Host.Ts.M.pure ((setGen { t with stack := fs.map M.frame } (M.a g) .done).go (.abr (.throw (M.val e))))) :=
+        (Host.Ts.M.pure ((setGen { t with stack := fs.map M.frame ++ stk } (M.a g) .done).go (.abr (.throw (M.val e))))) :=
       MSim.pure ⟨Grow.refl h.srv, u1.rel.go (.abr (.throw e)) (Supp.val_mono u1.pres (Nat.le_refl _) ha)⟩
     cases hgo : genOf { s with stack := fs } g with
     | none => exact sync
@@ -2482,14 +2750,14 @@ end
 /-! ## Sync generators: `next`/`return`/`throw` -/
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 theorem sim_genResume (hpo : Present s aObjectProto) (hfp : Present s aFunctionProto)
     (htp : Present s aTypeErrorProto) (hn : s.next + 2 ^ 21 < Sim.bound) {g : Nat} (hg : Present s g)
     {mode : Nat} (hmode : mode = 0 ∨ mode = 1 ∨ mode = 2) {v : Val} (hv : Supp.val (Present s) S.tab.length v)
     (hstart : ∀ body env, genOf s g = some (.start body env, false) → StartOK K body env) :
-    MSim (StepPost F FR M ν K S C) S C (genResume s g mode v) (genResume t (M.a g) mode (M.val v)) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (genResume s g mode v) (genResume t (M.a g) mode (M.val v)) := by
   have hs : s.next < Sim.bound := by omega
   have hst := fun {st : GenState} {a : Bool} (hgo : genOf s g = some (st, a)) => h.genOf_supp hgo
   unfold genResume
@@ -2508,23 +2776,23 @@ theorem sim_genResume (hpo : Present s aObjectProto) (hfp : Present s aFunctionP
         have he : Supp.env (Present s) S.tab.length env := hsg
         rcases hmode with rfl | rfl | rfl
         · obtain ⟨hcount, hfr⟩ := hstart body env hgo
-          have u1 : Upd F FR M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
+          have u1 : Upd F FR W stk M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
             upd_setGen h hs hg (st := .running) trivial
-          have u2 : Upd F FR M ν K S C (setGen s g .running) ((setGen s g .running).push (.k (.fn (.gen g))))
+          have u2 : Upd F FR W stk M ν K S C (setGen s g .running) ((setGen s g .running).push (.k (.fn (.gen g))))
               ((setGen t (M.a g) .running).push (.k (.fn (.gen (M.a g))))) 0 :=
             upd_push u1.rel (.k (.fn (.gen g))) (u1.pres _ hg)
           have u3 := upd_enterBlock (ss := body) hfr u2.rel (u2.pres _ (u1.pres _ hfp))
             (by have := u1.next; have := u2.next; omega)
             (Supp.env_mono (fun a ha => u2.pres a (u1.pres a ha)) (Nat.le_refl _) he)
           exact MSim.pure ⟨Grow.refl h.srv, u3.rel⟩
-        · have u1 : Upd F FR M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
+        · have u1 : Upd F FR W stk M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
             upd_setGen h hs hg (st := .done) trivial
           obtain ⟨ea, hr, u2⟩ := upd_iterResult u1.rel (u1.pres _ hpo) (u1.bound (j := 0) (by omega))
             (Supp.val_mono u1.pres (Nat.le_refl _) hv) true
           dsimp only
           rw [pair_eta (iterResult (setGen s g .done) v true), pair_eta (iterResult (setGen t (M.a g) .done) (M.val v) true), ea]
           exact MSim.pure ⟨Grow.refl h.srv, u2.rel.ret (.obj _) hr⟩
-        · have u1 : Upd F FR M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
+        · have u1 : Upd F FR W stk M ν K S C s (setGen s g .done) (setGen t (M.a g) .done) 0 :=
             upd_setGen h hs hg (st := .done) trivial
           exact MSim.pure ⟨Grow.refl h.srv, u1.rel.go (.abr (.throw v)) (Supp.val_mono u1.pres (Nat.le_refl _) hv)⟩
     | suspended su =>
@@ -2532,11 +2800,11 @@ theorem sim_genResume (hpo : Present s aObjectProto) (hfp : Present s aFunctionP
       | true => exact MSim.fail _ _
       | false =>
         have hsu : Supp.susp (Present s) S.tab.length su := hsg
-        have u1 : Upd F FR M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
+        have u1 : Upd F FR W stk M ν K S C s (setGen s g .running) (setGen t (M.a g) .running) 0 :=
           upd_setGen h hs hg (st := .running) trivial
-        have e : (M.susp su).frames ++ t.stack = (su.frames ++ s.stack).map M.frame := by
-          rw [List.map_append, h.stack]; rfl
-        have u2 : Upd F FR M ν K S C (setGen s g .running) { setGen s g .running with stack := su.frames ++ s.stack }
+        have e : (M.susp su).frames ++ t.stack = (su.frames ++ s.stack).map M.frame ++ stk := by
+          rw [List.map_append, h.stack, List.append_assoc]; rfl
+        have u2 : Upd F FR W stk M ν K S C (setGen s g .running) { setGen s g .running with stack := su.frames ++ s.stack }
             { setGen t (M.a g) .running with stack := (M.susp su).frames ++ t.stack } 0 := by
           rw [e]
           exact upd_restack u1.rel (su.frames ++ s.stack) fun f hf => by
@@ -2573,13 +2841,13 @@ theorem step_call_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctionP
     (hf : f = .genNext ∨ f = .genReturn ∨ f = .genThrow)
     (hstart : ∀ g body env, this = .obj g → genOf s g = some (.start body env, false) → StartOK K body env)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, hthis, hargs, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   have hn' := margin_take hn (2 ^ 21) (by decide)
   have hs := margin_take hn 0 (by decide)
   have key : ∀ mode, (mode = 0 ∨ mode = 1 ∨ mode = 2) →
-      MSim (StepPost F FR M ν K S C) S C (ctlN.gen F s this args mode) (ctlN.gen F t (M.val this) (M.vals args) mode) := by
+      MSim (StepPostB F FR W stk M ν K S C) S C (ctlN.gen F s this args mode) (ctlN.gen F t (M.val this) (M.vals args) mode) := by
     intro mode hm
     unfold ctlN.gen
     cases this with
@@ -2595,14 +2863,14 @@ theorem step_call_gen (hpo : Present s aObjectProto) (hfp : Present s aFunctionP
 end
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- An abrupt completion reaching `new Promise`'s executor frame: a throw rejects the promise. -/
 theorem step_abr_native_promiseCtor {a : Abrupt} {p : Val} {fs : List Frame}
     (hc : s.ctl = .abr a) (hs : s.stack = .k (.native (.ctl .promiseCtor) [p]) :: fs)
     (hn : s.next + margin < Sim.bound) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, h1, ha, hf⟩ := h.topAbr hc hs
   rw [e1, e2]
   have hp : Supp.val (Present s) S.tab.length p := hf p (List.mem_singleton_self _)
@@ -2620,14 +2888,14 @@ theorem step_abr_native_promiseCtor {a : Abrupt} {p : Val} {fs : List Frame}
 end
 
 section
-variable {s t : St F.S} (h : Rel F FR M ν K s S t C)
+variable {s t : St F.S} (h : RelB F FR W stk M ν K s S t C)
 include h
 
 /-- Calling `Promise` or `AsyncLocalStorage` without `new` is rejected by the model on both sides. -/
 theorem step_call_ctl_ctor {a : Nat} {this : Val} {args : List Val} {o : Obj} {f : CtlN} {data : List Val}
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o) (hk : o.kind = .fn (.native (.ctl f) data))
     (hf : f = .promiseCtor ∨ f = .alsCtor) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, -, -, -⟩ := h.topCall hc ho hk
   rw [e1, e2]
   rcases hf with rfl | rfl <;> exact MSim.fail _ _

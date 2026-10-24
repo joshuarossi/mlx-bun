@@ -62,13 +62,18 @@ theorem lift_value (memory : Memory) (i : Fin 10) :
     ((2^(AffineDot.width3 i)-1)*2^(AffineDot.shift3 i)))=_
   rw [AffineDot4Source.liftValue_checked _ range,mask_value]
 
--- A contraction choice applies to each separate +=. The two crossing fields
--- first multiply their input by the parsed 256.0f in a separately rounded op.
+-- A contraction choice applies to each separate +=: statement `i` is site `i`.
+-- The two crossing fields first multiply their input by the parsed 256.0f in a separately rounded op.
 def execute (contracted : Bool) (memory : Memory) (accumulator : Float32) (source : Statement) : Option Float32 := do
   if source.target≠"accum" then none else do
     let coefficient ←lift memory source
     let value ←readInput memory source.input
     pure (maddFloat contracted coefficient value accumulator)
+
+-- A statement and its site.
+def executeAt (contracted : Nat → Bool) (memory : Memory) (accumulator : Float32) (source : Statement × Nat) :
+    Option Float32 :=
+  execute (contracted source.2) memory accumulator source.1
 
 theorem statement_value (contracted : Bool) (memory : Memory) (accumulator : Float32) (i : Fin 10) :
     execute contracted memory accumulator (statement i)=some
@@ -82,30 +87,33 @@ theorem statement_value (contracted : Bool) (memory : Memory) (accumulator : Flo
 
 attribute [local irreducible] execute parse
 
-theorem fold_statements (contracted : Bool) (memory : Memory) (indices : List (Fin 10)) (accumulator : Float32) :
-    (indices.map statement).foldlM (execute contracted memory) accumulator=some
-      (indices.foldl (fun acc i => maddFloat contracted (AffineLift.value (AffineDot.mask3 (bytes memory) i))
+theorem fold_statements (contracted : Nat → Bool) (memory : Memory) (indices : List (Fin 10)) (accumulator : Float32) :
+    (indices.map (fun i => (statement i,i.val))).foldlM (executeAt contracted memory) accumulator=some
+      (indices.foldl (fun acc i => maddFloat (contracted i.val) (AffineLift.value (AffineDot.mask3 (bytes memory) i))
         (if AffineDot.crossed3 i then FlushToZero.mul (input memory (AffineDot.coordinate3 i)) 256
          else input memory (AffineDot.coordinate3 i)) acc) accumulator) := by
   induction indices generalizing accumulator with
   | nil => rfl
   | cons i rest ih =>
-    simp only [List.map_cons,List.foldlM_cons,List.foldl_cons,statement_value]
+    simp only [List.map_cons,List.foldlM_cons,List.foldl_cons,executeAt,statement_value]
     exact ih _
 
-theorem body_execution (contracted : Bool) (memory : Memory) (accumulator : Float32) :
-    body.foldlM (execute contracted memory) accumulator=some
+theorem body_sites : body.zipIdx=(List.finRange 10).map (fun i => (statement i,i.val)) := by decide +kernel
+
+theorem body_execution (contracted : Nat → Bool) (memory : Memory) (accumulator : Float32) :
+    body.zipIdx.foldlM (executeAt contracted memory) accumulator=some
       (AffineDot.source3 contracted (bytes memory) (input memory) accumulator) := by
-  unfold body AffineDot.source3
+  rw [body_sites]
+  unfold AffineDot.source3
   exact fold_statements contracted memory (List.finRange 10) accumulator
 
 theorem parsed_bind {α : Type} (f : List Statement → Option α) :
     (parse sourceBody).bind f=f body := by rw [parsed_body,Option.bind_some]
 
-def executeSource (contracted : Bool) (memory : Memory) (accumulator : Float32) : Option Float32 :=
-  (parse sourceBody).bind (fun statements => statements.foldlM (execute contracted memory) accumulator)
+def executeSource (contracted : Nat → Bool) (memory : Memory) (accumulator : Float32) : Option Float32 :=
+  (parse sourceBody).bind (fun statements => statements.zipIdx.foldlM (executeAt contracted memory) accumulator)
 
-theorem execution (contracted : Bool) (memory : Memory) (accumulator : Float32) :
+theorem execution (contracted : Nat → Bool) (memory : Memory) (accumulator : Float32) :
     executeSource contracted memory accumulator=some (AffineDot.source3 contracted (bytes memory) (input memory) accumulator) := by
   rw [executeSource,parsed_bind]
   exact body_execution contracted memory accumulator

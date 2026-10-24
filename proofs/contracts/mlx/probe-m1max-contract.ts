@@ -94,7 +94,8 @@ const FIELDS = ["fadd_model", "fmul_model", "fma_model", "fdiv_model", "fdiv_uni
   "exp_nonnegative", "exp_small", "exp_overflow", "fastExp_nonpositive", "fastExp_zero", "fastExp_negInf", "fastExp_nonnegative",
   "fastExp_overflow", "exp2_nonpositive", "log_bounded", "fastLog_unit", "fastSin_bounded", "fastCos_bounded", "fmax_value",
   "simdMax_tree", "fabs_value", "fastFabs_value", "simdSum_tree", "threadgroupLoad_contract", "vectorLoad_components",
-  "bfadd_model", "bfsub_model", "bfmul_model", "bfdiv_model", "narrow_model", "widen_model"];
+  "bfadd_model", "bfsub_model", "bfmul_model", "bfdiv_model", "narrow_model", "widen_model", "fdiv_one_model", "fadd_posInf",
+  "fdiv_posInf", "narrow_posInf", "bfadd_posInf", "bfdiv_posInf"];
 const PIPELINE_FIELDS = ["rmsLooped", "logSumExpLooped", "generalCopy2D", "simdWidth"];
 for (const [s, mine] of [["Contract", FIELDS], ["Pipelines", PIPELINE_FIELDS]] as const) {
   const lean = leanClauses(s);
@@ -195,6 +196,9 @@ section("reference self-test (fast references vs exact BigInt rationals)");
     if (!sameF(mulRef(a, b), exactMul(a, b))) c.fail(`mul ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))}`);
     if (!sameF(divRef(x, y), exactDiv(x, y))) c.fail(`div ${fmtF(bitsOf(x))} ${fmtF(bitsOf(y))}`);
     if (!sameF(fmaRef(a, b, cc), exactFma(a, b, cc))) c.fail(`fma ${fmtF(bitsOf(a))} ${fmtF(bitsOf(b))} ${fmtF(bitsOf(cc))}`);
+    const yb = valOf(((127 + rnd() % 128) << 23) | (rnd() & 0x7fffff)); // [1, largest finite]
+    c.cases++;
+    if (!sameF(divRef(1, yb), exactDiv(1, yb))) c.fail(`div 1 ${fmtF(bitsOf(yb))}`);
   }
   for (let i = 0; i < 400000; i++) {
     const a = rnd() & 0xffff; let b = rnd() & 0xffff;
@@ -341,6 +345,10 @@ const unarySpec: [UnaryName, string, Lowering][] = [
   ["fabs", "as_type<uint>(metal::precise::fabs(x))", { require: [/@air\.fabs\.f32/], forbid: [/@air\.fast_fabs/] }],
   ["fastFabs", "as_type<uint>(metal::fast::fabs(x))", { require: [/@air\.fast_fabs\.f32/], forbid: [/@air\.fabs\.f32/] }],
   ["narrow", "uint(as_type<ushort>(bfloat(x)))", { require: [/fptrunc float [^\n]* to bfloat/] }],
+  // +inf and 1 come from the parameter buffer, so the compiler cannot fold them.
+  ["addInf", "as_type<uint>(x + as_type<float>(p[1]))", { require: [/= fadd float /], forbid: [/@air\.fast_/] }],
+  ["divInf", "as_type<uint>(x / as_type<float>(p[1]))", { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] }],
+  ["recip", "as_type<uint>(as_type<float>(p[2]) / x)", { require: [/= fdiv float /], forbid: [/@air\.fast_/, /@air\.div/] }],
 ];
 const stat = newStat();
 {
@@ -352,7 +360,7 @@ const stat = newStat();
   let pending: Promise<void> | null = null;
   for (const ci of chunks) {
     const base = ci * CHUNK;
-    const p = params(base);
+    const p = params(base, 0x7f800000, 0x3f800000);
     const outs = ks.map(([, k]) => dispatch(k, [p], CHUNK, CHUNK));
     const tasks: Task[] = [];
     ks.forEach(([n], q) => {
@@ -374,7 +382,8 @@ const stat = newStat();
   clause("fastCos_bounded").info.push(`max |cos| = ${stat.cosMax}`);
   for (const n of ["rsqrt_normal", "exp_nonpositive", "exp_zero", "exp_nonnegative", "exp_small", "exp_overflow", "fastExp_nonpositive",
     "fastExp_zero", "fastExp_negInf", "fastExp_nonnegative", "fastExp_overflow", "exp2_nonpositive", "log_bounded", "fastLog_unit",
-    "fastSin_bounded", "fastCos_bounded", "fabs_value", "fastFabs_value", "narrow_model"]) report(clause(n));
+    "fastSin_bounded", "fastCos_bounded", "fabs_value", "fastFabs_value", "narrow_model", "fdiv_one_model", "fadd_posInf",
+    "fdiv_posInf", "narrow_posInf"]) report(clause(n));
 }
 
 // ---------------------------------------------------------------- binary arithmetic
@@ -769,6 +778,8 @@ const BF_ROWS = QUICK ? 512 : 65536;
     }
     await pending;
     report(clause(BF_OPS[oi]!));
+    if (oi === 0) report(clause("bfadd_posInf"));
+    if (oi === 3) report(clause("bfdiv_posInf"));
   }
   {
     const k = kernel("m1c_bf16_fmax_v2", ["p"], String.raw`

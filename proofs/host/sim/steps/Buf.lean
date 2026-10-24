@@ -432,10 +432,10 @@ theorem CellFixed.cell {M : Map} {lo hi : Nat} (hfix : ∀ i, BigFixed lo hi i �
   | big i => show Cell.big (M.big i) = .big i; rw [hfix i hc]
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
-theorem toCellBig_map (h : Rel F FR M ν K s S t C) {k : EltK} {i : Int} (hc : BigConvOK K k i)
+theorem toCellBig_map (h : RelB F FR W stk M ν K s S t C) {k : EltK} {i : Int} (hc : BigConvOK K k i)
     (hr : (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i)) :
     toCellBig k (M.big i) = (toCellBig k i).map M.cell := by
   rcases hc with ⟨hfi, hres⟩ | ⟨hlo, hhi⟩
@@ -561,7 +561,7 @@ theorem readCell_map {M : Map} {lo hi n : Nat} (hfix : ∀ i, BigFixed lo hi i �
 /-! ## Heap lookups and buffers under the relation -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 theorem s64 (hn : s.next < Sim.bound) : s.next < 2 ^ 64 := by
@@ -573,40 +573,44 @@ theorem obj?_cell {s : St F.S} {a : Nat} {v : Option Val} (hg : s.heap.get a = s
     s.obj? a = none := by
   unfold St.obj?; rw [hg]
 
-/-- A non-array object is never framed: its target image is the mapped object. -/
-theorem obj?_plain (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj}
-    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) : t.obj? (M.a a) = some (M.obj o) := by
-  cases hfr : K.fr a with
-  | none => exact h.obj? ho hfr
-  | some p =>
-    obtain ⟨pre, pre'⟩ := p
-    obtain ⟨_, _, ⟨xs, hk', _⟩⟩ := h.obj?_framed ho hfr
-    exact absurd hk' (hk _)
+/-- A non-array object of a kind no frame admits is never framed: its target image is the mapped
+object. -/
+theorem obj?_plain (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj}
+    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) (hw : ¬ Wideable o.kind) :
+    t.obj? (M.a a) = some (M.obj o) :=
+  h.obj? ho (h.fr_none ho hk hw)
 
-/-- A lookup at a present address: nothing on both sides, the image, or arrays on both sides
-(framed arrays). -/
-theorem obj?_cases (h : Rel F FR M ν K s S t C) {a : Nat} (hp : Present s a) :
+/-- A lookup at a present address: nothing on both sides, the image, arrays on both sides
+(framed arrays), or an object under a frame of `W` (kinds `Wideable` and `WTarget` admit). -/
+theorem obj?_cases (h : RelB F FR W stk M ν K s S t C) {a : Nat} (hp : Present s a) :
     (s.obj? a = none ∧ t.obj? (M.a a) = none) ∨
     (∃ o, s.obj? a = some o ∧ t.obj? (M.a a) = some (M.obj o)) ∨
     (∃ o o' es es', s.obj? a = some o ∧ t.obj? (M.a a) = some o' ∧ o.kind = .array es ∧
-      o'.kind = .array es') := by
+      o'.kind = .array es') ∨
+    (∃ o o', s.obj? a = some o ∧ t.obj? (M.a a) = some o' ∧ Wideable o.kind ∧ WTarget o'.kind ∧
+      W a ≠ none ∧ K.fr a ≠ none) := by
   obtain ⟨h0, hg⟩ := hp.get
   cases h0 with
   | cell v =>
-    have ht := h.get hg (h.fr_cell hg)
-    exact .inl ⟨obj?_cell hg, obj?_cell (v := v.map M.val) ht⟩
+    obtain ⟨v', ht⟩ := h.cell_target hg
+    exact .inl ⟨obj?_cell hg, obj?_cell (v := v') ht⟩
   | obj o =>
     have ho : s.obj? a = some o := obj?_iff.2 hg
     cases hfr : K.fr a with
     | none => exact .inr (.inl ⟨o, ho, h.obj? ho hfr⟩)
     | some p =>
-      obtain ⟨pre, pre'⟩ := p
-      obtain ⟨o', ht, ⟨xs, hk, rfl⟩⟩ := h.obj?_framed ho hfr
-      exact .inr (.inr ⟨o, _, _, _, ho, ht, hk, rfl⟩)
+      cases hw : W a with
+      | none =>
+        obtain ⟨pre, pre'⟩ := p
+        obtain ⟨o', ht, ⟨xs, hk, rfl⟩⟩ := h.obj?_framed ho hfr hw
+        exact .inr (.inr (.inl ⟨o, _, _, _, ho, ht, hk, rfl⟩))
+      | some w =>
+        obtain ⟨o', ht, hk, hk'⟩ := h.wide_obj hg hfr hw
+        exact .inr (.inr (.inr ⟨o, o', ho, obj?_iff.2 ht, hk, hk', by simp, by simp⟩))
 
 /-- A source buffer's bytes: the target buffer at the image holds their image. -/
 theorem bufBytes_rel {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
-    (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} {bs : List Byte}
+    (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} {bs : List Byte}
     (hb : bufBytes F s b = some bs) : bufBytes F t (M.a b) = some (bs.map M.byte) := by
   unfold bufBytes at hb ⊢
   cases ho : s.obj? b with
@@ -617,10 +621,10 @@ theorem bufBytes_rel {okCall : F.S → Name → List Arg → Bool} {okBack : F.S
     cases k with
     | buf bs0 =>
       cases hb
-      rw [obj?_plain h ho (fun _ h => nomatch h)]
+      rw [obj?_plain h ho (fun _ h => nomatch h) id]
       rfl
     | extBuf r off len =>
-      rw [obj?_plain h ho (fun _ h => nomatch h)]
+      rw [obj?_plain h ho (fun _ h => nomatch h) id]
       exact hF.read M S.tab.length s.ffi t.ffi r off len bs h.ffi hb
     | _ => cases hb
 
@@ -633,11 +637,14 @@ def BufOK (F : Ffi) (s : St F.S) (n : Nat) (b : Nat) : Prop :=
 /-- At a present address with `BufOK`, the target's bytes are exactly the image, and the
 source bytes are closed. -/
 theorem bufBytes_exact {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
-    (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} (hp : Present s b)
-    (hok : BufOK F s S.tab.length b) :
+    (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat} (hp : Present s b)
+    (hok : BufOK F s S.tab.length b) (hn : NoW K W s b) :
     bufBytes F t (M.a b) = (bufBytes F s b).map (List.map M.byte) ∧
       ∀ bs, bufBytes F s b = some bs → Supp.bytes (Present s) S.tab.length bs := by
-  rcases obj?_cases h hp with ⟨hs, ht⟩ | ⟨o, hs, ht⟩ | ⟨o, o', es, es', hs, ht, hk, hk'⟩
+  rcases obj?_cases h hp with ⟨hs, ht⟩ | ⟨o, hs, ht⟩ | ⟨o, o', es, es', hs, ht, hk, hk'⟩ |
+    ⟨o, o', hs, ht, w1, -, hw, hf⟩
+  rotate_left 3
+  · exact (hn.not_wide hs w1 hw hf).elim
   · unfold bufBytes; rw [hs, ht]; exact ⟨rfl, fun _ h => nomatch h⟩
   · obtain ⟨k, p, ps, pv, e⟩ := o
     have hsupp := h.obj?_supp hs
@@ -665,18 +672,18 @@ theorem bufBytes_exact {okCall : F.S → Name → List Arg → Bool} {okBack : F
 
 /-! ## Control steps -/
 
-theorem sim_rel {s' t' : St F.S} (h : Rel F FR M ν K s' S t' C) :
-    MSim (StepPost F FR M ν K S C) S C (Host.Ts.M.pure s') (Host.Ts.M.pure t') :=
+theorem sim_rel {s' t' : St F.S} (h : RelB F FR W stk M ν K s' S t' C) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (Host.Ts.M.pure s') (Host.Ts.M.pure t') :=
   MSim.pure ⟨Grow.refl h.srv, h⟩
 
-theorem sim_ret (h : Rel F FR M ν K s S t C) (v : Val) (hv : Supp.val (Present s) S.tab.length v) :
-    MSim (StepPost F FR M ν K S C) S C (retS F s v) (retS F t (M.val v)) :=
+theorem sim_ret (h : RelB F FR W stk M ν K s S t C) (v : Val) (hv : Supp.val (Present s) S.tab.length v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (retS F s v) (retS F t (M.val v)) :=
   sim_rel (h.ret v hv)
 
 /-- Throwing a new error object with an intrinsic prototype. -/
-theorem throwErr_sim (h : Rel F FR M ν K s S t C) (p : Nat) (msg : List Char)
+theorem throwErr_sim (h : RelB F FR W stk M ν K s S t C) (p : Nat) (msg : List Char)
     (hn : s.next < Sim.bound) (hI : M.a p = p) (hp : Present s p) :
-    MSim (StepPost F FR M ν K S C) S C (throwErr s p msg) (throwErr t p msg) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (throwErr s p msg) (throwErr t p msg) := by
   have h64 := s64 hn
   let ps : Props := [(.str ['m','e','s','s','a','g','e'], .data (.str msg) true false)]
   have hP : ∀ a, Present s a → Present (s.allocObj .ordinary (.obj p) ps).2 a :=
@@ -694,21 +701,21 @@ theorem throwErr_sim (h : Rel F FR M ν K s S t C) (p : Nat) (msg : List Char)
     .abr (.throw (.obj (M.a (s.allocObj .ordinary (.obj p) ps).1))) from rfl, ← ha] at this
   exact this
 
-theorem typeErr_sim (h : Rel F FR M ν K s S t C) (msg : List Char) (hn : s.next < Sim.bound)
+theorem typeErr_sim (h : RelB F FR W stk M ν K s S t C) (msg : List Char) (hn : s.next < Sim.bound)
     (hI : ∀ a, a < aFirst → M.a a = a) (hp : Present s aTypeErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (typeErr s msg) (typeErr t msg) :=
+    MSim (StepPostB F FR W stk M ν K S C) S C (typeErr s msg) (typeErr t msg) :=
   throwErr_sim h _ msg hn (hI _ (by decide)) hp
 
-theorem rangeErr_sim (h : Rel F FR M ν K s S t C) (msg : List Char) (hn : s.next < Sim.bound)
+theorem rangeErr_sim (h : RelB F FR W stk M ν K s S t C) (msg : List Char) (hn : s.next < Sim.bound)
     (hI : ∀ a, a < aFirst → M.a a = a) (hp : Present s aRangeErrorProto) :
-    MSim (StepPost F FR M ν K S C) S C (rangeErr s msg) (rangeErr t msg) :=
+    MSim (StepPostB F FR W stk M ν K S C) S C (rangeErr s msg) (rangeErr t msg) :=
   throwErr_sim h _ msg hn (hI _ (by decide)) hp
 
 /-- Allocate an object with an intrinsic prototype and return it. -/
-theorem allocObj_ret_sim (h : Rel F FR M ν K s S t C) (k : Kind) (p : Nat)
+theorem allocObj_ret_sim (h : RelB F FR W stk M ν K s S t C) (k : Kind) (p : Nat)
     (hn : s.next < Sim.bound) (hI : M.a p = p) (hp : Present s p)
     (hk : Supp.kind (Present s) S.tab.length k) :
-    MSim (StepPost F FR M ν K S C) S C
+    MSim (StepPostB F FR W stk M ν K S C) S C
       (retS F (s.allocObj k (.obj p) []).2 (.obj (s.allocObj k (.obj p) []).1))
       (retS F (t.allocObj (M.kind k) (.obj p) []).2 (.obj (t.allocObj (M.kind k) (.obj p) []).1)) := by
   have h64 := s64 hn
@@ -724,11 +731,11 @@ theorem allocObj_ret_sim (h : Rel F FR M ν K s S t C) (k : Kind) (p : Nat)
   exact this
 
 /-- `newTyped`: a fresh buffer and a typed array over it, returned. -/
-theorem newTyped_sim (h : Rel F FR M ν K s S t C) (k : EltK) (proto : Nat) (bytes : List Byte) (n : Nat)
+theorem newTyped_sim (h : RelB F FR W stk M ν K s S t C) (k : EltK) (proto : Nat) (bytes : List Byte) (n : Nat)
     (hn : s.next + 2 < Sim.bound) (hpl : proto < aFirst)
     (hp14 : Present s aArrayBufferProto) (hpp : Present s proto)
     (hb : Supp.bytes (Present s) S.tab.length bytes) :
-    MSim (StepPost F FR M ν K S C) S C
+    MSim (StepPostB F FR W stk M ν K S C) S C
       (retS F (newTyped F s k proto bytes n).2 (.obj (newTyped F s k proto bytes n).1))
       (retS F (newTyped F t k proto (bytes.map M.byte) n).2
         (.obj (newTyped F t k proto (bytes.map M.byte) n).1)) := by
@@ -757,12 +764,13 @@ theorem step_call_native {a : Nat} {this : Val} {args : List Val} {o : Obj} {n :
     (hk : o.kind = .fn (.native n data)) : step F s = callNative F s n data this args := by
   simp only [step, hc, callStep, ho, hk]
 
-theorem step_call_native_t (h : Rel F FR M ν K s S t C) {a : Nat} {this : Val} {args : List Val}
+theorem step_call_native_t (h : RelB F FR W stk M ν K s S t C) {a : Nat} {this : Val} {args : List Val}
     {o : Obj} {n : Native} {data : List Val} (hc : s.ctl = .call (.obj a) this args)
     (ho : s.obj? a = some o) (hk : o.kind = .fn (.native n data)) :
     step F t = callNative F t n (M.vals data) (M.val this) (M.vals args) := by
   have htc : t.ctl = .call (.obj (M.a a)) (M.val this) (M.vals args) := by rw [h.ctl, hc]; rfl
-  have hto : t.obj? (M.a a) = some (M.obj o) := obj?_plain h ho (by rw [hk]; exact fun _ h => nomatch h)
+  have hto : t.obj? (M.a a) = some (M.obj o) :=
+    obj?_plain h ho (by rw [hk]; exact fun _ h => nomatch h) (by rw [hk]; exact id)
   have htk : (M.obj o).kind = .fn (.native n (M.vals data)) := by
     show M.kind o.kind = _; rw [hk]; rfl
   simp only [step, htc, callStep, hto, htk]
@@ -772,24 +780,25 @@ theorem step_construct_native {a : Nat} {args : List Val} {nt : Val} {o : Obj} {
     (hk : o.kind = .fn (.native n data)) : step F s = constructNative F s n data args nt := by
   simp only [step, hc, constructStep, ho, hk]
 
-theorem step_construct_native_t (h : Rel F FR M ν K s S t C) {a : Nat} {args : List Val} {nt : Val}
+theorem step_construct_native_t (h : RelB F FR W stk M ν K s S t C) {a : Nat} {args : List Val} {nt : Val}
     {o : Obj} {n : Native} {data : List Val} (hc : s.ctl = .construct (.obj a) args nt)
     (ho : s.obj? a = some o) (hk : o.kind = .fn (.native n data)) :
     step F t = constructNative F t n (M.vals data) (M.vals args) (M.val nt) := by
   have htc : t.ctl = .construct (.obj (M.a a)) (M.vals args) (M.val nt) := by rw [h.ctl, hc]; rfl
-  have hto : t.obj? (M.a a) = some (M.obj o) := obj?_plain h ho (by rw [hk]; exact fun _ h => nomatch h)
+  have hto : t.obj? (M.a a) = some (M.obj o) :=
+    obj?_plain h ho (by rw [hk]; exact fun _ h => nomatch h) (by rw [hk]; exact id)
   have htk : (M.obj o).kind = .fn (.native n (M.vals data)) := by
     show M.kind o.kind = _; rw [hk]; rfl
   simp only [step, htc, constructStep, hto, htk]
 
-theorem call_supp (h : Rel F FR M ν K s S t C) {f this : Val} {args : List Val}
+theorem call_supp (h : RelB F FR W stk M ν K s S t C) {f this : Val} {args : List Val}
     (hc : s.ctl = .call f this args) :
     Supp.val (Present s) S.tab.length this ∧ Supp.vals (Present s) S.tab.length args := by
   have := h.ctlSupp
   rw [hc] at this
   exact ⟨this.2.1, this.2.2⟩
 
-theorem construct_supp (h : Rel F FR M ν K s S t C) {f nt : Val} {args : List Val}
+theorem construct_supp (h : RelB F FR W stk M ν K s S t C) {f nt : Val} {args : List Val}
     (hc : s.ctl = .construct f args nt) : Supp.vals (Present s) S.tab.length args := by
   have := h.ctlSupp
   rw [hc] at this
@@ -808,7 +817,7 @@ end
 
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv}
 
 theorem margin2 (hn : s.next + margin < Sim.bound) : s.next + 2 < Sim.bound := by
@@ -824,12 +833,12 @@ theorem lits_supp {A : Nat → Prop} {n : Nat} (ns : List Nat) : Supp.bytes A n 
     trivial
 
 /-- `Buffer.from(string)`: a `Uint8Array` of the UTF-8 bytes. -/
-theorem _root_.Host.Ts.Sim.step_buf_bufferFrom (h : Rel F FR M ν K s S t C) {a : Nat} {this : Val} {args : List Val}
+theorem _root_.Host.Ts.Sim.step_buf_bufferFrom (h : RelB F FR W stk M ν K s S t C) {a : Nat} {this : Val} {args : List Val}
     {o : Obj} {data : List Val} (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .bufferFrom) data)) (hn : s.next + margin < Sim.bound)
     (hp14 : Present s aArrayBufferProto)
     (hp38 : Present s aBufferProto) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   show MSim _ S C (bufN F s this args data .bufferFrom)
@@ -857,15 +866,15 @@ theorem zeroBytes_supp {A : Nat → Prop} {m : Nat} : ∀ n, Supp.bytes A m (zer
     · exact zeroBytes_supp n b hb
 
 theorem StepPost_grow {M' : Map} {S' : SSrv} {C' : CSrv} (g : Grow M ν S C M' S' C')
-    {m m' : Host.Ts.M (St F.S)} (hm : MSim (StepPost F FR M' ν K S' C') S' C' m m') :
-    MSim (StepPost F FR M ν K S C) S' C' m m' :=
+    {m m' : Host.Ts.M (St F.S)} (hm : MSim (StepPostB F FR W stk M' ν K S' C') S' C' m m') :
+    MSim (StepPostB F FR W stk M ν K S C) S' C' m m' :=
   MSim.mono hm fun _ _ _ _ _ ⟨g2, hr⟩ => ⟨g.trans g2, hr⟩
 
 theorem hI_grow {M' : Map} {n : Nat} (hI : ∀ a, a < aFirst → M.a a = a) (g : Ext M M' n) :
     ∀ a, a < aFirst → M'.a a = a := by rw [g.a]; exact hI
 
 /-- Lookup at a present unframed address. -/
-theorem obj?_nofr (h : Rel F FR M ν K s S t C) {a : Nat} (hp : Present s a) (hfr : K.fr a = none) :
+theorem obj?_nofr (h : RelB F FR W stk M ν K s S t C) {a : Nat} (hp : Present s a) (hfr : K.fr a = none) :
     t.obj? (M.a a) = (s.obj? a).map M.obj := by
   obtain ⟨h0, hg⟩ := hp.get
   have ht := h.get hg hfr
@@ -876,7 +885,7 @@ theorem obj?_nofr (h : Rel F FR M ν K s S t C) {a : Nat} (hp : Present s a) (hf
 /-- `new T(x)` for element kind `k` and prototype `proto`: from nothing, a length, a buffer
 (JS or native) or the elements of an array or typed array (`elemsOf`). -/
 theorem typedCtor_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
-    (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
+    (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
     (k : EltK) (proto : Nat) {args : List Val} (hargs : Supp.vals (Present s) S.tab.length args)
     (hn : s.next + margin < Sim.bound) (hpl : proto < aFirst)
     (hp14 : Present s aArrayBufferProto) (hpp : Present s proto)
@@ -886,7 +895,7 @@ theorem typedCtor_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.
       ∀ i, Val.big i ∈ vs → BigConvOK K k i)
     (hrange : ∀ vs S1, interpS (elemsOf F s (arg args 0)).run S = some (some vs, S1) →
       ∀ i, Val.big i ∈ vs → (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (bufN.typedCtor F s args k proto)
+    MSim (StepPostB F FR W stk M ν K S C) S C (bufN.typedCtor F s args k proto)
     (bufN.typedCtor F t (M.vals args) k proto) := by
   have hI := h.intr
   have hn1 : s.next < Sim.bound := by have := margin2 hn; omega
@@ -974,7 +983,7 @@ theorem typedCtor_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.
 /-- `new Uint8Array(x)`, `new BigUint64Array(xs)`, … (`construct` of the native typed-array
 constructor with data `[code, proto]`). -/
 theorem _root_.Host.Ts.Sim.step_buf_typedCtor {okCall : F.S → Name → List Arg → Bool}
-    {okBack : F.S → Arg → Bool} (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+    {okBack : F.S → Arg → Bool} (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hF : FfiSim F FR okCall okBack)
     {a : Nat} {args : List Val} {nt : Val} {o : Obj} {c p : F64} {ci proto : Nat}
     (hc : s.ctl = .construct (.obj a) args nt) (ho : s.obj? a = some o)
@@ -988,7 +997,7 @@ theorem _root_.Host.Ts.Sim.step_buf_typedCtor {okCall : F.S → Name → List Ar
       ∀ i, Val.big i ∈ vs → BigConvOK K (eltOfCode ci) i)
     (hrange : ∀ vs S1, interpS (elemsOf F s (arg args 0)).run S = some (some vs, S1) →
       ∀ i, Val.big i ∈ vs → (K.lo : Int) ≤ i → i < K.hi → BigRange (eltOfCode ci) (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_construct_native hc ho hk, step_construct_native_t h hc ho hk]
   have hd : M.vals [Val.num (.lit c), .num (.lit p)] = [.num (.lit c), .num (.lit p)] := rfl
@@ -1000,11 +1009,24 @@ theorem _root_.Host.Ts.Sim.step_buf_typedCtor {okCall : F.S → Name → List Ar
 
 /-! ## DataView reads and writes -/
 
-theorem viewOf_rel (h : Rel F FR M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
+theorem viewOf_rel (h : RelB F FR W stk M ν K s S t C) {v : Val} (hv : Supp.val (Present s) S.tab.length v) :
     viewOf F t (M.val v) = (viewOf F s v).map fun x => (M.a x.1, x.2.1, x.2.2) := by
   cases v with
   | obj a =>
-    rcases obj?_cases h hv with ⟨hs, ht⟩ | ⟨o, hs, ht⟩ | ⟨o, o', es, es', hs, ht, hk, hk'⟩
+    rcases obj?_cases h hv with ⟨hs, ht⟩ | ⟨o, hs, ht⟩ | ⟨o, o', es, es', hs, ht, hk, hk'⟩ |
+      ⟨o, o', hs, ht, w1, w2, -, -⟩
+    rotate_left 3
+    · show viewOf F t (.obj (M.a a)) = _
+      obtain ⟨kd, pr, ps, pv, e⟩ := o
+      obtain ⟨kd', pr', ps', pv', e'⟩ := o'
+      have hv1 : viewOf F s (.obj a) = none := by
+        cases kd <;> first | exact (w1 : False).elim | simp only [viewOf, hs]
+      have hv2 : viewOf F t (.obj (M.a a)) = none := by
+        rcases w2 with w2 | ⟨bs, hk2⟩ | ⟨kk, b, off, n, hk2⟩
+        · cases kd' <;> first | exact (w2 : False).elim | simp only [viewOf, ht]
+        · simp only at hk2; subst hk2; simp only [viewOf, ht]
+        · simp only at hk2; subst hk2; simp only [viewOf, ht]
+      rw [hv1, hv2]; rfl
     · show viewOf F t (.obj (M.a a)) = _
       simp only [viewOf, hs, ht, Option.map_none]
     · show viewOf F t (.obj (M.a a)) = _
@@ -1031,14 +1053,9 @@ theorem viewOf_some {v : Val} {b off n : Nat} (hv : viewOf F s v = some (b, off,
       exact ⟨a, _, rfl, ho, rfl⟩
   | _ => cases hv
 
-theorem fr_none (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o)
-    (hk : ∀ es, o.kind ≠ .array es) : K.fr a = none := by
-  cases hfr : K.fr a with
-  | none => rfl
-  | some p =>
-    obtain ⟨pre, pre'⟩ := p
-    obtain ⟨_, _, ⟨xs, hk', _⟩⟩ := h.obj?_framed ho hfr
-    exact absurd hk' (hk _)
+theorem fr_none (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o)
+    (hk : ∀ es, o.kind ≠ .array es) (hw : ¬ Wideable o.kind) : K.fr a = none :=
+  h.fr_none ho hk hw
 
 theorem cellVal_map (M : Map) (c : Cell) : M.val (cellVal c) = cellVal (M.cell c) := by
   cases c <;> rfl
@@ -1049,7 +1066,7 @@ theorem cellVal_supp {A : Nat → Prop} {n : Nat} {c : Cell} (hc : Supp.cell (fu
 
 /-- `DataView.prototype.getX(pos, little)`. -/
 theorem get_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
-    (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack) (k : EltK)
+    (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack) (k : EltK)
     {this : Val} {args : List Val} (hthis : Supp.val (Present s) S.tab.length this)
     (hn : s.next < Sim.bound) (hpT : Present s aTypeErrorProto)
     (hle : ∀ i, arg args 1 = .big i → BigFixed K.lo K.hi i)
@@ -1057,7 +1074,7 @@ theorem get_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → 
       offsetP (arg args 0) = some pos →
       ReadOK K.lo K.hi S.tab.length k
     (bif le then (bs.drop (off + pos)).take k.size else ((bs.drop (off + pos)).take k.size).reverse)) :
-    MSim (StepPost F FR M ν K S C) S C (bufN.get F s this args k) (bufN.get F t (M.val this) (M.vals args) k) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (bufN.get F s this args k) (bufN.get F t (M.val this) (M.vals args) k) := by
   have hI := h.intr
   unfold bufN.get
   simp only [arg_vals]
@@ -1096,18 +1113,18 @@ theorem get_sim {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → 
 
 
 /-- Replacing the bytes of a JS buffer object: the relation holds for the image bytes. -/
-theorem Rel.setBuf (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {b : Nat} {bs : List Byte}
+theorem RelB.setBuf (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {b : Nat} {bs : List Byte}
     {p : Val} {ps : Props} {pr : List ((Nat × Name) × PropV)} {ex : Bool}
     (ho : s.obj? b = some ⟨.buf bs, p, ps, pr, ex⟩) (nbs : List Byte)
     (hnb : Supp.bytes (Present s) S.tab.length nbs) :
     t.obj? (M.a b) = some ⟨.buf (bs.map M.byte), M.val p, M.props ps,
         pr.map (fun ((b, n), q) => ((M.a b, n), M.prop q)), ex⟩ ∧
-      Rel F FR M ν K (s.setObj b ⟨.buf nbs, p, ps, pr, ex⟩) S
+      RelB F FR W stk M ν K (s.setObj b ⟨.buf nbs, p, ps, pr, ex⟩) S
       (t.setObj (M.a b) ⟨.buf (nbs.map M.byte), M.val p, M.props ps,
         pr.map (fun ((b, n), q) => ((M.a b, n), M.prop q)), ex⟩) C := by
   have hso := h.obj?_supp ho
-  have hfr := fr_none h ho (fun _ h => nomatch h)
-  exact ⟨obj?_plain h ho (fun _ h => nomatch h),
+  have hfr := fr_none h ho (fun _ h => nomatch h) id
+  exact ⟨obj?_plain h ho (fun _ h => nomatch h) id,
     h.setObj ⟨.buf nbs, p, ps, pr, ex⟩ hn (Present.of_get (obj?_iff.1 ho)) hfr
       ⟨hnb, hso.2.1, hso.2.2.1, hso.2.2.2⟩⟩
 
@@ -1117,14 +1134,14 @@ theorem window_map (M : Map) (bs : List Byte) (i j : Nat) (le : Bool) :
   cases le <;> simp [List.map_reverse]
 
 /-- `DataView.prototype.setX(pos, value, little)`. -/
-theorem set_sim (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (k : EltK)
+theorem set_sim (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (k : EltK)
     {this : Val} {args : List Val} (hthis : Supp.val (Present s) S.tab.length this)
     (hargs : Supp.vals (Present s) S.tab.length args)
     (hn : s.next < Sim.bound) (hpT : Present s aTypeErrorProto)
     (hle : ∀ i, arg args 2 = .big i → BigFixed K.lo K.hi i)
     (hbig : ∀ i, arg args 1 = .big i → BigConvOK K k i)
     (hrange : ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (bufN.set F s this args k) (bufN.set F t (M.val this) (M.vals args) k) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (bufN.set F s this args k) (bufN.set F t (M.val this) (M.vals args) k) := by
   have hI := h.intr
   unfold bufN.set
   simp only [arg_vals]
@@ -1165,7 +1182,7 @@ theorem set_sim (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (k : EltK)
             · exact fun x hx => this x (List.mem_reverse.1 hx)
             · exact this
           have hbs : Supp.bytes (Present s) S2.tab.length bs := bytes_mono hso.1 g.len
-          obtain ⟨ht, hr⟩ := Rel.setBuf h2 hn hbo
+          obtain ⟨ht, hr⟩ := RelB.setBuf h2 hn hbo
             (bs.take (off + pos) ++ parts ++ bs.drop (off + pos + k.size))
             (bytes_append (bytes_append (bytes_take hbs _) hparts) (bytes_drop hbs _))
           rw [g.ext.a] at ht hr
@@ -1192,42 +1209,42 @@ abbrev GetSide (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (k : EltK) (this : Va
     ReadOK K.lo K.hi S.tab.length k
       (bif le then (bs.drop (off + pos)).take k.size else ((bs.drop (off + pos)).take k.size).reverse)
 
-theorem _root_.Host.Ts.Sim.step_buf_getU32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_buf_getU32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .getU32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto)
     (hside : GetSide F K s S .u32 this args) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact get_sim h hFR hF .u32 (call_supp h hc).1 hn hpT hside.1 hside.2
 
-theorem _root_.Host.Ts.Sim.step_buf_getI32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_buf_getI32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .getI32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto)
     (hside : GetSide F K s S .i32 this args) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact get_sim h hFR hF .i32 (call_supp h hc).1 hn hpT hside.1 hside.2
 
-theorem _root_.Host.Ts.Sim.step_buf_getF32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_buf_getF32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .getF32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto)
     (hside : GetSide F K s S .f32 this args) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact get_sim h hFR hF .f32 (call_supp h hc).1 hn hpT hside.1 hside.2
 
-theorem _root_.Host.Ts.Sim.step_buf_getBigU64 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
+theorem _root_.Host.Ts.Sim.step_buf_getBigU64 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : FfiSim F FR okCall okBack)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .getBigU64) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto)
     (hside : GetSide F K s S .u64 this args) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact get_sim h hFR hF .u64 (call_supp h hc).1 hn hpT hside.1 hside.2
@@ -1236,42 +1253,42 @@ theorem _root_.Host.Ts.Sim.step_buf_getBigU64 (h : Rel F FR M ν K s S t C) (hFR
 abbrev SetSide (K : Ctx) (k : EltK) (args : List Val) : Prop :=
   (∀ i, arg args 2 = .big i → BigFixed K.lo K.hi i) ∧ ∀ i, arg args 1 = .big i → BigConvOK K k i
 
-theorem _root_.Host.Ts.Sim.step_buf_setF32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem _root_.Host.Ts.Sim.step_buf_setF32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .setF32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto) (hside : SetSide K .f32 args)
     (hrange : ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange .f32 (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact set_sim h hFR .f32 (call_supp h hc).1 (call_supp h hc).2 hn hpT hside.1 hside.2 hrange
 
-theorem _root_.Host.Ts.Sim.step_buf_setU32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem _root_.Host.Ts.Sim.step_buf_setU32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .setU32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto) (hside : SetSide K .u32 args)
     (hrange : ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange .u32 (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact set_sim h hFR .u32 (call_supp h hc).1 (call_supp h hc).2 hn hpT hside.1 hside.2 hrange
 
-theorem _root_.Host.Ts.Sim.step_buf_setI32 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem _root_.Host.Ts.Sim.step_buf_setI32 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .setI32) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto) (hside : SetSide K .i32 args)
     (hrange : ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange .i32 (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact set_sim h hFR .i32 (call_supp h hc).1 (call_supp h hc).2 hn hpT hside.1 hside.2 hrange
 
-theorem _root_.Host.Ts.Sim.step_buf_setBigU64 (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem _root_.Host.Ts.Sim.step_buf_setBigU64 (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hc : s.ctl = .call (.obj a) this args) (ho : s.obj? a = some o)
     (hk : o.kind = .fn (.native (.buf .setBigU64) data)) (hn : s.next < Sim.bound)
     (hpT : Present s aTypeErrorProto) (hside : SetSide K .u64 args)
     (hrange : ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange .u64 (M.big i)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   have hI := h.intr
   rw [step_call_native hc ho hk, step_call_native_t h hc ho hk]
   exact set_sim h hFR .u64 (call_supp h hc).1 (call_supp h hc).2 hn hpT hside.1 hside.2 hrange

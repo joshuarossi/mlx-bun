@@ -79,13 +79,13 @@ theorem coordinate_mass (f : Fin 8 → ℝ) (hn : ∀ i, 0 ≤ f i) :
 -- coordinates appear twice because their packed fields cross byte boundaries.
 theorem source_bound (divide : Float32 → Float32 → Float32) (division : DivisionDirectedBounds.Contract divide)
     (x : Fin 8 → BF) (hx : ∀ i, Model.isFinite (x i) = true ∧ |Model.toReal (x i)| ≤ 512)
-    (contracted : Bool) (w : Fin 3 → BitVec 8) (acc : Float32)
+    (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (acc : Float32)
     (hf : Arithmetic.Finite (bind3 w (prepared divide x) acc) (expression3 contracted)) :
     |real (source3 contracted w (prepared divide x) acc)| ≤
       (1+(2 : ℝ)^(-16 : Int))*|real acc|+35*(∑ i, |Model.toReal (x i)|)+(2 : ℝ)^(-45 : Int) := by
   let input := bind3 w (prepared divide x) acc
   let mass := fun i : Fin 10 => 17*|Model.toReal (x (coordinate3 i))|+(2 : ℝ)^(-99 : Int)
-  have dependencies := ArithmeticDependencies.fold_finite input contracted left3 right3
+  have dependencies := ArithmeticDependencies.sites_finite input (fun i : Fin 10 => contracted i.val) left3 right3
     (List.finRange 10) (.input 19) hf
   have rightFinite (i : Fin 10) : Arithmetic.Finite input (right3 i) :=
     (dependencies.2 i (by simp)).2
@@ -97,8 +97,8 @@ theorem source_bound (divide : Float32 → Float32 → Float32) (division : Divi
   have products (i : Fin 10) : |real (evaluate input (left3 i))| * |real (evaluate input (right3 i))| ≤ mass i :=
     product_bound divide division x hx w acc i (rightFinite i)
   have accRead : evaluate input (.input 19) = acc := by simp [evaluate, input, bind3]
-  have result := MaddMagnitude.fold_bound input contracted left3 right3 mass (List.finRange 10) (.input 19)
-    |real acc| 0 (by simp) hf operands products (abs_nonneg _) (by rw [accRead]; simp)
+  have result := MaddMagnitude.sites_bound input (fun i : Fin 10 => contracted i.val) left3 right3 mass
+    (List.finRange 10) (.input 19) |real acc| 0 (by simp) hf operands products (abs_nonneg _) (by rw [accRead]; simp)
   have massEq : ((List.finRange 10).map mass).sum =
       17*(∑ i : Fin 10, |Model.toReal (x (coordinate3 i))|)+10*(2 : ℝ)^(-99 : Int) := by
     rw [← Fin.sum_univ_def]

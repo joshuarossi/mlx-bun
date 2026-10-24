@@ -126,20 +126,6 @@ noncomputable def context (p : TokenInference.Pipeline) (w : PipelineWeights)
   ReachedTokenContext.ofNormal parameters (selections M K p w hl) (other M K p w hl) K.sampling
     (C.logSumExpPrimitives K.lseSum K.lseNumerator) RopeInputConstruction.angles noLocals
 
--- The reached ranges of every Delta layer include its finite a + dt_bias.
-theorem decayOk (s : DecodeStage.Stage) (c : DecodeStage.Cache s n) (x : Fin 5120 → BF) (a : Attention.RopeAngles.Inputs)
-    (hf : DecodeStage.Finite s c x a) : DecayOk s x := by
-  cases s with
-  | delta l =>
-    intro h
-    exact BFloat16Arithmetic.finite_flush _ ((hf.mixer.recurrence.gates 0 le_rfl).decay h).sumFinite
-  | attention _ => trivial
-
-theorem decayFinite : (stages : List DecodeStage.Stage) → (c : DecodeChain.Caches stages n) →
-    (x : Fin 5120 → BF) → (a : Attention.RopeAngles.Inputs) → DecodeChain.Ranges stages c x a → DecayFinite stages c x a
-  | [], _, _, _, _ => trivial
-  | s :: rest, c, x, a, hr => ⟨decayOk s c.1 x a hr.1, decayFinite rest c.2 _ a hr.2⟩
-
 /-- One decode step of the loaded pipeline on the M1 Max: from handles holding
 the reached context's cache at `time`, the MLX trace returns the context's
 next token and handles holding its next cache. Premises: the operation-level
@@ -163,6 +149,6 @@ theorem contextStep (p : TokenInference.Pipeline) (w : PipelineWeights)
     (RopeInputConstruction.inputs_bound time lt) supported (RopeInputConstruction.target time) RopeInputConstruction.error
     (RopeInputConstruction.input_error time lt) (RopeInputConstruction.target_base_nonnegative time)
   exact GlueContext.context_step M K p w hl ctx rfl token time supported rfl hs hh
-    (decayFinite _ _ _ _ ranges.graph.chain) numeric.2.2.1
+    ranges.graph numeric.2.2.1
 
 end Host.Mlx.GlueM1Max

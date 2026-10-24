@@ -177,6 +177,37 @@ def memFlags (fuel : Nat) (e : Expr) : Option (Bool × Bool) :=
 /-- `INFINITY` (metal_types:310, `__builtin_inff()`): binary32 +∞. -/
 def infinityBits : Nat := 0x7F800000
 
+/-! ## SIMD-group matrices
+
+metal_simdgroup_matrix:47-80: `simdgroup_matrix<T, 8, 8>` keeps its elements in a
+`vec<T, 64>` spread over the SIMD-group (AIR `<64 x T>`); `thread_elements()` is
+the lane's part, its elements 0 and 1, so the core holds a matrix as each lane's
+`.vec T 2`. -/
+
+/-- `simdgroup_float8x8`, `simdgroup_half8x8`, `simdgroup_bfloat8x8` (:77-80). -/
+def matrixOfName (n : List Char) : Option Scalar :=
+  if same n chars!"simdgroup_float8x8" then some .f32
+  else if same n chars!"simdgroup_half8x8" then some .f16
+  else if same n chars!"simdgroup_bfloat8x8" then some .bf16
+  else none
+
+inductive MatFn where
+  /-- `make_filled_simdgroup_matrix<T, 8, 8>(v)` (:84-106): every element `T(v)`
+  (`air.simdgroup_matrix_8x8_init_filled`). -/
+  | fill
+  /-- `simdgroup_multiply_accumulate(d, a, b, c)` (:167-188): `d` from the
+  SIMD-group collective on `a`, `b`, `c`
+  (`air.simdgroup_matrix_8x8_multiply_accumulate`, Core `Collective.mma`). -/
+  | mma
+deriving DecidableEq, Repr, Inhabited
+
+def matFn (path : List (List Char)) : Option MatFn := do
+  let (precise, n) ← strip path
+  if precise then none
+  else if same n chars!"make_filled_simdgroup_matrix" then some .fill
+  else if same n chars!"simdgroup_multiply_accumulate" then some .mma
+  else none
+
 /-- Kernel parameter attributes MLX writes (metal_kernel.cpp:243-264), the
 coordinate each one is and its parameter type (Launch.lean gives the values). -/
 def coord (attr : List Char) : Option (Coord × Ty) :=

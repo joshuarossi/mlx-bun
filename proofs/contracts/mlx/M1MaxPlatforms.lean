@@ -47,17 +47,22 @@ noncomputable def rmsPlatform (groups : Nat) (positive : 0<groups) (bounded : gr
   groupsBounded := bounded
   contracted := contracted
 
-noncomputable def tilePlatform (contracted tailContracted : Bool) : Quantization.AffineTile.Platform where
+-- `contracted` is the choice at each contraction site of the tile's dot.
+noncomputable def tilePlatform (contracted : Nat → Bool) (tailContracted : Bool) : Quantization.AffineTile.Platform where
   divide := C.fdiv
   divError := FlushToZero.divBudget
   division := C.division
   contracted := contracted
   tailContracted := tailContracted
 
-noncomputable def rowPlatform (contracted tailContracted : Bool) : Quantization.AffineRow.Platform where
+noncomputable def rowPlatformAt (contracted : Nat → Bool) (tailContracted : Bool) : Quantization.AffineRow.Platform where
   tile := C.tilePlatform contracted tailContracted
   reduce := C.simdSum
   reduction := C.simdSum_tree
+
+-- One choice at every site of the dot.
+noncomputable def rowPlatform (contracted tailContracted : Bool) : Quantization.AffineRow.Platform :=
+  C.rowPlatformAt (fun _ => contracted) tailContracted
 
 noncomputable def exp2Error (x : Float32) : ℝ := |real (C.exp2 x)-Attention.RopeAngles.exp2 (real x)|
 

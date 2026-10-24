@@ -127,6 +127,44 @@ theorem findProp_map (hinj : ∀ a b, A a → A b → M.a a = M.a b → a = b) {
   rw [findProp_eq_linear, findProp_eq_linear]
   exact findPropLinear_map hinj hk hps
 
+theorem keyEq_str_sym (cs : List Char) (i : Nat) : keyEq (.str cs) (.sym i) = false := by
+  show Nat.beq (Nat.mul 2 (pack cs)) (Nat.succ (Nat.mul 2 i)) = false
+  cases hb : Nat.beq (Nat.mul 2 (pack cs)) (Nat.succ (Nat.mul 2 i))
+  · rfl
+  · have := Nat.eq_of_beq_eq_true hb
+    simp only [Nat.mul_eq, Nat.succ_eq_add_one] at this
+    omega
+
+/-- A string key equal to no ghost key reads the images under `PropsW`. -/
+theorem PropsW.findProp_eq (hinj : ∀ a b, A a → A b → M.a a = M.a b → a = b) {ks : List PKey}
+    {cs : List Char} (hks : ∀ j ∈ ks, keyEq (.str cs) j = false) {l l' : Props} (hw : PropsW M ks l l')
+    (hs : Supp.props A n l) : findPropLinear (.str cs) l' = (findPropLinear (.str cs) l).map M.prop := by
+  induction hw with
+  | nil => rfl
+  | both j p p' l l' _ hp _ ih =>
+    have hj := (hs (j, p) (List.mem_cons_self ..)).1
+    rw [findPropLinear_cons, findPropLinear_cons]
+    change brec (keyEq (M.key (.str cs)) (M.key j)) _ _ = (brec (keyEq (.str cs) j) _ _ : Option PropV).map M.prop
+    rw [keyEq_map (k := .str cs) hinj trivial hj]
+    cases keyEq (.str cs) j
+    · exact ih fun x hx => hs x (List.mem_cons_of_mem _ hx)
+    · rw [hp]; rfl
+  | ghostL j p l l' hj _ ih =>
+    rw [findPropLinear_cons]
+    change _ = (brec (keyEq (.str cs) j) _ _ : Option PropV).map M.prop
+    rw [hks j hj]
+    exact ih fun x hx => hs x (List.mem_cons_of_mem _ hx)
+  | ghostR j p' l l' hj _ ih =>
+    obtain ⟨k0, hk0, rfl⟩ := hj
+    rw [findPropLinear_cons]
+    change brec (keyEq (.str cs) (M.key k0)) _ _ = _
+    have hne : keyEq (.str cs) (M.key k0) = false := by
+      cases k0 with
+      | str ds => exact hks _ hk0
+      | sym i => exact keyEq_str_sym cs _
+    rw [hne]
+    exact ih hs
+
 theorem findPropLinear_supp {k : PKey} : ∀ {ps : Props} {p : PropV}, Supp.props A n ps →
     findPropLinear k ps = some p → Supp.prop A n p
   | [], _, _, h => nomatch h
@@ -236,6 +274,31 @@ theorem findPriv_supp {b : Nat} {nm : Name} : ∀ {l : List ((Nat × Name) × Pr
     · rw [hb] at h
       cases h
       exact (hl _ (List.mem_cons_self ..)).2
+
+/-- A name no ghost private member has reads the images under `PrivsW`. -/
+theorem PrivsW.findPriv_eq (hinj : ∀ a b, A a → A b → M.a a = M.a b → a = b) {ps : List (Nat × Name)} {b : Nat}
+    {nm : Name} (hb : A b) (hps : ∀ b0 n0, (b0, n0) ∈ ps → nameEq nm n0 = false)
+    {l l' : List ((Nat × Name) × PropV)} (hw : PrivsW M ps l l') (hs : Supp.privs A n l) :
+    findPriv (M.a b) nm l' = (findPriv b nm l).map M.prop := by
+  induction hw with
+  | nil => rfl
+  | both c m p p' l l' _ hp _ ih =>
+    have hc := (hs _ (List.mem_cons_self ..)).1
+    show (bif Nat.beq (M.a b) (M.a c) && nameEq nm m then some p' else findPriv (M.a b) nm l') =
+      (bif Nat.beq b c && nameEq nm m then some p else findPriv b nm l).map M.prop
+    rw [beq_map hinj hb hc]
+    cases Nat.beq b c && nameEq nm m
+    · exact ih fun x hx => hs x (List.mem_cons_of_mem _ hx)
+    · rw [hp]; rfl
+  | ghostL c m p l l' hm _ ih =>
+    show findPriv (M.a b) nm l' = (bif Nat.beq b c && nameEq nm m then some p else findPriv b nm l).map M.prop
+    rw [hps c m hm, Bool.and_false]
+    exact ih fun x hx => hs x (List.mem_cons_of_mem _ hx)
+  | ghostR b' m p' l l' hm _ ih =>
+    obtain ⟨c, hc, -⟩ := hm
+    show (bif Nat.beq (M.a b) b' && nameEq nm m then some p' else findPriv (M.a b) nm l') = _
+    rw [hps c m hc, Bool.and_false]
+    exact ih hs
 
 theorem setPrivL_map (hinj : ∀ a b, A a → A b → M.a a = M.a b → a = b) {b : Nat} (nm : Name) (p : PropV)
     (hb : A b) : ∀ {l : List ((Nat × Name) × PropV)}, Supp.privs A n l →
@@ -413,6 +476,41 @@ theorem MSim.cond {α β : Type} {P : Map → SSrv → CSrv → α → β → Pr
   · exact h2
   · exact h1
 
+/-- `numConc` asks the server nothing new: both sides get the same value. -/
+theorem numConc_read {ν : Nat → F64} {M : Map} {S : SSrv} {C : CSrv} (hs : Srv M ν S C) (a : NumV) :
+    MSim (ReadPost M S C (fun r r' => r' = r)) S C (numConc a) (numConc (M.nv a)) := by
+  intro γ δ Q k k' hk
+  cases a with
+  | lit x => exact hk M S C _ _ ⟨rfl, rfl, rfl, rfl⟩
+  | ref i =>
+    intro r S' hu
+    change interpS (.conc (.ref i) k) S = _ at hu
+    rw [interpS_conc] at hu
+    cases hva : S.val (.ref i) with
+    | none => rw [hva] at hu; cases hu
+    | some e =>
+      rw [hva] at hu
+      cases e with
+      | lit x =>
+        simp only at hu
+        have ca := hs.num.val hva
+        obtain ⟨M', b', C', hv, hq⟩ := hk M S C x x ⟨rfl, rfl, rfl, rfl⟩ r S' hu
+        refine ⟨M', b', C', ?_, hq⟩
+        cases hn : M.nv (.ref i) with
+        | lit u =>
+          rw [hn] at ca
+          simp only [CSrv.val, SymE.eval, Option.some.injEq] at ca
+          subst ca
+          exact hv
+        | ref j =>
+          rw [hn] at ca
+          show interpC (.conc (.ref j) k') C = _
+          rw [interpC_conc, ca]
+          exact hv
+      | var _ => cases hu
+      | bin _ _ _ => cases hu
+      | un _ _ => cases hu
+
 /-- The intrinsic objects (allocated by `Init` below `aFirst`) keep their addresses.
 Not part of `Rel`; every step that names an intrinsic address needs it. -/
 def Map.Intr (M : Map) : Prop := ∀ a, a < aFirst → M.a a = a
@@ -424,80 +522,197 @@ def TypedOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (o : Obj) (k : PKey) : P
   ∀ kk b off n i, o.kind = .typed kk b off n → keyIndex k = some i → i < n →
     ∀ bs, bufBytes F s b = some bs → CellRead K (Present s) S.tab.length kk (bs.drop (off + i * kk.size))
 
-/-- Own property `k` of `o` at `a`: a framed array is read only at keys other than
-indices and `length`; typed-array elements are `TypedOK`. -/
-def OwnOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (a : Nat) (o : Obj) (k : PKey) : Prop :=
-  (K.fr a = none ∨ keyIndex k = none ∧ keyEq k kLength = false) ∧ TypedOK F K s S o k
+/-- Reads at key `k` that the frame `w` keeps: on a ghost-field object a string key equal to
+no ghost key, on a by-key `Map` a key other than `size`. -/
+def WKeyOK : WFrame → PKey → Prop
+  | .fields ks _, k => (∃ cs, k = .str cs) ∧ ∀ j ∈ ks, keyEq k j = false
+  | .mapKeys _, k => keyEq k (.str (chars!"size")) = false
+  | .memo _, k => keyEq k (.str (chars!"size")) = false
+  | _, _ => False
+
+/-- Namespace exports read at key `k` are cells where `NoW` holds. -/
+def NsOK {S' : Type} (K : Ctx) (W : Nat → Option WFrame) (s : St S') (o : Obj) (k : PKey) : Prop :=
+  ∀ ex nm c, o.kind = .ns ex → k = .str nm → findExport nm ex = some c → NoW K W s c
+
+/-- Own property `k` of `o` at `a`: a framed object is read only at keys other than
+indices and `length`, under a frame of `W` only at keys it keeps (`WKeyOK`); typed-array
+elements are `TypedOK`, namespace exports `NsOK`. -/
+def OwnOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (a : Nat) (o : Obj) (k : PKey) : Prop :=
+  (K.fr a = none ∨ keyIndex k = none ∧ keyEq k kLength = false ∧ ∀ w, W a = some w → WKeyOK w k) ∧
+    TypedOK F K s S o k ∧ NsOK K W s o k
 
 /-- `OwnOK` along the prototype chain of `a`, within `f` links. -/
-def ChainOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (k : PKey) : Nat → Nat → Prop
+def ChainOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (k : PKey) : Nat → Nat → Prop
   | 0, _ => True
-  | f + 1, a => ∀ o, s.obj? a = some o → OwnOK F K s S a o k ∧ ∀ b, o.proto = .obj b → ChainOK F K s S k f b
+  | f + 1, a => ∀ o, s.obj? a = some o → OwnOK F K W s S a o k ∧ ∀ b, o.proto = .obj b → ChainOK F K W s S k f b
 
 /-- The side condition of `lookup`. -/
-def LookupOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (recv : Val) (k : PKey) : Prop :=
+def LookupOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (recv : Val) (k : PKey) : Prop :=
   match recv with
-  | .obj a => ChainOK F K s S k 16 a
-  | .str _ => ChainOK F K s S k 16 aStringProto
-  | v => ∀ p, protoOf F s v = some p → ChainOK F K s S k 16 p
+  | .obj a => ChainOK F K W s S k 16 a
+  | .str _ => ChainOK F K W s S k 16 aStringProto
+  | v => ∀ p, protoOf F s v = some p → ChainOK F K W s S k 16 p
 
 theorem TypedOK.of_plain {F : Ffi} {K : Ctx} {s : St F.S} {S : SSrv} {o : Obj} {k : PKey}
     (hk : keyIndex k = none) : TypedOK F K s S o k :=
   fun _ _ _ _ _ _ hi => nomatch hk.symm.trans hi
 
-/-- Keys other than indices and `length` need nothing along the chain. -/
-theorem ChainOK.of_plain {F : Ffi} {K : Ctx} {s : St F.S} {S : SSrv} {k : PKey}
-    (hk : keyIndex k = none) (hl : keyEq k kLength = false) : ∀ f a, ChainOK F K s S k f a
-  | 0, _ => trivial
-  | f + 1, _ => fun _ _ => ⟨⟨.inr ⟨hk, hl⟩, TypedOK.of_plain hk⟩, fun b _ => ChainOK.of_plain hk hl f b⟩
+/-- Along the prototype chain of `a` (within `f` links) no frame of `W` matters: each object's
+address, and a namespace object's export cells, carry no frame of `W` or are unframed. -/
+def ChainNoW {S' : Type} (K : Ctx) (W : Nat → Option WFrame) (s : St S') : Nat → Nat → Prop
+  | 0, _ => True
+  | f + 1, a => ∀ o, s.obj? a = some o → (W a = none ∨ K.fr a = none) ∧
+      (∀ ex, o.kind = .ns ex → ∀ p ∈ ex, W p.2 = none ∨ K.fr p.2 = none) ∧
+      ∀ b, o.proto = .obj b → ChainNoW K W s f b
 
-theorem LookupOK.of_plain {F : Ffi} {K : Ctx} {s : St F.S} {S : SSrv} {k : PKey}
-    (hk : keyIndex k = none) (hl : keyEq k kLength = false) (recv : Val) : LookupOK F K s S recv k := by
+/-- `ChainNoW` along the chain `lookup` reads for the receiver `recv`. -/
+def LookupNoW (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (recv : Val) : Prop :=
+  match recv with
+  | .obj a => ChainNoW K W s 16 a
+  | .str _ => ChainNoW K W s 16 aStringProto
+  | v => ∀ p, protoOf F s v = some p → ChainNoW K W s 16 p
+
+theorem ChainNoW.of_none {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s : St S'} (hW : ∀ a, W a = none) :
+    ∀ f a, ChainNoW K W s f a
+  | 0, _ => trivial
+  | f + 1, _ => fun _ _ => ⟨.inl (hW _), fun _ _ p _ => .inl (hW _), fun b _ => ChainNoW.of_none hW f b⟩
+
+theorem LookupNoW.of_none {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s : St F.S} (hW : ∀ a, W a = none)
+    (recv : Val) : LookupNoW F K W s recv := by
   cases recv <;> first
-    | exact ChainOK.of_plain hk hl 16 _
-    | exact fun p _ => ChainOK.of_plain hk hl 16 p
+    | exact ChainNoW.of_none hW 16 _
+    | exact fun p _ => ChainNoW.of_none hW 16 p
+
+theorem ChainNoW.congr {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s s' : St S'}
+    (hh : ∀ a, s'.obj? a = s.obj? a) : ∀ f a, ChainNoW K W s f a → ChainNoW K W s' f a
+  | 0, _, _ => trivial
+  | f + 1, a, hc => fun o ho => by
+    obtain ⟨h1, h2, h3⟩ := hc o (by rw [← hh]; exact ho)
+    exact ⟨h1, h2, fun b hb => ChainNoW.congr hh f b (h3 b hb)⟩
+
+theorem LookupNoW.congr {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s s' : St F.S} {recv : Val}
+    (hh : ∀ a, s'.obj? a = s.obj? a) (hc : LookupNoW F K W s recv) : LookupNoW F K W s' recv := by
+  cases recv <;> first
+    | exact ChainNoW.congr hh 16 _ hc
+    | exact fun p hp => ChainNoW.congr hh 16 p (hc p hp)
+
+theorem findExport_mem {nm : Name} {c : Nat} : ∀ {ex : List (Name × Nat)}, findExport nm ex = some c → ∃ m, (m, c) ∈ ex
+  | [], h => nomatch h
+  | (m, a) :: ex, h => by
+    change (bif nameEq nm m then some a else findExport nm ex) = some c at h
+    cases hb : nameEq nm m
+    · rw [hb] at h
+      obtain ⟨m', hm⟩ := findExport_mem h
+      exact ⟨m', List.mem_cons_of_mem _ hm⟩
+    · rw [hb] at h
+      cases h
+      exact ⟨m, List.mem_cons_self ..⟩
+
+/-- The cell of `n` in `env`, if bound, carries no frame of `W` or is unframed. -/
+def CellNoW (K : Ctx) (W : Nat → Option WFrame) (env : Env) (n : Name) : Prop :=
+  ∀ c, lookupEnv n env = some c → W c = none ∨ K.fr c = none
+
+/-- `NoW` excludes an object under a frame of `W`. -/
+theorem NoW.not_wide {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s : St S'} {a : Nat} {o : Obj}
+    (hn : NoW K W s a) (ho : s.obj? a = some o) (hk : Wideable o.kind) (hw : W a ≠ none) (hf : K.fr a ≠ none) :
+    False := by
+  rcases hn with h1 | h1 | ⟨o', ho', hk'⟩
+  · exact hw h1
+  · exact hf h1
+  · rw [ho] at ho'; cases ho'; exact hk' hk
+
+theorem NoW.congr {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s s' : St S'} {a : Nat}
+    (hh : ∀ a, s'.obj? a = s.obj? a) (h : NoW K W s a) : NoW K W s' a := by
+  rcases h with h | h | ⟨o, ho, hk⟩
+  · exact .inl h
+  · exact .inr (.inl h)
+  · exact .inr (.inr ⟨o, by rw [hh]; exact ho, hk⟩)
+
+theorem NoW.of_or {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s : St S'} {a : Nat}
+    (h : W a = none ∨ K.fr a = none) : NoW K W s a :=
+  h.elim .inl fun h => .inr (.inl h)
+
+/-- Plain keys along a chain where no frame of `W` matters. -/
+theorem ChainOK.of_noW {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s : St F.S} {S : SSrv} {k : PKey}
+    (hk : keyIndex k = none) (hl : keyEq k kLength = false) : ∀ f a, ChainNoW K W s f a → ChainOK F K W s S k f a
+  | 0, _, _ => trivial
+  | f + 1, a, hc => fun o ho => by
+    obtain ⟨hw, hns, hpr⟩ := hc o ho
+    refine ⟨⟨?_, TypedOK.of_plain hk, ?_⟩, fun b hb => ChainOK.of_noW hk hl f b (hpr b hb)⟩
+    · rcases hw with hw | hf
+      · exact .inr ⟨hk, hl, fun w h' => by rw [hw] at h'; cases h'⟩
+      · exact .inl hf
+    · intro ex nm c hex _ hc'
+      obtain ⟨m, hm⟩ := findExport_mem hc'
+      rcases hns ex hex _ hm with h1 | h1
+      · exact .inl h1
+      · exact .inr (.inl h1)
+
+theorem LookupOK.of_noW {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s : St F.S} {S : SSrv} {k : PKey}
+    (hk : keyIndex k = none) (hl : keyEq k kLength = false) {recv : Val} (hc : LookupNoW F K W s recv) :
+    LookupOK F K W s S recv k := by
+  cases recv <;> first
+    | exact ChainOK.of_noW hk hl 16 _ hc
+    | exact fun p hp => ChainOK.of_noW hk hl 16 p (hc p hp)
+
+/-- Without frames of `W`, keys other than indices and `length` need nothing along the chain. -/
+theorem ChainOK.of_plain {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s : St F.S} {S : SSrv} {k : PKey}
+    (hk : keyIndex k = none) (hl : keyEq k kLength = false) (hW : ∀ a, W a = none) : ∀ f a, ChainOK F K W s S k f a
+  | 0, _ => trivial
+  | f + 1, _ => fun _ _ => ⟨⟨.inr ⟨hk, hl, fun w hw => by rw [hW] at hw; cases hw⟩, TypedOK.of_plain hk,
+      fun _ _ c _ _ _ => .inl (hW c)⟩, fun b _ => ChainOK.of_plain hk hl hW f b⟩
+
+theorem LookupOK.of_plain {F : Ffi} {K : Ctx} {W : Nat → Option WFrame} {s : St F.S} {S : SSrv} {k : PKey}
+    (hk : keyIndex k = none) (hl : keyEq k kLength = false) (hW : ∀ a, W a = none) (recv : Val) :
+    LookupOK F K W s S recv k := by
+  cases recv <;> first
+    | exact ChainOK.of_plain hk hl hW 16 _
+    | exact fun p _ => ChainOK.of_plain hk hl hW 16 p
 
 /-! ## Reads -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
-/-- Framed addresses hold arrays. -/
-theorem Rel.framed_array (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} {p : List Val × List Val}
-    (ho : s.obj? a = some o) (hfr : K.fr a = some p) : ∃ es, o.kind = .array es := by
-  obtain ⟨pre, pre'⟩ := p
-  obtain ⟨_, _, xs, hk, _⟩ := h.obj?_framed ho hfr
-  exact ⟨_, hk⟩
-
-/-- An object that is not an array is not framed. -/
-theorem Rel.fr_none (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o)
-    (hk : ∀ es, o.kind ≠ .array es) : K.fr a = none := by
+/-- An object that is not an array, of a kind no frame admits, is not framed. -/
+theorem RelB.fr_none (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o)
+    (hk : ∀ es, o.kind ≠ .array es) (hw : ¬ Wideable o.kind) : K.fr a = none := by
   cases hfr : K.fr a with
   | none => rfl
   | some p =>
-    obtain ⟨es, he⟩ := h.framed_array ho hfr
-    exact absurd he (hk es)
+    obtain ⟨pre, pre'⟩ := p
+    obtain ⟨_, _, xs, hk', _⟩ := h.obj?_framed ho hfr (h.w_none (.of_kind ho hw) hfr)
+    exact absurd hk' (hk _)
 
-theorem Rel.bufBytes_some (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat}
+/-- Without frames: an object that is not an array is not framed. -/
+theorem Rel.fr_none {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj}
+    (ho : s.obj? a = some o) (hk : ∀ es, o.kind ≠ .array es) : K.fr a = none := by
+  cases hfr : K.fr a with
+  | none => rfl
+  | some p =>
+    obtain ⟨pre, pre'⟩ := p
+    obtain ⟨_, _, xs, hk', _⟩ := RelB.obj?_framed h ho hfr rfl
+    exact absurd hk' (hk _)
+
+theorem RelB.bufBytes_some (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {b : Nat}
     {bs : List Byte} (hb : bufBytes F s b = some bs) : bufBytes F t (M.a b) = some (bs.map M.byte) := by
   unfold Host.Ts.bufBytes at hb ⊢
   cases ho : s.obj? b with
   | none => rw [ho] at hb; cases hb
   | some o =>
     rw [ho] at hb
-    have hfr : K.fr b = none := h.fr_none ho fun es he => by
+    have hfr : K.fr b = none := by
       obtain ⟨kd, pr, ps, pv, ex⟩ := o
-      simp only at he
-      subst he
-      cases hb
+      cases kd <;> (try cases hb) <;> exact h.fr_none ho (fun es he => by cases he) id
     rw [h.obj? ho hfr]
     obtain ⟨kd, pr, ps, pv, ex⟩ := o
     cases kd <;> simp only [Map.obj, Map.kind] at hb ⊢ <;> try cases hb
     · rfl
     · exact hF.read _ _ _ _ _ _ _ _ h.ffi hb
 
-theorem typedGet_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {kk : EltK} {b off n i : Nat}
+theorem typedGet_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {kk : EltK} {b off n i : Nat}
     (hok : i < n → ∀ bs, bufBytes F s b = some bs →
       CellRead K (Present s) S.tab.length kk (bs.drop (off + i * kk.size))) :
     MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
@@ -518,9 +733,9 @@ theorem typedGet_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBa
         rw [← List.map_drop, readCell_map h.bigFixed hc hcr.2]
         exact ReadPost.pure ⟨by simp only [Option.map_some, Map.prop, cellVal_map], Supp.cellVal hcr.1⟩
 
-theorem ownGet_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj} {k : PKey}
+theorem ownGet_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj} {k : PKey}
     (hso : Supp.obj (Present s) S.tab.length o) (hk : Supp.key (Present s) S.tab.length k)
-    (hok : TypedOK F K s S o k) :
+    (hok : TypedOK F K s S o k) (hns : NsOK K W s o k) :
     MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
       (ownGet F s o k) (ownGet F t (M.obj o) (M.key k)) := by
   have hfp : findProp (M.key k) (M.props o.props) = (findProp k o.props).map M.prop :=
@@ -590,7 +805,7 @@ theorem ownGet_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack
         cases hc : s.cell? c with
         | none => exact MSim.fail _ _
         | some v =>
-          rw [h.cell? hc]
+          rw [h.cell? hc (hns ex nm c rfl rfl hx)]
           cases v with
           | none => exact MSim.fail _ _
           | some v => exact ReadPost.pure ⟨rfl, h.cell?_supp hc⟩
@@ -604,7 +819,7 @@ theorem ownGet_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack
 
 /-- A framed array read at a key other than an index or `length`: the target array
 keeps its own prefix, but the properties are images. -/
-theorem ownGet_framed (h : Rel F FR M ν K s S t C) {o o' : Obj} {pre pre' : List Val} {k : PKey}
+theorem ownGet_framed (h : RelB F FR W stk M ν K s S t C) {o o' : Obj} {pre pre' : List Val} {k : PKey}
     (hfo : FramedObj M pre pre' o o') (hso : Supp.obj (Present s) S.tab.length o)
     (hk : Supp.key (Present s) S.tab.length k) (hi : keyIndex k = none) (hl : keyEq k kLength = false) :
     MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
@@ -621,8 +836,76 @@ theorem ownGet_framed (h : Rel F FR M ν K s S t C) {o o' : Obj} {pre pre' : Lis
   rw [hkd, keyIndex_map, hi, hkl, hl]
   exact ReadPost.pure ⟨hfp, hfps⟩
 
-theorem getChain_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {k : PKey}
-    (hk : Supp.key (Present s) S.tab.length k) : ∀ f a, ChainOK F K s S k f a →
+/-- A read the frame keeps (`WKeyOK`) at an object under a frame of `W`. -/
+theorem ownGet_wide (h : RelB F FR W stk M ν K s S t C) {o : Obj} {w : WFrame} {k : PKey} {y : Option HObj}
+    (hso : Supp.obj (Present s) S.tab.length o) (hk : Supp.key (Present s) S.tab.length k) (hwk : WKeyOK w k)
+    (hw : WideOK M w (.obj o) y) :
+    ∃ o', y = some (.obj o') ∧ o'.proto = M.val o.proto ∧
+      MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C (ownGet F s o k) (ownGet F t o' (M.key k)) := by
+  have hfps : Supp.oprop (Present s) S.tab.length (findProp k o.props) := by
+    cases hf : findProp k o.props with
+    | none => trivial
+    | some p => exact findProp_supp hso.2.2.1 hf
+  cases w with
+  | fields ks ps =>
+    obtain ⟨⟨cs, rfl⟩, hks⟩ := hwk
+    rcases y with _ | ⟨_ | o'⟩
+    · exact hw.elim
+    · exact hw.elim
+    · obtain ⟨hwide, hkind, hpro, -, hprops, -⟩ := hw
+      have hfp : findProp (.str cs) o'.props = (findProp (.str cs) o.props).map M.prop := by
+        rw [findProp_eq_linear, findProp_eq_linear]
+        exact PropsW.findProp_eq h.inj hks hprops hso.2.2.1
+      refine ⟨o', rfl, hpro, ?_⟩
+      have dflt : MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
+          (Host.Ts.M.pure (findProp (.str cs) o.props)) (Host.Ts.M.pure (findProp (.str cs) o'.props)) :=
+        ReadPost.pure ⟨hfp, hfps⟩
+      obtain ⟨kd, pr, pp, pv, ex⟩ := o
+      change Wideable kd at hwide
+      change o'.kind = M.kind kd at hkind
+      show MSim _ S C (ownGet F s ⟨kd, pr, pp, pv, ex⟩ (.str cs)) (ownGet F t o' (.str cs))
+      unfold ownGet
+      rw [hkind]
+      cases kd
+      all_goals first | exact False.elim hwide | skip
+      · exact dflt
+      · simp only [Map.kind, Map.pairs, len_map]
+        exact MSim.cond _ (ReadPost.pure ⟨rfl, trivial⟩) dflt
+      · exact dflt
+  | mapKeys gs =>
+    rcases y with _ | ⟨_ | o'⟩
+    · exact hw.elim
+    · exact hw.elim
+    · obtain ⟨es, es', hkd, ho', -⟩ := hw
+      subst ho'
+      refine ⟨_, rfl, rfl, ?_⟩
+      have hfp := findProp_map h.inj hk hso.2.2.1
+      have hkl := keyEq_map_str h.inj hk (chars!"size")
+      change keyEq k (.str (chars!"size")) = false at hwk
+      unfold ownGet
+      rw [hkd]
+      simp only [hkl, hwk, Bool.cond_false]
+      exact ReadPost.pure ⟨hfp, hfps⟩
+  | memo gs =>
+    rcases y with _ | ⟨_ | o'⟩
+    · exact hw.elim
+    · exact hw.elim
+    · obtain ⟨es, es', hkd, ho', -⟩ := hw
+      subst ho'
+      refine ⟨_, rfl, rfl, ?_⟩
+      have hfp := findProp_map h.inj hk hso.2.2.1
+      have hkl := keyEq_map_str h.inj hk (chars!"size")
+      change keyEq k (.str (chars!"size")) = false at hwk
+      unfold ownGet
+      rw [hkd]
+      simp only [hkl, hwk, Bool.cond_false]
+      exact ReadPost.pure ⟨hfp, hfps⟩
+  | buf _ => exact hwk.elim
+  | typed _ _ _ _ => exact hwk.elim
+  | ghost => exact hwk.elim
+
+theorem getChain_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {k : PKey}
+    (hk : Supp.key (Present s) S.tab.length k) : ∀ f a, ChainOK F K W s S k f a →
     MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
       (getChain F s k f a) (getChain F t (M.key k) f (M.a a))
   | 0, _, _ => MSim.fail _ _
@@ -631,22 +914,28 @@ theorem getChain_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBa
     cases ho : s.obj? a with
     | none => exact MSim.fail _ _
     | some o =>
-      obtain ⟨⟨hfr, hty⟩, hpr⟩ := hc o ho
+      obtain ⟨⟨hfr, hty, hns⟩, hpr⟩ := hc o ho
       have hso := h.obj?_supp ho
       have key : ∃ o', t.obj? (M.a a) = some o' ∧ o'.proto = M.val o.proto ∧
           MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C (ownGet F s o k) (ownGet F t o' (M.key k)) := by
         cases hf : K.fr a with
-        | none => exact ⟨_, h.obj? ho hf, rfl, ownGet_sim h hF hso hk hty⟩
+        | none => exact ⟨_, h.obj? ho hf, rfl, ownGet_sim h hF hso hk hty hns⟩
         | some p =>
           obtain ⟨pre, pre'⟩ := p
-          obtain ⟨o', ho', hfo⟩ := h.obj?_framed ho hf
-          have hpl : keyIndex k = none ∧ keyEq k kLength = false := by
+          have hpl : keyIndex k = none ∧ keyEq k kLength = false ∧ ∀ w, W a = some w → WKeyOK w k := by
             rcases hfr with hfr | hpl
             · rw [hf] at hfr; cases hfr
             · exact hpl
-          refine ⟨o', ho', ?_, ownGet_framed h hfo hso hk hpl.1 hpl.2⟩
-          obtain ⟨xs, _, rfl⟩ := hfo
-          rfl
+          cases hw : W a with
+          | none =>
+            obtain ⟨o', ho', hfo⟩ := h.obj?_framed ho hf hw
+            refine ⟨o', ho', ?_, ownGet_framed h hfo hso hk hpl.1 hpl.2.1⟩
+            obtain ⟨xs, _, rfl⟩ := hfo
+            rfl
+          | some w =>
+            obtain ⟨o', hy, hpro, hown⟩ :=
+              ownGet_wide h hso hk (hpl.2.2 w hw) ((SlotW.of_wide hf hw).1 (h.heap a _ (obj?_iff.1 ho)))
+            exact ⟨o', obj?_iff.2 hy, hpro, hown⟩
       obtain ⟨o', ho', hpro, hown⟩ := key
       have hsp : Supp.val (Present s) S.tab.length o.proto := hso.2.1
       rw [ho']
@@ -666,15 +955,15 @@ theorem getChain_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBa
 theorem protoOf_map (M : Map) (v : Val) : protoOf F t (M.val v) = protoOf F s v := by
   cases v <;> rfl
 
-theorem lookup_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
+theorem lookup_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
     {recv : Val} {k : PKey} (hr : Supp.val (Present s) S.tab.length recv)
-    (hk : Supp.key (Present s) S.tab.length k) (hok : LookupOK F K s S recv k) :
+    (hk : Supp.key (Present s) S.tab.length k) (hok : LookupOK F K W s S recv k) :
     MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
       (lookup F s recv k) (lookup F t (M.val recv) (M.key k)) := by
   have hpro : ∀ p, protoOf F s recv = some p → p < aFirst := by
     intro p hp
     cases recv <;> simp only [protoOf, Option.some.injEq, reduceCtorEq] at hp <;> subst hp <;> decide
-  have prim : ∀ p, protoOf F s recv = some p → ChainOK F K s S k 16 p →
+  have prim : ∀ p, protoOf F s recv = some p → ChainOK F K W s S k 16 p →
       MSim (ReadPost M S C (PropR M (Present s) S.tab.length)) S C
         (getChain F s k 16 p) (getChain F t (M.key k) 16 p) := by
     intro p hp hc
@@ -705,9 +994,9 @@ theorem lookup_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack
   | ptr m off => exact prim _ rfl (hok _ rfl)
 
 /-- Running a looked-up property (`readProp`) on related states. -/
-theorem Rel.read (h : Rel F FR M ν K s S t C) {recv : Val} {p : Option PropV}
+theorem RelB.read (h : RelB F FR W stk M ν K s S t C) {recv : Val} {p : Option PropV}
     (hr : Supp.val (Present s) S.tab.length recv) (hp : Supp.oprop (Present s) S.tab.length p) :
-    Rel F FR M ν K (readProp F s recv p) S (readProp F t (M.val recv) (p.map M.prop)) C := by
+    RelB F FR W stk M ν K (readProp F s recv p) S (readProp F t (M.val recv) (p.map M.prop)) C := by
   rcases p with _ | ⟨v, w, e⟩ | ⟨g, st, e⟩
   · exact h.ret .undef trivial
   · exact h.ret v hp
@@ -723,9 +1012,9 @@ theorem Rel.read (h : Rel F FR M ν K s S t C) {recv : Val} {p : Option PropV}
     | ptr m off => exact h.go (.call (.ptr m off) recv []) ⟨hp.1, hr, fun _ hx => nomatch hx⟩
 
 /-- A thrown error object with an intrinsic prototype the map fixes. -/
-theorem throwErr_sim (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p)
+theorem throwErr_sim (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {p : Nat} (hp : Present s p)
     (hpa : M.a p = p) (msg : List Char) :
-    MSim (StepPost F FR M ν K S C) S C (throwErr s p msg) (throwErr t p msg) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (throwErr s p msg) (throwErr t p msg) := by
   have hs64 : s.next < 2 ^ 64 := by
     have : Sim.bound = 2 ^ 61 := rfl
     omega
@@ -743,28 +1032,28 @@ theorem throwErr_sim (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {p 
   rw [e, heq]
   exact MSim.pure ⟨Grow.refl h.srv, hrel.go (.abr (.throw (.obj _))) (Present.alloc_next s _ hs64)⟩
 
-theorem typeErr_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem typeErr_sim (h : RelB F FR W stk M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aTypeErrorProto) (msg : List Char) :
-    MSim (StepPost F FR M ν K S C) S C (typeErr s msg) (typeErr t msg) :=
+    MSim (StepPostB F FR W stk M ν K S C) S C (typeErr s msg) (typeErr t msg) :=
   throwErr_sim h hn hP (hI _ (by decide)) msg
 
-theorem rangeErr_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem rangeErr_sim (h : RelB F FR W stk M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aRangeErrorProto) (msg : List Char) :
-    MSim (StepPost F FR M ν K S C) S C (rangeErr s msg) (rangeErr t msg) :=
+    MSim (StepPostB F FR W stk M ν K S C) S C (rangeErr s msg) (rangeErr t msg) :=
   throwErr_sim h hn hP (hI _ (by decide)) msg
 
-theorem refErr_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem refErr_sim (h : RelB F FR W stk M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aReferenceErrorProto) (msg : List Char) :
-    MSim (StepPost F FR M ν K S C) S C (refErr s msg) (refErr t msg) :=
+    MSim (StepPostB F FR W stk M ν K S C) S C (refErr s msg) (refErr t msg) :=
   throwErr_sim h hn hP (hI _ (by decide)) msg
 
 /-- `o[k]`: a property get, running a getter by going to `.call`. -/
-theorem getV_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
+theorem getV_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
     (hn : s.next < Sim.bound) (hP : Present s aTypeErrorProto) {recv : Val} {k : PKey}
     (hr : Supp.val (Present s) S.tab.length recv) (hk : Supp.key (Present s) S.tab.length k)
-    (hok : LookupOK F K s S recv k) :
-    MSim (StepPost F FR M ν K S C) S C (getV F s recv k) (getV F t (M.val recv) (M.key k)) := by
-  have rest : MSim (StepPost F FR M ν K S C) S C
+    (hok : LookupOK F K W s S recv k) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (getV F s recv k) (getV F t (M.val recv) (M.key k)) := by
+  have rest : MSim (StepPostB F FR W stk M ν K S C) S C
       (Host.Ts.M.bind (lookup F s recv k) fun p => Host.Ts.M.pure (readProp F s recv p))
       (Host.Ts.M.bind (lookup F t (M.val recv) (M.key k)) fun p => Host.Ts.M.pure (readProp F t (M.val recv) p)) := by
     refine MSim.bind (lookup_sim h hF hI hr hk hok) ?_
@@ -786,9 +1075,9 @@ theorem getV_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) 
 def ValR (M : Map) (A : Nat → Prop) (n : Nat) (r r' : Option Val) : Prop :=
   r' = r.map M.val ∧ ∀ v, r = some v → Supp.val A n v
 
-theorem dataOf_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
+theorem dataOf_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
     {recv : Val} {k : PKey} (hr : Supp.val (Present s) S.tab.length recv)
-    (hk : Supp.key (Present s) S.tab.length k) (hok : LookupOK F K s S recv k) :
+    (hk : Supp.key (Present s) S.tab.length k) (hok : LookupOK F K W s S recv k) :
     MSim (ReadPost M S C (ValR M (Present s) S.tab.length)) S C
       (dataOf F s recv k) (dataOf F t (M.val recv) (M.key k)) := by
   refine MSim.bind (lookup_sim h hF hI hr hk hok) ?_
@@ -871,18 +1160,18 @@ theorem writeCell_supp {A : Nat → Prop} {m : Nat} {k : EltK} {c : Cell} {bs : 
   · exact hbs x (List.mem_of_mem_drop hx)
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
-theorem Rel.present_set (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} (ha : Present s a)
+theorem RelB.present_set (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} (ha : Present s a)
     (o : Obj) : ∀ b, Present s b → Present (s.setObj a o) b := by
   have hb : Sim.bound = 2 ^ 61 := rfl
   have := h.presentBound a ha
   exact fun b hp => Present.set (.obj o) (by omega) hp
 
 /-- Extending the map along a server growth keeps the relation. -/
-theorem Rel.grow {M' : Map} {S' : SSrv} {C' : CSrv} (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
-    (hg : Grow M ν S C M' S' C') : Rel F FR M' ν K s S' t C' :=
+theorem RelB.grow {M' : Map} {S' : SSrv} {C' : CSrv} (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
+    (hg : Grow M ν S C M' S' C') : RelB F FR W stk M' ν K s S' t C' :=
   h.extend hg.ext hg.srv hg.len hFR.stable hFR.mono
 
 theorem Map.Intr.ext {M M' : Map} {n : Nat} (hI : M.Intr) (he : Ext M M' n) : M'.Intr := by
@@ -892,15 +1181,15 @@ theorem Map.Intr.ext {M M' : Map} {n : Nat} (hI : M.Intr) (he : Ext M M' n) : M'
 
 /-- A step simulation after a server growth is one from before it. -/
 theorem StepPost.after {M' : Map} {S' : SSrv} {C' : CSrv} {m m' : Host.Ts.M (St F.S)}
-    (hg : Grow M ν S C M' S' C') (hm : MSim (StepPost F FR M' ν K S' C') S' C' m m') :
-    MSim (StepPost F FR M ν K S C) S' C' m m' :=
+    (hg : Grow M ν S C M' S' C') (hm : MSim (StepPostB F FR W stk M' ν K S' C') S' C' m m') :
+    MSim (StepPostB F FR W stk M ν K S C) S' C' m m' :=
   MSim.mono hm fun _ _ _ _ _ ⟨hg', hr⟩ => ⟨hg.trans hg', hr⟩
 
 /-- `CreateDataProperty` on a present unframed address. -/
-theorem Rel.defineData (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} {k : PKey} {v : Val}
+theorem RelB.defineData (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} {k : PKey} {v : Val}
     (ha : Present s a) (hfr : K.fr a = none) (hk : Supp.key (Present s) S.tab.length k)
     (hv : Supp.val (Present s) S.tab.length v) :
-    Rel F FR M ν K (Host.Ts.defineData F s a k v) S (Host.Ts.defineData F t (M.a a) (M.key k) (M.val v)) C := by
+    RelB F FR W stk M ν K (Host.Ts.defineData F s a k v) S (Host.Ts.defineData F t (M.a a) (M.key k) (M.val v)) C := by
   unfold Host.Ts.defineData
   cases ho : s.obj? a with
   | none =>
@@ -917,7 +1206,7 @@ theorem Rel.defineData (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {
   | some o =>
     rw [h.obj? ho hfr]
     have hso := h.obj?_supp ho
-    have hprops : Rel F FR M ν K (s.setObj a { o with props := setPropL k (.data v true true) o.props }) S
+    have hprops : RelB F FR W stk M ν K (s.setObj a { o with props := setPropL k (.data v true true) o.props }) S
         (t.setObj (M.a a) { M.obj o with props := setPropL (M.key k) (.data (M.val v) true true) (M.obj o).props }) C := by
       have := h.setObj { o with props := setPropL k (.data v true true) o.props } hn ha hfr
         ⟨hso.1, hso.2.1, setPropL_supp (p := .data v true true) hk hv hso.2.2.1, hso.2.2.2⟩
@@ -936,10 +1225,10 @@ theorem Rel.defineData (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {
         exact this
     | _ => exact hprops
 
-theorem Rel.defineProp (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} {k : PKey} {p : PropV}
+theorem RelB.defineProp (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat} {k : PKey} {p : PropV}
     (ha : Present s a) (hfr : K.fr a = none) (hk : Supp.key (Present s) S.tab.length k)
     (hp : Supp.prop (Present s) S.tab.length p) :
-    Rel F FR M ν K (Host.Ts.defineProp F s a k p) S (Host.Ts.defineProp F t (M.a a) (M.key k) (M.prop p)) C := by
+    RelB F FR W stk M ν K (Host.Ts.defineProp F s a k p) S (Host.Ts.defineProp F t (M.a a) (M.key k) (M.prop p)) C := by
   unfold Host.Ts.defineProp
   cases ho : s.obj? a with
   | none =>
@@ -1100,19 +1389,19 @@ end
 
 /-- The side condition of `putV`: the receiver object is unframed, inherited setters
 are looked up under `ChainOK`, and typed-array stores are `CellOK`. -/
-def PutOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (recv : Val) (k : PKey) (v : Val) : Prop :=
+def PutOK (F : Ffi) (K : Ctx) (W : Nat → Option WFrame) (s : St F.S) (S : SSrv) (recv : Val) (k : PKey) (v : Val) : Prop :=
   ∀ a, recv = .obj a → K.fr a = none ∧ ∀ o, s.obj? a = some o →
-    (∀ p, o.proto = .obj p → ChainOK F K s S k 16 p) ∧
+    (∀ p, o.proto = .obj p → ChainOK F K W s S k 16 p) ∧
     (∀ kk b off n, o.kind = .typed kk b off n → CellOK K kk v)
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
-theorem typedPut_sim (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem typedPut_sim (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aTypeErrorProto) {a : Nat} {o : Obj} {kk : EltK} {b off n i : Nat} {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) (hok : CellOK K kk v) :
-    MSim (StepPost F FR M ν K S C) S C (typedPut F s a o kk b off n i v)
+    MSim (StepPostB F FR W stk M ν K S C) S C (typedPut F s a o kk b off n i v)
       (typedPut F t (M.a a) (M.obj o) kk (M.a b) off n i (M.val v)) := by
   unfold typedPut
   refine MSim.bind (toCell_sim (A := Present s) h.srv h.bigFixed kk hv hok) ?_
@@ -1135,7 +1424,7 @@ theorem typedPut_sim (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hI : M.Int
       obtain ⟨kd, pr, ps, pv, ex⟩ := bo
       cases kd with
       | buf bs =>
-        have hfr : K.fr b = none := h.fr_none hb (fun es he => by cases he)
+        have hfr : K.fr b = none := h.fr_none hb (fun es he => by cases he) id
         have hb' := h'.obj? hb hfr
         rw [hg.ext.a] at hb'
         rw [hb']
@@ -1152,23 +1441,23 @@ theorem typedPut_sim (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR) (hI : M.Int
         exact MSim.pure ⟨hg, hnew'⟩
       | _ => exact MSim.fail _ _
 
-theorem putOrd_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
+theorem putOrd_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hI : M.Intr)
     (hn : s.next < Sim.bound) (hP : Present s aTypeErrorProto) {a : Nat} {o : Obj} {k : PKey} {v : Val}
     (ho : s.obj? a = some o) (hfr : K.fr a = none) (hk : Supp.key (Present s) S.tab.length k)
-    (hv : Supp.val (Present s) S.tab.length v) (hch : ∀ p, o.proto = .obj p → ChainOK F K s S k 16 p) :
-    MSim (StepPost F FR M ν K S C) S C (putV.putOrd F s a o k v)
+    (hv : Supp.val (Present s) S.tab.length v) (hch : ∀ p, o.proto = .obj p → ChainOK F K W s S k 16 p) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (putV.putOrd F s a o k v)
       (putV.putOrd F t (M.a a) (M.obj o) (M.key k) (M.val v)) := by
   have hso := h.obj?_supp ho
   have ha : Present s a := Present.of_get (obj?_iff.1 ho)
   have hP' := h.present_set hn ha
   have hle : S.tab.length ≤ S.tab.length := Nat.le_refl _
-  have call : ∀ st, Supp.val (Present s) S.tab.length st → MSim (StepPost F FR M ν K S C) S C
+  have call : ∀ st, Supp.val (Present s) S.tab.length st → MSim (StepPostB F FR W stk M ν K S C) S C
       (Host.Ts.M.pure ((s.push (.e (.const v))).go (.call st (.obj a) [v])))
       (Host.Ts.M.pure ((t.push (.e (.const (M.val v)))).go (.call (M.val st) (.obj (M.a a)) [M.val v]))) :=
     fun st hst => MSim.pure ⟨Grow.refl h.srv, (h.push (.e (.const v)) hv).go (.call st (.obj a) [v])
       ⟨hst, ha, fun x hx => by rcases List.mem_singleton.1 hx with rfl; exact hv⟩⟩
   have terr := typeErr_sim h hI hn hP
-  have add : Rel F FR M ν K ((s.setObj a { o with props := o.props ++ [(k, .data v true true)] }).ret v) S
+  have add : RelB F FR W stk M ν K ((s.setObj a { o with props := o.props ++ [(k, .data v true true)] }).ret v) S
       ((t.setObj (M.a a) { M.obj o with props := M.props o.props ++ [(M.key k, .data (M.val v) true true)] }).ret
         (M.val v)) C := by
     have hps : Supp.props (Present s) S.tab.length (o.props ++ [(k, .data v true true)]) := fun x hx => by
@@ -1214,7 +1503,7 @@ theorem putOrd_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack
       | _ => exact ReadPost.pure ⟨rfl, trivial⟩
     · rintro M' S' C' r r' ⟨-, hS, hC, rfl, hsupp⟩
       rw [hS, hC]
-      have addM : MSim (StepPost F FR M ν K S C) S C
+      have addM : MSim (StepPostB F FR W stk M ν K S C) S C
           (bif o.extensible then Host.Ts.M.pure ((s.setObj a { o with props := o.props ++ [(k, .data v true true)] }).ret v)
             else typeErr s (chars!"cannot add a property to a non-extensible object"))
           (bif (M.obj o).extensible then
@@ -1239,11 +1528,11 @@ theorem putOrd_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack
 
 /-- `o[k] = v` (strict mode): own data, setter, array index or length, typed-array
 element, or a new property. -/
-theorem putV_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
+theorem putV_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (hFR : FRLaws FR)
     (hI : M.Intr) (hn : s.next < Sim.bound) (hP : Present s aTypeErrorProto) (hPR : Present s aRangeErrorProto)
     {recv : Val} {k : PKey} {v : Val} (hk : Supp.key (Present s) S.tab.length k)
-    (hv : Supp.val (Present s) S.tab.length v) (hok : PutOK F K s S recv k v) :
-    MSim (StepPost F FR M ν K S C) S C (putV F s recv k v) (putV F t (M.val recv) (M.key k) (M.val v)) := by
+    (hv : Supp.val (Present s) S.tab.length v) (hok : PutOK F K W s S recv k v) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (putV F s recv k v) (putV F t (M.val recv) (M.key k) (M.val v)) := by
   cases recv with
   | obj a =>
     obtain ⟨hfr, hok'⟩ := hok a rfl
@@ -1334,23 +1623,39 @@ theorem putV_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) 
   | sym _ => exact typeErr_sim h hI hn hP _
   | ptr _ _ => exact typeErr_sim h hI hn hP _
 
-/-- The target object at the image of a present source object: framed or not, its
-prototype, properties, private members and extensibility are images. -/
-theorem Rel.obj?_some (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o) :
+/-- The target object at the image of a present source object where `NoW` holds: framed or
+not, its prototype, properties, private members and extensibility are images. -/
+theorem RelB.obj?_some (h : RelB F FR W stk M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o)
+    (hn : NoW K W s a) :
     ∃ o', t.obj? (M.a a) = some o' ∧ o'.proto = M.val o.proto ∧ o'.props = M.props o.props ∧
       o'.priv = M.privs o.priv ∧ o'.extensible = o.extensible := by
   cases hf : K.fr a with
   | none => exact ⟨_, h.obj? ho hf, rfl, rfl, rfl, rfl⟩
   | some p =>
     obtain ⟨pre, pre'⟩ := p
-    obtain ⟨o', ho', xs, _, rfl⟩ := h.obj?_framed ho hf
+    obtain ⟨o', ho', xs, _, rfl⟩ := h.obj?_framed ho hf (h.w_none hn hf)
     exact ⟨_, ho', rfl, rfl, rfl, rfl⟩
 
+theorem Rel.obj?_some {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : Rel F FR M ν K s S t C) {a : Nat} {o : Obj} (ho : s.obj? a = some o) :
+    ∃ o', t.obj? (M.a a) = some o' ∧ o'.proto = M.val o.proto ∧ o'.props = M.props o.props ∧
+      o'.priv = M.privs o.priv ∧ o'.extensible = o.extensible := RelB.obj?_some h ho .free
+
+/-- Private member reads of name `nm` on `recv`: `NoW` holds, or a ghost-field object whose ghost
+private members have other names. -/
+def PrivOK {S' : Type} (K : Ctx) (W : Nat → Option WFrame) (s : St S') (recv : Val) (nm : Name) : Prop :=
+  ∀ a, recv = .obj a → NoW K W s a ∨
+    ∃ ks ps, W a = some (.fields ks ps) ∧ ∀ b0 n0, (b0, n0) ∈ ps → nameEq nm n0 = false
+
+theorem PrivOK.congr {S' : Type} {K : Ctx} {W : Nat → Option WFrame} {s s' : St S'} {recv : Val} {nm : Name}
+    (hh : ∀ a, s'.obj? a = s.obj? a) (h : PrivOK K W s recv nm) : PrivOK K W s' recv nm := fun a ha =>
+  (h a ha).imp (NoW.congr hh) id
+
 /-- `o.#n`: a private member get. -/
-theorem privGetV_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem privGetV_sim (h : RelB F FR W stk M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aTypeErrorProto) {recv : Val} {b : Nat} {nm : Name}
-    (hr : Supp.val (Present s) S.tab.length recv) (hb : Present s b) :
-    MSim (StepPost F FR M ν K S C) S C (privGetV F s recv b nm) (privGetV F t (M.val recv) (M.a b) nm) := by
+    (hr : Supp.val (Present s) S.tab.length recv) (hb : Present s b) (hpk : PrivOK K W s recv nm) :
+    MSim (StepPostB F FR W stk M ν K S C) S C (privGetV F s recv b nm) (privGetV F t (M.val recv) (M.a b) nm) := by
   cases recv with
   | obj a =>
     unfold privGetV
@@ -1358,11 +1663,23 @@ theorem privGetV_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < 
     cases ho : s.obj? a with
     | none => exact MSim.fail _ _
     | some o =>
-      obtain ⟨o', ho', -, -, hpv, -⟩ := h.obj?_some ho
       have hso := h.obj?_supp ho
+      obtain ⟨o', ho', hpv⟩ : ∃ o', t.obj? (M.a a) = some o' ∧
+          findPriv (M.a b) nm o'.priv = (findPriv b nm o.priv).map M.prop := by
+        rcases hpk a rfl with hnw | ⟨ks, ps, hw, hps⟩
+        · obtain ⟨o', ho', -, -, hpv, -⟩ := h.obj?_some ho hnw
+          exact ⟨o', ho', by rw [hpv, findPriv_map h.inj nm hb hso.2.2.2]⟩
+        · cases hf : K.fr a with
+          | none => exact ⟨_, h.obj? ho hf, by rw [Map.obj_priv, findPriv_map h.inj nm hb hso.2.2.2]⟩
+          | some p =>
+            have hs := (SlotW.of_wide hf hw).1 (h.heap a _ (obj?_iff.1 ho))
+            rcases hy : t.heap.get (M.a a) with _ | ⟨_ | o'⟩ <;> rw [hy] at hs
+            · exact hs.elim
+            · exact hs.elim
+            · exact ⟨o', obj?_iff.2 hy, PrivsW.findPriv_eq h.inj hb hps hs.2.2.2.2.2 hso.2.2.2⟩
       rw [ho']
       simp only
-      rw [hpv, findPriv_map h.inj nm hb hso.2.2.2]
+      rw [hpv]
       cases hf : findPriv b nm o.priv with
       | none => exact typeErr_sim h hI hn hP _
       | some p =>
@@ -1377,11 +1694,11 @@ theorem privGetV_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < 
   | ptr _ _ => exact typeErr_sim h hI hn hP _
 
 /-- `o.#n = v`: a private member put (the object unframed). -/
-theorem privPutV_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
+theorem privPutV_sim (h : RelB F FR W stk M ν K s S t C) (hI : M.Intr) (hn : s.next < Sim.bound)
     (hP : Present s aTypeErrorProto) {recv : Val} {b : Nat} {nm : Name} {v : Val}
     (hr : Supp.val (Present s) S.tab.length recv) (hb : Present s b)
     (hv : Supp.val (Present s) S.tab.length v) (hfr : ∀ a, recv = .obj a → K.fr a = none) :
-    MSim (StepPost F FR M ν K S C) S C (privPutV F s recv b nm v)
+    MSim (StepPostB F FR W stk M ν K S C) S C (privPutV F s recv b nm v)
       (privPutV F t (M.val recv) (M.a b) nm (M.val v)) := by
   cases recv with
   | obj a =>
@@ -1396,7 +1713,7 @@ theorem privPutV_sim (h : Rel F FR M ν K s S t C) (hI : M.Intr) (hn : s.next < 
       rw [h.obj? ho hfa]
       simp only
       rw [Map.obj_priv, findPriv_map h.inj nm hb hso.2.2.2]
-      have call : ∀ st, Supp.val (Present s) S.tab.length st → MSim (StepPost F FR M ν K S C) S C
+      have call : ∀ st, Supp.val (Present s) S.tab.length st → MSim (StepPostB F FR W stk M ν K S C) S C
           (Host.Ts.M.pure ((s.push (.e (.const v))).go (.call st (.obj a) [v])))
           (Host.Ts.M.pure ((t.push (.e (.const (M.val v)))).go (.call (M.val st) (.obj (M.a a)) [M.val v]))) :=
         fun st hst => MSim.pure ⟨Grow.refl h.srv, (h.push (.e (.const v)) hv).go (.call st (.obj a) [v])
@@ -1452,10 +1769,10 @@ def ElemsOK (F : Ffi) (K : Ctx) (s : St F.S) (S : SSrv) (v : Val) : Prop :=
     ∀ k b off n, o.kind = .typed k b off n → ElemsReadOK F K s S k b off n 0
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
-theorem typedElems_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) (k : EltK) (b off : Nat) :
+theorem typedElems_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) (k : EltK) (b off : Nat) :
     ∀ n i, ElemsReadOK F K s S k b off n i →
     MSim (ReadPost M S C (fun vs vs' => vs' = M.vals vs ∧ Supp.vals (Present s) S.tab.length vs)) S C
       (typedElems F s k b off n i) (typedElems F t k (M.a b) off n i)
@@ -1482,17 +1799,17 @@ theorem typedElems_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall ok
       · exact hvs x hx
     · exact MSim.fail _ _
 
-theorem Rel.obj?_none (h : Rel F FR M ν K s S t C) {a : Nat} (ha : Present s a) (ho : s.obj? a = none) :
+theorem RelB.obj?_none (h : RelB F FR W stk M ν K s S t C) {a : Nat} (ha : Present s a) (ho : s.obj? a = none) :
     t.obj? (M.a a) = none := by
   obtain ⟨hh, hg⟩ := ha.get
   cases hh with
   | obj o => rw [obj?_iff.2 hg] at ho; cases ho
   | cell c =>
+    obtain ⟨c', hc'⟩ := h.cell_target hg
     unfold St.obj?
-    rw [h.get hg (h.fr_cell hg)]
-    rfl
+    rw [hc']
 
-theorem elemsOf_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
+theorem elemsOf_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {v : Val}
     (hv : Supp.val (Present s) S.tab.length v) (hok : ElemsOK F K s S v) :
     MSim (ReadPost M S C (ValsR M (Present s) S.tab.length)) S C (elemsOf F s v) (elemsOf F t (M.val v)) := by
   cases v with
@@ -1542,7 +1859,7 @@ theorem elemsOf_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBac
   | ptr _ _ => exact ReadPost.pure ⟨rfl, fun _ h => nomatch h⟩
 
 /-- `arrayOf` at a present unframed address. -/
-theorem Rel.arrayOf (h : Rel F FR M ν K s S t C) {a : Nat} (ha : Present s a) (hfr : K.fr a = none) :
+theorem RelB.arrayOf (h : RelB F FR W stk M ν K s S t C) {a : Nat} (ha : Present s a) (hfr : K.fr a = none) :
     Host.Ts.arrayOf F t (M.a a) = (Host.Ts.arrayOf F s a).map fun (o, es) => (M.obj o, M.vals es) := by
   unfold Host.Ts.arrayOf
   cases ho : s.obj? a with
@@ -1563,7 +1880,7 @@ theorem Rel.arrayOf (h : Rel F FR M ν K s S t C) {a : Nat} (ha : Present s a) (
     cases kd <;> rfl
 
 /-- `arrayOf` at a framed address: the target array keeps its own prefix. -/
-theorem Rel.arrayOf_framed (h : Rel F FR M ν K s S t C) {a : Nat} {pre pre' : List Val} {o : Obj}
+theorem RelB.arrayOf_framed (h : RelB F FR W stk M ν K s S t C) {a : Nat} {pre pre' : List Val} {o : Obj}
     {es : List Val} (hfr : K.fr a = some (pre, pre')) (hs : Host.Ts.arrayOf F s a = some (o, es)) :
     ∃ o' xs, Host.Ts.arrayOf F t (M.a a) = some (o', pre' ++ M.vals xs) ∧ es = pre ++ xs ∧
       FramedObj M pre pre' o o' := by
@@ -1573,14 +1890,18 @@ theorem Rel.arrayOf_framed (h : Rel F FR M ν K s S t C) {a : Nat} {pre pre' : L
   | some o0 =>
     rw [ho] at hs
     simp only at hs
-    obtain ⟨o', ho', hfo⟩ := h.obj?_framed ho hfr
+    have hw : W a = none := by
+      cases hk : o0.kind with
+      | array es0 => exact h.w_none (.of_array ho hk) hfr
+      | _ => rw [hk] at hs; cases hs
+    obtain ⟨o', ho', hfo⟩ := h.obj?_framed ho hfr hw
     obtain ⟨xs, hk, rfl⟩ := hfo
     rw [hk] at hs
     cases hs
     rw [ho']
     exact ⟨_, xs, rfl, rfl, xs, hk, rfl⟩
 
-theorem Rel.byteLen (h : Rel F FR M ν K s S t C) {b : Nat} (hb : Present s b) :
+theorem RelB.byteLen (h : RelB F FR W stk M ν K s S t C) {b : Nat} (hb : Present s b) (hn : NoW K W s b) :
     Host.Ts.byteLen F t (M.a b) = Host.Ts.byteLen F s b := by
   unfold Host.Ts.byteLen
   cases ho : s.obj? b with
@@ -1590,15 +1911,15 @@ theorem Rel.byteLen (h : Rel F FR M ν K s S t C) {b : Nat} (hb : Present s b) :
     | obj o => rw [obj?_iff.2 hg] at ho; cases ho
     | cell c =>
       have ht : t.obj? (M.a b) = none := by
+        obtain ⟨c', hc'⟩ := h.cell_target hg
         unfold St.obj?
-        rw [h.get hg (h.fr_cell hg)]
-        rfl
+        rw [hc']
       rw [ht]
   | some o =>
     cases hf : K.fr b with
     | some p =>
       obtain ⟨pre, pre'⟩ := p
-      obtain ⟨o', ho', xs, hk, rfl⟩ := h.obj?_framed ho hf
+      obtain ⟨o', ho', xs, hk, rfl⟩ := h.obj?_framed ho hf (h.w_none hn hf)
       rw [ho']
       obtain ⟨kd, pr, ps, pv, ex⟩ := o
       simp only at hk
@@ -1660,19 +1981,19 @@ def KVR (M : Map) (A : Nat → Prop) (n : Nat) (r r' : Option (List (PKey × Val
   r' = r.map M.kvs ∧ ∀ kvs, r = some kvs → ∀ x ∈ kvs, Supp.key A n x.1 ∧ Supp.val A n x.2
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {okCall : F.S → Name → List Arg → Bool} {okBack : F.S → Arg → Bool}
 
-theorem dataPropsGo_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj}
+theorem dataPropsGo_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj}
     (hso : Supp.obj (Present s) S.tab.length o) : ∀ ks : List PKey,
-    (∀ k ∈ ks, Supp.key (Present s) S.tab.length k ∧ TypedOK F K s S o k) →
+    (∀ k ∈ ks, Supp.key (Present s) S.tab.length k ∧ TypedOK F K s S o k ∧ NsOK K W s o k) →
     MSim (ReadPost M S C (KVR M (Present s) S.tab.length)) S C
       (dataProps.go F s o ks) (dataProps.go F t (M.obj o) (ks.map M.key))
   | [], _ => ReadPost.pure ⟨rfl, fun kvs h x hx => by cases h; cases hx⟩
   | k :: ks, hks => by
-    obtain ⟨hk, hty⟩ := hks k (List.mem_cons_self ..)
+    obtain ⟨hk, hty, hns⟩ := hks k (List.mem_cons_self ..)
     simp only [dataProps.go, List.map_cons]
-    refine MSim.bind (ownGet_sim h hF hso hk hty) ?_
+    refine MSim.bind (ownGet_sim h hF hso hk hty hns) ?_
     rintro M' S' C' r r' ⟨-, hS, hC, rfl, hsupp⟩
     rw [hS, hC]
     rcases r with _ | ⟨v, w, e⟩ | ⟨g, st, e⟩
@@ -1693,18 +2014,19 @@ theorem dataPropsGo_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall o
     · exact ReadPost.pure ⟨rfl, fun kvs h => by cases h⟩
 
 /-- Own enumerable data properties of an unframed object image (`Object.entries`). -/
-theorem dataProps_sim (h : Rel F FR M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj}
-    (hso : Supp.obj (Present s) S.tab.length o) (hok : ∀ k ∈ ownKeys F s o, TypedOK F K s S o k) :
+theorem dataProps_sim (h : RelB F FR W stk M ν K s S t C) (hF : FfiSim F FR okCall okBack) {o : Obj}
+    (hso : Supp.obj (Present s) S.tab.length o) (hok : ∀ k ∈ ownKeys F s o, TypedOK F K s S o k)
+    (hns : ∀ k ∈ ownKeys F s o, NsOK K W s o k) :
     MSim (ReadPost M S C (KVR M (Present s) S.tab.length)) S C (dataProps F s o) (dataProps F t (M.obj o)) := by
   unfold dataProps
   rw [ownKeys_map (s := s)]
-  exact dataPropsGo_sim h hF hso _ fun k hk => ⟨ownKeys_supp hso.2.2.1 k hk, hok k hk⟩
+  exact dataPropsGo_sim h hF hso _ fun k hk => ⟨ownKeys_supp hso.2.2.1 k hk, hok k hk, hns k hk⟩
 
 /-! ### Strict equality -/
 
 /-- Strict equality of related values gives the same answer, given that the map keeps
 the bigint and native-region comparisons of the operands. -/
-theorem strictEq_sim_of (h : Rel F FR M ν K s S t C) {x y : Val}
+theorem strictEq_sim_of (h : RelB F FR W stk M ν K s S t C) {x y : Val}
     (hx : Supp.val (Present s) S.tab.length x) (hy : Supp.val (Present s) S.tab.length y)
     (hb : ∀ i j, x = .big i → y = .big j → decide (M.big i = M.big j) = decide (i = j))
     (hr : ∀ r o r' o', x = .ptr (.ext r) o → y = .ptr (.ext r') o' →
@@ -1750,7 +2072,7 @@ def StrictOK (K : Ctx) (x y : Val) : Prop :=
   (∀ i j, x = .big i → y = .big j → BigFixed K.lo K.hi i ∧ BigFixed K.lo K.hi j ∨ i = j) ∧
   (∀ r o r' o', x = .ptr (.ext r) o → y = .ptr (.ext r') o' → r = r')
 
-theorem strictEq_sim (h : Rel F FR M ν K s S t C) {x y : Val}
+theorem strictEq_sim (h : RelB F FR W stk M ν K s S t C) {x y : Val}
     (hx : Supp.val (Present s) S.tab.length x) (hy : Supp.val (Present s) S.tab.length y)
     (hok : StrictOK K x y) :
     MSim (fun M' S' C' r r' => r' = r ∧ Grow M ν S C M' S' C') S C
@@ -1763,7 +2085,7 @@ theorem strictEq_sim (h : Rel F FR M ν K s S t C) {x y : Val}
     rw [Nat.beq_refl, Nat.beq_refl]
 
 /-- Strict equality when the map is injective on bigints and native regions (not part of `Rel`). -/
-theorem strictEq_sim_inj (h : Rel F FR M ν K s S t C) (hbig : ∀ i j, M.big i = M.big j → i = j)
+theorem strictEq_sim_inj (h : RelB F FR W stk M ν K s S t C) (hbig : ∀ i j, M.big i = M.big j → i = j)
     (hreg : ∀ r r', M.region r = M.region r' → r = r') {x y : Val}
     (hx : Supp.val (Present s) S.tab.length x) (hy : Supp.val (Present s) S.tab.length y) :
     MSim (fun M' S' C' r r' => r' = r ∧ Grow M ν S C M' S' C') S C
@@ -1791,9 +2113,9 @@ theorem defineData_heap (s : St F.S) (a : Nat) (k : PKey) (v : Val) :
     all_goals exact ⟨rfl, .inr ⟨_, rfl⟩⟩
 
 private theorem defineData_foldl_aux {a : Nat} (hfr : K.fr a = none) : ∀ (kvs : List (PKey × Val))
-    {s t : St F.S}, Rel F FR M ν K s S t C → s.next < Sim.bound → Present s a →
+    {s t : St F.S}, RelB F FR W stk M ν K s S t C → s.next < Sim.bound → Present s a →
     (∀ x ∈ kvs, Supp.key (Present s) S.tab.length x.1 ∧ Supp.val (Present s) S.tab.length x.2) →
-    Rel F FR M ν K (kvs.foldl (fun s (k, x) => Host.Ts.defineData F s a k x) s) S
+    RelB F FR W stk M ν K (kvs.foldl (fun s (k, x) => Host.Ts.defineData F s a k x) s) S
       ((M.kvs kvs).foldl (fun t (k, x) => Host.Ts.defineData F t (M.a a) k x) t) C
   | [], _, _, h, _, _, _ => h
   | (k, v) :: kvs, s, t, h, hn, ha, hkvs => by
@@ -1809,10 +2131,10 @@ private theorem defineData_foldl_aux {a : Nat} (hfr : K.fr a = none) : ∀ (kvs 
       ⟨Supp.key_mono hP hle (hkvs x (List.mem_cons_of_mem _ hx)).1,
         Supp.val_mono hP hle (hkvs x (List.mem_cons_of_mem _ hx)).2⟩
 
-theorem Rel.defineData_foldl (h : Rel F FR M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat}
+theorem RelB.defineData_foldl (h : RelB F FR W stk M ν K s S t C) (hn : s.next < Sim.bound) {a : Nat}
     (ha : Present s a) (hfr : K.fr a = none) (kvs : List (PKey × Val))
     (hkvs : ∀ x ∈ kvs, Supp.key (Present s) S.tab.length x.1 ∧ Supp.val (Present s) S.tab.length x.2) :
-    Rel F FR M ν K (kvs.foldl (fun s (k, x) => Host.Ts.defineData F s a k x) s) S
+    RelB F FR W stk M ν K (kvs.foldl (fun s (k, x) => Host.Ts.defineData F s a k x) s) S
       ((M.kvs kvs).foldl (fun t (k, x) => Host.Ts.defineData F t (M.a a) k x) t) C :=
   defineData_foldl_aux hfr kvs h hn ha hkvs
 

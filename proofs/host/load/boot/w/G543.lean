@@ -1,0 +1,10 @@
+import host.load.boot.States
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Load.Run.Prompt
+boot_w_chunk P 2172
+boot_w_chunk P 2173
+boot_w_chunk P 2174
+boot_w_chunk P 2175
+end Host.Load.Run.Prompt

@@ -180,7 +180,7 @@ target prefix followed by the images of `xs`. -/
 theorem Rel.framed_target (h : Rel F FR M ν K s S t C) {a : Nat} {pre pre' xs : List Val} {o : Obj}
     (hk : K.fr a = some (pre, pre')) (hg : s.heap.get a = some (.obj o)) (hkind : o.kind = .array (pre ++ xs)) :
     ∃ o', t.heap.get (M.a a) = some (.obj o') ∧ o'.kind = .array (pre' ++ M.vals xs) := by
-  have hs := h.heap a _ hg
+  have hs := (SlotW.of_w_none rfl).1 (h.heap a _ hg)
   unfold SlotOK at hs
   rw [hk] at hs
   obtain ⟨o1, o', e1, e2, ys, hk1, ho'⟩ := hs

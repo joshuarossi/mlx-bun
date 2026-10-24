@@ -16,7 +16,7 @@ theorem mask4_range (w : BitVec 16) (i : Fin 4) :
     norm_num
     exact_mod_cast h.le
 
-theorem range4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
+theorem range4 (contracted : Nat → Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) (acc : Float32)
     (exponent : Int) (count : Nat) (lo : -149 ≤ exponent + 16) (hi : exponent + 16 ≤ 100)
     (size : count + 4 < 16777216)
     (hx : ∀ i, (scaled i).isFinite = true ∧ |real (scaled i)| ≤ (2 : ℝ)^exponent)
@@ -32,18 +32,28 @@ theorem range4 (contracted : Bool) (w : BitVec 16) (scaled : Fin 4 → Float32) 
     have := i.isLt
     simpa [Arithmetic.Finite, evaluate, input, bind4, show ¬4+i.val < 4 by omega, show 4+i.val < 8 by omega] using mask4_range w i
   have hp := DyadicBounds.ceiling_range 1 (exponent+16) (by decide) lo hi
-  have hm := NativeMultiplication.range (scaled 0) (AffineLift.value (mask4 w 0)) (DyadicBounds.ceiling 1 (exponent+16))
-    (hx 0).1 (mask4_range w 0).1 hp.1
-    (by rw [hp.2, Nat.cast_one, one_mul, zpow_add₀ (by norm_num : (2 : ℝ) ≠ 0)];
-        exact mul_le_mul (hx 0).2 (mask4_range w 0).2 (abs_nonneg _) (zpow_nonneg (by norm_num) _))
-  have h0 : Arithmetic.Finite input (.mul (.input 0) (.input 4)) ∧
-      |real (evaluate input (.mul (.input 0) (.input 4)))| ≤ (1 : Nat) * (2 : ℝ)^(exponent+16) := by
-    refine ⟨⟨(hx' 0).1, (hw' 0).1, ?_⟩, ?_⟩
-    · simpa [input, evaluate, bind4] using hm.1
-    · simpa [input, evaluate, bind4, hp.2] using hm.2
-  have h1 := ArithmeticFoldBounds.madd_range input contracted (.input 1) (.input 5) _ exponent 16 1 lo hi (by decide) (hx' 1) (hw' 1) h0
-  have h2 := ArithmeticFoldBounds.madd_range input contracted (.input 2) (.input 6) _ exponent 16 2 lo hi (by decide) (hx' 2) (hw' 2) h1
-  have h3 := ArithmeticFoldBounds.madd_range input contracted (.input 3) (.input 7) _ exponent 16 3 lo hi (by decide) (hx' 3) (hw' 3) h2
+  have hprod (i : Fin 4) : Arithmetic.Finite input (.mul (.input i.val) (.input (4+i.val))) ∧
+      |real (evaluate input (.mul (.input i.val) (.input (4+i.val))))| ≤ (1 : Nat) * (2 : ℝ)^(exponent+16) := by
+    have hm := NativeMultiplication.range (evaluate input (.input i.val)) (evaluate input (.input (4+i.val)))
+      (DyadicBounds.ceiling 1 (exponent+16)) (finite_evaluate _ _ (hx' i).1) (finite_evaluate _ _ (hw' i).1) hp.1
+      (by rw [hp.2, Nat.cast_one, one_mul, zpow_add₀ (by norm_num : (2 : ℝ) ≠ 0)];
+          exact mul_le_mul (hx' i).2 (hw' i).2 (abs_nonneg _) (zpow_nonneg (by norm_num) _))
+    exact ⟨⟨(hx' i).1, (hw' i).1, hm.1⟩, by simpa only [evaluate, hp.2] using hm.2⟩
+  -- Site 0 adds the first two products; either may be the accumulated operand.
+  have h1 (c : Bool) : Arithmetic.Finite input (maddLeft c (.input 0) (.input 4) (.mul (.input 1) (.input 5))) ∧
+      |real (evaluate input (maddLeft c (.input 0) (.input 4) (.mul (.input 1) (.input 5))))| ≤
+        ((1+1 : Nat) : ℝ) * (2 : ℝ)^(exponent+16) := by
+    cases c
+    · rw [maddLeft_false]
+      exact ArithmeticFoldBounds.madd_range input false (.input 1) (.input 5) _ exponent 16 1 lo hi (by decide) (hx' 1) (hw' 1)
+        (hprod 0)
+    · rw [maddLeft_true]
+      exact ArithmeticFoldBounds.madd_range input true (.input 0) (.input 4) _ exponent 16 1 lo hi (by decide) (hx' 0) (hw' 0)
+        (hprod 1)
+  have h2 := ArithmeticFoldBounds.madd_range input (contracted 1) (.input 2) (.input 6) _ exponent 16 2 lo hi (by decide)
+    (hx' 2) (hw' 2) (h1 (contracted 0))
+  have h3 := ArithmeticFoldBounds.madd_range input (contracted 2) (.input 3) (.input 7) _ exponent 16 3 lo hi (by decide)
+    (hx' 3) (hw' 3) h2
   have hc := DyadicBounds.ceiling_range (count+4) (exponent+16) size lo hi
   have hadd := Float32Bounds.add_range acc _ (DyadicBounds.ceiling (count+4) (exponent+16)) ha.1
     (Arithmetic.finite_evaluate _ _ h3.1) hc.1
@@ -78,7 +88,7 @@ theorem real256 : real (256 : Float32) = (2 : ℝ)^(8 : Int) := by
     FloatLib.Floats.Formats.BinaryInterchange.Model.modelSignBit, FloatLib.Floats.Formats.Flocq.bpow,
     FloatLib.Numerics.binaryRadix, FloatLib.Numerics.Radix.toReal]
 
-theorem range3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32)
+theorem range3 (contracted : Nat → Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → Float32) (acc : Float32)
     (exponent : Int) (count : Nat) (lo : -149 ≤ exponent + 8) (hi : exponent + 16 ≤ 100)
     (size : count + 10 < 16777216)
     (hx : ∀ i, (scaled i).isFinite = true ∧ |real (scaled i)| ≤ (2 : ℝ)^exponent)
@@ -113,7 +123,8 @@ theorem range3 (contracted : Bool) (w : Fin 3 → BitVec 8) (scaled : Fin 8 → 
       · have hpow : (2 : ℝ)^exponent ≤ (2 : ℝ)^(exponent+8) := zpow_le_zpow_right₀ (by norm_num) (by omega)
         simpa [evaluate, input, bind3, (coordinate3 i).isLt] using (hx (coordinate3 i)).2.trans hpow
   have he : (8 : Int) + (exponent+8) = exponent+16 := by omega
-  have h := ArithmeticFoldBounds.fold_range input contracted left3 right3 8 (exponent+8) (by omega) (by omega)
+  have h := ArithmeticFoldBounds.sites_range input (fun i : Fin 10 => contracted i.val) left3 right3 8 (exponent+8)
+    (by omega) (by omega)
     hl hr (List.finRange 10) (.input 19) count (by simpa only [List.length_finRange] using size)
     (by simpa [Arithmetic.Finite, evaluate, input, bind3, he] using ha)
   change Arithmetic.Finite (bind3 w scaled acc) (expression3 contracted) ∧

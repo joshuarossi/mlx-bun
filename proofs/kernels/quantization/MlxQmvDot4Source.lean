@@ -35,10 +35,18 @@ def word (memory : Memory) (iteration : Fin 4) : BitVec 16 :=
 def input (memory : Memory) (iteration offset : Fin 4) : Float32 :=
   memory.scaled (memory.scaledBase+4*iteration.val+offset.val)
 
--- The contraction flag selects the same explicit arithmetic lowering as the
--- existing proof. Compiler selection of that lowering remains a boundary.
+-- Additions within an expression: the `+` of `left + right` is contraction site
+-- `additions left` (the parsed sum is left-associated; its products hold no additions).
+def additions : Expr → Nat
+  | .multiply left right => additions left+additions right
+  | .add left right => additions left+additions right+1
+  | _ => 0
+
+-- Each site's flag selects the same explicit arithmetic lowering as the model:
+-- `x * y + z` contracts the left product, else `z + x * y` the right one.
+-- Compiler selection of that lowering remains a boundary.
 -- Both lowerings preserve the parsed left-associated order and uint16 loads.
-def evaluate (contracted : Bool) (memory : Memory) (iteration : Fin 4) : Expr → Option Float32
+def evaluate (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) : Expr → Option Float32
   | .input array index => do
       if array≠"x_thread" then none else do
         let position ←evaluateIndex iteration index
@@ -52,15 +60,20 @@ def evaluate (contracted : Bool) (memory : Memory) (iteration : Fin 4) : Expr �
         else none
   | .multiply left right => do
       pure (FlushToZero.mul (←evaluate contracted memory iteration left) (←evaluate contracted memory iteration right))
+  | .add (.multiply a b) right => do
+      let a' ←evaluate contracted memory iteration a
+      let b' ←evaluate contracted memory iteration b
+      let rest ←evaluate contracted memory iteration right
+      pure (maddLeftFloat (contracted (additions a+additions b)) a' b' rest)
   | .add left (.multiply a b) => do
       let previous ←evaluate contracted memory iteration left
       let a ←evaluate contracted memory iteration a
       let b ←evaluate contracted memory iteration b
-      pure (maddFloat contracted a b previous)
+      pure (maddFloat (contracted (additions left)) a b previous)
   | .add left right => do
       pure (FlushToZero.add (←evaluate contracted memory iteration left) (←evaluate contracted memory iteration right))
 
-theorem input_value (contracted : Bool) (memory : Memory) (iteration offset : Fin 4) :
+theorem input_value (contracted : Nat → Bool) (memory : Memory) (iteration offset : Fin 4) :
     evaluate contracted memory iteration (.input "x_thread" (index offset))=some (input memory iteration offset) := by
   have safe : 0≤(4*iteration.val+offset.val:Int) ∧ (4*iteration.val+offset.val:Int)<16 := by
     have := iteration.isLt; have := offset.isLt; omega
@@ -75,7 +88,7 @@ theorem mask_value (bits : BitVec 16) (offset : Fin 4) :
   have bound : 15*2^(4*offset.val)<65536 := by fin_cases offset <;> decide
   simp only [AffineDot.mask4,AffinePacking.mask16,BitVec.toNat_and,BitVec.toNat_ofNat,Nat.mod_eq_of_lt bound]
 
-theorem lift_value (contracted : Bool) (memory : Memory) (iteration offset : Fin 4) :
+theorem lift_value (contracted : Nat → Bool) (memory : Memory) (iteration offset : Fin 4) :
     evaluate contracted memory iteration (.masked "ws" (.variable "i") (15*2^(4*offset.val)))=
       some (AffineLift.value (AffineDot.mask4 (word memory iteration) offset)) := by
   have maskBound : 15*2^(4*offset.val)<2^31 := by fin_cases offset <;> decide
@@ -87,40 +100,48 @@ theorem lift_value (contracted : Bool) (memory : Memory) (iteration offset : Fin
   change some (MlxQmv.integer ((word memory iteration).toNat &&& (15*2^(4*offset.val))))=_
   rw [mask_value,MlxQmv.integer_mask4]
 
-def execute (contracted : Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32)
+def execute (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32)
     (statement : Statement) : Option Float32 := do
   if statement.target≠"accum" then none else
     pure (FlushToZero.add accumulator (←evaluate contracted memory iteration statement.value))
 
-def executeSource (contracted : Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32) : Option Float32 :=
+def executeSource (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32) : Option Float32 :=
   (parse sourceBody).bind (execute contracted memory iteration accumulator)
 
-theorem product_value (contracted : Bool) (memory : Memory) (iteration offset : Fin 4) :
+theorem product_value (contracted : Nat → Bool) (memory : Memory) (iteration offset : Fin 4) :
     evaluate contracted memory iteration (product offset)=some
       (FlushToZero.mul (input memory iteration offset) (AffineLift.value (AffineDot.mask4 (word memory iteration) offset))) := by
   rw [product,evaluate,input_value,lift_value]
   rfl
 
-theorem add_product_value (contracted : Bool) (memory : Memory) (iteration offset : Fin 4)
-    (left : Expr) (previous : Float32) (first : evaluate contracted memory iteration left=some previous) :
-    evaluate contracted memory iteration (.add left (product offset))=some
-      (maddFloat contracted (input memory iteration offset) (AffineLift.value (AffineDot.mask4 (word memory iteration) offset)) previous) := by
-  rw [product,evaluate,first,input_value,lift_value]
+theorem pair_value (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) :
+    evaluate contracted memory iteration (.add (product 0) (product 1))=some
+      (maddLeftFloat (contracted 0) (input memory iteration 0) (AffineLift.value (AffineDot.mask4 (word memory iteration) 0))
+        (FlushToZero.mul (input memory iteration 1) (AffineLift.value (AffineDot.mask4 (word memory iteration) 1)))) := by
+  rw [product,evaluate,input_value,lift_value,product_value]
   rfl
 
-theorem body_value (contracted : Bool) (memory : Memory) (iteration : Fin 4) :
+theorem add_product_value (contracted : Nat → Bool) (memory : Memory) (iteration offset : Fin 4)
+    (left right : Expr) (previous : Float32) (first : evaluate contracted memory iteration (.add left right)=some previous) :
+    evaluate contracted memory iteration (.add (.add left right) (product offset))=some
+      (maddFloat (contracted (additions (.add left right))) (input memory iteration offset)
+        (AffineLift.value (AffineDot.mask4 (word memory iteration) offset)) previous) := by
+  rw [product,evaluate,first,input_value,lift_value]
+  · rfl
+  · exact fun _ _ h => Expr.noConfusion h
+
+theorem body_value (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) :
     evaluate contracted memory iteration body.value=some
-      (maddFloat contracted (input memory iteration 3) (AffineLift.value (AffineDot.mask4 (word memory iteration) 3))
-        (maddFloat contracted (input memory iteration 2) (AffineLift.value (AffineDot.mask4 (word memory iteration) 2))
-          (maddFloat contracted (input memory iteration 1) (AffineLift.value (AffineDot.mask4 (word memory iteration) 1))
-            (FlushToZero.mul (input memory iteration 0) (AffineLift.value (AffineDot.mask4 (word memory iteration) 0)))))) :=
-  add_product_value contracted memory iteration 3 _ _
-    (add_product_value contracted memory iteration 2 _ _
-      (add_product_value contracted memory iteration 1 _ _ (product_value contracted memory iteration 0)))
+      (maddFloat (contracted 2) (input memory iteration 3) (AffineLift.value (AffineDot.mask4 (word memory iteration) 3))
+        (maddFloat (contracted 1) (input memory iteration 2) (AffineLift.value (AffineDot.mask4 (word memory iteration) 2))
+          (maddLeftFloat (contracted 0) (input memory iteration 0) (AffineLift.value (AffineDot.mask4 (word memory iteration) 0))
+            (FlushToZero.mul (input memory iteration 1) (AffineLift.value (AffineDot.mask4 (word memory iteration) 1)))))) :=
+  add_product_value contracted memory iteration 3 _ _ _
+    (add_product_value contracted memory iteration 2 _ _ _ (pair_value contracted memory iteration))
 
 attribute [local irreducible] evaluate parse
 
-theorem execution (contracted : Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32) :
+theorem execution (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) (accumulator : Float32) :
     executeSource contracted memory iteration accumulator=some
       (MlxQmv.source4 contracted (word memory iteration) (input memory iteration) accumulator) := by
   rw [executeSource,parsed_body,Option.bind_some]

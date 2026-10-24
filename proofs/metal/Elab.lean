@@ -16,7 +16,8 @@ on structural fuel.
 * The kernel is the unit's `[[kernel]]` function, instantiated at MLX's
   explicit instantiation (or the only untemplated kernel). Buffer `i` is
   region `i` (pointer parameters hold `⟨i, 0, elem⟩`, `constant` references
-  the value loaded there); attribute parameters are `coord`s.
+  the value loaded there); attribute parameters are `coord`s. A kernel-level
+  `return;` leaves the scope the body is then wrapped in.
 * Header functions are inlined at each call into a `scope`: parameters get
   fresh slots (by value; pointer parameters are local pointers), `return e`
   sets a result slot and `leave`s. Only called functions are elaborated, and
@@ -27,8 +28,37 @@ on structural fuel.
 * Types: usual arithmetic conversions per Types.lean `common`; implicit
   conversions on initialization, assignment, argument passing and return;
   `float` → `bfloat` only explicitly (implicitly it is a compile error,
-  probed), `half` only `float(h)`, no `half` arithmetic; no float → integer
-  conversion. Conditions are converted to `bool`.
+  probed), `half` only `float(h)` and `half(x)`, no `half` arithmetic; no float →
+  integer conversion. Conditions are converted to `bool`. Vectors convert only
+  explicitly and componentwise between floating element types (`float4(v)`,
+  AIR `air.convert.f.v4f32.f.v4bf16`, an exact widening); `vec<T, n>(x)`
+  fills every component; `metal::vec<T, n>` names a vector type.
+* Memory: arrays may have any number of dimensions (`a[i][j][k]`: base plus
+  each leading index times its stride in 64 bits, then the last), may hold
+  pointers (a thread array; an element reads as a pointer to `const`, and a
+  pointer to pointers is never reinterpreted), and `&` takes an element's
+  address; `p - i` is `p` offset by `-(long)i`. A vector or SIMD-group matrix
+  declared without initializer is an object in this thread's memory (a
+  one-element thread array), so its unwritten elements are undefined; `v[i]`
+  of a vector object is its element `i`. An access through a declared array
+  element's address cast to a wider vector pointer has the element's alignment
+  (clang keeps a `Decl`-sourced alignment through explicit casts:
+  `*(threadgroup vec<T, 4>*)&xs[r][c] = v` is `store <4 x T> … align 2`) and is
+  made component by component, the same bytes.
+* SIMD-group matrices (`simdgroup_float8x8`, `simdgroup_half8x8`): each lane's
+  `thread_elements()`, a `.vec s 2` (Builtins.lean). With an initializer a
+  matrix is a slot, otherwise or in an array thread memory;
+  `m.thread_elements()[i]` reads at any `i` (none past the lane's two) and is
+  written at a constant 0 or 1 of a matrix in memory;
+  `make_filled_simdgroup_matrix<T, 8, 8>(v)` is `[T(v), T(v)]`;
+  `simdgroup_multiply_accumulate(d, a, b, c)` evaluates `d`'s place, then `a`,
+  `b`, `c`, then is the SIMD-group collective `.mma` on each lane's
+  `[a, b, c]` (float `d` and `c`; `a`, `b` float or half, not both half: the
+  contract's `simdMma`, `simdMmaHalfA`, `simdMmaHalfB`), its result stored to
+  `d`.
+* `if constexpr` with a constant condition elaborates only the branch it
+  selects; a `for` step may be two expressions joined by the comma operator;
+  template parameters may be `uint`.
 * Constants: literals, template arguments, `constexpr` values and every
   operation on constants are folded (clang folds them even at -O0):
   integers exactly as Value.lean computes (undefined → rejected), floating
@@ -65,6 +95,9 @@ on structural fuel.
     narrowed: the constant's minimal type is `half`).
     A comparison of widened `bfloat`s is also narrowed by the optimizer;
     the semantics compares `bfloat` through widening, so the core keeps it.
+  - Likewise `half(op(x, y))` is rejected when `x` and `y` may both be
+    16-bit floats widened or constants (`EV.hcand`, through slots), since
+    the optimizer may compute it in `half`.
 * Sites: one counter, 1, 2, …, in elaboration order (source order, an
   inlined body at each call, dead branches included), shared by contraction
   sites, barriers and collectives; other `bin` nodes carry site 0. -/
@@ -238,18 +271,36 @@ def kneg (k : K) : Option K :=
 /-! ## Types and environments -/
 
 /-- Types of values during elaboration: a pointer records its address space
-and whether its pointee is `const`. -/
+and whether its pointee is `const`; a SIMD-group matrix of element type `s` is
+held as the lane's `thread_elements()`, a `.vec s 2`. -/
 inductive ETy where
   | scalar (s : Scalar)
   | vec (s : Scalar) (n : Nat)
   | ptr (space : Space) (const : Bool) (elem : Ty)
   | void
+  | mat (s : Scalar)
 deriving DecidableEq, Repr, Inhabited
 
+/-- The type of a value read from memory of type `t`. A pointer kept in memory
+(an array of pointers) is read as a pointer to `const`: the element's own
+qualifier is not kept, so writes through it are rejected. -/
 def ETy.ofTy : Ty → ETy
   | .scalar s => .scalar s
   | .vec s n => .vec s n
-  | .ptr sp e => .ptr sp false e
+  | .ptr sp e => .ptr sp true e
+
+/-- The memory layout of a value of elaboration type `t`. -/
+def ETy.ty : ETy → Option Ty
+  | .scalar s => some (.scalar s)
+  | .vec s n => some (.vec s n)
+  | .ptr sp _ e => some (.ptr sp e)
+  | .mat s => some (.vec s 2)
+  | .void => none
+
+/-- Natural alignment (Run.lean `alignment`). -/
+def natAlign : Ty → Nat
+  | .scalar s => s.bytes
+  | t => t.bytes
 
 inductive Bind where
   /-- A local in `slot`. -/
@@ -261,6 +312,11 @@ inductive Bind where
   | coord (c : Coord) (t : ETy)
   /-- A template type parameter. -/
   | type (s : Scalar)
+  /-- A vector or matrix declared without initializer: an object of type `t` in
+  this thread's memory (a one-element thread array), `slot` its address. -/
+  | obj (slot : Nat) (t : ETy)
+  /-- An array of matrices (thread memory, `.vec s 2` elements). -/
+  | matArray (slot : Nat) (s : Scalar) (extents : List Nat)
 deriving Inhabited
 
 abbrev Env := List (List Char × Bind)
@@ -281,6 +337,26 @@ def elemTy (env : Env) (n : List Char) : Option Ty :=
       | some (.type s) => some (.scalar s)
       | _ => none
 
+/-- The value type a type spec names (its pointer declarator aside):
+`metal::vec<T, k>` a vector, a SIMD-group matrix name a matrix. -/
+def valTy (env : Env) (ts : TypeSpec) : Option ETy :=
+  match ts.vec with
+  | some k =>
+    match elemTy env ts.name with
+    | some (.scalar s) => if 2 ≤ k ∧ k ≤ 4 then some (.vec s k) else none
+    | _ => none
+  | none =>
+    match Builtins.matrixOfName ts.name with
+    | some s => some (.mat s)
+    | none => (elemTy env ts.name).map ETy.ofTy
+
+/-- The element type of a pointer or array a type spec names: a scalar or vector. -/
+def ptrElem (env : Env) (ts : TypeSpec) : Option Ty :=
+  match valTy env ts with
+  | some (.scalar s) => some (.scalar s)
+  | some (.vec s k) => some (.vec s k)
+  | _ => none
+
 inductive Decl where
   | auto
   | ty (t : ETy)
@@ -289,11 +365,11 @@ inductive Decl where
 def declTy (env : Env) (ts : TypeSpec) : Option Decl :=
   if ts.pointer then do
     let sp ← ts.space
-    let e ← elemTy env ts.name
+    let e ← ptrElem env ts
     pure (.ty (.ptr sp ts.const e))
-  else if same ts.name chars!"auto" then (if ts.space.isNone then some .auto else none)
-  else if same ts.name chars!"void" then some (.ty .void)
-  else (elemTy env ts.name).map fun e => .ty (ETy.ofTy e)
+  else if ts.vec.isNone && same ts.name chars!"auto" then (if ts.space.isNone then some .auto else none)
+  else if ts.vec.isNone && same ts.name chars!"void" then some (.ty .void)
+  else (valTy env ts).map .ty
 
 def component (f : List Char) : Option Nat :=
   if same f ['x'] then some 0 else if same f ['y'] then some 1
@@ -319,6 +395,11 @@ structure St where
   (sticky, in elaboration order). -/
   wide : List Nat := []
   cand : List Nat := []
+  /-- Slots that may hold a value the optimizer may narrow to `half` (below). -/
+  hwide : List Nat := []
+  hcand : List Nat := []
+  /-- The kernel body returns (a kernel-level `return`). -/
+  kret : Bool := false
 
 abbrev M := StateT St Option
 
@@ -353,6 +434,16 @@ structure EV where
   narrow : Option (Core.BinOp × CExpr × CExpr) := none
   /-- The optimizer might narrow a conversion of `e` to `bfloat`. -/
   cand : Bool := false
+  /-- To the optimizer `e` may be a 16-bit float widened to `float`, or a constant
+  (whose minimal type may be `half`). -/
+  hwide : Bool := false
+  /-- The optimizer might narrow a conversion of `e` to `half` (an operation on
+  two `hwide` operands). -/
+  hcand : Bool := false
+  /-- A pointer to an element of a declared array (or one cast from it): accesses
+  through it are aligned only to this many bytes (clang's alignment of a
+  `Decl`-sourced address, kept through explicit casts). -/
+  declAlign : Option Nat := none
 deriving Inhabited
 
 /-- A binary32 constant that is exactly a binary16 value. -/
@@ -366,18 +457,22 @@ def fitsHalf (w : Nat) : Bool :=
   | none => false
 
 def ofK (k : K) : EV :=
-  { e := .lit k.val, t := .scalar k.s, k := some k, maybeWide := k.s == .f32 && !fitsHalf k.w }
+  { e := .lit k.val, t := .scalar k.s, k := some k, maybeWide := k.s == .f32 && !fitsHalf k.w,
+    hwide := k.s == .f32 }
 
 /-- `slot := v`, noting what the slot may hold. -/
 def assign (slot : Nat) (v : EV) : M (List CStmt) := do
   modify fun s => { s with
     wide := if v.maybeWide then slot :: s.wide else s.wide
-    cand := if v.cand then slot :: s.cand else s.cand }
+    cand := if v.cand then slot :: s.cand else s.cand
+    hwide := if v.hwide then slot :: s.hwide else s.hwide
+    hcand := if v.hcand then slot :: s.hcand else s.hcand }
   pure (v.pre ++ [.set slot v.e])
 
 def readVar (slot : Nat) (t : ETy) : M EV := do
   let s ← get
-  pure { e := .local slot, t, maybeWide := memNat slot s.wide, cand := memNat slot s.cand }
+  pure { e := .local slot, t, maybeWide := memNat slot s.wide, cand := memNat slot s.cand,
+         hwide := memNat slot s.hwide, hcand := memNat slot s.hcand }
 
 /-- No memory read in `e`: its value cannot change under other statements
 (those of calls write only fresh slots and memory). -/
@@ -396,7 +491,8 @@ def stable (e : CExpr) : Bool := noLoad 1000 e
 def spill (v : EV) : M EV := do
   let slot ← fresh
   let ss ← assign slot v
-  pure { pre := ss, e := .local slot, t := v.t, maybeWide := v.maybeWide, cand := v.cand }
+  pure { pre := ss, e := .local slot, t := v.t, maybeWide := v.maybeWide, cand := v.cand, hwide := v.hwide,
+         hcand := v.hcand }
 
 /-! ## Conversions -/
 
@@ -407,7 +503,7 @@ def convOk (implicit : Bool) (a b : Scalar) : Bool :=
   if a == b then true
   else if isIntLike a then isIntLike b || b == .f32 || b == .bf16
   else if a == .bf16 then b == .f32
-  else if a == .f32 then !implicit && b == .bf16
+  else if a == .f32 then !implicit && (b == .bf16 || b == .f16)
   else if a == .f16 then !implicit && b == .f32
   else false
 
@@ -418,23 +514,45 @@ def convScalar (opt : Bool) (t : Scalar) (v : EV) : M EV := do
   | some k => return { ofK (← lift (convK t k)) with pre := v.pre }
   | none => pure ()
   if s == .bf16 && t == .f32 then
-    return { pre := v.pre, e := .conv .f32 v.e, t := .scalar .f32, wide := some v.e, maybeWide := true }
+    return { pre := v.pre, e := .conv .f32 v.e, t := .scalar .f32, wide := some v.e, maybeWide := true, hwide := true }
+  if s == .f16 && t == .f32 then
+    return { pre := v.pre, e := .conv .f32 v.e, t := .scalar .f32, hwide := true }
   if s == .f32 && t == .bf16 && opt then
     match v.narrow with
     | some (op, a, b) => return { pre := v.pre, e := .bin op .bf16 0 a b, t := .scalar .bf16 }
     | none => if v.cand then failure
+  -- Narrowing to `half` of an operation the optimizer might narrow: rejected.
+  if s == .f32 && t == .f16 && opt && v.hcand then failure
   return { pre := v.pre, e := .conv t v.e, t := .scalar t }
 
+def isPtrTy : Ty → Bool
+  | .ptr .. => true
+  | _ => false
+
+/-- Conversion of `v` to `t`: scalars per `convOk`; vectors explicitly
+componentwise (`float4(h4)`, AIR `air.convert`) and a scalar explicitly to every
+component (`vec<T, 4>(0)`); pointers within an address space (a pointer
+reinterpretation only explicitly, never of a pointer to pointers). -/
 def convTo (opt implicit : Bool) (t : ETy) (v : EV) : M EV :=
   match t, v.t with
   | .scalar b, .scalar a => if convOk implicit a b then convScalar opt b v else failure
-  | .vec s n, .vec s' n' => if s == s' && n == n' then pure v else failure
+  | .vec s n, .vec s' n' =>
+    if s == s' && n == n' then pure v
+    else if n == n' && !implicit && convOk false s' s && (isFloat s && isFloat s') then
+      pure { pre := v.pre, e := .conv s v.e, t := t }
+    else failure
+  | .vec s n, .scalar a => do
+    if implicit || !convOk false a s then failure
+    let x ← convScalar opt s v
+    let x ← if stable x.e then pure x else spill x
+    pure { pre := x.pre, e := .vector s (List.replicate n x.e), t := t }
+  | .mat s, .mat s' => if s == s' then pure v else failure
   | .ptr sp c e, .ptr sp' c' e' =>
     if sp != sp' then failure
     else if e == e' then
-      (if implicit && c' && !c then failure else pure { pre := v.pre, e := v.e, t := t })
-    else if implicit then failure
-    else pure { pre := v.pre, e := .ptrCast e v.e, t := t }
+      (if implicit && c' && !c then failure else pure { pre := v.pre, e := v.e, t := t, declAlign := v.declAlign })
+    else if implicit || isPtrTy e || isPtrTy e' then failure
+    else pure { pre := v.pre, e := .ptrCast e v.e, t := t, declAlign := v.declAlign }
   | _, _ => failure
 
 def toBool (opt : Bool) (v : EV) : M EV :=
@@ -484,7 +602,7 @@ def scalarBin (opt : Bool) (op : Core.BinOp) (c : Scalar) (a b : EV) : M EV := d
       | some r =>
         let m : CExpr := .bin .mul c 0 a.e (.lit (K.val ⟨c, r⟩))
         return { pre, e := if c == .f32 then .conv .f32 m else m, t := rt,
-                 cand := c == .f32 && a.maybeWide && !fitsHalf r }
+                 cand := c == .f32 && a.maybeWide && !fitsHalf r, hcand := c == .f32 && a.hwide }
       | none => pure ()
     let contract := (op == .add || op == .sub) && (a.mul || b.mul)
     if contract && c == .bf16 then failure
@@ -495,7 +613,7 @@ def scalarBin (opt : Bool) (op : Core.BinOp) (c : Scalar) (a b : EV) : M EV := d
          | _, _ => none)
       else none
     return { pre, e := .bin op c site a.e b.e, t := rt, mul := op == .mul, narrow,
-             cand := c == .f32 && a.maybeWide && b.maybeWide }
+             cand := c == .f32 && a.maybeWide && b.maybeWide, hcand := c == .f32 && a.hwide && b.hwide }
 
 /-- A binary operator other than `&&`, `||`: pointer arithmetic, shifts
 (operands promoted separately), the usual arithmetic conversions. -/
@@ -504,6 +622,13 @@ def arith (opt : Bool) (op : Metal.BinOp) (a b : EV) : M EV := do
   match a.t, b.t with
   | .ptr .., .scalar s =>
     if cop == .add && s.isInt then return { pre := a.pre ++ b.pre, e := .offset a.e b.e, t := a.t }
+    -- `p - i`: `p` offset by `-(i64)i` (clang: `sub i64 0, ext i`, then the element pointer).
+    if cop == .sub && s.isInt then
+      let x ← convScalar opt .i64 b
+      let nx ← match x.k with
+        | some k => do pure (ofK (← lift (kneg k))).e
+        | none => pure (CExpr.un .neg .i64 x.e)
+      return { pre := a.pre ++ x.pre, e := .offset a.e nx, t := a.t }
     failure
   | .scalar s, .ptr .. =>
     if cop == .add && s.isInt then return { pre := a.pre ++ b.pre, e := .offset b.e a.e, t := b.t }
@@ -553,20 +678,54 @@ def condType : ETy → ETy → Option ETy
 /-- What an expression designates. -/
 inductive Place where
   | var (slot : Nat) (t : ETy) (mutable : Bool)
-  /-- Memory at pointer `p` (after `pre`). -/
-  | mem (pre : List CStmt) (p : CExpr) (elem : Ty) (const : Bool)
+  /-- Memory at pointer `p` (after `pre`) in `space`; accesses aligned to
+  `align` when the address is a declared array element's (`EV.declAlign`). -/
+  | mem (pre : List CStmt) (p : CExpr) (elem : Ty) (const : Bool) (space : Space) (align : Option Nat)
+  /-- A SIMD-group matrix in this thread's memory at `p` (a `.vec s 2`). -/
+  | mat (pre : List CStmt) (p : CExpr) (s : Scalar)
   | value (v : EV)
+
+/-- Element `i` of the vector or matrix of element type `s` at `p`. -/
+def elemAt (s : Scalar) (p : CExpr) (i : Nat) : CExpr := .offset (.ptrCast (.scalar s) p) (.lit (.int .i32 i))
+def compAt (e : CExpr) (i : Nat) : CExpr := .component e (.lit (.int .u32 i))
+
+/-- How an access of `elem` aligned to `align` happens: whole (`none`), or a
+vector below its natural alignment component by component (clang's access of
+an under-aligned vector; the same bytes). -/
+def splitOf (elem : Ty) (align : Option Nat) : M (Option (Scalar × Nat)) :=
+  match align with
+  | some a =>
+    if a < natAlign elem then
+      match elem with
+      | .vec s n => if s.bytes ≤ a then pure (some (s, n)) else failure
+      | _ => failure
+    else pure none
+  | none => pure none
+
+def readMem (p : CExpr) (elem : Ty) (align : Option Nat) : M CExpr := do
+  match ← splitOf elem align with
+  | none => pure (.load elem p)
+  | some (s, n) => pure (.vector s ((List.range n).map fun i => .load (.scalar s) (elemAt s p i)))
 
 def write (opt : Bool) (pl : Place) (v : EV) : M (List CStmt) :=
   match pl with
   | .var slot t m => do
     if !m then failure
     assign slot (← convTo opt true t v)
-  | .mem pre p elem c => do
+  | .mem pre p elem c _ al => do
     if c then failure
     let v ← convTo opt true (ETy.ofTy elem) v
+    match ← splitOf elem al with
+    | none =>
+      let v ← if !pre.isEmpty && !stable v.e then spill v else pure v
+      pure (v.pre ++ pre ++ [.store elem p v.e])
+    | some (s, n) =>
+      let v ← if !stable v.e then spill v else pure v
+      pure (v.pre ++ pre ++ (List.range n).map fun i => .store (.scalar s) (elemAt s p i) (compAt v.e i))
+  | .mat pre p s => do
+    let v ← convTo opt true (.mat s) v
     let v ← if !pre.isEmpty && !stable v.e then spill v else pure v
-    pure (v.pre ++ pre ++ [.store elem p v.e])
+    pure (v.pre ++ pre ++ [.store (.vec s 2) p v.e])
   | .value _ => failure
 
 /-- `place op= v` (C++: computed in the common type, converted back). -/
@@ -577,14 +736,14 @@ def compound (opt : Bool) (pl : Place) (op : Metal.BinOp) (v : EV) : M (List CSt
     let cur ← readVar slot t
     let r ← arith opt op { cur with pre := v.pre } { v with pre := [] }
     assign slot (← convTo opt true t r)
-  | .mem pre p elem c => do
-    if c then failure
+  | .mem pre p elem c _ al => do
+    if c || al.any (· < natAlign elem) then failure
     let v ← if !pre.isEmpty && !stable v.e then spill v else pure v
     let cur : EV := { pre := v.pre ++ pre, e := .load elem p, t := ETy.ofTy elem }
     let r ← arith opt op cur { v with pre := [] }
     let r ← convTo opt true (ETy.ofTy elem) r
     pure (r.pre ++ [.store elem p r.e])
-  | .value _ => failure
+  | .mat .. | .value _ => failure
 
 def findFunc (fs : List Func) (n : List Char) : Option Func :=
   match fs.filter fun f => same f.name n with
@@ -592,7 +751,36 @@ def findFunc (fs : List Func) (n : List Char) : Option Func :=
   | _ => none
 
 def tparamName : TParam → List Char
-  | .type n | .int n | .bool n => n
+  | .type n | .int n | .bool n | .uint n => n
+
+/-- An array access `a[i₁]…[iₖ]`: the array's name and the indices. -/
+def indexChain : Nat → Expr → Option (List Char × List Expr)
+  | 0, _ => none
+  | f + 1, .index a i => (indexChain f a).map fun (n, is) => (n, is ++ [i])
+  | _ + 1, .name [n] => some (n, [])
+  | _ + 1, _ => none
+
+/-- The strides of an array's leading dimensions: each the product of the extents after it. -/
+def strides : List Nat → List Nat
+  | [] | [_] => []
+  | _ :: ds => ds.foldl (· * ·) 1 :: strides ds
+
+/-- `base` offset by `i₁·stride₁ + … + iₖ` (array indices `vs`): each of the
+first k-1 indices converted to 64 bits and multiplied by its stride. -/
+def rowsOffset (opt : Bool) (base : CExpr) : List Nat → List EV → M (List CStmt × CExpr)
+  | [], [v] => do
+    let .scalar si := v.t | failure
+    if !si.isInt then failure
+    pure (v.pre, .offset base v.e)
+  | st :: sts, v :: vs => do
+    let .scalar su := v.t | failure
+    if !su.isInt then failure
+    let w : Scalar := if su.isSigned then .i64 else .u64
+    let row ← scalarBin opt .mul w (← convScalar opt w v) (ofK ⟨w, st⟩)
+    let (pre, p) ← rowsOffset opt (.offset base row.e) sts vs
+    if !pre.isEmpty && !stable row.e then failure
+    pure (row.pre ++ pre, p)
+  | _, _ => failure
 
 /-! ## Expressions and statements -/
 
@@ -612,7 +800,9 @@ def expr (fuel : Nat) (ctx : Ctx) (env : Env) (x : Expr) : M EV :=
     if same n chars!"INFINITY" then pure (ofK ⟨.f32, infinityBits⟩) else
     match find env n with
     | some (.var slot t _) => readVar slot t
-    | some (.array slot sp elem [_]) => pure { e := .local slot, t := .ptr sp false elem }
+    | some (.array slot sp elem [_]) =>
+      pure { e := .local slot, t := .ptr sp false elem, declAlign := some (natAlign elem) }
+    | some (.obj slot t) => do pure { e := .load (← lift t.ty) (.local slot), t }
     | some (.const t k) => pure { ofK k with t }
     | some (.coord c t) => pure { e := .coord c, t }
     | _ => failure
@@ -623,6 +813,10 @@ def expr (fuel : Nat) (ctx : Ctx) (env : Env) (x : Expr) : M EV :=
     | some k => pure { ofK (kbool (k.w == 0)) with pre := v.pre }
     | none => pure { pre := v.pre, e := .un .not .bool v.e, t := .scalar .bool }
   | .unary .bitNot a => do bitNot ctx.opt (← expr fuel ctx env a)
+  | .unary .addr a => do
+    match ← place fuel ctx env a with
+    | .mem pre p elem c sp al => pure { pre, e := p, t := .ptr sp c elem, declAlign := al }
+    | _ => failure
   | .binary .and a b => logic fuel ctx env true a b
   | .binary .or a b => logic fuel ctx env false a b
   | .binary op a b => do
@@ -646,7 +840,8 @@ def expr (fuel : Nat) (ctx : Ctx) (env : Env) (x : Expr) : M EV :=
   | .index .. | .unary .deref _ => do
     match ← place fuel ctx env x with
     | .var slot t _ => readVar slot t
-    | .mem pre p elem _ => pure { pre, e := .load elem p, t := ETy.ofTy elem }
+    | .mem pre p elem _ _ al => do pure { pre, e := ← readMem p elem al, t := ETy.ofTy elem }
+    | .mat pre p s => pure { pre, e := .load (.vec s 2) p, t := .mat s }
     | .value v => pure v
   | _ => failure
 
@@ -700,27 +895,76 @@ def place (fuel : Nat) (ctx : Ctx) (env : Env) (x : Expr) : M Place :=
   | .name [n] =>
     match find env n with
     | some (.var slot t m) => pure (.var slot t m)
+    | some (.obj slot (.mat s)) => pure (.mat [] (.local slot) s)
+    | some (.obj slot t) => do pure (.mem [] (.local slot) (← lift t.ty) false .thread none)
     | _ => do pure (.value (← expr fuel ctx env x))
   | .unary .deref p => do
     let v ← expr fuel ctx env p
-    let .ptr _ c e := v.t | failure
-    pure (.mem v.pre v.e e c)
-  | .index (.index (.name [n]) u) i =>
-    match find env n with
-    | some (.array slot _ elem [_, inner]) => do
-      -- `a[u][i]` of `T a[U][inner]`: base + u·inner (in 64 bits) + i.
-      let vu ← expr fuel ctx env u
-      let vi ← expr fuel ctx env i
-      let .scalar su := vu.t | failure
-      let .scalar si := vi.t | failure
-      if !su.isInt || !si.isInt then failure
-      let w : Scalar := if su.isSigned then .i64 else .u64
-      let row ← scalarBin ctx.opt .mul w (← convScalar ctx.opt w vu) (ofK ⟨w, inner⟩)
-      if !vi.pre.isEmpty && !stable row.e then failure
-      pure (.mem (row.pre ++ vi.pre) (.offset (.offset (.local slot) row.e) vi.e) elem false)
-    | _ => subscript fuel ctx env (.index (.name [n]) u) i
-  | .index a i => subscript fuel ctx env a i
+    let .ptr sp c e := v.t | failure
+    pure (.mem v.pre v.e e c sp v.declAlign)
+  | .index (.call (.member m f) [] []) i =>
+    if same f chars!"thread_elements" then elements fuel ctx env m i
+    else subscript fuel ctx env (.call (.member m f) [] []) i
+  | .index a i =>
+    match indexChain 1000 x with
+    | some (n, is) =>
+      match find env n with
+      | some (.array slot sp elem ns) =>
+        -- `a[i₁]…[iₖ]` of `T a[d₁]…[dₖ]` (k ≥ 2): base + iⱼ·strideⱼ (in 64 bits) for j < k, + iₖ.
+        if 2 ≤ ns.length && is.length == ns.length then do
+          let (pre, p) ← rowsOffset ctx.opt (.local slot) (strides ns) (← exprList fuel ctx env is)
+          pure (.mem pre p elem false sp (some (natAlign elem)))
+        else subscript fuel ctx env a i
+      | some (.matArray slot s ns) =>
+        if is.length == ns.length then do
+          let (pre, p) ← rowsOffset ctx.opt (.local slot) (strides ns) (← exprList fuel ctx env is)
+          pure (.mat pre p s)
+        else failure
+      | some (.obj slot (.vec s _)) =>
+        if is.length == 1 then do
+          -- Component `i` of a vector in thread memory: past the object no access is defined.
+          let vi ← expr fuel ctx env i
+          let .scalar si := vi.t | failure
+          if !si.isInt then failure
+          pure (.mem vi.pre (.offset (.ptrCast (.scalar s) (.local slot)) vi.e) (.scalar s) false .thread none)
+        else failure
+      | _ => subscript fuel ctx env a i
+    | none => subscript fuel ctx env a i
   | _ => do pure (.value (← expr fuel ctx env x))
+
+/-- `m.thread_elements()[i]`: of a matrix in a slot, a value; of one in thread
+memory, the element (a place) for a constant `i` ∈ {0, 1}, else the value
+(no element past the lane's two). -/
+def elements (fuel : Nat) (ctx : Ctx) (env : Env) (m i : Expr) : M Place :=
+  match fuel with
+  | 0 => failure
+  | fuel + 1 => do
+  let pl ← place fuel ctx env m
+  let vi ← expr fuel ctx env i
+  let .scalar si := vi.t | failure
+  if !si.isInt then failure
+  match pl with
+  | .var slot (.mat s) _ => pure (.value { pre := vi.pre, e := .component (.local slot) vi.e, t := .scalar s })
+  | .mat pre p s =>
+    if !vi.pre.isEmpty && !stable p then failure
+    match vi.k with
+    | some k =>
+      if k.int = 0 ∨ k.int = 1 then pure (.mem (pre ++ vi.pre) (elemAt s p k.int.toNat) (.scalar s) false .thread none)
+      else failure
+    | none => pure (.value { pre := pre ++ vi.pre, e := .component (.load (.vec s 2) p) vi.e, t := .scalar s })
+  | _ => failure
+
+/-- Expressions, left to right. -/
+def exprList (fuel : Nat) (ctx : Ctx) (env : Env) (xs : List Expr) : M (List EV) :=
+  match fuel with
+  | 0 => failure
+  | fuel + 1 =>
+  match xs with
+  | [] => pure []
+  | x :: rest => do
+    let v ← expr fuel ctx env x
+    let vs ← exprList fuel ctx env rest
+    pure (v :: vs)
 
 /-- `a[i]`: a pointer (or decayed array) element, or a vector component. -/
 def subscript (fuel : Nat) (ctx : Ctx) (env : Env) (a i : Expr) : M Place :=
@@ -731,8 +975,8 @@ def subscript (fuel : Nat) (ctx : Ctx) (env : Env) (a i : Expr) : M Place :=
   let vi ← expr fuel ctx env i
   let va ← if !vi.pre.isEmpty && !stable va.e then spill va else pure va
   match va.t, vi.t with
-  | .ptr _ c e, .scalar s =>
-    if s.isInt then pure (.mem (va.pre ++ vi.pre) (.offset va.e vi.e) e c) else failure
+  | .ptr sp c e, .scalar s =>
+    if s.isInt then pure (.mem (va.pre ++ vi.pre) (.offset va.e vi.e) e c sp va.declAlign) else failure
   | .vec s _, .scalar si =>
     if si.isInt then pure (.value { pre := va.pre ++ vi.pre, e := .component va.e vi.e, t := .scalar s })
     else failure
@@ -779,6 +1023,41 @@ def builtinOrInline (fuel : Nat) (ctx : Ctx) (env : Env) (path : List (List Char
   match fuel with
   | 0 => failure
   | fuel + 1 =>
+  match Builtins.matFn path with
+  | some .fill => do
+    -- `make_filled_simdgroup_matrix<T, 8, 8>(v)`: both of the lane's elements `T(v)`.
+    let [.type t, .expr r, .expr c] := ts | failure
+    let some (.ty (.scalar s)) := declTy env t | failure
+    let vr ← expr fuel ctx env r
+    let vc ← expr fuel ctx env c
+    if !(vr.pre.isEmpty && vc.pre.isEmpty && vr.k.map K.int == some 8 && vc.k.map K.int == some 8) then failure
+    let [a] := args | failure
+    let v ← convTo ctx.opt true (.scalar s) (← expr fuel ctx env a)
+    let v ← if stable v.e then pure v else spill v
+    pure { pre := v.pre, e := .vector s [v.e, v.e], t := .mat s }
+  | some .mma => do
+    -- `simdgroup_multiply_accumulate(d, a, b, c)`: `d`'s address, then `a`, `b`, `c`; the
+    -- collective over the lanes' `[a, b, c]`; its result stored to `d`.
+    if !ts.isEmpty then failure
+    let [d, a, b, c] := args | failure
+    let pd ← place fuel ctx env d
+    let vs ← argList fuel ctx env [a, b, c]
+    let [va, vb, vc] := vs | failure
+    let .mat sa := va.t | failure
+    let .mat sb := vb.t | failure
+    let .mat .f32 := vc.t | failure
+    if !((sa == .f32 && (sb == .f32 || sb == .f16)) || (sa == .f16 && sb == .f32)) then failure
+    let pre := va.pre ++ vb.pre ++ vc.pre
+    let slot ← fresh
+    let site ← freshSite
+    let coll := CStmt.collective site slot (.mma sa sb) .f32 (.vector .f32 [va.e, vb.e, vc.e]) (.lit (.int .u16 0))
+    match pd with
+    | .var ds (.mat .f32) true => pure { pre := pre ++ [coll, .set ds (.local slot)], e := .lit (.bool true), t := .void }
+    | .mat dpre p .f32 =>
+      if !pre.isEmpty && !stable p then failure
+      pure { pre := dpre ++ pre ++ [coll, .store (.vec .f32 2) p (.local slot)], e := .lit (.bool true), t := .void }
+    | _ => failure
+  | none =>
   match Builtins.fn path with
   | some .threadgroupBarrier => do
     if !ts.isEmpty then failure
@@ -843,6 +1122,11 @@ def bindTemplate (fuel : Nat) (ctx : Ctx) (env : Env) (ps : List TParam) (as : L
         if !v.pre.isEmpty then failure
         let k ← lift (v.k.bind (convK .i32))
         pure (Bind.const (.scalar .i32) k)
+      | .uint _, .expr e => do
+        let v ← expr fuel ctx env e
+        if !v.pre.isEmpty then failure
+        let k ← lift (v.k.bind (convK .u32))
+        pure (Bind.const (.scalar .u32) k)
       | .bool _, .expr e => do
         let v ← expr fuel ctx env e
         if !v.pre.isEmpty then failure
@@ -886,6 +1170,7 @@ def exprStmt (fuel : Nat) (ctx : Ctx) (env : Env) (x : Expr) : M (List CStmt) :=
   | .step inc _ target => do
     compound ctx.opt (← place fuel ctx env target) (if inc then .add else .sub) (ofK ⟨.i32, 1⟩)
   | .call f ts args => do pure (← call fuel ctx env f ts args).pre
+  | .comma a b => do pure ((← exprStmt fuel ctx env a) ++ (← exprStmt fuel ctx env b))
   | _ => failure
 
 def extents (fuel : Nat) (ctx : Ctx) (env : Env) (xs : List Expr) : M (List Nat) :=
@@ -919,13 +1204,21 @@ def decl (fuel : Nat) (ctx : Ctx) (env : Env) (cx : Bool) (ts : TypeSpec) (d : D
     let v ← convTo ctx.opt true t v
     pure ((d.name, .const t (← lift v.k)) :: env, [])
   else if !d.extents.isEmpty then do
-    -- An array: a numbered allocation (thread or threadgroup), `= {…}` zero-filled.
-    if ts.pointer || ts.const then failure
-    let elem ← lift (elemTy env ts.name)
-    let group ← match ts.space with
+    -- An array: a numbered allocation (thread or threadgroup), `= {…}` zero-filled; of
+    -- pointers or of SIMD-group matrices, a thread array without initializer.
+    let mat := if ts.pointer || ts.vec.isSome then none else Builtins.matrixOfName ts.name
+    let elem ← if ts.pointer then do
+        let sp ← lift ts.space
+        pure (Ty.ptr sp (← lift (ptrElem env ts)))
+      else if ts.const then failure
+      else match mat with
+        | some s => pure (.vec s 2)
+        | none => lift (ptrElem env ts)
+    let group ← if ts.pointer then pure false else match ts.space with
       | some .threadgroup => pure true
       | none | some .thread => pure false
       | _ => failure
+    if (ts.pointer || mat.isSome) && (group || d.init.isSome) then failure
     let ns ← extents fuel ctx env d.extents
     let count := ns.foldl (· * ·) 1
     let st ← get
@@ -945,8 +1238,10 @@ def decl (fuel : Nat) (ctx : Ctx) (env : Env) (cx : Bool) (ts : TypeSpec) (d : D
           CStmt.store (.scalar s) (.offset (.local slot) (.lit (.int .i32 i)))
             ((vs[i]?.map (·.e)).getD (.lit zero.val)))
       | some (.expr _) => failure
-    pure ((d.name, .array slot (if group then .threadgroup else .thread) elem ns) :: env,
-      .array slot group index elem :: inits)
+    let b : Bind := match mat with
+      | some s => .matArray slot s ns
+      | none => .array slot (if group then .threadgroup else .thread) elem ns
+    pure ((d.name, b) :: env, .array slot group index elem :: inits)
   else do
     let dt ← lift (declTy env ts)
     if !ts.pointer && !(ts.space.isNone || ts.space == some .thread) then failure
@@ -964,9 +1259,24 @@ def decl (fuel : Nat) (ctx : Ctx) (env : Env) (cx : Bool) (ts : TypeSpec) (d : D
     | none =>
       let .ty t := dt | failure
       if t == .void || ts.const then failure
-      let slot ← fresh
-      modify fun s => { s with wide := slot :: s.wide, cand := slot :: s.cand }
-      pure ((d.name, .var slot t true) :: env, [])
+      match t with
+      | .vec _ _ | .mat _ => do
+        -- Without initializer a vector or matrix is an object in this thread's memory
+        -- (a one-element thread array), so that its unwritten elements are undefined.
+        let ty ← lift t.ty
+        let st ← get
+        let index := st.thread.length
+        set { st with thread := st.thread ++ [(ty, 1)] }
+        let slot ← fresh
+        pure ((d.name, .obj slot t) :: env, [.array slot false index ty])
+      | _ => do
+        let slot ← fresh
+        modify fun s => { s with
+          wide := slot :: s.wide
+          cand := slot :: s.cand
+          hwide := slot :: s.hwide
+          hcand := slot :: s.hcand }
+        pure ((d.name, .var slot t true) :: env, [])
     | some (.braces _) => failure
 
 def decls (fuel : Nat) (ctx : Ctx) (env : Env) (cx : Bool) (ts : TypeSpec) (ds : List Declarator) :
@@ -1018,13 +1328,28 @@ def stmt (fuel : Nat) (ctx : Ctx) (env : Env) (s : Stmt) : M (Env × List CStmt)
   | .continue_ => if ctx.loop then pure (env, [.continue_]) else failure
   | .break_ => if ctx.loop then pure (env, [.break_]) else failure
   | .ret v => do
-    let some (slot, t) := ctx.ret | failure
+    -- A `return;` of the kernel body leaves the scope the kernel's body is wrapped in.
+    let some (slot, t) := ctx.ret | (if v.isNone then do modify fun s => { s with kret := true }; pure (env, [.leave])
+                                    else failure)
     match v with
     | none => if t == .void then pure (env, [.leave]) else failure
     | some e => do
       let ss ← assign slot (← convTo ctx.opt true t (← expr fuel ctx env e))
       pure (env, ss ++ [.leave])
   | .pragma _ b => stmt fuel ctx env b
+  | .ifConstexpr c th el => do
+    -- Only the selected branch is instantiated.
+    let vc ← toBool ctx.opt (← expr fuel ctx env c)
+    let some k := vc.k | failure
+    if !vc.pre.isEmpty then failure
+    if k.w == 1 then do
+      let (_, ts) ← stmt fuel ctx env th
+      pure (env, ts)
+    else match el with
+      | some e => do
+        let (_, es) ← stmt fuel ctx env e
+        pure (env, es)
+      | none => pure (env, [])
   | .empty => pure (env, [])
 
 def stmts (fuel : Nat) (ctx : Ctx) (env : Env) (ss : List Stmt) : M (Env × List CStmt) :=
@@ -1049,7 +1374,7 @@ def kernelParams : Env → Nat → List Param → M (Env × List CStmt × Nat)
   | env, n, p :: ps =>
     match p.attr with
     | some (.buffer i) => do
-      if i != n then failure
+      if i != n || p.t.vec.isSome then failure
       let elem ← lift (elemTy env p.t.name)
       let slot ← fresh
       if p.t.pointer then
@@ -1064,7 +1389,7 @@ def kernelParams : Env → Nat → List Param → M (Env × List CStmt × Nat)
     | some (.builtin a) => do
       let (c, ty) ← lift (coord a)
       if p.t.pointer || p.reference || p.t.space.isSome then failure
-      if elemTy env p.t.name != some ty then failure
+      if p.t.vec.isSome || elemTy env p.t.name != some ty then failure
       kernelParams ((p.name, .coord c (ETy.ofTy ty)) :: env) n ps
     | none => failure
 
@@ -1078,20 +1403,31 @@ def split (name : List Char) : List Top → List Func → Option (List Func × F
     else split name rest (f :: before)
   | _ :: rest, before => split name rest before
 
+/-- The kernel to elaborate: the name and template arguments of MLX's explicit
+instantiation, or the only untemplated kernel. -/
+def instanceOf (unit : List Top) : Option (List Char × List TArg) :=
+  match unit.filterMap (fun | .instantiate _ n ts => some (n, ts) | _ => none),
+      unit.filterMap (fun | .func f => if f.kernel then some f.name else none | _ => none) with
+  | [(n, ts)], _ => some (n, ts)
+  | [], [n] => some (n, [])
+  | _, _ => none
+
+/-- The kernel `k` (after the functions `funcs`) with its template parameters
+bound in `tenv`: its parameters, then its body (wrapped in a scope when it
+returns). -/
+def kernelBody (opt : Bool) (funcs : List Func) (k : Func) (tenv : Env) : M (List CStmt × Nat) := do
+  let (env, ps, buffers) ← kernelParams tenv 0 k.params
+  let (_, body) ← stmts fuel { funcs, opt } env k.body
+  let st ← get
+  pure (ps ++ (if st.kret then [.scope body] else body), buffers)
+
 def kernelOf (opt : Bool) (unit : List Top) : Option Kernel := do
-  let insts := unit.filterMap fun | .instantiate _ n ts => some (n, ts) | _ => none
-  let (name, targs) ← match insts, unit.filterMap (fun | .func f => if f.kernel then some f.name else none | _ => none) with
-    | [(n, ts)], _ => some (n, ts)
-    | [], [n] => some (n, [])
-    | _, _ => none
+  let (name, targs) ← instanceOf unit
   let (funcs, k) ← split name unit []
   if !same k.result.name chars!"void" || k.result.pointer then none
-  let ctx : Ctx := { funcs, opt }
   let run : M (List CStmt × Nat) := do
-    let tenv ← bindTemplate fuel ctx [] k.tparams targs
-    let (env, ps, buffers) ← kernelParams tenv 0 k.params
-    let (_, body) ← stmts fuel ctx env k.body
-    pure (ps ++ body, buffers)
+    let tenv ← bindTemplate fuel { funcs, opt } [] k.tparams targs
+    kernelBody opt funcs k tenv
   let ((body, buffers), st) ← run.run {}
   pure { buffers, threadgroupArrays := st.group, threadArrays := st.thread, body }
 
@@ -1125,8 +1461,12 @@ operand), `air.fma.f32`, `air.fast_exp.f32`, `air.exp.f32`,
 `fptrunc f32→bf16`, `fpext f16→f32`, `bitcast i32→f32` (`as_type`; `isnan` is
 the bit test `bitcast f32→i32`), `air.convert.f.f32.s.i32` (a run-time
 integer → float conversion; constant ones are folded), `air.simd_sum.f32`,
-`air.simd_shuffle_down.f32`/`.u.i32`, `air.wg.barrier`, `air.min.u.i32`.
-Integer operations are not counted. The default-level view (`canon`) also
+`air.simd_shuffle_down.f32`/`.u.i32`, `air.wg.barrier`, `air.min.u.i32`,
+`fptrunc f32→f16`, `air.convert.f.v4f32.f.v4bf16` (a vector conversion) and
+`air.simdgroup_matrix_8x8_multiply_accumulate.v64f32.<A>.<B>.v64f32` (a `.mma`
+collective). `make_filled_simdgroup_matrix`'s `air.simdgroup_matrix_8x8_init_filled`
+is a register fill, no floating operation: not counted. Integer operations are
+not counted. The default-level view (`canon`) also
 counts `x - c` for a constant `c` as `fadd` (InstCombine's `fsub X, C` →
 `fadd X, -C`). -/
 
@@ -1159,7 +1499,10 @@ def tyOf (slots : List (Nat × Ty)) : Nat → CExpr → Option Ty
     | .un op s _ => some (.scalar (if op == .isnan then .bool else s))
     | .bin op s _ _ _ => some (.scalar (if isCompare op then .bool else s))
     | .fma .. => some (.scalar .f32)
-    | .conv t _ => some (.scalar t)
+    | .conv t a =>
+      match tyOf slots f a with
+      | some (.vec _ n) => some (.vec t n)
+      | _ => some (.scalar t)
     | .bitcast t _ => some (.scalar t)
     | .and .. | .or .. => some (.scalar .bool)
     | .cond _ a b =>
@@ -1184,7 +1527,7 @@ def scan : Nat → List (Nat × Ty) → List CStmt → List (Nat × Ty)
         match tyOf acc 1000 e with
         | some t => (slot, t) :: acc
         | none => acc
-      | .collective _ slot _ s _ _ => (slot, .scalar s) :: acc
+      | .collective _ slot op s _ _ => (slot, match op with | .mma .. => .vec s 2 | _ => .scalar s) :: acc
       | .ite _ a b => scan f (scan f acc a) b
       | .loop _ step b => scan f (scan f acc step) b
       | .scope b => scan f acc b
@@ -1241,6 +1584,10 @@ def name (k : Nat) : String :=
   | 25 => "fptrunc " ++ llvmTy a ++ "→" ++ llvmTy b
   | 26 => "bitcast " ++ llvmTy a ++ "→" ++ llvmTy b
   | 27 => "air.convert." ++ airTy b ++ "." ++ airTy a
+  | 29 => "air.simdgroup_matrix_8x8_multiply_accumulate.v64f32.v64" ++ llvmTy a ++ ".v64" ++ llvmTy b ++ ".v64f32"
+  | 30 => "air.convert.f.v2" ++ llvmTy b ++ ".f.v2" ++ llvmTy a
+  | 31 => "air.convert.f.v3" ++ llvmTy b ++ ".f.v3" ++ llvmTy a
+  | 32 => "air.convert.f.v4" ++ llvmTy b ++ ".f.v4" ++ llvmTy a
   | _ => "?"
 
 def unCode : Core.UnOp → Option Nat
@@ -1313,6 +1660,7 @@ def countE (canon : Bool) (slots : List (Nat × Ty)) : Nat → Counts → CExpr 
           | some F, some G => bump (key (if F.p < G.p then 24 else 25) s t) c
           | none, none => c
           | _, _ => bump (key 27 s t) c
+      | some (.vec s n) => if s != t && isFloat s && isFloat t then bump (key (28 + n) s t) c else c
       | _ => c
     | .bitcast t a =>
       let c := go c a
@@ -1336,7 +1684,12 @@ def countS (canon : Bool) (slots : List (Nat × Ty)) : Nat → Counts → List C
       | .loop x step b => countS canon slots f (countS canon slots f (ce c x) step) b
       | .scope b => countS canon slots f c b
       | .barrier .. => bump (key 15 .bool .bool) c
-      | .collective _ _ op s e d => bump (key (if op == .sum then 13 else 14) s s) (ce (ce c e) d)
+      | .collective _ _ op s e d =>
+        let k := match op with
+          | .sum => key 13 s s
+          | .shuffleDown => key 14 s s
+          | .mma a b => key 29 a b
+        bump k (ce (ce c e) d)
       | .array .. | .continue_ | .break_ | .leave => c
     countS canon slots f c rest
 

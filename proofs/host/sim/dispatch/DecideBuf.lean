@@ -111,8 +111,8 @@ theorem Kp.conv (hK : Kp P K) {s : St F.S} {k : EltK} {v : Val} (h : convB P s k
     rw [hK.1, hK.2.1]
     exact .inr this
 
-theorem convB_range {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {s t : St F.S}
-    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : Rel F FR M ν K s S t C)
+theorem convB_range {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {s t : St F.S}
+    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : RelB F FR W stk M ν K s S t C)
     {k : EltK} {v : Val} (hv : convB P s k v = true) :
     ∀ i, v = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i) := by
   rintro i rfl hlo hhi
@@ -139,8 +139,8 @@ theorem Kp.setSide (hK : Kp P K) {s : St F.S} {k : EltK} {args : List Val} (h : 
   simp only [setSideB, Bool.and_eq_true] at h
   exact ⟨hK.bfBig h.1, hK.conv h.2⟩
 
-theorem setSideB_range {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {s t : St F.S}
-    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : Rel F FR M ν K s S t C)
+theorem setSideB_range {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {s t : St F.S}
+    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : RelB F FR W stk M ν K s S t C)
     {k : EltK} {args : List Val} (hv : setSideB P s k args = true) :
     ∀ i, arg args 1 = .big i → (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i) := by
   simp only [setSideB, Bool.and_eq_true] at hv
@@ -153,8 +153,8 @@ theorem Kp.ctorElems (hK : Kp P K) {s : St F.S} {S : SSrv} {k : EltK} {v : Val}
   simp only [ctorElemsB, hr] at h
   exact hK.conv (allB_sound h _ hi) i rfl
 
-theorem ctorElemsB_range {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {s t : St F.S}
-    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : Rel F FR M ν K s S t C)
+theorem ctorElemsB_range {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {s t : St F.S}
+    {S : SSrv} {C : CSrv} (hK : Kp P K) (hN : NativeFacts F FR P) (h : RelB F FR W stk M ν K s S t C)
     {k : EltK} {v : Val} (hv : ctorElemsB P s S k v = true) :
     ∀ vs S1, interpS (elemsOf F s v).run S = some (some vs, S1) →
       ∀ i, Val.big i ∈ vs → (K.lo : Int) ≤ i → i < K.hi → BigRange k (M.big i) := by

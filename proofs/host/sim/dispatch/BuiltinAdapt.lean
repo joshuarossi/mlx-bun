@@ -8,13 +8,13 @@ open Host.Ts Host.Ts.Sim
 (the model returns `0`). -/
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
   {s t : St F.S} {S : SSrv} {C : CSrv} {fa : Nat} {this : Val} {args : List Val} {o : Obj} {data : List Val}
 
-theorem step_math_floor (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
+theorem step_math_floor (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR)
     (hc : s.ctl = .call (.obj fa) this args) (ho : s.obj? fa = some o)
     (hk : o.kind = .fn (.native (.math .floor) data)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, _, hargs⟩ := h.bi_native hc ho hk
   rw [e1, e2]
   simp only [callNative, mathN, mathN.un, bi_arg_map]
@@ -30,9 +30,9 @@ theorem step_math_floor (h : Rel F FR M ν K s S t C) (hFR : FRLaws FR)
     rw [e]
     exact bi_ret (h.grow hFR g) (.num r) hs'
 
-theorem step_fn_perfNow (h : Rel F FR M ν K s S t C) (hc : s.ctl = .call (.obj fa) this args)
+theorem step_fn_perfNow (h : RelB F FR W stk M ν K s S t C) (hc : s.ctl = .call (.obj fa) this args)
     (ho : s.obj? fa = some o) (hk : o.kind = .fn (.native (.fn .perfNow) data)) :
-    MSim (StepPost F FR M ν K S C) S C (step F s) (step F t) := by
+    MSim (StepPostB F FR W stk M ν K S C) S C (step F s) (step F t) := by
   obtain ⟨e1, e2, _, _⟩ := h.bi_native hc ho hk
   rw [e1, e2]
   exact bi_ret h (.num zeroN) trivial

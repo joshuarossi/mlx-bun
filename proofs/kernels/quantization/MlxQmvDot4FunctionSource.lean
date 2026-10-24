@@ -104,7 +104,7 @@ theorem return_model (contracted : Bool) (scale accum sum bias : Float32)
     simp only [Arithmetic.evaluate,AffineTile.tailBind] at left right
     exact congrArg some (Float32AdditionCommutative.flushed _ _ left right)
 
-structure Execution (contracted tailContracted : Bool) (memory : MlxQmvDot4Source.Memory)
+structure Execution (contracted : Nat → Bool) (tailContracted : Bool) (memory : MlxQmvDot4Source.Memory)
     (scale sum bias result : Float32) : Prop where
   initial : startSource=some 0
   pointer : attachSource memory=some memory
@@ -112,7 +112,7 @@ structure Execution (contracted tailContracted : Bool) (memory : MlxQmvDot4Sourc
     MlxQmvDot4LoopSource.header.initial 0 [0,1,2,3] (MlxQmvDot4LoopSource.result contracted memory 0)
   finish : returned tailContracted scale (MlxQmvDot4LoopSource.result contracted memory 0) sum bias=some result
 
-theorem execution (contracted tailContracted : Bool) (memory : MlxQmvDot4Source.Memory)
+theorem execution (contracted : Nat → Bool) (tailContracted : Bool) (memory : MlxQmvDot4Source.Memory)
     (scale sum bias : Float32) (aligned : memory.packedBase%2=0) (bounded : memory.packedBase+8≤2^64)
     (finite : Arithmetic.Finite
       (AffineTile.tailBind scale (MlxQmvDot4LoopSource.result contracted memory 0) sum bias)

@@ -46,7 +46,7 @@ def advance (index : Int) : Option Int := signed (index+1)
 
 -- Operational signed-int loop execution: a missing step or a truncated trace
 -- cannot satisfy stop while the source condition is true.
-inductive Runs (h : Header) (contracted : Bool) (memory : Memory) :
+inductive Runs (h : Header) (contracted : Nat → Bool) (memory : Memory) :
     Int → Float32 → List Int → Float32 → Prop where
   | stop (ended : condition h index=false) : Runs h contracted memory index acc [] acc
   | next (iteration : Fin 4) (sameIndex : index=(iteration.val:Int))
@@ -56,20 +56,20 @@ inductive Runs (h : Header) (contracted : Bool) (memory : Memory) :
       (rest : Runs h contracted memory next after visits result) :
       Runs h contracted memory index acc (index::visits) result
 
-def step (contracted : Bool) (memory : Memory) (iteration : Fin 4) (acc : Float32) : Float32 :=
+def step (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) (acc : Float32) : Float32 :=
   MlxQmv.source4 contracted (word memory iteration) (input memory iteration) acc
-def result (contracted : Bool) (memory : Memory) (initial : Float32) : Float32 :=
+def result (contracted : Nat → Bool) (memory : Memory) (initial : Float32) : Float32 :=
   (List.finRange 4).foldl (fun acc iteration => step contracted memory iteration acc) initial
 
 theorem signed_increment : ∀ index : Fin 4, advance index.val=some (index.val+1:Int) := by decide +kernel
 
-theorem step_execution (contracted : Bool) (memory : Memory) (iteration : Fin 4) (acc : Float32) :
+theorem step_execution (contracted : Nat → Bool) (memory : Memory) (iteration : Fin 4) (acc : Float32) :
     MlxQmvDot4Source.executeSource contracted memory iteration acc=some (step contracted memory iteration acc) :=
   MlxQmvDot4Source.execution contracted memory iteration acc
 
 attribute [local irreducible] MlxQmvDot4Source.executeSource step
 
-theorem execution (contracted : Bool) (memory : Memory) (initial : Float32) :
+theorem execution (contracted : Nat → Bool) (memory : Memory) (initial : Float32) :
     Runs header contracted memory header.initial initial [0,1,2,3] (result contracted memory initial) := by
   let a1:=step contracted memory 0 initial
   let a2:=step contracted memory 1 a1
@@ -88,7 +88,7 @@ theorem execution (contracted : Bool) (memory : Memory) (initial : Float32) :
   exact .next 0 rfl (by decide) (step_execution contracted memory 0 initial)
     (signed_increment 0) first
 
-theorem parsed_execution (contracted : Bool) (memory : Memory) (initial : Float32) :
+theorem parsed_execution (contracted : Nat → Bool) (memory : Memory) (initial : Float32) :
     ∃ h, parseHeader sourceHeader=some h ∧
       Runs h contracted memory h.initial initial [0,1,2,3] (result contracted memory initial) :=
   ⟨header,parsed_header,execution contracted memory initial⟩

@@ -17,19 +17,21 @@ inductive Space where
 deriving DecidableEq, Repr, Inhabited
 
 /-- A type as written: `const`, an address space (both before the name, in
-either order), a name (`float`, `uint4`, `T`, `bfloat16_t`, `auto`, `void`),
-and a pointer declarator `*`. `const` qualifies the named type, so the pointee
-of a pointer. -/
+either order), a name (`float`, `uint4`, `T`, `bfloat16_t`, `auto`, `void`,
+`simdgroup_float8x8`; `metal::` qualification dropped), and a pointer
+declarator `*`. `const` qualifies the named type, so the pointee of a pointer.
+`metal::vec<T, n>` is the name `T` with `vec = some n`. -/
 structure TypeSpec where
   const : Bool := false
   space : Option Space := none
   name : List Char
   pointer : Bool := false
+  vec : Option Nat := none
 deriving DecidableEq, Repr, Inhabited
 
 inductive UnOp where
-  /-- `-e`, `!e`, `~e`, `*e`. -/
-  | neg | not | bitNot | deref
+  /-- `-e`, `!e`, `~e`, `*e`, `&e`. -/
+  | neg | not | bitNot | deref | addr
 deriving DecidableEq, Repr, Inhabited
 
 inductive BinOp where
@@ -69,6 +71,8 @@ inductive Expr where
   | member (e : Expr) (field : List Char)
   /-- A functional cast's type is a bare name. -/
   | cast (style : CastStyle) (t : TypeSpec) (e : Expr)
+  /-- `a, b` (in a `for` step). -/
+  | comma (a b : Expr)
 deriving Repr, Inhabited
 end
 
@@ -105,6 +109,8 @@ inductive Stmt where
   | ret (value : Option Expr)
   /-- A loop hint before a `for` statement (or before another hint). -/
   | pragma (hint : LoopHint) (body : Stmt)
+  /-- `if constexpr (c) …`: only the branch the constant `c` selects is instantiated. -/
+  | ifConstexpr (c : Expr) (thenBranch : Stmt) (elseBranch : Option Stmt)
   | empty
 deriving Repr, Inhabited
 
@@ -122,11 +128,12 @@ structure Param where
   attr : Option Attr := none
 deriving DecidableEq, Repr, Inhabited
 
-/-- `typename T`, `int N`, `bool B`. -/
+/-- `typename T`, `int N`, `bool B`, `uint U`. -/
 inductive TParam where
   | type (name : List Char)
   | int (name : List Char)
   | bool (name : List Char)
+  | uint (name : List Char)
 deriving DecidableEq, Repr, Inhabited
 
 /-- `[template <…>] [[[kernel]]] {static|inline}* result name(params) { body }`. -/
@@ -178,6 +185,7 @@ def Expr.beq : Expr → Expr → Bool
   | .index a i, .index a' i' => Expr.beq a a' && Expr.beq i i'
   | .member a n, .member a' n' => Expr.beq a a' && decide (n = n')
   | .cast s t a, .cast s' t' a' => decide (s = s') && decide (t = t') && Expr.beq a a'
+  | .comma a b, .comma a' b' => Expr.beq a a' && Expr.beq b b'
   | _, _ => false
 termination_by structural a _ => a
 
@@ -214,6 +222,7 @@ def Stmt.beq : Stmt → Stmt → Bool
   | .break_, .break_ => true
   | .ret a, .ret b => a == b
   | .pragma h s, .pragma h' s' => decide (h = h') && Stmt.beq s s'
+  | .ifConstexpr c t e, .ifConstexpr c' t' e' => c.beq c' && Stmt.beq t t' && Stmt.beqOpt e e'
   | .empty, .empty => true
   | _, _ => false
 termination_by structural a _ => a

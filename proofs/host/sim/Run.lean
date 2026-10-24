@@ -72,9 +72,9 @@ def StepSim (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (ok : St F.S �
       Rel F FR M' ν K s1 S1 t1 C1
 
 /-- Halting is preserved by the relation. -/
-theorem Rel.isHalt {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64}
-    {K : Ctx} {s : St F.S} {S : SSrv}
-    {t : St F.S} {C : CSrv} (h : Rel F FR M ν K s S t C) : isHalt t.ctl = isHalt s.ctl := by
+theorem RelB.isHalt {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
+    {ν : Nat → F64} {K : Ctx} {s : St F.S} {S : SSrv}
+    {t : St F.S} {C : CSrv} (h : RelB F FR W stk M ν K s S t C) : isHalt t.ctl = isHalt s.ctl := by
   rw [h.ctl]
   cases s.ctl <;> rfl
 
@@ -125,18 +125,36 @@ receives it discards it. `RelD` relates such a pair: the target agrees with a
 related state except in the returned value, and the source's top frame is a
 statement-list frame. `RelX` is either relation; a checked run keeps it. -/
 
-def RelD (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
-    (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
+def RelDB (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map)
+    (ν : Nat → F64) (K : Ctx) (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
   ∃ v v' r env fs, s.ctl = .ret v ∧ t.ctl = .ret v' ∧ s.stack = .s (.block r env) :: fs ∧
-    Rel F FR M ν K s S { t with ctl := M.ctl s.ctl } C
+    RelB F FR W stk M ν K s S { t with ctl := M.ctl s.ctl } C
 
-def RelX (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
+def RelXB (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (stk : List Frame) (M : Map)
+    (ν : Nat → F64) (K : Ctx) (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
+  RelB F FR W stk M ν K s S t C ∨ RelDB F FR W stk M ν K s S t C
+
+/-- `RelDB` and `RelXB` without a stack base. -/
+abbrev RelDF (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (M : Map) (ν : Nat → F64)
+    (K : Ctx) (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
+  RelDB F FR W [] M ν K s S t C
+
+abbrev RelXF (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (W : Nat → Option WFrame) (M : Map) (ν : Nat → F64)
+    (K : Ctx) (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
+  RelXB F FR W [] M ν K s S t C
+
+/-- `RelDF` and `RelXF` without frames. -/
+abbrev RelD (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
     (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
-  Rel F FR M ν K s S t C ∨ RelD F FR M ν K s S t C
+  RelDF F FR noFrames M ν K s S t C
+
+abbrev RelX (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (ν : Nat → F64) (K : Ctx)
+    (s : St F.S) (S : SSrv) (t : St F.S) (C : CSrv) : Prop :=
+  RelXF F FR noFrames M ν K s S t C
 
 section
-variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {M : Map} {ν : Nat → F64} {K : Ctx}
-  {s t : St F.S} {S : SSrv} {C : CSrv}
+variable {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64}
+  {K : Ctx} {s t : St F.S} {S : SSrv} {C : CSrv}
 
 /-- A statement-list frame ignores the value it receives. -/
 theorem step_block_value (t : St F.S) (v v' : Val) (r : List Stmt) (env : Env) (fs : List Frame)
@@ -148,10 +166,10 @@ theorem step_block_value (t : St F.S) (v v' : Val) (r : List Stmt) (env : Env) (
   cases r <;> rfl
 
 /-- Under `RelD` the target steps exactly as the related state. -/
-theorem RelD.step_eq (h : RelD F FR M ν K s S t C) :
+theorem RelDB.step_eq (h : RelDB F FR W stk M ν K s S t C) :
     step F t = step F { t with ctl := M.ctl s.ctl } := by
   obtain ⟨v, v', r, env, fs, hc, htc, hs, hr⟩ := h
-  have hts : t.stack = .s (.block r (M.env env)) :: fs.map M.frame := by
+  have hts : t.stack = .s (.block r (M.env env)) :: (fs.map M.frame ++ stk) := by
     have := hr.stack
     simp only at this
     rw [this, hs]
@@ -159,15 +177,15 @@ theorem RelD.step_eq (h : RelD F FR M ν K s S t C) :
   have e1 : t = { t with ctl := .ret v' } := by cases t; simp only at htc; rw [htc]
   rw [hc]
   conv => lhs; rw [e1]
-  exact step_block_value t v' (M.val v) r (M.env env) (fs.map M.frame) hts
+  exact step_block_value t v' (M.val v) r (M.env env) (fs.map M.frame ++ stk) hts
 
-theorem RelX.isHalt (h : RelX F FR M ν K s S t C) : isHalt t.ctl = isHalt s.ctl := by
+theorem RelXB.isHalt (h : RelXB F FR W stk M ν K s S t C) : isHalt t.ctl = isHalt s.ctl := by
   rcases h with h | ⟨v, v', r, env, fs, hc, htc, _, _⟩
   · exact h.isHalt
   · rw [hc, htc]; rfl
 
 /-- At a state that is not returning a value, `RelX` is `Rel`. -/
-theorem RelX.rel (h : RelX F FR M ν K s S t C) (hc : ∀ v, s.ctl ≠ .ret v) : Rel F FR M ν K s S t C := by
+theorem RelXB.rel (h : RelXB F FR W stk M ν K s S t C) (hc : ∀ v, s.ctl ≠ .ret v) : RelB F FR W stk M ν K s S t C := by
   rcases h with h | ⟨v, _, _, _, _, hv, _⟩
   · exact h
   · exact absurd hv (hc v)

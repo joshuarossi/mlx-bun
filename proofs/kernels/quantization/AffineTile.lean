@@ -11,7 +11,9 @@ structure Platform where
   divide : Float32 → Float32 → Float32
   divError : Float32 → Float32 → ℝ
   division : Division.Contract divide divError
-  contracted : Bool
+  -- The compiler's choice at each contraction site of the dot, as
+  -- `AffineDot.expression3`/`expression4` number them; `tailContracted` at the tail.
+  contracted : Nat → Bool
   tailContracted : Bool
 
 def shift3 (i : Fin 8) : Fin 13 := ⟨AffineDot.inputShift3 i, by fin_cases i <;> decide⟩
