@@ -1356,9 +1356,9 @@ Automatic chat selection skips image models, and `mlx-bun serve <image model>`
 refuses before loading weights. Shared image, voice and text admission and
 execution are deferred to the loader and scheduler contracts.
 
-MOSS-Image Base and SFT have unresolved numerical acceptance failures against
-the official OpenMOSS reference. See the [recorded comparisons](../../packages/inference/README.md#moss-image-comparison-acceptance-pending)
-for the tested scope and limits.
+MOSS-Image targets exact outputs from pinned MFLUX. Component comparisons pass;
+complete-pipeline qualification remains pending. The [recorded comparisons](../../packages/inference/README.md#moss-image-comparison-acceptance-pending)
+state the tested scope and retain the earlier official CPU-reference failures.
 
 ## Metrics and performance
 
