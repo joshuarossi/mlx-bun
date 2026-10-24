@@ -367,10 +367,24 @@ and RGB output each have 196,608 elements. The production reports and source/nat
 `af9377801e3459ecd98b85a25322d73b4baa1c188e6323a52508c230eb7cbec9`
 remained unchanged throughout all three runs. The chunked-rule cases ran against
 the external candidate before integration; its production sequential-reference
-unit check also passes. Complete-pipeline qualification remains pending.
+unit check also passes.
 The independent captures and their controls are under
 `/tmp/moss-diag/mflux-sft-t0-r16`, `mflux-conditioner-r20`,
 `mflux-conditioner-local-r19` and `mflux-vae-r18-onecase`.
+
+Complete Base and SFT generations also matched at `986dde3d`, using each
+engine's own positive and empty-negative conditioning and identical supplied
+initial noise. The case is 256x256, eight steps, CFG 3 and unconditional skip
+`[22]`, with the prompt `A red fox sitting in fresh snow, morning light, photograph.`
+All 92 checks passed: 84 cross-engine comparisons and eight observation controls.
+The cross-engine comparisons covered 2,891,810 floating-point words, 66 token
+IDs and 393,216 RGB bytes with zero differences and no nonfinite values. Each
+engine advanced its own trajectory and decoded its own final latent. All eight
+generations completed with exactly 128 DiT calls, 16 encodes and eight decodes.
+The numerical source hash above remained unchanged. Reports, input/source/runtime
+pins, the external producer and PNGs are in `/tmp/moss-diag/mflux-full-pipeline-r23`.
+This qualifies the declared M4 Pro case. Native seeded noise and the advertised
+1024x1024/50-step configuration remain unqualified.
 
 [`moss-image-mflux.test.ts`](tests/parity/moss-image-mflux.test.ts) runs the
 production SFT DiT against the pinned independent captures. Set both
@@ -389,6 +403,23 @@ optional `MLX_BUN_MOSS_CONDITIONER_RESULTS`. The
 fresh candidate observation controls. These three regressions require the exact
 external captures named and hashed in their source; a missing capture skips only
 when no opt-in input is provided, and never counts as numerical evidence.
+
+The [complete-pipeline regression](tests/parity/moss-image-mflux-pipeline.test.ts)
+requires all three of `MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT`,
+`MLX_BUN_MOSS_PIPELINE_SFT_SNAPSHOT` and `MLX_BUN_MOSS_PIPELINE_ORACLE`.
+The oracle directory contains the content-pinned `case.json`, initial noise,
+`oracle-lock.json`, and the Base/SFT reference control/traced capture files and
+reports. `MLX_BUN_MOSS_PIPELINE_RESULTS` optionally names an external result
+directory. The test verifies all pins before loading MLX and runs a fresh control
+and traced generation for each model. Every conditional, unconditional and guided
+velocity, latent update, raw image and RGB byte must match exactly.
+
+The synthetic attention digests were recorded with Python MLX 0.32.2 on
+`applegpu_g16s`, the M4 Pro. Like the repository's other synthetic digests, those
+exact checks run only on their recorded device/runtime; an unrecorded device
+skips them visibly. Independent host-double checks for MOSS's 128-wide heads,
+the analytical rounding case, strides, lifetime and memory checks run on every
+device. The original numerical bounds are unchanged.
 
 The CPU-only [schedule tests](tests/models/moss-image-schedule.test.ts) check
 all sigma and timestep words at 8, 50 and 218 steps against MFLUX's unchanged
@@ -446,7 +477,7 @@ investigation history remain in Git. No bound was enlarged to accept them.
 All historical timing and memory figures were taken on a busy, swapping M4 Pro
 and do not qualify performance. The paired CI check at `aa8b4df9` stopped during
 machine preflight on the M1 Max, with excessive swap and competing work; it
-produced no benchmark numbers. Complete-pipeline parity and paired performance
+produced no benchmark numbers. Default-configuration parity and paired performance
 qualification remain open.
 
 ### Packed Qwen Trellis parity

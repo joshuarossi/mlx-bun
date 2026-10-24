@@ -164,11 +164,10 @@ Library, family, quantizer, image host and `@mlx-bun/module-images` are implemen
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Qualify the applied MLX bindings against pinned MFLUX, with exact comparisons
-      of conditioning, every denoiser output and latent update, and final pixels for
-      Base and SFT. The production component graphs match the pinned cases exactly;
-      complete-pipeline qualification is pending. Include the
-      advertised 1024x1024/50-step configuration before claiming parity there.
+- [ ] Qualify the advertised 1024x1024/50-step configuration against pinned MFLUX,
+      including native seeded noise, conditioning, every denoiser output and latent
+      update, and final pixels for Base and SFT. The 256x256/eight-step complete
+      pipelines pass all 92 exact checks with supplied initial noise.
       Retain the original CPU comparison assertions and historical failures in the
       [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
       No output-error allowance substitutes for the exact MLX target. Python stays

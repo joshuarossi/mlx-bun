@@ -1356,8 +1356,9 @@ Automatic chat selection skips image models, and `mlx-bun serve <image model>`
 refuses before loading weights. Shared image, voice and text admission and
 execution are deferred to the loader and scheduler contracts.
 
-MOSS-Image targets exact outputs from pinned MFLUX. Component comparisons pass;
-complete-pipeline qualification remains pending. The [recorded comparisons](../../packages/inference/README.md#moss-image-comparison-acceptance-pending)
+MOSS-Image matches pinned MFLUX exactly in the recorded Base/SFT 256px/eight-step
+complete-pipeline cases. The default 1024px/50-step configuration remains pending
+qualification. The [recorded comparisons](../../packages/inference/README.md#moss-image-comparison-acceptance-pending)
 state the tested scope and retain the earlier official CPU-reference failures.
 
 ## Metrics and performance
