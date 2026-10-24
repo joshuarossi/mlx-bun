@@ -131,7 +131,7 @@ export const BUILTIN_ARTIFACT_PROFILES: readonly ArtifactModelProfile[] = Object
 
 /** The engine capability each generation loop needs. */
 const loopCapability: Readonly<Record<GenerationLoop, EngineCapability>> = {
-  autoregressive: "autoregressive", diffusion: "diffusion", "encoder-decoder": "encoder-decoder",
+  autoregressive: "autoregressive", diffusion: "diffusion", "encoder-decoder": "encoder-decoder", "flow-matching": "flow-matching",
 };
 
 /** What the engine must provide to run a composition: its loader, its loop, and its graph's own capabilities. */

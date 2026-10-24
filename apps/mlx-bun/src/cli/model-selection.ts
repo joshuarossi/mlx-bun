@@ -4,7 +4,7 @@ import { scanSnapshot, type ModelRecord, type Registry } from "@mlx-bun/hub/regi
 import { downloadModel } from "@mlx-bun/hub/download";
 import { fit, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
-import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
+import { isImageModelType, isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, STARTER_REPO_ID } from "./model-choice";
 import { openRegistry } from "../storage/paths";
 
@@ -29,26 +29,29 @@ const defaults: ModelSelectionDependencies = {
   log: message => console.log(message),
 };
 
-/** Resolve a path/query, or select a cached supported model. An empty supported
+/** Resolve a path/query, or select a cached supported chat model. An empty supported
  * cache gets the starter first, as in main; the larger recommended model is
  * returned for the caller to fetch in the background under its own owner.
  * `signal` cancels the starter download (its partial stays resumable). */
 export async function resolveModelAuto(query: string | null, supplied: Partial<ModelSelectionDependencies> = {},
   signal?: AbortSignal): Promise<{ m: ModelRecord; picked: boolean; recommended?: string }> {
   const deps = { ...defaults, ...supplied };
-  if (query && existsSync(join(query, "config.json"))) {
+  // A model directory: a config.json, or a diffusers pipeline's model_index.json.
+  const declaring = query ? ["config.json", "model_index.json"].find(file => existsSync(join(query, file))) : undefined;
+  if (query && declaring) {
     const directory = resolve(query);
     const hf = /models--([^/]+)--([^/]+)\/snapshots\//.exec(directory);
     const repoId = hf ? `${hf[1]}/${hf[2]}` : basename(directory);
     const model = await deps.scanSnapshot(directory, repoId);
-    if (!model) throw new Error(`${directory} has config.json but no weights (*.safetensors)`);
+    if (!model) throw new Error(`${directory} has ${declaring} but no weights (*.safetensors)`);
     return { m: model, picked: false };
   }
   const registry = deps.registry();
   try {
     if (registry.list().length === 0) await registry.scan();
     if (query) return { m: registry.resolve(query), picked: false };
-    const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType));
+    // Image pipelines run through the standalone image command.
+    const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType) && !isImageModelType(model.modelType));
     let candidates = supported();
     let recommended: string | undefined;
     if (candidates.length === 0) {

@@ -9,6 +9,12 @@ export function isTranscriptionModelType(modelType: string): boolean {
   return familyOfModelType(modelType)?.transcribes === true;
 }
 
+/** Registry-level role of a `model_type` before any weights are read: a
+ *  text-to-image pipeline, opened through `openImagePipeline`. */
+export function isImageModelType(modelType: string): boolean {
+  return familyOfModelType(modelType)?.generatesImages === true;
+}
+
 /** Registry-level role of a `model_type` before any weights are read: its
  *  graph declares the pooled-embedding path (`embeddingDeclarationFor`). */
 export function isEmbeddingModelType(modelType: string): boolean {

@@ -318,11 +318,21 @@ const speechLoader: ArtifactLoader = {
   },
 };
 
+const imageLoader: ArtifactLoader = {
+  async open({ modelDir, profile }) {
+    throw new UnsupportedModelLoadError(profile, `${modelDir} is a text-to-image model (${profile.profile.id}); open it with ` +
+      "openImagePipeline — it has no chat/completion loop");
+  },
+  create(_weights, _config, profile) {
+    throw new UnsupportedModelLoadError(profile, `${profile.profile.id} is a text-to-image pipeline; open it with openImagePipeline`);
+  },
+};
+
 /** Artifact loading follows declared table facts, including streamed weights
  * and the separate speech operation. It never selects by a model predicate. */
 const ARTIFACT_LOADERS: Readonly<Record<ModelLoader, Readonly<Record<GenerationLoop, ArtifactLoader>>>> = {
-  safetensors: { autoregressive: residentLoader, diffusion: residentLoader, "encoder-decoder": speechLoader },
-  colibri: { autoregressive: streamedLoader, diffusion: streamedLoader, "encoder-decoder": speechLoader },
+  safetensors: { autoregressive: residentLoader, diffusion: residentLoader, "encoder-decoder": speechLoader, "flow-matching": imageLoader },
+  colibri: { autoregressive: streamedLoader, diffusion: streamedLoader, "encoder-decoder": speechLoader, "flow-matching": imageLoader },
 };
 
 /** Construct the binding named by a validated profile for `composition`, which

@@ -70,6 +70,9 @@ export function castTensor(name: string, array: MlxArray, dtype: ConvertDtype | 
 export interface QuantizeOptions {
   bits: 4 | 8;
   groupSize: 32 | 64;
+  /** Source-artifact loader. Absent uses the ordinary checkpoint loader.
+   * The writer owns and disposes the returned weights. */
+  openWeights?: (directory: string) => Promise<Weights>;
   /** `mlx_lm.convert --dtype`: dtype of the non-quantized tensors and of the
    *  quantization scales/biases. Absent keeps bf16 scales/biases and the
    *  source dtype for everything else. */
@@ -221,7 +224,7 @@ async function writeQuantizedModelDir(
 
   const config = await loadModelConfig(srcDir);
   const srcQuant: QuantizationConfig | null = config.quantization;
-  const weights = await Weights.open(srcDir);
+  const weights = await (opts.openWeights ?? Weights.open)(srcDir);
   let transformPlan: WeightTransformPlan | undefined;
   let transformContext: WeightTransformContext | undefined;
   try {

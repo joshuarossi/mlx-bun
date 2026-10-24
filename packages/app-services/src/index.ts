@@ -9,6 +9,12 @@ export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "
 export { CatalogFailure, ModelHostFailure } from "./failure";
 export { createHostServices } from "./host";
 export type { HostServices, HostServicesOptions, WhisperServing } from "./host";
+export { nativeImageBackend } from "./image-backend";
+export type { ImageBackend, ImageRunOptions, LoadedImagePipeline } from "./image-backend";
+export { createImageModelHost } from "./image-model-host";
+export { DEFAULT_STAGE_BUDGET_FRACTION, defaultStageBudgetBytes, stageBudgetRule, stageResidency } from "./image-stages";
+export type { StageResidency, StageRule } from "./image-stages";
+export type { ImageModelHost, ImageModelHostOptions } from "./image-model-host";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";
 export { createModuleSockets } from "./sockets";

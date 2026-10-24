@@ -3,7 +3,7 @@ export type ModelId = string;
 
 /** What a loaded graph declares when it is built. Consumers ask for an
  * operation; they never branch on a model family or class. */
-export type ModelOperation = "generate" | "embed" | "transcribe";
+export type ModelOperation = "generate" | "embed" | "transcribe" | "image";
 
 /** `companion` models (Whisper, a draft or embedding model) can be pinned resident beside the primary. */
 export type ModelRole = "primary" | "companion";
@@ -124,6 +124,56 @@ export interface TranscriptionOperation {
   start(options?: TranscribeOptions): TranscriptionRun;
 }
 
+/** A text-to-image request. Unset fields take the model's declared defaults (`ImageOperation.defaults`); `width` and `height` must be positive multiples of `ImageOperation.pixelsPerLatent`. Nothing here names a model family. */
+export interface ImageRequest {
+  readonly prompt: string;
+  readonly negativePrompt?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly steps?: number;
+  /** Classifier-free guidance scale; 1 runs the conditional prediction alone. */
+  readonly guidance?: number;
+  /** Seeds the initial noise; omitted picks one, reported in the result. Equal seeds reproduce on this backend only. */
+  readonly seed?: number;
+  /** Blocks the unconditional prediction skips (skip-layer guidance); empty disables it. */
+  readonly uncondSkipLayers?: readonly number[];
+}
+
+/** The sampling settings a text-to-image model publishes. */
+export interface ImageDefaults {
+  readonly width: number;
+  readonly height: number;
+  readonly steps: number;
+  readonly guidance: number;
+  readonly negativePrompt: string;
+  readonly uncondSkipLayers: readonly number[];
+}
+
+/** Where a run is: its stage, and completed denoising steps while denoising. */
+export interface ImageProgress {
+  readonly stage: "conditioner" | "denoiser" | "decoder";
+  readonly step?: number;
+  readonly steps?: number;
+}
+
+/** Decoded RGB pixels, row-major, three bytes per pixel, with the settings the run used. */
+export interface GeneratedImage {
+  readonly width: number;
+  readonly height: number;
+  readonly pixels: Uint8Array;
+  readonly seed: number;
+  readonly steps: number;
+  readonly guidance: number;
+  readonly timings: { readonly encodeMs: number; readonly denoiseMs: number; readonly decodeMs: number };
+}
+
+/** The `image` operation. An aborted signal rejects the run and frees what it held. */
+export interface ImageOperation {
+  readonly defaults: ImageDefaults;
+  readonly pixelsPerLatent: number;
+  generate(request: ImageRequest, options?: { readonly signal?: AbortSignal; readonly onProgress?: (progress: ImageProgress) => void }): Promise<GeneratedImage>;
+}
+
 /** An adapter mounted on a loaded model. */
 export interface MountedAdapter {
   readonly id: string;
@@ -159,6 +209,7 @@ export interface ModelOperations {
   generate(request: Request): Promise<Response>;
   embed(inputs: readonly string[], instruction?: string): Promise<readonly { readonly vector: Float32Array; readonly tokens: number }[]>;
   transcribe: TranscriptionOperation;
+  image: ImageOperation;
   adapters: AdapterOperation;
 }
 

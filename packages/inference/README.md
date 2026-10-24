@@ -325,6 +325,184 @@ This covers these checkpoints and clips only: no other Whisper size, no non-WAV
 input (AudioToolbox decoding), no oracle for word timestamps or the streaming run
 (main only), no Whisper batching, and no performance. Raw references remain external.
 
+### MOSS-Image comparison
+
+The current numerical target is the independent MFLUX MOSS implementation at
+`a3b21fcaa88726b2267bd42bfc2e2d722f7d5a47`, with Python 3.12.13 and MLX/MLX-Metal
+0.32.2. Its frozen environment uses NumPy 2.5.4, Transformers 5.20.2,
+tokenizers 0.23.3 and Torch 2.14.1. Both engines read the original dense OpenMOSS
+snapshots: Base `85975793d8b3d432f1b6e27f352abaa4c2a4c0d3` and SFT
+`f972bd4b4b9e3852133cc5da954d87bc32cd8fb9`. The shared text encoder, tokenizer
+and VAE files are byte-identical across those snapshots. No converted weights
+or Python runtime is needed by mlx-bun.
+
+MFLUX and the official PyTorch CPU pipeline use different operation orders and
+precision policies. The MOSS graph now binds the MLX operations: native biased
+projections and attention, compiled SiLU, eager bf16 SITU, float32 chunked delta
+attention, bf16 VAE weights and decoding, and NumPy-compatible schedule rounding.
+Existing model graphs, shared kernels and layers, token caches, sampling and
+execution implementations are unchanged.
+
+The exact comparisons check every selected float32 word, including signed zero;
+bf16 values are widened exactly. They reject nonfinite values, verify input and
+weight hashes before execution, record source and native-library identities,
+and compare observed and unobserved runs to detect changes caused by tracing.
+Tests use portable paths to external captures, with content hashes as their pins.
+The Python oracle and its environment stay outside the repository.
+
+The applied production bindings passed these bounded comparisons on an Apple
+M4 Pro, Bun 1.4.2 and MLX 0.32.2:
+
+| Comparison | Exact stages | Differing words |
+|---|---:|---:|
+| SFT conditional DiT, timestep 1000, 256x256, reference conditioning | 97/97 | 0/43,934,720 |
+| Shared text tower, 23-token positive prompt | 48/48 | 0/4,994,496 |
+| VAE, identical reference final latent, including RGB pixels | 39/39 | 0/72,712,448 |
+| Chunked delta rule, lengths 1, 23, 64, 65 and 129 | 5/5 | 0/72,192 |
+
+Each engine's tracing controls also matched exactly. The final DiT velocity has
+32,768 float32 values, conditioning has 94,208 bf16 values, and the VAE raw output
+and RGB output each have 196,608 elements. The production reports and source/native/input hashes are under
+`/tmp/moss-diag/integrated-r23`. Source SHA-256
+`af9377801e3459ecd98b85a25322d73b4baa1c188e6323a52508c230eb7cbec9`
+remained unchanged throughout all three runs. The chunked-rule cases ran against
+the external candidate before integration; its production sequential-reference
+unit check also passes.
+The independent captures and their controls are under
+`/tmp/moss-diag/mflux-sft-t0-r16`, `mflux-conditioner-r20`,
+`mflux-conditioner-local-r19` and `mflux-vae-r18-onecase`.
+
+Complete Base and SFT generations also matched at `986dde3d`, using each
+engine's own positive and empty-negative conditioning and identical supplied
+initial noise. The case is 256x256, eight steps, CFG 3 and unconditional skip
+`[22]`, with the prompt `A red fox sitting in fresh snow, morning light, photograph.`
+All 92 checks passed: 84 cross-engine comparisons and eight observation controls.
+The cross-engine comparisons covered 2,891,810 floating-point words, 66 token
+IDs and 393,216 RGB bytes with zero differences and no nonfinite values. Each
+engine advanced its own trajectory and decoded its own final latent. All eight
+generations completed with exactly 128 DiT calls, 16 encodes and eight decodes.
+The numerical source hash above remained unchanged. Reports, input/source/runtime
+pins, the external producer and PNGs are in `/tmp/moss-diag/mflux-full-pipeline-r23`.
+The default 1024x1024/50-step configuration also matched at `28d8c774`, with
+CFG 3, an empty negative prompt, unconditional skip `[22]` and seed 42. Each
+engine used its original seeded-noise path, encoded both prompts, advanced its
+own trajectory and decoded its final latent. The prompt was `A brass telescope
+beside a blue velvet armchair in a sunlit observatory, a folded star chart on an
+oak desk, detailed photograph.` All 428 checks passed: 420 cross-engine
+comparisons and eight observation controls, covering 220,594,378 floating-point
+words including controls, with zero differences or nonfinite values. Cross-engine
+token and pixel comparisons also matched: 96 token IDs and 6,291,456 RGB bytes.
+The eight generations completed exactly 800 DiT calls, 16 encodes and eight
+decodes, without retries. The numerical source and native libraries remained
+unchanged. Reports, frozen input/reference pins, the external producer and paired
+PNGs are in `/tmp/moss-diag/mflux-default-pipeline-r24`; its output-lock SHA-256 is
+`e06e4a7181c34c7d6e0a58735e38a65b469b9a2d37299c61e388f3b9471676ad`.
+
+The untraced Bun generations took 751.2 s for Base and 778.6 s for SFT, including
+stage loading. Peak MLX allocation across both engines was 14.92 GiB and sampled
+process RSS reached 10.09 GiB. These are observations from the sequential parity
+run; paired performance qualification remains open. The exact results qualify
+the two declared cases on the recorded M4 Pro, snapshots and runtime.
+
+[`moss-image-mflux.test.ts`](tests/parity/moss-image-mflux.test.ts) runs the
+production SFT DiT against the pinned independent captures. Set both
+`MLX_BUN_MOSS_IMAGE_MFLUX_SNAPSHOT` and `MLX_BUN_MOSS_IMAGE_MFLUX_ORACLE`;
+`MLX_BUN_MOSS_IMAGE_MFLUX_RESULTS` optionally selects the external result file.
+Absent both inputs the test skips; supplying only one fails. It checks all 97
+stages, including the final block's text rows, and compares the candidate with
+and without observation. No relative-error allowance substitutes for bit equality.
+
+The [conditioner regression](tests/parity/moss-image-mflux-conditioner.test.ts)
+uses `MLX_BUN_MOSS_CONDITIONER_SNAPSHOT`, `MLX_BUN_MOSS_CONDITIONER_ORACLE` and
+optional `MLX_BUN_MOSS_CONDITIONER_RESULTS`. The
+[VAE regression](tests/parity/moss-image-mflux-vae.test.ts) uses the corresponding
+`MLX_BUN_MOSS_VAE_SNAPSHOT`, `MLX_BUN_MOSS_VAE_ORACLE` and
+`MLX_BUN_MOSS_VAE_RESULTS` variables. Both verify portable content pins and run
+fresh candidate observation controls. These three regressions require the exact
+external captures named and hashed in their source; a missing capture skips only
+when no opt-in input is provided, and never counts as numerical evidence.
+
+The [complete-pipeline regression](tests/parity/moss-image-mflux-pipeline.test.ts)
+requires all three of `MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT`,
+`MLX_BUN_MOSS_PIPELINE_SFT_SNAPSHOT` and `MLX_BUN_MOSS_PIPELINE_ORACLE`.
+`MLX_BUN_MOSS_PIPELINE_CASE` selects `captured-256-8` (the default) or
+`native-1024-50`. Use the matching oracle directory above. It contains the
+content-pinned `case.json`, `oracle-lock.json`, and the Base/SFT reference
+control/traced capture files and reports. Only the 256px case supplies captured
+initial noise; the 1024px case compares each engine's native seed-42 output.
+`MLX_BUN_MOSS_PIPELINE_RESULTS` optionally names an external result directory.
+With no inputs the test skips visibly; partial opt-in or an unknown case fails
+before native imports. The test verifies all pins before loading MLX and runs a
+fresh control and traced generation for each model. Every conditional,
+unconditional and guided velocity, latent update, raw image and RGB byte must
+match exactly.
+
+The synthetic attention digests were recorded with Python MLX 0.32.2 on
+`applegpu_g16s`, the M4 Pro. Like the repository's other synthetic digests, those
+exact checks run only on their recorded device/runtime; an unrecorded device
+skips them visibly. Independent host-double checks for MOSS's 128-wide heads,
+the analytical rounding case, strides, lifetime and memory checks run on every
+device. The original numerical bounds are unchanged.
+
+The CPU-only [schedule tests](tests/models/moss-image-schedule.test.ts) check
+all sigma and timestep words at 8, 50 and 218 steps against MFLUX's unchanged
+NumPy schedule, with only its final MLX array constructor replaced by a host
+array. Both implementations reject 219 and 1000 requested steps because snapping
+would duplicate levels. They do not silently reduce the requested step count.
+
+The earlier official CPU comparison remains available in
+[`moss-image-oracle.test.ts`](tests/parity/moss-image-oracle.test.ts) and the
+real-weight cases in [`moss-image-vae.test.ts`](tests/models/moss-image-vae.test.ts).
+It uses the pinned snapshot's `pipeline_moss_image.py`, Transformers 5.12.1,
+Diffusers 0.38.0 and Torch 2.9.1 on Python 3.12.13. Opt in with
+`MLX_BUN_MOSS_IMAGE_SNAPSHOT` and `MLX_BUN_MOSS_IMAGE_ORACLE`;
+`MLX_BUN_MOSS_IMAGE_RESULTS` names its report. Its original assertions remain
+in place. This is a separate precision target and the MLX binding does not claim
+CPU bit parity or a pass under those tolerances.
+
+The original CPU criteria were exact tokens and schedules; hidden states and
+DiT stages within 0.03 relative Frobenius error, minimum per-token cosine 0.999
+and mean cosine 0.9995; trajectory steps within 0.06 relative error and minimum
+cosine 0.995. The decoder required error at most 1e-5 before decoding, then maximum
+1e-3, mean 1e-4 and no pixel differing by more than one level. Linear-attention
+checks retain their original per-operation ULP, relative-error and cosine limits.
+The only adjudicated exception concerned unconsumed text rows in the final DiT
+block. The latent comparison retains historical channel cosines alongside the
+corrected spatial-token cosines. No historical failure has been relabelled a pass.
+
+At `6e1d329a`, both CPU suites completed all 104 measurements and four exact
+checks; each passed four tests and failed the trajectory test:
+
+| Historical CPU comparison | Base | SFT |
+|---|---|---|
+| final trajectory relative error | 0.065978 | 0.090094 |
+| final minimum spatial-token cosine | 0.984926 | 0.945488 |
+| failing trajectory steps | relative 6–7; spatial cosine 5–7 | relative 6–7; spatial cosine 5–7 |
+| consumed DiT checkpoints | pass | pass |
+| same-input VAE maximum error | 2.453e-5 | 1.413e-5 |
+
+The saved reports are `base-85975793-tiled-6e1d329a-r11.json` and
+`sft-f972bd4b-tiled-6e1d329a-r11.json` under `~/oracles/moss-image/results`, with
+SHA-256 `3abc9d13362ba76966e4ad21b061a546f08aa36d95b92db3b4771fa1e778e066`
+and `204b38f68bb06d89b8647f13163d2c2dd01e482f5c264999085247a6e0dc8b7e`.
+The complete-pipeline comparison at `509729c3`, with its own conditioning and the
+same initial noise, ended at relative errors 0.07028764 Base and 0.16208197 SFT,
+minimum spatial cosines 0.98733405 and 0.80992252, and RGB mean errors 2.47082 and
+4.78242 levels. Those comparisons failed the original trajectory bounds.
+`/tmp/moss-diag/output-r12` contains that run's inputs, commands and reports.
+
+The former tiled bf16-numerator attention, one-row projection and CPU-style
+conditioner bindings sought the CPU reference's arithmetic. Their measured
+sensitivity did not establish acceptable full-generation error. They are replaced
+by the MFLUX bindings, not retained as runtime alternatives. Their source and
+investigation history remain in Git. No bound was enlarged to accept them.
+
+All historical timing and memory figures were taken on a busy, swapping M4 Pro
+and do not qualify performance. The paired CI check at `28d8c774` stopped during
+machine preflight on the separate M1 Max runner, with 5,935 MB swap against a
+512 MB limit and three active Lean proof processes. It produced no benchmark
+numbers. Paired performance qualification remains open.
+
 ### Packed Qwen Trellis parity
 
 [`tests/parity/qwen-trellis-parity.test.ts`](tests/parity/qwen-trellis-parity.test.ts)
@@ -963,7 +1141,8 @@ The direct graph imports currently include `models/gemma4`,
 `models/gemma4/graphs`, `models/minicpm5`, `models/qwen3`, `models/qwen3-moe`,
 `models/qwen3_5`, `models/qwen38-27b-trellis-m4pro`, `models/qwen38-27b-trellis-m1max`,
 and `models/universal`.
-`models/glm52`, `models/diffusion-gemma`, and `models/whisper` provide the other
+`models/glm52`, `models/diffusion-gemma`, `models/whisper` and `models/moss-image`
+(a text-to-image pipeline, see [Text-to-image](#text-to-image)) provide the other
 graph families.
 `@mlx-bun/inference/models` exposes the profile/implementation registry, the
 composition resolver and loading helpers: `createModel` loads the graph
@@ -1196,6 +1375,110 @@ use macOS system facilities. Optional encoder caching lives in `state/encoder-ca
 media fetching keeps the existing destination, size, and timeout controls.
 `MediaFetchPolicy.allowPrivate` permits LAN destinations; callers may supply
 `privateDestinationHint` when their UI needs a specific configuration instruction.
+
+## Text-to-image
+
+A text-to-image family binds three stages to the contracts in
+`contracts/mlx/image-generation`: an `ImageConditioner` (prompt text to the
+sequence a denoiser attends to), an `ImageDenoiser` (the flow-matching velocity
+of latents at one timestep) and an `ImageLatentDecoder` (latents to a raw image,
+then a bound `pixels` operation to NHWC uint8 RGB), with the noise levels of a
+`FlowMatchingSchedule`. Each contract states
+its tensor shapes, dtypes and ownership. A `TextToImagePipeline` opens each stage
+on first use and frees its weights on `release`, so a caller can hold one stage
+at a time. `openImagePipeline` (`@mlx-bun/inference/models`) selects a pipeline
+graph through the family's `GraphTable` and loads no stage weights. Callers can
+choose a shipped graph by name or supply their own graph function without family
+registration. The image loader binds `loadPipelineConfig` and the diffusers shard
+adapter explicitly. Existing `config.json` and safetensors readers are unchanged;
+`openModel` does not inspect an image pipeline's `model_index.json`.
+
+`generation/image` runs a request over those contracts and names no family.
+`resolveImageRequest` applies the pipeline's defaults and validates every field
+before any stage opens. `encodeConditioning`, `denoiseLatents` and `decodePixels`
+are separately callable: the denoiser takes flow-matching Euler steps,
+`x + (sigma_next - sigma) * v` in float32, with the velocity of the request's
+`GuidanceStep` (`ConditionalVelocity`, or `GuidedVelocity`'s
+`uncond + scale * (cond - uncond)` with skip-layer guidance on the unconditional
+branch), chosen once per request by `guidanceFor`. The decoder owns raw image
+layout, dtype, scaling, clipping and rounding. Generation passes the raw output
+unchanged to `pixels` and reads its RGB bytes in row-major order.
+`generateImage` runs the stages in order. It releases each stage once its output
+is evaluated unless the caller passes `releaseStages: false`, checks cancellation
+at every stage boundary and after each load, and on failure or cancellation
+releases what it opened and frees every tensor it made. Equal seeds give equal
+noise on this backend only. [`image-generation.test.ts`](tests/generation/image-generation.test.ts)
+drives every path with substitute stages.
+
+### MOSS-Image
+
+`models/moss-image` (public as `@mlx-bun/inference/models/moss-image`) is the
+MOSS-Image family from OpenMOSS: a diffusers snapshot whose `model_index.json`
+names `MOSSImagePipeline`. Base and SFT share every component's structure (SFT's
+DiT weights differ; its text encoder, tokenizer and VAE are the same files), so
+one family and its generic graphs serve both. The family writes its own layers,
+composed from kernels, and its graphs arrange them:
+
+- conditioner (`text-encoder`, `text-layers`): the Qwen3.5-9B text tower with
+  float32 `(1 + gamma)` RMS normalization, native partial rotary embedding,
+  gated attention, ordered float32 causal-convolution taps and a 64-token
+  chunked delta rule. Queries, keys and beta stay in float32 for that rule.
+  `MossTextDeltaRecurrence` owns `kernels/gated-delta-chunked`,
+  `MossTextCausalConv` owns `kernels/causal-depthwise-conv`, and `MossTextLogDecay`
+  owns the compiled softplus operation. The graph shares one compiled `MossSilu`.
+  The conditioner renders the tokenizer's chat template with thinking enabled,
+  truncates to 4096 tokens and encodes once without a token cache. It never reads
+  the vision tower.
+- DiT (`transformer`, `blocks`, `rope`, `layers`): 42 joint blocks over image and
+  text tokens, shared timestep modulation, a two-block text refiner, four-axis
+  rotary embedding, native biased projections, compiled bf16 SiLU and eager
+  bf16 SITU. The graph supplies `MossAttention`, bound to native MLX SDPA,
+  through `MossAttentionOperation`. Projections use the `MossLinear` contract.
+- decoder (`vae`, `vae-layers`, `vae-weights`): the FLUX.2 decode path with owned
+  bf16 weight buffers, bf16 latent denormalization, 2x2 unpatchification,
+  float32 fast GroupNorm, compiled bf16 SiLU and native attention. Pixel
+  normalization and clipping run in bf16 before widening, multiplying by 255,
+  rounding and storing uint8. One `MossSilu` is shared by the decoder's layers.
+- schedule (`scheduler`): the shifted grid is built and snapped in float64,
+  stored in float32, then multiplied by the training timestep count in float32.
+  Duplicate snapped levels reject the requested step count.
+
+Each projection and the token embedding bind as the checkpoint stores them:
+dense, or MLX affine-quantized with `.scales` and `.biases` and a quantization
+table entry; metadata that disagrees with the stored tensors fails at
+construction. The defaults are the model card's: 1024x1024, 50 steps, guidance 3,
+an empty negative prompt and block 22 skipped on the unconditional branch.
+Written graph files for one model on one machine are follow-up work once
+profiling chooses their bindings. `@mlx-bun/quantize`'s `quantizeMossImageDir`
+builds a local MLX artifact ([quantize README](../quantize/README.md)). The
+[ownership test](tests/models/moss-image-ownership.test.ts) holds the family to
+its own layers: no imports of other families or shared `layers/`, each of its
+kernels called only inside their owning layers, graph files that import neither MLX operations nor
+kernels, and no method that branches on a field fixed at construction.
+
+Memory before the bounded attention binding, measured on the M4 Pro (24 GB) on
+2026-10-23, Base, 4 steps, seed 1, each workload in its own process. The OS columns are the process's peak memory
+footprint and maximum resident set from `/usr/bin/time -l`; the MLX column is the
+allocator's peak. The machine was swapping throughout (8.5 to 12.2 GB of swap in
+use, and macOS grew the swap file from 10 to 13 GB), so these runs show completion
+under memory pressure, not a fit with headroom. The near-constant 18.4 GB staged
+footprint is not explained.
+
+| Workload | OS peak footprint | OS max RSS | MLX peak |
+|---|---|---|---|
+| q8, stages released, 512x512 | 18.43 GB | 10.13 GB | 7.87 GiB |
+| q8, stages kept, 512x512 | 18.38 GB | 11.14 GB | 17.05 GiB |
+| bf16, stages released, 512x512 | 18.41 GB | 11.68 GB | 14.80 GiB |
+| q8, stages released, 1024x1024 | 18.43 GB | 9.36 GB | 8.15 GiB |
+| q8, stages kept, 1024x1024 | 21.34 GB | 9.95 GB | 22.20 GiB |
+| bf16, stages released, 1024x1024 | 18.42 GB | 10.77 GB | 14.80 GiB |
+
+Before that binding, one run at the model card's defaults (bf16 Base, 1024x1024, 50 steps, stages
+released, seed 7) through `mlx-bun image` completed in 715 s: 6.8 s encoding, 693 s
+denoising (13.9 s a step, two DiT passes each under guidance) and 14.6 s decoding.
+Its OS peak footprint was 18.48 GB and its maximum resident set 8.98 GB, while swap
+in use grew from 6.2 to 9.0 GB. That is one run on a machine that was not idle, not
+a performance figure.
 
 ## Speculative generation
 

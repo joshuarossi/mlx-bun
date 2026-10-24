@@ -8,6 +8,7 @@ export * from "./drafter";
 export * from "./forward-work";
 export * from "./glm52-weights";
 export * from "./graph";
+export * from "./image-generation";
 export * from "./kv-codec";
 export * from "./media";
 export * from "./positions";

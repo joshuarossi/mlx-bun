@@ -2,8 +2,8 @@
 // like "vision-capable models under 10 GB" without shell archaeology.
 //
 // scan() walks the HF hub cache's models--*/snapshots/* plus any plain model
-// directories the caller names, reading only config.json + the safetensors
-// headers (never tensor bytes).
+// directories the caller names, reading only config.json (model_index.json for
+// a diffusers pipeline) + the safetensors headers (never tensor bytes).
 
 import { Database } from "bun:sqlite";
 import {
@@ -577,12 +577,94 @@ function visionConfigTypeOf(config: Record<string, any>): string | null {
   return typeof vt === "string" && vt.endsWith("_vision") ? vt : null;
 }
 
+/** The file that marks a diffusers pipeline snapshot: no root config.json, a
+ *  root model_index.json naming the pipeline class and its components. */
+const PIPELINE_INDEX = "model_index.json";
+
+/** Index a diffusers pipeline snapshot. model_index.json's `_class_name` is the
+ *  record's model type (which family runs it is the caller's question). Its other
+ *  non-underscore keys are components, each a `[library, class]` pair in its own
+ *  subdirectory; `[null, null]` declares an absent optional component. A
+ *  component whose directory holds a config.json is a model and must hold
+ *  safetensors weights; the others (scheduler, tokenizer) need none. The record's
+ *  size is every component's safetensors bytes; its quantization is the one its
+ *  model components' configs declare (`mixed` when they declare different ones,
+ *  none when no component is quantized). A malformed index, a declared
+ *  component that is missing, a model component without weights, or a snapshot
+ *  with no weights at all is not indexed. */
+async function scanPipelineSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
+  let index: unknown;
+  try {
+    index = await Bun.file(join(dir, PIPELINE_INDEX)).json();
+  } catch {
+    return null;
+  }
+  if (!index || typeof index !== "object" || Array.isArray(index)) return null;
+  const className = (index as Record<string, unknown>)._class_name;
+  if (typeof className !== "string" || !className) return null;
+  let sizeBytes = 0;
+  let hasWeights = false;
+  const quantizations: { bits: number | null; groupSize: number | null; mode: string }[] = [];
+  for (const [name, entry] of Object.entries(index as Record<string, unknown>)) {
+    if (name.startsWith("_")) continue;
+    if (!Array.isArray(entry) || entry.length !== 2) return null;
+    if (entry[0] === null && entry[1] === null) continue;
+    if (typeof entry[0] !== "string" || typeof entry[1] !== "string") return null;
+    let files: string[];
+    try {
+      files = readdirSync(join(dir, name));
+    } catch {
+      return null;
+    }
+    const weights = files.filter((f) => f.endsWith(".safetensors"));
+    if (files.includes("config.json") && weights.length === 0) return null;
+    if (files.includes("config.json")) {
+      let config: Record<string, unknown>;
+      try { config = await Bun.file(join(dir, name, "config.json")).json(); } catch { return null; }
+      const quant = (config.quantization ?? config.quantization_config) as { bits?: number; group_size?: number; mode?: string } | undefined;
+      if (quant) quantizations.push({ bits: quant.bits ?? null, groupSize: quant.group_size ?? null, mode: quant.mode ?? "affine" });
+    }
+    for (const f of weights) {
+      hasWeights = true;
+      try { sizeBytes += statSync(join(dir, name, f)).size; } catch {}
+    }
+  }
+  if (!hasWeights) return null;
+  const first = quantizations[0];
+  const agreed = first && quantizations.every(q => q.bits === first.bits && q.groupSize === first.groupSize && q.mode === first.mode);
+  return {
+    path: dir,
+    repoId,
+    modelType: className,
+    paramCount: null,
+    sidecarBytes: 0,
+    expertsBytes: 0,
+    sizeBytes,
+    quantBits: agreed ? first.bits : null,
+    quantGroupSize: agreed ? first.groupSize : null,
+    quantMode: first ? (agreed ? first.mode : "mixed") : null,
+    hasVisionSidecar: false,
+    visionConfigType: null,
+    hasAudioConfig: false,
+    hasAudioTower: false,
+    hasKvConfig: false,
+    hasToolTemplate: false,
+    numLayers: null,
+    hiddenSize: null,
+    vocabSize: null,
+    license: readmeLicense(dir),
+    scannedAt: Date.now(),
+  };
+}
+
 /** Build a ModelRecord straight from a snapshot directory (also the scan()
  *  workhorse). Exported for explicit-path loads (`serve --model <dir>`),
- *  which must not depend on the registry DB having scanned that dir. */
+ *  which must not depend on the registry DB having scanned that dir. A
+ *  directory without a config.json is read as a diffusers pipeline when it has
+ *  a model_index.json (`scanPipelineSnapshot`). */
 export async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
   const configPath = join(dir, "config.json");
-  if (!existsSync(configPath)) return null;
+  if (!existsSync(configPath)) return existsSync(join(dir, PIPELINE_INDEX)) ? scanPipelineSnapshot(dir, repoId) : null;
 
   // size: sum of model safetensors (resolved through HF's blob symlinks).
   // The vision sidecar is its own line item — it loads only for vision

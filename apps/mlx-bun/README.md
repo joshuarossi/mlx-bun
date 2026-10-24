@@ -1332,6 +1332,36 @@ test](tests/engine/transcription.test.ts) run real weights through this app, and
 opt-in [transcription parity test](tests/engine/transcription-parity.test.ts) checks the
 served transcripts against the oracle.
 
+## Text-to-image
+
+`mlx-bun image <prompt>` generates a PNG in a standalone process through
+[`@mlx-bun/module-images`](../../packages/module-images/src/index.ts).
+It accepts `--model`, `--out`, `--width`, `--height`, `--steps`, `--guidance`,
+`--seed`, `--negative-prompt`, `--no-skip-layers` and `--json`.
+The generated filename defaults to `image-<seed>.png` in the current directory;
+`--json` prints the path, resolved model, dimensions, seed, steps, guidance
+and timings. Progress goes to stderr. SIGINT cancels the run and releases
+its model lease. The [CLI tests](../../packages/module-images/tests/image.test.ts)
+exercise these options and decode the generated PNG.
+
+The service resolves the model through the catalog and acquires its declared
+`image` operation through `modelHost`. It validates the request before opening
+stages, releases the lease when generation settles, and encodes the RGB result
+as an 8-bit PNG. The pipeline's conditioner, denoiser and decoder are composed
+through the [image generation contracts](../../packages/inference/README.md#text-to-image).
+The loader selects the bound graph; the model supplies its generation defaults.
+
+Image generation is not installed in the chat or transcription server.
+Automatic chat selection skips image models, and `mlx-bun serve <image model>`
+refuses before loading weights. Shared image, voice and text admission and
+execution are deferred to the loader and scheduler contracts.
+
+MOSS-Image matches pinned MFLUX exactly in the recorded Base/SFT complete-pipeline
+cases: 256px/eight steps with supplied noise and the default 1024px/50 steps with
+each engine's native seeded noise. The [recorded comparisons](../../packages/inference/README.md#moss-image-comparison)
+state the tested prompts, snapshots and M4 Pro runtime, and retain the earlier
+official CPU-reference failures. Paired performance qualification remains open.
+
 ## Metrics and performance
 
 The live view is the metrics module's ([`@mlx-bun/module-metrics`](../../packages/module-metrics/README.md):

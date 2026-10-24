@@ -1,0 +1,36 @@
+{
+  "name": "@mlx-bun/module-images",
+  "version": "1.0.0",
+  "description": "Standalone text-to-image CLI module for mlx-bun applications",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "bun ../../scripts/typecheck.ts --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "fast-png": "^8.0.0"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

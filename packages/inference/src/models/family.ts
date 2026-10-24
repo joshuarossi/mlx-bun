@@ -23,7 +23,10 @@ export type FidelityTarget =
   | Readonly<{ tier: "l3"; oracle: null; claim: "measured" }>;
 
 export type ModelLoader = "safetensors" | "colibri";
-export type GenerationLoop = "autoregressive" | "diffusion" | "encoder-decoder";
+/** How a family produces output. `flow-matching` integrates image latents along a
+ * noise schedule through the stage contracts (`contracts/mlx/image-generation`);
+ * it never enters the token loop. */
+export type GenerationLoop = "autoregressive" | "diffusion" | "encoder-decoder" | "flow-matching";
 /** What a profile was declared for: an exact artifact, a family's own graphs, or
  * the universal graph. Which of a family's graphs a load builds (its generic
  * graph, or a written one built for the composition) is the
@@ -106,6 +109,8 @@ export interface ModelFamily {
   readonly capabilities: readonly EngineCapability[];
   /** A speech-to-text family, served by the transcription engine. */
   readonly transcribes?: true;
+  /** A text-to-image family, opened through `openImagePipeline`. */
+  readonly generatesImages?: true;
   readonly moe?: (config: ModelConfig) => MoeDeclaration | null;
   readonly trainingDefaults?: TrainingDefaults;
   /** Present when the graph declares `GraphCapabilities.embeddings`. */

@@ -7,7 +7,7 @@ import type { CatalogEntry, CatalogFilter, CatalogKind, DownloadProgress, Downlo
 import { downloadsSnapshot } from "@mlx-bun/hub/download";
 import { audioCapable, hubCacheRoot, visionCapable, type ModelRecord, type Registry } from "@mlx-bun/hub/registry";
 import { adapterWeightsFile, listAvailableAdapters } from "@mlx-bun/inference/adapters/available";
-import { isDrafterModelType, isEmbeddingModelType, isSupportedModelRecord, isTranscriptionModelType, listedSupportTier } from "@mlx-bun/inference/models/support";
+import { isDrafterModelType, isEmbeddingModelType, isImageModelType, isSupportedModelRecord, isTranscriptionModelType, listedSupportTier } from "@mlx-bun/inference/models/support";
 import { CatalogFailure } from "./failure";
 import { MODEL_LAYOUT, mlxBunHome, openModelRegistry } from "./home";
 
@@ -38,9 +38,14 @@ export interface RegistryCatalogOptions {
   events?: Pick<EventBus, "publish">;
 }
 
+/** The files that make a directory a model, in order, each with the key naming its type: `config.json`'s `model_type`, or,
+ * for a diffusers pipeline (no `config.json`), `model_index.json`'s pipeline class. */
+const DECLARING_FILES = [["config.json", "model_type"], ["model_index.json", "_class_name"]] as const;
+
 /** What a model declares, from its `model_type`: consumers ask for these, never for a family. */
 export function declaredOperations(modelType: string): ModelOperation[] {
   if (isTranscriptionModelType(modelType)) return ["transcribe"];
+  if (isImageModelType(modelType)) return ["image"];
   if (isDrafterModelType(modelType)) return [];
   return [...(isSupportedModelRecord(modelType) ? ["generate" as const] : []), ...(isEmbeddingModelType(modelType) ? ["embed" as const] : [])];
 }
@@ -103,10 +108,12 @@ export function createRegistryCatalog(options: RegistryCatalogOptions = {}): Mod
     },
     resolve,
     async find(query) {
-      // A directory with a config.json is used as given: its path is its id.
-      if (existsSync(join(query, "config.json"))) {
+      // A model directory (a config.json, or a pipeline's model_index.json) is used as given: its path is its id.
+      const declaring = DECLARING_FILES.find(([file]) => existsSync(join(query, file)));
+      if (declaring) {
+        const [file, key] = declaring;
         let modelType = "";
-        try { modelType = String((JSON.parse(readFileSync(join(query, "config.json"), "utf8")) as { model_type?: unknown }).model_type ?? ""); } catch { /* unreadable: declares nothing */ }
+        try { modelType = String((JSON.parse(readFileSync(join(query, file), "utf8")) as Record<string, unknown>)[key] ?? ""); } catch { /* unreadable: declares nothing */ }
         return { id: query, kind: "model", directory: query, bytes: 0, operations: declaredOperations(modelType) };
       }
       return withRegistry(registry => entryOf(registry.resolve(query)));
@@ -149,7 +156,9 @@ export function createRegistryCatalog(options: RegistryCatalogOptions = {}): Mod
   };
 }
 
-const hasConfig = (directory: string): boolean => { try { return statSync(join(directory, "config.json")).isFile(); } catch { return false; } };
+const isFile = (path: string): boolean => { try { return statSync(path).isFile(); } catch { return false; } };
+/** A model directory: a `config.json`, or a diffusers pipeline's `model_index.json`. */
+const isModelDirectory = (directory: string): boolean => DECLARING_FILES.some(([file]) => isFile(join(directory, file)));
 const repoIdOf = (folder: string) => folder.slice("models--".length).replaceAll("--", "/");
 
 /** Where a folder an OS picker selected lives. The picker reveals only the folder's name and, from a file input, its
@@ -164,8 +173,8 @@ async function locateFolder(selection: FolderSelection, open: () => CatalogRegis
     const snapshots = join(repoDir, "snapshots");
     let head = "";
     try { head = readFileSync(join(repoDir, "refs", "main"), "utf8").trim(); } catch { /* no ref */ }
-    if (head && hasConfig(join(snapshots, head))) return join(snapshots, head);
-    try { for (const hash of readdirSync(snapshots)) if (hasConfig(join(snapshots, hash))) return join(snapshots, hash); } catch { /* no snapshots */ }
+    if (head && isModelDirectory(join(snapshots, head))) return join(snapshots, head);
+    try { for (const hash of readdirSync(snapshots)) if (isModelDirectory(join(snapshots, hash))) return join(snapshots, hash); } catch { /* no snapshots */ }
     return null;
   };
 
@@ -179,13 +188,13 @@ async function locateFolder(selection: FolderSelection, open: () => CatalogRegis
       for (const repo of readdirSync(hubRoot)) {
         if (!repo.startsWith("models--")) continue;
         const candidate = join(hubRoot, repo, "snapshots", hashDir);
-        if (hasConfig(candidate)) return { directory: candidate, id: repoIdOf(repo) };
+        if (isModelDirectory(candidate)) return { directory: candidate, id: repoIdOf(repo) };
       }
     } catch { /* no hub cache */ }
   }
-  if (folder && hasConfig(join(hubRoot, folder))) return { directory: join(hubRoot, folder) };
+  if (folder && isModelDirectory(join(hubRoot, folder))) return { directory: join(hubRoot, folder) };
   // The app's own models are plain directories whose name is their id.
-  if (folder && hasConfig(join(models, folder))) return { directory: join(models, folder), id: folder };
+  if (folder && isModelDirectory(join(models, folder))) return { directory: join(models, folder), id: folder };
 
   const registry = open();
   try {

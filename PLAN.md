@@ -158,6 +158,27 @@ Migration gaps stay required work in the feature table.
 - [ ] (capability reporting) `/v1/models` reports DiffusionGemma with `vision: false` (as main)
   though image requests succeed.
 
+## Text-to-image (MOSS-Image)
+
+Library, family, quantizer, image host and `@mlx-bun/module-images` are implemented with
+their evidence in the [inference README](packages/inference/README.md#text-to-image).
+Open:
+
+- [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
+      M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
+      machine. Exit: the files and their numbers.
+- [ ] Memory on 24 GB: every measured run completed while the machine swapped, and the
+      near-constant 18.4 GB process footprint under staging is unexplained. Exit: an
+      explanation and a quiet-machine measurement of process footprint, RSS and MLX peak.
+- [ ] Shared image, voice and text serving is deferred. Add it through the loader's
+      admission and graph bindings and the scheduler's execution contracts, preserving
+      existing model paths. Exit: the composed operations coordinate loading, memory,
+      execution, cancellation and disposal through those interfaces; MOSS layers and
+      graphs contain no cross-model coordination.
+- [ ] q8 has numerical error measurements only, taken with the conditioner's earlier
+      linear-attention layers; no quality evaluation, and no 4-bit artifact has been built
+      or measured.
+
 ## Split the app into modules
 
 - [ ] Split `apps/mlx-bun` into modules on core services, as the repository split into apps and

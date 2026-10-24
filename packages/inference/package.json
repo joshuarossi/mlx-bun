@@ -19,6 +19,12 @@
     "./contracts": "./src/contracts/index.ts",
     "./kernels/turboquant": "./src/kernels/turboquant/index.ts",
     "./kernels/delta": "./src/kernels/delta/index.ts",
+    "./kernels/gated-delta-chunked": "./src/kernels/gated-delta-chunked.ts",
+    "./kernels/causal-depthwise-conv": "./src/kernels/causal-depthwise-conv.ts",
+    "./kernels/softplus": "./src/kernels/softplus.ts",
+    "./kernels/silu": "./src/kernels/silu.ts",
+    "./kernels/situ": "./src/kernels/situ.ts",
+    "./kernels/moss-attention": "./src/kernels/moss-attention.ts",
     "./kernels/attention/paged": "./src/kernels/attention/paged.ts",
     "./state/paged": "./src/state/paged/cache.ts",
     "./models/qwen3": "./src/models/qwen/qwen3.ts",
@@ -99,7 +105,8 @@
     "./execution/request-policy": "./src/execution/request-policy.ts",
     "./models/diffusion-gemma/vision": "./src/models/diffusion-gemma/vision.ts",
     "./input/tool-call": "./src/input/tool-call.ts",
-    "./models/profile": "./src/models/profile.ts"
+    "./models/profile": "./src/models/profile.ts",
+    "./models/moss-image": "./src/models/moss-image/index.ts"
   },
   "files": [
     "src",

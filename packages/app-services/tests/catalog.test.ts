@@ -30,6 +30,10 @@ test("models declare operations from their type, never from a family name", () =
   expect(declaredOperations("nonsense")).toEqual([]);
 });
 
+test("a text-to-image pipeline declares the image operation alone", () => {
+  expect(declaredOperations("MOSSImagePipeline")).toEqual(["image"]);
+});
+
 test("list, resolve, find and estimate read the index; an empty index is scanned once and every handle closes", async () => {
   const events: string[] = [];
   const rows = [record("org/whisper-turbo", "whisper"), record("org/qwen3", "qwen3")];
@@ -54,6 +58,17 @@ test("a directory with a config.json is used as given: its path is its id and it
     const broken = join(dir, "broken"); mkdirSync(broken); writeFileSync(join(broken, "config.json"), "{");
     const catalog = createRegistryCatalog({ registry: () => { throw new Error("a directory needs no registry"); } });
     expect(await catalog.find(whisper)).toEqual({ id: whisper, kind: "model", directory: whisper, bytes: 0, operations: ["transcribe"] });
+    expect((await catalog.find(broken)).operations).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a pipeline directory (a model_index.json and no config.json) is used as given, its pipeline class saying what it does", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-catalog-"));
+  try {
+    const image = join(dir, "image"); mkdirSync(image); writeFileSync(join(image, "model_index.json"), JSON.stringify({ _class_name: "MOSSImagePipeline" }));
+    const broken = join(dir, "broken"); mkdirSync(broken); writeFileSync(join(broken, "model_index.json"), "{");
+    const catalog = createRegistryCatalog({ registry: () => { throw new Error("a directory needs no registry"); } });
+    expect(await catalog.find(image)).toEqual({ id: image, kind: "model", directory: image, bytes: 0, operations: ["image"] });
     expect((await catalog.find(broken)).operations).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -115,6 +130,24 @@ test("a picked folder is located in the hub cache, the app's models directory, o
     expect(await catalog.locate({ name: "cafe" })).toEqual({ directory: "/elsewhere/cafe", id: "indexed/model", type: "qwen3" });
     expect(await catalog.locate({ name: "nothing-here" })).toBeUndefined();
     expect(await catalog.locate({})).toBeUndefined();
+  } finally { if (previous === undefined) delete process.env.HF_HUB_CACHE; else process.env.HF_HUB_CACHE = previous; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a picked pipeline folder (a model_index.json in place of a config.json) is located the same ways", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-locate-")), previous = process.env.HF_HUB_CACHE;
+  try {
+    const hub = join(dir, "hub"), models = join(dir, "models");
+    process.env.HF_HUB_CACHE = hub;
+    const pipeline = (path: string) => { mkdirSync(path, { recursive: true }); writeFileSync(join(path, "model_index.json"), "{}"); };
+    const repo = join(hub, "models--example--image");
+    pipeline(join(repo, "snapshots", "ccdd")); mkdirSync(join(repo, "refs")); writeFileSync(join(repo, "refs", "main"), "ccdd");
+    pipeline(join(models, "my-image")); pipeline(join(hub, "plain-image"));
+    const catalog = createRegistryCatalog({ registry: registry([]), modelsRoot: () => models });
+    expect(await catalog.locate({ name: "models--example--image" })).toEqual({ directory: join(repo, "snapshots", "ccdd"), id: "example/image" });
+    expect(await catalog.locate({ name: "ccdd" })).toEqual({ directory: join(repo, "snapshots", "ccdd"), id: "example/image" });
+    expect(await catalog.locate({ name: "model_index.json", relPath: "picked/ccdd/model_index.json" })).toEqual({ directory: join(repo, "snapshots", "ccdd"), id: "example/image" });
+    expect(await catalog.locate({ name: "plain-image" })).toEqual({ directory: join(hub, "plain-image") });
+    expect(await catalog.locate({ name: "my-image" })).toEqual({ directory: join(models, "my-image"), id: "my-image" });
   } finally { if (previous === undefined) delete process.env.HF_HUB_CACHE; else process.env.HF_HUB_CACHE = previous; rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -3,6 +3,7 @@ export * from "./denoising";
 export * from "./execution";
 export * from "./generation";
 export * from "./graph";
+export * from "./image-generation";
 export * from "./memory-plan";
 export * from "./object-cache";
 export * from "./prefill";
