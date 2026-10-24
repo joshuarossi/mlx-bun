@@ -192,7 +192,7 @@ interface Check {
 
 const format = (measured: Stats | UlpStats) => ("maxUlps" in measured
   ? `${measured.mismatches}/${measured.total} elements differ, at most ${measured.maxUlps.toFixed(3)} ulp`
-  : `relative ${measured.relative.toExponential(3)}, max |diff| ${measured.maxAbs.toExponential(3)}, ` +
+  : `${measured.bitMismatches}/${measured.elements} float32 words differ, relative ${measured.relative.toExponential(3)}, max |diff| ${measured.maxAbs.toExponential(3)}, ` +
     `cosine min ${measured.minCosine.toFixed(6)} mean ${measured.meanCosine.toFixed(6)}`) +
   (measured.nonFinite ? `, ${measured.nonFinite} NON-FINITE` : "");
 
@@ -304,6 +304,7 @@ describe("MOSS-Image against the PyTorch reference (adjudicated criteria; accept
     writeFileSync(resultsPath, JSON.stringify({ status: execution.status, acceptance: "pending", execution, originalCriteria: ORIGINAL, delta: DELTA,
       adjudicated: { lastBlockTextRows: "reported", unresolved: failures },
       investigative: { spreadFactor: SPREAD_FACTOR },
+      exactComparison: "every compared float32 word, including signed zero; bf16 values widened exactly; non-finite values fail independently",
       cosineAxes: { hidden: "token over features", legacyLatents: "channel over spatial positions",
         spatialLatents: "spatial token over channels (checks named spatial tokens)" },
       implementation: { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain").split("\n").filter(Boolean) },

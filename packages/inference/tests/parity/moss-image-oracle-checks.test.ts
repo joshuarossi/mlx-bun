@@ -15,6 +15,23 @@ const root = mkdtempSync(join(tmpdir(), "mlx-moss-oracle-checks-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
+test("exact comparison counts every selected word, including signed zero, independently of tolerance", () => {
+  const actualWords = new Uint32Array([0x41200000, 0x3f800000, 0x80000000, 0x40000001, 0x40400000, 0]);
+  const expectedWords = new Uint32Array([0, 0x3f800000, 0, 0x40000000, 0x40400000, 0x41200000]);
+  const actual = new Float32Array(actualWords.buffer).subarray(1, 5);
+  const expected = new Float32Array(expectedWords.buffer).subarray(1, 5);
+  const stats = compare(actual, expected, 2);
+  expect(stats.elements).toBe(4);
+  expect(stats.bitMismatches).toBe(2);
+  expect(stats.nonFinite).toBe(0);
+  expect(meets(stats, { relative: 0.03, minCosine: 0.999 })).toBe(true);
+  const selected = compare(actual, expected, 2, 1, 2);
+  expect(selected.elements).toBe(2);
+  expect(selected.bitMismatches).toBe(1);
+  expect(compareSpatial(actual, expected, 2).bitMismatches).toBe(2);
+  expect(compare(expected, expected, 2).bitMismatches).toBe(0);
+});
+
 test("spatial-token cosine detects a channel-scale error hidden by channel cosines", () => {
   // Two channels, two spatial positions. Scaling only the second channel
   // preserves each channel's direction but changes both spatial tokens.

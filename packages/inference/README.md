@@ -393,6 +393,14 @@ cosines and add `spatial tokens` checks across the 128 channels at each position
 using the same original bounds. Relative Frobenius error is unaffected by this
 axis correction.
 
+Comparisons also record the number of differing float32 words over every
+selected element, including signed zero. Captured bf16 values are widened
+exactly before comparison. These counts distinguish bit equality from passing
+the error bounds; non-finite values fail independently. Older result files
+predate these counts and retain their original measurements. The full-model
+oracle remains the official OpenMOSS pipeline; no output-equivalence gate
+replaces the original bounds.
+
 Independent review adjudicated one exception: the last DiT block's text rows feed
 no later operation, so they are reported and its image rows hold the original
 bounds. Every other check holds the original bounds, and every check that fails
@@ -612,6 +620,15 @@ is `90faea4830688bb617128d121dc6fe621df8f0fe11e418514b3b2d3a0bbad602`;
 `base-analysis.json` and `sft-analysis.json` have SHA-256
 `31f2be3512dc40c3a0e8e80a708be543c2de0b90cd8e154ef147c7bc95c28747` and
 `7902c5be3719aae7ac442149fb1b6a2c1e3ced71c4e5b6d2e2c2fe75a6de9ced`.
+
+An offline word comparison of those frozen captures confirms that they are not
+bit-identical: both models' positive conditioning differs on 82,699 of 94,208
+bf16 values, and negative conditioning on 36,873 of 40,960. With their own
+conditioning, both final latents differ on 32,767 of 32,768 float32 values.
+Every teacher-forced input state matches the reference exactly. This rereads
+existing captures and runs no model. The 50 comparisons per model and verified
+capture hashes are in `/tmp/moss-diag/exact-r15/report.json`, SHA-256
+`9c273a454bdb21cadadaba6e80ccc375882b17f2db275e92f456d98cfe42e26b`.
 
 The conditioner's previous binding (the shared delta and gated-norm kernels)
 measured 1.65e-3, 9.5e-4 / 3.5e-3, 4.7e-3 relative on the same real-layer

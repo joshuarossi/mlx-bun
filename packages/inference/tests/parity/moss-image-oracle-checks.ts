@@ -11,19 +11,24 @@ import { lstatSync, readdirSync, readlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileSha256 } from "./real-weight-inputs";
 
-export interface Stats { relative: number; maxAbs: number; minCosine: number; meanCosine: number; nonFinite: number }
+export interface Stats { relative: number; maxAbs: number; minCosine: number; meanCosine: number; nonFinite: number; elements: number; bitMismatches: number }
 export interface UlpStats { total: number; mismatches: number; maxUlps: number; nonFinite: number }
 export interface Bounds { relative: number; minCosine: number; meanCosine?: number }
 
-/** Relative Frobenius error, max |a - b|, and the cosine of each row over `width` values, over rows [from, to); a
- * non-finite value on either side is counted and makes every measure non-finite. */
+/** Relative Frobenius error, max |a - b|, and the cosine of each row over `width` values, over rows [from, to).
+ * Bit mismatches compare every selected float32 word, including signed zero; bf16 values are widened exactly
+ * by the caller. A non-finite value on either side is counted and makes every distance non-finite. */
 export function compare(actual: Float32Array, expected: Float32Array, width: number, from = 0, to = expected.length / width): Stats {
   if (actual.length !== expected.length) throw new RangeError(`compared ${actual.length} values with ${expected.length}`);
-  let diff = 0, norm = 0, maxAbs = 0, minCosine = 1, cosines = 0, nonFinite = 0;
+  const actualBits = new Uint32Array(actual.buffer, actual.byteOffset, actual.length);
+  const expectedBits = new Uint32Array(expected.buffer, expected.byteOffset, expected.length);
+  let diff = 0, norm = 0, maxAbs = 0, minCosine = 1, cosines = 0, nonFinite = 0, elements = 0, bitMismatches = 0;
   for (let r = from; r < to; r++) {
     let dot = 0, na = 0, nb = 0;
     for (let i = r * width; i < (r + 1) * width; i++) {
       const a = actual[i]!, b = expected[i]!;
+      elements++;
+      if (actualBits[i] !== expectedBits[i]) bitMismatches++;
       if (!Number.isFinite(a) || !Number.isFinite(b)) nonFinite++;
       diff += (a - b) ** 2; norm += b * b; maxAbs = Math.max(maxAbs, Math.abs(a - b));
       dot += a * b; na += a * a; nb += b * b;
@@ -31,8 +36,8 @@ export function compare(actual: Float32Array, expected: Float32Array, width: num
     const cosine = dot / Math.sqrt(na * nb || 1);
     minCosine = Math.min(minCosine, cosine); cosines += cosine;
   }
-  if (nonFinite) return { relative: Number.POSITIVE_INFINITY, maxAbs: Number.POSITIVE_INFINITY, minCosine: Number.NaN, meanCosine: Number.NaN, nonFinite };
-  return { relative: Math.sqrt(diff / norm), maxAbs, minCosine, meanCosine: cosines / (to - from), nonFinite };
+  if (nonFinite) return { relative: Number.POSITIVE_INFINITY, maxAbs: Number.POSITIVE_INFINITY, minCosine: Number.NaN, meanCosine: Number.NaN, nonFinite, elements, bitMismatches };
+  return { relative: Math.sqrt(diff / norm), maxAbs, minCosine, meanCosine: cosines / (to - from), nonFinite, elements, bitMismatches };
 }
 
 /** Compare `[1, C, H, W]` latents by spatial token, with each cosine over C
