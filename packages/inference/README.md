@@ -325,7 +325,7 @@ This covers these checkpoints and clips only: no other Whisper size, no non-WAV
 input (AudioToolbox decoding), no oracle for word timestamps or the streaming run
 (main only), no Whisper batching, and no performance. Raw references remain external.
 
-### MOSS-Image comparison (acceptance pending)
+### MOSS-Image comparison
 
 The current numerical target is the independent MFLUX MOSS implementation at
 `a3b21fcaa88726b2267bd42bfc2e2d722f7d5a47`, with Python 3.12.13 and MLX/MLX-Metal
@@ -383,8 +383,26 @@ engine advanced its own trajectory and decoded its own final latent. All eight
 generations completed with exactly 128 DiT calls, 16 encodes and eight decodes.
 The numerical source hash above remained unchanged. Reports, input/source/runtime
 pins, the external producer and PNGs are in `/tmp/moss-diag/mflux-full-pipeline-r23`.
-This qualifies the declared M4 Pro case. Native seeded noise and the advertised
-1024x1024/50-step configuration remain unqualified.
+The default 1024x1024/50-step configuration also matched at `28d8c774`, with
+CFG 3, an empty negative prompt, unconditional skip `[22]` and seed 42. Each
+engine used its original seeded-noise path, encoded both prompts, advanced its
+own trajectory and decoded its final latent. The prompt was `A brass telescope
+beside a blue velvet armchair in a sunlit observatory, a folded star chart on an
+oak desk, detailed photograph.` All 428 checks passed: 420 cross-engine
+comparisons and eight observation controls, covering 220,594,378 floating-point
+words including controls, with zero differences or nonfinite values. Cross-engine
+token and pixel comparisons also matched: 96 token IDs and 6,291,456 RGB bytes.
+The eight generations completed exactly 800 DiT calls, 16 encodes and eight
+decodes, without retries. The numerical source and native libraries remained
+unchanged. Reports, frozen input/reference pins, the external producer and paired
+PNGs are in `/tmp/moss-diag/mflux-default-pipeline-r24`; its output-lock SHA-256 is
+`e06e4a7181c34c7d6e0a58735e38a65b469b9a2d37299c61e388f3b9471676ad`.
+
+The untraced Bun generations took 751.2 s for Base and 778.6 s for SFT, including
+stage loading. Peak MLX allocation across both engines was 14.92 GiB and sampled
+process RSS reached 10.09 GiB. These are observations from the sequential parity
+run; paired performance qualification remains open. The exact results qualify
+the two declared cases on the recorded M4 Pro, snapshots and runtime.
 
 [`moss-image-mflux.test.ts`](tests/parity/moss-image-mflux.test.ts) runs the
 production SFT DiT against the pinned independent captures. Set both
@@ -407,12 +425,17 @@ when no opt-in input is provided, and never counts as numerical evidence.
 The [complete-pipeline regression](tests/parity/moss-image-mflux-pipeline.test.ts)
 requires all three of `MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT`,
 `MLX_BUN_MOSS_PIPELINE_SFT_SNAPSHOT` and `MLX_BUN_MOSS_PIPELINE_ORACLE`.
-The oracle directory contains the content-pinned `case.json`, initial noise,
-`oracle-lock.json`, and the Base/SFT reference control/traced capture files and
-reports. `MLX_BUN_MOSS_PIPELINE_RESULTS` optionally names an external result
-directory. The test verifies all pins before loading MLX and runs a fresh control
-and traced generation for each model. Every conditional, unconditional and guided
-velocity, latent update, raw image and RGB byte must match exactly.
+`MLX_BUN_MOSS_PIPELINE_CASE` selects `captured-256-8` (the default) or
+`native-1024-50`. Use the matching oracle directory above. It contains the
+content-pinned `case.json`, `oracle-lock.json`, and the Base/SFT reference
+control/traced capture files and reports. Only the 256px case supplies captured
+initial noise; the 1024px case compares each engine's native seed-42 output.
+`MLX_BUN_MOSS_PIPELINE_RESULTS` optionally names an external result directory.
+With no inputs the test skips visibly; partial opt-in or an unknown case fails
+before native imports. The test verifies all pins before loading MLX and runs a
+fresh control and traced generation for each model. Every conditional,
+unconditional and guided velocity, latent update, raw image and RGB byte must
+match exactly.
 
 The synthetic attention digests were recorded with Python MLX 0.32.2 on
 `applegpu_g16s`, the M4 Pro. Like the repository's other synthetic digests, those
@@ -475,10 +498,10 @@ by the MFLUX bindings, not retained as runtime alternatives. Their source and
 investigation history remain in Git. No bound was enlarged to accept them.
 
 All historical timing and memory figures were taken on a busy, swapping M4 Pro
-and do not qualify performance. The paired CI check at `aa8b4df9` stopped during
-machine preflight on the M1 Max, with excessive swap and competing work; it
-produced no benchmark numbers. Default-configuration parity and paired performance
-qualification remain open.
+and do not qualify performance. The paired CI check at `28d8c774` stopped during
+machine preflight on the separate M1 Max runner, with 5,935 MB swap against a
+512 MB limit and three active Lean proof processes. It produced no benchmark
+numbers. Paired performance qualification remains open.
 
 ### Packed Qwen Trellis parity
 

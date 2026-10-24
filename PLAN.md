@@ -164,14 +164,6 @@ Library, family, quantizer, image host and `@mlx-bun/module-images` are implemen
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Qualify the advertised 1024x1024/50-step configuration against pinned MFLUX,
-      including native seeded noise, conditioning, every denoiser output and latent
-      update, and final pixels for Base and SFT. The 256x256/eight-step complete
-      pipelines pass all 92 exact checks with supplied initial noise.
-      Retain the original CPU comparison assertions and historical failures in the
-      [inference README](packages/inference/README.md#moss-image-comparison-acceptance-pending).
-      No output-error allowance substitutes for the exact MLX target. Python stays
-      external. Exit: the declared configurations pass their exact gates.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.

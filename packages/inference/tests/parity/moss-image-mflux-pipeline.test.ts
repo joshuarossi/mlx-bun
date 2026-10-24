@@ -1,20 +1,20 @@
-// Base AND SFT, real public generation, 256px / 8 steps / CFG 3 / skip [22].
-// Each engine tokenizes and encodes both prompts itself. Only the initial noise
-// is supplied. Every branch, guided velocity, updated latent, raw image and RGB
-// byte is exact; there is no reference-latent replay or additional forward.
+// Independent MFLUX public-pipeline cases. The default captured-256-8 case
+// preserves its frozen inputs, outputs and all 46 exact/control checks per model.
+// MLX_BUN_MOSS_PIPELINE_CASE=native-1024-50 selects the separately declared case;
+// it cannot load a model until its independent output-lock pin is embedded.
+// Its public generateImage call omits options.latents: reference noise is only
+// an expected output, never an input supplied to the candidate.
 //
-// Set all three MLX_BUN_MOSS_PIPELINE_{BASE_SNAPSHOT,SFT_SNAPSHOT,ORACLE}.
-// None set skips visibly; any partial opt-in fails before native imports.
-// ORACLE contains case.json, noise.safetensors, oracle-lock.json and the four
-// base/sft-control/traced captures + reports. All paths may be relocated.
-// MLX_BUN_MOSS_PIPELINE_RESULTS optionally names an external report directory.
+// Both cases need MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT, _SFT_SNAPSHOT and _ORACLE
+// (each with the MLX_BUN_MOSS_PIPELINE prefix). No options set visibly skips;
+// partial opt-in or an unknown case fails before native imports. _RESULTS names
+// an external results directory. All fixture paths may be relocated.
 //
-// MFLUX a3b21fc / MLX 0.32.2 produced these captures through generate_image,
-// with component loaders deferring weight residency one stage at a time.
-// Its control and traced final latents/pixels matched for both models. Embedded
-// case and output-lock pins anchor every input/reference hash before MLX loads.
-// Each candidate runs one control and one trace through production generateImage.
-// No Python, reference engine, downloads or arithmetic overrides run here.
+// Each engine owns both tokenization/conditioning branches. Observers call the
+// original methods once, retain at most one GPU step, and restore in finally.
+// All selected float32 words (BF16 widened exactly), token IDs, pixels and
+// observer controls must match exactly and be finite. No teacher forcing,
+// Python, downloads, binding overrides or kernel-selection flags run here.
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -27,14 +27,28 @@ import { compare, compareSpatial, unpinnedEntries, verifyPinned, type Stats } fr
 import { fileSha256, optInAll, sha256 } from "./real-weight-inputs";
 
 const OPT_IN = ["MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT", "MLX_BUN_MOSS_PIPELINE_SFT_SNAPSHOT", "MLX_BUN_MOSS_PIPELINE_ORACLE"] as const;
-const CASE_SHA256 = "648fa31099379169ed6abbef060261eb78938a323a1c7e1052693d53122fb276";
-const ORACLE_LOCK_SHA256 = "33cb5ae0297db091e6eac5008d71909fb273a74472019ac0ef899da2dea6f998";
+const CASE_ENV = "MLX_BUN_MOSS_PIPELINE_CASE";
+const CASES = Object.freeze({
+  "captured-256-8": Object.freeze({
+    caseSha256: "648fa31099379169ed6abbef060261eb78938a323a1c7e1052693d53122fb276", oracleLockSha256: "33cb5ae0297db091e6eac5008d71909fb273a74472019ac0ef899da2dea6f998" as string | null,
+    noise: "captured", positiveTokens: 23 as number | null, timeoutMs: 1320000,
+    request: Object.freeze({"prompt":"A red fox sitting in fresh snow, morning light, photograph.","negativePrompt":"","width":256,"height":256,"steps":8,"guidance":3,"seed":42,"uncondSkipLayers":Object.freeze([22])}),
+  }),
+  "native-1024-50": Object.freeze({
+    caseSha256: "7d00407abf707efc8d925ed2df9f6a4404848c22861aabc4005fde1979d6dd7c", oracleLockSha256: "e06e4a7181c34c7d6e0a58735e38a65b469b9a2d37299c61e388f3b9471676ad" as string | null,
+    noise: "native", positiveTokens: null as number | null, timeoutMs: 3720000,
+    request: Object.freeze({"prompt":"A brass telescope beside a blue velvet armchair in a sunlit observatory, a folded star chart on an oak desk, detailed photograph.","negativePrompt":"","width":1024,"height":1024,"steps":50,"guidance":3,"seed":42,"uncondSkipLayers":Object.freeze([22])}),
+  }),
+});
+const caseName = process.env[CASE_ENV] ?? "captured-256-8";
+const DECLARED = CASES[caseName as keyof typeof CASES] ?? CASES["captured-256-8"];
+const CASE_SHA256 = DECLARED.caseSha256, ORACLE_LOCK_SHA256 = DECLARED.oracleLockSha256;
+const REQUEST = DECLARED.request;
+let positiveTokens = DECLARED.positiveTokens ?? 0;
 const MFLUX_REVISION = "a3b21fcaa88726b2267bd42bfc2e2d722f7d5a47";
 const MLX_VERSION = "0.32.2";
-const REQUEST = { prompt: "A red fox sitting in fresh snow, morning light, photograph.", negativePrompt: "",
-  width: 256, height: 256, steps: 8, guidance: 3, seed: 42, uncondSkipLayers: [22] } as const;
 const STAGES = ["input.noise", "tokens.positive", "tokens.negative", "conditioning.positive", "conditioning.negative", "schedule.sigmas", "schedule.timesteps"];
-for (let step = 0; step < 8; step++) for (const output of ["conditional", "unconditional", "guided", "latents"]) STAGES.push(`step.${step}.${output}`);
+for (let step = 0; step < REQUEST.steps; step++) for (const output of ["conditional", "unconditional", "guided", "latents"]) STAGES.push(`step.${step}.${output}`);
 STAGES.push("final.latents", "final.raw", "final.pixels");
 const CONTROLS = ["final.latents", "final.pixels"];
 
@@ -44,8 +58,8 @@ interface Measurement { stage: string; pass: boolean; actualSha256?: string; exp
 interface Fixture {
   schema: number; reference: { revision: string; mlx: string; mlxMetal: string; mflux: string };
   models: Record<"base" | "sft", { revision: string; snapshot: Record<string, string> }>;
-  noise: { file: string; sha256: string; payloadSha256: string };
-  tokenizer: Record<"positive" | "negative", { values: number[]; sha256: string }>;
+  noise: { mode?: "native_seeded"; file?: string; sha256?: string; payloadSha256?: string };
+  tokenizer: Record<"positive" | "negative", { values: number[]; sha256: string } | null>;
   selected: string[]; budget: { memoryLimitBytes: number; secondsPerPipeline: number };
 }
 
@@ -94,20 +108,21 @@ function widen(bytes: Uint8Array, bf16: boolean): Uint8Array {
 }
 
 function rawNchw(tensor: Tensor): Tensor {
-  if (tensor.dtype !== "F32" || tensor.shape.join() !== "1,256,256,3") throw new Error("expected raw NHWC image");
+  if (tensor.dtype !== "F32" || tensor.shape.join() !== [1, REQUEST.height, REQUEST.width, 3].join()) throw new Error("expected raw NHWC image");
   const input = new Uint32Array(tensor.bytes.buffer, tensor.bytes.byteOffset, tensor.bytes.length / 4), words = new Uint32Array(input.length);
-  for (let p = 0; p < 256 * 256; p++) for (let c = 0; c < 3; c++) words[c * 256 * 256 + p] = input[p * 3 + c]!;
-  return { dtype: "F32", shape: [1, 3, 256, 256], bytes: new Uint8Array(words.buffer) };
+  const positions = REQUEST.height * REQUEST.width;
+  for (let p = 0; p < positions; p++) for (let c = 0; c < 3; c++) words[c * positions + p] = input[p * 3 + c]!;
+  return { dtype: "F32", shape: [1, 3, REQUEST.height, REQUEST.width], bytes: new Uint8Array(words.buffer) };
 }
 
 function spec(stage: string): { dtype: Tensor["dtype"]; shape: number[] } {
-  if (stage.startsWith("tokens.")) return { dtype: "I32", shape: [stage.endsWith("positive") ? 23 : 10] };
-  if (stage.startsWith("conditioning.")) return { dtype: "F32", shape: [1, stage.endsWith("positive") ? 23 : 10, 4096] };
-  if (stage === "schedule.sigmas") return { dtype: "F32", shape: [9] };
-  if (stage === "schedule.timesteps") return { dtype: "F32", shape: [8] };
-  if (stage === "final.raw") return { dtype: "F32", shape: [1, 3, 256, 256] };
-  if (stage === "final.pixels") return { dtype: "U8", shape: [1, 256, 256, 3] };
-  return { dtype: "F32", shape: [1, 128, 16, 16] };
+  if (stage.startsWith("tokens.")) return { dtype: "I32", shape: [stage.endsWith("positive") ? positiveTokens : 10] };
+  if (stage.startsWith("conditioning.")) return { dtype: "F32", shape: [1, stage.endsWith("positive") ? positiveTokens : 10, 4096] };
+  if (stage === "schedule.sigmas") return { dtype: "F32", shape: [REQUEST.steps + 1] };
+  if (stage === "schedule.timesteps") return { dtype: "F32", shape: [REQUEST.steps] };
+  if (stage === "final.raw") return { dtype: "F32", shape: [1, 3, REQUEST.height, REQUEST.width] };
+  if (stage === "final.pixels") return { dtype: "U8", shape: [1, REQUEST.height, REQUEST.width, 3] };
+  return { dtype: "F32", shape: [1, 128, REQUEST.height / 16, REQUEST.width / 16] };
 }
 
 function measure(label: string, stage: string, actual: Tensor | undefined, expected: Tensor | undefined): Measurement {
@@ -140,14 +155,14 @@ function patch(object: object, key: string, replacement: unknown, restore: (() =
 }
 
 describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
-  if (OPT_IN.every(name => process.env[name] === undefined)) { test.skip(`needs ${OPT_IN.join(" and ")}`, () => {}); return; }
-  for (const model of ["base", "sft"] as const) test(`${model}: 42 stages plus four observer controls, exact and finite`, async () => {
+  if ([...OPT_IN, CASE_ENV].every(name => process.env[name] === undefined)) { test.skip(`needs ${OPT_IN.join(" and ")}`, () => {}); return; }
+  for (const model of ["base", "sft"] as const) test(`${model}: ${STAGES.length} stages plus four observer controls, exact and finite`, async () => {
     const root = resolve(import.meta.dir, "../../../..");
-    const output = process.env.MLX_BUN_MOSS_PIPELINE_RESULTS ?? join(tmpdir(), "moss-image-mflux-pipeline-results");
+    const output = process.env.MLX_BUN_MOSS_PIPELINE_RESULTS ?? join(tmpdir(), DECLARED.noise === "captured" ? "moss-image-mflux-pipeline-results" : `moss-image-mflux-pipeline-${caseName}-results`);
     mkdirSync(output, { recursive: true });
     const reportPath = join(output, `${model}-results.json`);
     const checks: Measurement[] = [], issues: string[] = [];
-    const run: Record<string, unknown> = { status: "incomplete", model, request: REQUEST, selected: STAGES, caseSha256: CASE_SHA256,
+    const run: Record<string, unknown> = { status: "incomplete", caseName, model, request: REQUEST, selected: STAGES, caseSha256: CASE_SHA256,
       oracleLockSha256: ORACLE_LOCK_SHA256, reference: { revision: MFLUX_REVISION, mlx: MLX_VERSION }, checks, issues, pipelines: {} };
     const modes = run.pipelines as Record<string, Record<string, unknown>>;
     const captures = { control: new Map<string, Tensor>(), traced: new Map<string, Tensor>() };
@@ -164,6 +179,8 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
     save();
     try {
       const opted = optInAll(process.env, OPT_IN, "MOSS full pipeline comparison")!;
+      if (!Object.hasOwn(CASES, caseName)) throw new Error(`unknown declared case ${caseName}`);
+      if (!ORACLE_LOCK_SHA256) throw new Error(`${caseName}: independent output pin is not frozen; no model may load`);
       const oracle = opted.MLX_BUN_MOSS_PIPELINE_ORACLE;
       const snapshot = model === "base" ? opted.MLX_BUN_MOSS_PIPELINE_BASE_SNAPSHOT : opted.MLX_BUN_MOSS_PIPELINE_SFT_SNAPSHOT;
       const initialPins = await verifyPinned(oracle, { "case.json": CASE_SHA256, "oracle-lock.json": ORACLE_LOCK_SHA256 });
@@ -177,7 +194,8 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
       const verified = await verifyPinned(snapshot, fixture.models[model].snapshot);
       const extras = unpinnedEntries(snapshot, fixture.models[model].snapshot);
       // model_index.json is pinned separately; do not reject unrelated root files.
-      const capturesVerified = await verifyPinned(oracle, { ...lock.files, [fixture.noise.file]: fixture.noise.sha256 });
+      const inputPins = DECLARED.noise === "captured" ? { [fixture.noise.file!]: fixture.noise.sha256! } : {};
+      const capturesVerified = await verifyPinned(oracle, { ...lock.files, ...inputPins });
       run.verified = { snapshot: verified, captures: capturesVerified, unpinned: extras };
       if (verified.mismatched.length || capturesVerified.mismatched.length || extras.length)
         throw new Error([...verified.mismatched, ...capturesVerified.mismatched, ...extras].join("\n"));
@@ -185,17 +203,29 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
         const report = JSON.parse(readFileSync(join(oracle, `${model}-${mode}.json`), "utf8"));
         if (report.status !== "complete" || report.caseSha256 !== CASE_SHA256 || report.producerSha256 !== lock.producerSha256
           || report.model !== model || report.mode !== mode || report.captureSha256 !== lock.files[`${model}-${mode}.safetensors`]
-          || JSON.stringify(report.calls) !== JSON.stringify({ generate: 1, noise: 1, encodes: 2, transformer: 16, decode: 1 })
+          || JSON.stringify(report.calls) !== JSON.stringify({ generate: 1, noise: 1, encodes: 2, transformer: 2 * REQUEST.steps, decode: 1 })
           || !report.observerRestored || report.failures.length) throw new Error(`incomplete independent ${mode}`);
       }
       expected = readCapture(join(oracle, `${model}-traced.safetensors`));
       referenceControl = readCapture(join(oracle, `${model}-control.safetensors`));
       if (expected.size !== STAGES.length || STAGES.some(s => !expected.has(s)) || referenceControl.size !== 2) throw new Error("reference capture set");
-      const noise = readCapture(join(oracle, fixture.noise.file)).get("latents")!;
-      if (sha256(noise.bytes) !== fixture.noise.payloadSha256 || noise.dtype !== "F32" || noise.shape.join() !== "1,128,16,16"
-        || sha256(expected.get("input.noise")!.bytes) !== fixture.noise.payloadSha256) throw new Error("initial noise payload changed");
-      for (const branch of ["positive", "negative"] as const)
-        if (sha256(expected.get(`tokens.${branch}`)!.bytes) !== fixture.tokenizer[branch].sha256) throw new Error(`independent ${branch} tokenizer ids changed`);
+      const positiveIds = expected.get("tokens.positive")!;
+      if (positiveIds.dtype !== "I32" || positiveIds.shape.length !== 1 || positiveIds.shape[0]! < 1 || positiveIds.shape[0]! > 4096)
+        throw new Error("invalid independent positive token sequence");
+      positiveTokens = positiveIds.shape[0]!;
+      if (DECLARED.positiveTokens !== null && positiveTokens !== DECLARED.positiveTokens) throw new Error("pinned token count changed");
+      const expectedNoise = expected.get("input.noise")!;
+      if (expectedNoise.dtype !== "F32" || expectedNoise.shape.join() !== spec("input.noise").shape.join()) throw new Error("independent noise geometry");
+      let noise: Tensor | undefined;
+      if (DECLARED.noise === "captured") {
+        noise = readCapture(join(oracle, fixture.noise.file!)).get("latents")!;
+        if (sha256(noise.bytes) !== fixture.noise.payloadSha256 || noise.dtype !== "F32" || noise.shape.join() !== spec("input.noise").shape.join()
+          || sha256(expectedNoise.bytes) !== fixture.noise.payloadSha256) throw new Error("initial noise payload changed");
+      } else if (fixture.noise.mode !== "native_seeded") throw new Error("native case must use its original seeded noise path");
+      for (const branch of ["positive", "negative"] as const) {
+        const pin = fixture.tokenizer[branch];
+        if (pin && sha256(expected.get(`tokens.${branch}`)!.bytes) !== pin.sha256) throw new Error(`independent ${branch} tokenizer ids changed`);
+      }
       const implementation = { commit: git("rev-parse", "HEAD"), modified: git("status", "--porcelain"), sourceSha256: await sourceHashes(),
         testSha256: await fileSha256(import.meta.path), helperSha256: await fileSha256(join(import.meta.dir, "moss-image-oracle-checks.ts")),
         bun: Bun.version, host: `${platform()} ${release()} ${arch()}` };
@@ -277,7 +307,7 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
               patch(component, "decode", function (this: typeof component, latents: MlxArray) {
                 counts.decode++; flush();
                 const final = copy(latents); observe("final.latents", final);
-                if (observed) observe("step.7.latents", final);
+                if (observed) observe(`step.${REQUEST.steps - 1}.latents`, final);
                 const result = decode.call(this, latents);
                 if (observed) retain("final.raw", result);
                 return result;
@@ -298,19 +328,20 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
               }, restores);
               patch(pipeline.schedule, "timestep", function (this: TextToImagePipeline["schedule"], sigma: number) {
                 const result = timestep.call(this, sigma); timesteps.push(result);
-                if (timesteps.length === 8) observe("schedule.timesteps", { dtype: "F32", shape: [8], bytes: new Uint8Array(Float32Array.from(timesteps).buffer) });
+                if (timesteps.length === REQUEST.steps) observe("schedule.timesteps", { dtype: "F32", shape: [REQUEST.steps], bytes: new Uint8Array(Float32Array.from(timesteps).buffer) });
                 return result;
               }, restores);
             }
-            using initial = MlxArray.fromBytesCopy(noise.bytes, noise.shape, Dtype.float32);
+            // Native case deliberately has no input tensor to copy: public generateImage draws its own seeded noise.
+            using initial = noise ? MlxArray.fromBytesCopy(noise.bytes, noise.shape, Dtype.float32) : null;
             counts.generate++;
-            const image = await generateImage(pipeline, REQUEST, { latents: initial, releaseStages: true,
+            const image = await generateImage(pipeline, REQUEST, { ...(initial ? { latents: initial } : {}), releaseStages: true,
               signal: AbortSignal.timeout(fixture.budget.secondsPerPipeline * 1000),
               onProgress: progress => { memory.push({ ...progress, activeBytes: ffi.activeMemory(), peakBytes: ffi.peakMemory() }); save(); },
             });
             flush();
             observe("final.pixels", { dtype: "U8", shape: [1, image.height, image.width, 3], bytes: image.pixels.slice() });
-            if (image.steps !== 8 || image.seed !== 42 || image.guidance !== 3) issues.push(`${mode}: generation metadata mismatch`);
+            if (image.steps !== REQUEST.steps || image.seed !== REQUEST.seed || image.guidance !== REQUEST.guidance) issues.push(`${mode}: generation metadata mismatch`);
             detail.status = "complete";
           } catch (error) { detail.error = String(error); issues.push(`${mode}: ${String(error)}`); }
           finally {
@@ -323,15 +354,15 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
             detail.observerRestored = true;
             const file = join(output, `${model}-${mode}.safetensors`);
             writeCapture(file, values); detail.captureSha256 = await fileSha256(file); detail.captured = [...values.keys()];
-            if (counts.generate !== 1 || counts.encodes !== 2 || counts.transformer !== 16 || counts.decode !== 1
-              || observed && (counts.guided !== 8 || counts.tokens !== 2)) issues.push(`${mode}: forward or tokenizer count mismatch`);
+            if (counts.generate !== 1 || counts.encodes !== 2 || counts.transformer !== 2 * REQUEST.steps || counts.decode !== 1
+              || observed && (counts.guided !== REQUEST.steps || counts.tokens !== 2)) issues.push(`${mode}: forward or tokenizer count mismatch`);
             if (stageOrder.join() !== "conditioner,denoiser,decoder" || released.join() !== "conditioner,denoiser,decoder") issues.push(`${mode}: stage lifecycle mismatch`);
             if (ffi.peakMemory() > fixture.budget.memoryLimitBytes) issues.push(`${mode}: memory budget exceeded`);
             const names = observed ? STAGES : CONTROLS;
             if (values.size !== names.length || names.some(name => !values.has(name))) issues.push(`${mode}: capture set mismatch`);
             ffi.clearCache(); save();
           }
-          if (detail.status !== "complete") break; // no retry after a native/runtime failure
+          if (detail.status !== "complete" || issues.length) break; // stop after any recorded run failure
         }
       } finally { ffi.setMemoryLimit(previousLimit); }
       if (git("rev-parse", "HEAD") !== implementation.commit || JSON.stringify(await sourceHashes()) !== JSON.stringify(implementation.sourceSha256))
@@ -351,5 +382,5 @@ describe("MOSS Base and SFT public pipeline against independent MFLUX", () => {
       save();
     }
     expect(run.failures).toEqual([]);
-  }, 1_320_000);
+  }, DECLARED.timeoutMs);
 });
