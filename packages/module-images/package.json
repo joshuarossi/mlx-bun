@@ -1,7 +1,7 @@
 {
   "name": "@mlx-bun/module-images",
   "version": "1.0.0",
-  "description": "Text-to-image module for mlx-bun applications: the OpenAI Images-compatible generations route and the image verb",
+  "description": "Standalone text-to-image CLI module for mlx-bun applications",
   "type": "module",
   "license": "MIT",
   "engines": {

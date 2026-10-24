@@ -160,11 +160,11 @@ Migration gaps stay required work in the feature table.
 
 ## Text-to-image (MOSS-Image)
 
-Library, family, quantizer, image host and `@mlx-bun/module-images` landed with
+Library, family, quantizer, image host and `@mlx-bun/module-images` are implemented with
 their evidence in the [inference README](packages/inference/README.md#text-to-image).
 Open:
 
-- [ ] Resolve or decide every check that fails the original bounds (the review adjudicated
+- [ ] Resolve every check that fails the original bounds (the review adjudicated
       only the last block's text rows). At `6e1d329a`, both Base and SFT fail trajectory
       steps 6 and 7, and the corrected spatial-token cosine also fails at step 5.
       All consumed DiT stage checks pass. The review's two
@@ -176,17 +176,20 @@ Open:
       numerators without holding the scores. The single complete-pipeline image
       comparison is recorded; full-model acceptance across prompts and configurations
       and performance qualification remain open. Exit:
-      each passes its bound, or Josh records a decision.
+      each passes its bound. Record exact tensor mismatch counts separately;
+      passing a tolerance is not bit parity. The official OpenMOSS engine remains
+      the full-model reference; Python tooling stays external.
 - [ ] Written graph files for one model on one machine (Base and SFT on the M4 Pro and
       M1 Max) once profiling chooses their bindings, with paired measurements on a quiet
       machine. Exit: the files and their numbers.
 - [ ] Memory on 24 GB: every measured run completed while the machine swapped, and the
       near-constant 18.4 GB process footprint under staging is unexplained. Exit: an
       explanation and a quiet-machine measurement of process footprint, RSS and MLX peak.
-- [ ] Serving gaps: `/v1/models` does not list image models.
-      An isolated image model keeps its first staging decision and charge while the server
-      runs, as a chat model keeps its first estimate, so a snapshot that grows on disk while
-      served is undercharged until its worker reports measured memory or the server restarts.
+- [ ] Shared image, voice and text serving is deferred. Add it through the loader's
+      admission and graph bindings and the scheduler's execution contracts, preserving
+      existing model paths. Exit: the composed operations coordinate loading, memory,
+      execution, cancellation and disposal through those interfaces; MOSS layers and
+      graphs contain no cross-model coordination.
 - [ ] q8 has numerical error measurements only, taken with the conditioner's earlier
       linear-attention layers; no quality evaluation, and no 4-bit artifact has been built
       or measured.

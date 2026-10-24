@@ -2,7 +2,7 @@
 // loader: runtime switches, expert offload, the model context and its startup
 // adapter. startContextHost serves one or more models from the model host
 // (residency/model-residency.ts): each loaded model is a serving unit (binding,
-// caches, engine, routes: serving-unit.ts), the companions (Whisper, image), the model
+// caches, engine, routes: serving-unit.ts), the Whisper companion, the model
 // router (server/model-routes.ts), and the listener that serves them with the
 // state's routes and the modules' sockets. Both borrow persistent services from the AppState they are
 // given, and one close releases everything they created in the app's order.
@@ -13,8 +13,6 @@ import { leasedAdapters } from "../residency/leased-adapters";
 import { defaultBudgetBytes, estimateRecordBytes } from "../residency/resident-estimate";
 import { createRecordIndex } from "../residency/record-index";
 import { listLocalRecords } from "../residency/local-records";
-import type { CatalogEntry, ModelCatalog } from "@mlx-bun/app-core";
-import type { Exclusive, StageRule } from "@mlx-bun/app-services";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import pkgJson from "../../package.json" with { type: "json" };
@@ -40,8 +38,6 @@ export interface ModelHostHooks {
   routes?(model: RouteGroup): RouteGroup;
   /** Internal (worker mode): serve only the model this host was started with; another is the parent's to load in another worker. */
   oneModel?: true;
-  /** A companion worker's execution lease, also held by its parent through the admin route. */
-  exclusive?: Exclusive;
 }
 
 /** Worker mode: the listener is a Unix socket, so there is no port to report. */
@@ -217,7 +213,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   try {
     const [{ startServer }, { createModelRoutes },
-      { createHostServices, createModuleRoutes, declaredOperations, defaultStageBudgetBytes, stageBudgetRule }] = await Promise.all([
+      { createHostServices, createModuleRoutes, declaredOperations }] = await Promise.all([
       import("../server/start"), import("../server/model-routes"),
       import("@mlx-bun/app-services"),
     ]);
@@ -242,15 +238,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     // restart, as in main). The weights load per take and release per the
     // --whisper-* policy; every decode runs with every resident model paused so
     // it never overlaps generation, and a load first makes room in the budget.
-    // The text-to-image companion (the images module's `image` leases) is the
-    // first downloaded image model, under the same lock and admission; its
-    // stages stay open or are released per run by the budget rule over the
-    // bytes its stages load, the bytes its admission asks room for. Modules
-    // reach both through the companions, by the operation a model declares.
-    const companionOperations = hooks.oneModel ? [] : ["transcribe", "image"] as const;
-    const exclusive: Exclusive = async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } };
-    const moduleHost = createHostServices({ operations: companionOperations, whisper: options.whisper, image: { stages: stageBudgetRule(defaultStageBudgetBytes()) }, events: state.events,
-      exclusive, loadExclusive: exclusive, reserve: (owner, signal) => residency.reserve(owner, signal) });
+    const moduleHost = createHostServices({ whisper: options.whisper, events: state.events,
+      exclusive: async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } },
+      admit: bytes => residency.makeRoom(bytes) });
     const whisperInfo = async () => {
       const id = await moduleHost.whisper.defaultFor("transcribe");
       return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
@@ -297,6 +287,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     let current = first.id;
     residency = createResidencyHost<ServingUnit>({ source, budgetBytes, events: state.events,
       ...(memory ? { measured: () => memory.activeMemory() } : {}),
+      external: () => moduleHost.whisper.resident().reduce((sum, model) => sum + model.bytes, 0),
       defaultFor: async operation => operation === "generate" ? current : undefined,
       // Switching: the models this host may load; a caller's own context and an expert-offload process hold one model and never switch.
       ...(input.models ? { async serve(id: string, signal: AbortSignal | undefined) {
@@ -313,7 +304,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const closeModules = async () => {
       const errors: unknown[] = [];
       try { await modules?.stop(); } catch (error) { errors.push(error); }
-      try { await moduleHost.companions.close(); } catch (error) { errors.push(error); }
+      try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "module cleanup failed");
     };
     const closeApp = async () => {
@@ -340,10 +331,10 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       hold: (id, signal) => residency.acquire(id, { need: ["generate"], ...(signal ? { signal } : {}) }),
       invalidateLibrary,
       resident: () => residency.resident(),
-      companions: moduleHost.companions,
+      companions: moduleHost.whisper,
       adapters: leasedAdapters(residency, () => current),
       ...(input.models ? { serve: (id: string, signal: AbortSignal) => residency.serve(id, { signal }) } : {}) });
-    modules = await loadInstalledModules({ bindings: { ...moduleHost.bindings, modelHost: () => state.modelHost } }, { operations: companionOperations });
+    modules = await loadInstalledModules({ bindings: { ...moduleHost.bindings, modelHost: () => state.modelHost } });
     const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
     const moduleRoutes = createModuleRoutes(modules.routes);
     const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
@@ -390,25 +381,24 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
  * internal hooks are the model host's: a Unix socket instead of TCP, a route
  * wrapper, and a step ahead of the Whisper close (the worker app form). */
 export async function startTranscriptionHost(model: ModelRecord, options: ServeOptions,
-  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain" | "exclusive"> = {}): Promise<RunningApp> {
+  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
   const [{ createCompanionInfoRoutes, createHostServices, createModuleRoutes, createModuleSockets }, { startServer }] = await Promise.all([
     import("@mlx-bun/app-services"), import("../server/start"),
   ]);
   const whisper = options.whisper ?? {};
-  const moduleHost = createHostServices({ operations: ["transcribe"], whisper: { ...whisper, modelDir: model.path, modelId: model.repoId },
-    ...(hooks.exclusive ? { exclusive: hooks.exclusive, loadExclusive: hooks.exclusive } : {}) });
+  const moduleHost = createHostServices({ whisper: { ...whisper, modelDir: model.path, modelId: model.repoId } });
   let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
   // The modules stop first (takes in flight are joined), then the weights release.
   const close = async () => {
     const errors: unknown[] = [];
     try { await modules?.stop(); } catch (error) { errors.push(error); }
-    try { await moduleHost.companions.close(); } catch (error) { errors.push(error); }
+    try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
     moduleHost.events.close();
     if (errors.length) throw new AggregateError(errors, "transcription cleanup failed");
   };
   let cleanup: (() => Promise<void>) | undefined = close;
   try {
-    modules = await loadInstalledModules(moduleHost, { operations: ["transcribe"] });
+    modules = await loadInstalledModules(moduleHost);
     if (whisper.preload) await moduleHost.whisper.preload(model.repoId);
     const audio = createModuleRoutes(modules.routes);
     const loaded = modules;
@@ -429,60 +419,5 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
     }, hooks.unix ? { unix: hooks.unix } : { port: options.port, hostname: options.hostname });
     return { ...(hooks.unix ? {} : { port: listener.server.port! }), close: listener.close,
       downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
-  } catch (error) { await cleanup?.(); throw error; }
-}
-
-/** The image worker's catalog: the snapshot it was started for, under its exact id, and no other model (the parent gives each
- * image model a worker of its own and charges it). Downloads and the rest stay the registry catalog's. */
-function servingOnly(model: ModelRecord, catalog: ModelCatalog): ModelCatalog {
-  const own: CatalogEntry = { id: model.repoId, kind: "model", directory: model.path, bytes: model.sizeBytes, operations: ["image"] };
-  return { ...catalog,
-    list: async filter => filter?.kind === "adapter" ? [] : [own],
-    resolve: async id => id === own.id ? own : undefined,
-    async find(query) {
-      if (query === own.id) return own;
-      throw new Error(`${query} is not served by this image worker, which serves ${own.id}; name an exact local image model id`);
-    } };
-}
-
-/** Image companion composition (the isolated server's image worker, `cli/worker-entry.ts`): the installed modules'
- * routes on the parent's Unix socket over the host library's services, with this snapshot as the `image` default and the
- * only model it serves; no chat model, prompt cache, jobs or web app. The pipeline opens on the first request and follows
- * the image host's residency under the given stage rule (the worker's: the parent's decision, applied as made), each run
- * inside the given execution lock (the worker's, which its admin surface leases to a managed job). The hooks are the worker's: the admin surface ahead of the routes, and its
- * close ahead of the modules'. */
-export async function startImageHost(model: ModelRecord, serving: { stages: StageRule; exclusive: Exclusive },
-  hooks: Pick<ModelHostHooks, "routes" | "beforeDrain"> & { unix: string }): Promise<RunningApp> {
-  const [{ createHostServices, createModuleRoutes, createModuleSockets, createRegistryCatalog }, { startServer }] = await Promise.all([
-    import("@mlx-bun/app-services"), import("../server/start"),
-  ]);
-  // This worker serves its snapshot alone, staged as the parent decided when it charged it: the catalog its modules and image host
-  // resolve through knows no other model, so a request naming another loads nothing here.
-  const moduleHost = createHostServices({ operations: ["image"], image: { modelDir: model.path, modelId: model.repoId, stages: serving.stages },
-    catalog: servingOnly(model, createRegistryCatalog()), exclusive: serving.exclusive });
-  let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
-  // The modules stop first (runs in flight are joined), then the pipeline releases.
-  const close = async () => {
-    const errors: unknown[] = [];
-    try { await modules?.stop(); } catch (error) { errors.push(error); }
-    try { await moduleHost.companions.close(); } catch (error) { errors.push(error); }
-    moduleHost.events.close();
-    if (errors.length) throw new AggregateError(errors, "image companion cleanup failed");
-  };
-  let cleanup: (() => Promise<void>) | undefined = close;
-  try {
-    modules = await loadInstalledModules(moduleHost, { operations: ["image"] });
-    const routes = createModuleRoutes(modules.routes);
-    // startServer owns the cleanup on entry, including a bind failure.
-    cleanup = undefined;
-    const listener = await startServer({
-      routes: hooks.routes?.(routes) ?? routes,
-      web: () => null,
-      // No chat: the image companion declares no sockets.
-      sockets: createModuleSockets([]),
-      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await close(); } },
-      closeEngine: async () => {},
-    }, { unix: hooks.unix });
-    return { close: listener.close, downloads: { active: [], start() { throw new Error("the image companion owns no downloads"); } } };
   } catch (error) { await cleanup?.(); throw error; }
 }

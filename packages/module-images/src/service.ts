@@ -1,7 +1,6 @@
 // Text-to-image over a model the host leases: request validation, model
-// resolution, the `image` lease and PNG encoding. The route and the verb are
-// adapters over `ImageService.generate`; neither loads weights nor decides
-// residency, which are the host's `modelHost` policy.
+// resolution, the `image` lease and PNG encoding. The CLI calls
+// `ImageService.generate`; the host owns loading and pipeline lifetime.
 //
 // A generation holds its lease from acquire until the operation settles,
 // whatever the outcome (success, failure, cancellation), and releases it
@@ -15,7 +14,7 @@ export type ImageServices = Pick<CoreServices, "modelHost" | "catalog">;
 export const NO_IMAGE_MODEL =
   "no image model is available; download a text-to-image model with mlx-bun get <org/repo>, or name a local one";
 
-/** A request the service refused before or instead of generating, with the HTTP status and error type the route answers. */
+/** A request the service refused before or instead of generating, with a status and error type for callers. */
 export class ImageRequestError extends Error {
   constructor(message: string, readonly status: number, readonly type = "invalid_request_error") {
     super(message);

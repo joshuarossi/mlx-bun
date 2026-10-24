@@ -50,7 +50,7 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
   try {
     if (registry.list().length === 0) await registry.scan();
     if (query) return { m: registry.resolve(query), picked: false };
-    // A chat model: an image pipeline is served beside one, never as one.
+    // Image pipelines run through the standalone image command.
     const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType) && !isImageModelType(model.modelType));
     let candidates = supported();
     let recommended: string | undefined;

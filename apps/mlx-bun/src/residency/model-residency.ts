@@ -8,9 +8,8 @@
 // resolves ids and loads units, and a unit says what it holds and how to close.
 import type {
   AcquireOptions, CoreEvent, ModelHost, ModelHostError, ModelId, ModelLease, ModelOperation, ModelOperations, ModelRole, ModelStats,
-  ResidencyFailure, ResidencyPlan, ResidencyPolicy, ResidentModel, ResidencyParticipant, ReserveModel,
+  ResidencyFailure, ResidencyPlan, ResidencyPolicy, ResidentModel,
 } from "@mlx-bun/app-core";
-import { createExecutionLock } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 
 export class ResidencyError extends Error implements ModelHostError {
@@ -96,10 +95,8 @@ export interface ResidencyHost<U extends ResidentUnit> extends ModelHost {
   peek(id: ModelId): U | undefined;
   /** Free `bytes` by draining least recently used models, waiting while every candidate is busy; resolves once they fit. */
   makeRoom(bytes: number, signal?: AbortSignal): Promise<void>;
-  /** Admit and own a companion's charge until its owner releases it. Idle companions participate in eviction. */
-  reserve: ReserveModel;
-  /** Serialize exclusive work, stop resident execution and hold back new loads. An already leased unit may remain runnable. */
-  pauseAll(signal?: AbortSignal, except?: ModelId): Promise<DisposableResource>;
+  /** Stop every resident execution until disposed, and hold back new loads meanwhile (a managed job, a companion's decode). */
+  pauseAll(signal?: AbortSignal): Promise<DisposableResource>;
   /** Stop admission, wait for loads in flight, close every unit. The results are each closed unit's. Idempotent. */
   close(): Promise<readonly UnitClosed[]>;
 }
@@ -128,8 +125,6 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
   const slots = new Map<ModelId, Slot<U>>();
   const pinned = new Set<ModelId>(options.pinned ?? []);
   const waiters = new Set<() => void>();
-  const execution = createExecutionLock();
-  const reservations = new Set<ResidencyParticipant>();
   let closed = false, closing: Promise<readonly UnitClosed[]> | undefined, paused = 0;
   const closedError = () => new ResidencyError("closed", "the model host is closed");
   const publish = (event: CoreEvent) => { try { options.events?.publish(event); } catch { /* a subscriber never slows a load */ } };
@@ -142,20 +137,11 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
     waiters.add(wake);
     if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
   });
-  /** Wait until every pending close or load settles (their failures are their owners'), or reject when the signal aborts
-   * first: the waiter gives up its turn; the work it waited on goes on. */
-  const settled = (pending: readonly (Promise<unknown> | undefined)[], signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
-    const abort = () => reject(signal!.reason);
-    if (signal?.aborted) { abort(); return; }
-    signal?.addEventListener("abort", abort, { once: true });
-    void Promise.all(pending.map(work => work?.catch(() => {}))).then(() => { signal?.removeEventListener("abort", abort); resolve(); });
-  });
 
   const held = (slot: Slot<U>) => slot.unit ? slot.unit.bytes() : slot.loading ? slot.entry.bytes : 0;
   /** Bytes in use by everyone but `except`: the estimates, floored by what the process measurably holds. */
   const used = (except?: Slot<U>) => {
     let sum = external();
-    for (const owner of reservations) sum += owner.model().bytes;
     for (const slot of slots.values()) if (slot !== except) sum += held(slot);
     return Math.max(sum, measured() - (except ? held(except) : 0));
   };
@@ -167,29 +153,20 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
   const evictable = (slot: Slot<U>) => !!slot.unit && !busy(slot) && !pinned.has(slot.id);
 
   /** Least recently used first, the fewest that make `bytes` fit. `busy` is what waiting could still free. */
-  type Victim = { id: string; bytes: number; lastUsedAt: number; evict(): Promise<unknown> };
-  function decide(bytes: number, except?: Slot<U>): { fits: boolean; victims: Victim[]; wait: boolean } {
+  function decide(bytes: number, except?: Slot<U>): { fits: boolean; victims: Slot<U>[]; wait: boolean } {
     const base = used(except);
     if (base + bytes <= budget) return { fits: true, victims: [], wait: false };
-    const candidates: Victim[] = [...slots.values()].filter(slot => slot !== except && evictable(slot))
-      .map(slot => ({ id: slot.id, bytes: held(slot), lastUsedAt: slot.lastUsedAt, evict: () => evict(slot, "evicted") }));
-    for (const owner of reservations) {
-      const model = owner.model();
-      if (!model.pinned && !model.leases && model.state === "ready") candidates.push({ id: model.id, bytes: model.bytes,
-        lastUsedAt: model.lastUsedAt, evict: () => owner.unload() });
-    }
-    candidates.sort((a, b) => a.lastUsedAt - b.lastUsedAt);
-    const victims: Victim[] = [];
+    const candidates = [...slots.values()].filter(slot => slot !== except && evictable(slot)).sort((a, b) => a.lastUsedAt - b.lastUsedAt);
+    const victims: Slot<U>[] = [];
     let freed = 0;
     for (const slot of candidates) {
-      victims.push(slot); freed += slot.bytes;
+      victims.push(slot); freed += held(slot);
       if (base - freed + bytes <= budget) return { fits: true, victims, wait: false };
     }
     // Even every candidate would not be enough. If busy models hold the rest, wait for one to finish rather
     // than evict for nothing; if only pinned models and this one remain, a lone model is always served.
     const others = [...slots.values()].some(slot => slot !== except && !pinned.has(slot.id) && !!(slot.unit || slot.loading) && busy(slot));
-    const companionsBusy = [...reservations].some(owner => { const model = owner.model(); return model.leases > 0 || model.state !== "ready"; });
-    return { fits: false, victims: candidates, wait: others || companionsBusy };
+    return { fits: false, victims: candidates, wait: others };
   }
 
   /** Drain, flush and release one resident model; it is `closing` for the duration so nothing else touches it. */
@@ -309,10 +286,9 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
         if (!plan.fits && plan.wait) { await changed(signal); continue; }
         if (plan.victims.length) {
           // The largest set the plan named, released before the newcomer loads. A settled eviction re-decides.
-          await Promise.all(plan.victims.map(victim => victim.evict()));
+          await Promise.all(plan.victims.map(victim => evict(victim, "evicted")));
           continue;
         }
-        if (!plan.fits && reservations.size) throw new ResidencyError("no-evictable-model", "the memory budget is held by pinned companions");
         reserve();
         try { return lease(slot, await startLoad(slot), now() - waited); }
         catch (error) { slot.leases--; notify(); throw error; }
@@ -368,54 +344,19 @@ export function createResidencyHost<U extends ResidentUnit>(options: ResidencyOp
         const plan = decide(bytes);
         if (plan.fits && !plan.victims.length) return;
         if (!plan.fits && plan.wait) { await changed(signal); continue; }
-        if (!plan.victims.length) {
-          if (reservations.size) throw new ResidencyError("no-evictable-model", "the memory budget is held by pinned companions");
-          return;
-        }
-        await Promise.all(plan.victims.map(victim => victim.evict()));
+        if (!plan.victims.length) return;
+        await Promise.all(plan.victims.map(victim => evict(victim, "evicted")));
       }
     },
 
-    async reserve(owner, signal) {
-      // Decide and publish the charge without an await between them. A second
-      // admission sees pending weights even before their owner finishes opening.
-      for (;;) {
-        signal?.throwIfAborted();
-        if (closed) throw closedError();
-        if (paused > 0) { await changed(signal); continue; }
-        await refreshed();
-        signal?.throwIfAborted();
-        if (closed || paused > 0) continue;
-        const plan = decide(owner.model().bytes);
-        if (!plan.fits && plan.wait) { await changed(signal); continue; }
-        if (plan.victims.length) { await Promise.all(plan.victims.map(victim => victim.evict())); continue; }
-        if (!plan.fits && (reservations.size || [...slots.values()].some(slot => slot.unit || slot.loading) || external() > 0))
-          throw new ResidencyError("no-evictable-model", "the memory budget is held by pinned residents or companions");
-        reservations.add(owner);
-        let released = false;
-        return { changed: notify, release() {
-          if (released) return;
-          released = true;
-          reservations.delete(owner);
-          notify();
-        } };
-      }
-    },
-
-    async pauseAll(signal, except) {
+    async pauseAll(signal) {
       paused++;
       const held: DisposableResource[] = [];
       try {
-        held.push(await execution.acquire(signal));
-        signal?.throwIfAborted();
-        if (closed) throw closedError();
-        // A model that is draining is on its way out: wait for it, then pause the ones that stay. A model that is loading
-        // (no new load starts once `paused` is raised) is on its way in: wait for it too, so it is paused before the job runs.
-        // A cancelled job stops waiting at once and lowers the gate; it never cancels a close or load another owner started.
-        await settled([...slots.values()].map(slot => slot.closing), signal);
-        await settled([...slots.values()].map(slot => slot.loading), signal);
+        // A model that is draining is on its way out: wait for it, then pause the ones that stay.
+        await Promise.all([...slots.values()].map(slot => slot.closing?.catch(() => {})));
         // A stable order, so two pausers never wait on each other.
-        for (const slot of [...slots.values()].filter(slot => slot.id !== except && slot.unit && !slot.closing).sort((a, b) => a.id < b.id ? -1 : 1))
+        for (const slot of [...slots.values()].filter(slot => slot.unit && !slot.closing).sort((a, b) => a.id < b.id ? -1 : 1))
           held.push(await slot.unit!.pause(signal));
       } catch (error) {
         for (const resource of held.reverse()) resource.dispose();

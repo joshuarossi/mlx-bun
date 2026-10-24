@@ -244,7 +244,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
 /** Main's `serve <whisper checkpoint>`: the transcription-only host has no
  * chat model, jobs, downloads, or web app, so no persistent state is composed. */
 export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions,
-  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain" | "exclusive"> = {}): Promise<RunningApp> {
+  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
   return (await import("./serve-host")).startTranscriptionHost(model, options, hooks);
 }
 
@@ -423,13 +423,11 @@ export class StartupCancelledError extends Error {
   constructor() { super("startup cancelled by signal"); this.name = "StartupCancelledError"; }
 }
 
-/** runServe's rejection, before anything loads, when the model to serve is a text-to-image model: it has no chat loop to
- * serve. It is served beside a chat model instead. */
+/** Refuse an image pipeline before loading a served chat model. */
 export class ImageModelServeError extends Error {
   readonly code = "image-model-not-servable";
   constructor(readonly model: string) {
-    super(`${model} is a text-to-image model, not a chat model. Start \`mlx-bun serve\` with a chat model (or none, to pick one): ` +
-      "the image model is served beside it through POST /v1/images/generations. To generate one image without a server, use `mlx-bun image`.");
+    super(`${model} is a text-to-image model. Use \`mlx-bun image\` to generate an image without a server.`);
     this.name = "ImageModelServeError";
   }
 }

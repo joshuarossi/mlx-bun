@@ -253,60 +253,6 @@ test("isolated discovery lists the configured companion before loading, preserve
   await f.host.close();
 });
 
-test("an image companion answers its own paths through the router, holding its lease until the body ends, and never answers a model listing", async () => {
-  const f = fixture({ chat: GB, "org/picture": GB });
-  (await f.host.acquire("chat")).release();
-  const routes = createModelRoutes({ host: f.host, current: () => "chat", serves: async id => id === "chat",
-    companion: async pathname => pathname.startsWith("/v1/images/") ? "org/picture" : undefined });
-  const companion = await f.host.acquire("org/picture"); companion.release();
-  Object.defineProperty(companion.unit, "operations", { value: ["image"] });
-  const asked: string[] = [];
-  companion.unit.routes.handle = async request => {
-    asked.push(new URL(request.url).pathname);
-    return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('{"data":[]}')); controller.close(); } }));
-  };
-  const leases = () => f.host.resident().find(model => model.id === "org/picture")!.leases;
-  const image = (await routes.handle(post("/v1/images/generations", { prompt: "a cat" })))!;
-  expect(leases()).toBe(1);
-  expect(await image.json()).toEqual({ data: [] });
-  expect(leases()).toBe(0);
-  await routes.handle(get("/v1/models"));
-  await routes.handle(get("/v1/models/org%2Fpicture"));
-  expect(asked).toEqual(["/v1/images/generations"]);
-  expect(f.received.filter(item => item.path.startsWith("/v1/images/"))).toEqual([]);
-  await f.host.close();
-});
-
-test("a companion that routes by the body's `model` reads it once and forwards the same bytes; one that never asks streams its body unread", async () => {
-  const f = fixture({ chat: GB, "org/picture": GB, "org/poster": GB, "org/whisper": GB });
-  (await f.host.acquire("chat")).release();
-  const asked: string[] = [];
-  // The composition's choice: an image request names its model (an exact id it knows, else its default); audio never does.
-  const routes = createModelRoutes({ host: f.host, current: () => "chat", serves: async id => id === "chat",
-    companion: async (pathname, named) => {
-      if (pathname.startsWith("/v1/audio/")) return "org/whisper";
-      if (!pathname.startsWith("/v1/images/")) return undefined;
-      const id = await named();
-      asked.push(String(id));
-      return id === "org/poster" ? id : "org/picture";
-    } });
-  const body = JSON.stringify({ prompt: "a cat", model: "org/poster" });
-  await routes.handle(post("/v1/images/generations", body));
-  for (const other of [{ prompt: "a dog" }, { prompt: "a cow", model: "poster" }, "not json"]) await routes.handle(post("/v1/images/generations", other));
-  // A read on a companion path has no body to name a model.
-  await routes.handle(get("/v1/images/generations"));
-  expect(asked).toEqual(["org/poster", "undefined", "poster", "undefined", "undefined"]);
-  const images = f.received.filter(item => item.path.startsWith("/v1/images/"));
-  expect(images.map(item => [item.unit, item.body])).toEqual([["org/poster", body], ["org/picture", JSON.stringify({ prompt: "a dog" })],
-    ["org/picture", JSON.stringify({ prompt: "a cow", model: "poster" })], ["org/picture", "not json"], ["org/picture", ""]]);
-  // Audio: the resolver never asks, so the upload reaches Whisper as sent, whatever it names.
-  await routes.handle(post("/v1/audio/transcriptions", JSON.stringify({ model: "org/poster" })));
-  expect(f.received.filter(item => item.path.startsWith("/v1/audio/")).map(item => [item.unit, item.body])).toEqual([["org/whisper", JSON.stringify({ model: "org/poster" })]]);
-  expect(asked).toHaveLength(5);
-  expect(f.host.resident().map(model => model.leases)).toEqual([0, 0, 0, 0]);
-  await f.host.close();
-});
-
 test("everything else model-scoped belongs to the current model; a change holds it resident, and an unmatched path falls through", async () => {
   const f = fixture({ a: 2 * GB, b: 2 * GB });
   (await f.host.acquire("a")).release(); (await f.host.acquire("b")).release();

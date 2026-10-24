@@ -1,5 +1,5 @@
 // The module as a host loads it: a valid manifest that needs only `modelHost`
-// and `catalog`, its route mounted at the root, its verb dispatched with what
+// and `catalog`, its verb dispatched with what
 // the host parsed, cancellation, and a stop that cancels and joins the
 // generations in flight before the host releases the models.
 import { expect, test } from "bun:test";
@@ -23,29 +23,25 @@ test("the manifest is valid for a host that implements modelHost and catalog, an
   expect(images.requires).toEqual(["modelHost", "catalog"]);
   expect(checkManifests([images], { provided: ["modelHost", "catalog"] })).toEqual([]);
   expect(checkManifests([images], { provided: ["modelHost"] })).toEqual(['module "images": requires "catalog", which this host does not implement']);
-  expect(checkManifests([images], { provided: ["modelHost", "catalog"], reserved: [{ method: "POST", path: "/v1/images/generations" }] }))
-    .toEqual(['module "images": route "generations" POST /v1/images/generations collides with the host']);
+  expect(images.routes ?? []).toEqual([]);
   expect([images.jobs ?? [], images.storage ?? [], images.sockets ?? [], images.panel ?? null]).toEqual([[], [], [], null]);
   expect(images.placement).toBeUndefined();
   expect(manifest.verbs.map(verb => verb.name)).toEqual(["image"]);
 });
 
-test("activated, it serves its route at the root and generates through the verb", async () => {
+test("activated, it generates through the verb and exposes no HTTP routes", async () => {
   const { services, events, held } = bindings();
   const written: string[] = [], printed: string[] = [];
   const loaded = await loadModules([createImagesModule({ verb: { writeFile: async path => { written.push(path); } } })], { services });
   try {
-    expect(loaded.routes.map(route => `${route.spec.method} ${route.path}`)).toEqual(["POST /v1/images/generations"]);
+    expect(loaded.routes).toEqual([]);
     expect([...loaded.verbs.keys()]).toEqual(["image"]);
     const verb = loaded.verbs.get("image")!;
     expect(await verb.handler(invoke(verb, ["a cat", "--out", "/tmp/cat.png", "--seed", "3"], new AbortController().signal, text => { printed.push(text); }))).toBe(0);
     expect([written, printed]).toEqual([["/tmp/cat.png"], ["/tmp/cat.png\n"]]);
     const routes = createModuleRoutes(loaded.routes);
-    const response = (await routes.handle(new Request("http://localhost/v1/images/generations", { method: "POST", body: JSON.stringify({ prompt: "a cat" }) })))!;
-    expect(response.status).toBe(200);
-    expect((await response.json()).mlx_bun.model).toBe(MODEL_ID);
-    expect(await routes.handle(new Request("http://localhost/v1/models"))).toBeNull();
-    expect(events).toEqual([`acquire ${MODEL_ID} need=image`, `release ${MODEL_ID}`, `acquire ${MODEL_ID} need=image`, `release ${MODEL_ID}`]);
+    expect(await routes.handle(new Request("http://localhost/v1/images/generations", { method: "POST" }))).toBeNull();
+    expect(events).toEqual([`acquire ${MODEL_ID} need=image`, `release ${MODEL_ID}`]);
     expect(held()).toBe(0);
   } finally { await loaded.stop(); }
 });
@@ -74,11 +70,12 @@ test("stopping the module cancels a generation in flight and joins it, so its le
     return new Promise((_, reject) => options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true }));
   } });
   const loaded = await loadModules([images], { services });
-  const response = createModuleRoutes(loaded.routes).handle(new Request("http://localhost/v1/images/generations", { method: "POST", body: JSON.stringify({ prompt: "x" }) }));
+  const verb = loaded.verbs.get("image")!;
+  const run = verb.handler(invoke(verb, ["x"], new AbortController().signal));
+  const rejected = run.catch(error => error);
   await started.promise;
   expect(held()).toBe(1);
   await loaded.stop();
   expect(held()).toBe(0);
-  const answered = (await response)!;
-  expect([answered.status, (await answered.json()).error.type]).toEqual([503, "server_closing"]);
+  expect(await rejected).toMatchObject({ message: "the image service has stopped" });
 });

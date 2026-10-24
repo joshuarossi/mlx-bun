@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { EventEmitter } from "node:events";
-import { createModuleSockets, type Exclusive } from "@mlx-bun/app-services";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { startModelServer, validateAppLaunchArgv, type AppSocketHooks, type RunningApp, type ServeOptions } from "../src/cli/serve";
-import { parseWorkerLaunch, runWorkerEntry, type AppWorkerDependencies } from "../src/cli/worker-entry";
+import { runWorkerEntry, type AppWorkerDependencies } from "../src/cli/worker-entry";
 import { encodeLaunch, spawnWorker, WorkerExitedError, WORKER_MESSAGE_PREFIX, WORKER_PROTOCOL_VERSION } from "../src/jobs/worker-process";
 import { startServer } from "../src/server/start";
 
@@ -473,7 +473,7 @@ test("the app form refuses nested isolation, a missing model, arguments the CLI 
   expect(() => validateAppLaunchArgv(["--model", "org/model", "--isolate"])).not.toThrow();
 });
 
-test("a Whisper checkpoint in the app form exposes a lease over its transcription wrapper without loading a chat host", async () => {
+test("a Whisper checkpoint in the app form hands the socket hooks to the transcription-only host, whose admin surface has no lease", async () => {
   const events: string[] = [];
   const host = fakeHost(events);
   let started = false;
@@ -488,15 +488,7 @@ test("a Whisper checkpoint in the app form exposes a lease over its transcriptio
     expect(run.logs).toEqual(["Serving org/whisper as a transcription-only server", "POST /v1/audio/transcriptions over the Unix socket (released after every take; loads on first request)"]);
     expect(await (await run.get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/whisper" });
     const lease = await run.get("/admin/lease", { method: "POST" });
-    expect(lease.status).toBe(200);
-    const exclusive = (hooks as typeof hooks & { exclusive: import("@mlx-bun/app-services").Exclusive }).exclusive;
-    let ran = false;
-    const decode = exclusive(async () => { ran = true; });
-    await Bun.sleep(20);
-    expect(ran).toBe(false);
-    await lease.body!.cancel();
-    await decode;
-    expect(ran).toBe(true);
+    expect([lease.status, await lease.json()]).toEqual([404, { error: { message: "Not found" } }]);
     const report = await (await run.get("/admin/drain", { method: "POST" })).json() as Record<string, unknown>;
     expect([report.drained, report.state]).toEqual([true, "draining"]);
     expect(events).not.toContain("lease");
@@ -505,193 +497,6 @@ test("a Whisper checkpoint in the app form exposes a lease over its transcriptio
     expect(existsSync(run.socketPath)).toBe(false);
     expect(run.errors).toEqual([]);
   } finally { run.cleanup(); }
-});
-
-test("the image form hands the socket hooks to the image companion composition: ready once it serves, an admin surface whose lease and the image runs take one lock in turn, one close when the parent leaves", async () => {
-  const socket = socketDir();
-  const picture = { repoId: "org/picture", path: "/unused/picture", modelType: "SomeImagePipeline", expertsBytes: 0 } as ModelRecord;
-  const events: string[] = [], written: string[] = [], errors: string[] = [];
-  const host = fakeHost(events);
-  const launch = { kind: "image", version: WORKER_PROTOCOL_VERSION, socketPath: socket.socketPath, model: picture, releaseStages: true };
-  // The form carries the snapshot the parent resolved and the staging decision it charged the worker by; it needs both.
-  expect(parseWorkerLaunch(encodeLaunch(launch))).toEqual(launch as never);
-  expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, model: undefined }))).toThrow("worker launch needs model.repoId and model.path");
-  for (const releaseStages of [undefined, 0, "true"])
-    expect(() => parseWorkerLaunch(encodeLaunch({ ...launch, releaseStages }))).toThrow("worker launch needs releaseStages, the parent's staging decision");
-  const decided: unknown[] = [];
-  let exclusive!: Exclusive;
-  let push!: (text: string) => void, end!: () => void;
-  const stdin = new ReadableStream<Uint8Array>({ start(controller) {
-    push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => { try { controller.close(); } catch { /* closed */ } };
-  } });
-  push(encodeLaunch(launch) + "\n");
-  const error = console.error;
-  console.error = (message: unknown) => { errors.push(String(message)); };
-  const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.socketPath } as RequestInit);
-  try {
-    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter(),
-      image: (model, serving, hooks) => { decided.push(serving.stages([300, 500, 100])); exclusive = serving.exclusive; return host.start(model, {} as ServeOptions, hooks); } });
-    await until(() => written.length === 1, "the ready line");
-    expect(JSON.parse(written[0]!.slice(WORKER_MESSAGE_PREFIX.length))).toMatchObject({ type: "ready", socketPath: socket.socketPath, modelId: "org/picture", version: WORKER_PROTOCOL_VERSION });
-    const { model, hooks } = host.calls[0]!;
-    expect([model, hooks.unix, typeof hooks.routes, typeof hooks.beforeDrain]).toEqual([picture, socket.socketPath, "function", "function"]);
-    // The host's stage rule is the parent's decision, applied as made whatever the stages weigh.
-    expect(decided).toEqual([{ releaseStages: true, bytes: 500 }]);
-    expect(await (await get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/picture" });
-    // A held lease (a managed job's) keeps the next image run waiting until the connection lets go.
-    const job = new AbortController(), order: string[] = [];
-    const lease = await get("/admin/lease", { method: "POST", signal: job.signal });
-    expect([lease.status, new TextDecoder().decode((await lease.body!.getReader().read()).value)]).toEqual([200, "leased\n"]);
-    expect(await (await get("/health")).json()).toMatchObject({ leases: 1 });
-    const run = exclusive(async () => { order.push("run"); });
-    await Bun.sleep(100);
-    order.push("job released");
-    job.abort();
-    await run;
-    // A run in flight keeps a lease request waiting until the run ends.
-    let finish!: () => void;
-    const inFlight = exclusive(() => new Promise<void>(resolve => { finish = () => { order.push("run finished"); resolve(); }; }));
-    const next = get("/admin/lease", { method: "POST" }).then(response => { order.push("leased"); return response; });
-    await Bun.sleep(100);
-    finish();
-    await inFlight;
-    await (await next).body!.cancel();
-    expect(order).toEqual(["job released", "run", "run finished", "leased"]);
-    end();
-    expect(await exited).toBe(0);
-    expect(events).toEqual(["start org/picture", "app close", "producers close", "engine close"]);
-    expect(existsSync(socket.socketPath)).toBe(false);
-    expect(errors).toEqual([]);
-  } finally { console.error = error; end(); socket.remove(); }
-});
-
-test("an image worker serves only the model it was started for: a request naming any other is refused without opening anything, and its own runs stage as the launch decided", async () => {
-  // The real image companion composition over the socket; only the pipeline backend (and the native library) are stand-ins.
-  const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
-  const script = `
-    import { mock } from "bun:test";
-    import { strict as assert } from "node:assert";
-    import { EventEmitter } from "node:events";
-    const app = ${JSON.stringify(app)};
-    const until = async (check, what) => { const end = Date.now() + 10000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
-    const opened = [], runs = [];
-    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
-    mock.module(${JSON.stringify(backend)}, () => ({ nativeImageBackend: { async load(directory) {
-      opened.push(directory);
-      return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16,
-        stageBytes: { conditioner: 600, denoiser: 300, decoder: 100 },
-        async generate(request, options) { runs.push(options.releaseStages);
-          return { width: 16, height: 16, pixels: new Uint8Array(16 * 16 * 3), seed: 1, steps: 1, guidance: 1, timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } }; },
-        dispose() {} };
-    } } }));
-    const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
-    const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
-    const socketPath = process.env.WORKER_SOCKET, releaseStages = process.env.RELEASE_STAGES === "1";
-    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 1000, modelType: "SomeImagePipeline" }, releaseStages };
-    let push, end;
-    const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
-    push(encodeLaunch(launch) + "\\n");
-    const written = [];
-    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter() });
-    await until(() => written.length === 1, "the ready line");
-    const post = body => fetch("http://worker/v1/images/generations", { method: "POST", unix: socketPath, headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "a cat", size: "16x16", ...body }) });
-    // Another local model, a query, and this model's own directory are not its exact id: refused, nothing opened.
-    for (const model of ["org/poster", "picture", "/models/picture"]) {
-      const refused = await post({ model });
-      assert.equal(refused.status, 404);
-      assert.deepEqual((await refused.json()).error, { type: "model_not_found",
-        message: model + " is not served by this image worker, which serves org/picture; name an exact local image model id" });
-    }
-    assert.deepEqual(opened, []);
-    // No name, or its own exact id: its own snapshot opens (and, idle after each run, is released) under the launch's budget.
-    for (const body of [{}, { model: "org/picture" }]) {
-      const served = await post(body);
-      assert.equal(served.status, 200);
-      assert.equal((await served.json()).mlx_bun.model, "org/picture");
-    }
-    assert.deepEqual(opened, ["/models/picture", "/models/picture"]);
-    console.error(JSON.stringify(runs));
-    end();
-    assert.equal(await exited, 0);
-  `;
-  const socket = socketDir();
-  try {
-    // The worker applies the launch's decision: each stage released per run, or every stage kept open.
-    for (const release of [true, false]) {
-      const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, RELEASE_STAGES: release ? "1" : "0", HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
-      expect([result.code, result.stderr.trim()]).toEqual([0, JSON.stringify([release, release])]);
-      expect(result.stdout).toContain(release ? "(one stage resident at a time)" : "(stages kept open)");
-      expect(existsSync(socket.socketPath)).toBe(false);
-    }
-  } finally { socket.remove(); }
-});
-
-test("an image worker's runs and its execution lease take one lock: a managed job's lease waits for the run in flight, and a run waits for a held lease", async () => {
-  // The real image companion composition and admin surface; only the pipeline backend (and the native library) are stand-ins.
-  const backend = new URL("../../../packages/app-services/src/image-backend.ts", import.meta.url).pathname;
-  const script = `
-    import { mock } from "bun:test";
-    import { strict as assert } from "node:assert";
-    import { EventEmitter } from "node:events";
-    const app = ${JSON.stringify(app)};
-    const until = async (check, what) => { const end = Date.now() + 10000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
-    const order = [];
-    let gate;
-    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
-    mock.module(${JSON.stringify(backend)}, () => ({ nativeImageBackend: { async load() {
-      return { defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] }, pixelsPerLatent: 16,
-        stageBytes: { conditioner: 1, denoiser: 1, decoder: 1 },
-        async generate() {
-          order.push("run started");
-          await gate?.promise;
-          order.push("run finished");
-          return { width: 16, height: 16, pixels: new Uint8Array(16 * 16 * 3), seed: 1, steps: 1, guidance: 1, timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } };
-        },
-        dispose() {} };
-    } } }));
-    const { runWorkerEntry } = await import(app + "src/cli/worker-entry.ts");
-    const { encodeLaunch, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
-    const socketPath = process.env.WORKER_SOCKET;
-    const launch = { kind: "image", version, socketPath, model: { repoId: "org/picture", path: "/models/picture", sizeBytes: 3, modelType: "SomeImagePipeline" }, releaseStages: false };
-    let push, end;
-    const stdin = new ReadableStream({ start(controller) { push = text => controller.enqueue(new TextEncoder().encode(text)); end = () => controller.close(); } });
-    push(encodeLaunch(launch) + "\\n");
-    const written = [];
-    const exited = runWorkerEntry({ stdin, write: line => { written.push(line); }, signals: new EventEmitter() });
-    await until(() => written.length === 1, "the ready line");
-    const answered = [];
-    const post = () => fetch("http://worker/v1/images/generations", { method: "POST", unix: socketPath, headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt: "a cat", size: "16x16" }) }).then(async response => { answered.push(response.status); return response; });
-    // (a) A run is in flight when the job asks for the lease: the lease waits for the run to end.
-    gate = Promise.withResolvers();
-    const first = post();
-    await until(() => order.includes("run started"), "the run");
-    const job = new AbortController();
-    const lease = fetch("http://worker/admin/lease", { method: "POST", unix: socketPath, signal: job.signal }).then(response => { order.push("leased"); return response; });
-    await Bun.sleep(100);
-    order.push("run released");
-    gate.resolve();
-    assert.equal((await lease).status, 200);
-    await first;
-    // (b) The job holds the lease when a request arrives: the run waits for the job to let go.
-    gate = undefined;
-    const second = post();
-    await Bun.sleep(100);
-    order.push("job released");
-    job.abort();
-    await second;
-    assert.deepEqual(order, ["run started", "run released", "run finished", "leased", "job released", "run started", "run finished"]);
-    assert.deepEqual(answered, [200, 200]);
-    end();
-    assert.equal(await exited, 0);
-  `;
-  const socket = socketDir();
-  try {
-    const result = await runChild(script, { WORKER_SOCKET: socket.socketPath, HOME: socket.dir, MLX_BUN_HOME: join(socket.dir, "home") });
-    expect([result.code, result.stderr]).toEqual([0, ""]);
-    expect(existsSync(socket.socketPath)).toBe(false);
-  } finally { socket.remove(); }
 });
 
 test("the app form composes the real app over the socket with private storage: persistent routes, synthesis on the memory task model, dataset loopback to the same socket, streaming, and client aborts", async () => {
@@ -835,10 +640,7 @@ test("the app form composes the real app over the socket with private storage: p
     assert.equal(JSON.parse(whisper.written[0].slice(WORKER_MESSAGE_PREFIX.length)).modelId, "org/whisper");
     assert.deepEqual((await (await whisper.get("/v1/models")).json()).data.map(row => [row.id, row.transcription]), [["org/whisper", true]]);
     assert.equal((await (await whisper.get("/health")).json()).status, "ok");
-    const whisperLease = await whisper.get("/admin/lease", { method: "POST" });
-    assert.equal(whisperLease.status, 200);
-    await whisperLease.body.cancel();
-    assert.equal((await whisper.get("/v1/images/generations", { method: "POST", body: JSON.stringify({ prompt: "cat", model: "/local/image" }) })).status, 404);
+    assert.equal((await whisper.get("/admin/lease", { method: "POST" })).status, 404);
     assert.equal((await whisper.get("/", {})).status, 404);
     whisper.signals.emit("SIGTERM");
     assert.equal(await whisper.exited, 0);

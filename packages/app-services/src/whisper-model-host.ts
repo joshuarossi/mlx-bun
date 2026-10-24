@@ -3,9 +3,9 @@
 // (`idleUnloadSec` > 0 keeps it for that long; a pinned model stays). Weights
 // are mmap'd safetensors, so a reload after unload reads from the OS page
 // cache; the GPU memory is what an idle host gives back. The memory budget is
-// the app's generation host's (apps/mlx-bun `residency/model-residency.ts`): this
-// host reserves pending and resident bytes before a checkpoint loads, and
-// exposes idle weights to the shared host's eviction policy.
+// the app's generation host's (apps/mlx-bun `engine/model-residency.ts`): this
+// host reports its bytes as resident and, given `admit`, asks that host to make
+// room (draining a chat model) before a checkpoint loads.
 //
 // Every decode call (a one-shot transcription, or each feed and finish of a
 // streaming run) goes through the host's `exclusive` wrapper, so a host that
@@ -14,7 +14,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AcquireOptions, CatalogEntry, EventBus, ModelUnloadReason, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
-  ResidencyPlan, ResidencyPolicy, ResidentModel, ReserveModel, ResidencyReservation, TranscribeOptions, TranscriptionOperation,
+  ResidencyPlan, ResidencyPolicy, ResidentModel, TranscribeOptions, TranscriptionOperation,
 } from "@mlx-bun/app-core";
 import type { WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
 import { ModelHostFailure } from "./failure";
@@ -42,11 +42,7 @@ export interface WhisperModelHostOptions {
   resident?: boolean;
   /** Wraps every decode call (the full server passes the generation gateway's exclusive lock). */
   exclusive?: Exclusive;
-  /** Coordinates lazy weight loading with the host's other execution. Admission runs first. */
-  loadExclusive?: Exclusive;
-  /** Owns the pending and resident charge, and can reclaim idle weights. A host sharing a memory budget supplies this. */
-  reserve?: ReserveModel;
-  /** One-shot admission for hosts without owned reservations. Used only when `reserve` is absent. */
+  /** Called with the bytes a checkpoint needs before it loads, so a host that also generates can make room (drain a model) first. */
   admit?: (bytes: number) => Promise<void>;
   /** Real weights by default. */
   backend?: WhisperBackend;
@@ -106,9 +102,6 @@ interface Slot {
   readonly bytes: number;
   loaded: LoadedWhisper | null;
   loading: Promise<LoadedWhisper> | null;
-  loadingAbort: AbortController | null;
-  loadingWaiters: number;
-  reservation: ResidencyReservation | undefined;
   leases: number;
   pinned: boolean;
   timer: unknown;
@@ -148,8 +141,6 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
     const started = now();
     slot.loaded.dispose();
     slot.loaded = null;
-    slot.reservation?.release();
-    slot.reservation = undefined;
     if (reason) {
       slot.unloads++;
       publish({ type: "model.unload", at: Date.now(), model: slot.id, reason, drainMs: now() - started, flushed: false });
@@ -176,8 +167,7 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       if (!entry.operations.includes(operation)) throw new ModelHostFailure("does-not-fit", `${entry.id} does not declare the ${operation} operation`);
     const known = slots.get(entry.id);
     if (known) return known;
-    const slot: Slot = { id: entry.id, directory: entry.directory, bytes: entry.bytes, loaded: null, loading: null,
-      loadingAbort: null, loadingWaiters: 0, reservation: undefined, leases: 0, pinned: false,
+    const slot: Slot = { id: entry.id, directory: entry.directory, bytes: entry.bytes, loaded: null, loading: null, leases: 0, pinned: false,
       timer: null, loads: 0, unloads: 0, lastLoadMs: 0, lastUsedAt: 0 };
     slots.set(entry.id, slot);
     if (id !== entry.id) slots.set(id, slot);
@@ -185,39 +175,23 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
   }
 
   /** Load (or reuse); returns the milliseconds this call waited for weights. */
-  async function ensureLoaded(slot: Slot, signal?: AbortSignal): Promise<{ loadMs: number; loaded: LoadedWhisper }> {
-    signal?.throwIfAborted();
+  async function ensureLoaded(slot: Slot): Promise<{ loadMs: number; loaded: LoadedWhisper }> {
     if (closed) throw closedError();
     if (slot.loaded) return { loadMs: 0, loaded: slot.loaded };
     const waitStart = now();
     if (!slot.loading) {
-      const loadingAbort = slot.loadingAbort = new AbortController();
       slot.loading = (async () => {
         const t0 = now();
-        let loaded: LoadedWhisper | undefined;
+        let loaded: LoadedWhisper;
         publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "started" });
-        try {
-          if (options.reserve) slot.reservation = await options.reserve({ model: () => resident(slot), unload: () => host.unload(slot.id) }, loadingAbort.signal);
-          else if (slot.bytes > 0) await options.admit?.(slot.bytes);
-          loadingAbort.signal.throwIfAborted();
-          loaded = await (options.loadExclusive ?? (fn => fn()))(async () => {
-            loadingAbort.signal.throwIfAborted();
-            const weights = await backend.load(slot.directory);
-            if (loadingAbort.signal.aborted) { weights.dispose(); loadingAbort.signal.throwIfAborted(); }
-            return weights;
-          }, loadingAbort.signal);
-          loadingAbort.signal.throwIfAborted();
-        }
+        // A host that also generates makes room first: it may drain a chat model to fit this checkpoint.
+        try { if (slot.bytes > 0) await options.admit?.(slot.bytes); loaded = await backend.load(slot.directory); }
         catch (error) {
-          loaded?.dispose();
-          slot.reservation?.release();
-          slot.reservation = undefined;
-          if (closed) throw closedError();
           const message = error instanceof Error ? error.message : String(error);
           publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "failed", error: message });
           throw new ModelHostFailure("load-failed", message, { cause: error });
         }
-        if (closed) { loaded.dispose(); slot.reservation?.release(); slot.reservation = undefined; throw closedError(); }
+        if (closed) { loaded.dispose(); throw closedError(); }
         slot.loaded = loaded;
         slot.loads++;
         slot.lastLoadMs = now() - t0;
@@ -225,24 +199,10 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
         publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "finished", ms: slot.lastLoadMs, weightsBytes: slot.bytes });
         publish({ type: "model.memory", at: Date.now(), model: slot.id, weightsBytes: slot.bytes, kvBytes: 0, prefixCacheBytes: 0 });
         return loaded;
-      })().finally(() => { slot.loading = null; slot.loadingAbort = null; slot.reservation?.changed(); });
+      })().finally(() => { slot.loading = null; });
     }
-    // One cancelled caller must not cancel a shared load or a preload. The last
-    // waiter cancels admission, but an already running backend is joined before
-    // releasing its charge and disposing any weights it returns.
-    slot.loadingWaiters++;
-    const cancelled = Promise.withResolvers<never>();
-    const abort = () => cancelled.reject(signal!.reason);
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    try {
-      const loaded = await (signal ? Promise.race([slot.loading, cancelled.promise]) : slot.loading);
-      signal?.throwIfAborted();
-      return { loadMs: now() - waitStart, loaded };
-    } catch (error) {
-      if (slot.loadingWaiters === 1) slot.loadingAbort?.abort(error);
-      throw error;
-    } finally { slot.loadingWaiters--; signal?.removeEventListener("abort", abort); }
+    const loaded = await slot.loading;
+    return { loadMs: now() - waitStart, loaded };
   }
 
   const resident = (slot: Slot): ResidentModel => ({ id: slot.id, role: "companion", state: slot.loading && !slot.loaded ? "loading" : "ready",
@@ -259,9 +219,9 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       cancelTimer(slot);
       slot.leases++;
       let loaded: LoadedWhisper, loadMs: number;
-      try { ({ loaded, loadMs } = await ensureLoaded(slot, acquireOptions.signal)); acquireOptions.signal?.throwIfAborted(); }
-      catch (error) { slot.leases--; slot.reservation?.changed(); armIdle(slot, acquireOptions.keepAliveSec); throw error; }
-      slot.lastUsedAt = now();
+      try { ({ loaded, loadMs } = await ensureLoaded(slot)); }
+      catch (error) { slot.leases--; armIdle(slot, acquireOptions.keepAliveSec); throw error; }
+      slot.lastUsedAt = Date.now();
       let released = false;
       return {
         model: resident(slot), loadMs, operations: { transcribe: transcription(loaded, exclusive) },
@@ -269,8 +229,6 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
           if (released) return;
           released = true;
           slot.leases--;
-          slot.lastUsedAt = now();
-          slot.reservation?.changed();
           armIdle(slot, acquireOptions.keepAliveSec);
         },
       };
@@ -302,8 +260,8 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       if (dispose(slot, "requested")) log(`[transcription] ${slot.id} unloaded (idle)`);
     },
 
-    pin(id) { pinnedIds.add(id); const slot = slots.get(id); if (slot) { cancelTimer(slot); slot.reservation?.changed(); } },
-    unpin(id) { pinnedIds.delete(id); slots.get(id)?.reservation?.changed(); },
+    pin(id) { pinnedIds.add(id); const slot = slots.get(id); if (slot) cancelTimer(slot); },
+    unpin(id) { pinnedIds.delete(id); },
     resident: () => [...new Set(slots.values())].filter(slot => slot.loaded).map(resident),
 
     stats(id): ModelStats {
@@ -322,7 +280,6 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       if (closing) return closing;
       closed = true;
       const all = [...new Set(slots.values())];
-      for (const slot of all) slot.loadingAbort?.abort(closedError());
       const release = () => { for (const slot of all) dispose(slot, null); };
       const loading = all.flatMap(slot => slot.loading ? [slot.loading.catch(() => undefined)] : []);
       if (!loading.length) { release(); return closing = Promise.resolve(); }

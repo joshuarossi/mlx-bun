@@ -1,9 +1,9 @@
 // The image model host's contract with a fake backend (no model, no MLX): leases,
-// lazy open, idle policy, the execution lock around runs, cancellation, and the
+// lazy open, idle policy, queued runs, cancellation, and the
 // stage-residency policy the host hands each run.
 import { expect, test } from "bun:test";
 import type { CatalogEntry, CoreEvent, ImageProgress, ImageRequest, ModelCatalog, ModelHostError } from "@mlx-bun/app-core";
-import { createImageModelHost, fixedStageRule, stageBudgetRule, type ImageBackend, type ImageRunOptions, type LoadedImagePipeline } from "../src";
+import { createImageModelHost, stageBudgetRule, type ImageBackend, type ImageRunOptions, type LoadedImagePipeline } from "../src";
 
 const entry = (id: string, directory = `/models/${id}`, operations: CatalogEntry["operations"] = ["image"]): CatalogEntry =>
   ({ id, kind: "model", directory, bytes: 900, operations });
@@ -102,6 +102,84 @@ test("an abort while the pipeline opens rejects the acquire and leaves no lease 
   await expect(host.acquire("org/image", { signal: controller.signal })).rejects.toThrow("gave up");
 });
 
+for (const preloadFirst of [true, false]) test(`cancelling an acquisition preserves a shared preload started ${preloadFirst ? "before" : "after"} it`, async () => {
+  const opening = Promise.withResolvers<LoadedImagePipeline>();
+  const started = Promise.withResolvers<void>();
+  let loads = 0, disposals = 0;
+  const { host } = setup({ backend: { load() { loads++; started.resolve(); return opening.promise; } } });
+  const abort = new AbortController();
+  let preload: Promise<void>, acquire: ReturnType<typeof host.acquire>;
+  if (preloadFirst) {
+    preload = host.preload("org/image");
+    await started.promise;
+    acquire = host.acquire("org/image", { signal: abort.signal });
+  } else {
+    acquire = host.acquire("org/image", { signal: abort.signal });
+    await started.promise;
+    preload = host.preload("org/image");
+  }
+  // Both callers reach the same pending backend open before either settles.
+  await Bun.sleep(0);
+  abort.abort(new Error("request cancelled"));
+  await expect(acquire).rejects.toThrow("request cancelled");
+  opening.resolve({ defaults, pixelsPerLatent: 16, stageBytes,
+    generate: async () => { throw new Error("unused"); }, dispose() { disposals++; } });
+  await preload;
+  expect(loads).toBe(1);
+  expect(disposals).toBe(0);
+  expect(host.resident()).toMatchObject([{ id: "org/image", leases: 0 }]);
+  expect(host.stats("org/image").loads).toBe(1);
+  await host.close();
+  expect(disposals).toBe(1);
+});
+
+test("cancelling one acquisition preserves another waiter's lease", async () => {
+  const opening = Promise.withResolvers<LoadedImagePipeline>();
+  let disposals = 0;
+  const { host } = setup({ backend: { load: () => opening.promise } });
+  const abort = new AbortController();
+  const cancelled = host.acquire("org/image", { signal: abort.signal });
+  const kept = host.acquire("org/image");
+  await Bun.sleep(0);
+  abort.abort(new Error("request cancelled"));
+  await expect(cancelled).rejects.toThrow("request cancelled");
+  opening.resolve({ defaults, pixelsPerLatent: 16, stageBytes,
+    generate: async () => { throw new Error("unused"); }, dispose() { disposals++; } });
+  const lease = await kept;
+  expect(disposals).toBe(0);
+  expect(host.resident()).toMatchObject([{ leases: 1 }]);
+  lease.release();
+  expect(disposals).toBe(1);
+  expect(host.resident()).toEqual([]);
+  await host.close();
+});
+
+test("the last cancelled waiter drains its open, then a new preload retries without inheriting that cancellation", async () => {
+  const opening = Promise.withResolvers<LoadedImagePipeline>();
+  const started = Promise.withResolvers<void>();
+  let loads = 0, disposals = 0;
+  const pipeline = (): LoadedImagePipeline => ({ defaults, pixelsPerLatent: 16, stageBytes,
+    generate: async () => { throw new Error("unused"); }, dispose() { disposals++; } });
+  const { host } = setup({ backend: { async load() {
+    loads++; started.resolve();
+    return loads === 1 ? opening.promise : pipeline();
+  } } });
+  const abort = new AbortController();
+  const cancelled = host.acquire("org/image", { signal: abort.signal });
+  await started.promise;
+  abort.abort(new Error("request cancelled"));
+  await expect(cancelled).rejects.toThrow("request cancelled");
+  const preload = host.preload("org/image");
+  await Bun.sleep(0);
+  expect(loads).toBe(1);
+  opening.resolve(pipeline());
+  await preload;
+  expect([loads, disposals]).toEqual([2, 1]);
+  expect(host.resident()).toMatchObject([{ id: "org/image", leases: 0 }]);
+  await host.close();
+  expect(disposals).toBe(2);
+});
+
 test("the idle policy and a per-lease keep-alive delay the release; a new lease cancels it and pinning removes it", async () => {
   const { host, timers, events } = setup({ idleUnloadSec: 5 });
   (await host.acquire("org/image")).release();
@@ -123,41 +201,8 @@ test("the idle policy and a per-lease keep-alive delay the release; a new lease 
   expect(events.filter(event => event.startsWith("open"))).toHaveLength(2);
 });
 
-test("runs go through the execution lock one at a time, and a run that waits for it can be cancelled without taking it", async () => {
-  let held = 0, maxHeld = 0;
-  const queue: (() => void)[] = [];
-  let busy = false;
-  const exclusive = async <T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
-    while (busy) {
-      await new Promise<void>((resolve, reject) => {
-        queue.push(resolve);
-        signal?.addEventListener("abort", () => { queue.splice(queue.indexOf(resolve), 1); reject(signal.reason); }, { once: true });
-      });
-    }
-    busy = true; held++; maxHeld = Math.max(maxHeld, held);
-    try { return await fn(); } finally { held--; busy = false; queue.shift()?.(); }
-  };
-  const { host, events, runs, started } = setup({ exclusive });
-  const lease = await host.acquire("org/image");
-  const first = lease.operations.image!.generate({ prompt: "one" });
-  const second = lease.operations.image!.generate({ prompt: "two" });
-  const controller = new AbortController();
-  const third = lease.operations.image!.generate({ prompt: "three" }, { signal: controller.signal });
-  await started(1);
-  await Bun.sleep(5);
-  expect(runs).toHaveLength(1);
-  controller.abort(new Error("cancelled while queued"));
-  await expect(third).rejects.toThrow("cancelled while queued");
-  runs[0]!.finish();
-  await first;
-  (await started(2)).finish();
-  await second;
-  expect(maxHeld).toBe(1);
-  expect(events.filter(event => event.startsWith("run") || event.startsWith("done"))).toEqual(["run one release=false", "done one", "run two release=false", "done two"]);
-  lease.release();
-});
 
-test("runs on one pipeline never overlap without an execution lock either; a run that gives up while queued does not let the next one in early", async () => {
+test("runs on one pipeline never overlap; a run that gives up while queued does not let the next one in early", async () => {
   const { host, events, runs, started } = setup();
   const one = await host.acquire("org/image"), two = await host.acquire("org/image");
   const first = one.operations.image!.generate({ prompt: "first" });
@@ -189,17 +234,13 @@ test("stages that fit the budget stay open between runs; stages that exceed it a
   expect(fits.host.resident()[0]!.bytes).toBe(900);
   kept.release();
   // A budget below the 900 bytes: each run releases every stage after its output; at most the largest stage is held.
-  const admitted: number[] = [];
-  const tight = setup({ stages: stageBudgetRule(899), reserve: async owner => {
-    admitted.push(owner.model().bytes); return { changed() {}, release() {} };
-  } });
+  const tight = setup({ stages: stageBudgetRule(899) });
   const lease = await tight.host.acquire("org/image");
   const run = lease.operations.image!.generate({ prompt: "tight" });
   (await tight.started(1)).finish();
   await run;
   expect(tight.runs[0]!.options.releaseStages).toBe(true);
   expect(tight.host.resident()[0]!.bytes).toBe(500);
-  expect(admitted).toEqual([500]);
   lease.release();
   // At the budget exactly the stages still fit.
   const exact = setup({ stages: stageBudgetRule(900) });
@@ -209,16 +250,7 @@ test("stages that fit the budget stay open between runs; stages that exceed it a
   await exactRun;
   expect(exact.runs[0]!.options.releaseStages).toBe(false);
   exactLease.release();
-  // A decision made elsewhere is applied as made, whatever the stages weigh: the host reports what a run holds under it.
-  for (const release of [true, false]) {
-    const fixed = setup({ stages: fixedStageRule(release), idleUnloadSec: 60 });
-    const fixedLease = await fixed.host.acquire("org/image");
-    const fixedRun = fixedLease.operations.image!.generate({ prompt: "fixed" });
-    (await fixed.started(1)).finish();
-    await fixedRun;
-    expect([fixed.runs[0]!.options.releaseStages, fixed.host.resident()[0]!.bytes]).toEqual([release, release ? 500 : 900]);
-    fixedLease.release();
-  }
+
 });
 
 test("acquire rejects a model that does not declare image and an id the catalog lacks; a configured model needs no catalog", async () => {
@@ -245,12 +277,12 @@ test("the default is the configured snapshot, else the first that declares image
   await expect(none.host.preload()).rejects.toMatchObject({ code: "does-not-fit" });
 });
 
-test("an open failure surfaces as load-failed with the library's message; a refused admission disposes the opened pipeline", async () => {
+test("an open failure surfaces as load-failed with the library's message; an invalid stage rule disposes the pipeline", async () => {
   const failing = setup({ backend: { load: async () => { throw new Error("transformer latent_channels 3 != VAE latent_channels 4"); } } });
   await expect(failing.host.acquire("org/image")).rejects.toMatchObject({ code: "load-failed", message: "transformer latent_channels 3 != VAE latent_channels 4" });
   expect(failing.host.resident()).toEqual([]);
-  const refused = setup({ stages: stageBudgetRule(1), reserve: async () => { throw new Error("no room"); } });
-  await expect(refused.host.acquire("org/image")).rejects.toMatchObject({ code: "load-failed", message: "no room" });
+  const refused = setup({ stages: () => { throw new Error("invalid stage budget"); } });
+  await expect(refused.host.acquire("org/image")).rejects.toMatchObject({ code: "load-failed", message: "invalid stage budget" });
   expect(refused.events).toEqual(["open /models/org/image", "dispose /models/org/image"]);
 });
 

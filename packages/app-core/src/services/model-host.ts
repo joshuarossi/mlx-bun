@@ -24,22 +24,6 @@ export interface ResidentModel {
   readonly uses?: readonly string[];
 }
 
-/** A model owned by another host that shares this composition's memory budget.
- * The owner reports pending loads as loading, and refuses unload while leased. */
-export interface ResidencyParticipant {
-  model(): ResidentModel;
-  unload(): Promise<void>;
-}
-
-/** Charges a participant before it loads weights. The owner signals lease/pin/state
- * changes, and releases the charge only after disposing the model, including on failure. */
-export interface ResidencyReservation {
-  changed(): void;
-  release(): void;
-}
-
-export type ReserveModel = (owner: ResidencyParticipant, signal?: AbortSignal) => Promise<ResidencyReservation>;
-
 export interface ResidencyPolicy {
   /** Bytes all resident models may use together; a load that would exceed it evicts first. */
   readonly budgetBytes: number;
@@ -130,8 +114,7 @@ export interface TranscriptionRun {
   finish(signal?: AbortSignal): Promise<Transcript>;
 }
 
-/** The `transcribe` operation. Each decode call takes its host's execution lease: where one host also generates, it never
- * overlaps generation; where transcription runs in a process of its own, that lease is its process's alone. */
+/** The `transcribe` operation. Each decode call takes the host's execution lease, so it never overlaps generation. */
 export interface TranscriptionOperation {
   /** Tokens a prompt may hold; vocabulary hints are fitted into it. */
   readonly promptTokenBudget: number;
@@ -184,8 +167,7 @@ export interface GeneratedImage {
   readonly timings: { readonly encodeMs: number; readonly denoiseMs: number; readonly decodeMs: number };
 }
 
-/** The `image` operation. Each run takes its host's execution lease. An isolated composition also leases execution
- * in the parent, pausing competing workers until the run has drained. An aborted signal rejects the run and frees what it held. */
+/** The `image` operation. An aborted signal rejects the run and frees what it held. */
 export interface ImageOperation {
   readonly defaults: ImageDefaults;
   readonly pixelsPerLatent: number;

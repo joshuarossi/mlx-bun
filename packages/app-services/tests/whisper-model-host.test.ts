@@ -2,7 +2,7 @@
 // the execution lock around decode calls, and the failures a consumer sees.
 import { expect, test } from "bun:test";
 import type { CatalogEntry, CoreEvent, ModelCatalog, ModelHostError } from "@mlx-bun/app-core";
-import { createExecutionLock, createWhisperModelHost, type LoadedWhisper, type WhisperBackend } from "../src";
+import { createWhisperModelHost, type LoadedWhisper, type WhisperBackend } from "../src";
 
 const entry = (id: string, directory = `/models/${id}`, operations: CatalogEntry["operations"] = ["transcribe"]): CatalogEntry =>
   ({ id, kind: "model", directory, bytes: 100, operations });
@@ -31,28 +31,6 @@ function setup(options: Partial<Parameters<typeof createWhisperModelHost>[0]> = 
     ...options });
   return { host, events, seen, timers, clock };
 }
-
-test("a worker lease gates lazy weight loading as well as transcription without changing decode options", async () => {
-  const lock = createExecutionLock();
-  const paused = await lock.acquire();
-  const { host, events } = setup({ exclusive: lock.exclusive, loadExclusive: lock.exclusive });
-  try {
-    const pending = host.acquire("org/whisper");
-    await Bun.sleep(10);
-    expect(events).toEqual([]);
-    paused.dispose();
-    const lease = await pending;
-    expect(events).toEqual(["load /models/org/whisper"]);
-    const nextPause = await lock.acquire();
-    const run = lease.operations.transcribe!.transcribe(new Float32Array(16));
-    await Bun.sleep(10);
-    expect(events).toHaveLength(1);
-    nextPause.dispose();
-    await run;
-    expect(events.at(-1)).toBe("transcribe 16");
-    lease.release();
-  } finally { paused.dispose(); await host.close(); }
-});
 
 test("a lease loads on first use, reports what loading cost, and the default policy releases right after it", async () => {
   const { host, events } = setup();

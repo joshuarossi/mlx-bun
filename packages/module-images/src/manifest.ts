@@ -6,11 +6,8 @@ import type { AppModule } from "@mlx-bun/app-core";
 export const manifest = {
   id: "images",
   title: "Images",
-  summary: "Text-to-image with a local image model: the OpenAI Images-compatible generations route and the image verb.",
+  summary: "Write a PNG from a prompt with a local image model.",
   requires: ["modelHost", "catalog"],
-  routes: [
-    { id: "generations", method: "POST", path: "/v1/images/generations", summary: "Generate one PNG from a prompt (OpenAI Images-compatible; b64_json only)", response: "json", mount: "root" },
-  ],
   verbs: [
     { name: "image", summary: "Text-to-image: write a PNG from a prompt with a local image model (no server)",
       positional: [{ name: "prompt", summary: "What to draw (quote it)", required: true }],

@@ -24,7 +24,7 @@ try {
   } else if (!verbs.has(command)) throw new Error(`Unknown command: ${command}. Use ${PROGRAM} --help.`);
   else if (args.includes("--help") || args.includes("-h")) console.log(verbHelp(PROGRAM, verbs.get(command)!));
   else if (command === serveVerb.name) process.exitCode = await runServe(args);
-  else process.exitCode = await runVerb({ program: PROGRAM, spec: installed.get(command)!, argv: args, modules: installedModules, services: createHostServices({ operations: ["transcribe"], log() {} }) });
+  else process.exitCode = await runVerb({ program: PROGRAM, spec: installed.get(command)!, argv: args, modules: installedModules, services: createHostServices({ log() {} }) });
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

@@ -1,21 +1,16 @@
 // The worker half of runtime isolation, reached only through the parent's
 // spawn helper (jobs/worker-process.ts): the launch record arrives as the
 // first stdin line, the ready line leaves on stdout, and the end of stdin
-// means the parent is gone. No flag selects it. Three launch forms, each
+// means the parent is gone. No flag selects it. Two launch forms, both
 // carrying the app's package version (a record with another one exits 2):
 // - model (the isolated server's worker, one per resident model): only the model-scoped host (serve-host.ts) over the
 //   parent's Unix socket, with the persistent services stubbed because the
 //   parent owns them, plus the memory task model the parent's synthesis calls
 //   through the admin surface (only the default worker is ever asked);
 // - app: the whole app, composed by `runServe` from serve arguments exactly as
-//   the CLI composes it, listening on the parent's socket instead of TCP;
-// - image: the isolated server's text-to-image companion, one per image model, the image companion
-//   composition (serve-host.ts `startImageHost`) over the parent's socket, serving that model only,
-//   its runs under an execution lock the parent's managed jobs lease.
+//   the CLI composes it, listening on the parent's socket instead of TCP.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import type { Exclusive } from "@mlx-bun/app-services";
-import { createEventHub, createExecutionLock, createModuleSockets, fixedStageRule } from "@mlx-bun/app-services/portable";
-import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import { createEventHub, createModuleSockets } from "@mlx-bun/app-services/portable";
 import { decodeLaunch, formatWorkerMessage, WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import type { WorkerMemory } from "../jobs/worker-memory";
 import { ResponseStore } from "../server/responses";
@@ -23,7 +18,7 @@ import { createWorkerRoutes } from "../server/worker-routes";
 import type { CommandArgs } from "./args";
 // The app form's composition loads only when a launch asks for it.
 import type { ServeDependencies, ServedApp, SignalPort, startModelServer, startTranscriptionServer } from "./serve";
-import { startImageHost, startModelHost } from "./serve-host";
+import { startModelHost } from "./serve-host";
 import { createServedModelHost } from "./served-model-host";
 import type { ServeOptions } from "./serve-options";
 import type { AppState, ModelHostLink, RouteGroup } from "./serve-state";
@@ -35,10 +30,7 @@ export interface ModelWorkerLaunch { kind?: "model"; version: string; socketPath
 /** The app form: serve arguments as the CLI takes them (`["--model", model, ...]`),
  * validated by `validateAppLaunchArgv` and composed by `runServe` on the socket. */
 export interface AppWorkerLaunch { kind: "app"; version: string; socketPath: string; argv: string[] }
-/** The image form: the text-to-image snapshot the parent resolved, the only model this worker serves, and the parent's
- * staging decision for it (whether each run releases every stage), which the parent charged the worker by and its host applies. */
-export interface ImageWorkerLaunch { kind: "image"; version: string; socketPath: string; model: ModelRecord; releaseStages: boolean }
-export type WorkerLaunch = ModelWorkerLaunch | AppWorkerLaunch | ImageWorkerLaunch;
+export type WorkerLaunch = ModelWorkerLaunch | AppWorkerLaunch;
 
 export function parseWorkerLaunch(text: string): WorkerLaunch {
   let value: unknown;
@@ -54,14 +46,10 @@ export function parseWorkerLaunch(text: string): WorkerLaunch {
       throw new Error("worker launch needs argv, the serve arguments");
     return { kind: "app", version, socketPath, argv: record.argv as string[] };
   }
-  if (record.kind !== undefined && record.kind !== "model" && record.kind !== "image") throw new Error(`worker launch kind ${JSON.stringify(record.kind)} is unknown`);
+  if (record.kind !== undefined && record.kind !== "model") throw new Error(`worker launch kind ${JSON.stringify(record.kind)} is unknown`);
   const model = record.model as Partial<ModelRecord> | undefined;
   if (!model || typeof model !== "object" || typeof model.repoId !== "string" || typeof model.path !== "string")
     throw new Error("worker launch needs model.repoId and model.path");
-  if (record.kind === "image") {
-    if (typeof record.releaseStages !== "boolean") throw new Error("worker launch needs releaseStages, the parent's staging decision");
-    return { kind: "image", version, socketPath, model: model as ModelRecord, releaseStages: record.releaseStages };
-  }
   const options = record.options as Partial<ServeOptions> | undefined;
   if (!options || typeof options !== "object" || !options.cache || !options.request || typeof options.capacity !== "number")
     throw new Error("worker launch needs resolved serve options");
@@ -122,8 +110,6 @@ export interface WorkerEntryPorts {
   /** Internal (tests): stand-ins for the app form's selection, compositions,
    * and log; a stand-in composition still receives the socket hooks. */
   app?: Partial<AppWorkerDependencies>;
-  /** Internal (tests): a stand-in for the image form's composition; it still receives the socket hooks. */
-  image?: typeof startImageHost;
 }
 
 const defaults: WorkerEntryPorts = { stdin: Bun.stdin.stream(), write: line => { process.stdout.write(line + "\n"); }, signals: process };
@@ -154,7 +140,6 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   }
   const parentLeft = () => (async () => { while ((await readLine()) !== null) { /* nothing else is expected on stdin */ } })().catch(() => {});
   if (launch.kind === "app") return runAppWorker(launch, args!, ports, parentLeft());
-  if (launch.kind === "image") return runImageWorker(launch, ports, parentLeft());
   const link: { current?: ModelHostLink } = {};
   // Main's memory task model, loaded by the first call and kept until this
   // worker stops: the admin surface runs each call under the host's execution
@@ -202,36 +187,6 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   });
 }
 
-/** The image form: the image companion composition on the parent's socket behind an admin surface with readiness, drain,
- * memory and an execution lease over the image runs (a managed job holds it, as it holds a chat worker's), ready once it
- * serves, closed once when the parent signals or leaves. */
-async function runImageWorker(launch: ImageWorkerLaunch, ports: WorkerEntryPorts, parentLeft: Promise<void>): Promise<number> {
-  const memoryNow = await processMemory();
-  const lock = createExecutionLock();
-  const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}),
-    acquireExecutionLease: signal => lock.acquire(signal) });
-  let host: Awaited<ReturnType<typeof startImageHost>>;
-  try {
-    host = await (ports.image ?? startImageHost)(launch.model, { stages: fixedStageRule(launch.releaseStages), exclusive: lock.exclusive },
-      { unix: launch.socketPath, routes: routes => admin.wrap(routes), beforeDrain: () => admin.close() });
-  } catch (error) {
-    console.error(`worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
-    return 1;
-  }
-  ports.write(formatWorkerMessage({ type: "ready", socketPath: launch.socketPath, modelId: launch.model.repoId, pid: process.pid, version: WORKER_PROTOCOL_VERSION }));
-  return new Promise<number>(resolve => {
-    let closing = false;
-    const stop = () => {
-      if (closing) return;
-      closing = true;
-      ports.signals.removeListener("SIGTERM", stop); ports.signals.removeListener("SIGINT", stop);
-      host.close().then(() => resolve(0), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
-    };
-    ports.signals.on("SIGTERM", stop); ports.signals.on("SIGINT", stop);
-    void parentLeft.finally(stop);
-  });
-}
-
 /** The app form's signal port: the process's SIGTERM and SIGINT, plus the
  * parent leaving (the end of stdin) delivered as SIGTERM, so runServe's
  * startup abort and its shutdown handlers see all three. */
@@ -266,15 +221,14 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
   const link: { current?: ModelHostLink } = {};
   let modelId: string | undefined;
   const memoryNow = await processMemory();
-  const transcriptionLock = createExecutionLock();
-  // The transcription companion exposes the same execution contract as other workers.
+  // One admin surface for the model the app serves; the transcription-only app has no execution lease.
   const socket = (model: ModelRecord, lease: boolean) => {
     modelId = model.repoId;
-    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}), acquireExecutionLease(signal: AbortSignal) {
-        if (!lease) return transcriptionLock.acquire(signal);
+    const admin = createWorkerRoutes({ modelId: model.repoId, pid: process.pid, ...(memoryNow ? { memory: memoryNow } : {}), ...(lease ? {
+      acquireExecutionLease(signal: AbortSignal) {
         if (!link.current) return Promise.reject(new Error("no model host is attached"));
         return link.current.acquireExecutionLease(signal);
-      } });
+      } } : {}) });
     return { unix: launch.socketPath, routes: (routes: RouteGroup) => admin.wrap(routes), beforeDrain: () => admin.close() };
   };
   try {
@@ -286,7 +240,7 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
         // `mlx-bun compile-ane --quiet` before every model load), never to the serving process.
         installAne: async () => {},
         start: (model, options) => start(model, options, { ...socket(model, true), link }),
-        startTranscription: (model, options) => startTranscription(model, options, { ...socket(model, false), exclusive: transcriptionLock.exclusive }),
+        startTranscription: (model, options) => startTranscription(model, options, socket(model, false)),
         // The app listens on the socket, so `--port` names no listener to check (the parent may serve it).
         interactive: false, probe: async () => null, open() {}, signals, exit: code => exit.resolve(code),
       });

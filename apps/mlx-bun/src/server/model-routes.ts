@@ -3,9 +3,7 @@
 // (the ones `/v1/models` lists) leases that model from the model host, loading
 // it (and draining another) when it is not resident; anything else (no id, an
 // alias such as Pi's `local`, a name another server would know) is answered by
-// the current model. A companion's paths (audio, images) go to the companion
-// the composition names for them, which may pick it by the body's `model` too.
-// Every other model-scoped path (`/stats`, `/fit`, cache
+// the current model. Every other model-scoped path (`/stats`, `/fit`, cache
 // administration) belongs to the current model too. The response
 // body holds the lease until it ends, so a model is never released under a
 // stream. `/v1/models` lists every local model with which are
@@ -39,30 +37,26 @@ export interface ModelRoutesOptions<U extends RoutedUnit> {
   current(): string;
   /** Whether `id` is an exact id this host can serve (the ids `/v1/models` lists), resident or not. */
   serves(id: string): Promise<boolean>;
-  /** The companion model (Whisper for audio, an image model for images) that answers this path, when it is one of its own; the router leases it like
-   * any model. `named` reads the request's JSON body once and answers its string `model` (undefined for a request without a body): a companion whose requests name
-   * their model asks it, and the buffered body is then forwarded unchanged; one that never asks (audio uploads) streams through unread. */
-  companion?(pathname: string, named: () => Promise<string | undefined>): Promise<string | Response | undefined>;
-  /** A companion request's parent-owned execution lease. Release may drain cancelled work before resuming peers. */
-  companionExecution?(unit: U, signal: AbortSignal): Promise<{ dispose(): void | Promise<void> } | undefined>;
+  /** The companion model (Whisper) that answers this path, when it is one of its own; the router leases it like any model. */
+  companion?(pathname: string): Promise<string | undefined>;
   /** The configured transcription companion, including before its worker starts. */
   transcription?(): Promise<string | undefined>;
 }
 
 /** A response that keeps its lease until the body has ended, been cancelled, or failed. */
-function holding(response: Response, release: () => Promise<void>): Response {
-  if (!response.body) { void release(); return response; }
+function holding(response: Response, release: () => void): Response {
+  if (!response.body) { release(); return response; }
   const reader = response.body.getReader();
   let done = false;
-  const finish = async () => { if (!done) { done = true; await release(); } };
+  const finish = () => { if (!done) { done = true; release(); } };
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const chunk = await reader.read();
-        if (chunk.done) { await finish(); controller.close(); } else controller.enqueue(chunk.value);
-      } catch (error) { await finish(); controller.error(error); }
+        if (chunk.done) { finish(); controller.close(); } else controller.enqueue(chunk.value);
+      } catch (error) { finish(); controller.error(error); }
     },
-    async cancel(reason) { try { await reader.cancel(reason).catch(() => {}); } finally { await finish(); } },
+    cancel(reason) { finish(); return reader.cancel(reason).catch(() => {}); },
   });
   return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
@@ -93,22 +87,15 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
   const residentIds = () => new Set(host.resident().filter(model => model.state === "ready").map(model => model.id));
 
   /** Lease `id`, run `serve` on its unit, and hold the lease until the response has been delivered. */
-  async function leased(id: string, request: Request, serve: (unit: U, lease: { release(): void }) => Promise<Response | null>, companion = false): Promise<Response | null> {
+  async function leased(id: string, request: Request, serve: (unit: U, lease: { release(): void }) => Promise<Response | null>): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     let lease;
     try { lease = await host.acquire(id, { signal: request.signal }); }
     catch (error) { return unavailable(error, path, request.signal); }
-    let execution: { dispose(): void | Promise<void> } | undefined;
-    let released: Promise<void> | undefined;
-    const release = () => released ??= (async () => { try { await execution?.dispose(); } finally { lease.release(); } })();
     try {
-      if (companion) execution = await options.companionExecution?.(lease.unit, request.signal);
-      request.signal.throwIfAborted();
       const response = await serve(lease.unit, lease);
-      if (response?.body) return holding(response, release);
-      await release();
-      return response;
-    } catch (error) { await release(); return errorResponse(error, path, undefined, request.signal); }
+      return response ? holding(response, () => lease.release()) : (lease.release(), null);
+    } catch (error) { lease.release(); return errorResponse(error, path, undefined, request.signal); }
   }
 
   return {
@@ -136,8 +123,7 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
         // `/v1/models/{id}` lists that one model; `/v1/models` lists them all.
         const filter = decodeURIComponent(pathname.slice("/v1/models/".length)) || null;
         const own = filter === null ? undefined : options.host.peek(filter);
-        // A chat model answers for itself; a companion (Whisper, an image model) is listed by this host.
-        if (own?.operations.includes("generate")) return own.routes.handle(request);
+        if (own && !own.operations.includes("transcribe")) return own.routes.handle(request);
         const base = await listing(request, "/v1/models");
         if (!base) return null;
         // A unit that cannot answer (a worker that is down) is the answer, not something to decorate.
@@ -156,13 +142,12 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
             resident: false, capabilities: { transcription: true, translation: true, chat_completions: false } });
         }
         const resident = residentIds(), current = options.current();
-        // Every resident model listed here answers for itself (chat models and the transcription companion; an image companion is not
-        // listed); the rest are listed as the registry knows them.
+        // Every resident model answers for itself; the rest are listed as the registry knows them.
         const full = await Promise.all([...resident].map(async id => {
           const unit = host.peek(id);
           const companion = unit?.operations.includes("transcribe");
           const path = companion ? "/v1/models" : `/v1/models/${encodeURIComponent(id)}`;
-          const entry = unit && (companion || unit.operations.includes("generate")) ? await unit.routes.handle(new Request(new URL(path, request.url))) : null;
+          const entry = unit ? await unit.routes.handle(new Request(new URL(path, request.url))) : null;
           const rows = entry?.ok ? ((await entry.json()) as { data?: Record<string, unknown>[] }).data : undefined;
           const row = companion ? rows?.find(row => row.transcription === true) : rows?.[0];
           return [id, row ? { ...row, id } : undefined] as const;
@@ -194,20 +179,14 @@ export function createModelRoutes<U extends RoutedUnit>(options: ModelRoutesOpti
       }
       if (request.method === "GET" && pathname === "/health")
         return await active()?.routes.handle(request) ?? Response.json({ status: "ok" });
-      let body: Uint8Array<ArrayBuffer> | undefined;
-      const named = async () => request.body === null ? undefined : modelField(body ??= new Uint8Array(await request.arrayBuffer()));
-      const companion = await options.companion?.(pathname, named);
-      // Recognized but unavailable companions are an answer, never chat fallthrough.
-      if (companion instanceof Response) return companion;
-      // A body read for its `model` goes on as the same bytes.
-      const forwarded = body ? new Request(request.url, { method: request.method, headers: request.headers, body, signal: request.signal }) : request;
-      if (companion !== undefined) return leased(companion, forwarded, served => served.routes.handle(forwarded), true);
+      const companion = await options.companion?.(pathname);
+      if (companion !== undefined) return leased(companion, request, served => served.routes.handle(request));
       // Everything else model-scoped is the current model's, when one is resident: a read answers as it is, and
       // a change (flushing a cache) holds the model resident until it is done.
       const unit = active();
       if (!unit) return null;
-      if (["GET", "HEAD"].includes(request.method)) return unit.routes.handle(forwarded);
-      return leased(unit.id, forwarded, served => served.routes.handle(forwarded));
+      if (["GET", "HEAD"].includes(request.method)) return unit.routes.handle(request);
+      return leased(unit.id, request, served => served.routes.handle(request));
     },
   };
 }

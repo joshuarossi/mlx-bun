@@ -16,6 +16,7 @@ export function installedVerbs(): ReadonlyMap<string, CliVerbSpec> {
 export async function runInstalledVerb(name: string, input: string[] | { values: Readonly<Record<string, unknown>>; positionals: readonly string[] }): Promise<number> {
   const spec = installedVerbs().get(name);
   if (!spec) throw new Error(`Unknown command: ${name}`);
+  if (name === "image") return (await import("./image-verb")).runImageVerb(spec, input);
   // The module code and its services load only now, so the command list and help stay light.
   const [{ createHostServices, runVerb }, { installedModules }, { createCatalogHub }, terminal, { createJobHost }, { createJobService }, { JobStore }, { fileURLToPath }, fs, os, path] = await Promise.all([
     import("@mlx-bun/app-services"), import("../modules"), import("../publishing/catalog-hub"), import("./terminal"), import("../jobs/host"), import("../jobs/service"), import("../jobs/db"),

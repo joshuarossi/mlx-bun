@@ -54,14 +54,14 @@ export async function startTranscribeServer(input: ServeInput = {}): Promise<Run
     : (await catalog.list({ kind: "model" })).find(model => model.operations.includes("transcribe"))
       ?? (() => { throw new Error("no Whisper model downloaded — try: mlx-bun get mlx-community/whisper-large-v3-turbo"); })();
   if (!entry.operations.includes("transcribe")) throw new Error(`${entry.id} is not a speech-to-text model`);
-  const services: HostServices = createHostServices({ operations: ["transcribe"], catalog, ...(input.backend ? { backend: input.backend } : {}),
+  const services: HostServices = createHostServices({ catalog, ...(input.backend ? { backend: input.backend } : {}),
     whisper: { modelDir: entry.directory, modelId: entry.id, idleUnloadSec: input.idleUnloadSec, resident: input.resident } });
   let loaded: LoadedModules | undefined, closing: Promise<void> | undefined, stopped = false;
   // The module stops first (takes in flight are joined), then the weights release.
   const closeServices = async () => {
     const errors: unknown[] = [];
     try { await loaded?.stop(); } catch (error) { errors.push(error); }
-    try { await services.companions.close(); } catch (error) { errors.push(error); }
+    try { await services.whisper.close(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, "transcription cleanup failed");
   };
   try {

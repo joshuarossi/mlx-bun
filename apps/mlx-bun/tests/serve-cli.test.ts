@@ -238,13 +238,12 @@ test("--whisper-model resolves like the main model and refuses a non-Whisper che
   expect(run.signals.listenerCount("SIGINT")).toBe(0);
 });
 
-test("a text-to-image model named as the served model is refused before anything loads, saying how image models are served", async () => {
+test("a text-to-image model named as the served model is refused before anything loads, pointing to the standalone image command", async () => {
   const run = runtime();
   const picture = { repoId: "OpenMOSS-Team/MOSS-Image-SFT", path: "/picture", modelType: "MOSSImagePipeline" } as ModelRecord;
   const refused = runServe(parseCommand("serve", ["MOSS-Image"]), { ...run.dependencies, resolve: async () => ({ m: picture, picked: false }) });
   await expect(refused).rejects.toBeInstanceOf(ImageModelServeError);
   await expect(refused).rejects.toMatchObject({ code: "image-model-not-servable", model: "OpenMOSS-Team/MOSS-Image-SFT" });
-  await expect(refused).rejects.toThrow("POST /v1/images/generations");
   await expect(refused).rejects.toThrow("`mlx-bun image`");
   expect(run.steps).toEqual([]);
   expect([run.starts, run.transcriptionStarts, run.opens]).toEqual([[], [], []]);
@@ -776,27 +775,22 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)}, lib = app + "../../packages/app-services/src/";
     const events = [], loads = [];
-    let found = null, imageEntry = null, discovery, listenerInput, drain;
+    let found = null, discovery, listenerInput, drain;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { cache: { savedPrefixes: () => [], set onPut(_observe) {},
         report: () => ({ prefixes: { entries: 0, bytes: 0, maxBytes: 0, hits: 0, misses: 0 }, saved: null, kv: { projectedBytes: 0, budgetBytes: null } }),
         stopIdleDemotion() {}, async close() { return { durable: true }; } },
       resolvedKvScheme: { mode: "off", fitOptions: undefined, storage: { kind: "bf16" } }, adapterNamespace() {} };
-    // Lazy loading and every decode pause the resident models through each engine's execution lease.
+    // Every decode pauses the resident models, which is each engine's execution lease.
     const gateway = { activeRows: 0, async acquireExecutionLease(signal) { events.push("lock"); signal?.throwIfAborted(); return { dispose() {} }; } };
     mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
     // The Whisper checkpoint and the local catalog are the only seams behind the model host; everything else is the real composition.
     mock.module(lib + "whisper-backend.ts", () => ({ nativeWhisperBackend: { async load(dir) { events.push("load " + dir); return { promptTokenBudget: 3, encode: () => [],
       async transcribe(samples, options) { events.push("decode " + samples.length + " " + options.language); return { text: " hi", segments: [], language: options.language ?? "en" }; },
       start() { throw new Error("no sessions here"); }, dispose() { events.push("whisper close " + dir); } }; } } }));
-    mock.module(lib + "image-backend.ts", () => ({ nativeImageBackend: { async load() { events.push("open image");
-      return { stageBytes: { conditioner: 40, denoiser: 0, decoder: 0 }, pixelsPerLatent: 16,
-        defaults: { width: 16, height: 16, steps: 1, guidance: 1, negativePrompt: "", uncondSkipLayers: [] },
-        async generate() { events.push("run image"); return { width: 16, height: 16, pixels: new Uint8Array(768), seed: 1, steps: 1, guidance: 1,
-          timings: { encodeMs: 0, denoiseMs: 0, decodeMs: 0 } }; }, dispose() { events.push("image close"); } }; } } }));
-    mock.module(lib + "catalog.ts", () => ({ declaredOperations: () => [], createRegistryCatalog: () => ({ list: async () => { events.push("registry lookup"); return [found, imageEntry].filter(Boolean); },
-      find: async query => { if (imageEntry?.id === query) return imageEntry; throw new Error("unused " + query); }, resolve: async () => undefined, estimate: async () => undefined, register: async () => {}, download: async () => {} }) }));
+    mock.module(lib + "catalog.ts", () => ({ declaredOperations: () => [], createRegistryCatalog: () => ({ list: async () => { events.push("registry lookup"); return found ? [found] : []; },
+      find: async query => { throw new Error("unused " + query); }, resolve: async () => undefined, estimate: async () => undefined, register: async () => {}, download: async () => {} }) }));
     mock.module("@mlx-bun/inference/input/audio", () => ({ isRiffWave: () => true, decodeWav: () => ({ samples: new Float32Array(16000), sampleRate: 16000 }), resampleTo16k: samples => samples }));
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => ({ discovery: { embeddings: false }, gateway: {} }),
@@ -832,7 +826,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     const first = await take();
     assert.equal(first.status, 200);
     assert.equal((await first.json()).mlx_bun.model, "mlx-community/whisper-large-v3-turbo");
-    assert.deepEqual(events, ["lock", "load /unused/whisper", "lock", "decode 16000 en"]);
+    assert.deepEqual(events, ["load /unused/whisper", "lock", "decode 16000 en"]);
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-large-v3-turbo", resident: true });
     assert.deepEqual({ ...await unload(), last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 1, last_load_ms: 0, idle_unload_sec: null });
     events.length = 0;
@@ -871,7 +865,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-tiny", resident: false });
     assert.equal((await take()).status, 200);
     // The default policy releases the weights right after the take.
-    assert.deepEqual(events, ["registry lookup", "lock", "load /cache/whisper", "lock", "decode 16000 en", "whisper close /cache/whisper"]);
+    assert.deepEqual(events, ["registry lookup", "load /cache/whisper", "lock", "decode 16000 en", "whisper close /cache/whisper"]);
     events.length = 0;
     await foundApp.close();
     assert.deepEqual(events, ["engine close", "model close"]);
@@ -884,25 +878,6 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     assert.equal(lateStatus, 503);
     assert.deepEqual(events, ["registry lookup", "engine close", "model close"]);
     drain = undefined;
-    // The real in-process composition counts resident Whisper once: 20 chat +
-    // 40 audio + 40 image fits exactly, without evicting the idle audio weights.
-    events.length = 0;
-    context.model.weightsBytes = 20;
-    found = { id: "org/audio", kind: "model", directory: "/cache/audio", bytes: 40, operations: ["transcribe"] };
-    imageEntry = { id: "org/image", kind: "model", directory: "/cache/image", bytes: 40, operations: ["image"] };
-    const shared = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 },
-      { ...options, modelBudgetBytes: 100, whisper: { idleUnloadSec: 30 } });
-    try {
-      assert.equal((await take()).status, 200);
-      assert.deepEqual(await discovery(), { id: "org/audio", resident: true });
-      const image = await listenerInput.routes.handle(new Request("http://127.0.0.1/v1/images/generations", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "org/image", prompt: "ok" }) }));
-      assert.equal(image.status, 200);
-      assert.ok(events.includes("run image"));
-      assert.ok(!events.includes("whisper close /cache/audio"));
-      assert.ok(!events.includes("model close"));
-      assert.deepEqual(await discovery(), { id: "org/audio", resident: true });
-    } finally { await shared.close(); }
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
@@ -934,14 +909,12 @@ test("the transcription-only server preloads on request, serves audio and discov
       const index = await (await fetch(base + "/v1")).json();
       assert.equal(index.mode, "transcription");
       assert.deepEqual(index.endpoints, ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload", "POST /v1/audio/sessions",
-        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id",
-        "GET /v1/models", "GET /health", "GET /stats"]);
+        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "GET /v1/models", "GET /health", "GET /stats"]);
       const unloaded = await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json();
       assert.deepEqual({ ...unloaded, last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 0, last_load_ms: 0, idle_unload_sec: 5 });
       // No chat model, no web app, no chat completions, no chat socket (no module here declares one): 404s, never a placeholder.
       for (const path of ["/", "/v1/chat/completions", "/api/hub/local", "/ws/chat"]) assert.equal((await fetch(base + path, { method: path === "/" ? "GET" : "POST" })).status, 404);
       assert.equal((await fetch(base + "/ws/chat")).status, 404);
-      assert.equal((await fetch(base + "/v1/images/generations", { method: "POST", body: JSON.stringify({ model: "/local/image", prompt: "cat" }) })).status, 404);
       assert.throws(() => running.downloads.start("org/x"), /owns no downloads/);
     } finally { await running.close(); }
     assert.deepEqual(events, ["load /unused/whisper", "close /unused/whisper"]);

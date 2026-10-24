@@ -28,8 +28,11 @@ export async function activateModules(modules: readonly AppModule[], services: {
  * then the model host releases what it loaded. `terminal` is the host's
  * presentation (default: plain lines); `activated` sees the loaded modules
  * before the verb runs (a host that runs their job kinds takes them here).
+ * Existing `HostServices` close their Whisper host. A standalone composition
+ * supplies `close()` to release its own model host instead.
  */
-export async function runVerb(input: { program: string; spec: CliVerbSpec; modules: () => Promise<readonly AppModule[]>; services: HostServices;
+export async function runVerb(input: { program: string; spec: CliVerbSpec; modules: () => Promise<readonly AppModule[]>;
+  services: HostServices | (Pick<HostServices, "bindings" | "events"> & { close(): Promise<void> });
   terminal?: CliTerminal; activated?: (loaded: LoadedModules) => void } &
   ({ argv: readonly string[] } | { values: Readonly<Record<string, unknown>>; positionals: readonly string[] })): Promise<number> {
   const parsed = "argv" in input ? parseVerb(input.program, input.spec, input.argv) : verbArguments(input.program, input.spec, input.values, input.positionals);
@@ -43,6 +46,9 @@ export async function runVerb(input: { program: string; spec: CliVerbSpec; modul
       stdout: text => { process.stdout.write(text); }, stderr: text => { process.stderr.write(text); } });
   } finally {
     process.off("SIGINT", stop); process.off("SIGTERM", stop);
-    try { await loaded.stop(); } finally { try { await input.services.companions.close(); } finally { input.services.events.close(); } }
+    try { await loaded.stop(); } finally {
+      try { await ("whisper" in input.services ? input.services.whisper.close() : input.services.close()); }
+      finally { input.services.events.close(); }
+    }
   }
 }

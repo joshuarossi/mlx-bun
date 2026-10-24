@@ -1,6 +1,5 @@
 // The `image` verb: one prompt → the host's image model → a PNG on disk, no
-// server. The same `ImageService.generate` call the route makes; this file
-// only maps the parsed options to a request, prints progress on stderr, writes
+// server. This file maps parsed options to a request, prints progress on stderr, writes
 // the file and reports it.
 import { resolve } from "node:path";
 import type { CliInvocation, ImageProgress, ImageRequest } from "@mlx-bun/app-core";
