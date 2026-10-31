@@ -11,15 +11,13 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable abbrev forwardCut (NB T : Nat) (tk : Nat → Nat) :=
   typedCut NB T tk D1StageSplit.s22 D1StageSplit.S22
 
-kernel_rfl cnt22 : countersOkB D1StageSplit.s21 D1StageSplit.s22 = true
-
 private theorem bridge22 : bridgeOf D1StageSplit.s22.ffi = bridgeOf D1StageSplit.s21.ffi :=
   typedRun21.dst_bridge.trans typedRun21.src_bridge.symm
 
 theorem g2 (NB T : Nat) (tk : Nat → Nat)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.S21.oracle) :
     CutStep (g2Cut NB T tk) (forwardCut NB T tk) 7 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (D1Sim.typed NB T tk (D1Typed.bytes π)) hb.context hb.valuation hgood
@@ -55,8 +53,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat)
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
-    hnat.step rfl hr hm' hext.big hext.node cnt22⟩
+    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids⟩
 
 noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) :
     GluePiece FF [final_cold.r0] (fun _ => g2Cut NB T tk) (fun _ => forwardCut NB T tk) where

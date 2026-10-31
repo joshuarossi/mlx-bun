@@ -18,12 +18,10 @@ noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (s : St FF.S) (S : SS
       (D1Frames.typedW (D1Typed.bytes π)) [] x.M x.ν x.K s S x.t x.C ∧
     SetupD1.ForwardBook π K0 x ∧ SetupD1Input.InputAt π (x.M.node 15235) x.t x.C ∧
     setupInputs T tk x ∧ MapOk x.ν (setupI 1) D1StageSplit.map_g1_FIN_first
-  B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 s x.t
+  B := fun x => AneFresh x.t ∧ fixedCells x
 
 noncomputable abbrev dispatchCut (NB T : Nat) (tk : Nat → Nat) :=
   typedCut NB T tk D1StageSplit.s20 D1StageSplit.S20
-
-kernel_rfl cnt20 : countersOkB D1StageSplit.s1 D1StageSplit.s20 = true
 
 private theorem bridge15 : bridgeOf D1StageSplit.s15.ffi = bridgeOf D1StageSplit.s1.ffi :=
   D1StageSplit.stepA6.dst_bridge.trans D1StageSplit.k1.src_bridge.symm
@@ -33,7 +31,7 @@ private theorem bridge20 : bridgeOf D1StageSplit.s20.ffi = bridgeOf D1StageSplit
 theorem g1 (NB T : Nat) (tk : Nat → Nat)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν g1Oracle) :
     CutStep (g1Cut NB T tk) (dispatchCut NB T tk) 261 := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb, hnat⟩
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb⟩
   obtain ⟨hk, hmemo, π, hlen, hvocab, hframe, hd, hfresh⟩ := hb.1.1
   have hi1 : (bridgeOf D1StageSplit.s1.ffi).active = false := by rw [bridge1]; exact inactive0
   have hi15 : (bridgeOf D1StageSplit.s15.ffi).active = false := by rw [bridge15]; exact hi1
@@ -58,8 +56,7 @@ theorem g1 (NB T : Nat) (tk : Nat → Nat)
   have hinputs : setupInputs T tk (⟨M', x.ν, K', t', C'⟩ : SegInst FF) := by
     exact ⟨hb.2.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hb.2.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨π, x.K, hrel, hbook, hinput, hinputs, hq.2.2⟩, fresh, hids,
-    hnat.step rfl hr hrel hext.big hext.node cnt20⟩
+    ⟨π, x.K, hrel, hbook, hinput, hinputs, hq.2.2⟩, fresh, hids⟩
 
 noncomputable def g1_FIN_first (NB T : Nat) (tk : Nat → Nat) :
     GluePiece FF [final_cold.r0] (fun _ => g1Cut NB T tk) (fun _ => dispatchCut NB T tk) where

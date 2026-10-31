@@ -36,8 +36,8 @@ theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Ins
   have hcdata := nps_compact_rel hR hB
   obtain ⟨hr, ν, hν, hvb, hkp, hmap⟩ := hR
   obtain ⟨⟨hframeBook, hsmall, hoffset⟩, hins, hids, hbase, hcall, hNB, hnative⟩ := hB
-  obtain ⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩ := hframeBook
-  obtain ⟨hc, hctx, hmemo', hp, hD⟩ := hcdata
+  obtain ⟨hk, hmemo, π', hlen, hvocab, hframe, hfresh⟩ := hframeBook
+  obtain ⟨hc, hctx, hmemo', hp, hD, hfrP⟩ := hcdata
   have hvals := post_callP (m := [(9, .L)]) (m' := npsMap) (qs := [.n])
     (S2 := PRE_first_tail_x15_r0.st1.S2.tab) (Sm := PRE_first_tail_x15_r0.S18.tab)
     (ws := PRE_first_tail_x15_r0.ws1) (cws := PRE_first_tail_x15_r0.cws1)
@@ -66,7 +66,7 @@ theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Ins
     rw [hν]
     exact hvals
   refine ⟨npsPair x, rfl, rfl, ⟨hc, hpq.1, hctx.1, hpq.2⟩,
-    ⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hpin,
+    ⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hfrP.trans hpin,
       ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩
   · intro j hj
     change Shift.valuation θZ1 x.ν j = _

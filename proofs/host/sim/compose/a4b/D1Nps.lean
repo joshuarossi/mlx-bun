@@ -17,24 +17,18 @@ def Book (T : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
 noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (m : List (Nat × Q))
     (s : St FF.S) (S : SSrv) : ICut FF :=
   { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP m s S (setupI 1)
-    with B := fun x => Book T tk x ∧ NativeAt 0 0 s x.t }
+    with B := Book T tk }
 
 noncomputable abbrev npsCut (NB T : Nat) (tk : Nat → Nat) :=
   cut NB T tk D1StageSplit.map_start D1StageSplit.s0 D1StageSplit.S0
 noncomputable abbrev g1Cut (NB T : Nat) (tk : Nat → Nat) :=
   cut NB T tk D1StageSplit.map_g1_FIN_first D1StageSplit.s1 D1StageSplit.S1
 
-kernel_rfl cnt1 : countersOkB D1StageSplit.s0 D1StageSplit.s1 = true
-
 theorem toNps (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
     CutConv (SetupCommon.nextCut NB T tk π 1) (npsCut NB T tk) := by
-  apply (SetupDrop.toSingletonPin NB T tk π).trans
-  rintro x ⟨hr, hq⟩ ⟨hb, hins, _, hnat⟩
-  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, ⟨hb, hins⟩, ?_⟩
-  rotate_left
-  · change NativeAt 0 0 (D1StageSplit.s0 : St FF.S) x.t
-    rw [startEq]
-    exact hnat
+  apply (SetupDrop.toSingleton NB T tk π).trans
+  rintro x ⟨hr, hq⟩ hb
+  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb⟩
   change RelB FF _ wideP [] x.M x.ν x.K (D1StageSplit.s0 : St FF.S)
     ⟨D1StageSplit.S0.tab, []⟩ x.t x.C
   rw [startEq, startTab]
@@ -56,15 +50,14 @@ theorem nps {NB T : Nat} {tk : Nat → Nat}
     (horacle : ∀ ν, MapOk ν (setupI 1) [(9, .L)] → Good ν D1StageSplit.st0.S0.oracle) :
     CutStep (npsCut NB T tk) (g1Cut NB T tk) (D1StageSplit.st0.tpl.n + 1) := by
   apply (D1StageSplit.site0 (stageSim NB T tk)).step
-    (fun x hq hb => ⟨hb.1.1.1.1, hq.1⟩)
+    (fun x hq hb => ⟨hb.1.1.1, hq.1⟩)
     (fun x hq _ => horacle x.ν hq.2.2)
-  rintro x M t C hq ⟨hb, hnat⟩ hrel hext _ hmerged
+  intro x M t C hq hb hrel hext _ hmerged
   change PQ setupJ D1StageSplit.map_g1_FIN_first (setupI 1)
       (⟨M, Conv.resVal x.ν D1StageSplit.ws0
         (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩ : SegInst FF) ∧
     Book T tk ⟨M, Conv.resVal x.ν D1StageSplit.ws0
-      (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩ ∧
-      NativeAt 0 0 D1StageSplit.s1 t
+      (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩
   have hvals := post_mergeP (ws := D1StageSplit.ws0) (qs := [.L, .L, .L])
     (f := Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν)
     hq.1 hq.2.2 (by rw [ws0]; decide) (by rw [ws0]; rfl)
@@ -77,7 +70,7 @@ theorem nps {NB T : Nat} {tk : Nat → Nat}
       exact resultValue hq.2.2.1 hj)
     (by intro j w q hw hqj; have hqL : q = Q.L := by simpa using nth?_mem_some hqj
         subst q; change 1 ≤ 2 ^ 20; decide)
-  refine ⟨⟨hvals.1, hq.2.1, ?_⟩, ?_, hnat.step rfl hrel hmerged hext.big hext.node cnt1⟩
+  refine ⟨⟨hvals.1, hq.2.1, ?_⟩, ?_⟩
   · simpa [ws0, D1StageSplit.map_start, D1StageSplit.map_g1_FIN_first] using hvals.2
   · obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hd, hfresh⟩, hids⟩ := hb.1
     have hi1 : (bridgeOf D1StageSplit.s1.ffi).active = false := by rw [bridge1]; exact inactive0

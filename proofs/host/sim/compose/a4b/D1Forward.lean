@@ -53,20 +53,8 @@ noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
   chk := (D1Split.g2_fin_first NB T tk).chk
   ok r hr i hi ho := CutStep.reached ((D1Split.g2_fin_first NB T tk).ok r hr i hi ho)
 
-/-- The forward's call at the route's prompt and within the template's native counters. -/
-noncomputable def forwardPinCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : ICut FF :=
-  { SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV) with
-    B := fun x => (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV)).B x ∧
-      NativeAt 0 0 Host.Load.Run.Tpl.D1StageSplit.s22 x.t }
-
-/-- The checked prefix and the split stages run from the same start: the prefix's prompt and the
-stages' native bound hold at the same target. -/
 theorem toForwardPrompt (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
-    CutConv (forwardCut NB T tk π) (forwardPinCut NB T tk π) := by
-  rintro x ⟨_, t0, C0, hi, hr⟩ hB
-  obtain ⟨t', C', hd, y, hyt, hyc, hyR, hyB⟩ := D1Common.toForwardPrompt NB T tk π t0 C0 hi
-  rw [hr] at hd
-  cases hd
-  exact ⟨y, hyt, hyc, hyR, hyB, by rw [← hyt]; exact hB.2.2⟩
+    CutConv (forwardCut NB T tk π) (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV)) :=
+  reached_convert (D1Common.toForwardPrompt NB T tk π)
 
 end Host.Ts.Sim.Compose.D1First

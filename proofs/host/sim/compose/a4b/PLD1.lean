@@ -93,11 +93,11 @@ theorem PLD1.facts : Post.LinkFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.
   inactive := PLD1.inactive
   raised := .inr ⟨17764, rfl, by decide, rfl⟩
   bigs := by
-    change bigsOutB (Host.Ts.Sim.Full.mlxOf PRE_pl_entry.s0.ffi).next 131072 (Host.Ts.Sim.Full.mlxOf PRE_pl_entry.s0.ffi) = true
+    change bigsOutB (Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx.next 131072 (Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx = true
     rw [PRE_pl_entry.hnext]
     exact PRE_pl_entry.nativeFresh
   free := by
-    change NoBigSt (fun i => ((Host.Ts.Sim.Full.mlxOf PRE_pl_entry.s0.ffi).next : Int) ≤ i ∧ i < 131072) PRE_pl_entry.s0.trace PRE_pl_entry.s0
+    change NoBigSt (fun i => ((Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx.next : Int) ≤ i ∧ i < 131072) PRE_pl_entry.s0.trace PRE_pl_entry.s0
     rw [PRE_pl_entry.hnext]
     exact PRE_pl_entry.noBigFresh
   loLe := Nat.le_of_ble_eq_true PLD1.lo

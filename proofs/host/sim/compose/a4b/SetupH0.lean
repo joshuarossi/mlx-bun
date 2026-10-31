@@ -106,7 +106,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_first_tail_x15_r0.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_first_tail_x15_r0.ws0
     (Conv.resF SymE.var PRE_first_tail_x15_r0.st0.S2.tab PRE_first_tail_x15_r0.S4.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl hr hm' hext.big hext.node cntMerged⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_first_tail_x15_r0.s5 ⟨PRE_first_tail_x15_r0.S5.tab, []⟩ t' C' ∧ _
     rw [PRE_first_tail_x15_r0.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩

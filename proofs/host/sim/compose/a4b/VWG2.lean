@@ -53,7 +53,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
-    hnat.step rfl hr hm' hext.big hext.node cnt41⟩
+    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt41⟩
 
 kernel_rfl g2Check : (firstTailRows.all fun r => goodLin r.ps
   (varsOf r.V npsMap) PRE_first_tail_x15_r0.S40.oracle) = true

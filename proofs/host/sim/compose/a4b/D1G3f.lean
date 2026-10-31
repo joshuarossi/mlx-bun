@@ -1,7 +1,6 @@
 import host.sim.compose.PostGlue
 import host.sim.compose.a4b.PLD1
 import host.sim.compose.a4b.D1BodyFill
-import host.sim.compose.CallLink
 import host.sim.template.a4pre_pl_head.Origin
 import host.sim.template.a4pre_pl_head.Run
 import host.sim.template.a4pre_pl_head.Good
@@ -40,10 +39,12 @@ kernel_rfl anchorB : PLWalkD1.R.data.a 2586 = 2586
 kernel_rfl anchorC : PLWalkD1.R.data.a 2589 = 2589
 kernel_rfl inputNode : PLWalkD1.R.data.nodeF 15235 = 15235
 kernel_rfl sameNext : D1Body.s155.next = PRE_pl_entry.s0.next
+kernel_rfl sameHandles : (mlxOf D1Body.s155.ffi).next = (mlxOf PRE_pl_entry.s0.ffi).next
+kernel_rfl sameNodes : (mlxOf D1Body.s155.ffi).nnext = (mlxOf PRE_pl_entry.s0.ffi).nnext
 kernel_rfl nodesBelow : Nat.ble (mlxOf D1Body.s155.ffi).nnext PLD1.P0.NL = true
 
 /-- The variables the entry binds, at the singleton's row. -/
-private theorem entryValuation {π : List Nat} {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : ν 9 = F64.ofNat 1) :
+private theorem entryValuation {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : ν 9 = F64.ofNat 1) :
     VBOkF loopVB (Shift.valuation PLD1.θ ν) := by
   intro j
   change ∃ k ≤ 2 ^ 20, Shift.valuation PLD1.θ ν j = F64.ofNat k
@@ -77,11 +78,11 @@ private theorem entryValuation {π : List Nat} {ν : Nat → F64} (hv : VBOkF lo
 theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈ ρ, k < 248320) {cap : Nat}
     (hcap : 4096 ≤ cap) :
     CutConv (returnedPromptCut NB T tk ρ) (Post.indexedCut NB T tk cap ρ PRE_pl_entry.s0 PRE_pl_entry.S0) := by
-  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨hf, hc⟩, hp, hnat⟩
+  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨hf, hc⟩, hp⟩
   obtain ⟨origin, hfb, _⟩ := hb
   have hP : x.K.fr 2665 = some ([], π.map natV) := SetupD1PromptIdentity.forward_prompt hfb
   have hC : x.K.fr D1Frames.chunk = some ([], π.map natV) := by
-    change ({ x.K with base' := origin } : Ctx).fr D1Frames.chunk = _
+    change x.K.fr D1Frames.chunk = _
     rw [hfb.frames]
     simp [D1Continue.framed, Disp.typedK, Disp.Ctx.frameAt, D1Frames.chunk, D1Frames.buffer]
   have e : ρ = π := (SetupDrop.promptEq hfb.vocab hρ hP hp).symm
@@ -98,19 +99,24 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
     have := hctx.2
     simp only [Sim.bound]
     omega
-  have hrel := Post.linkRel PLD1.facts (π := ρ) (γ := ρ) hr hctx hP hC hnat (by decide) (by decide) hNB hD
+  have hrel := Post.linkRel PLD1.facts (π := ρ) (γ := ρ) hr hctx hP hC
+    (Post.linkRoomSame hr sameHandles sameNodes) hNB hD
   have h9 : x.ν 9 = F64.ofNat 1 := hfb.singleton
   have hlen : ρ.length = 1 := hfb.length
   have hfr : Shift.framedNext x.M x.K D1Body.s155 = x.K.fr := Post.linkFrames PLD1.facts hctx.1
   have hoff : x.t.next = D1Body.s155.next + x.K.D := hr.offset
-  refine ⟨_, rfl, rfl, ⟨ρ, hrel, ?_⟩, hf, ?_⟩
+  let y : SegInst FF := ⟨((x.M.after PLWalkD1.R.data.map).rebig (mlxOf PRE_pl_entry.s0.ffi).next setupP.E
+      (mlxOf x.t.ffi).next).withJs, Shift.valuation PLD1.θ x.ν,
+    ⟨Shift.framedNext x.M x.K D1Body.s155, PRE_pl_entry.s0.trace, x.t.trace, x.t.next - PRE_pl_entry.s0.next,
+      x.K.lo, x.K.hi⟩, x.t, x.C⟩
+  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, hf, ?_⟩
   · refine
-      { nonempty := by rw [hlen]; decide
+      { nonempty := by omega
         vocab := hfb.vocab
         lastRows := by rw [hlen]; simp
         rowsLength := hlen
         rowsVocab := hfb.vocab
-        valuation := entryValuation (π := ρ) hfb.valuation h9
+        valuation := entryValuation hfb.valuation h9
         promptValue := ?_
         rowValue := θat h9 θ10
         offsetValue := ?_
@@ -153,11 +159,13 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
     · change x.M.a (PLWalkD1.R.data.a 2590) = 2590
       rw [anchorA]
       exact hem
-    · change x.M.node (PLWalkD1.R.data.nodeF 15235) < (mlxOf x.t.ffi).nnext ∧
-        Host.Mlx.FfiEval.HostInt32 (concrete x.C.val) (mlxOf x.t.ffi) (x.M.node (PLWalkD1.R.data.nodeF 15235))
-          (ρ.map Int.ofNat) [1, 1]
-      rw [inputNode]
-      exact hip
+    · have e : y.M.node 15235 = x.M.node 15235 := by
+        change x.M.node (PLWalkD1.R.data.nodeF 15235) = _
+        rw [inputNode]
+      have hi : SetupD1Input.InputAt ρ (y.M.node 15235) x.t x.C := by
+        rw [e]
+        exact hip
+      exact hi
   · change x.M.a (PLWalkD1.R.data.a 2586) = 2586 ∧ x.M.a (PLWalkD1.R.data.a 2589) = 2589
     rw [anchorB, anchorC]
     exact hc

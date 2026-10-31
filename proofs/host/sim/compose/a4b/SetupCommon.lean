@@ -63,7 +63,7 @@ theorem book_fwd {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {L : Nat} {sa s
   have sameBridge : bridgeOf t.ffi = bridgeOf x.t.ffi :=
     (hn1.toR hi').bridge.1.trans (hb.trans (hn0.toR hi).bridge.1.symm)
   refine ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, ?_, (he.num 10 h10).trans hnum⟩,
-    ⟨hreserved, (congrFun he.a 2590).trans hem⟩, hbase, hsmall⟩, ?_, hpin, hnat.step rfl h0 h1 he.big he.node hcnt⟩
+    ⟨hreserved, (congrFun he.a 2590).trans hem⟩, hbase, hsmall⟩, ?_, hpin, hnat.step (P := { setupP with rest := machReads T tk }) rfl h0 h1 he.big he.node hcnt⟩
   · intro Cx Pc Kc weights kind NE IP G init
     change Host.Mlx.FfiAneEval.final Pc Kc weights kind NE IP G init (bridgeOf t.ffi) = _
     rw [sameBridge]

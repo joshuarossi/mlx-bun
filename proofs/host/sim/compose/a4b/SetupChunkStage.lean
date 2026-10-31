@@ -86,7 +86,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_setup_early_r0.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_setup_early_r0.ws0
     (Conv.resF SymE.var PRE_setup_early_r0.st0.S2.tab PRE_setup_early_r0.S4.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl hr hm' hext.big hext.node cntMerged⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_early_r0.s5 ⟨PRE_setup_early_r0.S5.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_early_r0.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩
@@ -200,7 +200,7 @@ theorem initial_chunkCall_fixed_oracle_keeps {NB T L : Nat} {tk : Nat → Nat}
     accepted3 PRE_setup_early_r0.stepA2
   have run3 := runC_trans run2 (runC_one (by rw [h2.isHalt, PRE_setup_early_r0.ctlA1]; rfl) step3)
   have run4 := runC_trans run3 (runC_one (by rw [rel3j.isHalt]; exact unhalted3) step4)
-  refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl h0 (rel4.rel_noRet top4)
+  refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl h0 (rel4.rel_noRet top4)
     (ext4.big.trans (ext3.big.trans (ext2.big.trans ext1.big)))
     (ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node))) cntCall⟩
   · exact ⟨(rel4.rel_noRet top4).withOracle (fun _ h => nomatch h), hq⟩

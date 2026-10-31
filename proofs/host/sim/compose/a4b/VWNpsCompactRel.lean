@@ -18,7 +18,7 @@ theorem nps_compact_rel {NB T L : Nat} {tk : Nat → Nat} {x : SegInst FF}
     Disp.KpJ setupJ 4096 (npsPair x).K ∧ (npsPair x).K.fr 4910 = none ∧
     (∃ π : List Nat, π.length = L ∧ (∀ k ∈ π, k < 248320) ∧
       (npsPair x).K.fr 2665 = some ([], π.map natV)) ∧
-    (npsPair x).K.D = x.K.D + 14 := by
+    (npsPair x).K.D = x.K.D + 14 ∧ (npsPair x).K.fr 2665 = x.K.fr 2665 := by
   obtain ⟨hr, ν, hν, hvb, hkp, hmap⟩ := hR
   obtain ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall, hoffset⟩,
     hins, hids, hbase, hcall, hNB, hnative⟩ := hB
@@ -84,11 +84,12 @@ theorem nps_compact_rel {NB T L : Nat} {tk : Nat → Nat} {x : SegInst FF}
   have hmemo' : K'.fr 4910 = none :=
     (framedNext_none_iff (M := x.M) (s1 := (PRE_first_tail_x15_r0.s18 : St FF.S)) 4910).mpr hmemo
   have hcW := inactiveMemo hcJ (wideInactive hmemo')
-  refine ⟨hcW, hctx, hmemo', ⟨π, hlen, hvocab, ?_⟩, hD⟩
-  obtain ⟨o, ho, hkind⟩ := PRE_first_tail_x15_r0.arr1_2665
-  have hknd : o.kind = .array ([] ++ []) := by
-    simpa only [npsPromptEmpty, PRE_first_tail_x15_r0.arrEl1_2665] using hkind
-  have h := framedNext_of (M := x.M) hframe ho hknd
-  change Shift.framedNext x.M x.K PRE_first_tail_x15_r0.s18 2665 = some ([], π.map natV)
-  simpa only [Map.vals, List.map_nil, List.append_nil] using h
+  have hfrp : (npsPair x).K.fr 2665 = some ([], π.map natV) := by
+    obtain ⟨o, ho, hkind⟩ := PRE_first_tail_x15_r0.arr1_2665
+    have hknd : o.kind = .array ([] ++ []) := by
+      simpa only [npsPromptEmpty, PRE_first_tail_x15_r0.arrEl1_2665] using hkind
+    have h := framedNext_of (M := x.M) hframe ho hknd
+    change Shift.framedNext x.M x.K PRE_first_tail_x15_r0.s18 2665 = some ([], π.map natV)
+    simpa only [Map.vals, List.map_nil, List.append_nil] using h
+  exact ⟨hcW, hctx, hmemo', ⟨π, hlen, hvocab, hfrp⟩, hD, hfrp.trans hframe.symm⟩
 end Host.Ts.Sim.Compose.VWFirst

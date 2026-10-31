@@ -1657,7 +1657,8 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
   for (const m of src("Bridge").matchAll(new RegExp(`kernel_rfl ${X}\\.sizeA(\\d+) : Host\\.Ts\\.Sim\\.Disp\\.sizeParts ${X}\\.s(\\d+)`, "g")))
     sizeIdx.set(+m[2]!, +m[1]!);
   const chain = JSON.parse(readFileSync(join(stream, "chain.json"), "utf8"));
-  const fuelOf = (k: number) => `${X}.ks`;
+  const foldParts: string[] = [];
+  let foldN = 0;
   for (const p of chain.pieces.filter((p: any) => p.glue !== undefined)) {
     const j = +p.glue.slice(1);
     if (onlySites.length || onlyGlues.length) { if (!onlyGlues.includes(j)) continue; }
@@ -1669,6 +1670,7 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
       "host.sim.compose.a4b.VWBodyMap", `${mod}.Bridge`]);
     const hOf = (k: number) => imports.add(`${mod}.H${Math.floor(k / 32)}`);
     let facts = "", proof = "";
+    const steps = (p.steps as number) + (stage ? 1 : 0);
     const brEq = (k: number) => { facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`; };
     const good = (k: number) => {
       facts += `kernel_rfl bodyO${k} : ${X}.S${k}.oracle = List.drop (${X}.OR.length - ${X}.S${k}.oracle.length) ${X}.OR\n`;
@@ -1721,11 +1723,61 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
     writeFileSync(join(outDir, `VWBodyG${j}.lean`), head([...imports]) + `${dedup}
 theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
     (hr : r ∈ fwdRows) (hi : InRow r i) :
-    ∃ n, CutStep (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${start} ${X}.S${start})
-      (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${last} ${X}.S${last}) n :=
-  ⟨_, ${proof}⟩
+    CutStep (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${start} ${X}.S${start})
+      (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${last} ${X}.S${last}) ${steps} :=
+  (${proof}).cast rfl rfl rfl
 ` + tail);
-    console.log(`${X}: glue ${j} (${start}..${last}): ${pieces.length} pieces`);
+    console.log(`${X}: glue ${j} (${start}..${last}): ${pieces.length} pieces, ${steps} steps`);
+    foldParts.push(`bodyGlue${j} NB T tk π hr hi`);
+    foldN += steps;
+    if (stage) {
+      const n = +(readFileSync(join(tdir, `st${j}/TypedTpl.lean`), "utf8").match(/\n  n := (\d+)/) ?? fail(`st${j}: n`))[1]!;
+      foldParts.push(`bodyStep${j} NB T tk π hr hi`);
+      foldN += n + 1;
+    }
+  }
+  if (!onlySites.length && !onlyGlues.length) {
+    const end = chain.T1 as number, Dend = Ds.get(stages.length) ?? fail("no final offset");
+    const fold = foldParts.reduce((acc0, q) => acc0 ? `(${acc0}).trans (${q})` : `(${q})`, "");
+    const rest = [...bodyQ.entries()].filter(([v]) => v !== 9 && v !== 10).map(([v, q]) => `(${v}, Q.${q})`);
+    writeFileSync(join(outDir, "VWBodyFold.lean"), head([
+      ...foldParts.map(p => `host.sim.compose.a4b.${p.startsWith("bodyGlue") ? "VWBodyG" : "VWBodyS"}${p.match(/\d+/)![0]}`),
+      "host.sim.compose.a4b.VWBodyEntry",
+    ]) + `/-- **The forward's flat body**, in ${foldN} steps. -/
+theorem bodyAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
+    (hr : r ∈ fwdRows) (hi : InRow r i) :
+    CutStep (bodyCut NB T tk π i ${Ds.get(0)} bodyM ${X}.s0 ${X}.S0)
+      (bodyCut NB T tk π i ${Dend} bodyM ${X}.s${end} ${X}.S${end}) ${foldN} :=
+  (${fold}).cast rfl rfl rfl
+
+def bodyRest : List (Nat × Q) := [${rest.join(", ")}]
+kernel_rfl bodySplit : bodyMap ++ bodyRest = bodyM
+kernel_rfl bodyRestFree : ${X}.S0.tab.all (fun e => bodyRest.all fun p => e.noVar p.1) = true
+kernel_rfl bodyRestNd : nodupT (bodyRest.map Prod.fst) PTrie.nil = true
+kernel_rfl bodyRestDisj : bodyRest.all (fun p => bodyMap.all fun q => !Nat.beq q.1 p.1) = true
+kernel_rfl bodyRestLow : bodyRest.all (fun p => Nat.ble 9 p.1) = true
+kernel_rfl bodyRestQ : bodyRest.all (fun p => decide (p.2 = Q.n)) = true
+
+/-- The forward's start at the chain's one map. -/
+theorem bodyEnter {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hn : i.n ≤ 2 ^ 20) :
+    CutConv (bodyStartCut NB T tk π i) (bodyCut NB T tk π i ${Ds.get(0)} bodyM ${X}.s0 ${X}.S0) := by
+  have h := bindRest (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (O := ${Ds.get(0)}) (m := bodyMap)
+    (rest := bodyRest) (s := ${X}.s0) (S := ${X}.S0)
+    (fun e he p hp => List.all_eq_true.mp (List.all_eq_true.mp bodyRestFree e he) p hp)
+    (nodupT_sound bodyRestNd).2
+    (fun p hp q hq he => by
+      have hc := List.all_eq_true.mp (List.all_eq_true.mp bodyRestDisj p hp) q hq
+      rw [he] at hc
+      simp at hc)
+    (fun p hp => Nat.le_of_ble_eq_true (List.all_eq_true.mp bodyRestLow p hp))
+    (fun p hp => by
+      have hq : p.2 = Q.n := of_decide_eq_true (List.all_eq_true.mp bodyRestQ p hp)
+      rw [hq]
+      exact hn)
+  rw [bodySplit] at h
+  exact fromStart.trans h
+` + tail);
+    console.log(`${X}: fold of ${foldParts.length} pieces, ${foldN} steps, end ${Dend}`);
   }
 }
 
@@ -1958,11 +2010,11 @@ function genPostLink(args: string[]) {
     "  inactive := N.inactive",
     "  raised := .inr \u27E8" + st.nnext + ", rfl, by decide, rfl\u27E9",
     "  bigs := by",
-    "    change bigsOutB " + fq(s0) + ".next 131072 " + fq(s0) + " = true",
+    "    change bigsOutB " + mlx(s0) + ".next 131072 " + mlx(s0) + " = true",
     "    rw [" + T + ".hnext]",
     "    exact " + T + ".nativeFresh",
     "  free := by",
-    "    change NoBigSt (fun i => (" + fq(s0) + ".next : Int) \u2264 i \u2227 i < 131072) " + s0 + ".trace " + s0,
+    "    change NoBigSt (fun i => (" + mlx(s0) + ".next : Int) \u2264 i \u2227 i < 131072) " + s0 + ".trace " + s0,
     "    rw [" + T + ".hnext]",
     "    exact " + T + ".noBigFresh",
     "  loLe := Nat.le_of_ble_eq_true N.lo",

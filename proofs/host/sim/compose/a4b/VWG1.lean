@@ -78,7 +78,7 @@ theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hπ :
     ⟨hins.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hins.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
     ⟨x.K, hrel, hb, hinput, inputs, hq.2.2⟩, fresh, ids,
-    hnat.step rfl hr hrel hext.big hext.node cnt38⟩
+    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hrel hext.big hext.node cnt38⟩
 
 noncomputable def g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320) :
     GluePiece FF firstTailRows (afterNpsCut NB T tk π) (dispatchCut NB T tk π) where

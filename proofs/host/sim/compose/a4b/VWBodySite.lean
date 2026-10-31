@@ -113,7 +113,7 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
     constructor
     · omega
     · constructor <;> omega
-  have hnat' := hnat.step rfl hr hm' hext.big hext.node F.cntM
+  have hnat' := hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node F.cntM
   have hnatC : NativeAt O'.H O'.N sc t' := by
     obtain ⟨h1, h2⟩ := hnat'
     constructor <;> omega

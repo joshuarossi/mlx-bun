@@ -23,10 +23,10 @@ theorem natV_map_inj {a b : List Nat} (ha : ∀ k ∈ a, k < 248320) (hb : ∀ k
   | nil =>
     cases b with
     | nil => rfl
-    | cons _ _ => cases h
+    | cons _ _ => simp at h
   | cons p a ih =>
     cases b with
-    | nil => cases h
+    | nil => simp at h
     | cons q b =>
       have hc := List.cons.inj h
       have hn : F64.ofNat p = F64.ofNat q := NumV.lit.inj (Val.num.inj hc.1)
@@ -35,7 +35,7 @@ theorem natV_map_inj {a b : List Nat} (ha : ∀ k ∈ a, k < 248320) (hb : ∀ k
       have hq := hb q List.mem_cons_self
       rw [Disp.truncInt_ofNat (by omega), Disp.truncInt_ofNat (by omega)] at hi
       have hpq : p = q := Int.ofNat_inj.mp (Option.some.inj hi)
-      rw [hpq, ih (fun k hk => ha k (List.mem_cons_of_mem _ hk))
+      rw [hpq, ih (b := b) (fun k hk => ha k (List.mem_cons_of_mem _ hk))
         (fun k hk => hb k (List.mem_cons_of_mem _ hk)) hc.2]
 
 /-- The prompt a book's frame holds is the route's. -/

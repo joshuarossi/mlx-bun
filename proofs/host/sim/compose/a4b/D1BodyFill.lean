@@ -30,27 +30,17 @@ theorem saved_forward_returned (NB T : Nat) (tk : Nat → Nat) :
   have reserved : SetupD1Values.Reserved T tk x'.ν :=
     SetupD1Reserved.body_reserved hr.srv.num h.relation.srv.num h.ext h.server hv
   have emitted : x'.M.a 2590 = 2590 := (congrFun h.ext.a 2590).trans hem
-  have hnat' : NativeAt 0 0 D1Body.s155 x'.t := by
-    obtain ⟨h1, h2⟩ := hnat
-    obtain ⟨e1, e2⟩ := h.nativeCounters
-    have b1 := bodyNext
-    have b2 := bodyNnext
-    constructor <;> omega
   exact ⟨x'.t, x'.C, h.run, x', rfl, rfl,
     ⟨π, K0, h.relation, h.book, ip, reserved, emitted⟩, h.fresh, h.anchors⟩
 
 /-- The returned cut at the route's prompt. -/
 noncomputable def returnedPromptCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : ICut FF :=
-  { returnedSavedCut NB T tk with
-    B := fun x => (returnedSavedCut NB T tk).B x ∧ SetupD1PromptIdentity.PromptAt (π.map natV) x ∧
-      NativeAt 0 0 D1Body.s155 x.t }
-
-kernel_rfl bodyNext : (mlxOf D1StageSplit.s22.ffi).next + 3830 = (mlxOf D1Body.s155.ffi).next
-kernel_rfl bodyNnext : (mlxOf D1StageSplit.s22.ffi).nnext + 2528 = (mlxOf D1Body.s155.ffi).nnext
+  SetupD1PromptIdentity.withPrompt (π.map natV) (returnedSavedCut NB T tk)
 
 theorem prompt_forward_returned (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) :
-    CutStep (forwardPinCut NB T tk ρ) (returnedPromptCut NB T tk ρ) 1541184 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hi, hv, hem⟩, ⟨⟨hf, hc⟩, hp⟩, hnat⟩
+    CutStep (SetupD1PromptIdentity.forwardPromptCut NB T tk (ρ.map natV))
+      (returnedPromptCut NB T tk ρ) 1541184 := by
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hi, hv, hem⟩, ⟨hf, hc⟩, hp⟩
   obtain ⟨x', h⟩ := SetupD1.run_full hr hb hf hc
   have ip : SetupD1Input.InputAt π (x'.M.node 15235) x'.t x'.C := by
     rw [h.inputNode]
@@ -63,7 +53,7 @@ theorem prompt_forward_returned (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) 
     have e : x'.K.fr 2665 = some ([], π.map natV) := SetupD1PromptIdentity.forward_prompt hfb
     exact e.trans ((SetupD1PromptIdentity.forward_prompt hb).symm.trans hp)
   exact ⟨x'.t, x'.C, h.run, x', rfl, rfl,
-    ⟨π, K0, h.relation, h.book, ip, reserved, emitted⟩, ⟨h.fresh, h.anchors⟩, hp', hnat'⟩
+    ⟨π, K0, h.relation, h.book, ip, reserved, emitted⟩, ⟨h.fresh, h.anchors⟩, hp'⟩
 
 noncomputable def fwd_D1_cold_DFirst__g2_fin_first__g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
     FwdPiece FF [final_cold.r0] [⟨[(0, .o), (1, .cap), (2, .n)], Stage.Cache.KvDFirst.O⟩]

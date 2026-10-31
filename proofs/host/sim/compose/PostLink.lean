@@ -97,7 +97,7 @@ private theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K :
 theorem frames_perm {a : Nat} (h : a ∈ [D1Frames.chunk, D1Frames.buffer, D1Frames.view, 2665]) :
     a ∈ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view] := by
   simp only [List.mem_cons, List.not_mem_nil, or_false] at h ⊢
-  rcases h with h | h | h | h <;> simp only [h, true_or, or_true]
+  rcases h with rfl | rfl | rfl | rfl <;> simp
 
 /-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the frames in place and empty. -/
 structure LinkFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
@@ -226,7 +226,8 @@ theorem linkShift (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {K : Ctx} {bs :
       rw [heq] at hm
       exact absurd (hnone a hkp hw) ((hfr a).mpr hm)
   · intro a hkp
-    have hb := (Bool.and_eq_true _ _).mp hkp
+    have hb : (K.fr a).isSome = true ∧ (linkW bs a).isNone = true := by
+      simpa only [kpOf, Bool.and_eq_true] using hkp
     have hne : K.fr a ≠ none := by
       intro e
       have h1 := hb.1
@@ -295,14 +296,47 @@ theorem linkFrames (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {M : Map} {K :
     have he := List.all_eq_true.mp F.framesEmpty a ha
     exact framedNext_empty M K (List.isEmpty_iff.mp he)
 
-/-- **The relation at the entry.** The native offsets bound the compaction's room. -/
-theorem linkRel (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {NB T cap H N : Nat} {tk : Nat → Nat}
+/-- With the same native counters on both sides the relation's own room is the compaction's. -/
+theorem linkRoomSame {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {t : St FF.S} {S : SSrv} {C : CSrv}
+    (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W [] M ν K s1 S t C)
+    (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next) (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext) :
+    NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
+  obtain ⟨P', hP, hf⟩ := hr.ffi.1
+  obtain ⟨_, hE, hNE, _⟩ := Raised.restart (.inl rfl) hP
+  constructor
+  · have h := hf.load.mlx.hroom.2
+    rw [hE] at h
+    change (mlxOf t.ffi).next + (setupP.E - (mlxOf s1.ffi).next) < 2 ^ 46 at h
+    rw [sameH] at h
+    exact h
+  · have h := hf.load.mlx.nroom.2.2
+    rw [hNE] at h
+    change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s1.ffi).nnext) < 2 ^ 62 at h
+    rw [sameN] at h
+    exact h
+
+/-- A final's own offsets give the room when its counters are past the entry's. -/
+theorem linkRoomAt {H N : Nat} {t : St FF.S} (hnat : NativeAt H N s1 t) (hH : H ≤ 2 ^ 40) (hN : N ≤ 2 ^ 40)
+    (hhi : (mlxOf s1.ffi).next ≤ setupP.E) (hnhi : (mlxOf s1.ffi).nnext ≤ setupP.NE) :
+    NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
+  obtain ⟨h1, h2⟩ := hnat
+  have hE : setupP.E = 131072 := rfl
+  have hNE : setupP.NE = 1099511627776 := rfl
+  constructor
+  · change (mlxOf t.ffi).next + (setupP.E - (mlxOf s0.ffi).next) < 2 ^ 46
+    omega
+  · change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
+    omega
+
+/-- **The relation at the entry.** -/
+theorem linkRel (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {NB T cap : Nat} {tk : Nat → Nat}
     {bs : List Byte} {π γ : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) (D1Frames.typedW bs) []
       M ν K s1 ⟨tab1, []⟩ t C)
     (hk : Disp.KpJ (D1Frames.typedJ bs) cap K) (hP : K.fr 2665 = some ([], π.map natV))
     (hC : K.fr D1Frames.chunk = some ([], γ.map natV))
-    (hnat : NativeAt H N s1 t) (hH : H ≤ 2 ^ 40) (hN : N ≤ 2 ^ 40) (hNB : NB ≤ P0.NL)
+    (hroomN : NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi)) (hNB : NB ≤ P0.NL)
     (hD : K.D + (s1.next - s0.next) < Sim.bound) :
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) (D1Frames.typedW bs) []
       (((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
@@ -312,7 +346,7 @@ theorem linkRel (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {NB T cap H N : N
     | none => rfl
     | some p =>
       have hm := (hk.1.2.2 4910).mp (by rw [e]; exact Option.some_ne_none _)
-      exact absurd hm (by decide)
+      exact (by decide : 4910 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view]) hm
   have hr0 := inactiveMemo hr.ofJ (linkW_agree bs hmemo)
   have hs := linkShift F hk.1 hP hC
   have hband : ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E →
@@ -327,17 +361,6 @@ theorem linkRel (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {NB T cap H N : N
     constructor
     · omega
     · constructor <;> omega
-  have hroomN : NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
-    obtain ⟨h1, h2⟩ := hnat
-    have hE : setupP.E = 131072 := rfl
-    have hNE : setupP.NE = 1099511627776 := rfl
-    have hhi := F.hi1
-    have hnhi := F.nhi1
-    constructor
-    · change (mlxOf t.ffi).next + (setupP.E - (mlxOf s0.ffi).next) < 2 ^ 46
-      omega
-    · change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
-      omega
   have hoff : t.next = s1.next + K.D := hr.offset
   have hg := F.grows
   have hc := Conv.full_compactQXD NB (P := setupP) (r := machReads T tk)
