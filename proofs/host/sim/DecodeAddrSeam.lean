@@ -318,8 +318,8 @@ theorem decodeHalt_last3A (hA : A.nxt = 17) (st : LoopStartA A P s0 tab0) {L : N
   have hupd : ∀ nx, upd (valL ρ T tk L (T - 2) nx) A.nxt (F64.ofNat (tk T)) = valL ρ T tk L (T - 2) (tk T) :=
     fun _ => by rw [hA]; exact upd_valL _
   have hg := good_finalGL (ρ := ρ) (T := T) (tk := tk) (L := L) (i := T - 2) (nx := tk T) (by omega) (by omega)
-    (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) le_rfl) (by omega)
-    (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T le_rfl; omega)
+    (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) (Nat.le_refl _)) (by omega)
+    (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T (Nat.le_refl _); omega)
   by_cases hc0 : (T - 2) % 256 = 0
   · have e0 : decide ((T - 2) % 256 = 0) = true := decide_eq_true hc0
     have e1 : decide ((T - 2 + 1) % 256 = 0) = false := decide_eq_false (by omega)

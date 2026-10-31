@@ -13,7 +13,7 @@ const head = (imports: string[]) => [...new Set(imports)].map(i => `import ${i}\
   "set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" +
   "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim Host.Ts.Sim.Template\n\n";
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-put("TypedOk", head(["host.sim.compose.a4b.VWFrames"]) +
+put("TypedOk", head(["host.sim.compose.a4b.VWFramesDefs"]) +
   `noncomputable def ${name}.bodyOkB (bytes : List Byte) (rows : Nat) : St Host.Load.Layers.full.S → SSrv → Bool :=\n` +
   "  Host.Ts.Sim.Compose.VWFrames.bodyOk bytes rows\n");
 const fuel = (k: number) => `((nth? ${name}.ks ${k}).getD 0)`;

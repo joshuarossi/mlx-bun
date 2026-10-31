@@ -66,7 +66,12 @@ boot chain `host/load/boot/w/*` needs recompiling against the current core (11-1
 | POST (`hpostPieces`), hand-off (`postHandoff`), short paths and graphs (`shortPaths`, `graphA/B2/B0/C1/C0`) | The current blocker: generator hasn't reached a common POST boundary. Hand-off theorem `decCutFirstFb_handoff` compiled; needs its shift and `withLo` obligations (`full/HandleBand.lean`) checked at POST. L = 1 exists from the singleton. |
 | Decode `D`, `Dg`, constants, counter bounds | Written concretely in `host/route/GenOf.lean`. Rebuild from current sources: four of six `DEC_<k>.case` compile with standard axioms (ord, clear, grow, fill), clearFill and clearGrow remaining; `decode_counter_bounds` compiled. GenOf not compiled yet. |
 
-**In progress (31 Oct):** VW step `template/a4pre_first_tail_x15_r0` plus `_body`: prefix, setup chunks, `g0b` and suffix compile; the 192-site body is compiling, memory-capped stages being split; the row count is kept as body variable 10. One-token route from `ldCut` to the forward's return compiles (`singleton_forward`, 1,544,195 steps). Per-class drain budgets in `world/Offset`.
+**In progress (31 Oct):**
+- VW step `template/a4pre_first_tail_x15_r0` plus `_body`: prefix, setup chunks, `g0b` and suffix compile; the 192-site body restarts on the slimmer imports; the row count is kept as body variable 10.
+- One-token route from `ldCut` to the forward's return compiles (`singleton_forward`, 1,544,195 steps). Per-class drain budgets in `world/Offset`.
+- POST for any prompt length: `PRE_pl_entry/head/selector/call/common` compile with standard axioms; `PRE_pl_tail` and the T=1 tails are running.
+- Neural Engine forward x22, cold: 2.48M steps, 579 chunks, no stage cuts. K checks 74 of 130 passed, 4 to split, the rest being rebuilt. Later forwards need the bridge log base (Decisions, 31 Oct), native implementing.
+- Trust-boundary satisfiability: worker started 31 Oct, to rule out contradictory premises.
 
 **Discarded:** rounds R1-R113 and the VW17 "source-only" bundles in `~/proofdev/devout-sol-general-prefill-*` (Oct 27-30)
 were hand-written interpreter steps that were never compiled, reviewed only byte-wise, stopped by a resource-sampler
@@ -133,20 +138,20 @@ traced once, symbolically.
 5. **Bulk generation**, once 1-4 work end to end on one row of each family.
 6. **Final:** consistent build of everything, full `check.ts`, then `route_main` without `Gn`.
 
-**Size and speed (31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 6,578 small modules as first generated. Almost all of that is imports. One import edge (`host.sim.extract.Grow → host.simgraph.Grow`) puts 8,625 Mathlib modules under every generated module, while a chunk check uses constants from about 530 modules. Being fixed in one batch:
-- cut that edge (about 3x less import CPU);
-- drop 1,739 modules with no consumer;
-- merge the remaining 4,837 into 33 bundles (`template/genMerge.ts`);
-- 3,333-step stage boundaries, avoiding 90 native reruns.
-Estimate after these: about 3 CPU-h per VW forward. x9 and x15 VW bodies match so far, and `plan` has 3 answer patterns across 17 bands, so VW may drop from 58 pieces to 13 (133 to 88 in total), about 260 CPU-h.
+**Size and speed (31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 6,578 small modules as first generated. Almost all of that is imports. One import edge (`host.sim.extract.Grow → host.simgraph.Grow`) puts 8,625 Mathlib modules under every generated module, while a chunk check uses constants from about 530 modules. Fixes:
+- that edge cut, landed 31 Oct 12:51 (`extract/GrowGraph`, `template/SetupP`, `compose/a4b/VWFramesDefs`). Validated on a 1,149-module closure; generated chains and the modules importing them not yet recompiled, and `load/boot/ld/NC` reused pending full `check.ts`;
+- 3,333-step stage boundaries (`"chunk": 3333` in chain plans), avoiding 90 native reruns;
+- not yet applied: drop 1,739 modules with no consumer; merge the remaining 4,837 into 33 bundles (`template/genMerge.ts`).
+Estimate after these, not yet measured: about 3 CPU-h per VW forward. x9 and x15 VW bodies match so far, and `plan` has 3 answer patterns across 17 bands, so VW may drop from 58 pieces to 13 (133 to 88 in total), about 260 CPU-h.
 
 **Machine lessons (31 Oct).**
 - RSS overstates Lean: most of it is shared mmapped oleans. Use footprint.
 - APFS clones share disk blocks, not the page cache. Compiled files are hardlinked through `~/proofdev/cas`; the builder reuses any agent's compile (index in `cas/index`) and has early cutoff (dev only; the final full build rechecks everything).
-- `memory_pressure`'s free % counts the file cache as free. The gate admits by compressor size instead: 5 slots, or 2 while the compressor holds 9 GB or more. Throughput went from about 1.4 to about 18 modules/min once it stopped thrashing.
-- Docker Desktop's VM holds about 14.5 GB of the 32 GB when running; closing it would let the gate stay open.
+- `memory_pressure`'s free % counts the file cache as free. The gate admits by compressor size instead: 3 slots, or 1 while the compressor holds 8 GB or more. Throughput peaked around 18 modules/min without thrashing, against about 1.4 while thrashing.
+- Admission can't foresee a compile's growth: six x22 K modules at about 6 GB footprint each held the machine at 16 GB compressed for 50 minutes. `~/proofdev/tools/governor.ts` pauses the newest large compiles under pressure. Start it detached after a reboot.
+- Docker Desktop's VM holds up to about 14.5 GB of the 32 GB when running; closing it would let the gate stay open.
 
-**Biggest blockers:** (1) bulk cost, above; (2) the Neural Engine path, worker building the first chain now; (3) POST for any prompt length, offset and capacity as variables, generator and route; (4) the graph evaluator change to `evalRR`, route; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 168 GiB free, floor 110.
+**Biggest blockers:** (1) bulk cost, above, with Neural Engine K modules the largest part; (2) the bridge log base, native, needed for every prompt with two or more active forwards; (3) POST for any prompt length, generator and route; (4) links: `I π`, VW body pieces, fills; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) satisfiability of the trust boundary, unknown until the worker reports; (7) disk: 172 GiB free, floor 110.
 
 **Rules for the machine reference:** for |π| >= 3 the reference is the machine's own computation, because MMA and the
 Neural Engine are uninterpreted; the model-level statement stays limited to |π| <= 2.
@@ -172,6 +177,7 @@ Neural Engine are uninterpreted; the model-level statement stays limited to |π|
   `evalRR` on `ffiGraphR`, as a layer: `evalR` has no value for prefill kernels, so the old statement fails after a multi-row step.
   The reference was already `evalRR`; the trust boundary doesn't change.
 - 31 Oct: `BridgeA.dense` starts at node 1, fixed in place: as written it could never hold, so every active-bridge theorem was vacuous. Lands with a compiled witness of the active relation.
+- 31 Oct: bridge log base: `b'.log = b.log.map M.effect ++ L`, `L` fixed along a chain, row templates starting at `log = []`, boundary memory stated on the target. As written, one row template can't relate to a target whose log grows with each forward. Only the memory semantics read the log. `BRel`, `BridgeX`, `FullRX` keep their names as `L = []`, to limit rebuilds of the 8,132 modules above `full/BridgeA`.
 - 30 Oct: stop source-only work; everything is compiled as it is written, generated rather than hand-stepped; no
   receipts, admissions or review packets. Acceptance is the kernel plus `#print axioms`.
 

@@ -69,7 +69,7 @@ theorem loop_sourceL_addr
   have hqa : ∀ K : Ctx, (∀ a, K.fr a ≠ none ↔ a ∈ addr0.fwd :: addr0.emit :: LoopFrames.empty.toA.xs) →
       K.lo = P.lo → K.hi = P.E → Disp.Kp S.jsP K ∧ VBOk (valL ρ T tk L (T - 2) (tk T)) := fun K hK hlo hhi =>
     ⟨⟨hlo.trans S.hj.1.symm, hhi.trans S.hj.2.1.symm, fun a => by rw [hK a, S.hj.2.2]; rfl⟩,
-      hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩
+      hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩
   exact decode_sourceLA (A := addr0) (W := noFrames) (Fr := LoopFrames.empty.toA) (B := ⟨0, 0, 0⟩) rfl
     (S.toWL fun _ => Iff.rfl) st.toA hfr17 hcE hb rfl rfl cs.toA hcs.toA
     (fun i _ _ => by
@@ -174,8 +174,8 @@ theorem loop_source_eosL_addr
     (fun i _ _ _ => by rw [hsel]; exact (KeepsA_addr0 _).2 (loopSelL cs L i).keeps_empty)
     (X.segA S _) X.cover (FE0.segA S _) (FE1.segA S _) FE0.cover FE1.cover
     (fun hk nx K hnx hK hlo hhi => ⟨hkp K hK hlo hhi, hVB (k - 1) nx (by omega) (by omega) hnx⟩)
-    (fun K hK hlo hhi => ⟨⟨hkp K hK hlo hhi, hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩,
-      ⟨hkp K hK hlo hhi, hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩⟩)
+    (fun K hK hlo hhi => ⟨⟨hkp K hK hlo hhi, hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩,
+      ⟨hkp K hK hlo hhi, hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩⟩)
     henv hT hLT hlen htk notEos eos hVB (by simpa using hJ) (by simpa using hH) (by simpa using hN)
     (fun i h1 h2 h3 => by rw [hsel]; exact hG i h1 h2 h3)
     (fun h => ExitGStepV.toSegA X S hQX (hX h)) (fun h h0 => FinalEGStepV.toSegA FE0 S hQ0 (hF h h0))

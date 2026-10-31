@@ -18,7 +18,7 @@ const head = (imports: string[]) => imports.map(i => `import ${i}\n`).join("") +
   "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim Host.Ts.Sim.Template\n\n";
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
 const localOk = `${name}.bodyOkL`;
-put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFrames", "host.sim.template.FullOk"]) +
+put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFramesDefs", "host.sim.template.FullOk"]) +
   `noncomputable def ${localOk} (bytes : List Byte) (rows : Nat) : St ${name}.F.S → SSrv → Bool :=\n` +
   `  okLocal (${acceptance} bytes rows)\n\n` +
   [0, end].map((i, j) => `kernel_rfl ${name}.bodyAccepted${j} :\n` +

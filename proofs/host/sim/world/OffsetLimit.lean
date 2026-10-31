@@ -13,13 +13,13 @@ theorem prefill_signed_allowance {base dDrain dTail dFinal L oldD : Nat}
     (hL : L ≤ 262143)
     (hbudget : base + 4095 * dDrain + dTail + dFinal ≤ oldD + 1593835520) :
     prefillOffsetBudget base dDrain dTail dFinal L ≤ oldD + 1593835520 :=
-  (prefill_offset_budget_le hL).trans hbudget
+  Nat.le_trans (prefill_offset_budget_le hL) hbudget
 
 theorem prefill_signed_allowance_by_class {base dDrain dTail dFinal L oldD : Nat}
     {c : SetupClass} (hL : L ≤ 262143) (ha : c.Applies L)
     (hbudget : base + c.maxDrains * dDrain + dTail + dFinal ≤ oldD + 1593835520) :
     prefillOffsetBudget base dDrain dTail dFinal L ≤ oldD + 1593835520 :=
-  (prefill_offset_budget_le_class hL ha).trans hbudget
+  Nat.le_trans (prefill_offset_budget_le_class hL ha) hbudget
 
 section
 variable {F : Ffi} {J : Disp.JSP F} {okBack : F.S → Arg → Bool}

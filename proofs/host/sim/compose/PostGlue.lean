@@ -45,7 +45,7 @@ theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St F
     { hs with ffi := ⟨⟨hs.ffi.1, Host.Mlx.Ffi.NGrow.refl _⟩, hs.ffi.2⟩ }
   have hok := PostSimulation.accepted_signed hcap (ha bs)
   have hrun' := PostSimulation.run_signed hcap (hrun bs)
-  have hsim := PostSimulation.simulationQ NB T tk bs jsSignedLimit cap le_rfl [] (mlxOf x.t.ffi)
+  have hsim := PostSimulation.simulationQ NB T tk bs jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
   obtain ⟨M', t', C', ht, he, hx⟩ :=
     Disp.runOk_simXVB FF _ _ _ _ [] _ hsim.xv (fun _ _ _ => .inl rfl) x.ν x.K
       hb.context ⟨hb.valuation, hb.rowValue⟩ n x.M sa Sa x.t x.C sb Sb (.inl hq) hok hrun'

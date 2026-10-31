@@ -41,7 +41,7 @@ theorem le_listMax {α : Type} {f : α → Nat} {x : α} : ∀ {xs : List α}, x
   | _ :: xs, h => by
     rcases List.mem_cons.mp h with rfl | h
     · exact Nat.le_max_left _ _
-    · exact (le_listMax h).trans (Nat.le_max_right _ _)
+    · exact Nat.le_trans (le_listMax h) (Nat.le_max_right _ _)
 
 /-- One counter's checked growth over each generated piece of the prefill. -/
 structure PieceCounter where
@@ -123,8 +123,8 @@ theorem final_le (h1 : 1 ≤ L) (h2 : L ≤ 262143) :
   refine Nat.le_trans ?_ hm
   cases pfSrcOf L
   · exact Nat.le_max_left _ _
-  · exact (Nat.le_max_left _ _).trans (Nat.le_max_right _ _)
-  · exact (Nat.le_max_right _ _).trans (Nat.le_max_right _ _)
+  · exact Nat.le_trans (Nat.le_max_left _ _) (Nat.le_max_right _ _)
+  · exact Nat.le_trans (Nat.le_max_right _ _) (Nat.le_max_right _ _)
 
 theorem atDrain_le_budget (h1 : 1 ≤ L) (h2 : L ≤ 262143) {k : Nat} (hk : k ≤ drains L) :
     W.atDrain L k ≤ W.budget (setupOf L) := by
@@ -189,8 +189,8 @@ theorem cuts_within {limit : Nat} (h : ∀ c ∈ setupClasses, W.budget c ≤ li
     (h1 : 1 ≤ L) (h2 : L ≤ 262143) :
     (∀ k, k ≤ drains L → W.atDrain L k ≤ limit) ∧ W.atPre L ≤ limit ∧ W.atExit L ≤ limit :=
   have hb := W.budget_le_of_classes h h1 h2
-  ⟨fun _ hk => (W.atDrain_le_budget h1 h2 hk).trans hb,
-    (W.atPre_le_budget h1 h2).trans hb, (W.atExit_le_budget h1 h2).trans hb⟩
+  ⟨fun _ hk => Nat.le_trans (W.atDrain_le_budget h1 h2 hk) hb,
+    Nat.le_trans (W.atPre_le_budget h1 h2) hb, Nat.le_trans (W.atExit_le_budget h1 h2) hb⟩
 
 end
 

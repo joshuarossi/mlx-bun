@@ -54,8 +54,8 @@ theorem mergeHeap_ovr (hbd : ∀ b ∈ wr, σ.a b / 4096 < 4 ^ 31) (hnd : wr.Nod
         | none => simp [hc, ih]
         | some o => simp [hc, ih]
     rw [e]
-    exact (List.Nodup.filter _ hnd).map_on fun x hx y hy hxy =>
-      hinj x y (List.mem_of_mem_filter hx) (List.mem_of_mem_filter hy) hxy
+    exact List.pairwise_map.2 ((List.Pairwise.filter _ hnd).imp_of_mem fun hx hy hne hxy =>
+      hne (hinj _ _ (List.mem_filter.1 hx).1 (List.mem_filter.1 hy).1 hxy))
   have hm : (σ.a b, τ.hobj o) ∈ wr.filterMap fun b => (h2.get b).map fun o => (σ.a b, τ.hobj o) :=
     List.mem_filterMap.2 ⟨b, hb, by rw [hg]; rfl⟩
   exact setAll_get_mem _ _ _ _ hkeys hm fun e he => by

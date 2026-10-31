@@ -16,16 +16,16 @@ theorem Fresh.refl (s : St S) : Fresh s s :=
   ⟨Nat.le_refl _, fun _ h => .inl h, fun _ _ => rfl⟩
 
 theorem Fresh.of_same (h : Same s u) : Fresh s u :=
-  ⟨by rw [h.2], fun a ha => .inl (by unfold Present at ha ⊢; rwa [h.1] at ha),
+  ⟨by rw [h.2]; exact Nat.le_refl _, fun a ha => .inl (by unfold Present at ha ⊢; rwa [h.1] at ha),
     fun _ _ => by rw [h.1]⟩
 
 theorem Fresh.trans (h : Fresh s u) (h' : Fresh u v) : Fresh s v where
-  grows := h.grows.trans h'.grows
+  grows := Nat.le_trans h.grows h'.grows
   old a ha := by
     rcases h'.old a ha with hp | hp
     · exact h.old a hp
-    · exact .inr (h.grows.trans hp)
-  kept a ha := (h'.kept a (ha.trans_le h.grows)).trans (h.kept a ha)
+    · exact .inr (Nat.le_trans h.grows hp)
+  kept a ha := (h'.kept a (Nat.lt_of_lt_of_le ha h.grows)).trans (h.kept a ha)
 
 theorem Fresh.alloc (s : St S) (o : HObj) : Fresh s (s.alloc o).2 where
   grows := Nat.le_succ _

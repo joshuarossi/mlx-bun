@@ -124,7 +124,7 @@ end
 
 section
 variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB M k x y)
-  (hF : ∀ i, Full P i) (hd : ∀ i, i < x.nnext → PN x i)
+  (hF : ∀ i, Full P i) (hd : DenseN x)
 include hr hF hd
 
 /-- **An evaluation under the map.** -/
@@ -272,7 +272,7 @@ end
 section
 variable {P : LoadP} {NB : Nat} {M M' : Map} {k k' : Nat} {x y x' y' : NSt} (hr : G.MR P NB M k x y)
   (hr' : G.MR P NB M' k' x' y') (hn : M'.node = M.node) (hF : ∀ i, Full P i)
-  (hd : ∀ i, i < x.nnext → PN x i) (hd' : ∀ i, i < x'.nnext → PN x' i) (hxx : x.nnext ≤ x'.nnext)
+  (hd : DenseN x) (hd' : DenseN x') (hxx : x.nnext ≤ x'.nnext)
 include hr hr' hn hF hd hd' hxx
 
 theorem lockstep_nnext : y'.nnext = y.nnext + (x'.nnext - x.nnext) := by
@@ -293,7 +293,7 @@ theorem BRel.classifyPost {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {b1 : B
   have hfr : ∀ i, M.node (x.nnext + i) = y.nnext + i := hr.nfresh
   have h0 : BRel M' x'.nnext y'.nnext b b' := (h.widen hxx (by omega) hfr).names hn
   have hfr' : ∀ i, M'.node (x.nnext + i) = y.nnext + i := fun i => by rw [hn]; exact hfr i
-  have := BRel.classify hr' hF hd' hxx (by omega) hfr' (x'.nnext - x.nnext) 0 h0 (b1 := b1) (by simpa using e)
+  have := BRel.classify hr' hF hd' hd.1 hxx (by omega) hfr' (x'.nnext - x.nnext) 0 h0 (b1 := b1) (by simpa using e)
   simp only [Nat.add_zero] at this
   rw [show y'.nnext - y.nnext = x'.nnext - x.nnext by omega]
   exact this

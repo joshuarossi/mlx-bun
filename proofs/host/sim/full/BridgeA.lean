@@ -8,8 +8,9 @@ scheduled or not completed (`unscheduled`, `running`) and the effect log's evalu
 target's bridge is the template's with those ids renamed by the map (`BridgeA`): the surfaces, the
 programs and the create calls' handles are equal; the aliases and touches agree at the images of
 the template's nodes, and both sides record them only below their node counters; the queues and the
-log are the template's images. The template's nodes below its counter are all present (`dense`),
-so the renaming is injective there and sends the template's fresh nodes to the target's fresh ones.
+log are the template's images. The template's nodes from 1 up to its counter are all present (`dense`;
+`Ffi.init` starts the counter at 1 and node 0 is never created), so the renaming is ordered and injective
+below the counter (`MR.norder`) and sends the template's fresh nodes to the target's fresh ones.
 
 `BridgeX` is the full world's bridge relation: the inactive bridge (`BridgeI`) or the active one
 under the map; `FullRX` is `FullRB BridgeX`. -/
@@ -20,6 +21,9 @@ open Host.Mlx.FfiAne (Effect)
 
 /-- The bridge state. -/
 abbrev BSt := Host.Mlx.FfiAne.St
+
+/-- The template's counter is positive and its nodes from 1 up to the counter are present. -/
+def DenseN (x : NSt) : Prop := 1 ≤ x.nnext ∧ ∀ i, 1 ≤ i → i < x.nnext → PN x i
 
 /-- An effect with node ids renamed. -/
 def _root_.Host.Ts.Sim.Map.effect (M : Map) : Effect → Effect
@@ -46,10 +50,10 @@ structure BRel (M : Map) (nx ny : Nat) (b b' : Host.Mlx.FfiAne.St) : Prop where
   log : b'.log = b.log.map M.effect
 
 /-- **The active bridge under the map**: the bridge states related at the node counters, the
-template's nodes below its counter present. -/
+template's nodes from 1 up to its counter present. -/
 structure BridgeA (M : Map) (x y : FF.S) : Prop where
   rel : BRel M (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y)
-  dense : ∀ i, i < (mlxOf x).nnext → PN (mlxOf x) i
+  dense : DenseN (mlxOf x)
 
 /-- **The full world's bridge relation**: inactive and equal, or active under the map. -/
 def BridgeX (M : Map) (x y : FF.S) : Prop := BridgeI M x y ∨ ((bridgeOf x).active = true ∧ BridgeA M x y)

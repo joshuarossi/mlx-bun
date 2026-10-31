@@ -67,11 +67,11 @@ theorem loop_sourceL_seam {cE : Nat}
       (F1.fc.toSeg S F1.acc F1.ne2 (toks.drop (T - 1))) (F2.fc.toSeg S F2.acc F2.ne2 (toks.drop (T - 1))) F0.cover F1.cover F2.cover hfr17 hcE hb hT hLT hlen htk
       notEos
       (fun K hK hlo hhi => ⟨⟨⟨hlo.trans S.hj.1.symm, hhi.trans S.hj.2.1.symm, fun a => by rw [hK a, S.hj.2.2]; rfl⟩,
-          hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩,
+          hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩,
         ⟨⟨hlo.trans S.hj.1.symm, hhi.trans S.hj.2.1.symm, fun a => by rw [hK a, S.hj.2.2]; rfl⟩,
-          hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩,
+          hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩,
         ⟨⟨hlo.trans S.hj.1.symm, hhi.trans S.hj.2.1.symm, fun a => by rw [hK a, S.hj.2.2]; rfl⟩,
-          hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)⟩⟩)
+          hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))⟩⟩)
       henv
       (fun h0 h1 => FinalGStepV.toSeg F0.fc S F0.acc F0.ne2 (hF h0 h1))
       (fun h => FinalGStepV.toSeg F1.fc S F1.acc F1.ne2 (hF0 h))

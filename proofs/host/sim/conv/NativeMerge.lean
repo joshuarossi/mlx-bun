@@ -430,7 +430,7 @@ theorem traced' (h o) (ho : xr.objs.get h = some o) (hNL : P0.NL = P1.NL) : ∀ 
     exact H.hr1.traced h o ho
 
 theorem nlt' (i : Nat) (hi : PN xr i) : i < xr.nnext := by
-  by_contra hc
+  refine Nat.lt_of_not_le fun hc => ?_
   have := H.mer.nodesHi i (by omega)
   unfold PN at hi; rw [this] at hi; cases hi
 

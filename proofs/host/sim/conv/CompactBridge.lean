@@ -203,7 +203,7 @@ The generator's checks of an active bridge shift (`brel_of_checks`): the surface
 and activity equal; each recorded node table's keys below the start's counter, the end's keys below its
 counter and each the image of a start key, the end's entries at the images the start's (an image check
 over the start's keys, no decision procedure on the entries); the queues and the log the images; the
-start's nodes below its counter present (`bridgeA_of_checks`), so the node map is injective there
+start's nodes from 1 up to its counter present (`bridgeA_of_checks`), so the node map is injective below it
 (`ninj_dense`). -/
 
 /-- A node table renamed injectively below `nx`, from checks over its keys. -/
@@ -273,21 +273,25 @@ theorem brel_of_checks {σ : Map} {nx ny : Nat} {b b' : BSt}
     queued := fun n hn => Nat.blt_eq.mp (List.all_eq_true.mp hq n hn)
     log := hlog }
 
-/-- A shift's node map is injective on a start whose nodes below its counter are all present. -/
+/-- A shift's node map is injective below the counter of a start whose nodes from 1 are present. -/
 theorem ninj_dense {P : LoadP} {n0 : Nat} {σ : Map} {x0 x1 : NSt} (hm : MShift P n0 σ x0 x1)
-    (hd : ∀ i, i < x0.nnext → PN x0 i) : ∀ i j, i < x0.nnext → j < x0.nnext → σ.node i = σ.node j → i = j :=
-  fun i j hi hj he => hm.ninj i j (hd i hi) (hd j hj) he
+    (hF : ∀ i, Full P i) (hd : DenseN x0) :
+    ∀ i j, i < x0.nnext → j < x0.nnext → σ.node i = σ.node j → i = j := fun i j hi hj he => by
+  rcases Nat.lt_trichotomy i j with e | e | e
+  · have := hm.norder j (hd.2 j (by omega) hj) (hF j) i e; omega
+  · exact e
+  · have := hm.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
 
-/-- The start's nodes below its counter present, by a check. -/
-theorem dense_of_check {x : NSt} (h : (List.range x.nnext).all (fun i => (x.nodes.get i).isSome) = true) :
-    ∀ i, i < x.nnext → PN x i :=
-  fun i hi => List.all_eq_true.mp h i (List.mem_range.mpr hi)
+/-- The start's nodes from 1 up to its counter present, by a check. -/
+theorem dense_of_check {x : NSt} (h1 : 1 ≤ x.nnext)
+    (h : (List.range' 1 (x.nnext - 1)).all (fun i => (x.nodes.get i).isSome) = true) : DenseN x :=
+  ⟨h1, fun i hi1 hi => List.all_eq_true.mp h i (List.mem_range'_1.mpr ⟨hi1, by omega⟩)⟩
 
 /-- **An active bridge shift from the checks**: the start's bridge active, `BRel` at the start's and
 the end's node counters, the start dense. -/
 theorem bridgeX_of_active {σ : Map} {x y : FF.S} (ha : (bridgeOf x).active = true)
     (hrel : BRel σ (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y))
-    (hd : ∀ i, i < (mlxOf x).nnext → PN (mlxOf x) i) : BridgeX σ x y :=
+    (hd : DenseN (mlxOf x)) : BridgeX σ x y :=
   .inr ⟨ha, hrel, hd⟩
 
 /-- An inactive bridge shift from the checks: the start's bridge inactive, the end's equal. -/

@@ -29,7 +29,7 @@ theorem jsShiftBad_above {n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {D : 
     obtain ⟨he, hb, _⟩ := jsPtrOf_some hp
     simp only [jsAboveB, hp]
     apply Nat.ble_eq_true_of_le
-    by_contra hn
+    refine Nat.le_of_not_lt fun hn => ?_
     have ha : (Map.compact n0 n1 nS pl nr D.big D.region D.nodeF).a b = b :=
       Map.compact_lt (by omega)
     have hi : (Map.compact n0 n1 nS pl nr D.big D.region D.nodeF).big i = i :=

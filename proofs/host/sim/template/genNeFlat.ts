@@ -16,7 +16,7 @@ const take = (f: string, k = 1) => {
   return v;
 };
 const group = Number(take("--group")?.[0] ?? 4);
-const okArg = take("--ok", 2) ?? ["host.sim.compose.a4b.VWFrames", "Host.Ts.Sim.Compose.VWFrames.bodyOk"];
+const okArg = take("--ok", 2) ?? ["host.sim.compose.a4b.VWFramesDefs", "Host.Ts.Sim.Compose.VWFrames.bodyOk"];
 const only = take("--only-chunks")?.[0]?.split("-").map(Number);
 // the chain's source state and server (its prefix's end, `bridge_literal` of it): the start seam
 const src = take("--source", 4);

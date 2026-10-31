@@ -69,8 +69,9 @@ structure BodySiteFacts (sa sm sc s0 : St FF.S) (Sa Sm Sc : SSrv) (ws cws nr pl 
   xnLe : c2.xn ≤ (mlxOf sc.ffi).next
   loLe : setupP.lo ≤ (mlxOf sc.ffi).next
   zroots2 : noBigRootsP (fun i => !Conv.oldBigB c2 i) sc.trace sc = true
-  sameH : (mlxOf sm.ffi).next = (mlxOf sc.ffi).next
-  sameN : (mlxOf sm.ffi).nnext = (mlxOf sc.ffi).nnext
+  cntM : countersOkB sa sm = true
+  hiLe : (mlxOf sc.ffi).next ≤ setupP.E
+  nhiLe : (mlxOf sc.ffi).nnext ≤ setupP.NE
   jsHeap : JsHeapAbove sa.next sc
   jsRoots : noBigRootsP (jsAboveB sa.next) sc.trace sc = true
   jsNative : bigsOutB jsLoN jsHiN (mlxOf sc.ffi) = true

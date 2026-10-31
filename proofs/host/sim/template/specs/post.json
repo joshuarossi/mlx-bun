@@ -123,13 +123,6 @@
    "var": 16
   },
   {
-   "name": "nextTraceId",
-   "kind": "cell",
-   "addr": 1050,
-   "value": null,
-   "var": 20
-  },
-  {
    "name": "traceCalls",
    "kind": "cell",
    "addr": 1054,

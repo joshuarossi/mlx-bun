@@ -1,30 +1,11 @@
 import host.route.SetupEntry
+import host.sim.compose.a4b.VWFramesDefs
 import host.sim.dispatch.BridgeTyped
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose.VWFrames
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Route
-
-def chunk : Nat := 2673467
-def buffer : Nat := 2673472
-def view : Nat := 2673473
-
-abbrev chunkJ : Disp.JSP FF := fullJSPPXS setupP [2665, chunk] [(4910, .memo [])]
-
-def typedW (bytes : List Byte) (n : Nat) : Nat → Option WFrame :=
-  Disp.wAt (Disp.wAt wideP buffer (.buf bytes)) view (.typed .i32 buffer 0 n)
-
-abbrev typedJ (bytes : List Byte) (n : Nat) : Disp.JSP FF :=
-  fullJSPPXS setupP [2665, chunk, buffer, view]
-    [(buffer, .buf bytes), (view, .typed .i32 buffer 0 n), (4910, .memo [])]
-
-noncomputable def typedOk (bytes : List Byte) (n : Nat) : St FF.S → SSrv → Bool :=
-  Disp.okJSJ (typedJ bytes n) (okBackFXS setupP) 4096
-
-def bodyD0 : Nat := 131072
-noncomputable def bodyOk (bytes : List Byte) (n : Nat) : St FF.S → SSrv → Bool :=
-  Disp.okJSJ (typedJ bytes n) (okBackFXS setupP) bodyD0
 
 theorem kp_frame {J J' : Disp.JSP FF} {K : Host.Ts.Sim.Ctx} {a : Nat}
     (hlo : J'.lo = J.lo) (hhi : J'.hi = J.hi) (hfs : J'.framed = J.framed ++ [a])

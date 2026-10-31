@@ -99,10 +99,7 @@ theorem source_tokens_prompt_routeW_framed (π : List Nat) {T : Nat} (hπ : 1 �
     exact ⟨_, t1, C1, runC_trans hboot hr1, hinv', hv1, hvals⟩
   by_cases hex : ∃ k, 1 ≤ k ∧ k ≤ T ∧ tk k = 248044
   · -- the first EOS
-    obtain ⟨k, hk⟩ : ∃ k, FirstEos tk T k := by
-      refine ⟨Nat.find hex, (Nat.find_spec hex).1, (Nat.find_spec hex).2.1, (Nat.find_spec hex).2.2,
-        fun j h1 h2 he => Nat.find_min hex h2 ⟨h1, ?_, he⟩⟩
-      have := (Nat.find_spec hex).2.1; omega
+    obtain ⟨k, hk⟩ : ∃ k, FirstEos tk T k := FirstEos.exists_of hex
     obtain ⟨hk1, hkT, heos, hmin⟩ := hk
     refine RouteGoalW.ofFirst ⟨hk1, hkT, heos, hmin⟩ ?_
     by_cases hk1' : k = 1
@@ -113,7 +110,7 @@ theorem source_tokens_prompt_routeW_framed (π : List Nat) {T : Nat} (hπ : 1 �
       exact ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩
     · -- tokens `2 … T`: POST, then the decode route's EOS stop
       have hk2 : 2 ≤ k := by omega
-      obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hmin 1 le_rfl (by omega))
+      obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hmin 1 (Nat.le_refl _) (by omega))
       obtain ⟨N, tF, CF, hrun, hv, hle, ⟨hem, hg⟩, hfin⟩ := decode_source_eosLW_framed (Fin := stopFin env) (G := GE k)
         hA st hfrN hcE hb hwc hwe k hk2 hkT
         (fun i h1 h2 h3 => hit i h1 h3 fun j hj1 hj2 => hmin j hj1 (by omega)) (X k) (cX k) FE0 FE1 c0E c1E
@@ -130,7 +127,7 @@ theorem source_tokens_prompt_routeW_framed (π : List Nat) {T : Nat} (hπ : 1 �
   · -- no EOS among tokens `1 … T`: POST, the decode route, the final chains
     have hno : NoEos tk T := fun j h1 h2 he => hex ⟨j, h1, h2, he⟩
     refine RouteGoalW.ofNo hno ?_
-    obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hno 1 le_rfl (by omega))
+    obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hno 1 (Nat.le_refl _) (by omega))
     obtain ⟨N, tF, CF, hrun, hv, hle, hem, hg⟩ := decode_sourceLW_framed hA st hfrN hcE hb hwc hwe
       (fun i h1 h2 => hit i h1 h2 fun j hj1 hj2 => hno j hj1 (by omega))
       F0 F1 F2 c0 c1 c2 hQA henv hT hLT hlen htk (fun j h2 h3 => hno j (by omega) h3) (hF hno) (hF0 hno) (hF1 hno)

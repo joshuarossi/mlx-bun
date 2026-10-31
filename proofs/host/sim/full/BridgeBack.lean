@@ -72,11 +72,7 @@ theorem fullBackOfA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
     · have kx := (load_back_keep _ a).1 S _ S' hra l r ws rfl
       have ky := (load_back_keep _ _).2 C _ C' hrb l' r' ws' rfl
       have hmx' := hcr.1.mlx
-      have hd' : ∀ i, i < l.mlx.nnext → PN l.mlx i := fun i hi => by
-        by_cases e : i < (mlxOf x).nnext
-        · show (l.mlx.nodes.get i).isSome = true
-          rw [kx.nodes i e]; exact hbA.dense i e
-        · exact kx.dense i (Nat.not_lt.mp e) hi (by have := hmx'.xnnext_lt; omega)
+      have hd' : DenseN l.mlx := hbA.dense.keep kx hmx'.xnnext_lt
       show MSim _ S' C' (Host.Ts.M.pure (liftB x a ((Host.Mlx.FfiAne.classify (bridgeOf x) l.mlx
           (l.mlx.nnext - (mlxOf x).nnext) (mlxOf x).nnext).map _)))
         (Host.Ts.M.pure (liftB y (M.arg a) ((Host.Mlx.FfiAne.classify (bridgeOf y) l'.mlx

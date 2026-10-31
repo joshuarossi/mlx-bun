@@ -1,9 +1,10 @@
 import host.sim.compose.a4b.VWBodyJ0
 import host.sim.compose.a4b.VWBodySite0
 import host.sim.compose.a4b.VWBodyOracles_0
-import host.sim.template.a4pre_first_tail_x15_r0_body.SiteR0
+import host.sim.compose.a4b.VWBodyMap
 import host.sim.template.a4pre_first_tail_x15_r0_body.SiteD0
 import host.sim.template.a4pre_first_tail_x15_r0_body.SiteZ0
+import host.sim.template.CallGen
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -12,12 +13,27 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
+theorem bodyCshift0 {BR : Map → Host.Ts.Sim.Full.FF.S → Host.Ts.Sim.Full.FF.S → Prop} {P : LoadP} {NB : Nat} {M : Map}
+    {y : Host.Ts.Sim.Full.FF.S} (h : Host.Ts.Sim.Full.FullRB BR P NB M PRE_first_tail_x15_r0_body.S14.tab.length PRE_first_tail_x15_r0_body.s14.ffi y)
+    (hNL : P.NL ≤ PRE_first_tail_x15_r0_body.P0.NL) : Conv.FullShiftQ PRE_first_tail_x15_r0_body.P0 101 PRE_first_tail_x15_r0_body.kappa0 PRE_first_tail_x15_r0_body.s16.ffi PRE_first_tail_x15_r0_body.s15.ffi := by
+  have hr := h.load.mlx
+  obtain ⟨_, _, hF⟩ := h.live _ PRE_first_tail_x15_r0_body.ofxC_0
+  obtain ⟨_, _, hK⟩ := h.kern _ PRE_first_tail_x15_r0_body.okrC_0
+  have hcl : SSt (· < 101) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s16.ffi).mlx :=
+    sst_of_callK (n0 := PRE_first_tail_x15_r0_body.S14.tab.length) hr.cl (by rw [PRE_first_tail_x15_r0_body.n0_0] <;> decide) PRE_first_tail_x15_r0_body.cnodesK0 PRE_first_tail_x15_r0_body.cobjsK0
+      PRE_first_tail_x15_r0_body.citemsK0 PRE_first_tail_x15_r0_body.cbd0 PRE_first_tail_x15_r0_body.csst0
+  exact PRE_first_tail_x15_r0_body.cshift0 bodyNcl0 hr.hlt hr.nlt (fun k v hg => hr.itemsPresent k (by rw [hg]; rfl))
+    (fun h o hg i hi => Nat.lt_of_lt_of_le (hr.traced h o hg i hi) hNL) (sst_clear hcl) hF.obj hK.flagsObj hK.targsObj
+    (fun h l hl => by have := hK.cl h l hl; rw [PRE_first_tail_x15_r0_body.n0_0] at this; exact this)
+
+
 kernel_rfl bodyFramesEmpty0 : [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view].all (fun a => (arrOf PRE_first_tail_x15_r0_body.s15 a).isEmpty) = true
 kernel_rfl bodyJsRoots0 : noBigRootsP (jsAboveB PRE_first_tail_x15_r0_body.s14.next) PRE_first_tail_x15_r0_body.s16.trace PRE_first_tail_x15_r0_body.s16 = true
 kernel_rfl bodyJsNative0 : bigsOutB jsLoN jsHiN (mlxOf PRE_first_tail_x15_r0_body.s16.ffi) = true
 kernel_rfl bodyLow0 : (PRE_first_tail_x15_r0_body.cws0 ++ PRE_first_tail_x15_r0_body.ws0).all (Nat.ble 9) = true
-kernel_rfl bodySameH0 : (mlxOf PRE_first_tail_x15_r0_body.s15.ffi).next = (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).next
-kernel_rfl bodySameN0 : (mlxOf PRE_first_tail_x15_r0_body.s15.ffi).nnext = (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).nnext
+kernel_rfl bodyCntM0 : countersOkB PRE_first_tail_x15_r0_body.s14 PRE_first_tail_x15_r0_body.s15 = true
+kernel_rfl bodyHi0 : Nat.ble (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).next setupP.E = true
+kernel_rfl bodyNhi0 : Nat.ble (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).nnext setupP.NE = true
 kernel_rfl bodyBridge0 : bridgeOf PRE_first_tail_x15_r0_body.s15.ffi = bridgeOf PRE_first_tail_x15_r0_body.s14.ffi
 kernel_rfl bodyNN0 : Nat.ble (mlxOf PRE_first_tail_x15_r0_body.s14.ffi).nnext PRE_first_tail_x15_r0_body.P0.NL = true
 kernel_rfl bodyXn0 : Nat.ble (⟨18197, 15296, 2674920, 101⟩ : Conv.Cnt).xn (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).next = true
@@ -72,7 +88,7 @@ theorem bodyFacts0 : BodySiteFacts PRE_first_tail_x15_r0_body.s14 PRE_first_tail
   cbridge := PRE_first_tail_x15_r0_body.cbridge0
   sbridge := bodyBridge0
   cwsDisj := PRE_first_tail_x15_r0_body.cwsDisj0
-  cshiftR := fun h hNL => PRE_first_tail_x15_r0_body.cshiftR0 h hNL
+  cshiftR := fun h hNL => bodyCshift0 h hNL
   nnextLe := Nat.le_of_ble_eq_true bodyNN0
   raised := PRE_first_tail_x15_r0_body.raised0
   cbigs := PRE_first_tail_x15_r0_body.cbigs0
@@ -80,8 +96,9 @@ theorem bodyFacts0 : BodySiteFacts PRE_first_tail_x15_r0_body.s14 PRE_first_tail
   xnLe := Nat.le_of_ble_eq_true bodyXn0
   loLe := Nat.le_of_ble_eq_true bodyLo0
   zroots2 := PRE_first_tail_x15_r0_body.zroots20
-  sameH := bodySameH0
-  sameN := bodySameN0
+  cntM := bodyCntM0
+  hiLe := Nat.le_of_ble_eq_true bodyHi0
+  nhiLe := Nat.le_of_ble_eq_true bodyNhi0
   jsHeap := bodyJs0
   jsRoots := bodyJsRoots0
   jsNative := bodyJsNative0
@@ -92,21 +109,19 @@ theorem bodyFacts0 : BodySiteFacts PRE_first_tail_x15_r0_body.s14 PRE_first_tail
 def bodyQs0 : List (Option Q) := [some Q.n, some Q.n, some Q.n, none, some Q.n, some Q.n, some Q.n, some Q.n, some Q.n, none, none, some Q.n, some Q.n, none, some Q.n, some Q.n, some Q.n, some Q.n]
 noncomputable def bodyEs0 : List (Option SymE) := PRE_first_tail_x15_r0_body.nr0.map fun r => nth? PRE_first_tail_x15_r0_body.st0.S3.tab r
 kernel_rfl bodyResChk0 : (fwdRows.all fun r =>
-  resChkAll r Oracles.PRE_first_tail_x15_r0_body.map_g0 bodyEs0 bodyQs0) = true
+  resChkAll r bodyM bodyEs0 bodyQs0) = true
 kernel_rfl bodyLq0 : bodyQs0.length = PRE_first_tail_x15_r0_body.cws0.length
 kernel_rfl bodyNrLo0 : PRE_first_tail_x15_r0_body.nr0.all (Nat.ble PRE_first_tail_x15_r0_body.S14.tab.length) = true
-kernel_rfl bodyM00 : (Oracles.PRE_first_tail_x15_r0_body.map_g0.all fun p =>
-  (Conv.idx? p.1 PRE_first_tail_x15_r0_body.cws0).isNone && !PRE_first_tail_x15_r0_body.ws0.contains p.1) = true
-kernel_rfl bodySub0 : (Oracles.PRE_first_tail_x15_r0_body.map_site0.all fun p => Oracles.PRE_first_tail_x15_r0_body.map_g0.contains p) = true
-kernel_rfl bodySubNext0 : postSubB Oracles.PRE_first_tail_x15_r0_body.map_g1 Oracles.PRE_first_tail_x15_r0_body.map_g0 PRE_first_tail_x15_r0_body.cws0 bodyQs0 = true
+kernel_rfl bodySub0 : (Oracles.PRE_first_tail_x15_r0_body.map_site0.all fun p => bodyM.contains p) = true
+kernel_rfl bodyPost0 : postSubB bodyM PRE_first_tail_x15_r0_body.ws0 PRE_first_tail_x15_r0_body.cws0 bodyQs0 = true
 kernel_rfl bodyDrop0 : Nat.ble (3571 + (PRE_first_tail_x15_r0_body.s15.next - PRE_first_tail_x15_r0_body.s16.next)) 5263 = true
-
-noncomputable def bodyD0 : Nat := 3571
+kernel_rfl bodyDropH0 : Nat.ble (0 + ((mlxOf PRE_first_tail_x15_r0_body.s15.ffi).next - (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).next)) 46 = true
+kernel_rfl bodyDropN0 : Nat.ble (0 + ((mlxOf PRE_first_tail_x15_r0_body.s15.ffi).nnext - (mlxOf PRE_first_tail_x15_r0_body.s16.ffi).nnext)) 0 = true
 
 theorem bodyStep0 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
     (hr : r ∈ fwdRows) (hi : InRow r i) :
-    CutStep (bodyCut NB T tk π i 3571 Oracles.PRE_first_tail_x15_r0_body.map_g0 PRE_first_tail_x15_r0_body.s14 PRE_first_tail_x15_r0_body.S14)
-      (bodyCut NB T tk π i 5263 Oracles.PRE_first_tail_x15_r0_body.map_g1 PRE_first_tail_x15_r0_body.s16 PRE_first_tail_x15_r0_body.S16) (17040 + 1) :=
+    CutStep (bodyCut NB T tk π i ⟨3571, 0, 0⟩ bodyM PRE_first_tail_x15_r0_body.s14 PRE_first_tail_x15_r0_body.S14)
+      (bodyCut NB T tk π i ⟨5263, 46, 0⟩ bodyM PRE_first_tail_x15_r0_body.s16 PRE_first_tail_x15_r0_body.S16) (17040 + 1) :=
   bodySite (n := 17040) (S2 := PRE_first_tail_x15_r0_body.st0.S3.tab) (Es := bodyEs0) (qs := bodyQs0)
     (ok := PRE_first_tail_x15_r0_body.st0.bodyOkL)
     (fun bs rows => Host.Ts.Sim.Compose.PRE_first_tail_x15_r0_body.site0 bs rows (bodyLocalSim NB T tk bs rows))
@@ -115,7 +130,8 @@ theorem bodyStep0 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i :
     (fun _ _ ν hm => good_of_row
       (List.all_eq_true.mp Oracles.PRE_first_tail_x15_r0_body.chk_site0 r hr) hi (MapOk.sub hm (sub_of_all bodySub0)))
     (fun _ hm _ _ _ ho hq => resChkAll_sound (List.all_eq_true.mp bodyResChk0 r hr) hi hm ho hq)
-    bodyLq0 rfl bodyNrLo0 (m0_of_all bodyM00) (postSub_sound bodySubNext0)
-    (Nat.le_of_ble_eq_true bodyDrop0) (by decide)
+    bodyLq0 rfl bodyNrLo0 (postSub_sound bodyPost0)
+    (Nat.le_of_ble_eq_true bodyDrop0) (by decide) (Nat.le_of_ble_eq_true bodyDropH0) (by decide)
+    (Nat.le_of_ble_eq_true bodyDropN0) (by decide)
 
 end Host.Ts.Sim.Compose.VWFirst

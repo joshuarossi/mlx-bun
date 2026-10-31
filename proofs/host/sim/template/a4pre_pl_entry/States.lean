@@ -6,6 +6,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
+-- specs/post.json revision 3: nextTraceId literal
 noncomputable def PRE_pl_entry.rawSrv : Host.Ts.SSrv :=
   ⟨D1Body.S155.tab.map (·.subst (fun v => if v = 9 then .var 10 else .var v)), []⟩
 server_data PRE_pl_entry.chooserSrv := PRE_pl_entry.rawSrv

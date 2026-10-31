@@ -13,7 +13,7 @@ theorem prefill_image_allowance_by_class {base dDrain dTail dFinal L oldD : Nat}
     {c : SetupClass} (hL : L ≤ 262143) (ha : c.Applies L)
     (hbudget : base + c.maxDrains * dDrain + dTail + dFinal ≤ oldD + Disp.lim29) :
     prefillOffsetBudget base dDrain dTail dFinal L ≤ oldD + Disp.lim29 :=
-  (prefill_offset_budget_le_class hL ha).trans hbudget
+  Nat.le_trans (prefill_offset_budget_le_class hL ha) hbudget
 
 theorem SetupClass.maxDrains_le_nonH5 {c : SetupClass} (hc : c ≠ .h5) :
     c.maxDrains ≤ 1365 := by

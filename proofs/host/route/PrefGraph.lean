@@ -25,7 +25,8 @@ additive bookkeeping layer. `An` is the Neural Engine memory component, read at 
 * `DrainG Cr k`: at the drain cut after `k` whole chunks (`afterDrains`).
 * `PreG Cr`: at the pre-final cut (`preFinal`); `PreG.prefillAt`: that is the reference's `prefillAt`.
 * `ExitG Cr out`: at the prefill's exit cut, after the final D1 forward from `prefillAt`'s state: the node
-  `x.M.node out` holds the forward's hidden state and the carriers its next handles.
+  `x.M.node out` holds the forward's normalized hidden state and the carriers its next handles.
+* `stepTrace_final`: the reference's step at the last prompt row is that forward, then the head and the sampler.
 * `GlueOk`: what a stretch between forwards keeps; `DrainG.glue`, `PreG.glue`, `ExitG.glue` transport across it.
 * `DrainG.succ`, `DrainG.preG_tail`, `DrainG.preG_of_no_tail`, `PreG.exit`: a forward advances the fold. -/
 
@@ -68,13 +69,61 @@ def PreG (Cr : List (Option Nat × Option Nat)) (x : SegInst FF) : Prop :=
   ∀ tab, Host.Ts.Sim.CSrv.Le x.C ⟨tab⟩ → ∃ s, preFinal (refStep P KR NE net env π tab) π.length (refInit net) = some s ∧
     Held P KR env (V s) tab s.hs x.M.node Cr x.t ∧ An s x.t
 
-/-- The final D1 forward of the reference's state at the last prompt row. -/
-noncomputable def finalForward (tab : List F64) (hs : List Handles) : Option (Value × List Handles) :=
-  (embedTrace P.toMlxContract (wts P KR env tab).embedWords (wts P KR env tab).embedScales
-    (wts P KR env tab).embedBiases (π.getD (π.length - 1) 0)).bind
-    (chainTrace P.toMlxContract KR.toKernelContract (π.length - 1) (stageWeights (wts P KR env tab)) hs)
+/-- The final D1 forward of the reference's state at the last prompt row: the normalized hidden state the forward
+returns (the node `rmsNorm` of the last layer's output) and the next handles. -/
+noncomputable def finalForward (tab : List F64) (hs : List Handles) : Option (Value × List Handles) := do
+  let x ← embedTrace P.toMlxContract (wts P KR env tab).embedWords (wts P KR env tab).embedScales
+    (wts P KR env tab).embedBiases (π.getD (π.length - 1) 0)
+  let (y, hs') ← chainTrace P.toMlxContract KR.toKernelContract (π.length - 1) (stageWeights (wts P KR env tab)) hs x
+  let h ← rmsNorm P.toMlxContract.hiddenNorm y (wts P KR env tab).finalNorm (f32 0x358637bd)
+  pure (h, hs')
 
-/-- **The prefill's exit cut**: the final forward's hidden state at the carrier `out`, its handles at `Cr`. -/
+/-- The head and the sampler on the forward's normalized hidden state: the token. -/
+noncomputable def finalToken (tab : List F64) (h : Value) : Option Nat := do
+  let logits ← GlueLayers.project P.toMlxContract KR.toKernelContract .affineRow (wts P KR env tab).head h
+  let l ← reshape logits [1, 248320]
+  let [r] ← KernelClosure.eval KR.toKernelContract .normalizedArgmax [l] | none
+  itemUint32 r
+
+/-- **The decode step at the last prompt row** is the final forward, then the head and the sampler. -/
+theorem stepTrace_final (tab : List F64) (hs : List Handles) :
+    stepTrace P.toMlxContract KR.toKernelContract (wts P KR env tab) (π.length - 1) (π.getD (π.length - 1) 0) hs =
+      (finalForward P KR env π tab hs).bind fun r => (finalToken P KR env tab r.1).map fun t => (t, r.2) := by
+  simp only [stepTrace, finalForward, finalToken, bind, Option.bind, pure, Option.map]
+  cases embedTrace P.toMlxContract (wts P KR env tab).embedWords (wts P KR env tab).embedScales
+      (wts P KR env tab).embedBiases (π.getD (π.length - 1) 0) with
+  | none => rfl
+  | some x =>
+    dsimp only
+    cases chainTrace P.toMlxContract KR.toKernelContract (π.length - 1) (stageWeights (wts P KR env tab)) hs x with
+    | none => rfl
+    | some r =>
+      obtain ⟨y, hs'⟩ := r
+      dsimp only
+      cases rmsNorm P.toMlxContract.hiddenNorm y (wts P KR env tab).finalNorm (f32 0x358637bd) with
+      | none => rfl
+      | some h =>
+        dsimp only
+        cases GlueLayers.project P.toMlxContract KR.toKernelContract .affineRow (wts P KR env tab).head h with
+        | none => rfl
+        | some logits =>
+          dsimp only
+          cases reshape logits [1, 248320] with
+          | none => rfl
+          | some l =>
+            dsimp only
+            cases KernelClosure.eval KR.toKernelContract .normalizedArgmax [l] with
+            | none => rfl
+            | some rs =>
+              dsimp only
+              match rs with
+              | [] => rfl
+              | [r] =>
+                dsimp only
+                cases itemUint32 r <;> rfl
+              | _ :: _ :: _ => rfl
+
+/-- **The prefill's exit cut**: the final forward's normalized hidden state at the carrier `out`, its handles at `Cr`. -/
 def ExitG (Cr : List (Option Nat × Option Nat)) (out : Nat) (x : SegInst FF) : Prop :=
   ∀ tab, Host.Ts.Sim.CSrv.Le x.C ⟨tab⟩ → ∃ s hidden hs,
     Host.Mlx.SimGraph.Ref.prefillAt P KR NE KR.inPlace net env π tab = some s ∧

@@ -310,7 +310,7 @@ theorem LoopCasesW.iterW (hA : A.nxt = 17) (st : LoopStartW Wd A P s0 tab0) (cs 
     (hG : ∀ i, 1 ≤ i → i + 2 < T → (∀ j, 1 ≤ j → j ≤ i + 1 → tk j ≠ 248044) →
       LoopGStepW Gx (relW Wd P W) Fr (loopSelLW cs L i).toLoopCaseW (valL ρ T tk L) toks i) :
     DecodeItersW (DecodeInvW Wd A Gx W P Fr s0 tab0 fixA (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN) T tk :=
-  fun i hi1 hiT hne => ⟨_, decodeIter_selLW hA st cs hcs hi1 hiT hLT hlen htk (hne (i + 1) (by omega) le_rfl)
+  fun i hi1 hiT hne => ⟨_, decodeIter_selLW hA st cs hcs hi1 hiT hLT hlen htk (hne (i + 1) (by omega) (Nat.le_refl _))
     (hQ i hi1 hiT) (hsh i hi1 hiT) (hkeep i hi1 hiT) (fun nx hnx => hVB i nx hi1 (by omega) hnx) hJ hH hN
     (hG i hi1 hiT hne)⟩
 
@@ -406,8 +406,8 @@ theorem decodeHalt_last3W (hA : A.nxt = 17) (st : LoopStartW Wd A P s0 tab0) {L 
     fun _ => by rw [hA]; exact upd_valL _
   have hg : ∀ {r3 r7 : Bool} {o : List Ans}, FinalOk r3 r7 o → decide ((T - 2) % 256 = 0) = r3 →
       decide ((T - 2 + 1) % 256 = 0) = r7 → Good (valL ρ T tk L (T - 2) (tk T)) o := fun hc h3 h7 =>
-    good_finalW hc (by omega) (by omega) (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) le_rfl)
-      (by omega) (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T le_rfl; omega) h3 h7
+    good_finalW hc (by omega) (by omega) (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) (Nat.le_refl _))
+      (by omega) (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T (Nat.le_refl _); omega) h3 h7
   by_cases hc0 : (T - 2) % 256 = 0
   · exact ⟨_, decodeHalt_lastW st F1 hfrN hcE hb hwc hwe hupd hT hlen
       (hg c1 (decide_eq_true hc0) (decide_eq_false (by omega)))

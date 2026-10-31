@@ -1,5 +1,4 @@
 import host.sim.native.Lawful
-import host.simgraph.Grow
 
 /-! # The native target state only grows
 
@@ -138,23 +137,6 @@ theorem trans (h : NGrow x y) (h' : NGrow y z) : NGrow x z where
     obtain ⟨ps, h1, h2⟩ := h.pops
     obtain ⟨qs, h3, h4⟩ := h'.pops
     exact ⟨ps ++ qs, by rw [h1, h3, List.map_append, List.append_assoc], h2.append h4⟩
-
-/-- Resolved kernel names are kept. -/
-theorem kernelName (h : NGrow x y) (Ks : Host.Mlx.FfiEval.KernelSources) (k : Nat) (name : List Char)
-    (hk : Host.Mlx.FfiEval.kernelName? Ks x k = some name) : Host.Mlx.FfiEval.kernelName? Ks y k = some name := by
-  unfold Host.Mlx.FfiEval.kernelName? at hk ⊢
-  cases ho : x.obj? k with
-  | none => rw [ho] at hk; cases hk
-  | some o =>
-    rw [ho] at hk
-    cases o with
-    | kernel nm sc hd a b =>
-      rw [show y.obj? k = some (.kernel nm sc hd a b) from h.kernels k _ ho ⟨nm, sc, hd, a, b, rfl⟩]
-      exact hk
-    | _ => cases hk
-
-theorem grows (h : NGrow x y) (Ks : Host.Mlx.FfiEval.KernelSources) : Host.Mlx.SimGraph.Grows Ks x y :=
-  ⟨h.nodes, h.kernelName Ks⟩
 
 /-- The item frame: every item of `y` was an item of `x` or a popped value at one of at most
 as many fresh slots as values were popped. -/

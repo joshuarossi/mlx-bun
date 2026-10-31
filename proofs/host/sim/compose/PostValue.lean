@@ -32,7 +32,7 @@ theorem resChkAll_sound {r : Row} {m : List (Nat × Q)} {Es : List (Option SymE)
   | some E => exact ⟨E, rfl, resChk_sound hc hi hν⟩
 
 /-- The valuation after a compacting call: results at their checked values, everything else kept. -/
-theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m m' : List (Nat × Q)}
+theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m : List (Nat × Q)}
     {qs : List (Option Q)} {tab S2 Sm : List SymE} {ws cws nr : List Nat} {n0 : Nat}
     {Es : List (Option SymE)}
     (hVB : VBOkF loopVB ν)
@@ -45,11 +45,11 @@ theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m m' : List (Nat × Q)}
       ∃ E, o = some E ∧ (∃ k ≤ 2 ^ 20, E.eval ν = F64.ofNat k) ∧
         ∀ q, oq = some q → E.eval ν = F64.ofNat (i.get q))
     (hm : MapOk ν i m)
-    (hm0 : ∀ p ∈ m, idx? p.1 cws = none ∧ ws.contains p.1 = false)
-    (hsub : ∀ p ∈ m', p ∈ m ∨ ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2)) :
+    (hsub : ∀ p ∈ m, (idx? p.1 cws = none ∧ ws.contains p.1 = false) ∨
+      ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2)) :
     let θ := compactθZ cws (nr.map fun r => (nth? Sm r).getD (.var 0)) ws
     let ν' := resVal ν ws (resF SymE.var S2 n0 ν)
-    VBOkF loopVB (Shift.valuation θ ν') ∧ MapOk (Shift.valuation θ ν') i m' := by
+    VBOkF loopVB (Shift.valuation θ ν') ∧ MapOk (Shift.valuation θ ν') i m := by
   intro θ ν'
   have hres : ∀ j rr, nth? nr j = some rr → ∀ oq, nth? qs j = some oq →
       ∃ E, nth? S2 rr = some E ∧ ((nth? Sm rr).getD (.var 0)).eval ν' = E.eval ν ∧
@@ -88,8 +88,8 @@ theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m m' : List (Nat × Q)}
       exact ⟨k, hkle, by rw [he]; exact hk⟩
   · refine mapOk_iff'.2 fun p hp => ?_
     rcases hsub p hp with hpm | ⟨j, hj, hqj⟩
-    · rw [valuation_compactθZ_out (hm0 p hpm).1 (hm0 p hpm).2, hout p.1 (hm0 p hpm).2]
-      exact (mapOk_iff'.1 hm) p hpm
+    · rw [valuation_compactθZ_out hpm.1 hpm.2, hout p.1 hpm.2]
+      exact (mapOk_iff'.1 hm) p hp
     · have hjl := nth?_lt _ _ _ hj
       obtain ⟨rr, hrr⟩ := nth?_some_of_lt (show j < nr.length by omega)
       have hr : nth? (nr.map fun r => (nth? Sm r).getD (.var 0)) j = some ((nth? Sm rr).getD (.var 0)) := by
@@ -99,9 +99,9 @@ theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m m' : List (Nat × Q)}
       rw [he]
       exact hq p.2 rfl
 
-/-- The next boundary's map from the call's and its results' quantities. -/
-def postSubB (m' m : List (Nat × Q)) (cws : List Nat) (qs : List (Option Q)) : Bool :=
-  m'.all fun p => m.contains p || (cws.zip qs).contains (p.1, some p.2)
+/-- Each mapped variable keeps its value across the call, or is a result at its quantity. -/
+def postSubB (m : List (Nat × Q)) (ws cws : List Nat) (qs : List (Option Q)) : Bool :=
+  m.all fun p => ((idx? p.1 cws).isNone && !ws.contains p.1) || (cws.zip qs).contains (p.1, some p.2)
 
 theorem mem_zip_nth {α β : Type} : ∀ {l : List α} {r : List β} {a : α} {b : β}, (a, b) ∈ l.zip r →
     ∃ j, nth? l j = some a ∧ nth? r j = some b
@@ -114,14 +114,15 @@ theorem mem_zip_nth {α β : Type} : ∀ {l : List α} {r : List β} {a : α} {b
   | [], _, _, _, h => by simp at h
   | _ :: _, [], _, _, h => by simp at h
 
-theorem postSub_sound {m' m : List (Nat × Q)} {cws : List Nat} {qs : List (Option Q)}
-    (h : postSubB m' m cws qs = true) :
-    ∀ p ∈ m', p ∈ m ∨ ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2) := by
+theorem postSub_sound {m : List (Nat × Q)} {ws cws : List Nat} {qs : List (Option Q)}
+    (h : postSubB m ws cws qs = true) :
+    ∀ p ∈ m, (idx? p.1 cws = none ∧ ws.contains p.1 = false) ∨
+      ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2) := by
   intro p hp
   have hc := List.all_eq_true.mp h p hp
-  simp only [Bool.or_eq_true] at hc
+  simp only [Bool.or_eq_true, Bool.and_eq_true, Option.isNone_iff_eq_none, Bool.not_eq_true'] at hc
   rcases hc with hc | hc
-  · exact .inl (List.contains_iff_mem.mp hc)
+  · exact .inl hc
   · exact .inr (mem_zip_nth (List.contains_iff_mem.mp hc))
 
 end Host.Ts.Sim.Compose

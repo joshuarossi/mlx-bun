@@ -165,8 +165,8 @@ theorem CutBookW.restart_indexed {Q : PrefPW Wd} {sA sF sB : St Wd.F.S}
     CutBookW Wd Q sB frsB (base + k' * stride)
       (H + ((Wd.toMlx sF.ffi).next - (Wd.toMlx sB.ffi).next))
       (N + ((Wd.toMlx sF.ffi).nnext - (Wd.toMlx sB.ffi).nnext)) x' := by
-  apply (hb.restart hp).mono _ le_rfl le_rfl
-  exact offset_budget_step le_rfl le_rfl hdelta hk
+  apply (hb.restart hp).mono _ (Nat.le_refl _) (Nat.le_refl _)
+  exact offset_budget_step (Nat.le_refl _) (Nat.le_refl _) hdelta hk
 
 /-- An entry book supplies a chosen admission margin once its offset budget fits it. -/
 theorem CutBookW.kpJ {Q : PrefPW Wd} {s0 : St Wd.F.S} {frs : List Nat}
@@ -174,7 +174,7 @@ theorem CutBookW.kpJ {Q : PrefPW Wd} {s0 : St Wd.F.S} {frs : List Nat}
     (hb : CutBookW Wd Q s0 frs D H N x) (J : Disp.JSP Wd.F)
     (hlo : J.lo = Wd.lo Q.P) (hhi : J.hi = Wd.E Q.P) (hframes : J.framed = frs)
     (hcap : D ≤ cap) : Disp.KpJ J cap x.K := by
-  refine ⟨⟨hb.lo.trans hlo.symm, hb.hi.trans hhi.symm, ?_⟩, hb.D.trans hcap⟩
+  refine ⟨⟨hb.lo.trans hlo.symm, hb.hi.trans hhi.symm, ?_⟩, Nat.le_trans hb.D hcap⟩
   intro a
   rw [hframes]
   exact hb.framed a

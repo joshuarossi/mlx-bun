@@ -11,7 +11,7 @@ set_option maxHeartbeats 0
 of `w`, or of the load world: its lift) for one representative prompt (the plan's valuation, e.g. a
 class table row's `rep`), cut at every call of the plan's stage functions, to the plan's stop.
 
-* **Glue**: the stream `X` (boundaries every 10 000 steps), a stage call's state at a boundary `ia`
+* **Glue**: the stream `X` (boundaries every `chunk` steps, default 10 000), a stage call's state at a boundary `ia`
   reached by a one-step chunk (`ia - 1`), the merged state after the call at `ia + 1` (a zero-step
   chunk: the conversions and the stage run are not steps of `X`); `seg.json` lists each call as a
   `stage` entry. The glue pieces are `X`'s segments between the entries (`gen.ts`: `X.runSeg<k>`). A chain from
@@ -75,6 +75,8 @@ structure ChainPlan where
   glue : List String := []
   /-- The start template's variables and their quantities (the stage specs' map, `[[v, q], …]`). -/
   vars : List (Nat × String) := []
+  /-- The steps between a glue piece's or a stage's boundaries (a kernel check's size, so its memory). -/
+  chunk : Nat := 10000
   /-- Compact after every merge (default `true`). -/
   compact : Bool := true
   /-- The framed arrays (`K.fr`; default `framedArrays`): a canonical state holds the call's entry there (the template
@@ -126,6 +128,7 @@ def planOf (j : Lean.Json) (tags : List (String × String)) : Except String Chai
            fresh := ((j.getObjVal? "fresh").bind (·.getNat?)).toOption.getD 1000,
            baseVals := ← SpecJ.pairsOf (SpecJ.optD j "baseVals" (.arr #[])),
            row := ((j.getObjVal? "row").bind (·.getStr?)).toOption, tags, static := staticOf j, glue, vars,
+           chunk := ((j.getObjVal? "chunk").bind (·.getNat?)).toOption.getD 10000,
            compact := ((j.getObjVal? "compact").bind (·.getBool?)).toOption.getD true,
            frames := ((j.getObjVal? "frames").bind fun v => (Lean.fromJson? v : Except String (List Nat))).toOption.getD framedArrays,
            bridges := ((j.getObjVal? "bridges").bind fun v => (Lean.fromJson? v : Except String (List String))).toOption.getD [],
@@ -152,7 +155,7 @@ def planOf (j : Lean.Json) (tags : List (String × String)) : Except String Chai
 def rowTags (classes : Lean.Json) (row : String) : Except String (List (String × String)) := do
   for c in (← (← SpecJ.req classes "classes").getArr?) do
     for r in (← (SpecJ.optD c "rows" (.arr #[])).getArr?) do
-      if (r.getObjVal? "id").bind (·.getStr?) == .ok row then
+      if ((r.getObjVal? "id").bind (·.getStr?)).toOption == some row then
         match r.getObjVal? "tags" with
         | .ok (.obj kvs) => return kvs.foldl (fun acc k v => match v with | .str t => acc ++ [(k, t)] | _ => acc) []
         | _ => return []
@@ -555,7 +558,7 @@ unsafe def chainCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
       if let some cs := isStage lastRet st then
         call := some (cs, st, c, [])
         stepped := false
-    while call.isNone && bridge.isNone && n < 10000 do
+    while call.isNone && bridge.isNone && n < plan.chunk do
       match plan.stop with
       | .readback => match st.ctl with
         | .call (.obj a) _ _ => if steps > 0 && a == fa0 && st.stack.length == depth0 then stop := "readback"; break
@@ -654,7 +657,7 @@ unsafe def chainCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
     let iO := mkConst (ipre ++ `O)
     let (gI, bI0) ← writeBoundaryW w ipre inonce dir { g with pre := ipre } 0 s0 cI.tab
       (mkApp3 (mkConst ``List.drop [.zero]) (mkConst ``Ans) (mkRawNatLit 0) iO) none
-    let (s2, c2, out) ← runLocal w ipre inonce dir ρ s0 cI.tab { g := gI, bytes := bI0 } cap
+    let (s2, c2, out) ← runLocal w ipre inonce dir ρ s0 cI.tab { g := gI, bytes := bI0 } cap plan.chunk
     defineStream ipre w.ffiC out.o cI.tab out.ks inonce out.steps
     defineEntries ipre #[] ifr
     let cls := cs.cls.getD ((plan.tags.find? (·.1 == cs.piece)).map (·.2) |>.getD "")
@@ -783,6 +786,38 @@ unsafe def chainCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
 where
   resTab' (ws : List Nat) : List SymE := ws.map SymE.var
 
+/-- A closed term as the term denoting it: `tpl_chain`'s `arg`, an argument of the command run in the world. -/
+private partial def quoteLevel : Level → Lean.Expr
+  | .zero => mkConst ``Level.zero
+  | .succ l => mkApp (mkConst ``Level.succ) (quoteLevel l)
+  | .max a b => mkApp2 (mkConst ``Level.max) (quoteLevel a) (quoteLevel b)
+  | .imax a b => mkApp2 (mkConst ``Level.imax) (quoteLevel a) (quoteLevel b)
+  | .param n => mkApp (mkConst ``Level.param) (toExpr n)
+  | .mvar _ => panic! "tpl_chain: a level metavariable in arg"
+
+private def quoteBinder : BinderInfo → Lean.Expr
+  | .default => mkConst ``BinderInfo.default
+  | .implicit => mkConst ``BinderInfo.implicit
+  | .strictImplicit => mkConst ``BinderInfo.strictImplicit
+  | .instImplicit => mkConst ``BinderInfo.instImplicit
+
+private partial def quoteExpr : Lean.Expr → Lean.Expr
+  | .bvar i => mkApp (mkConst ``Lean.Expr.bvar) (toExpr i)
+  | .sort l => mkApp (mkConst ``Lean.Expr.sort) (quoteLevel l)
+  | .const n ls => mkApp2 (mkConst ``Lean.Expr.const) (toExpr n) (ls.foldr (fun l r => mkApp3 (mkConst ``List.cons [.zero]) (mkConst ``Level) (quoteLevel l) r) (mkApp (mkConst ``List.nil [.zero]) (mkConst ``Level)))
+  | .app f a => mkApp2 (mkConst ``Lean.Expr.app) (quoteExpr f) (quoteExpr a)
+  | .lam n t b bi => mkApp4 (mkConst ``Lean.Expr.lam) (toExpr n) (quoteExpr t) (quoteExpr b) (quoteBinder bi)
+  | .forallE n t b bi => mkApp4 (mkConst ``Lean.Expr.forallE) (toExpr n) (quoteExpr t) (quoteExpr b) (quoteBinder bi)
+  | .lit (.natVal v) => mkApp (mkConst ``Lean.Expr.lit) (mkApp (mkConst ``Literal.natVal) (toExpr v))
+  | .lit (.strVal s) => mkApp (mkConst ``Lean.Expr.lit) (mkApp (mkConst ``Literal.strVal) (toExpr s))
+  | .mdata _ e => quoteExpr e
+  | .proj s i e => mkApp3 (mkConst ``Lean.Expr.proj) (toExpr s) (toExpr i) (quoteExpr e)
+  | _ => panic! "tpl_chain: a free or let variable in arg"
+
+private def quoteOptExpr : Option Lean.Expr → Lean.Expr
+  | none => mkApp (mkConst ``Option.none [.zero]) (mkConst ``Lean.Expr)
+  | some e => mkApp2 (mkConst ``Option.some [.zero]) (mkConst ``Lean.Expr) (quoteExpr e)
+
 /-- `tpl_chain X from s, S : "<plan>" [(world := w, cap := n, arg := t)]` (`arg`: `s` is an abstracted boundary,
 `host_stream … abs`, applied to `t`, e.g. the prompt boot's `P.a2818 (π.map natV)`). -/
 elab "tpl_chain " p:ident " from " src:ident ", " srv:ident " : " plan:str os:(tplOpts)? : command =>
@@ -798,7 +833,7 @@ elab "tpl_chain " p:ident " from " src:ident ", " srv:ident " : " plan:str os:(t
     match os.ident `world with
     | none | some `lf => unsafe chainCmdW lfWorld pre srcN srvN plan.getString (os.num `cap) argE
     | some n =>
-      let args := #[toExpr pre, toExpr srcN, toExpr srvN, toExpr plan.getString, toExpr (os.num `cap), toExpr argE]
+      let args := #[toExpr pre, toExpr srcN, toExpr srvN, toExpr plan.getString, toExpr (os.num `cap), quoteOptExpr argE]
       unsafe inWorld ``chainCmdW (← worldConst n) args
 
 end Host.Ts.Sim.Template

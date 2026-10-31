@@ -21,8 +21,8 @@ theorem bodyGrowLocalSim (NB T : Nat) (tk : Nat → Nat) (bs : List Byte) (n : N
 
 /-- **One compacting call of the body**: the checked site run and its compaction, carrying the
 book, the input, the reserved variables and the row's mapped variables to the canonical state. -/
-theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Dmax Dmax' : Nat}
-    {m m' : List (Nat × Q)} {sa sm sc s0 : St FF.S} {Sa Sm Sc : SSrv} {ws cws nr pl l : List Nat}
+theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {O O' : BodyOff}
+    {m : List (Nat × Q)} {sa sm sc s0 : St FF.S} {Sa Sm Sc : SSrv} {ws cws nr pl l : List Nat}
     {n1 nC : Nat} {D : RData} {κ : Map} {P0 : LoadP} {c c2 : Conv.Cnt} {S2 : List SymE}
     {Es : List (Option SymE)} {qs : List (Option Q)}
     {ok : List Byte → Nat → St FF.S → SSrv → Bool}
@@ -43,11 +43,13 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
         ∀ q, oq = some q → E.eval ν = F64.ofNat (i.get q))
     (hlq : qs.length = cws.length) (hder : nr.map (fun r => nth? S2 r) = Es)
     (hnrLo : nr.all (Nat.ble Sa.tab.length) = true)
-    (hm0 : ∀ p ∈ m, Conv.idx? p.1 cws = none ∧ ws.contains p.1 = false)
-    (hsub : ∀ p ∈ m', p ∈ m ∨ ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2))
-    (hDmax : Dmax + (sm.next - sc.next) ≤ Dmax') (hD' : Dmax' ≤ VWFrames.bodyD0) :
-    CutStep (bodyCut NB T tk π i Dmax m sa Sa) (bodyCut NB T tk π i Dmax' m' sc Sc) (n + 1) := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+    (hsub : ∀ p ∈ m, (Conv.idx? p.1 cws = none ∧ ws.contains p.1 = false) ∨
+      ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2))
+    (hDmax : O.D + (sm.next - sc.next) ≤ O'.D) (hD' : O'.D ≤ VWFrames.bodyD0)
+    (hHmax : O.H + ((mlxOf sm.ffi).next - (mlxOf sc.ffi).next) ≤ O'.H) (hH' : O'.H ≤ 2 ^ 40)
+    (hNmax : O.N + ((mlxOf sm.ffi).nnext - (mlxOf sc.ffi).nnext) ≤ O'.N) (hN' : O'.N ≤ 2 ^ 40) :
+    CutStep (bodyCut NB T tk π i O m sa Sa) (bodyCut NB T tk π i O' m sc Sc) (n + 1) := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hnat, hip, hins, hmap⟩, hfresh, hids⟩
   let bs := tokenBytes (π.take i.n)
   let rows := (π.take i.n).length
   let d0 := d bs rows
@@ -111,21 +113,22 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
     constructor
     · omega
     · constructor <;> omega
+  have hnat' := hnat.step hr hm' hext F.cntM
+  have hnatC : NativeOff O' sc t' := by
+    obtain ⟨h1, h2⟩ := hnat'
+    constructor <;> omega
   have hroomN : NRoom setupP (Host.Load.Layers.toLoad sc.ffi) (Host.Load.Layers.toLoad t'.ffi) := by
-    obtain ⟨P', hP, hf⟩ := hm'.ffi.1
-    obtain ⟨_, hE, hNE, _⟩ := Raised.restart (.inl rfl) hP
+    obtain ⟨h1, h2⟩ := hnatC
+    have hE : setupP.E = 131072 := rfl
+    have hNE : setupP.NE = 1099511627776 := rfl
+    have hhi := F.hiLe
+    have hnhi := F.nhiLe
     constructor
-    · have h := hf.load.mlx.hroom.2
-      rw [hE] at h
-      change (mlxOf t'.ffi).next + (setupP.E - (mlxOf sm.ffi).next) < 2 ^ 46 at h
-      rw [F.sameH] at h
-      exact h
-    · have h := hf.load.mlx.nroom.2.2
-      rw [hNE] at h
-      change (mlxOf t'.ffi).nnext + (setupP.NE - (mlxOf sm.ffi).nnext) < 2 ^ 62 at h
-      rw [F.sameN] at h
-      exact h
-  have hoffK : x.K.D ≤ Dmax := hb.offset
+    · change (mlxOf t'.ffi).next + (setupP.E - (mlxOf sc.ffi).next) < 2 ^ 46
+      omega
+    · change (mlxOf t'.ffi).nnext + (setupP.NE - (mlxOf sc.ffi).nnext) < 2 ^ 62
+      omega
+  have hoffK : x.K.D ≤ O.D := hb.offset
   have hc := Conv.full_compactQXD NB (P := setupP) (r := machReads T tk)
     (s0 := sc) (s1 := sm) (S0 := ⟨Sc.tab, []⟩) (S1 := ⟨Sm.tab, []⟩)
     F.raised hNB hr0 hs F.cbigs hfree hband (fun _ h => nomatch h)
@@ -151,13 +154,13 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have hcW := inactiveMemo hcJ (fun a ha => (compactW_agree bs rows hmemo' a ha).symm)
   -- the valuation
   let θ := Conv.compactθZ cws (nr.map fun r => (nth? Sm.tab r).getD (.var 0)) ws
-  have hval := post_callV (m := m) (m' := m') (qs := qs) (tab := Sa.tab) (S2 := S2) (Sm := Sm.tab)
+  have hval := post_callV (m := m) (qs := qs) (tab := Sa.tab) (S2 := S2) (Sm := Sm.tab)
     (ws := ws) (cws := cws) (nr := nr) (n0 := Sa.tab.length) (Es := Es) (i := i)
     hb.valuation F.mergeTab rfl (by rw [← hS2 bs rows]; exact d0.len) d0.freshNodup
     (nodupT_sound F.zcnd).2 F.lenc hlq hnrLo
-    (fun r hr => Nat.blt_eq.mp (List.all_eq_true.mp F.znrHi r hr)) hder (hEs x.ν hmap) hmap hm0 hsub
+    (fun r hr => Nat.blt_eq.mp (List.all_eq_true.mp F.znrHi r hr)) hder (hEs x.ν hmap) hmap hsub
   have hval1 : VBOkF loopVB (Shift.valuation θ ν1) := hval.1
-  have hval2 : MapOk (Shift.valuation θ ν1) i m' := hval.2
+  have hval2 : MapOk (Shift.valuation θ ν1) i m := hval.2
   let y : SegInst FF := ⟨N.withJs, Shift.valuation θ ν1, K', t', C'⟩
   have node : y.M.node 15235 = M'.node 15235 := by
     change M'.node (κ.node 15235) = M'.node 15235
@@ -174,10 +177,10 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have hsaBig : 2590 < sa.next ∧ 2586 < sa.next ∧ 2589 < sa.next := by
     have := hfrlt 2665 (by simp)
     omega
-  have book : BodyBook i π K0 y Dmax' := by
+  have book : BodyBook i π K0 y O'.D := by
     refine ⟨hb.length, hb.vocab, hval1, hctx, hb.incoming, hb.incomingPrompt, hb.incomingMemo,
       hfr.trans hb.frames, ?_, hb.lo, hb.hi, ?_⟩
-    · change t'.next - sc.next ≤ Dmax'
+    · change t'.next - sc.next ≤ O'.D
       rw [hD]
       omega
     · obtain ⟨asR, ret, pre, tr, hev⟩ := hb.inputEvent
@@ -213,7 +216,7 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have hia : (bridgeOf sa.ffi).active = false :=
     (congrArg (fun b : Host.Mlx.FfiAne.St => b.active) (F.sbridge.symm.trans F.cbridge)).trans F.zbin
   have fresh : AneFresh t' := bodyFresh hr hm' hia F.sbridge hfresh
-  refine ⟨t', C', hrun, y, rfl, rfl, ⟨K0, hcW, book, ?_, inputs, hval2⟩, fresh, ids⟩
+  refine ⟨t', C', hrun, y, rfl, rfl, ⟨K0, hcW, book, hnatC, ?_, inputs, hval2⟩, fresh, ids⟩
   rw [node]
   exact ip
 

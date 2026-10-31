@@ -85,7 +85,7 @@ theorem handle_withJs {h : Nat} (hh : h < 2 ^ 46) : M.withJs.handle h = M.handle
   show (M.withJs.big (Int.ofNat h)).toNat = (M.big (Int.ofNat h)).toNat
   have e : (2 : Nat) ^ 46 < 72057594037927936 := by decide
   have h1 : h < 72057594037927936 := by omega
-  have h2 : Int.ofNat h < 72057594037927936 := by simp only [Int.ofNat_eq_natCast]; exact_mod_cast h1
+  have h2 : Int.ofNat h < 72057594037927936 := by simp only [Int.ofNat_eq_natCast]; omega
   rw [Map.withJs_big (jsPtrOf_none (.inl h2))]
 
 theorem FreedR.withJs {P : LoadP} {NB n : Nat} (hr : G.MRw P NB M n x y) {fx fy : PTrie Unit}
@@ -118,7 +118,7 @@ theorem fullRB_withJs {BR : Map → FF.S → FF.S → Prop} (hBR : ∀ M x y, BR
   have hlo : (P.lo : Int) < 72057594037927936 := by
     have : P.lo < 72057594037927936 := by have : (2 : Nat) ^ 46 < 72057594037927936 := by decide
                                           omega
-    exact_mod_cast this
+    omega
   have hQ : ∀ i : Int, i < 72057594037927936 → outB jsLoN jsHiN i = true := fun _ hi => outB_js_of hi
   have hag := outB_withJs M
   have hw' := hw.agreeB hag
@@ -129,7 +129,7 @@ theorem fullRB_withJs {BR : Map → FF.S → FF.S → Prop} (hBR : ∀ M x y, BR
       have h1 := handle_lt hw hk
       have e : (2 : Nat) ^ 46 < 72057594037927936 := by decide
       have h2 : k < 72057594037927936 := by omega
-      simp only [Int.ofNat_eq_natCast]; exact_mod_cast h2))
+      simp only [Int.ofNat_eq_natCast]; omega))
     (withJs_zero M hw.zero) (bigsOutB_sound hb) P.rest
   refine ⟨⟨h.load.host, h.load.hostReg, h.load.hostLt, h.load.cbr,
     { hw' with
@@ -142,7 +142,7 @@ theorem fullRB_withJs {BR : Map → FF.S → FF.S → Prop} (hBR : ∀ M x y, BR
         have e : (2 : Nat) ^ 46 < 72057594037927936 := by decide
         have h5 : (mlxOf x).next + k < 72057594037927936 := by omega
         have h6 : Int.ofNat ((mlxOf x).next + k) < 72057594037927936 := by
-          simp only [Int.ofNat_eq_natCast]; exact_mod_cast h5
+          simp only [Int.ofNat_eq_natCast]; omega
         rw [Map.withJs_big (jsPtrOf_none (.inl h6))]
         exact hm.hfreshB k hk
       tokensX := hm.tokensX }⟩, hBR _ _ _ h.bridge, ?_, ?_, h.pend.withJs hn46⟩

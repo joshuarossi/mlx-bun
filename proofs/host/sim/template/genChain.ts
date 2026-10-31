@@ -76,6 +76,9 @@ if (acceptArg) process.env.CHAIN_ACCEPT = acceptArg;
 if (d0Arg) process.env.CHAIN_D0 = d0Arg;
 // the compaction's native shift by the full checks in chunks (SiteNa, SiteNc<k>_<j>, SiteNb) instead of its footprint (SiteS)
 const chunksArg = flag("--chunks");
+// a chain whose bridge is active at its compactions: `zact` instead of `zbin`, and SiteB<k>, the checks of the bridge relation at
+// the compaction map (`Conv.brel_of_checks`, `<Name>.cbrel<k>`; the map's injectivity is its premise, the start's nodes being present)
+const activeBridge = flag("--active-bridge");
 const [dirArg, nameArg] = argv;
 if (!dirArg || !nameArg) throw new Error("usage: genChain.ts <case-dir> <Name> [--world <w>] [--ok <ok> <ok-module>] [--loadP <term>]");
 const dir = dirArg, name = nameArg;
@@ -474,12 +477,14 @@ function shiftDFacts(k: number, cp: Comp, cC: number[], cK: number[], sa: string
     `-- the map as \`Conv.compact_shift\` states it (the call's counters for the literals)${NL}`,
     ck("zkap", `${kap} = Conv.Map.compact ${sa}.next ${cp.n1} ${Sa}.tab.length ${name}.pl${k} (${name}.nr${k}.map NumV.ref) ${name}.kd${k}.big${NL}  ${name}.kd${k}.region ${name}.kd${k}.nodeF`),
     `-- the bridge inactive at the canonical state (\`Conv.FullShiftQ.toX\`; the merged state's bridge is the canonical's: cbridge)${NL}`,
+    activeBridge ? ck("zact", `(Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = true`) :
     inactiveBridgeArg
       ? `theorem ${name}.zbin${k} : (Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = false := ${inactiveBridgeArg}${NL}`
       : ck("zbin", `(Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = false`),
     `-- the JS bookkeeping's step (\`Conv.JClean.step\` over the changed list) and the canonical roots' bigint freedom${NL}`,
     ck("zjc", `Conv.jcleanListB ${cKL} ${sc} ${cl} = true`),
-    ck("zroots2", `noBigRootsP (fun i => !Conv.oldBigB ${cKL} i) ${sc}.trace ${sc} = true`),
+    // past 20 sites `zroots2<k>` would collide with `zroots<2k>`
+    ck(stages.length > 20 ? "zrootsB" : "zroots2", `noBigRootsP (fun i => !Conv.oldBigB ${cKL} i) ${sc}.trace ${sc} = true`),
     ck("zhm", `Nat.ble ${world.mlx(`${name}.s0`)}.nnext ${cC[1]} = true`),
     `theorem ${name}.cjcl${k} (h : Conv.JClean ${cCL} ${sa}) : Conv.JClean ${cKL} ${sc} :=${NL}`,
     `  Conv.JClean.step h (Conv.Cnt.le_of_leB ${name}.cle${k})${NL}`,
@@ -830,6 +835,35 @@ for (const b of stages) {
         `    (fun h l hl => by have := hK.cl h l hl; rw [${name}.n0_${k}] at this; exact this)${NL}${NL}`]);
       if (cc.cCan) put(`SiteZ${k}`, [...head(caseMod(`SiteS${k}`), caseMod(`SiteK${k}`), caseMod(`SiteF${k}`), "host.sim.conv.CompactShift",
           "host.sim.template.Check", "host.sim.BigFreeP", "host.sim.template.CallGen"), ...shiftDFacts(k, cp, cc.cCall, cc.cCan, s(ia), s(ia + 1), c, S(ia), S(ia + 1), nC, inst, wide ? T : undefined)]);
+      if (activeBridge) {
+        const m = s(ia + 1), kap = `${name}.kappa${k}`, b = `(Host.Ts.Sim.Full.bridgeOf ${c}.ffi)`, b1 = `(Host.Ts.Sim.Full.bridgeOf ${m}.ffi)`;
+        const nx = `(Host.Ts.Sim.Full.mlxOf ${c}.ffi).nnext`, ny = `(Host.Ts.Sim.Full.mlxOf ${m}.ffi).nnext`;
+        const ck = (nm: string, stmt: string) => `kernel_rfl ${name}.${nm}${k} : ${stmt}${NL}`;
+        const table = (nm: string, f: string) => [
+          ck(`${nm}K`, `(Template.PTrie.keysA ${b}.${f}).all (fun n => Nat.blt n ${nx}) = true`),
+          ck(`${nm}Kb`, `(Template.PTrie.keysA ${b1}.${f}).all (fun m => Nat.blt m ${ny} && (Template.PTrie.keysA ${b}.${f}).any (fun n => Nat.beq (${kap}.node n) m)) = true`),
+          ck(`${nm}V`, `(Template.PTrie.keysA ${b}.${f}).map (fun n => ${b1}.${f}.get (${kap}.node n)) = (Template.PTrie.keysA ${b}.${f}).map (fun n => ${b}.${f}.get n)`)];
+        put(`SiteB${k}`, [...head(caseMod(`SiteR${k}`), "host.sim.template.ActiveShift"),
+          `/-! The bridge at the compaction of site ${k}, active: the checks of \`Conv.brel_of_checks\` at the compaction map. -/${NL}${NL}`,
+          ck("bsurf", `${b1}.surfaces = ${b}.surfaces`), ck("bprog", `${b1}.programs = ${b}.programs`), ck("bhand", `${b1}.handles = ${b}.handles`),
+          ck("bact", `${b1}.active = ${b}.active`), ...table("ba", "aliases"), ...table("bt", "touch"),
+          ck("bun", `${b1}.unscheduled = ${b}.unscheduled.map ${kap}.node`), ck("brun", `${b1}.running = ${b}.running.map ${kap}.node`),
+          ck("bq", `(${b}.unscheduled ++ ${b}.running).all (fun n => Nat.blt n ${nx}) = true`), ck("blog", `${b1}.log = ${b}.log.map ${kap}.effect`),
+          `theorem ${name}.cbrel${k} (hinj : ∀ i j, i < ${nx} → j < ${nx} → ${kap}.node i = ${kap}.node j → i = j) :${NL}`,
+          `    Host.Ts.Sim.Full.BRel ${kap} ${nx} ${ny} ${b} ${b1} :=${NL}`,
+          `  Conv.brel_of_checks ${name}.bsurf${k} ${name}.bprog${k} ${name}.bhand${k} ${name}.bact${k} hinj ${name}.baK${k} ${name}.baKb${k} ${name}.baV${k}${NL}`,
+          `    ${name}.btK${k} ${name}.btKb${k} ${name}.btV${k} ${name}.bun${k} ${name}.brun${k} ${name}.bq${k} ${name}.blog${k}${NL}${NL}`,
+          ck("bcact", `${b}.active = true`), ck("bdo", `Nat.ble 1 ${nx} = true`),
+          ck("bdn", `(List.range' 1 (${nx} - 1)).all (fun i => ((Host.Ts.Sim.Full.mlxOf ${c}.ffi).nodes.get i).isSome) = true`),
+          ck("bfull", `Nat.ble ${name}.P${k}.N0 ${name}.P${k}.NL = true`),
+          `/-- **The compaction's native shift with the bridge active**, from the call state's full relation. -/${NL}`,
+          `theorem ${name}.cshiftX${k} {BR : Map → Host.Ts.Sim.Full.FF.S → Host.Ts.Sim.Full.FF.S → Prop} {P : LoadP} {NB : Nat} {M : Map}${NL}`,
+          `    {y : Host.Ts.Sim.Full.FF.S} (h : Host.Ts.Sim.Full.FullRB BR P NB M ${S(ia)}.tab.length ${s(ia)}.ffi y)${NL}`,
+          `    (hNL : P.NL ${raise ? "≤" : "="} ${name}.P${k}.NL) : Conv.FullShiftQX ${name}.P${k} ${nC} ${kap} ${c}.ffi ${m}.ffi :=${NL}`,
+          `  Conv.fullShiftQX_of_active (${name}.cshiftR${k} h hNL) ${name}.bcact${k}${NL}`,
+          `    (fun i => (Nat.lt_or_ge i ${name}.P${k}.NL).imp id (fun e => Nat.le_trans (Nat.le_of_ble_eq_true ${name}.bfull${k}) e))${NL}`,
+          `    (Conv.dense_of_check (Nat.le_of_ble_eq_true ${name}.bdo${k}) ${name}.bdn${k}) ${name}.cbrel${k}${NL}${NL}`]);
+      }
     } else if (w === "full") {
       const sf = shiftFacts(k, cp, c, s(ia + 1), nC, mC, mM);
       put(`SiteNa${k}`, [...head(caseMod(`SiteC${k}`), "host.sim.conv.CompactFull", "host.sim.template.NShiftOf"), ...sf.a]);

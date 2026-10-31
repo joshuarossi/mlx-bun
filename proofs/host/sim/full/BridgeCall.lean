@@ -205,6 +205,14 @@ theorem call_newFacts {x : Host.Load.LSt} {name : Name} {args : List Arg} {S S' 
       try (simp only [List.length_cons, List.length_nil] at hl; omega)
     exact (load_kernelNew_res x hm hs hb a0 a1 a2 a3 a4 rc ao).1 S _ S' hra l r ws rfl
 
+/-- A call keeps the nodes present. -/
+theorem DenseN.keep {x x' : NSt} (hd : DenseN x) (k : Keep x x') (hl : x'.nnext < 2 ^ 62) : DenseN x' :=
+  ⟨Nat.le_trans hd.1 k.nnext, fun i h1 hi => by
+    by_cases e : i < x.nnext
+    · show (x'.nodes.get i).isSome = true
+      rw [k.nodes i e]; exact hd.2 i h1 e
+    · exact k.dense i (Nat.not_lt.mp e) hi (by omega)⟩
+
 theorem BridgeX.active {M : Map} {x y : FF.S} (h : BridgeX M x y) (ha : (bridgeOf x).active = true) : BridgeA M x y := by
   rcases h with h | ⟨-, h⟩
   · rw [h.2] at ha; cases ha
@@ -260,11 +268,7 @@ theorem fullCallOfA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
           cases this
       | some b1 =>
         have hmx' := hlr.mlx
-        have hd' : ∀ i, i < l.mlx.nnext → PN l.mlx i := fun i hi => by
-          by_cases e : i < (mlxOf x).nnext
-          · show (l.mlx.nodes.get i).isSome = true
-            rw [kx.nodes i e]; exact hbA.dense i e
-          · exact kx.dense i (Nat.not_lt.mp e) hi (by have := hmx'.xnnext_lt; omega)
+        have hd' : DenseN l.mlx := hbA.dense.keep kx hmx'.xnnext_lt
         obtain ⟨b1', haf', hrel⟩ := BRel.after hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext hbA.rel haft haf
         rw [fullContA_some x name args haf, fullContA_some y name _ haf']
         have hb : (toLoad x).mlx.next < 2 ^ 64 := by

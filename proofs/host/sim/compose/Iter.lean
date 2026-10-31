@@ -142,7 +142,7 @@ theorem itersW (hE : Wd.EndLaws) (hA : A.nxt = 17) (st : LoopStartW Wd A P s0 ta
     DecodeItersW (DecodeInvW Wd A Gx W P Fr s0 tab0 fixA (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN) T tk := by
   intro i hi1 hiT hne
   obtain ⟨k, hk⟩ := DecKind.cover L i
-  have hs : DecSel T L tk k i := ⟨⟨hi1, hiT, hk⟩, htv (i + 1) (by omega), hne (i + 1) (by omega) le_rfl⟩
+  have hs : DecSel T L tk k i := ⟨⟨hi1, hiT, hk⟩, htv (i + 1) (by omega), hne (i + 1) (by omega) (Nat.le_refl _)⟩
   exact ⟨_, (cs k).iter hE hA st (fun _ hs => (hgr k).trans (DecKind.grows_eq hs.1.2.2)) hs hi1 hiT hLT
     hlen htk hJ hH hN (hG k i hs hne)⟩
 

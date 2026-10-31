@@ -283,12 +283,12 @@ theorem loop_sourceL {Gx : Nat → Map → St LF.S → CSrv → Prop} {G : St LF
     intro D F hD hGF
     obtain ⟨tF, CF, v, hrF, hv, hem, hLeF, hGoal⟩ := final_stepL S.sim F.acc.sim S.ng F.acc.ng S.simL S.ngL S.hj
       F.acc.hj st F.fc hfr17 hcE hb F.ne1 F.ne2 hinv hT hlen (good_of_mem hD F.cover)
-      (hVB (T - 2) (tk T) (by omega) (by omega) (htk T le_rfl)) henv hGF
+      (hVB (T - 2) (tk T) (by omega) (by omega) (htk T (Nat.le_refl _))) henv hGF
     have hrun := runC_trans hpre (runC_trans hrL hrF)
     exact ⟨_, tF, CF, fun n hn => runC_halted_le hrun (by rw [hv]; rfl) hn, ⟨v, hv⟩, hem, hLe.trans hLeF, hGoal⟩
   have hg := good_finalGL (ρ := ρ) (T := T) (tk := tk) (L := L) (i := T - 2) (nx := tk T) (by omega) (by omega)
-    (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) le_rfl) (by omega)
-    (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T le_rfl; omega)
+    (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) (Nat.le_refl _)) (by omega)
+    (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T (Nat.le_refl _); omega)
   by_cases hc0 : (T - 2) % 256 = 0
   · have e0 : decide ((T - 2) % 256 = 0) = true := decide_eq_true hc0
     have e1 : decide ((T - 2 + 1) % 256 = 0) = false := decide_eq_false (by omega)
@@ -370,7 +370,7 @@ theorem loop_source_eosL {Gx : Nat → Map → St LF.S → CSrv → Prop} {G : S
       intro D F hQ hD hGF
       obtain ⟨tF, CF, v, hrF, hv, hem, hLeF, hGoal, MF, ν, KF, hrel, hfixF⟩ := finalE_stepL S.sim F.acc.sim S.ng
         F.acc.ng S.simL S.ngL S.hj F.acc.hj st F.ec hfr17 hcE hb F.ne2 hinv hT hlen (good_of_mem hD F.cover)
-        (hVB (k - 2) (tk k) (by omega) (by omega) (htk k le_rfl)) henv hGF
+        (hVB (k - 2) (tk k) (by omega) (by omega) (htk k (Nat.le_refl _))) henv hGF
       have hrun := runC_trans hpre (runC_trans hrL hrF)
       exact ⟨_, tF, CF, fun n hn => runC_halted_le hrun (by rw [hv]; rfl) hn, ⟨v, hv⟩, hem, hLe.trans hLeF, hGoal,
         _, MF, ν, KF, _, _, hQ, hrel, hfixF⟩

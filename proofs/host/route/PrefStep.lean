@@ -176,4 +176,24 @@ theorem rowStep_values (tab : List F64) (x : Ffi.St) (w : PipelineWeights) (π :
 
 end
 
+section
+variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
+  (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat)
+
+/-- **The reference at time `L`** is the final forward's handles and the head's and sampler's token, from the state
+the prefill's exit cut holds (`ExitG`). -/
+theorem refPrompt_last (tab : List F64) (h1 : 1 ≤ π.length) {s : Host.Mlx.SimGraph.Ref.RSt} {hidden : Value}
+    {hs : List Handles} (hp : Host.Mlx.SimGraph.Ref.prefillAt P KR NE KR.inPlace net env π tab = some s)
+    (hf : finalForward P KR env π tab s.hs = some (hidden, hs)) :
+    Host.Mlx.SimGraph.Mach.refPrompt P KR NE KR.inPlace net env π tab π.length =
+      (finalToken P KR env tab hidden).map fun t => (t, hs) := by
+  have hsucc := Host.Mlx.SimGraph.Mach.refPrompt_succ P KR NE KR.inPlace net env π tab (π.length - 1) le_rfl
+  rw [show π.length - 1 + 1 = π.length by omega, Host.Mlx.SimGraph.Mach.refPrompt_start, hp] at hsucc
+  rw [hsucc]
+  simp only [Option.map_some, Option.bind_some]
+  rw [stepTrace_final P KR env π tab s.hs, hf]
+  rfl
+
+end
+
 end Host.Route.PrefGraph

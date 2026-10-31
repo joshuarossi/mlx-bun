@@ -16,14 +16,14 @@ namespace Host.Ts.Sim.Full
 open Host.Ts Host.Ts.Sim
 open Host.Mlx.FfiAne (pushIns reach reachOf minL)
 
-/-- The template's walk, checked: every node it expands has its inputs below the node counter. -/
+/-- The template's walk, checked: every node it visits is present with its inputs below the node counter. -/
 def reachOk (s : Host.Mlx.Ffi.St) (lo : Nat) : Nat → List Nat → PTrie Bool → Bool
   | 0, _, _ => true
   | _ + 1, [], _ => true
   | f + 1, n :: st, seen => match s.nodes.get n with
     | some nd => nd.ins.all (fun i => Nat.blt i s.nnext) &&
         reachOk s lo f (pushIns lo nd.ins st seen).1 (pushIns lo nd.ins st seen).2
-    | none => reachOk s lo f st seen
+    | none => false
 
 /-- An evaluation's walk, checked (`schedOk`), unless the evaluation starts nothing. -/
 def schedOk (b : BSt) (s : Host.Mlx.Ffi.St) (roots : List Nat) : Bool :=
@@ -37,7 +37,7 @@ def SeenR (M : Map) (X : Nat) (seen seen' : PTrie Bool) : Prop := ∀ n, n < X �
 
 section
 variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB M k x y)
-  (hF : ∀ i, Full P i) (hd : ∀ i, i < x.nnext → PN x i)
+  (hF : ∀ i, Full P i) (hd : DenseN x)
 include hr hF hd
 
 theorem minL_map : ∀ (m : Nat) (l : List Nat), m < x.nnext → (∀ i ∈ l, i < x.nnext) →
@@ -107,7 +107,10 @@ theorem reach_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (f : Nat) (st : List Nat
     obtain ⟨g, rfl⟩ : ∃ g, f' = g + 1 := ⟨f' - 1, by omega⟩
     have hn := hst n List.mem_cons_self
     have hst' : ∀ m ∈ st, m < x.nnext := fun m hm => hst m (List.mem_cons_of_mem _ hm)
-    obtain ⟨nd, hnd⟩ := Option.isSome_iff_exists.mp (hd n hn)
+    obtain ⟨nd, hnd⟩ : ∃ nd, x.nodes.get n = some nd := by
+      cases e0 : x.nodes.get n with
+      | some nd => exact ⟨nd, rfl⟩
+      | none => unfold reachOk at hok; rw [e0] at hok; cases hok
     obtain ⟨nd', hnd', hnr⟩ := hr.nodes n nd hnd
     have hins := (hnr.2.2.2 (hF n)).2
     unfold reachOk at hok

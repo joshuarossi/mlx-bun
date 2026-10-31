@@ -2,15 +2,13 @@ import host.route.LoadCut
 import host.sim.compose.PreFill
 import host.sim.template.FullOk
 import host.sim.template.EndGen
+import host.sim.template.SetupP
 import host.sim.template.a4pre_setup_early_r0.Start
 import host.sim.template.a4pre_setup_early_r0.OkB
 namespace Host.Route
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Compose Host.Ts.Sim.Template Host.Ts.Sim.Lin.Cls
 open Host.Load.Run.Tpl
-
-/-- The checked setup's parameters, before its readback suffix is supplied. -/
-def setupP : LoadP := ⟨18151, 131072, 2 ^ 40, 15235, 15235, []⟩
 
 /-- The actual setup acceptance: only the prompt is framed in the context. -/
 abbrev setupJ : Disp.JSP FF := fullJSPPXS setupP [2665] [(4910, .memo [])]

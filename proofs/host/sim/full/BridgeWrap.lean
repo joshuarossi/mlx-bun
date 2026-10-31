@@ -7,7 +7,7 @@ import host.sim.full.BridgeOpsSim
 surface's wrap, the bridge active. On related states the target wraps the same surface (the bridges'
 surfaces are equal, the address and the literal shape are fixed by the map) with the image node
 (`wrap_rel`). The first wrap starts the active relation from the inactive one: the template's bridge
-records nothing yet (`bridgeClean`) and its nodes below the counter are present (`denseB`), both
+records nothing yet (`bridgeClean`) and its nodes from 1 up to the counter are present (`denseB`), both
 decided once. -/
 
 namespace Host.Ts.Sim.Full
@@ -37,11 +37,12 @@ def noGpu (e : Host.Mlx.FfiAne.Effect) : Bool :=
 def bridgeClean (b : BSt) : Bool :=
   isNilT b.aliases && isNilT b.touch && b.unscheduled.isEmpty && b.running.isEmpty && b.log.all noGpu
 
-/-- The template's nodes below its counter are present, decided. -/
-def denseB (x : NSt) : Bool := (List.range x.nnext).all fun i => (x.nodes.get i).isSome
+/-- The template's nodes from 1 up to its counter are present, decided. -/
+def denseB (x : NSt) : Bool := Nat.ble 1 x.nnext && (List.range' 1 (x.nnext - 1)).all fun i => (x.nodes.get i).isSome
 
-theorem denseB_sound {x : NSt} (h : denseB x = true) : ∀ i, i < x.nnext → PN x i := fun i hi =>
-  List.all_eq_true.mp h i (List.mem_range.mpr hi)
+theorem denseB_sound {x : NSt} (h : denseB x = true) : DenseN x := by
+  simp only [denseB, Bool.and_eq_true, Nat.ble_eq] at h
+  refine ⟨h.1, fun i h1 hi => List.all_eq_true.mp h.2 i (List.mem_range'_1.mpr ⟨h1, by omega⟩)⟩
 
 /-- A clean bridge is related to itself under any map. -/
 theorem BRel.ofClean {b : BSt} (h : bridgeClean b = true) (M : Map) (nx ny : Nat) : BRel M nx ny b b := by
@@ -127,7 +128,7 @@ theorem surfaceOf_map {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt} (hr
 
 /-- **A wrap under the map.** -/
 theorem wrap_rel {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt} (hr : G.MR P NB M n x y)
-    (hd : ∀ i, i < x.nnext → PN x i) {b b' : BSt} (hb : BRel M x.nnext y.nnext b b') {args : List Arg}
+    {b b' : BSt} (hb : BRel M x.nnext y.nnext b b') {args : List Arg}
     (hok : wrapOk P x args = true) {x' : NSt} {b1 : BSt} {r : Ret}
     (e : Host.Mlx.FfiAne.wrap b x args = some (x', b1, r)) :
     ∃ y' b1', Host.Mlx.FfiAne.wrap b' y (args.map M.arg) = some (y', b1', M.ret r) ∧ G.MR P NB M n x' y' ∧
@@ -175,7 +176,7 @@ theorem wrap_rel {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt} (hr : G.
               have hnn : M.nnode nd0 = nd0 := by simp only [nd0, Map.nnode, Map.prim, dims_lit M hl, List.map_nil]
               rw [hnn, hr.node_next] at h2
               have hbig : M.big (Int.ofNat x.next) = Int.ofNat y.next := (hr.fresh0 (by omega)).1
-              have hlt : ∀ m, m < x.nnext → M.node m < y.nnext := fun m hm => hr.nimg m (hd m hm)
+              have hlt : ∀ m, m < x.nnext → M.node m < y.nnext := hr.nall
               have hret : M.ret (Ret.big ((x.next : Nat) : Int)) = Ret.big ((y.next : Nat) : Int) := by
                 show Ret.big (M.big (Int.ofNat x.next)) = _; rw [hbig]; rfl
               refine ⟨_, _, by rw [hret], h2, ?_, rfl, ?_, ?_⟩
@@ -206,7 +207,7 @@ theorem fullWrapSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
     MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullRX P NB) M' S'.tab.length r r') S C
       (FF.call x name args) (FF.call y name (args.map M.arg)) := by
   have hpre : BRel M (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y) ∧
-      ∀ i, i < (mlxOf x).nnext → PN (mlxOf x) i := by
+      DenseN (mlxOf x) := by
     rcases hr.bridge with hb | ⟨-, hb⟩
     · rcases hst with ha | ⟨hc, hdn⟩
       · rw [hb.2] at ha; cases ha
@@ -220,17 +221,13 @@ theorem fullWrapSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
     exact MSim.pure ⟨Grow.refl hsrv, trivial⟩
   | some q =>
     obtain ⟨x', b1, r⟩ := q
-    obtain ⟨y', b1', e', hmr', hb1, ha1, kx, ky⟩ := wrap_rel hr.load.mlx hd hbr hok e
+    obtain ⟨y', b1', e', hmr', hb1, ha1, kx, ky⟩ := wrap_rel hr.load.mlx hbr hok e
     rw [show Host.Mlx.FfiAne.wrap x.1.1.bridge x.1.1.base.mlx args = some (x', b1, r) from e,
       show Host.Mlx.FfiAne.wrap y.1.1.bridge y.1.1.base.mlx (args.map M.arg) = some (y', b1', M.ret r) from e']
     simp only [Option.map_some, liftF_some]
     have hob : ObsPost P NB M M S.tab.length S.tab.length (mlxOf x) (mlxOf y) x' y' :=
       ⟨hr.load.mlx, hmr', Ext.refl _ _, Nat.le_refl _, kx, ky⟩
-    have hd' : ∀ i, i < x'.nnext → PN x' i := fun i hi => by
-      by_cases e2 : i < (mlxOf x).nnext
-      · show (x'.nodes.get i).isSome = true
-        rw [kx.nodes i e2]; exact hd i e2
-      · exact kx.dense i (Nat.not_lt.mp e2) hi (by have := hmr'.xnnext_lt; omega)
+    have hd' : DenseN x' := hd.keep kx hmr'.xnnext_lt
     refine MSim.pure ⟨Grow.refl hsrv, ⟨?_, rfl, rfl⟩⟩
     refine ⟨⟨hr.load.host, hr.load.hostReg, hr.load.hostLt, hr.load.cbr, hmr'⟩, .inr ⟨ha1, ⟨hb1, hd'⟩⟩, ?_, ?_,
       hr.pend.step hr.load.mlx hmr' (Ext.refl _ _) kx⟩

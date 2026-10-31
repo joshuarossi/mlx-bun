@@ -40,13 +40,16 @@ theorem unitStrides_map (M : Map) {sr : List Dim} (hs : Host.Mlx.FfiAne.unitStri
 
 section
 variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB M k x y)
-  (hF : ∀ i, Full P i) (hd : ∀ i, i < x.nnext → PN x i)
+  (hF : ∀ i, Full P i) (hd : DenseN x)
 include hr hF hd
 
-theorem _root_.Host.Ts.Sim.G.MR.bnode_inj {i j : Nat} (hi : i < x.nnext) (hj : j < x.nnext) (h : M.node i = M.node j) : i = j :=
-  hr.ninj i j (hd i hi) (hd j hj) h
+theorem _root_.Host.Ts.Sim.G.MR.bnode_inj {i j : Nat} (hi : i < x.nnext) (hj : j < x.nnext) (h : M.node i = M.node j) : i = j := by
+  rcases Nat.lt_trichotomy i j with e | e | e
+  · have := hr.norder j (hd.2 j (by omega) hj) (hF j) i e; omega
+  · exact e
+  · have := hr.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
 
-theorem _root_.Host.Ts.Sim.G.MR.bnode_lt {i : Nat} (hi : i < x.nnext) : M.node i < y.nnext := hr.nimg i (hd i hi)
+theorem _root_.Host.Ts.Sim.G.MR.bnode_lt {i : Nat} (hi : i < x.nnext) : M.node i < y.nnext := hr.nall i hi
 
 theorem _root_.Host.Ts.Sim.G.MR.bnode_ge {j : Nat} (hj : x.nnext ≤ j) : y.nnext ≤ M.node j := by
   have := hr.nfresh (j - x.nnext)
@@ -58,12 +61,12 @@ theorem _root_.Host.Ts.Sim.G.MR.bnode_lt62 {i : Nat} (hi : i < x.nnext) : M.node
 
 theorem _root_.Host.Ts.Sim.G.MR.bnode_mono {i j : Nat} (hi : i < x.nnext) (hj : j < x.nnext) : i < j ↔ M.node i < M.node j := by
   constructor
-  · intro h; exact hr.norder j (hd j hj) (hF j) i h
+  · intro h; exact hr.norder j (hd.2 j (by omega) hj) (hF j) i h
   · intro h
     rcases Nat.lt_or_ge i j with e | e
     · exact e
     · rcases Nat.lt_or_eq_of_le e with e | e
-      · have := hr.norder i (hd i hi) (hF i) j e; omega
+      · have := hr.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
       · subst e; omega
 
 variable {b b' : BSt} (h : BRel M x.nnext y.nnext b b')
@@ -144,10 +147,10 @@ theorem BRel.register {n : Nat} (hn : n < x.nnext) (t : Touch) :
 
 
 /-- **A new node classified under the map.** -/
-theorem BRel.classifyNode {n : Nat} (hn : n < x.nnext) {b1 : BSt}
+theorem BRel.classifyNode {n : Nat} (hn1 : 1 ≤ n) (hn : n < x.nnext) {b1 : BSt}
     (e : Host.Mlx.FfiAne.classifyNode b x n = some b1) :
     ∃ b1', Host.Mlx.FfiAne.classifyNode b' y (M.node n) = some b1' ∧ BRel M x.nnext y.nnext b1 b1' := by
-  obtain ⟨nd, hnd⟩ := Option.isSome_iff_exists.mp (hd n hn)
+  obtain ⟨nd, hnd⟩ := Option.isSome_iff_exists.mp (hd.2 n hn1 hn)
   obtain ⟨nd', hnd', hnr⟩ := hr.nodes n nd hnd
   obtain ⟨hpr, hins⟩ := hnr.2.2.2 (hF n)
   unfold Host.Mlx.FfiAne.classifyNode at e ⊢
@@ -246,12 +249,12 @@ end
 
 section
 variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB M k x y)
-  (hF : ∀ i, Full P i) (hd : ∀ i, i < x.nnext → PN x i)
+  (hF : ∀ i, Full P i) (hd : DenseN x)
 include hr hF hd
 
 /-- **The new nodes classified under the map**, from `n0` (the template's counter before the call) and its
 image `m0`, the fresh nodes in step. -/
-theorem BRel.classify {n0 m0 : Nat} (hn0 : n0 ≤ x.nnext) (hY : m0 + (x.nnext - n0) = y.nnext)
+theorem BRel.classify {n0 m0 : Nat} (hn1 : 1 ≤ n0) (hn0 : n0 ≤ x.nnext) (hY : m0 + (x.nnext - n0) = y.nnext)
     (hfr : ∀ i, M.node (n0 + i) = m0 + i) :
     ∀ (f i : Nat) {b b' : BSt}, BRel M x.nnext y.nnext b b' → ∀ {b1 : BSt},
       Host.Mlx.FfiAne.classify b x f (n0 + i) = some b1 →
@@ -270,11 +273,11 @@ theorem BRel.classify {n0 m0 : Nat} (hn0 : n0 ≤ x.nnext) (hY : m0 + (x.nnext -
       | none => rw [e2] at e; cases e
       | some b2 =>
         rw [e2] at e
-        obtain ⟨b2', e2', h2⟩ := h.classifyNode hr hF hd hlt' e2
+        obtain ⟨b2', e2', h2⟩ := h.classifyNode hr hF hd (by omega) hlt' e2
         have e2'' : Host.Mlx.FfiAne.classifyNode b' y (m0 + i) = some b2' := by rw [← hfr i]; exact e2'
         rw [e2'']
         simp only [Option.bind_some] at e ⊢
-        have := BRel.classify hn0 hY hfr f (i + 1) h2 (b1 := b1) (by rw [← Nat.add_assoc]; exact e)
+        have := BRel.classify hn1 hn0 hY hfr f (i + 1) h2 (b1 := b1) (by rw [← Nat.add_assoc]; exact e)
         rw [← Nat.add_assoc] at this
         exact this
 end

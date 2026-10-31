@@ -8,7 +8,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Load.Run.Tpl Host.Ts.Sim.Compose.SetupChunk
 
 /-- The JS bookkeeping at the body's start, from the prefix's. -/
-theorem bodyClean0 : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s0 := by
+theorem bodyStartClean : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s0 := by
   rw [bodyStartEq]
   exact PRE_first_tail_x15_r0.gjcl3 (PRE_first_tail_x15_r0.cjcl2 dispatchCallClean)
 
@@ -16,7 +16,7 @@ kernel_rfl bodyJs41 : PRE_first_tail_x15_r0.gjh3.all
   (noBigAtP (jsAboveB 2673488) PRE_first_tail_x15_r0.s41) = true
 
 /-- No heap entry at the body's start holds a JS pointer into the fresh addresses. -/
-theorem bodyJs0 : JsHeapAbove 2673488 PRE_first_tail_x15_r0_body.s0 := by
+theorem bodyStartJs : JsHeapAbove 2673488 PRE_first_tail_x15_r0_body.s0 := by
   have hp : ∀ i, jsAboveB 2673488 i = true → jsShiftBadB PRE_first_tail_x15_r0.kappa2 i = true := by
     intro i hi
     rw [PRE_first_tail_x15_r0.zkap2]

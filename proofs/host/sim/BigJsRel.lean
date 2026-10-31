@@ -112,7 +112,7 @@ theorem RelB.withJs (h : RelB F FR W stk N ν K s S t C) (hlo : K.lo ≤ 2 ^ 56)
     unfold BigFixed at hf
     rw [e56] at hf
     have hlo' : K.lo ≤ 72057594037927936 := hlo
-    have : (K.lo : Int) ≤ 72057594037927936 := by exact_mod_cast hlo'
+    have : (K.lo : Int) ≤ 72057594037927936 := by omega
     omega
   exact h.rebig62 (b := N.withJs.big) hb hI hfree hffi
 
@@ -163,7 +163,7 @@ theorem jsBig_rebig {X : Map} {a b d : Nat} (hb : b ≤ 2 ^ 56) {i : Int} (hi : 
     split
     · rename_i hc
       have hb' : b ≤ 72057594037927936 := hb
-      have : (b : Int) ≤ 72057594037927936 := by exact_mod_cast hb'
+      have : (b : Int) ≤ 72057594037927936 := by omega
       omega
     · rfl
 

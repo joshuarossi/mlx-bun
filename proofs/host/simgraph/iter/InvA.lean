@@ -1,3 +1,4 @@
+import host.sim.extract.GrowGraph
 import host.simgraph.iter.InvL
 import host.sim.DecodeAddrHalt
 set_option maxRecDepth 1000000

@@ -1473,10 +1473,22 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
 `;
   const tail = `\nend ${NS}.VWFirst\n`;
   mkdirSync(outDir, { recursive: true });
+  // One map for the whole chain: its last glue's cumulative map holds every variable the oracle reads.
+  const allMap = oracleOf.get(`g${stages.length}`) ?? fail(`no map_g${stages.length}`);
+  const bodyQ = new Map(parseMap(allMap.map));
+  writeFileSync(join(outDir, "VWBodyMap.lean"), head(["host.sim.compose.a4b.VWBodyBase", `${mod}.H0`, "host.sim.lin.Table"]) +
+    `def bodyM : List (Nat × Q) := ${allMap.map}
+
+kernel_rfl bodyGoodAll : (fwdRows.all fun r => goodLin r.ps (varsOf r.V bodyM) ${X}.OR) = true
+
+theorem bodyGoodDrop {r : Row} {i : Cls.Inst} {ν : Nat → F64} (hr : r ∈ fwdRows) (hi : InRow r i)
+    (hν : MapOk ν i bodyM) (d : Nat) : Good ν (List.drop d ${X}.OR) :=
+  fun q hq => good_of_row (List.all_eq_true.mp bodyGoodAll r hr) hi hν q (List.mem_of_mem_drop hq)
+` + tail);
   const cnt = (s: string) => s.replace(/\s/g, "");
   // the offsets: 3571 at the start, each compaction adds its discarded addresses
-  let D = 3571;
-  const Ds = new Map<number, number>([[0, D]]);
+  let D = 3571, H = 0, N = 0;
+  const Ds = new Map<number, string>([[0, `⟨${D}, ${H}, ${N}⟩`]]);
   for (const b of stages) {
     const k = b.site as number, a = b.ia as number, m = a + 1, cn = a + 2;
     const c = b.compaction;
@@ -1488,39 +1500,47 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
     const tpl = readFileSync(join(tdir, `st${k}/TypedTpl.lean`), "utf8");
     const nSteps = +(tpl.match(/\n  n := (\d+)/) ?? fail(`st${k}: n`))[1]!;
     const T1 = +(tpl.match(new RegExp(`S2 := ${X}\\.st${k}\\.S(\\d+)`)) ?? fail(`st${k}: S2`))[1]!;
-    const here = oracleOf.get(`g${k}`) ?? fail(`no map_g${k}`), next = oracleOf.get(`g${k + 1}`) ?? fail(`no map_g${k + 1}`);
     const site = oracleOf.get(`site${k}`) ?? fail(`no map_site${k}`);
-    const nextMap = new Map(parseMap(next.map));
     const cws = c.ws as number[];
-    const qs = cws.map(v => nextMap.has(v) ? `some Q.${nextMap.get(v)}` : "none");
+    const qs = cws.map(v => bodyQ.has(v) ? `some Q.${bodyQ.get(v)}` : "none");
     const drop = n1 - +(src(`SiteC${k}`).match(new RegExp(`cnext${k} : .* = (\\d+)`)) ?? fail("cnext"))[1]!;
-    const Dnext = D + drop;
+    const [cxn, cnn] = cAfter[1]!.slice(1, -1).split(",").map(Number) as [number, number];
+    const Dnext = D + drop, Hnext = H + (c.xn1 - cxn), Nnext = N + (c.nn1 - cnn);
+    const off = `⟨${D}, ${H}, ${N}⟩`, offNext = `⟨${Dnext}, ${Hnext}, ${Nnext}⟩`;
     const sel = !onlySites.length && !onlyGlues.length || onlySites.includes(k);
     if (sel) {
-      const prevJs = k === 0 ? "bodyJs0" : `bodyJs${k - 1}`, prevN = k === 0 ? "2673488" : `${X}.s${stages[k - 1].ia}.next`;
-      const prevClean = k === 0 ? "bodyClean0" : `(${X}.cjcl${k - 1} bodyClean${k - 1})`;
+      const prevJs = k === 0 ? "bodyStartJs" : `bodyJs${k - 1}`, prevN = k === 0 ? "2673488" : `${X}.s${stages[k - 1].ia}.next`;
+      const prevClean = k === 0 ? "bodyStartClean" : `(${X}.cjcl${k - 1} bodyClean${k - 1})`;
+      const prevNcl = k === 0 ? `${X}.ncl0` : `(${X}.cncl${k - 1} bodyNcl${k - 1})`;
+      const cshift = (src(`SiteR${k}`).match(new RegExp(`theorem ${X}\\.cshiftR${k} [\\s\\S]*?(?=\\nend Host)`)) ?? fail(`SiteR${k}`))[0]!
+        .replace(`${X}.cshiftR${k} `, `bodyCshift${k} `).replaceAll(`${X}.ncl${a} `, `bodyNcl${k} `);
       writeFileSync(join(outDir, `VWBodyJ${k}.lean`), head([
         k === 0 ? "host.sim.compose.a4b.VWBodyBase" : `host.sim.compose.a4b.VWBodyJ${k - 1}`,
-        `${mod}.GlueN${k}`, `${mod}.SiteZ${k}`,
-      ]) + `theorem bodyClean${k} : Conv.JClean (${counters[1]} : Conv.Cnt) ${X}.s${a} :=
+        ...(k === 0 ? [`${mod}.NCl0`] : []), `${mod}.GlueN${k}`, `${mod}.SiteZ${k}`,
+      ]) + `theorem bodyNcl${k} : Conv.NClean (${counters[3]} : Conv.Cnt) (Host.Load.Layers.toLoad ${X}.s${a}.ffi).mlx :=
+  ${X}.gncl${k} ${prevNcl}
+
+theorem bodyClean${k} : Conv.JClean (${counters[3]} : Conv.Cnt) ${X}.s${a} :=
   ${X}.gjcl${k} ${prevClean}
 
 kernel_rfl bodyJsLe${k} : Nat.ble ${prevN} ${X}.s${a}.next = true
 kernel_rfl bodyJsList${k} : (${X}.gjh${k} ++ ${X}.cl${k}).all (noBigAtP (jsAboveB ${X}.s${a}.next) ${X}.s${cn}) = true
 theorem bodyJs${k} : JsHeapAbove ${X}.s${a}.next ${X}.s${cn} :=
-  ${prevJs}.glueSite (Nat.le_of_ble_eq_true bodyJsLe${k}) ${X}.gjk${k} ${X}.gjbd${k} ${X}.cheap${k} ${X}.zclbd${k} bodyJsList${k}
+  JsHeapAbove.glueSite ${prevJs} (Nat.le_of_ble_eq_true bodyJsLe${k}) ${X}.gjk${k} ${X}.gjbd${k} ${X}.cheap${k} ${X}.zclbd${k} bodyJsList${k}
 ` + tail);
       writeFileSync(join(outDir, `VWBodyS${k}.lean`), head([
         `host.sim.compose.a4b.VWBodyJ${k}`, `host.sim.compose.a4b.VWBodySite${k}`,
-        `host.sim.compose.a4b.${site.file}`, ...(next.file === site.file ? [] : [`host.sim.compose.a4b.${next.file}`]),
-        ...(here.file === site.file ? [] : [`host.sim.compose.a4b.${here.file}`]),
-        `${mod}.SiteR${k}`, `${mod}.SiteD${k}`, `${mod}.SiteZ${k}`,
-      ]) + `kernel_rfl bodyFramesEmpty${k} : [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view].all (fun a => (arrOf ${X}.s${m} a).isEmpty) = true
+        `host.sim.compose.a4b.${site.file}`, "host.sim.compose.a4b.VWBodyMap",
+        `${mod}.SiteD${k}`, `${mod}.SiteZ${k}`, "host.sim.template.CallGen",
+      ]) + `${cshift}
+
+kernel_rfl bodyFramesEmpty${k} : [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view].all (fun a => (arrOf ${X}.s${m} a).isEmpty) = true
 kernel_rfl bodyJsRoots${k} : noBigRootsP (jsAboveB ${X}.s${a}.next) ${X}.s${cn}.trace ${X}.s${cn} = true
 kernel_rfl bodyJsNative${k} : bigsOutB jsLoN jsHiN (mlxOf ${X}.s${cn}.ffi) = true
 kernel_rfl bodyLow${k} : (${X}.cws${k} ++ ${X}.ws${k}).all (Nat.ble 9) = true
-kernel_rfl bodySameH${k} : (mlxOf ${X}.s${m}.ffi).next = (mlxOf ${X}.s${cn}.ffi).next
-kernel_rfl bodySameN${k} : (mlxOf ${X}.s${m}.ffi).nnext = (mlxOf ${X}.s${cn}.ffi).nnext
+kernel_rfl bodyCntM${k} : countersOkB ${X}.s${a} ${X}.s${m} = true
+kernel_rfl bodyHi${k} : Nat.ble (mlxOf ${X}.s${cn}.ffi).next setupP.E = true
+kernel_rfl bodyNhi${k} : Nat.ble (mlxOf ${X}.s${cn}.ffi).nnext setupP.NE = true
 kernel_rfl bodyBridge${k} : bridgeOf ${X}.s${m}.ffi = bridgeOf ${X}.s${a}.ffi
 kernel_rfl bodyNN${k} : Nat.ble (mlxOf ${X}.s${a}.ffi).nnext ${X}.P${k}.NL = true
 kernel_rfl bodyXn${k} : Nat.ble (${cAfter[1]} : Conv.Cnt).xn (mlxOf ${X}.s${cn}.ffi).next = true
@@ -1575,7 +1595,7 @@ theorem bodyFacts${k} : BodySiteFacts ${X}.s${a} ${X}.s${m} ${X}.s${cn} ${X}.s0 
   cbridge := ${X}.cbridge${k}
   sbridge := bodyBridge${k}
   cwsDisj := ${X}.cwsDisj${k}
-  cshiftR := fun h hNL => ${X}.cshiftR${k} h hNL
+  cshiftR := fun h hNL => bodyCshift${k} h hNL
   nnextLe := Nat.le_of_ble_eq_true bodyNN${k}
   raised := ${X}.raised${k}
   cbigs := ${X}.cbigs${k}
@@ -1583,8 +1603,9 @@ theorem bodyFacts${k} : BodySiteFacts ${X}.s${a} ${X}.s${m} ${X}.s${cn} ${X}.s0 
   xnLe := Nat.le_of_ble_eq_true bodyXn${k}
   loLe := Nat.le_of_ble_eq_true bodyLo${k}
   zroots2 := ${X}.zroots2${k}
-  sameH := bodySameH${k}
-  sameN := bodySameN${k}
+  cntM := bodyCntM${k}
+  hiLe := Nat.le_of_ble_eq_true bodyHi${k}
+  nhiLe := Nat.le_of_ble_eq_true bodyNhi${k}
   jsHeap := bodyJs${k}
   jsRoots := bodyJsRoots${k}
   jsNative := bodyJsNative${k}
@@ -1595,21 +1616,19 @@ theorem bodyFacts${k} : BodySiteFacts ${X}.s${a} ${X}.s${m} ${X}.s${cn} ${X}.s0 
 def bodyQs${k} : List (Option Q) := [${qs.join(", ")}]
 noncomputable def bodyEs${k} : List (Option SymE) := ${X}.nr${k}.map fun r => nth? ${X}.st${k}.S${T1}.tab r
 kernel_rfl bodyResChk${k} : (fwdRows.all fun r =>
-  resChkAll r Oracles.${X}.map_g${k} bodyEs${k} bodyQs${k}) = true
+  resChkAll r bodyM bodyEs${k} bodyQs${k}) = true
 kernel_rfl bodyLq${k} : bodyQs${k}.length = ${X}.cws${k}.length
 kernel_rfl bodyNrLo${k} : ${X}.nr${k}.all (Nat.ble ${X}.S${a}.tab.length) = true
-kernel_rfl bodyM0${k} : (Oracles.${X}.map_g${k}.all fun p =>
-  (Conv.idx? p.1 ${X}.cws${k}).isNone && !${X}.ws${k}.contains p.1) = true
-kernel_rfl bodySub${k} : (Oracles.${X}.map_site${k}.all fun p => Oracles.${X}.map_g${k}.contains p) = true
-kernel_rfl bodySubNext${k} : postSubB Oracles.${X}.map_g${k + 1} Oracles.${X}.map_g${k} ${X}.cws${k} bodyQs${k} = true
+kernel_rfl bodySub${k} : (Oracles.${X}.map_site${k}.all fun p => bodyM.contains p) = true
+kernel_rfl bodyPost${k} : postSubB bodyM ${X}.ws${k} ${X}.cws${k} bodyQs${k} = true
 kernel_rfl bodyDrop${k} : Nat.ble (${D} + (${X}.s${m}.next - ${X}.s${cn}.next)) ${Dnext} = true
-
-noncomputable def bodyD${k} : Nat := ${D}
+kernel_rfl bodyDropH${k} : Nat.ble (${H} + ((mlxOf ${X}.s${m}.ffi).next - (mlxOf ${X}.s${cn}.ffi).next)) ${Hnext} = true
+kernel_rfl bodyDropN${k} : Nat.ble (${N} + ((mlxOf ${X}.s${m}.ffi).nnext - (mlxOf ${X}.s${cn}.ffi).nnext)) ${Nnext} = true
 
 theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
     (hr : r ∈ fwdRows) (hi : InRow r i) :
-    CutStep (bodyCut NB T tk π i ${D} Oracles.${X}.map_g${k} ${X}.s${a} ${X}.S${a})
-      (bodyCut NB T tk π i ${Dnext} Oracles.${X}.map_g${k + 1} ${X}.s${cn} ${X}.S${cn}) (${nSteps} + 1) :=
+    CutStep (bodyCut NB T tk π i ${off} bodyM ${X}.s${a} ${X}.S${a})
+      (bodyCut NB T tk π i ${offNext} bodyM ${X}.s${cn} ${X}.S${cn}) (${nSteps} + 1) :=
   bodySite (n := ${nSteps}) (S2 := ${X}.st${k}.S${T1}.tab) (Es := bodyEs${k}) (qs := bodyQs${k})
     (ok := ${X}.st${k}.bodyOkL)
     (fun bs rows => ${NS}.${X}.site${k} bs rows (bodyLocalSim NB T tk bs rows))
@@ -1618,13 +1637,14 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
     (fun _ _ ν hm => ${site.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"}
       (List.all_eq_true.mp Oracles.${X}.chk_site${k} r hr) hi (MapOk.sub hm (sub_of_all bodySub${k})))
     (fun _ hm _ _ _ ho hq => resChkAll_sound (List.all_eq_true.mp bodyResChk${k} r hr) hi hm ho hq)
-    bodyLq${k} rfl bodyNrLo${k} (m0_of_all bodyM0${k}) (postSub_sound bodySubNext${k})
-    (Nat.le_of_ble_eq_true bodyDrop${k}) (by decide)
+    bodyLq${k} rfl bodyNrLo${k} (postSub_sound bodyPost${k})
+    (Nat.le_of_ble_eq_true bodyDrop${k}) (by decide) (Nat.le_of_ble_eq_true bodyDropH${k}) (by decide)
+    (Nat.le_of_ble_eq_true bodyDropN${k}) (by decide)
 ` + tail);
-      console.log(`${X}: site ${k} (${a}): D ${D} -> ${Dnext}, ${nSteps} + 1 steps`);
+      console.log(`${X}: site ${k} (${a}): ${off} -> ${offNext}, ${nSteps} + 1 steps`);
     }
-    D = Dnext;
-    Ds.set(k + 1, Dnext);
+    D = Dnext; H = Hnext; N = Nnext;
+    Ds.set(k + 1, offNext);
   }
   // the glue stretches: typed runs and size bridges between the calls
   const stepsAt = new Map<string, { name: string; file: string }>();
@@ -1641,24 +1661,27 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
   for (const p of chain.pieces.filter((p: any) => p.glue !== undefined)) {
     const j = +p.glue.slice(1);
     if (onlySites.length || onlyGlues.length) { if (!onlyGlues.includes(j)) continue; }
-    const here = oracleOf.get(`g${j}`) ?? fail(`no map_g${j}`);
     const stage = stages.find(b => b.site === j);
     const start = p.from as number, last = stage ? stage.ia as number : p.to as number;
     const inside = bridges.filter(b => b.kind === "size" && b.ia > start && b.ia <= last).sort((x, y) => x.ia - y.ia);
     const Dj = Ds.get(j) ?? fail(`no offset at glue ${j}`);
     const imports = new Set<string>(["host.sim.compose.a4b.VWBodyGlue", "host.sim.compose.a4b.VWBodyBase",
-      `host.sim.compose.a4b.${here.file}`, `${mod}.Bridge`]);
+      "host.sim.compose.a4b.VWBodyMap", `${mod}.Bridge`]);
     const hOf = (k: number) => imports.add(`${mod}.H${Math.floor(k / 32)}`);
     let facts = "", proof = "";
     const brEq = (k: number) => { facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`; };
-    const good = (k: number, e: number) => {
-      facts += `kernel_rfl bodyGood${k} : (fwdRows.all fun r => ${here.check} r.ps (varsOf r.V Oracles.${X}.map_g${j}) (${X}.S${k}.oracle.take (${X}.S${k}.oracle.length - ${X}.S${e}.oracle.length))) = true\n`;
+    const good = (k: number) => {
+      facts += `kernel_rfl bodyO${k} : ${X}.S${k}.oracle = List.drop (${X}.OR.length - ${X}.S${k}.oracle.length) ${X}.OR\n`;
       brEq(k);
-      return `(fun _ hm => ${here.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"} (List.all_eq_true.mp bodyGood${k} r hr) hi hm)`;
+      return `(fun _ hm => bodyO${k} ▸ bodyGoodDrop hr hi hm _)`;
     };
     const acc = (k: number) => {
       facts += `kernel_rfl bodyAcc${k} : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows ${X}.s${k} ${X}.S${k}) = fun _ _ => true\n`;
       return `bodyAcc${k}`;
+    };
+    const cnt = (x: number, y: number) => {
+      facts += `kernel_rfl bodyCnt${x} : countersOkB ${X}.s${x} ${X}.s${y} = true\n`;
+      return `bodyCnt${x}`;
     };
     const active = (k: number) => `((congrArg (fun b : Host.Mlx.FfiAne.St => b.active) bodyBr${k}).trans bodyInactive0)`;
     const pieces: string[] = [];
@@ -1672,9 +1695,9 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
     const toCall = (b: number) => {
       const st = stepsAt.get(`${b}->${b + 1}`) ?? fail(`no step ${b}->${b + 1}`);
       imports.add(`${mod}.${st.file}`); hOf(b + 1);
-      const brIn = good(a, b + 1), acA = acc(a), acB = acc(b), run = seg(a, b);
+      const brIn = good(a), acA = acc(a), acB = acc(b), run = seg(a, b);
       facts += `kernel_rfl bodyBr${b + 1} : bridgeOf ${X}.s${b + 1}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyHalt${b} : isHalt ${X}.s${b}.ctl = false\nkernel_rfl bodyTop${b + 1} : noRetBlock ${X}.s${b + 1} = true\n`;
-      pieces.push(`bodyToCall (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm)`);
+      pieces.push(`bodyToCall (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (O := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm) ${cnt(a, b + 1)}`);
     };
     for (const br of inside) {
       if (br.ia === last) continue;
@@ -1682,24 +1705,24 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
       const n = sizeIdx.get(br.ia) ?? fail(`no size bridge at ${br.ia}`);
       const patch = stepsAt.get(`${br.ia}->${br.ia + 1}`) ?? fail(`no patch ${br.ia}`);
       imports.add(`${mod}.${patch.file}`); hOf(br.ia + 1);
-      brEq(br.ia); brEq(br.ia + 1);
-      facts += `kernel_rfl bodyDecLen${n} : ${X}.sizeS0${n}.oracle.length = ${X}.S${br.ia}.oracle.length\nkernel_rfl bodySizeLen${n} : ${X}.S${br.ia + 1}.oracle.length = ${X}.S${br.ia}.oracle.length\n`;
-      pieces.push(`bodySize (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${X}.sizeA${n} ${X}.sizeArgsA${n} ${X}.sizeSymA${n} ${X}.sizeMlxA${n} ${X}.sizePayA${n} ${X}.sizeTaA${n} ${X}.sizeDecA${n} ${X}.sizePreA${n} ${X}.${patch.name} bodyDecLen${n} bodySizeLen${n} ${active(br.ia)} (bodyBr${br.ia + 1}.trans bodyBr${br.ia}.symm)`);
+      const g0 = good(br.ia);
+      brEq(br.ia + 1);
+      pieces.push(`bodySize (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (O := ${Dj}) ${X}.sizeA${n} ${X}.sizeArgsA${n} ${X}.sizeSymA${n} ${X}.sizeMlxA${n} ${X}.sizePayA${n} ${X}.sizeTaA${n} ${X}.sizeDecA${n} ${X}.sizePreA${n} ${X}.${patch.name} ${g0} ${active(br.ia)} (bodyBr${br.ia + 1}.trans bodyBr${br.ia}.symm) ${cnt(br.ia, br.ia + 1)}`);
       a = br.ia + 1;
     }
     if (stage) toCall(last - 1);
     else {
-      const brIn = good(a, last), acA = acc(a), run = seg(a, last);
+      const brIn = good(a), acA = acc(a), run = seg(a, last);
       facts += `kernel_rfl bodyBr${last} : bridgeOf ${X}.s${last}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyTop${last} : noRetBlock ${X}.s${last} = true\n`;
-      pieces.push(`bodyGlue (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} (fun _ hp => hp) ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm)`);
+      pieces.push(`bodyGlue (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (O := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm) ${cnt(a, last)}`);
     }
     const dedup = [...new Set(facts.split("\n"))].join("\n");
     proof = pieces.reduce((acc0, q) => acc0 ? `(${acc0}).trans (${q})` : q, "");
     writeFileSync(join(outDir, `VWBodyG${j}.lean`), head([...imports]) + `${dedup}
 theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
     (hr : r ∈ fwdRows) (hi : InRow r i) :
-    ∃ n, CutStep (bodyCut NB T tk π i ${Dj} Oracles.${X}.map_g${j} ${X}.s${start} ${X}.S${start})
-      (bodyCut NB T tk π i ${Dj} Oracles.${X}.map_g${j} ${X}.s${last} ${X}.S${last}) n :=
+    ∃ n, CutStep (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${start} ${X}.S${start})
+      (bodyCut NB T tk π i ${Dj} bodyM ${X}.s${last} ${X}.S${last}) n :=
   ⟨_, ${proof}⟩
 ` + tail);
     console.log(`${X}: glue ${j} (${start}..${last}): ${pieces.length} pieces`);

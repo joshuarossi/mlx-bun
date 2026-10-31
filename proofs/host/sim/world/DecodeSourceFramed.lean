@@ -100,8 +100,8 @@ theorem decodeHalt_last3W_framed (hA : A.nxt = 17) (st : LoopStartW Wd A P s0 ta
     fun _ => by rw [hA]; exact upd_valL _
   have hg : ∀ {r3 r7 : Bool} {o : List Ans}, FinalOk r3 r7 o → decide ((T - 2) % 256 = 0) = r3 →
       decide ((T - 2 + 1) % 256 = 0) = r7 → Good (valL ρ T tk L (T - 2) (tk T)) o := fun hc h3 h7 =>
-    good_finalW hc (by omega) (by omega) (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) le_rfl)
-      (by omega) (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T le_rfl; omega) h3 h7
+    good_finalW hc (by omega) (by omega) (notEos (T - 2 + 1) (by omega) (by omega)) (notEos T (by omega) (Nat.le_refl _))
+      (by omega) (by have := htk (T - 2 + 1) (by omega); omega) (by have := htk T (Nat.le_refl _); omega) h3 h7
   by_cases hc0 : (T - 2) % 256 = 0
   · exact ⟨_, decodeHalt_lastW_framed st F1 hfrN hcE hb hwc hwe hupd hT hlen
       (hg c1 (decide_eq_true hc0) (decide_eq_false (by omega)))

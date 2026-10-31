@@ -236,9 +236,9 @@ structure Out where
   wrRs : Array (List (Nat × Nat)) := #[]
 
 /-- Run the isolated stage from `s0` natively to its return (the last local state, then the return
-step), writing boundaries every 10 000 steps (the return step a chunk of its own). -/
+step), writing boundaries every `chunk` steps (the return step a chunk of its own). -/
 unsafe def runLocal {F : Ffi} (w : TWorld F) (pre : Lean.Name) (nonce : String) (dir : System.FilePath)
-    (ρ : Nat → F64) (s0 : St F.S) (tab : List SymE) (out : Out) (cap : Nat) : TermElabM (St F.S × SSrv × Out) := do
+    (ρ : Nat → F64) (s0 : St F.S) (tab : List SymE) (out : Out) (cap : Nat) (chunk : Nat := 10000) : TermElabM (St F.S × SSrv × Out) := do
   let oE := mkConst (pre ++ `O)
   let drop (m : Nat) := mkApp3 (mkConst ``List.drop [.zero]) (mkConst ``Ans) (mkRawNatLit m) oE
   let mut out := out
@@ -249,7 +249,7 @@ unsafe def runLocal {F : Ffi} (w : TWorld F) (pre : Lean.Name) (nonce : String) 
   while !done do
     let mut n : Nat := 0
     let mut last : Option (St F.S × SSrv × List Ans) := none
-    while n < 10000 do
+    while n < chunk do
       if isHalt st.ctl then throwError "tpl_stage {pre}: halted inside the stage"
       match interpRec ρ (step F st).run c [] with
       | some (s', c', a) =>

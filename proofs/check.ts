@@ -8421,7 +8421,9 @@ const proofFiles = [
   "host/simgraph/world/MachAtV.lean",
   "host/simgraph/world/MachRouteV.lean",
   "host/sim/compose/MachV.lean",
+  "host/simgraph/mach/Agree.lean",
   "host/route/FinalV.lean",
+  "host/route/PrefStep.lean",
   "host/route/PrefGraph.lean",
   "host/sim/world/Offset.lean",
   "host/sim/world/OffsetImage.lean",
@@ -8449,6 +8451,9 @@ const proofFiles = [
   "host/sim/dispatch/JsLimitSim.lean",
   "host/sim/dispatch/OkFill.lean",
   "host/sim/tests/BigJs.lean",
+  "host/sim/tests/ActiveRelationData.lean",
+  "host/sim/tests/ActiveRelationDense.lean",
+  "host/sim/tests/ActiveRelation.lean",
   "host/sim/BigFreeP.lean",
   "host/sim/BigJsRel.lean",
   "host/sim/full/BigJs.lean",
@@ -8456,6 +8461,7 @@ const proofFiles = [
   "host/sim/full/JsImage.lean",
   "host/sim/full/JsLimit.lean",
   "host/sim/full/AcceptNE.lean",
+  "host/sim/full/AcceptNESim.lean",
   "host/sim/steps/Ext.lean",
   "host/sim/dispatch/Ext.lean",
   "host/sim/full/SizeJs.lean",
@@ -17181,6 +17187,9 @@ const proofFiles = [
   "host/sim/template/a4pre_post_call/FactAccepted.lean",
   "host/sim/template/a4pre_post_call/FactBridge.lean",
   "host/sim/template/a4pre_post_call/FactHead.lean",
+  "host/sim/extract/GrowGraph.lean",
+  "host/sim/template/SetupP.lean",
+  "host/sim/compose/a4b/VWFramesDefs.lean",
 ];
 
 const discoveredProofs = await Array.fromAsync(new Bun.Glob("**/*.lean").scan({

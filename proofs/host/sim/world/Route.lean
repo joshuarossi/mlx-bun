@@ -239,6 +239,17 @@ def FirstEos (tk : Nat → Nat) (T k : Nat) : Prop :=
 /-- No token among `1 … T` is EOS. -/
 def NoEos (tk : Nat → Nat) (T : Nat) : Prop := ∀ j, 1 ≤ j → j ≤ T → tk j ≠ 248044
 
+/-- The first EOS of a run that has one. -/
+theorem FirstEos.exists_of {tk : Nat → Nat} {T : Nat} (hex : ∃ k, 1 ≤ k ∧ k ≤ T ∧ tk k = 248044) :
+    ∃ k, FirstEos tk T k := by
+  obtain ⟨n, hn⟩ := hex
+  induction n using Nat.strongRecOn with
+  | ind n ih =>
+    by_cases hx : ∃ j, j < n ∧ 1 ≤ j ∧ j ≤ T ∧ tk j = 248044
+    · obtain ⟨j, hj, hp⟩ := hx
+      exact ih j hj hp
+    · exact ⟨n, hn.1, hn.2.1, hn.2.2, fun j h1 h2 he => hx ⟨j, h2, h1, by have := hn.2.1; omega, he⟩⟩
+
 theorem FirstEos.unique {tk : Nat → Nat} {T k k' : Nat} (h : FirstEos tk T k) (h' : FirstEos tk T k') : k' = k := by
   obtain ⟨h1, _, h3, h4⟩ := h
   obtain ⟨h1', _, h3', h4'⟩ := h'
@@ -396,10 +407,7 @@ theorem source_tokens_prompt_routeW (π : List Nat) {T : Nat} (hπ : 1 ≤ π.le
     exact ⟨_, t1, C1, runC_trans hboot hr1, hinv', hv1, hvals⟩
   by_cases hex : ∃ k, 1 ≤ k ∧ k ≤ T ∧ tk k = 248044
   · -- the first EOS
-    obtain ⟨k, hk⟩ : ∃ k, FirstEos tk T k := by
-      refine ⟨Nat.find hex, (Nat.find_spec hex).1, (Nat.find_spec hex).2.1, (Nat.find_spec hex).2.2,
-        fun j h1 h2 he => Nat.find_min hex h2 ⟨h1, ?_, he⟩⟩
-      have := (Nat.find_spec hex).2.1; omega
+    obtain ⟨k, hk⟩ : ∃ k, FirstEos tk T k := FirstEos.exists_of hex
     obtain ⟨hk1, hkT, heos, hmin⟩ := hk
     refine RouteGoalW.ofFirst ⟨hk1, hkT, heos, hmin⟩ ?_
     by_cases hk1' : k = 1
@@ -410,7 +418,7 @@ theorem source_tokens_prompt_routeW (π : List Nat) {T : Nat} (hπ : 1 ≤ π.le
       exact ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩
     · -- tokens `2 … T`: POST, then the decode route's EOS stop
       have hk2 : 2 ≤ k := by omega
-      obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hmin 1 le_rfl (by omega))
+      obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hmin 1 (Nat.le_refl _) (by omega))
       obtain ⟨N, tF, CF, hrun, hv, hle, ⟨hem, hg⟩, hfin⟩ := decode_source_eosLW (Fin := stopFin env) (G := GE k)
         hA st hfrN hcE hb hwc hwe k hk2 hkT
         (fun i h1 h2 h3 => hit i h1 h3 fun j hj1 hj2 => hmin j hj1 (by omega)) (X k) (cX k) FE0 FE1 c0E c1E
@@ -427,7 +435,7 @@ theorem source_tokens_prompt_routeW (π : List Nat) {T : Nat} (hπ : 1 ≤ π.le
   · -- no EOS among tokens `1 … T`: POST, the decode route, the final chains
     have hno : NoEos tk T := fun j h1 h2 he => hex ⟨j, h1, h2, he⟩
     refine RouteGoalW.ofNo hno ?_
-    obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hno 1 le_rfl (by omega))
+    obtain ⟨N1, t1, C1, hpre, hinv, hv1, hvals⟩ := post (hno 1 (Nat.le_refl _) (by omega))
     obtain ⟨N, tF, CF, hrun, hv, hle, hem, hg⟩ := decode_sourceLW hA st hfrN hcE hb hwc hwe
       (fun i h1 h2 => hit i h1 h2 fun j hj1 hj2 => hno j hj1 (by omega))
       F0 F1 F2 c0 c1 c2 hQA henv hT hLT hlen htk (fun j h2 h3 => hno j (by omega) h3) (hF hno) (hF0 hno) (hF1 hno)
@@ -484,7 +492,7 @@ theorem source_tokens_prompt_allW (π : List Nat) {T : Nat} (hπ : 1 ≤ π.leng
   rcases (by omega : T = 1 ∨ T = 2 ∨ 3 ≤ T) with h1 | h2 | h3'
   · subst h1
     by_cases he : tk 1 = 248044
-    · refine RouteGoalW.ofFirst (k := 1) ⟨le_rfl, le_rfl, he, fun j h1 h2 => absurd h2 (by omega)⟩ ?_
+    · refine RouteGoalW.ofFirst (k := 1) ⟨(Nat.le_refl _), (Nat.le_refl _), he, fun j h1 h2 => absurd h2 (by omega)⟩ ?_
       obtain ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩ := source_haltW hboot hld hps
         ((P11 rfl he).halt (Fin := stopFin env) hcE hb hwc henv ((s11 rfl he).toW hgen hgenv) (g11 rfl he))
       exact ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩
@@ -495,12 +503,12 @@ theorem source_tokens_prompt_allW (π : List Nat) {T : Nat} (hπ : 1 ≤ π.leng
       exact ⟨N, tF, CF, hr, hv, hle, hem, hg⟩
   · subst h2
     by_cases he1 : tk 1 = 248044
-    · refine RouteGoalW.ofFirst (k := 1) ⟨le_rfl, by omega, he1, fun j h1 h2 => absurd h2 (by omega)⟩ ?_
+    · refine RouteGoalW.ofFirst (k := 1) ⟨(Nat.le_refl _), by omega, he1, fun j h1 h2 => absurd h2 (by omega)⟩ ?_
       obtain ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩ := source_haltW hboot hld hps
         ((P21 rfl he1).halt (Fin := stopFin env) hcE hb hwc henv ((s21 rfl he1).toW hgen hgenv) (g21 rfl he1))
       exact ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩
     · by_cases he2 : tk 2 = 248044
-      · refine RouteGoalW.ofFirst (k := 2) ⟨by omega, le_rfl, he2, fun j h1 h2 => by
+      · refine RouteGoalW.ofFirst (k := 2) ⟨by omega, (Nat.le_refl _), he2, fun j h1 h2 => by
           obtain rfl : j = 1 := by omega
           exact he1⟩ ?_
         obtain ⟨N, tF, CF, hr, hv, hle, hem, hg, hs⟩ := source_haltW hboot hld hps

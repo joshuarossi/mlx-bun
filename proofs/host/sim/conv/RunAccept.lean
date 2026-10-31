@@ -58,7 +58,7 @@ theorem runOk_next_mono {F : Ffi} (hnext : SourceNextMono F)
         | false => simp only [hb, Bool.cond_false] at h; cases h
         | true =>
           simp only [hb, Bool.cond_true, St.rebuild_eq] at h
-          exact (hnext s S s2 S2 hs).trans (ih h)
+          exact Nat.le_trans (hnext s S s2 S2 hs) (ih h)
 
 /-- An endpoint bounds every intermediate allocator counter when steps are monotone. -/
 theorem runOk_mono_bounded_next {F : Ffi} (hnext : SourceNextMono F)
