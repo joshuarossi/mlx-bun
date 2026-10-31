@@ -11,57 +11,57 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-/-! The compaction's state shift at call site 168 of chain `PRE_first_tail_x15_r0_body` (`Conv.compact_shift`): the call `PRE_first_tail_x15_r0_body.s1484`, the merged
-state `PRE_first_tail_x15_r0_body.s1485`, the canonical state `PRE_first_tail_x15_r0_body.s1486`; its frames [2665,2673467,2673472,2673473] (kept arrays [2665,2673467]). -/
+/-! The compaction's state shift at call site 168 of chain `PRE_first_tail_x15_r0_body` (`Conv.compact_shift`): the call `PRE_first_tail_x15_r0_body.s1626`, the merged
+state `PRE_first_tail_x15_r0_body.s1627`, the canonical state `PRE_first_tail_x15_r0_body.s1628`; its frames [2665,2673467,2673472,2673473] (kept arrays [2665,2673467]). -/
 
 -- the map's places and counters
-kernel_rfl PRE_first_tail_x15_r0_body.zpl168 : PRE_first_tail_x15_r0_body.pl168.all (Nat.ble PRE_first_tail_x15_r0_body.s1484.next) = true
+kernel_rfl PRE_first_tail_x15_r0_body.zpl168 : PRE_first_tail_x15_r0_body.pl168.all (Nat.ble PRE_first_tail_x15_r0_body.s1626.next) = true
 kernel_rfl PRE_first_tail_x15_r0_body.zplnd168 : nodupT PRE_first_tail_x15_r0_body.pl168 PTrie.nil = true
-kernel_rfl PRE_first_tail_x15_r0_body.zn1168 : Nat.ble PRE_first_tail_x15_r0_body.s1484.next 2808454 = true
-kernel_rfl PRE_first_tail_x15_r0_body.zfirst168 : Nat.ble aFirst PRE_first_tail_x15_r0_body.s1484.next = true
-kernel_rfl PRE_first_tail_x15_r0_body.zscn168 : PRE_first_tail_x15_r0_body.s1486.next = PRE_first_tail_x15_r0_body.s1484.next + PRE_first_tail_x15_r0_body.pl168.length
-kernel_rfl PRE_first_tail_x15_r0_body.zsmn168 : PRE_first_tail_x15_r0_body.s1485.next = 2808454
-kernel_rfl PRE_first_tail_x15_r0_body.zgrow168 : Nat.ble PRE_first_tail_x15_r0_body.s1486.next PRE_first_tail_x15_r0_body.s1485.next = true
+kernel_rfl PRE_first_tail_x15_r0_body.zn1168 : Nat.ble PRE_first_tail_x15_r0_body.s1626.next 2808454 = true
+kernel_rfl PRE_first_tail_x15_r0_body.zfirst168 : Nat.ble aFirst PRE_first_tail_x15_r0_body.s1626.next = true
+kernel_rfl PRE_first_tail_x15_r0_body.zscn168 : PRE_first_tail_x15_r0_body.s1628.next = PRE_first_tail_x15_r0_body.s1626.next + PRE_first_tail_x15_r0_body.pl168.length
+kernel_rfl PRE_first_tail_x15_r0_body.zsmn168 : PRE_first_tail_x15_r0_body.s1627.next = 2808454
+kernel_rfl PRE_first_tail_x15_r0_body.zgrow168 : Nat.ble PRE_first_tail_x15_r0_body.s1628.next PRE_first_tail_x15_r0_body.s1627.next = true
 -- the tables
-kernel_rfl PRE_first_tail_x15_r0_body.zfresh168 : PRE_first_tail_x15_r0_body.S1484.tab.all (fun e => PRE_first_tail_x15_r0_body.cws168.all fun v => e.noVar v) = true
+kernel_rfl PRE_first_tail_x15_r0_body.zfresh168 : PRE_first_tail_x15_r0_body.S1626.tab.all (fun e => PRE_first_tail_x15_r0_body.cws168.all fun v => e.noVar v) = true
 kernel_rfl PRE_first_tail_x15_r0_body.zcnd168 : nodupT PRE_first_tail_x15_r0_body.cws168 PTrie.nil = true
-kernel_rfl PRE_first_tail_x15_r0_body.znrHi168 : PRE_first_tail_x15_r0_body.nr168.all (fun r => Nat.blt r PRE_first_tail_x15_r0_body.S1485.tab.length) = true
+kernel_rfl PRE_first_tail_x15_r0_body.znrHi168 : PRE_first_tail_x15_r0_body.nr168.all (fun r => Nat.blt r PRE_first_tail_x15_r0_body.S1627.tab.length) = true
 -- the frames: every framed address below the call's counter; the kept arrays the chain start's, extended in the merged state
-kernel_rfl PRE_first_tail_x15_r0_body.zfrlt168 : [2665, 2673467, 2673472, 2673473].all (fun a => Nat.blt a PRE_first_tail_x15_r0_body.s1484.next) = true
-kernel_rfl PRE_first_tail_x15_r0_body.zg168_2665 : PRE_first_tail_x15_r0_body.s1486.heap.get 2665 = some (.obj (objOf PRE_first_tail_x15_r0_body.s1486 2665))
-kernel_rfl PRE_first_tail_x15_r0_body.zk168_2665 : (objOf PRE_first_tail_x15_r0_body.s1486 2665).kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665)
-kernel_rfl PRE_first_tail_x15_r0_body.zm168_2665 : PRE_first_tail_x15_r0_body.s1485.heap.get 2665 = some (.obj { PRE_first_tail_x15_r0_body.kappa168.obj (objOf PRE_first_tail_x15_r0_body.s1486 2665) with
-  kind := .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ (arrOf PRE_first_tail_x15_r0_body.s1485 2665).drop (arrOf PRE_first_tail_x15_r0_body.s0 2665).length) })
-kernel_rfl PRE_first_tail_x15_r0_body.zg168_2673467 : PRE_first_tail_x15_r0_body.s1486.heap.get 2673467 = some (.obj (objOf PRE_first_tail_x15_r0_body.s1486 2673467))
-kernel_rfl PRE_first_tail_x15_r0_body.zk168_2673467 : (objOf PRE_first_tail_x15_r0_body.s1486 2673467).kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467)
-kernel_rfl PRE_first_tail_x15_r0_body.zm168_2673467 : PRE_first_tail_x15_r0_body.s1485.heap.get 2673467 = some (.obj { PRE_first_tail_x15_r0_body.kappa168.obj (objOf PRE_first_tail_x15_r0_body.s1486 2673467) with
-  kind := .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ (arrOf PRE_first_tail_x15_r0_body.s1485 2673467).drop (arrOf PRE_first_tail_x15_r0_body.s0 2673467).length) })
-kernel_rfl PRE_first_tail_x15_r0_body.zw168_4910 : (PRE_first_tail_x15_r0_body.s1486.heap.get 4910).isSome = true
-kernel_rfl PRE_first_tail_x15_r0_body.zw168_2673472 : (PRE_first_tail_x15_r0_body.s1486.heap.get 2673472).isSome = true
-kernel_rfl PRE_first_tail_x15_r0_body.zw168_2673473 : (PRE_first_tail_x15_r0_body.s1486.heap.get 2673473).isSome = true
+kernel_rfl PRE_first_tail_x15_r0_body.zfrlt168 : [2665, 2673467, 2673472, 2673473].all (fun a => Nat.blt a PRE_first_tail_x15_r0_body.s1626.next) = true
+kernel_rfl PRE_first_tail_x15_r0_body.zg168_2665 : PRE_first_tail_x15_r0_body.s1628.heap.get 2665 = some (.obj (objOf PRE_first_tail_x15_r0_body.s1628 2665))
+kernel_rfl PRE_first_tail_x15_r0_body.zk168_2665 : (objOf PRE_first_tail_x15_r0_body.s1628 2665).kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665)
+kernel_rfl PRE_first_tail_x15_r0_body.zm168_2665 : PRE_first_tail_x15_r0_body.s1627.heap.get 2665 = some (.obj { PRE_first_tail_x15_r0_body.kappa168.obj (objOf PRE_first_tail_x15_r0_body.s1628 2665) with
+  kind := .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ (arrOf PRE_first_tail_x15_r0_body.s1627 2665).drop (arrOf PRE_first_tail_x15_r0_body.s0 2665).length) })
+kernel_rfl PRE_first_tail_x15_r0_body.zg168_2673467 : PRE_first_tail_x15_r0_body.s1628.heap.get 2673467 = some (.obj (objOf PRE_first_tail_x15_r0_body.s1628 2673467))
+kernel_rfl PRE_first_tail_x15_r0_body.zk168_2673467 : (objOf PRE_first_tail_x15_r0_body.s1628 2673467).kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467)
+kernel_rfl PRE_first_tail_x15_r0_body.zm168_2673467 : PRE_first_tail_x15_r0_body.s1627.heap.get 2673467 = some (.obj { PRE_first_tail_x15_r0_body.kappa168.obj (objOf PRE_first_tail_x15_r0_body.s1628 2673467) with
+  kind := .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ (arrOf PRE_first_tail_x15_r0_body.s1627 2673467).drop (arrOf PRE_first_tail_x15_r0_body.s0 2673467).length) })
+kernel_rfl PRE_first_tail_x15_r0_body.zw168_4910 : (PRE_first_tail_x15_r0_body.s1628.heap.get 4910).isSome = true
+kernel_rfl PRE_first_tail_x15_r0_body.zw168_2673472 : (PRE_first_tail_x15_r0_body.s1628.heap.get 2673472).isSome = true
+kernel_rfl PRE_first_tail_x15_r0_body.zw168_2673473 : (PRE_first_tail_x15_r0_body.s1628.heap.get 2673473).isSome = true
 -- the heap: the changed list in range, holding the stage's written and fresh addresses; the canonical side's image
 kernel_rfl PRE_first_tail_x15_r0_body.zclbd168 : PRE_first_tail_x15_r0_body.cl168.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true
-kernel_rfl PRE_first_tail_x15_r0_body.zwr168 : PRE_first_tail_x15_r0_body.st168.wr.all (fun b => !Nat.blt b PRE_first_tail_x15_r0_body.s1484.next || PRE_first_tail_x15_r0_body.cl168.contains b) = true
+kernel_rfl PRE_first_tail_x15_r0_body.zwr168 : PRE_first_tail_x15_r0_body.st168.wr.all (fun b => !Nat.blt b PRE_first_tail_x15_r0_body.s1626.next || PRE_first_tail_x15_r0_body.cl168.contains b) = true
 def PRE_first_tail_x15_r0_body.zl168 : List Nat := PRE_first_tail_x15_r0_body.cl168.filter fun a => !(List.contains [2665, 2673467] a)
-kernel_rfl PRE_first_tail_x15_r0_body.zimgE168 : PRE_first_tail_x15_r0_body.zl168.map (fun a => PRE_first_tail_x15_r0_body.s1485.heap.get (PRE_first_tail_x15_r0_body.kappa168.a a)) = PRE_first_tail_x15_r0_body.zl168.map (fun a => (PRE_first_tail_x15_r0_body.s1486.heap.get a).map PRE_first_tail_x15_r0_body.kappa168.hobj)
-theorem PRE_first_tail_x15_r0_body.zimg168 : HeapImg PRE_first_tail_x15_r0_body.kappa168 PRE_first_tail_x15_r0_body.s1486 PRE_first_tail_x15_r0_body.s1485 PRE_first_tail_x15_r0_body.zl168 := PRE_first_tail_x15_r0_body.zimgE168
+kernel_rfl PRE_first_tail_x15_r0_body.zimgE168 : PRE_first_tail_x15_r0_body.zl168.map (fun a => PRE_first_tail_x15_r0_body.s1627.heap.get (PRE_first_tail_x15_r0_body.kappa168.a a)) = PRE_first_tail_x15_r0_body.zl168.map (fun a => (PRE_first_tail_x15_r0_body.s1628.heap.get a).map PRE_first_tail_x15_r0_body.kappa168.hobj)
+theorem PRE_first_tail_x15_r0_body.zimg168 : HeapImg PRE_first_tail_x15_r0_body.kappa168 PRE_first_tail_x15_r0_body.s1628 PRE_first_tail_x15_r0_body.s1627 PRE_first_tail_x15_r0_body.zl168 := PRE_first_tail_x15_r0_body.zimgE168
 -- the roots and their supports
-kernel_rfl PRE_first_tail_x15_r0_body.zctl168 : PRE_first_tail_x15_r0_body.s1485.ctl = PRE_first_tail_x15_r0_body.kappa168.ctl PRE_first_tail_x15_r0_body.s1486.ctl
-kernel_rfl PRE_first_tail_x15_r0_body.zstack168 : PRE_first_tail_x15_r0_body.s1485.stack = PRE_first_tail_x15_r0_body.s1486.stack.map PRE_first_tail_x15_r0_body.kappa168.frame
-kernel_rfl PRE_first_tail_x15_r0_body.zjobs168 : PRE_first_tail_x15_r0_body.s1485.jobs = PRE_first_tail_x15_r0_body.s1486.jobs.map PRE_first_tail_x15_r0_body.kappa168.job
-kernel_rfl PRE_first_tail_x15_r0_body.zstores168 : PRE_first_tail_x15_r0_body.s1485.stores = PRE_first_tail_x15_r0_body.kappa168.stores PRE_first_tail_x15_r0_body.s1486.stores
-kernel_rfl PRE_first_tail_x15_r0_body.zroots168 : checkRootsSupp PRE_first_tail_x15_r0_body.s1486 7283 = true
-kernel_rfl PRE_first_tail_x15_r0_body.znC168 : PRE_first_tail_x15_r0_body.S1484.tab.length + PRE_first_tail_x15_r0_body.cws168.length = 7283
+kernel_rfl PRE_first_tail_x15_r0_body.zctl168 : PRE_first_tail_x15_r0_body.s1627.ctl = PRE_first_tail_x15_r0_body.kappa168.ctl PRE_first_tail_x15_r0_body.s1628.ctl
+kernel_rfl PRE_first_tail_x15_r0_body.zstack168 : PRE_first_tail_x15_r0_body.s1627.stack = PRE_first_tail_x15_r0_body.s1628.stack.map PRE_first_tail_x15_r0_body.kappa168.frame
+kernel_rfl PRE_first_tail_x15_r0_body.zjobs168 : PRE_first_tail_x15_r0_body.s1627.jobs = PRE_first_tail_x15_r0_body.s1628.jobs.map PRE_first_tail_x15_r0_body.kappa168.job
+kernel_rfl PRE_first_tail_x15_r0_body.zstores168 : PRE_first_tail_x15_r0_body.s1627.stores = PRE_first_tail_x15_r0_body.kappa168.stores PRE_first_tail_x15_r0_body.s1628.stores
+kernel_rfl PRE_first_tail_x15_r0_body.zroots168 : checkRootsSupp PRE_first_tail_x15_r0_body.s1628 7283 = true
+kernel_rfl PRE_first_tail_x15_r0_body.znC168 : PRE_first_tail_x15_r0_body.S1626.tab.length + PRE_first_tail_x15_r0_body.cws168.length = 7283
 -- the map as `Conv.compact_shift` states it (the call's counters for the literals)
-kernel_rfl PRE_first_tail_x15_r0_body.zkap168 : PRE_first_tail_x15_r0_body.kappa168 = Conv.Map.compact PRE_first_tail_x15_r0_body.s1484.next 2808454 PRE_first_tail_x15_r0_body.S1484.tab.length PRE_first_tail_x15_r0_body.pl168 (PRE_first_tail_x15_r0_body.nr168.map NumV.ref) PRE_first_tail_x15_r0_body.kd168.big
+kernel_rfl PRE_first_tail_x15_r0_body.zkap168 : PRE_first_tail_x15_r0_body.kappa168 = Conv.Map.compact PRE_first_tail_x15_r0_body.s1626.next 2808454 PRE_first_tail_x15_r0_body.S1626.tab.length PRE_first_tail_x15_r0_body.pl168 (PRE_first_tail_x15_r0_body.nr168.map NumV.ref) PRE_first_tail_x15_r0_body.kd168.big
   PRE_first_tail_x15_r0_body.kd168.region PRE_first_tail_x15_r0_body.kd168.nodeF
 -- the bridge inactive at the canonical state (`Conv.FullShiftQ.toX`; the merged state's bridge is the canonical's: cbridge)
-theorem PRE_first_tail_x15_r0_body.zbin168 : (Host.Ts.Sim.Full.bridgeOf PRE_first_tail_x15_r0_body.s1486.ffi).active = false := (Host.Load.Boot.replay_active Host.Load.Run.Prompt.P.oblog2818)
+theorem PRE_first_tail_x15_r0_body.zbin168 : (Host.Ts.Sim.Full.bridgeOf PRE_first_tail_x15_r0_body.s1628.ffi).active = false := (Host.Load.Boot.replay_active Host.Load.Run.Prompt.P.oblog2818)
 -- the JS bookkeeping's step (`Conv.JClean.step` over the changed list) and the canonical roots' bigint freedom
-kernel_rfl PRE_first_tail_x15_r0_body.zjc168 : Conv.jcleanListB (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1486 PRE_first_tail_x15_r0_body.cl168 = true
-kernel_rfl PRE_first_tail_x15_r0_body.zroots2168 : noBigRootsP (fun i => !Conv.oldBigB (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) i) PRE_first_tail_x15_r0_body.s1486.trace PRE_first_tail_x15_r0_body.s1486 = true
+kernel_rfl PRE_first_tail_x15_r0_body.zjc168 : Conv.jcleanListB (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1628 PRE_first_tail_x15_r0_body.cl168 = true
+kernel_rfl PRE_first_tail_x15_r0_body.zrootsB168 : noBigRootsP (fun i => !Conv.oldBigB (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) i) PRE_first_tail_x15_r0_body.s1628.trace PRE_first_tail_x15_r0_body.s1628 = true
 kernel_rfl PRE_first_tail_x15_r0_body.zhm168 : Nat.ble (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s0.ffi).mlx.nnext 18596 = true
-theorem PRE_first_tail_x15_r0_body.cjcl168 (h : Conv.JClean (⟨21520, 18596, 2807299, 7265⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1484) : Conv.JClean (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1486 :=
+theorem PRE_first_tail_x15_r0_body.cjcl168 (h : Conv.JClean (⟨21520, 18596, 2807299, 7265⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1626) : Conv.JClean (⟨21523, 18623, 2807305, 7283⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1628 :=
   Conv.JClean.step h (Conv.Cnt.le_of_leB PRE_first_tail_x15_r0_body.cle168)
     (Conv.heap_off_setAll PRE_first_tail_x15_r0_body.cheap168 fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x15_r0_body.zclbd168 a ha)) PRE_first_tail_x15_r0_body.zjc168
 

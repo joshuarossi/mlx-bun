@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { syncRowMetadata } from "./syncRowMeta";
+import { kindFacts } from "./bridgeFacts.ts";
 
 const argv = process.argv.slice(2);
 const take = (f: string, k = 1) => {
@@ -20,6 +21,10 @@ const okArg = take("--ok", 2) ?? ["host.sim.compose.a4b.VWFramesDefs", "Host.Ts.
 const only = take("--only-chunks")?.[0]?.split("-").map(Number);
 // the chain's source state and server (its prefix's end, `bridge_literal` of it): the start seam
 const src = take("--source", 4);
+// the value bound of the size bridges' numeric premise
+const sizeVb = take("--size-vb")?.[0] ?? "(Host.Ts.Sim.Full.rowVB 2048)";
+// the class table rows whose oracle check the body's oracle passes once, at L and n (`bodyGoodAll`)
+const rows = take("--rows")?.[0]?.split(",");
 const [dir, name] = argv;
 if (!dir || !name) throw Error("usage: genNeFlat.ts dir Name [--group n] [--ok module term] [--only-chunks a-b]");
 const streams = process.env.HOST_STREAM_DIR ?? join(import.meta.dir, "../../../.host-stream");
@@ -87,5 +92,54 @@ for (const [j, ks] of stretches.entries()) {
     `    fun _ _ => some (${s(k + 1)}, ${S(k + 1)})\n`);
   put(`K${j}`, head([H(ks[ks.length - 1]! + 1), mod("TypedOk"), "host.sim.Chunk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Template") + lines.join(""));
   emitted.push(`K${j}`);
+}
+// The composition's facts per stretch (`bodyRunSeg<j>` between the size bridges; bridge n, 1-based: `bodyStepA<n>` into its state,
+// `bodyPatchB<n>` its block, `sizeA<n>` … `sizePreA<n>`), the acceptance at the stretches' ends (`bodyOkAt<i>`) and the oracle once.
+if (!only) {
+  const kMod = new Map<number, string>();
+  stretches.forEach((ks, j) => ks.forEach(k => kMod.set(k, mod(`K${j}`))));
+  const ranges: { a: number; b: number }[] = [];
+  let a0 = 0;
+  for (const b of bridges) { ranges.push({ a: a0, b: Number(b.ia) - 1 }); a0 = Number(b.ia) + 1; }
+  ranges.push({ a: a0, b: T1 });
+  const O = "Host.Ts Host.Ts.Sim Host.Ts.Sim.Template";
+  for (const [j, r] of ranges.entries()) {
+    const applied = (k: number) => `(congrFun (congrFun ${name}.bodyK${k} bytes) rows)`;
+    let proof = r.a < r.b ? applied(r.a) : "rfl", sum = r.a < r.b ? fuel(r.a) : "0";
+    for (let k = r.a + 1; k < r.b; k++) {
+      proof = `runOk_trans ${name}.F (${name}.bodyOkB bytes rows) ${sum} ${fuel(k)} ${s(r.a)} ${s(k)} ${s(k + 1)} ${S(r.a)} ${S(k)} ${S(k + 1)} (${proof}) ${applied(k)}`;
+      sum = `(${sum} + ${fuel(k)})`;
+    }
+    put(`Seg${j}`, head(["host.sim.Chunk", H(r.b), mod("TypedOk"), ...Array.from({ length: r.b - r.a }, (_, i) => kMod.get(r.a + i)!)], O) +
+      `theorem ${name}.bodyRunSeg${j} (bytes : List Byte) (rows : Nat) :\n    runOk ${name}.F (${name}.bodyOkB bytes rows) ${sum} ${s(r.a)} ${S(r.a)} = some (${s(r.b)}, ${S(r.b)}) :=\n  ${proof}\n`);
+  }
+  writeFileSync(join(root, "Run.lean"), ranges.map((_, j) => `import ${mod(`Seg${j}`)}\n`).join(""));
+  const ends = [...new Set(ranges.flatMap(r => [r.a, r.b]))].sort((x, y) => x - y), width = 32;
+  const endMods: string[] = [];
+  for (let g = 0; g * width < ends.length; g++) {
+    const xs = ends.slice(g * width, (g + 1) * width);
+    put(`Ends${g}`, head([H(xs[xs.length - 1]!), mod("TypedOk")], O) + xs.map(i =>
+      `kernel_rfl ${name}.bodyOkAt${i} :\n  (fun (bytes : List Byte) (rows : Nat) => ${name}.bodyOkB bytes rows ${s(i)} ${S(i)}) = fun _ _ => true\n`).join(""));
+    endMods.push(mod(`Ends${g}`));
+  }
+  if (rows) put("Good", head([mod("H0"), "host.sim.lin.Table"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls") +
+    `def ${name}.bodyM : List (Nat × Q) := [(9, Q.L), (10, Q.n)]\n` +
+    `kernel_rfl ${name}.bodyGoodAll : ([${rows.join(", ")}].all fun r => goodLin r.ps (varsOf r.V ${name}.bodyM) ${name}.OR) = true\n`);
+  const per8 = 8, bridgeMods: string[] = [];
+  for (let g = 0; g * per8 < bridges.length; g++) {
+    const xs = bridges.slice(g * per8, (g + 1) * per8), base = g * per8, last = Number(xs[xs.length - 1].ia) + 1;
+    put(`Steps${g}`, head([H(last), "host.sim.template.Bridges", "host.sim.compose.Glue", "host.sim.full.Rel"], O) + xs.map((b, i) => {
+      const n = base + i + 1, ia = Number(b.ia);
+      return `kernel_rfl ${name}.bodyStepA${n} : interpS (step ${name}.F ${s(ia - 1)}).run ${S(ia - 1)} = some (${s(ia)}, ${S(ia)})\n` +
+        `kernel_rfl ${name}.bodyPatchB${n} : interpS (Host.Ts.Sim.Disp.sizeS ${name}.F ${s(ia)}).run ${S(ia)} = some (${s(ia + 1)}, ${S(ia + 1)})\n` +
+        `kernel_rfl ${name}.bodyTop${n} : Host.Ts.Sim.Compose.noRetBlock ${s(ia)} = true\n` +
+        `kernel_rfl ${name}.bodyLive${n} : isHalt ${s(ia - 1)}.ctl = false\n` +
+        `kernel_rfl ${name}.bodyBridge${n} : Host.Ts.Sim.Full.bridgeOf ${s(ia + 1)}.ffi = Host.Ts.Sim.Full.bridgeOf ${s(ia)}.ffi\n`;
+    }).join(""));
+    put(`Bridge${g}`, head([H(last), "host.sim.template.Bridges", "host.sim.LoopFinal", "host.sim.full.SizeSim", okArg[0]!], O) +
+      xs.map((b, i) => kindFacts(name, b, base + i + 1, seg.frames, sizeVb)).join(""));
+    bridgeMods.push(mod(`Steps${g}`), mod(`Bridge${g}`));
+  }
+  writeFileSync(join(root, "Facts.lean"), [...endMods, ...bridgeMods].map(m => `import ${m}\n`).join(""));
 }
 console.log(`${dir}: T1 ${T1}, ${seg.steps} steps, ${bridges.length} bridges, ${glue.length} glue chunks in ${stretches.length} K modules; emitted ${emitted.length}`);

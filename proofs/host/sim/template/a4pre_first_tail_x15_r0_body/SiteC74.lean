@@ -1,4 +1,4 @@
-import host.sim.template.a4pre_first_tail_x15_r0_body.H20
+import host.sim.template.a4pre_first_tail_x15_r0_body.H22
 import host.sim.conv.Compact
 import host.sim.native.RebigR
 import host.sim.template.Sigma
@@ -11,8 +11,8 @@ set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 /-! The compaction after the merge at call site 74 of chain `PRE_first_tail_x15_r0_body` (`Conv.compact`, `Conv.full_compactQ`): the canonical
-state `PRE_first_tail_x15_r0_body.s657` (the stage's results at canonical places, its trace the call's) under `PRE_first_tail_x15_r0_body.kappa74` into the merged state
-`PRE_first_tail_x15_r0_body.s656`. -/
+state `PRE_first_tail_x15_r0_body.s720` (the stage's results at canonical places, its trace the call's) under `PRE_first_tail_x15_r0_body.kappa74` into the merged state
+`PRE_first_tail_x15_r0_body.s719`. -/
 
 def PRE_first_tail_x15_r0_body.pl74 : List Nat := [2732753]
 def PRE_first_tail_x15_r0_body.nr74 : List Nat := []
@@ -27,21 +27,21 @@ noncomputable def PRE_first_tail_x15_r0_body.kappa74 : Map :=
     PRE_first_tail_x15_r0_body.kd74.region PRE_first_tail_x15_r0_body.kd74.nodeF
 /-- The canonical result variables and their images, the merged state's entries (`Conv.compactθ`). -/
 def PRE_first_tail_x15_r0_body.cws74 : List Nat := []
-noncomputable def PRE_first_tail_x15_r0_body.crs74 : List SymE := PRE_first_tail_x15_r0_body.nr74.map fun r => (nth? PRE_first_tail_x15_r0_body.S656.tab r).getD (.var 0)
+noncomputable def PRE_first_tail_x15_r0_body.crs74 : List SymE := PRE_first_tail_x15_r0_body.nr74.map fun r => (nth? PRE_first_tail_x15_r0_body.S719.tab r).getD (.var 0)
 noncomputable def PRE_first_tail_x15_r0_body.ctheta74 : Nat → SymE := Conv.compactθ PRE_first_tail_x15_r0_body.cws74 PRE_first_tail_x15_r0_body.crs74
 /-- The call's entries the stage wrote (renamed in the canonical state with the results). -/
 def PRE_first_tail_x15_r0_body.wrB74 : List Nat := [2665, 2673467]
 
-kernel_rfl PRE_first_tail_x15_r0_body.ctab74 : PRE_first_tail_x15_r0_body.S657.tab = PRE_first_tail_x15_r0_body.S655.tab ++ PRE_first_tail_x15_r0_body.cws74.map SymE.var
-kernel_rfl PRE_first_tail_x15_r0_body.ctrace74 : PRE_first_tail_x15_r0_body.s657.trace = PRE_first_tail_x15_r0_body.s655.trace
-kernel_rfl PRE_first_tail_x15_r0_body.cnext74 : PRE_first_tail_x15_r0_body.s657.next = 2732744
-kernel_rfl PRE_first_tail_x15_r0_body.ccounters74 : ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s657.ffi).mlx.next, (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s657.ffi).mlx.nnext) = (19655, 16744)
+kernel_rfl PRE_first_tail_x15_r0_body.ctab74 : PRE_first_tail_x15_r0_body.S720.tab = PRE_first_tail_x15_r0_body.S718.tab ++ PRE_first_tail_x15_r0_body.cws74.map SymE.var
+kernel_rfl PRE_first_tail_x15_r0_body.ctrace74 : PRE_first_tail_x15_r0_body.s720.trace = PRE_first_tail_x15_r0_body.s718.trace
+kernel_rfl PRE_first_tail_x15_r0_body.cnext74 : PRE_first_tail_x15_r0_body.s720.next = 2732744
+kernel_rfl PRE_first_tail_x15_r0_body.ccounters74 : ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s720.ffi).mlx.next, (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s720.ffi).mlx.nnext) = (19655, 16744)
 -- the merged state's readback queue, carried to the canonical state (`Conv.FullShiftQ.tokens`, `tokSupp`)
-kernel_rfl PRE_first_tail_x15_r0_body.cqueue74 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s656.ffi).mlx.tokens = (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s657.ffi).mlx.tokens.map PRE_first_tail_x15_r0_body.kappa74.nv
-kernel_rfl PRE_first_tail_x15_r0_body.ctokSupp74 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s657.ffi).mlx.tokens.all (bSN 3217) = true
+kernel_rfl PRE_first_tail_x15_r0_body.cqueue74 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s719.ffi).mlx.tokens = (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s720.ffi).mlx.tokens.map PRE_first_tail_x15_r0_body.kappa74.nv
+kernel_rfl PRE_first_tail_x15_r0_body.ctokSupp74 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s720.ffi).mlx.tokens.all (bSN 3217) = true
 -- the written and the result entries carry no bigint of the canonical fresh band [next, E) and no fresh region
-kernel_rfl PRE_first_tail_x15_r0_body.cclean74 : Conv.cleanListB 19655 131072 (fun r => Nat.ble 78620 r) PRE_first_tail_x15_r0_body.s657
+kernel_rfl PRE_first_tail_x15_r0_body.cclean74 : Conv.cleanListB 19655 131072 (fun r => Nat.ble 78620 r) PRE_first_tail_x15_r0_body.s720
     (PRE_first_tail_x15_r0_body.wrB74 ++ (List.range 1).map (2732743 + ·)) = true
-kernel_rfl PRE_first_tail_x15_r0_body.cbigs74 : bigsOutB 19655 131072 (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s657.ffi).mlx = true
+kernel_rfl PRE_first_tail_x15_r0_body.cbigs74 : bigsOutB 19655 131072 (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s720.ffi).mlx = true
 
 end Host.Load.Run.Tpl

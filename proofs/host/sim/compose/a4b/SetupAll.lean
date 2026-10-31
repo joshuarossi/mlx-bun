@@ -15,104 +15,104 @@ namespace Host.Ts.Sim.Compose.SetupAll
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 
-private theorem rowRun {NB T : Nat} {tk : Nat → Nat} {r : Row} {i : Cls.Inst} {obls : List Obl}
+private theorem rowRun {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {r : Row} {i : Cls.Inst} {obls : List Obl}
     (hr : r ∈ FillSetupEarly.setupRows) (hi : InRow r i)
     (p : StagePiece FF [r] obls
-      (fun i => withSetupInputs T tk (SetupChunk.chunkCallFixedCut NB T tk i.L))
-      (SetupCommon.cut NB T tk PRE_g0b.s0 PRE_g0b.S0))
+      (fun i => withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L))
+      (SetupCommon.cut NB T tk π PRE_g0b.s0 PRE_g0b.S0))
     (ho : OblOk i obls) :
-    CutStep (ldCut NB setupP wideP (Host.Load.Run.Prompt.ldStT [] []) T tk i.L)
-      (SetupCommon.nextCut NB T tk i.L)
-      ((FillSetupEarly.g0a NB T tk).n + p.n + (FillSetupEarly.g0b NB T tk).n) := by
-  have hga := (FillSetupEarly.g0a NB T tk).ok r hr i hi
-    ⟨obl_of_row hi ((FillSetupEarly.g0a NB T tk).chk r hr), trivial⟩
+    CutStep (FillSetupEarly.ldPinCut NB T tk π i.L)
+      (SetupCommon.nextCut NB T tk π i.L)
+      ((FillSetupEarly.g0a NB T tk π).n + p.n + (FillSetupEarly.g0b NB T tk π).n) := by
+  have hga := (FillSetupEarly.g0a NB T tk π).ok r hr i hi
+    ⟨obl_of_row hi ((FillSetupEarly.g0a NB T tk π).chk r hr), trivial⟩
   have hs := (p.ok r (by simp) i hi ⟨obl_of_row hi (p.chk r (by simp)), ho⟩).step
-  have hgb := (FillSetupEarly.g0b NB T tk).ok r hr i hi
-    ⟨obl_of_row hi ((FillSetupEarly.g0b NB T tk).chk r hr), trivial⟩
+  have hgb := (FillSetupEarly.g0b NB T tk π).ok r hr i hi
+    ⟨obl_of_row hi ((FillSetupEarly.g0b NB T tk π).chk r hr), trivial⟩
   exact (hga.trans hs).trans hgb
 
-theorem row {NB T : Nat} {tk : Nat → Nat} {r : Row} {i : Cls.Inst}
+theorem row {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {r : Row} {i : Cls.Inst}
     (hr : r ∈ FillSetupEarly.setupRows) (hi : InRow r i) :
-    ∃ n, CutStep (ldCut NB setupP wideP (Host.Load.Run.Prompt.ldStT [] []) T tk i.L)
-      (SetupCommon.nextCut NB T tk i.L) n := by
+    ∃ n, CutStep (FillSetupEarly.ldPinCut NB T tk π i.L)
+      (SetupCommon.nextCut NB T tk π i.L) n := by
   simp only [FillSetupEarly.setupRows, List.mem_cons, List.not_mem_nil, or_false] at hr
   rcases hr with rfl | rfl | rfl | rfl | rfl | rfl | rfl
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (FillSetupEarly.chunk_K8__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (FillSetupEarly.chunk_K8__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_early.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH0.chunk_K2048__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH0.chunk_K2048__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h0.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH1.chunk_K1024__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH1.chunk_K1024__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h1.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH2.chunk_K512__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH2.chunk_K512__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h2.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH3.chunk_K256__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH3.chunk_K256__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h3.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH4.chunk_K128__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH4.chunk_K128__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h4.r0.chunk, trivial⟩⟩
-  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH5.chunk_K64__g0a__g0b NB T tk)
+  · exact ⟨_, rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH5.chunk_K64__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h5.r0.chunk, trivial⟩⟩
 
-noncomputable def count (NB T : Nat) (tk : Nat → Nat) : SetupClass → Nat
-  | .early => (FillSetupEarly.g0a NB T tk).n + (FillSetupEarly.chunk_K8__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h0 => (FillSetupEarly.g0a NB T tk).n + (SetupH0.chunk_K2048__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h1 => (FillSetupEarly.g0a NB T tk).n + (SetupH1.chunk_K1024__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h2 => (FillSetupEarly.g0a NB T tk).n + (SetupH2.chunk_K512__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h3 => (FillSetupEarly.g0a NB T tk).n + (SetupH3.chunk_K256__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h4 => (FillSetupEarly.g0a NB T tk).n + (SetupH4.chunk_K128__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
-  | .h5 => (FillSetupEarly.g0a NB T tk).n + (SetupH5.chunk_K64__g0a__g0b NB T tk).n + (FillSetupEarly.g0b NB T tk).n
+noncomputable def count (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : SetupClass → Nat
+  | .early => (FillSetupEarly.g0a NB T tk π).n + (FillSetupEarly.chunk_K8__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h0 => (FillSetupEarly.g0a NB T tk π).n + (SetupH0.chunk_K2048__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h1 => (FillSetupEarly.g0a NB T tk π).n + (SetupH1.chunk_K1024__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h2 => (FillSetupEarly.g0a NB T tk π).n + (SetupH2.chunk_K512__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h3 => (FillSetupEarly.g0a NB T tk π).n + (SetupH3.chunk_K256__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h4 => (FillSetupEarly.g0a NB T tk π).n + (SetupH4.chunk_K128__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
+  | .h5 => (FillSetupEarly.g0a NB T tk π).n + (SetupH5.chunk_K64__g0a__g0b NB T tk π).n + (FillSetupEarly.g0b NB T tk π).n
 
-theorem forClass_count {NB T L : Nat} {tk : Nat → Nat} {c : SetupClass}
+theorem forClass_count {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {c : SetupClass}
     (h1 : 1 ≤ L) (h2 : L ≤ 262143) (ha : c.Applies L) :
-    CutStep (ldCut NB setupP wideP (Host.Load.Run.Prompt.ldStT [] []) T tk L)
-      (SetupCommon.nextCut NB T tk L) (count NB T tk c) := by
+    CutStep (FillSetupEarly.ldPinCut NB T tk π L)
+      (SetupCommon.nextCut NB T tk π L) (count NB T tk π c) := by
   cases c
   · obtain ⟨r, hr, hi⟩ := setup_early.cover L h1 h2 ha
     have he : r = setup_early.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (FillSetupEarly.chunk_K8__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (FillSetupEarly.chunk_K8__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_early.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h0.cover L h1 h2 ha
     have he : r = setup_h0.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH0.chunk_K2048__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH0.chunk_K2048__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h0.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h1.cover L h1 h2 ha
     have he : r = setup_h1.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH1.chunk_K1024__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH1.chunk_K1024__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h1.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h2.cover L h1 h2 ha
     have he : r = setup_h2.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH2.chunk_K512__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH2.chunk_K512__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h2.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h3.cover L h1 h2 ha
     have he : r = setup_h3.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH3.chunk_K256__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH3.chunk_K256__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h3.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h4.cover L h1 h2 ha
     have he : r = setup_h4.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH4.chunk_K128__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH4.chunk_K128__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h4.r0.chunk, trivial⟩
   · obtain ⟨r, hr, hi⟩ := setup_h5.cover L h1 h2 ha
     have he : r = setup_h5.r0 := List.mem_singleton.mp hr
     subst r
-    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH5.chunk_K64__g0a__g0b NB T tk)
+    exact rowRun (by simp [FillSetupEarly.setupRows]) hi (SetupH5.chunk_K64__g0a__g0b NB T tk π)
       ⟨obl_of_row hi setup_h5.r0.chunk, trivial⟩
 
-theorem forClass {NB T L : Nat} {tk : Nat → Nat} {c : SetupClass}
+theorem forClass {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {c : SetupClass}
     (h1 : 1 ≤ L) (h2 : L ≤ 262143) (ha : c.Applies L) :
-    ∃ n, CutStep (ldCut NB setupP wideP (Host.Load.Run.Prompt.ldStT [] []) T tk L)
-      (SetupCommon.nextCut NB T tk L) n :=
-  ⟨count NB T tk c, forClass_count h1 h2 ha⟩
+    ∃ n, CutStep (FillSetupEarly.ldPinCut NB T tk π L)
+      (SetupCommon.nextCut NB T tk π L) n :=
+  ⟨count NB T tk π c, forClass_count h1 h2 ha⟩
 
 /-- Every supported prompt length reaches the shared prefill boundary through
 one checked chunk template and the common continuation. -/
-theorem setup {NB T L : Nat} {tk : Nat → Nat} (h1 : 1 ≤ L) (h2 : L ≤ 262143) :
-    ∃ n, CutStep (ldCut NB setupP wideP (Host.Load.Run.Prompt.ldStT [] []) T tk L)
-      (SetupCommon.nextCut NB T tk L) n :=
+theorem setup {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} (h1 : 1 ≤ L) (h2 : L ≤ 262143) :
+    ∃ n, CutStep (FillSetupEarly.ldPinCut NB T tk π L)
+      (SetupCommon.nextCut NB T tk π L) n :=
   forClass h1 h2 ((Host.Ts.Sim.Prefill.setup_cover h1 (by omega)).2.1)
 
 end Host.Ts.Sim.Compose.SetupAll

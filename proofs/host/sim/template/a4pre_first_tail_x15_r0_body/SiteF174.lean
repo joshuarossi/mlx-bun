@@ -13,9 +13,9 @@ kernel_rfl PRE_first_tail_x15_r0_body.wrNodupB174 : nodupT PRE_first_tail_x15_r0
 theorem PRE_first_tail_x15_r0_body.wrNodup174 : PRE_first_tail_x15_r0_body.st174.wr.Nodup := (nodupT_sound PRE_first_tail_x15_r0_body.wrNodupB174).2
 kernel_rfl PRE_first_tail_x15_r0_body.wrBoundB174 : PRE_first_tail_x15_r0_body.st174.wr.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true
 theorem PRE_first_tail_x15_r0_body.wrBound174 : ∀ b ∈ PRE_first_tail_x15_r0_body.st174.wr, b / 4096 < 4 ^ 31 := fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x15_r0_body.wrBoundB174 b hb)
-noncomputable def PRE_first_tail_x15_r0_body.trFr174 := PRE_first_tail_x15_r0_body.st174.s3.trace.take 120
-kernel_rfl PRE_first_tail_x15_r0_body.traceEq174 : PRE_first_tail_x15_r0_body.st174.s3.trace = PRE_first_tail_x15_r0_body.trFr174 ++ PRE_first_tail_x15_r0_body.st174.s0.trace
-theorem PRE_first_tail_x15_r0_body.trace174 : ∃ fr, PRE_first_tail_x15_r0_body.st174.s3.trace = fr ++ PRE_first_tail_x15_r0_body.st174.s0.trace := ⟨_, PRE_first_tail_x15_r0_body.traceEq174⟩
+noncomputable def PRE_first_tail_x15_r0_body.trFr174 := PRE_first_tail_x15_r0_body.st174.s5.trace.take 120
+kernel_rfl PRE_first_tail_x15_r0_body.traceEq174 : PRE_first_tail_x15_r0_body.st174.s5.trace = PRE_first_tail_x15_r0_body.trFr174 ++ PRE_first_tail_x15_r0_body.st174.s0.trace
+theorem PRE_first_tail_x15_r0_body.trace174 : ∃ fr, PRE_first_tail_x15_r0_body.st174.s5.trace = fr ++ PRE_first_tail_x15_r0_body.st174.s0.trace := ⟨_, PRE_first_tail_x15_r0_body.traceEq174⟩
 
 -- the caller's wide frames at the instance's start (`Conv.isolateW`'s `W0` under `Map.id`) and their `WFix`
 def PRE_first_tail_x15_r0_body.wide174 : List (Nat × WFrame) := [(4910, .memo [])]

@@ -6,11 +6,11 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-kernel_rfl PRE_first_tail_x15_r0_body.ckA33 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s304.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s302.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.clo33.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s304.ffi).mlx.arrs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.ckA33 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s334.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s332.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.clo33.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s334.ffi).mlx.arrs.get i).map (i, ·))
 kernel_rfl PRE_first_tail_x15_r0_body.cbd33 : (PRE_first_tail_x15_r0_body.clo33 ++ PRE_first_tail_x15_r0_body.cln33 ++ PRE_first_tail_x15_r0_body.cli33).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true
 kernel_rfl PRE_first_tail_x15_r0_body.cle33 : Conv.Cnt.leB (⟨18865, 15950, 2701320, 1500⟩ : Conv.Cnt) (⟨18869, 15956, 2701335, 1509⟩ : Conv.Cnt) = true
-kernel_rfl PRE_first_tail_x15_r0_body.cck33 : Conv.ncleanListB (⟨18869, 15956, 2701335, 1509⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s304.ffi).mlx PRE_first_tail_x15_r0_body.clo33 PRE_first_tail_x15_r0_body.cln33 PRE_first_tail_x15_r0_body.cli33 = true
-theorem PRE_first_tail_x15_r0_body.cncl33 (h : Conv.NClean (⟨18865, 15950, 2701320, 1500⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s302.ffi).mlx) : Conv.NClean (⟨18869, 15956, 2701335, 1509⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s304.ffi).mlx :=
+kernel_rfl PRE_first_tail_x15_r0_body.cck33 : Conv.ncleanListB (⟨18869, 15956, 2701335, 1509⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s334.ffi).mlx PRE_first_tail_x15_r0_body.clo33 PRE_first_tail_x15_r0_body.cln33 PRE_first_tail_x15_r0_body.cli33 = true
+theorem PRE_first_tail_x15_r0_body.cncl33 (h : Conv.NClean (⟨18865, 15950, 2701320, 1500⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s332.ffi).mlx) : Conv.NClean (⟨18869, 15956, 2701335, 1509⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s334.ffi).mlx :=
   Conv.NClean.stepKeep h PRE_first_tail_x15_r0_body.cle33 PRE_first_tail_x15_r0_body.ckA33 PRE_first_tail_x15_r0_body.cobjsK33 PRE_first_tail_x15_r0_body.cnodesK33 PRE_first_tail_x15_r0_body.citemsK33 PRE_first_tail_x15_r0_body.cbd33 PRE_first_tail_x15_r0_body.cck33
 
 end Host.Load.Run.Tpl

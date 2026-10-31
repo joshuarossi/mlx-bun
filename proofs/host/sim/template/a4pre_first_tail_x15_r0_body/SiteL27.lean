@@ -9,39 +9,39 @@ set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 /-! The call link's facts at call site 27 of chain `PRE_first_tail_x15_r0_body`: the instance's start server, its footprint (`Conv.StageFoot`), the
-merged state `PRE_first_tail_x15_r0_body.s252`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
+merged state `PRE_first_tail_x15_r0_body.s276`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
 
 kernel_rfl PRE_first_tail_x15_r0_body.srvO27 : PRE_first_tail_x15_r0_body.st27.S0.oracle = PRE_first_tail_x15_r0_body.st27.OR
 kernel_rfl PRE_first_tail_x15_r0_body.wr0B27 : PRE_first_tail_x15_r0_body.st27.wr.all (fun b => !Nat.blt b PRE_first_tail_x15_r0_body.st27.s0.next || (PRE_first_tail_x15_r0_body.st27.s0.heap.get b).isSome) = true
-theorem PRE_first_tail_x15_r0_body.stFoot27 : Conv.StageFoot PRE_first_tail_x15_r0_body.st27.wr PRE_first_tail_x15_r0_body.st27.s0 PRE_first_tail_x15_r0_body.st27.s3 :=
+theorem PRE_first_tail_x15_r0_body.stFoot27 : Conv.StageFoot PRE_first_tail_x15_r0_body.st27.wr PRE_first_tail_x15_r0_body.st27.s0 PRE_first_tail_x15_r0_body.st27.s5 :=
   stageFoot_of PRE_first_tail_x15_r0_body.st27.heapFoot PRE_first_tail_x15_r0_body.wrNodup27 PRE_first_tail_x15_r0_body.wrBound27 PRE_first_tail_x15_r0_body.wr0B27 PRE_first_tail_x15_r0_body.st27.grows
 
 /-- **The relation at the merged state** from the relation at the merge (`Conv.site_merge`'s; `merged_relB`). -/
 theorem PRE_first_tail_x15_r0_body.merged27 {FR : Map → Nat → PRE_first_tail_x15_r0_body.st27.F.S → PRE_first_tail_x15_r0_body.st27.F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
     {ν : Nat → F64} {K : Host.Ts.Sim.Ctx} {S : SSrv} {t : St PRE_first_tail_x15_r0_body.st27.F.S} {C : CSrv} {n0 : Nat}
-    (h : RelB PRE_first_tail_x15_r0_body.st27.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs27 PRE_first_tail_x15_r0_body.st27.wr PRE_first_tail_x15_r0_body.s251 PRE_first_tail_x15_r0_body.st27.s3 PRE_first_tail_x15_r0_body.st27.s0
-      PRE_first_tail_x15_r0_body.st27.s3.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st27.F FR W stk M ν K PRE_first_tail_x15_r0_body.s252 S t C :=
+    (h : RelB PRE_first_tail_x15_r0_body.st27.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs27 PRE_first_tail_x15_r0_body.st27.wr PRE_first_tail_x15_r0_body.s275 PRE_first_tail_x15_r0_body.st27.s5 PRE_first_tail_x15_r0_body.st27.s0
+      PRE_first_tail_x15_r0_body.st27.s5.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st27.F FR W stk M ν K PRE_first_tail_x15_r0_body.s276 S t C :=
   merged_relB PRE_first_tail_x15_r0_body.iso27 PRE_first_tail_x15_r0_body.stFoot27 PRE_first_tail_x15_r0_body.wrNodup27 PRE_first_tail_x15_r0_body.wrBound27 PRE_first_tail_x15_r0_body.trace27 PRE_first_tail_x15_r0_body.mheap27
     PRE_first_tail_x15_r0_body.mnext27 PRE_first_tail_x15_r0_body.mctl27 PRE_first_tail_x15_r0_body.mstack27 PRE_first_tail_x15_r0_body.mjobs27 PRE_first_tail_x15_r0_body.mffi27 PRE_first_tail_x15_r0_body.mtrace27 PRE_first_tail_x15_r0_body.mstores27 h
 
 def PRE_first_tail_x15_r0_body.arrEl27_2665 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE27_2665 : arrOf PRE_first_tail_x15_r0_body.s252 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl27_2665
-kernel_rfl PRE_first_tail_x15_r0_body.arrA27_2665 : isArrB PRE_first_tail_x15_r0_body.s252 2665 = true
-theorem PRE_first_tail_x15_r0_body.arr27_2665 : ∃ o, PRE_first_tail_x15_r0_body.s252.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl27_2665) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE27_2665 : arrOf PRE_first_tail_x15_r0_body.s276 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl27_2665
+kernel_rfl PRE_first_tail_x15_r0_body.arrA27_2665 : isArrB PRE_first_tail_x15_r0_body.s276 2665 = true
+theorem PRE_first_tail_x15_r0_body.arr27_2665 : ∃ o, PRE_first_tail_x15_r0_body.s276.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl27_2665) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE27_2665 PRE_first_tail_x15_r0_body.arrA27_2665
 kernel_rfl PRE_first_tail_x15_r0_body.arrN27_2665 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl27_2665 = true
 theorem PRE_first_tail_x15_r0_body.arrR27_2665 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl27_2665 := numRefs_of PRE_first_tail_x15_r0_body.arrN27_2665
 
 def PRE_first_tail_x15_r0_body.arrEl27_2673467 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE27_2673467 : arrOf PRE_first_tail_x15_r0_body.s252 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl27_2673467
-kernel_rfl PRE_first_tail_x15_r0_body.arrA27_2673467 : isArrB PRE_first_tail_x15_r0_body.s252 2673467 = true
-theorem PRE_first_tail_x15_r0_body.arr27_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s252.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl27_2673467) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE27_2673467 : arrOf PRE_first_tail_x15_r0_body.s276 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl27_2673467
+kernel_rfl PRE_first_tail_x15_r0_body.arrA27_2673467 : isArrB PRE_first_tail_x15_r0_body.s276 2673467 = true
+theorem PRE_first_tail_x15_r0_body.arr27_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s276.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl27_2673467) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE27_2673467 PRE_first_tail_x15_r0_body.arrA27_2673467
 kernel_rfl PRE_first_tail_x15_r0_body.arrN27_2673467 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl27_2673467 = true
 theorem PRE_first_tail_x15_r0_body.arrR27_2673467 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl27_2673467 := numRefs_of PRE_first_tail_x15_r0_body.arrN27_2673467
 
-kernel_rfl PRE_first_tail_x15_r0_body.w4910k27 : isArrB PRE_first_tail_x15_r0_body.s252 4910 = false
-theorem PRE_first_tail_x15_r0_body.keep27 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s252 := by
+kernel_rfl PRE_first_tail_x15_r0_body.w4910k27 : isArrB PRE_first_tail_x15_r0_body.s276 4910 = false
+theorem PRE_first_tail_x15_r0_body.keep27 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s276 := by
   intro a pre pre' hx o es ho hk
   unfold framesP at hx
   simp only at hx

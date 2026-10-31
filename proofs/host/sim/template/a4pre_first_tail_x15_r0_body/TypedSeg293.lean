@@ -1,7 +1,8 @@
 import host.sim.Chunk
-import host.sim.template.a4pre_first_tail_x15_r0_body.H31
+import host.sim.template.a4pre_first_tail_x15_r0_body.H33
 import host.sim.template.a4pre_first_tail_x15_r0_body.TypedOk
-import host.sim.template.a4pre_first_tail_x15_r0_body.TypedK991
+import host.sim.template.a4pre_first_tail_x15_r0_body.TypedK1085
+import host.sim.template.a4pre_first_tail_x15_r0_body.TypedK1086
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -9,6 +10,6 @@ namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 theorem PRE_first_tail_x15_r0_body.bodyRunSeg293 (bytes : List Byte) (rows : Nat) :
-    runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 991).getD 0) PRE_first_tail_x15_r0_body.s991 PRE_first_tail_x15_r0_body.S991 = some (PRE_first_tail_x15_r0_body.s992, PRE_first_tail_x15_r0_body.S992) :=
-  (congrFun (congrFun PRE_first_tail_x15_r0_body.bodyK991 bytes) rows)
+    runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) (((nth? PRE_first_tail_x15_r0_body.ks 1085).getD 0) + ((nth? PRE_first_tail_x15_r0_body.ks 1086).getD 0)) PRE_first_tail_x15_r0_body.s1085 PRE_first_tail_x15_r0_body.S1085 = some (PRE_first_tail_x15_r0_body.s1087, PRE_first_tail_x15_r0_body.S1087) :=
+  runOk_trans PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 1085).getD 0) ((nth? PRE_first_tail_x15_r0_body.ks 1086).getD 0) PRE_first_tail_x15_r0_body.s1085 PRE_first_tail_x15_r0_body.s1086 PRE_first_tail_x15_r0_body.s1087 PRE_first_tail_x15_r0_body.S1085 PRE_first_tail_x15_r0_body.S1086 PRE_first_tail_x15_r0_body.S1087 ((congrFun (congrFun PRE_first_tail_x15_r0_body.bodyK1085 bytes) rows)) (congrFun (congrFun PRE_first_tail_x15_r0_body.bodyK1086 bytes) rows)
 end Host.Load.Run.Tpl

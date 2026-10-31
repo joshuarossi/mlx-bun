@@ -70,6 +70,8 @@ theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simpa only [P, backRest] using h.1
 
 
+kernel_rfl cntMerged : countersOkB PRE_setup_h5_chunk.s0 PRE_setup_h5_chunk.s1 = true
+
 theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (horacle : ∀ ν, MapOk ν (setupI L) [(9, .L)] → Good ν PRE_setup_h5_chunk.st0.S0.oracle) :
     CutStepKeeps (chunkCallFixedCut NB T tk L) (chunkMergedCut NB T tk L) (PRE_setup_h5_chunk.st0.tpl.n + 1) := by
@@ -102,7 +104,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_setup_h5_chunk.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_setup_h5_chunk.ws0
     (Conv.resF SymE.var PRE_setup_h5_chunk.st0.S5.tab PRE_setup_h5_chunk.S0.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl hr hm' hext.big hext.node cntMerged⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_h5_chunk.s1 ⟨PRE_setup_h5_chunk.S1.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_h5_chunk.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩
@@ -287,12 +289,14 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
       change Shift.valuation (Conv.compactθZ [] PRE_setup_h5_chunk.crs0 PRE_setup_h5_chunk.ws0) x.ν 9 = _
       rw [Conv.valuation_compactθZ_out (by rfl) (by decide), hout 9 (by decide)]
       exact hmap.1
-  refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_⟩
-  · refine ⟨hctx, hmemo', π, hlen, hvocab, ?_, hD, hfresh⟩
+  have hfrK : K'.fr 2665 = some ([], π.map natV) := by
     obtain ⟨o, ho, hkind⟩ := PRE_setup_h5_chunk.arr0_2665
     have hknd : o.kind = .array ([] ++ []) := by simpa only [sourcePromptEmpty, PRE_setup_h5_chunk.arrEl0_2665] using hkind
     have h := framedNext_of (M := x.M) hframe ho hknd
     simpa only [Map.vals, List.map_nil, List.append_nil] using h
+  refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_,
+    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩⟩
+  · exact ⟨hctx, hmemo', π, hlen, hvocab, hfrK, hD, hfresh⟩
   · have hκ : ∀ a ∈ [2586, 2589], PRE_setup_h5_chunk.kappa0.a a = a := by
       intro a ha
       simp only [List.mem_cons, List.not_mem_nil, or_false] at ha

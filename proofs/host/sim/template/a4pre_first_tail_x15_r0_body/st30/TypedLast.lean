@@ -7,9 +7,9 @@ set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-boot_rfl PRE_first_tail_x15_r0_body.st30.bodyLast from PRE_first_tail_x15_r0_body.st30.s2 to PRE_first_tail_x15_r0_body.st30.s3 :
-  interpS (step PRE_first_tail_x15_r0_body.st30.F PRE_first_tail_x15_r0_body.st30.s2).run PRE_first_tail_x15_r0_body.st30.S2 = some (PRE_first_tail_x15_r0_body.st30.s3, PRE_first_tail_x15_r0_body.st30.S3)
-kernel_rfl PRE_first_tail_x15_r0_body.st30.bodyHalt : isHalt PRE_first_tail_x15_r0_body.st30.s2.ctl = false
-kernel_rfl PRE_first_tail_x15_r0_body.st30.bodyTopCheck : noBlockTop PRE_first_tail_x15_r0_body.st30.s3.stack = true
+boot_rfl PRE_first_tail_x15_r0_body.st30.bodyLast from PRE_first_tail_x15_r0_body.st30.s4 to PRE_first_tail_x15_r0_body.st30.s5 :
+  interpS (step PRE_first_tail_x15_r0_body.st30.F PRE_first_tail_x15_r0_body.st30.s4).run PRE_first_tail_x15_r0_body.st30.S4 = some (PRE_first_tail_x15_r0_body.st30.s5, PRE_first_tail_x15_r0_body.st30.S5)
+kernel_rfl PRE_first_tail_x15_r0_body.st30.bodyHalt : isHalt PRE_first_tail_x15_r0_body.st30.s4.ctl = false
+kernel_rfl PRE_first_tail_x15_r0_body.st30.bodyTopCheck : noBlockTop PRE_first_tail_x15_r0_body.st30.s5.stack = true
 
 end Host.Load.Run.Tpl

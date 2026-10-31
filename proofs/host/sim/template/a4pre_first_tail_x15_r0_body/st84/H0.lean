@@ -1,5 +1,5 @@
 import host.sim.template.a4pre_first_tail_x15_r0_body.States
-import host.sim.template.a4pre_first_tail_x15_r0_body.H23
+import host.sim.template.a4pre_first_tail_x15_r0_body.H25
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 set_option maxRecDepth 1000000
@@ -8,4 +8,6 @@ host_stream_state PRE_first_tail_x15_r0_body.st84 0
 host_stream_state PRE_first_tail_x15_r0_body.st84 1
 host_stream_state PRE_first_tail_x15_r0_body.st84 2
 host_stream_state PRE_first_tail_x15_r0_body.st84 3
+host_stream_state PRE_first_tail_x15_r0_body.st84 4
+host_stream_state PRE_first_tail_x15_r0_body.st84 5
 end Host.Load.Run.Tpl

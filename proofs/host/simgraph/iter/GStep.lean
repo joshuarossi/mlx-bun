@@ -1,3 +1,4 @@
+import host.sim.extract.GrowGraph
 import host.simgraph.iter.Inv
 import host.sim.LoopInv
 import host.sim.extract.Grow

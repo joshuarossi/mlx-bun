@@ -52,6 +52,8 @@ theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simpa only [P, backRest] using h.1
 
 /-- The actual site template runs for 100 steps and its return step, keeping caller entries. -/
+kernel_rfl cntMerged : countersOkB PRE_setup_early_r0.s4 PRE_setup_early_r0.s5 = true
+
 theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (h1 : 1 ≤ L) (h8 : L ≤ 8) :
     CutStepKeeps (chunkCallFixedCut NB T tk L) (chunkMergedCut NB T tk L) 101 := by
@@ -84,7 +86,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_setup_early_r0.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_setup_early_r0.ws0
     (Conv.resF SymE.var PRE_setup_early_r0.st0.S2.tab PRE_setup_early_r0.S4.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl hr hm' hext.big hext.node cntMerged⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_early_r0.s5 ⟨PRE_setup_early_r0.S5.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_early_r0.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩
@@ -143,6 +145,8 @@ theorem ldCut_initialFixed {NB T L : Nat} {tk : Nat → Nat} (hctx : L + T ≤ 2
     rw [hB.1]
     exact ⟨rfl, rfl⟩
 
+kernel_rfl cntCall : countersOkB PRE_setup_early_r0.s0 PRE_setup_early_r0.s4 = true
+
 theorem initial_chunkCall_fixed_oracle_keeps {NB T L : Nat} {tk : Nat → Nat}
     (horacle : ∀ ν, MapOk ν (setupI L) [(9, .L)] → Good ν PRE_setup_early_r0.S0.oracle) :
     CutStepKeeps (initialFixedCut NB T tk L) (chunkCallFixedCut NB T tk L) (897 + 1 + 1 + 1) := by
@@ -196,7 +200,9 @@ theorem initial_chunkCall_fixed_oracle_keeps {NB T L : Nat} {tk : Nat → Nat}
     accepted3 PRE_setup_early_r0.stepA2
   have run3 := runC_trans run2 (runC_one (by rw [h2.isHalt, PRE_setup_early_r0.ctlA1]; rfl) step3)
   have run4 := runC_trans run3 (runC_one (by rw [rel3j.isHalt]; exact unhalted3) step4)
-  refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_⟩
+  refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step rfl h0 (rel4.rel_noRet top4)
+    (ext4.big.trans (ext3.big.trans (ext2.big.trans ext1.big)))
+    (ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node))) cntCall⟩
   · exact ⟨(rel4.rel_noRet top4).withOracle (fun _ h => nomatch h), hq⟩
   · constructor
     · have inactive0 : (bridgeOf PRE_setup_early_r0.s0.ffi).active = false := by
@@ -431,12 +437,14 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
       change Shift.valuation (Conv.compactθZ [] PRE_setup_early_r0.crs0 [1000]) x.ν 9 = _
       rw [Conv.valuation_compactθZ_out (by rfl) (by decide), hout 9 (by decide)]
       exact hmap.1
-  refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_⟩
-  · refine ⟨hctx, hmemo', π, hlen, hvocab, ?_, hD, hfresh⟩
+  have hfrK : K'.fr 2665 = some ([], π.map natV) := by
     obtain ⟨o, ho, hkind⟩ := PRE_setup_early_r0.arr0_2665
     have hknd : o.kind = .array ([] ++ []) := by simpa only [sourcePromptEmpty, PRE_setup_early_r0.arrEl0_2665] using hkind
     have h := framedNext_of (M := x.M) hframe ho hknd
     simpa only [Map.vals, List.map_nil, List.append_nil] using h
+  refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_,
+    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩⟩
+  · exact ⟨hctx, hmemo', π, hlen, hvocab, hfrK, hD, hfresh⟩
   · have hκ : ∀ a ∈ [2586, 2589], PRE_setup_early_r0.kappa0.a a = a := by
       intro a ha
       simp only [List.mem_cons, List.not_mem_nil, or_false] at ha

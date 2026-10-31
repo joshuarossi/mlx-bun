@@ -7,13 +7,13 @@ set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 /-! Stage `PRE_first_tail_x15_r0_body.st21` (kvW: `appendWindow`) as a stage template: the isolated call state `PRE_first_tail_x15_r0_body.st21.s0`, the checked
-local run (`PRE_first_tail_x15_r0_body.st21.run`, 3452 steps with `PRE_first_tail_x15_r0_body.st21.okL`) to `PRE_first_tail_x15_r0_body.st21.s1` and the return step (`PRE_first_tail_x15_r0_body.st21.last`)
-to `PRE_first_tail_x15_r0_body.st21.s2`. Its variables (the stage specs' map): `9` L, `10` n. -/
+local run (`PRE_first_tail_x15_r0_body.st21.run`, 3452 steps with `PRE_first_tail_x15_r0_body.st21.okL`) to `PRE_first_tail_x15_r0_body.st21.s2` and the return step (`PRE_first_tail_x15_r0_body.st21.last`)
+to `PRE_first_tail_x15_r0_body.st21.s3`. Its variables (the stage specs' map): `9` L, `10` n. -/
 
 kernel_rfl PRE_first_tail_x15_r0_body.st21.ok0 : PRE_first_tail_x15_r0_body.st21.okL PRE_first_tail_x15_r0_body.st21.s0 PRE_first_tail_x15_r0_body.st21.S0 = true
-kernel_rfl PRE_first_tail_x15_r0_body.st21.ok1 : PRE_first_tail_x15_r0_body.st21.okL PRE_first_tail_x15_r0_body.st21.s1 PRE_first_tail_x15_r0_body.st21.S1 = true
-kernel_rfl PRE_first_tail_x15_r0_body.st21.halt1 : isHalt PRE_first_tail_x15_r0_body.st21.s1.ctl = false
-kernel_rfl PRE_first_tail_x15_r0_body.st21.top_check : noBlockTop PRE_first_tail_x15_r0_body.st21.s2.stack = true
+kernel_rfl PRE_first_tail_x15_r0_body.st21.ok1 : PRE_first_tail_x15_r0_body.st21.okL PRE_first_tail_x15_r0_body.st21.s2 PRE_first_tail_x15_r0_body.st21.S2 = true
+kernel_rfl PRE_first_tail_x15_r0_body.st21.halt1 : isHalt PRE_first_tail_x15_r0_body.st21.s2.ctl = false
+kernel_rfl PRE_first_tail_x15_r0_body.st21.top_check : noBlockTop PRE_first_tail_x15_r0_body.st21.s3.stack = true
 
 theorem PRE_first_tail_x15_r0_body.st21.loc : ∀ s Sv, PRE_first_tail_x15_r0_body.st21.okL s Sv = true → Disp.localB s = true := okLocal_localB
 
@@ -21,10 +21,10 @@ theorem PRE_first_tail_x15_r0_body.st21.loc : ∀ s Sv, PRE_first_tail_x15_r0_bo
 noncomputable def PRE_first_tail_x15_r0_body.st21.tpl : Host.Ts.Sim.Stage.StageTpl PRE_first_tail_x15_r0_body.st21.F PRE_first_tail_x15_r0_body.st21.okL where
   s0 := PRE_first_tail_x15_r0_body.st21.s0
   S0 := PRE_first_tail_x15_r0_body.st21.S0
-  s1 := PRE_first_tail_x15_r0_body.st21.s1
-  S1 := PRE_first_tail_x15_r0_body.st21.S1
-  s2 := PRE_first_tail_x15_r0_body.st21.s2
-  S2 := PRE_first_tail_x15_r0_body.st21.S2
+  s1 := PRE_first_tail_x15_r0_body.st21.s2
+  S1 := PRE_first_tail_x15_r0_body.st21.S2
+  s2 := PRE_first_tail_x15_r0_body.st21.s3
+  S2 := PRE_first_tail_x15_r0_body.st21.S3
   n := 3452
   ok0 := PRE_first_tail_x15_r0_body.st21.ok0
   run := PRE_first_tail_x15_r0_body.st21.run

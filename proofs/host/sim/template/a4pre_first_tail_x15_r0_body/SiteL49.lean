@@ -9,7 +9,7 @@ set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 /-! The call link's facts at call site 49 of chain `PRE_first_tail_x15_r0_body`: the instance's start server, its footprint (`Conv.StageFoot`), the
-merged state `PRE_first_tail_x15_r0_body.s442`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
+merged state `PRE_first_tail_x15_r0_body.s485`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
 
 kernel_rfl PRE_first_tail_x15_r0_body.srvO49 : PRE_first_tail_x15_r0_body.st49.S0.oracle = PRE_first_tail_x15_r0_body.st49.OR
 kernel_rfl PRE_first_tail_x15_r0_body.wr0B49 : PRE_first_tail_x15_r0_body.st49.wr.all (fun b => !Nat.blt b PRE_first_tail_x15_r0_body.st49.s0.next || (PRE_first_tail_x15_r0_body.st49.s0.heap.get b).isSome) = true
@@ -19,29 +19,29 @@ theorem PRE_first_tail_x15_r0_body.stFoot49 : Conv.StageFoot PRE_first_tail_x15_
 /-- **The relation at the merged state** from the relation at the merge (`Conv.site_merge`'s; `merged_relB`). -/
 theorem PRE_first_tail_x15_r0_body.merged49 {FR : Map → Nat → PRE_first_tail_x15_r0_body.st49.F.S → PRE_first_tail_x15_r0_body.st49.F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
     {ν : Nat → F64} {K : Host.Ts.Sim.Ctx} {S : SSrv} {t : St PRE_first_tail_x15_r0_body.st49.F.S} {C : CSrv} {n0 : Nat}
-    (h : RelB PRE_first_tail_x15_r0_body.st49.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs49 PRE_first_tail_x15_r0_body.st49.wr PRE_first_tail_x15_r0_body.s441 PRE_first_tail_x15_r0_body.st49.s2 PRE_first_tail_x15_r0_body.st49.s0
-      PRE_first_tail_x15_r0_body.st49.s2.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st49.F FR W stk M ν K PRE_first_tail_x15_r0_body.s442 S t C :=
+    (h : RelB PRE_first_tail_x15_r0_body.st49.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs49 PRE_first_tail_x15_r0_body.st49.wr PRE_first_tail_x15_r0_body.s484 PRE_first_tail_x15_r0_body.st49.s2 PRE_first_tail_x15_r0_body.st49.s0
+      PRE_first_tail_x15_r0_body.st49.s2.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st49.F FR W stk M ν K PRE_first_tail_x15_r0_body.s485 S t C :=
   merged_relB PRE_first_tail_x15_r0_body.iso49 PRE_first_tail_x15_r0_body.stFoot49 PRE_first_tail_x15_r0_body.wrNodup49 PRE_first_tail_x15_r0_body.wrBound49 PRE_first_tail_x15_r0_body.trace49 PRE_first_tail_x15_r0_body.mheap49
     PRE_first_tail_x15_r0_body.mnext49 PRE_first_tail_x15_r0_body.mctl49 PRE_first_tail_x15_r0_body.mstack49 PRE_first_tail_x15_r0_body.mjobs49 PRE_first_tail_x15_r0_body.mffi49 PRE_first_tail_x15_r0_body.mtrace49 PRE_first_tail_x15_r0_body.mstores49 h
 
 def PRE_first_tail_x15_r0_body.arrEl49_2665 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE49_2665 : arrOf PRE_first_tail_x15_r0_body.s442 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl49_2665
-kernel_rfl PRE_first_tail_x15_r0_body.arrA49_2665 : isArrB PRE_first_tail_x15_r0_body.s442 2665 = true
-theorem PRE_first_tail_x15_r0_body.arr49_2665 : ∃ o, PRE_first_tail_x15_r0_body.s442.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl49_2665) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE49_2665 : arrOf PRE_first_tail_x15_r0_body.s485 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl49_2665
+kernel_rfl PRE_first_tail_x15_r0_body.arrA49_2665 : isArrB PRE_first_tail_x15_r0_body.s485 2665 = true
+theorem PRE_first_tail_x15_r0_body.arr49_2665 : ∃ o, PRE_first_tail_x15_r0_body.s485.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl49_2665) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE49_2665 PRE_first_tail_x15_r0_body.arrA49_2665
 kernel_rfl PRE_first_tail_x15_r0_body.arrN49_2665 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl49_2665 = true
 theorem PRE_first_tail_x15_r0_body.arrR49_2665 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl49_2665 := numRefs_of PRE_first_tail_x15_r0_body.arrN49_2665
 
 def PRE_first_tail_x15_r0_body.arrEl49_2673467 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE49_2673467 : arrOf PRE_first_tail_x15_r0_body.s442 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl49_2673467
-kernel_rfl PRE_first_tail_x15_r0_body.arrA49_2673467 : isArrB PRE_first_tail_x15_r0_body.s442 2673467 = true
-theorem PRE_first_tail_x15_r0_body.arr49_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s442.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl49_2673467) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE49_2673467 : arrOf PRE_first_tail_x15_r0_body.s485 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl49_2673467
+kernel_rfl PRE_first_tail_x15_r0_body.arrA49_2673467 : isArrB PRE_first_tail_x15_r0_body.s485 2673467 = true
+theorem PRE_first_tail_x15_r0_body.arr49_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s485.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl49_2673467) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE49_2673467 PRE_first_tail_x15_r0_body.arrA49_2673467
 kernel_rfl PRE_first_tail_x15_r0_body.arrN49_2673467 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl49_2673467 = true
 theorem PRE_first_tail_x15_r0_body.arrR49_2673467 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl49_2673467 := numRefs_of PRE_first_tail_x15_r0_body.arrN49_2673467
 
-kernel_rfl PRE_first_tail_x15_r0_body.w4910k49 : isArrB PRE_first_tail_x15_r0_body.s442 4910 = false
-theorem PRE_first_tail_x15_r0_body.keep49 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s442 := by
+kernel_rfl PRE_first_tail_x15_r0_body.w4910k49 : isArrB PRE_first_tail_x15_r0_body.s485 4910 = false
+theorem PRE_first_tail_x15_r0_body.keep49 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s485 := by
   intro a pre pre' hx o es ho hk
   unfold framesP at hx
   simp only at hx

@@ -15,16 +15,16 @@ def ChunkBook (L : Nat) (x : SegInst FF) : Prop :=
   ∃ π : List Nat, π.length = L ∧ (∀ t ∈ π, t < 248320) ∧
     x.K.fr 2665 = some ([], π.map natV) ∧ AneFresh x.t) ∧ (L ≤ 8 → x.K.D = 13) ∧ x.K.D ≤ 3526
 
-noncomputable def literalCut (NB T : Nat) (tk : Nat → Nat) (c : Nat) (i : Cls.Inst) : ICut FF :=
+noncomputable def literalCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (c : Nat) (i : Cls.Inst) : ICut FF :=
   { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP [(9, .L)]
       ((PRE_setup_early_r0.s6 : St FF.S).ret (.num (.lit (F64.ofNat c)))) PRE_setup_early_r0.S6 i with
-    B := fun x => ChunkBook i.L x ∧ setupInputs T tk x ∧ fixedCells x }
+    B := fun x => ChunkBook i.L x ∧ setupInputs T tk x ∧ fixedCells x ∧ PromptFr π x ∧ NativeAt 0 0 PRE_setup_early_r0.s6 x.t }
 
 /-- Any checked chunk literal reaches the same C-reference template in zero steps. -/
-theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {i : Cls.Inst}
+theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst}
     (hC : i.C = c) (hchunk : c = chunkC i.L) (hbound : c ≤ loopVB 10) :
-    CutConv (literalCut NB T tk c i) (cut NB T tk PRE_g0b.s0 PRE_g0b.S0 i) := by
-  rintro x ⟨hr, hq⟩ ⟨hb, hv, hids⟩
+    CutConv (literalCut NB T tk ρ c i) (cut NB T tk ρ PRE_g0b.s0 PRE_g0b.S0 i) := by
+  rintro x ⟨hr, hq⟩ ⟨hb, hv, hids, hpin, hnat⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have ha := hr.abstractRetLitJ (fullRXD_laws { setupP with rest := machReads T tk } NB) rfl
     (fun e he => List.all_eq_true.mp chunkFresh10 e he) (fun _ h => nomatch h)
@@ -54,6 +54,11 @@ theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {i : Cls.Inst}
   · intro a o ho
     exact Supp.hobj_mono (fun _ _ => trivial) (show PRE_setup_early_r0.S6.tab.length ≤ 10 by
       rw [canonicalTable]; decide) (hr.heapSupp a o ho)
-  · exact ⟨(congrFun he.a 2586).trans hids.1, (congrFun he.a 2589).trans hids.2⟩
+  · refine ⟨⟨(congrFun he.a 2586).trans hids.1, (congrFun he.a 2589).trans hids.2⟩, hpin, ?_⟩
+    have hs : (PRE_g0b.s0 : St FF.S) =
+        (PRE_setup_early_r0.s6 : St FF.S).ret (.num (.ref PRE_setup_early_r0.S6.tab.length)) := start_eq
+    change NativeAt 0 0 (PRE_g0b.s0 : St FF.S) x.t
+    rw [hs]
+    exact hnat
 
 end Host.Ts.Sim.Compose.SetupCommon

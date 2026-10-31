@@ -9,7 +9,7 @@ set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 /-! The call link's facts at call site 8 of chain `PRE_first_tail_x15_r0_body`: the instance's start server, its footprint (`Conv.StageFoot`), the
-merged state `PRE_first_tail_x15_r0_body.s80`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
+merged state `PRE_first_tail_x15_r0_body.s87`'s framed arrays as the chain start's extended (`arrExt_of`, `numRefs_of`). -/
 
 kernel_rfl PRE_first_tail_x15_r0_body.srvO8 : PRE_first_tail_x15_r0_body.st8.S0.oracle = PRE_first_tail_x15_r0_body.st8.OR
 kernel_rfl PRE_first_tail_x15_r0_body.wr0B8 : PRE_first_tail_x15_r0_body.st8.wr.all (fun b => !Nat.blt b PRE_first_tail_x15_r0_body.st8.s0.next || (PRE_first_tail_x15_r0_body.st8.s0.heap.get b).isSome) = true
@@ -19,29 +19,29 @@ theorem PRE_first_tail_x15_r0_body.stFoot8 : Conv.StageFoot PRE_first_tail_x15_r
 /-- **The relation at the merged state** from the relation at the merge (`Conv.site_merge`'s; `merged_relB`). -/
 theorem PRE_first_tail_x15_r0_body.merged8 {FR : Map → Nat → PRE_first_tail_x15_r0_body.st8.F.S → PRE_first_tail_x15_r0_body.st8.F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
     {ν : Nat → F64} {K : Host.Ts.Sim.Ctx} {S : SSrv} {t : St PRE_first_tail_x15_r0_body.st8.F.S} {C : CSrv} {n0 : Nat}
-    (h : RelB PRE_first_tail_x15_r0_body.st8.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs8 PRE_first_tail_x15_r0_body.st8.wr PRE_first_tail_x15_r0_body.s79 PRE_first_tail_x15_r0_body.st8.s2 PRE_first_tail_x15_r0_body.st8.s0
-      PRE_first_tail_x15_r0_body.st8.s2.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st8.F FR W stk M ν K PRE_first_tail_x15_r0_body.s80 S t C :=
+    (h : RelB PRE_first_tail_x15_r0_body.st8.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) PRE_first_tail_x15_r0_body.rs8 PRE_first_tail_x15_r0_body.st8.wr PRE_first_tail_x15_r0_body.s86 PRE_first_tail_x15_r0_body.st8.s2 PRE_first_tail_x15_r0_body.st8.s0
+      PRE_first_tail_x15_r0_body.st8.s2.ffi) S t C) : RelB PRE_first_tail_x15_r0_body.st8.F FR W stk M ν K PRE_first_tail_x15_r0_body.s87 S t C :=
   merged_relB PRE_first_tail_x15_r0_body.iso8 PRE_first_tail_x15_r0_body.stFoot8 PRE_first_tail_x15_r0_body.wrNodup8 PRE_first_tail_x15_r0_body.wrBound8 PRE_first_tail_x15_r0_body.trace8 PRE_first_tail_x15_r0_body.mheap8
     PRE_first_tail_x15_r0_body.mnext8 PRE_first_tail_x15_r0_body.mctl8 PRE_first_tail_x15_r0_body.mstack8 PRE_first_tail_x15_r0_body.mjobs8 PRE_first_tail_x15_r0_body.mffi8 PRE_first_tail_x15_r0_body.mtrace8 PRE_first_tail_x15_r0_body.mstores8 h
 
 def PRE_first_tail_x15_r0_body.arrEl8_2665 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE8_2665 : arrOf PRE_first_tail_x15_r0_body.s80 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl8_2665
-kernel_rfl PRE_first_tail_x15_r0_body.arrA8_2665 : isArrB PRE_first_tail_x15_r0_body.s80 2665 = true
-theorem PRE_first_tail_x15_r0_body.arr8_2665 : ∃ o, PRE_first_tail_x15_r0_body.s80.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl8_2665) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE8_2665 : arrOf PRE_first_tail_x15_r0_body.s87 2665 = arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl8_2665
+kernel_rfl PRE_first_tail_x15_r0_body.arrA8_2665 : isArrB PRE_first_tail_x15_r0_body.s87 2665 = true
+theorem PRE_first_tail_x15_r0_body.arr8_2665 : ∃ o, PRE_first_tail_x15_r0_body.s87.heap.get 2665 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2665 ++ PRE_first_tail_x15_r0_body.arrEl8_2665) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE8_2665 PRE_first_tail_x15_r0_body.arrA8_2665
 kernel_rfl PRE_first_tail_x15_r0_body.arrN8_2665 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl8_2665 = true
 theorem PRE_first_tail_x15_r0_body.arrR8_2665 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl8_2665 := numRefs_of PRE_first_tail_x15_r0_body.arrN8_2665
 
 def PRE_first_tail_x15_r0_body.arrEl8_2673467 : List Val := []
-kernel_rfl PRE_first_tail_x15_r0_body.arrE8_2673467 : arrOf PRE_first_tail_x15_r0_body.s80 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl8_2673467
-kernel_rfl PRE_first_tail_x15_r0_body.arrA8_2673467 : isArrB PRE_first_tail_x15_r0_body.s80 2673467 = true
-theorem PRE_first_tail_x15_r0_body.arr8_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s80.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl8_2673467) :=
+kernel_rfl PRE_first_tail_x15_r0_body.arrE8_2673467 : arrOf PRE_first_tail_x15_r0_body.s87 2673467 = arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl8_2673467
+kernel_rfl PRE_first_tail_x15_r0_body.arrA8_2673467 : isArrB PRE_first_tail_x15_r0_body.s87 2673467 = true
+theorem PRE_first_tail_x15_r0_body.arr8_2673467 : ∃ o, PRE_first_tail_x15_r0_body.s87.heap.get 2673467 = some (.obj o) ∧ o.kind = .array (arrOf PRE_first_tail_x15_r0_body.s0 2673467 ++ PRE_first_tail_x15_r0_body.arrEl8_2673467) :=
   arrExt_of PRE_first_tail_x15_r0_body.arrE8_2673467 PRE_first_tail_x15_r0_body.arrA8_2673467
 kernel_rfl PRE_first_tail_x15_r0_body.arrN8_2673467 : numRefsB PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl8_2673467 = true
 theorem PRE_first_tail_x15_r0_body.arrR8_2673467 : Prefill.NumRefs PRE_first_tail_x15_r0_body.S0.tab.length PRE_first_tail_x15_r0_body.arrEl8_2673467 := numRefs_of PRE_first_tail_x15_r0_body.arrN8_2673467
 
-kernel_rfl PRE_first_tail_x15_r0_body.w4910k8 : isArrB PRE_first_tail_x15_r0_body.s80 4910 = false
-theorem PRE_first_tail_x15_r0_body.keep8 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s80 := by
+kernel_rfl PRE_first_tail_x15_r0_body.w4910k8 : isArrB PRE_first_tail_x15_r0_body.s87 4910 = false
+theorem PRE_first_tail_x15_r0_body.keep8 (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP PRE_first_tail_x15_r0_body.s0 q) PRE_first_tail_x15_r0_body.s87 := by
   intro a pre pre' hx o es ho hk
   unfold framesP at hx
   simp only at hx

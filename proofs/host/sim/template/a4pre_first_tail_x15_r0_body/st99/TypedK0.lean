@@ -1,17 +1,14 @@
-import host.sim.template.a4pre_first_tail_x15_r0_body.st99.TypedSplitK0Part0
-import host.sim.template.a4pre_first_tail_x15_r0_body.st99.TypedSplitK0Part1
-import host.sim.template.a4pre_first_tail_x15_r0_body.st99.TypedSplitK0Part2
+import host.sim.template.a4pre_first_tail_x15_r0_body.st99.TypedOk
+import host.sim.template.a4pre_first_tail_x15_r0_body.st99.H0
+import host.sim.template.BootEq
+import host.sim.Chunk
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
-open Host.Ts Host.Ts.Sim
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-theorem PRE_first_tail_x15_r0_body.st99.bodyK0 :
+boot_rfl PRE_first_tail_x15_r0_body.st99.bodyK0 from PRE_first_tail_x15_r0_body.st99.s0 to PRE_first_tail_x15_r0_body.st99.s1 :
   (fun (bytes : List Byte) (rows : Nat) => runOk PRE_first_tail_x15_r0_body.st99.F (PRE_first_tail_x15_r0_body.st99.bodyOkL bytes rows)
-    ((nth? PRE_first_tail_x15_r0_body.st99.ks 0).getD 0) PRE_first_tail_x15_r0_body.st99.s0 PRE_first_tail_x15_r0_body.st99.S0) = fun _ _ => some (PRE_first_tail_x15_r0_body.st99.s1, PRE_first_tail_x15_r0_body.st99.S1) := by
-  funext bytes rows
-  change runOk PRE_first_tail_x15_r0_body.st99.F (PRE_first_tail_x15_r0_body.st99.bodyOkL bytes rows) 10000 PRE_first_tail_x15_r0_body.st99.s0 PRE_first_tail_x15_r0_body.st99.S0 = _
-  exact runOk_trans PRE_first_tail_x15_r0_body.st99.F (PRE_first_tail_x15_r0_body.st99.bodyOkL bytes rows) 6666 3334 PRE_first_tail_x15_r0_body.st99.s0 PRE_first_tail_x15_r0_body.st99.typedSplitK0.p1.s1 PRE_first_tail_x15_r0_body.st99.s1 PRE_first_tail_x15_r0_body.st99.S0 PRE_first_tail_x15_r0_body.st99.typedSplitK0.originalS2 PRE_first_tail_x15_r0_body.st99.S1 (runOk_trans PRE_first_tail_x15_r0_body.st99.F (PRE_first_tail_x15_r0_body.st99.bodyOkL bytes rows) 3333 3333 PRE_first_tail_x15_r0_body.st99.s0 PRE_first_tail_x15_r0_body.st99.typedSplitK0.p0.s1 PRE_first_tail_x15_r0_body.st99.typedSplitK0.p1.s1 PRE_first_tail_x15_r0_body.st99.S0 PRE_first_tail_x15_r0_body.st99.typedSplitK0.originalS1 PRE_first_tail_x15_r0_body.st99.typedSplitK0.originalS2 ((congrFun (congrFun PRE_first_tail_x15_r0_body.st99.typedSplitK0.part0 bytes) rows)) (congrFun (congrFun PRE_first_tail_x15_r0_body.st99.typedSplitK0.part1 bytes) rows)) (congrFun (congrFun PRE_first_tail_x15_r0_body.st99.typedSplitK0.part2 bytes) rows)
-
+    ((nth? PRE_first_tail_x15_r0_body.st99.ks 0).getD 0) PRE_first_tail_x15_r0_body.st99.s0 PRE_first_tail_x15_r0_body.st99.S0) = fun _ _ => some (PRE_first_tail_x15_r0_body.st99.s1, PRE_first_tail_x15_r0_body.st99.S1)
 end Host.Load.Run.Tpl

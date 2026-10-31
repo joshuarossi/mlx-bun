@@ -1,4 +1,16 @@
-import host.sim.template.a4pre_first_tail_x15_r0_body.K368_0
-import host.sim.template.a4pre_first_tail_x15_r0_body.K368_1
-import host.sim.template.a4pre_first_tail_x15_r0_body.K368_2
-import host.sim.template.a4pre_first_tail_x15_r0_body.K368_3
+import host.sim.template.a4pre_first_tail_x15_r0_body.H46
+import host.sim.template.a4pre_first_tail_x15_r0_body.OkB
+import host.sim.Chunk
+import host.sim.template.BootEq
+import host.sim.template.Bridges
+-- Serialized lookahead: [1,2]
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim
+boot_rfl PRE_first_tail_x15_r0_body.k1472 from PRE_first_tail_x15_r0_body.s1472 to PRE_first_tail_x15_r0_body.s1473 : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB397 ((nth? PRE_first_tail_x15_r0_body.ks 1472).getD 0) PRE_first_tail_x15_r0_body.s1472 PRE_first_tail_x15_r0_body.S1472 = some (PRE_first_tail_x15_r0_body.s1473, PRE_first_tail_x15_r0_body.S1473)
+boot_rfl PRE_first_tail_x15_r0_body.k1473 from PRE_first_tail_x15_r0_body.s1473 to PRE_first_tail_x15_r0_body.s1474 : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB397 ((nth? PRE_first_tail_x15_r0_body.ks 1473).getD 0) PRE_first_tail_x15_r0_body.s1473 PRE_first_tail_x15_r0_body.S1473 = some (PRE_first_tail_x15_r0_body.s1474, PRE_first_tail_x15_r0_body.S1474)
+boot_rfl PRE_first_tail_x15_r0_body.stepA398 from PRE_first_tail_x15_r0_body.s1474 to PRE_first_tail_x15_r0_body.s1475 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s1474).run PRE_first_tail_x15_r0_body.S1474 = some (PRE_first_tail_x15_r0_body.s1475, PRE_first_tail_x15_r0_body.S1475)
+boot_rfl PRE_first_tail_x15_r0_body.patchB398 from PRE_first_tail_x15_r0_body.s1475 to PRE_first_tail_x15_r0_body.s1476 : interpS (Host.Ts.Sim.Disp.sizeS PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s1475).run PRE_first_tail_x15_r0_body.S1475 = some (PRE_first_tail_x15_r0_body.s1476, PRE_first_tail_x15_r0_body.S1476)
+end Host.Load.Run.Tpl

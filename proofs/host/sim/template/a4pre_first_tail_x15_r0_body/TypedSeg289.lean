@@ -1,7 +1,7 @@
 import host.sim.Chunk
-import host.sim.template.a4pre_first_tail_x15_r0_body.H30
+import host.sim.template.a4pre_first_tail_x15_r0_body.H33
 import host.sim.template.a4pre_first_tail_x15_r0_body.TypedOk
-import host.sim.template.a4pre_first_tail_x15_r0_body.TypedK978
+import host.sim.template.a4pre_first_tail_x15_r0_body.TypedK1072
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -9,6 +9,6 @@ namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
 theorem PRE_first_tail_x15_r0_body.bodyRunSeg289 (bytes : List Byte) (rows : Nat) :
-    runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 978).getD 0) PRE_first_tail_x15_r0_body.s978 PRE_first_tail_x15_r0_body.S978 = some (PRE_first_tail_x15_r0_body.s979, PRE_first_tail_x15_r0_body.S979) :=
-  (congrFun (congrFun PRE_first_tail_x15_r0_body.bodyK978 bytes) rows)
+    runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 1072).getD 0) PRE_first_tail_x15_r0_body.s1072 PRE_first_tail_x15_r0_body.S1072 = some (PRE_first_tail_x15_r0_body.s1073, PRE_first_tail_x15_r0_body.S1073) :=
+  (congrFun (congrFun PRE_first_tail_x15_r0_body.bodyK1072 bytes) rows)
 end Host.Load.Run.Tpl

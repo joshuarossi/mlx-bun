@@ -9,8 +9,6 @@ namespace Host.Load.Run.Tpl
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim
-boot_rfl PRE_first_tail_x15_r0_body.stepA158 from PRE_first_tail_x15_r0_body.s532 to PRE_first_tail_x15_r0_body.s533 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s532).run PRE_first_tail_x15_r0_body.S532 = some (PRE_first_tail_x15_r0_body.s533, PRE_first_tail_x15_r0_body.S533)
-boot_rfl PRE_first_tail_x15_r0_body.patchB158 from PRE_first_tail_x15_r0_body.s533 to PRE_first_tail_x15_r0_body.s534 : interpS (Host.Ts.Sim.Disp.sizeS PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s533).run PRE_first_tail_x15_r0_body.S533 = some (PRE_first_tail_x15_r0_body.s534, PRE_first_tail_x15_r0_body.S534)
-boot_rfl PRE_first_tail_x15_r0_body.k534 from PRE_first_tail_x15_r0_body.s534 to PRE_first_tail_x15_r0_body.s535 : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB158 ((nth? PRE_first_tail_x15_r0_body.ks 534).getD 0) PRE_first_tail_x15_r0_body.s534 PRE_first_tail_x15_r0_body.S534 = some (PRE_first_tail_x15_r0_body.s535, PRE_first_tail_x15_r0_body.S535)
-boot_rfl PRE_first_tail_x15_r0_body.stepA159 from PRE_first_tail_x15_r0_body.s535 to PRE_first_tail_x15_r0_body.s536 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s535).run PRE_first_tail_x15_r0_body.S535 = some (PRE_first_tail_x15_r0_body.s536, PRE_first_tail_x15_r0_body.S536)
+boot_rfl PRE_first_tail_x15_r0_body.k532 from PRE_first_tail_x15_r0_body.s532 to PRE_first_tail_x15_r0_body.s533 : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB144 ((nth? PRE_first_tail_x15_r0_body.ks 532).getD 0) PRE_first_tail_x15_r0_body.s532 PRE_first_tail_x15_r0_body.S532 = some (PRE_first_tail_x15_r0_body.s533, PRE_first_tail_x15_r0_body.S533)
+boot_rfl PRE_first_tail_x15_r0_body.stepA145 from PRE_first_tail_x15_r0_body.s533 to PRE_first_tail_x15_r0_body.s534 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s533).run PRE_first_tail_x15_r0_body.S533 = some (PRE_first_tail_x15_r0_body.s534, PRE_first_tail_x15_r0_body.S534)
 end Host.Load.Run.Tpl

@@ -10,7 +10,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 /-! The canonical results at call site 60 of chain `PRE_first_tail_x15_r0_body`: their values in the instance's end table, the references past
 the call's table, the canonical variables apart from the stage's. -/
 
-kernel_rfl PRE_first_tail_x15_r0_body.cderived60 : PRE_first_tail_x15_r0_body.nr60.map (fun r => nth? PRE_first_tail_x15_r0_body.st60.S3.tab r) =
+kernel_rfl PRE_first_tail_x15_r0_body.cderived60 : PRE_first_tail_x15_r0_body.nr60.map (fun r => nth? PRE_first_tail_x15_r0_body.st60.S5.tab r) =
   [some (SymE.bin .add (SymE.lit (F64.zero false)) (SymE.un .int32 (SymE.un .int32 (SymE.var 10)))),
    some (SymE.un .int32 (SymE.un .int32 (SymE.bin .sub (SymE.bin .add (SymE.lit (F64.fin false 3 (0))) (SymE.un .int32 (SymE.un .int32 (SymE.var 10)))) (SymE.lit (F64.fin false 3 (0)))))),
    some (SymE.un .int32 (SymE.bin .sub (SymE.bin .add (SymE.lit (F64.fin false 3 (0))) (SymE.un .int32 (SymE.un .int32 (SymE.var 10)))) (SymE.un .int32 (SymE.un .int32 (SymE.un .int32 (SymE.var 10)))))),

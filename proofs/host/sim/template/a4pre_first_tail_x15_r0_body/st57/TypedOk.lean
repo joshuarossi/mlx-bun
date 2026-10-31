@@ -1,5 +1,5 @@
 import host.sim.template.a4pre_first_tail_x15_r0_body.st57.H0
-import host.sim.compose.a4b.VWFrames
+import host.sim.compose.a4b.VWFramesDefs
 import host.sim.template.FullOk
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -14,6 +14,6 @@ kernel_rfl PRE_first_tail_x15_r0_body.st57.bodyAccepted0 :
   (fun (bytes : List Byte) (rows : Nat) => PRE_first_tail_x15_r0_body.st57.bodyOkL bytes rows PRE_first_tail_x15_r0_body.st57.s0 PRE_first_tail_x15_r0_body.st57.S0) = fun _ _ => true
 
 kernel_rfl PRE_first_tail_x15_r0_body.st57.bodyAccepted1 :
-  (fun (bytes : List Byte) (rows : Nat) => PRE_first_tail_x15_r0_body.st57.bodyOkL bytes rows PRE_first_tail_x15_r0_body.st57.s1 PRE_first_tail_x15_r0_body.st57.S1) = fun _ _ => true
+  (fun (bytes : List Byte) (rows : Nat) => PRE_first_tail_x15_r0_body.st57.bodyOkL bytes rows PRE_first_tail_x15_r0_body.st57.s2 PRE_first_tail_x15_r0_body.st57.S2) = fun _ _ => true
 
 end Host.Load.Run.Tpl

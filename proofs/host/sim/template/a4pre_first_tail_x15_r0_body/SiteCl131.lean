@@ -6,11 +6,11 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-kernel_rfl PRE_first_tail_x15_r0_body.ckA131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1155.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.clo131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1155.ffi).mlx.arrs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.ckA131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1266.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1264.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.clo131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1266.ffi).mlx.arrs.get i).map (i, ·))
 kernel_rfl PRE_first_tail_x15_r0_body.cbd131 : (PRE_first_tail_x15_r0_body.clo131 ++ PRE_first_tail_x15_r0_body.cln131 ++ PRE_first_tail_x15_r0_body.cli131).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true
 kernel_rfl PRE_first_tail_x15_r0_body.cle131 : Conv.Cnt.leB (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) (⟨20777, 17866, 2777542, 5653⟩ : Conv.Cnt) = true
-kernel_rfl PRE_first_tail_x15_r0_body.cck131 : Conv.ncleanListB (⟨20777, 17866, 2777542, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1155.ffi).mlx PRE_first_tail_x15_r0_body.clo131 PRE_first_tail_x15_r0_body.cln131 PRE_first_tail_x15_r0_body.cli131 = true
-theorem PRE_first_tail_x15_r0_body.cncl131 (h : Conv.NClean (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx) : Conv.NClean (⟨20777, 17866, 2777542, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1155.ffi).mlx :=
+kernel_rfl PRE_first_tail_x15_r0_body.cck131 : Conv.ncleanListB (⟨20777, 17866, 2777542, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1266.ffi).mlx PRE_first_tail_x15_r0_body.clo131 PRE_first_tail_x15_r0_body.cln131 PRE_first_tail_x15_r0_body.cli131 = true
+theorem PRE_first_tail_x15_r0_body.cncl131 (h : Conv.NClean (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1264.ffi).mlx) : Conv.NClean (⟨20777, 17866, 2777542, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1266.ffi).mlx :=
   Conv.NClean.stepKeep h PRE_first_tail_x15_r0_body.cle131 PRE_first_tail_x15_r0_body.ckA131 PRE_first_tail_x15_r0_body.cobjsK131 PRE_first_tail_x15_r0_body.cnodesK131 PRE_first_tail_x15_r0_body.citemsK131 PRE_first_tail_x15_r0_body.cbd131 PRE_first_tail_x15_r0_body.cck131
 
 end Host.Load.Run.Tpl

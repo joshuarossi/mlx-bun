@@ -1,4 +1,4 @@
-import host.sim.template.a4pre_first_tail_x15_r0_body.H51
+import host.sim.template.a4pre_first_tail_x15_r0_body.H56
 import host.sim.template.a4pre_first_tail_x15_r0_body.st186.H0
 import host.sim.conv.MergeSt
 import host.sim.conv.Fresh
@@ -8,31 +8,31 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-/-! Call site 186 of chain `PRE_first_tail_x15_r0_body`: `ssmW__g186__g187` (`recurWindow`), the call state `PRE_first_tail_x15_r0_body.s1643`, the merged state `PRE_first_tail_x15_r0_body.s1644`,
-the site template `PRE_first_tail_x15_r0_body.st186` (σ = `Map.id`, θ the identity at its own site), the canonical state `PRE_first_tail_x15_r0_body.s1645`: the merge.
+/-! Call site 186 of chain `PRE_first_tail_x15_r0_body`: `ssmW__g186__g187` (`recurWindow`), the call state `PRE_first_tail_x15_r0_body.s1799`, the merged state `PRE_first_tail_x15_r0_body.s1800`,
+the site template `PRE_first_tail_x15_r0_body.st186` (σ = `Map.id`, θ the identity at its own site), the canonical state `PRE_first_tail_x15_r0_body.s1801`: the merge.
 The footprint's facts are in `SiteF186`, the compaction's in `SiteC186`, `SiteK186`, `SiteNa186`, `SiteNb186`. -/
 
-kernel_rfl PRE_first_tail_x15_r0_body.iso186 : PRE_first_tail_x15_r0_body.st186.s0 = { PRE_first_tail_x15_r0_body.s1643 with stack := [] }
+kernel_rfl PRE_first_tail_x15_r0_body.iso186 : PRE_first_tail_x15_r0_body.st186.s0 = { PRE_first_tail_x15_r0_body.s1799 with stack := [] }
 /-- The caller's frames at the call. -/
-noncomputable def PRE_first_tail_x15_r0_body.rs186 : List Frame := PRE_first_tail_x15_r0_body.s1643.stack
-kernel_rfl PRE_first_tail_x15_r0_body.n0_186 : PRE_first_tail_x15_r0_body.S1643.tab.length = 8036
-kernel_rfl PRE_first_tail_x15_r0_body.tab0_186 : PRE_first_tail_x15_r0_body.st186.S0.tab = PRE_first_tail_x15_r0_body.S1643.tab
+noncomputable def PRE_first_tail_x15_r0_body.rs186 : List Frame := PRE_first_tail_x15_r0_body.s1799.stack
+kernel_rfl PRE_first_tail_x15_r0_body.n0_186 : PRE_first_tail_x15_r0_body.S1799.tab.length = 8036
+kernel_rfl PRE_first_tail_x15_r0_body.tab0_186 : PRE_first_tail_x15_r0_body.st186.S0.tab = PRE_first_tail_x15_r0_body.S1799.tab
 
 /-- The fresh variables of the stage's results. -/
 def PRE_first_tail_x15_r0_body.ws186 : List Nat := [4147, 4148, 4149, 4150, 4151, 4152, 4153, 4154, 4155, 4156, 4157, 4158, 4159, 4160, 4161, 4162, 4163, 4164, 4165, 4166, 4167, 4168, 4169, 4170, 4171, 4172, 4173, 4174, 4175, 4176, 4177]
-kernel_rfl PRE_first_tail_x15_r0_body.fresh186 : (PRE_first_tail_x15_r0_body.S1643.tab.all fun e => PRE_first_tail_x15_r0_body.ws186.all fun v => e.noVar v) &&
-    (PRE_first_tail_x15_r0_body.S1643.oracle.all fun q => PRE_first_tail_x15_r0_body.ws186.all fun v => q.noVar v) = true
-kernel_rfl PRE_first_tail_x15_r0_body.mergeTab186 : PRE_first_tail_x15_r0_body.S1644.tab = PRE_first_tail_x15_r0_body.S1643.tab ++ Conv.resTab PRE_first_tail_x15_r0_body.ws186
-kernel_rfl PRE_first_tail_x15_r0_body.mergeLen186 : PRE_first_tail_x15_r0_body.st186.S3.tab.length - PRE_first_tail_x15_r0_body.st186.S0.tab.length = 31
+kernel_rfl PRE_first_tail_x15_r0_body.fresh186 : (PRE_first_tail_x15_r0_body.S1799.tab.all fun e => PRE_first_tail_x15_r0_body.ws186.all fun v => e.noVar v) &&
+    (PRE_first_tail_x15_r0_body.S1799.oracle.all fun q => PRE_first_tail_x15_r0_body.ws186.all fun v => q.noVar v) = true
+kernel_rfl PRE_first_tail_x15_r0_body.mergeTab186 : PRE_first_tail_x15_r0_body.S1800.tab = PRE_first_tail_x15_r0_body.S1799.tab ++ Conv.resTab PRE_first_tail_x15_r0_body.ws186
+kernel_rfl PRE_first_tail_x15_r0_body.mergeLen186 : PRE_first_tail_x15_r0_body.st186.S5.tab.length - PRE_first_tail_x15_r0_body.st186.S0.tab.length = 31
 
 -- The merged state: the instance's return state with the caller's frames (`PRE_first_tail_x15_r0_body.merged186`, `merged_relB`).
-kernel_rfl PRE_first_tail_x15_r0_body.mheap186 : PRE_first_tail_x15_r0_body.s1644.heap = PRE_first_tail_x15_r0_body.st186.s3.heap
-kernel_rfl PRE_first_tail_x15_r0_body.mnext186 : PRE_first_tail_x15_r0_body.s1644.next = PRE_first_tail_x15_r0_body.st186.s3.next
-kernel_rfl PRE_first_tail_x15_r0_body.mctl186 : PRE_first_tail_x15_r0_body.s1644.ctl = PRE_first_tail_x15_r0_body.st186.s3.ctl
-kernel_rfl PRE_first_tail_x15_r0_body.mstack186 : PRE_first_tail_x15_r0_body.s1644.stack = PRE_first_tail_x15_r0_body.st186.s3.stack ++ PRE_first_tail_x15_r0_body.s1643.stack
-kernel_rfl PRE_first_tail_x15_r0_body.mjobs186 : PRE_first_tail_x15_r0_body.s1644.jobs = PRE_first_tail_x15_r0_body.st186.s3.jobs
-kernel_rfl PRE_first_tail_x15_r0_body.mffi186 : PRE_first_tail_x15_r0_body.s1644.ffi = PRE_first_tail_x15_r0_body.st186.s3.ffi
-kernel_rfl PRE_first_tail_x15_r0_body.mtrace186 : PRE_first_tail_x15_r0_body.s1644.trace = PRE_first_tail_x15_r0_body.st186.s3.trace
-kernel_rfl PRE_first_tail_x15_r0_body.mstores186 : PRE_first_tail_x15_r0_body.s1644.stores = PRE_first_tail_x15_r0_body.st186.s3.stores
+kernel_rfl PRE_first_tail_x15_r0_body.mheap186 : PRE_first_tail_x15_r0_body.s1800.heap = PRE_first_tail_x15_r0_body.st186.s5.heap
+kernel_rfl PRE_first_tail_x15_r0_body.mnext186 : PRE_first_tail_x15_r0_body.s1800.next = PRE_first_tail_x15_r0_body.st186.s5.next
+kernel_rfl PRE_first_tail_x15_r0_body.mctl186 : PRE_first_tail_x15_r0_body.s1800.ctl = PRE_first_tail_x15_r0_body.st186.s5.ctl
+kernel_rfl PRE_first_tail_x15_r0_body.mstack186 : PRE_first_tail_x15_r0_body.s1800.stack = PRE_first_tail_x15_r0_body.st186.s5.stack ++ PRE_first_tail_x15_r0_body.s1799.stack
+kernel_rfl PRE_first_tail_x15_r0_body.mjobs186 : PRE_first_tail_x15_r0_body.s1800.jobs = PRE_first_tail_x15_r0_body.st186.s5.jobs
+kernel_rfl PRE_first_tail_x15_r0_body.mffi186 : PRE_first_tail_x15_r0_body.s1800.ffi = PRE_first_tail_x15_r0_body.st186.s5.ffi
+kernel_rfl PRE_first_tail_x15_r0_body.mtrace186 : PRE_first_tail_x15_r0_body.s1800.trace = PRE_first_tail_x15_r0_body.st186.s5.trace
+kernel_rfl PRE_first_tail_x15_r0_body.mstores186 : PRE_first_tail_x15_r0_body.s1800.stores = PRE_first_tail_x15_r0_body.st186.s5.stores
 
 end Host.Load.Run.Tpl

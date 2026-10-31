@@ -8,19 +8,19 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-/-! The compaction's native shift at call site 139 of chain `PRE_first_tail_x15_r0_body` from the call state's full relation: the call's bookkeeping (`PRE_first_tail_x15_r0_body.ncl1230`), the relation's native facts,
+/-! The compaction's native shift at call site 139 of chain `PRE_first_tail_x15_r0_body` from the call state's full relation: the call's bookkeeping (`PRE_first_tail_x15_r0_body.ncl1347`), the relation's native facts,
 its observers' and the canonical closedness (`sst_of_callK`). -/
 
 theorem PRE_first_tail_x15_r0_body.cshiftR139 {BR : Map → Host.Ts.Sim.Full.FF.S → Host.Ts.Sim.Full.FF.S → Prop} {P : LoadP} {NB : Nat} {M : Map}
-    {y : Host.Ts.Sim.Full.FF.S} (h : Host.Ts.Sim.Full.FullRB BR P NB M PRE_first_tail_x15_r0_body.S1230.tab.length PRE_first_tail_x15_r0_body.s1230.ffi y)
-    (hNL : P.NL ≤ PRE_first_tail_x15_r0_body.P139.NL) : Conv.FullShiftQ PRE_first_tail_x15_r0_body.P139 6023 PRE_first_tail_x15_r0_body.kappa139 PRE_first_tail_x15_r0_body.s1232.ffi PRE_first_tail_x15_r0_body.s1231.ffi := by
+    {y : Host.Ts.Sim.Full.FF.S} (h : Host.Ts.Sim.Full.FullRB BR P NB M PRE_first_tail_x15_r0_body.S1347.tab.length PRE_first_tail_x15_r0_body.s1347.ffi y)
+    (hNL : P.NL ≤ PRE_first_tail_x15_r0_body.P139.NL) : Conv.FullShiftQ PRE_first_tail_x15_r0_body.P139 6023 PRE_first_tail_x15_r0_body.kappa139 PRE_first_tail_x15_r0_body.s1349.ffi PRE_first_tail_x15_r0_body.s1348.ffi := by
   have hr := h.load.mlx
   obtain ⟨_, _, hF⟩ := h.live _ PRE_first_tail_x15_r0_body.ofxC_139
   obtain ⟨_, _, hK⟩ := h.kern _ PRE_first_tail_x15_r0_body.okrC_139
-  have hcl : SSt (· < 6023) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1232.ffi).mlx :=
-    sst_of_callK (n0 := PRE_first_tail_x15_r0_body.S1230.tab.length) hr.cl (by rw [PRE_first_tail_x15_r0_body.n0_139] <;> decide) PRE_first_tail_x15_r0_body.cnodesK139 PRE_first_tail_x15_r0_body.cobjsK139
+  have hcl : SSt (· < 6023) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1349.ffi).mlx :=
+    sst_of_callK (n0 := PRE_first_tail_x15_r0_body.S1347.tab.length) hr.cl (by rw [PRE_first_tail_x15_r0_body.n0_139] <;> decide) PRE_first_tail_x15_r0_body.cnodesK139 PRE_first_tail_x15_r0_body.cobjsK139
       PRE_first_tail_x15_r0_body.citemsK139 PRE_first_tail_x15_r0_body.cbd139 PRE_first_tail_x15_r0_body.csst139
-  exact PRE_first_tail_x15_r0_body.cshift139 PRE_first_tail_x15_r0_body.ncl1230 hr.hlt hr.nlt (fun k v hg => hr.itemsPresent k (by rw [hg]; rfl))
+  exact PRE_first_tail_x15_r0_body.cshift139 PRE_first_tail_x15_r0_body.ncl1347 hr.hlt hr.nlt (fun k v hg => hr.itemsPresent k (by rw [hg]; rfl))
     (fun h o hg i hi => Nat.lt_of_lt_of_le (hr.traced h o hg i hi) hNL) (sst_clear hcl) hF.obj hK.flagsObj hK.targsObj
     (fun h l hl => by have := hK.cl h l hl; rw [PRE_first_tail_x15_r0_body.n0_139] at this; exact this)
 

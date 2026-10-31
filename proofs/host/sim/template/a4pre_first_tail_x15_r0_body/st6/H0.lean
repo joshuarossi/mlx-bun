@@ -8,4 +8,6 @@ host_stream_state PRE_first_tail_x15_r0_body.st6 0
 host_stream_state PRE_first_tail_x15_r0_body.st6 1
 host_stream_state PRE_first_tail_x15_r0_body.st6 2
 host_stream_state PRE_first_tail_x15_r0_body.st6 3
+host_stream_state PRE_first_tail_x15_r0_body.st6 4
+host_stream_state PRE_first_tail_x15_r0_body.st6 5
 end Host.Load.Run.Tpl
