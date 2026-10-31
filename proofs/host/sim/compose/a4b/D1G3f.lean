@@ -54,6 +54,7 @@ noncomputable def g3f_first (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (hcap : 
         (fun e he => List.all_eq_true.mp PRE_post_head.fresh10 e he)).trans ?_
       rintro x ⟨π, hπ, γ, hr, hb⟩ hB
       exact ⟨x, rfl, rfl, ⟨π, hπ, γ, hr, hb.mono hcap⟩, hB⟩
+    show CutStep (returnedSavedCut NB T tk) (Post.cut NB T tk cap i.L PRE_post_head.s1 PRE_post_head.S1) 809
     rw [hL]
     exact hstep.convL hconv
 

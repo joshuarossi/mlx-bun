@@ -99,4 +99,29 @@ theorem post_callV {ν : Nat → F64} {i : Cls.Inst} {m m' : List (Nat × Q)}
       rw [he]
       exact hq p.2 rfl
 
+/-- The next boundary's map from the call's and its results' quantities. -/
+def postSubB (m' m : List (Nat × Q)) (cws : List Nat) (qs : List (Option Q)) : Bool :=
+  m'.all fun p => m.contains p || (cws.zip qs).contains (p.1, some p.2)
+
+theorem mem_zip_nth {α β : Type} : ∀ {l : List α} {r : List β} {a : α} {b : β}, (a, b) ∈ l.zip r →
+    ∃ j, nth? l j = some a ∧ nth? r j = some b
+  | a0 :: l, b0 :: r, a, b, h => by
+    simp only [List.zip_cons_cons, List.mem_cons, Prod.mk.injEq] at h
+    rcases h with ⟨rfl, rfl⟩ | h
+    · exact ⟨0, rfl, rfl⟩
+    · obtain ⟨j, h1, h2⟩ := mem_zip_nth h
+      exact ⟨j + 1, h1, h2⟩
+  | [], _, _, _, h => by simp at h
+  | _ :: _, [], _, _, h => by simp at h
+
+theorem postSub_sound {m' m : List (Nat × Q)} {cws : List Nat} {qs : List (Option Q)}
+    (h : postSubB m' m cws qs = true) :
+    ∀ p ∈ m', p ∈ m ∨ ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2) := by
+  intro p hp
+  have hc := List.all_eq_true.mp h p hp
+  simp only [Bool.or_eq_true] at hc
+  rcases hc with hc | hc
+  · exact .inl (List.contains_iff_mem.mp hc)
+  · exact .inr (mem_zip_nth (List.contains_iff_mem.mp hc))
+
 end Host.Ts.Sim.Compose

@@ -49,7 +49,7 @@ theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St F
   obtain ⟨M', t', C', ht, he, hx⟩ :=
     Disp.runOk_simXVB FF _ _ _ _ [] _ hsim.xv (fun _ _ _ => .inl rfl) x.ν x.K
       hb.context ⟨hb.valuation, hb.rowValue⟩ n x.M sa Sa x.t x.C sb Sb (.inl hq) hok hrun'
-  have hrel := (hx.rel_noRet htop).withOracle (S' := ⟨Sb.tab, []⟩) (fun _ h => nomatch h)
+  have hrel := (hx.rel_noRet htop).withOracle (o := []) (fun _ h => nomatch h)
   have hout : RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB))
       (D1Frames.typedW bs) [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
     { hrel with ffi := ⟨hrel.ffi.1.1, hrel.ffi.2⟩ }

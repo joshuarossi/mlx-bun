@@ -1398,7 +1398,8 @@ end ${oraclesOnly ? `${NS}.Oracles` : NS}
     for (let at = 0; at < oracleBlocks.length; at += 8) {
       const batch = oracleBlocks.slice(at, at + 8);
       const leaf = output.replace(/\.lean$/, `_${at / 8}.lean`);
-      const deps = new Set(["host.sim.compose.PreCall", "host.sim.lin.Table", `${mod}.States`, ...batch.flatMap(b => b.imports)]);
+      const deps = new Set(["host.sim.compose.PreCall", "host.sim.lin.Table", `${mod}.States`, ...batch.flatMap(b => b.imports),
+        ...(batch.some(b => b.imports.length) ? [] : [`${mod}.H0`])]);
       writeFileSync(leaf, render(deps, batch.map(b => b.code).join("")));
       leaves.push(relative(root, leaf).replaceAll("/", ".").replace(/\.lean$/, ""));
     }
@@ -1433,3 +1434,275 @@ end ${oraclesOnly ? `${NS}.Oracles` : NS}
 }
 
 if (process.argv[2] === "prefill") genPrefill(process.argv.slice(3));
+
+// `prefill-body`: the VW forward's body from its typed chain. Each call site names the facts its generated site
+// modules state (`VWFirst.BodySiteFacts`), each glue its typed runs and size bridges; `bodySite`, `bodyToCall`,
+// `bodySize` are proved once. Usage: prefill-body <chain>:<case-dir> --out <dir> [--site k]... [--glue j]...
+function genBodyFill(args: string[]) {
+  const take = (flag: string) => {
+    const out: string[] = [];
+    for (let i = args.indexOf(flag); i >= 0; i = args.indexOf(flag)) out.push(args.splice(i, 2)[1]!);
+    return out;
+  };
+  const outDir = take("--out")[0] ?? fail("prefill-body: --out <dir>");
+  const onlySites = take("--site").map(Number), onlyGlues = take("--glue").map(Number);
+  const streams = take("--streams")[0] ?? process.env.HOST_STREAM_DIR ?? join(HERE, "../../../.host-stream");
+  const [, X0, dir] = args[0]?.match(/^([^:]+):(.+)$/) ?? fail("prefill-body: <chain>:<case-dir>");
+  const X = X0!, full = `Host.Load.Run.Tpl.${X}`, stream = join(streams, full);
+  const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
+  const tdir = join(HERE, "../template", dir!), mod = `host.sim.template.${dir!.replaceAll("/", ".")}`;
+  const src = (f: string) => readFileSync(join(tdir, `${f}.lean`), "utf8");
+  const oracleFiles = readdirSync(join(HERE, "a4b")).filter(f => /^VWBodyOracles_\d+\.lean$/.test(f));
+  const oracleOf = new Map<string, { file: string; map: string; check: string }>();
+  for (const f of oracleFiles) for (const m of readFileSync(join(HERE, "a4b", f), "utf8")
+      .matchAll(/def \S+\.map_((?:g|site)\d+) : List \(Nat × Q\) := (.*)\n\nkernel_rfl \S+\.chk_\S+ : \(.*\n  (goodLin|goodEnum) /g))
+    oracleOf.set(m[1]!, { file: f.slice(0, -5), map: m[2]!, check: m[3]! });
+  const bridges = seg.bridges as any[];
+  const stages = bridges.filter(b => b.kind === "stage").sort((a, b) => a.site - b.site);
+  const parseMap = (s: string): [number, string][] =>
+    [...s.matchAll(/\((\d+), Q\.(\w+)\)/g)].map(m => [+m[1]!, m[2]!]);
+  const head = (imports: string[]) => `${[...new Set(imports)].map(i => `import ${i}`).join("\n")}
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace ${NS}.VWFirst
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
+open ${NS}.SetupEarly ${NS}.SetupChunk
+
+`;
+  const tail = `\nend ${NS}.VWFirst\n`;
+  mkdirSync(outDir, { recursive: true });
+  const cnt = (s: string) => s.replace(/\s/g, "");
+  // the offsets: 3571 at the start, each compaction adds its discarded addresses
+  let D = 3571;
+  const Ds = new Map<number, number>([[0, D]]);
+  for (const b of stages) {
+    const k = b.site as number, a = b.ia as number, m = a + 1, cn = a + 2;
+    const c = b.compaction;
+    const siteZ = src(`SiteZ${k}`), glue = src(`GlueN${k}`);
+    const counters = glue.match(new RegExp(`theorem ${X}\\.gjcl${k} \\(h : Conv\\.JClean \\((⟨[^⟩]*⟩) : Conv\\.Cnt\\) ${X}\\.s(\\d+)\\) : Conv\\.JClean \\((⟨[^⟩]*⟩)`)) ?? fail(`${X}: GlueN${k}: gjcl`);
+    const cAfter = siteZ.match(new RegExp(`theorem ${X}\\.cjcl${k} \\(h : Conv\\.JClean \\(⟨[^⟩]*⟩ : Conv\\.Cnt\\) ${X}\\.s${a}\\) : Conv\\.JClean \\((⟨[^⟩]*⟩)`)) ?? fail(`${X}: SiteZ${k}: cjcl`);
+    const nC = +(siteZ.match(new RegExp(`znC${k} : .* = (\\d+)`)) ?? fail("znC"))[1]!;
+    const n1 = +(siteZ.match(new RegExp(`zsmn${k} : .* = (\\d+)`)) ?? fail("zsmn"))[1]!;
+    const tpl = readFileSync(join(tdir, `st${k}/TypedTpl.lean`), "utf8");
+    const nSteps = +(tpl.match(/\n  n := (\d+)/) ?? fail(`st${k}: n`))[1]!;
+    const T1 = +(tpl.match(new RegExp(`S2 := ${X}\\.st${k}\\.S(\\d+)`)) ?? fail(`st${k}: S2`))[1]!;
+    const here = oracleOf.get(`g${k}`) ?? fail(`no map_g${k}`), next = oracleOf.get(`g${k + 1}`) ?? fail(`no map_g${k + 1}`);
+    const site = oracleOf.get(`site${k}`) ?? fail(`no map_site${k}`);
+    const nextMap = new Map(parseMap(next.map));
+    const cws = c.ws as number[];
+    const qs = cws.map(v => nextMap.has(v) ? `some Q.${nextMap.get(v)}` : "none");
+    const drop = n1 - +(src(`SiteC${k}`).match(new RegExp(`cnext${k} : .* = (\\d+)`)) ?? fail("cnext"))[1]!;
+    const Dnext = D + drop;
+    const sel = !onlySites.length && !onlyGlues.length || onlySites.includes(k);
+    if (sel) {
+      const prevJs = k === 0 ? "bodyJs0" : `bodyJs${k - 1}`, prevN = k === 0 ? "2673488" : `${X}.s${stages[k - 1].ia}.next`;
+      const prevClean = k === 0 ? "bodyClean0" : `(${X}.cjcl${k - 1} bodyClean${k - 1})`;
+      writeFileSync(join(outDir, `VWBodyJ${k}.lean`), head([
+        k === 0 ? "host.sim.compose.a4b.VWBodyBase" : `host.sim.compose.a4b.VWBodyJ${k - 1}`,
+        `${mod}.GlueN${k}`, `${mod}.SiteZ${k}`,
+      ]) + `theorem bodyClean${k} : Conv.JClean (${counters[1]} : Conv.Cnt) ${X}.s${a} :=
+  ${X}.gjcl${k} ${prevClean}
+
+kernel_rfl bodyJsLe${k} : Nat.ble ${prevN} ${X}.s${a}.next = true
+kernel_rfl bodyJsList${k} : (${X}.gjh${k} ++ ${X}.cl${k}).all (noBigAtP (jsAboveB ${X}.s${a}.next) ${X}.s${cn}) = true
+theorem bodyJs${k} : JsHeapAbove ${X}.s${a}.next ${X}.s${cn} :=
+  ${prevJs}.glueSite (Nat.le_of_ble_eq_true bodyJsLe${k}) ${X}.gjk${k} ${X}.gjbd${k} ${X}.cheap${k} ${X}.zclbd${k} bodyJsList${k}
+` + tail);
+      writeFileSync(join(outDir, `VWBodyS${k}.lean`), head([
+        `host.sim.compose.a4b.VWBodyJ${k}`, `host.sim.compose.a4b.VWBodySite${k}`,
+        `host.sim.compose.a4b.${site.file}`, ...(next.file === site.file ? [] : [`host.sim.compose.a4b.${next.file}`]),
+        ...(here.file === site.file ? [] : [`host.sim.compose.a4b.${here.file}`]),
+        `${mod}.SiteR${k}`, `${mod}.SiteD${k}`, `${mod}.SiteZ${k}`,
+      ]) + `kernel_rfl bodyFramesEmpty${k} : [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view].all (fun a => (arrOf ${X}.s${m} a).isEmpty) = true
+kernel_rfl bodyJsRoots${k} : noBigRootsP (jsAboveB ${X}.s${a}.next) ${X}.s${cn}.trace ${X}.s${cn} = true
+kernel_rfl bodyJsNative${k} : bigsOutB jsLoN jsHiN (mlxOf ${X}.s${cn}.ffi) = true
+kernel_rfl bodyLow${k} : (${X}.cws${k} ++ ${X}.ws${k}).all (Nat.ble 9) = true
+kernel_rfl bodySameH${k} : (mlxOf ${X}.s${m}.ffi).next = (mlxOf ${X}.s${cn}.ffi).next
+kernel_rfl bodySameN${k} : (mlxOf ${X}.s${m}.ffi).nnext = (mlxOf ${X}.s${cn}.ffi).nnext
+kernel_rfl bodyBridge${k} : bridgeOf ${X}.s${m}.ffi = bridgeOf ${X}.s${a}.ffi
+kernel_rfl bodyNN${k} : Nat.ble (mlxOf ${X}.s${a}.ffi).nnext ${X}.P${k}.NL = true
+kernel_rfl bodyXn${k} : Nat.ble (${cAfter[1]} : Conv.Cnt).xn (mlxOf ${X}.s${cn}.ffi).next = true
+kernel_rfl bodyLo${k} : Nat.ble setupP.lo (mlxOf ${X}.s${cn}.ffi).next = true
+kernel_rfl bodyStart2665 : arrOf ${X}.s0 2665 = []
+kernel_rfl bodyStartChunk : arrOf ${X}.s0 VWFrames.chunk = []
+
+theorem bodyFacts${k} : BodySiteFacts ${X}.s${a} ${X}.s${m} ${X}.s${cn} ${X}.s0 ${X}.S${a} ${X}.S${m} ${X}.S${cn}
+    ${X}.ws${k} ${X}.cws${k} ${X}.nr${k} ${X}.pl${k} ${X}.cl${k} ${n1} ${nC} ${X}.kd${k} ${X}.kappa${k} ${X}.P${k}
+    ${counters[3]} ${cAfter[1]} where
+  zkap := ${X}.zkap${k}
+  clean := bodyClean${k}
+  cfix := ${X}.cfix${k}
+  zpl := ${X}.zpl${k}
+  zplnd := ${X}.zplnd${k}
+  zn1 := ${X}.zn1${k}
+  zfirst := ${X}.zfirst${k}
+  zscn := ${X}.zscn${k}
+  zsmn := ${X}.zsmn${k}
+  zgrow := ${X}.zgrow${k}
+  mergeTab := ${X}.mergeTab${k}
+  zfresh := ${X}.zfresh${k}
+  zcnd := ${X}.zcnd${k}
+  lenc := by rfl
+  znrHi := ${X}.znrHi${k}
+  zfrlt := ${X}.zfrlt${k}
+  zgP := ${X}.zg${k}_2665
+  zkP := ${X}.zk${k}_2665
+  zmP := ${X}.zm${k}_2665
+  zgC := ${X}.zg${k}_2673467
+  zkC := ${X}.zk${k}_2673467
+  zmC := ${X}.zm${k}_2673467
+  start2665 := bodyStart2665
+  startChunk := bodyStartChunk
+  zwB := ${X}.zw${k}_2673472
+  zwV := ${X}.zw${k}_2673473
+  cheap := ${X}.cheap${k}
+  zclbd := ${X}.zclbd${k}
+  hml := hoff_of ${X}.mheap${k} ${X}.stFoot${k} ${X}.iso${k} ${X}.zwr${k}
+  ckeepP := ${X}.ckeepP${k}
+  csupp := ${X}.csupp${k}
+  cbound := ${X}.cbound${k}
+  zimg := ${X}.zimg${k}
+  zctl := ${X}.zctl${k}
+  zstack := ${X}.zstack${k}
+  zjobs := ${X}.zjobs${k}
+  zstores := ${X}.zstores${k}
+  zroots := ${X}.zroots${k}
+  znC := ${X}.znC${k}
+  ctab := ${X}.ctab${k}
+  zbin := ${X}.zbin${k}
+  cbridge := ${X}.cbridge${k}
+  sbridge := bodyBridge${k}
+  cwsDisj := ${X}.cwsDisj${k}
+  cshiftR := fun h hNL => ${X}.cshiftR${k} h hNL
+  nnextLe := Nat.le_of_ble_eq_true bodyNN${k}
+  raised := ${X}.raised${k}
+  cbigs := ${X}.cbigs${k}
+  cjcl := ${X}.cjcl${k}
+  xnLe := Nat.le_of_ble_eq_true bodyXn${k}
+  loLe := Nat.le_of_ble_eq_true bodyLo${k}
+  zroots2 := ${X}.zroots2${k}
+  sameH := bodySameH${k}
+  sameN := bodySameN${k}
+  jsHeap := bodyJs${k}
+  jsRoots := bodyJsRoots${k}
+  jsNative := bodyJsNative${k}
+  framesEmpty := bodyFramesEmpty${k}
+  inputOld := by decide
+  lowVars := bodyLow${k}
+
+def bodyQs${k} : List (Option Q) := [${qs.join(", ")}]
+noncomputable def bodyEs${k} : List (Option SymE) := ${X}.nr${k}.map fun r => nth? ${X}.st${k}.S${T1}.tab r
+kernel_rfl bodyResChk${k} : (fwdRows.all fun r =>
+  resChkAll r Oracles.${X}.map_g${k} bodyEs${k} bodyQs${k}) = true
+kernel_rfl bodyLq${k} : bodyQs${k}.length = ${X}.cws${k}.length
+kernel_rfl bodyNrLo${k} : ${X}.nr${k}.all (Nat.ble ${X}.S${a}.tab.length) = true
+kernel_rfl bodyM0${k} : (Oracles.${X}.map_g${k}.all fun p =>
+  (Conv.idx? p.1 ${X}.cws${k}).isNone && !${X}.ws${k}.contains p.1) = true
+kernel_rfl bodySub${k} : (Oracles.${X}.map_site${k}.all fun p => Oracles.${X}.map_g${k}.contains p) = true
+kernel_rfl bodySubNext${k} : postSubB Oracles.${X}.map_g${k + 1} Oracles.${X}.map_g${k} ${X}.cws${k} bodyQs${k} = true
+kernel_rfl bodyDrop${k} : Nat.ble (${D} + (${X}.s${m}.next - ${X}.s${cn}.next)) ${Dnext} = true
+
+noncomputable def bodyD${k} : Nat := ${D}
+
+theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
+    (hr : r ∈ fwdRows) (hi : InRow r i) :
+    CutStep (bodyCut NB T tk π i ${D} Oracles.${X}.map_g${k} ${X}.s${a} ${X}.S${a})
+      (bodyCut NB T tk π i ${Dnext} Oracles.${X}.map_g${k + 1} ${X}.s${cn} ${X}.S${cn}) (${nSteps} + 1) :=
+  bodySite (n := ${nSteps}) (S2 := ${X}.st${k}.S${T1}.tab) (Es := bodyEs${k}) (qs := bodyQs${k})
+    (ok := ${X}.st${k}.bodyOkL)
+    (fun bs rows => ${NS}.${X}.site${k} bs rows (bodyLocalSim NB T tk bs rows))
+    (fun bs rows stk y0 => bodyGrowLocalSim NB T tk bs rows stk y0)
+    (fun _ _ => rfl) (fun _ _ => rfl) bodyFacts${k}
+    (fun _ _ ν hm => ${site.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"}
+      (List.all_eq_true.mp Oracles.${X}.chk_site${k} r hr) hi (MapOk.sub hm (sub_of_all bodySub${k})))
+    (fun _ hm _ _ _ ho hq => resChkAll_sound (List.all_eq_true.mp bodyResChk${k} r hr) hi hm ho hq)
+    bodyLq${k} rfl bodyNrLo${k} (m0_of_all bodyM0${k}) (postSub_sound bodySubNext${k})
+    (Nat.le_of_ble_eq_true bodyDrop${k}) (by decide)
+` + tail);
+      console.log(`${X}: site ${k} (${a}): D ${D} -> ${Dnext}, ${nSteps} + 1 steps`);
+    }
+    D = Dnext;
+    Ds.set(k + 1, Dnext);
+  }
+  // the glue stretches: typed runs and size bridges between the calls
+  const stepsAt = new Map<string, { name: string; file: string }>();
+  for (const f of readdirSync(tdir).filter(f => /^TypedSteps\d+\.lean$/.test(f)))
+    for (const m of readFileSync(join(tdir, f), "utf8").matchAll(new RegExp(`boot_rfl ${X}\\.(body(?:StepA|StepB|PatchB)\\d*) from ${X}\\.s(\\d+) to ${X}\\.s(\\d+)`, "g")))
+      stepsAt.set(`${m[2]}->${m[3]}`, { name: m[1]!, file: f.slice(0, -5) });
+  const ranges = [...src("Run").matchAll(/^sim_chain_range \S+ \S+ (\d+) (\d+) runSeg(\d+)$/gm)]
+    .map(m => ({ a: +m[1]!, b: +m[2]!, r: +m[3]! }));
+  const sizeIdx = new Map<number, number>();
+  for (const m of src("Bridge").matchAll(new RegExp(`kernel_rfl ${X}\\.sizeA(\\d+) : Host\\.Ts\\.Sim\\.Disp\\.sizeParts ${X}\\.s(\\d+)`, "g")))
+    sizeIdx.set(+m[2]!, +m[1]!);
+  const chain = JSON.parse(readFileSync(join(stream, "chain.json"), "utf8"));
+  const fuelOf = (k: number) => `${X}.ks`;
+  for (const p of chain.pieces.filter((p: any) => p.glue !== undefined)) {
+    const j = +p.glue.slice(1);
+    if (onlySites.length || onlyGlues.length) { if (!onlyGlues.includes(j)) continue; }
+    const here = oracleOf.get(`g${j}`) ?? fail(`no map_g${j}`);
+    const stage = stages.find(b => b.site === j);
+    const start = p.from as number, last = stage ? stage.ia as number : p.to as number;
+    const inside = bridges.filter(b => b.kind === "size" && b.ia > start && b.ia <= last).sort((x, y) => x.ia - y.ia);
+    const Dj = Ds.get(j) ?? fail(`no offset at glue ${j}`);
+    const imports = new Set<string>(["host.sim.compose.a4b.VWBodyGlue", "host.sim.compose.a4b.VWBodyBase",
+      `host.sim.compose.a4b.${here.file}`, `${mod}.Bridge`]);
+    const hOf = (k: number) => imports.add(`${mod}.H${Math.floor(k / 32)}`);
+    let facts = "", proof = "";
+    const good = (k: number) => {
+      facts += `kernel_rfl bodyGood${k} : (fwdRows.all fun r => ${here.check} r.ps (varsOf r.V Oracles.${X}.map_g${j}) ${X}.S${k}.oracle) = true\n`;
+      facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`;
+      return `(fun _ hm => ${here.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"} (List.all_eq_true.mp bodyGood${k} r hr) hi hm)`;
+    };
+    const acc = (k: number) => {
+      facts += `kernel_rfl bodyAcc${k} : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows ${X}.s${k} ${X}.S${k}) = fun _ _ => true\n`;
+      return `bodyAcc${k}`;
+    };
+    const active = (k: number) => `((congrArg (fun b : Host.Mlx.FfiAne.St => b.active) bodyBr${k}).trans bodyInactive0)`;
+    const pieces: string[] = [];
+    const seg = (a: number, b: number) => {
+      const rg = ranges.find(r => r.a === a && r.b === b) ?? fail(`no range ${a}..${b}`);
+      imports.add(`${mod}.TypedSeg${rg.r}`);
+      hOf(a); hOf(b);
+      return `${X}.bodyRunSeg${rg.r}`;
+    };
+    let a = start;
+    const toCall = (b: number) => {
+      const st = stepsAt.get(`${b}->${b + 1}`) ?? fail(`no step ${b}->${b + 1}`);
+      imports.add(`${mod}.${st.file}`); hOf(b + 1);
+      const brIn = good(a), acA = acc(a), acB = acc(b), run = seg(a, b);
+      facts += `kernel_rfl bodyBr${b + 1} : bridgeOf ${X}.s${b + 1}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyHalt${b} : isHalt ${X}.s${b}.ctl = false\nkernel_rfl bodyTop${b + 1} : noRetBlock ${X}.s${b + 1} = true\n`;
+      pieces.push(`bodyToCall (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm)`);
+    };
+    for (const br of inside) {
+      if (br.ia === last) continue;
+      toCall(br.ia - 1);
+      const n = sizeIdx.get(br.ia) ?? fail(`no size bridge at ${br.ia}`);
+      const patch = stepsAt.get(`${br.ia}->${br.ia + 1}`) ?? fail(`no patch ${br.ia}`);
+      imports.add(`${mod}.${patch.file}`); hOf(br.ia + 1);
+      const g0 = good(br.ia);
+      facts += facts.includes(`bodyBr${br.ia + 1} :`) ? "" : `kernel_rfl bodyBr${br.ia + 1} : bridgeOf ${X}.s${br.ia + 1}.ffi = bridgeOf ${X}.s0.ffi\n`;
+      pieces.push(`bodySize (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${X}.sizeA${n} ${X}.sizeArgsA${n} ${X}.sizeSymA${n} ${X}.sizeMlxA${n} ${X}.sizePayA${n} ${X}.sizeTaA${n} ${X}.sizeDecA${n} ${X}.sizePreA${n} ${X}.${patch.name} ${g0} ${active(br.ia)} (bodyBr${br.ia + 1}.trans bodyBr${br.ia}.symm)`);
+      a = br.ia + 1;
+    }
+    if (stage) toCall(last - 1);
+    else {
+      const brIn = good(a), acA = acc(a), run = seg(a, last);
+      facts += `kernel_rfl bodyBr${last} : bridgeOf ${X}.s${last}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyTop${last} : noRetBlock ${X}.s${last} = true\n`;
+      pieces.push(`bodyGlue (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} (fun _ hp => hp) ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm)`);
+    }
+    const dedup = [...new Set(facts.split("\n"))].join("\n");
+    proof = pieces.reduce((acc0, q) => acc0 ? `(${acc0}).trans (${q})` : q, "");
+    writeFileSync(join(outDir, `VWBodyG${j}.lean`), head([...imports]) + `${dedup}
+theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i : Cls.Inst}
+    (hr : r ∈ fwdRows) (hi : InRow r i) :
+    ∃ n, CutStep (bodyCut NB T tk π i ${Dj} Oracles.${X}.map_g${j} ${X}.s${start} ${X}.S${start})
+      (bodyCut NB T tk π i ${Dj} Oracles.${X}.map_g${j} ${X}.s${last} ${X}.S${last}) n :=
+  ⟨_, ${proof}⟩
+` + tail);
+    console.log(`${X}: glue ${j} (${start}..${last}): ${pieces.length} pieces`);
+  }
+}
+
+if (process.argv[2] === "prefill-body") genBodyFill(process.argv.slice(3));

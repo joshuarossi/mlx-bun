@@ -44,9 +44,9 @@ theorem npsJsBad_sub {i : Int} (h : jsShiftBadB PRE_first_tail_x15_r0.kappa1 i =
     omega
 
 /-- Reuse the checked initial JS heap, checking only the two finite changed lists. -/
-theorem npsJsFree {N : Map}
-    (hp : ∀ i, JsBad N i → jsShiftBadB PRE_first_tail_x15_r0.kappa1 i = true) :
-    NoBigSt (JsBad N) PRE_first_tail_x15_r0.s19.trace PRE_first_tail_x15_r0.s19 := by
+theorem npsJsFree {I : Int → Prop}
+    (hp : ∀ i, I i → jsShiftBadB PRE_first_tail_x15_r0.kappa1 i = true) :
+    NoBigSt I PRE_first_tail_x15_r0.s19.trace PRE_first_tail_x15_r0.s19 := by
   have hs := npsJsRoots
   simp only [noBigRootsP, Bool.and_eq_true, List.all_eq_true] at hs
   refine ⟨?_, noBigCtlP_sound hp hs.1.1.1.1,

@@ -57,9 +57,9 @@ theorem dispatchJsBad_sub {i : Int} (h : jsShiftBadB PRE_first_tail_x15_r0.kappa
     simp only [hp, ha, hbig, hne, decide_false, Bool.false_and, Bool.not_false]
 
 /-- Reuse the checked initial JS heap, checking only the two finite changed lists. -/
-theorem dispatchJsFree {N : Map}
-    (hp : ∀ i, JsBad N i → jsShiftBadB PRE_first_tail_x15_r0.kappa2 i = true) :
-    NoBigSt (JsBad N) PRE_first_tail_x15_r0.s40.trace PRE_first_tail_x15_r0.s40 := by
+theorem dispatchJsFree {I : Int → Prop}
+    (hp : ∀ i, I i → jsShiftBadB PRE_first_tail_x15_r0.kappa2 i = true) :
+    NoBigSt I PRE_first_tail_x15_r0.s40.trace PRE_first_tail_x15_r0.s40 := by
   have hs := dispatchJsRoots
   simp only [noBigRootsP, Bool.and_eq_true, List.all_eq_true] at hs
   refine ⟨?_, noBigCtlP_sound hp hs.1.1.1.1,

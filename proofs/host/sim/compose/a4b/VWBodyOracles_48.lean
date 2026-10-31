@@ -1,6 +1,7 @@
 import host.sim.compose.PreCall
 import host.sim.lin.Table
 import host.sim.template.a4pre_first_tail_x15_r0_body.States
+import host.sim.template.a4pre_first_tail_x15_r0_body.H0
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

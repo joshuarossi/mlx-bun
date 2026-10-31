@@ -1,8 +1,7 @@
 # Handoff: the route proof for Qwen3.8-27B-Trellis on M1 Max
 
 Updated 2026-10-31 07:05 CST. Branch `proof/qwen38-m1max-trellis`, worktree
-`/Users/joshrossi/Code/mlx-bun-proof-m1max`; last pushed commit `c684efc97` (Oct 23); a week of work is
-uncommitted in the worktree. Paths are under `proofs/` unless absolute. The Oct 24-26 detail (receipts,
+`/Users/joshrossi/Code/mlx-bun-proof-m1max`; snapshots are committed and pushed as work lands. Paths are under `proofs/` unless absolute. The Oct 24-26 detail (receipts,
 per-module results) is in `~/proofdev/HANDOFF-archive-20261026.md`.
 
 ## 1. Goal
@@ -134,7 +133,14 @@ traced once, symbolically.
 5. **Bulk generation**, once 1-4 work end to end on one row of each family.
 6. **Final:** consistent build of everything, full `check.ts`, then `route_main` without `Gn`.
 
-**Size (updated 31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 3,757 small modules at about 6-8 s each, about 7 slot-h. 133 forwards at that rate is about 800 slot-h (11 days on 3 slots), dominated by per-module import cost. The generator reports options to cut this by at least 3x after the VW step compiles: fewer modules per site, warm/cold sharing, one body across the 17 VW plan bands. A piece's template serves all its rows; other rows only need oracle checks (`lin/gen.ts`).
+**Size and speed (31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 3,757+ small modules, about 7 slot-h; 133 forwards would be about 800 slot-h. Almost all of that is imports: importing a generated module's closure costs 5-7.5 s real with about 0.55 GB private footprint, while a root K check (40k steps) is about 20 s and a stage K about 15 s. RSS (4-6 GB) overstates memory because most of it is shared mmapped oleans, so the gate went from 3 to 8 slots, above 3 only while memory is free.
+
+**Biggest blockers and what's being done:**
+1. Bulk cost: a dedicated cost worker merges generated modules (target at most 2 slot-h per VW forward) and shares bodies across plan bands and KV classes (21 bodies instead of 133, as first planned).
+2. The Neural Engine path is unproved and could expose design gaps: a dedicated worker builds the first chain now, in parallel with VW.
+3. POST for any prompt length: generator and route.
+4. The growth bound for long prompts: route.
+5. Disk: 169 GiB free, floor 110; bulk generation needs old `devout-*` dirs cleared first.
 
 **Rules for the machine reference:** for |π| >= 3 the reference is the machine's own computation, because MMA and the
 Neural Engine are uninterpreted; the model-level statement stays limited to |π| <= 2.
@@ -156,6 +162,9 @@ Neural Engine are uninterpreted; the model-level statement stays limited to |π|
   (`cut_decanon`), so the loop shift stays `loopTheta`.
 - 23 Oct: `AneNet.inputs` indexed by row count (the old form made the Neural Engine premise unsatisfiable).
 
+- 31 Oct: the end theorem's graph goals (`GFM`, `ForwardAtM`, `goalM`, `goalC`, `machGx`) move from `evalR` on the decode-kernel graph to
+  `evalRR` on `ffiGraphR`, as a layer: `evalR` has no value for prefill kernels, so the old statement fails after a multi-row step.
+  The reference was already `evalRR`; the trust boundary doesn't change.
 - 30 Oct: stop source-only work; everything is compiled as it is written, generated rather than hand-stepped; no
   receipts, admissions or review packets. Acceptance is the kernel plus `#print axioms`.
 
@@ -163,8 +172,9 @@ Neural Engine are uninterpreted; the model-level statement stays limited to |π|
 
 `~/proofdev/proof-brief.md` has the rules and the build commands for agents.
 
-- Commit only when Josh asks. Commit proof sources, tools and their data; not stream data, `node_modules` or generated
-  chain modules `check.ts` doesn't register.
+- Commit and push snapshots of the proof sources as we go (Josh, 31 Oct): sources, tools and their data, registered
+  generated modules and each chain's `States.lean`; not stream data, `node_modules`, or unregistered generated modules.
+- The boot chain `host/load/boot/w/*` waits for the final build (Josh, 31 Oct): finish everything else first.
 - Machine: 32 GB, 10 cores, 3 compile slots via `~/leanslot.sh`; 8 GB cap, 24 GB exclusive retry, enforced on footprint.
   Keep `/System/Volumes/Data` above 110 GiB free.
 - Builder: `~/proofdev/tools/build.ts` compiles an import closure from the worktree, reusing a compiled file when its source

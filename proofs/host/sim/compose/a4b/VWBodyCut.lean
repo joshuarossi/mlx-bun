@@ -42,26 +42,17 @@ theorem BodyBook.memo {i : Cls.Inst} {π : List Nat} {K0 : Ctx} {x : SegInst FF}
   rw [hb.frames]
   exact hb.incomingMemo
 
-/-- A body boundary at the variables `m`, with offset at most `Dmax`. -/
-noncomputable def bodyCut (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) (Dmax : Nat)
+/-- A body boundary of the prompt `π`, at the variables `m`, with offset at most `Dmax`. -/
+noncomputable def bodyCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) (Dmax : Nat)
     (m : List (Nat × Q)) (s : St FF.S) (S : SSrv) : ICut FF where
   s0 := s
   tab0 := S.tab
-  R := fun x s S => ∃ π K0,
+  R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K s S x.t x.C ∧
     BodyBook i π K0 x Dmax ∧ InputAt (π.take i.n) (x.M.node 15235) x.t x.C ∧
     setupInputs T tk x ∧ MapOk x.ν i m
   B := fun x => AneFresh x.t ∧ fixedCells x
-
-theorem fromStart {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst} {Dmax : Nat} {m : List (Nat × Q)}
-    (hD : 3571 ≤ Dmax) (hsub : ∀ p ∈ m, p ∈ bodyMap) :
-    CutConv (bodyStartCut NB T tk i)
-      (bodyCut NB T tk i Dmax m PRE_first_tail_x15_r0_body.s0 PRE_first_tail_x15_r0_body.S0) := by
-  rintro x ⟨π, K0, hr, hb, hip, hins, hmap, hk⟩ hB
-  refine ⟨x, rfl, rfl, ⟨π, K0, hr, ?_, hip, hins, MapOk.sub hmap hsub⟩, hB⟩
-  exact ⟨hb.length, hb.vocab, hb.valuation, hk, hb.incoming, hb.incomingPrompt, hb.incomingMemo,
-    hb.frames, Nat.le_trans hb.offset hD, hb.lo, hb.hi, hb.inputEvent⟩
 
 /-- The bridge of the target follows the template's while both sides are inactive. -/
 theorem bodyFresh {W : Nat → Option WFrame}
@@ -92,10 +83,10 @@ theorem BodyBook.ext {i : Cls.Inst} {π : List Nat} {K0 K : Ctx} {M M' : Map} {�
   rw [he.a]
   exact hb.inputEvent
 
-theorem setupInputs_ext {T : Nat} {tk : Nat → Nat} {M M' : Map} {ν : Nat → F64} {K : Ctx}
+theorem setupInputs_ext {T : Nat} {tk : Nat → Nat} {M M' : Map} {ν : Nat → F64} {K K' : Ctx}
     {t t' : St FF.S} {C C' : CSrv} {n : Nat}
     (h : setupInputs T tk ⟨M, ν, K, t, C⟩) (he : Ext M M' n) :
-    setupInputs T tk ⟨M', ν, K, t', C'⟩ :=
+    setupInputs T tk ⟨M', ν, K', t', C'⟩ :=
   ⟨h.1, by change M'.a 2590 = 2590; rw [he.a]; exact h.2⟩
 
 theorem fixedCells_ext {M M' : Map} {ν : Nat → F64} {K K' : Ctx}
@@ -107,15 +98,15 @@ theorem fixedCells_ext {M M' : Map} {ν : Nat → F64} {K K' : Ctx}
   exact h
 
 /-- A checked glue stretch of the body, under the body's acceptance for every token buffer. -/
-theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst} {Dmax n : Nat}
+theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Dmax n : Nat}
     {m m' : List (Nat × Q)} {sa sb : St FF.S} {Sa Sb : SSrv}
     (ha : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows sa Sa) = fun _ _ => true)
     (hrun : ∀ (bs : List Byte) (rows : Nat), runOk FF (VWFrames.bodyOk bs rows) n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true) (hgood : ∀ ν, MapOk ν i m → Good ν Sa.oracle)
     (hsub : ∀ p ∈ m', p ∈ m) (hi : (bridgeOf sa.ffi).active = false)
     (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi) :
-    CutStep (bodyCut NB T tk i Dmax m sa Sa) (bodyCut NB T tk i Dmax m' sb Sb) n := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+    CutStep (bodyCut NB T tk π i Dmax m sa Sa) (bodyCut NB T tk π i Dmax m' sb Sb) n := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
   have hok := congrFun (congrFun ha (tokenBytes (π.take i.n))) (π.take i.n).length
   obtain ⟨M', t', C', hrun', hext, hm'⟩ := D1Advance.run
     (bodySim NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length []) hb.context hb.valuation
@@ -126,7 +117,7 @@ theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst} {Dmax n : Nat}
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun')
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', hb.ext hext, ip, setupInputs_ext hins hext, MapOk.sub hmap hsub⟩,
+    ⟨K0, hm', hb.ext hext, ip, setupInputs_ext hins hext, MapOk.sub hmap hsub⟩,
     bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩
 
 end Host.Ts.Sim.Compose.VWFirst
