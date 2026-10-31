@@ -13,9 +13,13 @@ def afterNpsBook (T L : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
   Disp.KpJ setupJ 4096 x.K ∧ x.K.fr 4910 = none ∧
   (∃ π : List Nat, π.length = L ∧ (∀ k ∈ π, k < 248320) ∧ x.K.fr 2665 = some ([], π.map natV)) ∧
   AneFresh x.t ∧ setupInputs T tk x ∧ fixedCells x ∧ x.K.D ≤ 3540
-noncomputable def afterNpsCut (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
+noncomputable def afterNpsCut (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) (i : Cls.Inst) : ICut FF :=
   { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP npsMap
-      PRE_first_tail_x15_r0.s19 PRE_first_tail_x15_r0.S19 i with B := afterNpsBook T i.L tk }
+      PRE_first_tail_x15_r0.s19 PRE_first_tail_x15_r0.S19 i with
+    B := fun x => afterNpsBook T i.L tk x ∧ PromptFr ρ x ∧ NativeAt 0 0 PRE_first_tail_x15_r0.s19 x.t }
+
+kernel_rfl sameNext1 : (mlxOf PRE_first_tail_x15_r0.s18.ffi).next = (mlxOf PRE_first_tail_x15_r0.s19.ffi).next
+kernel_rfl sameNnext1 : (mlxOf PRE_first_tail_x15_r0.s18.ffi).nnext = (mlxOf PRE_first_tail_x15_r0.s19.ffi).nnext
 
 theorem reservedCwsOff {j : Nat} (hj : j < 9) : Conv.idx? j PRE_first_tail_x15_r0.cws1 = none := by
   simp [PRE_first_tail_x15_r0.cws1, Conv.idx?, show 1087 ≠ j by omega]
@@ -25,10 +29,10 @@ theorem reservedWsOff {j : Nat} (hj : j < 9) : PRE_first_tail_x15_r0.ws1.contain
   have h := Nat.le_of_ble_eq_true (List.all_eq_true.mp npsWsLow j (List.contains_iff_mem.mp hc))
   omega
 
-theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst}
+theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst}
     (h1 : 1 ≤ i.L) (hL : i.L ≤ 2 ^ 20) (hn : i.n = i.L - 1) :
-    CutConv (mergedCut NB T tk i.L) (afterNpsCut NB T tk i) := by
-  rintro x hR hB
+    CutConv (mergedPinCut NB T tk ρ i.L) (afterNpsCut NB T tk ρ i) := by
+  rintro x hR ⟨hB, hpin, hnat⟩
   have hcdata := nps_compact_rel hR hB
   obtain ⟨hr, ν, hν, hvb, hkp, hmap⟩ := hR
   obtain ⟨⟨hframeBook, hsmall, hoffset⟩, hins, hids, hbase, hcall, hNB, hnative⟩ := hB
@@ -62,7 +66,8 @@ theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst}
     rw [hν]
     exact hvals
   refine ⟨npsPair x, rfl, rfl, ⟨hc, hpq.1, hctx.1, hpq.2⟩,
-    hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩
+    ⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hpin,
+      ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩
   · intro j hj
     change Shift.valuation θZ1 x.ν j = _
     unfold θZ1

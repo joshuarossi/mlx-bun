@@ -10,10 +10,39 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (L : Nat) : ICut FF :=
+noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (L : Nat) : ICut FF :=
   { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP [(9, .L)]
       PRE_setup_early_r0.s16 PRE_setup_early_r0.S16 (setupI L) with
-    B := fun x => SetupCommon.ChunkBook L x ∧ setupInputs T tk x ∧ fixedCells x ∧ baseNums }
+    B := fun x => SetupCommon.ChunkBook L x ∧ setupInputs T tk x ∧ fixedCells x ∧ baseNums ∧
+      PromptFr π x ∧ NativeAt 0 0 PRE_setup_early_r0.s16 x.t }
+
+/-- Bounded vocabulary values are decoded from the retained floating-point prefix. -/
+theorem natV_map_inj {a b : List Nat} (ha : ∀ k ∈ a, k < 248320) (hb : ∀ k ∈ b, k < 248320)
+    (h : a.map natV = b.map natV) : a = b := by
+  induction a generalizing b with
+  | nil =>
+    cases b with
+    | nil => rfl
+    | cons _ _ => cases h
+  | cons p a ih =>
+    cases b with
+    | nil => cases h
+    | cons q b =>
+      have hc := List.cons.inj h
+      have hn : F64.ofNat p = F64.ofNat q := NumV.lit.inj (Val.num.inj hc.1)
+      have hi := congrArg F64.truncInt hn
+      have hp := ha p List.mem_cons_self
+      have hq := hb q List.mem_cons_self
+      rw [Disp.truncInt_ofNat (by omega), Disp.truncInt_ofNat (by omega)] at hi
+      have hpq : p = q := Int.ofNat_inj.mp (Option.some.inj hi)
+      rw [hpq, ih (fun k hk => ha k (List.mem_cons_of_mem _ hk))
+        (fun k hk => hb k (List.mem_cons_of_mem _ hk)) hc.2]
+
+/-- The prompt a book's frame holds is the route's. -/
+theorem promptEq {π' π : List Nat} {x : SegInst FF} (hv : ∀ k ∈ π', k < 248320)
+    (hπ : ∀ k ∈ π, k < 248320) (hf : x.K.fr 2665 = some ([], π'.map natV)) (hp : PromptFr π x) :
+    π' = π :=
+  natV_map_inj hv hπ (congrArg Prod.snd (Option.some.inj (hf.symm.trans hp)))
 
 private theorem map_fixed_tail {α : Type} {f : α → α} : ∀ (r s : List α),
     (r ++ s).map f = r ++ s → s.map f = s := by
@@ -32,9 +61,9 @@ theorem tableAt {j : Nat} {e : SymE} (h : nth? PRE_setup_early_r0.S16.tab j = so
 
 /-- Remove the setup-only C entry while retaining the actual lookahead queue,
 loaded values, prompt frame, native state and fixed driver cells. -/
-theorem toOld {NB T L : Nat} {tk : Nat → Nat} (hC : chunkC L = 2048) :
-    CutConv (SetupCommon.nextCut NB T tk L) (cut NB T tk L) := by
-  rintro x ⟨hr, hq⟩ ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, hnum⟩, hv, hbase, hsmall⟩, hids⟩
+theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} (hC : chunkC L = 2048) :
+    CutConv (SetupCommon.nextCut NB T tk ρ L) (cut NB T tk ρ L) := by
+  rintro x ⟨hr, hq⟩ ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, hnum⟩, hv, hbase, hsmall⟩, hids, hp, hnat⟩
   change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
     x.M x.ν x.K (PRE_g0b.s10 : St FF.S) ⟨PRE_g0b.S10.tab, []⟩ x.t x.C at hr
   change x.M.num 10 = .lit (F64.ofNat (chunkC L)) at hnum
@@ -75,9 +104,13 @@ theorem toOld {NB T L : Nat} {tk : Nat → Nat} (hC : chunkC L = 2048) :
       exact eraseNum_supp (F64.ofNat 2048) (by decide : 10 ≤ 14) (by simpa only [newLen] using hj))
     hsrv hffi'
   refine ⟨⟨N, x.ν, x.K, x.t, x.C⟩, rfl, rfl, ⟨hr', hq.1, hq.2.1, ?_⟩,
-    ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩, ?_, ?_, hbase⟩
+    ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩, ?_, ?_, hbase, hp, ?_⟩
   · exact ⟨hq.2.2.1, trivial⟩
   · exact ⟨hv.1, hv.2⟩
   · exact hids
+  · change NativeAt 0 0 PRE_setup_early_r0.s16 x.t
+    unfold NativeAt
+    rw [nativeEq]
+    exact hnat
 
 end Host.Ts.Sim.Compose.SetupDrop

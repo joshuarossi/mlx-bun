@@ -9,9 +9,9 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly
 
-noncomputable def nps_DTtail_first__start__g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) :
+noncomputable def nps_DTtail_first__start__g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
     StagePiece FF firstTailRows [⟨[(0, .L), (1, .o), (2, .C)], Stage.NextStep.DTtail.O⟩]
-      (fun i => SetupCommon.nextCut NB T tk i.L) (afterNpsCut NB T tk) where
+      (fun i => SetupCommon.nextCut NB T tk π i.L) (afterNpsCut NB T tk π) where
   m := [(9, .L)]
   n := PRE_first_tail_x15_r0.st1.tpl.n + 1
   O := PRE_first_tail_x15_r0.st1.S0.oracle

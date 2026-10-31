@@ -23,20 +23,20 @@ theorem bodyStartEq : (PRE_first_tail_x15_r0_body.s0 : St FF.S) = PRE_first_tail
 
 def bodyMap : List (Nat × Q) := [(9, .L), (10, .n)]
 
-noncomputable def bodyStartCut (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF where
+noncomputable def bodyStartCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF where
   s0 := PRE_first_tail_x15_r0_body.s0
   tab0 := PRE_first_tail_x15_r0_body.S0.tab
-  R := fun x s S => ∃ π K0,
+  R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K s S x.t x.C ∧
     ForwardBook i π K0 x 3571 ∧ InputAt (π.take i.n) (x.M.node 15235) x.t x.C ∧
     setupInputs T tk x ∧ MapOk x.ν i bodyMap ∧
     Disp.KpJ (VWFrames.typedJ (tokenBytes (π.take i.n)) (π.take i.n).length) VWFrames.bodyD0 x.K
-  B := fun x => AneFresh x.t ∧ fixedCells x
+  B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 PRE_first_tail_x15_r0_body.s0 x.t
 
-theorem toBody {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst} (hn : i.n ≤ loopVB 10) :
-    CutConv (forwardCut NB T tk i) (bodyStartCut NB T tk i) := by
-  rintro x ⟨π, K0, hr, hb, hip, hins, hmap⟩ hfresh
+theorem toBody {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hn : i.n ≤ loopVB 10) :
+    CutConv (forwardCut NB T tk π i) (bodyStartCut NB T tk π i) := by
+  rintro x ⟨K0, hr, hb, hip, hins, hmap⟩ ⟨hfresh, hids, hnat⟩
   have hv : x.ν 1087 = F64.ofNat i.n := hmap.2.1
   have hval := bindQuantity (v := 10) (c := i.n) (q := Q.n) hb.valuation hmap
     (by
@@ -75,6 +75,9 @@ theorem toBody {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst} (hn : i.n ≤ loop
     rcases hp with rfl | rfl <;> simp [npsMap])
   have hk : Disp.KpJ (VWFrames.typedJ (tokenBytes (π.take i.n)) (π.take i.n).length) VWFrames.bodyD0 y.K :=
     ⟨hb.context.1, Nat.le_trans hb.context.2 (by decide)⟩
-  exact ⟨y, rfl, rfl, ⟨π, K0, hrel', book, hip, inputs, hmap', hk⟩, hfresh⟩
+  have hnat' : NativeAt 0 0 PRE_first_tail_x15_r0_body.s0 y.t := by
+    rw [bodyStartEq]
+    exact hnat
+  exact ⟨y, rfl, rfl, ⟨K0, hrel', book, hip, inputs, hmap', hk⟩, hfresh, hids, hnat'⟩
 
 end Host.Ts.Sim.Compose.VWFirst

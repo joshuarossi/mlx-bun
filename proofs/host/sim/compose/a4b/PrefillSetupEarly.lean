@@ -72,10 +72,10 @@ kernel_rfl PRE_setup_early_r0.chk_g0b : ([setup_early.r0, setup_h0.r0, setup_h1.
   goodLin r.ps (varsOf r.V PRE_setup_early_r0.map_g0b) (List.take 1 (List.drop 0 Host.Load.Run.Tpl.PRE_setup_early_r0.O))) = true
 
 /-- The bundle uses the shared PRE_g0b template after the zero-step C seam. -/
-noncomputable def PRE_setup_early_r0.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
-  withSetupInputs T tk (SetupChunk.chunkCallFixedCut NB T tk i.L)
-noncomputable def PRE_setup_early_r0.b_g0b_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  SetupCommon.cut NB T tk Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
+noncomputable def PRE_setup_early_r0.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
+  withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L)
+noncomputable def PRE_setup_early_r0.b_g0b_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  SetupCommon.cut NB T tk π Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
 noncomputable def PRE_setup_early_r0.pc0 := SetupCommon.nextCut
 
 noncomputable def PRE_setup_early_r0.g0a := FillSetupEarly.g0a

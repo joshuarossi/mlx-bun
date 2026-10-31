@@ -8,16 +8,18 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-noncomputable def forwardCut (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
-  typedCut NB T tk PRE_first_tail_x15_r0.s41 PRE_first_tail_x15_r0.S41 i 3571
+noncomputable def forwardCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
+  typedCut NB T tk π PRE_first_tail_x15_r0.s41 PRE_first_tail_x15_r0.S41 i 3571
+
+kernel_rfl cnt41 : countersOkB PRE_first_tail_x15_r0.s40 PRE_first_tail_x15_r0.s41 = true
 
 private theorem bridge22 : bridgeOf PRE_first_tail_x15_r0.s41.ffi = bridgeOf PRE_first_tail_x15_r0.s40.ffi :=
   typedRun40.dst_bridge.trans typedRun40.src_bridge.symm
 
-theorem g2 (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst)
+theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x15_r0.S40.oracle) :
-    CutStep (g2Cut NB T tk i) (forwardCut NB T tk i) 7 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+    CutStep (g2Cut NB T tk π i) (forwardCut NB T tk π i) 7 := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (typedSim NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length []) hb.context hb.valuation hgood
@@ -50,17 +52,18 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst)
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids⟩
+    ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
+    hnat.step rfl hr hm' hext.big hext.node cnt41⟩
 
 kernel_rfl g2Check : (firstTailRows.all fun r => goodLin r.ps
   (varsOf r.V npsMap) PRE_first_tail_x15_r0.S40.oracle) = true
 
-noncomputable def g2_first (NB T : Nat) (tk : Nat → Nat) :
-    GluePiece FF firstTailRows (g2Cut NB T tk) (forwardCut NB T tk) where
+noncomputable def g2_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
+    GluePiece FF firstTailRows (g2Cut NB T tk π) (forwardCut NB T tk π) where
   m := npsMap
   n := 7
   O := PRE_first_tail_x15_r0.S40.oracle
   chk r hr := List.all_eq_true.mp g2Check r hr
-  ok _ _ i _ ho := g2 NB T tk i ho.1
+  ok _ _ i _ ho := g2 NB T tk π i ho.1
 
 end Host.Ts.Sim.Compose.VWFirst

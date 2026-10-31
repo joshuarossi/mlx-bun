@@ -21,6 +21,13 @@ noncomputable def mergedCut (NB T : Nat) (tk : Nat → Nat) (L : Nat) : ICut FF 
     (Conv.relB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP [] (mergedQ L))).with
     (mergedBook NB T L tk)
 
+/-- The merged cut at the route's prompt. -/
+noncomputable def mergedPinCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (L : Nat) : ICut FF :=
+  { mergedCut NB T tk L with
+    B := fun x => (mergedCut NB T tk L).B x ∧ PromptFr π x ∧ NativeAt 0 0 PRE_first_tail_x15_r0.s18 x.t }
+
+kernel_rfl cnt18 : countersOkB PRE_first_tail_x15_r0.s17 PRE_first_tail_x15_r0.s18 = true
+
 theorem npsSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
     Disp.StepSimXLB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       PRE_first_tail_x15_r0.st1.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
@@ -33,10 +40,10 @@ theorem npsSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simp only [Bool.and_eq_true] at h
   simpa only [P, backRest] using h.1
 
-theorem nps_merged {NB T L : Nat} {tk : Nat → Nat}
+theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat}
     (horacle : ∀ ν, MapOk ν (setupI L) [(9, .L)] → Good ν PRE_first_tail_x15_r0.st1.S0.oracle) :
-    CutStep (npsCut NB T tk L) (mergedCut NB T tk L) (PRE_first_tail_x15_r0.st1.tpl.n + 1) := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb, hins, hids, hbase⟩
+    CutStep (npsCut NB T tk ρ L) (mergedPinCut NB T tk ρ L) (PRE_first_tail_x15_r0.st1.tpl.n + 1) := by
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb, hins, hids, hbase, hp, hnat⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have h0 := hr.withOracle (horacle x.ν hq.2.2)
   change RelB FF _ wideP [] x.M x.ν x.K PRE_first_tail_x15_r0.s17
@@ -72,11 +79,14 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat}
       ⟨PRE_first_tail_x15_r0.S18.tab, []⟩ t' C' ∧ _
     rw [PRE_first_tail_x15_r0.mergeTab1]
     exact ⟨hm', x.ν, rfl, hq⟩
-  · refine ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, fresh⟩, hsmall⟩,
+  · have hnat0 : NativeAt 0 0 PRE_first_tail_x15_r0.s17 x.t := by
+      rw [PRE_first_tail_x15_r0.nps1_eq]
+      exact hnat
+    refine ⟨⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, fresh⟩, hsmall⟩,
       ⟨?_, (congrFun ext.a 2590).trans hins.2⟩,
       ⟨(congrFun ext.a 2586).trans hids.1, (congrFun ext.a 2589).trans hids.2⟩,
       hbase, ⟨hr.presentBound, hr.heapSupp⟩, top.1.load.mlx.nbl.trans hNL,
-      PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩
+      PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step rfl hr hm' ext.big ext.node cnt18⟩
     intro j hj
     change npsVal x.ν j = _
     rw [show npsVal x.ν j = x.ν j from Conv.resVal_off (by

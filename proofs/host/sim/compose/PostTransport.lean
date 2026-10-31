@@ -10,7 +10,7 @@ theorem Book.grow {T cap n : Nat} {tk : Nat → Nat} {π γ : List Nat}
     (hg : Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi)) (hc : CSrv.Le C C') :
     Book T tk cap π γ ⟨M', ν, K, t', C'⟩ := by
   refine ⟨h.nonempty, h.vocab, h.lastRows, h.rowsLength, h.rowsVocab, h.valuation,
-    h.promptValue, h.rowValue, h.context, h.prompt, h.chunk, h.reserved, ?_, ?_⟩
+    h.promptValue, h.rowValue, h.offsetValue, h.capValue, h.context, h.prompt, h.chunk, h.reserved, ?_, ?_⟩
   · exact (congrFun he.a 2590).trans h.emittedAnchor
   · have hi : SetupD1Input.InputAt γ (M.node 15235) t C := h.input
     change SetupD1Input.InputAt γ (M'.node 15235) t' C'

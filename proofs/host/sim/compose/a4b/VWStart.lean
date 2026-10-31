@@ -7,12 +7,12 @@ namespace Host.Ts.Sim.Compose.VWFirst
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
 
-noncomputable def npsCut (NB T : Nat) (tk : Nat → Nat) (L : Nat) : ICut FF :=
-  { SetupDrop.cut NB T tk L with
+noncomputable def npsCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (L : Nat) : ICut FF :=
+  { SetupDrop.cut NB T tk π L with
     s0 := PRE_first_tail_x15_r0.s17, tab0 := PRE_first_tail_x15_r0.S17.tab }
 
-theorem toNps {NB T L : Nat} {tk : Nat → Nat} (hC : chunkC L = 2048) :
-    CutConv (SetupCommon.nextCut NB T tk L) (npsCut NB T tk L) := by
+theorem toNps {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} (hC : chunkC L = 2048) :
+    CutConv (SetupCommon.nextCut NB T tk π L) (npsCut NB T tk π L) := by
   apply (SetupDrop.toOld hC).trans
   rintro x ⟨hr, hq⟩ hb
   refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb⟩

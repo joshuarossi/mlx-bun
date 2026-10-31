@@ -13,7 +13,7 @@ kernel_rfl PRE_first_tail_x15_r0.ncl_nodes_eq : (Host.Load.Layers.toLoad PRE_fir
 kernel_rfl PRE_first_tail_x15_r0.ncl_items_eq : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0.s0.ffi).mlx.items = (Host.Load.Layers.toLoad PRE_setup_early_r0.s0.ffi).mlx.items
 
 theorem PRE_first_tail_x15_r0.ncl0 : Conv.NClean (⟨18151, 15235, 2673202, 9⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0.s0.ffi).mlx := by
-  refine PRE_setup_early_r0.ncl0.stepB (lh := []) (ln := []) (li := []) ⟨le_rfl, le_rfl, le_rfl, le_rfl⟩ ?_ ?_ ?_ ?_ rfl
+  refine PRE_setup_early_r0.ncl0.stepB (lh := []) (ln := []) (li := []) ⟨Nat.le_refl _, Nat.le_refl _, Nat.le_refl _, Nat.le_refl _⟩ ?_ ?_ ?_ ?_ rfl
   · intro k _; rw [PRE_first_tail_x15_r0.ncl_arrs_eq]
   · intro k _; rw [PRE_first_tail_x15_r0.ncl_objs_eq]
   · intro k _; rw [PRE_first_tail_x15_r0.ncl_nodes_eq]

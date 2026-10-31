@@ -1,6 +1,7 @@
 import host.sim.compose.PreCall
 import host.sim.template.a4pre_d1_dispatch.Frames
 import host.simgraph.family.FoldedData
+import host.sim.CasesL
 set_option Elab.async false
 namespace Host.Ts.Sim.Compose.Post
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
@@ -17,6 +18,8 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap : Nat) (π γ : List Nat) (x : 
   valuation : VBOkF loopVB x.ν
   promptValue : x.ν 9 = F64.ofNat π.length
   rowValue : x.ν 10 = F64.ofNat 1
+  offsetValue : x.ν 11 = F64.ofNat π.length
+  capValue : x.ν 16 = F64.ofNat (capL π.length)
   context : Disp.KpJ (D1Frames.typedJ (bytes γ)) cap x.K
   prompt : x.K.fr 2665 = some ([], π.map natV)
   chunk : x.K.fr D1Frames.chunk = some ([], γ.map natV)

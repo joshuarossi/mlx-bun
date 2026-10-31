@@ -10,17 +10,19 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
-  { typedCut NB T tk PRE_first_tail_x15_r0.s39 PRE_first_tail_x15_r0.S39 i with
-    B := fun x => AneFresh x.t ∧ fixedCells x ∧
+noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
+  { typedCut NB T tk π PRE_first_tail_x15_r0.s39 PRE_first_tail_x15_r0.S39 i with
+    B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 PRE_first_tail_x15_r0.s39 x.t ∧
       Conv.CallFacts PRE_first_tail_x15_r0.s38 PRE_first_tail_x15_r0.S38.tab.length ∧
       NB ≤ PRE_first_tail_x15_r0.P2.NL ∧ Conv.FullShiftQ PRE_first_tail_x15_r0.P2 18
         PRE_first_tail_x15_r0.kappa2 PRE_first_tail_x15_r0.s40.ffi PRE_first_tail_x15_r0.s39.ffi }
 
-theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst)
+kernel_rfl cnt39 : countersOkB PRE_first_tail_x15_r0.s38 PRE_first_tail_x15_r0.s39 = true
+
+theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x15_r0.st2.S0.oracle) :
-    CutStep (dispatchCut NB T tk i) (mergedDispatchCut NB T tk i) 425 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+    CutStep (dispatchCut NB T tk π i) (mergedDispatchCut NB T tk π i) 425 := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
   let d := dispatchSite NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K PRE_first_tail_x15_r0.s38 d.tpl.S0 x.t x.C := by
@@ -77,7 +79,8 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst)
     change (mlxOf PRE_first_tail_x15_r0.s38.ffi).nnext ≤ 15236
     rw [← PRE_first_tail_x15_r0.fcnn2]
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids, ⟨hr.presentBound, hr.heapSupp⟩,
+    ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
+    hnat.step rfl hr hm' hext.big hext.node cnt39, ⟨hr.presentBound, hr.heapSupp⟩,
     top.1.load.mlx.nbl.trans hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩
 
 end Host.Ts.Sim.Compose.VWFirst

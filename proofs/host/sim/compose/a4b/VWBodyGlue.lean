@@ -27,7 +27,7 @@ theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun')
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', hb.ext hext, hnat.step hr hm' hext hcnt, ip, setupInputs_ext hins hext, hmap⟩,
+    ⟨K0, hm', hb.ext hext, hnat.step rfl hr hm' hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap⟩,
     bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩
 
 /-- A checked glue stretch and the step into the next bridge or call. -/
@@ -55,7 +55,7 @@ theorem bodyToCall {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun')
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', hb.ext hext, hnat.step hr hm' hext hcnt, ip, setupInputs_ext hins hext, hmap⟩,
+    ⟨K0, hm', hb.ext hext, hnat.step rfl hr hm' hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap⟩,
     bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩
 
 /-- An `mlx_array_size` bridge of the body: three target steps, a new trace base. -/
@@ -113,7 +113,7 @@ theorem bodySize {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
     rw [ht, hf, hev, hext.a]
     simp only [List.cons_append, List.append_assoc]
   refine ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨K0, hout, book, hnat.step hr hout hext hcnt, ip, setupInputs_ext hins hext, hmap⟩,
+    ⟨K0, hout, book, hnat.step rfl hr hout hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap⟩,
     bodyFresh hr hout hi hbr hfresh, fixedCells_ext hids hext⟩
 
 end Host.Ts.Sim.Compose.VWFirst

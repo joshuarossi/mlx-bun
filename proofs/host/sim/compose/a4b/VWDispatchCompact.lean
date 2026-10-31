@@ -9,15 +9,18 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable def dispatchPair (x : SegInst FF) := prefillCompactPair setupP PRE_first_tail_x15_r0.kappa2
   θZ2 PRE_first_tail_x15_r0.s39 PRE_first_tail_x15_r0.s40 x
 
-noncomputable def g2Cut (NB T : Nat) (tk : Nat → Nat) (i : Lin.Cls.Inst) : ICut FF :=
-  typedCut NB T tk PRE_first_tail_x15_r0.s40 PRE_first_tail_x15_r0.S40 i 3571
+noncomputable def g2Cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Lin.Cls.Inst) : ICut FF :=
+  typedCut NB T tk π PRE_first_tail_x15_r0.s40 PRE_first_tail_x15_r0.S40 i 3571
+
+kernel_rfl sameNext2 : (mlxOf PRE_first_tail_x15_r0.s39.ffi).next = (mlxOf PRE_first_tail_x15_r0.s40.ffi).next
+kernel_rfl sameNnext2 : (mlxOf PRE_first_tail_x15_r0.s39.ffi).nnext = (mlxOf PRE_first_tail_x15_r0.s40.ffi).nnext
 
 theorem dispatchVal (ν : Nat → F64) : Shift.valuation θZ2 ν = ν := rfl
 kernel_rfl dispatchFixNode : PRE_first_tail_x15_r0.kappa2.node 15235 = 15235
 
-theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {i : Lin.Cls.Inst} :
-    CutConv (mergedDispatchCut NB T tk i) (g2Cut NB T tk i) := by
-  rintro x ⟨π, K0, hr, hb, hip, hins, hmap⟩ ⟨hfresh, hids, hcall, hNB, hnative⟩
+theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Lin.Cls.Inst} :
+    CutConv (mergedDispatchCut NB T tk π i) (g2Cut NB T tk π i) := by
+  rintro x ⟨K0, hr, hb, hip, hins, hmap⟩ ⟨hfresh, hids, hnat, hcall, hNB, hnative⟩
   let bs := tokenBytes (π.take i.n)
   let n := (π.take i.n).length
   have hmemo := hb.memo
@@ -122,7 +125,8 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {i : Lin.Cls.Inst} :
     change (dispatchPair x).M.a 2586 = 2586 ∧ (dispatchPair x).M.a 2589 = 2589
     rw [aold 2586 (by decide), aold 2589 (by decide)]
     exact hids
-  refine ⟨dispatchPair x, rfl, rfl, ⟨π, K0, hcW, book, ?_, inputs, ?_⟩, hfresh, ids⟩
+  refine ⟨dispatchPair x, rfl, rfl, ⟨K0, hcW, book, ?_, inputs, ?_⟩, hfresh, ids,
+    ⟨sameNext2 ▸ hnat.1, sameNnext2 ▸ hnat.2⟩⟩
   · rw [node]
     exact hip
   · rw [pairν]

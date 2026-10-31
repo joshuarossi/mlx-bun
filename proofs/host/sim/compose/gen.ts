@@ -1094,16 +1094,16 @@ namespace Host.Ts.Sim.Compose.FillD1First
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
 
 noncomputable def pc0 := SetupCommon.nextCut
-noncomputable def b_g1_FIN_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  fun _ => D1First.g1Cut NB T tk
-noncomputable def b_g1_FIN_first_o (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  fun _ => D1First.dispatchCut NB T tk
-noncomputable def b_g2_fin_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  fun _ => D1First.g2Cut NB T tk
-noncomputable def b_g2_fin_first_o (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  fun _ => D1First.forwardCut NB T tk
-noncomputable def b_g3f_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  fun _ => D1First.returnedSavedCut NB T tk
+noncomputable def b_g1_FIN_first_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.g1Cut NB T tk π
+noncomputable def b_g1_FIN_first_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.dispatchCut NB T tk π
+noncomputable def b_g2_fin_first_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.g2Cut NB T tk π
+noncomputable def b_g2_fin_first_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.forwardCut NB T tk π
+noncomputable def b_g3f_first_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.returnedPromptCut NB T tk π
 
 noncomputable def nps_FIN_first__start__g1_FIN_first := D1First.nps_FIN_first__start__g1_FIN_first
 noncomputable def g1_FIN_first := D1First.g1_FIN_first
@@ -1369,10 +1369,10 @@ ${typedBody ? "    (bytes : List Byte) (rows : Nat)\n" : ""}\
   if (chain.row === "setup_early.r0" && stages.length === 1 && stages[0].stage.name === "chunk_K8__g0a__g0b") {
     imports.add("host.sim.compose.a4b.FillSetupEarly");
     code += `/-- The bundle uses the shared PRE_g0b template after the zero-step C seam. -/
-noncomputable def ${X}.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
-  withSetupInputs T tk (SetupChunk.chunkCallFixedCut NB T tk i.L)
-noncomputable def ${X}.b_g0b_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
-  SetupCommon.cut NB T tk Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
+noncomputable def ${X}.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
+  withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L)
+noncomputable def ${X}.b_g0b_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
+  SetupCommon.cut NB T tk π Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
 noncomputable def ${X}.pc0 := SetupCommon.nextCut
 
 noncomputable def ${X}.g0a := FillSetupEarly.g0a
@@ -1602,7 +1602,7 @@ theorem bodyFacts${k} : BodySiteFacts ${X}.s${a} ${X}.s${m} ${X}.s${cn} ${X}.s0 
   cjcl := ${X}.cjcl${k}
   xnLe := Nat.le_of_ble_eq_true bodyXn${k}
   loLe := Nat.le_of_ble_eq_true bodyLo${k}
-  zroots2 := ${X}.zroots2${k}
+  zroots2 := ${X}.${/\.zrootsB\d+ :/.test(src(`SiteZ${k}`)) ? "zrootsB" : "zroots2"}${k}
   cntM := bodyCntM${k}
   hiLe := Nat.le_of_ble_eq_true bodyHi${k}
   nhiLe := Nat.le_of_ble_eq_true bodyNhi${k}
@@ -1729,4 +1729,254 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
   }
 }
 
+
+// The link of a final's end into the L-general POST entry (host.sim.compose.PostLink): the walk's
+// checks over the whole states.  The entry's own facts are written once with --template.
+function genPostLink(args: string[]) {
+  const take = (flag: string) => {
+    const i = args.indexOf(flag);
+    if (i < 0) return undefined;
+    return args.splice(i, 2)[1]!;
+  };
+  const withTemplate = args.includes("--template");
+  if (withTemplate) args.splice(args.indexOf("--template"), 1);
+  const streams = take("--streams") ?? process.env.HOST_STREAM_DIR ?? join(HERE, "../../../.host-stream");
+  const name = take("--name") ?? fail("post-link: --name <prefix>");
+  const walk = take("--walk") ?? fail("post-link: --walk <walk prefix>"), walkMod = take("--walkmod") ?? fail("post-link: --walkmod <module>");
+  const endMod = take("--endmod") ?? fail("post-link: --endmod <module>");
+  const [, X, Ti] = args[0]?.match(/^([^:]+):(\d+)$/) ?? fail("post-link: <chain>:<end>");
+  const T = "PRE_pl_entry", a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
+  const tm = JSON.parse(readFileSync(join(streams, "Host.Load.Run.Tpl." + T, "template.json"), "utf8"));
+  const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
+  const chunk = 2000, s0 = T + ".s0", S0 = T + ".S0", s1 = X + ".s" + Ti, S1 = X + ".S" + Ti;
+  const mlx = (s: string) => "(Host.Load.Layers.toLoad " + s + ".ffi).mlx";
+  const head = (...imps: string[]) => imps.map(i => "import " + i + NL).join("") +
+    "set_option Elab.async false" + NL + "namespace Host.Load.Run.Tpl" + NL +
+    "open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route" + NL +
+    "set_option maxRecDepth 1000000" + NL + "set_option maxHeartbeats 0" + NL + NL;
+  const put = (file: string, body: string) => writeFileSync(join(out, file + ".lean"), body + NL + "end Host.Load.Run.Tpl" + NL);
+  if (withTemplate) {
+    put("PLEntryKeys", head("host.sim.template.a4pre_pl_entry.S", "host.sim.template.RestartCmd") + "tpl_keys " + T + NL);
+    put("PLEntryClosed", head(a4b + ".PLEntryKeys", "host.sim.template.Check", "host.sim.template.NShiftGen") + [
+      "abbrev T.n : Nat := " + st.n,
+      "kernel_rfl T.tab_len : T.S0.tab.length = T.n",
+      "kernel_rfl T.frames_eq : T.frames = [2673479, 2673484, 2673485, 2665]",
+      "noncomputable def T.suppAt (a : Nat) : Bool :=",
+      "  match T.s0.heap.get a with",
+      "  | some h => bHobj (presentB T.s0) T.n h",
+      "  | none => true",
+      "noncomputable def T.boundAt (a : Nat) : Bool := Nat.blt a T.s0.next",
+      "",
+      "tpl_all_blocks T.HS from T : T.suppAt",
+      "kernel_rfl T.suppFramed : T.frames.all T.suppAt = true",
+      "tpl_all_blocks T.BD from T : T.boundAt",
+      "kernel_rfl T.boundFramed : T.frames.all T.boundAt = true",
+      "kernel_rfl T.rootsSupp_check : checkRootsSupp T.s0 T.n = true",
+      "",
+      "theorem T.allPresent {p : Nat \u2192 Bool} (hb : \u2200 q \u2208 T.gks, \u2200 a \u2208 q.2, p a = true) (hf : T.frames.all p = true) :",
+      "    \u2200 a, Present T.s0 a \u2192 p a = true := by",
+      "  intro a ha",
+      "  obtain \u27E8h, hg\u27E9 := Present.get ha",
+      "  by_cases hm : a \u2208 T.frames",
+      "  \u00B7 exact List.all_eq_true.mp hf a hm",
+      "  \u00B7 obtain \u27E8q, hq, haq\u27E9 := T.cover a h hg hm",
+      "    exact hb q hq a haq",
+      "",
+      "theorem T.heapSupp : \u2200 a h, T.s0.heap.get a = some h \u2192 Supp.hobj (Present T.s0) T.n h := by",
+      "  intro a h ha",
+      "  have hp := T.allPresent T.HS.all T.suppFramed a (Present.of_get ha)",
+      "  unfold T.suppAt at hp",
+      "  rw [ha] at hp",
+      "  exact bHobj_sound hp",
+      "",
+      "theorem T.rootsSupp : Supp.ctl (Present T.s0) T.n T.s0.ctl \u2227",
+      "    (\u2200 f \u2208 T.s0.stack, Supp.frame (Present T.s0) T.n f) \u2227",
+      "    (\u2200 j \u2208 T.s0.jobs, Supp.job (Present T.s0) T.n j) \u2227 Supp.stores (Present T.s0) T.n T.s0.stores :=",
+      "  checkRootsSupp_sound T.rootsSupp_check",
+      "",
+      "theorem T.presentBound : \u2200 a, Present T.s0 a \u2192 a < T.s0.next := by",
+      "  intro a ha",
+      "  have := T.allPresent T.BD.all T.boundFramed a ha",
+      "  unfold T.boundAt at this",
+      "  simpa [Nat.blt_eq] using this",
+      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + T + " "));
+    put("PLEntryFresh", head(a4b + ".PLEntryClosed", "host.sim.BigFree", "host.sim.native.RebigR", "host.sim.compose.JsAbove") + [
+      "kernel_rfl T.hnext : " + mlx("T.s0") + ".next = " + st.mnext,
+      "noncomputable def T.freshAt (a : Nat) : Bool := noBigAtB " + st.mnext + " 131072 T.s0 a",
+      "tpl_all_blocks T.FB from T : T.freshAt",
+      "kernel_rfl T.freshFramed : T.frames.all T.freshAt = true",
+      "kernel_rfl T.freshRoots : noBigRootsB " + st.mnext + " 131072 T.s0.trace T.s0 = true",
+      "kernel_rfl T.nativeFresh : bigsOutB " + st.mnext + " 131072 " + mlx("T.s0") + " = true",
+      "theorem T.noBigFresh : NoBigSt (fun i => (" + st.mnext + " : Int) \u2264 i \u2227 i < 131072) T.s0.trace T.s0 :=",
+      "  NoBigSt.of_checks (fun a ha => T.allPresent T.FB.all T.freshFramed a ha) T.freshRoots",
+      "",
+      "noncomputable def T.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB " + st.next + ") T.s0 a",
+      "tpl_all_blocks T.JH from T : T.jsAt",
+      "kernel_rfl T.jsFramed : T.frames.all T.jsAt = true",
+      "kernel_rfl T.jsRoots : noBigRootsP (jsAboveB " + st.next + ") T.s0.trace T.s0 = true",
+      "kernel_rfl T.jsNative : bigsOutB jsLoN jsHiN " + mlx("T.s0") + " = true",
+      "theorem T.jsHeap : JsHeapAbove " + st.next + " T.s0 := by",
+      "  intro a o ho",
+      "  have hc := T.allPresent T.JH.all T.jsFramed a (Present.of_get ho)",
+      "  unfold T.jsAt noBigAtP at hc",
+      "  rw [ho] at hc",
+      "  exact noBigHobjP_sound (fun _ hi => hi) hc",
+      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + T + " "));
+  }
+  const R = walk + ".R", D = R + ".data", sg = D + ".map", P = name + ".P0", x0 = name + ".x0", x1 = name + ".x1";
+  put(name + "Heap", head(walkMod, a4b + ".PLEntryKeys") + "tpl_heap_blocks " + R + " from " + T + " : " + sg + ", " + s0 + ", " + s1 + NL);
+  const ck = (nm: string, stmt: string) => "kernel_rfl " + name + ".n" + nm + " : " + stmt + NL;
+  const chunked = (nm: string, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string) => {
+    const m = Math.max(1, Math.ceil(n / chunk));
+    let l = list;
+    const ls: string[] = [];
+    for (let j = 0; j <= m; j++) { ls.push(l); l = "(" + l + ").drop " + chunk; }
+    const chunks = Array.from({ length: m }, (_, j) => "kernel_rfl " + name + ".n" + nm + "_" + j + " : " + stmt("(" + ls[j] + ").take " + chunk) + NL);
+    const step = kind === "all" ? "all_take_drop" : "map_take_drop", nil = kind === "all" ? "all_of_nil" : "map_of_nil";
+    let proof = nil + " " + name + ".n" + nm + "_end";
+    for (let j = m - 1; j >= 0; j--) proof = step + " " + chunk + " " + name + ".n" + nm + "_" + j + " (" + proof + ")";
+    return { chunks, assemble: "kernel_rfl " + name + ".n" + nm + "_end : " + ls[m] + " = []" + NL + "theorem " + name + ".n" + nm + " : " + stmt(list) + " :=" + NL + "  " + proof + NL };
+  };
+  const hs = chunked("handles", "handlesOfA " + x0, st.mnext + 4000, "all", l => "(" + l + ").all (handleOK " + sg + " " + P + ".lo " + x0 + " " + x1 + ") = true");
+  const ns = chunked("nodes", "PTrie.keysA " + x0 + ".nodes", st.nnext, "all", l => "(" + l + ").all (nodeOKF " + sg + " " + P + " " + x0 + " " + x1 + ") = true");
+  const ps = chunked("prims", "fullKeysF " + P + " " + x0, 4000, "map", l =>
+    "(" + l + ").map (fun i => (" + x1 + ".nodes.get (" + sg + ".node i)).map Host.Mlx.Ffi.Node.prim) =" + NL + "  (" + l + ").map (fun i => (" + x0 + ".nodes.get i).map fun nd => " + sg + ".prim nd.prim)");
+  const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
+    "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
+  put(name + "Na", head(walkMod, a4b + ".PLEntryClosed", "host.sim.template.NShiftOf", "host.sim.compose.PostLink") +
+    "def " + P + " : LoadP := setupP.raise " + st.nnext + NL +
+    "noncomputable abbrev " + name + ".y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s0 + ".ffi)" + NL +
+    "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
+    "noncomputable abbrev " + x0 + " : NSt := " + name + ".y0.mlx" + NL +
+    "noncomputable abbrev " + x1 + " : NSt := " + name + ".y1.mlx" + NL + NL + [
+    ck("nh0", D + ".nh0 = " + x0 + ".next"), ck("nh1", D + ".nh1 = " + x1 + ".next"), ck("nn0", D + ".nn0 = " + x0 + ".nnext"),
+    ck("nn1", D + ".nn1 = " + x1 + ".nnext"),
+    ck("lo", "(Nat.blt 0 " + P + ".lo && Nat.ble " + P + ".lo " + x0 + ".next && Nat.ble " + P + ".lo RData.bigHi && Nat.ble RData.bigHi " + P + ".E) = true"),
+    ck("cnt", "(Nat.ble " + x0 + ".next " + x1 + ".next && Nat.ble " + x0 + ".nnext " + x1 + ".nnext) = true"),
+    ck("nband", "(Nat.blt 0 " + P + ".NL && Nat.ble " + P + ".NL " + P + ".N0 && Nat.ble " + P + ".N0 " + x0 + ".nnext) = true"),
+    ck("hbelow", D + ".checkHndBelow = true"),
+    ck("hren", "checkRenG " + D + ".hnd " + R + ".hinv (phB " + x0 + ") = true"),
+    ck("band", D + ".checkBand " + P + ".lo = true"), ck("nh1pos", "Nat.blt 0 " + D + ".nh1 = true"),
+    ck("nren", "checkRenG " + D + ".node " + R + ".ninv (pnB " + x0 + ") = true"),
+    ck("nlow", "(PTrie.keysA " + D + ".node).all (fun j => Nat.ble " + P + ".NL j && Nat.blt (" + D + ".nodeF j) " + x1 + ".nnext) = true"),
+    ck("nord", "(fullAbove " + P + " " + x0 + ").all (fun i => Nat.ble i (" + D + ".nodeF i) &&" + NL + "  (PTrie.keysA " + D + ".node).all fun j => !Nat.blt j i || Nat.blt (" + D + ".nodeF j) (" + D + ".nodeF i)) = true"),
+    ck("items", "(PTrie.keysA " + x0 + ".items).all (pnB " + x0 + ") = true"), ck("ssT", "checkSSt " + T + ".n " + x0 + " = true"),
+    ck("abs0a", x0 + ".arrs.get 0 = none"), ck("abs0b", x0 + ".objs.get 0 = none"), ck("tok1", x1 + ".tokens = []"),
+    ck("pend", x1 + ".pending = " + x0 + ".pending.map " + sg + ".pend"), ck("errh", x1 + ".errh = " + x0 + ".errh.map " + sg + ".arg"),
+    ck("files", x1 + ".files = " + x0 + ".files"), ck("arch", x1 + ".arch = " + x0 + ".arch"),
+    ck("sizes", x1 + ".deviceSizes = " + x0 + ".deviceSizes"), ck("wired", x1 + ".wired = " + x0 + ".wired"),
+    ck("host", name + ".y1.host = " + name + ".y0.host")].join(""));
+  const cks = [ck("objs", "(PTrie.keysA " + x0 + ".objs).map (fun h => " + x1 + ".objs.get (" + sg + ".handle h)) =" + NL + "  (PTrie.keysA " + x0 + ".objs).map (fun h => (" + x0 + ".objs.get h).map " + sg + ".nobj)") +
+    ck("objok", "(PTrie.keysA " + x0 + ".objs).all (objOK " + sg + " " + P + ".NL " + x0 + ") = true"), ...hs.chunks, ...ns.chunks, ...ps.chunks];
+  cks.forEach((body, j) => put(name + "Nc_" + j, head(a4b + "." + name + "Na") + body));
+  put(name + "Nb", head(...cks.map((_, j) => a4b + "." + name + "Nc_" + j)) + hs.assemble + ns.assemble + ps.assemble + NL +
+    "theorem " + name + ".nshift : NShift " + P + " " + T + ".n " + sg + " " + name + ".y0 " + name + ".y1 :=" + NL +
+    "  nshift_of \u27E8rfl, rfl, rfl, " + fields.map(f => name + ".n" + f).join(", ") + "\u27E9 " + name + ".nhost fun _ => rfl" + NL);
+  const fq = (a: string) => "(Host.Ts.Sim.Full.mlxOf " + a + ".ffi)";
+  put(name + "Full", head(a4b + "." + name + "Nb", "host.sim.template.FullShiftGen") + [
+    "kernel_rfl N.tokens : " + fq(s1) + ".tokens = " + fq(s0) + ".tokens.map " + sg + ".nv",
+    "kernel_rfl N.tokSupp : " + fq(s0) + ".tokens.all (bSN " + T + ".n) = true",
+    "kernel_rfl N.bridge : bridgeOf " + s1 + ".ffi = bridgeOf " + s0 + ".ffi",
+    "kernel_rfl N.live : liveShiftB " + sg + " " + fq(s0) + " (freedOf " + s0 + ".ffi) (freedOf " + s1 + ".ffi) = true",
+    "kernel_rfl N.kern : kernShiftB " + sg + " " + T + ".n " + fq(s0) + " (krecOf " + s0 + ".ffi) (krecOf " + s1 + ".ffi) = true",
+    "kernel_rfl N.pendR : pendRegB " + sg + " " + fq(s0) + " = true",
+    "kernel_rfl N.pendLe : Nat.ble " + fq(s0) + ".next " + fq(s1) + ".next = true",
+    "",
+    "theorem N.fullShift : Conv.FullShiftQ " + P + " " + T + ".n " + sg + " " + s0 + ".ffi " + s1 + ".ffi :=",
+    "  \u27E8N.nshift, N.tokens, fun t ht => bSN_sound (List.all_eq_true.mp N.tokSupp t ht), N.bridge,",
+    "    liveShift_of N.live, kernShift_of N.kern,",
+    "    pendReg_of rfl N.nnh0 N.nnh1 (Nat.le_of_ble_eq_true N.pendLe) N.pendR\u27E9",
+    ""].join(NL).replaceAll("N.", name + "."));
+  const frs = [["P", "2665"], ["C", "D1Frames.chunk"]];
+  const sf = [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
+  put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + ".PLEntryFresh", endMod) + [
+    "noncomputable def N.\u03B8 : Nat \u2192 SymE := thetaOf " + R + ".theta",
+    "kernel_rfl N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true",
+    ...[...frs, ...sf].map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a),
+    ...frs.flatMap(([k, a]) => [
+      "kernel_rfl N.get" + k + " : " + s0 + ".heap.get " + a + " = some (.obj (Template.objOf " + s0 + " " + a + "))",
+      "kernel_rfl N.kind" + k + " : (Template.objOf " + s0 + " " + a + ").kind = .array []",
+      "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = some (.obj { " + sg + ".obj (Template.objOf " + s0 + " " + a + ") with kind := .array ([] ++ arrOf " + s1 + " " + a + ") })"]),
+    ...sf.flatMap(([k, a]) => [
+      "kernel_rfl N.get" + k + " : (" + s0 + ".heap.get " + a + ").isSome = true",
+      "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = (" + s0 + ".heap.get " + a + ").map " + sg + ".hobj"]),
+    "kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true",
+    "kernel_rfl N.n0 : " + D + ".n0 = " + s0 + ".next",
+    "kernel_rfl N.n1 : " + D + ".n1 = " + s1 + ".next",
+    "kernel_rfl N.grows : Nat.ble " + s0 + ".next " + s1 + ".next = true",
+    "kernel_rfl N.ren : checkRen " + s0 + " " + D + " " + R + ".inv = true",
+    "kernel_rfl N.ctl : " + s1 + ".ctl = " + sg + ".ctl " + s0 + ".ctl",
+    "kernel_rfl N.stack : " + s1 + ".stack = " + s0 + ".stack.map " + sg + ".frame",
+    "kernel_rfl N.jobs : " + s1 + ".jobs = " + s0 + ".jobs.map " + sg + ".job",
+    "kernel_rfl N.stores : " + s1 + ".stores = " + sg + ".stores " + s0 + ".stores",
+    "kernel_rfl N.band : " + D + ".checkBand 18151 = true",
+    "kernel_rfl N.nh0le : Nat.ble 18151 " + D + ".nh0 = true",
+    "kernel_rfl N.intr : (List.range 40).all (fun a => Nat.beq (" + D + ".a a) a) = true",
+    "kernel_rfl N.inactive : (bridgeOf " + s0 + ".ffi).active = false",
+    "kernel_rfl N.lo : Nat.ble 18151 " + fq(s0) + ".next = true",
+    "kernel_rfl N.hi0 : Nat.ble " + fq(s0) + ".next setupP.E = true",
+    "kernel_rfl N.nhi0 : Nat.ble " + fq(s0) + ".nnext setupP.NE = true",
+    "kernel_rfl N.hi1 : Nat.ble " + fq(s1) + ".next setupP.E = true",
+    "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
+    "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
+    "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true",
+    "",
+    "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where",
+    "  num := N.num",
+    "  heap := by",
+    "    intro a h ha hm",
+    "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (Post.frames_perm (by rw [" + T + ".frames_eq] at hf; exact hf)))",
+    "    have he := " + R + ".heapAt q hq a haq",
+    "    rw [ha] at he",
+    "    exact he",
+    ...[...frs, ...sf].map(([k]) => "  fix" + k + " := N.fix" + k),
+    ...frs.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  kind" + k + " := N.kind" + k, "  img" + k + " := N.img" + k]),
+    ...sf.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  img" + k + " := N.img" + k]),
+    "  framesEmpty := N.framesEmpty",
+    "  n0 := N.n0",
+    "  n1 := N.n1",
+    "  grows := Nat.le_of_ble_eq_true N.grows",
+    "  ren := N.ren",
+    "  bound := " + T + ".presentBound",
+    "  ctl := N.ctl",
+    "  stack := N.stack",
+    "  jobs := N.jobs",
+    "  stores := N.stores",
+    "  heapSupp := by rw [" + T + ".tab_len]; exact " + T + ".heapSupp",
+    "  ctlSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.1",
+    "  stackSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.1",
+    "  jobsSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.2.1",
+    "  storesSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.2.2",
+    "  band := N.band",
+    "  nh0 := Nat.le_of_ble_eq_true N.nh0le",
+    "  intr := by",
+    "    intro a ha",
+    "    have := N.intr",
+    "    simp only [List.all_eq_true, List.mem_range, Nat.beq_eq] at this",
+    "    exact this a ha",
+    "  shift := by rw [" + T + ".tab_len]; exact N.fullShift",
+    "  inactive := N.inactive",
+    "  raised := .inr \u27E8" + st.nnext + ", rfl, by decide, rfl\u27E9",
+    "  bigs := by",
+    "    change bigsOutB " + fq(s0) + ".next 131072 " + fq(s0) + " = true",
+    "    rw [" + T + ".hnext]",
+    "    exact " + T + ".nativeFresh",
+    "  free := by",
+    "    change NoBigSt (fun i => (" + fq(s0) + ".next : Int) \u2264 i \u2227 i < 131072) " + s0 + ".trace " + s0,
+    "    rw [" + T + ".hnext]",
+    "    exact " + T + ".noBigFresh",
+    "  loLe := Nat.le_of_ble_eq_true N.lo",
+    "  hi0 := Nat.le_of_ble_eq_true N.hi0",
+    "  nhi0 := Nat.le_of_ble_eq_true N.nhi0",
+    "  hi1 := Nat.le_of_ble_eq_true N.hi1",
+    "  nhi1 := Nat.le_of_ble_eq_true N.nhi1",
+    "  jsHeap := " + T + ".jsHeap",
+    "  jsRoots := " + T + ".jsRoots",
+    "  jsNative := " + T + ".jsNative",
+    "  jsFix := Post.jsFix_of_keys (Nat.le_of_ble_eq_true N.jsLe) N.jsKeys",
+    ""].join(NL).replaceAll("N.", name + "."));
+  console.log(name + ": link modules written, " + cks.length + " native check modules");
+}
+
+if (process.argv[2] === "post-link") genPostLink(process.argv.slice(3));
 if (process.argv[2] === "prefill-body") genBodyFill(process.argv.slice(3));

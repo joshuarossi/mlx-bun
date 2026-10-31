@@ -11,13 +11,15 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable abbrev g2Cut (NB T : Nat) (tk : Nat → Nat) :=
   typedCut NB T tk D1StageSplit.s21 D1StageSplit.S21
 
+kernel_rfl cnt21 : countersOkB D1StageSplit.s20 D1StageSplit.s21 = true
+
 private theorem bridge21 : bridgeOf D1StageSplit.s21.ffi = bridgeOf D1StageSplit.s20.ffi :=
   typedRun21.src_bridge.trans typedRun19.dst_bridge.symm
 
 theorem dispatch (NB T : Nat) (tk : Nat → Nat)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.st1.S0.oracle) :
     CutStep (dispatchCut NB T tk) (g2Cut NB T tk) 155 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
   let d := dispatchSite NB T tk (D1Typed.bytes π)
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (D1Frames.typedW (D1Typed.bytes π)) [] x.M x.ν x.K D1StageSplit.s20 d.tpl.S0 x.t x.C := by
@@ -68,7 +70,8 @@ theorem dispatch (NB T : Nat) (tk : Nat → Nat)
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids⟩
+    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
+    hnat.step rfl hr hm' hext.big hext.node cnt21⟩
 
 noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat → Nat) :
     StagePiece FF [final_cold.r0] [] (fun _ => dispatchCut NB T tk) (fun _ => g2Cut NB T tk) where

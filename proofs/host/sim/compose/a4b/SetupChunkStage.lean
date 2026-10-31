@@ -51,9 +51,9 @@ theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simp only [Bool.and_eq_true] at h
   simpa only [P, backRest] using h.1
 
-/-- The actual site template runs for 100 steps and its return step, keeping caller entries. -/
 kernel_rfl cntMerged : countersOkB PRE_setup_early_r0.s4 PRE_setup_early_r0.s5 = true
 
+/-- The actual site template runs for 100 steps and its return step, keeping caller entries. -/
 theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (h1 : 1 ≤ L) (h8 : L ≤ 8) :
     CutStepKeeps (chunkCallFixedCut NB T tk L) (chunkMergedCut NB T tk L) 101 := by

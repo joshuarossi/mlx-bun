@@ -23,19 +23,21 @@ structure ForwardBook (i : Cls.Inst) (π : List Nat) (K0 : Ctx) (x : SegInst FF)
   inputEvent : ∃ asR ret pre tr, x.K.base' = pre ++
     ⟨chars!"mlx_array_new_data", .jsPtr (x.M.a VWFrames.buffer) 0 (tokenBytes (π.take i.n)) :: asR, ret⟩ :: tr
 
-noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst)
+noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst)
     (Dmax : Nat := 3540) : ICut FF where
   s0 := s
   tab0 := S.tab
-  R := fun x s S => ∃ π K0,
+  R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K s S x.t x.C ∧
     ForwardBook i π K0 x Dmax ∧ InputAt (π.take i.n) (x.M.node 15235) x.t x.C ∧
     setupInputs T tk x ∧ MapOk x.ν i npsMap
-  B := fun x => AneFresh x.t ∧ fixedCells x
+  B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 s x.t
 
-noncomputable abbrev dispatchCut (NB T : Nat) (tk : Nat → Nat) :=
-  typedCut NB T tk PRE_first_tail_x15_r0.s38 PRE_first_tail_x15_r0.S38
+noncomputable abbrev dispatchCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :=
+  typedCut NB T tk π PRE_first_tail_x15_r0.s38 PRE_first_tail_x15_r0.S38
+
+kernel_rfl cnt38 : countersOkB PRE_first_tail_x15_r0.s19 PRE_first_tail_x15_r0.s38 = true
 
 theorem inactive19 : (bridgeOf PRE_first_tail_x15_r0.s19.ffi).active = false := PRE_first_tail_x15_r0.zbin1
 private theorem bridge33 : bridgeOf PRE_first_tail_x15_r0.s33.ffi = bridgeOf PRE_first_tail_x15_r0.s19.ffi :=
@@ -43,11 +45,12 @@ private theorem bridge33 : bridgeOf PRE_first_tail_x15_r0.s33.ffi = bridgeOf PRE
 private theorem bridge38 : bridgeOf PRE_first_tail_x15_r0.s38.ffi = bridgeOf PRE_first_tail_x15_r0.s19.ffi :=
   typedRun37.dst_bridge.trans PRE_first_tail_x15_r0.k19.src_bridge.symm
 
-theorem g1 {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst}
+theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hπ : ∀ k ∈ π, k < 248320)
     (hL : 2 ≤ i.L) (hLmax : i.L ≤ 2048) (hn : i.n = i.L - 1)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν g1Oracle) :
-    CutStep (afterNpsCut NB T tk i) (dispatchCut NB T tk i) 260 := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hk, hmemo, ⟨π, hlen, hvc, hfr⟩, hfresh, hins, hids, hbound⟩
+    CutStep (afterNpsCut NB T tk π i) (dispatchCut NB T tk π i) 260 := by
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hk, hmemo, ⟨π', hlen, hvc, hfr⟩, hfresh, hins, hids, hbound⟩, hp, hnat⟩
+  rw [SetupDrop.promptEq hvc hπ hfr hp] at hlen hvc hfr
   have hi33 : (bridgeOf PRE_first_tail_x15_r0.s33.ffi).active = false := by rw [bridge33]; exact inactive19
   have hi38 : (bridgeOf PRE_first_tail_x15_r0.s38.ffi).active = false := by rw [bridge38]; exact inactive19
   have hv : x.ν 1087 = F64.ofNat i.n := hq.2.2.2.1
@@ -74,16 +77,17 @@ theorem g1 {NB T : Nat} {tk : Nat → Nat} {i : Cls.Inst}
   have inputs : setupInputs T tk (⟨M', x.ν, K', t', C'⟩ : SegInst FF) :=
     ⟨hins.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hins.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨π, x.K, hrel, hb, hinput, inputs, hq.2.2⟩, fresh, ids⟩
+    ⟨x.K, hrel, hb, hinput, inputs, hq.2.2⟩, fresh, ids,
+    hnat.step rfl hr hrel hext.big hext.node cnt38⟩
 
-noncomputable def g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) :
-    GluePiece FF firstTailRows (afterNpsCut NB T tk) (dispatchCut NB T tk) where
+noncomputable def g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320) :
+    GluePiece FF firstTailRows (afterNpsCut NB T tk π) (dispatchCut NB T tk π) where
   m := npsMap
   n := 260
   O := g1Oracle
   chk r hr := List.all_eq_true.mp g1Check r hr
   ok r hr i hi ho := by
     obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts hr hi
-    exact g1 hL hLmax hn ho.1
+    exact g1 hπ hL hLmax hn ho.1
 
 end Host.Ts.Sim.Compose.VWFirst
