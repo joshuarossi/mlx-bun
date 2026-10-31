@@ -1,6 +1,6 @@
 # Handoff: the route proof for Qwen3.8-27B-Trellis on M1 Max
 
-Updated 2026-10-31 10:50 CST. Branch `proof/qwen38-m1max-trellis`, worktree
+Updated 2026-10-31 18:00 CST. Branch `proof/qwen38-m1max-trellis`, worktree
 `/Users/joshrossi/Code/mlx-bun-proof-m1max`; snapshots are committed and pushed as work lands. Paths are under `proofs/` unless absolute. The Oct 24-26 detail (receipts,
 per-module results) is in `~/proofdev/HANDOFF-archive-20261026.md`.
 
@@ -9,6 +9,11 @@ per-module results) is in `~/proofdev/HANDOFF-archive-20261026.md`.
 A Lean 4 machine-checked proof that the TypeScript inference program, running Qwen3.8-27B-Trellis on
 M1 Max, emits the right tokens for any prompt: one model, one program, every prompt length, every token
 budget, including the stop at the first EOS token.
+
+**Current scope (Josh, 31 Oct): the Neural Engine is out for now.** The target is the same conclusion for prompts
+that never run a Neural Engine forward (about |π| ≤ 224; measured L = 224 inactive, L = 225 active; route is
+confirming the bound and reachable rows). Longer prompts are not covered by this theorem. All Neural Engine work
+stays in the tree, parked, to be added back later as a layer without redoing it.
 
 We verify our program only. MLX, Bun and the Apple hardware are trusted and enter the theorem as
 assumptions, never proven: the hardware contract `C : M1Max.Contract` (including the uninterpreted MMA
@@ -34,8 +39,7 @@ with the EOS stop path.
   `route_of_piecesFramedAt` (`compose/MainFramed.lean`). Prefill runs in `fullWorldXD NB`, decode in the pinned world
   `fullWorldFb b0 NB`. `Gn` is being built in `host/route/GenOf.lean`.
 - `Final.lean`'s module doc states the trust boundary and the reference precisely.
-- Not yet shown: that the trust-boundary assumptions are jointly satisfiable (one model of all of them).
-  Optional; it would rule out a vacuous theorem.
+- For the current scope: a bounded theorem and a restricted `RouteGen` added beside these, which stay unedited. Route owns the statement; not written yet.
 
 
 ## 3. Status
@@ -72,7 +76,7 @@ boot chain `host/load/boot/w/*` needs recompiling against the current core (11-1
 - POST for any prompt length: `PRE_pl_entry/head/selector/call/common` compile with standard axioms; `PRE_pl_tail` and the T=1 tails are running.
 - Neural Engine forward x22, cold: 2.48M steps, 579 chunks, no stage cuts. K checks being rebuilt after the cut; 4 modules to split. Later forwards use the bridge frame (Decisions, 31 Oct), landed 15:30 in new modules `full/LogFrame`, `LogBase`, `LogRel`, witness `tests/ActiveRelationLog` (`two_targets`): relation `FRL L FR`, step theorems `fullStepSimXLBNL`, `fullStepSimXLBXDJSL`. Also landed: B-size with the bridge active (`full/SizeNE`), hand-off at a frame (`conv/HandOffL`, `full_handoffTbL`), growth variants (`full/LogGrow`). Still needed before later rows compose: adoption in `compose/*` and route. No chain has run at `L ≠ []` yet, and the witness's second target is constructed, not reached by a second forward; native is scanning more prompt lengths for any further field the frame doesn't cover.
 
-**Open gap, Neural Engine prompts only (31 Oct):** `decCutFb` can't be instantiated for them as stated. `Quiet.running` fails at the hand-off: one running node on every Neural Engine prompt run (L = 225 to 2273, and 5000), the last-layer `astype` from an unawaited row, measured unchanged through decode up to T = 6. Only `mlx_synchronize`, after the last readback, clears it. GPU-only prompts are unaffected. Native's proposed fix: drop `Quiet.running`, add a closure fact on the target's node inputs, and relax the pin up to `running`; the closure fact is the unknown. Being drafted and measured in scratch; nothing landed.
+**Parked with the Neural Engine, not needed for the current scope. Open gap, Neural Engine prompts only (31 Oct):** `decCutFb` can't be instantiated for them as stated. Josh's choice when this resumes: fix B first, a new run-lift theorem leaving the decode proofs untouched; fix A below only if B proves impractical. `Quiet.running` fails at the hand-off: one running node on every Neural Engine prompt run (L = 225 to 2273, and 5000), the last-layer `astype` from an unawaited row, measured unchanged through decode up to T = 6. Only `mlx_synchronize`, after the last readback, clears it. GPU-only prompts are unaffected. Native's proposed fix: drop `Quiet.running`, add a closure fact on the target's node inputs, and relax the pin up to `running`; the closure fact is the unknown. Being drafted and measured in scratch; nothing landed.
 
 **Cost driver found (31 Oct):** `SSrv.tab` is a plain list, so kernel cost per numeric op grows with table length. Measured: the same chunk goes from 6.4 s to about 20 s with 8,000 extra entries; the x15 table reaches 8,218 by site 191. Cost is prototyping a table-reset conversion at layer boundaries, to adopt before bulk generation.
 
@@ -161,7 +165,7 @@ Estimate after these, not yet measured: about 3 CPU-h per VW forward. x9 and x15
 - Many thousands of log files overflow the argument limit, and `2>/dev/null` hides that: a `grep` over a `.log/*.log` glob can report zero matches falsely. Use `find ... | xargs`.
 - Docker Desktop's VM holds up to about 14.5 GB of the 32 GB when running; closing it would let the gate stay open.
 
-**Biggest blockers:** (1) bulk cost, above; x22 K after the cut, interim from 70 modules: 23 slot-s median, extrapolating to about 2 slot-h per Neural Engine body (the earlier 11 CPU-h was based on bad timings); (2) the bridge frame, native, needed for every prompt with two or more active forwards; (3) POST for any prompt length, generator and route; (4) links: `I π`, VW body pieces, fills; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 173 GiB free, floor 110.
+**Biggest blockers (current scope):** (1) the bounded statement and reachable row set, route; (2) bulk cost of the GPU forwards, cost: table cost, where `P.smallB` accounts for 6.4 s of 9.9 s on one chunk, with no measured per-forward number yet; (3) POST for bounded prompts, generator and route; (4) links: `I π`, VW body pieces, fills; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 172 GiB free, floor 110.
 
 **Rules for the machine reference:** for |π| >= 3 the reference is the machine's own computation, because MMA and the
 Neural Engine are uninterpreted; the model-level statement stays limited to |π| <= 2.
@@ -187,6 +191,7 @@ Neural Engine are uninterpreted; the model-level statement stays limited to |π|
   `evalRR` on `ffiGraphR`, as a layer: `evalR` has no value for prefill kernels, so the old statement fails after a multi-row step.
   The reference was already `evalRR`; the trust boundary doesn't change.
 - 31 Oct: `BridgeA.dense` starts at node 1, fixed in place: as written it could never hold, so every active-bridge theorem was vacuous. Lands with a compiled witness of the active relation.
+- 31 Oct (Josh): Neural Engine out of scope for now, to get a complete theorem for shorter prompts. 78 of 298 chain rows and 53 of 130 forward stages use it directly, and more rows are reachable only after it. Done as a layer, so it can be added back.
 - 31 Oct: bridge frame for rows after the first active forward: `b'.log = b.log.map M.effect ++ L`, `L` fixed along a chain, and the target's `programs` equal the template's modulo `inLocked`/`outLocked`. Row templates start at `log = []`; boundary memory is stated on the target. As written, one row template can't relate to a target whose log and lock flags depend on earlier rows. Only the memory semantics read the log, and nothing reads the flags. Stated against a stripped target in new modules, so `BRel`, `BridgeX`, `FullRX` and the 8,132 modules above `full/BridgeA` don't change. Field check measured on one path only (L = 5000, native, up to the first readback).
 - 30 Oct: stop source-only work; everything is compiled as it is written, generated rather than hand-stepped; no
   receipts, admissions or review packets. Acceptance is the kernel plus `#print axioms`.
