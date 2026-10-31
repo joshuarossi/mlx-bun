@@ -4,12 +4,15 @@
 //   --out: write the bundles to <case-dir'> (default: <case-dir>/m); the members stay. Constant names do not change.
 //   --only: bundle only the members whose path matches (a validation of one site; everything else stays imported as it is).
 //   --roots: keep only the import closure of the members whose path matches (the consumers' modules; the rest is not written).
-//   --budget: a bundle's check budget in slot-seconds (default 300), --costs: earlier builders' "slot <s>s <file>" lines
+//   --budget: a bundle's check budget in slot-seconds (default 600), --costs: earlier builders' "slot <s>s <file>" lines
 //   (without them a kind's default below; the import, IMPORT seconds, is not part of a member's cost).
+//   --replace: the bundles replace the case directory's modules: written to it, every other module deleted but States and
+//   Rebind (genChain.ts and the typed generators write them again from the stream).
+//   --rewrite <file>...: instead of merging, point these importers' imports of members at their bundles (members.json).
 // A partition of a topological order into intervals has an acyclic quotient, so the bundles are intervals of the import
 // order, the order keeping a site's members together. States and Rebind (native commands) are never members; a member's
 // body is scoped by a section, so options and opens stay its own.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, existsSync } from "node:fs";
 import { join, relative, dirname } from "node:path";
 
 const argv = process.argv.slice(2);
@@ -18,15 +21,34 @@ const takeN = (f: string): string[] => {
   for (let i = argv.indexOf(f); i >= 0; i = argv.indexOf(f)) { out.push(argv[i + 1]!); argv.splice(i, 2); }
   return out;
 };
-const outArg = takeN("--out")[0], onlyArg = takeN("--only")[0], rootArgs = takeN("--roots"), budget = Number(takeN("--budget")[0] ?? 300);
+const outArg = takeN("--out")[0], onlyArg = takeN("--only")[0], rootArgs = takeN("--roots"), budget = Number(takeN("--budget")[0] ?? 600), rewrites = takeN("--rewrite");
+const replaceAll_ = argv.includes("--replace");
+if (replaceAll_) argv.splice(argv.indexOf("--replace"), 1);
 const costFiles = takeN("--costs");
 const dir = argv[0];
 if (!dir) throw new Error("usage: genMerge.ts <case-dir> [--out <dir>] [--only <regex>] [--budget <s>] [--costs <log>...]");
-const here = import.meta.dir, root = join(here, dir), outDir = outArg ?? `${dir}/m`;
+const here = import.meta.dir, root = join(here, dir), outDir = replaceAll_ ? dir : outArg ?? `${dir}/m`;
 const prefix = `host.sim.template.${dir.replaceAll("/", ".")}.`, outPrefix = `host.sim.template.${outDir.replaceAll("/", ".")}.`;
 const IMPORT = 6;
+if (rewrites.length) {
+  const bundleOfMember = JSON.parse(readFileSync(join(here, dir, "members.json"), "utf8")) as Record<string, string>;
+  for (const file of rewrites) {
+    const seen = new Set<string>();
+    const lines = readFileSync(file, "utf8").split("\n").flatMap(l => {
+      const m = /^import\s+(\S+)\s*$/.exec(l);
+      if (!m) return [l];
+      const b = m[1]!.startsWith(prefix) ? bundleOfMember[m[1]!.slice(prefix.length).replaceAll(".", "/")] : undefined;
+      const i = b ? `${prefix}${b}` : m[1]!;
+      if (seen.has(i)) return [];
+      seen.add(i);
+      return [`import ${i}`];
+    });
+    writeFileSync(file, lines.join("\n"));
+  }
+  process.exit(0);
+}
 // never bundled: native commands, whose order and side effects the stream relies on
-const fixed = /^(States|Rebind|Origin)$/;
+const fixed = /^(States|Rebind|Origin|B\d+)$/;
 type Mod = { name: string; imports: string[]; body: string; rank: number; site: number; cost: number };
 const walk = (d: string): string[] => readdirSync(d).flatMap(f => {
   const p = join(d, f);
@@ -44,7 +66,7 @@ const costOf = (n: string) => measured.get(n) ?? defaults.find(([r]) => r.test(n
 // the order: the chain's states and acceptance, its glue checks, the sites one by one, the assemblies
 const rankOf = (n: string): [number, number] => {
   const site = /^st(\d+)\//.exec(n) ?? /^Site[A-Za-z]*(\d+)/.exec(n);
-  if (/^H\d+$/.test(n)) return [0, Number(n.slice(1))];
+  if (/^H\d+$/.test(n) || /^(TypedOk|OkB)$/.test(n)) return [0, /^H/.test(n) ? Number(n.slice(1)) : 1000];
   if (site && !/^SiteR/.test(n)) return [2, Number(site[1])];
   if (/^SiteR/.test(n)) return [4, 0];
   if (/^(K|K_|MicroK|TypedK|TypedSteps|TypedSeg)/.test(n)) return [1, 0];
@@ -101,6 +123,13 @@ while (ready.length) {
   }
 }
 if (order.length !== mods.size) throw new Error(`import cycle among ${dir}'s members`);
+// a name two members declare: modules that were never imported together may collide, a bundle may not
+const declared = new Map<string, string>();
+for (const n of order) for (const m of mods.get(n)!.body.matchAll(/^(?:kernel_rfl|boot_rfl|boot_all_rfl|theorem|def|noncomputable def|noncomputable abbrev|abbrev)\s+(\S+)/gm)) {
+  const o = declared.get(m[1]!);
+  if (o && o !== n) throw new Error(`${m[1]} is declared by both ${o} and ${n}`);
+  declared.set(m[1]!, n);
+}
 // cut the order by budget and at a change of rank
 const bundles: string[][] = [];
 let cur: string[] = [], curCost = 0, curRank = -1;
@@ -113,6 +142,11 @@ if (cur.length) bundles.push(cur);
 const bundleOf = new Map<string, number>();
 bundles.forEach((b, j) => b.forEach(n => bundleOf.set(n, j)));
 mkdirSync(join(here, outDir), { recursive: true });
+for (const f of readdirSync(join(here, outDir))) if (/^B\d+\.lean$/.test(f)) rmSync(join(here, outDir, f));
+if (replaceAll_) for (const p of walk(root)) {
+  const n = relative(root, p).replace(/\.lean$/, "");
+  if (!fixed.test(n)) rmSync(p);
+}
 const pad = (j: number) => String(j).padStart(String(bundles.length).length, "0");
 const bundleMod = (j: number) => `${outPrefix}B${pad(j)}`;
 for (const [j, b] of bundles.entries()) {

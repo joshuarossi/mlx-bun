@@ -97,27 +97,5 @@ theorem fixedCells_ext {M M' : Map} {ν : Nat → F64} {K K' : Ctx}
   rw [he.a]
   exact h
 
-/-- A checked glue stretch of the body, under the body's acceptance for every token buffer. -/
-theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Dmax n : Nat}
-    {m m' : List (Nat × Q)} {sa sb : St FF.S} {Sa Sb : SSrv}
-    (ha : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows sa Sa) = fun _ _ => true)
-    (hrun : ∀ (bs : List Byte) (rows : Nat), runOk FF (VWFrames.bodyOk bs rows) n sa Sa = some (sb, Sb))
-    (htop : noRetBlock sb = true) (hgood : ∀ ν, MapOk ν i m → Good ν Sa.oracle)
-    (hsub : ∀ p ∈ m', p ∈ m) (hi : (bridgeOf sa.ffi).active = false)
-    (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi) :
-    CutStep (bodyCut NB T tk π i Dmax m sa Sa) (bodyCut NB T tk π i Dmax m' sb Sb) n := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
-  have hok := congrFun (congrFun ha (tokenBytes (π.take i.n))) (π.take i.n).length
-  obtain ⟨M', t', C', hrun', hext, hm'⟩ := D1Advance.run
-    (bodySim NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length []) hb.context hb.valuation
-    (hgood x.ν hmap) hok (hrun _ _) htop hr
-  have hgs := typedGrowSimAt NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length VWFrames.bodyD0 []
-  have ng := glue_ngrow hgs hok (hrun _ _) hb.valuation hb.context (hr.withOracle (hgood x.ν hmap)) hrun'
-  have ip : InputAt (π.take i.n) (M'.node 15235) t' C' := by
-    rw [hext.node]
-    exact hip.grow ng (runC_le _ _ _ _ _ hrun')
-  exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', hb.ext hext, ip, setupInputs_ext hins hext, MapOk.sub hmap hsub⟩,
-    bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩
 
 end Host.Ts.Sim.Compose.VWFirst

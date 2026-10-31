@@ -12,7 +12,7 @@ open _root_.Host.Mlx.SimGraph.Mach (refPrompt refPrompt_decodes)
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open _root_.Host.Ts.Sim.Prefill
 open _root_.Host.Ts.Sim.Full (FF fullWorldXD fullWorldFb fullWorldFb_end mlxOf)
-open _root_.Host.Route (RouteArtifactsFramed decCutFb machGx goalM goalC machVal machReads)
+open _root_.Host.Route (RouteArtifactsFramed decCutFb machGxV goalMV goalCV machVal machReads routeVs)
 open _root_.Host.Ts.Sim.Lin.Cls (routeI RouteKind DecKind)
 open _root_.Host.Ts.Sim (Addr WFrame LoopFramesA LoopBase LoopStartW HaltSegW valL)
 
@@ -54,7 +54,7 @@ end
 /-- Assembles the unchanged route goals at the actual prefix, preserving exact terminal frames. -/
 noncomputable def route_of_piecesFramedAt (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
-    (typed : TypedCheckpoint env.weights) (π : List Nat) {T : Nat} {tk : Nat → Nat} (je : Host.Ts.Env)
+    (typed : TypedCheckpoint env.weights) (π : List Nat) (kind : Nat → Option Compiled) {T : Nat} {tk : Nat → Nat} (je : Host.Ts.Env)
     (nm : Host.Ts.Name) (hπ : 1 ≤ π.length) (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
     -- the full world, the prefill's and the decode's load parameters, the driver's cells, the prefill invariants
     (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA : List Nat) (I : PrefInvsW (fullWorldXD NB).F)
@@ -73,7 +73,7 @@ noncomputable def route_of_piecesFramedAt (P : MlxPrefillContract C) (KR : Route
     (hA : A.nxt = 17) (hAt : A.tvar = 9) (hAk : A.kvar = 14) (hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0)
     (hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true)
     -- the decode cut over the pinned worlds, its prefix token 1 read through table symbol 1
-    (hdec : CutConv (I.dec π.length) (decCutFb NB A (machGx P KR NE net env π NB Itpl) W Pd Fr s0 tab0 fixA
+    (hdec : CutConv (I.dec π.length) (decCutFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
       (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B))
     (he1 : ∀ t C, (I.dec π.length).Inv t C → C.val (.ref 1) = some (F64.ofNat (tk 1)))
     -- the tokens: the reference's, in the vocabulary
@@ -84,10 +84,10 @@ noncomputable def route_of_piecesFramedAt (P : MlxPrefillContract C) (KR : Route
     (hH : (mlxOf s0.ffi).next + T * ΔH + B.H + (Pd.E - (mlxOf s0.ffi).next) < 2 ^ 46)
     (hN : (mlxOf s0.ffi).nnext + T * ΔN + B.N + (Pd.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62)
     -- the short paths' graph certificates
-    (gA : Hp.pA.Goal (goalM P KR NE net env π NB 1)) (gB2 : Hp.pB2.Goal (goalM P KR NE net env π NB 2))
-    (gB0 : Hp.pB0.Goal (goalC P KR NE net env π NB T je)) (gC1 : Hp.pC1.Goal (goalM P KR NE net env π NB 1))
-    (gC0 : Hp.pC0.Goal (goalC P KR NE net env π NB T je)) :
-    RouteArtifactsFramed P KR NE net env π T tk je nm :=
+    (gA : Hp.pA.Goal (goalMV P KR NE net env π kind NB 1)) (gB2 : Hp.pB2.Goal (goalMV P KR NE net env π kind NB 2))
+    (gB0 : Hp.pB0.Goal (goalCV P KR NE net env π kind NB T je)) (gC1 : Hp.pC1.Goal (goalMV P KR NE net env π kind NB 1))
+    (gC0 : Hp.pC0.Goal (goalCV P KR NE net env π kind NB T je)) :
+    RouteArtifactsFramed P KR NE net env π kind T tk je nm :=
   have h2 : π.length ≤ 262143 := by omega
   have htk' : ∀ j, j ≤ T → tk j ≤ 2 ^ 20 := fun j hj => Nat.le_trans (htk j hj) (by decide)
   have htkb : ∀ j, j + 1 ≤ T → tk (j + 1) < 2 ^ 31 := fun j hj => by have := htk (j + 1) hj; omega
@@ -162,10 +162,10 @@ noncomputable def route_of_piecesFramedAt (P : MlxPrefillContract C) (KR : Route
       { st := hst b0
         hit := itersW (fullWorldFb_end b0 NB) hA (hst b0) (D h3 b0).cs (D h3 b0).gr (by omega)
           (by simp only [List.length_cons, machReads_length]; omega) htk' htk hJ hH hN
-          fun k i hs _ => loopG_ofAtM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) (Dg h3 b0).st
+          fun k i hs _ => loopG_ofAtV P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) (Dg h3 b0).st
             ((D h3 b0).cs k).g ((Dg h3 b0).en k) hAt hAk (fun tab j hj => htkR tab j (by have := hs.1.2.1; omega))
             (fun j hj => htkb j (by have := hs.1.2.1; omega))
-            (caseFwdAtM_of_tpl P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) leaves typed
+            (caseFwdAtV_of_tpl P KR env kind (fun _ _ => none) (fullProjFb b0 NB) leaves typed
               (refPrompt_decodes P KR NE KR.inPlace net env π)
               (weightShapes_first P.toMlxContract KR.toKernelContract env leaves typed) (by omega) ((Dg h3 b0).tpl k i hs))
         F0 := (D h3 b0).f0.seg _
@@ -187,17 +187,17 @@ noncomputable def route_of_piecesFramedAt (P : MlxPrefillContract C) (KR : Route
         s0E := (D h3 b0).e0.stop (D h3 b0).s0E _
         s1E := (D h3 b0).e1.stop (D h3 b0).s1E _
         hlen := by simp only [List.length_cons, machReads_length]; omega
-        hF := fun _ _ _ => lastGC_ofM P KR NE net env π (Dg h3 b0).st (Dg h3 b0).f0 (Dg h3 b0).c0.cache hAk hA (by omega)
+        hF := fun _ _ _ => lastGC_ofV P KR NE net env π kind (Dg h3 b0).st (Dg h3 b0).f0 (Dg h3 b0).c0.cache hAk hA (by omega)
           (fun tab j hj => htkR tab j (by omega)) (fun j hj => htkb j (by omega))
-        hF0 := fun _ _ => lastGC_ofM P KR NE net env π (Dg h3 b0).st (Dg h3 b0).f1 (Dg h3 b0).c1.cache hAk hA (by omega)
+        hF0 := fun _ _ => lastGC_ofV P KR NE net env π kind (Dg h3 b0).st (Dg h3 b0).f1 (Dg h3 b0).c1.cache hAk hA (by omega)
           (fun tab j hj => htkR tab j (by omega)) (fun j hj => htkb j (by omega))
-        hF1 := fun _ _ => lastGC_ofM P KR NE net env π (Dg h3 b0).st (Dg h3 b0).f2 (Dg h3 b0).c2.cache hAk hA (by omega)
+        hF1 := fun _ _ => lastGC_ofV P KR NE net env π kind (Dg h3 b0).st (Dg h3 b0).f2 (Dg h3 b0).c2.cache hAk hA (by omega)
           (fun tab j hj => htkR tab j (by omega)) (fun j hj => htkb j (by omega))
-        hX := fun k hk hkT _ => cutG_ofM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) (Dg h3 b0).st
+        hX := fun k hk hkT _ => cutG_ofV P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) (Dg h3 b0).st
           (by omega) ((Dg h3 b0).x k) hAk (fun tab j hj => htkR tab j (by omega)) (by have := htk k (by omega); omega)
-        hFE := fun _ _ => lastG_ofM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) (Dg h3 b0).st (Dg h3 b0).e0
+        hFE := fun _ _ => lastG_ofV P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) (Dg h3 b0).st (Dg h3 b0).e0
           hAk hA (by omega) (fun tab j hj => htkR tab j (by omega)) (fun j hj => htkb j (by omega))
-        hFE0 := fun _ _ => lastG_ofM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) (Dg h3 b0).st (Dg h3 b0).e1
+        hFE0 := fun _ _ => lastG_ofV P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) (Dg h3 b0).st (Dg h3 b0).e1
           hAk hA (by omega) (fun tab j hj => htkR tab j (by omega)) (fun j hj => htkb j (by omega)) } }
 
 end Host.Ts.Sim.Compose

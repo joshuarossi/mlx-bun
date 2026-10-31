@@ -79,8 +79,8 @@ for (const [j, b] of bridges.entries()) {
 const boundaries = [0, ...glue.flatMap(k => [k, k + 1]), T1].filter((v, i, a) => a.indexOf(v) === i);
 const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} :\n  (fun bytes : List Byte => ${ok} bytes ${s(i)} ${S(i)}) = fun _ => true\n`);
 put("Accept", head([mod("H0"), OK]) + groups.join(""));
-put("Good", head([mod("H0"), "host.sim.template.a4pre_post_head.Good"]) +
-  `kernel_rfl ${name}.good_checked :\n  (fun ν : Nat → F64 => PRE_post_head.singletonGoodB ν ${S(0)}.oracle) = fun _ => true\n\n` +
+put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +
+  `kernel_rfl ${name}.good_checked :\n  (fun ν : Nat → F64 => PRE_pl_head.singletonGoodB ν ${S(0)}.oracle) = fun _ => true\n\n` +
   `theorem ${name}.good {ν : Nat → F64} (hν : ν 10 = F64.ofNat 1) : Good ν ${S(0)}.oracle :=\n` +
-  `  PRE_post_head.singletonGoodB_sound hν (congrFun ${name}.good_checked ν)\n`);
+  `  PRE_pl_head.singletonGoodB_sound hν (congrFun ${name}.good_checked ν)\n`);
 console.log(`${dir}: T1 ${T1}, glue chunks ${glue.join(",")}, bridges ${bridges.map(b => `${b.kind}@${b.ia}`).join(",") || "none"}`);

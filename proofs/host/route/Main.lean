@@ -129,8 +129,8 @@ theorem route_main (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelGpu.
       (netLd P (routeKernel G B Pg lseSum lseNumerator) env init) env π T
       (tokLd P G Pg B lseSum lseNumerator NE env π init)
       (entryEnv (bootedSt π T (tokLd P G Pg B lseSum lseNumerator NE env π init))) chars!"emitted" (ldStT [] [])) :
-    RouteOutcome P (routeKernel G B Pg lseSum lseNumerator) NE
-      (netLd P (routeKernel G B Pg lseSum lseNumerator) env init) env leaves typed π T
+    RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE
+      (netLd P (routeKernel G B Pg lseSum lseNumerator) env init) env leaves typed π Gn.kind T
       (bootedSt π T (tokLd P G Pg B lseSum lseNumerator NE env π init)) Gn.NB :=
   have hnet := aneNetLd_ok P.toMlxContract (routeKernel G B Pg lseSum lseNumerator).toKernelContract env
     (contentsLd P (routeKernel G B Pg lseSum lseNumerator) env) init

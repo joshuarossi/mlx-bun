@@ -1,6 +1,5 @@
-import host.route.Final
+import host.route.FinalV
 import host.sim.world.DecodeSourceFramed
-import host.simgraph.world.MachRoute
 import host.simgraph.mach.Schedule
 import host.sim.full.World
 import host.sim.full.BridgeFrame
@@ -27,13 +26,13 @@ open Host.Ts.Sim.Full (FF fullWorldXD fullWorldFb Quiet bridgeOf mlxOf)
 variable {C : M1Max.Contract}
 
 structure LoopDecFramed (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
-    (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat)
+    (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (kind : Nat → Option Compiled) (T : Nat) (tk : Nat → Nat)
     (je : Host.Ts.Env) (NB : Nat) (Pw Pd : Sim.LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA : List Nat)
-    (I : PrefInvsW (fullWorldXD NB).F) (Lc : LoopCut P KR NE net env π T tk NB Pw Pd A W fixA I)
+    (I : PrefInvsW (fullWorldXD NB).F) (Lc : LoopCutV P KR NE net env π kind T tk NB Pw Pd A W fixA I)
     (b0 : Host.Mlx.FfiAne.St) where
   st : LoopStartW (fullWorldFb b0 NB) A Pd Lc.s0 Lc.tab0
   -- the decode iterations, each with its graph certificate
-  hit : DecodeItersW (DecodeInvW (fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) W Pd Lc.Fr Lc.s0
+  hit : DecodeItersW (DecodeInvW (fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) W Pd Lc.Fr Lc.s0
     Lc.tab0 fixA (valL Lc.ρ T tk π.length) tk Lc.toks Lc.E0 Lc.B Lc.ΔJ Lc.ΔH Lc.ΔN) T tk
   -- the final chains, the EOS exit, the EOS final chains
   F0 : HaltSegW (fullWorldFb b0 NB) A W Pd (Lc.toks.drop (T - 1)) Lc.s0
@@ -75,32 +74,32 @@ structure LoopDecFramed (P : MlxPrefillContract C) (KR : RouteKernelContract C) 
   hlen : T - 1 ≤ Lc.toks.length
   -- the halts' graph certificates
   hF : NoEos tk T → (T - 2) % 256 ≠ 0 → (T - 1) % 256 ≠ 0 →
-    LastGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    LastGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       F0 (valL Lc.ρ T tk π.length) tk
-      (goalC P KR NE net env π NB T je)
+      (goalCV P KR NE net env π kind NB T je)
   hF0 : NoEos tk T → (T - 2) % 256 = 0 →
-    LastGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    LastGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       F1 (valL Lc.ρ T tk π.length) tk
-      (goalC P KR NE net env π NB T je)
+      (goalCV P KR NE net env π kind NB T je)
   hF1 : NoEos tk T → (T - 1) % 256 = 0 →
-    LastGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    LastGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       F2 (valL Lc.ρ T tk π.length) tk
-      (goalC P KR NE net env π NB T je)
+      (goalCV P KR NE net env π kind NB T je)
   hX : ∀ k, 2 ≤ k → k < T → FirstEos tk T k →
-    CutGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    CutGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       (X k) (valL Lc.ρ T tk π.length)
-      (goalM P KR NE net env π NB k)
+      (goalMV P KR NE net env π kind NB k)
   hFE : FirstEos tk T T → (T - 2) % 256 ≠ 0 →
-    LastGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    LastGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       FE0 (valL Lc.ρ T tk π.length) tk
-      (goalM P KR NE net env π NB T)
+      (goalMV P KR NE net env π kind NB T)
   hFE0 : FirstEos tk T T → (T - 2) % 256 = 0 →
-    LastGStepW (Wd := fullWorldFb b0 NB) A (machGx P KR NE net env π NB Lc.Itpl) Pd W Lc.Fr fixA
+    LastGStepW (Wd := fullWorldFb b0 NB) A (machGxV P KR NE net env π kind NB Lc.Itpl) Pd W Lc.Fr fixA
       FE1 (valL Lc.ρ T tk π.length) tk
-      (goalM P KR NE net env π NB T)
+      (goalMV P KR NE net env π kind NB T)
 
 structure RouteArtifactsFramed (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine) (net : Host.Mlx.SimGraph.Ref.AneNet)
-    (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat) (je : Host.Ts.Env) (nm : Host.Ts.Name) where
+    (env : FfiEval.Env InKey) (π : List Nat) (kind : Nat → Option Compiled) (T : Nat) (tk : Nat → Nat) (je : Host.Ts.Env) (nm : Host.Ts.Name) where
   NB : Nat
   Pw : Sim.LoadP
   Pd : Sim.LoadP
@@ -123,13 +122,13 @@ structure RouteArtifactsFramed (P : MlxPrefillContract C) (KR : RouteKernelContr
   s21 : ∀ h h', HaltStopSrc (P21 h h').hs
   s22 : ∀ h h' h'', HaltStopSrc (P22 h h' h'').hs
   s11 : ∀ h h', HaltStopSrc (P11 h h').hs
-  g21 : ∀ h h', (P21 h h').Goal (goalM P KR NE net env π NB 1)
-  g22 : ∀ h h' h'', (P22 h h' h'').Goal (goalM P KR NE net env π NB 2)
-  g20 : ∀ h h' h'', (P20 h h' h'').Goal (goalC P KR NE net env π NB T je)
-  g11 : ∀ h h', (P11 h h').Goal (goalM P KR NE net env π NB 1)
-  g10 : ∀ h h', (P10 h h').Goal (goalC P KR NE net env π NB T je)
-  loop : 3 ≤ T → LoopCut P KR NE net env π T tk NB Pw Pd A W fixA I
-  dec : ∀ (h3 : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), LoopDecFramed P KR NE net env π T tk je NB Pw Pd A W fixA I (loop h3) b0
+  g21 : ∀ h h', (P21 h h').Goal (goalMV P KR NE net env π kind NB 1)
+  g22 : ∀ h h' h'', (P22 h h' h'').Goal (goalMV P KR NE net env π kind NB 2)
+  g20 : ∀ h h' h'', (P20 h h' h'').Goal (goalCV P KR NE net env π kind NB T je)
+  g11 : ∀ h h', (P11 h h').Goal (goalMV P KR NE net env π kind NB 1)
+  g10 : ∀ h h', (P10 h h').Goal (goalCV P KR NE net env π kind NB T je)
+  loop : 3 ≤ T → LoopCutV P KR NE net env π kind T tk NB Pw Pd A W fixA I
+  dec : ∀ (h3 : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), LoopDecFramed P KR NE net env π kind T tk je NB Pw Pd A W fixA I (loop h3) b0
 
 
 
@@ -137,12 +136,12 @@ structure RouteArtifactsFramed (P : MlxPrefillContract C) (KR : RouteKernelContr
 prefill over `fullWorldXD NB` and the decode over the pinned world `fullWorldFb b0 NB` of the bridge `b0` the
 decode cut holds; the decode artifacts are the same for every `b0`). -/
 theorem route_loopFb_framed {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
-    {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat} {T : Nat} {tk : Nat → Nat}
-    {je : Host.Ts.Env} {nm : Host.Ts.Name} (Ar : RouteArtifactsFramed P KR NE net env π T tk je nm) (hπ : 1 ≤ π.length)
+    {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat} {kind : Nat → Option Compiled} {T : Nat} {tk : Nat → Nat}
+    {je : Host.Ts.Env} {nm : Host.Ts.Name} (Ar : RouteArtifactsFramed P KR NE net env π kind T tk je nm) (hπ : 1 ≤ π.length)
     (h3 : 3 ≤ T) (hctx : π.length + T ≤ 262144) {N0 : Nat} {t0 tL : St FF.S} {C0 CL : CSrv}
     (hboot : runC FF N0 t0 C0 = some (tL, CL)) (hld : (Ar.I.ld π.length).Inv tL CL)
     (htk : ∀ j, j ≤ T → tk j ≤ 2 ^ 20) :
-    RouteGoalW t0 C0 je nm T tk (goalC P KR NE net env π Ar.NB T je) (fun k => goalM P KR NE net env π Ar.NB k) := by
+    RouteGoalW t0 C0 je nm T tk (goalCV P KR NE net env π kind Ar.NB T je) (fun k => goalMV P KR NE net env π kind Ar.NB k) := by
   classical
   let Lc := Ar.loop h3
   have hL2 : π.length ≤ 262143 := by omega
@@ -150,7 +149,7 @@ theorem route_loopFb_framed {P : MlxPrefillContract C} {KR : RouteKernelContract
   have hps := Host.Ts.Sim.Prefill.prefill_reach_psW Ar.SP hπ hL2
   -- the decode cut after POST: a pinned bridge, the seam invariant over its world, the prefix's and readbacks' values
   have post : tk 1 ≠ 248044 → ∃ N1 t1 C1 b0, runC FF N1 t0 C0 = some (t1, C1) ∧
-      DecodeInvW (fullWorldFb b0 Ar.NB) Ar.A (machGx P KR NE net env π Ar.NB Lc.Itpl) Ar.W Ar.Pd Lc.Fr Lc.s0 Lc.tab0
+      DecodeInvW (fullWorldFb b0 Ar.NB) Ar.A (machGxV P KR NE net env π kind Ar.NB Lc.Itpl) Ar.W Ar.Pd Lc.Fr Lc.s0 Lc.tab0
         Ar.fixA (valL Lc.ρ T tk π.length) tk Lc.toks Lc.E0 Lc.B Lc.ΔJ Lc.ΔH Lc.ΔN 1 t1 C1 ∧
       C1.val Lc.e1 = some (F64.ofNat (tk 1)) ∧
       ∀ j (hj : j < Lc.toks.length), C1.val Lc.toks[j] = some (F64.ofNat (tk (j + 2))) := by
@@ -183,7 +182,7 @@ theorem route_loopFb_framed {P : MlxPrefillContract C} {KR : RouteKernelContract
       obtain ⟨N1, t1, C1, b0, hpre, hinv, hv1, hvals⟩ := post (hmin 1 le_rfl (by omega))
       let Ld := Ar.dec h3 b0
       obtain ⟨N, tF, CF, hrun, hv, hle, ⟨hem, hg⟩, hfin⟩ := Host.Ts.Sim.Prefill.decode_source_eosLW_framed (Wd := fullWorldFb b0 Ar.NB)
-        (Fin := Host.Ts.Sim.stopFin je) (G := goalM P KR NE net env π Ar.NB k)
+        (Fin := Host.Ts.Sim.stopFin je) (G := goalMV P KR NE net env π kind Ar.NB k)
         Lc.hA Ld.st Lc.hfrN Ar.hcE Ar.hb Ar.hwc Lc.hwe k hk2 hkT
         (fun i h1 h2 h3' => Ld.hit i h1 h3' fun j hj1 hj2 => hmin j hj1 (by omega)) (Ld.X k) (Ld.cX k) Ld.FE0 Ld.FE1
         Ld.c0E Ld.c1E (fun h => Ld.hQX k hk2 h) Ld.hQE
@@ -220,7 +219,7 @@ theorem route_final_framed (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Ke
     (B : KernelGpu.SetBytes) (lseSum : Bool) (lseNumerator : Inference.Kernels.Attention.SdpaUpdate.Contraction)
     (NE : NeuralEngine) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
     (typed : TypedCheckpoint env.weights)
-    (π : List Nat) (T : Nat) (hπ : 1 ≤ π.length) (hlt : ∀ t ∈ π, t < 248320) (hT : 1 ≤ T)
+    (π : List Nat) (kind : Nat → Option Compiled) (T : Nat) (hπ : 1 ≤ π.length) (hlt : ∀ t ∈ π, t < 248320) (hT : 1 ≤ T)
     (hctx : π.length + T ≤ 262144)
     -- the loaded model's Neural Engine side (`route_main`: the boot's `aneNetLd c init`)
     (net : Host.Mlx.SimGraph.Ref.AneNet)
@@ -234,14 +233,14 @@ theorem route_final_framed (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Ke
     (hs : bootL (RoutePrompt.cx π) (routeWorld T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π))
       2000 = some s)
     -- the route's artifacts (`route_main`: from the generated pieces by A4b's `route_of_pieces`)
-    (Ar : RouteArtifactsFramed P (routeKernel G B Pg lseSum lseNumerator) NE net env π T
+    (Ar : RouteArtifactsFramed P (routeKernel G B Pg lseSum lseNumerator) NE net env π kind T
       (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π) (entryEnv s) chars!"emitted")
     -- the full-world run of the boot to the loadDone cut (`route_main`: `route_boot` and `hld`)
     (hboot : ∃ N0 tL CL, runC (fullWorldXD Ar.NB).F N0 (bootStart s)
       (routeServer T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π)) = some (tL, CL) ∧
       (Ar.I.ld π.length).Inv tL CL) :
-    RouteOutcome P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π T s Ar.NB := by
-  unfold RouteOutcome
+    RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π kind T s Ar.NB := by
+  unfold RouteOutcomeV
   obtain ⟨N0, tL, CL, hrun, hld⟩ := hboot
   have hRT := route_refTokens P G Pg B lseSum lseNumerator NE net env leaves typed hπ (by omega) hlt hNE hnet
   have hdef := fun tab j (_ : j < T) => machTok_def P (routeKernel G B Pg lseSum lseNumerator) NE net env π (hRT []) hπ tab j
@@ -249,18 +248,18 @@ theorem route_final_framed (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Ke
     Nat.le_trans (machTok_le P _ NE net env π (hRT []) hπ hlt j) (by decide)
   have hm : RouteGoalW (bootStart s) (routeServer T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π))
       (entryEnv s) chars!"emitted" T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π)
-      (goalC P (routeKernel G B Pg lseSum lseNumerator) NE net env π Ar.NB T (entryEnv s))
-      (fun k => goalM P (routeKernel G B Pg lseSum lseNumerator) NE net env π Ar.NB k) := by
+      (goalCV P (routeKernel G B Pg lseSum lseNumerator) NE net env π kind Ar.NB T (entryEnv s))
+      (fun k => goalMV P (routeKernel G B Pg lseSum lseNumerator) NE net env π kind Ar.NB k) := by
     refine source_tokens_prompt_allW (Wd := fullWorldXD Ar.NB) (A := Ar.A) (W := Ar.W) (P := Ar.Pw) (fixA := Ar.fixA)
       π hπ hT hctx Ar.SP hrun hld Ar.hcE Ar.hb Ar.hgen Ar.hwc Ar.henv Ar.hgenv
       (fun h3 => ?_) Ar.P21 Ar.P22 Ar.P20 Ar.P11 Ar.P10 Ar.s21 Ar.s22 Ar.s11 Ar.g21 Ar.g22 Ar.g20 Ar.g11 Ar.g10
     exact route_loopFb_framed Ar hπ h3 hctx hrun hld htkb
   refine ⟨hm, hRT, fun hL parameters => ?_⟩
   have h := prefillHolds_short P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed parameters hπ hL hlt
-  have hm' := hm.mono (G' := goalM P (routeKernel G B Pg lseSum lseNumerator) NE net env π Ar.NB T)
-    (GE' := fun k => goalM P (routeKernel G B Pg lseSum lseNumerator) NE net env π Ar.NB k) (fun _ _ hg => hg.1)
+  have hm' := hm.mono (G' := goalMV P (routeKernel G B Pg lseSum lseNumerator) NE net env π kind Ar.NB T)
+    (GE' := fun k => goalMV P (routeKernel G B Pg lseSum lseNumerator) NE net env π kind Ar.NB k) (fun _ _ hg => hg.1)
     (fun _ _ _ _ hg => hg)
-  exact ⟨h, route_model_of_mach P _ NE _ net env leaves typed parameters (Wd := fullWorldXD Ar.NB) h hlt hπ hdef hm'⟩
+  exact ⟨h, route_model_of_machV P _ NE _ net env (routeVs P _ env kind) leaves typed parameters (Wd := fullWorldXD Ar.NB) h hlt hπ hdef hm'⟩
 
 
 end Host.Route

@@ -32,6 +32,8 @@ but the trust boundary, the prompt's and the budget's premises and the tokens' f
 structure RouteGen (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat)
     (je : Host.Ts.Env) (nm : Host.Ts.Name) (s0ld : St FF.S) where
+  -- the closures' names at the route's values
+  kind : Nat → Option Compiled
   -- the full world, the prefill's and the decode's load parameters, the driver's cells, the prefill invariants
   NB : Nat
   Pw : Sim.LoadP
@@ -76,18 +78,18 @@ structure RouteGen (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE :
   hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0
   hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true
   -- the decode cut over the pinned worlds, its prefix token 1 read through table symbol 1
-  hdec : Host.Ts.Sim.Prefill.CutConv (I.dec π.length) (decCutFirstFb NB A (machGx P KR NE net env π NB Itpl) W Pd Fr s0 tab0 fixA
+  hdec : Host.Ts.Sim.Prefill.CutConv (I.dec π.length) (decCutFirstFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
     (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B)
   -- the counters' bounds
   hJ : T * ΔJ + B.D < Sim.bound
   hH : (mlxOf s0.ffi).next + T * ΔH + B.H + (Pd.E - (mlxOf s0.ffi).next) < 2 ^ 46
   hN : (mlxOf s0.ffi).nnext + T * ΔN + B.N + (Pd.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
   -- the short paths' graph certificates
-  gA : Hp.pA.Goal (goalM P KR NE net env π NB 1)
-  gB2 : Hp.pB2.Goal (goalM P KR NE net env π NB 2)
-  gB0 : Hp.pB0.Goal (goalC P KR NE net env π NB T je)
-  gC1 : Hp.pC1.Goal (goalM P KR NE net env π NB 1)
-  gC0 : Hp.pC0.Goal (goalC P KR NE net env π NB T je)
+  gA : Hp.pA.Goal (goalMV P KR NE net env π kind NB 1)
+  gB2 : Hp.pB2.Goal (goalMV P KR NE net env π kind NB 2)
+  gB0 : Hp.pB0.Goal (goalCV P KR NE net env π kind NB T je)
+  gC1 : Hp.pC1.Goal (goalMV P KR NE net env π kind NB 1)
+  gC0 : Hp.pC0.Goal (goalCV P KR NE net env π kind NB T je)
 
 /-- Enter the generated invariant from the boot relation for the actual prompt. -/
 theorem RouteGen.loadEntry_inv {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
@@ -106,8 +108,8 @@ noncomputable def RouteGen.artifacts {P : MlxPrefillContract C} {KR : RouteKerne
     (hctx : π.length + T ≤ 262144)
     (htkR : ∀ tab j, j < T →
       ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
-    (htk : ∀ j, j ≤ T → tk j ≤ 248319) : RouteArtifactsFramed P KR NE net env π T tk je nm :=
-  route_of_piecesFramedAt P KR NE net env leaves typed π je nm hπ hT hctx Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.I Gn.Fr
+    (htk : ∀ j, j ≤ T → tk j ≤ 248319) : RouteArtifactsFramed P KR NE net env π Gn.kind T tk je nm :=
+  route_of_piecesFramedAt P KR NE net env leaves typed π Gn.kind je nm hπ hT hctx Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.I Gn.Fr
     Gn.s0 Gn.tab0 Gn.Itpl Gn.B Gn.ΔJ Gn.ΔH Gn.ΔN Gn.Pp Gn.H Gn.Hp Gn.D Gn.Dg Gn.hcE Gn.hb Gn.hgen Gn.hwc Gn.hwe Gn.henv Gn.hgenv
     Gn.hA Gn.hAt Gn.hAk Gn.hst0 Gn.hfrN (Gn.hdec.trans decCutFirstFb_forget)
     (fun _ _ h => decCutFirstFb_token (cutConv_inv Gn.hdec h)) htkR htk Gn.hJ Gn.hH Gn.hN Gn.gA Gn.gB2 Gn.gB0 Gn.gC1 Gn.gC0
@@ -129,9 +131,9 @@ theorem route_gen (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelGpu.R
     (hboot : ∃ N0 tL CL, runC (fullWorldXD Gn.NB).F N0 (bootStart s)
       (routeServer T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π)) = some (tL, CL) ∧
       (Gn.I.ld π.length).Inv tL CL) :
-    RouteOutcome P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π T s Gn.NB := by
+    RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π Gn.kind T s Gn.NB := by
   have hRT := route_refTokens P G Pg B lseSum lseNumerator NE net env leaves typed hπ (by omega) hlt hNE hnet
-  exact route_final_framed P G Pg B lseSum lseNumerator NE env leaves typed π T hπ hlt hT hctx net hNE hnet s hs
+  exact route_final_framed P G Pg B lseSum lseNumerator NE env leaves typed π Gn.kind T hπ hlt hT hctx net hNE hnet s hs
     (Gn.artifacts leaves typed hπ hT hctx (fun tab j _ => machTok_def P _ NE net env π (hRT []) hπ tab j)
       (fun j _ => machTok_le P _ NE net env π (hRT []) hπ hlt j)) hboot
 

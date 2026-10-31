@@ -19,7 +19,7 @@ def taFillB (s : St F.S) : Bool :=
   | .call (.obj fa) (.obj ta) [.num (.lit _)] => match s.obj? fa with
     | some o => match o.kind with
       | .fn (.native (.buf .taFill) _) => frB P ta && match s.obj? ta with
-        | some to => match to.kind with
+        | some tobj => match tobj.kind with
           | .typed _ _ _ _ => true
           | _ => false
         | none => false
@@ -42,9 +42,9 @@ theorem okJSJ_F (h : okJSJ P okBack D0 s S = true) : okJSF P okBack D0 s S = tru
 
 theorem taFillB_spec (h : taFillB P s = true) :
     s.next < nextMax ∧ presB s aTypeErrorProto = true ∧
-      ∃ fa ta x o data to k b off n, s.ctl = .call (.obj fa) (.obj ta) [.num (.lit x)] ∧ s.obj? fa = some o ∧
-        o.kind = .fn (.native (.buf .taFill) data) ∧ frB P ta = true ∧ s.obj? ta = some to ∧
-        to.kind = .typed k b off n := by
+      ∃ fa ta x o data tobj k b off n, s.ctl = .call (.obj fa) (.obj ta) [.num (.lit x)] ∧ s.obj? fa = some o ∧
+        o.kind = .fn (.native (.buf .taFill) data) ∧ frB P ta = true ∧ s.obj? ta = some tobj ∧
+        tobj.kind = .typed k b off n := by
   unfold taFillB at h
   simp only [Bool.and_eq_true, Nat.blt_eq] at h
   obtain ⟨⟨hn, hp⟩, h⟩ := h
@@ -58,10 +58,10 @@ theorem taFillB_spec (h : taFillB P s = true) :
         simp only [Bool.and_eq_true] at h
         obtain ⟨hfr, h⟩ := h
         split at h
-        · rename_i to hto
+        · rename_i tobj hto
           split at h
           · rename_i k b off n htk
-            exact ⟨fa, ta, x, o, data, to, k, b, off, n, hc, ho, hk, hfr, hto, htk⟩
+            exact ⟨fa, ta, x, o, data, tobj, k, b, off, n, hc, ho, hk, hfr, hto, htk⟩
           · cases h
         · cases h
       · cases h
@@ -81,8 +81,8 @@ theorem dispatchJF {okCall0 : F.S → Name → List Arg → Bool} {okBack0 : F.S
   simp only [okJSF, Bool.or_eq_true] at hok
   rcases hok with hok | hok
   · exact dispatchJS hF hB hC hsm hsmB hFR hL hN hK hD hW h hJ hh hok hloc
-  · obtain ⟨hn, hp, fa, ta, x, o, data, to, k, b, off, n, hc, ho, hk, hfr, hto, htk⟩ := taFillB_spec hok
-    exact MSim.toX (step_buf_taFill h hFR (next_ok (Nat.blt_eq.mpr hn)) (presB_sound hp) hc ho hk hto htk (hK.fr_none hfr))
+  · obtain ⟨hn, hp, fa, ta, x, o, data, tobj, k, b, off, n, hc, ho, hk, hfr, hto, htk⟩ := taFillB_spec hok
+    exact MSim.toX (step_buf_taFill h hFR (Nat.lt_of_le_of_lt (Nat.le_add_right _ _) (next_ok (Nat.blt_eq.mpr hn))) (presB_sound hp) hc ho hk hto htk (hK.fr_none hfr))
 
 /-- **The checked runs' one-step theorem of `okJSF`.** -/
 theorem stepSimXLBJF {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}

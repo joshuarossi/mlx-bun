@@ -1,6 +1,5 @@
 import host.sim.full.BridgeJs
 import host.sim.dispatch.OkFill
-import host.sim.template.FullOk
 
 /-! # The acceptance of Neural Engine rows
 

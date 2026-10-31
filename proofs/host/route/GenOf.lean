@@ -24,7 +24,7 @@ variable {C : M1Max.Contract}
   (lseNumerator : Inference.Kernels.Attention.SdpaUpdate.Contraction)
   (NE : NeuralEngine) (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey)
   (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
-  (π : List Nat) (T : Nat) (hπ : 1 ≤ π.length) (hlt : ∀ t ∈ π, t < 248320)
+  (π : List Nat) (kind : Nat → Option Compiled) (T : Nat) (hπ : 1 ≤ π.length) (hlt : ∀ t ∈ π, t < 248320)
   (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
   (hNE : NE.Succeeds net)
   (hnet : ∀ tab, Host.Mlx.SimGraph.Mach.AneNetOk net
@@ -35,7 +35,7 @@ local notation "Kr" => routeKernel G bytes Pg lseSum lseNumerator
 local notation "Tk" => machTok P Kr NE net env π
 local notation "Je" => entryEnv (Host.Load.Run.Prompt.P.at0 (π.map natV) (machReads T Tk))
 local notation "Fr" => framesP DEC.s0 (π.map natV)
-local notation "Gx" => machGx P Kr NE net env π 15235 DEC.inputs
+local notation "Gx" => machGxV P Kr NE net env π kind 15235 DEC.inputs
 
 /-- Assemble the route from the prefill bundle. The remaining premises name the POST,
 short-path executions and graph facts, and the two connections of the prefill invariants. -/
@@ -51,11 +51,11 @@ noncomputable def routeGenOf
     (postHandoff : CutConv (I.dec π.length)
       (decCutFirstFb 15235 addrPrompt Gx wideP DEC.Pw Fr DEC.s0 DEC.tab0 terminalFixP
         (valL (machVal T Tk) T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBase))
-    (graphA : shortPaths.pA.Goal (goalM P Kr NE net env π 15235 1))
-    (graphB2 : shortPaths.pB2.Goal (goalM P Kr NE net env π 15235 2))
-    (graphB0 : shortPaths.pB0.Goal (goalC P Kr NE net env π 15235 T Je))
-    (graphC1 : shortPaths.pC1.Goal (goalM P Kr NE net env π 15235 1))
-    (graphC0 : shortPaths.pC0.Goal (goalC P Kr NE net env π 15235 T Je)) :
+    (graphA : shortPaths.pA.Goal (goalMV P Kr NE net env π kind 15235 1))
+    (graphB2 : shortPaths.pB2.Goal (goalMV P Kr NE net env π kind 15235 2))
+    (graphB0 : shortPaths.pB0.Goal (goalCV P Kr NE net env π kind 15235 T Je))
+    (graphC1 : shortPaths.pC1.Goal (goalMV P Kr NE net env π kind 15235 1))
+    (graphC0 : shortPaths.pC0.Goal (goalCV P Kr NE net env π kind 15235 T Je)) :
     RouteGen P Kr NE net env π T Tk Je chars!"emitted" (ldStT [] []) := by
   have hRT := route_refTokens P G Pg bytes lseSum lseNumerator NE net env leaves typed
     hπ (by omega) hlt hNE hnet
@@ -84,7 +84,8 @@ noncomputable def routeGenOf
       (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hρ hπ h3 hctx
       (fun j _ => hv j) le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2
   refine
-    { NB := 15235
+    { kind := kind
+      NB := 15235
       Pw := setupP
       Pd := DEC.Pw
       A := addrPrompt

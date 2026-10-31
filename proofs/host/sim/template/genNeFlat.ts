@@ -1,5 +1,6 @@
 // Write the checked modules of a flat Neural Engine forward body (`tpl_chain` with no stage cuts, the bridge literal).
 // usage: bun genNeFlat.ts <dir under template/> <Name> [--group <chunks per K module>] [--ok <module> <term>] [--only-chunks a-b]
+//   [--source <state> <server> <module> <the prefix's canonical row variable>]
 // The acceptance is parameterized (`<term> bytes rows`); states never hold the `Boot.replay` thunk, so every check is a
 // plain kernel evaluation of literal states (no `boot_rfl`).
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,6 +18,8 @@ const take = (f: string, k = 1) => {
 const group = Number(take("--group")?.[0] ?? 4);
 const okArg = take("--ok", 2) ?? ["host.sim.compose.a4b.VWFrames", "Host.Ts.Sim.Compose.VWFrames.bodyOk"];
 const only = take("--only-chunks")?.[0]?.split("-").map(Number);
+// the chain's source state and server (its prefix's end, `bridge_literal` of it): the start seam
+const src = take("--source", 4);
 const [dir, name] = argv;
 if (!dir || !name) throw Error("usage: genNeFlat.ts dir Name [--group n] [--ok module term] [--only-chunks a-b]");
 const streams = process.env.HOST_STREAM_DIR ?? join(import.meta.dir, "../../../.host-stream");
@@ -43,6 +46,28 @@ for (let j = 0; j <= Math.floor(T1 / per); j++) {
 }
 put("TypedOk", head([okArg[0]!], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Template") +
   `noncomputable def ${name}.bodyOkB (bytes : List Byte) (rows : Nat) : St Host.Load.Layers.full.S → SSrv → Bool :=\n  ${okArg[1]} bytes rows\n`);
+
+if (src) {
+  const [srcS, srcSrv, srcMod, rowVar] = src as [string, string, string, string];
+  put("S0State", head([mod("H0"), srcMod, "host.sim.full.DropTokens"]) +
+    `kernel_rfl ${name}.s0_noFfi : ${s(0)}.setFfi ${srcS}.ffi = ${srcS}\n`);
+  put("S0Table", head([mod("H0"), srcMod]) +
+    `kernel_rfl ${name}.s0_tab : ${S(0)}.tab = ${srcSrv}.tab.map (·.subst (fun v => if v = ${rowVar} then .var 10 else .var v))\n`);
+  put("S0Tokens", head([H(T1), "host.sim.full.Raise"]) +
+    `kernel_rfl ${name}.tokens0 : (Full.mlxOf ${s(0)}.ffi).tokens = [.ref 1, .ref 2]\n` +
+    `kernel_rfl ${name}.tokensEnd : (Full.mlxOf ${s(T1)}.ffi).tokens = [.ref 1, .ref 2]\n`);
+  put("S0Eq", head([mod("S0State"), mod("S0Table"), "host.sim.full.StateFields", "host.sim.template.a4pre_setup_native32.Origin"], "Host.Ts Host.Ts.Sim Host.Load") +
+    `state_fields ${name}.newFields from ${s(0)}\nstate_fields ${name}.oldFields from ${srcS}\n` +
+    `kernel_rfl ${name}.new_bridge : ${name}.newFields.bridge = PRENative32.s0.ffi.1.1.bridge\n` +
+    `kernel_rfl ${name}.old_bridge : ${name}.oldFields.bridge = Boot.replay Host.Load.Run.Prompt.P.oblog2818\n` +
+    `kernel_rfl ${name}.s0_load : ${name}.newFields.load =\n  { ${name}.oldFields.load with mlx := { ${name}.oldFields.load.mlx with tokens := [.ref 1, .ref 2] } }\n` +
+    `kernel_rfl ${name}.s0_live : ${name}.newFields.live = ${name}.oldFields.live\n` +
+    `kernel_rfl ${name}.s0_krec : ${name}.newFields.krec = ${name}.oldFields.krec\n` +
+    `theorem ${name}.s0_tok : ${s(0)} = ${srcS}.setFfi (Full.fullSetTokens ${srcS}.ffi [.ref 1, .ref 2]) :=\n` +
+    `  Full.start_of_fields ${name}.newFields.ffi_eq ${name}.oldFields.ffi_eq ${name}.s0_noFfi ${name}.s0_load\n` +
+    `    (${name}.new_bridge.trans (PRENative32.bridge_exact.symm.trans ${name}.old_bridge.symm))\n` +
+    `    ${name}.s0_live ${name}.s0_krec\n`);
+}
 
 // a chunk entered or left by a size bridge is the bridge's facts, not glue
 const bridgeChunks = new Set<number>();

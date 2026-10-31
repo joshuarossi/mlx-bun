@@ -1650,9 +1650,10 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
       `host.sim.compose.a4b.${here.file}`, `${mod}.Bridge`]);
     const hOf = (k: number) => imports.add(`${mod}.H${Math.floor(k / 32)}`);
     let facts = "", proof = "";
-    const good = (k: number) => {
-      facts += `kernel_rfl bodyGood${k} : (fwdRows.all fun r => ${here.check} r.ps (varsOf r.V Oracles.${X}.map_g${j}) ${X}.S${k}.oracle) = true\n`;
-      facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`;
+    const brEq = (k: number) => { facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`; };
+    const good = (k: number, e: number) => {
+      facts += `kernel_rfl bodyGood${k} : (fwdRows.all fun r => ${here.check} r.ps (varsOf r.V Oracles.${X}.map_g${j}) (${X}.S${k}.oracle.take (${X}.S${k}.oracle.length - ${X}.S${e}.oracle.length))) = true\n`;
+      brEq(k);
       return `(fun _ hm => ${here.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"} (List.all_eq_true.mp bodyGood${k} r hr) hi hm)`;
     };
     const acc = (k: number) => {
@@ -1671,7 +1672,7 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
     const toCall = (b: number) => {
       const st = stepsAt.get(`${b}->${b + 1}`) ?? fail(`no step ${b}->${b + 1}`);
       imports.add(`${mod}.${st.file}`); hOf(b + 1);
-      const brIn = good(a), acA = acc(a), acB = acc(b), run = seg(a, b);
+      const brIn = good(a, b + 1), acA = acc(a), acB = acc(b), run = seg(a, b);
       facts += `kernel_rfl bodyBr${b + 1} : bridgeOf ${X}.s${b + 1}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyHalt${b} : isHalt ${X}.s${b}.ctl = false\nkernel_rfl bodyTop${b + 1} : noRetBlock ${X}.s${b + 1} = true\n`;
       pieces.push(`bodyToCall (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm)`);
     };
@@ -1681,14 +1682,14 @@ theorem bodyStep${k} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {
       const n = sizeIdx.get(br.ia) ?? fail(`no size bridge at ${br.ia}`);
       const patch = stepsAt.get(`${br.ia}->${br.ia + 1}`) ?? fail(`no patch ${br.ia}`);
       imports.add(`${mod}.${patch.file}`); hOf(br.ia + 1);
-      const g0 = good(br.ia);
-      facts += facts.includes(`bodyBr${br.ia + 1} :`) ? "" : `kernel_rfl bodyBr${br.ia + 1} : bridgeOf ${X}.s${br.ia + 1}.ffi = bridgeOf ${X}.s0.ffi\n`;
-      pieces.push(`bodySize (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${X}.sizeA${n} ${X}.sizeArgsA${n} ${X}.sizeSymA${n} ${X}.sizeMlxA${n} ${X}.sizePayA${n} ${X}.sizeTaA${n} ${X}.sizeDecA${n} ${X}.sizePreA${n} ${X}.${patch.name} ${g0} ${active(br.ia)} (bodyBr${br.ia + 1}.trans bodyBr${br.ia}.symm)`);
+      brEq(br.ia); brEq(br.ia + 1);
+      facts += `kernel_rfl bodyDecLen${n} : ${X}.sizeS0${n}.oracle.length = ${X}.S${br.ia}.oracle.length\nkernel_rfl bodySizeLen${n} : ${X}.S${br.ia + 1}.oracle.length = ${X}.S${br.ia}.oracle.length\n`;
+      pieces.push(`bodySize (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${X}.sizeA${n} ${X}.sizeArgsA${n} ${X}.sizeSymA${n} ${X}.sizeMlxA${n} ${X}.sizePayA${n} ${X}.sizeTaA${n} ${X}.sizeDecA${n} ${X}.sizePreA${n} ${X}.${patch.name} bodyDecLen${n} bodySizeLen${n} ${active(br.ia)} (bodyBr${br.ia + 1}.trans bodyBr${br.ia}.symm)`);
       a = br.ia + 1;
     }
     if (stage) toCall(last - 1);
     else {
-      const brIn = good(a), acA = acc(a), run = seg(a, last);
+      const brIn = good(a, last), acA = acc(a), run = seg(a, last);
       facts += `kernel_rfl bodyBr${last} : bridgeOf ${X}.s${last}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyTop${last} : noRetBlock ${X}.s${last} = true\n`;
       pieces.push(`bodyGlue (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Dmax := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} (fun _ hp => hp) ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm)`);
     }

@@ -1,6 +1,6 @@
 # Handoff: the route proof for Qwen3.8-27B-Trellis on M1 Max
 
-Updated 2026-10-31 07:05 CST. Branch `proof/qwen38-m1max-trellis`, worktree
+Updated 2026-10-31 10:50 CST. Branch `proof/qwen38-m1max-trellis`, worktree
 `/Users/joshrossi/Code/mlx-bun-proof-m1max`; snapshots are committed and pushed as work lands. Paths are under `proofs/` unless absolute. The Oct 24-26 detail (receipts,
 per-module results) is in `~/proofdev/HANDOFF-archive-20261026.md`.
 
@@ -133,14 +133,20 @@ traced once, symbolically.
 5. **Bulk generation**, once 1-4 work end to end on one row of each family.
 6. **Final:** consistent build of everything, full `check.ts`, then `route_main` without `Gn`.
 
-**Size and speed (31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 3,757+ small modules, about 7 slot-h; 133 forwards would be about 800 slot-h. Almost all of that is imports: importing a generated module's closure costs 5-7.5 s real with about 0.55 GB private footprint, while a root K check (40k steps) is about 20 s and a stage K about 15 s. RSS (4-6 GB) overstates memory because most of it is shared mmapped oleans, so the gate went from 3 to 8 slots, above 3 only while memory is free.
+**Size and speed (31 Oct, measured).** One VW forward: 1.5M glue steps, native run 51 slot-min, 6,578 small modules as first generated. Almost all of that is imports. One import edge (`host.sim.extract.Grow → host.simgraph.Grow`) puts 8,625 Mathlib modules under every generated module, while a chunk check uses constants from about 530 modules. Being fixed in one batch:
+- cut that edge (about 3x less import CPU);
+- drop 1,739 modules with no consumer;
+- merge the remaining 4,837 into 33 bundles (`template/genMerge.ts`);
+- 3,333-step stage boundaries, avoiding 90 native reruns.
+Estimate after these: about 3 CPU-h per VW forward. x9 and x15 VW bodies match so far, and `plan` has 3 answer patterns across 17 bands, so VW may drop from 58 pieces to 13 (133 to 88 in total), about 260 CPU-h.
 
-**Biggest blockers and what's being done:**
-1. Bulk cost: a dedicated cost worker merges generated modules (target at most 2 slot-h per VW forward) and shares bodies across plan bands and KV classes (21 bodies instead of 133, as first planned).
-2. The Neural Engine path is unproved and could expose design gaps: a dedicated worker builds the first chain now, in parallel with VW.
-3. POST for any prompt length: generator and route.
-4. The growth bound for long prompts: route.
-5. Disk: 169 GiB free, floor 110; bulk generation needs old `devout-*` dirs cleared first.
+**Machine lessons (31 Oct).**
+- RSS overstates Lean: most of it is shared mmapped oleans. Use footprint.
+- APFS clones share disk blocks, not the page cache. Compiled files are hardlinked through `~/proofdev/cas`; the builder reuses any agent's compile (index in `cas/index`) and has early cutoff (dev only; the final full build rechecks everything).
+- `memory_pressure`'s free % counts the file cache as free. The gate admits by compressor size instead: 5 slots, or 2 while the compressor holds 9 GB or more. Throughput went from about 1.4 to about 18 modules/min once it stopped thrashing.
+- Docker Desktop's VM holds about 14.5 GB of the 32 GB when running; closing it would let the gate stay open.
+
+**Biggest blockers:** (1) bulk cost, above; (2) the Neural Engine path, worker building the first chain now; (3) POST for any prompt length, offset and capacity as variables, generator and route; (4) the graph evaluator change to `evalRR`, route; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 168 GiB free, floor 110.
 
 **Rules for the machine reference:** for |π| >= 3 the reference is the machine's own computation, because MMA and the
 Neural Engine are uninterpreted; the model-level statement stays limited to |π| <= 2.
@@ -165,6 +171,7 @@ Neural Engine are uninterpreted; the model-level statement stays limited to |π|
 - 31 Oct: the end theorem's graph goals (`GFM`, `ForwardAtM`, `goalM`, `goalC`, `machGx`) move from `evalR` on the decode-kernel graph to
   `evalRR` on `ffiGraphR`, as a layer: `evalR` has no value for prefill kernels, so the old statement fails after a multi-row step.
   The reference was already `evalRR`; the trust boundary doesn't change.
+- 31 Oct: `BridgeA.dense` starts at node 1, fixed in place: as written it could never hold, so every active-bridge theorem was vacuous. Lands with a compiled witness of the active relation.
 - 30 Oct: stop source-only work; everything is compiled as it is written, generated rather than hand-stepped; no
   receipts, admissions or review packets. Acceptance is the kernel plus `#print axioms`.
 
