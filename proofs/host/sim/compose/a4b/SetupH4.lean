@@ -113,7 +113,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
         PRE_setup_h4_chunk.P0.NL := by
       change (mlxOf PRE_setup_h4_chunk.s0.ffi).nnext ≤ 15235
       rw [← PRE_setup_h4_chunk.fcnn0]
-    refine ⟨?_, ?_, ⟨hr.presentBound, hr.heapSupp⟩, top.1.load.mlx.nbl.trans hNL,
+    refine ⟨?_, ?_, ⟨hr.presentBound, hr.heapSupp⟩, Nat.le_trans top.1.load.mlx.nbl hNL,
       PRE_setup_h4_chunk.cshiftR0 top.1 hNL⟩
     · have inactive4 : (bridgeOf PRE_setup_h4_chunk.s0.ffi).active = false := by
         exact inactiveStart

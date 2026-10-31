@@ -91,7 +91,7 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have hNL : ({ setupP with rest := machReads T tk }.raise (mlxOf sa.ffi).nnext).NL ≤ P0.NL := by
     change (mlxOf sa.ffi).nnext ≤ P0.NL
     exact F.nnextLe
-  have hNB : NB ≤ P0.NL := top.1.load.mlx.nbl.trans hNL
+  have hNB : NB ≤ P0.NL := Nat.le_trans top.1.load.mlx.nbl hNL
   have hnative := F.cshiftR top.1 hNL
   have hfreshW : ∀ e ∈ Sa.tab, ∀ w ∈ ws, e.noVar w = true := d0.fresh
   have hs := bodyShift F hk.1 hb.prompt hb.chunk ⟨hr.presentBound, hr.heapSupp⟩ hnative hfreshW
@@ -164,7 +164,7 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   let y : SegInst FF := ⟨N.withJs, Shift.valuation θ ν1, K', t', C'⟩
   have node : y.M.node 15235 = M'.node 15235 := by
     change M'.node (κ.node 15235) = M'.node 15235
-    rw [Conv.node_of_fixOld F.cfix (le_refl c.nn) 15235 F.inputOld]
+    rw [Conv.node_of_fixOld F.cfix (Nat.le_refl c.nn) 15235 F.inputOld]
   have aold : ∀ a, a < sa.next → y.M.a a = M'.a a := by
     intro a ha
     change M'.a (κ.a a) = M'.a a

@@ -85,7 +85,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat}
     refine ⟨⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, fresh⟩, hsmall⟩,
       ⟨?_, (congrFun ext.a 2590).trans hins.2⟩,
       ⟨(congrFun ext.a 2586).trans hids.1, (congrFun ext.a 2589).trans hids.2⟩,
-      hbase, ⟨hr.presentBound, hr.heapSupp⟩, top.1.load.mlx.nbl.trans hNL,
+      hbase, ⟨hr.presentBound, hr.heapSupp⟩, Nat.le_trans top.1.load.mlx.nbl hNL,
       PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step (P := { setupP with rest := machReads T tk }) rfl hr hm' ext.big ext.node cnt18⟩
     intro j hj
     change npsVal x.ν j = _

@@ -81,6 +81,6 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt39, ⟨hr.presentBound, hr.heapSupp⟩,
-    top.1.load.mlx.nbl.trans hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩
+    Nat.le_trans top.1.load.mlx.nbl hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩
 
 end Host.Ts.Sim.Compose.VWFirst

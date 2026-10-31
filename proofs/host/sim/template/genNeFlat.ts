@@ -25,6 +25,8 @@ const src = take("--source", 4);
 const sizeVb = take("--size-vb")?.[0] ?? "(Host.Ts.Sim.Full.rowVB 2048)";
 // the class table rows whose oracle check the body's oracle passes once, at L and n (`bodyGoodAll`)
 const rows = take("--rows")?.[0]?.split(",");
+// the size bridges (1-based) to cross explicitly at an active bridge (`Full.fullBridgeSizeJX`, `<Name>.crossSize<n>`)
+const cross = take("--cross")?.[0]?.split(",").map(Number) ?? [];
 const [dir, name] = argv;
 if (!dir || !name) throw Error("usage: genNeFlat.ts dir Name [--group n] [--ok module term] [--only-chunks a-b]");
 const streams = process.env.HOST_STREAM_DIR ?? join(import.meta.dir, "../../../.host-stream");
@@ -140,6 +142,21 @@ if (!only) {
       xs.map((b, i) => kindFacts(name, b, base + i + 1, seg.frames, sizeVb)).join(""));
     bridgeMods.push(mod(`Steps${g}`), mod(`Bridge${g}`));
   }
+  if (cross.length) put("Cross", head(cross.flatMap(n => [mod(`Bridge${Math.floor((n - 1) / per8)}`), mod(`Steps${Math.floor((n - 1) / per8)}`)]).concat(["host.sim.full.SizeNE"]), `${O} Host.Ts.Sim.Full`) + cross.map(n => {
+    const b = bridges[n - 1], a = s(Number(b.ia)), Sa = S(Number(b.ia));
+    return `kernel_rfl ${name}.bodyActive${n} : (bridgeOf ${a}.ffi).active = true\n\n` +
+      `/-- Bridge ${n}'s block, with the bridge active, on the relation at its state. -/\n` +
+      `theorem ${name}.crossSize${n} {P : LoadP} {NB : Nat} {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}\n` +
+      `    {t : St FF.S} {C : CSrv} (h : RelB FF (Disp.FRJ (FullRXD P NB)) W stk M ν K ${a} ${Sa} t C) (hfr : K.fr ${b.ta} = none)\n` +
+      `    (hν : ∀ v, ∃ k ≤ rowVB 2048 v, ν v = F64.ofNat k) :\n` +
+      `    MSim (fun M' S' C' s1 t1 => Grow M ν ${Sa} C M' S' C' ∧\n` +
+      `      RelB FF (Disp.FRJ (FullRXD P NB)) W stk M' ν ⟨K.fr, s1.trace, t1.trace, K.D, K.lo, K.hi⟩ s1 S' t1 C' ∧\n` +
+      `      ∃ asR ret asR' ret' v, s1.trace = ⟨chars!${JSON.stringify(b.name)}, asR, ret⟩ :: ${a}.trace ∧ t1.trace = ⟨chars!${JSON.stringify(b.name)}, asR', ret'⟩ :: t.trace ∧\n` +
+      `        Disp.numRet ret = some v ∧ Disp.numRet ret' = some (M'.val v)) ${Sa} C\n` +
+      `      (Disp.sizeS FF ${a}) (Disp.sizeS FF t) :=\n` +
+      `  fullBridgeSizeJX h ${name}.sizeA${n} ${name}.sizeArgsA${n} ${name}.sizeSymA${n} ${name}.sizeMlxA${n} ${name}.sizePayA${n} hfr\n` +
+      `    (sizePre_of ${name}.sizeDecA${n} ${name}.sizePreA${n} hν)\n\n`;
+  }).join(""));
   writeFileSync(join(root, "Facts.lean"), [...endMods, ...bridgeMods].map(m => `import ${m}\n`).join(""));
 }
 console.log(`${dir}: T1 ${T1}, ${seg.steps} steps, ${bridges.length} bridges, ${glue.length} glue chunks in ${stretches.length} K modules; emitted ${emitted.length}`);
