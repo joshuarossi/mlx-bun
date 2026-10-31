@@ -1,0 +1,23 @@
+import host.sim.template.a4pre_setup_early_r0.States
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+host_stream_state PRE_setup_early_r0 0
+host_stream_state PRE_setup_early_r0 1
+host_stream_state PRE_setup_early_r0 2
+host_stream_state PRE_setup_early_r0 3
+host_stream_state PRE_setup_early_r0 4
+host_stream_state PRE_setup_early_r0 5
+host_stream_state PRE_setup_early_r0 6
+host_stream_state PRE_setup_early_r0 7
+host_stream_state PRE_setup_early_r0 8
+host_stream_state PRE_setup_early_r0 9
+host_stream_state PRE_setup_early_r0 10
+host_stream_state PRE_setup_early_r0 11
+host_stream_state PRE_setup_early_r0 12
+host_stream_state PRE_setup_early_r0 13
+host_stream_state PRE_setup_early_r0 14
+host_stream_state PRE_setup_early_r0 15
+host_stream_state PRE_setup_early_r0 16
+end Host.Load.Run.Tpl

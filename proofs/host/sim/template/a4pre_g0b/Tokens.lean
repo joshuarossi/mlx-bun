@@ -1,0 +1,12 @@
+import host.sim.template.a4pre_g0b.H0
+import host.sim.full.Raise
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Load.Run.Tpl
+open Host.Ts Host.Ts.Sim
+
+kernel_rfl PRE_g0b.tokens0 : (Full.mlxOf PRE_g0b.s0.ffi).tokens = [.ref 1, .ref 2]
+kernel_rfl PRE_g0b.tokens10 : (Full.mlxOf PRE_g0b.s10.ffi).tokens = [.ref 1, .ref 2]
+
+end Host.Load.Run.Tpl

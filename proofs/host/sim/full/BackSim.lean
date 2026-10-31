@@ -12,7 +12,10 @@ adjacency `G.PendReg.reg` keeps), the kernel-recording layer keeps its record.
 The recorded trace names fresh nodes, so the relation after it is at a raise: from a band-free `P`
 (`P.NL = P.N0`, decided), `FullRD` raises to the node counter before the continuation (`FullR.raise`),
 where every recorded node is pre-loop and the general check `G.backOkG` applies (`okBackF`,
-`fullBackSimD`). The one-step theorems of `Disp.okJSK` follow (`fullStepSim*DK`). -/
+`fullBackSimD`). The one-step theorems of `Disp.okJSK` follow (`fullStepSim*DK`). A trace over symbolic
+shapes replays under `G.backOkV` (`okBackFS`) given the numeric premise `smallBackF`, decided by
+`smallBackFB` (`fullBackSimDS`, `fullJSPXDS`, `fullStepSim*DKS`); everything `okBackF` accepts the
+premise's decider accepts (`smallBackFB_of_okBackF`). -/
 
 namespace Host.Ts.Sim.G
 open Host.Ts.Sim.BufSim (Lawful)
@@ -203,30 +206,87 @@ general check at the band raised to the node counter. -/
 def okBackF (P : LoadP) (x : FF.S) (a : Arg) : Bool :=
   decide (P.NL = P.N0) && !(bridgeOf x).active && G.backOkG (P.raise (mlxOf x).nnext) (mlxOf x) a
 
+/-- The full world's continuation at a raise, from the mlx world's at the band raised to the node
+counter (a band-free `P`, the bridge inactive). -/
+theorem fullBackD_of {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSrv} {C : CSrv} {x y : FF.S} {a : Arg}
+    (hr : FullRD P NB M S.tab.length x y) (hb : P.NL = P.N0) (hact : (bridgeOf x).active = false)
+    (hg : G.MR (P.raise (mlxOf x).nnext) NB M S.tab.length (mlxOf x) (mlxOf y) →
+      MSim (G.MPost (P.raise (mlxOf x).nnext) NB M ν S C) S C (Host.Mlx.Ffi.back (mlxOf x) a)
+        (Host.Mlx.Ffi.back (mlxOf y) (M.arg a))) :
+    MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullRD P NB) M' S'.tab.length r r') S C
+      (FF.back x a) (FF.back y (M.arg a)) := by
+  obtain ⟨P', hP, hr⟩ := hr
+  have hP' : P'.NL = P'.N0 ∧ P.N0 ≤ P'.N0 ∧ P'.raise (mlxOf x).nnext = P.raise (mlxOf x).nnext := by
+    rcases hP with rfl | ⟨k, -, hk, rfl⟩
+    · exact ⟨hb, Nat.le_refl _, rfl⟩
+    · exact ⟨rfl, hk, rfl⟩
+  obtain ⟨hb1, hb2, hb3⟩ := hP'
+  have hn : P'.N0 ≤ (mlxOf x).nnext := hr.load.mlx.nband.2
+  have hrr : FullR (P.raise (mlxOf x).nnext) NB M S.tab.length x y := by
+    rw [← hb3]; exact hr.raise hb1 hn (Nat.le_refl _)
+  refine MSim.mono (fullBackOf hrr hact (G.mlx_liftB hrr.load (hg hrr.load.mlx))) ?_
+  intro M' S' C' r r' h
+  obtain ⟨hgr, hc⟩ := h
+  refine ⟨hgr, ?_⟩
+  rcases r with _ | ⟨x', r1, ws⟩ <;> rcases r' with _ | ⟨y', r2, ws'⟩
+  · trivial
+  · trivial
+  · exact hc
+  · exact ⟨⟨_, .inr ⟨(mlxOf x).nnext, hb, Nat.le_trans hb2 hn, rfl⟩, hc.1⟩, hc.2⟩
+
 /-- **The full world's continuation simulation at a raise.** -/
 theorem fullBackSimD (P : LoadP) (NB : Nat) : FfiBackSim FF (FullRD P NB) (okBackF P) where
   back := by
     intro M ν S C x y a hsrv hr hok _
-    obtain ⟨P', hP, hr⟩ := hr
     simp only [okBackF, Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true'] at hok
     obtain ⟨⟨hb, hact⟩, hg⟩ := hok
-    have hP' : P'.NL = P'.N0 ∧ P.N0 ≤ P'.N0 ∧ P'.raise (mlxOf x).nnext = P.raise (mlxOf x).nnext := by
-      rcases hP with rfl | ⟨k, -, hk, rfl⟩
-      · exact ⟨hb, Nat.le_refl _, rfl⟩
-      · exact ⟨rfl, hk, rfl⟩
-    obtain ⟨hb1, hb2, hb3⟩ := hP'
-    have hn : P'.N0 ≤ (mlxOf x).nnext := hr.load.mlx.nband.2
-    have hrr : FullR (P.raise (mlxOf x).nnext) NB M S.tab.length x y := by
-      rw [← hb3]; exact hr.raise hb1 hn (Nat.le_refl _)
-    refine MSim.mono (fullBackOf hrr hact (G.mlx_liftB hrr.load (G.sim_traceBack hsrv hrr.load.mlx hg))) ?_
-    intro M' S' C' r r' h
-    obtain ⟨hgr, hc⟩ := h
-    refine ⟨hgr, ?_⟩
-    rcases r with _ | ⟨x', r1, ws⟩ <;> rcases r' with _ | ⟨y', r2, ws'⟩
-    · trivial
-    · trivial
-    · exact hc
-    · exact ⟨⟨_, .inr ⟨(mlxOf x).nnext, hb, Nat.le_trans hb2 hn, rfl⟩, hc.1⟩, hc.2⟩
+    exact fullBackD_of hr hb hact fun hm => G.sim_traceBack hsrv hm hg
+
+/-- **The full world's accepted continuations with symbolic replays**: `okBackF`'s, or the replay over
+symbolic shapes (`G.backOkV`) at the band raised to the node counter. -/
+def okBackFS (P : LoadP) (x : FF.S) (a : Arg) : Bool :=
+  decide (P.NL = P.N0) && !(bridgeOf x).active &&
+    (G.backOkG (P.raise (mlxOf x).nnext) (mlxOf x) a || G.backOkV (P.raise (mlxOf x).nnext) (mlxOf x) a)
+
+theorem okBackFS_of {P : LoadP} {x : FF.S} {a : Arg} (h : okBackF P x a = true) : okBackFS P x a = true := by
+  simp only [okBackF, okBackFS, Bool.and_eq_true, Bool.or_eq_true] at h ⊢
+  exact ⟨h.1, .inl h.2⟩
+
+/-- **The numeric premise of the full world's continuations**: the symbolic replay's (`G.backSmall`). -/
+def smallBackF (ν : Nat → F64) (S : SSrv) (x : FF.S) (a : Arg) : Prop := G.backSmall ν S (mlxOf x) a
+
+/-- The decider of `smallBackF` (irreducible, as `smallFSB`). -/
+@[irreducible] def smallBackFB (VB : Nat → Nat) (S : SSrv) (x : FF.S) (a : Arg) : Bool := G.backSmallB VB S (mlxOf x) a
+
+theorem smallBackFB_sound {VB : Nat → Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {a : Arg}
+    (hν : ∀ v, ∃ k ≤ VB v, ν v = F64.ofNat k) (h : smallBackFB VB S x a = true) : smallBackF ν S x a := by
+  unfold smallBackFB at h
+  exact G.backSmallB_sound hν h
+
+/-- Every continuation `okBackF` accepts has the premise's decider true: its replay is the literal one. -/
+theorem smallBackFB_of_okBackF {P : LoadP} {VB : Nat → Nat} {S : SSrv} {x : FF.S} {a : Arg}
+    (h : okBackF P x a = true) : smallBackFB VB S x a = true := by
+  simp only [okBackF, Bool.and_eq_true] at h
+  obtain ⟨x1, c, t, xs, hf, hn, hc⟩ :=
+    G.backOkR_found (rc := fun x1 c m o => G.rchk (P.raise (mlxOf x).nnext).NL c x1 m o) h.2
+  have hc' : G.rchk x1.nnext c x1 (t.ins.zip xs) t.order = true := by rw [hn]; exact hc
+  unfold smallBackFB G.backSmallB G.backSym
+  rw [hf]
+  dsimp only
+  rw [hc']
+  rfl
+
+/-- **The full world's continuation at a raise with symbolic replays**, under the numeric premise. -/
+theorem fullBackSimDS_back (P : LoadP) (NB : Nat) :
+    ∀ M ν S C x y a, Srv M ν S C → FullRD P NB M S.tab.length x y → okBackFS P x a = true →
+      Supp.arg (fun _ => True) S.tab.length a → smallBackF ν S x a →
+      MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullRD P NB) M' S'.tab.length r r') S C
+        (FF.back x a) (FF.back y (M.arg a)) := by
+  intro M ν S C x y a hsrv hr hok _ hsm
+  simp only [okBackFS, Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true', Bool.or_eq_true] at hok
+  obtain ⟨⟨hb, hact⟩, hg | hv⟩ := hok
+  · exact fullBackD_of hr hb hact fun hm => G.sim_traceBack hsrv hm hg
+  · exact fullBackD_of hr hb hact fun hm => G.sim_traceBackV hsrv hm hv hsm
 
 /-! ## The one-step theorems with continuations -/
 
@@ -259,6 +319,51 @@ theorem fullStepSimXLDK (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP 
     Disp.StepSimXL FF (FullRD P NB) (Disp.okJSK J (okBackF P)) (Disp.Kp J) (VBOkF VB) :=
   Disp.stepSimXLK (fullFfiSimD P NB) (fullBackSimD P NB) (by rw [hJ]; exact fullCallSimSDD P NB)
     (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg)
+
+
+/-- The acceptance parameters at a raise with the continuations' premise decided by `smallBackFB`. -/
+abbrev fullJSPXDS (P : LoadP) (VB : Nat → Nat) (framed : List Nat) (wide : List (Nat × WFrame) := []) :
+    Disp.JSP FF :=
+  { fullJSPXD P VB framed wide with smallBackB := smallBackFB VB }
+
+/-- **The full world's continuation simulation at a raise with symbolic replays.** -/
+theorem fullBackSimDS (P : LoadP) (NB : Nat) : FfiBackSimS FF (FullRD P NB) (okBackFS P) smallBackF :=
+  ⟨fullBackSimDS_back P NB⟩
+
+/-- **The one-step theorem at a raise with continuations over symbolic shapes** (`okBackFS`, the
+premise decided by `smallBackFB`), under frames `W` and a stack base. -/
+theorem fullStepSimXBDKS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (hJ : J.okCall = okCallFSD P)
+    (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB) (hlo : J.lo = P.lo)
+    (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) {W : Nat → Option WFrame} (stk : List Frame)
+    (hW : Disp.Wp J W) :
+    Disp.StepSimXVB FF (FullRD P NB) (Disp.okJSK J (okBackFS P)) (Disp.Kp J) W stk (VBOkF VB) := by
+  have hC : FfiCallSim FF (FullRD P NB) J.okCall smallFS := by rw [hJ]; exact fullCallSimSDD P NB
+  exact Disp.stepSimXVBKS (fullFfiSimD P NB) (fullBackSimDS P NB) hC
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg) hW
+
+/-- The same for any reached state, under frames and a stack base. -/
+theorem fullStepSimXLBDKS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (hJ : J.okCall = okCallFSD P)
+    (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB) (hlo : J.lo = P.lo)
+    (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) {W : Nat → Option WFrame} (stk : List Frame)
+    (hW : Disp.Wp J W) :
+    Disp.StepSimXLB FF (FullRD P NB) (Disp.okJSK J (okBackFS P)) (Disp.Kp J) W stk (VBOkF VB) := by
+  have hC : FfiCallSim FF (FullRD P NB) J.okCall smallFS := by rw [hJ]; exact fullCallSimSDD P NB
+  exact Disp.stepSimXLBKS (fullFfiSimD P NB) (fullBackSimDS P NB) hC
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg) hW
+
+/-- The same for any reached state. -/
+theorem fullStepSimXLDKS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (hJ : J.okCall = okCallFSD P)
+    (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB) (hlo : J.lo = P.lo)
+    (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) :
+    Disp.StepSimXL FF (FullRD P NB) (Disp.okJSK J (okBackFS P)) (Disp.Kp J) (VBOkF VB) :=
+  Disp.stepSimXLKS (fullFfiSimD P NB) (fullBackSimDS P NB) (by rw [hJ]; exact fullCallSimSDD P NB)
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
     (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg)
 
 end Host.Ts.Sim.Full

@@ -11,7 +11,7 @@
 //   ptr      "buf", "off", "patched"
 //   newdata  "buf" (the buffer-framed placeholder), "patched": the step is `Disp.newDataS` with bytes `bsT = []`
 //   size     "fsym", "ta", "nf", "name", "rt" (`Disp.sizeParts`), "patched": `mlx_array_size` on a symbolic shape
-//            (`Full.fullBridgeSize`): the transition `Disp.sizeS` (the native call, `Number`'s argument frame, `Number`)
+//            (`Full.fullBridgeSize`; `fullBridgeSizeD`, `fullBridgeSizeJD` under okJSK, okJSJ): the transition `Disp.sizeS` (the native call, `Number`'s argument frame, `Number`)
 //   stage    "fn" (the callee), "instance" (the stage instance), "conv" (the conversion's data id): the
 //            boundary ia is the call state, ia + 1 the merged state (no step: a zero-step conversion)
 // Kinds other than spread and stage are patched (`host.sim.template.Bridges`): the transition from boundary
@@ -95,11 +95,19 @@ kernel_rfl ${name}.lenA${k} : ${T}.isLenFrame ${A}.stack = true
 kernel_rfl ${name}.objA${k} : ${A}.obj? ${b.arr} = some (objOf ${A} ${b.arr})
 kernel_rfl ${name}.kindA${k} : (objOf ${A} ${b.arr}).kind = .array (arrOf ${A} ${b.arr})
 `;
-    case "slice": return `kernel_rfl ${name}.sliceA${k} : ${T}.isSliceOf ${A} ${b.arr} = true
-kernel_rfl ${name}.kindA${k} : (objOf ${A} ${b.arr}).kind = .array (arrOf ${A} ${b.arr})
+    case "slice": {
+      // Older chooser metadata records only returned objects in `arr`; a slice is a call.
+      // Read its receiver from the checked state instead of treating the absent receiver as address zero.
+      const arr = b.arr ? String(b.arr) : `${name}.sliceArr${k}`;
+      return `${b.arr ? "" : `noncomputable def ${arr} : Nat := match ${A}.ctl with
+  | .call _ (.obj a) _ => a
+  | _ => 0
+` }kernel_rfl ${name}.sliceA${k} : ${T}.isSliceOf ${A} ${arr} = true
+kernel_rfl ${name}.kindA${k} : (objOf ${A} ${arr}).kind = .array (arrOf ${A} ${arr})
 ${room}kernel_rfl ${name}.arrA${k} : (${A}.heap.get aArrayProto).isSome = true
 kernel_rfl ${name}.newA${k} : ${A}.next = ${b.aN}
 `;
+    }
     case "typed": return `kernel_rfl ${name}.typedA${k} : ${T}.typedProto ${A} = some ${b.proto}
 ${room}kernel_rfl ${name}.bufA${k} : (${A}.heap.get aArrayBufferProto).isSome = true
 kernel_rfl ${name}.protoA${k} : (${A}.heap.get ${b.proto}).isSome = true
@@ -119,7 +127,7 @@ kernel_rfl ${name}.newA${k} : ${A}.next = ${b.buf}
     }
     case "size": {
       if (!b.patched) return `kernel_rfl ${name}.sizeA${k} : ${T}.symCallName ${A} = some chars!"mlx_array_size"\n`;
-      // `Full.fullBridgeSize`'s hypotheses at the bridge state (`Full.sizePre_of` for the premise)
+      // `Full.fullBridgeSize`'s hypotheses (also `fullBridgeSizeD`'s, `fullBridgeSizeJD`'s) at the bridge state (`Full.sizePre_of` for the premise)
       const D = "Host.Ts.Sim.Disp", nm = `chars!${JSON.stringify(b.name)}`;
       const sel = (i: number, d: string) =>
         `match ${D}.sizeParts ${A} with | some (_, _, _, _, _, tys, args) => ${["tys", "args"][i]} | none => ${d}`;
@@ -146,3 +154,11 @@ kernel_rfl ${name}.sizePreA${k} : Host.Ts.Sim.Full.sizePreB ${vb} ${name}.sizeS0
     default: throw new Error(`bridge kind ${b.kind}`);
   }
 }
+
+/** A wide site instance (a model forward): its footprint per stream state (`genStage.ts`'s FootS modules, `CallGen`'s
+ *  `FootAcc`), its written list's facts by lemma; above `FOOT_WIDE` fresh heap entries (default 20000). */
+export const wideFootOf = (m: { wrRs?: unknown; fresh?: number[] }): boolean => {
+  const [lo, hi] = m.fresh ?? [];
+  return Array.isArray(m.wrRs) && typeof lo === "number" && typeof hi === "number" &&
+    hi - lo > Number(process.env.FOOT_WIDE ?? 20000);
+};

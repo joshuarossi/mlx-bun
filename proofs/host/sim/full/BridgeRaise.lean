@@ -27,6 +27,10 @@ theorem FullRD.toXD {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : FF.S} (h :
   obtain ⟨P', hP, h⟩ := h
   exact ⟨P', hP, h.toX⟩
 
+/-- The inactive bridge at the load cut enters the prefill relation without changing its parameters. -/
+theorem FullR.toXD {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : FF.S} (h : FullR P NB M n x y) :
+    FullRXD P NB M n x y := h.toD.toXD
+
 /-- A band-free `P`'s raise to the template's node counter, from any raise of it. -/
 theorem FullRXD.top {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : FF.S} (h : FullRXD P NB M n x y)
     (hb : P.NL = P.N0) : FullRX (P.raise (mlxOf x).nnext) NB M n x y ∧ Raised P (P.raise (mlxOf x).nnext) := by

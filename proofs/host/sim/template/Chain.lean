@@ -82,6 +82,8 @@ structure ChainPlan where
   frames : List Nat := framedArrays
   /-- The bridge kinds the glue is cut at (`Bridge.routeBridges`, as `tpl_case_split … bridging`; default none). -/
   bridges : List String := []
+  /-- Framed arrays' length variables (`Bridge.RouteB.lens`): address and variable index. -/
+  lens : List (Nat × Nat) := []
   /-- Start from the start's call isolated (`isolate`: the caller's frames dropped, the spec's places symbolized):
   a stage's body cut at its own stage calls, to its return (`stop: "ret"`). -/
   isolate : Bool := false
@@ -127,6 +129,7 @@ def planOf (j : Lean.Json) (tags : List (String × String)) : Except String Chai
            compact := ((j.getObjVal? "compact").bind (·.getBool?)).toOption.getD true,
            frames := ((j.getObjVal? "frames").bind fun v => (Lean.fromJson? v : Except String (List Nat))).toOption.getD framedArrays,
            bridges := ((j.getObjVal? "bridges").bind fun v => (Lean.fromJson? v : Except String (List String))).toOption.getD [],
+           lens := ← SpecJ.pairsOf (SpecJ.optD j "lens" (.arr #[])),
            isolate := ((j.getObjVal? "isolate").bind (·.getBool?)).toOption.getD false,
            stuckStop := ((j.getObjVal? "stuckStop").bind (·.getBool?)).toOption.getD false,
            accept := ((j.getObjVal? "accept").bind (·.getStr?)).toOption.getD "auto",
@@ -294,11 +297,12 @@ unsafe def compactNative {F : Ffi} (w : TWorld F) (sC sr : St F.S) (callTab mTab
   let n0 := lC.next; let n1 := l1.next; let nS := callTab.length
   let xn0 := mC.next; let xn1 := m1.next; let nn0 := mC.nnext; let nn1 := m1.nnext
   -- the stage's results are what the merged state reaches through the stage's writes: a walk of the footprint from
-  -- the roots and the written caller entries, not entering the caller's other entries (they cannot reach a result)
+  -- the roots and the written caller entries, not entering the caller's other entries (they cannot reach a result); a
+  -- kept node's inputs too (its fresh nodes are from `N0` on, compared in full: `NodeR`'s `ins`, `Conv.NClean`)
   let wrB := changedKeys lC.heap l1.heap n0
   let whB := ((changedKeys mC.arrs m1.arrs xn0) ++ (changedKeys mC.objs m1.objs xn0)).eraseDups
   let ctx : Ctx := { s1 := l1, s2 := l1, t1 := mTab.toArray, t2 := mTab.toArray, env, traceNodes := traceNodesOf m1,
-                     heapFrom := n0, handlesFrom := xn0, nodesFrom := nn0, primNums := true }
+                     heapFrom := n0, handlesFrom := xn0, nodesFrom := nn0, followIns := true }
   let ((), wk) ← ((show Host.Ts.Sim.Template.WM Unit from do
       for n in w.extraNodes sr.aux.ffi do pairNode n n (.root "extra") ""
       for b in wrB do modify fun x => { x with sig := x.sig.insert b b, sigInv := x.sigInv.insert b b, work := x.work.push (0, b, b) }
@@ -575,7 +579,8 @@ unsafe def chainCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
           break
         if let some cs := isStage lastRet s' then call := some (cs, s', c', a); break
         if !plan.bridges.isEmpty then
-          if let some hit := Bridge.routeBridges { kinds := plan.bridges } frames (w.proj s') c' then
+          let bp : Bridge.RouteB := { kinds := plan.bridges, lens := plan.lens.map (fun (a, v) => (a, SymE.var v)) }
+          if let some hit := Bridge.routeBridges bp frames (w.proj s') c' then
             bridge := some (hit, s', c', a); break
         st := s'; c := c'; o := o ++ a.reverse.toArray; steps := steps + 1; n := n + 1; segSteps := segSteps + 1
       | none =>
@@ -686,7 +691,7 @@ unsafe def chainCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
           ("callBoundary", Lean.toJson ia), ("callSteps", Lean.toJson steps), ("callDepth", Lean.toJson rs.length),
           ("wide", Lean.toJson iwide), ("loadP", loadPJ), ("accept", Lean.toJson plan.accept), ("D0", Lean.toJson plan.D0),
           ("traceNew", Lean.toJson ((w.proj s2).aux.trace.length - (w.proj s0).aux.trace.length)),
-          ("tab0", Lean.toJson cI.tab.length)] ++ footJson (w.proj s0) (w.proj s2) plan.static)).pretty ++ "\n")
+          ("tab0", Lean.toJson cI.tab.length)] ++ footJson (w.proj s0) (w.proj s2) plan.static ++ [("wrRs", wrRsJson out.wrRs)])).pretty ++ "\n")
     writeSeg dir ipre (segJson cs.piece "return" out.ks.size out.steps ifr [] (segMore w (w.proj s0) (w.proj s2) false))
     -- the merged state at boundary `ia + 1` (zero steps), the table with the fresh variables
     let callSt := st

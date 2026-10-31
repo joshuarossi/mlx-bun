@@ -20,6 +20,12 @@ theorem PureP.eq {α : Type} {m : Host.Ts.M α} {Q : α → Prop} (h : PureP m Q
 
 theorem dEq_lit (a b : Int) : Host.Mlx.Ffi.dEq (.lit a) (.lit b) = Host.Ts.M.pure (decide (a = b)) := rfl
 
+theorem allEq_same : ∀ xs : List Dim, Host.Mlx.Ffi.allEq xs xs = Host.Ts.M.pure true
+  | [] => rfl
+  | x :: xs => by
+    show Host.Ts.M.bind (Host.Mlx.Ffi.dEq x x) (fun e => bif e then Host.Mlx.Ffi.allEq xs xs else Host.Ts.M.pure false) = _
+    rw [dEq_self, allEq_same xs]; rfl
+
 theorem dimLit_eq {d : Dim} (h : dimLit d = true) : ∃ i, d = .lit i := by
   cases d with
   | lit i => exact ⟨i, rfl⟩
@@ -98,6 +104,47 @@ theorem infer_qmm_simS {tr : Bool} {g b : Nat} {mode : List Char} {x w sc bi : L
     · rfl
   · cases hc0 : c0 <;> rw [hc0] at e
     · cases hcc : cc <;> rw [hcc] at e <;> cases e
+      refine ⟨fun e he => ?_, fun e he => ?_⟩
+      · rcases mem_setAt he with h' | rfl
+        · exact hc.1 e h'
+        · trivial
+      · rcases mem_setAt he with h' | rfl
+        · exact hc.2 e h'
+        · rfl
+    · cases e
+
+/-- Dequantization over a literal last weight dimension, with scales and biases of one shape. -/
+theorem infer_dequantize_simS {g b : Nat} {mode : List Char} {dt : Option Nat} {w sb : List Dim} {dw dsc dbi : Nat}
+    {wl : Int} (hw : nthD (.lit 0) w (len w - 1) = .lit wl) (h : ShOk M S.tab.length [(w, dw)]) :
+    MSim (IPost M ν S C) S C (Host.Mlx.Ffi.infer (.dequantize g b mode dt) [(w, dw), (sb, dsc), (sb, dbi)])
+      (Host.Mlx.Ffi.infer (M.prim (.dequantize g b mode dt)) ([(w, dw), (sb, dsc), (sb, dbi)].map M.shp)) := by
+  have hc := h _ List.mem_cons_self
+  have hw' : nthD (.lit 0) (M.dims w) (len (M.dims w) - 1) = .lit wl := by rw [len_dims, nthD_dims, hw]; rfl
+  let c0 := !(nameEq mode chars!"affine") || !(Nat.beq dw Host.Mlx.Ffi.dtUint32) || Nat.beq b 0
+  let d := match dt with | some d => d | none => Host.Mlx.Ffi.promote dsc dbi
+  refine infer_pure_simV hs (o := bif c0 then none else
+      some (.node (Host.Mlx.Ffi.setAt w (len w - 1) (.lit (wl * 32 / b))) d)) ?_ ?_ fun s' d' e => ?_
+  · show (bif c0 then Host.Ts.M.pure none else _) = _
+    cases hc0 : c0
+    · show (match nthD (.lit 0) w (len w - 1) with | .lit wl => _ | _ => _) = _
+      rw [hw]
+      show Host.Ts.M.bind (Host.Mlx.Ffi.allEq sb sb) _ = _
+      rw [allEq_same]
+      rfl
+    · rfl
+  · show (bif c0 then Host.Ts.M.pure none else _) = _
+    cases hc0 : c0
+    · show (match nthD (.lit 0) (M.dims w) (len (M.dims w) - 1) with | .lit wl => _ | _ => _) = _
+      rw [hw']
+      show Host.Ts.M.bind (Host.Mlx.Ffi.allEq (M.dims sb) (M.dims sb)) _ = _
+      rw [allEq_same]
+      show Host.Ts.M.pure (some (Out.node (Host.Mlx.Ffi.setAt (M.dims w) (len (M.dims w) - 1) (.lit (wl * 32 / b))) d))
+        = _
+      rw [len_dims, setAt_dims_lit]
+      rfl
+    · rfl
+  · cases hc0 : c0 <;> rw [hc0] at e
+    · cases e
       refine ⟨fun e he => ?_, fun e he => ?_⟩
       · rcases mem_setAt he with h' | rfl
         · exact hc.1 e h'

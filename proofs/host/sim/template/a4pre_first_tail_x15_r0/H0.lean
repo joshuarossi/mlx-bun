@@ -1,0 +1,38 @@
+import host.sim.template.a4pre_first_tail_x15_r0.States
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+host_stream_state PRE_first_tail_x15_r0 0
+host_stream_state PRE_first_tail_x15_r0 1
+host_stream_state PRE_first_tail_x15_r0 2
+host_stream_state PRE_first_tail_x15_r0 3
+host_stream_state PRE_first_tail_x15_r0 4
+host_stream_state PRE_first_tail_x15_r0 5
+host_stream_state PRE_first_tail_x15_r0 6
+host_stream_state PRE_first_tail_x15_r0 7
+host_stream_state PRE_first_tail_x15_r0 8
+host_stream_state PRE_first_tail_x15_r0 9
+host_stream_state PRE_first_tail_x15_r0 10
+host_stream_state PRE_first_tail_x15_r0 11
+host_stream_state PRE_first_tail_x15_r0 12
+host_stream_state PRE_first_tail_x15_r0 13
+host_stream_state PRE_first_tail_x15_r0 14
+host_stream_state PRE_first_tail_x15_r0 15
+host_stream_state PRE_first_tail_x15_r0 16
+host_stream_state PRE_first_tail_x15_r0 17
+host_stream_state PRE_first_tail_x15_r0 18
+host_stream_state PRE_first_tail_x15_r0 19
+host_stream_state PRE_first_tail_x15_r0 20
+host_stream_state PRE_first_tail_x15_r0 21
+host_stream_state PRE_first_tail_x15_r0 22
+host_stream_state PRE_first_tail_x15_r0 23
+host_stream_state PRE_first_tail_x15_r0 24
+host_stream_state PRE_first_tail_x15_r0 25
+host_stream_state PRE_first_tail_x15_r0 26
+host_stream_state PRE_first_tail_x15_r0 27
+host_stream_state PRE_first_tail_x15_r0 28
+host_stream_state PRE_first_tail_x15_r0 29
+host_stream_state PRE_first_tail_x15_r0 30
+host_stream_state PRE_first_tail_x15_r0 31
+end Host.Load.Run.Tpl

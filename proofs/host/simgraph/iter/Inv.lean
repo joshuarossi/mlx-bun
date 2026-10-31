@@ -4,6 +4,7 @@ import host.mlx.ReadbackValues
 import host.load.run.full.RecurrenceReadbacks
 import host.sim.Free
 import host.load.CacheCarriersCommand
+import host.simgraph.Carriers
 set_option maxRecDepth 1000000
 namespace Host.Mlx.SimGraph.Iter
 open Host.Load Host.Load.Extract Host.Load.Program Host.Load.Run.Full
@@ -103,12 +104,6 @@ noncomputable abbrev hpOf (tab : List F64) := parameters_for_table M K env leave
 
 /-- The KV capacity at iteration `i` (time `i + 2`), as `Host.Ts.Sim.cap`. -/
 def capOf (i : Nat) : Nat := 256 * ((i + 1) / 256 + 1)
-
-/-- The template start's cache input nodes (64 pairs) and its two token nodes. -/
-structure TplInputs where
-  caches : List (Option Nat × Option Nat)
-  read : Nat
-  fed : Nat
 
 /-- **The invariant at iteration `i`**, at table `tab`, for the target native state `x`
 under the node map `σ`. -/

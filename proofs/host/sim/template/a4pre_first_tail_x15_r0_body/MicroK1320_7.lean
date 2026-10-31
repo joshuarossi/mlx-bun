@@ -1,0 +1,11 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.MicroK1320_7b
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Load.Run.Tpl
+open Host.Ts Host.Ts.Sim
+noncomputable def PRE_first_tail_x15_r0_body.microK1320_7.s1 := PRE_first_tail_x15_r0_body.microK1320_7_right.s1
+noncomputable def PRE_first_tail_x15_r0_body.microK1320_7.S1 : SSrv := PRE_first_tail_x15_r0_body.microK1320_7_right.S1
+theorem PRE_first_tail_x15_r0_body.microK1320_7.checked : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB390 256 PRE_first_tail_x15_r0_body.microK1320_6.s1 PRE_first_tail_x15_r0_body.microK1320_6.S1 = some (PRE_first_tail_x15_r0_body.microK1320_7.s1, PRE_first_tail_x15_r0_body.microK1320_7.S1) :=
+  runOk_trans PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB390 128 128 PRE_first_tail_x15_r0_body.microK1320_6.s1 PRE_first_tail_x15_r0_body.microK1320_7_left.s1 PRE_first_tail_x15_r0_body.microK1320_7_right.s1 PRE_first_tail_x15_r0_body.microK1320_6.S1 PRE_first_tail_x15_r0_body.microK1320_7_left.S1 PRE_first_tail_x15_r0_body.microK1320_7_right.S1 PRE_first_tail_x15_r0_body.microK1320_7_left.checked PRE_first_tail_x15_r0_body.microK1320_7_right.checked
+end Host.Load.Run.Tpl

@@ -215,6 +215,24 @@ theorem mlx_simX (s : Host.Mlx.Ffi.Sym) (hsym : Host.Mlx.Ffi.symOf name = some s
         · cases hm
       · cases hm
     · cases hok
+  case dequantize =>
+    simp only [NativeOkX.sym, NativeOkX.dequantize] at hok
+    split at hok
+    · rename_i o w sc bi g b mode gs dt e
+      simp only [Bool.and_eq_true] at hok
+      obtain ⟨⟨⟨⟨⟨⟨⟨⟨hw, hsc⟩, hbi⟩, hg⟩, hb⟩, hgs⟩, hdt⟩, hout⟩, hm⟩ := hok
+      obtain ⟨ho, hE, hNE⟩ := out_spec hout
+      split at hm
+      · rename_i ins gv bv m dv h1 eg eb emode egs edt
+        split at hm
+        · rename_i ws dw scs dsc bis dbi hsh
+          simp only [Bool.and_eq_true, decide_eq_true_eq] at hm
+          obtain ⟨hl, rfl⟩ := hm
+          obtain ⟨wl, hwl⟩ := lastLit_spec hl
+          exact sim_dequantizeX hs hr hsym hw hsc hbi hg hb hgs hdt ho hE hNE h1 eg eb emode egs edt hsh hwl
+        · cases hm
+      · cases hm
+    · cases hok
   case reshape =>
     simp only [NativeOkX.sym, NativeOkX.reshape] at hok
     split at hok

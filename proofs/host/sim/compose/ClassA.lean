@@ -21,7 +21,7 @@ theorem setup_early.steps (P : Pieces F I) : SetupS I (.early) (setup_early.tota
     simp only [setup_early.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 0) rfl)), trivial⟩)
-        (P.q1.chunk_K8__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_early.r0.chunk, trivial⟩)
+        (P.q1.chunk_K8__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K8__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_early.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 0) rfl)), trivial⟩)
 
 /-- setup class `setup_h0`: the step from its rows' pieces. -/
@@ -32,7 +32,7 @@ theorem setup_h0.steps (P : Pieces F I) : SetupS I (.h0) (setup_h0.total P) :=
     simp only [setup_h0.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 1) rfl)), trivial⟩)
-        (P.q1.chunk_K2048__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h0.r0.chunk, trivial⟩)
+        (P.q1.chunk_K2048__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K2048__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h0.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 1) rfl)), trivial⟩)
 
 /-- setup class `setup_h1`: the step from its rows' pieces. -/
@@ -43,7 +43,7 @@ theorem setup_h1.steps (P : Pieces F I) : SetupS I (.h1) (setup_h1.total P) :=
     simp only [setup_h1.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 2) rfl)), trivial⟩)
-        (P.q1.chunk_K1024__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h1.r0.chunk, trivial⟩)
+        (P.q1.chunk_K1024__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K1024__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h1.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 2) rfl)), trivial⟩)
 
 /-- setup class `setup_h2`: the step from its rows' pieces. -/
@@ -54,7 +54,7 @@ theorem setup_h2.steps (P : Pieces F I) : SetupS I (.h2) (setup_h2.total P) :=
     simp only [setup_h2.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 3) rfl)), trivial⟩)
-        (P.q1.chunk_K512__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h2.r0.chunk, trivial⟩)
+        (P.q1.chunk_K512__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K512__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h2.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 3) rfl)), trivial⟩)
 
 /-- setup class `setup_h3`: the step from its rows' pieces. -/
@@ -65,7 +65,7 @@ theorem setup_h3.steps (P : Pieces F I) : SetupS I (.h3) (setup_h3.total P) :=
     simp only [setup_h3.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 4) rfl)), trivial⟩)
-        (P.q1.chunk_K256__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h3.r0.chunk, trivial⟩)
+        (P.q1.chunk_K256__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K256__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h3.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 4) rfl)), trivial⟩)
 
 /-- setup class `setup_h4`: the step from its rows' pieces. -/
@@ -76,7 +76,7 @@ theorem setup_h4.steps (P : Pieces F I) : SetupS I (.h4) (setup_h4.total P) :=
     simp only [setup_h4.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 5) rfl)), trivial⟩)
-        (P.q1.chunk_K128__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h4.r0.chunk, trivial⟩)
+        (P.q1.chunk_K128__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K128__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h4.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 5) rfl)), trivial⟩)
 
 /-- setup class `setup_h5`: the step from its rows' pieces. -/
@@ -87,7 +87,7 @@ theorem setup_h5.steps (P : Pieces F I) : SetupS I (.h5) (setup_h5.total P) :=
     simp only [setup_h5.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
     · exact setup_shape (P.q1.g0a.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g0a.chk _ (mem_at (k := 6) rfl)), trivial⟩)
-        (P.q1.chunk_K64__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin setup_h5.r0.chunk, trivial⟩)
+        (P.q1.chunk_K64__g0a__g0b.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.chunk_K64__g0a__g0b.chk _ (mem_at (k := 0) rfl)), obl_of_row hin setup_h5.r0.chunk, trivial⟩)
         (P.q1.g0b.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g0b.chk _ (mem_at (k := 6) rfl)), trivial⟩)
 
 /-- first class `first_drain_2048`: the step from its rows' pieces. -/
@@ -97,7 +97,7 @@ theorem first_drain_2048.steps (P : Pieces F I) : FirstDrainS I 2048 (first_drai
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_2048.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_2048.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin first_drain_2048.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 0) rfl)), obl_of_row hin first_drain_2048.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_cA2048__g1_DCby_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA2048__g1_DCby_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
@@ -105,7 +105,7 @@ theorem first_drain_2048.steps (P : Pieces F I) : FirstDrainS I 2048 (first_drai
         (P.q1.g3d_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pc_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pc_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g4_pc_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_first__start__g1_DCeq_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin first_drain_2048.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_first__start__g1_DCeq_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_first__start__g1_DCeq_first.chk _ (mem_at (k := 0) rfl)), obl_of_row hin first_drain_2048.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_cA2048__g1_DCeq_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA2048__g1_DCeq_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
@@ -121,7 +121,7 @@ theorem first_drain_1024.steps (P : Pieces F I) : FirstDrainS I 1024 (first_drai
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_1024.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_1024.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin first_drain_1024.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 1) rfl)), obl_of_row hin first_drain_1024.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.disp_cA1024__g1_DCby_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA1024__g1_DCby_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 2) rfl)), trivial⟩)
@@ -137,7 +137,7 @@ theorem first_drain_512.steps (P : Pieces F I) : FirstDrainS I 512 (first_drain_
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_512.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_512.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin first_drain_512.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 2) rfl)), obl_of_row hin first_drain_512.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.disp_cA512__g1_DCby_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA512__g1_DCby_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 3) rfl)), trivial⟩)
@@ -153,7 +153,7 @@ theorem first_drain_256.steps (P : Pieces F I) : FirstDrainS I 256 (first_drain_
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_256.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_256.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin first_drain_256.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 3) rfl)), obl_of_row hin first_drain_256.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.disp_cA256__g1_DCby_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA256__g1_DCby_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 4) rfl)), trivial⟩)
@@ -169,7 +169,7 @@ theorem first_drain_128.steps (P : Pieces F I) : FirstDrainS I 128 (first_drain_
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_128.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_128.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin first_drain_128.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 4) rfl)), obl_of_row hin first_drain_128.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 5) rfl)), trivial⟩)
@@ -185,7 +185,7 @@ theorem first_drain_64.steps (P : Pieces F I) : FirstDrainS I 64 (first_drain_64
   firstDrainS_of_rows Host.Ts.Sim.Lin.Cls.first_drain_64.cover fun r hr L h1 h2 ha hin => by
     simp only [first_drain_64.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin first_drain_64.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_first__start__g1_DCby_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_first__start__g1_DCby_first.chk _ (mem_at (k := 5) rfl)), obl_of_row hin first_drain_64.r0.nps, trivial⟩)
         (P.q1.g1_DCby_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_first.chk _ (mem_at (k := 5) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 6) rfl)), trivial⟩)
@@ -201,7 +201,7 @@ theorem first_tail_x0.steps (P : Pieces F I) : FirstTailS I 0 (first_tail_x0.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x0.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x0.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTdec_first__start__g1_DTdec_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin first_tail_x0.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTdec_first__start__g1_DTdec_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTdec_first__start__g1_DTdec_first.chk _ (mem_at (k := 0) rfl)), obl_of_row hin first_tail_x0.r0.nps, trivial⟩)
         (P.q1.g1_DTdec_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTdec_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_D1__g1_DTdec_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_D1__g1_DTdec_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 7) rfl)), trivial⟩)
@@ -217,7 +217,7 @@ theorem first_tail_x1.steps (P : Pieces F I) : FirstTailS I 1 (first_tail_x1.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x1.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x1.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin first_tail_x1.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 0) rfl)), obl_of_row hin first_tail_x1.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_V23__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_V23__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 8) rfl)), trivial⟩)
@@ -233,7 +233,7 @@ theorem first_tail_x2.steps (P : Pieces F I) : FirstTailS I 2 (first_tail_x2.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x2.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x2.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin first_tail_x2.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 1) rfl)), obl_of_row hin first_tail_x2.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.disp_V4__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_V4__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 9) rfl)), trivial⟩)
@@ -249,7 +249,7 @@ theorem first_tail_x3.steps (P : Pieces F I) : FirstTailS I 3 (first_tail_x3.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x3.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x3.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin first_tail_x3.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 2) rfl)), obl_of_row hin first_tail_x3.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.disp_V58__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_V58__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 10) rfl)), trivial⟩)
@@ -265,7 +265,7 @@ theorem first_tail_x4.steps (P : Pieces F I) : FirstTailS I 4 (first_tail_x4.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x4.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x4.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin first_tail_x4.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 3) rfl)), obl_of_row hin first_tail_x4.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.disp_V58__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_V58__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 11) rfl)), trivial⟩)
@@ -281,7 +281,7 @@ theorem first_tail_x5.steps (P : Pieces F I) : FirstTailS I 5 (first_tail_x5.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x5.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x5.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin first_tail_x5.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 4) rfl)), obl_of_row hin first_tail_x5.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 12) rfl)), trivial⟩)
@@ -297,7 +297,7 @@ theorem first_tail_x6.steps (P : Pieces F I) : FirstTailS I 6 (first_tail_x6.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x6.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x6.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin first_tail_x6.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 5) rfl)), obl_of_row hin first_tail_x6.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 5) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 13) rfl)), trivial⟩)
@@ -313,7 +313,7 @@ theorem first_tail_x7.steps (P : Pieces F I) : FirstTailS I 7 (first_tail_x7.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x7.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x7.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin first_tail_x7.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 6) rfl)), obl_of_row hin first_tail_x7.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 14) rfl)), trivial⟩)
@@ -329,7 +329,7 @@ theorem first_tail_x8.steps (P : Pieces F I) : FirstTailS I 8 (first_tail_x8.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x8.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x8.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin first_tail_x8.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 7) rfl)), obl_of_row hin first_tail_x8.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 7) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 15) rfl)), trivial⟩)
@@ -345,7 +345,7 @@ theorem first_tail_x9.steps (P : Pieces F I) : FirstTailS I 9 (first_tail_x9.tot
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x9.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x9.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin first_tail_x9.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 8) rfl)), obl_of_row hin first_tail_x9.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 16) rfl)), trivial⟩)
@@ -361,7 +361,7 @@ theorem first_tail_x10.steps (P : Pieces F I) : FirstTailS I 10 (first_tail_x10.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x10.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x10.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin first_tail_x10.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 9) rfl)), obl_of_row hin first_tail_x10.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 9) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 5) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 17) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 17) rfl)), trivial⟩)
@@ -377,7 +377,7 @@ theorem first_tail_x11.steps (P : Pieces F I) : FirstTailS I 11 (first_tail_x11.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x11.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x11.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin first_tail_x11.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 10) rfl)), obl_of_row hin first_tail_x11.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 10) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 18) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 18) rfl)), trivial⟩)
@@ -393,7 +393,7 @@ theorem first_tail_x12.steps (P : Pieces F I) : FirstTailS I 12 (first_tail_x12.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x12.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x12.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin first_tail_x12.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 11) rfl)), obl_of_row hin first_tail_x12.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 11) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 7) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 19) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 19) rfl)), trivial⟩)
@@ -409,7 +409,7 @@ theorem first_tail_x13.steps (P : Pieces F I) : FirstTailS I 13 (first_tail_x13.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x13.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x13.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin first_tail_x13.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 12) rfl)), obl_of_row hin first_tail_x13.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 12) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 20) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 20) rfl)), trivial⟩)
@@ -425,7 +425,7 @@ theorem first_tail_x14.steps (P : Pieces F I) : FirstTailS I 14 (first_tail_x14.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x14.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x14.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin first_tail_x14.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 13) rfl)), obl_of_row hin first_tail_x14.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 13) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 9) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 21) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 21) rfl)), trivial⟩)
@@ -441,7 +441,7 @@ theorem first_tail_x15.steps (P : Pieces F I) : FirstTailS I 15 (first_tail_x15.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x15.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x15.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin first_tail_x15.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 14) rfl)), obl_of_row hin first_tail_x15.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 14) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 10) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 22) rfl)), trivial⟩)
@@ -457,7 +457,7 @@ theorem first_tail_x16.steps (P : Pieces F I) : FirstTailS I 16 (first_tail_x16.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x16.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x16.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin first_tail_x16.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 15) rfl)), obl_of_row hin first_tail_x16.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 15) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 11) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 23) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 23) rfl)), trivial⟩)
@@ -473,7 +473,7 @@ theorem first_tail_x17.steps (P : Pieces F I) : FirstTailS I 17 (first_tail_x17.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x17.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x17.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin first_tail_x17.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 16) rfl)), obl_of_row hin first_tail_x17.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 16) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 12) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 24) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 24) rfl)), trivial⟩)
@@ -489,7 +489,7 @@ theorem first_tail_x18.steps (P : Pieces F I) : FirstTailS I 18 (first_tail_x18.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x18.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x18.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 17) rfl) _ hin ⟨obl_of_row hin first_tail_x18.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 17) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 17) rfl)), obl_of_row hin first_tail_x18.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 17) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 17) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 13) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 25) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 25) rfl)), trivial⟩)
@@ -505,7 +505,7 @@ theorem first_tail_x19.steps (P : Pieces F I) : FirstTailS I 19 (first_tail_x19.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x19.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x19.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 18) rfl) _ hin ⟨obl_of_row hin first_tail_x19.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 18) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 18) rfl)), obl_of_row hin first_tail_x19.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 18) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 18) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 14) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 26) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 26) rfl)), trivial⟩)
@@ -521,7 +521,7 @@ theorem first_tail_x20.steps (P : Pieces F I) : FirstTailS I 20 (first_tail_x20.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x20.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x20.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 19) rfl) _ hin ⟨obl_of_row hin first_tail_x20.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 19) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 19) rfl)), obl_of_row hin first_tail_x20.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 19) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 19) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 15) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 27) rfl)), trivial⟩)
@@ -537,7 +537,7 @@ theorem first_tail_x21.steps (P : Pieces F I) : FirstTailS I 21 (first_tail_x21.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x21.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x21.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 20) rfl) _ hin ⟨obl_of_row hin first_tail_x21.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 20) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 20) rfl)), obl_of_row hin first_tail_x21.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 20) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 20) rfl)), trivial⟩)
         (P.q1.disp_VW__g1_DTtail_first__g2_first.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_VW__g1_DTtail_first__g2_first.chk _ (mem_at (k := 16) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 28) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 28) rfl)), trivial⟩)
@@ -553,7 +553,7 @@ theorem first_tail_x22.steps (P : Pieces F I) : FirstTailS I 22 (first_tail_x22.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x22.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x22.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 21) rfl) _ hin ⟨obl_of_row hin first_tail_x22.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 21) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 21) rfl)), obl_of_row hin first_tail_x22.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 21) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 21) rfl)), trivial⟩)
         (P.q1.disp_A256__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A256__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 29) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 29) rfl)), trivial⟩)
@@ -561,7 +561,7 @@ theorem first_tail_x22.steps (P : Pieces F I) : FirstTailS I 22 (first_tail_x22.
         (P.q1.g3d_first.ok _ (mem_at (k := 29) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 29) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 22) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 22) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin first_tail_x22.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 22) rfl)), obl_of_row hin first_tail_x22.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 22) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 22) rfl)), trivial⟩)
         (P.q1.disp_A256__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A256__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 30) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 30) rfl)), trivial⟩)
@@ -577,7 +577,7 @@ theorem first_tail_x23.steps (P : Pieces F I) : FirstTailS I 23 (first_tail_x23.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x23.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x23.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 23) rfl) _ hin ⟨obl_of_row hin first_tail_x23.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 23) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 23) rfl)), obl_of_row hin first_tail_x23.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 23) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 23) rfl)), trivial⟩)
         (P.q1.disp_A320__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A320__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 31) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 31) rfl)), trivial⟩)
@@ -593,7 +593,7 @@ theorem first_tail_x24.steps (P : Pieces F I) : FirstTailS I 24 (first_tail_x24.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x24.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x24.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 24) rfl) _ hin ⟨obl_of_row hin first_tail_x24.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 24) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 24) rfl)), obl_of_row hin first_tail_x24.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 24) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 24) rfl)), trivial⟩)
         (P.q1.disp_A384__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A384__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 32) rfl)), trivial⟩)
@@ -609,7 +609,7 @@ theorem first_tail_x25.steps (P : Pieces F I) : FirstTailS I 25 (first_tail_x25.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x25.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x25.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 25) rfl) _ hin ⟨obl_of_row hin first_tail_x25.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 25) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 25) rfl)), obl_of_row hin first_tail_x25.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 25) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 25) rfl)), trivial⟩)
         (P.q1.disp_A448__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A448__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 33) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 33) rfl)), trivial⟩)
@@ -625,7 +625,7 @@ theorem first_tail_x26.steps (P : Pieces F I) : FirstTailS I 26 (first_tail_x26.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x26.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x26.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 26) rfl) _ hin ⟨obl_of_row hin first_tail_x26.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 26) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 26) rfl)), obl_of_row hin first_tail_x26.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 26) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 26) rfl)), trivial⟩)
         (P.q1.disp_A512__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A512__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 34) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 34) rfl)), trivial⟩)
@@ -633,7 +633,7 @@ theorem first_tail_x26.steps (P : Pieces F I) : FirstTailS I 26 (first_tail_x26.
         (P.q1.g3d_first.ok _ (mem_at (k := 34) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 34) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 27) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 27) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin first_tail_x26.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 27) rfl)), obl_of_row hin first_tail_x26.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 27) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 27) rfl)), trivial⟩)
         (P.q1.disp_A512__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A512__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 35) rfl)), trivial⟩)
@@ -649,7 +649,7 @@ theorem first_tail_x27.steps (P : Pieces F I) : FirstTailS I 27 (first_tail_x27.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x27.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x27.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 28) rfl) _ hin ⟨obl_of_row hin first_tail_x27.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 28) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 28) rfl)), obl_of_row hin first_tail_x27.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 28) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 28) rfl)), trivial⟩)
         (P.q1.disp_A576__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A576__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 36) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 36) rfl)), trivial⟩)
@@ -665,7 +665,7 @@ theorem first_tail_x28.steps (P : Pieces F I) : FirstTailS I 28 (first_tail_x28.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x28.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x28.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 29) rfl) _ hin ⟨obl_of_row hin first_tail_x28.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 29) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 29) rfl)), obl_of_row hin first_tail_x28.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 29) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 29) rfl)), trivial⟩)
         (P.q1.disp_A640__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A640__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 37) rfl)), trivial⟩)
@@ -681,7 +681,7 @@ theorem first_tail_x29.steps (P : Pieces F I) : FirstTailS I 29 (first_tail_x29.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x29.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x29.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 30) rfl) _ hin ⟨obl_of_row hin first_tail_x29.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 30) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 30) rfl)), obl_of_row hin first_tail_x29.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 30) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 30) rfl)), trivial⟩)
         (P.q1.disp_A704__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A704__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 38) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 38) rfl)), trivial⟩)
@@ -697,7 +697,7 @@ theorem first_tail_x30.steps (P : Pieces F I) : FirstTailS I 30 (first_tail_x30.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x30.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x30.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 31) rfl) _ hin ⟨obl_of_row hin first_tail_x30.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 31) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 31) rfl)), obl_of_row hin first_tail_x30.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 31) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 31) rfl)), trivial⟩)
         (P.q1.disp_A768__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A768__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 39) rfl)), trivial⟩)
@@ -705,7 +705,7 @@ theorem first_tail_x30.steps (P : Pieces F I) : FirstTailS I 30 (first_tail_x30.
         (P.q1.g3d_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 39) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 32) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 32) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin first_tail_x30.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 32) rfl)), obl_of_row hin first_tail_x30.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 32) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 32) rfl)), trivial⟩)
         (P.q1.disp_A768__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A768__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 40) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 40) rfl)), trivial⟩)
@@ -721,7 +721,7 @@ theorem first_tail_x31.steps (P : Pieces F I) : FirstTailS I 31 (first_tail_x31.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x31.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x31.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 33) rfl) _ hin ⟨obl_of_row hin first_tail_x31.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 33) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 33) rfl)), obl_of_row hin first_tail_x31.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 33) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 33) rfl)), trivial⟩)
         (P.q1.disp_A896__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A896__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 41) rfl)), trivial⟩)
@@ -737,7 +737,7 @@ theorem first_tail_x32.steps (P : Pieces F I) : FirstTailS I 32 (first_tail_x32.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x32.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x32.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 34) rfl) _ hin ⟨obl_of_row hin first_tail_x32.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 34) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 34) rfl)), obl_of_row hin first_tail_x32.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 34) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 34) rfl)), trivial⟩)
         (P.q1.disp_A1024__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1024__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 42) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 42) rfl)), trivial⟩)
@@ -745,7 +745,7 @@ theorem first_tail_x32.steps (P : Pieces F I) : FirstTailS I 32 (first_tail_x32.
         (P.q1.g3d_first.ok _ (mem_at (k := 42) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 42) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 35) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 35) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin first_tail_x32.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 35) rfl)), obl_of_row hin first_tail_x32.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 35) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 35) rfl)), trivial⟩)
         (P.q1.disp_A1024__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1024__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 43) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 43) rfl)), trivial⟩)
@@ -761,7 +761,7 @@ theorem first_tail_x33.steps (P : Pieces F I) : FirstTailS I 33 (first_tail_x33.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x33.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x33.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 36) rfl) _ hin ⟨obl_of_row hin first_tail_x33.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 36) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 36) rfl)), obl_of_row hin first_tail_x33.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 36) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 36) rfl)), trivial⟩)
         (P.q1.disp_A1280__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1280__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 44) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 44) rfl)), trivial⟩)
@@ -769,7 +769,7 @@ theorem first_tail_x33.steps (P : Pieces F I) : FirstTailS I 33 (first_tail_x33.
         (P.q1.g3d_first.ok _ (mem_at (k := 44) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 44) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 37) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 37) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin first_tail_x33.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 37) rfl)), obl_of_row hin first_tail_x33.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 37) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 37) rfl)), trivial⟩)
         (P.q1.disp_A1280__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1280__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 45) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 45) rfl)), trivial⟩)
@@ -785,7 +785,7 @@ theorem first_tail_x34.steps (P : Pieces F I) : FirstTailS I 34 (first_tail_x34.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x34.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x34.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 38) rfl) _ hin ⟨obl_of_row hin first_tail_x34.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 38) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 38) rfl)), obl_of_row hin first_tail_x34.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 38) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 38) rfl)), trivial⟩)
         (P.q1.disp_A1536__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1536__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 46) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 46) rfl)), trivial⟩)
@@ -793,7 +793,7 @@ theorem first_tail_x34.steps (P : Pieces F I) : FirstTailS I 34 (first_tail_x34.
         (P.q1.g3d_first.ok _ (mem_at (k := 46) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 46) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 39) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 39) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin first_tail_x34.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 39) rfl)), obl_of_row hin first_tail_x34.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 39) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 39) rfl)), trivial⟩)
         (P.q1.disp_A1536__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1536__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 47) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 47) rfl)), trivial⟩)
@@ -809,7 +809,7 @@ theorem first_tail_x35.steps (P : Pieces F I) : FirstTailS I 35 (first_tail_x35.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x35.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x35.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 40) rfl) _ hin ⟨obl_of_row hin first_tail_x35.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 40) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 40) rfl)), obl_of_row hin first_tail_x35.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 40) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 40) rfl)), trivial⟩)
         (P.q1.disp_A1792__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1792__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 48) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 48) rfl)), trivial⟩)
@@ -817,7 +817,7 @@ theorem first_tail_x35.steps (P : Pieces F I) : FirstTailS I 35 (first_tail_x35.
         (P.q1.g3d_first.ok _ (mem_at (k := 48) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_first.chk _ (mem_at (k := 48) rfl)), trivial⟩)
         (P.q1.eval__g3d_first__g4_pf_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_first__g4_pf_first.chk _ (mem_at (k := 41) rfl)), trivial⟩)
         (P.q1.g4_pf_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pf_first.chk _ (mem_at (k := 41) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin first_tail_x35.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 41) rfl)), obl_of_row hin first_tail_x35.r1.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 41) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 41) rfl)), trivial⟩)
         (P.q1.disp_A1792__g1_DTtail_first__g2_first.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A1792__g1_DTtail_first__g2_first.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 49) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 49) rfl)), trivial⟩)
@@ -833,7 +833,7 @@ theorem first_tail_x36.steps (P : Pieces F I) : FirstTailS I 36 (first_tail_x36.
   firstTailS_of_rows Host.Ts.Sim.Lin.Cls.first_tail_x36.cover fun r hr L h1 h2 ha hin => by
     simp only [first_tail_x36.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 42) rfl) _ hin ⟨obl_of_row hin first_tail_x36.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DTtail_first__start__g1_DTtail_first.ok _ (mem_at (k := 42) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DTtail_first__start__g1_DTtail_first.chk _ (mem_at (k := 42) rfl)), obl_of_row hin first_tail_x36.r0.nps, trivial⟩)
         (P.q1.g1_DTtail_first.ok _ (mem_at (k := 42) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DTtail_first.chk _ (mem_at (k := 42) rfl)), trivial⟩)
         (P.q1.disp_A2048__g1_DTtail_first__g2_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_A2048__g1_DTtail_first__g2_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_first.ok _ (mem_at (k := 50) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_first.chk _ (mem_at (k := 50) rfl)), trivial⟩)
@@ -849,7 +849,7 @@ theorem drain_2048_g.steps (P : Pieces F I) : DrainS I (⟨2048, true⟩) (drain
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_2048_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_2048_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin drain_2048_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 0) rfl)), obl_of_row hin drain_2048_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_cA2048__g1_DCby_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA2048__g1_DCby_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
@@ -857,7 +857,7 @@ theorem drain_2048_g.steps (P : Pieces F I) : DrainS I (⟨2048, true⟩) (drain
         (P.q1.g3d_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin drain_2048_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 0) rfl)), obl_of_row hin drain_2048_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.disp_cA2048__g1_DCeq_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA2048__g1_DCeq_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 1) rfl)), trivial⟩)
@@ -873,7 +873,7 @@ theorem drain_1024_g.steps (P : Pieces F I) : DrainS I (⟨1024, true⟩) (drain
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_1024_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_1024_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin drain_1024_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 1) rfl)), obl_of_row hin drain_1024_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.disp_cA1024__g1_DCby_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA1024__g1_DCby_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
@@ -881,7 +881,7 @@ theorem drain_1024_g.steps (P : Pieces F I) : DrainS I (⟨1024, true⟩) (drain
         (P.q1.g3d_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin drain_1024_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 1) rfl)), obl_of_row hin drain_1024_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.disp_cA1024__g1_DCeq_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA1024__g1_DCeq_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 3) rfl)), trivial⟩)
@@ -897,7 +897,7 @@ theorem drain_512_g.steps (P : Pieces F I) : DrainS I (⟨512, true⟩) (drain_5
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_512_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_512_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin drain_512_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 2) rfl)), obl_of_row hin drain_512_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.disp_cA512__g1_DCby_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA512__g1_DCby_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
@@ -905,7 +905,7 @@ theorem drain_512_g.steps (P : Pieces F I) : DrainS I (⟨512, true⟩) (drain_5
         (P.q1.g3d_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin drain_512_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 2) rfl)), obl_of_row hin drain_512_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.disp_cA512__g1_DCeq_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA512__g1_DCeq_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 5) rfl)), trivial⟩)
@@ -921,7 +921,7 @@ theorem drain_256_g.steps (P : Pieces F I) : DrainS I (⟨256, true⟩) (drain_2
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_256_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_256_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin drain_256_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 3) rfl)), obl_of_row hin drain_256_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.disp_cA256__g1_DCby_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA256__g1_DCby_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
@@ -929,7 +929,7 @@ theorem drain_256_g.steps (P : Pieces F I) : DrainS I (⟨256, true⟩) (drain_2
         (P.q1.g3d_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin drain_256_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 3) rfl)), obl_of_row hin drain_256_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.disp_cA256__g1_DCeq_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cA256__g1_DCeq_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 7) rfl)), trivial⟩)
@@ -945,7 +945,7 @@ theorem drain_128_g.steps (P : Pieces F I) : DrainS I (⟨128, true⟩) (drain_1
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_128_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_128_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin drain_128_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 4) rfl)), obl_of_row hin drain_128_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
@@ -953,7 +953,7 @@ theorem drain_128_g.steps (P : Pieces F I) : DrainS I (⟨128, true⟩) (drain_1
         (P.q1.g3d_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin drain_128_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 4) rfl)), obl_of_row hin drain_128_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCeq_later__g2_later.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCeq_later__g2_later.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 9) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 9) rfl)), trivial⟩)
@@ -969,7 +969,7 @@ theorem drain_128_f.steps (P : Pieces F I) : DrainS I (⟨128, false⟩) (drain_
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_128_f.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_128_f.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin drain_128_f.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 5) rfl)), obl_of_row hin drain_128_f.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 5) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_later__g2_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_later__g2_later.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 10) rfl)), trivial⟩)
@@ -977,7 +977,7 @@ theorem drain_128_f.steps (P : Pieces F I) : DrainS I (⟨128, false⟩) (drain_
         (P.q1.g3d_later.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 10) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 10) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 10) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 10) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin drain_128_f.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 5) rfl)), obl_of_row hin drain_128_f.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 5) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 5) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCeq_later__g2_later.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCeq_later__g2_later.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 11) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 11) rfl)), trivial⟩)
@@ -993,7 +993,7 @@ theorem drain_64_g.steps (P : Pieces F I) : DrainS I (⟨64, true⟩) (drain_64_
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_64_g.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_64_g.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin drain_64_g.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 6) rfl)), obl_of_row hin drain_64_g.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_later__g2_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_later__g2_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 12) rfl)), trivial⟩)
@@ -1001,7 +1001,7 @@ theorem drain_64_g.steps (P : Pieces F I) : DrainS I (⟨64, true⟩) (drain_64_
         (P.q1.g3d_later.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 12) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 12) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 12) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 12) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin drain_64_g.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 6) rfl)), obl_of_row hin drain_64_g.r1.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 6) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 6) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCeq_later__g2_later.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCeq_later__g2_later.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 13) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 13) rfl)), trivial⟩)
@@ -1017,7 +1017,7 @@ theorem drain_64_f.steps (P : Pieces F I) : DrainS I (⟨64, false⟩) (drain_64
   drainS_of_rows Host.Ts.Sim.Lin.Cls.drain_64_f.cover fun r hr L j h1 h2 ha hin => by
     simp only [drain_64_f.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl | rfl | rfl | rfl
-    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin drain_64_f.r0.nps, trivial⟩)
+    · exact step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 7) rfl)), obl_of_row hin drain_64_f.r0.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 7) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_later__g2_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_later__g2_later.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 14) rfl)), trivial⟩)
@@ -1025,7 +1025,7 @@ theorem drain_64_f.steps (P : Pieces F I) : DrainS I (⟨64, false⟩) (drain_64
         (P.q1.g3d_later.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 14) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 14) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 14) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 14) rfl)), trivial⟩)
-    · exact (step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin drain_64_f.r1.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCby_later__start__g1_DCby_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCby_later__start__g1_DCby_later.chk _ (mem_at (k := 8) rfl)), obl_of_row hin drain_64_f.r1.nps, trivial⟩)
         (P.q1.g1_DCby_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCby_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCby_later__g2_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCby_later__g2_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 15) rfl)), trivial⟩)
@@ -1033,7 +1033,7 @@ theorem drain_64_f.steps (P : Pieces F I) : DrainS I (⟨64, false⟩) (drain_64
         (P.q1.g3d_later.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 15) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 15) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 15) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 15) rfl)), trivial⟩)).cast rfl rfl P.eqs.eq_drain_64_f_r1
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin drain_64_f.r2.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 7) rfl)), obl_of_row hin drain_64_f.r2.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 7) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 7) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCeq_later__g2_later.ok _ (mem_at (k := 3) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCeq_later__g2_later.chk _ (mem_at (k := 3) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 16) rfl)), trivial⟩)
@@ -1041,7 +1041,7 @@ theorem drain_64_f.steps (P : Pieces F I) : DrainS I (⟨64, false⟩) (drain_64
         (P.q1.g3d_later.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.g3d_later.chk _ (mem_at (k := 16) rfl)), trivial⟩)
         (P.q1.eval__g3d_later__g4_pc_later.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.eval__g3d_later__g4_pc_later.chk _ (mem_at (k := 16) rfl)), trivial⟩)
         (P.q1.g4_pc_later.ok _ (mem_at (k := 16) rfl) _ hin ⟨obl_of_row hin (P.q1.g4_pc_later.chk _ (mem_at (k := 16) rfl)), trivial⟩)).cast rfl rfl P.eqs.eq_drain_64_f_r2
-    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin drain_64_f.r3.nps, trivial⟩)
+    · exact (step_shape (P.q1.nps_DCeq_later__start__g1_DCeq_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.nps_DCeq_later__start__g1_DCeq_later.chk _ (mem_at (k := 8) rfl)), obl_of_row hin drain_64_f.r3.nps, trivial⟩)
         (P.q1.g1_DCeq_later.ok _ (mem_at (k := 8) rfl) _ hin ⟨obl_of_row hin (P.q1.g1_DCeq_later.chk _ (mem_at (k := 8) rfl)), trivial⟩)
         (P.q1.disp_cVW__g1_DCeq_later__g2_later.ok _ (mem_at (k := 4) rfl) _ hin ⟨obl_of_row hin (P.q1.disp_cVW__g1_DCeq_later__g2_later.chk _ (mem_at (k := 4) rfl)), trivial⟩)
         (P.q1.g2_later.ok _ (mem_at (k := 17) rfl) _ hin ⟨obl_of_row hin (P.q1.g2_later.chk _ (mem_at (k := 17) rfl)), trivial⟩)
@@ -1057,7 +1057,7 @@ theorem final_cold_first.steps (P : Pieces F I) : FinalS I .first (.cold) (final
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_cold.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_cold.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_first__start__g1_FIN_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin final_cold.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_first__start__g1_FIN_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_first__start__g1_FIN_first.chk _ (mem_at (k := 0) rfl)), obl_of_row hin final_cold.r0.nps, trivial⟩)
         (P.q2.g1_FIN_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_first__g2_fin_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_first__g2_fin_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.g2_fin_first.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_first.chk _ (mem_at (k := 0) rfl)), trivial⟩)
@@ -1071,7 +1071,7 @@ theorem final_ord_drained.steps (P : Pieces F I) : FinalS I .drained (.warm .ord
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_ord.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_ord.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin final_ord.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_drained__start__g1_FIN_drained.chk _ (mem_at (k := 0) rfl)), obl_of_row hin final_ord.r0.nps, trivial⟩)
         (P.q2.g1_FIN_drained.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_drained.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.g2_fin_drained.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_drained.chk _ (mem_at (k := 0) rfl)), trivial⟩)
@@ -1085,7 +1085,7 @@ theorem final_ord_tailed.steps (P : Pieces F I) : FinalS I .tailed (.warm .ord) 
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_ord.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_ord.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin final_ord.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.chk _ (mem_at (k := 0) rfl)), obl_of_row hin final_ord.r0.nps, trivial⟩)
         (P.q2.g1_FIN_tailed.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_tailed.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.chk _ (mem_at (k := 0) rfl)), trivial⟩)
         (P.q2.g2_fin_tailed.ok _ (mem_at (k := 0) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_tailed.chk _ (mem_at (k := 0) rfl)), trivial⟩)
@@ -1099,7 +1099,7 @@ theorem final_fill_drained.steps (P : Pieces F I) : FinalS I .drained (.warm .fi
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_fill.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_fill.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin final_fill.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_drained__start__g1_FIN_drained.chk _ (mem_at (k := 1) rfl)), obl_of_row hin final_fill.r0.nps, trivial⟩)
         (P.q2.g1_FIN_drained.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_drained.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q2.g2_fin_drained.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_drained.chk _ (mem_at (k := 1) rfl)), trivial⟩)
@@ -1113,7 +1113,7 @@ theorem final_fill_tailed.steps (P : Pieces F I) : FinalS I .tailed (.warm .fill
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_fill.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_fill.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin final_fill.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.chk _ (mem_at (k := 1) rfl)), obl_of_row hin final_fill.r0.nps, trivial⟩)
         (P.q2.g1_FIN_tailed.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_tailed.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.chk _ (mem_at (k := 1) rfl)), trivial⟩)
         (P.q2.g2_fin_tailed.ok _ (mem_at (k := 1) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_tailed.chk _ (mem_at (k := 1) rfl)), trivial⟩)
@@ -1127,7 +1127,7 @@ theorem final_grow_drained.steps (P : Pieces F I) : FinalS I .drained (.warm .gr
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_grow.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_grow.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin final_grow.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_drained__start__g1_FIN_drained.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_drained__start__g1_FIN_drained.chk _ (mem_at (k := 2) rfl)), obl_of_row hin final_grow.r0.nps, trivial⟩)
         (P.q2.g1_FIN_drained.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_drained.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_drained__g2_fin_drained.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q2.g2_fin_drained.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_drained.chk _ (mem_at (k := 2) rfl)), trivial⟩)
@@ -1141,7 +1141,7 @@ theorem final_grow_tailed.steps (P : Pieces F I) : FinalS I .tailed (.warm .grow
   finalS_of_rows Host.Ts.Sim.Lin.Cls.final_grow.cover fun r hr L h1 h2 ha hs hin => by
     simp only [final_grow.rows, List.mem_cons, List.not_mem_nil, or_false] at hr
     rcases hr with rfl
-    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin final_grow.r0.nps, trivial⟩)
+    · exact final_shape (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.nps_FIN_tailed__start__g1_FIN_tailed.chk _ (mem_at (k := 2) rfl)), obl_of_row hin final_grow.r0.nps, trivial⟩)
         (P.q2.g1_FIN_tailed.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.g1_FIN_tailed.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.disp_D1__g1_FIN_tailed__g2_fin_tailed.chk _ (mem_at (k := 2) rfl)), trivial⟩)
         (P.q2.g2_fin_tailed.ok _ (mem_at (k := 2) rfl) _ hin ⟨obl_of_row hin (P.q2.g2_fin_tailed.chk _ (mem_at (k := 2) rfl)), trivial⟩)

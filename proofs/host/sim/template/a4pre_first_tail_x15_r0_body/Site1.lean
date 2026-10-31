@@ -1,0 +1,38 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.H0
+import host.sim.template.a4pre_first_tail_x15_r0_body.st1.H0
+import host.sim.conv.MergeSt
+import host.sim.conv.Fresh
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
+
+/-! Call site 1 of chain `PRE_first_tail_x15_r0_body`: `rowBlocks__g1__g2` (`rowBlocks`), the call state `PRE_first_tail_x15_r0_body.s21`, the merged state `PRE_first_tail_x15_r0_body.s22`,
+the site template `PRE_first_tail_x15_r0_body.st1` (σ = `Map.id`, θ the identity at its own site), the canonical state `PRE_first_tail_x15_r0_body.s23`: the merge.
+The footprint's facts are in `SiteF1`, the compaction's in `SiteC1`, `SiteK1`, `SiteNa1`, `SiteNb1`. -/
+
+kernel_rfl PRE_first_tail_x15_r0_body.iso1 : PRE_first_tail_x15_r0_body.st1.s0 = { PRE_first_tail_x15_r0_body.s21 with stack := [] }
+/-- The caller's frames at the call. -/
+noncomputable def PRE_first_tail_x15_r0_body.rs1 : List Frame := PRE_first_tail_x15_r0_body.s21.stack
+kernel_rfl PRE_first_tail_x15_r0_body.n0_1 : PRE_first_tail_x15_r0_body.S21.tab.length = 122
+kernel_rfl PRE_first_tail_x15_r0_body.tab0_1 : PRE_first_tail_x15_r0_body.st1.S0.tab = PRE_first_tail_x15_r0_body.S21.tab
+
+/-- The fresh variables of the stage's results. -/
+def PRE_first_tail_x15_r0_body.ws1 : List Nat := [1049, 1050]
+kernel_rfl PRE_first_tail_x15_r0_body.fresh1 : (PRE_first_tail_x15_r0_body.S21.tab.all fun e => PRE_first_tail_x15_r0_body.ws1.all fun v => e.noVar v) &&
+    (PRE_first_tail_x15_r0_body.S21.oracle.all fun q => PRE_first_tail_x15_r0_body.ws1.all fun v => q.noVar v) = true
+kernel_rfl PRE_first_tail_x15_r0_body.mergeTab1 : PRE_first_tail_x15_r0_body.S22.tab = PRE_first_tail_x15_r0_body.S21.tab ++ Conv.resTab PRE_first_tail_x15_r0_body.ws1
+kernel_rfl PRE_first_tail_x15_r0_body.mergeLen1 : PRE_first_tail_x15_r0_body.st1.S2.tab.length - PRE_first_tail_x15_r0_body.st1.S0.tab.length = 2
+
+-- The merged state: the instance's return state with the caller's frames (`PRE_first_tail_x15_r0_body.merged1`, `merged_relB`).
+kernel_rfl PRE_first_tail_x15_r0_body.mheap1 : PRE_first_tail_x15_r0_body.s22.heap = PRE_first_tail_x15_r0_body.st1.s2.heap
+kernel_rfl PRE_first_tail_x15_r0_body.mnext1 : PRE_first_tail_x15_r0_body.s22.next = PRE_first_tail_x15_r0_body.st1.s2.next
+kernel_rfl PRE_first_tail_x15_r0_body.mctl1 : PRE_first_tail_x15_r0_body.s22.ctl = PRE_first_tail_x15_r0_body.st1.s2.ctl
+kernel_rfl PRE_first_tail_x15_r0_body.mstack1 : PRE_first_tail_x15_r0_body.s22.stack = PRE_first_tail_x15_r0_body.st1.s2.stack ++ PRE_first_tail_x15_r0_body.s21.stack
+kernel_rfl PRE_first_tail_x15_r0_body.mjobs1 : PRE_first_tail_x15_r0_body.s22.jobs = PRE_first_tail_x15_r0_body.st1.s2.jobs
+kernel_rfl PRE_first_tail_x15_r0_body.mffi1 : PRE_first_tail_x15_r0_body.s22.ffi = PRE_first_tail_x15_r0_body.st1.s2.ffi
+kernel_rfl PRE_first_tail_x15_r0_body.mtrace1 : PRE_first_tail_x15_r0_body.s22.trace = PRE_first_tail_x15_r0_body.st1.s2.trace
+kernel_rfl PRE_first_tail_x15_r0_body.mstores1 : PRE_first_tail_x15_r0_body.s22.stores = PRE_first_tail_x15_r0_body.st1.s2.stores
+
+end Host.Load.Run.Tpl

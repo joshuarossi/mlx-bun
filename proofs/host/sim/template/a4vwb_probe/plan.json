@@ -1,0 +1,19 @@
+{
+ "isolate": true,
+ "spec": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/template/a4vw/vwspec.json",
+ "stages": [
+  {"fn": "appendWindow", "piece": "kvW"},
+  {"fn": "recurWindow", "piece": "ssmW"},
+  {"fn": "plan", "piece": "plan"},
+  {"fn": "rowBlocks", "piece": "rowBlocks"}
+ ],
+ "bridges": ["size"],
+ "stop": "steps:88617",
+ "cap": 100000,
+ "frames": [],
+ "wide": [[4910, ".memo []"]],
+ "baseVals": [[21, 101]],
+ "vars": [[21, "n"]],
+ "accept": "jsjxs",
+ "D0": 4096
+}

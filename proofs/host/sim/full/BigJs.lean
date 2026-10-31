@@ -321,6 +321,55 @@ theorem fullStepSimXLDJ (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP 
     (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
     (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg)
 
+/-- `fullStepSimXBDJ` with the continuations at `okBackFS` and their smallness `smallBackFB` (`fullBackSimDS`,
+`fullJSPXDS`). -/
+theorem fullStepSimXBDJS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (D0 : Nat)
+    (hJ : J.okCall = okCallFSD P) (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB)
+    (hlo : J.lo = P.lo) (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) {W : Nat → Option WFrame}
+    (stk : List Frame) (hW : Disp.Wp J W) :
+    Disp.StepSimXVB FF (Disp.FRJ (FullRD P NB)) (Disp.okJSJ J (okBackFS P) D0) (Disp.KpJ J D0) W stk (VBOkF VB) := by
+  have hC : FfiCallSim FF (FullRD P NB) J.okCall smallFS := by rw [hJ]; exact fullCallSimSDD P NB
+  exact Disp.stepSimXVBJS (fullFfiSimD P NB) (fullBackSimDS P NB) hC
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg) hW
+
+/-- `fullStepSimXLBDJ` with the continuations at `okBackFS` and their smallness `smallBackFB`. -/
+theorem fullStepSimXLBDJS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (D0 : Nat)
+    (hJ : J.okCall = okCallFSD P) (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB)
+    (hlo : J.lo = P.lo) (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) {W : Nat → Option WFrame}
+    (stk : List Frame) (hW : Disp.Wp J W) :
+    Disp.StepSimXLB FF (Disp.FRJ (FullRD P NB)) (Disp.okJSJ J (okBackFS P) D0) (Disp.KpJ J D0) W stk (VBOkF VB) := by
+  have hC : FfiCallSim FF (FullRD P NB) J.okCall smallFS := by rw [hJ]; exact fullCallSimSDD P NB
+  exact Disp.stepSimXLBJS (fullFfiSimD P NB) (fullBackSimDS P NB) hC
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg) hW
+
+/-- `fullStepSimXLDJ` with the continuations at `okBackFS` and their smallness `smallBackFB`. -/
+theorem fullStepSimXLDJS (P : LoadP) (NB : Nat) (VB : Nat → Nat) (J : Disp.JSP FF) (D0 : Nat)
+    (hJ : J.okCall = okCallFSD P) (hsm : J.smallB = smallFSB VB) (hsb : J.smallBackB = smallBackFB VB)
+    (hlo : J.lo = P.lo) (hh : J.isHandle = fullIsHandle) (hg : J.isRegion = fullIsRegion) :
+    Disp.StepSimXL FF (Disp.FRJ (FullRD P NB)) (Disp.okJSJ J (okBackFS P) D0) (Disp.KpJ J D0) (VBOkF VB) :=
+  Disp.stepSimXLJS (fullFfiSimD P NB) (fullBackSimDS P NB) (by rw [hJ]; exact fullCallSimSDD P NB)
+    (fun _ _ _ _ _ hν hb => smallFSB_sound hν (by rw [hsm] at hb; exact hb))
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν (by rw [hsb] at hb; exact hb))
+    (fullRD_laws P NB) fullLawful (fullNativeFactsD P NB J hlo hh hg)
+
+/-- **Agreement** with the acceptance before the smallness check, for literal callbacks. -/
+theorem fullJSPXDS_agree (P : LoadP) (VB : Nat → Nat) (framed : List Nat) (wide : List (Nat × WFrame))
+    (D0 : Nat) (s : St FF.S) (S : SSrv) :
+    Disp.okJSJ (fullJSPXDS P VB framed wide) (okBackF P) D0 s S =
+      Disp.okJSJOld (fullJSPXDS P VB framed wide) (okBackF P) D0 s S :=
+  Disp.okJSJ_eq_old (fun _ _ _ h => smallBackFB_of_okBackF h) s S
+
+/-- **Lift** an old checked state to the acceptance with symbolic continuation replays. -/
+theorem fullJSPXDS_lift {P : LoadP} {VB : Nat → Nat} {framed : List Nat} {wide : List (Nat × WFrame)}
+    {D0 : Nat} {s : St FF.S} {S : SSrv}
+    (h : Disp.okJSJOld (fullJSPXDS P VB framed wide) (okBackF P) D0 s S = true) :
+    Disp.okJSJ (fullJSPXDS P VB framed wide) (okBackFS P) D0 s S = true :=
+  Disp.okJSJ_mono (fun _ _ h => okBackFS_of h) ((fullJSPXDS_agree P VB framed wide D0 s S).trans h)
+
 end
 
 section

@@ -1,0 +1,34 @@
+import host.sim.template.a4dec_clear.H0
+import host.sim.conv.NClean
+import host.sim.conv.CompactShift
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
+
+/-! Glue piece 2 of chain `DEC_clear` (boundaries 6 to 8): the native bookkeeping's step. -/
+
+def DEC_clear.gh2 : List Nat := [29302, 29303, 29432, 29433, 29434, 29435, 29436, 29437, 29438, 29439]
+def DEC_clear.gn2 : List Nat := [24913, 24914, 24915, 24916, 24917, 24918, 24919]
+def DEC_clear.gi2 : List Nat := []
+kernel_rfl DEC_clear.gkA2 : (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad DEC_clear.s6.ffi).mlx.arrs (DEC_clear.gh2.filterMap fun i => ((Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.arrs.get i).map (i, ·))
+kernel_rfl DEC_clear.gkO2 : (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.objs = Stage.setAll (Host.Load.Layers.toLoad DEC_clear.s6.ffi).mlx.objs (DEC_clear.gh2.filterMap fun i => ((Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.objs.get i).map (i, ·))
+kernel_rfl DEC_clear.gkN2 : (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.nodes = Stage.setAll (Host.Load.Layers.toLoad DEC_clear.s6.ffi).mlx.nodes (DEC_clear.gn2.filterMap fun i => ((Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.nodes.get i).map (i, ·))
+kernel_rfl DEC_clear.gkI2 : (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.items = Stage.setAll (Host.Load.Layers.toLoad DEC_clear.s6.ffi).mlx.items (DEC_clear.gi2.filterMap fun i => ((Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx.items.get i).map (i, ·))
+kernel_rfl DEC_clear.gbd2 : (DEC_clear.gh2 ++ DEC_clear.gn2 ++ DEC_clear.gi2).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true
+kernel_rfl DEC_clear.gle2 : Conv.Cnt.leB (⟨29432, 24913, 3123900, 353⟩ : Conv.Cnt) (⟨29440, 24920, 3124248, 354⟩ : Conv.Cnt) = true
+kernel_rfl DEC_clear.gck2 : Conv.ncleanListB (⟨29440, 24920, 3124248, 354⟩ : Conv.Cnt) (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx DEC_clear.gh2 DEC_clear.gn2 DEC_clear.gi2 = true
+theorem DEC_clear.gncl2 (h : Conv.NClean (⟨29432, 24913, 3123900, 353⟩ : Conv.Cnt) (Host.Load.Layers.toLoad DEC_clear.s6.ffi).mlx) : Conv.NClean (⟨29440, 24920, 3124248, 354⟩ : Conv.Cnt) (Host.Load.Layers.toLoad DEC_clear.s8.ffi).mlx :=
+  Conv.NClean.stepKeep h DEC_clear.gle2 DEC_clear.gkA2 DEC_clear.gkO2 DEC_clear.gkN2 DEC_clear.gkI2 DEC_clear.gbd2 DEC_clear.gck2
+
+-- the JS bookkeeping's step
+def DEC_clear.gjh2 : List Nat := [2673321, 2673323, 3123582, 3123587, 3123588, 3123596, 3123598, 3123603, 3123627, 3123642, 3123900, 3123901, 3123902, 3123903, 3123904, 3123905, 3123906, 3123907, 3123908, 3123909, 3123910, 3123911, 3123912, 3123913, 3123914, 3123915, 3123916, 3123917, 3123918, 3123919, 3123920, 3123921, 3123922, 3123923, 3123924, 3123925, 3123926, 3123927, 3123928, 3123929, 3123930, 3123931, 3123932, 3123933, 3123934, 3123935, 3123936, 3123937, 3123938, 3123939, 3123940, 3123941, 3123942, 3123943, 3123944, 3123945, 3123946, 3123947, 3123948, 3123949, 3123950, 3123951, 3123952, 3123953, 3123954, 3123955, 3123956, 3123957, 3123958, 3123959, 3123960, 3123961, 3123962, 3123963, 3123964, 3123965, 3123966, 3123967, 3123968, 3123969, 3123970, 3123971, 3123972, 3123973, 3123974, 3123975, 3123976, 3123977, 3123978, 3123979, 3123980, 3123981, 3123982, 3123983, 3123984, 3123985, 3123986, 3123987, 3123988, 3123989, 3123990, 3123991, 3123992, 3123993, 3123994, 3123995, 3123996, 3123997, 3123998, 3123999, 3124000, 3124001, 3124002, 3124003, 3124004, 3124005, 3124006, 3124007, 3124008, 3124009, 3124010, 3124011, 3124012, 3124013, 3124014, 3124015, 3124016, 3124017, 3124018, 3124019, 3124020, 3124021, 3124022, 3124023, 3124024, 3124025, 3124026, 3124027, 3124028, 3124029, 3124030, 3124031, 3124032, 3124033, 3124034, 3124035, 3124036, 3124037, 3124038, 3124039, 3124040, 3124041, 3124042, 3124043, 3124044, 3124045, 3124046, 3124047, 3124048, 3124049, 3124050, 3124051, 3124052, 3124053, 3124054, 3124055, 3124056, 3124057, 3124058, 3124059, 3124060, 3124061, 3124062, 3124063, 3124064, 3124065, 3124066, 3124067, 3124068, 3124069, 3124070, 3124071, 3124072, 3124073, 3124074, 3124075, 3124076, 3124077, 3124078, 3124079, 3124080, 3124081, 3124082, 3124083, 3124084, 3124085, 3124086, 3124087, 3124088, 3124089, 3124090, 3124091, 3124092, 3124093, 3124094, 3124095, 3124096, 3124097, 3124098, 3124099, 3124100, 3124101, 3124102, 3124103, 3124104, 3124105, 3124106, 3124107, 3124108, 3124109, 3124110, 3124111, 3124112, 3124113, 3124114, 3124115, 3124116, 3124117, 3124118, 3124119, 3124120, 3124121, 3124122, 3124123, 3124124, 3124125, 3124126, 3124127, 3124128, 3124129, 3124130, 3124131, 3124132, 3124133, 3124134, 3124135, 3124136, 3124137, 3124138, 3124139, 3124140, 3124141, 3124142, 3124143, 3124144, 3124145, 3124146, 3124147, 3124148, 3124149, 3124150, 3124151, 3124152, 3124153, 3124154, 3124155, 3124156, 3124157, 3124158, 3124159, 3124160, 3124161, 3124162, 3124163, 3124164, 3124165, 3124166, 3124167, 3124168, 3124169, 3124170, 3124171, 3124172, 3124173, 3124174, 3124175, 3124176, 3124177, 3124178, 3124179, 3124180, 3124181, 3124182, 3124183, 3124184, 3124185, 3124186, 3124187, 3124188, 3124189, 3124190, 3124191, 3124192, 3124193, 3124194, 3124195, 3124196, 3124197, 3124198, 3124199, 3124200, 3124201, 3124202, 3124203, 3124204, 3124205, 3124206, 3124207, 3124208, 3124209, 3124210, 3124211, 3124212, 3124213, 3124214, 3124215, 3124216, 3124217, 3124218, 3124219, 3124220, 3124221, 3124222, 3124223, 3124224, 3124225, 3124226, 3124227, 3124228, 3124229, 3124230, 3124231, 3124232, 3124233, 3124234, 3124235, 3124236, 3124237, 3124238, 3124239, 3124240, 3124241, 3124242, 3124243, 3124244, 3124245, 3124246, 3124247]
+kernel_rfl DEC_clear.gjk2 : DEC_clear.s8.heap = Stage.setAll DEC_clear.s6.heap (DEC_clear.gjh2.filterMap fun a => (DEC_clear.s8.heap.get a).map (a, ·))
+kernel_rfl DEC_clear.gjbd2 : DEC_clear.gjh2.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true
+kernel_rfl DEC_clear.gjc2 : Conv.jcleanListB (⟨29440, 24920, 3124248, 354⟩ : Conv.Cnt) DEC_clear.s8 DEC_clear.gjh2 = true
+theorem DEC_clear.gjcl2 (h : Conv.JClean (⟨29432, 24913, 3123900, 353⟩ : Conv.Cnt) DEC_clear.s6) : Conv.JClean (⟨29440, 24920, 3124248, 354⟩ : Conv.Cnt) DEC_clear.s8 :=
+  Conv.JClean.step h (Conv.Cnt.le_of_leB DEC_clear.gle2)
+    (Conv.heap_off_setAll DEC_clear.gjk2 fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp DEC_clear.gjbd2 a ha)) DEC_clear.gjc2
+
+end Host.Load.Run.Tpl

@@ -1,5 +1,5 @@
 import host.sim.full.Topo
-import host.sim.native.gen.ReplayCall
+import host.sim.full.ReplayV
 namespace Host.Ts.Sim.G
 open Host.Mlx.Ffi (Dim Prim Node Cfg Clo Trace Pending dimOf)
 
@@ -10,7 +10,8 @@ appends the trace to the closure and replays it on the apply's inputs (`applyDon
 states the target pops the image, orders the images (`MR.topo_map`), appends the imaged trace and
 replays it (`sim_applyDone`, `MR.replayOrder`). The recorded nodes are pre-loop for the relation
 (`P.NL`, `backOkG`): the full world raises a band-free relation's band to the node counter first
-(`host.sim.full.Raise`). -/
+(`host.sim.full.Raise`). A trace over symbolic shapes replays under `rwalk` (`backOkV`, `sim_traceBackV`,
+`host.sim.full.ReplayV`) given its numeric premise `backSmall`. -/
 
 /-- Node `n` of `x` is a custom kernel's (`traceBack`'s shapeless check). -/
 def kernAt (x : NSt) (n : Nat) : Bool :=
@@ -28,11 +29,12 @@ theorem PrimR.isKernel {M : Map} {nd : Node} {p' : Prim} (h : PrimR M nd p') :
   · obtain ⟨p, ins, sh, d⟩ := nd
     cases p <;> first | rfl | (simp [shapeOnly] at hs)
 
-/-- The template's traceBack, decided: the pending trace's result decoded and its closure compiled,
-its graph ordered over pre-loop nodes (`P.NL`) with no custom kernel in a shapeless graph, its
-tracers, outputs and inputs present, the result slot null or present, room for the result vector
-and the replay, and the replay checked (`rchk`) on the state after the closure's update. -/
-def backOkG (P : LoadP) (x : NSt) (a : Arg) : Bool :=
+/-- The template's traceBack, decided with a replay check `rc` (state, closure, inputs, order): the
+pending trace's result decoded and its closure compiled, its graph ordered over pre-loop nodes (`P.NL`)
+with no custom kernel in a shapeless graph, its tracers, outputs and inputs present, the result slot
+null or present, room for the result vector and the replay, and the replay checked on the state after
+the closure's update. -/
+def backOkR (P : LoadP) (rc : NSt → Nat → List (Nat × Nat) → List Nat → Bool) (x : NSt) (a : Arg) : Bool :=
   natOk P a && match x.pending, Host.Mlx.Ffi.argNat a with
   | p :: rest, some 0 => match p.res, x.obj? p.cls with
     | some outs, some (.clo (.compiled cb pl sl ts)) =>
@@ -43,12 +45,96 @@ def backOkG (P : LoadP) (x : NSt) (a : Arg) : Bool :=
           order.all (fun i => decide (i < P.NL) && (x.nodes.get i).isSome) && !(sl && order.any (kernAt x)) &&
           (Nat.beq p.outSlot 0 || isPH x p.outSlot) && decide (x.next + 1 ≤ P.E) &&
           decide (x.nnext + order.length ≤ P.NE) &&
-          rchk P.NL p.cls
-            { x.setObj p.cls (.clo (.compiled cb pl sl (ts ++ [⟨p.tracers, outs, order⟩]))) with pending := rest }
-            (p.tracers.zip p.ins) order
+          rc { x.setObj p.cls (.clo (.compiled cb pl sl (ts ++ [⟨p.tracers, outs, order⟩]))) with pending := rest }
+            p.cls (p.tracers.zip p.ins) order
       | none => false
     | _, _ => false
   | _, _ => false
+
+/-- **The template's traceBack, decided** with the literal replay's check (`rchk`). -/
+def backOkG (P : LoadP) (x : NSt) (a : Arg) : Bool := backOkR P (fun x1 c m o => rchk P.NL c x1 m o) x a
+
+/-- **The template's traceBack over symbolic shapes**: the replay `rwalk` accepts and the literal one
+does not (`host.sim.full.ReplayV`). -/
+def backOkV (P : LoadP) (x : NSt) (a : Arg) : Bool :=
+  backOkR P (fun x1 c m o => (rwalk x1 x1.nnext m o).isSome && !(rchk x1.nnext c x1 m o)) x a
+
+/-- The state `traceBack` replays on, with the closure, the recorded trace and the apply's inputs. -/
+def backFound (x : NSt) (a : Arg) : Option (NSt × Nat × Trace × List Nat) :=
+  match x.pending, Host.Mlx.Ffi.argNat a with
+  | p :: rest, some 0 => match p.res, x.obj? p.cls with
+    | some outs, some (.clo (.compiled cb pl sl ts)) =>
+      match Host.Mlx.Ffi.topo x p.tracers 4096 (outs.map (·, false)) [] [] with
+      | some order =>
+        some ({ x.setObj p.cls (.clo (.compiled cb pl sl (ts ++ [⟨p.tracers, outs, order⟩]))) with pending := rest },
+          p.cls, ⟨p.tracers, outs, order⟩, p.ins)
+      | none => none
+    | _, _ => none
+  | _, _ => none
+
+/-- A continuation the symbolic replay may cover: the recorded trace is not the literal replay's. -/
+def backSym (x : NSt) (a : Arg) : Bool :=
+  match backFound x a with
+  | some (x1, c, t, xs) => !(rchk x1.nnext c x1 (t.ins.zip xs) t.order)
+  | none => false
+
+/-- The references of the nodes the symbolic replay of a continuation lists. -/
+def backRefs (x : NSt) (a : Arg) : List Nat :=
+  match backFound x a with
+  | some (x1, _, t, xs) => ((rwalk x1 x1.nnext (t.ins.zip xs) t.order).getD []).flatMap (nodeRefs x1)
+  | none => []
+
+/-- **The symbolic replay's numeric premise for a continuation** (`cloSmall`'s): the listed nodes'
+references denote small naturals, and the template's continuation has a result. -/
+def backSmall (ν : Nat → F64) (S : SSrv) (x : NSt) (a : Arg) : Prop :=
+  backSym x a = true → (∀ j ∈ backRefs x a, RefSmall ν S j) ∧ RunSome S (Host.Mlx.Ffi.back x a)
+
+/-- The template's continuation at `S` has a result (decided by evaluation). -/
+def backRunB (S : SSrv) (x : NSt) (a : Arg) : Bool :=
+  match interpS (Host.Mlx.Ffi.back x a).run S with
+  | some (none, _) => false
+  | _ => true
+
+/-- The decider of `backSmall`. -/
+def backSmallB (VB : Nat → Nat) (S : SSrv) (x : NSt) (a : Arg) : Bool :=
+  !backSym x a || ((backRefs x a).all (refSmallB VB S) && backRunB S x a)
+
+theorem backSmallB_sound {VB : Nat → Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {a : Arg}
+    (hν : ∀ v, ∃ k ≤ VB v, ν v = F64.ofNat k) (h : backSmallB VB S x a = true) : backSmall ν S x a := by
+  intro hc
+  unfold backSmallB at h
+  rw [hc] at h
+  simp only [Bool.not_true, Bool.false_or, Bool.and_eq_true] at h
+  refine ⟨fun j hj => refSmallB_sound (List.all_eq_true.mp h.1 j hj) hν, fun r S' hr' => ?_⟩
+  have h2 := h.2
+  unfold backRunB at h2
+  rw [hr'] at h2
+  cases r
+  · cases h2
+  · rfl
+
+/-- A continuation `backOkR` accepts has its replay's state found, with the node counter, and checked. -/
+theorem backOkR_found {P : LoadP} {rc : NSt → Nat → List (Nat × Nat) → List Nat → Bool} {x : NSt} {a : Arg}
+    (h : backOkR P rc x a = true) :
+    ∃ x1 c t xs, backFound x a = some (x1, c, t, xs) ∧ x1.nnext = x.nnext ∧ rc x1 c (t.ins.zip xs) t.order = true := by
+  unfold backOkR at h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨-, h⟩ := h
+  split at h
+  case h_2 => cases h
+  rename_i p rest hpx ha0
+  split at h
+  case h_2 => cases h
+  rename_i outs cb pl sl ts hres hcls
+  split at h
+  case h_2 => cases h
+  rename_i order htopo
+  simp only [Bool.and_eq_true] at h
+  refine ⟨_, _, ⟨p.tracers, outs, order⟩, _, ?_, ?_, h.2⟩
+  · unfold backFound
+    rw [hpx, ha0]
+    simp only [hres, hcls, htopo]
+  · rfl
 
 section
 variable {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt}
@@ -153,10 +239,19 @@ variable {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSrv} {C : CSr
   (hs : Srv M ν S C) (hr : MR P NB M S.tab.length x y)
 include hs hr
 
-/-- **A trace continuation** the template's check accepts (`backOkG`). -/
-theorem sim_traceBack {a : Arg} (hok : backOkG P x a = true) :
+omit hs in
+/-- **A trace continuation** the template's check accepts with a replay check `rc`, given that an apply
+`rc` accepts finishes (`hfin`, on the state `traceBack` replays on, `backFound`). -/
+theorem sim_traceBackR {a : Arg} {rc : NSt → Nat → List (Nat × Nat) → List Nat → Bool} (hok : backOkR P rc x a = true)
+    (hfin : ∀ {x1 y1 : NSt} {c b off sl : Nat} {t : Trace} {xs : List Nat}, MR P NB M S.tab.length x1 y1 →
+      rc x1 c (t.ins.zip xs) t.order = true → (∀ a ∈ t.ins, PN x1 a) → (∀ k ∈ xs, PN x1 k) →
+      (∀ a ∈ t.outs, PN x1 a) → x1.nnext + t.order.length ≤ P.NE → (sl = 0 ∨ PH x1 sl) → x1.next + 1 ≤ P.E →
+      (∀ i ∈ t.order, i < P.NL) → backFound x a = some (x1, c, t, xs) →
+      Host.Mlx.Ffi.back x a = Host.Mlx.Ffi.applyDone x1 c b off sl t xs →
+      MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.applyDone x1 c b off sl t xs)
+        (Host.Mlx.Ffi.applyDone y1 (M.handle c) (M.a b) off (M.handle sl) (M.trace t) (xs.map M.node))) :
     MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.back x a) (Host.Mlx.Ffi.back y (M.arg a)) := by
-  unfold backOkG at hok
+  unfold backOkR at hok
   rw [Bool.and_eq_true] at hok
   obtain ⟨hna, hm⟩ := hok
   have ha : Host.Mlx.Ffi.argNat (M.arg a) = Host.Mlx.Ffi.argNat a := hr.natOk_argNat hna
@@ -234,7 +329,40 @@ theorem sim_traceBack {a : Arg} (hok : backOkG P x a = true) :
         by_cases e : p.outSlot = p.cls
         · simp [e]
         · simp only [e, ↓reduceIte]; exact h
-  exact sim_applyDone hs hr1 hck hT' hI' hO' hRoom' hsl' hE'
+  have hfound : backFound x a = some ({ x.setObj p.cls o with pending := rest }, p.cls, t, p.ins) := by
+    unfold backFound
+    rw [hpx, ha0]
+    simp only [hres, hcls, htopo]
+    rfl
+  have eback : Host.Mlx.Ffi.back x a = Host.Mlx.Ffi.applyDone { x.setObj p.cls o with pending := rest } p.cls
+      p.outBuf p.outOff p.outSlot t p.ins := by
+    unfold Host.Mlx.Ffi.back
+    rw [traceBack_eq hpx ha0 hres hcls htopo, hk1, Bool.cond_false]
+  exact hfin hr1 hck hT' hI' hO' hRoom' hsl' hE' (fun i hi => (hOrd' i hi).1) hfound eback
+
+/-- **A trace continuation** the template's check accepts (`backOkG`). -/
+theorem sim_traceBack {a : Arg} (hok : backOkG P x a = true) :
+    MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.back x a) (Host.Mlx.Ffi.back y (M.arg a)) :=
+  sim_traceBackR hr hok fun hr1 hck hT hI hO hR hsl hE _ _ _ => sim_applyDone hs hr1 hck hT hI hO hR hsl hE
+
+/-- **A trace continuation over symbolic shapes** (`backOkV`), under its numeric premise. -/
+theorem sim_traceBackV {a : Arg} (hok : backOkV P x a = true) (hsm : backSmall ν S x a) :
+    MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.back x a) (Host.Mlx.Ffi.back y (M.arg a)) := by
+  refine sim_traceBackR hr hok fun {x1 y1 c b off sl t xs} hr1 hck hT hI hO hR hsl hE hband hfound eback => ?_
+  rw [Bool.and_eq_true, Bool.not_eq_true'] at hck
+  obtain ⟨hwk, hnr⟩ := hck
+  obtain ⟨L, hwL⟩ := Option.isSome_iff_exists.mp hwk
+  have hbs : backSym x a = true := by unfold backSym; rw [hfound]; simp only [hnr, Bool.not_false]
+  obtain ⟨hrefs, hrun⟩ := hsm hbs
+  have hLv : ∀ b ∈ L, ∀ nd, x1.nodes.get b = some nd → ∃ ks, DVSs M C S nd.shape ks ∧ Bd ks := by
+    intro b hb nd hn
+    have hval := rwalk_valued _ _ _ hwL b hb
+    unfold valuedN at hval; rw [hn] at hval
+    refine dvss_of hs hval fun j hj => hrefs j ?_
+    unfold backRefs; rw [hfound]; dsimp only; rw [hwL]
+    exact List.mem_flatMap.mpr ⟨b, hb, by unfold nodeRefs; rw [hn]; exact hj⟩
+  rw [eback] at hrun
+  exact sim_applyDoneV hs hr1 hwL hband hLv hrun hT hI hO hR hsl hE
 
 end
 

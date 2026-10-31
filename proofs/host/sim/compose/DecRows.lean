@@ -46,6 +46,26 @@ theorem DecAt.o_succ_lt31 {L T : Nat} {tk : Nat → Nat} {i : Cls.Inst} (h : Dec
 theorem DecAt.o_succ_lt {L T : Nat} {tk : Nat → Nat} {i : Cls.Inst} (h : DecAt L T tk i) : i.get .o + 1 < 2 ^ 53 :=
   Nat.lt_of_le_of_lt (Nat.succ_le_succ (h.get_le (Or.inl rfl))) (by decide)
 
+/-- **A growing step's capacity**: at the `grow` row its KV capacity after the append is its capacity before plus a
+page (`256`), below `2 ^ 20`. -/
+theorem dec_grow.capRow : ∀ r ∈ dec_grow.rows, ∀ i, InRow r i → i.get .cap1 = i.get .cap + 256 ∧ i.get .cap1 ≤ 2 ^ 20 := by
+  intro r hr i h
+  simp only [dec_grow.rows, List.mem_singleton] at hr
+  subst hr
+  obtain ⟨-, x, hbox, hq⟩ := h
+  simp only [dec_grow.r0, InBox, QOk, Aff.eval, dot, Inst.get] at hbox hq ⊢
+  omega
+
+/-- **A growing step's capacity** at the `clearGrow` row (`dec_grow.capRow`'s). -/
+theorem dec_clearGrow.capRow :
+    ∀ r ∈ dec_clearGrow.rows, ∀ i, InRow r i → i.get .cap1 = i.get .cap + 256 ∧ i.get .cap1 ≤ 2 ^ 20 := by
+  intro r hr i h
+  simp only [dec_clearGrow.rows, List.mem_singleton] at hr
+  subst hr
+  obtain ⟨-, x, hbox, hq⟩ := h
+  simp only [dec_clearGrow.r0, InBox, QOk, Aff.eval, dot, Inst.get] at hbox hq ⊢
+  omega
+
 /-- **A decode link over the rows `uses`** between the cut families `A`, `B` (at the step and the
 iteration's start pair), its template's oracle checked over the rows at its variables `m`, its further
 oracles `obls`. -/

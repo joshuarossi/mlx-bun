@@ -1,5 +1,5 @@
 import host.sim.full.Record
-import host.sim.full.Call
+import host.sim.full.ReplayV
 namespace Host.Ts.Sim.G
 open Host.Mlx.Ffi (Clo)
 
@@ -11,7 +11,8 @@ The calls `compile.ts` makes around a closure's first application (`host.sim.ful
 `mlx_closure_free`; and a kernel's creation: `mlx_vector_string_new_data` of a fixed count,
 `mlx_fast_metal_kernel_new` over two name vectors, `mlx_vector_string_free`. `sim_life`: the
 template's and the target's calls simulate under `NativeOkX.life`; `sim_clo`: these with the pending
-traces' calls. -/
+traces' calls and an apply's replay over symbolic shapes (`host.sim.full.ReplayV`, under its numeric
+premise `cloSmall`). -/
 
 /-- A handle argument naming a present device. -/
 def devOk (x : NSt) (a : Arg) : Bool :=
@@ -54,11 +55,11 @@ def NativeOkX.life (P : LoadP) (x : NSt) : Host.Mlx.Ffi.Sym → List Arg → Boo
   | _, _ => false
 
 /-- The compiled-closure calls: `mlx_vector_array_set_data` into a pending trace's result
-(`NativeOkX.vset`), a trace recording (`NativeOkX.clRecord`) and a closure's life with the kernels
-(`NativeOkX.life`). -/
+(`NativeOkX.vset`), a trace recording (`NativeOkX.clRecord`) or a replay over symbolic shapes
+(`NativeOkX.clApplyV`), and a closure's life with the kernels (`NativeOkX.life`). -/
 def NativeOkX.clo (P : LoadP) (x : NSt) : Host.Mlx.Ffi.Sym → List Arg → Bool
   | .vecSetData, args => NativeOkX.vset P x args
-  | .closureApply, args => NativeOkX.clRecord P x args
+  | .closureApply, args => NativeOkX.clRecord P x args || NativeOkX.clApplyV P x args
   | s, args => NativeOkX.life P x s args
 
 /-- The calls `NativeOkX.clo` accepts are none of the symbolic-shape layer's, no array free and no
@@ -432,7 +433,7 @@ theorem sim_life {sy : Host.Mlx.Ffi.Sym} (hsym : Host.Mlx.Ffi.symOf name = some 
 /-- **The compiled-closure calls**, the pending traces' regions the relation's (`PendReg`). -/
 theorem sim_clo {sy : Host.Mlx.Ffi.Sym} (hsym : Host.Mlx.Ffi.symOf name = some sy) {args : List Arg}
     (hok : NativeOkX.clo P x sy args = true) (hsupp : ∀ a ∈ args, Supp.arg (fun _ => True) S.tab.length a)
-    (hpr : PendReg M x y) :
+    (hpr : PendReg M x y) (hsm : cloSmall ν S x name args) :
     MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.call x name args) (Host.Mlx.Ffi.call y name (args.map M.arg)) := by
   unfold NativeOkX.clo at hok
   split at hok
@@ -440,7 +441,10 @@ theorem sim_clo {sy : Host.Mlx.Ffi.Sym} (hsym : Host.Mlx.Ffi.symOf name = some s
     split at hok
     · exact sim_vecSetData hs hr hsym hok hpr
     · cases hok
-  · exact sim_clRecord hs hr hsym hok hpr
+  · rw [Bool.or_eq_true] at hok
+    rcases hok with hok | hok
+    · exact sim_clRecord hs hr hsym hok hpr
+    · exact sim_closureApplyV hs hr hsym hok hsm
   · exact sim_life hs hr hsym hok hsupp
 
 end

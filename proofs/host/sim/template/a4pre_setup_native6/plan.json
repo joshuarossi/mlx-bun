@@ -1,0 +1,15 @@
+{
+  "stop": "steps:32",
+  "stages": [],
+  "compact": false,
+  "isolate": false,
+  "frames": [2665],
+  "wide": [[4910, ".memo []"]],
+  "lens": [[2665, 9]],
+  "baseVals": [[9, 4]],
+  "vars": [[9, "L"]],
+  "bridges": [],
+  "accept": "jsjxs",
+  "D0": 4096,
+  "loadP": [18151, 131072, 1099511627776, 15235, 15235]
+}

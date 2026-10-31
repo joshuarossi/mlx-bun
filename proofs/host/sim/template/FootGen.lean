@@ -94,4 +94,73 @@ theorem kernShift_foot {P : LoadP} {n0 : Nat} {σ : Map} {D : RData} {hinv ninv 
   exact ⟨k1, h1, fun h hf => he ▸ r.1 h hf, fun h ht => he ▸ r.2.1 h ht, fun h hp => r.2.2.1 h (he ▸ hp),
     fun h hp => r.2.2.2.1 h (he ▸ hp), r.2.2.2.2⟩
 
+
+/-! ## The renamed nodes' order, linearly
+
+`Conv.MFoot.cnord` checks every renamed node against every key of the map (quadratic in the canonical nodes). The
+canonical nodes are a range `[a, a + n)` with the map increasing along it (`incrB`): the order follows (`cnord_of`). -/
+
+/-- `f` increases along the list. -/
+def incrB (f : Nat → Nat) : List Nat → Bool
+  | a :: b :: l => Nat.blt (f a) (f b) && incrB f (b :: l)
+  | _ => true
+
+theorem incr_range {f : Nat → Nat} (n : Nat) : ∀ a, incrB f (List.range' a n) = true →
+    ∀ i j, a ≤ i → i < j → j < a + n → f i < f j := by
+  induction n with
+  | zero => intro a _ i j _ _ hj; omega
+  | succ n ih =>
+    intro a h i j hi hij hj
+    cases n with
+    | zero => omega
+    | succ m =>
+      have h' : incrB f (a :: (a + 1) :: List.range' (a + 1 + 1) m) = true := by
+        rw [List.range'_succ, List.range'_succ] at h; exact h
+      simp only [incrB, Bool.and_eq_true] at h'
+      have h0 := Nat.blt_eq.mp h'.1
+      have ih' := ih (a + 1) (by rw [List.range'_succ]; exact h'.2)
+      by_cases hia : i = a
+      · subst hia
+        by_cases hja : j = i + 1
+        · subst hja; exact h0
+        · exact Nat.lt_trans h0 (ih' (i + 1) j (Nat.le_refl _) (by omega) (by omega))
+      · exact ih' i j (by omega) hij (by omega)
+
+theorem nodeF_hi {D : RData} {i : Nat} (h : D.nn0 ≤ i) : D.nodeF i = i - D.nn0 + D.nn1 := by
+  unfold RData.nodeF
+  rw [show Nat.ble D.nn0 i = true from Nat.ble_eq.mpr h]
+  rfl
+
+/-- **The renamed nodes' order** (`Conv.MFoot.cnord`) from the map increasing along the canonical range `[a, a + n)`,
+its keys there, and each renamed node in the range or past the map's counter. -/
+theorem cnord_of {D : RData} {P : LoadP} {x1 : NSt} {ln : List Nat} {a n : Nat}
+    (hnl : (PTrie.keysA D.node).all (fun k => Nat.ble P.NL k && Nat.blt (D.nodeF k) x1.nnext) = true)
+    (hn1 : D.nn1 = x1.nnext) (hinc : incrB D.nodeF (List.range' a n) = true)
+    (hks : (PTrie.keysA D.node).all (fun k => Nat.ble a k && Nat.blt k (a + n)) = true)
+    (hl : (ln.filter (Nat.ble P.N0)).all (fun i => Nat.ble i (D.nodeF i) && (Nat.blt i (a + n) || Nat.ble D.nn0 i)) = true) :
+    (ln.filter (Nat.ble P.N0)).all (fun i => Nat.ble i (D.nodeF i) &&
+      (PTrie.keysA D.node).all fun k => !Nat.blt k i || Nat.blt (D.nodeF k) (D.nodeF i)) = true := by
+  refine List.all_eq_true.mpr fun i hi => ?_
+  have h1 := List.all_eq_true.mp hl i hi
+  simp only [Bool.and_eq_true, Bool.or_eq_true] at h1
+  obtain ⟨hle, hcase⟩ := h1
+  simp only [Bool.and_eq_true]
+  refine ⟨hle, List.all_eq_true.mpr fun k hk => ?_⟩
+  have hk1 := List.all_eq_true.mp hks k hk
+  simp only [Bool.and_eq_true] at hk1
+  have ha := Nat.le_of_ble_eq_true hk1.1
+  cases hlt : Nat.blt k i
+  · rfl
+  · have hki := Nat.blt_eq.mp hlt
+    simp only [Bool.not_true, Bool.false_or]
+    apply Nat.blt_eq.mpr
+    rcases hcase with hc | hc
+    · exact incr_range n a hinc k i ha hki (Nat.blt_eq.mp hc)
+    · have hge := Nat.le_of_ble_eq_true hc
+      have hn := List.all_eq_true.mp hnl k hk
+      simp only [Bool.and_eq_true] at hn
+      have hkx := Nat.blt_eq.mp hn.2
+      rw [nodeF_hi hge]
+      omega
+
 end Host.Ts.Sim.Template

@@ -111,13 +111,13 @@ theorem fullCallSimF_core {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S
         rw [hpath, Bool.cond_false] at hok
         simp only [Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at hok
         obtain ⟨⟨-, hsx | hvs⟩, hobs⟩ := hok
-        · have hsm' := hsm.2 hpath
+        · have hsm' := (hsm.2 hpath).1
           exact fullCallOfF hr hm hp hact hia hq hobs hsupp (kernAccX_of hsx) (arrAccX_of hsx) hsm'.2
             ((G.loadFfiCallSimX P NB).call M ν S C (toLoad x) (toLoad y) name args hsrv hr.load hsx hsupp hsm'.1)
         · unfold cloOk at hvs
           split at hvs
           · rename_i sy hsym
-            have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hvs hsupp hr.pend)
+            have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hvs hsupp hr.pend (hsm.2 hpath).2)
             have hkl := G.NativeOkX.clo_kern hvs
             obtain ⟨n1, n2, n3, n4, -, n6, n7, n8⟩ := G.NativeOkX.clo_not hvs
             have hss : isSymShape name = false := by

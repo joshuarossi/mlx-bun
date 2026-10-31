@@ -167,24 +167,51 @@ end Host.Ts.Sim.G
 namespace Host.Ts.Sim.Full
 open Host.Ts Host.Ts.Sim
 
-theorem cloOk_raise (P : LoadP) (k : Nat) : cloOk (P.raise k) = cloOk P := by
-  funext x name args
+theorem clApplyV_raise {P : LoadP} {x : NSt} {args : List Arg} {k : Nat} (h : P.NL ≤ k)
+    (hc : G.NativeOkX.clApplyV P x args = true) : G.NativeOkX.clApplyV (P.raise k) x args = true := by
+  unfold G.NativeOkX.clApplyV at hc ⊢
+  revert hc
+  split
+  · simp only [Bool.and_eq_true]
+    intro ⟨h1, hc⟩
+    refine ⟨h1, ?_⟩
+    revert hc
+    split
+    · simp only [Bool.and_eq_true]
+      intro ⟨h2, hc⟩
+      refine ⟨h2, ?_⟩
+      revert hc
+      split
+      · simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq]
+        intro ⟨⟨⟨h3, h4⟩, h5⟩, h6⟩
+        exact ⟨⟨⟨h3, h4⟩, fun a ha => Nat.lt_of_lt_of_le (h5 a ha) h⟩, h6⟩
+      · exact id
+    · exact id
+  · exact id
+
+/-- The closure calls' decider is monotone in the band (an apply's symbolic replay reads it). -/
+theorem cloOk_raise {P : LoadP} {k : Nat} (h : P.NL ≤ k) {x : NSt} {name : Name} {args : List Arg}
+    (hc : cloOk P x name args = true) : cloOk (P.raise k) x name args = true := by
+  revert hc
   unfold cloOk
   split
   · unfold G.NativeOkX.clo
     split
-    · unfold G.NativeOkX.vset
-      split <;> rfl
-    · unfold G.NativeOkX.clRecord
-      split <;> rfl
-    · unfold G.NativeOkX.life
-      split <;> rfl
-  · rfl
+    · rw [show G.NativeOkX.vset (P.raise k) = G.NativeOkX.vset P from by
+        funext x args; unfold G.NativeOkX.vset; split <;> rfl]
+      exact id
+    · rw [show G.NativeOkX.clRecord (P.raise k) = G.NativeOkX.clRecord P from by
+        funext x args; unfold G.NativeOkX.clRecord; split <;> rfl, Bool.or_eq_true, Bool.or_eq_true]
+      exact fun hc => hc.imp id (clApplyV_raise h)
+    · rw [show G.NativeOkX.life (P.raise k) = G.NativeOkX.life P from by
+        funext x s args; unfold G.NativeOkX.life; split <;> rfl]
+      exact id
+  · exact id
 
 theorem okCallFS_raise {P : LoadP} {x : FF.S} {name : Name} {args : List Arg} {k : Nat} (h : P.NL ≤ k)
     (hc : okCallFS P x name args = true) : okCallFS (P.raise k) x name args = true := by
   unfold okCallFS at hc ⊢
-  rw [G.symShapeOk_raise, cloOk_raise]
+  rw [G.symShapeOk_raise]
   simp only [Bool.and_eq_true] at hc ⊢
   obtain ⟨⟨⟨⟨ha, hb⟩, hcc⟩, hd⟩, he⟩ := hc
   refine ⟨⟨⟨⟨ha, hb⟩, hcc⟩, ?_⟩, he⟩
@@ -194,7 +221,7 @@ theorem okCallFS_raise {P : LoadP} {x : FF.S} {name : Name} {args : List Arg} {k
     simp only [Bool.or_eq_true] at hd ⊢
     rcases hd with hd | hd
     · exact .inl (G.okCallSX_raise h hd)
-    · exact .inr hd
+    · exact .inr (cloOk_raise h hd)
   · rw [hp, Bool.cond_true] at hd
     rw [Bool.cond_true]
     exact hd

@@ -1,0 +1,35 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.H35
+import host.sim.template.a4pre_first_tail_x15_r0_body.H36
+import host.sim.conv.NClean
+import host.sim.conv.CompactShift
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
+
+/-! Glue piece 131 of chain `PRE_first_tail_x15_r0_body` (boundaries 1151 to 1153): the native bookkeeping's step. -/
+
+def PRE_first_tail_x15_r0_body.gh131 : List Nat := [20770, 20771, 20772, 20773, 20774, 20775, 20776]
+def PRE_first_tail_x15_r0_body.gn131 : List Nat := [17862, 17863, 17864, 17865]
+def PRE_first_tail_x15_r0_body.gi131 : List Nat := []
+kernel_rfl PRE_first_tail_x15_r0_body.gkA131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1151.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.gh131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.arrs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkO131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.objs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1151.ffi).mlx.objs (PRE_first_tail_x15_r0_body.gh131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.objs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkN131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.nodes = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1151.ffi).mlx.nodes (PRE_first_tail_x15_r0_body.gn131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.nodes.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkI131 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.items = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1151.ffi).mlx.items (PRE_first_tail_x15_r0_body.gi131.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx.items.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gbd131 : (PRE_first_tail_x15_r0_body.gh131 ++ PRE_first_tail_x15_r0_body.gn131 ++ PRE_first_tail_x15_r0_body.gi131).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gle131 : Conv.Cnt.leB (⟨20770, 17862, 2777253, 5636⟩ : Conv.Cnt) (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gck131 : Conv.ncleanListB (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx PRE_first_tail_x15_r0_body.gh131 PRE_first_tail_x15_r0_body.gn131 PRE_first_tail_x15_r0_body.gi131 = true
+theorem PRE_first_tail_x15_r0_body.gncl131 (h : Conv.NClean (⟨20770, 17862, 2777253, 5636⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1151.ffi).mlx) : Conv.NClean (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s1153.ffi).mlx :=
+  Conv.NClean.stepKeep h PRE_first_tail_x15_r0_body.gle131 PRE_first_tail_x15_r0_body.gkA131 PRE_first_tail_x15_r0_body.gkO131 PRE_first_tail_x15_r0_body.gkN131 PRE_first_tail_x15_r0_body.gkI131 PRE_first_tail_x15_r0_body.gbd131 PRE_first_tail_x15_r0_body.gck131
+
+-- the JS bookkeeping's step
+def PRE_first_tail_x15_r0_body.gjh131 : List Nat := [2777211, 2777223, 2777224, 2777225, 2777226, 2777253, 2777254, 2777255, 2777256, 2777257, 2777258, 2777259, 2777260, 2777261, 2777262, 2777263, 2777264, 2777265, 2777266, 2777267, 2777268, 2777269, 2777270, 2777271, 2777272, 2777273, 2777274, 2777275, 2777276, 2777277, 2777278, 2777279, 2777280, 2777281, 2777282, 2777283, 2777284, 2777285, 2777286, 2777287, 2777288, 2777289, 2777290, 2777291, 2777292, 2777293, 2777294, 2777295, 2777296, 2777297, 2777298, 2777299, 2777300, 2777301, 2777302, 2777303, 2777304, 2777305, 2777306, 2777307, 2777308, 2777309, 2777310, 2777311, 2777312, 2777313, 2777314, 2777315, 2777316, 2777317, 2777318, 2777319, 2777320, 2777321, 2777322, 2777323, 2777324, 2777325, 2777326, 2777327, 2777328, 2777329, 2777330, 2777331, 2777332, 2777333, 2777334, 2777335, 2777336, 2777337, 2777338, 2777339, 2777340, 2777341, 2777342, 2777343, 2777344, 2777345, 2777346, 2777347, 2777348, 2777349, 2777350, 2777351, 2777352, 2777353, 2777354, 2777355, 2777356, 2777357, 2777358, 2777359, 2777360, 2777361, 2777362, 2777363, 2777364, 2777365, 2777366, 2777367, 2777368, 2777369, 2777370, 2777371, 2777372, 2777373, 2777374, 2777375, 2777376, 2777377, 2777378, 2777379, 2777380, 2777381, 2777382, 2777383, 2777384, 2777385, 2777386, 2777387, 2777388, 2777389, 2777390, 2777391, 2777392, 2777393, 2777394, 2777395, 2777396, 2777397, 2777398, 2777399, 2777400, 2777401, 2777402, 2777403, 2777404, 2777405, 2777406, 2777407, 2777408, 2777409, 2777410, 2777411, 2777412, 2777413, 2777414, 2777415, 2777416, 2777417, 2777418, 2777419, 2777420, 2777421, 2777422, 2777423, 2777424, 2777425, 2777426, 2777427, 2777428, 2777429, 2777430, 2777431, 2777432, 2777433, 2777434, 2777435, 2777436, 2777437, 2777438, 2777439, 2777440, 2777441, 2777442, 2777443, 2777444, 2777445, 2777446, 2777447, 2777448, 2777449, 2777450, 2777451, 2777452, 2777453, 2777454, 2777455, 2777456, 2777457, 2777458, 2777459, 2777460, 2777461, 2777462, 2777463, 2777464, 2777465, 2777466, 2777467, 2777468, 2777469, 2777470, 2777471, 2777472, 2777473, 2777474, 2777475, 2777476, 2777477, 2777478, 2777479, 2777480, 2777481, 2777482, 2777483, 2777484, 2777485, 2777486, 2777487, 2777488, 2777489, 2777490, 2777491, 2777492, 2777493, 2777494, 2777495, 2777496, 2777497, 2777498, 2777499, 2777500, 2777501, 2777502, 2777503, 2777504, 2777505, 2777506, 2777507, 2777508, 2777509, 2777510, 2777511, 2777512, 2777513, 2777514, 2777515, 2777516, 2777517, 2777518, 2777519, 2777520, 2777521, 2777522, 2777523, 2777524, 2777525, 2777526, 2777527, 2777528, 2777529, 2777530, 2777531, 2777532, 2777533, 2777534, 2777535, 2777536, 2777537, 2777538, 2777539, 2777540]
+kernel_rfl PRE_first_tail_x15_r0_body.gjk131 : PRE_first_tail_x15_r0_body.s1153.heap = Stage.setAll PRE_first_tail_x15_r0_body.s1151.heap (PRE_first_tail_x15_r0_body.gjh131.filterMap fun a => (PRE_first_tail_x15_r0_body.s1153.heap.get a).map (a, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gjbd131 : PRE_first_tail_x15_r0_body.gjh131.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gjc131 : Conv.jcleanListB (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1153 PRE_first_tail_x15_r0_body.gjh131 = true
+theorem PRE_first_tail_x15_r0_body.gjcl131 (h : Conv.JClean (⟨20770, 17862, 2777253, 5636⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1151) : Conv.JClean (⟨20777, 17866, 2777541, 5653⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s1153 :=
+  Conv.JClean.step h (Conv.Cnt.le_of_leB PRE_first_tail_x15_r0_body.gle131)
+    (Conv.heap_off_setAll PRE_first_tail_x15_r0_body.gjk131 fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x15_r0_body.gjbd131 a ha)) PRE_first_tail_x15_r0_body.gjc131
+
+end Host.Load.Run.Tpl

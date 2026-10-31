@@ -198,13 +198,14 @@ theorem fullCloSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSrv
     {name : Name} {args : List Arg} (hsrv : Srv M ν S C) (hr : FullR P NB M S.tab.length x y)
     (hm : Host.Load.isMlx name = true) (hp : nameEq name Host.Mlx.FfiAne.payloadName = false)
     (hact : (bridgeOf x).active = false) (hok : cloOk P (mlxOf x) name args = true)
-    (hobs : obsOk (mlxOf x) name args = true) (hsupp : ∀ a ∈ args, Supp.arg (fun _ => True) S.tab.length a) :
+    (hobs : obsOk (mlxOf x) name args = true) (hsupp : ∀ a ∈ args, Supp.arg (fun _ => True) S.tab.length a)
+    (hsm : G.cloSmall ν S (mlxOf x) name args) :
     MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullR P NB) M' S'.tab.length r r') S C
       (FF.call x name args) (FF.call y name (args.map M.arg)) := by
   unfold cloOk at hok
   split at hok
   · rename_i sy hsym
-    have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hok hsupp hr.pend)
+    have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hok hsupp hr.pend hsm)
     have hkl := G.NativeOkX.clo_kern hok
     obtain ⟨n1, n2, n3, n4, -, n6, n7, n8⟩ := G.NativeOkX.clo_not hok
     have hss : isSymShape name = false := by
@@ -222,21 +223,22 @@ def okCallFS (P : LoadP) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
     (bif G.symPath (mlxOf x) name args then G.symShapeOk P (mlxOf x) name args
       else G.okCallSX P (toLoad x) name args || cloOk P (mlxOf x) name args) && obsOk (mlxOf x) name args
 
-/-- **The numeric premise**, by the same split. -/
+/-- **The numeric premise**, by the same split, with an apply's replay over symbolic shapes (`G.cloSmall`). -/
 def smallFS (ν : Nat → F64) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Prop :=
   (G.symPath (mlxOf x) name args = true → G.symShapeSmall ν S (mlxOf x) name args) ∧
-    (G.symPath (mlxOf x) name args = false → smallFX ν S x name args)
+    (G.symPath (mlxOf x) name args = false → smallFX ν S x name args ∧ G.cloSmall ν S (mlxOf x) name args)
 
 /-- The decider of `smallFS` (irreducible, as `smallFB`). -/
 @[irreducible] def smallFSB (VB : Nat → Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
-  bif G.symPath (mlxOf x) name args then G.symShapeSmallB VB S (mlxOf x) name args else smallFXB VB S x name args
+  bif G.symPath (mlxOf x) name args then G.symShapeSmallB VB S (mlxOf x) name args
+  else smallFXB VB S x name args && G.cloSmallB VB S (mlxOf x) name args
 
 theorem smallFSB_sound {VB : Nat → Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
     (hν : ∀ v, ∃ k ≤ VB v, ν v = F64.ofNat k) (h : smallFSB VB S x name args = true) : smallFS ν S x name args := by
   unfold smallFSB at h
   constructor
   · intro hp; rw [hp, Bool.cond_true] at h; exact G.symShapeSmallB_sound h hν
-  · intro hp; rw [hp, Bool.cond_false] at h; exact smallFXB_sound hν h
+  · intro hp; rw [hp, Bool.cond_false, Bool.and_eq_true] at h; exact ⟨smallFXB_sound hν h.1, G.cloSmallB_sound hν h.2⟩
 
 /-- **The full world's native-call simulation** with the calls the symbolic-shape layer completes and
 the forward's operations over symbolic shapes, the bridge inactive. -/
@@ -250,8 +252,8 @@ theorem fullCallSimS (P : LoadP) (NB : Nat) : FfiCallSim FF (FullR P NB) (okCall
       obtain ⟨⟨⟨⟨hm, hp⟩, hact⟩, hsx | hvs⟩, hobs⟩ := hok
       · have hok' : okCallFX P x name args = true := by
           unfold okCallFX; simp only [hm, hp, hact, hsx, hobs, Bool.not_false, Bool.and_self]
-        exact (fullCallSimX P NB).call M ν S C x y name args hsrv hr hok' hsupp (hsm.2 hpath)
-      · exact fullCloSim hsrv hr hm hp hact hvs hobs hsupp
+        exact (fullCallSimX P NB).call M ν S C x y name args hsrv hr hok' hsupp (hsm.2 hpath).1
+      · exact fullCloSim hsrv hr hm hp hact hvs hobs hsupp (hsm.2 hpath).2
     · unfold okCallFS at hok
       rw [hpath] at hok
       simp only [Bool.cond_true, Bool.and_eq_true, Bool.not_eq_true'] at hok
@@ -263,6 +265,18 @@ theorem symShapeOk_rest (P : LoadP) (r : List NumV) : G.symShapeOk { P with rest
   unfold G.symShapeOk
   split <;> rfl
 
+theorem clRecord_rest (P : LoadP) (r : List NumV) :
+    G.NativeOkX.clRecord { P with rest := r } = G.NativeOkX.clRecord P := by
+  funext x args
+  unfold G.NativeOkX.clRecord
+  split <;> rfl
+
+theorem clApplyV_rest (P : LoadP) (r : List NumV) :
+    G.NativeOkX.clApplyV { P with rest := r } = G.NativeOkX.clApplyV P := by
+  funext x args
+  unfold G.NativeOkX.clApplyV
+  split <;> rfl
+
 theorem cloOk_rest (P : LoadP) (r : List NumV) : cloOk { P with rest := r } = cloOk P := by
   funext x name args
   unfold cloOk
@@ -271,8 +285,7 @@ theorem cloOk_rest (P : LoadP) (r : List NumV) : cloOk { P with rest := r } = cl
     split
     · unfold G.NativeOkX.vset
       split <;> rfl
-    · unfold G.NativeOkX.clRecord
-      split <;> rfl
+    · rw [clRecord_rest, clApplyV_rest]
     · unfold G.NativeOkX.life
       split <;> rfl
   · rfl

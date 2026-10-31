@@ -1,0 +1,16 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.H40
+import host.sim.template.a4pre_first_tail_x15_r0_body.OkB
+import host.sim.Chunk
+import host.sim.template.BootEq
+import host.sim.template.Bridges
+-- Serialized lookahead: [1,2]
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim
+boot_rfl PRE_first_tail_x15_r0_body.stepA381 from PRE_first_tail_x15_r0_body.s1288 to PRE_first_tail_x15_r0_body.s1289 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s1288).run PRE_first_tail_x15_r0_body.S1288 = some (PRE_first_tail_x15_r0_body.s1289, PRE_first_tail_x15_r0_body.S1289)
+boot_rfl PRE_first_tail_x15_r0_body.patchB381 from PRE_first_tail_x15_r0_body.s1289 to PRE_first_tail_x15_r0_body.s1290 : interpS (Host.Ts.Sim.Disp.sizeS PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s1289).run PRE_first_tail_x15_r0_body.S1289 = some (PRE_first_tail_x15_r0_body.s1290, PRE_first_tail_x15_r0_body.S1290)
+boot_rfl PRE_first_tail_x15_r0_body.k1290 from PRE_first_tail_x15_r0_body.s1290 to PRE_first_tail_x15_r0_body.s1291 : runOk PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.okB381 ((nth? PRE_first_tail_x15_r0_body.ks 1290).getD 0) PRE_first_tail_x15_r0_body.s1290 PRE_first_tail_x15_r0_body.S1290 = some (PRE_first_tail_x15_r0_body.s1291, PRE_first_tail_x15_r0_body.S1291)
+boot_rfl PRE_first_tail_x15_r0_body.stepA382 from PRE_first_tail_x15_r0_body.s1291 to PRE_first_tail_x15_r0_body.s1292 : interpS (step PRE_first_tail_x15_r0_body.F PRE_first_tail_x15_r0_body.s1291).run PRE_first_tail_x15_r0_body.S1291 = some (PRE_first_tail_x15_r0_body.s1292, PRE_first_tail_x15_r0_body.S1292)
+end Host.Load.Run.Tpl

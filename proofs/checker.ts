@@ -12,7 +12,7 @@ open Lean Elab Command
 
 -- Each local declaration is traversed once across all theorem roots. Imported
 -- declarations retain Lean's own precomputed transitive axiom collection.
-private partial def visit (env : Environment) (root name : Name) : StateRefT NameSet CommandElabM Unit := do
+private partial def visit (env : Environment) (root name : Lean.Name) : StateRefT NameSet CommandElabM Unit := do
   if (← get).contains name then return
   modify fun seen => seen.insert name
   if (env.getModuleIdxFor? name).isSome then
@@ -20,7 +20,7 @@ private partial def visit (env : Environment) (root name : Name) : StateRefT Nam
       unless #[\`propext, \`Classical.choice, \`Quot.sound].contains axiomName do
         throwError "Forbidden axiom {axiomName} in {root}"
     return
-  let expression (value : Expr) := value.getUsedConstants.forM (visit env root)
+  let expression (value : Lean.Expr) := value.getUsedConstants.forM (visit env root)
   -- Match Lean.Util.CollectAxioms, including types, opaque bodies, recursors
   -- and inductive constructors. Consult the checked kernel environment.
   match env.checked.get.find? name with
@@ -41,12 +41,12 @@ open Lean Elab Command in
 run_cmd do
   let env ← getEnv
   let declaredAxioms := env.constants.foldStage2 (fun ns name info =>
-    if info.isAxiom then ns.push name else ns) (#[] : Array Name)
+    if info.isAxiom then ns.push name else ns) (#[] : Array Lean.Name)
   for name in declaredAxioms do
     unless #[\`propext, \`Classical.choice, \`Quot.sound].contains name do
       throwError "Forbidden axiom declaration {name}"
   let names := env.constants.foldStage2 (fun ns name info =>
-    if info.isTheorem then ns.push name else ns) (#[] : Array Name)
+    if info.isTheorem then ns.push name else ns) (#[] : Array Lean.Name)
   (names.forM fun name => MlxProofAxiomAudit.visit env name name).run' ({} : NameSet)
   logInfo m!"Axiom audit passed: {names.size} theorems"
 `;

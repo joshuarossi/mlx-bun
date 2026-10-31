@@ -1,0 +1,15 @@
+{
+ "glue": ["g0b"],
+ "stages": [],
+ "stop": "call:nextPrefillStep",
+ "frames": [2665],
+ "wide": [[4910, ".memo []"]],
+ "bridges": ["len"],
+ "lens": [[2665, 9]],
+ "baseVals": [[9, 125], [10, 2048]],
+ "vars": [[9, "L"], [10, "C"]],
+ "startTokens": [1, 2],
+ "accept": "jsjxs",
+ "D0": 4096,
+ "loadP": [18151, 131072, 1099511627776, 15235, 15235]
+}

@@ -1,0 +1,46 @@
+{
+ "row": "setup_h5.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "stages": [
+  {
+   "fn": "chunkSize",
+   "piece": "chunk",
+   "name": "chunk_K64"
+  }
+ ],
+ "stop": "steps:1",
+ "frames": [
+  2665
+ ],
+ "wide": [
+  [
+   4910,
+   ".memo []"
+  ]
+ ],
+ "baseVals": [
+  [
+   9,
+   218453
+  ]
+ ],
+ "vars": [
+  [
+   9,
+   "L"
+  ]
+ ],
+ "startTokens": [
+  1,
+  2
+ ],
+ "accept": "jsjxs",
+ "D0": 4096,
+ "loadP": [
+  18151,
+  131072,
+  1099511627776,
+  15235,
+  15235
+ ]
+}

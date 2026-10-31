@@ -1,0 +1,21 @@
+import host.sim.compose.a4b.VWDispatchCompact
+set_option Elab.async false
+namespace Host.Ts.Sim.Compose.VWFirst
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl
+
+def vwRows : List Row := [first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0,
+  first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0,
+  first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0,
+  first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0]
+
+noncomputable def disp_VW__g1_DTtail_first__g2_first (NB T : Nat) (tk : Nat → Nat) :
+    StagePiece FF vwRows [] (dispatchCut NB T tk) (g2Cut NB T tk) where
+  m := npsMap
+  n := 425
+  O := PRE_first_tail_x15_r0.st2.S0.oracle
+  chk r hr := List.all_eq_true.mp PRE_first_tail_x15_r0.chk_site2 r hr
+  ok _ _ i _ ho := StageCall.intro (CutConv.refl _)
+    (dispatch_merged NB T tk i ho.1) dispatch_compact
+
+end Host.Ts.Sim.Compose.VWFirst

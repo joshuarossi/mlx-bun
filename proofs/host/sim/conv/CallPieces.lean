@@ -288,7 +288,8 @@ theorem post_call_val {VB : Nat → Nat} {ν : Nat → F64} {i : Host.Ts.Sim.Lin
 /-! ## Results at several quantities
 
 A compaction's results need not share one quantity: the decode chains' forward call exports
-`u + 1` and `int32(u + 1)` (the end quantity) and `int32(u)` (the offset), `u` the offset variable
+`u + 1`, `int32(u + 1)` and `int32(u + 1) - 0` (the end quantity) and `int32(u)` (the offset), `u` the offset
+variable
 (`decQ`). `post_call_valQ` is `post_call_val` with each result at its own quantity (`qs`, the map's
 entries `cws.zip qs`). -/
 
@@ -296,7 +297,8 @@ entries `cws.zip qs`). -/
 def decQ (u : Nat) (E : SymE) : Option Q :=
   bif decide (E = .bin .add (.var u) litOne) then some .e
   else bif decide (E = .un .int32 (.var u)) then some .o
-  else bif decide (E = .un .int32 (.bin .add (.var u) litOne)) then some .e else none
+  else bif decide (E = .un .int32 (.bin .add (.var u) litOne)) then some .e
+  else bif decide (E = .bin .sub (.un .int32 (.bin .add (.var u) litOne)) litZero) then some .e else none
 
 /-- A decode result form's value: the offset `o` or `o + 1`, the instance's end quantity `o + 1`. -/
 theorem decQ_eval {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst} {u : Nat} {E : SymE} {q : Q}
@@ -321,7 +323,16 @@ theorem decQ_eval {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst} {u : Nat} {E
         cases h
         rw [hn]; exact eval_int32 (eval_succ_lit hu (by omega)) hb
       · rw [decide_eq_false h3, Bool.cond_false] at h
-        cases h
+        by_cases h4 : E = .bin .sub (.un .int32 (.bin .add (.var u) litOne)) litZero
+        · subst h4
+          rw [decide_eq_true rfl, Bool.cond_true] at h
+          cases h
+          have e := eval_sub (eval_int32 (eval_succ_lit hu (by omega)) hb) (eval_litZero (ν := ν)) (by omega)
+            (Nat.zero_le _)
+          rw [Nat.sub_zero] at e
+          rw [hn]; exact e
+        · rw [decide_eq_false h4, Bool.cond_false] at h
+          cases h
 
 theorem nth?_zip_some {α β : Type} (l1 : List α) : ∀ {l2 : List β} {j : Nat} {a : α} {b : β},
     nth? (l1.zip l2) j = some (a, b) → nth? l1 j = some a ∧ nth? l2 j = some b := by
@@ -352,6 +363,47 @@ theorem hEs_of_decQ {Es : List (Option SymE)} {u : Nat} {ν : Nat → F64} {i : 
     | none => simp [Option.bind, hq] at hs
     | some q =>
       refine ⟨E, q, rfl, ?_, decQ_eval hq hu hn hb⟩
+      rw [nth?_map, ho]; simp [Option.bind, hq]
+
+
+/-! ## A second base: the capacity
+
+The growing chains also export the capacity's growth `c + 256` (`c` the capacity variable, at the
+grown capacity's quantity): `decQC` is `decQ` with that form. -/
+
+/-- The result forms at the offset variable `u` and the capacity variable `c`. -/
+def decQC (u c : Nat) (E : SymE) : Option Q :=
+  bif decide (E = .bin .add (.var c) lit256) then some .cap1 else decQ u E
+
+theorem decQC_eval {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst} {u c : Nat} {E : SymE} {q : Q}
+    (h : decQC u c E = some q) (hu : ν u = F64.ofNat (i.get .o)) (hn : i.get .e = i.get .o + 1)
+    (hb : i.get .o + 1 < 2 ^ 31) (hc : ν c = F64.ofNat (i.get .cap)) (hcap : i.get .cap1 = i.get .cap + 256)
+    (hcb : i.get .cap + 256 < 2 ^ 53) : E.eval ν = F64.ofNat (i.get q) := by
+  unfold decQC at h
+  by_cases h1 : E = .bin .add (.var c) lit256
+  · subst h1
+    rw [decide_eq_true rfl, Bool.cond_true] at h
+    cases h
+    rw [hcap]; exact eval_add (a := .var c) hc (eval_lit256 (ν := ν)) hcb
+  · rw [decide_eq_false h1, Bool.cond_false] at h
+    exact decQ_eval h hu hn hb
+
+/-- `hEs_of_decQ` with the capacity form. -/
+theorem hEs_of_decQC {Es : List (Option SymE)} {u c : Nat} {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst}
+    (hall : Es.all (fun o => (o.bind (decQC u c)).isSome) = true) (hu : ν u = F64.ofNat (i.get .o))
+    (hn : i.get .e = i.get .o + 1) (hb : i.get .o + 1 < 2 ^ 31) (hc : ν c = F64.ofNat (i.get .cap))
+    (hcap : i.get .cap1 = i.get .cap + 256) (hcb : i.get .cap + 256 < 2 ^ 53) :
+    ∀ j o, nth? Es j = some o → ∃ E q, o = some E ∧
+      nth? (Es.map fun o => (o.bind (decQC u c)).getD .o) j = some q ∧ E.eval ν = F64.ofNat (i.get q) := by
+  intro j o ho
+  have hs := List.all_eq_true.mp hall o (nth?_mem_some ho)
+  cases o with
+  | none => cases hs
+  | some E =>
+    cases hq : decQC u c E with
+    | none => simp [Option.bind, hq] at hs
+    | some q =>
+      refine ⟨E, q, rfl, ?_, decQC_eval hq hu hn hb hc hcap hcb⟩
       rw [nth?_map, ho]; simp [Option.bind, hq]
 
 /-- `mapOk_post` with each result at its own quantity. -/

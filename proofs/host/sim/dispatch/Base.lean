@@ -26,6 +26,9 @@ structure JSP (F : Ffi) where
   isRegion : F.S → Nat → Bool
   /-- Frames beyond framed arrays, by source address (`Wp`). -/
   wide : List (Nat × WFrame) := []
+  /-- The smallness decider of native continuations at a callback's return (`FfiBackSimS`), on the
+  server after decoding; by default no condition. -/
+  smallBackB : SSrv → F.S → Arg → Bool := fun _ _ _ => true
 
 /-- The run's context agrees with the parameters. -/
 def Kp {F : Ffi} (P : JSP F) (K : Ctx) : Prop :=

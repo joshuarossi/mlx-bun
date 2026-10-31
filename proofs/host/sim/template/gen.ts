@@ -32,18 +32,24 @@ import { type Bridge, type Meta, framesAdded, kindFacts, transitionLine, worlds 
 type Addr = { module: string; name: string; fwd: number; emit: number; cE: number; tok: number; nxt: number };
 
 const argv = process.argv.slice(2);
+const fromI = argv.indexOf("--from-boundary");
+const fromBoundary = fromI < 0 ? 0 : Number(argv[fromI + 1]);
+const bootBridge = process.env.CHAIN_BOOT_BRIDGE === "1";
+if (fromI >= 0) argv.splice(fromI, 2);
 const mi = argv.indexOf("--meta");
 let meta: Meta | undefined;
 if (mi >= 0) {
-  if (!argv[mi + 1]) throw new Error("--meta needs a seg.json path");
-  meta = JSON.parse(readFileSync(argv[mi + 1], "utf8")) as Meta;
+  const path = argv[mi + 1];
+  if (!path) throw new Error("--meta needs a seg.json path");
+  meta = JSON.parse(readFileSync(path, "utf8")) as Meta;
   argv.splice(mi, 2);
 }
 const ai = argv.indexOf("--addr");
 let addr: Addr | undefined;
 if (ai >= 0) {
-  if (!argv[ai + 1]) throw new Error("--addr needs an addr.json path");
-  addr = JSON.parse(readFileSync(argv[ai + 1], "utf8")) as Addr;
+  const path = argv[ai + 1];
+  if (!path) throw new Error("--addr needs an addr.json path");
+  addr = JSON.parse(readFileSync(path, "utf8")) as Addr;
   argv.splice(ai, 2);
 }
 const wi = argv.indexOf("--world");
@@ -66,16 +72,19 @@ if (oi >= 0) {
   argv.splice(oi, 2);
 }
 const world = worlds[worldArg ?? meta?.world ?? "lf"]!;
-const [dir, name, last, okArg, okModuleArg, iaArg, aNArg] = argv;
+const [dirArg, nameArg, lastArg, okArg, okModuleArg, iaArg, aNArg] = argv;
+if (!dirArg || !nameArg || !lastArg) {
+  throw new Error("usage: gen.ts <case-dir> <Name> <T1> [<ok> <ok-module> [<ia> <aN>]] [--meta <seg.json>] [--addr <addr.json>] [--world <w>] [--out <dir>]");
+}
+const dir = dirArg, name = nameArg, last = lastArg;
 // another world's checked runs default to its acceptance function
 const okMod0 = okModuleArg ?? (worldArg && worldArg !== "lf" ? world.okModule : undefined);
 const ok = okMeta ? `${name}.okB0` : okArg ?? (worldArg && worldArg !== "lf" ? world.ok : undefined);
 const okModule = okMeta ? `host.sim.template.${dir.replaceAll("/", ".")}.OkB` : okMod0;
-if (!dir || !name || !last) {
-  throw new Error("usage: gen.ts <case-dir> <Name> <T1> [<ok> <ok-module> [<ia> <aN>]] [--meta <seg.json>] [--addr <addr.json>] [--world <w>] [--out <dir>]");
-}
 const n = Number(last);
 if (!Number.isSafeInteger(n) || n < 1) throw new Error("T1 must be a positive integer");
+if (!Number.isSafeInteger(fromBoundary) || fromBoundary < 0 || fromBoundary >= n)
+  throw new Error("--from-boundary must name a boundary before T1");
 if (meta && meta.T1 !== n) throw new Error(`--meta: T1 ${meta.T1} ≠ ${n}`);
 const frames0 = meta?.frames ?? (addr ? [addr.fwd, addr.emit] : [2673447, 12502]);
 const bridges: Bridge[] = meta && meta.bridges.length > 0 ? meta.bridges
@@ -116,8 +125,13 @@ const jspOf = (fr: number[]) => loadP && world.jspP
 const backP = loadP && world.jspP && loadP[3] === loadP[4] ? `⟨${loadP.join(", ")}, []⟩` : undefined;
 // seg.json "accept": `js`, `jsk`, `jsj` (`Disp.okJSJ`, kernel-creating chains, its counter offset bound "D0"), `auto` (`jsk` at a band-free P)
 const accept = process.env.CHAIN_ACCEPT ?? (meta as { accept?: string })?.accept ?? "auto", D0 = Number(process.env.CHAIN_D0 ?? (meta as { D0?: number })?.D0 ?? 4096);
-const okE = (fr: number[]) => accept === "jskx" && backP ? `Disp.okJSK (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
+if (accept === "jsjxs" && (!backP || worldArg && worldArg !== "full"))
+  throw new Error("--accept jsjxs needs the full world and band-free loadP in seg.json");
+const okE = (fr: number[]) => accept === "jsjxs" ? `Disp.okJSJ (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
+  : accept === "jskx" && backP ? `Disp.okJSK (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
   : accept === "jsj" && backP ? `Disp.okJSJ (${jspOf(fr)}) (Host.Ts.Sim.Full.okBackF ${backP}) ${D0}`
+  // okJSJ with the symbolic-shape continuation returns (`Template.fullJSPPDS`, `Full.okBackFS`; A1's BackSim)
+  : accept === "jsjs" && backP ? `Disp.okJSJ (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPDS ")}) (Host.Ts.Sim.Full.okBackFS ${backP}) ${D0}`
   : (accept === "jsk" || accept === "auto") && backP ? `Disp.okJSK (${jspOf(fr)}) (Host.Ts.Sim.Full.okBackF ${backP})`
   // a banded P (a decode loop's): `okJSK` without continuations (its JS-level disjunct, `Full.fullStepSimXBK`)
   : accept === "js" ? `Disp.okJS (${jspOf(fr)})` : `Disp.okJSK (${jspOf(fr)}) (fun _ _ => false)`;
@@ -126,7 +140,7 @@ const root = outArg ?? join(import.meta.dir, dir);
 mkdirSync(root, { recursive: true });
 const mod = (file: string) => `host.sim.template.${dir.replaceAll("/", ".")}.${file}`;
 const header = (...imps: string[]) =>
-  `${imps.map(i => `import ${i}\n`).join("")}set_option Elab.async false\nnamespace Host.Load.Run.Tpl\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n`;
+  `${imps.map(i => `import ${i}\n`).join("")}${process.env.CHAIN_QUEUE ? `-- Serialized lookahead: ${process.env.CHAIN_QUEUE}\n` : ""}set_option Elab.async false\nnamespace Host.Load.Run.Tpl\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n`;
 const per = 32;
 const hCount = Math.floor(n / per) + 1;
 for (let j = 0; j < hCount; j++) {
@@ -145,7 +159,7 @@ if (split || okMeta) {
     : [`/-- The acceptance function of \`${name}\` after bridge ${k + 1} (${b.kind} at boundary ${b.ia}). -/\n`,
       `noncomputable def ${okOf(k + 1)} : St ${world.S} → SSrv → Bool := ${okE(framesOf(k + 1))}\n\n`]);
   writeFileSync(join(root, "OkB.lean"), [
-    `import ${okMod0}\n`, backP ? `import host.sim.full.BackSim\n${accept === "jsj" ? "import host.sim.dispatch.OkJs\n" : ""}` : "", "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim\n\n", ...def0, ...defs.flat(),
+    `import ${okMod0}\n`, backP ? `import host.sim.full.BackSim\n${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? "import host.sim.dispatch.OkJs\n" : ""}` : "", "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim\n\n", ...def0, ...defs.flat(),
     "end Host.Load.Run.Tpl\n"].join(""));
 }
 // chunk i's role: a bridge's step into (i = ia - 1) or out of (i = ia) its state, or segment k's chunk
@@ -163,16 +177,24 @@ for (let j = 0; j < cCount; j++) {
   const states = mod(`H${Math.floor((lastChunk + 1) / per)}`);
   if (ok && okModule) {
     const k = [header(states, split || okMeta ? mod("OkB") : okModule, "host.sim.Chunk",
+      ...(bootBridge ? ["host.sim.template.BootEq"] : []),
       ...(bridges.some(b => b.kind !== "spread" && b.kind !== "stage") ? ["host.sim.template.Bridges"] : [])), "open Host.Ts Host.Ts.Sim\n"];
     for (let i = j * cPer; i <= lastChunk; i++) {
+      if (i < fromBoundary) continue;
       const r = role(i);
-      if ("seg" in r) k.push(`sim_chunk ${name} ${okOf(r.seg)} ${i}\n`);
+      const checked = (proof: string, statement: string) => bootBridge
+        ? `boot_rfl ${proof} from ${name}.s${i} to ${name}.s${i + 1} : ${statement}\n`
+        : `kernel_rfl ${proof} : ${statement}\n`;
+      if ("seg" in r) k.push(bootBridge
+        ? checked(`${name}.k${i}`, `runOk ${name}.F ${okOf(r.seg)} ((nth? ${name}.ks ${i}).getD 0) ${name}.s${i} ${name}.S${i} = some (${name}.s${i + 1}, ${name}.S${i + 1})`)
+        : `sim_chunk ${name} ${okOf(r.seg)} ${i}\n`);
       else if (r.step === "A") {
-        k.push(`kernel_rfl ${name}.${stepOf(r.k, r.step)} : interpS (step ${name}.F ${name}.s${i}).run ${name}.S${i} = some (${name}.s${i + 1}, ${name}.S${i + 1})\n`);
+        k.push(checked(`${name}.${stepOf(r.k, r.step)}`, `interpS (step ${name}.F ${name}.s${i}).run ${name}.S${i} = some (${name}.s${i + 1}, ${name}.S${i + 1})`));
       } else {
         // the bridge's transition: the machine's step, the lemma's patched template, or none (a stage conversion)
         const line = i === bridges[r.k]!.ia ? transitionLine(name, bridges[r.k]!, one ? "" : String(r.k + 1)) : undefined;
-        if (line) k.push(line);
+        if (line) k.push(bootBridge ? line.replace(/^kernel_rfl (\S+) : /,
+          `boot_rfl $1 from ${name}.s${i} to ${name}.s${i + 1} : `) : line);
       }
     }
     k.push("end Host.Load.Run.Tpl\n");
@@ -184,11 +206,14 @@ if (ok && okModule) {
   // segment k runs from boundary (k = 0 ? 0 : ia_k + 1) to (k = N ? T1 : ia_{k+1} - 1)
   const segs = Array.from({ length: bridges.length + 1 }, (_, k) =>
     [k === 0 ? 0 : lastOf(bridges[k - 1]!) + 1, k === bridges.length ? n : bridges[k]!.ia - 1] as const);
-  const body = !split ? [`sim_chain_run ${name} ${ok}\n`]
-    : one ? [`sim_chain_range ${name} ${ok} 0 ${segs[0]![1]} runA\n`, `sim_chain_range ${name} ${okOf(1)} ${segs[1]![0]} ${n} runB\n`]
-    : segs.flatMap(([a, b], k) => (a < b ? [`sim_chain_range ${name} ${okOf(k)} ${a} ${b} runSeg${k}\n`] : []));
+  if (split && segs.some(([a, b]) => a < fromBoundary && fromBoundary < b))
+    throw new Error("--from-boundary must align with a glue boundary or stage call");
+  const body = !split ? [fromBoundary === 0 ? `sim_chain_run ${name} ${ok}\n`
+      : `sim_chain_range ${name} ${ok} ${fromBoundary} ${n} runTail\n`]
+    : segs.flatMap(([a, b], k) => a >= fromBoundary && a < b
+      ? [`sim_chain_range ${name} ${okOf(k)} ${a} ${b} ${one ? k === 0 ? "runA" : "runB" : `runSeg${k}`}\n`] : []);
   writeFileSync(join(root, "Run.lean"),
-    [header(...imps, ...(split ? ["host.sim.template.ChainRange"] : [])), "open Host.Ts.Sim Host.Ts.Sim.Template\n", ...body,
+    [header(...imps, ...(split || fromBoundary > 0 ? ["host.sim.template.ChainRange"] : [])), "open Host.Ts.Sim Host.Ts.Sim.Template\n", ...body,
       "end Host.Load.Run.Tpl\n"].join(""));
 }
 if (bridges.some(b => b.kind !== "spread")) {
@@ -201,4 +226,4 @@ if (bridges.some(b => b.kind !== "spread")) {
 }
 const splitLog = !meta && one ? `${bridges[0]!.ia} (aN = ${bridges[0]!.aN})`
   : bridges.map(b => `${b.ia} (${b.kind}, aN = ${b.aN})`).join(", ");
-console.log(`${name}: ${hCount} state modules, ${cCount} chunk modules, chunks 0..${n - 1}${ok ? `, checked runs with ${ok}` : ""}${split ? `, split at ${splitLog}` : ""}`);
+console.log(`${name}: ${hCount} state modules, ${cCount} chunk modules, chunks ${fromBoundary}..${n - 1}${ok ? `, checked runs with ${ok}` : ""}${split ? `, split at ${splitLog}` : ""}`);

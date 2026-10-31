@@ -88,6 +88,10 @@ unsafe def decode (root : Lean.Expr) : M NonScalar := do
       if let some value := (← get).values[e]? then
         out := out.push value
         continue
+      let reduced := e.headBeta
+      if reduced != e then
+        todo := todo.push (.alias e none) |>.push (.enter reduced)
+        continue
       match e with
       | .lit (.natVal n) =>
         let value := boxed n
@@ -98,6 +102,9 @@ unsafe def decode (root : Lean.Expr) : M NonScalar := do
         modify fun d => { d with values := d.values.insert e value }
         out := out.push value
       | .mdata _ body =>
+        todo := todo.push (.alias e none) |>.push (.enter body)
+      | .proj _ _ _ =>
+        let some body ← reduceProj? e | throwError "constructor projection expected: {e}"
         todo := todo.push (.alias e none) |>.push (.enter body)
       | _ =>
         let .const name levels := e.getAppFn | throwError "constructor data expected: {e}"

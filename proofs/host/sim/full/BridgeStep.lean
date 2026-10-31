@@ -47,7 +47,8 @@ theorem aneRunOk_sound {S : SSrv} {x : FF.S} {name : Name} {args : List Arg} (h 
 
 /-- The numeric premise with the bridge active. -/
 def smallFA (ν : Nat → F64) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Prop :=
-  smallFX ν S x name args ∧ (isSymShape name = true → aneRunOk S x name args = true)
+  smallFX ν S x name args ∧ (isSymShape name = true → aneRunOk S x name args = true) ∧
+    G.cloSmall ν S (mlxOf x) name args
 
 /-- **The numeric premise with the bridge inactive or active.** -/
 def smallFX2 (ν : Nat → F64) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Prop :=
@@ -55,7 +56,8 @@ def smallFX2 (ν : Nat → F64) (S : SSrv) (x : FF.S) (name : Name) (args : List
 
 /-- The decider of `smallFX2`. -/
 @[irreducible] def smallFX2B (VB : Nat → Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
-  bif (bridgeOf x).active then smallFXB VB S x name args && (!isSymShape name || aneRunOk S x name args)
+  bif (bridgeOf x).active then smallFXB VB S x name args && (!isSymShape name || aneRunOk S x name args) &&
+    G.cloSmallB VB S (mlxOf x) name args
   else smallFSB VB S x name args
 
 theorem smallFX2B_sound {VB : Nat → Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
@@ -64,9 +66,9 @@ theorem smallFX2B_sound {VB : Nat → Nat} {ν : Nat → F64} {S : SSrv} {x : FF
   constructor
   · intro ha; rw [ha, Bool.cond_false] at h; exact smallFSB_sound hν h
   · intro ha
-    rw [ha, Bool.cond_true, Bool.and_eq_true] at h
-    refine ⟨smallFXB_sound hν h.1, fun hs => ?_⟩
-    have := h.2
+    rw [ha, Bool.cond_true, Bool.and_eq_true, Bool.and_eq_true] at h
+    refine ⟨smallFXB_sound hν h.1.1, fun hs => ?_, G.cloSmallB_sound hν h.2⟩
+    have := h.1.2
     rw [hs] at this
     simpa using this
 
@@ -81,7 +83,7 @@ theorem fullCallSimA_mlx {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S 
     MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullRX P NB) M' S'.tab.length r r') S C
       (FF.call x name args) (FF.call y name (args.map M.arg)) := by
   have hsA : isSymShape name = true → ∀ a S', interpS (Host.Load.Ane.call x.1.1 name args).run S = some (a, S') →
-      a.isSome = true := fun hs => aneRunOk_sound (hsm.2 hs)
+      a.isSome = true := fun hs => aneRunOk_sound (hsm.2.1 hs)
   rw [Bool.or_eq_true] at hok
   rcases hok with hsx | hcl
   · exact fullCallOfA hr hF hm hp hact haft hobs hsupp (kernAccX_of hsx) (arrAccX_of hsx) hsA
@@ -89,7 +91,7 @@ theorem fullCallSimA_mlx {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S 
   · unfold cloOk at hcl
     split at hcl
     · rename_i sy hsym
-      have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hcl hsupp hr.pend)
+      have hg := G.mlx_lift hr.load hm (G.sim_clo hsrv hr.load.mlx hsym hcl hsupp hr.pend hsm.2.2)
       have hkl := G.NativeOkX.clo_kern hcl
       obtain ⟨n1, n2, n3, n4, -, n6, n7, n8⟩ := G.NativeOkX.clo_not hcl
       have hss : isSymShape name = false := by

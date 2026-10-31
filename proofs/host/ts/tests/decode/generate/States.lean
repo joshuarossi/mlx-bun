@@ -1,4 +1,5 @@
 import host.ts.tests.decode.Generate
+import host.ts.Stream
 namespace Host.Ts.Tests.Decode.Generate
 open Host.Ts
 
@@ -8,6 +9,6 @@ cache) abstracted over states 37 … 75: from inside iteration 0 to before
 `makeStats` reads it, every chunk holds for any contents of the array (`P.ac<k>`). -/
 
 set_option maxHeartbeats 0 in
-host_chain_abs P : Host.Mlx.Ffi.ffi, boot0, tab, (fun i => F64.ofNat ([5, 256, 5, 100, 101, 102, 103, 104, 105, 106, 107].getD i 0)), 800000, [10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000], 37, 75, "forwarded"
+host_stream P : Host.Mlx.Ffi.ffi, boot0, tab, (fun i => F64.ofNat ([5, 256, 5, 100, 101, 102, 103, 104, 105, 106, 107].getD i 0)), 10000, 76 abs 37, 75, "forwarded"
 
 end Host.Ts.Tests.Decode.Generate

@@ -75,7 +75,9 @@ theorem relF_frame {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ν : N
     · subst hba; exact Present.of_get ho
     · simp [hba] at hp
   ctl := (Map.ctl_id _).symm
-  stack := (List.map_id'' Map.frame_id _).symm
+  stack := by
+    change s.stack = List.map Map.id.frame s.stack ++ []
+    simpa only [List.append_nil] using (List.map_id'' Map.frame_id s.stack).symm
   jobs := (List.map_id'' Map.job_id _).symm
   stores := (Map.stores_id _).symm
   ffi := h.ffi

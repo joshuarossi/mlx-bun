@@ -13,8 +13,9 @@ operations only over literal input shapes, and graph operations, `astype`, `cont
 each simulation needs: closed and canonical inputs are the relation's; dimensions read by value
 have values (`dimOkV`, and the numeric premise `smallX` for their references, decided by
 `smallXB`); products are bounded statically (`prodBnd`); quantized matmul and normalization check
-literal weights and inner dimensions. `loadFfiCallSimX` is the load world's native-call simulation
-for `okCallSX`. -/
+literal weights and inner dimensions; dequantization checks a literal last weight dimension and
+scales and biases of one shape. `loadFfiCallSimX` is the load world's native-call simulation for
+`okCallSX`. -/
 
 namespace NativeOkX
 variable (P : LoadP) (x : NSt)
@@ -121,6 +122,17 @@ def qmm : List Arg → Bool
     | _, _, _, _ => false
   | _ => false
 
+def dequantize : List Arg → Bool
+  | [o, w, sc, bi, g, b, mode, gs, dt, _] => hdOk x w && hdOk x sc && hdOk x bi && natOk P g && natOk P b &&
+    natOk P gs && natOk P dt && out P x o &&
+    match Host.Mlx.Ffi.arrIns x [w, sc, bi], Host.Mlx.Ffi.optIntArg g, Host.Mlx.Ffi.optIntArg b,
+      Host.Mlx.Ffi.cstrArg mode, Host.Mlx.Ffi.argNat gs, Host.Mlx.Ffi.optIntArg dt with
+    | some ins, some _, some _, some _, some 0, some _ => match Host.Mlx.Ffi.shapesOf x ins with
+      | some [(ws, _), (scs, _), (bis, _)] => lastLit ws && decide (scs = bis)
+      | _ => false
+    | _, _, _, _, _, _ => false
+  | _ => false
+
 def reshape : List Arg → Bool
   | [o, a, sh, n, _] => hdOk x a && dimsOk P sh n && out P x o &&
     match Host.Mlx.Ffi.arrIns x [a], Host.Mlx.Ffi.dimsArg sh n with
@@ -174,6 +186,7 @@ def sym : Host.Mlx.Ffi.Sym → List Arg → Bool
   | .binary => binary P x
   | .rmsNorm => rms P x
   | .qmm => qmm P x
+  | .dequantize => dequantize P x
   | .reshape => reshape P x
   | .sliceDynamic => sliceDynamic P x
   | .zeros => zeros P x

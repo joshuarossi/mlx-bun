@@ -4,12 +4,14 @@ import { fileURLToPath,pathToFileURL } from "node:url";
 import { checkMlxQmvInput4SourceBinding } from "./MlxQmvInput4SourceBinding.ts";
 const revision="1f8e74e3f12f31365464a6867c6579f0e9b29d85";
 const sourceHash="2a007016da606afe569adb9adcc05e00f14558ad2e094bcb4f8974beb53c316f";
+// The parsed proof tracks each addition's contraction choice and preserves the
+// left operand of the first multiply-add (reviewed in c684efc97).
 const pins:Record<string,string>={
   "MlxQmvDot4Syntax": "bba5bd7c71dba5579ef67f27962d1d78ce31cd25c3db678f83a68559da7928be",
-  "MlxQmvDot4Source": "708ec2e951369657470a1a2b56a5b866555967f119278a92abdf9f1b93b05eec",
-  "MlxQmvDot4LoopSource": "c695fa34c75e953094aad8681f86c95819af8bf27d143cf9c25deb0059d3b827",
+  "MlxQmvDot4Source": "23b1674e13fed7f6beb28994e18b3222d320dba75b13ca58bdae043cad75b751",
+  "MlxQmvDot4LoopSource": "7108ba478ce2cc9395507e9e07307ab8e3f495613f49be874a04ba9e87d96b75",
   "MlxQmvDot4FunctionSyntax": "624c468aaabe7a30ca42b456c597aaedc9105672ca910676f694053b05e0bd06",
-  "MlxQmvDot4FunctionSource": "4265141f5749beeae1d84c3cd0c7ff968ca53a6c5519e3c902403a90db3f781f",
+  "MlxQmvDot4FunctionSource": "0e70ecdff670bc0b72ba790ac91bd883390673e12c6484aaf2040e3a6107dac3",
   "MlxQmvDot4TileMemory": "ab106d4598aaedf9e8b1e3d623e260e269de8a4e4845b2190306e5828931f9b9",
   "MlxQmvPrivate4Memory": "1768d9d8c8dfc9ba84b4536122064640c4364317a2cb4566c75d8a9b60dcbf30"
 };

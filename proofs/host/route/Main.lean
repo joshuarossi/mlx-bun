@@ -1,4 +1,5 @@
 import host.route.Gen
+import host.route.PromptLoadedCut
 import host.load.boot.Boot
 import host.load.boot.ane.Ld
 import host.load.boot.ane.Graph
@@ -14,7 +15,7 @@ open Host.Mlx.SimGraph.Iter (Gr)
 
 /-! # The route of a prompt
 
-`route_main`: `route_gen` (`host.route.Gen`: `route_final` from the generated pieces) at the boot's Neural
+`route_main`: `route_gen` (`host.route.Gen`: `route_final_framed` from the generated pieces) at the boot's Neural
 Engine side and run: the loaded model's Neural Engine side the one the boot's end state holds (`netLd`:
 `aneNetLd` at the loaded graph's contents, `aneNetLd_state`; its `AneNetOk` by `aneNetLd_ok`), the booted
 state and the boot's full-world run to `loadDone` the boot's (`route_boot`, `host.load.boot.Boot`), the prefill's
@@ -77,29 +78,20 @@ theorem bootedSt_run (π : List Nat) (T : Nat) (tk : Nat → Nat) (NB : Nat) :
 /-- **The prefill's loadDone cut holds at the boot's end** (`Ld.rel_full` at the route's readbacks and
 valuation, widened to the route's frames off the prompt array; the boot's server `P.S2818_eq`; the Neural
 Engine memory `ldBridge_final`). -/
+theorem ldPromptCut_inv (NB : Nat) (Pw : Sim.LoadP) (hPw : LdParams Pw NB) (W : Nat → Option Host.Ts.Sim.WFrame)
+    (hW : W 2665 = none)
+    (π : List Nat) (hlt : ∀ t ∈ π, t < 248320) (T : Nat) (tk : Nat → Nat) (hT : T ≤ 2 ^ 20)
+    (htk : ∀ j, tk j ≤ 2 ^ 20) :
+    (ldPromptCut NB Pw W (ldStT [] []) T tk π).Inv (ldStT (π.map natV) (machReads T tk)) (routeServer T tk) :=
+  LoadedCut.ldPromptCut_inv NB Pw hPw W hW π hlt T tk hT htk
+
 theorem ldCut_inv (NB : Nat) (Pw : Sim.LoadP) (hPw : LdParams Pw NB) (W : Nat → Option Host.Ts.Sim.WFrame)
     (hW : W 2665 = none)
     (π : List Nat) (hlt : ∀ t ∈ π, t < 248320) (T : Nat) (tk : Nat → Nat) (hT : T ≤ 2 ^ 20)
     (htk : ∀ j, tk j ≤ 2 ^ 20) :
-    (ldCut NB Pw W (ldStT [] []) T tk π.length).Inv (ldStT (π.map natV) (machReads T tk)) (routeServer T tk) := by
-  obtain ⟨hlo, hE, hN, hNE, hNB⟩ := hPw
-  have h := Ld.rel_full Pw NB hlo hE hN hNE hNB (machVal T tk) Pw.lo Pw.E (by omega) (π.map natV) (machReads T tk)
-  rw [Host.Load.Run.Prompt.P.S2818_eq] at h
-  have hw : ∀ a, W a ≠ none →
-      (Host.Load.Run.Prompt.FrameRel.ctx (ldStT [] []) 2665 (π.map natV) Pw.lo Pw.E).fr a = none := by
-    intro a ha
-    rw [Host.Load.Run.Prompt.FrameRel.ctx_fr]
-    have : a ≠ 2665 := fun e => ha (e ▸ hW)
-    simp [this]
-  have hv : Host.Ts.Sim.Full.VBOkF Sim.loopVB (machVal T tk) := fun v => by
-    unfold machVal
-    by_cases h0 : v = 0
-    · exact ⟨T, hT, by simp [h0]⟩
-    · exact ⟨tk v, htk v, by simp [h0]⟩
-  exact ⟨⟨Sim.Map.id, machVal T tk, Host.Load.Run.Prompt.FrameRel.ctx (ldStT [] []) 2665 (π.map natV) Pw.lo Pw.E,
-      ldStT (π.map natV) (machReads T tk), routeServer T tk⟩, rfl, rfl, RelB.widen h hw, rfl, rfl, hv,
-    ⟨π, rfl, hlt, rfl⟩,
-    fun _ Pc Kc weights kind NE IP G init => ldBridge_final Pc Kc weights kind NE IP G init _ _⟩
+    (ldCut NB Pw W (ldStT [] []) T tk π.length).Inv (ldStT (π.map natV) (machReads T tk)) (routeServer T tk) :=
+  cutConv_inv (ldPromptCut_forget NB Pw W (ldStT [] []) T tk π)
+    (ldPromptCut_inv NB Pw hPw W hW π hlt T tk hT htk)
 
 /-- **The boot's run to the prefill's loadDone cut**, for generated pieces starting from it (`RouteGen.hI`). -/
 theorem bootedSt_ld {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
@@ -107,10 +99,8 @@ theorem bootedSt_ld {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE 
     {je : Host.Ts.Env} {nm : Host.Ts.Name} (Gn : RouteGen P KR NE net env π T tk je nm (ldStT [] []))
     (hlt : ∀ t ∈ π, t < 248320) (hT : T ≤ 2 ^ 20) (htk : ∀ j, tk j ≤ 2 ^ 20) :
     ∃ N0 tL CL, runC (fullWorld Gn.NB).F N0 (bootStart (bootedSt π T tk)) (routeServer T tk) = some (tL, CL) ∧
-      (Gn.I.ld π.length).Inv tL CL := by
-  refine ⟨28172201, _, _, bootedSt_run π T tk Gn.NB, ?_⟩
-  rw [Gn.hI]
-  exact ldCut_inv Gn.NB Gn.Pw Gn.hPw Gn.W Gn.hW π hlt T tk hT htk
+      (Gn.I.ld π.length).Inv tL CL :=
+  LoadedCut.boot_entry Gn hlt hT htk (bootedSt_run π T tk Gn.NB)
 
 /-! ## The route of a prompt -/
 

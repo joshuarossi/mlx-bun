@@ -20,11 +20,11 @@
 // (base/Closed.lean), and the native start's `checkSSt` (`<Name>.ssT`).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { worlds } from "./bridgeFacts.ts";
+import { wideFootOf, worlds } from "./bridgeFacts.ts";
 
 type StageMeta = { instance: string; piece: string; fn: string; world: string; T1: number; steps: number;
   frames: number[]; vars: [number, string][]; tab0: number; wrR: [number, number][]; wh: number[]; wi: number[];
-  wide?: [number, string][]; loadP?: number[] };
+  wide?: [number, string][]; loadP?: number[]; wrRs?: [number, number][][]; fresh?: number[] };
 const argv = process.argv.slice(2);
 const take = (flag: string): string | undefined => {
   const i = argv.indexOf(flag);
@@ -87,12 +87,16 @@ void framesArg;
 // `Full.okBackF`, A1's `host.sim.full.BackSim`)
 const backP = meta.loadP && world.jspP && meta.loadP[3] === meta.loadP[4] ? `⟨${meta.loadP.join(", ")}, []⟩` : undefined;
 const accept = process.env.CHAIN_ACCEPT ?? (meta as { accept?: string }).accept ?? "auto", D0 = Number(process.env.CHAIN_D0 ?? (meta as { D0?: number }).D0 ?? 4096);
-const okE = accept === "jskx" && backP ? `Disp.okJSK (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
+if (accept === "jsjxs" && (!backP || (worldArg ?? meta.world) !== "full"))
+  throw new Error("--accept jsjxs needs the full world and band-free loadP in stage.json");
+const okE = accept === "jsjxs" ? `Disp.okJSJ (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
+  : accept === "jskx" && backP ? `Disp.okJSK (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
   : accept === "jsj" && backP ? `Disp.okJSJ (${jsp}) (Host.Ts.Sim.Full.okBackF ${backP}) ${D0}`
+  : accept === "jsjs" && backP ? `Disp.okJSJ (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPDS ")}) (Host.Ts.Sim.Full.okBackFS ${backP}) ${D0}`
   : (accept === "jsk" || accept === "auto") && backP ? `Disp.okJSK (${jsp}) (Host.Ts.Sim.Full.okBackF ${backP})`
   // a banded P (a decode loop's): `okJSK` without continuations (its JS-level disjunct, `Full.fullStepSimXBK`)
   : accept === "js" ? `Disp.okJS (${jsp})` : `Disp.okJSK (${jsp}) (fun _ _ => false)`;
-write("Ok.lean", [`import ${world.okModule}${NL}import host.sim.template.Stage${NL}${backP ? `import host.sim.full.BackSim${NL}${accept === "jsj" ? `import host.sim.dispatch.OkJs${NL}` : ""}` : ""}`,
+write("Ok.lean", [`import ${world.okModule}${NL}import host.sim.template.Stage${NL}${backP ? `import host.sim.full.BackSim${NL}${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? `import host.sim.dispatch.OkJs${NL}` : ""}` : ""}`,
   `namespace Host.Load.Run.Tpl${NL}open Host.Ts Host.Ts.Sim${NL}${NL}`,
   `/-- The acceptance of stage \`${name}\` (${meta.piece}, \`${meta.fn}\`): the world's under the caller's frames (its framed${NL}`,
   `arrays and wide frames the start holds, \`Conv.isoCtxW\`), at local states only. -/${NL}`,
@@ -100,12 +104,19 @@ write("Ok.lean", [`import ${world.okModule}${NL}import host.sim.template.Stage${
   `  Host.Ts.Sim.Template.okLocal (${okE})${NL}${NL}`, end]);
 // the checked run and the return step
 const cPer = 4;
+const bootBridge = process.env.CHAIN_BOOT_BRIDGE === "1";
 const cCount = Math.ceil(n / cPer);
 for (let j = 0; j < cCount; j++) {
   const lastChunk = Math.min((j + 1) * cPer, n) - 1;
-  const k = [header(mod(`H${Math.floor((lastChunk + 1) / per)}`), mod("Ok"), "host.sim.Chunk"), `open Host.Ts Host.Ts.Sim${NL}`];
+  const k = [header(mod(`H${Math.floor((lastChunk + 1) / per)}`), mod("Ok"), "host.sim.Chunk",
+    ...(bootBridge ? ["host.sim.template.BootEq"] : [])), `open Host.Ts Host.Ts.Sim${NL}`];
   for (let i = j * cPer; i <= lastChunk; i++) {
-    if (i < n - 1) k.push(`sim_chunk ${name} ${name}.okL ${i}${NL}`);
+    if (bootBridge) {
+      const statement = i < n - 1
+        ? `runOk ${name}.F ${name}.okL ((nth? ${name}.ks ${i}).getD 0) ${s(i)} ${S(i)} = some (${s(i + 1)}, ${S(i + 1)})`
+        : `interpS (step ${name}.F ${s(i)}).run ${S(i)} = some (${s(i + 1)}, ${S(i + 1)})`;
+      k.push(`boot_rfl ${name}.${i < n - 1 ? `k${i}` : "last"} from ${s(i)} to ${s(i + 1)} : ${statement}${NL}`);
+    } else if (i < n - 1) k.push(`sim_chunk ${name} ${name}.okL ${i}${NL}`);
     else k.push(`kernel_rfl ${name}.last : interpS (step ${name}.F ${s(i)}).run ${S(i)} = some (${s(i + 1)}, ${S(i + 1)})${NL}`);
   }
   k.push(end);
@@ -132,6 +143,70 @@ write("Tpl.lean", [header(mod("Run"), "host.sim.StageRel"), `open Host.Ts Host.T
 const X0 = world.mlx(s(0)), X2 = world.mlx(s(n));
 const ls = (xs: number[]) => `[${xs.join(", ")}]`;
 // the footprint's facts need only the states (not the checked run: a site's conversion facts compile beside its chunks)
+const pairsL = (rs: [number, number][]) => `[${rs.map(([a, b]) => `(${a}, ${b})`).join(", ")}]`;
+const nativeFoot = [
+  `/-- The written and fresh handles; the written readback items of old nodes. -/${NL}`,
+  `def ${name}.wh : List Nat := ${ls(meta.wh)}${NL}def ${name}.wi : List Nat := ${ls(meta.wi)}${NL}${NL}`,
+  `kernel_rfl ${name}.arrsFoot : ${X2}.arrs = setAll ${X0}.arrs (${name}.wh.filterMap fun h => (${X2}.arrs.get h).map (h, ·))${NL}`,
+  `kernel_rfl ${name}.objsFoot : ${X2}.objs = setAll ${X0}.objs (${name}.wh.filterMap fun h => (${X2}.objs.get h).map (h, ·))${NL}`,
+  `kernel_rfl ${name}.nodesFoot : ${X2}.nodes = setAll ${X0}.nodes (freshOf ${X2}.nodes ${X0}.nnext ${X2}.nnext)${NL}`,
+  `kernel_rfl ${name}.itemsFoot : ${X2}.items = setAll ${X0}.items ((${name}.wi.filterMap fun i => (${X2}.items.get i).map (i, ·)) ++${NL}`,
+  `    freshOf ${X2}.items ${X0}.nnext ${X2}.nnext)${NL}`,
+  `kernel_rfl ${name}.counters : (Nat.ble ${X0}.next ${X2}.next && Nat.ble ${X0}.nnext ${X2}.nnext) = true${NL}${NL}`];
+const growsL = [`kernel_rfl ${name}.grows_check : Nat.ble ${s(0)}.next ${s(n)}.next = true${NL}`,
+  `theorem ${name}.grows : ${s(0)}.next ≤ ${s(n)}.next := Nat.le_of_ble_eq_true ${name}.grows_check${NL}${NL}`];
+const wideFoot = wideFootOf(meta);
+if (wideFoot) {
+  // a wide site: the footprint per stream state (each state's written ranges `fR<i>` and fresh range), composed from the
+  // start (`FootAcc`) onto the written list `wr` (the return state's written ranges and fresh range); 32 states a module
+  const wrRs = meta.wrRs, n0 = meta.fresh?.[0];
+  if (!wrRs || n0 === undefined) throw new Error("stage.json: a wide footprint needs per-state ranges and a fresh start");
+  if (wrRs.length !== n) throw new Error(`stage.json: ${wrRs.length} per-state written ranges for ${n} states`);
+  // every state's written range below the start's counter lies in a written range of the return state (`coverB`)
+  wrRs.forEach((rs, i) => rs.forEach(([lo, hi]) => {
+    if (lo >= n0 || meta.wrR.some(([a, b]) => a <= lo && Math.min(hi, n0) <= b)) return;
+    throw new Error(`state ${i}: its written range [${lo}, ${hi}) is off the return state's written ranges`);
+  }));
+  const fCount = Math.ceil(n / per);
+  for (let j = 0; j < fCount; j++) {
+    const lines = [header(...(j === 0 ? [mod(`H${hCount - 1}`), "host.sim.template.CallGen"] : [mod(`FootS${j - 1}`)])),
+      `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Stage Host.Ts.Sim.Template${NL}${NL}`];
+    if (j === 0) lines.push(
+      `/-! The footprint of stage \`${name}\`'s site template per stream state (\`stageFoot_ofRF\`, composed by \`FootAcc\`): each `,
+      `state's written ranges and fresh range,${NL}its written addresses on the return state's written list \`${name}.wr\`. -/${NL}${NL}`,
+      `/-- The written heap ranges below the start's counter. -/${NL}def ${name}.wrR : List (Nat × Nat) := ${pairsL(meta.wrR)}${NL}`,
+      `/-- The written and fresh addresses of the return state. -/${NL}`,
+      `noncomputable def ${name}.wr : List Nat := footW ${s(n)} ${name}.wrR ${s(0)}.next${NL}${NL}`,
+      `theorem ${name}.fa0 : FootAcc ${name}.wr ${s(n)} ${s(0)} ${s(0)} := FootAcc.start _ _ _${NL}${NL}`);
+    for (let i = j * per; i < Math.min((j + 1) * per, n); i++) {
+      const rs = wrRs[i];
+      if (!rs) throw new Error(`stage.json: no written ranges at state ${i}`);
+      lines.push(
+      `def ${name}.fR${i} : List (Nat × Nat) := ${pairsL(rs)}${NL}`,
+      `kernel_rfl ${name}.fh${i} : ${s(i + 1)}.heap = setAll ${s(i)}.heap (rangesOf ${s(i + 1)}.heap ${name}.fR${i} ++ freshOf ${s(i + 1)}.heap ${s(i)}.next ${s(i + 1)}.next)${NL}`,
+      `kernel_rfl ${name}.fb${i} : footRB ${s(i)} ${s(i + 1)} ${name}.fR${i} = true${NL}`,
+      `kernel_rfl ${name}.fc${i} : (Nat.ble ${s(0)}.next ${s(i)}.next && Nat.ble ${s(i + 1)}.next ${s(n)}.next && coverB ${name}.fR${i} ${name}.wrR ${s(0)}.next) = true${NL}`,
+      `theorem ${name}.fa${i + 1} : FootAcc ${name}.wr ${s(n)} ${s(0)} ${s(i + 1)} :=${NL}`,
+      `  ${name}.fa${i}.step (stageFoot_ofRF ${name}.fh${i} ${name}.fb${i}) (incl_of_footW ${name}.fb${i} ${name}.fc${i})${NL}${NL}`);
+    }
+    lines.push(end);
+    write(`FootS${j}.lean`, lines);
+  }
+  write("Foot.lean", [header(mod(`FootS${fCount - 1}`), "host.sim.template.NShiftOf"), `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Stage Host.Ts.Sim.Template${NL}${NL}`,
+    `/-! The footprint of stage \`${name}\`'s site template (\`Conv.StageFoot\` over its written list, \`Conv.NFoot\`): composed from its `,
+    `states (\`FootS<j>\`); the written list distinct and in range by lemma over its old written part. -/${NL}${NL}`,
+    `kernel_rfl ${name}.wr0Old : (rangesOf ${s(n)}.heap ${name}.wrR).all (fun e => !Nat.blt e.1 ${s(0)}.next || (${s(0)}.heap.get e.1).isSome) = true${NL}`,
+    `theorem ${name}.stFoot : Conv.StageFoot ${name}.wr ${s(0)} ${s(n)} := FootAcc.finish ${name}.fa${n} ${name}.wr0Old${NL}`,
+    `kernel_rfl ${name}.wrOldNodupB : nodupT ((rangesOf ${s(n)}.heap ${name}.wrR).map (·.1)) PTrie.nil = true${NL}`,
+    `kernel_rfl ${name}.wrRlo : ${name}.wrR.all (fun p => Nat.ble p.2 ${s(0)}.next) = true${NL}`,
+    `theorem ${name}.wrNodup : ${name}.wr.Nodup :=${NL}`,
+    `  footW_nodup (nodupT_sound ${name}.wrOldNodupB).2 fun p hp => Nat.le_of_ble_eq_true (List.all_eq_true.mp ${name}.wrRlo p hp)${NL}`,
+    `kernel_rfl ${name}.wrRhi : ${name}.wrR.all (fun p => Nat.ble p.2 ${s(n)}.next) = true${NL}`,
+    `kernel_rfl ${name}.wrHi : Nat.blt (${s(n)}.next / 4096) (4 ^ 31) = true${NL}`,
+    `theorem ${name}.wrBound : ∀ b ∈ ${name}.wr, b / 4096 < 4 ^ 31 :=${NL}`,
+    `  footW_bound (fun p hp => Nat.le_of_ble_eq_true (List.all_eq_true.mp ${name}.wrRhi p hp)) (Nat.blt_eq.mp ${name}.wrHi)${NL}${NL}`,
+    ...growsL, ...nativeFoot, end]);
+} else
 write("Foot.lean", [header(mod(`H${hCount - 1}`), "host.sim.stage.Mlx"), `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Stage Host.Ts.Sim.Template${NL}${NL}`,
   `/-! The footprint of stage \`${name}\`'s site template (\`Conv.StageFoot\`, \`Conv.NFoot\`): every entry of the return${NL}`,
   `state other than the written and fresh ones is the start's (kernel evaluation of the equalities). -/${NL}${NL}`,
@@ -141,16 +216,7 @@ write("Foot.lean", [header(mod(`H${hCount - 1}`), "host.sim.stage.Mlx"), `open H
   `noncomputable def ${name}.wrE : List (Nat × Host.Ts.HObj) :=${NL}  rangesOf ${s(n)}.heap ${name}.wrR ++ freshOf ${s(n)}.heap ${s(0)}.next ${s(n)}.next${NL}`,
   `noncomputable def ${name}.wr : List Nat := ${name}.wrE.map (·.1)${NL}${NL}`,
   `kernel_rfl ${name}.heapFoot : ${s(n)}.heap = setAll ${s(0)}.heap ${name}.wrE${NL}`,
-  `kernel_rfl ${name}.grows_check : Nat.ble ${s(0)}.next ${s(n)}.next = true${NL}`,
-  `theorem ${name}.grows : ${s(0)}.next ≤ ${s(n)}.next := Nat.le_of_ble_eq_true ${name}.grows_check${NL}${NL}`,
-  `/-- The written and fresh handles; the written readback items of old nodes. -/${NL}`,
-  `def ${name}.wh : List Nat := ${ls(meta.wh)}${NL}def ${name}.wi : List Nat := ${ls(meta.wi)}${NL}${NL}`,
-  `kernel_rfl ${name}.arrsFoot : ${X2}.arrs = setAll ${X0}.arrs (${name}.wh.filterMap fun h => (${X2}.arrs.get h).map (h, ·))${NL}`,
-  `kernel_rfl ${name}.objsFoot : ${X2}.objs = setAll ${X0}.objs (${name}.wh.filterMap fun h => (${X2}.objs.get h).map (h, ·))${NL}`,
-  `kernel_rfl ${name}.nodesFoot : ${X2}.nodes = setAll ${X0}.nodes (freshOf ${X2}.nodes ${X0}.nnext ${X2}.nnext)${NL}`,
-  `kernel_rfl ${name}.itemsFoot : ${X2}.items = setAll ${X0}.items ((${name}.wi.filterMap fun i => (${X2}.items.get i).map (i, ·)) ++${NL}`,
-  `    freshOf ${X2}.items ${X0}.nnext ${X2}.nnext)${NL}`,
-  `kernel_rfl ${name}.counters : (Nat.ble ${X0}.next ${X2}.next && Nat.ble ${X0}.nnext ${X2}.nnext) = true${NL}${NL}`, end]);
+  ...growsL, ...nativeFoot, end]);
 if (closed) {
   write("Keys.lean", [header(mod("H0"), "host.sim.template.RestartCmd"), `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template${NL}${NL}`,
     `tpl_keys ${name}${NL}${NL}`, end]);
@@ -170,4 +236,4 @@ if (closed) {
     `kernel_rfl ${name}.rootsSupp_check : checkRootsSupp ${s(0)} ${name}.n = true${NL}`,
     `kernel_rfl ${name}.ssT : checkSSt ${name}.n ${X0} = true${NL}${NL}`, end]);
 }
-console.log(`${name}: ${hCount} state modules, ${cCount} chunk modules (chunks 0..${n - 2} with ${name}.okL, chunk ${n - 1} the return step), Ok, Run, Tpl, Foot${closed ? ", Keys, Closed" : ""}`);
+console.log(`${name}: ${hCount} state modules, ${cCount} chunk modules (chunks 0..${n - 2} with ${name}.okL, chunk ${n - 1} the return step), Ok, Run, Tpl, Foot${wideFoot ? " (per state: FootS<j>)" : ""}${closed ? ", Keys, Closed" : ""}`);

@@ -81,6 +81,10 @@ def typedJsB (s : St F.S) (S : SSrv) : Bool :=
 def okJSJ (s : St F.S) (S : SSrv) : Bool :=
   okJSK P okBack s S || bigJsCallB s || typedJsB P D0 s S
 
+/-- `okJSJ` before `JSP.smallBackB` (over `okJSKOld`). -/
+def okJSJOld (s : St F.S) (S : SSrv) : Bool :=
+  okJSKOld P okBack s S || bigJsCallB s || typedJsB P D0 s S
+
 end
 
 section
@@ -94,6 +98,42 @@ theorem okJSK_J (h : okJSK P okBack s S = true) : okJSJ P okBack D0 s S = true :
 
 /-- **Agreement**: every state `okJS` accepts `okJSJ` accepts. -/
 theorem okJS_J (h : okJS P s S = true) : okJSJ P okBack D0 s S = true := okJSK_J (okJS_K h)
+
+/-- **Agreement**: `okJSJ` accepts what `okJSJOld` accepted (under `backB_of_old`'s condition). -/
+theorem okJSJ_of_old (hsb : ∀ S x a, okBack x a = true → P.smallBackB S x a = true)
+    (h : okJSJOld P okBack D0 s S = true) : okJSJ P okBack D0 s S = true := by
+  unfold okJSJOld at h
+  unfold okJSJ
+  simp only [Bool.or_eq_true] at h ⊢
+  rcases h with (h | h) | h
+  · exact .inl (.inl (okJSK_of_old hsb h))
+  · exact .inl (.inr h)
+  · exact .inr h
+
+/-- **Projection** to the acceptance before the continuation's smallness check. -/
+theorem okJSJ_to_old (h : okJSJ P okBack D0 s S = true) : okJSJOld P okBack D0 s S = true := by
+  unfold okJSJ at h
+  unfold okJSJOld
+  simp only [Bool.or_eq_true] at h ⊢
+  rcases h with (h | h) | h
+  · exact .inl (.inl (okJSK_to_old h))
+  · exact .inl (.inr h)
+  · exact .inr h
+
+/-- **Agreement** with the old acceptance when every accepted continuation passes the added check. -/
+theorem okJSJ_eq_old (hsb : ∀ S x a, okBack x a = true → P.smallBackB S x a = true) (s : St F.S) (S : SSrv) :
+    okJSJ P okBack D0 s S = okJSJOld P okBack D0 s S := by
+  rw [okJSJ, okJSJOld, okJSK_eq_old hsb]
+
+/-- `okJSJ` is monotone in its accepted continuations. -/
+theorem okJSJ_mono {okBack' : F.S → Arg → Bool} (hb : ∀ x a, okBack x a = true → okBack' x a = true)
+    (h : okJSJ P okBack D0 s S = true) : okJSJ P okBack' D0 s S = true := by
+  unfold okJSJ at h ⊢
+  simp only [Bool.or_eq_true] at h ⊢
+  rcases h with (h | h) | h
+  · exact .inl (.inl (okJSK_mono hb h))
+  · exact .inl (.inr h)
+  · exact .inr h
 
 theorem bigJsCallB_spec {s : St F.S} (h : bigJsCallB s = true) :
     ∃ fa this args o data b off, s.ctl = .call (.obj fa) this args ∧ s.obj? fa = some o ∧
@@ -178,6 +218,26 @@ theorem ctorElemsJB_cell (hK : Kp P K) (hD : K.D ≤ D0) (hN : NativeFacts F FR 
         omega
       exact toCellBig_js hJ hb hoff himg k
 
+/-- **The one-step theorem of `okJSJ`**, the continuations' smallness decided by `P.smallBackB` (`hsmB`). -/
+theorem dispatchJS {okCall0 : F.S → Name → List Arg → Bool} {okBack0 : F.S → Arg → Bool}
+    {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} {smallBack : (Nat → F64) → SSrv → F.S → Arg → Prop}
+    (hF : FfiSim F FR okCall0 okBack0) (hB : FfiBackSimS F FR okBack smallBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsm : ∀ S x name args, P.smallB S x name args = true → small ν S x name args)
+    (hsmB : ∀ S x a, P.smallBackB S x a = true → smallBack ν S x a)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hK : Kp P K) (hD : K.D ≤ D0)
+    (hW : Wp P W) (h : RelB F FR W stk M ν K s S t C) (hJ : BigJs M)
+    (hh : isHalt s.ctl = false) (hok : okJSJ P okBack D0 s S = true) (hloc : stk = [] ∨ localB s = true) :
+    MSim (PX F FR W stk M ν K S C) S C (step F s) (step F t) := by
+  simp only [okJSJ, Bool.or_eq_true] at hok
+  rcases hok with (hok | hok) | hok
+  · exact dispatchKS hF hB hC hsm hsmB hFR hL hN hK hW h hh hok hloc
+  · obtain ⟨fa, this, args, o, data, b, off, hc, ho, hk, hx, hb, hoff⟩ := bigJsCallB_spec hok
+    exact MSim.toX (step_num_bigint_js h hJ hc ho hk hx hb hoff)
+  · obtain ⟨a, args, nt, o, c, p, ci, proto, b, ob, es, hc, ho, hk, hci, hpi, hn, h1, h2, h3, h4, h5, hb, hob,
+      hes, h6⟩ := typedJsB_spec hok
+    exact MSim.toX (step_buf_typedCtor_arr h hFR hF hc ho hk hci hpi (next_ok hn) h1 h2 h3 h4 hb hob hes
+      (hK.elems h5) (ctorElemsJB_cell hK hD hN hJ h h6))
+
 /-- **The one-step theorem of `okJSJ`**, under the law `BigJs M` and a counter offset at most `D0`. -/
 theorem dispatchJ {okCall0 : F.S → Name → List Arg → Bool} {okBack0 : F.S → Arg → Bool}
     {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop} (hF : FfiSim F FR okCall0 okBack0)
@@ -186,16 +246,9 @@ theorem dispatchJ {okCall0 : F.S → Name → List Arg → Bool} {okBack0 : F.S 
     (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hK : Kp P K) (hD : K.D ≤ D0)
     (hW : Wp P W) (h : RelB F FR W stk M ν K s S t C) (hJ : BigJs M)
     (hh : isHalt s.ctl = false) (hok : okJSJ P okBack D0 s S = true) (hloc : stk = [] ∨ localB s = true) :
-    MSim (PX F FR W stk M ν K S C) S C (step F s) (step F t) := by
-  simp only [okJSJ, Bool.or_eq_true] at hok
-  rcases hok with (hok | hok) | hok
-  · exact dispatchK hF hB hC hsm hFR hL hN hK hW h hh hok hloc
-  · obtain ⟨fa, this, args, o, data, b, off, hc, ho, hk, hx, hb, hoff⟩ := bigJsCallB_spec hok
-    exact MSim.toX (step_num_bigint_js h hJ hc ho hk hx hb hoff)
-  · obtain ⟨a, args, nt, o, c, p, ci, proto, b, ob, es, hc, ho, hk, hci, hpi, hn, h1, h2, h3, h4, h5, hb, hob,
-      hes, h6⟩ := typedJsB_spec hok
-    exact MSim.toX (step_buf_typedCtor_arr h hFR hF hc ho hk hci hpi (next_ok hn) h1 h2 h3 h4 hb hob hes
-      (hK.elems h5) (ctorElemsJB_cell hK hD hN hJ h h6))
+    MSim (PX F FR W stk M ν K S C) S C (step F s) (step F t) :=
+  dispatchJS (smallBack := fun _ _ _ _ => True) hF hB.toS hC hsm (fun _ _ _ _ => trivial) hFR hL hN hK hD hW h hJ
+    hh hok hloc
 
 /-! ## Along checked runs: the law in the native relation -/
 
@@ -210,6 +263,49 @@ theorem _root_.Host.Ts.Sim.RelXB.toJ (h : RelXB F FR W stk M ν K s S t C) (hJ :
   · exact .inl (h.toJ hJ)
   · exact .inr ⟨v, v', r, env, fs, hc, htc, hs, h.toJ hJ⟩
 
+/-- `stepSimXLBJ` with the continuations' smallness decided by `P.smallBackB` under `VBOk`. -/
+theorem stepSimXLBJS {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}
+    {okBack0 : F.S → Arg → Bool} {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop}
+    {smallBack : (Nat → F64) → SSrv → F.S → Arg → Prop} {VBOk : (Nat → F64) → Prop}
+    (hF : FfiSim F FR okCall0 okBack0) (hB : FfiBackSimS F FR okBack smallBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
+    (hsmallB : ∀ ν S x a, VBOk ν → P.smallBackB S x a = true → smallBack ν S x a)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hW : Wp P W) :
+    StepSimXLB F (FRJ FR) (okJSJ P okBack D0) (KpJ P D0) W stk VBOk := by
+  intro M ν K s S t C s1 S1 hK hν hr hh hloc hok hs
+  rcases hr with hr | hd
+  · obtain ⟨M', t1, C1, ht, hg, hr1⟩ :=
+      MSim.run (dispatchJS hF hB hC (hsmall ν · · · · hν) (hsmallB ν · · · hν) hFR hL hN hK.1 hK.2 hW hr.ofJ
+        hr.ffi.2 hh hok hloc) s1 S1 hs
+    exact ⟨M', t1, C1, ht, hg.ext, RelXB.toJ hr1 (hr.ffi.2.ext hg.ext)⟩
+  · have e := RelDB.step_eq hd
+    obtain ⟨v, v', r, env, fs, hc, _, hstk, hr⟩ := hd
+    rw [e]
+    obtain ⟨M', t1, C1, ht, hg, hr1⟩ := MSim.run (step_ret_block hr hc hstk) s1 S1 hs
+    exact ⟨M', t1, C1, ht, hg.ext, .inl hr1⟩
+
+/-- `stepSimXVBJ` with the continuations' smallness decided by `P.smallBackB`. -/
+theorem stepSimXVBJS {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}
+    {okBack0 : F.S → Arg → Bool} {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop}
+    {smallBack : (Nat → F64) → SSrv → F.S → Arg → Prop} {VBOk : (Nat → F64) → Prop}
+    (hF : FfiSim F FR okCall0 okBack0) (hB : FfiBackSimS F FR okBack smallBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
+    (hsmallB : ∀ ν S x a, VBOk ν → P.smallBackB S x a = true → smallBack ν S x a)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hW : Wp P W) :
+    StepSimXVB F (FRJ FR) (okJSJ P okBack D0) (KpJ P D0) W stk VBOk :=
+  (stepSimXLBJS hF hB hC hsmall hsmallB hFR hL hN hW).xv
+
+/-- `stepSimXLJ` with the continuations' smallness decided by `P.smallBackB`. -/
+theorem stepSimXLJS {okCall0 : F.S → Name → List Arg → Bool} {okBack0 : F.S → Arg → Bool}
+    {small : (Nat → F64) → SSrv → F.S → Name → List Arg → Prop}
+    {smallBack : (Nat → F64) → SSrv → F.S → Arg → Prop} {VBOk : (Nat → F64) → Prop}
+    (hF : FfiSim F FR okCall0 okBack0) (hB : FfiBackSimS F FR okBack smallBack) (hC : FfiCallSim F FR P.okCall small)
+    (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
+    (hsmallB : ∀ ν S x a, VBOk ν → P.smallBackB S x a = true → smallBack ν S x a)
+    (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) :
+    StepSimXL F (FRJ FR) (okJSJ P okBack D0) (KpJ P D0) VBOk :=
+  (stepSimXLBJS (stk := []) hF hB hC hsmall hsmallB hFR hL hN Wp.free).nil
+
 /-- `stepSimXLBK` for `okJSJ`: the law rides in the native relation `FRJ FR`, the offset bound in
 `KpJ P D0`. -/
 theorem stepSimXLBJ {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}
@@ -218,18 +314,8 @@ theorem stepSimXLBJ {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.
     (hF : FfiSim F FR okCall0 okBack0) (hB : FfiBackSim F FR okBack) (hC : FfiCallSim F FR P.okCall small)
     (hsmall : ∀ ν S x name args, VBOk ν → P.smallB S x name args = true → small ν S x name args)
     (hFR : FRLaws FR) (hL : BufSim.FfiLawful F) (hN : NativeFacts F FR P) (hW : Wp P W) :
-    StepSimXLB F (FRJ FR) (okJSJ P okBack D0) (KpJ P D0) W stk VBOk := by
-  intro M ν K s S t C s1 S1 hK hν hr hh hloc hok hs
-  rcases hr with hr | hd
-  · obtain ⟨M', t1, C1, ht, hg, hr1⟩ :=
-      MSim.run (dispatchJ hF hB hC (hsmall ν · · · · hν) hFR hL hN hK.1 hK.2 hW hr.ofJ hr.ffi.2 hh hok hloc)
-        s1 S1 hs
-    exact ⟨M', t1, C1, ht, hg.ext, RelXB.toJ hr1 (hr.ffi.2.ext hg.ext)⟩
-  · have e := RelDB.step_eq hd
-    obtain ⟨v, v', r, env, fs, hc, _, hstk, hr⟩ := hd
-    rw [e]
-    obtain ⟨M', t1, C1, ht, hg, hr1⟩ := MSim.run (step_ret_block hr hc hstk) s1 S1 hs
-    exact ⟨M', t1, C1, ht, hg.ext, .inl hr1⟩
+    StepSimXLB F (FRJ FR) (okJSJ P okBack D0) (KpJ P D0) W stk VBOk :=
+  stepSimXLBJS (smallBack := fun _ _ _ _ => True) hF hB.toS hC hsmall (fun _ _ _ _ _ _ => trivial) hFR hL hN hW
 
 /-- `stepSimXVBK` for `okJSJ`. -/
 theorem stepSimXVBJ {W : Nat → Option WFrame} {stk : List Frame} {okCall0 : F.S → Name → List Arg → Bool}

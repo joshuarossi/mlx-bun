@@ -1,0 +1,25 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.H51
+-- Serialized lookahead: [1,2]
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+host_stream_state PRE_first_tail_x15_r0_body 1664
+host_stream_state PRE_first_tail_x15_r0_body 1665
+host_stream_state PRE_first_tail_x15_r0_body 1666
+host_stream_state PRE_first_tail_x15_r0_body 1667
+host_stream_state PRE_first_tail_x15_r0_body 1668
+host_stream_state PRE_first_tail_x15_r0_body 1669
+host_stream_state PRE_first_tail_x15_r0_body 1670
+host_stream_state PRE_first_tail_x15_r0_body 1671
+host_stream_state PRE_first_tail_x15_r0_body 1672
+host_stream_state PRE_first_tail_x15_r0_body 1673
+host_stream_state PRE_first_tail_x15_r0_body 1674
+host_stream_state PRE_first_tail_x15_r0_body 1675
+host_stream_state PRE_first_tail_x15_r0_body 1676
+host_stream_state PRE_first_tail_x15_r0_body 1677
+host_stream_state PRE_first_tail_x15_r0_body 1678
+host_stream_state PRE_first_tail_x15_r0_body 1679
+host_stream_state PRE_first_tail_x15_r0_body 1680
+host_stream_state PRE_first_tail_x15_r0_body 1681
+end Host.Load.Run.Tpl

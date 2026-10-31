@@ -263,6 +263,63 @@ def StepSimZB (F : Ffi) (FR : Map → Nat → F.S → F.S → Prop) (ok : St F.S
     ∃ M' t1 C1, interpC (step F t).run C = some (t1, C1) ∧ Ext M M' S.tab.length ∧
       RelXZ F FR W stk Z z M' ν K s1 S1 t1 C1
 
+/-- A step's heap footprint, independent of the frozen set: old source entries were present
+before the step, and target writes below its counter occur only at images of present entries. -/
+structure HeapStepFoot {S : Type} (M : Map) (s t s1 t1 : St S) : Prop where
+  grows : s.next ≤ s1.next
+  old : ∀ a, Present s1 a → Present s a ∨ s.next ≤ a
+  kept : ∀ a, a < t.next → (∀ b, Present s b → M.a b ≠ a) → t1.heap.get a = t.heap.get a
+
+private theorem relXB_next {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop}
+    {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} (h : RelXB F FR W stk M ν K s S t C) (k : Nat) :
+    M.a (s.next + k) = t.next + k := by
+  rcases h with h | ⟨_, _, _, _, _, _, _, _, h⟩
+  · exact h.next k
+  · exact h.next k
+
+/-- A base simulation result and its heap footprint preserve every frozen caller set.
+This does not require a second proof of the relational dispatcher. -/
+theorem RelXZ.ofFoot {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop}
+    {W : Nat → Option WFrame} {stk : List Frame} {Z : Nat → Prop} {z : Nat → Option HObj}
+    {M M' : Map} {ν : Nat → F64} {K : Ctx} {s t s1 t1 : St F.S} {S S1 : SSrv} {C C1 : CSrv}
+    (h : RelXZ F FR W stk Z z M ν K s S t C) (he : Ext M M' S.tab.length)
+    (hr : RelXB F FR W stk M' ν K s1 S1 t1 C1) (hf : HeapStepFoot M s t s1 t1) :
+    RelXZ F FR W stk Z z M' ν K s1 S1 t1 C1 := by
+  have hnx : t1.next = t.next + (s1.next - s.next) := by
+    calc
+      t1.next = M'.a (s1.next + 0) := (relXB_next hr 0).symm
+      _ = M.a (s.next + (s1.next - s.next)) := by rw [he.a, Nat.add_zero, Nat.add_sub_of_le hf.grows]
+      _ = t.next + (s1.next - s.next) := relXB_next h.rel _
+  refine ⟨hr, ?_, fun a ha => Nat.lt_of_lt_of_le (h.below a ha) (by omega), ?_⟩
+  · intro a ha hz
+    rw [he.a] at hz
+    rcases hf.old a ha with hp | hp
+    · exact h.out a hp hz
+    · have hx : M.a a = t.next + (a - s.next) := by
+        have := relXB_next h.rel (a - s.next)
+        simpa only [Nat.add_sub_of_le hp] using this
+      have hb := h.below _ hz
+      rw [hx] at hb
+      omega
+  · intro a ha
+    rw [hf.kept a (h.below a ha) (fun b hb e => h.out b hb (e ▸ ha))]
+    exact h.frozen a ha
+
+/-- Lift the existing one-step simulation once the accepted steps' heap footprints are proved.
+The remaining obligation is a write-footprint theorem, rather than the relational simulation. -/
+theorem StepSimZB.ofFoot {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop}
+    {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop} {W : Nat → Option WFrame}
+    {stk : List Frame} {VBOk : (Nat → F64) → Prop}
+    (hsim : Disp.StepSimXLB F FR ok Kp W stk VBOk)
+    (hfoot : ∀ M ν K s S t C s1 S1 t1 C1, Kp K → VBOk ν → RelXB F FR W stk M ν K s S t C →
+      isHalt s.ctl = false → (stk = [] ∨ Disp.localB s = true) → ok s S = true →
+      interpS (step F s).run S = some (s1, S1) → interpC (step F t).run C = some (t1, C1) →
+      HeapStepFoot M s t s1 t1) : StepSimZB F FR ok Kp W stk VBOk := by
+  intro Z z M ν K s S t C s1 S1 hK hν h hh hl hok hs
+  obtain ⟨M', t1, C1, ht, he, hr⟩ := hsim M ν K s S t C s1 S1 hK hν h.rel hh hl hok hs
+  exact ⟨M', t1, C1, ht, he, h.ofFoot he hr (hfoot M ν K s S t C s1 S1 t1 C1 hK hν h.rel hh hl hok hs ht)⟩
+
 /-- **Projection**: the frozen obligation gives the base one (no frozen entries). -/
 theorem StepSimZB.toXLB {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {ok : St F.S → SSrv → Bool}
     {Kp : Ctx → Prop} {W : Nat → Option WFrame} {stk : List Frame} {VBOk : (Nat → F64) → Prop}

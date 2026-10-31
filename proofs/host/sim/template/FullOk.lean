@@ -1,6 +1,8 @@
 import host.sim.full.StepX
 import host.sim.full.Raise
 import host.sim.full.BridgeStepD
+import host.sim.full.BackSim
+import host.sim.full.BridgeJs
 import host.sim.LoadSim
 namespace Host.Ts.Sim.Template
 open Host.Ts Host.Ts.Sim Host.Load.Layers
@@ -31,6 +33,13 @@ abbrev fullJSPPD (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) :
 /-- The acceptance parameters of a chain whose Neural Engine bridge goes active (A1's host.sim.full.BridgeStepD: the calls at
 `Full.okCallFXD`, the bridge's small steps). -/
 abbrev fullJSPPX (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) : Disp.JSP full := Full.fullJSPXX P loopVB framed wide
+/-- A band-free chain's parameters with the symbolic-shape continuation returns (`Full.fullJSPXDS`: `smallBackFB`, with
+`Full.okBackFS`; A1's host.sim.full.BackSim). -/
+abbrev fullJSPPDS (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) : Disp.JSP full := Full.fullJSPXDS P loopVB framed wide
+
+/-- Prefill acceptance with the bridge active or inactive at a raise, including symbolic-shape
+continuation returns (`FullRXD`, `Full.fullStepSimXLBXDJS`). -/
+abbrev fullJSPPXS (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) : Disp.JSP full := Full.fullJSPXXS P loopVB framed wide
 
 /-- The acceptance function with the decode loop's framed arrays (noncomputable: it is only
 evaluated by the kernel). -/

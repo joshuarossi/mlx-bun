@@ -8,6 +8,11 @@
  *     reads A4's decode chains; writes DecBundle.lean.
  *   bun proofs/host/sim/compose/gen.ts fill --spec host/sim/lin/decode.spec.json --out <file> [--run] <chain>@<kind>:<case-dir>
  *     reads A4's chain modules (host/sim/template/<case-dir>/); writes one decode case's pieces (out of tree).
+ *   bun proofs/host/sim/compose/gen.ts prefill --out <file> [--spec <file>] <chain>:<case-dir>
+ *     emits actual template boundaries, row checks and checked site constructors; the compiled
+ *     backends also emit concrete piece fills (--sites-only skips the backend). --typed-body
+ *     uses parametric typed-buffer templates; --oracles-only checks every internal oracle over
+ *     the enclosing forward's uses (--piece overrides that inferred owner).
  *
  * Each row of each class gets its chain of pieces (host.sim.compose.Shape), each piece named by
  * what it depends on: the row's stage tags (`nps`, `kv`, `kv2`), the class's chunk or row band (the
@@ -27,13 +32,16 @@
  *   (not generated: it reads the bundles only through their composed results).
  *
  * When a piece's template exists, its field is filled by its theorem: only names change. */
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const LIN = join(HERE, "../lin");
 const NS = "Host.Ts.Sim.Compose";
 const fail = (m: string): never => { throw new Error(m); };
+const writeBundle = (file: string, text: string) => {
+  if (process.argv[2] === undefined) writeFileSync(file, text);
+};
 
 const table = JSON.parse(readFileSync(join(LIN, "classes.json"), "utf8"));
 const stages = JSON.parse(readFileSync(join(LIN, "stages.json"), "utf8"));
@@ -74,15 +82,13 @@ const finalPrefix: Record<string, string> = { first: "cold", drained: "dcold", t
 
 type Kind = "glue" | "stageP" | "stageR" | "fwd";
 interface Obl { m: string; O: string; chk: (row: string) => string; enumMode?: boolean }
-interface Piece { name: string; kind: Kind; A: string; B: string; mock: boolean; real: Obl[]; uses: string[] }
+interface Piece { name: string; kind: Kind; A: string; B: string; real: Obl[]; uses: string[] }
 /** A link of a row's chain: the piece and how its obligations are discharged at the row. */
 interface Link { p: Piece; mem: number; obls: string[] }
 type Spec = ({ glue: string } | { stage: string; real?: Obl[] } | { fwd: string; real: Obl[] })[];
 
-const MOCK_M = "[(0, .L), (1, .C), (2, .o), (3, .n), (4, .e), (5, .cap), (6, .cap1), (7, .k)]";
 const NPS_M = "[(0, .L), (1, .o), (2, .C)]", KV_M = "[(0, .o), (1, .cap), (2, .n)]";
 const KV2_M = "[(0, .e), (1, .cap1), (2, .n)]", PLAN_M = "[(0, .n)]", CHUNK_M = "[(0, .L)]";
-const ROUTE_M = "[(0, .L), (1, .C), (2, .o), (3, .n), (4, .e), (5, .cap), (6, .cap1), (7, .k), (8, .T), (9, .t1), (10, .t2)]";
 const GROUP = 200;
 
 class Bundle {
@@ -91,19 +97,18 @@ class Bundle {
   eqs: string[] = [];
   /** `route`: route pieces (over route rows, at the run's steps `RunAt T tk`). */
   constructor(readonly var_: string, readonly route: boolean) {}
-  get mockM() { return this.route ? ROUTE_M : MOCK_M; }
   groupOf(p: Piece) { return `q${Math.floor([...this.pieces.keys()].indexOf(p.name) / GROUP) + 1}`; }
   at(p: Piece) { return `${this.var_}.${this.groupOf(p)}.${p.name}`; }
   use(name: string, kind: Kind, A: string, B: string, row: string, real: Obl[] = []): Link {
     let p = this.pieces.get(name);
-    if (!p) this.pieces.set(name, p = { name, kind, A, B, mock: kind !== "stageR", real, uses: [] });
+    if (!p) this.pieces.set(name, p = { name, kind, A, B, real, uses: [] });
     if (p.A !== A || p.B !== B || p.kind !== kind) fail(`piece ${name}: used between different cuts`);
     if (JSON.stringify(p.real.map(o => [o.m, o.O])) !== JSON.stringify(real.map(o => [o.m, o.O]))) fail(`piece ${name}: obligations differ`);
     let k = p.uses.indexOf(row);
     if (k < 0) { k = p.uses.length; p.uses.push(row); }
     const mem = k;
     const obls = [
-      ...(p.mock ? [`obl_of_row hin (${this.at(p)}.chk _ (mem_at (k := ${k}) rfl))`] : []),
+      `obl_of_row hin (${this.at(p)}.chk _ (mem_at (k := ${k}) rfl))`,
       ...real.map(o => `${o.enumMode ? "obl_of_row_enum" : "obl_of_row"} hin ${o.chk(row)}`),
     ];
     return { p, mem, obls };
@@ -136,14 +141,13 @@ class Bundle {
     const real = `[${p.real.map(o => `⟨${o.m}, ${o.O}⟩`).join(", ")}]`;
     const ends = `(${p.A}) (${p.B})`.replace(/\bb_(\w+)/g, "K.b_$1");
     if (this.route) {
-      if (p.kind === "stageR") fail(`route piece ${p.name}: a stage with existing oracles`);
-      return p.kind === "glue" ? `RGlue F (RunAt T tk) ${uses} ${ROUTE_M} ${ends}`
-        : p.kind === "fwd" ? `RFwd F (RunAt T tk) ${uses} ${ROUTE_M} ${real} ${ends}` : `RStage F (RunAt T tk) ${uses} ${ROUTE_M} ${ends}`;
+      return p.kind === "glue" ? `RGluePiece F (RunAt T tk) ${uses} ${ends}`
+        : p.kind === "fwd" ? `RFwdPiece F (RunAt T tk) ${uses} ${real} ${ends}`
+        : `RStagePiece F (RunAt T tk) ${uses} ${real} ${ends}`;
     }
-    if (p.kind === "glue") return `GlueP F ${uses} ${MOCK_M} ${ends}`;
-    if (p.kind === "stageP") return `StageP F ${uses} ${MOCK_M} ${ends}`;
-    if (p.kind === "stageR") return `StageR F ${uses} ${real} ${ends}`;
-    return `FwdP F ${uses} ${MOCK_M} ${real} ${ends}`;
+    if (p.kind === "glue") return `GluePiece F ${uses} ${ends}`;
+    if (p.kind === "stageP" || p.kind === "stageR") return `StagePiece F ${uses} ${real} ${ends}`;
+    return `FwdPiece F ${uses} ${real} ${ends}`;
   }
   /** The bundle's structures: `<Cuts>`, the piece groups, `<Eqs>`, and the bundle `name`. */
   structures(name: string, params: string, args: string): string {
@@ -315,18 +319,19 @@ const groups: [string, (cc: ClassChains) => boolean][] = [
 ];
 const classMods = groups.map(([mod, sel]) =>
   [mod, sect("{F : Ffi} {I : PrefInvsW F}", pre.filter(sel).map(cc => classTheorem(PB, cc, "Pieces F I") + "\n").join(""))] as const);
-writeFileSync(join(HERE, "Bundle.lean"), HEADER(["host.sim.compose.Steps", "host.sim.lin.Cover", "host.sim.lin.checks.Nps",
+writeBundle(join(HERE, "Bundle.lean"), HEADER(["host.sim.compose.Steps", "host.sim.compose.Pieces", "host.sim.lin.Cover", "host.sim.lin.checks.Nps",
   "host.sim.lin.checks.Kv", "host.sim.lin.checks.Chunk", "host.sim.lin.checks.Plan"],
 `# The pieces of the prefill classes (generated by \`host/sim/compose/gen.ts\`)
 
 \`Pieces F I\`: the boundary cuts between pieces (\`b_<glue>_i\`, \`b_<glue>_o\`), every piece the
-classes' rows use (\`host.sim.compose.Shape\`: \`GlueP\`, \`StageP\`, \`StageR\`, \`FwdP\`, each over the
-rows that use it; a call is named \`<stage>__<glue before>__<glue after>\`), and the length
+classes' rows use (\`host.sim.compose.Pieces\`: \`GluePiece\`, \`StagePiece\`, \`FwdPiece\`, each with
+its template's variable map and oracle over the rows that use it; a call is named
+\`<stage>__<glue before>__<glue after>\`), and the length
 equalities between the rows of a class. A field is filled by the piece's theorem once its template
-exists (tpl_chain, A3's conversions); the stage templates' oracles are the existing ones
-(\`host.sim.stage\`), checked per row (\`host.sim.lin.checks\`).`) + PB.structures("Pieces", "", "") + `\nend ${NS}\n`);
+exists (tpl_chain, A3's conversions). Stage sites have their own checked oracle as well as
+the existing standalone stage obligations (\`host.sim.lin.checks\`).`) + PB.structures("Pieces", "", "") + `\nend ${NS}\n`);
 for (const [mod, s] of classMods)
-  writeFileSync(join(HERE, `${mod}.lean`), HEADER(["host.sim.compose.Bundle"],
+  writeBundle(join(HERE, `${mod}.lean`), HEADER(["host.sim.compose.Bundle"],
     `# The prefill classes' steps from their pieces (generated by \`host/sim/compose/gen.ts\`)
 
 \`<class>.steps P\`: the class's step at every length where it applies, from its cover (the row of
@@ -345,7 +350,7 @@ const finalCase = (kv: string | null, src: string) => {
   if (cc) return `${thmName(cc)}.steps P`;
   return kv ? `FinalS.warm_first _ _` : `FinalS.cold_of_ne (by decide) _`;
 };
-writeFileSync(join(HERE, "Route.lean"), HEADER(["host.sim.compose.ClassA", "host.sim.compose.ClassT1", "host.sim.compose.ClassT2"],
+writeBundle(join(HERE, "Route.lean"), HEADER(["host.sim.compose.ClassA", "host.sim.compose.ClassT1", "host.sim.compose.ClassT2"],
 `# The prefill from the classes' pieces (generated by \`host/sim/compose/gen.ts\`)
 
 \`classSteps P\`: the classes' steps (\`ClassSteps\`); \`reach_of_pieces\`: the prefill from the
@@ -393,18 +398,18 @@ const routeT = "RoutePieces F I T tk";
 const routeCs = out.filter(cc => cc.kind);
 let rsteps = "";
 for (const cc of routeCs) rsteps += classTheorem(RB, cc, routeT) + "\n";
-writeFileSync(join(HERE, "RouteBundle.lean"), HEADER(["host.sim.compose.Route", "host.sim.lin.CoverR"],
+writeBundle(join(HERE, "RouteBundle.lean"), HEADER(["host.sim.compose.Route", "host.sim.compose.RoutePieces", "host.sim.lin.CoverR"],
 `# The route pieces (generated by \`host/sim/compose/gen.ts\`)
 
 \`RoutePieces F I T tk\`: POST's pieces and the short budgets' paths' prefixes to their cuts
 \`b_pA_cut\`, \`b_pB_cut\`, \`b_pC_cut\`, each over the route classes' rows that use it
-(\`host.sim.lin.CoverR\`; \`host.sim.compose.Shape\`: \`RGlue\`, \`RStage\`, \`RFwd\`) with its oracle and
+(\`host.sim.lin.CoverR\`; \`host.sim.compose.RoutePieces\`) with its own variable map, oracle and
 its checks, at the steps of the run at budget \`T\` with tokens \`tk\` (\`RunAt T tk\`); the KV append's
 oracle at the step's offset is discharged by the rows' checks.`) +
   RB.structures("RoutePieces", "(T : Nat) (tk : Nat → Nat)", "T tk") + `\nend ${NS}\n`);
 const post = routeCs.filter(cc => cc.kind === "post");
 const pathCs = (k: string) => routeCs.filter(cc => cc.kind === k);
-writeFileSync(join(HERE, "RouteSteps.lean"), HEADER(["host.sim.compose.RouteBundle"],
+writeBundle(join(HERE, "RouteSteps.lean"), HEADER(["host.sim.compose.RouteBundle"],
 `# POST and the short paths' prefixes from the route pieces (generated by \`host/sim/compose/gen.ts\`)
 
 \`route_post_<class>.steps H\`: POST's step at every length of the post class where POST's facts
@@ -453,10 +458,11 @@ for (const cc of out)
       glue: [...(rc.links[0]!.p.kind === "glue" ? [] : ["start"]), ...rc.links.filter(l => l.p.kind === "glue").map(l => l.p.name)],
       stages: rc.links.filter(l => l.p.kind !== "glue").map(l => l.p.name.split("__")[0]!),
     };
-writeFileSync(join(HERE, "chains.json"), JSON.stringify(chainsOut, null, 1) + "\n");
+writeBundle(join(HERE, "chains.json"), JSON.stringify(chainsOut, null, 1) + "\n");
 
 const nP = PB.pieces.size, nR = RB.pieces.size;
-console.log(`${pre.length} prefill class steps, ${routeCs.length} route chains; ${nP} prefill pieces, ${PB.bounds.size} cuts, ${PB.eqs.length} equalities; ${nR} route pieces, ${RB.bounds.size} cuts, ${RB.eqs.length} equalities`);
+if (process.argv[2] === undefined)
+  console.log(`${pre.length} prefill class steps, ${routeCs.length} route chains; ${nP} prefill pieces, ${PB.bounds.size} cuts, ${PB.eqs.length} equalities; ${nR} route pieces, ${RB.bounds.size} cuts, ${RB.eqs.length} equalities`);
 
 /* ---------- The decode cases' pieces from their route chains ---------- */
 
@@ -488,7 +494,9 @@ cut steps (\`IterChainW\`) at every iteration of the case.`);
   {tab0 : List SymE} {fixA : List Nat} {V : LoopVals} {tk : Nat → Nat} {toks : List NumV} {E0 : List Val} {B : LoopBase}
   {ΔJ ΔH ΔN : Nat}\n\n`;
   for (const a of args) {
-    const [name, kind] = a.split("@");
+    const parts = a.split("@");
+    const name = parts[0] ?? fail(`decode: ${a}: <chain>@<kind>`);
+    const kind = parts[1] ?? fail(`decode: ${a}: <chain>@<kind>`);
     if (!name || !kind || !kinds.has(kind)) fail(`decode: ${a}: <chain>@<kind>`);
     const chain = JSON.parse(readFileSync(join(streams, name.startsWith("Host.") ? name : `Host.Load.Run.Tpl.${name}`, "chain.json"), "utf8"));
     const short = String(chain.chain).split(".").pop()!;
@@ -533,10 +541,10 @@ if (process.argv[2] === "decode") genDecode(process.argv.slice(3));
  * the compactions before them (`<chain>.g<j>`); the start link `startLink`, the glue links
  * `glueLinkCall`/`glueLinkEnd` from A4's runs (`<chain>.Runs`: `Run`'s `runSeg<k>`, the `K<j>`'s `stepA<j>`; with
  * `--run`, `<chain>.runs` from those modules), the boundary facts (kernel checks here) and the pinned world's growth
- * (`<chain>.Grow`, A1's); the call links `callLink` (`host.sim.compose.CallLink`) from each call's facts
- * (`<chain>.Call<j>`, by owner) and the counters and band checked here; the case's `IterCaseW` from the end facts
- * (`<chain>.End`, A4's in the full world at the prompt route's instance: `<chain>.EndAt`, moved by `IterEndW.toFb`),
- * the emitted token (`<chain>.emitTok`) and the counters (`<chain>.within`). A
+ * (`<chain>.Grow`, A1's); the call links `callLink` (`host.sim.compose.CallLink`) from A4's site modules
+ * (`Site*<k>`, `JClAll`), A3's `Conv.callShift` and kernel checks here, what A4 does not state yet in `<chain>.Calls`;
+ * the case's `IterCaseW` at A4's end (`<chain>.iterEnd`, moved by `IterEndW.toFb`), the emitted token
+ * (`<chain>.emitTok`) and the counters (`<chain>.within`), all at the prompt route's instance. A
  * glue piece's oracle is its start server's (`List.drop o X.O`): every later glue piece consumes no answers. */
 function genFill(args: string[]) {
   const take = (flag: string) => {
@@ -582,14 +590,17 @@ function genFill(args: string[]) {
   const jsps = [...okb.matchAll(/:= Disp\.okJSK \(Host\.Ts\.Sim\.Template\.fullJSPP (⟨[^⟩]*⟩) (\[[^\]]*\]) (\[\]|\[\(.*?\)\])\) \(fun _ _ => false\)\s*$/gm)].map(m => [m[1]!, m[2]!, m[3]!]);
   if (jsps.length === 0) fail(`${X}: okB not \`Disp.okJSK (fullJSPP …) (fun _ _ => false)\` (\`decOk\`)`);
   if (jsps.length === 0 || jsps.some(j => JSON.stringify(j) !== JSON.stringify(jsps[0]))) fail(`${X}: the okB's acceptance parameters differ`);
-  const [Pw, fr, wd] = jsps[0]!;
+  const Pw = jsps[0]![0] ?? fail(`${X}: missing acceptance parameters`);
+  const fr = jsps[0]![1] ?? fail(`${X}: missing acceptance frames`);
+  const wd = jsps[0]![2] ?? fail(`${X}: missing acceptance wide frames`);
   // the decode loop's frames: `forwarded`, `emitted`, the further ones (every wide frame's address among them)
   const frs = JSON.parse(fr) as number[], wides = [...wd.matchAll(/\((\d+), /g)].map(m => +m[1]!);
   if (wides.some(w => !frs.includes(w))) console.warn(`${X}: the okB frames ${fr} miss the wide frames ${wides} (IterEndW.ShiftFW needs them in Fr.xs)`);
   // the absorbed `emitted` elements of each call: the merged state's array past the chain start's
   const eNs: string[][] = (seg.bridges as any[]).filter(b => b.kind === "stage").map(b => {
-    const e = (b.arrs as { a: number; prefix: boolean; els: string[] }[] | undefined)?.find(x => x.a === frs[1]);
-    if (!e || !e.prefix) fail(`${X}: bridge ${b.ia}: no emitted array past the chain start's`);
+    const e = (b.arrs as { a: number; prefix: boolean; els: string[] }[] | undefined)?.find(x => x.a === frs[1])
+      ?? fail(`${X}: bridge ${b.ia}: no emitted array past the chain start's`);
+    if (!e.prefix) fail(`${X}: bridge ${b.ia}: no emitted array past the chain start's`);
     return e.els;
   });
   // the runs `sim_chain_range X okB<j> a b runSeg<k>` and the entry steps `stepA<j>` from boundary a
@@ -615,9 +626,14 @@ function genFill(args: string[]) {
   if (ia.length !== nCalls) fail(`${X}: ${ia.length} stage bridges, ${nCalls} calls`);
   const glues = pieces.filter((_, k) => k % 2 === 0);
   const answers = glues.map(g => g.glue === "start" ? 0 : JSON.parse(readFileSync(join(sdir, g.meta), "utf8")).answers as number);
-  const P = `b0 NB ${X}.Pw ${X}.fr ${X}.wd W A Fr ${t0} ${T0}.tab fixA toks ΔJ ΔH ΔN`;
+  // the prompt route's instance: its addresses, wide frames, further frames (the target's prompt `q`), fixed addresses
+  const AP = "Host.Load.Run.Prompt.addrPrompt", WP = "Template.wideP", FP = `(Template.framesP ${t0} q)`, XP = "Template.fixP";
+  const P = `b0 NB ${X}.Pw ${X}.fr ${X}.wd ${WP} ${AP} ${FP} ${t0} ${T0}.tab ${XP} toks ΔJ ΔH ΔN`;
+  const [fwdA, emitA] = [frs[0]!, frs[1]!];
+  // A4's site modules' sources (their data's literals)
+  const srcOf = (f: string) => readFileSync(join(tdir, `${f}.lean`), "utf8");
   // the ghost's data (`b0`'s world); its closed form for the kernel's counter checks (the data reads no bridge)
-  const ghost = (j: number, nb = "NB", en = "eN", bb = "b0") =>
+  const ghost = (j: number, nb = "NB", en = `${X}.eN`, bb = "b0") =>
     j === 0 ? `(GhostP.init (fullWorldFb ${bb} ${nb}) ${t0})` : `(${X}.g${j} ${bb} ${nb} ${en})`;
   const ghostK = (j: number) => ghost(j, "0", "fun _ => []", "Host.Mlx.FfiAne.St.empty");
   const cut = (b: number, j: number, m: string) => `(fun i x0 => bdCut ${P} θ ${ghost(j)} ${m} ${c(`s${b}`)} ${c(`S${b}`)} i x0)`;
@@ -643,8 +659,12 @@ function genFill(args: string[]) {
   const dJ = gJ + sub0(start.next + seg.counters.dJ, vJ), dH = gH + sub0(start.mnext + seg.counters.dH, vH),
     dN = gN + sub0(start.nnext + seg.counters.dN, vN);
   let dec: { vs: number[]; u: number; m: string } | undefined;
+  const imps = new Set<string>();
+  // a growing case's results: the decode forms of the offset `v9` and the capacity `v16` plus a page (`Conv.decQC`)
+  const grows = kind === "grow" || kind === "clearGrow";
+  const dQ = grows ? "Conv.decQC 9 16" : "Conv.decQ 9";
   let facts = "", runsS = "", runsV: string[] = [], growV: string[] = [], grow = "", calls = "", callsF = "", links = "";
-  links += `  start := startLink [] (by decide +kernel) rfl rfl hfr hVB
+  links += `  start := startLink [] (by decide +kernel) rfl rfl (${X}.hfr q) hVB
     (fun i nx => MapOk.sub (mapOk_decM ρ T tk L i nx) (by decide +kernel)) hJb hHb hNb\n`;
   for (let j = 0; j < nCalls; j++) {
     const cl = pieces[2 * j + 1].stage, gl = pieces[2 * j + 2], last = j === nCalls - 1;
@@ -671,126 +691,110 @@ kernel_rfl ${X}.scE${j} : Nat.ble (mlxOf ${sc}.ffi).next ${X}.Pw.E = true
 kernel_rfl ${X}.scN${j} : Nat.ble (mlxOf ${sc}.ffi).nnext ${X}.Pw.NE = true
 
 `;
-    calls += `/-- **Call \`${cl.name}\`'s facts** (\`${cl.fn}\`, ${cl.steps} target steps; \`callLink\`'s, by owner): the instance \`I\`, its
-oracle \`O\`, written addresses \`wr\`, fresh result variables \`ws\`, canonical result variables \`cws\` and their merged
-references \`nr\`, the compaction map \`κ\`, the forwarded elements \`f\`, the results' entries \`Es\` (A4's \`${inst}\`,
-\`Site${k}\`, \`SiteF${k}\`, \`SiteC${k}\`, \`SiteD${k}\`, \`SiteL${k}\`, \`SiteS${k}\`). -/
-structure ${X}.Call${j} (b0 : BSt) (NB : Nat) (W : Nat → Option WFrame) (A : Addr) (Fr : LoopFramesA A) (fixA : List Nat)
-    (L T : Nat) (tk : Nat → Nat) (θ : Nat → SymE) (eN : Nat → List Val) where
-  /-- ${A4(`${inst}.tpl`)} -/
-  I : Stage.StageTpl FF (Template.okLocal (decOk ${X}.Pw ${X}.fr ${X}.wd))
-  /-- ${A4(`${inst}.O`)} -/
-  O : List Ans
-  /-- ${A4(`${inst}.wr`)} -/
-  wr : List Nat
-  /-- ${A4(`ws${k}`)} -/
-  ws : List Nat
-  /-- ${A4(`cws${k}`)} -/
-  cws : List Nat
-  /-- ${A4(`nr${k}`)} -/
-  nr : List Nat
-  /-- ${A4(`kappa${k}`)} -/
-  κ : Map
-  /-- A4: \`SiteL${k}\`'s forwarded elements at \`s${a + 1}\` -/
-  f : List Val
-  /-- A4: \`cderived${k}\`'s entries -/
-  Es : List (Option SymE)
-  /-- the instance's oracle at the link's map (kernel, once \`O\` is A4's) -/
-  chk : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${m}) O = true
-  /-- ${A4(`srvO${k}`)} -/
-  hO : I.S0.oracle = O
-  /-- ${A4(`iso${k}`)} -/
-  hs0 : I.s0 = { ${sa} with stack := [] }
-  /-- ${A4(`tab0_${k}`)} -/
-  htab : I.S0.tab = ${Sa}.tab
-  /-- ${A4(`stFoot${k}`)} -/
-  hfoot : Conv.StageFoot wr I.s0 I.s2
-  /-- ${A4(`wrNodup${k}`)} -/
-  hnd : wr.Nodup
-  /-- ${A4(`wrBound${k}`)} -/
-  hbd : ∀ b ∈ wr, b / 4096 < 4 ^ 31
-  /-- ${A4(`trace${k}`)} -/
-  htr : ∃ fr, I.s2.trace = fr ++ I.s0.trace
-  /-- ${A4(`merge${k}`)}, with \`n0_${k}\` -/
-  hmer : ${sm} = Conv.mergeSt Map.id (Map.id.res ${Sa}.tab.length ${Sa}.tab.length) ${sa}.stack wr ${sa} I.s2 I.s0 I.s2.ffi
-  /-- ${A4(`mergeTab${k}`)} -/
-  hmtab : ${tabm} = ${Sa}.tab ++ Conv.resTab ws
-  /-- kernel, once \`ws\` is A4's -/
-  hwsl : ws.length = I.S2.tab.length - ${Sa}.tab.length
-  /-- kernel -/
-  hwsnd : ws.Nodup
-  /-- ${A4(`fresh${k}`)} (its first conjunct) -/
-  hfresh : ∀ e ∈ ${Sa}.tab, ∀ w ∈ ws, e.noVar w = true
-  /-- kernel: the loop table avoids the results and the stage's variables -/
-  hgtab : ∀ j e, nth? ${T0}.tab j = some e → ∀ w, (w ∈ cws ∨ w ∈ ws) → e.noVar w = true
-  /-- from the end's restart substitution (\`IterEndW.theta\` at \`addrPrompt\`), kernel -/
-  hgθ : ∀ j e, nth? ${T0}.tab j = some e → ∀ w, (w ∈ cws ∨ w ∈ ws) → w ≠ A.nxt → (e.subst θ).noVar w = true
-  /-- ${A4(`ctab${k}`)} -/
-  hctab : ${Sc}.tab = ${Sa}.tab ++ cws.map SymE.var
-  /-- ${A4(`cwsDisj${k}`)} -/
-  hdis : ∀ w ∈ cws, w ∉ ws
-  /-- A3's \`Conv.compact_shift\` (\`hcall\` the call state's \`CallFacts\`; A4's \`JClean\`, \`cfix${k}\`, \`cheap${k}\`, the frames'
-  per-array facts; \`Fd\` the acceptance's frames (\`hFd\` from \`Kp\`), \`Xs\` those off \`W\`, the wide frame's address framed
-  and present at the canonical state, its \`WFix\` trivial; \`hctab\` rewrites its canonical table) -/
-  hshift : ∀ x0 x : SegInst FF, Conv.CallFacts ${sa} ${Sa}.tab.length → Disp.Kp ${DJ} x.K → IterGhostCW (fullWorldFb b0 NB) A ${X}.Pw Fr ${t0} ${T0}.tab fixA θ ${g} x0 x →
-    ShiftD FF (fun _ _ _ => True) κ (Conv.compactθ cws (nr.map fun r => (nth? ${tabm} r).getD (.var 0)))
-      (kpOf x.K W) W x.K ${sc} ⟨${Sc}.tab, []⟩ ${sm} ⟨${tabm}, []⟩
-  /-- ${A4(`cshift${k}`)} with the chain's \`NClean\` and the **E-form facts** -/
-  hffi : Conv.FullShiftQ ${X}.Pw ${Sc}.tab.length κ ${sc}.ffi ${sm}.ffi
-  /-- ${A4(`cbigs${k}`)} with \`ccounters${k}\` -/
-  hbig : bigsOutB (mlxOf ${sc}.ffi).next ${X}.Pw.E (mlxOf ${sc}.ffi) = true
-  /-- **A3/A4**: no bigint of the canonical fresh band (\`cclean${k}\`) -/
-  hfree : NoBigSt (fun i => ((mlxOf ${sc}.ffi).next : Int) ≤ i ∧ i < ${X}.Pw.E) ${sc}.trace ${sc}
-  /-- \`Conv.Map.compact_num_lt\` at ${A4(`kappa${k}`)} -/
-  hκn : ∀ j, j < ${T0}.tab.length → κ.num j = .ref j
-  /-- \`Conv.Map.compact_lt\` at \`fixA\` (the route's, below the canonical counter) -/
-  hκa : ∀ a ∈ fixA, κ.a a = a
-  /-- **A3/A4**: the compaction's nodes below the template start's -/
-  hκv : ∀ j, j < (mlxOf ${t0}.ffi).nnext → κ.node j = j
-  /-- A4: \`SiteL${k}\`'s \`arr${k}_<fwd>\` at \`A := addrPrompt\` -/
-  hfwd : ∃ o, ${sm}.heap.get A.fwd = some (.obj o) ∧ o.kind = .array (arrOf ${t0} A.fwd ++ f)
-  /-- A4: \`SiteL${k}\`'s \`arr${k}_<emit>\` -/
-  hemit : ∃ o, ${sm}.heap.get A.emit = some (.obj o) ∧ o.kind = .array (arrOf ${t0} A.emit ++ eN ${j})
-  /-- A4: \`SiteL${k}\`'s further frames' arrays (their prefixes) -/
-  hkeep : KeepsAtW Fr ${sm}
-  /-- A4: \`SiteL${k}\`'s \`arrR${k}_<emit>\` -/
-  heN : NumRefs ${T0}.tab.length (eN ${j})
-  /-- kernel -/
-  hm0 : ∀ p ∈ ${R}, Conv.idx? p.1 cws = none ∧ ws.contains p.1 = false
-  /-- kernel -/
-  hndc : cws.Nodup
-  /-- kernel -/
-  hlenc : cws.length = nr.length
-  /-- ${A4(`cnrLo${k}`)} -/
-  hnrLo : nr.all (Nat.ble ${Sa}.tab.length) = true
-  /-- ${A4(`cderived${k}`)} -/
-  hder : nr.map (fun r => nth? I.S2.tab r) = Es
-  /-- A4: \`cqs${k}\`, the results' quantities (\`cderived${k}\`'s forms by \`Conv.decQ\`) -/
-  qs : List Q
-  /-- kernel -/
-  hlq : qs.length = cws.length
-  /-- kernel: each result at the offset or the end position -/
-  hqs : qs.all (fun q => decide (q = .o ∨ q = .e)) = true
-  /-- \`Conv.hEs_of_decQ\` with A4's \`cdq${k}\` (\`decI\`'s \`n = 1\`, the offset below \`2 ^ 31\`) -/
-  hEs : ∀ (i : Cls.Inst) (ν : Nat → F64), DecAt L T tk i → MapOk ν i ${R} → VBOkF loopVB ν →
-    ∀ j o, nth? Es j = some o → ∃ E q, o = some E ∧ nth? qs j = some q ∧ E.eval ν = F64.ofNat (i.get q)
-  /-- kernel: the next cut's variables -/
-  hR' : ∀ p ∈ ${R2}, p ∈ ${R} ++ cws.zip qs
-
+    // A4's site data: the compaction map's counters and table length, the results and their forms
+    const kap = srcOf(`SiteC${k}`).match(new RegExp(`def ${X}\\.kappa${k} : Map :=\\s*Conv\\.Map\\.compact (\\d+) (\\d+) (\\d+) `)) ??
+      fail(`${X}: SiteC${k}: kappa${k} is not \`Conv.Map.compact n0 n1 nS …\``);
+    const [kn0, , knS] = [+kap[1]!, +kap[2]!, +kap[3]!];
+    const cwsL = JSON.parse((srcOf(`SiteC${k}`).match(new RegExp(`def ${X}\\.cws${k} : List Nat := (\\[[^\\]]*\\])`)) ??
+      fail(`${X}: SiteC${k}: cws${k}`))[1]!) as number[];
+    const gmeta = JSON.parse(readFileSync(join(sdir, gl.meta), "utf8"));
+    const decForm = (e: string) => /^\(v9 add 1\)$|^int32\(v9\)$|^int32\(\(v9 add 1\)\)$|^\(int32\(\(v9 add 1\)\) sub 0\)$/.test(e) ||
+      (grows && e === "(v16 add 256)");
+    const resOk = ((gmeta.derived ?? []) as [number, string, string][]).every(([v, , e]) => !cwsL.includes(v) || decForm(e));
+    if (!varsOf(pieces[2 * j]).some(([v, q]) => v === 9 && q === "o")) fail(`${X}: call ${j}: v9 not at the offset before it`);
+    const st = c(`st${k}`), tpl = `${st}.tpl`, cn = (n: string) => c(`${n}${k}`), θ = c("θ");
+    const hasKeep = new RegExp(`^theorem ${X}\\.keep${k} `, "m").test(srcOf(`SiteL${k}`));
+    // A4's native shift from the call's relation, once built (in `DEVOUT` when given)
+    const built = (f: string) => !process.env.DEVOUT || existsSync(join(process.env.DEVOUT, "host/sim/template", dir, `${f}.olean`));
+    const hasShR = existsSync(join(tdir, `SiteR${k}.lean`)) && built(`SiteR${k}`) &&
+      new RegExp(`^theorem ${X}\\.cshiftR${k} `, "m").test(srcOf(`SiteR${k}`));
+    // the canonical state's counters (its roots check's; the bookkeeping's `jcl<b>` at or below them, `JClean.mono`)
+    const jclC = srcOf(`SiteZ${k}`).match(new RegExp(`kernel_rfl ${X}\\.zroots2${k} : noBigRootsP \\(fun i => !Conv\\.oldBigB \\(⟨(\\d+), `)) ??
+      fail(`${X}: SiteZ${k}: zroots2${k}`);
+    if (hasShR) imps.add(`SiteR${k}`);
+    facts += `-- call \`${cl.name}\`'s data (A4's site ${k}) in \`callLink\`'s forms
+kernel_rfl ${X}.wsl${j} : ${cn("ws")}.length = ${tpl}.S2.tab.length - ${Sa}.tab.length
+kernel_rfl ${X}.wsnd${j} : Template.nodupT ${cn("ws")} PTrie.nil = true
+kernel_rfl ${X}.fresh${j} : (${Sa}.tab.all fun e => ${cn("ws")}.all fun w => e.noVar w) = true
+kernel_rfl ${X}.gtab${j} : (${T0}.tab.all fun e => (${cn("cws")} ++ ${cn("ws")}).all fun w => e.noVar w) = true
+kernel_rfl ${X}.gth${j} : (${T0}.tab.all fun e => (${cn("cws")} ++ ${cn("ws")}).all fun w => w == 17 || (e.subst ${θ}).noVar w) = true
+kernel_rfl ${X}.big${j} : bigsOutB (mlxOf ${sc}.ffi).next ${X}.Pw.E (mlxOf ${sc}.ffi) = true
+kernel_rfl ${X}.kn${j} : Nat.ble ${T0}.tab.length ${knS} = true
+kernel_rfl ${X}.ka${j} : (${XP}.all fun a => Nat.blt a ${kn0}) = true
+kernel_rfl ${X}.m0_${j} : (${R}.all fun p => (Conv.idx? p.1 ${cn("cws")}).isNone && !${cn("ws")}.contains p.1) = true
+kernel_rfl ${X}.ndc${j} : Template.nodupT ${cn("cws")} PTrie.nil = true
+kernel_rfl ${X}.lenc${j} : ${cn("cws")}.length = ${cn("nr")}.length
+kernel_rfl ${X}.nrLo${j} : ${cn("nr")}.all (Nat.ble ${Sa}.tab.length) = true
+kernel_rfl ${X}.xn${j} : Nat.ble ${jclC[1]} (mlxOf ${sc}.ffi).next = true
+theorem ${X}.chk${j} : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${m}) ${st}.O = true := by
+  decide +kernel
+${resOk ? `/-- Call ${j}'s results' entries and their quantities (\`Conv.decQ\` at the offset \`v9\`). -/
+noncomputable def ${X}.Es${j} : List (Option SymE) := ${cn("nr")}.map fun r => nth? ${tpl}.S2.tab r
+noncomputable def ${X}.qs${j} : List Q := ${X}.Es${j}.map fun o => (o.bind (${dQ})).getD .o
+kernel_rfl ${X}.dq${j} : ${X}.Es${j}.all (fun o => (o.bind (${dQ})).isSome) = true
+kernel_rfl ${X}.lq${j} : ${X}.qs${j}.length = ${cn("cws")}.length
+kernel_rfl ${X}.qsOk${j} : ${X}.qs${j}.all (fun q => decide (q = .o ∨ q = .e${grows ? " ∨ q = .cap1" : ""})) = true
+kernel_rfl ${X}.R'${j} : (${R2}.all fun p => (${R} ++ ${cn("cws")}.zip ${X}.qs${j}).contains p) = true
+` : ""}
 `;
-    callsF += `  c${j} : ${X}.Call${j} b0 NB W A Fr fixA L T tk θ eN\n`;
+    const nshift = `Conv.FullShiftQ ${X}.Pw ${Sc}.tab.length ${cn("kappa")} ${sc}.ffi ${sm}.ffi`;
+    const res = (f: string) => `${f} : ${f === "hffi"
+      ? `∀ (r : List NumV) (M : Map) (y : FF.S), FLRb b0 ${X}.Pw NB r M ${Sa}.tab.length ${sa}.ffi y → ${nshift}`
+      : `KeepsAtW ${FP} ${sm}`}`;
+    const isOpen = !hasShR || !hasKeep || !resOk;
+    if (isOpen) calls += `/-- **Call \`${cl.name}\`'s open facts** (\`${cl.fn}\`, ${cl.steps} target steps; A4's site ${k}): what A4's site
+modules do not state yet (the native shift from the call state's relation, the merged state's further frames)${resOk ? "" : `,
+the results' quantities (their forms beyond \`Conv.decQ\`'s)`}. -/
+structure ${X}.Call${j} (b0 : BSt) (NB : Nat) (q : List Val) (L T : Nat) (tk : Nat → Nat) where
+${hasShR ? "" : `  /-- A4's \`cshiftR${k}\` (\`cshift${k}\` at \`ncl${a}\` and the call state's native relation) -/
+  ${res("hffi")}
+`}${hasKeep ? "" : `  /-- A4's \`keep${k}\` -/
+  ${res("hkeep")}
+`}${resOk ? "" : `  qs : List Q
+  hlq : qs.length = ${cn("cws")}.length
+  hqs : qs.all (fun q => decide (q = .o ∨ q = .e)) = true
+  hEs : ∀ (i : Cls.Inst) (ν : Nat → F64), DecAt L T tk i → MapOk ν i ${R} → VBOkF loopVB ν →
+    ∀ j o, nth? (${cn("nr")}.map fun r => nth? ${tpl}.S2.tab r) j = some o → ∃ E q, o = some E ∧ nth? qs j = some q ∧
+      E.eval ν = F64.ofNat (i.get q)
+  hR' : ∀ p ∈ ${R2}, p ∈ ${R} ++ ${cn("cws")}.zip qs
+`}
+`;
+    if (isOpen) callsF += `  c${j} : ${X}.Call${j} b0 NB q L T tk\n`;
     const cj = `Cs.c${j}`;
-    const field = (n: string) => `(${n} := ${cj}.${n})`;
-    links += `  ${cl.name} := callLink ${cj}.I ${cj}.O hW ${cj}.chk ${cj}.hO ${sub(m, R)} ${["hs0", "htab", "hfoot", "hnd", "hbd", "htr", "hmer",
-      "hmtab", "hwsl", "hwsnd", "hfresh"].map(field).join(" ")}
-    (hlen := Nat.le_of_ble_eq_true ${X}.len${a}) ${["hgtab", "hgθ"].map(field).join(" ")}
-    (hgrow := call_ngrow hW ${cj}.I ${cj}.hs0 ${cj}.hfoot ${cj}.hnd ${cj}.hbd ${cj}.htr) ${["hctab", "hdis", "hshift", "hffi", "hbig", "hfree"].map(field).join(" ")}
+    links += `  ${cl.name} := callLink ${tpl} ${st}.O hW ${X}.chk${j} ${cn("srvO")} ${sub(m, R)}
+    (hs0 := ${cn("iso")}) (htab := ${c(`tab0_${k}`)}) (hfoot := ${cn("stFoot")}) (hnd := ${cn("wrNodup")})
+    (hbd := ${cn("wrBound")}) (htr := ${cn("trace")}) (hmer := fun _ => ${cn("merged")}) (hmtab := ${cn("mergeTab")})
+    (hwsl := ${X}.wsl${j}) (hwsnd := (Template.nodupT_sound ${X}.wsnd${j}).2) (hfresh := noVar_of_all ${X}.fresh${j})
+    (hlen := Nat.le_of_ble_eq_true ${X}.len${a}) (hgtab := noVar_nth_of_all ${X}.gtab${j})
+    (hgθ := noVarθ_nth_of_all ${X}.gth${j})
+    (hgrow := call_ngrow hW ${tpl} ${cn("iso")} ${cn("stFoot")} ${cn("wrNodup")} ${cn("wrBound")} ${cn("trace")})
+    (hctab := ${cn("ctab")}) (hdis := disj_of_all ${cn("cwsDisj")}) (hshift := fun x0 x hcf hfq hK hB => ${cn("ctab")} ▸ Conv.callShift ${cn("zkap")}
+      (Conv.JClean.mono (Conv.Cnt.le_of_leB (by decide)) ${c(`jcl${a}`)}) ${cn("cfix")} hfq
+      rfl rfl ${cn("zpl")} ${cn("zplnd")} ${cn("zn1")} ${cn("zfirst")} ${cn("zscn")} ${cn("zsmn")} ${cn("zgrow")} ${cn("mergeTab")}
+      ${cn("zfresh")} ${cn("zcnd")} ${X}.lenc${j} ${cn("znrHi")} ${cn("znC")} ${cn("zfrlt")} xs_wideP wfr_wideP (hX_framesP ${X}.arr4910)
+      (kept_of fun a ha => by
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+        rcases ha with rfl | rfl | rfl
+        exacts [${frs.slice(0, 3).map(fa => `⟨${c(`zg${k}_${fa}`)}, ${c(`zk${k}_${fa}`)}, ${c(`zm${k}_${fa}`)}⟩`).join(", ")}])
+      (wp_present ${c(`zw${k}_4910`)}) wf_wideP ${cn("zclbd")} ${cn("cheap")}
+      (hoff_of ${cn("mheap")} ${cn("stFoot")} ${cn("iso")} ${cn("zwr")}) ${cn("ckeepP")} ${cn("csupp")} ${cn("cbound")} ${cn("zimg")}
+      ${cn("zctl")} ${cn("zstack")} ${cn("zjobs")} ${cn("zstores")} ${cn("zroots")} x0 x hcf hK hB.ofFb)
+    (hffi := ${hasShR ? `fun _ _ _ h => ${cn("cshiftR")} h rfl` : `${cj}.hffi`})
+    (hbig := ${X}.big${j}) (hfree := Conv.jclean_noBigSt (Conv.JClean.mono (Conv.Cnt.le_of_leB (by decide)) ${c(`jcl${a + 2}`)})
+      (Nat.le_of_ble_eq_true ${X}.xn${j}) (by decide) ${cn("zroots2")})
     (hband := band_of (Nat.le_of_ble_eq_true ${X}.bandLo${j}) (Nat.le_of_ble_eq_true ${X}.bandHi) (by decide))
-    ${["hκn", "hκa", "hκv", "hfwd", "hemit", "hkeep", "heN"].map(field).join(" ")}
+    (hκn := compact_num_of ${X}.kn${j}) (hκa := compact_fix_of ${X}.ka${j}) (hκv := Conv.node_of_fixOld ${cn("cfix")} (Nat.le_of_ble_eq_true ${cn("zhm")}))
+    (hfwd := ${c(`arr${k}_${fwdA}`)}) (hemit := ${c(`arr${k}_${emitA}`)}) (hkeep := ${hasKeep ? `${cn("keep")} q` : `${cj}.hkeep`})
+    (heN := ${c(`arrR${k}_${emitA}`)})
     (hJ := Nat.le_of_ble_eq_true ${X}.cJm${j}) (hJc := Nat.le_of_ble_eq_true ${X}.cJc${j})
     (hH := Nat.le_of_ble_eq_true ${X}.cHm${j}) (hHE := Nat.blt_eq.mp ${X}.cHE${j})
-    (hN := Nat.le_of_ble_eq_true ${X}.cNm${j}) ${["hm0", "hndc", "hlenc", "hlq", "hnrLo", "hder", "hEs", "hR'"].map(field).join(" ")}
-    (hq := qs_le ${cj}.hqs) (dJ := ${dJ}) (dH := ${dH}) (dN := ${dN}) (hdJ := hdJ) (hdH := hdH)
+    (hN := Nat.le_of_ble_eq_true ${X}.cNm${j}) (hm0 := m0_of_all ${X}.m0_${j}) (hndc := (Template.nodupT_sound ${X}.ndc${j}).2)
+    (hlenc := ${X}.lenc${j}) (hnrLo := ${X}.nrLo${j}) (hder := rfl)
+    ${resOk ? `(qs := ${X}.qs${j}) (hlq := ${X}.lq${j}) (hEs := ${grows ? `hEs_of_allC dec_${kind}.capRow (by decide) (by decide)`
+      : "hEs_of_all (by decide)"} ${X}.dq${j})
+    (hq := ${grows ? `qs_leC dec_${kind}.capRow` : "qs_le"} ${X}.qsOk${j}) (hR' := sub_of_all ${X}.R'${j})`
+      : `(qs := ${cj}.qs) (hlq := ${cj}.hlq) (hEs := ${cj}.hEs) (hq := qs_le ${cj}.hqs) (hR' := ${cj}.hR')`}
+    (dJ := ${dJ}) (dH := ${dH}) (dN := ${dN}) (hdJ := hdJ) (hdH := hdH)
     (hdN := hdN) (hcJ := Nat.le_of_ble_eq_true ${X}.cRJ${j}) (hcH := Nat.le_of_ble_eq_true ${X}.cRH${j})
     (hcN := Nat.le_of_ble_eq_true ${X}.cRN${j}) (hs0E := Nat.le_of_ble_eq_true ${X}.s0E)
     (hscE := Nat.le_of_ble_eq_true ${X}.scE${j}) (hs0N := Nat.le_of_ble_eq_true ${X}.s0N)
@@ -834,14 +838,15 @@ kernel_rfl ${X}.top${t + 1} : noRetBlock ${c(`s${t + 1}`)} = true\n\n`;
       facts += `kernel_rfl ${X}.top${t} : noRetBlock ${c(`s${t}`)} = true\n\n`;
       const der = (meta.derived as [number, string, string][]);
       const us = [...new Set(der.flatMap(([, , ex]) => [...ex.matchAll(/v(\d+)/g)].map(mm => mm[1]!)))];
-      if (us.length > 1) fail(`${X}: ${gl.glue}: results of several variables ${us}`);
-      dec = der.length ? { vs: der.map(([v]) => v), u: +us[0]!, m: mA } : undefined;
+      if (us.some(u => u !== "9" && !(grows && u === "16"))) fail(`${X}: ${gl.glue}: results of variables ${us}`);
+      dec = der.length ? { vs: der.map(([v]) => v), u: 9, m: mA } : undefined;
       links += dec
         ? `  ${gl.glue} := glueLinkEndD ${O} hW ${X}.chk_${gl.glue} ${X}.srv${f} ${X}.ok${f} R.${rn}
-    ${X}.top${t} ${c("dvs")} ${c("des")} ${dec.u} (e := Ed.e.toFb b0) Ed.he1 Ed.hS1 (decQ_hvs ${X}.hvsB) (by decide +kernel)
+    ${X}.top${t} ${c("dvs")} ${c("des")} (e := (${c("iterEnd")} NB).toFb b0) rfl ${X}.hS1D
+    ${grows ? `(hde_of_decC dec_${kind}.capRow ${X}.hvsB (by decide) (by decide))` : `(hde_of_dec ${X}.hvsB (by decide))`}
     (Nat.le_of_ble_eq_true ${X}.len${f}) Gw.${gl.glue}\n`
         : `  ${gl.glue} := glueLinkEnd ${O} hW ${X}.chk_${gl.glue} ${X}.srv${f} ${X}.ok${f} R.${rn}
-    ${X}.top${t} (e := Ed.e.toFb b0) Ed.he1 Ed.hS1 (Nat.le_of_ble_eq_true ${X}.len${f}) Gw.${gl.glue}\n`;
+    ${X}.top${t} (e := (${c("iterEnd")} NB).toFb b0) rfl rfl (Nat.le_of_ble_eq_true ${X}.len${f}) Gw.${gl.glue}\n`;
       growV.push(`fun r _ _ _ hν hK hr ht => Full.glue_ngrow (decSimQ b0 NB ${X}.Pw ${X}.fr ${X}.wd W hW r []) ${X}.ok${f} R.${rn}
     hν hK hr ht`);
     }
@@ -863,7 +868,8 @@ import host.load.run.prompt.Addr
 import host.sim.template.EndGen
 import ${mod}.H0
 import ${mod}.OkB
-${[...new Set([...(dec ? [desMod] : []), eRMod, ...(endMod ? [endMod] : [])])].map(m => `import ${mod}.${m}\n`).join("")}${withRun ? `import ${mod}.Run\n` : ""}set_option maxRecDepth 1000000
+${[...new Set([...(dec ? [desMod] : []), eRMod, ...(endMod ? [endMod] : [])])].map(m => `import ${mod}.${m}\n`).join("")}${withRun ? `import ${mod}.Run\n` : ""}${ia.map((_, k) => `import ${mod}.st${k}.Tpl\nimport ${mod}.SiteL${k}\nimport ${mod}.SiteD${k}\nimport ${mod}.SiteZ${k}\n`).join("")}import ${mod}.JClAll
+${[...imps].map(m => `import ${mod}.${m}\n`).join("")}set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace ${NS}
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Ts.Sim.Full Host.Load.Layers
@@ -875,11 +881,11 @@ Scratch, unregistered: it imports A4's chain modules (\`${mod}\`). The decode wo
 \`b0\` (\`fullWorldFb b0 NB\`). \`${X}.pieces\`: \`DecPieces_${X}\` at the chain's boundaries (\`host.sim.compose.ChainFill\`'s \`bdCut\`, each at the variables known there, the ghost
 \`${X}.g<j>\` after \`j\` compactions, absorbing \`emitted\`'s elements \`eN j\`); the start and glue links from A4's
 runs (\`${X}.Runs\`${withRun ? `, \`${X}.runs\`` : ""}), the boundary facts below and the pinned decode world's growth along the runs
-(\`${X}.Grow\`, A1's); the call links \`callLink\` (\`host.sim.compose.CallLink\`) from the calls' facts
-(\`${X}.Call<j>\`, each field's owner in its doc) and the counters and band below. \`${X}.case\`: the case's
-\`IterCaseW\` from the end facts (\`${X}.End\`, A4's in the full world at the prompt route's instance: \`${X}.EndAt\`${endMod ? `,
-\`${X}.endAt\` from A4's \`${endMod}\`` : ""}; moved by \`IterEndW.toFb\`), the emitted token (\`${X}.emitTok\`) and the
-counters (\`${X}.within\`: the ghost's \`dJ ${dJ}\`, \`dH ${dH}\`, \`dN ${dN}\`, the growth absorbed by the compactions
+(\`${X}.Grow\`, A1's); the call links \`callLink\` (\`host.sim.compose.CallLink\`) from A4's site modules, A3's
+\`Conv.callShift\` and the kernel checks below${callsF ? `, the calls' open facts in \`${X}.Calls\`` : ""}. All at the prompt route's instance
+(\`addrPrompt\`, \`wideP\`, the frames \`framesP ${X}.s0 q\`, \`fixP\`). \`${X}.case\`: the case's \`IterCaseW\` at A4's end
+(\`${X}.iterEnd\` in the full world, moved by \`IterEndW.toFb\`; \`${X}.shiftFW\`, \`${X}.keep\`), the emitted token
+(\`${X}.emitTok\`) and the counters (\`${X}.within\`: the ghost's \`dJ ${dJ}\`, \`dH ${dH}\`, \`dN ${dN}\`, the growth absorbed by the compactions
 included; seg.json's canonical deltas \`${seg.counters.dJ}\`, \`${seg.counters.dH}\`, \`${seg.counters.dN}\`). -/
 
 /-- The chain's acceptance parameters (its \`okB<k>\`'s \`Template.fullJSPP\`). -/
@@ -889,7 +895,7 @@ abbrev ${X}.wd : List (Nat × WFrame) := ${wd}
 /-- The \`emitted\` elements each call's compaction absorbs (A4's merged states' \`emitted\` past the chain start's, the
 canonical states resetting it). -/
 def ${X}.eN : Nat → List Val
-${eNs.map((l, j) => `  | ${j} => [${l.join(", ")}]`).join("\n")}
+${eNs.map((_, j) => `  | ${j} => ${c(`arrEl${j}_${emitA}`)}`).join("\n")}
   | _ => []
 
 /-- The pieces' variable maps (the chains' spec). -/
@@ -897,7 +903,7 @@ ${maps.map((l, k) => `def ${X}.m${k} : List (Nat × Q) := ${l}`).join("\n")}
 
 ${dec ? `-- A4's end results (\`${X}.dvs\`) and terms (\`${X}.des\`): each a decode form of \`v${dec.u}\` (\`Conv.decQ\`) at a
 -- quantity the last glue piece's map holds it
-kernel_rfl ${X}.hvsB : (${c("dvs")}.zip ${c("des")}).all (fun p => match Conv.decQ ${dec.u} p.2 with
+kernel_rfl ${X}.hvsB : (${c("dvs")}.zip ${c("des")}).all (fun p => match ${dQ} p.2 with
   | some q => ${dec.m}.contains (p.1, q) | none => false) = true
 
 ` : ""}
@@ -907,6 +913,7 @@ ${ghosts}
 /-! ## The boundary facts -/
 
 kernel_rfl ${X}.bandHi : Nat.ble ${X}.Pw.E ${DJ}.hi = true
+kernel_rfl ${X}.arr4910 : arrOf ${t0} 4910 = []
 kernel_rfl ${X}.s0E : Nat.ble (mlxOf ${t0}.ffi).next ${X}.Pw.E = true
 kernel_rfl ${X}.s0N : Nat.ble (mlxOf ${t0}.ffi).nnext ${X}.Pw.NE = true
 
@@ -943,72 +950,57 @@ theorem ${X}.within {b0 : BSt} {NB : Nat} {A : Addr} {fixA : List Nat} (eN : Nat
 
 /-! ## The calls and the end -/
 
-${calls}/-- **The calls' facts.** -/
-structure ${X}.Calls (b0 : BSt) (NB : Nat) (W : Nat → Option WFrame) (A : Addr) (Fr : LoopFramesA A) (fixA : List Nat)
-    (L T : Nat) (tk : Nat → Nat) (θ : Nat → SymE) (eN : Nat → List Val) where
+${callsF ? `${calls}/-- **The calls' open facts.** -/
+structure ${X}.Calls (b0 : BSt) (NB : Nat) (q : List Val) (L T : Nat) (tk : Nat → Nat) where
 ${callsF}
-/-- **The case's end facts** (A4's restart data at the chain's end \`s${end}\` in the full world, \`${X}.endB\`'s: the end
-template \`e\`, its map \`σ\`, substitution \`θ\`, arrays and native shift, its \`emitted\` elements past the chain start's
-\`eR\`; the shift under the frames, the kept frames). The pinned decode world's end is \`e.toFb b0\`. -/
-structure ${X}.End (NB : Nat) (W : Nat → Option WFrame) (A : Addr) (Fr : LoopFramesA A) (fixA : List Nat) where
-  e : IterEndW (fullWorld NB) A ${X}.Pw ${t0} ${T0}.tab fixA
-  he1 : e.s1 = ${sE}
-  hS1 : e.S1 = ${dec ? `⟨${c(`S${end}`)}.tab.map (·.subst (Conv.compactθ ${c("dvs")} ${c("des")})), ${c(`S${end}`)}.oracle⟩` : c(`S${end}`)}
-  heR : e.eR = ${c("eR")}
-  sh : e.ShiftFW Fr W
-  keep : KeepsAtW Fr e.s1
-
-/-- **The emitted token** after the compactions' absorbed elements and the end's. -/
-theorem ${X}.emitTok (b0 : BSt) (NB : Nat) :
-    (${X}.g${nCalls} b0 NB ${X}.eN).eA ++ ${c("eR")} = [.num (.ref Host.Load.Run.Prompt.addrPrompt.tok)] := rfl
-
-/-- **A4's end facts at the prompt route's instance** (\`${X}.endB\`'s form): \`${X}.End\` under \`A := addrPrompt\`, the
-route's frames \`framesP ${X}.s0 q\`, its wide frames \`wideP\` and fixed addresses \`fixP\`. -/
-abbrev ${X}.EndAt (NB : Nat) : Type :=
-  ∀ {W : Nat → Option WFrame} {A : Addr} {Fr : LoopFramesA A} {fixA : List Nat} (q : List Val),
-    A = Host.Load.Run.Prompt.addrPrompt → HEq Fr (Template.framesP ${t0} q) → W = Template.wideP →
-    fixA = Template.fixP → ${X}.End NB W A Fr fixA
-${endMod ? `${dec ? `
--- A4's end server: the canonical results back to their terms
+` : ""}${dec ? `-- A4's end server: the canonical results back to their terms
 kernel_rfl ${X}.hS1D : ${c("S1D")} = ⟨${c(`S${end}`)}.tab.map (·.subst (Conv.compactθ ${c("dvs")} ${c("des")})), ${c(`S${end}`)}.oracle⟩
-` : ""}
-/-- **A4's end facts at the prompt route's instance** (\`${X}.iterEnd\`, \`${X}.shiftFW\`, \`${X}.keep\`, as \`${X}.endB\`). -/
-noncomputable def ${X}.endAt (NB : Nat) : ${X}.EndAt NB := fun q hA hFr hWP hfix => by
-  subst hA hWP hfix
-  cases hFr
-  exact ⟨${c("iterEnd")} NB, rfl, ${dec ? `${X}.hS1D` : "rfl"}, rfl, ${c("shiftFW")} NB q, ${c("keep")} q⟩
-` : ""}
-section
-variable {b0 : BSt} {NB : Nat} {W : Nat → Option WFrame} {A : Addr} {Fr : LoopFramesA A} {fixA : List Nat} {toks : List NumV}
-  {L T : Nat} {tk : Nat → Nat} {E0 : List Val} {B : LoopBase} {ΔJ ΔH ΔN : Nat} {ρ : Nat → F64}
 
-/-- **Decode case \`${kind}\`'s pieces from chain \`${X}\`.** -/
-noncomputable def ${X}.pieces ${sigP} :
-    DecPieces_${X} (fullWorldFb b0 NB) A W ${X}.Pw Fr ${t0} ${T0}.tab fixA (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN L T
-      (Ed.e.toFb b0) (${X}.g${nCalls} b0 NB eN) :=
-  let θ := Ed.e.θ
-  let Gw : ${X}.Grow b0 NB W := ${X}.grow R hW
+` : ""}/-- **The emitted token** after the compactions' absorbed elements and the end's. -/
+theorem ${X}.emitTok (b0 : BSt) (NB : Nat) :
+    (${X}.g${nCalls} b0 NB ${X}.eN).eA ++ ${c("eR")} = [.num (.ref ${AP}.tok)] := rfl
+
+/-- The prompt route's wide frames are the acceptance's. -/
+theorem ${X}.hW : Disp.Wp ${DJ} ${WP} := fun _ _ h => h
+
+/-- The decode loop's frames at the prompt route's: the chain's acceptance's. -/
+theorem ${X}.hfr (q : List Val) : ∀ a, a ∈ ${AP}.fwd :: ${AP}.emit :: ${FP}.xs ↔ a ∈ ${X}.fr := fun _ => Iff.rfl
+
+section
+variable {b0 : BSt} {NB : Nat} {toks : List NumV} {L T : Nat} {tk : Nat → Nat} {E0 : List Val} {B : LoopBase}
+  {ΔJ ΔH ΔN : Nat} {ρ : Nat → F64}
+
+/-- **Decode case \`${kind}\`'s pieces from chain \`${X}\`** at the prompt route's instance (\`addrPrompt\`, \`wideP\`, the
+frames \`framesP ${X}.s0 q\`, \`fixP\`), A4's end (\`${X}.iterEnd\`). -/
+noncomputable def ${X}.pieces (q : List Val) (R : ${X}.Runs)${callsF ? ` (Cs : ${X}.Calls b0 NB q L T tk)` : ""}
+    (hVB : ∀ i nx, nx ≤ 2 ^ 20 → VBOkF loopVB (valL ρ T tk L i nx)) (hdJ : ${dJ} ≤ ΔJ) (hdH : ${dH} ≤ ΔH) (hdN : ${dN} ≤ ΔN)
+    (hJb : T * ΔJ + B.D < Sim.bound)
+    (hHb : (mlxOf ${t0}.ffi).next + T * ΔH + B.H + (${X}.Pw.E - (mlxOf ${t0}.ffi).next) < 2 ^ 46)
+    (hNb : (mlxOf ${t0}.ffi).nnext + T * ΔN + B.N + (${X}.Pw.NE - (mlxOf ${t0}.ffi).nnext) < 2 ^ 62) :
+    DecPieces_${X} (fullWorldFb b0 NB) ${AP} ${WP} ${X}.Pw ${FP} ${t0} ${T0}.tab ${XP} (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN
+      L T ((${c("iterEnd")} NB).toFb b0) (${X}.g${nCalls} b0 NB ${X}.eN) :=
+  let θ := ${c("θ")}
+  let hW := ${X}.hW
+  let Gw : ${X}.Grow b0 NB ${WP} := ${X}.grow R hW
   { ${cutB.map(([b, j, m], k) => `c${k + 1} := ${cut(b, j, m)}`).join("\n    ")}
 ${links.replace(/^ {2}/gm, "    ")}  }
 
-/-- **Decode case \`${kind}\` from chain \`${X}\`** (\`IterCaseW\`), with A4's end facts at the prompt route's instance. -/
-noncomputable def ${X}.case (EdA : ${X}.EndAt NB) (q : List Val) (hA : A = Host.Load.Run.Prompt.addrPrompt)
-    (hFr : HEq Fr (Template.framesP ${t0} q)) (hWP : W = Template.wideP) (hfix : fixA = Template.fixP)
-    (hW : Disp.Wp ${DJ} W) (hfr : ∀ a, a ∈ A.fwd :: A.emit :: Fr.xs ↔ a ∈ ${X}.fr)
-    (R : ${X}.Runs) (Cs : ${X}.Calls b0 NB W A Fr fixA L T tk (EdA q hA hFr hWP hfix).e.θ ${X}.eN)
+/-- **Decode case \`${kind}\` from chain \`${X}\`** (\`IterCaseW\`) at the prompt route's instance, A4's end facts
+(\`${X}.iterEnd\`, \`${X}.shiftFW\`, \`${X}.keep\`). -/
+noncomputable def ${X}.case (q : List Val)${withRun ? "" : ` (R : ${X}.Runs)`}${callsF ? ` (Cs : ${X}.Calls b0 NB q L T tk)` : ""}
     (hVB : ∀ i nx, nx ≤ 2 ^ 20 → VBOkF loopVB (valL ρ T tk L i nx)) (h1 : 1 ≤ L) (hctx : L + T ≤ 262144)
     (hJ : ${dJ} ≤ ΔJ) (hH : ${dH} ≤ ΔH) (hN : ${dN} ≤ ΔN) (hJb : T * ΔJ + B.D < Sim.bound)
     (hHb : (mlxOf ${t0}.ffi).next + T * ΔH + B.H + (${X}.Pw.E - (mlxOf ${t0}.ffi).next) < 2 ^ 46)
     (hNb : (mlxOf ${t0}.ffi).nnext + T * ΔN + B.N + (${X}.Pw.NE - (mlxOf ${t0}.ffi).nnext) < 2 ^ 62) :
-    IterCaseW (fullWorldFb b0 NB) A W ${X}.Pw Fr ${t0} ${T0}.tab fixA (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN
+    IterCaseW (fullWorldFb b0 NB) ${AP} ${WP} ${X}.Pw ${FP} ${t0} ${T0}.tab ${XP} (valL ρ T tk L) tk toks E0 B ΔJ ΔH ΔN
       (DecSel T L tk .${kind}) where
-  e := (EdA q hA hFr hWP hfix).e.toFb b0
+  e := (${c("iterEnd")} NB).toFb b0
   g := ${X}.g${nCalls} b0 NB ${X}.eN
-  chain := (${X}.pieces (E0 := E0) (B := B) ${X}.eN (EdA q hA hFr hWP hfix) R Cs hW hfr hVB hJ hH hN hJb hHb hNb).chain h1 hctx
-  sh := (EdA q hA hFr hWP hfix).sh
-  keep := (EdA q hA hFr hWP hfix).keep
-  emit := (congrArg (_ ++ ·) (EdA q hA hFr hWP hfix).heR).trans (by subst hA; exact ${X}.emitTok b0 NB)
-  within := ${X}.within (e := (EdA q hA hFr hWP hfix).e.toFb b0) ${X}.eN (EdA q hA hFr hWP hfix).he1 hJ hH hN
+  chain := (${X}.pieces (E0 := E0) (B := B) q ${withRun ? `${X}.runs` : "R"}${callsF ? " Cs" : ""} hVB hJ hH hN hJb hHb hNb).chain h1 hctx
+  sh := ${c("shiftFW")} NB q
+  keep := ${c("keep")} q
+  emit := ${X}.emitTok b0 NB
+  within := ${X}.within (e := (${c("iterEnd")} NB).toFb b0) ${X}.eN rfl hJ hH hN
 
 end
 
@@ -1020,3 +1012,424 @@ end ${NS}
 }
 
 if (process.argv[2] === "fill") genFill(process.argv.slice(3));
+
+/* ---------- Prefill boundaries and checked call sites ---------- */
+
+function genSetupFill(output: string, X: string, mod: string, h: number, stage: any, bridge: any) {
+  const cp = bridge.compaction;
+  const C = 2048 / 2 ** h;
+  if (!cp || cp.pl.length || cp.nr.length || cp.ws.length || cp.n0 !== 2673336 || cp.nS !== 10 ||
+      cp.xn0 !== 18155 || cp.xn1 !== 18155 || cp.nn0 !== 15235 || cp.nn1 !== 15235 ||
+      cp.n1 <= cp.n0 || cp.n1 - cp.n0 > 4096)
+    fail("prefill: setup fill needs the shared fixed-load chunk seam and empty compacted results");
+  const root = resolve(HERE, "../../..");
+  const outFile = resolve(output), rel = relative(root, outFile);
+  if (rel.startsWith("..") || !rel.endsWith(".lean"))
+    fail("prefill: setup fills need --out under proofs/; use --sites-only for another destination");
+  const outMod = rel.slice(0, -5).replaceAll("/", "."), dirMod = outMod.slice(0, outMod.lastIndexOf("."));
+  const outDir = dirname(outFile), cls = `SetupH${h}`;
+  // These are checked Lean proof templates. Substitute exact names and whole
+  // decimal literals, preserving the old K8 reference proof used at the seam.
+  const render = (source: string) => source
+    .replaceAll("host.sim.compose.a4b.PrefillSetupH1", outMod)
+    .replaceAll("host.sim.compose.a4b.SetupH1Data", `${dirMod}.${cls}Data`)
+    .replaceAll("host.sim.compose.a4b.SetupH1", `${dirMod}.${cls}`)
+    .replaceAll("host.sim.template.a4pre_setup_h1_chunk", mod)
+    .replaceAll("PRE_setup_h1_chunk", X)
+    .replaceAll("setup_h1", `setup_h${h}`)
+    .replaceAll("SetupH1", cls)
+    .replaceAll("K1024", `K${C}`)
+    .replace(/\b1024\b/g, String(C))
+    .replace(/\b2674514\b/g, String(cp.n1))
+    .replace(/\b1178\b/g, String(cp.n1 - cp.n0))
+    .replaceAll(`${X}.st0.S3`, `${X}.st0.S${stage.T1}`)
+    .replace(new RegExp(`${X.replaceAll(".", "\\.")}\\.(s|S)([012])\\b`, "g"),
+      (_, s, k) => `${X}.${s}${bridge.ia + +k}`);
+  const files = ["SetupH1Data", "SetupH1", "FillSetupH1"].map(name => ({
+    name: name.replace("SetupH1", cls), source: render(readFileSync(join(HERE, `a4b/${name}.lean`), "utf8")),
+  }));
+  if (h === 0) {
+    const data = files[0]!;
+    data.source = data.source.replace(`${mod}.Canonical`, `${mod}.SharedStart`)
+      .replace(/theorem startEq[\s\S]*?(?=theorem callClean)/, `theorem startEq : (${X}.s4 : St FF.S) = PRE_setup_early_r0.s4 :=
+  ${X}.call0_eq
+theorem startTab : ${X}.S4.tab = PRE_setup_early_r0.S4.tab := ${X}.call0_tab_eq
+private theorem ret_same {S : Type} {s : St S} {v : Val} (hc : s.ctl = .ret v) : s.ret v = s := by
+  cases s
+  cases hc
+  rfl
+theorem canonicalEq : (${X}.s6 : St FF.S) =
+    (PRE_setup_early_r0.s6 : St FF.S).ret (.num (.lit (F64.ofNat 2048))) :=
+  (show (${X}.s6 : St FF.S) = PRE_setup_early_r0.s6 from ${X}.chunk0_eq).trans
+    (ret_same SetupChunk.chunkLiteral6).symm
+theorem canonicalTab : ${X}.S6.tab = PRE_setup_early_r0.S6.tab := ${X}.chunk0_tab_eq
+
+`);
+    const main = files[1]!;
+    main.source = main.source
+      .replace("kernel_rfl sourcePromptEmpty :", `kernel_rfl chainPromptEmpty : arrOf ${X}.s0 2665 = []\n\nkernel_rfl sourcePromptEmpty :`)
+      .replace(`[${X}.zk0_2665, sourcePromptEmpty]`, `[${X}.zk0_2665, chainPromptEmpty]`)
+      .replaceAll("[sourcePromptEmpty,", "[chainPromptEmpty, sourcePromptEmpty,");
+  }
+  for (const f of files) writeFileSync(join(outDir, `${f.name}.lean`), f.source);
+  const check = join(root, "check.ts");
+  const paths = [rel, ...files.map(f => relative(root, join(outDir, `${f.name}.lean`)))];
+  const registry = readFileSync(check, "utf8");
+  const missing = paths.filter(p => !registry.includes(JSON.stringify(p)));
+  if (missing.length) {
+    const anchor = '  "host/sim/compose/a4b/FillSetupH1.lean",';
+    if (!registry.includes(anchor)) fail("prefill: missing setup registration anchor in check.ts");
+    writeFileSync(check, registry.replace(anchor, `${anchor}\n${missing.map(p => `  ${JSON.stringify(p)},`).join("\n")}`));
+  }
+  console.log(`${X}: concrete ${cls}.chunk_K${C}__g0a__g0b emitted in ${files[2]!.name}.lean`);
+}
+
+function genSingletonFill(output: string, X: string, stages: any[]) {
+  if (X !== "D1StageSplit" || stages.length !== 2 ||
+      stages[0].stage.name !== "nps_FIN_first__start__g1_FIN_first" ||
+      stages[1].stage.name !== "disp_D1__g1_FIN_first__g2_fin_first") return;
+  const file = join(dirname(output), "FillD1First.lean");
+  writeFileSync(file, `import host.sim.compose.a4b.D1BodyFill
+namespace Host.Ts.Sim.Compose.FillD1First
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
+
+noncomputable def pc0 := SetupCommon.nextCut
+noncomputable def b_g1_FIN_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.g1Cut NB T tk
+noncomputable def b_g1_FIN_first_o (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.dispatchCut NB T tk
+noncomputable def b_g2_fin_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.g2Cut NB T tk
+noncomputable def b_g2_fin_first_o (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.forwardCut NB T tk
+noncomputable def b_g3f_first_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  fun _ => D1First.returnedSavedCut NB T tk
+
+noncomputable def nps_FIN_first__start__g1_FIN_first := D1First.nps_FIN_first__start__g1_FIN_first
+noncomputable def g1_FIN_first := D1First.g1_FIN_first
+noncomputable def disp_D1__g1_FIN_first__g2_fin_first := D1First.disp_D1__g1_FIN_first__g2_fin_first
+noncomputable def g2_fin_first := D1First.g2_fin_first
+noncomputable def fwd_D1_cold_DFirst__g2_fin_first__g3f_first := D1First.fwd_D1_cold_DFirst__g2_fin_first__g3f_first
+end Host.Ts.Sim.Compose.FillD1First
+`);
+  const root = resolve(HERE, "../../..");
+  const rel = relative(root, file);
+  const check = join(root, "check.ts");
+  const registry = readFileSync(check, "utf8");
+  if (!registry.includes(JSON.stringify(rel))) {
+    const anchor = '  "host/sim/compose/a4b/D1G2.lean",';
+    if (!registry.includes(anchor)) fail("prefill: missing singleton registration anchor in check.ts");
+    writeFileSync(check, registry.replace(anchor, anchor + "\n  " + JSON.stringify(rel) + ","));
+  }
+  console.log(X + ": concrete singleton prefix fills emitted in " + file);
+}
+
+function genVWPrefixFill(output: string, X: string, stages: any[]) {
+  if (X !== "PRE_first_tail_x15_r0" || stages.length !== 3 ||
+      String(stages[1].stage.name).replace("__g0b__", "__start__") !== "nps_DTtail_first__start__g1_DTtail_first" ||
+      stages[2].stage.name !== "disp_VW__g1_DTtail_first__g2_first") return;
+  const file = join(dirname(output), "FillVWFirst.lean");
+  writeFileSync(file, `import host.sim.compose.a4b.VWDispatch
+import host.sim.compose.a4b.VWG2
+namespace Host.Ts.Sim.Compose.FillVWFirst
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
+
+noncomputable def pc0 := SetupCommon.nextCut
+noncomputable def b_g1_DTtail_first_i := VWFirst.afterNpsCut
+noncomputable def b_g1_DTtail_first_o := VWFirst.dispatchCut
+noncomputable def b_g2_first_i := VWFirst.g2Cut
+noncomputable def b_g2_first_o := VWFirst.forwardCut
+
+noncomputable def nps_DTtail_first__start__g1_DTtail_first := VWFirst.nps_DTtail_first__start__g1_DTtail_first
+noncomputable def g1_DTtail_first := VWFirst.g1_DTtail_first
+noncomputable def disp_VW__g1_DTtail_first__g2_first := VWFirst.disp_VW__g1_DTtail_first__g2_first
+noncomputable def g2_first := VWFirst.g2_first
+end Host.Ts.Sim.Compose.FillVWFirst
+`);
+  const root = resolve(HERE, "../../..");
+  const rel = relative(root, file);
+  const check = join(root, "check.ts");
+  const registry = readFileSync(check, "utf8");
+  if (!registry.includes(JSON.stringify(rel))) {
+    const anchor = '  "host/sim/compose/a4b/VWG2.lean",';
+    if (!registry.includes(anchor)) fail("prefill: missing VW registration anchor in check.ts");
+    writeFileSync(check, registry.replace(anchor, anchor + "\n  " + JSON.stringify(rel) + ","));
+  }
+  console.log(X + ": concrete first-tail prefix fills emitted in " + file);
+}
+
+function genPrefill(args: string[]) {
+  const oracleAt = args.indexOf("--oracles-only"), oraclesOnly = oracleAt >= 0;
+  if (oraclesOnly) args.splice(oracleAt, 1);
+  const onlyAt = args.indexOf("--sites-only"), sitesOnly = onlyAt >= 0 || oraclesOnly;
+  if (onlyAt >= 0) args.splice(onlyAt, 1);
+  const typedAt = args.indexOf("--typed-body"), typedBody = typedAt >= 0;
+  if (typedBody) args.splice(typedAt, 1);
+  const take = (flag: string) => {
+    const i = args.indexOf(flag);
+    if (i < 0) return undefined;
+    if (!args[i + 1]) fail(`prefill: ${flag} needs a value`);
+    return args.splice(i, 2)[1];
+  };
+  const output = take("--out") ?? fail("prefill: --out <file>");
+  const specFile = take("--spec");
+  const ownerName = take("--piece");
+  const siteArg = take("--site");
+  const oneSite = siteArg === undefined ? undefined : Number(siteArg);
+  if (oneSite !== undefined && (!Number.isSafeInteger(oneSite) || oneSite < 0))
+    fail("prefill: --site requires a nonnegative integer");
+  const streams = take("--streams") ?? process.env.HOST_STREAM_DIR ?? join(HERE, "../../../.host-stream");
+  if (args.length !== 1) fail("prefill: <chain>:<case-dir>");
+  const match = args[0]!.match(/^([^:]+):(.+)$/) ?? fail("prefill: <chain>:<case-dir>");
+  const [, inputName, dir] = match;
+  const fullName = inputName!.startsWith("Host.") ? inputName! : `Host.Load.Run.Tpl.${inputName}`;
+  const stream = join(streams, fullName);
+  const chain = JSON.parse(readFileSync(join(stream, "chain.json"), "utf8"));
+  const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
+  if (chain.world !== "full" || seg.world !== "full") fail("prefill: a full-world chain is required");
+  if (chain.chain !== fullName) fail(`prefill: stream belongs to ${chain.chain}, not ${fullName}`);
+  const forwardOwners = [...PB.pieces.values()].filter(p => p.kind === "fwd" && p.uses.includes(chain.row));
+  const owner = ownerName ? PB.pieces.get(ownerName) : chain.stop === "ret" && forwardOwners.length === 1 ? forwardOwners[0] : undefined;
+  if (ownerName && !owner) fail(`prefill: unknown bundle piece ${ownerName}`);
+  if (owner && !owner.uses.includes(chain.row)) fail(`prefill: ${owner.name} does not use ${chain.row}`);
+  const defaultRows = owner?.uses ?? [chain.row];
+  const X = fullName.split(".").pop()!;
+  const c = (name: string) => `${fullName}.${name}`;
+  const mod = `host.sim.template.${dir!.replaceAll("/", ".")}`;
+  const spec = specFile ? JSON.parse(readFileSync(specFile, "utf8")) : undefined;
+  const maps = new Map<string, [number, string][]>((spec?.pieces ?? []).map((p: any) => [p.id, p.vars]));
+  const enums = new Set<string>(spec?.enum ?? []);
+  const skippedDerived = new Set<number>();
+  const row = table.classes.flatMap((c: any) => c.rows).find((r: any) => r.id === chain.row);
+  type Affine = { c: number; cs: number[] };
+  const normalize = (a: Affine): Affine => {
+    const cs = [...a.cs];
+    while (cs.at(-1) === 0) cs.pop();
+    if (![a.c, ...cs].every(Number.isSafeInteger)) fail("prefill: affine expression exceeds exact integer arithmetic; supply --spec");
+    return { c: a.c, cs };
+  };
+  const derivedMap = (meta: any): [number, string][] => {
+    const vars: [number, string][] = [...(meta.vars ?? [])];
+    if (!(meta.derived?.length)) return vars;
+    if (!row) fail(`prefill: no class-table row ${chain.row}; supply --spec`);
+    const env = new Map<number, Affine>(vars.map(([v, q]) => [v, normalize(row.forms[q] ?? fail(`prefill: no form for ${q}`))]));
+    const combine = (a: Affine, b: Affine, sign: number): Affine => normalize({
+      c: a.c + sign * b.c,
+      cs: Array.from({ length: Math.max(a.cs.length, b.cs.length) }, (_, j) => (a.cs[j] ?? 0) + sign * (b.cs[j] ?? 0)),
+    });
+    const parse = (source: string): Affine => {
+      const tokens = source.match(/v\d+|-?\d+|[A-Za-z][A-Za-z0-9]*|[()]/g) ?? [];
+      let at = 0;
+      const expr = (): Affine => {
+        const token = tokens[at++];
+        if (token === "int32" || token === "trunc") {
+          if (tokens[at++] !== "(") fail(`prefill: invalid derived expression ${source}`);
+          const a = expr();
+          if (tokens[at++] !== ")") fail(`prefill: invalid derived expression ${source}`);
+          return a;
+        }
+        if (token === "(") {
+          const a = expr(), op = tokens[at++], b = expr();
+          if (tokens[at++] !== ")") fail(`prefill: invalid derived expression ${source}`);
+          if (op === "add") return combine(a, b, 1);
+          if (op === "sub") return combine(a, b, -1);
+          if (op === "mul" && (!a.cs.length || !b.cs.length)) {
+            const scale = a.cs.length ? b.c : a.c;
+            const term = a.cs.length ? a : b;
+            return normalize({ c: scale * term.c, cs: term.cs.map(c => scale * c) });
+          }
+          fail(`prefill: non-affine derived expression ${source}; supply --spec`);
+        }
+        if (token && /^v\d+$/.test(token)) return env.get(+token.slice(1)) ?? fail(`prefill: unmapped ${token} in ${source}; supply --spec`);
+        if (token && /^-?\d+$/.test(token)) return { c: +token, cs: [] };
+        fail(`prefill: unsupported derived expression ${source}; supply --spec`);
+      };
+      const a = expr();
+      if (at !== tokens.length) fail(`prefill: trailing derived expression ${source}; supply --spec`);
+      return a;
+    };
+    const quantities = ["n", "e", "C", "cap1", "o", "L", "cap", "k", "T", "t1", "t2", "kp"];
+    for (const [v, , expression] of meta.derived as [number, string, string][]) {
+      let a: Affine;
+      try { a = parse(expression); }
+      catch { skippedDerived.add(v); continue; }
+      env.set(v, a);
+      const q = quantities.find(q => row.forms[q] && JSON.stringify(normalize(row.forms[q])) === JSON.stringify(a));
+      // A canonical value can be a constant or another derived expression,
+      // rather than one of the schedule's quantities. The emitted oracle
+      // check verifies whether the retained quantity map is sufficient.
+      if (!q) { skippedDerived.add(v); continue; }
+      const old = vars.findIndex(([w]) => w === v);
+      if (old < 0) vars.push([v, q]); else vars[old] = [v, q];
+    }
+    return vars;
+  };
+  const mapped = (name: string, fallback: [number, string][]) => {
+    const vars = maps.get(`${X}.${name}`) ?? fallback;
+    if (vars.some(([v, q]) => !Number.isInteger(v) || v < 9 || !/^[A-Za-z][A-Za-z0-9]*$/.test(q)))
+      fail(`prefill: ${name}: quantity variables must be >=9`);
+    if (new Set(vars.map(([v]) => v)).size !== vars.length) fail(`prefill: ${name}: duplicate variable`);
+    return `[${vars.map(([v, q]) => `(${v}, Q.${q})`).join(", ")}]`;
+  };
+  const imports = new Set(["host.sim.compose.PreCall", "host.sim.lin.Table", `${mod}.States`]);
+  const bridges = seg.bridges.filter((b: any) => b.kind === "stage");
+  const stages = chain.pieces.filter((p: any) => p.stage);
+  if (stages.length !== bridges.length) fail("prefill: stage/bridge count mismatch");
+  if (oneSite !== undefined && !stages.some((p: any) => p.stage.site === oneSite))
+    fail(`prefill: no site ${oneSite} in ${X}`);
+  const bundlePiece = (stage: any) => {
+    const exact = PB.pieces.get(stage.name);
+    if (exact) return exact;
+    if (stage.piece === "chunk") return PB.pieces.get(`${stage.stage}__g0a__g0b`);
+    // A chain starting at load still calls the first nps after g0b; the bundle
+    // starts that step at I.pc0 and calls the preceding glue `start`.
+    const atStart = String(stage.name).replace("__g0b__", "__start__");
+    return PB.pieces.get(atStart);
+  };
+  const oracleBlocks: { code: string; imports: string[] }[] = [];
+  let code = "", previousVars: [number, string][] = [];
+  let emittedSites = 0, emittedGlues = 0;
+  for (const p of chain.pieces) {
+    if (p.glue !== undefined) {
+      const meta = JSON.parse(readFileSync(join(stream, p.meta), "utf8"));
+      previousVars = maps.get(`${X}.${p.glue}`) ?? derivedMap(meta);
+      if (oneSite !== undefined) continue;
+      emittedGlues++;
+      const m = mapped(p.glue, previousVars);
+      const piece = PB.pieces.get(p.glue);
+      const rows = `[${(piece?.uses ?? defaultRows).join(", ")}]`;
+      // The actual call boundary is the bridge's ia; glue metadata ends before its entry step.
+      const call = bridges.find((b: any) => b.ia === p.to + 1);
+      const end = call ? call.ia : p.to;
+      code += `def ${X}.map_${p.glue} : List (Nat × Q) := ${m}\n\n`;
+      for (const [side, boundary] of (oraclesOnly ? [] : [["i", p.from], ["o", end]]) as readonly (readonly [string, number])[]) {
+        code += `noncomputable def ${X}.cut_${p.glue}_${side}
+    (FR : Map → Nat → FF.S → FF.S → Prop) (J : Disp.JSP FF) (W : Nat → Option WFrame)
+    (book : Cls.Inst → SegInst FF → Prop) (i : Cls.Inst) : ICut FF :=
+  { pbCut FR J W ${X}.map_${p.glue} ${c(`s${boundary}`)} ${c(`S${boundary}`)} i with B := book i }\n\n`;
+      }
+      const check = enums.has(`${X}.${p.glue}`) ? "goodEnum" : "goodLin";
+      code += `kernel_rfl ${X}.chk_${p.glue} : (${rows}.all fun r =>
+  ${check} r.ps (varsOf r.V ${X}.map_${p.glue}) (${meta.oracle})) = true\n\n`;
+      if (oraclesOnly) { oracleBlocks.push({ code, imports: [] }); code = ""; }
+      continue;
+    }
+    const stage = p.stage;
+    const b = bridges.find((b: any) => b.site === stage.site) ?? fail(`prefill: no bridge for site ${stage.site}`);
+    const k = stage.site as number, a = b.ia as number;
+    if (oneSite !== undefined && k !== oneSite) continue;
+    emittedSites++;
+    for (const file of (oraclesOnly ? [`st${k}.H0`] : [`SiteL${k}`, `st${k}.${typedBody ? "TypedTpl" : "Tpl"}`])) imports.add(`${mod}.${file}`);
+    const stageName = c(`st${k}`);
+    const ok = typedBody ? `(${stageName}.bodyOkL bytes rows)` : `${stageName}.okL`;
+    const tpl = typedBody ? `(${stageName}.bodyTpl bytes rows)` : `${stageName}.tpl`;
+    const local = typedBody ? `${stageName}.bodyLocal bytes rows` : `${stageName}.loc`;
+    const fullMap = mapped(stage.name, previousVars);
+    const piece = bundlePiece(stage);
+    const rows = `[${(piece?.uses ?? defaultRows).join(", ")}]`;
+    const check = stage.piece === "plan" || enums.has(`${X}.site${k}`) ? "goodEnum" : "goodLin";
+    // Enumeration follows the first parameter read by the map. An unrelated
+    // prompt variable can have a huge range while this site's rows are fixed.
+    const m = check === "goodEnum" ? `(${fullMap}).filter (fun p => ${c(`st${k}`)}.S0.oracle.any (fun q => !(q.a.noVar p.1 && q.b.noVar p.1)))` : fullMap;
+    code += `${check === "goodEnum" ? "noncomputable " : ""}def ${X}.map_site${k} : List (Nat × Q) := ${m}
+
+kernel_rfl ${X}.chk_site${k} : (${rows}.all fun r =>
+  ${check} r.ps (varsOf r.V ${X}.map_site${k}) ${c(`st${k}`)}.S0.oracle) = true
+
+`;
+    if (oraclesOnly) { oracleBlocks.push({ code, imports: [`${mod}.st${k}.H0`] }); code = ""; continue; }
+    code += `noncomputable def ${X}.site${k}
+${typedBody ? "    (bytes : List Byte) (rows : Nat)\n" : ""}\
+    {FR : Map → Nat → FF.S → FF.S → Prop} {Kp : Ctx → Prop} {W : Nat → Option WFrame}
+    (hsim : ∀ stk, Disp.StepSimXLB FF FR ${ok} Kp W stk (VBOkF loopVB)) :
+    PrefillSite FR Kp W ${ok} ${c(`s${a}`)} ${c(`s${a + 1}`)} ${c(`S${a}`)} ${c(`ws${k}`)} where
+  tpl := ${tpl}
+  wr := ${c(`st${k}`)}.wr
+  start := ${c(`iso${k}`)}
+  tab := ${c(`tab0_${k}`)}
+  sim := hsim
+  localOk := ${local}
+  foot := ${c(`stFoot${k}`)}
+  nodup := ${c(`wrNodup${k}`)}
+  bound := ${c(`wrBound${k}`)}
+  trace := ${c(`trace${k}`)}
+  merged := ${c(`merged${k}`)}
+  len := by
+    change ${c(`ws${k}`)}.length = ${tpl}.S2.tab.length - ${c(`S${a}`)}.tab.length
+    rw [← ${c(`tab0_${k}`)}]
+    exact ${c(`mergeLen${k}`)}.symm
+  freshNodup := by decide +kernel
+  fresh := noVar_of_all (by
+    have h := ${c(`fresh${k}`)}
+    simp only [Bool.and_eq_true] at h
+    exact h.1)
+
+`;
+  }
+  if (chain.row === "setup_early.r0" && stages.length === 1 && stages[0].stage.name === "chunk_K8__g0a__g0b") {
+    imports.add("host.sim.compose.a4b.FillSetupEarly");
+    code += `/-- The bundle uses the shared PRE_g0b template after the zero-step C seam. -/
+noncomputable def ${X}.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (i : Cls.Inst) : ICut FF :=
+  withSetupInputs T tk (SetupChunk.chunkCallFixedCut NB T tk i.L)
+noncomputable def ${X}.b_g0b_i (NB T : Nat) (tk : Nat → Nat) : Cls.Inst → ICut FF :=
+  SetupCommon.cut NB T tk Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
+noncomputable def ${X}.pc0 := SetupCommon.nextCut
+
+noncomputable def ${X}.g0a := FillSetupEarly.g0a
+noncomputable def ${X}.chunk_K8__g0a__g0b := FillSetupEarly.chunk_K8__g0a__g0b
+noncomputable def ${X}.g0b := FillSetupEarly.g0b
+`;
+  }
+  const render = (deps: Iterable<string>, body: string) => `${[...deps].map(x => `import ${x}`).join("\n")}
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace ${oraclesOnly ? `${NS}.Oracles` : NS}
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Full Host.Ts.Sim.Template
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
+
+${body}
+end ${oraclesOnly ? `${NS}.Oracles` : NS}
+`;
+  mkdirSync(dirname(output), { recursive: true });
+  if (oraclesOnly) {
+    const root = resolve(HERE, "../../..");
+    const leaves: string[] = [];
+    for (let at = 0; at < oracleBlocks.length; at += 8) {
+      const batch = oracleBlocks.slice(at, at + 8);
+      const leaf = output.replace(/\.lean$/, `_${at / 8}.lean`);
+      const deps = new Set(["host.sim.compose.PreCall", "host.sim.lin.Table", `${mod}.States`, ...batch.flatMap(b => b.imports)]);
+      writeFileSync(leaf, render(deps, batch.map(b => b.code).join("")));
+      leaves.push(relative(root, leaf).replaceAll("/", ".").replace(/\.lean$/, ""));
+    }
+    writeFileSync(output, leaves.map(m => `import ${m}\n`).join(""));
+    const outputRel = relative(root, resolve(output));
+    if (!outputRel.startsWith("..") && !outputRel.startsWith("/")) {
+      const check = join(root, "check.ts");
+      const registry = readFileSync(check, "utf8");
+      const paths = [...leaves.map(m => m.replaceAll(".", "/") + ".lean"), outputRel];
+      const missing = paths.filter(p => !registry.includes(JSON.stringify(p)));
+      const anchor = '  "host/sim/compose/PreCall.lean",';
+      if (missing.length) {
+        if (!registry.includes(anchor)) fail("prefill: missing link registration anchor in check.ts");
+        writeFileSync(check, registry.replace(anchor, anchor + "\n" + missing.map(p => "  " + JSON.stringify(p) + ",").join("\n")));
+      }
+    }
+  } else writeFileSync(output, render(imports, code));
+  console.log(`${X}: ${emittedSites} site checks, ${emittedGlues} glue boundaries: ${output}`);
+  if (skippedDerived.size) console.log(`${X}: ${skippedDerived.size} derived values outside the quantity map`);
+  if (!sitesOnly && oneSite === undefined) {
+    genSingletonFill(output, X, stages);
+    genVWPrefixFill(output, X, stages);
+    for (const p of stages) {
+      const uses = bundlePiece(p.stage)?.uses;
+      const setup = uses?.length === 1 && uses[0]!.match(/^setup_h([0-5])\.r0$/);
+      if (p.stage.piece === "chunk" && setup) {
+        const b = bridges.find((b: any) => b.site === p.stage.site)!;
+        genSetupFill(output, X, mod, +setup[1]!, p.stage, b);
+      }
+    }
+  }
+}
+
+if (process.argv[2] === "prefill") genPrefill(process.argv.slice(3));

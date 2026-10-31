@@ -1,9 +1,11 @@
 import host.sim.compose.ChainFill
 import host.sim.conv.CallPieces
 import host.sim.conv.CompactShift
+import host.sim.conv.CallShift
 import host.sim.conv.Decanon
 import host.sim.conv.SiteMerge
 import host.sim.template.Stage
+import host.sim.template.EndGen
 namespace Host.Ts.Sim.Compose
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Ts.Sim.Full Host.Load.Layers
   Host.Ts.Sim.Template
@@ -71,8 +73,8 @@ theorem _root_.Host.Ts.Sim.RelB.resMerge {M M' : Map} {ν : Nat → F64} {K : Ct
     exact h2.srv.num _ e2 he2
 
 /-- **A site instance's run and merge as a cut step** (`Conv.site_merge`, `RelB.resMerge`): the caller's
-cut at the call state `sa` into the merged cut at `sm` (the instance's merged state, `hmer`) with the merged
-table `tab ++ resTab ws`; the caller's predicate and bookkeeping after the merge by `hQ`, which sees the
+cut at the call state `sa` into the merged cut at `sm` (the relation at the instance's merged state moves to it,
+`hmer`: A4's merge transfer, `RelB.srcCongr` and `Conv.mergeSt_site`) with the merged table `tab ++ resTab ws`; the caller's predicate and bookkeeping after the merge by `hQ`, which sees the
 caller pair, its relation at the instance's start server, the map's extension, the run and the merged relation. -/
 theorem cut_siteMerge {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop} {VBOk : (Nat → F64) → Prop}
     (T : Stage.StageTpl F ok) {sa sm : St F.S} {tab : List SymE} {wr ws : List Nat}
@@ -81,7 +83,9 @@ theorem cut_siteMerge {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop} {VBOk 
     (hsim : ∀ r, Disp.StepSimXLB F FR ok Kp W r VBOk) (hloc : ∀ s S, ok s S = true → Disp.localB s = true)
     (hfoot : Conv.StageFoot wr T.s0 T.s2) (hnd : wr.Nodup) (hbd : ∀ b ∈ wr, b / 4096 < 4 ^ 31)
     (htr : ∃ fr, T.s2.trace = fr ++ T.s0.trace)
-    (hmer : sm = Conv.mergeSt Map.id (Map.id.res tab.length tab.length) sa.stack wr sa T.s2 T.s0 T.s2.ffi)
+    (hmer : ∀ {M : Map} {ν : Nat → F64} {K : Ctx} {S : SSrv} {t : St F.S} {C : CSrv},
+      RelB F FR W [] M ν K (Conv.mergeSt Map.id (Map.id.res tab.length tab.length) sa.stack wr sa T.s2 T.s0 T.s2.ffi) S t C →
+      RelB F FR W [] M ν K sm S t C)
     (hwsl : ws.length = T.S2.tab.length - tab.length) (hwsnd : ws.Nodup)
     (hfresh : ∀ e ∈ tab, ∀ w ∈ ws, e.noVar w = true)
     (hKν : ∀ c, Q c → B c → Kp c.K ∧ VBOk c.ν) (hg : ∀ c, Q c → B c → Good c.ν T.S0.oracle)
@@ -102,7 +106,7 @@ theorem cut_siteMerge {ok : St F.S → SSrv → Bool} {Kp : Ctx → Prop} {VBOk 
     exact this
   obtain ⟨M', t', C', hrun, he, h2⟩ := Conv.site_merge T hs0 rfl hsim hloc hK hν hfoot hnd hbd htr tab.length h0
   rw [htab] at he
-  rw [← hmer] at h2
+  replace h2 := hmer h2
   have hm := h2.resMerge (tab := tab) hc.srv.num he (runC_le _ _ _ _ _ hrun) (htab ▸ T.len2) hwsl hwsnd
     hfresh
   obtain ⟨hq', hb'⟩ := hQ c M' t' C' hq hb h0 he hrun hm
@@ -192,7 +196,8 @@ variable {b0 : BSt} {NB : Nat} {Pw : LoadP} {fr : List Nat} {wd : List (Nat × W
 
 The facts, by source: the instance and the merge (`hs0` … `hfresh`); the ghost across the merge (`hlen`,
 `hgtab`, `hgθ`) and the full world's mlx growth along the instance's run (`hgrow`); the compaction: the
-canonical table (`hctab`), the state shift at `Conv.compactθ` (`hshift`) and the native one (`hffi`), the
+canonical table (`hctab`), the native shift from the call state's relation (`hffi`) and the state shift at
+`Conv.compactθ` under it (`hshift`), the
 canonical state's band (`hbig`, `hfree`, `hband`), the target's room (the chain's growth `dJ`, `dH`, `dN` within the
 budget, the merged and canonical states' counters: `hdJ` … `hscN`), the map (`hκn`, `hκa`, `hκv`), the merged state's framed arrays (`hfwd`, `hemit`, `hkeep`, `heN`) and counters (`hJ` …
 `hN`), the results apart from the stage's other variables (`hdis`); the post-call quantities (`hm0`
@@ -207,7 +212,10 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
     -- the instance and the merge
     (hs0 : I.s0 = { sa with stack := [] }) (htab : I.S0.tab = Sa.tab) (hfoot : Conv.StageFoot wr I.s0 I.s2)
     (hnd : wr.Nodup) (hbd : ∀ b ∈ wr, b / 4096 < 4 ^ 31) (htr : ∃ fr, I.s2.trace = fr ++ I.s0.trace)
-    (hmer : sm = Conv.mergeSt Map.id (Map.id.res Sa.tab.length Sa.tab.length) sa.stack wr sa I.s2 I.s0 I.s2.ffi)
+    (hmer : ∀ (r : List NumV) {M : Map} {ν : Nat → F64} {K : Ctx} {S : SSrv} {t : St FF.S} {C : CSrv},
+      RelB FF (FLRb b0 Pw NB r) W [] M ν K
+        (Conv.mergeSt Map.id (Map.id.res Sa.tab.length Sa.tab.length) sa.stack wr sa I.s2 I.s0 I.s2.ffi) S t C →
+      RelB FF (FLRb b0 Pw NB r) W [] M ν K sm S t C)
     (hmtab : tabm = Sa.tab ++ Conv.resTab ws) (hwsl : ws.length = I.S2.tab.length - Sa.tab.length)
     (hwsnd : ws.Nodup) (hfresh : ∀ e ∈ Sa.tab, ∀ w ∈ ws, e.noVar w = true)
     -- the ghost across the merge
@@ -219,10 +227,12 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
       runC FF (I.n + 1) c.t c.C = some (t', C') → Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t'.ffi))
     -- the compaction
     (hctab : Sc.tab = Sa.tab ++ cws.map SymE.var) (hdis : ∀ w ∈ cws, w ∉ ws)
-    (hshift : ∀ x0 x : SegInst FF, Conv.CallFacts sa Sa.tab.length → Disp.Kp (decJ Pw fr wd) x.K → IterGhostCW (fullWorldFb b0 NB) A Pw Fr s0 tab0 fixA θ g x0 x →
+    (hshift : ∀ x0 x : SegInst FF, Conv.CallFacts sa Sa.tab.length → Conv.FullShiftQ Pw Sc.tab.length κ sc.ffi sm.ffi →
+      Disp.Kp (decJ Pw fr wd) x.K → IterGhostCW (fullWorldFb b0 NB) A Pw Fr s0 tab0 fixA θ g x0 x →
       ShiftD FF (fun _ _ _ => True) κ (Conv.compactθ cws (nr.map fun r => (nth? tabm r).getD (.var 0)))
         (kpOf x.K W) W x.K sc ⟨Sc.tab, []⟩ sm ⟨tabm, []⟩)
-    (hffi : Conv.FullShiftQ Pw Sc.tab.length κ sc.ffi sm.ffi)
+    (hffi : ∀ (r : List NumV) (M : Map) (y : FF.S), FLRb b0 Pw NB r M Sa.tab.length sa.ffi y →
+      Conv.FullShiftQ Pw Sc.tab.length κ sc.ffi sm.ffi)
     (hbig : bigsOutB (mlxOf sc.ffi).next Pw.E (mlxOf sc.ffi) = true)
     (hfree : NoBigSt (fun i => ((mlxOf sc.ffi).next : Int) ≤ i ∧ i < Pw.E) sc.trace sc)
     (hband : ∀ i : Int, ((mlxOf sc.ffi).next : Int) ≤ i ∧ i < Pw.E →
@@ -245,30 +255,32 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
     (hlenc : cws.length = nr.length) (hnrLo : nr.all (Nat.ble Sa.tab.length) = true)
     (hder : nr.map (fun r => nth? I.S2.tab r) = Es)
     (hlq : qs.length = cws.length)
-    (hEs : ∀ (i : Cls.Inst) (ν : Nat → F64), DecAt L T tk i → MapOk ν i R → VBOkF loopVB ν →
+    (hEs : ∀ r ∈ uses, ∀ (i : Cls.Inst), InRow r i → ∀ (ν : Nat → F64), DecAt L T tk i → MapOk ν i R → VBOkF loopVB ν →
       ∀ j o, nth? Es j = some o → ∃ E q, o = some E ∧ nth? qs j = some q ∧ E.eval ν = F64.ofNat (i.get q))
-    (hq : ∀ i, DecAt L T tk i → ∀ j c q, nth? cws j = some c → nth? qs j = some q → i.get q ≤ loopVB c)
+    (hq : ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ j c q, nth? cws j = some c → nth? qs j = some q →
+      i.get q ≤ loopVB c)
     (hR' : ∀ p ∈ R', p ∈ R ++ cws.zip qs) :
     DLink (DecAt L T tk) uses m [] (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ g R sa Sa)
       (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ (GhostP.compact (fullWorldFb b0 NB) g sm sc eN) R' sc Sc) where
   n := I.n + 1
   O := O
   chk := hchk
-  ok _ _ i _ hobl hadm x0 := CutStep.withP fun hbud => by
+  ok r hr i hin hobl hadm x0 := CutStep.withP fun hbud => by
     -- the merged cut's predicate: the merged valuation of a call valuation in the bound at `R`, the context, the
     -- target's offset and counters at the merged state, the call state's facts (`Conv.CallFacts`, A3's `compact_shift`)
     let νr : (Nat → F64) → Nat → F64 := fun ν => Conv.resVal ν ws (Conv.resF SymE.var I.S2.tab Sa.tab.length ν)
     let Qm : SegInst FF → Prop := fun x =>
       ∃ ν, x.ν = νr ν ∧ VBOkF loopVB ν ∧ MapOk ν i R ∧ Disp.Kp (decJ Pw fr wd) x.K ∧ x.t.next = sm.next + x.K.D ∧
         (mlxOf x.t.ffi).next + g.vH ≤ (mlxOf x0.t.ffi).next + g.dH + (mlxOf sm.ffi).next ∧
-        (mlxOf x.t.ffi).nnext + g.vN ≤ (mlxOf x0.t.ffi).nnext + g.dN + (mlxOf sm.ffi).nnext ∧ Conv.CallFacts sa Sa.tab.length
+        (mlxOf x.t.ffi).nnext + g.vN ≤ (mlxOf x0.t.ffi).nnext + g.dN + (mlxOf sm.ffi).nnext ∧ Conv.CallFacts sa Sa.tab.length ∧
+        Conv.FullShiftQ Pw Sc.tab.length κ sc.ffi sm.ffi
     let crs := nr.map fun r => (nth? tabm r).getD (.var 0)
     have hstep := cut_siteMerge (FR := FLRb b0 Pw NB (toks.drop i.k)) (W := W)
       (Q := DQ Pw fr wd R i) (B := IterGhostCW (fullWorldFb b0 NB) A Pw Fr s0 tab0 fixA θ g x0) (Q' := Qm)
       (B' := IterGhostCW (fullWorldFb b0 NB) A Pw Fr s0 tab0 fixA θ g x0) I hs0 htab
       (fun stk => (decSimAt b0 NB Pw fr wd W hW _ stk).mono fun s S h => by
         simp only [Template.okLocal, Bool.and_eq_true] at h; exact h.1)
-      Template.okLocal_localB hfoot hnd hbd htr hmer hwsl hwsnd hfresh
+      Template.okLocal_localB hfoot hnd hbd htr (hmer _) hwsl hwsnd hfresh
       (fun c hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν (MapOk.sub hq.2.2 hmR))
       (fun c M' t' C' hq hb h0 he hrun hm => by
         have hb' := hb.merge (V := (· ∈ ws)) (M' := M') (t' := t') (C' := C') (he.mono hlen)
@@ -276,7 +288,8 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
           (fun j e hj w hw => hgtab j e hj w (.inr hw)) (fun j e hj w hw => hgθ j e hj w (.inr hw))
           (hgrow _ c t' C' hq.1 hq.2.1 h0 hrun)
         have hc := IterGhostCW.counters (fullWorldFb_end b0 NB) hb' hm.ffi hH hHE hN
-        exact ⟨⟨c.ν, rfl, hq.1, hq.2.2, hq.2.1, hm.offset, hc.1, hc.2, htab ▸ Conv.CallFacts.of_rel h0⟩, hb'⟩)
+        exact ⟨⟨c.ν, rfl, hq.1, hq.2.2, hq.2.1, hm.offset, hc.1, hc.2, htab ▸ Conv.CallFacts.of_rel h0,
+          hffi _ _ _ (htab ▸ h0.ffi)⟩, hb'⟩)
     rw [← hmtab] at hstep
     refine hstep.convR (cut_compactQ b0 (V := fun v => v ∈ cws ∨ v ∈ ws) (θk := Conv.compactθZ cws crs ws)
       (Q := Qm) (Q' := DQ Pw fr wd R' i) (f := f) (eN := eN)
@@ -284,11 +297,11 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
       hκn hκa hκv (fun v hv => compactθZ_off hv) hgtab hgθ hfwd hemit hkeep heN hJ hJc hH hHE hN
       (fun x hx _ => ?_))
     · -- the shift at the canonical substitution, the native shift
-      obtain ⟨-, -, -, -, hK, -, -, -, hcf⟩ := hx
-      have hs := (hshift x0 x hcf hK hB).retheta (θ' := Conv.compactθZ cws crs ws) (by
+      obtain ⟨-, -, -, -, hK, -, -, -, hcf, hfq⟩ := hx
+      have hs := (hshift x0 x hcf hfq hK hB).retheta (θ' := Conv.compactθZ cws crs ws) (by
         rw [hctab]
         exact Conv.compactθZ_tab (fun e he z hz => hfresh e he z hz) hdis)
-      exact { hs with ffi := ⟨rfl, hffi⟩ }
+      exact { hs with ffi := ⟨rfl, hfq⟩ }
     · obtain ⟨-, -, -, -, ⟨hlo, hhi, -⟩, -⟩ := hx
       rw [hlo, hhi]
       exact hband
@@ -305,7 +318,7 @@ def callLink {m R R' : List (Nat × Q)} {qs : List Q} {θ : Nat → SymE} {g : G
     · -- the canonical pair's run predicate
       obtain ⟨ν, hxν, hVB, hmap, ⟨hlo, hhi, hfr⟩, -⟩ := hx
       have hp := Conv.post_call_valQ (VB := loopVB) (qs := qs) (S5 := tabm) (n0 := Sa.tab.length) hVB hmap hm0 hmtab
-        rfl hwsl hwsnd hndc hlenc hlq hnrLo hder (hEs i ν hadm hmap hVB) (hq i hadm)
+        rfl hwsl hwsnd hndc hlenc hlq hnrLo hder (hEs r hr i hin ν hadm hmap hVB) (hq r hr i hin hadm)
       refine ⟨?_, ⟨hlo, hhi, fun a => ?_⟩, ?_⟩
       · show ∀ v, ∃ k ≤ loopVB v, Shift.valuation (Conv.compactθZ cws crs ws) x.ν v = F64.ofNat k
         rw [hxν]; exact hp.1
@@ -342,14 +355,222 @@ theorem decQ_hvs {u : Nat} {vs : List Nat} {es : List SymE} {m : List (Nat × Q)
   | none => rw [hq] at hm; cases hm
   | some q => rw [hq] at hm; exact ⟨q, rfl, List.contains_iff_mem.mp hm⟩
 
+/-! ### A call's facts from kernel checks of its data (the fill's `X.call<j>` facts) -/
+
+/-- No table entry reads a variable of `ws`. -/
+theorem noVar_of_all {tab : List SymE} {ws : List Nat} (h : (tab.all fun e => ws.all fun w => e.noVar w) = true) :
+    ∀ e ∈ tab, ∀ w ∈ ws, e.noVar w = true :=
+  fun e he w hw => List.all_eq_true.mp (List.all_eq_true.mp h e he) w hw
+
+/-- No loop table entry reads a result or a fresh variable. -/
+theorem noVar_nth_of_all {tab : List SymE} {cws ws : List Nat}
+    (h : (tab.all fun e => (cws ++ ws).all fun w => e.noVar w) = true) :
+    ∀ j e, nth? tab j = some e → ∀ w, (w ∈ cws ∨ w ∈ ws) → e.noVar w = true :=
+  fun _ e he w hw => noVar_of_all h e (nth?_mem_some he) w (List.mem_append.mpr hw)
+
+/-- No loop table entry reads a result or a fresh variable after the restart substitution, but `n`. -/
+theorem noVarθ_nth_of_all {tab : List SymE} {cws ws : List Nat} {θ : Nat → SymE} {n : Nat}
+    (h : (tab.all fun e => (cws ++ ws).all fun w => w == n || (e.subst θ).noVar w) = true) :
+    ∀ j e, nth? tab j = some e → ∀ w, (w ∈ cws ∨ w ∈ ws) → w ≠ n → (e.subst θ).noVar w = true := by
+  intro _ e he w hw hn
+  have h1 := List.all_eq_true.mp (List.all_eq_true.mp h e (nth?_mem_some he)) w (List.mem_append.mpr hw)
+  simp only [Bool.or_eq_true, beq_iff_eq] at h1
+  exact h1.resolve_left hn
+
+/-- The results apart from the stage's fresh variables. -/
+theorem disj_of_all {cws ws : List Nat} (h : (cws.all fun c => !ws.contains c) = true) : ∀ w ∈ cws, w ∉ ws := by
+  intro w hw hm
+  have h1 := List.all_eq_true.mp h w hw
+  rw [List.contains_iff_mem.mpr hm] at h1
+  cases h1
+
+/-- The cut's variables apart from the results and the fresh variables. -/
+theorem m0_of_all {R : List (Nat × Q)} {cws ws : List Nat}
+    (h : (R.all fun p => (Conv.idx? p.1 cws).isNone && !ws.contains p.1) = true) :
+    ∀ p ∈ R, Conv.idx? p.1 cws = none ∧ ws.contains p.1 = false := by
+  intro p hp
+  have h1 := List.all_eq_true.mp h p hp
+  simp only [Bool.and_eq_true, Option.isNone_iff_eq_none, Bool.not_eq_true'] at h1
+  exact h1
+
+/-- A map within a list. -/
+theorem sub_of_all {R2 l : List (Nat × Q)} (h : (R2.all fun p => l.contains p) = true) : ∀ p ∈ R2, p ∈ l :=
+  fun p hp => List.contains_iff_mem.mp (List.all_eq_true.mp h p hp)
+
+/-- A compaction map keeps the table's numbers below its table length. -/
+theorem compact_num_of {n n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {big : Int → Int} {region : Nat → Nat}
+    {node : Nat → Nat} (h : Nat.ble n nS = true) :
+    ∀ j, j < n → (Conv.Map.compact n0 n1 nS pl nr big region node).num j = .ref j :=
+  fun _ hj => Conv.Map.compact_num_lt (Nat.lt_of_lt_of_le hj (Nat.le_of_ble_eq_true h))
+
+/-- A compaction map keeps the addresses below its old counter. -/
+theorem compact_fix_of {l : List Nat} {n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {big : Int → Int}
+    {region : Nat → Nat} {node : Nat → Nat} (h : (l.all fun a => Nat.blt a n0) = true) :
+    ∀ a ∈ l, (Conv.Map.compact n0 n1 nS pl nr big region node).a a = a :=
+  fun a ha => Conv.Map.compact_lt (Nat.blt_eq.mp (List.all_eq_true.mp h a ha))
+
+/-- **The results' values at their decode forms** (`Conv.hEs_of_decQ`) at an admitted step whose map holds `u` at the
+offset. -/
+theorem hEs_of_all {L T : Nat} {tk : Nat → Nat} {uses : List Row} {R : List (Nat × Q)} {u : Nat}
+    {Es : List (Option SymE)} (hR : (u, Q.o) ∈ R) (hall : Es.all (fun o => (o.bind (Conv.decQ u)).isSome) = true) :
+    ∀ r ∈ uses, ∀ (i : Cls.Inst), InRow r i → ∀ (ν : Nat → F64), DecAt L T tk i → MapOk ν i R → VBOkF loopVB ν →
+      ∀ j o, nth? Es j = some o → ∃ E q, o = some E ∧
+        nth? (Es.map fun o => (o.bind (Conv.decQ u)).getD .o) j = some q ∧ E.eval ν = F64.ofNat (i.get q) :=
+  fun _ _ _ _ _ hadm hmap _ => Conv.hEs_of_decQ hall (mapOk_iff.1 hmap _ hR) (DecAt.get_e hadm) (DecAt.o_succ_lt31 hadm)
+
+/-- **The results' values at their decode and capacity forms** (`Conv.hEs_of_decQC`) at a growing row's admitted
+step (`hcap`, `dec_grow.capRow`), the map holding `u` at the offset and `c` at the capacity. -/
+theorem hEs_of_allC {L T : Nat} {tk : Nat → Nat} {uses : List Row} {R : List (Nat × Q)} {u c : Nat}
+    {Es : List (Option SymE)}
+    (hcap : ∀ r ∈ uses, ∀ i, InRow r i → i.get .cap1 = i.get .cap + 256 ∧ i.get .cap1 ≤ 2 ^ 20)
+    (hR : (u, Q.o) ∈ R) (hc : (c, Q.cap) ∈ R) (hall : Es.all (fun o => (o.bind (Conv.decQC u c)).isSome) = true) :
+    ∀ r ∈ uses, ∀ (i : Cls.Inst), InRow r i → ∀ (ν : Nat → F64), DecAt L T tk i → MapOk ν i R → VBOkF loopVB ν →
+      ∀ j o, nth? Es j = some o → ∃ E q, o = some E ∧
+        nth? (Es.map fun o => (o.bind (Conv.decQC u c)).getD .o) j = some q ∧ E.eval ν = F64.ofNat (i.get q) :=
+  fun r hr i hin _ hadm hmap _ =>
+    have hk := hcap r hr i hin
+    Conv.hEs_of_decQC hall (mapOk_iff.1 hmap _ hR) (DecAt.get_e hadm) (DecAt.o_succ_lt31 hadm) (mapOk_iff.1 hmap _ hc)
+      hk.1 (by omega)
+
+/-! ### The prompt route's frames at a call (`Conv.callShift`'s frame facts at `framesP`, `wideP`) -/
+
+/-- The kept arrays: the framed addresses off the wide frames. -/
+theorem xs_wideP (a : Nat) :
+    a ∈ [2673448, 12504, 2665] ↔ a ∈ [2673448, 12504, 2665, 4910] ∧ Template.wideP a = none := by
+  by_cases h : a = 4910
+  · subst h; decide
+  · have hw : Template.wideP a = none := by
+      show (bif Nat.beq a 4910 then some (WFrame.memo []) else none) = none
+      rw [Template.beq_false h]; rfl
+    simp only [hw, and_true, List.mem_cons, List.not_mem_nil, or_false, h]
+
+/-- The wide frames are framed. -/
+theorem wfr_wideP : ∀ a w, Template.wideP a = some w → a ∈ [2673448, 12504, 2665, 4910] := by
+  intro a w hw
+  by_cases h : a = 4910
+  · subst h; decide
+  · have : Template.wideP a = none := by
+      show (bif Nat.beq a 4910 then some (WFrame.memo []) else none) = none
+      rw [Template.beq_false h]; rfl
+    rw [this] at hw; cases hw
+
+/-- The further frames' prefixes are the chain start's arrays (the wide frame's none). -/
+theorem hX_framesP {S : Type} {s0 : St S} {q : List Val} (h : arrOf s0 4910 = []) :
+    ∀ a pre pre', (Template.framesP s0 q).X a = some (pre, pre') → pre = arrOf s0 a := by
+  intro a pre pre' hx
+  simp only [Template.framesP] at hx
+  cases h1 : Nat.beq a 2665
+  · cases h2 : Nat.beq a 4910
+    · rw [h1, h2] at hx; cases hx
+    · rw [h1, h2] at hx; cases hx
+      rw [Nat.eq_of_beq_eq_true h2, h]
+  · rw [h1] at hx; cases hx
+    rw [Nat.eq_of_beq_eq_true h1]
+
+/-- The kept arrays at the canonical state, their images at the merged state extending them. -/
+theorem kept_of {S : Type} {sc sm s0 : St S} {κ : Map} {l : List Nat}
+    (h : ∀ a ∈ l, sc.heap.get a = some (HObj.obj (Template.objOf sc a)) ∧
+      (Template.objOf sc a).kind = Kind.array (arrOf s0 a) ∧
+      sm.heap.get a = some (HObj.obj { κ.obj (Template.objOf sc a) with
+        kind := Kind.array (arrOf s0 a ++ (arrOf sm a).drop (arrOf s0 a).length) })) :
+    ∀ a ∈ l, ∃ o xs, sc.heap.get a = some (HObj.obj o) ∧ o.kind = Kind.array (arrOf s0 a) ∧
+      sm.heap.get a = some (HObj.obj { κ.obj o with kind := Kind.array (arrOf s0 a ++ xs) }) :=
+  fun a ha => let ⟨g, k, m⟩ := h a ha; ⟨_, _, g, k, m⟩
+
+/-- The wide frame present. -/
+theorem wp_present {S : Type} {s : St S} (h : (s.heap.get 4910).isSome = true) :
+    ∀ a w, Template.wideP a = some w → Present s a := by
+  intro a w hw
+  by_cases ha : a = 4910
+  · subst ha; exact h
+  · have : Template.wideP a = none := by
+      show (bif Nat.beq a 4910 then some (WFrame.memo []) else none) = none
+      rw [Template.beq_false ha]; rfl
+    rw [this] at hw; cases hw
+
+/-- The wide frame's shift facts: a memo frame's none. -/
+theorem wf_wideP {κ : Map} {A : Nat → Prop} : ∀ a w, Template.wideP a = some w → WFix κ A w := by
+  intro a w hw
+  by_cases ha : a = 4910
+  · subst ha
+    have : w = WFrame.memo [] := by cases hw; rfl
+    subst this; trivial
+  · have : Template.wideP a = none := by
+      show (bif Nat.beq a 4910 then some (WFrame.memo []) else none) = none
+      rw [Template.beq_false ha]; rfl
+    rw [this] at hw; cases hw
+
+/-- **The merged state's heap off the call's kept list** below the call's counter: the call's, from the merged heap
+the instance's end heap (A4's `mheap<k>`), its footprint and its start the call state's. -/
+theorem hoff_of {S : Type} {sa sm s0 s2 : St S} {wr l : List Nat} (hm : sm.heap = s2.heap)
+    (hf : Conv.StageFoot wr s0 s2) (hi : s0 = { sa with stack := [] })
+    (hw : wr.all (fun b => !Nat.blt b sa.next || l.contains b) = true) :
+    ∀ a, a ∉ l → a < sa.next → sm.heap.get a = sa.heap.get a := by
+  intro a ha hlt
+  have hnw : a ∉ wr := fun hmem => by
+    have h := List.all_eq_true.mp hw a hmem
+    simp only [Bool.or_eq_true, Bool.not_eq_true'] at h
+    rcases h with h | h
+    · rw [Nat.blt_eq.mpr hlt] at h; cases h
+    · exact ha (List.contains_iff_mem.mp h)
+  rw [hm, hf.same a hnw, hi]
+
 /-- **The results' quantities are within the bound** at an admitted step, when each is the offset or the end
 position. -/
-theorem qs_le {L T : Nat} {tk : Nat → Nat} {qs : List Q} {cws : List Nat}
+theorem qs_le {L T : Nat} {tk : Nat → Nat} {uses : List Row} {qs : List Q} {cws : List Nat}
     (hqs : qs.all (fun q => decide (q = .o ∨ q = .e)) = true) :
-    ∀ i, DecAt L T tk i → ∀ j c q, nth? cws j = some c → nth? qs j = some q → i.get q ≤ loopVB c := by
-  intro i h j c q _ hq
+    ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ j c q, nth? cws j = some c → nth? qs j = some q →
+      i.get q ≤ loopVB c := by
+  intro _ _ i _ h j c q _ hq
   have hm := of_decide_eq_true (List.all_eq_true.mp hqs q (nth?_mem_some hq))
   exact DecAt.get_le h (hm.elim .inl fun he => .inr (.inl he))
+
+/-- **The results' quantities are within the bound** at a growing row's admitted step, each the offset, the end
+position or the capacity after the append. -/
+theorem qs_leC {L T : Nat} {tk : Nat → Nat} {uses : List Row} {qs : List Q} {cws : List Nat}
+    (hcap : ∀ r ∈ uses, ∀ i, InRow r i → i.get .cap1 = i.get .cap + 256 ∧ i.get .cap1 ≤ 2 ^ 20)
+    (hqs : qs.all (fun q => decide (q = .o ∨ q = .e ∨ q = .cap1)) = true) :
+    ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ j c q, nth? cws j = some c → nth? qs j = some q →
+      i.get q ≤ loopVB c := by
+  intro r hr i hin h j c q _ hq
+  rcases of_decide_eq_true (List.all_eq_true.mp hqs q (nth?_mem_some hq)) with e | e | e
+  · exact DecAt.get_le h (.inl e)
+  · exact DecAt.get_le h (.inr (.inl e))
+  · subst e; exact (hcap r hr i hin).2
+
+/-- **The end results back to their terms** at an admitted step: each a decode form of `u` (`Conv.decQ`) at a
+quantity the map holds it, `u` at the offset (`Conv.decanon_dec`). -/
+theorem hde_of_dec {L T : Nat} {tk : Nat → Nat} {uses : List Row} {m : List (Nat × Q)} {u : Nat} {vs : List Nat}
+    {es : List SymE}
+    (h : (vs.zip es).all (fun p => match Conv.decQ u p.2 with | some q => m.contains (p.1, q) | none => false) = true)
+    (hu : (u, Q.o) ∈ m) :
+    ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ ν, MapOk ν i m →
+      ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν :=
+  fun _ _ _ _ hadm _ hm => Conv.decanon_dec hm hu (DecAt.get_e hadm) (DecAt.o_succ_lt31 hadm) (decQ_hvs h)
+
+/-- The end results' forms with the capacity from a check against the link's map (`decQ_hvs` at `Conv.decQC`). -/
+theorem decQC_hvs {u c : Nat} {vs : List Nat} {es : List SymE} {m : List (Nat × Q)}
+    (h : (vs.zip es).all (fun p => match Conv.decQC u c p.2 with | some q => m.contains (p.1, q) | none => false) = true) :
+    ∀ j v e, nth? vs j = some v → nth? es j = some e → ∃ q, Conv.decQC u c e = some q ∧ (v, q) ∈ m := by
+  intro j v e hv he
+  have hm := List.all_eq_true.mp h (v, e) (nth?_mem_some (nth?_zip hv he))
+  simp only at hm
+  cases hq : Conv.decQC u c e with
+  | none => rw [hq] at hm; cases hm
+  | some q => rw [hq] at hm; exact ⟨q, rfl, List.contains_iff_mem.mp hm⟩
+
+/-- **The end results back to their terms with the capacity** at a growing row's admitted step
+(`Conv.decanon_decC`). -/
+theorem hde_of_decC {L T : Nat} {tk : Nat → Nat} {uses : List Row} {m : List (Nat × Q)} {u c : Nat} {vs : List Nat}
+    {es : List SymE}
+    (hcap : ∀ r ∈ uses, ∀ i, InRow r i → i.get .cap1 = i.get .cap + 256 ∧ i.get .cap1 ≤ 2 ^ 20)
+    (h : (vs.zip es).all (fun p => match Conv.decQC u c p.2 with | some q => m.contains (p.1, q) | none => false) = true)
+    (hu : (u, Q.o) ∈ m) (hc : (c, Q.cap) ∈ m) :
+    ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ ν, MapOk ν i m →
+      ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν :=
+  fun r hr i hin hadm _ hm =>
+    have hk := hcap r hr i hin
+    Conv.decanon_decC hm hu (DecAt.get_e hadm) (DecAt.o_succ_lt31 hadm) hc hk.1 (by omega) (decQC_hvs h)
 
 /-- **The last glue piece into the iteration's end with the end table de-canonicalized** (see the module doc): the end
 template's server is the glue's end server with the canonical results `vs` replaced by their terms `es`, each a
@@ -359,10 +580,10 @@ def glueLinkEndD {m : List (Nat × Q)} {e : IterEndW (fullWorldFb b0 NB) A Pw s0
     (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) O = true) (hO : Sa.oracle = O)
     (hok : decOk Pw fr wd sa Sa = true)
     (hrun : runOk FF (decOk Pw fr wd) n sa Sa = some (sb, Sb))
-    (htop : noRetBlock sb = true) (vs : List Nat) (es : List SymE) (u : Nat) (he1 : e.s1 = sb)
+    (htop : noRetBlock sb = true) (vs : List Nat) (es : List SymE) (he1 : e.s1 = sb)
     (hS1 : e.S1 = ⟨Sb.tab.map (·.subst (Conv.compactθ vs es)), Sb.oracle⟩)
-    (hvs : ∀ j v e, nth? vs j = some v → nth? es j = some e → ∃ q, Conv.decQ u e = some q ∧ (v, q) ∈ m)
-    (hu : (u, Q.o) ∈ m) (hlen : tab0.length ≤ Sa.tab.length)
+    (hde : ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ ν, MapOk ν i m →
+      ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν) (hlen : tab0.length ≤ Sa.tab.length)
     (hgrow : ∀ (r : List NumV) (c : SegInst FF) (t' : St FF.S) (C' : CSrv), VBOkF loopVB c.ν →
       Disp.Kp (decJ Pw fr wd) c.K → RelB FF (FLRb b0 Pw NB r) W [] c.M c.ν c.K sa Sa c.t c.C →
       runC FF n c.t c.C = some (t', C') → Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t'.ffi)) :
@@ -371,12 +592,12 @@ def glueLinkEndD {m : List (Nat × Q)} {e : IterEndW (fullWorldFb b0 NB) A Pw s0
   n := n
   O := O
   chk := hchk
-  ok _ _ i _ hobl hadm x0 := cut_glue (decSim b0 NB Pw fr wd W hW _) hok hrun htop
+  ok r hru i hin hobl hadm x0 := cut_glue (decSim b0 NB Pw fr wd W hW _) hok hrun htop
     (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν hq.2.2)
     (fun c _ t' _ hq hb hc he hr h2 => ⟨by
         show RelF FF (FLRb b0 Pw NB _) W _ _ _ e.s1 e.S1 _ _
         rw [he1, hS1]
-        exact h2.decanon (Conv.decanon_dec hq.2.2 hu (DecAt.get_e hadm) (DecAt.o_succ_lt31 hadm) hvs),
+        exact h2.decanon (hde r hru i hin hadm _ hq.2.2),
       hb.1.conv (he.mono hlen) rfl (fun _ _ _ => rfl) (fun _ _ _ _ => rfl) (hgrow _ c t' _ hq.1 hq.2.1 hc hr)⟩)
 
 end

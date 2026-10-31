@@ -1,5 +1,7 @@
 // Write the modules of a route chain (`tpl_chain`): the chain's stream, its stage instances and the call sites' facts.
 // usage: bun proofs/host/sim/template/genChain.ts <case-dir> <Name> [--world <w>] [--ok <ok> <ok-module>] [--loadP <term>]
+//   --boot-bridge checks literal boot snapshots; --rebind-rows retains n at variable 10;
+//   --source-table <term> kernel-checks the rebound input table; --from-boundary <n> reuses an earlier checked prefix.
 //   Reads $HOST_STREAM_DIR (default <proofs>/.host-stream)/Host.Load.Run.Tpl.<Name>/{chain.json,seg.json} and each
 //   instance's stage.json; <case-dir>/States.lean is the module running `tpl_chain`.
 // Writes, through gen.ts and genStage.ts:
@@ -14,8 +16,9 @@
 //   `Conv.site_merge`'s footprint facts `<Name>.wrNodup<k>`, `<Name>.wrBound<k>`, `<Name>.trace<k>` (the stage's trace extends the
 //   call's); the fresh variables `<Name>.ws<k>` with `<Name>.fresh<k>` (`noVar` of every caller table entry and oracle answer)
 //   and `<Name>.mergeTab<k> : <Name>.S<ia+1>.tab = <Name>.S<ia>.tab ++ Conv.resTab <Name>.ws<k>`; the merged state
-//   `<Name>.merge<k> : <Name>.s<ia+1> = Conv.mergeSt Map.id (Map.id.res n0 n0) <Name>.rs<k> <Name>.st<k>.wr <Name>.s<ia>
-//   <Name>.st<k>.s<T1> <Name>.st<k>.s0 <Name>.st<k>.s<T1>.ffi`; with the compaction (tpl_chain's default) the canonical state
+//   as the instance's return state with the caller's frames (`<Name>.mheap<k>` … `mstores<k>`; `SiteL<k>`'s
+//   `<Name>.merged<k>` moves the relation at `Conv.mergeSt Map.id (Map.id.res n0 n0) <Name>.rs<k> <Name>.st<k>.wr …` to it;
+//   a wide site's footprint and written list facts are its instance's, `genStage.ts`); with the compaction (tpl_chain's default) the canonical state
 //   <Name>.s<ia+2>, the map `<Name>.kappa<k> := Conv.Map.compact n0 n1 nS <Name>.pl<k> (<Name>.nr<k>.map .ref) …` (its native
 //   part `<Name>.kd<k> : RData`), the canonical result variables `<Name>.cws<k>` with `<Name>.ctheta<k> := Conv.compactθ …`,
 //   and the checks `ctab`, `ctrace`, `cnext`, `ccounters`, `cclean` (`Conv.cleanListB` of the written and the result
@@ -28,11 +31,12 @@
 // * the native bookkeeping (`Conv.NClean` of the model states): NCl0 (with NCl0c_<j>, the start's full check
 //   `<Name>.ncl0`), GlueN<k> (glue piece k to its call, `<Name>.gncl<k>`), SiteCl<k> (the compaction, `<Name>.cncl<k>`),
 //   NClAll (`<Name>.nclEnd`, at the chain's end); a piece that removes native entries gets none (reported).
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type Meta, worlds } from "./bridgeFacts.ts";
+import { syncRowMetadata } from "./syncRowMeta";
+import { type Meta, wideFootOf, worlds } from "./bridgeFacts.ts";
 
-const fail = (m: string): never => { throw new Error(m); };
+function fail(m: string): never { throw new Error(m); }
 const argv = process.argv.slice(2);
 const flag = (f: string): boolean => {
   const i = argv.indexOf(f);
@@ -49,6 +53,19 @@ const take = (f: string, k = 1): string[] | undefined => {
 };
 const worldArg = take("--world")?.[0];
 const loadPArg = take("--loadP")?.[0];
+// A chooser-only state view may omit an inactive bridge that its serializer restores.
+const actualStartArg = take("--actual-start")?.[0];
+const sourceTableArg = take("--source-table")?.[0];
+const rebindRows = flag("--rebind-rows");
+const nclPrefixes = flag("--ncl-prefixes");
+const factsOnly = flag("--facts-only");
+const nonArraysArg = take("--non-arrays")?.[0];
+const fromBoundaryArg = take("--from-boundary")?.[0];
+const inactiveBridgeArg = take("--inactive-bridge")?.[0];
+if (inactiveBridgeArg) process.env.CHAIN_INACTIVE_BRIDGE = inactiveBridgeArg;
+if (flag("--boot-bridge")) process.env.CHAIN_BOOT_BRIDGE = "1";
+// Regenerate only one site's compaction map and footprint shift, retaining states and bookkeeping.
+const shiftSiteArg = take("--shift-site")?.[0];
 const okArg = take("--ok", 2);
 // the generated checks' acceptance (`--accept js|jsk|jsj [--D0 n]`, else seg.json's): gen.ts and genStage.ts read it from the environment
 const acceptArg = take("--accept")?.[0], d0Arg = take("--D0")?.[0];
@@ -59,14 +76,25 @@ if (acceptArg) process.env.CHAIN_ACCEPT = acceptArg;
 if (d0Arg) process.env.CHAIN_D0 = d0Arg;
 // the compaction's native shift by the full checks in chunks (SiteNa, SiteNc<k>_<j>, SiteNb) instead of its footprint (SiteS)
 const chunksArg = flag("--chunks");
-const [dir, name] = argv;
-if (!dir || !name) throw new Error("usage: genChain.ts <case-dir> <Name> [--world <w>] [--ok <ok> <ok-module>] [--loadP <term>]");
+const [dirArg, nameArg] = argv;
+if (!dirArg || !nameArg) throw new Error("usage: genChain.ts <case-dir> <Name> [--world <w>] [--ok <ok> <ok-module>] [--loadP <term>]");
+const dir = dirArg, name = nameArg;
 const here = import.meta.dir;
 const streams = process.env.HOST_STREAM_DIR ?? join(here, "..", "..", "..", ".host-stream");
 const sdir = join(streams, `Host.Load.Run.Tpl.${name}`);
+// Retain the row quantity through the chooser's metadata as well as its binary
+// candidates. This is idempotent, including after a fresh native generation.
+if (rebindRows) {
+  syncRowMetadata(streams, `Host.Load.Run.Tpl.${name}`);
+}
 const chain = JSON.parse(readFileSync(join(sdir, "chain.json"), "utf8"));
+if (chain.startTokens) process.env.CHAIN_QUEUE = JSON.stringify(chain.startTokens);
 const metaPath = join(sdir, "seg.json");
 const meta = JSON.parse(readFileSync(metaPath, "utf8")) as Meta;
+const nonArrayFrames = new Set([
+  ...meta.bridges.filter(b => b.kind === "typed").flatMap(b => b.frames ?? (b.buf === undefined ? [] : [b.buf, b.buf + 1])),
+  ...(nonArraysArg?.split(",").map(Number) ?? []),
+]);
 const w = worldArg ?? chain.world ?? "lf";
 const world = worlds[w] ?? (() => { throw new Error(`unknown world ${w}`); })();
 const run = (args: string[]) => {
@@ -75,11 +103,28 @@ const run = (args: string[]) => {
   process.stdout.write(p.stdout);
 };
 const [ok, okModule] = okArg ?? [world.ok, world.okModule];
-run(["gen.ts", dir, name, String(meta.T1), ok!, okModule!, "--meta", metaPath, "--world", w, "--okMeta"]);
+if (shiftSiteArg === undefined && !factsOnly)
+  run(["gen.ts", dir, name, String(meta.T1), ok!, okModule!, "--meta", metaPath, "--world", w, "--okMeta",
+    ...(fromBoundaryArg === undefined ? [] : ["--from-boundary", fromBoundaryArg])]);
 const mod = (file: string) => `host.sim.template.${dir.replaceAll("/", ".")}.${file}`;
 const per = 32;
 const stages = meta.bridges.filter(b => b.kind === "stage");
 const NL = "\n";
+if (rebindRows && shiftSiteArg === undefined && !factsOnly) {
+  const commands = [[name, meta.T1] as const, ...stages.map(b => {
+    const k = (b as typeof b & { site: number }).site;
+    const st = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${name}.st${k}`, "stage.json"), "utf8"));
+    return [`${name}.st${k}`, st.T1] as const;
+  })];
+  writeFileSync(join(here, dir, "Rebind.lean"), [
+    `import ${mod("States")}\nimport host.sim.template.StreamRows\nimport host.sim.template.StreamTokens\n`,
+    `set_option Elab.async false\nnamespace Host.Load.Run.Tpl\n`,
+    ...commands.flatMap(([p, n]) => [`tpl_stream_keep_lookahead ${p} through ${n}\n`, `tpl_stream_bind_rows ${p} through ${n}\n`]),
+    `end Host.Load.Run.Tpl\n`,
+  ].join(""));
+  const h0 = join(here, dir, "H0.lean");
+  writeFileSync(h0, readFileSync(h0, "utf8").replace(`import ${mod("States")}\n`, `import ${mod("Rebind")}\n`));
+}
 type Comp = {
   n0: number; n1: number; nS: number; pl: number[]; nr: number[]; plh: number[]; pln: number[]; xn0: number; xn1: number;
   nn0: number; nn1: number; ws: number[]; wrB: number[]; whB: number[]; wiB: number[]; counts?: number[];
@@ -88,6 +133,66 @@ type Comp = {
 };
 const pairs = (l: [number, number][]) => `[${l.map(([a, c]) => `(${a}, ${c})`).join(", ")}]`;
 const range = (a: number, n: number) => Array.from({ length: n }, (_, j) => a + j);
+// Identity exceptions below nn0 are redundant: RData.nodeF already defaults to identity.
+// Reject duplicate keys before filtering, so removing an earlier identity cannot change a later assignment.
+function nodeExceptions(cp: Comp): [number, number][] {
+  const seen = new Set<number>();
+  for (const [a, b] of cp.fwd.node) {
+    if (!Number.isSafeInteger(a) || a < 0 || !Number.isSafeInteger(b) || b < 0 || seen.has(a))
+      fail("compaction node table needs distinct nonnegative safe-integer keys and values");
+    seen.add(a);
+  }
+  return cp.fwd.node.filter(([a, b]) => a !== b);
+}
+// A sufficient fixed prefix of the unchanged nodeF: below its affine tail and every moved key.
+// The generated MFoot checks still establish nid, bounds, injectivity and strict node order.
+function nodeFixedPrefix(cp: Comp, callNext: number): number {
+  let prefix = cp.fwd.nn0;
+  for (const [a] of nodeExceptions(cp)) prefix = Math.min(prefix, a);
+  if (!Number.isSafeInteger(prefix) || prefix < callNext)
+    fail("compaction does not preserve the call's node prefix");
+  return prefix;
+}
+function compFacts(k: number, cp: Comp, ia: number, nC: number): string[] {
+  const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
+  const c = s(ia + 2), mC = world.mlx(c), mM = world.mlx(s(ia + 1));
+  const cnext = cp.xn0 + cp.plh.length, hAfter = mod(`H${Math.floor((ia + 2) / per)}`);
+  const head = (...imps: string[]) => [...imps.map(i => `import ${i}${NL}`),
+    `set_option Elab.async false${NL}namespace Host.Load.Run.Tpl${NL}set_option maxRecDepth 1000000${NL}set_option maxHeartbeats 0${NL}`,
+    `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template${NL}${NL}`];
+  return [...head(hAfter, "host.sim.conv.Compact", "host.sim.native.RebigR", "host.sim.template.Sigma",
+        "host.sim.template.NShiftGen", "host.sim.stage.Mlx"),
+      `/-! The compaction after the merge at call site ${k} of chain \`${name}\` (\`Conv.compact\`, \`Conv.full_compactQ\`): the canonical${NL}`,
+      `state \`${c}\` (the stage's results at canonical places, its trace the call's) under \`${name}.kappa${k}\` into the merged state${NL}`,
+      `\`${s(ia + 1)}\`. -/${NL}${NL}`,
+      `def ${name}.pl${k} : List Nat := [${cp.pl.join(", ")}]${NL}`,
+      `def ${name}.nr${k} : List Nat := [${cp.nr.join(", ")}]${NL}`,
+      `/-- The native part of the compaction map (canonical → merged handles and nodes: its \`big\`, \`region\`, \`nodeF\`). -/${NL}`,
+      `def ${name}.kd${k} : RData :=${NL}`,
+      `  ⟨${cp.fwd.n0}, ${cp.fwd.n1}, Stage.setAll PTrie.nil ${pairs(cp.fwd.heap)}, Stage.setAll PTrie.nil ${pairs(cp.fwd.hnd)},${NL}`,
+      `   ${cp.fwd.nh0}, ${cp.fwd.nh1}, ${cp.fwd.nn0}, ${cp.fwd.nn1}, Stage.setAll PTrie.nil ${pairs(nodeExceptions(cp))},${NL}`,
+      `   Stage.setAll PTrie.nil [${cp.nr.map((r, j) => `(${cp.nS + j}, .ref ${r})`).join(", ")}]⟩${NL}`,
+      `/-- **The compaction map.** -/${NL}noncomputable def ${name}.kappa${k} : Map :=${NL}`,
+      `  Conv.Map.compact ${cp.n0} ${cp.n1} ${cp.nS} ${name}.pl${k} (${name}.nr${k}.map NumV.ref) ${name}.kd${k}.big${NL}`,
+      `    ${name}.kd${k}.region ${name}.kd${k}.nodeF${NL}`,
+      `/-- The canonical result variables and their images, the merged state's entries (\`Conv.compactθ\`). -/${NL}`,
+      `def ${name}.cws${k} : List Nat := [${cp.ws.join(", ")}]${NL}`,
+      `noncomputable def ${name}.crs${k} : List SymE := ${name}.nr${k}.map fun r => (nth? ${S(ia + 1)}.tab r).getD (.var 0)${NL}`,
+      `noncomputable def ${name}.ctheta${k} : Nat → SymE := Conv.compactθ ${name}.cws${k} ${name}.crs${k}${NL}`,
+      `/-- The call's entries the stage wrote (renamed in the canonical state with the results). -/${NL}`,
+      `def ${name}.wrB${k} : List Nat := [${cp.wrB.join(", ")}]${NL}${NL}`,
+      `kernel_rfl ${name}.ctab${k} : ${S(ia + 2)}.tab = ${S(ia)}.tab ++ ${name}.cws${k}.map SymE.var${NL}`,
+      `kernel_rfl ${name}.ctrace${k} : ${c}.trace = ${s(ia)}.trace${NL}`,
+      `kernel_rfl ${name}.cnext${k} : ${c}.next = ${cp.n0 + cp.pl.length}${NL}`,
+      `kernel_rfl ${name}.ccounters${k} : (${mC}.next, ${mC}.nnext) = (${cnext}, ${cp.nn0 + cp.pln.length})${NL}`,
+      `-- the merged state's readback queue, carried to the canonical state (\`Conv.FullShiftQ.tokens\`, \`tokSupp\`)${NL}`,
+      `kernel_rfl ${name}.cqueue${k} : ${mM}.tokens = ${mC}.tokens.map ${name}.kappa${k}.nv${NL}`,
+      `kernel_rfl ${name}.ctokSupp${k} : ${mC}.tokens.all (bSN ${nC}) = true${NL}`,
+      `-- the written and the result entries carry no bigint of the canonical fresh band [next, E) and no fresh region${NL}`,
+      `kernel_rfl ${name}.cclean${k} : Conv.cleanListB ${cnext} 131072 (fun r => Nat.ble ${4 * cnext} r) ${c}${NL}`,
+      `    (${name}.wrB${k} ++ (List.range ${cp.pl.length}).map (${cp.n0} + ·)) = true${NL}`,
+      `kernel_rfl ${name}.cbigs${k} : bigsOutB ${cnext} 131072 ${mC} = true${NL}${NL}`];
+}
 // the canonical state's closedness from the call's (`Conv.closed_of_callB`, `Conv.sst_of_callB`) over the changed entries
 function closedFacts(k: number, cp: Comp, call: string, c: string, nC: number, xC: string, mC: string): string[] {
   const l = [...cp.wrB, ...range(cp.n0, cp.pl.length)];
@@ -117,17 +222,18 @@ function closedFacts(k: number, cp: Comp, call: string, c: string, nC: number, x
 // the compaction's native shift in the full world (`Conv.FullShiftQ`): `NShift` at the token-cleared states from its checks
 // a check over a long list in chunks of `chunk` elements (`all_take_drop`, `map_take_drop`): one module per chunk
 const chunk = Number(take("--chunk")?.[0] ?? 2000);
-function chunked(nm: string, k: number, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string):
-    { chunks: string[][]; assemble: string[] } {
-  const m = Math.max(1, Math.ceil(n / chunk));
+function chunked(nm: string, k: number, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string,
+    size: number = chunk): { chunks: string[][]; assemble: string[] } {
+  const chunk_ = size;
+  const m = Math.max(1, Math.ceil(n / chunk_));
   let l = list;
   const ls: string[] = [];
-  for (let j = 0; j <= m; j++) { ls.push(l); l = `(${l}).drop ${chunk}`; }
-  const chunks = Array.from({ length: m }, (_, j) => [`kernel_rfl ${name}.${nm}${k}_${j} : ${stmt(`(${ls[j]}).take ${chunk}`)}${NL}`]);
+  for (let j = 0; j <= m; j++) { ls.push(l); l = `(${l}).drop ${chunk_}`; }
+  const chunks = Array.from({ length: m }, (_, j) => [`kernel_rfl ${name}.${nm}${k}_${j} : ${stmt(`(${ls[j]}).take ${chunk_}`)}${NL}`]);
   const last = `kernel_rfl ${name}.${nm}${k}_end : ${ls[m]} = []${NL}`;
   const step = kind === "all" ? "all_take_drop" : "map_take_drop", nil = kind === "all" ? "all_of_nil" : "map_of_nil";
   let proof = `${nil} ${name}.${nm}${k}_end`;
-  for (let j = m - 1; j >= 0; j--) proof = `${step} ${chunk} ${name}.${nm}${k}_${j} (${proof})`;
+  for (let j = m - 1; j >= 0; j--) proof = `${step} ${chunk_} ${name}.${nm}${k}_${j} (${proof})`;
   return { chunks, assemble: [last, `theorem ${name}.${nm}${k} : ${stmt(list)} :=${NL}  ${proof}${NL}`] };
 }
 // the compaction's native shift from its footprint (`Conv.nshift_of_foot`, `Conv.MFoot`; A3's host.sim.conv.NShiftFoot): the
@@ -135,8 +241,10 @@ function chunked(nm: string, k: number, list: string, n: number, kind: "all" | "
 // the changed lists (SiteK, SiteCl), the merged state's over the stage's footprint (its `wh`, fresh nodes, `wi` and fresh
 // items), the checks over the changed lists; the observers by `liveShift_foot`, `kernShift_foot` (FootGen). The call's
 // bookkeeping (`Conv.NClean`, its `gncl` chain), its relation's facts and the canonical closedness are parameters.
+// a band-free chain (P.NL = P.N0, from its start's counters or a given band-free loadP): its sites' shifts raised
+function raisedP(lp: number[] | undefined): boolean { return !loadPArg && (!lp || lp[3] === lp[4]); }
 function footFacts(k: number, cp: Comp, cC: number[], c: string, m: string, call: string, nC: number, mC: string, mM: string,
-    wh: number[], wi: number[]): string[] {
+    wh: number[], wi: number[]): { a: string[]; chunks: string[][]; b: string[] } {
   const kap = `${name}.kappa${k}`, D = `${name}.kd${k}`, P = `${name}.P${k}`;
   const y0 = `${name}.cx0_${k}`, y1 = `${name}.cx1_${k}`, x0 = `${y0}.mlx`, x1 = `${y1}.mlx`, xC = world.mlx(call);
   const lp: number[] | undefined = (meta as { loadP?: number[] }).loadP;
@@ -144,6 +252,10 @@ function footFacts(k: number, cp: Comp, cC: number[], c: string, m: string, call
   const ck = (nm: string, stmt: string) => `kernel_rfl ${name}.${nm}${k} : ${stmt}${NL}`;
   const N = (nm: string) => `${name}.${nm}${k}`;
   const cCL = `(⟨${cC.join(", ")}⟩ : Conv.Cnt)`;
+  const callNext = cC[1] ?? fail("missing call node counter");
+  // A stage can record compiled closures before its compaction. Include the
+  // additional nodes that the map fixes; the checks below verify that band.
+  const prefix = nodeFixedPrefix(cp, callNext);
   const lh = N("clo"), ln = N("cln"), li = N("cli"), wS = N("cwS"), nS = N("cnS"), iS = N("ciS");
   const fresh = `List.range' ${cC[1]} ${cp.nn1 - cC[1]!}`;
   const keep = (y: string, field: string, xs: string) =>
@@ -162,12 +274,36 @@ function footFacts(k: number, cp: Comp, cC: number[], c: string, m: string, call
     "clean", N("fcxn"), N("fcnn"), "hltC", "nltC", "itemsC", "tracedC", "cl", N("fle0"), N("fnk"),
     N("ckA"), N("cobjsK"), N("cnodesK"), N("citemsK"), N("f1A"), N("f1O"), N("f1N"), N("f1I"), N("fbd"), N("fincW"), N("fincI"),
     N("fincN"), N("flnF"), N("fh"), N("fo"), N("fok"), N("fnd"), N("fp"), N("fnord"), N("fi"), N("fii")];
-  return [
+  // the per-node checks over the canonical changed nodes, in chunks past `chunk` of them (their own modules)
+  const nodeChunk = 600, nodeChunks = cp.pln.length > nodeChunk;
+  const nd = nodeChunks ? chunked("fnd", k, ln, cp.pln.length, "all", l => `(${l}).all (nodeOKF ${kap} ${P} ${x0} ${x1}) = true`, nodeChunk)
+    : { chunks: [], assemble: [ck("fnd", `${ln}.all (nodeOKF ${kap} ${P} ${x0} ${x1}) = true`)] };
+  const lnF = `(${ln}.filter (fullB ${P}))`;
+  const fpS = (l: string) => `(${l}).map (fun i => (${x1}.nodes.get (${kap}.node i)).map Host.Mlx.Ffi.Node.prim) =${NL}  (${l}).map (fun i => (${x0}.nodes.get i).map fun nd => ${kap}.prim nd.prim)`;
+  const fp = nodeChunks ? chunked("fp", k, lnF, cp.pln.length, "map", fpS, nodeChunk) : { chunks: [], assemble: [ck("fp", fpS(lnF))] };
+  // the renamed nodes' order (`cnord_of`: the canonical nodes the range `[nn0, nn0 + |pln|)`, the map increasing along it)
+  const na = cp.nn0, nb = cp.nn0 + cp.pln.length;
+  const nord = [
+    ck("fnordI", `incrB ${D}.nodeF (List.range' ${na} ${cp.pln.length}) = true`),
+    ck("fnordK", `(PTrie.keysA ${D}.node).all (fun k => Nat.ble ${na} k && Nat.blt k ${nb}) = true`),
+    ck("fnordL", `(${ln}.filter (Nat.ble ${P}.N0)).all (fun i => Nat.ble i (${D}.nodeF i) && (Nat.blt i ${nb} || Nat.ble ${D}.nn0 i)) = true`),
+    `theorem ${N("fnord")} : (${ln}.filter (Nat.ble ${P}.N0)).all (fun i => Nat.ble i (${D}.nodeF i) &&${NL}`,
+    `    (PTrie.keysA ${D}.node).all fun j => !Nat.blt j i || Nat.blt (${D}.nodeF j) (${D}.nodeF i)) = true :=${NL}`,
+    `  cnord_of ${N("cnlow")} ${N("cnn1")} ${N("fnordI")} ${N("fnordK")} ${N("fnordL")}${NL}`];
+  const head = [
     `/-! The compaction's native shift at call site ${k} from its footprint (\`Conv.nshift_of_foot\`), and the observers'${NL}`,
     `(\`liveShift_foot\`, \`kernShift_foot\`): \`Conv.FullShiftQ\` for \`Conv.full_compactQ\`, given the call's bookkeeping and its${NL}`,
     `relation's facts. -/${NL}${NL}`,
-    `/-- The load parameters of the chain (its start's node counter as \`NL\` and \`N0\`). -/${NL}`,
-    `def ${P} : LoadP := ${loadPArg ?? (lp ? `⟨${lp.join(", ")}, []⟩` : `⟨${st0.mnext}, 131072, 2 ^ 40, ${st0.nnext}, ${st0.nnext}, []⟩`)}${NL}`,
+    ...(raisedP(lp) ? [
+      `/-- The load parameters of the chain (band-free: its start's node counter as \`NL\` and \`N0\`). -/${NL}`,
+      `def ${name}.Pc${k} : LoadP := ${lp ? `⟨${lp.join(", ")}, []⟩` : `⟨${st0.mnext}, 131072, 2 ^ 40, ${st0.nnext}, ${st0.nnext}, []⟩`}${NL}`,
+      `/-- The site's band raised to the map's checked fixed-node prefix, including newly recorded closure traces. -/${NL}`,
+      `def ${P} : LoadP := ${name}.Pc${k}.raise ${prefix}${NL}`,
+      ck("craise", `Nat.ble ${name}.Pc${k}.N0 ${prefix} = true`),
+      `theorem ${name}.raised${k} : Host.Ts.Sim.Full.Raised ${name}.Pc${k} ${P} :=${NL}`,
+      `  .inr ⟨${prefix}, rfl, Nat.le_of_ble_eq_true ${name}.craise${k}, rfl⟩${NL}`] : [
+      `/-- The load parameters of the chain (its start's node counter as \`NL\` and \`N0\`). -/${NL}`,
+      `def ${P} : LoadP := ${loadPArg ?? (lp ? `⟨${lp.join(", ")}, []⟩` : `⟨${st0.mnext}, 131072, 2 ^ 40, ${st0.nnext}, ${st0.nnext}, []⟩`)}${NL}`]),
     `noncomputable abbrev ${y0} : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad ${c}.ffi)${NL}`,
     `noncomputable abbrev ${y1} : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad ${m}.ffi)${NL}`,
     `def ${name}.khinv${k} : PTrie Nat := Stage.setAll PTrie.nil ${pairs(cp.plh.map((h, j) => [h, cp.xn0 + j] as [number, number]))}${NL}`,
@@ -212,14 +348,13 @@ function footFacts(k: number, cp: Comp, cC: number[], c: string, m: string, call
     ck("fbd", `(${lh} ++ ${ln} ++ ${li} ++ ${wS} ++ ${nS} ++ ${iS}).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true`),
     ck("fincW", `${wS}.all (fun h => !Nat.blt h ${xC}.next || ${lh}.contains h) = true`),
     ck("fincI", `${iS}.all (fun k => !Nat.blt k ${xC}.nnext || ${li}.contains k) = true`),
-    ck("fincN", `${nS}.all (Nat.ble ${xC}.nnext) = true`), ck("flnF", `${ln}.all (Nat.ble ${xC}.nnext) = true`),
+    ck("fincN", `${nS}.all (Nat.ble ${xC}.nnext) = true`), ck("flnF", `${ln}.all (Nat.ble ${xC}.nnext) = true`)];
+  const tail = [
     `-- the checks over the changed lists${NL}`,
     ck("fh", `${lh}.all (handleOK ${kap} ${P}.lo ${x0} ${x1}) = true`),
     ck("fo", `${lh}.map (fun h => ${x1}.objs.get (${kap}.handle h)) = ${lh}.map (fun h => (${x0}.objs.get h).map ${kap}.nobj)`),
     ck("fok", `${lh}.all (objOK ${kap} ${P}.NL ${x0}) = true`),
-    ck("fnd", `${ln}.all (nodeOKF ${kap} ${P} ${x0} ${x1}) = true`),
-    ck("fp", `(${ln}.filter (fullB ${P})).map (fun i => (${x1}.nodes.get (${kap}.node i)).map Host.Mlx.Ffi.Node.prim) =${NL}  (${ln}.filter (fullB ${P})).map (fun i => (${x0}.nodes.get i).map fun nd => ${kap}.prim nd.prim)`),
-    ck("fnord", `(${ln}.filter (Nat.ble ${P}.N0)).all (fun i => Nat.ble i (${D}.nodeF i) &&${NL}  (PTrie.keysA ${D}.node).all fun j => !Nat.blt j i || Nat.blt (${D}.nodeF j) (${D}.nodeF i)) = true`),
+    ...nd.assemble, ...fp.assemble, ...nord,
     ck("fi", `${li}.all (pnB ${x0}) = true`),
     ck("fii", `${li}.all (fun k => decide (${x1}.items.get (${kap}.node k) = (${x0}.items.get k).map ${kap}.nv)) = true`),
     `/-- **The compaction's footprint.** -/${NL}`,
@@ -258,18 +393,48 @@ function footFacts(k: number, cp: Comp, cC: number[], c: string, m: string, call
     `      ${name}.fkf0${k} ${name}.fkt0${k} ${name}.fkf1${k} ${name}.fkt1${k} ${name}.fkck${k},${NL}`,
     `    pendReg_of rfl ${name}.cnh0${k} ${name}.cnh1${k} (Nat.le_of_ble_eq_true ${name}.cpendLe${k}) ${name}.cpendR${k}⟩${NL}${NL}`,
   ];
+  return { a: head, chunks: [...nd.chunks, ...fp.chunks], b: tail };
+}
+if (shiftSiteArg !== undefined) {
+  const k = Number(shiftSiteArg);
+  if (!Number.isSafeInteger(k) || k < 0 || w !== "full" || chunksArg)
+    fail("--shift-site needs a nonnegative site index in the full world without --chunks");
+  const b = stages.find(b => b.site === k);
+  if (!b) fail(`no stage site ${k}`);
+  const cp = b.compaction as Comp & { cCall?: number[] };
+  if (!cp?.cCall || b.n0 === undefined) fail(`site ${k} lacks its compaction footprint/call counters`);
+  const st = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${name}.st${k}`, "stage.json"), "utf8"));
+  const c = `${name}.s${b.ia + 2}`, m = `${name}.s${b.ia + 1}`;
+  const ff = footFacts(k, cp, cp.cCall, c, m, `${name}.s${b.ia}`, b.n0 + cp.ws.length, world.mlx(c), world.mlx(m), st.wh, st.wi);
+  const head = (...imps: string[]) => [...imps.map(i => `import ${i}${NL}`),
+    `set_option Elab.async false${NL}namespace Host.Load.Run.Tpl${NL}set_option maxRecDepth 1000000${NL}set_option maxHeartbeats 0${NL}`,
+    `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template${NL}${NL}`];
+  const put = (file: string, lines: string[]) => writeFileSync(join(here, dir, `${file}.lean`), [...lines, `end Host.Load.Run.Tpl${NL}`].join(""));
+  put(`SiteC${k}`, compFacts(k, cp, b.ia, b.n0 + cp.ws.length));
+  const imports = [mod(`SiteCl${k}`), "host.sim.conv.CompactFull", "host.sim.template.FootGen"];
+  if (ff.chunks.length === 0) put(`SiteS${k}`, [...head(...imports), ...ff.a, ...ff.b]);
+  else {
+    put(`SiteSa${k}`, [...head(...imports), ...ff.a]);
+    ff.chunks.forEach((lines, j) => put(`SiteSn${k}_${j}`, [...head(mod(`SiteSa${k}`)), ...lines]));
+    put(`SiteS${k}`, [...head(...ff.chunks.map((_, j) => mod(`SiteSn${k}_${j}`))), ...ff.b]);
+  }
+  console.log(`${name}: regenerated only site ${k}'s compaction map and footprint shift`);
+  process.exit(0);
 }
 // the compaction's state shift (`Conv.compact_shift`, A3's host.sim.conv.CompactShift) at call site `k`: the map's places and
 // counters, the tables, the frames (`Fd` the chain's framed addresses, `Xs` those without a wide frame), the heap off the
 // changed list `cl<k>` (its image on the canonical side), the roots and their supports, the JS bookkeeping's step
 // (`Conv.JClean.step`, `jcleanListB` at the canonical counters) and the canonical roots' bigint freedom (`jclean_noBigSt`)
 function shiftDFacts(k: number, cp: Comp, cC: number[], cK: number[], sa: string, sm: string, sc: string, Sa: string,
-    Sm: string, nC: number, inst: string): string[] {
+    Sm: string, nC: number, inst: string, wideT?: number): string[] {
   const ck = (nm: string, stmt: string) => `kernel_rfl ${name}.${nm}${k} : ${stmt}${NL}`;
   const kap = `${name}.kappa${k}`, cl = `${name}.cl${k}`;
   const cCL = `(⟨${cC.join(", ")}⟩ : Conv.Cnt)`, cKL = `(⟨${cK.join(", ")}⟩ : Conv.Cnt)`;
   const fd: number[] = meta.frames ?? [];
-  const wideA = ((meta as { wide?: [number, string][] }).wide ?? []).map(([a]) => a);
+  const wideA = [...new Set([
+    ...((meta as { wide?: [number, string][] }).wide ?? []).map(([a]) => a),
+    ...fd.filter(a => nonArrayFrames.has(a)),
+  ])];
   const xs = fd.filter(a => !wideA.includes(a));
   return [
     `/-! The compaction's state shift at call site ${k} of chain \`${name}\` (\`Conv.compact_shift\`): the call \`${sa}\`, the merged${NL}`,
@@ -293,7 +458,11 @@ function shiftDFacts(k: number, cp: Comp, cC: number[], cK: number[], sa: string
     ...wideA.map(a => `kernel_rfl ${name}.zw${k}_${a} : (${sc}.heap.get ${a}).isSome = true${NL}`),
     `-- the heap: the changed list in range, holding the stage's written and fresh addresses; the canonical side's image${NL}`,
     ck("zclbd", `${cl}.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true`),
-    ck("zwr", `${inst}.wr.all (fun b => !Nat.blt b ${sa}.next || ${cl}.contains b) = true`),
+    ...(wideT === undefined ? [ck("zwr", `${inst}.wr.all (fun b => !Nat.blt b ${sa}.next || ${cl}.contains b) = true`)] : [
+      ck("zwrN", `Nat.ble ${sa}.next ${inst}.s0.next = true`),
+      ck("zwrO", `(Stage.rangesOf ${inst}.s${wideT}.heap ${inst}.wrR).all (fun e => !Nat.blt e.1 ${sa}.next || ${cl}.contains e.1) = true`),
+      `theorem ${name}.zwr${k} : ${inst}.wr.all (fun b => !Nat.blt b ${sa}.next || ${cl}.contains b) = true :=${NL}`,
+      `  footW_lowAll ${name}.zwrN${k} ${name}.zwrO${k}${NL}`]),
     `def ${name}.zl${k} : List Nat := ${cl}.filter fun a => !(List.contains [${xs.join(", ")}] a)${NL}`,
     ck("zimgE", `${name}.zl${k}.map (fun a => ${sm}.heap.get (${kap}.a a)) = ${name}.zl${k}.map (fun a => (${sc}.heap.get a).map ${kap}.hobj)`),
     `theorem ${name}.zimg${k} : HeapImg ${kap} ${sc} ${sm} ${name}.zl${k} := ${name}.zimgE${k}${NL}`,
@@ -305,7 +474,9 @@ function shiftDFacts(k: number, cp: Comp, cC: number[], cK: number[], sa: string
     `-- the map as \`Conv.compact_shift\` states it (the call's counters for the literals)${NL}`,
     ck("zkap", `${kap} = Conv.Map.compact ${sa}.next ${cp.n1} ${Sa}.tab.length ${name}.pl${k} (${name}.nr${k}.map NumV.ref) ${name}.kd${k}.big${NL}  ${name}.kd${k}.region ${name}.kd${k}.nodeF`),
     `-- the bridge inactive at the canonical state (\`Conv.FullShiftQ.toX\`; the merged state's bridge is the canonical's: cbridge)${NL}`,
-    ck("zbin", `(Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = false`),
+    inactiveBridgeArg
+      ? `theorem ${name}.zbin${k} : (Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = false := ${inactiveBridgeArg}${NL}`
+      : ck("zbin", `(Host.Ts.Sim.Full.bridgeOf ${sc}.ffi).active = false`),
     `-- the JS bookkeeping's step (\`Conv.JClean.step\` over the changed list) and the canonical roots' bigint freedom${NL}`,
     ck("zjc", `Conv.jcleanListB ${cKL} ${sc} ${cl} = true`),
     ck("zroots2", `noBigRootsP (fun i => !Conv.oldBigB ${cKL} i) ${sc}.trace ${sc} = true`),
@@ -410,10 +581,22 @@ function nclStep(p: string, k: number, xa: string, xb: string, ca: number[], cb:
     `  Conv.NClean.stepKeep h ${name}.${p}le${k} ${K("A")} ${kO} ${kN} ${kI} ${name}.${p}bd${k} ${name}.${p}ck${k}${NL}${NL}`];
 }
 // the framed arrays at `st` past the chain start's: the elements, the array's shape, `NumRefs` where all are references
-function arrFacts(tag: string, st: string, arrs: { a: number; prefix: boolean; els: string[] }[] | undefined): string[] {
+function arrFacts(tag: string, st: string, arrs: { a: number; prefix: boolean; els: string[]; array?: boolean }[] | undefined): string[] {
   if (!arrs) return [];
   const wideA = ((meta as { wide?: [number, string][] }).wide ?? []).map(([w]) => w);
-  return arrs.filter(({ a }) => !wideA.includes(a)).flatMap(({ a, prefix, els }) => {
+  // the prompt route's frames kept at the state (`KeepsAtW (framesP s0 q)`): the prompt array the start's, the wide frame no array
+  const prompt = arrs.find(({ a }) => a === 2665);
+  const keep = wideA.includes(4910) && prompt?.prefix && prompt.els.length === 0 ? [
+    `kernel_rfl ${name}.w4910k${tag} : isArrB ${st} 4910 = false${NL}`,
+    `theorem ${name}.keep${tag} (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesP ${name}.s0 q) ${st} := by${NL}`,
+    `  intro a pre pre' hx o es ho hk${NL}  unfold framesP at hx${NL}  simp only at hx${NL}`,
+    `  cases h1 : Nat.beq a 2665${NL}  · cases h2 : Nat.beq a 4910${NL}    · rw [h1, h2] at hx; cases hx${NL}`,
+    `    · have := Nat.eq_of_beq_eq_true h2; subst this${NL}      rw [h1, h2] at hx; cases hx${NL}`,
+    `      exact (notArr_of ${name}.w4910k${tag} ho hk).elim${NL}`,
+    `  · have := Nat.eq_of_beq_eq_true h1; subst this${NL}    rw [h1] at hx; cases hx${NL}`,
+    `    obtain ⟨o', ho', hk'⟩ := ${name}.arr${tag}_2665${NL}    rw [ho] at ho'; cases ho'${NL}    rw [hk'] at hk; cases hk${NL}`,
+    `    simp [${name}.arrEl${tag}_2665]${NL}${NL}`] : [];
+  return [...arrs.filter(({ a, array }) => array !== false && !wideA.includes(a) && !nonArrayFrames.has(a)).flatMap(({ a, prefix, els }) => {
     if (!prefix || els.includes("none")) return [`-- ${a}: not the chain start's array extended${NL}`];
     const E = `${name}.arrEl${tag}_${a}`;
     const refs = els.every(e => e.startsWith("(Val.num (NumV.ref "));
@@ -426,7 +609,7 @@ function arrFacts(tag: string, st: string, arrs: { a: number; prefix: boolean; e
       ...(refs ? [`kernel_rfl ${name}.arrN${tag}_${a} : numRefsB ${name}.S0.tab.length ${E} = true${NL}`,
         `theorem ${name}.arrR${tag}_${a} : Prefill.NumRefs ${name}.S0.tab.length ${E} := numRefs_of ${name}.arrN${tag}_${a}${NL}`] : []),
       NL];
-  });
+  }), ...keep];
 }
 // a glue piece's JS bookkeeping step (`Conv.JClean.step`): its JS heap off the changed and removed entries `jh`, checked
 function jclStep(k: number, sa: string, sb: string, ca: number[], cb: number[], jh: number[]): string[] {
@@ -448,6 +631,9 @@ function decQOf(e: string): string | undefined {
   if (e === `(SymE.bin .add (SymE.var 9) ${one})`) return "e";
   if (e === "(SymE.un .int32 (SymE.var 9))") return "o";
   if (e === `(SymE.un .int32 (SymE.bin .add (SymE.var 9) ${one}))`) return "e";
+  if (e === `(SymE.bin .sub (SymE.un .int32 (SymE.bin .add (SymE.var 9) ${one})) (SymE.lit (F64.zero false)))`) return "e";
+  // a growing chain's capacity growth (`Conv.decQC 9 16`)
+  if (e === "(SymE.bin .add (SymE.var 16) (SymE.lit (F64.fin false 256 (0))))") return "cap1";
   return undefined;
 }
 const headT = (...imps: string[]) => [...imps.map(i => `import ${i}${NL}`),
@@ -460,10 +646,11 @@ const hOf = (i: number) => mod(`H${Math.floor(i / per)}`);
 // (`Full.fullSetTokens`; `Full.RelF.dropTokens` takes the source's queue to the live tokens and the dropped suffix)
 const stok = chain.startTokens as number[] | null | undefined;
 if (stok && chain.source) {
-  const src = chain.source as string;
+  const src = actualStartArg ?? chain.source as string;
   putT("S0Eq", [...headT(hOf(0), "host.sim.full.DropTokens"),
     `/-! The start of chain \`${name}\`: its source \`${src}\` with the mlx token queue set to its live tokens. -/${NL}${NL}`,
-    `kernel_rfl ${name}.s0_tok : ${sT(0)} = ${src}.setFfi (Host.Ts.Sim.Full.fullSetTokens ${src}.ffi [${stok.map(r => `.ref ${r}`).join(", ")}])${NL}${NL}`]);
+    `kernel_rfl ${name}.s0_tok : ${sT(0)} = ${src}.setFfi (Host.Ts.Sim.Full.fullSetTokens ${src}.ffi [${stok.map(r => `.ref ${r}`).join(", ")}])${NL}${NL}`,
+    ...(sourceTableArg ? [`kernel_rfl ${name}.s0_tab : ${name}.S0.tab = ${sourceTableArg}${NL}${NL}`] : [])]);
 }
 const nclMods: string[] = [];
 let nclProof = "";
@@ -497,20 +684,24 @@ for (const b of stages) {
   const inst = `${name}.st${k}`;
   const ipath = join(streams, `Host.Load.Run.Tpl.${inst}`, "stage.json");
   const hCall = mod(`H${Math.floor(b.ia / per)}`);
-  run(["genStage.ts", `${dir}/st${k}`, inst, "--meta", ipath, "--world", w, "--states", `${mod("States")},${hCall}`]);
+  if (!factsOnly) run(["genStage.ts", `${dir}/st${k}`, inst, "--meta", ipath, "--world", w, "--states", `${mod("States")},${hCall}`]);
   const ia = b.ia, T = ext.T1;
   const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
   const cp = (b as { compaction?: Comp | null }).compaction ?? undefined;
   const hAfter = mod(`H${Math.floor((ia + (cp ? 2 : 1)) / per)}`);
   // the site's facts, one module per piece (each a few kernel checks over the states: every module under the slot cap)
-  const traceNew = (JSON.parse(readFileSync(ipath, "utf8")) as { traceNew?: number }).traceNew;
+  const imeta = JSON.parse(readFileSync(ipath, "utf8")) as { traceNew?: number; wrRs?: unknown; fresh?: number[]; oracle?: string };
+  const oracleRef = (imeta.oracle ?? `Host.Load.Run.Tpl.${inst}.O`).replace(/^Host\.Load\.Run\.Tpl\./, "");
+  const traceNew = imeta.traceNew;
+  // a wide site (`wideFootOf`): the instance's footprint per state, its written list's facts by lemma (`genStage.ts`)
+  const wide = wideFootOf(imeta);
   const caseMod = (file: string) => `host.sim.template.${dir.replaceAll("/", ".")}.${file}`;
   const head = (...imps: string[]) => [...imps.map(i => `import ${i}${NL}`),
     `set_option Elab.async false${NL}namespace Host.Load.Run.Tpl${NL}set_option maxRecDepth 1000000${NL}set_option maxHeartbeats 0${NL}`,
     `open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template${NL}${NL}`];
   const put = (file: string, lines: string[]) => writeFileSync(join(here, dir, `${file}.lean`), [...lines, `end Host.Load.Run.Tpl${NL}`].join(""));
   const foot = caseMod(`st${k}.Foot`);
-  put(`Site${k}`, [...head(hAfter, foot, "host.sim.conv.MergeSt", "host.sim.conv.Fresh"),
+  put(`Site${k}`, [...head(hAfter, mod(`st${k}.H${Math.floor(T / per)}`), "host.sim.conv.MergeSt", "host.sim.conv.Fresh"),
     `/-! Call site ${k} of chain \`${name}\`: \`${ext.name}\` (\`${ext.fn}\`), the call state \`${s(ia)}\`, the merged state \`${s(ia + 1)}\`,${NL}`,
     `the site template \`${inst}\` (σ = \`Map.id\`, θ the identity at its own site)${cp ? `, the canonical state \`${s(ia + 2)}\`` : ""}: the merge.${NL}`,
     `The footprint's facts are in \`SiteF${k}\`${cp ? `, the compaction's in \`SiteC${k}\`, \`SiteK${k}\`${w === "full" ? `, \`SiteNa${k}\`, \`SiteNb${k}\`` : ""}` : ""}. -/${NL}${NL}`,
@@ -523,19 +714,28 @@ for (const b of stages) {
     `    (${S(ia)}.oracle.all fun q => ${name}.ws${k}.all fun v => q.noVar v) = true${NL}`,
     `kernel_rfl ${name}.mergeTab${k} : ${S(ia + 1)}.tab = ${S(ia)}.tab ++ Conv.resTab ${name}.ws${k}${NL}`,
     `kernel_rfl ${name}.mergeLen${k} : ${inst}.S${T}.tab.length - ${inst}.S0.tab.length = ${ext.ws.length}${NL}${NL}`,
-    `-- The merged state is \`Conv.mergeSt\` at the instance's own site.${NL}`,
-    `kernel_rfl ${name}.merge${k} : ${s(ia + 1)} = Conv.mergeSt Map.id (Map.id.res ${ext.n0} ${ext.n0}) ${name}.rs${k} ${inst}.wr ${s(ia)}${NL}`,
-    `    ${inst}.s${T} ${inst}.s0 ${inst}.s${T}.ffi${NL}${NL}`]);
+    `-- The merged state: the instance's return state with the caller's frames (\`${name}.merged${k}\`, \`merged_relB\`).${NL}`,
+    `kernel_rfl ${name}.mheap${k} : ${s(ia + 1)}.heap = ${inst}.s${T}.heap${NL}`,
+    `kernel_rfl ${name}.mnext${k} : ${s(ia + 1)}.next = ${inst}.s${T}.next${NL}`,
+    `kernel_rfl ${name}.mctl${k} : ${s(ia + 1)}.ctl = ${inst}.s${T}.ctl${NL}`,
+    `kernel_rfl ${name}.mstack${k} : ${s(ia + 1)}.stack = ${inst}.s${T}.stack ++ ${s(ia)}.stack${NL}`,
+    `kernel_rfl ${name}.mjobs${k} : ${s(ia + 1)}.jobs = ${inst}.s${T}.jobs${NL}`,
+    `kernel_rfl ${name}.mffi${k} : ${s(ia + 1)}.ffi = ${inst}.s${T}.ffi${NL}`,
+    `kernel_rfl ${name}.mtrace${k} : ${s(ia + 1)}.trace = ${inst}.s${T}.trace${NL}`,
+    `kernel_rfl ${name}.mstores${k} : ${s(ia + 1)}.stores = ${inst}.s${T}.stores${NL}${NL}`]);
   // the footprint's facts (`Conv.site_merge`): distinct written entries (`nodupT`, linear), in the stores' range, the
   // stage's trace its new events (`traceNew` of them) before the call's
   const trFr = traceNew !== undefined ? `${inst}.s${T}.trace.take ${traceNew}`
     : `${inst}.s${T}.trace.take (${inst}.s${T}.trace.length - ${inst}.s0.trace.length)`;
   put(`SiteF${k}`, [...head(foot, "host.sim.template.NShiftOf", ...(iwide.length > 0 ? ["host.sim.template.FullShiftGen"] : [])),
     `/-! Call site ${k} of chain \`${name}\`: \`Conv.site_merge\`'s footprint facts. -/${NL}${NL}`,
-    `kernel_rfl ${name}.wrNodupB${k} : nodupT ${inst}.wr PTrie.nil = true${NL}`,
-    `theorem ${name}.wrNodup${k} : ${inst}.wr.Nodup := (nodupT_sound ${name}.wrNodupB${k}).2${NL}`,
-    `kernel_rfl ${name}.wrBoundB${k} : ${inst}.wr.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true${NL}`,
-    `theorem ${name}.wrBound${k} : ∀ b ∈ ${inst}.wr, b / 4096 < 4 ^ 31 := fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp ${name}.wrBoundB${k} b hb)${NL}`,
+    ...(wide ? [
+      `theorem ${name}.wrNodup${k} : ${inst}.wr.Nodup := ${inst}.wrNodup${NL}`,
+      `theorem ${name}.wrBound${k} : ∀ b ∈ ${inst}.wr, b / 4096 < 4 ^ 31 := ${inst}.wrBound${NL}`] : [
+      `kernel_rfl ${name}.wrNodupB${k} : nodupT ${inst}.wr PTrie.nil = true${NL}`,
+      `theorem ${name}.wrNodup${k} : ${inst}.wr.Nodup := (nodupT_sound ${name}.wrNodupB${k}).2${NL}`,
+      `kernel_rfl ${name}.wrBoundB${k} : ${inst}.wr.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true${NL}`,
+      `theorem ${name}.wrBound${k} : ∀ b ∈ ${inst}.wr, b / 4096 < 4 ^ 31 := fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp ${name}.wrBoundB${k} b hb)${NL}`]),
     `noncomputable def ${name}.trFr${k} := ${trFr}${NL}`,
     `kernel_rfl ${name}.traceEq${k} : ${inst}.s${T}.trace = ${name}.trFr${k} ++ ${inst}.s0.trace${NL}`,
     `theorem ${name}.trace${k} : ∃ fr, ${inst}.s${T}.trace = fr ++ ${inst}.s0.trace := ⟨_, ${name}.traceEq${k}${"⟩"}${NL}${NL}`,
@@ -545,42 +745,33 @@ for (const b of stages) {
       `kernel_rfl ${name}.wfixB${k} : (${name}.wide${k}.all fun p => wfixB Map.id (presentB ${inst}.s0) p.2) = true${NL}`,
       `theorem ${name}.wfix${k} : ∀ p ∈ ${name}.wide${k}, WFix Map.id (Present ${inst}.s0) p.2 :=${NL}`,
       `  fun p hp => wfix_of (List.all_eq_true.mp ${name}.wfixB${k} p hp)${NL}${NL}`])]);
+  // the call link's facts: the instance's server and footprint, the merged state's framed arrays past the chain start's
+  const arrs = (b as { arrs?: { a: number; prefix: boolean; els: string[] }[] }).arrs;
+  put(`SiteL${k}`, [...head(caseMod(`Site${k}`), caseMod(`SiteF${k}`), "host.sim.template.CallGen", "host.sim.template.EndGen"),
+    `/-! The call link's facts at call site ${k} of chain \`${name}\`: the instance's start server, its footprint (\`Conv.StageFoot\`), the${NL}`,
+    `merged state \`${s(ia + 1)}\`'s framed arrays as the chain start's extended (\`arrExt_of\`, \`numRefs_of\`). -/${NL}${NL}`,
+    `kernel_rfl ${name}.srvO${k} : ${inst}.S0.oracle = ${oracleRef}${NL}`,
+    ...(wide ? [
+      `theorem ${name}.wr0B${k} : ${inst}.wr.all (fun b => !Nat.blt b ${inst}.s0.next || (${inst}.s0.heap.get b).isSome) = true :=${NL}`,
+      `  footW_lowAll (Nat.ble_eq.mpr (Nat.le_refl _)) ${inst}.wr0Old${NL}`,
+      `theorem ${name}.stFoot${k} : Conv.StageFoot ${inst}.wr ${inst}.s0 ${inst}.s${T} := ${inst}.stFoot${NL}${NL}`] : [
+      `kernel_rfl ${name}.wr0B${k} : ${inst}.wr.all (fun b => !Nat.blt b ${inst}.s0.next || (${inst}.s0.heap.get b).isSome) = true${NL}`,
+      `theorem ${name}.stFoot${k} : Conv.StageFoot ${inst}.wr ${inst}.s0 ${inst}.s${T} :=${NL}`,
+      `  stageFoot_of ${inst}.heapFoot ${name}.wrNodup${k} ${name}.wrBound${k} ${name}.wr0B${k} ${inst}.grows${NL}${NL}`]),
+    `/-- **The relation at the merged state** from the relation at the merge (\`Conv.site_merge\`'s; \`merged_relB\`). -/${NL}`,
+    `theorem ${name}.merged${k} {FR : Map → Nat → ${inst}.F.S → ${inst}.F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}${NL}`,
+    `    {ν : Nat → F64} {K : Host.Ts.Sim.Ctx} {S : SSrv} {t : St ${inst}.F.S} {C : CSrv} {n0 : Nat}${NL}`,
+    `    (h : RelB ${inst}.F FR W stk M ν K (Conv.mergeSt Map.id (Map.id.res n0 n0) ${name}.rs${k} ${inst}.wr ${s(ia)} ${inst}.s${T} ${inst}.s0${NL}`,
+    `      ${inst}.s${T}.ffi) S t C) : RelB ${inst}.F FR W stk M ν K ${s(ia + 1)} S t C :=${NL}`,
+    `  merged_relB ${name}.iso${k} ${name}.stFoot${k} ${name}.wrNodup${k} ${name}.wrBound${k} ${name}.trace${k} ${name}.mheap${k}${NL}`,
+    `    ${name}.mnext${k} ${name}.mctl${k} ${name}.mstack${k} ${name}.mjobs${k} ${name}.mffi${k} ${name}.mtrace${k} ${name}.mstores${k} h${NL}${NL}`,
+    ...arrFacts(`${k}`, s(ia + 1), arrs)]);
+
   if (cp) {
     const c = s(ia + 2), mC = world.mlx(c), mM = world.mlx(s(ia + 1));
     const cnext = cp.xn0 + cp.plh.length;
     const nC = ext.n0 + cp.ws.length;
-    put(`SiteC${k}`, [...head(hAfter, "host.sim.conv.Compact", "host.sim.native.RebigR", "host.sim.template.Sigma",
-        "host.sim.template.NShiftGen", "host.sim.stage.Mlx"),
-      `/-! The compaction after the merge at call site ${k} of chain \`${name}\` (\`Conv.compact\`, \`Conv.full_compactQ\`): the canonical${NL}`,
-      `state \`${c}\` (the stage's results at canonical places, its trace the call's) under \`${name}.kappa${k}\` into the merged state${NL}`,
-      `\`${s(ia + 1)}\`. -/${NL}${NL}`,
-      `def ${name}.pl${k} : List Nat := [${cp.pl.join(", ")}]${NL}`,
-      `def ${name}.nr${k} : List Nat := [${cp.nr.join(", ")}]${NL}`,
-      `/-- The native part of the compaction map (canonical → merged handles and nodes: its \`big\`, \`region\`, \`nodeF\`). -/${NL}`,
-      `def ${name}.kd${k} : RData :=${NL}`,
-      `  ⟨${cp.fwd.n0}, ${cp.fwd.n1}, Stage.setAll PTrie.nil ${pairs(cp.fwd.heap)}, Stage.setAll PTrie.nil ${pairs(cp.fwd.hnd)},${NL}`,
-      `   ${cp.fwd.nh0}, ${cp.fwd.nh1}, ${cp.fwd.nn0}, ${cp.fwd.nn1}, Stage.setAll PTrie.nil ${pairs(cp.fwd.node)},${NL}`,
-      `   Stage.setAll PTrie.nil [${cp.nr.map((r, j) => `(${cp.nS + j}, .ref ${r})`).join(", ")}]⟩${NL}`,
-      `/-- **The compaction map.** -/${NL}noncomputable def ${name}.kappa${k} : Map :=${NL}`,
-      `  Conv.Map.compact ${cp.n0} ${cp.n1} ${cp.nS} ${name}.pl${k} (${name}.nr${k}.map NumV.ref) ${name}.kd${k}.big${NL}`,
-      `    ${name}.kd${k}.region ${name}.kd${k}.nodeF${NL}`,
-      `/-- The canonical result variables and their images, the merged state's entries (\`Conv.compactθ\`). -/${NL}`,
-      `def ${name}.cws${k} : List Nat := [${cp.ws.join(", ")}]${NL}`,
-      `noncomputable def ${name}.crs${k} : List SymE := ${name}.nr${k}.map fun r => (nth? ${S(ia + 1)}.tab r).getD (.var 0)${NL}`,
-      `noncomputable def ${name}.ctheta${k} : Nat → SymE := Conv.compactθ ${name}.cws${k} ${name}.crs${k}${NL}`,
-      `/-- The call's entries the stage wrote (renamed in the canonical state with the results). -/${NL}`,
-      `def ${name}.wrB${k} : List Nat := [${cp.wrB.join(", ")}]${NL}${NL}`,
-      `kernel_rfl ${name}.ctab${k} : ${S(ia + 2)}.tab = ${S(ia)}.tab ++ ${name}.cws${k}.map SymE.var${NL}`,
-      `kernel_rfl ${name}.ctrace${k} : ${c}.trace = ${s(ia)}.trace${NL}`,
-      `kernel_rfl ${name}.cnext${k} : ${c}.next = ${cp.n0 + cp.pl.length}${NL}`,
-      `kernel_rfl ${name}.ccounters${k} : (${mC}.next, ${mC}.nnext) = (${cnext}, ${cp.nn0 + cp.pln.length})${NL}`,
-      `-- the merged state's readback queue, carried to the canonical state (\`Conv.FullShiftQ.tokens\`, \`tokSupp\`)${NL}`,
-      `kernel_rfl ${name}.cqueue${k} : ${mM}.tokens = ${mC}.tokens.map ${name}.kappa${k}.nv${NL}`,
-      `kernel_rfl ${name}.ctokSupp${k} : ${mC}.tokens.all (bSN ${nC}) = true${NL}`,
-      `-- the written and the result entries carry no bigint of the canonical fresh band [next, E) and no fresh region${NL}`,
-      `kernel_rfl ${name}.cclean${k} : Conv.cleanListB ${cnext} 131072 (fun r => Nat.ble ${4 * cnext} r) ${c}${NL}`,
-      `    (${name}.wrB${k} ++ (List.range ${cp.pl.length}).map (${cp.n0} + ·)) = true${NL}`,
-      `kernel_rfl ${name}.cbigs${k} : bigsOutB ${cnext} 131072 ${mC} = true${NL}${NL}`]);
+    put(`SiteC${k}`, compFacts(k, cp, ia, nC));
     put(`SiteK${k}`, [...head(caseMod(`SiteC${k}`), "host.sim.conv.Closed"),
       ...closedFacts(k, cp, s(ia), c, nC, world.mlx(s(ia)), mC)]);
     const cc = cp as Comp & { cCall?: number[]; cCan?: number[]; removed?: number[] };
@@ -591,40 +782,54 @@ for (const b of stages) {
     }
     // the canonical results' values (the instance's end table at the result references) and the variables' disjointness
     const rsLean = (cp as { rsLean?: string[] }).rsLean;
+    const dq = (rsLean ?? []).some(e => decQOf(e) === "cap1") ? "Conv.decQC 9 16" : "Conv.decQ 9";
     if (rsLean) put(`SiteD${k}`, [...head(caseMod(`Site${k}`), caseMod(`SiteC${k}`), "host.sim.conv.CallPieces"),
       `/-! The canonical results at call site ${k} of chain \`${name}\`: their values in the instance's end table, the references past${NL}`,
       `the call's table, the canonical variables apart from the stage's. -/${NL}${NL}`,
       `kernel_rfl ${name}.cderived${k} : ${name}.nr${k}.map (fun r => nth? ${inst}.S${T}.tab r) =${NL}  [${rsLean.map(e => `some ${e}`).join(`,${NL}   `)}]${NL}`,
       `kernel_rfl ${name}.cnrLo${k} : ${name}.nr${k}.all (Nat.ble ${(cp as { nS: number }).nS}) = true${NL}`,
       `kernel_rfl ${name}.cwsDisj${k} : ${name}.cws${k}.all (fun c => !${name}.ws${k}.contains c) = true${NL}`,
-      // the results' quantities (A3's `Conv.decQ` at the decode offset variable 9: v9 + 1 and int32(v9 + 1) the end
-      // quantity, int32(v9) the offset), where every result has such a form
+      // the results' quantities (A3's `Conv.decQ` at the decode offset variable 9: v9 + 1, int32(v9 + 1) and int32(v9 + 1) - 0
+      // the end quantity, int32(v9) the offset; `Conv.decQC 9 16` with a growing chain's v16 + 256), where every result has one
       ...(rsLean.length && rsLean.every(e => decQOf(e) !== undefined) ? [
         `def ${name}.cqs${k} : List Host.Ts.Sim.Lin.Cls.Q := [${rsLean.map(e => `.${decQOf(e)}`).join(", ")}]${NL}`,
         `kernel_rfl ${name}.cqsEq${k} : ${name}.cqs${k} = (${name}.nr${k}.map (fun r => nth? ${inst}.S${T}.tab r)).map${NL}`,
-        `  fun o => (o.bind (Conv.decQ 9)).getD .o${NL}`,
+        `  fun o => (o.bind (${dq})).getD .o${NL}`,
         `kernel_rfl ${name}.cdq${k} : (${name}.nr${k}.map (fun r => nth? ${inst}.S${T}.tab r)).all${NL}`,
-        `  (fun o => (o.bind (Conv.decQ 9)).isSome) = true${NL}`] : []),
+        `  (fun o => (o.bind (${dq})).isSome) = true${NL}`] : []),
       `/-- The compaction's substitution: the canonical variables to their merged values, the stage's other fresh variables${NL}`,
       `to \`0\` (\`Conv.compactθZ\`). -/${NL}`,
       `noncomputable def ${name}.cthetaZ${k} : Nat → SymE := Conv.compactθZ ${name}.cws${k} ${name}.crs${k} ${name}.ws${k}${NL}${NL}`]);
-    // the call link's facts: the instance's server and footprint, the merged state's framed arrays past the chain start's
-    const arrs = (b as { arrs?: { a: number; prefix: boolean; els: string[] }[] }).arrs;
-    put(`SiteL${k}`, [...head(caseMod(`SiteF${k}`), "host.sim.template.CallGen"),
-      `/-! The call link's facts at call site ${k} of chain \`${name}\`: the instance's start server, its footprint (\`Conv.StageFoot\`), the${NL}`,
-      `merged state \`${s(ia + 1)}\`'s framed arrays as the chain start's extended (\`arrExt_of\`, \`numRefs_of\`). -/${NL}${NL}`,
-      `kernel_rfl ${name}.srvO${k} : ${inst}.S0.oracle = ${inst}.O${NL}`,
-      `kernel_rfl ${name}.wr0B${k} : ${inst}.wr.all (fun b => !Nat.blt b ${inst}.s0.next || (${inst}.s0.heap.get b).isSome) = true${NL}`,
-      `theorem ${name}.stFoot${k} : Conv.StageFoot ${inst}.wr ${inst}.s0 ${inst}.s${T} :=${NL}`,
-      `  stageFoot_of ${inst}.heapFoot ${name}.wrNodup${k} ${name}.wrBound${k} ${name}.wr0B${k} ${inst}.grows${NL}${NL}`,
-      ...arrFacts(`${k}`, s(ia + 1), arrs)]);
-
     if (w === "full" && !chunksArg && cc.cCall) {
       const st = JSON.parse(readFileSync(ipath, "utf8")) as { wh: number[]; wi: number[] };
-      put(`SiteS${k}`, [...head(caseMod(`SiteCl${k}`), "host.sim.conv.CompactFull", "host.sim.template.FootGen"),
-        ...footFacts(k, cp, cc.cCall, c, s(ia + 1), s(ia), nC, mC, mM, st.wh, st.wi)]);
+      const ff = footFacts(k, cp, cc.cCall, c, s(ia + 1), s(ia), nC, mC, mM, st.wh, st.wi);
+      if (ff.chunks.length === 0)
+        put(`SiteS${k}`, [...head(caseMod(`SiteCl${k}`), "host.sim.conv.CompactFull", "host.sim.template.FootGen"), ...ff.a, ...ff.b]);
+      else {
+        put(`SiteSa${k}`, [...head(caseMod(`SiteCl${k}`), "host.sim.conv.CompactFull", "host.sim.template.FootGen"), ...ff.a]);
+        ff.chunks.forEach((lines, j) => put(`SiteSn${k}_${j}`, [...head(caseMod(`SiteSa${k}`)), ...lines]));
+        put(`SiteS${k}`, [...head(...ff.chunks.map((_, j) => caseMod(`SiteSn${k}_${j}`))), ...ff.b]);
+      }
+      // the native shift from the call's full relation (A4b's call link): `cshift<k>` with its parameters (a band-free
+      // chain's relation band below the site's raised one)
+      const raise = raisedP((meta as { loadP?: number[] }).loadP);
+      put(`SiteR${k}`, [...head(caseMod(`Site${k}`), caseMod(`SiteS${k}`), caseMod("NClAll"), "host.sim.template.CallGen"),
+        `/-! The compaction's native shift at call site ${k} of chain \`${name}\` from the call state's full relation: the call's `,
+        `bookkeeping (\`${name}.ncl${ia}\`), the relation's native facts,${NL}its observers' and the canonical closedness (\`sst_of_callK\`). -/${NL}${NL}`,
+        `theorem ${name}.cshiftR${k} {BR : Map → Host.Ts.Sim.Full.FF.S → Host.Ts.Sim.Full.FF.S → Prop} {P : LoadP} {NB : Nat} {M : Map}${NL}`,
+        `    {y : Host.Ts.Sim.Full.FF.S} (h : Host.Ts.Sim.Full.FullRB BR P NB M ${S(ia)}.tab.length ${s(ia)}.ffi y)${NL}`,
+        `    (hNL : P.NL ${raise ? "≤" : "="} ${name}.P${k}.NL) : Conv.FullShiftQ ${name}.P${k} ${nC} ${name}.kappa${k} ${c}.ffi ${s(ia + 1)}.ffi := by${NL}`,
+        `  have hr := h.load.mlx${NL}`,
+        `  obtain ⟨_, _, hF⟩ := h.live _ ${name}.ofxC_${k}${NL}`,
+        `  obtain ⟨_, _, hK⟩ := h.kern _ ${name}.okrC_${k}${NL}`,
+        `  have hcl : SSt (· < ${nC}) ${mC} :=${NL}`,
+        `    sst_of_callK (n0 := ${S(ia)}.tab.length) hr.cl (by rw [${name}.n0_${k}] <;> decide) ${name}.cnodesK${k} ${name}.cobjsK${k}${NL}`,
+        `      ${name}.citemsK${k} ${name}.cbd${k} ${name}.csst${k}${NL}`,
+        `  exact ${name}.cshift${k} ${name}.ncl${ia} hr.hlt hr.nlt (fun k v hg => hr.itemsPresent k (by rw [hg]; rfl))${NL}`,
+        `    (fun h o hg i hi => ${raise ? "Nat.lt_of_lt_of_le (hr.traced h o hg i hi) hNL" : "hNL ▸ hr.traced h o hg i hi"}) (sst_clear hcl) hF.obj hK.flagsObj hK.targsObj${NL}`,
+        `    (fun h l hl => by have := hK.cl h l hl; rw [${name}.n0_${k}] at this; exact this)${NL}${NL}`]);
       if (cc.cCan) put(`SiteZ${k}`, [...head(caseMod(`SiteS${k}`), caseMod(`SiteK${k}`), caseMod(`SiteF${k}`), "host.sim.conv.CompactShift",
-          "host.sim.template.Check", "host.sim.BigFreeP"), ...shiftDFacts(k, cp, cc.cCall, cc.cCan, s(ia), s(ia + 1), c, S(ia), S(ia + 1), nC, inst)]);
+          "host.sim.template.Check", "host.sim.BigFreeP", "host.sim.template.CallGen"), ...shiftDFacts(k, cp, cc.cCall, cc.cCan, s(ia), s(ia + 1), c, S(ia), S(ia + 1), nC, inst, wide ? T : undefined)]);
     } else if (w === "full") {
       const sf = shiftFacts(k, cp, c, s(ia + 1), nC, mC, mM);
       put(`SiteNa${k}`, [...head(caseMod(`SiteC${k}`), "host.sim.conv.CompactFull", "host.sim.template.NShiftOf"), ...sf.a]);
@@ -694,3 +899,6 @@ if (nclProof && nclMods.length) {
   console.log(`${name}: native bookkeeping: ${nclMods.join(", ")}, NClAll`);
 } else if (ncl0) console.log(`${name}: native bookkeeping: ${nclMods.join(", ")} (no composition: a piece without its step)`);
 writeFileSync(join(sdir, "pieces.json"), JSON.stringify(chain.pieces, null, 1) + NL);
+if (chain.endArrs?.length) putT("EndFrames", [...headT(hOf(meta.T1), "host.sim.template.CallGen", "host.sim.template.EndGen"),
+  ...arrFacts("End", sT(meta.T1), chain.endArrs)]);
+if (nclPrefixes && nclProof && nclMods.length) run(["genNclPrefixes.ts", dir, name]);

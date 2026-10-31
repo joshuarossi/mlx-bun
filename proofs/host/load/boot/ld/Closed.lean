@@ -10,19 +10,19 @@ set_option maxHeartbeats 0
 stack, the jobs and the stores mention only present addresses and the first `Ld.n` number references,
 and every present address is below the counter (kernel evaluation of the Boolean checks, block by
 block over `Ld.gks` (`Ld.HS`, `Ld.BD`), and at the present ones of the template tooling's framed
-addresses `framedList`). -/
+addresses `Ld.frames`). -/
 
-kernel_rfl Ld.suppFramed : framedList.all (fun a => !presentB Ld.s0 a || Ld.suppAt a) = true
-kernel_rfl Ld.boundFramed : framedList.all (fun a => !presentB Ld.s0 a || Ld.boundAt a) = true
+kernel_rfl Ld.suppFramed : Ld.frames.all (fun a => !presentB Ld.s0 a || Ld.suppAt a) = true
+kernel_rfl Ld.boundFramed : Ld.frames.all (fun a => !presentB Ld.s0 a || Ld.boundAt a) = true
 kernel_rfl Ld.rootsSupp_check : checkRootsSupp Ld.s0 Ld.n = true
 
 /-- A property checked over the blocks and the present framed addresses holds at every present address. -/
 theorem Ld.allPresent {p : Nat → Bool} (hb : ∀ q ∈ Ld.gks, ∀ a ∈ q.2, p a = true)
-    (hf : framedList.all (fun a => !presentB Ld.s0 a || p a) = true) :
+    (hf : Ld.frames.all (fun a => !presentB Ld.s0 a || p a) = true) :
     ∀ a, Present Ld.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha
-  by_cases hm : a ∈ framedList
+  by_cases hm : a ∈ Ld.frames
   · have := List.all_eq_true.mp hf a hm
     have hpr : presentB Ld.s0 a = true := by simp [presentB, hg]
     simpa [hpr] using this

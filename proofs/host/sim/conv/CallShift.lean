@@ -40,8 +40,8 @@ native shift `hffi`, the iteration's further frames' prefixes `hX`, and the gene
 `z` facts; `nC` the canonical table's length). -/
 theorem callShift {NB : Nat} {P : LoadP} {J : Disp.JSP FF} {A : Addr} {Fr : LoopFramesA A} {s0 : St FF.S}
     {tab0 : List SymE} {fixA : List Nat} {θ : Nat → SymE} {g : GhostP} {W : Nat → Option WFrame}
-    {sa sc sm s2 s20 : St FF.S} {xm : FF.S} {τ : Map} {rs : List Frame} {tab tabm : List SymE}
-    {ws cws nr pl Xs l wr : List Nat} {n1 nC n : Nat} {D : RData} {c : Cnt} {κ : Map}
+    {sa sc sm : St FF.S} {tab tabm : List SymE}
+    {ws cws nr pl Xs l : List Nat} {n1 nC n : Nat} {D : RData} {c : Cnt} {κ : Map}
     (hκ : κ = Map.compact sa.next n1 tab.length pl (nr.map NumV.ref) D.big D.region D.nodeF)
     (hclean : JClean c sa) (hfix : FixOld c κ) (hffi : FullShiftQ P n κ sc.ffi sm.ffi)
     (hJlo : J.lo = P.lo) (hJhi : J.hi = P.E)
@@ -63,8 +63,7 @@ theorem callShift {NB : Nat} {P : LoadP} {J : Disp.JSP FF} {A : Addr} {Fr : Loop
     -- the heap
     (zclbd : l.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true)
     (cheap : sc.heap = Stage.setAll sa.heap (l.filterMap fun a => (sc.heap.get a).map (a, ·)))
-    (hmer : sm = mergeSt Map.id τ rs wr sa s2 s20 xm) (hwrbd : ∀ b ∈ wr, b / 4096 < 4 ^ 31)
-    (zwr : wr.all (fun b => !Nat.blt b sa.next || l.contains b) = true)
+    (hoff : ∀ a, a ∉ l → a < sa.next → sm.heap.get a = sa.heap.get a)
     (ckeep : keptPresentB sa sc l = true) (csupp : suppListB sc nC l = true) (cbound : boundListB sc l = true)
     (zimg : HeapImg κ sc sm (l.filter fun a => !Xs.contains a))
     -- the roots
@@ -81,19 +80,14 @@ theorem callShift {NB : Nat} {P : LoadP} {J : Disp.JSP FF} {A : Addr} {Fr : Loop
     (fun a hne hw => (hXs a).mpr ⟨(hK.2.2 a).mp hne, hw⟩) hkept
   obtain ⟨hctlS, hstackS, hjobsS, hstoresS⟩ := checkRootsSupp_sound zroots
   subst hnC
-  refine compact_shift hκ hcf hclean hfix (fun p hp => Nat.le_of_ble_eq_true (List.all_eq_true.mp zpl p hp))
+  exact compact_shift hκ hcf hclean hfix (fun p hp => Nat.le_of_ble_eq_true (List.all_eq_true.mp zpl p hp))
     (nodupT_sound zplnd).2 (Nat.le_of_ble_eq_true zn1) (Nat.le_of_ble_eq_true zfirst) zscn zsmn
     (Nat.le_of_ble_eq_true zgrow) hmtab (fun e he w hw => List.all_eq_true.mp (List.all_eq_true.mp zfresh e he) w hw)
     (nodupT_sound zcnd).2 hlenc (fun r hr => Nat.blt_eq.mp (List.all_eq_true.mp znrHi r hr)) hK.2.2
     (fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp zfrlt a ha)) hXs hWfr hframed hWP hWF
     (heap_off_setAll cheap fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp zclbd a ha))
-    (mergeSt_heap_off hmer hwrbd fun b hb hlt => ?_) ckeep csupp cbound zimg zctl zstack zjobs zstores
+    hoff ckeep csupp cbound zimg zctl zstack zjobs zstores
     hctlS hstackS hjobsS hstoresS
     (bigFixed_of_mshift hffi.load.mlx (hK.1.trans hJlo) (hK.2.1.trans hJhi))
-  have h := List.all_eq_true.mp zwr b hb
-  simp only [Bool.or_eq_true, Bool.not_eq_true'] at h
-  rcases h with h | h
-  · rw [Nat.blt_eq.mpr hlt] at h; cases h
-  · exact List.contains_iff_mem.mp h
 
 end Host.Ts.Sim.Conv

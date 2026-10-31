@@ -176,82 +176,6 @@ unsafe def isolate {F : Ffi} (w : TWorld F) (s : St F.S) (c : SSrv) (sp : TSpec)
   let stats := s!"{if collect == "callee" then "class" else "site"} template heap {heapN} (callee reaches {wkI.sig.size}), handles {wkI.hnd.size}, nodes {wkI.nod.size}{if collect == "all" then "; collected" else ""}"
   return (w.unproj s' T0, c0, ents, frames, stats)
 
-/-- The boundaries' writer state of a stream. -/
-structure Out where
-  g : G
-  bytes : Nat := 0
-  o : Array Ans := #[]
-  ks : Array Nat := #[]
-  steps : Nat := 0
-
-/-- Run the isolated stage from `s0` natively to its return (the last local state, then the return
-step), writing boundaries every 10 000 steps (the return step a chunk of its own). -/
-unsafe def runLocal {F : Ffi} (w : TWorld F) (pre : Lean.Name) (nonce : String) (dir : System.FilePath)
-    (ρ : Nat → F64) (s0 : St F.S) (tab : List SymE) (out : Out) (cap : Nat) : TermElabM (St F.S × SSrv × Out) := do
-  let oE := mkConst (pre ++ `O)
-  let drop (m : Nat) := mkApp3 (mkConst ``List.drop [.zero]) (mkConst ``Ans) (mkRawNatLit m) oE
-  let mut out := out
-  let mut st := s0
-  let mut c : SSrv := ⟨tab, []⟩
-  let mut done := false
-  while !done do
-    let mut n : Nat := 0
-    let mut last : Option (St F.S × SSrv × List Ans) := none
-    while n < 10000 do
-      if isHalt st.ctl then throwError "tpl_stage {pre}: halted inside the stage"
-      match interpRec ρ (step F st).run c [] with
-      | some (s', c', a) =>
-        if !Disp.localB s' then last := some (s', c', a); break
-        st := s'; c := c'; out := { out with o := out.o ++ a.reverse.toArray, steps := out.steps + 1 }; n := n + 1
-      | none => throwError "tpl_stage {pre}: stuck after {out.steps} steps"
-    if n > 0 then
-      out := { out with ks := out.ks.push n }
-      let (g', b) ← writeBoundaryW w pre nonce dir out.g out.ks.size st c.tab (drop out.o.size) none
-      out := { out with g := g', bytes := out.bytes + b }
-    if let some (s', c', a) := last then
-      st := s'; c := c'
-      out := { out with o := out.o ++ a.reverse.toArray, steps := out.steps + 1, ks := out.ks.push 1 }
-      let (g', b) ← writeBoundaryW w pre nonce dir out.g out.ks.size st c.tab (drop out.o.size) none
-      out := { out with g := g', bytes := out.bytes + b }
-      done := true
-    if out.steps > cap then throwError "tpl_stage {pre}: no return within {cap} steps"
-  return (st, c, out)
-
-private def addDefT (name : Lean.Name) (type value : Lean.Expr) (compile : Bool := false) : TermElabM Unit := do
-  let d := Declaration.defnDecl { name, levelParams := [], type, value, hints := .abbrev, safety := .safe }
-  addDecl d
-  if compile then compileDecl d
-
-/-- The stream constants every template stream defines. -/
-def defineStream (pre : Lean.Name) (ffiC : Lean.Name) (o : Array Ans) (tab : List SymE) (ks : Array Nat) (nonce : String)
-    (steps : Nat) : TermElabM Unit := do
-  let oE := mkConst (pre ++ `O)
-  addDefT (pre ++ `O) (mkApp (mkConst ``List [.zero]) (mkConst ``Ans)) (toExpr o.toList)
-  addDefT (pre ++ `F) (mkConst ``Ffi) (mkConst ffiC)
-  addDefT (pre ++ `ks) (mkApp (mkConst ``List [.zero]) (mkConst ``Nat)) (toExpr ks.toList) (compile := true)
-  addDefT (pre ++ `nonce) (mkConst ``String) (toExpr nonce) (compile := true)
-  addDefT (pre ++ `srv) (mkConst ``SSrv) (mkApp2 (mkConst ``SSrv.mk) (toExpr tab) oE)
-  addDefT (pre ++ `T1) (mkConst ``Nat) (mkRawNatLit ks.size) (compile := true)
-  addDefT (pre ++ `steps) (mkConst ``Nat) (mkRawNatLit steps)
-
-def defineEntries (pre : Lean.Name) (ents : Array Entry) (frames : List Nat) : TermElabM Unit := do
-  let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) (mkConst ``Nat) (mkConst ``Nat)
-  addDefT (pre ++ `entries) (mkApp (mkConst ``List [.zero]) pairTy) (toExpr (ents.toList.map fun e => (e.ref, e.var)))
-  let origTy := mkApp2 (mkConst ``Prod [.zero, .zero]) (mkConst ``Nat) (mkConst ``NumV)
-  addDefT (pre ++ `orig) (mkApp (mkConst ``List [.zero]) origTy) (toExpr (ents.toList.map fun e => (e.ref, e.orig)))
-  let natsTy := mkApp (mkConst ``List [.zero]) (mkConst ``Nat)
-  addDefT (pre ++ `frames) natsTy (toExpr frames) (compile := true)
-
-/-- `stage.json`: the piece instance for the module generators and the class table's checks. -/
-def stageJson (pre : Lean.Name) (fn piece : String) (w : String) (t1 steps : Nat) (vars : List (Nat × String))
-    (frames : List Nat) (ents : Array Entry) (tab : Array SymE) (more : List (String × Lean.Json) := []) : Lean.Json :=
-  Lean.Json.mkObj ([("instance", Lean.toJson pre.toString), ("piece", Lean.toJson piece), ("fn", Lean.toJson fn),
-    ("world", Lean.toJson w), ("T1", Lean.toJson t1), ("steps", Lean.toJson steps),
-    ("vars", Lean.Json.arr (vars.toArray.map fun (v, q) => Lean.Json.arr #[Lean.toJson v, Lean.toJson q])),
-    ("oracle", Lean.toJson s!"{pre}.O"), ("frames", Lean.toJson frames),
-    ("entries", Lean.Json.arr (ents.map fun e => Lean.Json.mkObj [("name", Lean.toJson e.name), ("ref", Lean.toJson e.ref),
-      ("var", Lean.toJson e.var), ("orig", Lean.toJson (fmtNum tab e.orig))]))] ++ more)
-
 /-- The keys of a paged store. -/
 def keysOf {α : Type} (t : PTrie α) : List Nat := (ptrieFold (fun (acc : Array Nat) k _ => acc.push k) t #[]).toList.mergeSort (· ≤ ·)
 
@@ -300,6 +224,91 @@ unsafe def changedKeys {α : Type} (t0 t2 : PTrie α) (lim : Nat) : List Nat :=
   let ks := trieDiff group groupAll t0.root t2.root 0 1 #[]
   -- only keys present in t2 (a key present only in t0 is a removal, not a write)
   (ks.toList.filter fun k => decide (k < lim) && (t2.get k).isSome).mergeSort (· ≤ ·) |>.eraseDups
+
+/-- The boundaries' writer state of a stream. -/
+structure Out where
+  g : G
+  bytes : Nat := 0
+  o : Array Ans := #[]
+  ks : Array Nat := #[]
+  steps : Nat := 0
+  /-- Each boundary's written heap ranges below the previous boundary's counter (a wide site's footprint, per state). -/
+  wrRs : Array (List (Nat × Nat)) := #[]
+
+/-- Run the isolated stage from `s0` natively to its return (the last local state, then the return
+step), writing boundaries every 10 000 steps (the return step a chunk of its own). -/
+unsafe def runLocal {F : Ffi} (w : TWorld F) (pre : Lean.Name) (nonce : String) (dir : System.FilePath)
+    (ρ : Nat → F64) (s0 : St F.S) (tab : List SymE) (out : Out) (cap : Nat) : TermElabM (St F.S × SSrv × Out) := do
+  let oE := mkConst (pre ++ `O)
+  let drop (m : Nat) := mkApp3 (mkConst ``List.drop [.zero]) (mkConst ``Ans) (mkRawNatLit m) oE
+  let mut out := out
+  let mut st := s0
+  let mut c : SSrv := ⟨tab, []⟩
+  let mut done := false
+  let mut prev := s0
+  while !done do
+    let mut n : Nat := 0
+    let mut last : Option (St F.S × SSrv × List Ans) := none
+    while n < 10000 do
+      if isHalt st.ctl then throwError "tpl_stage {pre}: halted inside the stage"
+      match interpRec ρ (step F st).run c [] with
+      | some (s', c', a) =>
+        if !Disp.localB s' then last := some (s', c', a); break
+        st := s'; c := c'; out := { out with o := out.o ++ a.reverse.toArray, steps := out.steps + 1 }; n := n + 1
+      | none => throwError "tpl_stage {pre}: stuck after {out.steps} steps"
+    if n > 0 then
+      out := { out with ks := out.ks.push n, wrRs := out.wrRs.push (toRanges (changedKeys prev.heap st.heap prev.next)) }
+      prev := st
+      let (g', b) ← writeBoundaryW w pre nonce dir out.g out.ks.size st c.tab (drop out.o.size) none
+      out := { out with g := g', bytes := out.bytes + b }
+    if let some (s', c', a) := last then
+      st := s'; c := c'
+      out := { out with o := out.o ++ a.reverse.toArray, steps := out.steps + 1, ks := out.ks.push 1,
+                        wrRs := out.wrRs.push (toRanges (changedKeys prev.heap st.heap prev.next)) }
+      let (g', b) ← writeBoundaryW w pre nonce dir out.g out.ks.size st c.tab (drop out.o.size) none
+      out := { out with g := g', bytes := out.bytes + b }
+      done := true
+    if out.steps > cap then throwError "tpl_stage {pre}: no return within {cap} steps"
+  return (st, c, out)
+
+private def addDefT (name : Lean.Name) (type value : Lean.Expr) (compile : Bool := false) : TermElabM Unit := do
+  let d := Declaration.defnDecl { name, levelParams := [], type, value, hints := .abbrev, safety := .safe }
+  addDecl d
+  if compile then compileDecl d
+
+/-- The stream constants every template stream defines. -/
+def defineStream (pre : Lean.Name) (ffiC : Lean.Name) (o : Array Ans) (tab : List SymE) (ks : Array Nat) (nonce : String)
+    (steps : Nat) : TermElabM Unit := do
+  let oE := mkConst (pre ++ `O)
+  addDefT (pre ++ `O) (mkApp (mkConst ``List [.zero]) (mkConst ``Ans)) (toExpr o.toList)
+  addDefT (pre ++ `F) (mkConst ``Ffi) (mkConst ffiC)
+  addDefT (pre ++ `ks) (mkApp (mkConst ``List [.zero]) (mkConst ``Nat)) (toExpr ks.toList) (compile := true)
+  addDefT (pre ++ `nonce) (mkConst ``String) (toExpr nonce) (compile := true)
+  addDefT (pre ++ `srv) (mkConst ``SSrv) (mkApp2 (mkConst ``SSrv.mk) (toExpr tab) oE)
+  addDefT (pre ++ `T1) (mkConst ``Nat) (mkRawNatLit ks.size) (compile := true)
+  addDefT (pre ++ `steps) (mkConst ``Nat) (mkRawNatLit steps)
+
+def defineEntries (pre : Lean.Name) (ents : Array Entry) (frames : List Nat) : TermElabM Unit := do
+  let pairTy := mkApp2 (mkConst ``Prod [.zero, .zero]) (mkConst ``Nat) (mkConst ``Nat)
+  addDefT (pre ++ `entries) (mkApp (mkConst ``List [.zero]) pairTy) (toExpr (ents.toList.map fun e => (e.ref, e.var)))
+  let origTy := mkApp2 (mkConst ``Prod [.zero, .zero]) (mkConst ``Nat) (mkConst ``NumV)
+  addDefT (pre ++ `orig) (mkApp (mkConst ``List [.zero]) origTy) (toExpr (ents.toList.map fun e => (e.ref, e.orig)))
+  let natsTy := mkApp (mkConst ``List [.zero]) (mkConst ``Nat)
+  addDefT (pre ++ `frames) natsTy (toExpr frames) (compile := true)
+
+/-- `stage.json`: the piece instance for the module generators and the class table's checks. -/
+def stageJson (pre : Lean.Name) (fn piece : String) (w : String) (t1 steps : Nat) (vars : List (Nat × String))
+    (frames : List Nat) (ents : Array Entry) (tab : Array SymE) (more : List (String × Lean.Json) := []) : Lean.Json :=
+  Lean.Json.mkObj ([("instance", Lean.toJson pre.toString), ("piece", Lean.toJson piece), ("fn", Lean.toJson fn),
+    ("world", Lean.toJson w), ("T1", Lean.toJson t1), ("steps", Lean.toJson steps),
+    ("vars", Lean.Json.arr (vars.toArray.map fun (v, q) => Lean.Json.arr #[Lean.toJson v, Lean.toJson q])),
+    ("oracle", Lean.toJson s!"{pre}.O"), ("frames", Lean.toJson frames),
+    ("entries", Lean.Json.arr (ents.map fun e => Lean.Json.mkObj [("name", Lean.toJson e.name), ("ref", Lean.toJson e.ref),
+      ("var", Lean.toJson e.var), ("orig", Lean.toJson (fmtNum tab e.orig))]))] ++ more)
+
+/-- The per-state written ranges as JSON. -/
+def wrRsJson (rs : Array (List (Nat × Nat))) : Lean.Json :=
+  Lean.Json.arr (rs.map fun r => Lean.Json.arr (r.toArray.map fun (a, b) => Lean.Json.arr #[Lean.toJson a, Lean.toJson b]))
 
 /-- A stage template's footprint (`host.sim.conv`): the start's present non-band heap addresses
 (`foot`), handles (`hfoot`) and nodes (`nfoot`); the run's written heap ranges below the start's
@@ -376,7 +385,7 @@ unsafe def stageCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Name) 
   IO.FS.writeFile (dir / pre.toString / "stage.json")
     ((stageJson pre fn piece w.name out.ks.size out.steps (qtysOf sj) frames ents c0.tab.toArray
       ([("callSteps", Lean.toJson n0), ("callDepth", Lean.toJson sC.stack.length), ("tab0", Lean.toJson c0.tab.length)] ++
-        footJson (w.proj s0) (w.proj s2) stat)).pretty ++ "\n")
+        footJson (w.proj s0) (w.proj s2) stat ++ [("wrRs", wrRsJson out.wrRs)])).pretty ++ "\n")
   logInfo m!"tpl_stage {pre} ({fn}): restore {t1 - t0 - 0} ms incl. {n0} steps to the call (depth {sC.stack.length}), isolate {t2 - t1} ms ({stats}); stage {out.steps} steps in {t3 - t2} ms, {out.ks.size} chunks (T1 = {pre}.s{out.ks.size}), oracle {out.o.size} answers, {out.bytes} bytes"
 
 /-- `tpl_stage X from s, S : "f" [(piece := "…", world := w, spec := "…", depth := d, cap := n)]`. -/

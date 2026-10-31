@@ -1,0 +1,35 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.H26
+import host.sim.template.a4pre_first_tail_x15_r0_body.H27
+import host.sim.conv.NClean
+import host.sim.conv.CompactShift
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
+
+/-! Glue piece 98 of chain `PRE_first_tail_x15_r0_body` (boundaries 863 to 865): the native bookkeeping's step. -/
+
+def PRE_first_tail_x15_r0_body.gh98 : List Nat := [20120, 20121, 20122, 20123, 20124, 20125, 20126]
+def PRE_first_tail_x15_r0_body.gn98 : List Nat := [17214, 17215, 17216, 17217]
+def PRE_first_tail_x15_r0_body.gi98 : List Nat := []
+kernel_rfl PRE_first_tail_x15_r0_body.gkA98 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.arrs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s863.ffi).mlx.arrs (PRE_first_tail_x15_r0_body.gh98.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.arrs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkO98 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.objs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s863.ffi).mlx.objs (PRE_first_tail_x15_r0_body.gh98.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.objs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkN98 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.nodes = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s863.ffi).mlx.nodes (PRE_first_tail_x15_r0_body.gn98.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.nodes.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gkI98 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.items = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s863.ffi).mlx.items (PRE_first_tail_x15_r0_body.gi98.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx.items.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gbd98 : (PRE_first_tail_x15_r0_body.gh98 ++ PRE_first_tail_x15_r0_body.gn98 ++ PRE_first_tail_x15_r0_body.gi98).all (fun i => Nat.blt (i / 4096) (4 ^ 31)) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gle98 : Conv.Cnt.leB (⟨20120, 17214, 2751287, 4226⟩ : Conv.Cnt) (⟨20127, 17218, 2751575, 4243⟩ : Conv.Cnt) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gck98 : Conv.ncleanListB (⟨20127, 17218, 2751575, 4243⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx PRE_first_tail_x15_r0_body.gh98 PRE_first_tail_x15_r0_body.gn98 PRE_first_tail_x15_r0_body.gi98 = true
+theorem PRE_first_tail_x15_r0_body.gncl98 (h : Conv.NClean (⟨20120, 17214, 2751287, 4226⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s863.ffi).mlx) : Conv.NClean (⟨20127, 17218, 2751575, 4243⟩ : Conv.Cnt) (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s865.ffi).mlx :=
+  Conv.NClean.stepKeep h PRE_first_tail_x15_r0_body.gle98 PRE_first_tail_x15_r0_body.gkA98 PRE_first_tail_x15_r0_body.gkO98 PRE_first_tail_x15_r0_body.gkN98 PRE_first_tail_x15_r0_body.gkI98 PRE_first_tail_x15_r0_body.gbd98 PRE_first_tail_x15_r0_body.gck98
+
+-- the JS bookkeeping's step
+def PRE_first_tail_x15_r0_body.gjh98 : List Nat := [2751245, 2751257, 2751258, 2751259, 2751260, 2751287, 2751288, 2751289, 2751290, 2751291, 2751292, 2751293, 2751294, 2751295, 2751296, 2751297, 2751298, 2751299, 2751300, 2751301, 2751302, 2751303, 2751304, 2751305, 2751306, 2751307, 2751308, 2751309, 2751310, 2751311, 2751312, 2751313, 2751314, 2751315, 2751316, 2751317, 2751318, 2751319, 2751320, 2751321, 2751322, 2751323, 2751324, 2751325, 2751326, 2751327, 2751328, 2751329, 2751330, 2751331, 2751332, 2751333, 2751334, 2751335, 2751336, 2751337, 2751338, 2751339, 2751340, 2751341, 2751342, 2751343, 2751344, 2751345, 2751346, 2751347, 2751348, 2751349, 2751350, 2751351, 2751352, 2751353, 2751354, 2751355, 2751356, 2751357, 2751358, 2751359, 2751360, 2751361, 2751362, 2751363, 2751364, 2751365, 2751366, 2751367, 2751368, 2751369, 2751370, 2751371, 2751372, 2751373, 2751374, 2751375, 2751376, 2751377, 2751378, 2751379, 2751380, 2751381, 2751382, 2751383, 2751384, 2751385, 2751386, 2751387, 2751388, 2751389, 2751390, 2751391, 2751392, 2751393, 2751394, 2751395, 2751396, 2751397, 2751398, 2751399, 2751400, 2751401, 2751402, 2751403, 2751404, 2751405, 2751406, 2751407, 2751408, 2751409, 2751410, 2751411, 2751412, 2751413, 2751414, 2751415, 2751416, 2751417, 2751418, 2751419, 2751420, 2751421, 2751422, 2751423, 2751424, 2751425, 2751426, 2751427, 2751428, 2751429, 2751430, 2751431, 2751432, 2751433, 2751434, 2751435, 2751436, 2751437, 2751438, 2751439, 2751440, 2751441, 2751442, 2751443, 2751444, 2751445, 2751446, 2751447, 2751448, 2751449, 2751450, 2751451, 2751452, 2751453, 2751454, 2751455, 2751456, 2751457, 2751458, 2751459, 2751460, 2751461, 2751462, 2751463, 2751464, 2751465, 2751466, 2751467, 2751468, 2751469, 2751470, 2751471, 2751472, 2751473, 2751474, 2751475, 2751476, 2751477, 2751478, 2751479, 2751480, 2751481, 2751482, 2751483, 2751484, 2751485, 2751486, 2751487, 2751488, 2751489, 2751490, 2751491, 2751492, 2751493, 2751494, 2751495, 2751496, 2751497, 2751498, 2751499, 2751500, 2751501, 2751502, 2751503, 2751504, 2751505, 2751506, 2751507, 2751508, 2751509, 2751510, 2751511, 2751512, 2751513, 2751514, 2751515, 2751516, 2751517, 2751518, 2751519, 2751520, 2751521, 2751522, 2751523, 2751524, 2751525, 2751526, 2751527, 2751528, 2751529, 2751530, 2751531, 2751532, 2751533, 2751534, 2751535, 2751536, 2751537, 2751538, 2751539, 2751540, 2751541, 2751542, 2751543, 2751544, 2751545, 2751546, 2751547, 2751548, 2751549, 2751550, 2751551, 2751552, 2751553, 2751554, 2751555, 2751556, 2751557, 2751558, 2751559, 2751560, 2751561, 2751562, 2751563, 2751564, 2751565, 2751566, 2751567, 2751568, 2751569, 2751570, 2751571, 2751572, 2751573, 2751574]
+kernel_rfl PRE_first_tail_x15_r0_body.gjk98 : PRE_first_tail_x15_r0_body.s865.heap = Stage.setAll PRE_first_tail_x15_r0_body.s863.heap (PRE_first_tail_x15_r0_body.gjh98.filterMap fun a => (PRE_first_tail_x15_r0_body.s865.heap.get a).map (a, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.gjbd98 : PRE_first_tail_x15_r0_body.gjh98.all (fun b => Nat.blt (b / 4096) (4 ^ 31)) = true
+kernel_rfl PRE_first_tail_x15_r0_body.gjc98 : Conv.jcleanListB (⟨20127, 17218, 2751575, 4243⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s865 PRE_first_tail_x15_r0_body.gjh98 = true
+theorem PRE_first_tail_x15_r0_body.gjcl98 (h : Conv.JClean (⟨20120, 17214, 2751287, 4226⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s863) : Conv.JClean (⟨20127, 17218, 2751575, 4243⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s865 :=
+  Conv.JClean.step h (Conv.Cnt.le_of_leB PRE_first_tail_x15_r0_body.gle98)
+    (Conv.heap_off_setAll PRE_first_tail_x15_r0_body.gjk98 fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x15_r0_body.gjbd98 a ha)) PRE_first_tail_x15_r0_body.gjc98
+
+end Host.Load.Run.Tpl

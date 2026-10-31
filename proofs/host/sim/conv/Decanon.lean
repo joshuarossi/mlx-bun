@@ -116,4 +116,17 @@ theorem decanon_dec {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst} {m : List 
   obtain ⟨q, hq, hvq⟩ := hvs j v e hv he
   rw [(mapOk_iff'.mp hm) _ hvq, decQ_eval hq ((mapOk_iff'.mp hm) _ hu) hn hb]
 
+
+/-- `decanon_dec` with the capacity form (`decQC`): the capacity variable `c` at its quantity. -/
+theorem decanon_decC {ν : Nat → F64} {i : Host.Ts.Sim.Lin.Cls.Inst} {m : List (Nat × Host.Ts.Sim.Lin.Cls.Q)}
+    {vs : List Nat} {es : List SymE} {u c : Nat} (hm : Host.Ts.Sim.Lin.Cls.MapOk ν i m) (hu : (u, .o) ∈ m)
+    (hn : i.get .e = i.get .o + 1) (hb : i.get .o + 1 < 2 ^ 31) (hc : (c, .cap) ∈ m)
+    (hcap : i.get .cap1 = i.get .cap + 256) (hcb : i.get .cap + 256 < 2 ^ 53)
+    (hvs : ∀ j v e, nth? vs j = some v → nth? es j = some e → ∃ q, decQC u c e = some q ∧ (v, q) ∈ m) :
+    ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν := by
+  intro j v e hv he
+  obtain ⟨q, hq, hvq⟩ := hvs j v e hv he
+  rw [(mapOk_iff'.mp hm) _ hvq,
+    decQC_eval hq ((mapOk_iff'.mp hm) _ hu) hn hb ((mapOk_iff'.mp hm) _ hc) hcap hcb]
+
 end Host.Ts.Sim.Conv

@@ -159,6 +159,29 @@ theorem sim_qmmX (hsym : Host.Mlx.Ffi.symOf name = some Host.Mlx.Ffi.Sym.qmm)
   exact sim_opOutS hs hr ho hE hNE trivial hsh (infer_qmm_simS hs hx lw lsc lbi fun p hp => hc p (by
     rcases List.mem_singleton.mp hp with rfl; exact List.mem_cons_self))
 
+theorem sim_dequantizeX (hsym : Host.Mlx.Ffi.symOf name = some Host.Mlx.Ffi.Sym.dequantize)
+    {o w sc bi g b mode gs dt e : Arg} {ins : List Nat} {gv bv dv : Option Nat} {m : List Char}
+    {ws sbs : List Dim} {dw dsc dbi : Nat} {wl : Int}
+    (hw : hdOk x w = true) (hsc : hdOk x sc = true) (hbi : hdOk x bi = true)
+    (hg : natOk P g = true) (hb : natOk P b = true) (hgs : natOk P gs = true) (hdt : natOk P dt = true)
+    (ho : slotOk P x o = true) (hE : x.next + 1 ≤ P.E) (hNE : x.nnext + 1 ≤ P.NE)
+    (h1 : Host.Mlx.Ffi.arrIns x [w, sc, bi] = some ins) (eg : Host.Mlx.Ffi.optIntArg g = some gv)
+    (eb : Host.Mlx.Ffi.optIntArg b = some bv) (hm : Host.Mlx.Ffi.cstrArg mode = some m)
+    (egs : Host.Mlx.Ffi.argNat gs = some 0) (edt : Host.Mlx.Ffi.optIntArg dt = some dv)
+    (hsh : Host.Mlx.Ffi.shapesOf x ins = some [(ws, dw), (sbs, dsc), (sbs, dbi)])
+    (hl : nthD (.lit 0) ws (len ws - 1) = .lit wl) :
+    MSim (MPost P NB M ν S C) S C (Host.Mlx.Ffi.call x name [o, w, sc, bi, g, b, mode, gs, dt, e])
+      (Host.Mlx.Ffi.call y name [M.arg o, M.arg w, M.arg sc, M.arg bi, M.arg g, M.arg b, M.arg mode, M.arg gs,
+        M.arg dt, M.arg e]) := by
+  have t1 := hr.arrIns_some (as := [w, sc, bi]) (by simp [hw, hsc, hbi]) h1
+  unfold Host.Mlx.Ffi.call; rw [hsym]
+  simp only [List.map_cons, List.map_nil] at t1
+  simp only [h1, t1, hr.optInt_eq hg, hr.optInt_eq hb, eg, eb, cstrArg_map, hm, hr.natOk_argNat hgs, egs,
+    hr.optInt_eq hdt, edt]
+  have hc := shOk_of hs hr hsh
+  exact sim_opOutS hs hr ho hE hNE trivial hsh (infer_dequantize_simS hs hl fun p hp => hc p (by
+    rcases List.mem_singleton.mp hp with rfl; exact List.mem_cons_self))
+
 theorem sim_reshapeX (hsym : Host.Mlx.Ffi.symOf name = some Host.Mlx.Ffi.Sym.reshape)
     {o a sh n e : Arg} {ins : List Nat} {new old : List Dim} {d : Nat} (ha : hdOk x a = true)
     (hd : dimsOk P sh n = true) (ho : slotOk P x o = true) (hE : x.next + 1 ≤ P.E) (hNE : x.nnext + 1 ≤ P.NE)

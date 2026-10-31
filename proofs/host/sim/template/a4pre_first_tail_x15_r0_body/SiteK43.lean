@@ -1,0 +1,27 @@
+import host.sim.template.a4pre_first_tail_x15_r0_body.SiteC43
+import host.sim.conv.Closed
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
+
+/-! The canonical state's closedness from the call's (`Conv.closed_of_callB`, `Conv.sst_of_callB`): it keeps the call's entries
+off the written and the result ones (`PRE_first_tail_x15_r0_body.cl43`; natively the written and result handles, the result nodes, the written
+and result items), and those are checked. -/
+
+def PRE_first_tail_x15_r0_body.cl43 : List Nat := [2665, 2673467]
+def PRE_first_tail_x15_r0_body.clo43 : List Nat := []
+def PRE_first_tail_x15_r0_body.cln43 : List Nat := []
+def PRE_first_tail_x15_r0_body.cli43 : List Nat := []
+kernel_rfl PRE_first_tail_x15_r0_body.cheap43 : PRE_first_tail_x15_r0_body.s392.heap = Stage.setAll PRE_first_tail_x15_r0_body.s390.heap (PRE_first_tail_x15_r0_body.cl43.filterMap fun a => (PRE_first_tail_x15_r0_body.s392.heap.get a).map (a, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.cnextLe43 : Nat.ble PRE_first_tail_x15_r0_body.s390.next PRE_first_tail_x15_r0_body.s392.next = true
+kernel_rfl PRE_first_tail_x15_r0_body.ckeepP43 : Conv.keptPresentB PRE_first_tail_x15_r0_body.s390 PRE_first_tail_x15_r0_body.s392 PRE_first_tail_x15_r0_body.cl43 = true
+kernel_rfl PRE_first_tail_x15_r0_body.csupp43 : Conv.suppListB PRE_first_tail_x15_r0_body.s392 1919 PRE_first_tail_x15_r0_body.cl43 = true
+kernel_rfl PRE_first_tail_x15_r0_body.cbound43 : Conv.boundListB PRE_first_tail_x15_r0_body.s392 PRE_first_tail_x15_r0_body.cl43 = true
+kernel_rfl PRE_first_tail_x15_r0_body.cnodesK43 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.nodes = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s390.ffi).mlx.nodes (PRE_first_tail_x15_r0_body.cln43.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.nodes.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.cobjsK43 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.objs = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s390.ffi).mlx.objs (PRE_first_tail_x15_r0_body.clo43.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.objs.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.citemsK43 : (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.items = Stage.setAll (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s390.ffi).mlx.items (PRE_first_tail_x15_r0_body.cli43.filterMap fun i => ((Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx.items.get i).map (i, ·))
+kernel_rfl PRE_first_tail_x15_r0_body.csst43 : Conv.sstListB 1919 (Host.Load.Layers.toLoad PRE_first_tail_x15_r0_body.s392.ffi).mlx PRE_first_tail_x15_r0_body.cln43 PRE_first_tail_x15_r0_body.clo43 PRE_first_tail_x15_r0_body.cli43 = true
+
+end Host.Load.Run.Tpl

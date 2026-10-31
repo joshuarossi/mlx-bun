@@ -49,6 +49,14 @@ def _root_.Host.Ts.Sim.Prefill.IterEndW.toFb {NB : Nat} {A : Addr} {P : LoadP} {
   ⟨e.s1, e.S1, e.σ, e.θ, e.grow, e.xs, e.eR, e.tlen, e.noVarTab, e.noVarOr, e.nshift, e.num, e.hE, e.theta, e.fwd,
     e.emit, e.fix⟩
 
+/-- The iteration's ghost in the pinned decode world is the full world's (the worlds agree on what it reads: the
+projection, the bound, the growth). -/
+theorem _root_.Host.Ts.Sim.Prefill.IterGhostCW.ofFb {b0 : BSt} {NB : Nat} {A : Addr} {P : LoadP}
+    {Fr : LoopFramesA A} {s0 : St FF.S} {tab0 : List SymE} {fixA : List Nat} {θ : Nat → SymE} {g : GhostP}
+    {x0 x : SegInst FF} (h : IterGhostCW (fullWorldFb b0 NB) A P Fr s0 tab0 fixA θ g x0 x) :
+    IterGhostCW (fullWorld NB) A P Fr s0 tab0 fixA θ g x0 x :=
+  ⟨h.fr, h.lo, h.hi, h.D, h.num, h.fix, h.node, h.H, h.N, h.tab, h.val, h.grows⟩
+
 section
 variable (b0 : BSt) (NB : Nat) (Pw : LoadP) (fr : List Nat) (wd : List (Nat × WFrame)) (W : Nat → Option WFrame) (A : Addr)
   (Fr : LoopFramesA A) (s0 : St FF.S) (tab0 : List SymE) (fixA : List Nat) (toks : List NumV)

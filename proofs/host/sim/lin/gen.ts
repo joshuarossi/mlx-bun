@@ -849,10 +849,12 @@ function genSpec(out: string, args: string[]) {
         return [v, q] as [number, Q];
       });
       for (const [v, q, e] of (meta.derived ?? []) as [number, string, string][]) {
-        // an `int32` of an integer below `2 ^ 31` is the integer: its quantity the inner form's
-        const ex = e.match(/^int32\((.*)\)$/)?.[1] ?? e;
+        // an `int32` of an integer below `2 ^ 31` is the integer, so is the difference with `0`: its quantity the
+        // inner form's
+        const e0 = e.match(/^\((.*) sub 0\)$/)?.[1] ?? e;
+        const ex = e0.match(/^int32\((.*)\)$/)?.[1] ?? e0;
         const dm = ex.match(/^\(v(\d+) add (-?\d+)\)$/) ?? ex.match(/^v(\d+)$/) ??
-          fail(`${what}: derived ${v}: ${e} is not (v<j> add <c>), v<j> or their int32`);
+          fail(`${what}: derived ${v}: ${e} is not (v<j> add <c>), v<j>, their int32 or its difference with 0`);
         const base = vars.find(([j]) => j === +dm[1]!) ?? fail(`${what}: derived ${v}: v${dm[1]} is not mapped`);
         if (base[1] !== q) fail(`${what}: derived ${v}: v${dm[1]} holds ${base[1]}, not ${q}`);
         vars.push([v, derivedQ(rows, q, dm[2] === undefined ? 0 : +dm[2], `${what}: derived ${v}`)]);

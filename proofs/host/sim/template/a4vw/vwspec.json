@@ -1,0 +1,8 @@
+{
+ "doc": "Scratch (A4 Phase B): the VW forward call (h2671722) of a 102-token prompt with its row count symbolic: the ids node's axis 1 (handle 18155, node 15235 at the L100/L224 calls).",
+ "collect": false,
+ "frames": [],
+ "places": [
+  {"name": "rows", "kind": "dim", "addr": 18155, "index": 1, "value": 101, "var": 21}
+ ]
+}

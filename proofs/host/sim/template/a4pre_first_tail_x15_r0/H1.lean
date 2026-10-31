@@ -1,0 +1,16 @@
+import host.sim.template.a4pre_first_tail_x15_r0.H0
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+host_stream_state PRE_first_tail_x15_r0 32
+host_stream_state PRE_first_tail_x15_r0 33
+host_stream_state PRE_first_tail_x15_r0 34
+host_stream_state PRE_first_tail_x15_r0 35
+host_stream_state PRE_first_tail_x15_r0 36
+host_stream_state PRE_first_tail_x15_r0 37
+host_stream_state PRE_first_tail_x15_r0 38
+host_stream_state PRE_first_tail_x15_r0 39
+host_stream_state PRE_first_tail_x15_r0 40
+host_stream_state PRE_first_tail_x15_r0 41
+end Host.Load.Run.Tpl

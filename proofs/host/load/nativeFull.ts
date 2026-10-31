@@ -16,7 +16,9 @@ export const fullLibrary = "libloadproof-full.dylib";
 
 /** A module running a template command in a world other than the load world. */
 export function isFullChooser(file: string, source: string): boolean {
-  return file.startsWith("host/") && /^tpl_\w+\b[^\n]*[\s(,]world\s*:=\s*(?!lf\b)/m.test(source);
+  if (!file.startsWith("host/")) return false;
+  const world = /^tpl_\w+\b[^\n]*[\s(,](?:world|«world»)\s*:=\s*(«[^»]+»|[\w.]+)/m.exec(source)?.[1];
+  return world !== undefined && world !== "lf" && world !== "«lf»";
 }
 
 // checker.ts's hash (not exported there), byte for byte.

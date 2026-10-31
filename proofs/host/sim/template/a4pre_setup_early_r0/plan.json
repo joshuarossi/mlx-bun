@@ -1,0 +1,29 @@
+{
+ "row": "setup_early.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "glue": [
+  "g0a",
+  "g0b"
+ ],
+ "stages": [
+  {
+   "fn": "chunkSize",
+   "piece": "chunk",
+   "name": "chunk_K8"
+  }
+ ],
+ "stop": "call:nextPrefillStep",
+ "frames": [2665],
+ "bridges": ["len"],
+ "lens": [[2665, 9]],
+ "baseVals": [[9, 4]],
+ "vars": [[9, "L"]],
+ "wide": [
+  [
+   4910,
+   ".memo []"
+  ]
+ ],
+ "accept": "jsjxs",
+ "D0": 4096
+}

@@ -34,7 +34,13 @@ theorem rel_loadDone {FR : Map → Nat → LSt → LSt → Prop} {ν : Nat → F
     (lo hi : Nat) (fw : List Val) (h : FrameRel.Hyps Host.Load.ffi FR ν S C lo hi (P.a2818 [])) :
     Rel Host.Load.ffi FR Map.id ν (FrameRel.ctx (P.a2818 []) 2665 fw lo hi)
       (P.a2818 []) S (P.a2818 fw) C := by
-  rw [frame fw]
-  exact FrameRel.relF_frame h (prompt_obj []) rfl (by decide)
+  exact Eq.mpr
+    (congrArg
+      (fun t : St LSt =>
+        Rel Host.Load.ffi FR Map.id ν (FrameRel.ctx (P.a2818 []) 2665 fw lo hi)
+          (P.a2818 []) S t C)
+      (frame fw))
+    (@FrameRel.relF_frame Host.Load.ffi FR ν S C lo hi (P.a2818 []) 2665
+      (promptObj []) fw h (prompt_obj []) rfl (by decide))
 
 end Host.Load.Run.Prompt
