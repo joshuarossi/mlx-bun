@@ -1,4 +1,5 @@
 import host.sim.template.a4pre_d1_post.Origin
+-- revision: literal chunk length
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

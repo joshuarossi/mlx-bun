@@ -18,7 +18,7 @@ noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (K0 : Host
   tab0 := S.tab
   R := fun x s S => RelB FF (Native NB T tk y0) (D1Frames.typedW (D1Typed.bytes π)) []
     x.M x.ν x.K s S x.t x.C ∧ BodyBook π K0 x
-  B := fun x => AneFresh x.t ∧ fixedCells x ∧ Ext M0 x.M 20
+  B := fun x => AneFresh x.t ∧ fixedCells x ∧ Ext M0 x.M 17
 
 theorem simulation (NB T : Nat) (tk : Nat → Nat) (bytes : List Byte) (y0 : Host.Mlx.Ffi.St) :
     Disp.StepSimXLB FF (Native NB T tk y0) (D1Frames.typedOk bytes)
@@ -67,7 +67,7 @@ theorem toCall {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.S
     (htop : noRetBlock sc = true)
     (hgood : Lin.goodEnum Lin.Cls.final_cold.r0.ps (Lin.Cls.varsOf Lin.Cls.final_cold.r0.V [(9, .L)]) Sa.oracle = true)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sc.ffi = bridgeOf sa.ffi)
-    (h20 : 20 ≤ Sa.tab.length) :
+    (h20 : 17 ≤ Sa.tab.length) :
     CutStep (cut NB T tk π K0 M0 y0 sa Sa) (cut NB T tk π K0 M0 y0 sc Sc) (n + 1) := by
   apply cut_glueCall (simulation NB T tk (D1Typed.bytes π) y0)
     (congrFun ha _) (hrun _) (congrFun hb _) hh hs htop
@@ -88,7 +88,7 @@ theorem finish {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.S
     (htop : noRetBlock sb = true)
     (hgood : Lin.goodEnum Lin.Cls.final_cold.r0.ps (Lin.Cls.varsOf Lin.Cls.final_cold.r0.V [(9, .L)]) Sa.oracle = true)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
-    (h20 : 20 ≤ Sa.tab.length) :
+    (h20 : 17 ≤ Sa.tab.length) :
     CutStep (cut NB T tk π K0 M0 y0 sa Sa) (cut NB T tk π K0 M0 y0 sb Sb) n := by
   apply cut_glue (simulation NB T tk (D1Typed.bytes π) y0) (congrFun ha _) (hrun _) htop
   · intro x hbook _

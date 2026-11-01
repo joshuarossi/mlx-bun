@@ -1,5 +1,6 @@
 import host.sim.full.BridgeFrameS
 import host.sim.template.FullOk
+import host.sim.compose.Retab
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -167,6 +168,50 @@ theorem smallD_sound {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {arg
 /-- A decode chain's acceptance parameters. -/
 abbrev decJ (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) : Disp.JSP FF :=
   { Full.fullJSPXF P loopVB framed wide with smallB := smallD }
+
+/-! ## The end of an iteration
+
+Each iteration leaves a convolution cache one token longer and slices it back, so its dim is `int32((v + 1) - 1)`. At the valuations
+`VP` that is `v` again, and the end's table may read it so (`RelB.retab`), which keeps the iteration's substitution the identity there. -/
+
+/-- An entry `int32((v + 1) - 1)` of an abstracted dim, read as its variable. -/
+def convBack : SymE → SymE
+  | e@(.un .int32 (.bin .sub (.bin .add (.var v) (.lit a)) (.lit b))) =>
+    bif isConv v && decide (a = F64.ofNat 1) && decide (b = F64.ofNat 1) then .var v else e
+  | e => e
+
+theorem convBack_eval {ν : Nat → F64} (hν : VP ν) (e : SymE) : (convBack e).eval ν = e.eval ν := by
+  unfold convBack
+  split
+  · rename_i v a b
+    cases hc : isConv v && decide (a = F64.ofNat 1) && decide (b = F64.ofNat 1) with
+    | false => rw [cond_false]
+    | true =>
+      rw [cond_true]
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+      obtain ⟨⟨hv, rfl⟩, rfl⟩ := hc
+      exact (conv_entry_eval (hν.2 v hv)).symm
+  · rfl
+
+/-- The end's table with its abstracted dims read as their variables. -/
+def convTab (S : SSrv) : SSrv := ⟨S.tab.map convBack, S.oracle⟩
+
+theorem nth?_map_convBack (l : List SymE) (i : Nat) (e' : SymE) (h : nth? (l.map convBack) i = some e') :
+    ∃ e, nth? l i = some e ∧ convBack e = e' := by
+  induction l generalizing i with
+  | nil => cases h
+  | cons a l ih =>
+    cases i with
+    | zero => exact ⟨a, rfl, Option.some.inj h⟩
+    | succ i => exact ih i h
+
+/-- **The relation at that table.** -/
+theorem retab {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
+    {ν : Nat → F64} {K : Ctx} {s : St F.S} {S : SSrv} {t : St F.S} {C : CSrv} (hν : VP ν)
+    (h : RelB F FR W stk M ν K s S t C) : RelB F FR W stk M ν K s (convTab S) t C :=
+  h.retab (List.length_map _) rfl fun i e' he' => by
+    obtain ⟨e, he, rfl⟩ := nth?_map_convBack S.tab i e' he'
+    exact ⟨e, he, (convBack_eval hν e).symm⟩
 
 /-! ## The simulation -/
 

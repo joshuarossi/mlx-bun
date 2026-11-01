@@ -2,6 +2,7 @@ import host.sim.template.a4pre_d1_body.D4
 import host.sim.template.a4pre_first_tail_x15_r0.States
 import host.sim.template.ServerData
 import host.sim.template.BridgeLiteral
+-- revision: literal chunk length
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

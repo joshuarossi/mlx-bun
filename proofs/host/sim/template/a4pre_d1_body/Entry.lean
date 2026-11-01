@@ -40,7 +40,7 @@ theorem originalCaller {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Hos
       ⟨D1Call.S1.tab, []⟩ x.t x.C)
     (h1 : (cut NB T tk π K0 x.M (mlxOf x.t.ffi) D1Body.s155 D1Body.S155).R
       x' D1Body.s155 ⟨D1Body.S155.tab, []⟩)
-    (he : Ext x.M x'.M 20) : x'.t.stack = x.t.stack := by
+    (he : Ext x.M x'.M 17) : x'.t.stack = x.t.stack := by
   rw [h1.1.stack, h0.stack, D1Body.caller]
   congr 1
   apply List.map_congr_left

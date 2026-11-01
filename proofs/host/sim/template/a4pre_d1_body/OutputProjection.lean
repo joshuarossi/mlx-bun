@@ -57,7 +57,7 @@ theorem targetOutput {P : LoadP} {NB : Nat} {W : Nat → Option WFrame}
       D1Endpoint.privateVal o (chars!"handle") = some (.big (M.big 21985))) ∧
     (mlxOf t.ffi).arrs.get (M.handle 21985) = some (M.node 17763) ∧
     ((mlxOf t.ffi).nodes.get (M.node 17763)).map (fun n => (n.shape, n.dtype)) =
-      some (M.dims [.lit 1, .sym (.ref 55), .lit 5120], 12) := by
+      some (M.dims [.lit 1, .lit 1, .lit 5120], 12) := by
   refine ⟨⟨M.obj (objOf D1Body.s155 2826766), hr.obj? outputPresent (unframed hk (by
     change _ ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view]; decide)),
     congrFun mappedHandle M⟩, ?_, ?_⟩

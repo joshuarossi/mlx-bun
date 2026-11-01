@@ -20,7 +20,7 @@ theorem size {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.Sim.C
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))
     (hgood : Lin.goodEnum Lin.Cls.final_cold.r0.ps (Lin.Cls.varsOf Lin.Cls.final_cold.r0.V [(9, .L)]) Sa.oracle = true)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
-    (h20 : 20 ≤ Sa.tab.length) :
+    (h20 : 17 ≤ Sa.tab.length) :
     CutStep (cut NB T tk π K0 M0 y0 sa Sa) (cut NB T tk π K0 M0 y0 sb Sb) 3 := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hbook⟩, hf, hfixed, he0⟩
   obtain ⟨origin, hinit, hpref⟩ := hbook

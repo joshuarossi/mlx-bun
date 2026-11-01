@@ -7,7 +7,7 @@ open Lean Elab Command Meta Host.Ts Host.Ts.Sim Host.Load Host.Ts.Stream
 
 `tpl_abstract X from T : "spec.json" (world := w)` is the template `T` with the listed number sites of its nodes as references
 to fresh table entries, one per variable of the spec. The rest of `T` is unchanged. A node's number sites are its shape's dims, then
-its primitive's numbers, numbered in that order (`mapNode`). The spec's `sites` are `{node, site, var, value}`, `value` the literal
+its primitive's numbers, numbered in that order (`mapNode`). Its `ghostCells` are reset and framed as ghosts. The spec's `sites` are `{node, site, var, value}`, `value` the literal
 the site must hold, and its `vars` the variables, in table order. `DecodeAbs`'s template is the decode template with the dims of the
 prompt's end at its row count abstracted. -/
 
@@ -85,6 +85,8 @@ deriving FromJson, ToJson
 structure AbsSpec where
   sites : Array AbsSite
   vars : Array AbsVar
+  /-- Cells no later step of a chain from this template reads: reset to `undefined`, what only they held collected. -/
+  ghostCells : Option (Array Nat) := none
 deriving FromJson, ToJson
 
 private def addAbsDef (name : Lean.Name) (type value : Lean.Expr) (compile : Bool := false) : TermElabM Unit := do
@@ -118,7 +120,28 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
       unless (refOf x.var).isSome do throwError "tpl_abstract: site's variable {x.var} is not listed"
     let f (k : Nat) : Option Nat := (here.find? (·.site == k)).bind fun x => refOf x.var
     nodes := nodes.set id ((mapNode f nd).run (0, #[])).1
-  let T0 := w.unproj s (l.setFfi { l.aux.ffi with mlx := { m with nodes } })
+  let ghostCells := (spec.ghostCells.getD #[]).toList
+  for a in ghostCells do
+    match l.heap.get a with
+    | some (.cell _) => pure ()
+    | _ => throwError "tpl_abstract: ghost {a} is not a cell"
+  let l1 : St LSt := { l with heap := ghostCells.foldl (fun h a => h.set a (.cell (some .undef))) l.heap }
+  let l1 := l1.setFfi { l1.aux.ffi with mlx := { m with nodes } }
+  let s1 := w.unproj s l1
+  -- what the reset cells alone held goes, as in the template's own collection
+  let (T0, dropped) ← if ghostCells.isEmpty then pure (s1, 0) else do
+    let m1 := l1.aux.ffi.mlx
+    let roots := ((List.range 40).filter fun a => (l1.heap.get a).isSome) ++ nativeHeapRefs m1
+    let ctx : Ctx := { s1 := l1, s2 := l1, t1 := c.tab.toArray, t2 := c.tab.toArray, env := ← getEnv, traceNodes := traceNodesOf m1 }
+    let ((), wk) ← ((do
+        for k in w.extraNodes s1.aux.ffi do pairNode k k (.root "extra") ""
+        walkRoots (roots.map fun a => (a, a))).run ctx).run {}
+    unless wk.mism.isEmpty do throwError "tpl_abstract: the identity walk found {wk.mism.size} mismatches"
+    let heap := ptrieFold (fun (acc : PTrie Host.Ts.HObj) a o => if wk.sig.contains a then acc.set a o else acc) l1.heap PTrie.nil
+    let before := ptrieFold (fun (k : Nat) _ _ => k + 1) l1.heap 0
+    let after := ptrieFold (fun (k : Nat) _ _ => k + 1) heap 0
+    let l2 : St LSt := { l1 with heap }
+    pure (w.unproj s1 l2 |>.setFfi (w.restrict s1.aux.ffi wk.hnd.contains wk.nod.contains), before - after)
   let tab := c.tab ++ spec.vars.toList.map fun v => SymE.var v.var
   let nonce := s!"{pre}:{← IO.monoNanosNow}"
   let dir ← streamDir
@@ -137,8 +160,15 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
   addAbsDef (pre ++ `orig) (mkApp (mkConst ``List [.zero]) origTy)
     (mkAppN (mkConst ``List.append [.zero]) #[origTy, mkConst (base ++ `orig),
       toExpr (fresh.map fun (r, v) => (r, NumV.lit (F64.ofNat v.value)))])
-  for k in [`frames, `ghosts, `maps, `frozen] do
+  for k in [`maps, `frozen] do
     addAbsDef (pre ++ k) natsTy (mkConst (base ++ k)) (compile := true)
+  if ghostCells.isEmpty then
+    for k in [`frames, `ghosts] do
+      addAbsDef (pre ++ k) natsTy (mkConst (base ++ k)) (compile := true)
+  else
+    let baseFrames ← evalConst (List Nat) (base ++ `frames)
+    addAbsDef (pre ++ `frames) natsTy (toExpr (baseFrames ++ ghostCells)) (compile := true)
+    addAbsDef (pre ++ `ghosts) natsTy (toExpr ghostCells) (compile := true)
   -- `template.json`: the base's, with the fresh entries and the table's new length
   let baseJ ← IO.FS.readFile (dir / base.toString / "template.json")
   let j ← match Json.parse baseJ with | .ok j => pure j | .error e => throwError "tpl_abstract: {e}"
@@ -148,7 +178,7 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
   let start := (j.getObjValD "start").setObjVal! "n" (toJson tab.length)
   let j := (j.setObjVal! "entries" (Json.arr (ents ++ more))).setObjVal! "start" start
   IO.FS.writeFile (dir / pre.toString / "template.json") (j.pretty ++ "\n")
-  logInfo m!"tpl_abstract {pre}: {spec.sites.size} sites over {spec.vars.size} variables at {nodeIds.size} nodes; table {n} -> {tab.length}; {bytes} bytes"
+  logInfo m!"tpl_abstract {pre}: {spec.sites.size} sites over {spec.vars.size} variables at {nodeIds.size} nodes; ghosts {ghostCells}, {dropped} heap entries dropped; table {n} -> {tab.length}; {bytes} bytes"
 
 elab "tpl_abstract " p:ident " from " b:ident " : " path:str os:(tplOpts)? : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do

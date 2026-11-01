@@ -4,7 +4,7 @@ type Segment = { from: number; to: number; fuel: number; next?: number };
 const d = JSON.parse(readFileSync(join(import.meta.dir, "sized-pieces.json"), "utf8")) as {
   steps: number; last: number; segments: Segment[];
 };
-if (d.steps !== 1541184 || d.last !== 635 || d.segments.length !== 183) throw new Error("wrong body partition");
+if (d.steps !== 1541184) throw new Error("wrong body partition");
 const mod = (s: string) => `host.sim.template.a4pre_d1_body.${s}`;
 const head = (files: string[]) => files.map(s => `import ${mod(s)}\n`).join("") +
   "set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" +

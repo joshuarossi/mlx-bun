@@ -6,7 +6,7 @@ namespace Host.Load.Run.Tpl.D1BodyOutput
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template
 
 kernel_rfl shapeDtype : ((mlxOf D1Body.s155.ffi).nodes.get 17763).map
-    (fun n => (n.shape, n.dtype)) = some ([.lit 1, .sym (.ref 55), .lit 5120], 12)
+    (fun n => (n.shape, n.dtype)) = some ([.lit 1, .lit 1, .lit 5120], 12)
 kernel_rfl outputPresent : D1Body.s155.obj? 2826766 = some (objOf D1Body.s155 2826766)
 kernel_rfl mappedHandle : (fun M : Map => D1Endpoint.privateVal
     (M.obj (objOf D1Body.s155 2826766)) (chars!"handle")) =

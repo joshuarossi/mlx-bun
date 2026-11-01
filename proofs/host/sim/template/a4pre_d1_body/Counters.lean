@@ -18,7 +18,7 @@ theorem nativeDelta {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.T
       ⟨D1Call.S1.tab, []⟩ x.t x.C)
     (h1 : (D1BodyAdvance.cut NB T tk π K0 x.M (mlxOf x.t.ffi) D1Body.s155 D1Body.S155).R
       x' D1Body.s155 ⟨D1Body.S155.tab, []⟩)
-    (he : Ext x.M x'.M 20) :
+    (he : Ext x.M x'.M 17) :
     (mlxOf x'.t.ffi).next = (mlxOf x.t.ffi).next + 3830 ∧
     (mlxOf x'.t.ffi).nnext = (mlxOf x.t.ffi).nnext + 2528 := by
   obtain ⟨P0, hP0, r0⟩ := h0.ffi.1

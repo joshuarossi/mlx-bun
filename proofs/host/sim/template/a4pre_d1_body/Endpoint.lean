@@ -12,7 +12,7 @@ kernel_rfl D1Body.top : Host.Ts.Sim.Compose.noRetBlock D1Body.s155 = true
 kernel_rfl D1Body.heapCounter : D1Body.s155.next = 2826779
 kernel_rfl D1Body.handleCounter : (mlxOf D1Body.s155.ffi).next = 21986
 kernel_rfl D1Body.nodeCounter : (mlxOf D1Body.s155.ffi).nnext = 17764
-kernel_rfl D1Body.tableCount : D1Body.S155.tab.length = 3190
+kernel_rfl D1Body.tableCount : D1Body.S155.tab.length = 17
 kernel_rfl D1Body.outputHandle :
   D1Endpoint.privateVal (objOf D1Body.s155 2826766) (chars!"handle") = some (.big 21985)
 kernel_rfl D1Body.outputNode : (mlxOf D1Body.s155.ffi).arrs.get 21985 = some 17763

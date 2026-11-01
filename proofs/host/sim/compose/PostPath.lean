@@ -3,7 +3,6 @@ import host.sim.compose.Seg
 import host.sim.compose.ShortFix
 import host.sim.world.Route
 import host.sim.dispatch.BridgeSpread
-import host.sim.template.a4pre_d1_post_one.Simulation
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -32,6 +31,33 @@ noncomputable def endCut (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (extra : Li
   R := fun x s S => RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB)) wideP [] x.M x.ν x.K s S x.t x.C ∧
     BookE T tk cap extra x
   B := fun x => AneFresh x.t ∧ Anchors x
+
+/-- An array with no elements framed. -/
+theorem frameEmpty {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop}
+    {W : Nat → Option WFrame} {stk : List Frame} {M : Map} {ν : Nat → F64} {K : Host.Ts.Sim.Ctx}
+    {s t : St F.S} {S : SSrv} {C : CSrv} {a : Nat} {o : Obj} {xs : List Val}
+    (h : RelB F FR W stk M ν K s S t C) (ho : s.obj? a = some o)
+    (hk : o.kind = .array xs) (hn : K.fr a = none) (hw : W a = none) :
+    RelB F FR W stk M ν (Disp.Ctx.frameAt K a ([], [])) s S t C := by
+  refine { h with heap := ?_, framedPresent := ?_ }
+  · intro b obj hg
+    by_cases hb : b = a
+    · subst b
+      have he := (obj?_iff.1 ho).symm.trans hg
+      cases he
+      apply (SlotW.of_w_none hw).2
+      apply (SlotOK.some_iff (pre := []) (pre' := []) (by simp [Disp.Ctx.frameAt])).2
+      refine ⟨o, M.obj o, rfl, h.get (obj?_iff.1 ho) hn, xs, hk, ?_⟩
+      cases o with
+      | mk kind proto props privs ext =>
+        simp only at hk
+        subst kind
+        rfl
+    · exact Disp.SlotW.congr_fr (by simp [Disp.Ctx.frameAt, hb]) (h.heap b obj hg)
+  · intro b p hf
+    by_cases hb : b = a
+    · subst b; exact Present.of_get (obj?_iff.1 ho)
+    · exact h.framedPresent b p (by simpa [Disp.Ctx.frameAt, hb] using hf)
 
 /-- A framed array more. -/
 theorem kpFrame {J J' : Disp.JSP FF} {K : Ctx} {a cap : Nat} (hlo : J'.lo = J.lo) (hhi : J'.hi = J.hi)
@@ -115,7 +141,7 @@ theorem spreadM {sO sI sC sA : St FF.S} {SO SI SC SA : SSrv} {env : Env} {fs : L
       cases hc
   let Kf := Disp.Ctx.frameAt x.K fwd ([], [])
   have hr2f : RelSp FF (Disp.FRJ (FRQ (FullRXD (PostSimulation.params T tk) NB) fun y => Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y))) wideP [] M2 x.ν Kf (some ([], (π.map natV).reverse)) sC SC t2 C2 :=
-    ⟨D1PostOneSim.frameEmpty hr2.1 hFwd hFwdK hfr hFwdW, hr2.2⟩
+    ⟨frameEmpty hr2.1 hFwd hFwdK hfr hFwdW, hr2.2⟩
   have hfk : Kf.fr fwd = some ([], []) := by simp [Kf, Disp.Ctx.frameAt]
   obtain ⟨M3, t3, C3, ht3, gg3, hrel3, hffi3⟩ :=
     (Disp.step_spread_close (A := []) hr2f hCloseCtl hCloseSt hfk (Nat.blt_eq.mp hRoom) hProto hFwdW hNewW).run

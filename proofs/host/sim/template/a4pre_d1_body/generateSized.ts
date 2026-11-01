@@ -8,7 +8,7 @@ const m = JSON.parse(readFileSync(metaPath, "utf8")) as {
   world: string; stop: string; steps: number; T1: number; bridges: Bridge[]; loadP: number[];
 };
 if (m.world !== "full" || m.stop !== "ret" || !Number.isSafeInteger(m.steps) || m.steps !== 1541184 ||
-    !Number.isSafeInteger(m.T1) || !Array.isArray(m.bridges) || !m.bridges.length ||
+    !Number.isSafeInteger(m.T1) || !Array.isArray(m.bridges) ||
     m.bridges.some(b => b.kind !== "size" || !Number.isSafeInteger(b.ia) || !Number.isSafeInteger(b.nA)) ||
     JSON.stringify(m.loadP) !== JSON.stringify([18151, 131072, 1099511627776, 15235, 15235]))
   throw new Error("expected the unchanged full-body path partitioned only at actual size calls");

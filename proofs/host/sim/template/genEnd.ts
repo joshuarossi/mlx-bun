@@ -36,6 +36,8 @@ const tdir = take("--tdir") ?? "a4dec";
 const grow = take("--grow") ?? "false";
 const chunk = Number(take("--chunk") ?? 2000);
 const withTemplate = flag("--template");
+// the end table with the abstracted conv dims read as their variables (`DecOk.convTab`), so `θ` stays the identity on them
+const retab = flag("--retab");
 // the template's token queue (Lean term) and the banded relation's NL its recorded traces lie below
 const tokens = take("--tokens") ?? "[.ref 79]";
 const handNL = Number(take("--handNL") ?? 20000);
@@ -59,7 +61,7 @@ const s1 = `${X}.s${T1}`, S1 = `${X}.S${T1}`, P = `${X}.PE`, sg = `${X}.σ`, S0s
 // facts' server `<Name>.S1D` (A3's host.sim.conv.Decanon relates it to the end cut's)
 const dth = chain.dtheta as { ws: number[]; rs: string[]; endTab: string[] } | undefined;
 const decanon = !!dth && dth.ws.length > 0;
-const S1E = decanon ? `${X}.S1D` : S1;
+const S1E = decanon ? `${X}.S1D` : retab ? `${X}.S1R` : S1;
 const mlx = (s: string) => `(Host.Load.Layers.toLoad ${s}.ffi).mlx`;
 const AP = "Host.Load.Run.Prompt.addrPrompt";
 const frames = [2673448, 12504, 2665];
@@ -141,7 +143,7 @@ if (withTemplate) {
 
 // ---------- the chain's end ----------
 const lastH = mod(dir, `H${Math.floor(T1 / 32)}`);
-put(dir, "ERestart", [...head(lastH, mod(tdir, "S"), "host.sim.template.RestartCmd", "host.sim.conv.Compact"),
+put(dir, "ERestart", [...head(lastH, mod(tdir, "S"), "host.sim.template.RestartCmd", "host.sim.conv.Compact", ...(retab ? ["host.sim.template.DecOk", "host.sim.template.ServerData"] : [])),
   `/-! The restart map of chain \`${X}\`'s end (its start \`${S0s}\`, the template \`${T}\`'s with its readback suffix dropped, to${NL}`,
   `\`${s1}\`, the next readback cut), chosen natively. -/${NL}${NL}`,
   `def ${X}.frames : List Nat := ${T}.frames${NL}def ${X}.ghosts : List Nat := ${T}.ghosts${NL}def ${X}.maps : List Nat := ${T}.maps${NL}`,
@@ -155,6 +157,14 @@ put(dir, "ERestart", [...head(lastH, mod(tdir, "S"), "host.sim.template.RestartC
     `kernel_rfl ${X}.dtab : ${S1}.tab.map (·.subst (Conv.compactθ ${X}.dvs ${X}.des)) = ${X}.S1D.tab${NL}${NL}`,
     `set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`,
     `tpl_restart ${X}.R : ${X}, ${X} ${T1} (world := full, subst := ${X}.dθ)${NL}${NL}`] :
+    retab ? [
+    `/-- The end's server with its abstracted dims read as their variables, for the restart map. -/${NL}`,
+    `noncomputable def ${X}.S1R : SSrv := DecOk.convTab ${S1}${NL}`,
+    `noncomputable def ${X}R.s${T1} := ${s1}${NL}`,
+    `server_data ${X}R.S${T1} := (⟨${S1}.tab.map DecOk.convBack, []⟩ : SSrv)${NL}`,
+    `kernel_rfl ${X}.S1R_tab : ${X}.S1R.tab = ${X}R.S${T1}.tab${NL}${NL}`,
+    `set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`,
+    `tpl_restart ${X}.R : ${X}, ${X}R ${T1} (world := full)${NL}${NL}`] :
     [`set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`, `tpl_restart ${X}.R : ${X}, ${X} ${T1} (world := full)${NL}${NL}`]),
   `noncomputable abbrev ${sg} : Map := ${X}.R.data.map${NL}`,
   `noncomputable def ${X}.θ : Nat → SymE := thetaOf ${X}.R.theta${NL}`,
