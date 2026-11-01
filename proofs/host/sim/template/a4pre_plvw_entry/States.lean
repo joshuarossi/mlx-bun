@@ -1,4 +1,4 @@
-import host.sim.template.a4pre_fd_vw_r0_body.H27
+import host.sim.template.a4pre_fd_vw_r0_body.H14
 import host.sim.template.ServerData
 import host.sim.template.BridgeLiteral
 set_option Elab.async false
@@ -6,13 +6,13 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts
--- specs/post_vw.json. The forward's row count 12 is POST's 10; the tail's rows and offset (10, 11, both L - 1) move out of its way to 27.
+-- specs/post_vw.json, the forward's row literal. The tail's rows and offset (10, 11, both L - 1) move out of POST's way to 27.
 def PRE_plvw_entry.rebind (v : Nat) : SymE :=
-  if v = 12 then .var 10 else if v = 10 then .var 27 else if v = 11 then .var 27 else .var v
+  if v = 10 then .var 27 else if v = 11 then .var 27 else .var v
 noncomputable def PRE_plvw_entry.rawSrv : SSrv :=
-  ⟨PRE_fd_vw_r0_body.S895.tab.map (·.subst PRE_plvw_entry.rebind), []⟩
+  ⟨PRE_fd_vw_r0_body.S451.tab.map (·.subst PRE_plvw_entry.rebind), []⟩
 server_data PRE_plvw_entry.chooserSrv := PRE_plvw_entry.rawSrv
-bridge_empty PRE_plvw_entry.input from PRE_fd_vw_r0_body.s895
+bridge_empty PRE_plvw_entry.input from PRE_fd_vw_r0_body.s451
 set_option interpreter.prefer_native true in
 tpl_template PRE_plvw_entry from PRE_plvw_entry.input, PRE_plvw_entry.chooserSrv («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld, spec := "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/template/specs/post_vw.json")
 end Host.Load.Run.Tpl

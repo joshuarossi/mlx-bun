@@ -1,5 +1,6 @@
 import host.sim.template.a4pre_plvw_entry.S
 import host.sim.template.ReturnLiteral
+-- revision: literal row
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
