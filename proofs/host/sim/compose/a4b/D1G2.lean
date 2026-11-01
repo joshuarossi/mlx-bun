@@ -69,9 +69,7 @@ noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF
   ok r hr i hi ho := by
     obtain rfl := List.mem_singleton.mp hr
     have hL := finalRowL hi
-    apply g2
-    intro ν hm
-    apply ho.1 ν
+    refine g2 NB T tk hMem fun ν hm => ho.1 ν ?_
     simpa only [D1StageSplit.map_g1_FIN_first, MapOk, setupI, Cls.Inst.get, hL] using hm
 
 end Host.Ts.Sim.Compose.D1Split

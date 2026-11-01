@@ -1,4 +1,5 @@
 import host.sim.compose.a4b.D1G1Run
+import host.sim.compose.a4b.SetupEarlyGlue
 import host.sim.compose.a4b.D1NewDataInput
 import host.sim.compose.a4b.D1LengthFfi
 import host.sim.template.a4pre_d1_input.Growth
@@ -13,9 +14,9 @@ theorem chunkGrow (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St) :
       (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
       D1Input.okB1 (Disp.KpJ D1Frames.chunkJ 4096) wideP [] (VBOkF loopVB) := by
   let P : LoadP := { setupP with rest := machReads T tk }
-  have hj : D1Frames.chunkJ.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
+  have hj : D1Frames.chunkJ.okCall = okCallFXD P := (SetupEarly.callRaiseRest setupP (machReads T tk)).symm
   have hs := fullStepSimXLBXDJSQ P NB loopVB D1Frames.chunkJ 4096 hj rfl rfl rfl rfl rfl [] D1Frames.chunk_wp y0
-  have hb : okBackFXS P = okBackFXS setupP := backRest setupP (machReads T tk)
+  have hb : okBackFXS P = okBackFXS setupP := SetupEarly.backRest setupP (machReads T tk)
   have ha : D1Input.okB1 = Disp.okJSJ D1Frames.chunkJ (okBackFXS setupP) 4096 := by
     funext s S
     rfl

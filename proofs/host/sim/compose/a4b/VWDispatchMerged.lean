@@ -23,7 +23,7 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x15_r0.st2.S0.oracle) :
     CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 425 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   let d := dispatchSite NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K PRE_first_tail_x15_r0.s38 d.tpl.S0 x.t x.C := by
@@ -83,6 +83,6 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
     ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt39, ⟨hr.presentBound, hr.heapSupp⟩,
     Nat.le_trans top.1.load.mlx.nbl hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt39)⟩ hm⟩
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt39)⟩ hmem⟩
 
 end Host.Ts.Sim.Compose.VWFirst

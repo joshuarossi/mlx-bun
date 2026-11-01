@@ -77,7 +77,7 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     have hvv := Input.call_input hS hr.load.mlx hiy hok' hv9 hlen hvc (by rw [he] at ht; exact ht)
     rw [hg.ext.node]
     exact hvv
-  have hninv : ∀ M n x y, Disp.FRJ (FullRXD P NB) M n x y → NInv (mlxOf y) :=
+  have hninv : ∀ M n x y, Disp.FRJ (FullRXD P NB) M n x y → Host.Mlx.Ffi.NGrowCall.NInv (mlxOf y) :=
     fun M n x y hr => fullRXD_ninv M n x y hr.1
   have hQ : TargetPres FF (Disp.FRJ (FullRXD P NB)) (fun y => Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf y)) :=
     fullTargetPres hninv (mlxOf t.ffi)

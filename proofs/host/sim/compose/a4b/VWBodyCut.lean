@@ -2,6 +2,7 @@ import host.sim.compose.a4b.VWBodyStart
 import host.sim.compose.a4b.VWDispatchCompact
 import host.sim.template.a4pre_d1_body.SizeAt
 import host.sim.lin.Enum
+import host.sim.compose.PostValue
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -43,23 +44,44 @@ theorem BodyBook.memo {i : Cls.Inst} {π : List Nat} {K0 : Ctx} {x : SegInst FF}
   exact hb.incomingMemo
 
 /-- The offsets of a body boundary: the JS heap's and the native handles' and nodes'. Compactions
-drop source addresses, so each offset grows there and is kept by everything else. -/
+drop source addresses, so each offset grows there and is kept by everything else. `J` counts the
+canonical results so far. -/
 structure BodyOff where
   D : Nat
   H : Nat
   N : Nat
+  J : Nat
+
+/-- Each canonical result of `vs` has its term's value in `es`. -/
+def DefsOk (vs : List Nat) (es : List SymE) (ν : Nat → F64) : Prop :=
+  ∀ p ∈ vs.zip es, ν p.1 = p.2.eval ν
+
+theorem DefsOk.nil {es : List SymE} {ν : Nat → F64} : DefsOk [] es ν := fun _ h => nomatch h
+
+/-- In the form `RelB.decanon` reads. -/
+theorem DefsOk.nth {vs : List Nat} {es : List SymE} {ν : Nat → F64} (h : DefsOk vs es ν) :
+    ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν :=
+  fun _ _ _ hv he => h _ (nth?_zip_some hv he)
 
 /-- A body boundary of the prompt `π`, at the variables `m`, within the offsets `O`. -/
-noncomputable def bodyCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) (O : BodyOff)
-    (m : List (Nat × Q)) (s : St FF.S) (S : SSrv) : ICut FF where
+noncomputable def bodyCore (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
+    (Θ : List Nat × List SymE) (O : BodyOff) (m : List (Nat × Q)) (s : St FF.S) (S : SSrv) : ICut FF where
   s0 := s
   tab0 := S.tab
   R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K s S x.t x.C ∧
     BodyBook i π K0 x O.D ∧ NativeAt O.H O.N s x.t ∧ InputAt (π.take i.n) (x.M.node 15235) x.t x.C ∧
-    setupInputs T tk x ∧ MapOk x.ν i m
+    setupInputs T tk x ∧ MapOk x.ν i m ∧ DefsOk (Θ.1.take O.J) (Θ.2.take O.J) x.ν
   B := fun x => AneFresh x.t ∧ fixedCells x
+
+/-- A body boundary of the forward that started at `x0`. -/
+noncomputable def bodyCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) (x0 : SegInst FF)
+    (Θ : List Nat × List SymE) (O : BodyOff) (m : List (Nat × Q)) (s : St FF.S) (S : SSrv) : ICut FF :=
+  withMem (BodyTrail x0) (bodyCore NB T tk π i Θ O m s S)
+
+theorem BodyTrail.ofTrack (x0 x y : SegInst FF) (h : NTrack x y) (ht : BodyTrail x0 x) : BodyTrail x0 y :=
+  ht.step (fun k _ => congrFun h.map k) h.nodes h.tokens
 
 /-- The bridge of the target follows the template's while both sides are inactive. -/
 theorem bodyFresh {W : Nat → Option WFrame}
@@ -97,12 +119,14 @@ theorem setupInputs_ext {T : Nat} {tk : Nat → Nat} {M M' : Map} {ν : Nat → 
   ⟨h.1, by change M'.a 2590 = 2590; rw [he.a]; exact h.2⟩
 
 /-- The body's start, at the rows' map, enters the first boundary. -/
-theorem fromStart {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} :
-    CutConv (bodyStartCut NB T tk π i)
-      (bodyCut NB T tk π i ⟨3571, 0, 0⟩ bodyMap PRE_first_tail_x15_r0_body.s0 PRE_first_tail_x15_r0_body.S0) := by
-  rintro x ⟨K0, hr, hb, hip, hins, hmap, hk⟩ ⟨hfresh, hids, hnat⟩
+theorem fromStart {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {x0 : SegInst FF}
+    {Θ : List Nat × List SymE} {s : St FF.S} {S : SSrv} :
+    CutConv (withMem (BodyTrail x0) (bodyStartCut NB T tk π i s S))
+      (bodyCut NB T tk π i x0 Θ ⟨3571, 0, 0, 0⟩ bodyMap s S) := by
+  rintro x ⟨K0, hr, hb, hip, hins, hmap, hk⟩ ⟨⟨hfresh, hids, hnat⟩, htr⟩
   exact ⟨x, rfl, rfl, ⟨K0, hr, ⟨hb.length, hb.vocab, hb.valuation, hk, hb.incoming, hb.incomingPrompt,
-    hb.incomingMemo, hb.frames, hb.offset, hb.lo, hb.hi, hb.inputEvent⟩, hnat, hip, hins, hmap⟩, hfresh, hids⟩
+    hb.incomingMemo, hb.frames, hb.offset, hb.lo, hb.hi, hb.inputEvent⟩, hnat, hip, hins, hmap, by
+      simp only [List.take_zero]; exact DefsOk.nil⟩, ⟨hfresh, hids⟩, htr⟩
 
 theorem fixedCells_ext {M M' : Map} {ν : Nat → F64} {K K' : Ctx}
     {t t' : St FF.S} {C C' : CSrv} {n : Nat}

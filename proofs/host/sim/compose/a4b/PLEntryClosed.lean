@@ -16,13 +16,13 @@ noncomputable def PRE_pl_entry.suppAt (a : Nat) : Bool :=
   | none => true
 noncomputable def PRE_pl_entry.boundAt (a : Nat) : Bool := Nat.blt a PRE_pl_entry.s0.next
 
-tpl_all_blocks PRE_pl_entry.HS from PRE_pl_entry : PRE_pl_entry.suppAt
+tpl_all_blocks PRE_pl_entry.HS from PLEntryV : PRE_pl_entry.suppAt
 kernel_rfl PRE_pl_entry.suppFramed : PRE_pl_entry.frames.all PRE_pl_entry.suppAt = true
-tpl_all_blocks PRE_pl_entry.BD from PRE_pl_entry : PRE_pl_entry.boundAt
+tpl_all_blocks PRE_pl_entry.BD from PLEntryV : PRE_pl_entry.boundAt
 kernel_rfl PRE_pl_entry.boundFramed : PRE_pl_entry.frames.all PRE_pl_entry.boundAt = true
 kernel_rfl PRE_pl_entry.rootsSupp_check : checkRootsSupp PRE_pl_entry.s0 PRE_pl_entry.n = true
 
-theorem PRE_pl_entry.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PRE_pl_entry.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pl_entry.frames.all p = true) :
+theorem PRE_pl_entry.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PLEntryV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pl_entry.frames.all p = true) :
     ∀ a, Present PRE_pl_entry.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha

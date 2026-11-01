@@ -20,7 +20,7 @@ theorem dispatch (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.st1.S0.oracle) :
     CutStep (withMem Mem (dispatchCut NB T tk)) (withMem Mem (g2Cut NB T tk)) 155 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids⟩, hm⟩
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids⟩, hmem⟩
   let d := dispatchSite NB T tk (D1Typed.bytes π)
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (D1Frames.typedW (D1Typed.bytes π)) [] x.M x.ν x.K D1StageSplit.s20 d.tpl.S0 x.t x.C := by
@@ -72,7 +72,7 @@ theorem dispatch (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨π, K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt21)⟩ hm⟩
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt21)⟩ hmem⟩
 
 noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :

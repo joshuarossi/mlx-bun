@@ -10,7 +10,7 @@ set_option maxHeartbeats 0
 
 kernel_rfl PRE_pl_entry.hnext : (Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx.next = 21986
 noncomputable def PRE_pl_entry.freshAt (a : Nat) : Bool := noBigAtB 21986 131072 PRE_pl_entry.s0 a
-tpl_all_blocks PRE_pl_entry.FB from PRE_pl_entry : PRE_pl_entry.freshAt
+tpl_all_blocks PRE_pl_entry.FB from PLEntryV : PRE_pl_entry.freshAt
 kernel_rfl PRE_pl_entry.freshFramed : PRE_pl_entry.frames.all PRE_pl_entry.freshAt = true
 kernel_rfl PRE_pl_entry.freshRoots : noBigRootsB 21986 131072 PRE_pl_entry.s0.trace PRE_pl_entry.s0 = true
 kernel_rfl PRE_pl_entry.nativeFresh : bigsOutB 21986 131072 (Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx = true
@@ -18,7 +18,7 @@ theorem PRE_pl_entry.noBigFresh : NoBigSt (fun i => (21986 : Int) ≤ i ∧ i < 
   NoBigSt.of_checks (fun a ha => PRE_pl_entry.allPresent PRE_pl_entry.FB.all PRE_pl_entry.freshFramed a ha) PRE_pl_entry.freshRoots
 
 noncomputable def PRE_pl_entry.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2826779) PRE_pl_entry.s0 a
-tpl_all_blocks PRE_pl_entry.JH from PRE_pl_entry : PRE_pl_entry.jsAt
+tpl_all_blocks PRE_pl_entry.JH from PLEntryV : PRE_pl_entry.jsAt
 kernel_rfl PRE_pl_entry.jsFramed : PRE_pl_entry.frames.all PRE_pl_entry.jsAt = true
 kernel_rfl PRE_pl_entry.jsRoots : noBigRootsP (jsAboveB 2826779) PRE_pl_entry.s0.trace PRE_pl_entry.s0 = true
 kernel_rfl PRE_pl_entry.jsNative : bigsOutB jsLoN jsHiN (Host.Load.Layers.toLoad PRE_pl_entry.s0.ffi).mlx = true

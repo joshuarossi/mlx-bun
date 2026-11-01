@@ -45,7 +45,9 @@ noncomputable def DEC_clearFill.piecesFixed (q : List Val) (R : DEC_clearFill.Ru
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk0_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm0_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_12504, Host.Load.Run.Tpl.DEC_clearFill.zk0_12504, Host.Load.Run.Tpl.DEC_clearFill.zm0_12504⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_2665, Host.Load.Run.Tpl.DEC_clearFill.zk0_2665, Host.Load.Run.Tpl.DEC_clearFill.zm0_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk0_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm0_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_12504, Host.Load.Run.Tpl.DEC_clearFill.zk0_12504, Host.Load.Run.Tpl.DEC_clearFill.zm0_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg0_2665, Host.Load.Run.Tpl.DEC_clearFill.zk0_2665, Host.Load.Run.Tpl.DEC_clearFill.zm0_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_clearFill.zw0_4910) wf_wideP Host.Load.Run.Tpl.DEC_clearFill.zclbd0 Host.Load.Run.Tpl.DEC_clearFill.cheap0
         (hoff_of Host.Load.Run.Tpl.DEC_clearFill.mheap0 Host.Load.Run.Tpl.DEC_clearFill.stFoot0 Host.Load.Run.Tpl.DEC_clearFill.iso0 Host.Load.Run.Tpl.DEC_clearFill.zwr0) Host.Load.Run.Tpl.DEC_clearFill.ckeepP0 Host.Load.Run.Tpl.DEC_clearFill.csupp0 Host.Load.Run.Tpl.DEC_clearFill.cbound0 Host.Load.Run.Tpl.DEC_clearFill.zimg0
         Host.Load.Run.Tpl.DEC_clearFill.zctl0 Host.Load.Run.Tpl.DEC_clearFill.zstack0 Host.Load.Run.Tpl.DEC_clearFill.zjobs0 Host.Load.Run.Tpl.DEC_clearFill.zstores0 Host.Load.Run.Tpl.DEC_clearFill.zroots0 x0 x hcf hK hB.ofFb)
@@ -84,7 +86,9 @@ noncomputable def DEC_clearFill.piecesFixed (q : List Val) (R : DEC_clearFill.Ru
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk1_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm1_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_12504, Host.Load.Run.Tpl.DEC_clearFill.zk1_12504, Host.Load.Run.Tpl.DEC_clearFill.zm1_12504⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_2665, Host.Load.Run.Tpl.DEC_clearFill.zk1_2665, Host.Load.Run.Tpl.DEC_clearFill.zm1_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk1_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm1_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_12504, Host.Load.Run.Tpl.DEC_clearFill.zk1_12504, Host.Load.Run.Tpl.DEC_clearFill.zm1_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg1_2665, Host.Load.Run.Tpl.DEC_clearFill.zk1_2665, Host.Load.Run.Tpl.DEC_clearFill.zm1_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_clearFill.zw1_4910) wf_wideP Host.Load.Run.Tpl.DEC_clearFill.zclbd1 Host.Load.Run.Tpl.DEC_clearFill.cheap1
         (hoff_of Host.Load.Run.Tpl.DEC_clearFill.mheap1 Host.Load.Run.Tpl.DEC_clearFill.stFoot1 Host.Load.Run.Tpl.DEC_clearFill.iso1 Host.Load.Run.Tpl.DEC_clearFill.zwr1) Host.Load.Run.Tpl.DEC_clearFill.ckeepP1 Host.Load.Run.Tpl.DEC_clearFill.csupp1 Host.Load.Run.Tpl.DEC_clearFill.cbound1 Host.Load.Run.Tpl.DEC_clearFill.zimg1
         Host.Load.Run.Tpl.DEC_clearFill.zctl1 Host.Load.Run.Tpl.DEC_clearFill.zstack1 Host.Load.Run.Tpl.DEC_clearFill.zjobs1 Host.Load.Run.Tpl.DEC_clearFill.zstores1 Host.Load.Run.Tpl.DEC_clearFill.zroots1 x0 x hcf hK hB.ofFb)
@@ -123,7 +127,9 @@ noncomputable def DEC_clearFill.piecesFixed (q : List Val) (R : DEC_clearFill.Ru
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk2_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm2_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_12504, Host.Load.Run.Tpl.DEC_clearFill.zk2_12504, Host.Load.Run.Tpl.DEC_clearFill.zm2_12504⟩, ⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_2665, Host.Load.Run.Tpl.DEC_clearFill.zk2_2665, Host.Load.Run.Tpl.DEC_clearFill.zm2_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_2673448, Host.Load.Run.Tpl.DEC_clearFill.zk2_2673448, Host.Load.Run.Tpl.DEC_clearFill.zm2_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_12504, Host.Load.Run.Tpl.DEC_clearFill.zk2_12504, Host.Load.Run.Tpl.DEC_clearFill.zm2_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_clearFill.zg2_2665, Host.Load.Run.Tpl.DEC_clearFill.zk2_2665, Host.Load.Run.Tpl.DEC_clearFill.zm2_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_clearFill.zw2_4910) wf_wideP Host.Load.Run.Tpl.DEC_clearFill.zclbd2 Host.Load.Run.Tpl.DEC_clearFill.cheap2
         (hoff_of Host.Load.Run.Tpl.DEC_clearFill.mheap2 Host.Load.Run.Tpl.DEC_clearFill.stFoot2 Host.Load.Run.Tpl.DEC_clearFill.iso2 Host.Load.Run.Tpl.DEC_clearFill.zwr2) Host.Load.Run.Tpl.DEC_clearFill.ckeepP2 Host.Load.Run.Tpl.DEC_clearFill.csupp2 Host.Load.Run.Tpl.DEC_clearFill.cbound2 Host.Load.Run.Tpl.DEC_clearFill.zimg2
         Host.Load.Run.Tpl.DEC_clearFill.zctl2 Host.Load.Run.Tpl.DEC_clearFill.zstack2 Host.Load.Run.Tpl.DEC_clearFill.zjobs2 Host.Load.Run.Tpl.DEC_clearFill.zstores2 Host.Load.Run.Tpl.DEC_clearFill.zroots2 x0 x hcf hK hB.ofFb)

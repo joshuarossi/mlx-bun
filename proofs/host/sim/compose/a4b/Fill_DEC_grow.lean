@@ -329,7 +329,9 @@ noncomputable def DEC_grow.pieces (q : List Val) (R : DEC_grow.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_grow.zg0_2673448, Host.Load.Run.Tpl.DEC_grow.zk0_2673448, Host.Load.Run.Tpl.DEC_grow.zm0_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg0_12504, Host.Load.Run.Tpl.DEC_grow.zk0_12504, Host.Load.Run.Tpl.DEC_grow.zm0_12504⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg0_2665, Host.Load.Run.Tpl.DEC_grow.zk0_2665, Host.Load.Run.Tpl.DEC_grow.zm0_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg0_2673448, Host.Load.Run.Tpl.DEC_grow.zk0_2673448, Host.Load.Run.Tpl.DEC_grow.zm0_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg0_12504, Host.Load.Run.Tpl.DEC_grow.zk0_12504, Host.Load.Run.Tpl.DEC_grow.zm0_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg0_2665, Host.Load.Run.Tpl.DEC_grow.zk0_2665, Host.Load.Run.Tpl.DEC_grow.zm0_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_grow.zw0_4910) wf_wideP Host.Load.Run.Tpl.DEC_grow.zclbd0 Host.Load.Run.Tpl.DEC_grow.cheap0
         (hoff_of Host.Load.Run.Tpl.DEC_grow.mheap0 Host.Load.Run.Tpl.DEC_grow.stFoot0 Host.Load.Run.Tpl.DEC_grow.iso0 Host.Load.Run.Tpl.DEC_grow.zwr0) Host.Load.Run.Tpl.DEC_grow.ckeepP0 Host.Load.Run.Tpl.DEC_grow.csupp0 Host.Load.Run.Tpl.DEC_grow.cbound0 Host.Load.Run.Tpl.DEC_grow.zimg0
         Host.Load.Run.Tpl.DEC_grow.zctl0 Host.Load.Run.Tpl.DEC_grow.zstack0 Host.Load.Run.Tpl.DEC_grow.zjobs0 Host.Load.Run.Tpl.DEC_grow.zstores0 Host.Load.Run.Tpl.DEC_grow.zroots0 x0 x hcf hK hB.ofFb)
@@ -368,7 +370,9 @@ noncomputable def DEC_grow.pieces (q : List Val) (R : DEC_grow.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_grow.zg1_2673448, Host.Load.Run.Tpl.DEC_grow.zk1_2673448, Host.Load.Run.Tpl.DEC_grow.zm1_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg1_12504, Host.Load.Run.Tpl.DEC_grow.zk1_12504, Host.Load.Run.Tpl.DEC_grow.zm1_12504⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg1_2665, Host.Load.Run.Tpl.DEC_grow.zk1_2665, Host.Load.Run.Tpl.DEC_grow.zm1_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg1_2673448, Host.Load.Run.Tpl.DEC_grow.zk1_2673448, Host.Load.Run.Tpl.DEC_grow.zm1_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg1_12504, Host.Load.Run.Tpl.DEC_grow.zk1_12504, Host.Load.Run.Tpl.DEC_grow.zm1_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg1_2665, Host.Load.Run.Tpl.DEC_grow.zk1_2665, Host.Load.Run.Tpl.DEC_grow.zm1_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_grow.zw1_4910) wf_wideP Host.Load.Run.Tpl.DEC_grow.zclbd1 Host.Load.Run.Tpl.DEC_grow.cheap1
         (hoff_of Host.Load.Run.Tpl.DEC_grow.mheap1 Host.Load.Run.Tpl.DEC_grow.stFoot1 Host.Load.Run.Tpl.DEC_grow.iso1 Host.Load.Run.Tpl.DEC_grow.zwr1) Host.Load.Run.Tpl.DEC_grow.ckeepP1 Host.Load.Run.Tpl.DEC_grow.csupp1 Host.Load.Run.Tpl.DEC_grow.cbound1 Host.Load.Run.Tpl.DEC_grow.zimg1
         Host.Load.Run.Tpl.DEC_grow.zctl1 Host.Load.Run.Tpl.DEC_grow.zstack1 Host.Load.Run.Tpl.DEC_grow.zjobs1 Host.Load.Run.Tpl.DEC_grow.zstores1 Host.Load.Run.Tpl.DEC_grow.zroots1 x0 x hcf hK hB.ofFb)
@@ -407,7 +411,9 @@ noncomputable def DEC_grow.pieces (q : List Val) (R : DEC_grow.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_grow.zg2_2673448, Host.Load.Run.Tpl.DEC_grow.zk2_2673448, Host.Load.Run.Tpl.DEC_grow.zm2_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg2_12504, Host.Load.Run.Tpl.DEC_grow.zk2_12504, Host.Load.Run.Tpl.DEC_grow.zm2_12504⟩, ⟨Host.Load.Run.Tpl.DEC_grow.zg2_2665, Host.Load.Run.Tpl.DEC_grow.zk2_2665, Host.Load.Run.Tpl.DEC_grow.zm2_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg2_2673448, Host.Load.Run.Tpl.DEC_grow.zk2_2673448, Host.Load.Run.Tpl.DEC_grow.zm2_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg2_12504, Host.Load.Run.Tpl.DEC_grow.zk2_12504, Host.Load.Run.Tpl.DEC_grow.zm2_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_grow.zg2_2665, Host.Load.Run.Tpl.DEC_grow.zk2_2665, Host.Load.Run.Tpl.DEC_grow.zm2_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_grow.zw2_4910) wf_wideP Host.Load.Run.Tpl.DEC_grow.zclbd2 Host.Load.Run.Tpl.DEC_grow.cheap2
         (hoff_of Host.Load.Run.Tpl.DEC_grow.mheap2 Host.Load.Run.Tpl.DEC_grow.stFoot2 Host.Load.Run.Tpl.DEC_grow.iso2 Host.Load.Run.Tpl.DEC_grow.zwr2) Host.Load.Run.Tpl.DEC_grow.ckeepP2 Host.Load.Run.Tpl.DEC_grow.csupp2 Host.Load.Run.Tpl.DEC_grow.cbound2 Host.Load.Run.Tpl.DEC_grow.zimg2
         Host.Load.Run.Tpl.DEC_grow.zctl2 Host.Load.Run.Tpl.DEC_grow.zstack2 Host.Load.Run.Tpl.DEC_grow.zjobs2 Host.Load.Run.Tpl.DEC_grow.zstores2 Host.Load.Run.Tpl.DEC_grow.zroots2 x0 x hcf hK hB.ofFb)

@@ -1,4 +1,5 @@
 import host.sim.compose.a4b.VWBodySiteStep
+import host.sim.conv.Decanon
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -19,9 +20,70 @@ theorem bodyGrowLocalSim (NB T : Nat) (tk : Nat → Nat) (bs : List Byte) (n : N
   simp only [okLocal, Bool.and_eq_true] at h
   exact h.1
 
+/-- The canonical results of a call join the finished ones: the earlier ones keep their values and
+terms, and each new one is its result's term, with the earlier ones replaced by theirs. -/
+theorem defs_post {ν : Nat → F64} {tab S2 Sm : List SymE} {ws cws nr : List Nat} {n0 : Nat}
+    {vs : List Nat} {es : List SymE}
+    (hSm : Sm = tab ++ Conv.resTab ws) (hn0 : tab.length = n0)
+    (hws : ws.length = S2.length - n0) (hnd : ws.Nodup) (hndc : cws.Nodup) (hlen : cws.length = nr.length)
+    (hnrLo : nr.all (Nat.ble n0) = true) (hnrHi : ∀ r ∈ nr, r < Sm.length)
+    (hdef : DefsOk vs es ν) (hl : vs.length = es.length)
+    (hold : vs.all (fun v => (Conv.idx? v cws).isNone && !ws.contains v) = true)
+    (hfree : (es ++ nr.map (fun r => ((nth? S2 r).getD (.lit (F64.zero false))).subst (Conv.compactθ vs es))).all
+      (fun e => (cws ++ ws).all fun w => e.noVar w) = true) :
+    DefsOk (vs ++ cws) (es ++ nr.map (fun r => ((nth? S2 r).getD (.lit (F64.zero false))).subst (Conv.compactθ vs es)))
+      (Shift.valuation (Conv.compactθZ cws (nr.map fun r => (nth? Sm r).getD (.var 0)) ws)
+        (Conv.resVal ν ws (Conv.resF SymE.var S2 n0 ν))) := by
+  subst hSm
+  let θ := Conv.compactθZ cws (nr.map fun r => (nth? (tab ++ Conv.resTab ws) r).getD (.var 0)) ws
+  let ν1 := Conv.resVal ν ws (Conv.resF SymE.var S2 n0 ν)
+  have hout : ∀ v, Conv.idx? v cws = none → ws.contains v = false → Shift.valuation θ ν1 v = ν v := by
+    intro v hc hw
+    rw [Conv.valuation_compactθZ_out hc hw]
+    exact Conv.resVal_off (fun hm => by
+      have hc' := List.contains_iff_mem.mpr hm
+      rw [hw] at hc'
+      cases hc')
+  have hcongr : ∀ e : SymE, ((cws ++ ws).all fun w => e.noVar w) = true → e.eval (Shift.valuation θ ν1) = e.eval ν := by
+    intro e he
+    refine Conv.SymE.eval_congr (V := (· ∈ cws ++ ws)) (fun v hv => ?_) e fun w hw => List.all_eq_true.mp he w hw
+    refine hout v (Conv.idx?_none fun hm => hv (List.mem_append_left _ hm)) ?_
+    exact Bool.eq_false_iff.mpr fun hc => hv (List.mem_append_right _ (List.contains_iff_mem.mp hc))
+  rintro ⟨v, e⟩ hp
+  change Shift.valuation θ ν1 v = e.eval (Shift.valuation θ ν1)
+  rw [List.zip_append hl, List.mem_append] at hp
+  rcases hp with hp | hp
+  · have hzip := List.of_mem_zip hp
+    have hv := List.all_eq_true.mp hold v hzip.1
+    simp only [Bool.and_eq_true, Option.isNone_iff_eq_none, Bool.not_eq_true'] at hv
+    rw [hout v hv.1 hv.2, hcongr e (List.all_eq_true.mp hfree e (List.mem_append_left _ hzip.2))]
+    exact hdef (v, e) hp
+  · obtain ⟨j, hj, hje⟩ := mem_zip_nth hp
+    rw [nth?_map] at hje
+    cases hrr : nth? nr j with
+    | none => rw [hrr] at hje; cases hje
+    | some rr =>
+      rw [hrr] at hje
+      obtain rfl : ((nth? S2 rr).getD (.lit (F64.zero false))).subst (Conv.compactθ vs es) = e := Option.some.inj hje
+      have hr : nth? (nr.map fun r => (nth? (tab ++ Conv.resTab ws) r).getD (.var 0)) j =
+          some ((nth? (tab ++ Conv.resTab ws) rr).getD (.var 0)) := by
+        rw [nth?_map, hrr]
+        rfl
+      have hmem : ((nth? S2 rr).getD (.lit (F64.zero false))).subst (Conv.compactθ vs es) ∈
+          es ++ nr.map (fun r => ((nth? S2 r).getD (.lit (F64.zero false))).subst (Conv.compactθ vs es)) :=
+        List.mem_append_right _ (List.mem_map.mpr ⟨rr, nth?_mem_some hrr, rfl⟩)
+      have hE := hcongr _ (List.all_eq_true.mp hfree _ hmem)
+      rw [hE, Conv.valuation_compactθZ_res (Conv.idx?_nth hndc hj) hr]
+      have hlo := Nat.le_of_ble_eq_true (List.all_eq_true.mp hnrLo rr (nth?_mem_some hrr))
+      have hhi := hnrHi rr (nth?_mem_some hrr)
+      have hSl : (tab ++ Conv.resTab ws).length = tab.length + ws.length := by simp [Conv.resTab]
+      rw [Conv.crs_eval hn0 hnd hlo (by omega), SymE.eval_subst,
+        show (fun v => (Conv.compactθ vs es v).eval ν) = ν from funext (Conv.valuation_decanon hdef.nth)]
+
 /-- **One compacting call of the body**: the checked site run and its compaction, carrying the
-book, the input, the reserved variables and the row's mapped variables to the canonical state. -/
-theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {O O' : BodyOff}
+book, the input, the reserved variables and the row's mapped variables to the canonical state.
+The instance after it, on the nodes: everything else its two uses read is the stretch's. -/
+theorem bodySiteCore {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE} {O O' : BodyOff}
     {m : List (Nat × Q)} {sa sm sc s0 : St FF.S} {Sa Sm Sc : SSrv} {ws cws nr pl l : List Nat}
     {n1 nC : Nat} {D : RData} {κ : Map} {P0 : LoadP} {c c2 : Conv.Cnt} {S2 : List SymE}
     {Es : List (Option SymE)} {qs : List (Option Q)}
@@ -47,9 +109,21 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
       ∃ j, nth? cws j = some p.1 ∧ nth? qs j = some (some p.2))
     (hDmax : O.D + (sm.next - sc.next) ≤ O'.D) (hD' : O'.D ≤ VWFrames.bodyD0)
     (hHmax : O.H + ((mlxOf sm.ffi).next - (mlxOf sc.ffi).next) ≤ O'.H) (hH' : O'.H ≤ 2 ^ 40)
-    (hNmax : O.N + ((mlxOf sm.ffi).nnext - (mlxOf sc.ffi).nnext) ≤ O'.N) (hN' : O'.N ≤ 2 ^ 40) :
-    CutStep (bodyCut NB T tk π i O m sa Sa) (bodyCut NB T tk π i O' m sc Sc) (n + 1) := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hnat, hip, hins, hmap⟩, hfresh, hids⟩
+    (hNmax : O.N + ((mlxOf sm.ffi).nnext - (mlxOf sc.ffi).nnext) ≤ O'.N) (hN' : O'.N ≤ 2 ^ 40)
+    (hDv : Θ.1.take O'.J = Θ.1.take O.J ++ cws)
+    (hDe : Θ.2.take O'.J = Θ.2.take O.J ++
+      nr.map (fun r => ((nth? S2 r).getD (.lit (F64.zero false))).subst (Conv.compactθ (Θ.1.take O.J) (Θ.2.take O.J))))
+    (hDl : (Θ.1.take O.J).length = (Θ.2.take O.J).length)
+    (hDold : (Θ.1.take O.J).all (fun v => (Conv.idx? v cws).isNone && !ws.contains v) = true)
+    (hDfree : (Θ.2.take O'.J).all (fun e => (cws ++ ws).all fun w => e.noVar w) = true)
+    {x : SegInst FF} (hR : (bodyCore NB T tk π i Θ O m sa Sa).R x sa ⟨Sa.tab, []⟩)
+    (hB : (bodyCore NB T tk π i Θ O m sa Sa).B x) :
+    ∃ y : SegInst FF, runC FF (n + 1) x.t x.C = some (y.t, y.C) ∧
+      (bodyCore NB T tk π i Θ O' m sc Sc).R y sc ⟨Sc.tab, []⟩ ∧ (bodyCore NB T tk π i Θ O' m sc Sc).B y ∧
+      (∀ k, y.M.node k = x.M.node (κ.node k)) ∧ Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧
+      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens := by
+  obtain ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ := hR
+  obtain ⟨hfresh, hids⟩ := hB
   let bs := tokenBytes (π.take i.n)
   let rows := (π.take i.n).length
   let d0 := d bs rows
@@ -164,7 +238,7 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   let y : SegInst FF := ⟨N.withJs, Shift.valuation θ ν1, K', t', C'⟩
   have node : y.M.node 15235 = M'.node 15235 := by
     change M'.node (κ.node 15235) = M'.node 15235
-    rw [Conv.node_of_fixOld F.cfix (Nat.le_refl c.nn) 15235 F.inputOld]
+    rw [Conv.node_of_fixOld F.cfix (Nat.le_refl c.nn) 15235 (Nat.lt_of_lt_of_le (by decide) F.trailOld)]
   have aold : ∀ a, a < sa.next → y.M.a a = M'.a a := by
     intro a ha
     change M'.a (κ.a a) = M'.a a
@@ -216,8 +290,40 @@ theorem bodySite {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have hia : (bridgeOf sa.ffi).active = false :=
     (congrArg (fun b : Host.Mlx.FfiAne.St => b.active) (F.sbridge.symm.trans F.cbridge)).trans F.zbin
   have fresh : AneFresh t' := bodyFresh hr hm' hia F.sbridge hfresh
-  refine ⟨t', C', hrun, y, rfl, rfl, ⟨K0, hcW, book, hnatC, ?_, inputs, hval2⟩, fresh, ids⟩
+  have defs : DefsOk (Θ.1.take O'.J) (Θ.2.take O'.J) y.ν := by
+    rw [hDv, hDe]
+    refine defs_post (tab := Sa.tab) (Sm := Sm.tab) F.mergeTab rfl (by rw [← hS2 bs rows]; exact d0.len)
+      d0.freshNodup (nodupT_sound F.zcnd).2 F.lenc hnrLo (fun r hr => Nat.blt_eq.mp (List.all_eq_true.mp F.znrHi r hr))
+      hdf hDl hDold ?_
+    rw [← hDe]
+    exact hDfree
+  refine ⟨y, hrun, ⟨K0, hcW, book, hnatC, ?_, inputs, hval2, defs⟩, ⟨fresh, ids⟩,
+    fun k => congrFun hext.node (κ.node k), ng, tokens_of_grow hr hm' ng (countersOkB_tokens F.cntM)⟩
   rw [node]
   exact ip
+
+/-- A call in the forward: its compaction moves only nodes made during the forward. -/
+theorem bodySite {A B : ICut FF} {n : Nat} {κ : Map} {c : Conv.Cnt} {x0 : SegInst FF}
+    (hfix : Conv.FixOld c κ) (hold : bodyN0 ≤ c.nn)
+    (core : ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x → ∃ y : SegInst FF, runC FF n x.t x.C = some (y.t, y.C) ∧
+      B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧ (∀ k, y.M.node k = x.M.node (κ.node k)) ∧
+      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) :
+    CutStep (withMem (BodyTrail x0) A) (withMem (BodyTrail x0) B) n := by
+  rintro t C ⟨x, rfl, rfl, hR, hB, htr⟩
+  obtain ⟨y, hrun, hR', hB', hnode, ng, htok⟩ := core x hR hB
+  refine ⟨_, _, hrun, y, rfl, rfl, hR', hB', htr.step (fun k hk => ?_) ng htok⟩
+  rw [hnode k, Conv.node_of_fixOld hfix (Nat.le_refl c.nn) k (Nat.lt_of_lt_of_le hk hold)]
+
+/-- A call whose compaction renames no node: the retained property of any stretch. -/
+theorem memSite {A B : ICut FF} {n : Nat} {κ : Map} {Tr : SegInst FF → Prop}
+    (hT : ∀ x y, NTrack x y → Tr x → Tr y) (hκ : ∀ k, κ.node k = k)
+    (core : ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x → ∃ y : SegInst FF, runC FF n x.t x.C = some (y.t, y.C) ∧
+      B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧ (∀ k, y.M.node k = x.M.node (κ.node k)) ∧
+      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) :
+    CutStep (withMem Tr A) (withMem Tr B) n := by
+  rintro t C ⟨x, rfl, rfl, hR, hB, htr⟩
+  obtain ⟨y, hrun, hR', hB', hnode, ng, htok⟩ := core x hR hB
+  exact ⟨_, _, hrun, y, rfl, rfl, hR', hB',
+    hT x y ⟨runC_le _ _ _ _ _ hrun, funext fun k => (hnode k).trans (congrArg x.M.node (hκ k)), ng, htok⟩ htr⟩
 
 end Host.Ts.Sim.Compose.VWFirst

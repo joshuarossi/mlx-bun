@@ -44,7 +44,9 @@ noncomputable def DEC_ord.piecesBounded (q : List Val) (R : DEC_ord.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_ord.zg0_2673448, Host.Load.Run.Tpl.DEC_ord.zk0_2673448, Host.Load.Run.Tpl.DEC_ord.zm0_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg0_12504, Host.Load.Run.Tpl.DEC_ord.zk0_12504, Host.Load.Run.Tpl.DEC_ord.zm0_12504⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg0_2665, Host.Load.Run.Tpl.DEC_ord.zk0_2665, Host.Load.Run.Tpl.DEC_ord.zm0_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg0_2673448, Host.Load.Run.Tpl.DEC_ord.zk0_2673448, Host.Load.Run.Tpl.DEC_ord.zm0_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg0_12504, Host.Load.Run.Tpl.DEC_ord.zk0_12504, Host.Load.Run.Tpl.DEC_ord.zm0_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg0_2665, Host.Load.Run.Tpl.DEC_ord.zk0_2665, Host.Load.Run.Tpl.DEC_ord.zm0_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_ord.zw0_4910) wf_wideP Host.Load.Run.Tpl.DEC_ord.zclbd0 Host.Load.Run.Tpl.DEC_ord.cheap0
         (hoff_of Host.Load.Run.Tpl.DEC_ord.mheap0 Host.Load.Run.Tpl.DEC_ord.stFoot0 Host.Load.Run.Tpl.DEC_ord.iso0 Host.Load.Run.Tpl.DEC_ord.zwr0) Host.Load.Run.Tpl.DEC_ord.ckeepP0 Host.Load.Run.Tpl.DEC_ord.csupp0 Host.Load.Run.Tpl.DEC_ord.cbound0 Host.Load.Run.Tpl.DEC_ord.zimg0
         Host.Load.Run.Tpl.DEC_ord.zctl0 Host.Load.Run.Tpl.DEC_ord.zstack0 Host.Load.Run.Tpl.DEC_ord.zjobs0 Host.Load.Run.Tpl.DEC_ord.zstores0 Host.Load.Run.Tpl.DEC_ord.zroots0 x0 x hcf hK hB.ofFb)
@@ -83,7 +85,9 @@ noncomputable def DEC_ord.piecesBounded (q : List Val) (R : DEC_ord.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_ord.zg1_2673448, Host.Load.Run.Tpl.DEC_ord.zk1_2673448, Host.Load.Run.Tpl.DEC_ord.zm1_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg1_12504, Host.Load.Run.Tpl.DEC_ord.zk1_12504, Host.Load.Run.Tpl.DEC_ord.zm1_12504⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg1_2665, Host.Load.Run.Tpl.DEC_ord.zk1_2665, Host.Load.Run.Tpl.DEC_ord.zm1_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg1_2673448, Host.Load.Run.Tpl.DEC_ord.zk1_2673448, Host.Load.Run.Tpl.DEC_ord.zm1_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg1_12504, Host.Load.Run.Tpl.DEC_ord.zk1_12504, Host.Load.Run.Tpl.DEC_ord.zm1_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg1_2665, Host.Load.Run.Tpl.DEC_ord.zk1_2665, Host.Load.Run.Tpl.DEC_ord.zm1_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_ord.zw1_4910) wf_wideP Host.Load.Run.Tpl.DEC_ord.zclbd1 Host.Load.Run.Tpl.DEC_ord.cheap1
         (hoff_of Host.Load.Run.Tpl.DEC_ord.mheap1 Host.Load.Run.Tpl.DEC_ord.stFoot1 Host.Load.Run.Tpl.DEC_ord.iso1 Host.Load.Run.Tpl.DEC_ord.zwr1) Host.Load.Run.Tpl.DEC_ord.ckeepP1 Host.Load.Run.Tpl.DEC_ord.csupp1 Host.Load.Run.Tpl.DEC_ord.cbound1 Host.Load.Run.Tpl.DEC_ord.zimg1
         Host.Load.Run.Tpl.DEC_ord.zctl1 Host.Load.Run.Tpl.DEC_ord.zstack1 Host.Load.Run.Tpl.DEC_ord.zjobs1 Host.Load.Run.Tpl.DEC_ord.zstores1 Host.Load.Run.Tpl.DEC_ord.zroots1 x0 x hcf hK hB.ofFb)
@@ -122,7 +126,9 @@ noncomputable def DEC_ord.piecesBounded (q : List Val) (R : DEC_ord.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_ord.zg2_2673448, Host.Load.Run.Tpl.DEC_ord.zk2_2673448, Host.Load.Run.Tpl.DEC_ord.zm2_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg2_12504, Host.Load.Run.Tpl.DEC_ord.zk2_12504, Host.Load.Run.Tpl.DEC_ord.zm2_12504⟩, ⟨Host.Load.Run.Tpl.DEC_ord.zg2_2665, Host.Load.Run.Tpl.DEC_ord.zk2_2665, Host.Load.Run.Tpl.DEC_ord.zm2_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg2_2673448, Host.Load.Run.Tpl.DEC_ord.zk2_2673448, Host.Load.Run.Tpl.DEC_ord.zm2_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg2_12504, Host.Load.Run.Tpl.DEC_ord.zk2_12504, Host.Load.Run.Tpl.DEC_ord.zm2_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_ord.zg2_2665, Host.Load.Run.Tpl.DEC_ord.zk2_2665, Host.Load.Run.Tpl.DEC_ord.zm2_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_ord.zw2_4910) wf_wideP Host.Load.Run.Tpl.DEC_ord.zclbd2 Host.Load.Run.Tpl.DEC_ord.cheap2
         (hoff_of Host.Load.Run.Tpl.DEC_ord.mheap2 Host.Load.Run.Tpl.DEC_ord.stFoot2 Host.Load.Run.Tpl.DEC_ord.iso2 Host.Load.Run.Tpl.DEC_ord.zwr2) Host.Load.Run.Tpl.DEC_ord.ckeepP2 Host.Load.Run.Tpl.DEC_ord.csupp2 Host.Load.Run.Tpl.DEC_ord.cbound2 Host.Load.Run.Tpl.DEC_ord.zimg2
         Host.Load.Run.Tpl.DEC_ord.zctl2 Host.Load.Run.Tpl.DEC_ord.zstack2 Host.Load.Run.Tpl.DEC_ord.zjobs2 Host.Load.Run.Tpl.DEC_ord.zstores2 Host.Load.Run.Tpl.DEC_ord.zroots2 x0 x hcf hK hB.ofFb)

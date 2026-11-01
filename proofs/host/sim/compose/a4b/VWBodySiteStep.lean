@@ -76,7 +76,7 @@ structure BodySiteFacts (sa sm sc s0 : St FF.S) (Sa Sm Sc : SSrv) (ws cws nr pl 
   jsRoots : noBigRootsP (jsAboveB sa.next) sc.trace sc = true
   jsNative : bigsOutB jsLoN jsHiN (mlxOf sc.ffi) = true
   framesEmpty : [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view].all (fun a => (arrOf sm a).isEmpty) = true
-  inputOld : 15235 < c.nn
+  trailOld : bodyN0 ≤ c.nn
   lowVars : (cws ++ ws).all (Nat.ble 9) = true
 
 section

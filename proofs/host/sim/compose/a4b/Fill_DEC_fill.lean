@@ -329,7 +329,9 @@ noncomputable def DEC_fill.pieces (q : List Val) (R : DEC_fill.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_fill.zg0_2673448, Host.Load.Run.Tpl.DEC_fill.zk0_2673448, Host.Load.Run.Tpl.DEC_fill.zm0_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg0_12504, Host.Load.Run.Tpl.DEC_fill.zk0_12504, Host.Load.Run.Tpl.DEC_fill.zm0_12504⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg0_2665, Host.Load.Run.Tpl.DEC_fill.zk0_2665, Host.Load.Run.Tpl.DEC_fill.zm0_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg0_2673448, Host.Load.Run.Tpl.DEC_fill.zk0_2673448, Host.Load.Run.Tpl.DEC_fill.zm0_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg0_12504, Host.Load.Run.Tpl.DEC_fill.zk0_12504, Host.Load.Run.Tpl.DEC_fill.zm0_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg0_2665, Host.Load.Run.Tpl.DEC_fill.zk0_2665, Host.Load.Run.Tpl.DEC_fill.zm0_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_fill.zw0_4910) wf_wideP Host.Load.Run.Tpl.DEC_fill.zclbd0 Host.Load.Run.Tpl.DEC_fill.cheap0
         (hoff_of Host.Load.Run.Tpl.DEC_fill.mheap0 Host.Load.Run.Tpl.DEC_fill.stFoot0 Host.Load.Run.Tpl.DEC_fill.iso0 Host.Load.Run.Tpl.DEC_fill.zwr0) Host.Load.Run.Tpl.DEC_fill.ckeepP0 Host.Load.Run.Tpl.DEC_fill.csupp0 Host.Load.Run.Tpl.DEC_fill.cbound0 Host.Load.Run.Tpl.DEC_fill.zimg0
         Host.Load.Run.Tpl.DEC_fill.zctl0 Host.Load.Run.Tpl.DEC_fill.zstack0 Host.Load.Run.Tpl.DEC_fill.zjobs0 Host.Load.Run.Tpl.DEC_fill.zstores0 Host.Load.Run.Tpl.DEC_fill.zroots0 x0 x hcf hK hB.ofFb)
@@ -368,7 +370,9 @@ noncomputable def DEC_fill.pieces (q : List Val) (R : DEC_fill.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_fill.zg1_2673448, Host.Load.Run.Tpl.DEC_fill.zk1_2673448, Host.Load.Run.Tpl.DEC_fill.zm1_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg1_12504, Host.Load.Run.Tpl.DEC_fill.zk1_12504, Host.Load.Run.Tpl.DEC_fill.zm1_12504⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg1_2665, Host.Load.Run.Tpl.DEC_fill.zk1_2665, Host.Load.Run.Tpl.DEC_fill.zm1_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg1_2673448, Host.Load.Run.Tpl.DEC_fill.zk1_2673448, Host.Load.Run.Tpl.DEC_fill.zm1_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg1_12504, Host.Load.Run.Tpl.DEC_fill.zk1_12504, Host.Load.Run.Tpl.DEC_fill.zm1_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg1_2665, Host.Load.Run.Tpl.DEC_fill.zk1_2665, Host.Load.Run.Tpl.DEC_fill.zm1_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_fill.zw1_4910) wf_wideP Host.Load.Run.Tpl.DEC_fill.zclbd1 Host.Load.Run.Tpl.DEC_fill.cheap1
         (hoff_of Host.Load.Run.Tpl.DEC_fill.mheap1 Host.Load.Run.Tpl.DEC_fill.stFoot1 Host.Load.Run.Tpl.DEC_fill.iso1 Host.Load.Run.Tpl.DEC_fill.zwr1) Host.Load.Run.Tpl.DEC_fill.ckeepP1 Host.Load.Run.Tpl.DEC_fill.csupp1 Host.Load.Run.Tpl.DEC_fill.cbound1 Host.Load.Run.Tpl.DEC_fill.zimg1
         Host.Load.Run.Tpl.DEC_fill.zctl1 Host.Load.Run.Tpl.DEC_fill.zstack1 Host.Load.Run.Tpl.DEC_fill.zjobs1 Host.Load.Run.Tpl.DEC_fill.zstores1 Host.Load.Run.Tpl.DEC_fill.zroots1 x0 x hcf hK hB.ofFb)
@@ -407,7 +411,9 @@ noncomputable def DEC_fill.pieces (q : List Val) (R : DEC_fill.Runs)
         (kept_of fun a ha => by
           simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
           rcases ha with rfl | rfl | rfl
-          exacts [⟨Host.Load.Run.Tpl.DEC_fill.zg2_2673448, Host.Load.Run.Tpl.DEC_fill.zk2_2673448, Host.Load.Run.Tpl.DEC_fill.zm2_2673448⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg2_12504, Host.Load.Run.Tpl.DEC_fill.zk2_12504, Host.Load.Run.Tpl.DEC_fill.zm2_12504⟩, ⟨Host.Load.Run.Tpl.DEC_fill.zg2_2665, Host.Load.Run.Tpl.DEC_fill.zk2_2665, Host.Load.Run.Tpl.DEC_fill.zm2_2665⟩])
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg2_2673448, Host.Load.Run.Tpl.DEC_fill.zk2_2673448, Host.Load.Run.Tpl.DEC_fill.zm2_2673448⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg2_12504, Host.Load.Run.Tpl.DEC_fill.zk2_12504, Host.Load.Run.Tpl.DEC_fill.zm2_12504⟩
+          · exact ⟨Host.Load.Run.Tpl.DEC_fill.zg2_2665, Host.Load.Run.Tpl.DEC_fill.zk2_2665, Host.Load.Run.Tpl.DEC_fill.zm2_2665⟩)
         (wp_present Host.Load.Run.Tpl.DEC_fill.zw2_4910) wf_wideP Host.Load.Run.Tpl.DEC_fill.zclbd2 Host.Load.Run.Tpl.DEC_fill.cheap2
         (hoff_of Host.Load.Run.Tpl.DEC_fill.mheap2 Host.Load.Run.Tpl.DEC_fill.stFoot2 Host.Load.Run.Tpl.DEC_fill.iso2 Host.Load.Run.Tpl.DEC_fill.zwr2) Host.Load.Run.Tpl.DEC_fill.ckeepP2 Host.Load.Run.Tpl.DEC_fill.csupp2 Host.Load.Run.Tpl.DEC_fill.cbound2 Host.Load.Run.Tpl.DEC_fill.zimg2
         Host.Load.Run.Tpl.DEC_fill.zctl2 Host.Load.Run.Tpl.DEC_fill.zstack2 Host.Load.Run.Tpl.DEC_fill.zjobs2 Host.Load.Run.Tpl.DEC_fill.zstores2 Host.Load.Run.Tpl.DEC_fill.zroots2 x0 x hcf hK hB.ofFb)

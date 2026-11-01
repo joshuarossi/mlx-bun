@@ -8427,6 +8427,7 @@ const proofFiles = [
   "host/route/PrefGraph.lean",
   "host/route/PostGraph.lean",
   "host/route/GpuLoad.lean",
+  "host/route/GpuMem.lean",
   "host/sim/world/Offset.lean",
   "host/sim/world/OffsetImage.lean",
   "host/sim/world/OffsetLimit.lean",

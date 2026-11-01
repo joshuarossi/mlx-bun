@@ -139,10 +139,11 @@ theorem PostAt.next (h : PostAt M K env Vs R L tab j σ toks Cr x) (hg : Host.Ml
   params := params_grow h hg
   reads := (h.grow hg ht).reads
 
-/-- **The decode cut's invariant** at iteration `i`, from the reference held through time `L + i + 1`. -/
+/-- **The decode cut's invariant** at iteration `i`, from the reference held through time `L + i + 1`, at the decode
+template's carriers under the map `σ'`. -/
 theorem PostAt.toGIMV {I : TplInputs} {i : Nat} (h : PostAt M K env Vs R L tab (i + 1) σ toks Cr x)
-    (hr : σ I.read = σ (toks i)) (hf : σ I.fed = σ (toks (i + 1))) (hc : cachesAt σ I.caches = cachesAt σ Cr) :
-    GIMV M K env Vs I R L tab i σ x where
+    (hr : σ' I.read = σ (toks i)) (hf : σ' I.fed = σ (toks (i + 1))) (hc : cachesAt σ' I.caches = cachesAt σ Cr) :
+    GIMV M K env Vs I R L tab i σ' x where
   ok := h.ok
   hist k h1 h2 := by
     obtain ⟨cs, hfw, ho, hb⟩ := h.hist (k - L) (by omega)
@@ -230,6 +231,21 @@ theorem PostG.glue {x y : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF} (h : PostG M 
   intro tab hC
   rw [hg.map]
   exact (h tab (hg.server.trans hC)).grow hg.nodes hg.tokens
+
+/-- **The hand-off's invariant.** POST's end, with the reference held through time `L + 2`, under the shift `κ` into the
+decode template: the invariant `GxV` at iteration 1 at the hand-off's map. -/
+theorem PostG.handoff {I : TplInputs} {κ : Sim.Map} {a b d : Nat} {x : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF}
+    (h : PostG M K env Vs R L 2 toks Cr x) (hr : κ.node I.read = toks 1) (hf : κ.node I.fed = toks 2)
+    (hc : I.caches.map (fun p => (p.1.map κ.node, p.2.map κ.node)) = Cr) :
+    GxV M K env Vs I R L 1 ((x.M.after κ).rebig a b d) (Host.Ts.Sim.Full.mlxOf x.t.ffi) x.C := by
+  intro tab hle
+  refine (h tab hle).toGIMV (i := 1) ?_ ?_ ?_
+  · show x.M.node (κ.node I.read) = _
+    rw [hr]
+  · show x.M.node (κ.node I.fed) = _
+    rw [hf]
+  · rw [← hc]
+    exact (Host.Mlx.SimGraph.Iter.cachesAt_comp x.M.node κ.node I.caches).symm
 
 theorem PostG.congr {x y : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF} (h : PostG M K env Vs R L j toks Cr x)
     (ht : y.t = x.t) (hC : y.C = x.C) (hσ : ∀ k, k ≤ j → y.M.node (toks' k) = x.M.node (toks k))

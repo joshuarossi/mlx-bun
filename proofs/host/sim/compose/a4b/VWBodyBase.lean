@@ -7,16 +7,15 @@ namespace Host.Ts.Sim.Compose.VWFirst
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
 open Host.Load.Run.Tpl Host.Ts.Sim.Compose.SetupChunk
 
-/-- The JS bookkeeping at the body's start, from the prefix's. -/
-theorem bodyStartClean : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_first_tail_x15_r0_body.s0 := by
-  rw [bodyStartEq]
-  exact PRE_first_tail_x15_r0.gjcl3 (PRE_first_tail_x15_r0.cjcl2 dispatchCallClean)
+/-- The JS bookkeeping at the prefix's end, where every VW chain starts. -/
+theorem startClean41 : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_first_tail_x15_r0.s41 :=
+  PRE_first_tail_x15_r0.gjcl3 (PRE_first_tail_x15_r0.cjcl2 dispatchCallClean)
 
 kernel_rfl bodyJs41 : PRE_first_tail_x15_r0.gjh3.all
   (noBigAtP (jsAboveB 2673488) PRE_first_tail_x15_r0.s41) = true
 
-/-- No heap entry at the body's start holds a JS pointer into the fresh addresses. -/
-theorem bodyStartJs : JsHeapAbove 2673488 PRE_first_tail_x15_r0_body.s0 := by
+/-- No heap entry at the prefix's end holds a JS pointer into the fresh addresses. -/
+theorem startJs41 : JsHeapAbove 2673488 PRE_first_tail_x15_r0.s41 := by
   have hp : ∀ i, jsAboveB 2673488 i = true → jsShiftBadB PRE_first_tail_x15_r0.kappa2 i = true := by
     intro i hi
     rw [PRE_first_tail_x15_r0.zkap2]
@@ -33,11 +32,9 @@ theorem bodyStartJs : JsHeapAbove 2673488 PRE_first_tail_x15_r0_body.s0 := by
       apply decide_eq_true_eq.mpr
       exact Nat.le_of_ble_eq_true hi
   have h40 : JsHeapAbove 2673488 PRE_first_tail_x15_r0.s40 := (dispatchJsFree hp).heap
-  have h41 : JsHeapAbove 2673488 PRE_first_tail_x15_r0.s41 := h40.step (Nat.le_refl _)
+  exact h40.step (Nat.le_refl _)
     (Conv.heap_off_setAll PRE_first_tail_x15_r0.gjk3
       (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x15_r0.gjbd3 b hb))) bodyJs41
-  rw [bodyStartEq]
-  exact h41
 
 /-- The body's JS chain: a glue stretch and a compaction change only their listed entries. -/
 theorem JsHeapAbove.glueSite {S : Type} {n n' : Nat} {sp sa sc : St S} {gl l : List Nat}
@@ -53,13 +50,9 @@ theorem JsHeapAbove.glueSite {S : Type} {n n' : Nat} {sp sa sc : St S} {gl l : L
     exact (Conv.heap_off_setAll hck (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp hcb b hb)) a hc).trans
       (Conv.heap_off_setAll hgk (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp hgb b hb)) a hg)) hall
 
-/-- The bridge is inactive throughout the body: every boundary's equals the start's. -/
-theorem bodyInactive0 : (bridgeOf PRE_first_tail_x15_r0_body.s0.ffi).active = false := by
-  rw [bodyStartEq]
-  exact (congrArg (fun b : Host.Mlx.FfiAne.St => b.active)
+/-- The bridge is inactive at the prefix's end. -/
+theorem inactive41 : (bridgeOf PRE_first_tail_x15_r0.s41.ffi).active = false :=
+  (congrArg (fun b : Host.Mlx.FfiAne.St => b.active)
     (typedRun40.dst_bridge.trans typedRun40.src_bridge.symm)).trans PRE_first_tail_x15_r0.zbin2
-
-/-- The rows the VW forward serves. -/
-def fwdRows : List Lin.Cls.Row := [Lin.Cls.first_drain_128.r0, Lin.Cls.first_tail_x15.r0]
 
 end Host.Ts.Sim.Compose.VWFirst
