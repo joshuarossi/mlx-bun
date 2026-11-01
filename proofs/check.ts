@@ -8434,6 +8434,7 @@ const proofFiles = [
   "host/route/cert/One/CheckF.lean",
   "host/route/cert/One/CertF.lean",
   "host/route/PostTail.lean",
+  "host/route/RestartE.lean",
   "host/route/PostGoals.lean",
   "host/route/PostReframe.lean",
   "host/route/PostTailVW.lean",

@@ -22,6 +22,8 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x
   offsetValue : x.ν 11 = F64.ofNat π.length
   capValue : x.ν 16 = F64.ofNat (capL π.length)
   context : Disp.KpJ PostOk.J cap x.K
+  /-- The target is at least this far above the template: the hand-off's restart needs the room. -/
+  offsetLow : 13 ≤ x.K.D
   prompt : x.K.fr 2665 = some ([], π.map natV)
   reserved : ∀ j, j < 9 → x.ν j = machVal T tk j
   emittedAnchor : x.M.a 2590 = 2590

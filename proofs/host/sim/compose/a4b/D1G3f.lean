@@ -156,6 +156,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
         offsetValue := ?_
         capValue := ?_
         context := ⟨⟨hlo, hhi, fun a => ?_⟩, ?_⟩
+        offsetLow := ?_
         prompt := ?_
         reserved := ?_
         emittedAnchor := ?_
@@ -178,6 +179,10 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
         simp only [ne_eq, not_true_eq_false, List.mem_cons, List.not_mem_nil, or_false, false_iff]
         exact ha
     · change x.t.next - PRE_pl_entry.s0.next ≤ cap
+      rw [hoff, sameNext]
+      omega
+    · have h13 : x.K.D = 13 := hfb.offset
+      change 13 ≤ x.t.next - PRE_pl_entry.s0.next
       rw [hoff, sameNext]
       omega
     · change y.K.fr 2665 = _

@@ -224,7 +224,7 @@ theorem sizeM {sa sb : St FF.S} {Sa Sb Sdec : SSrv} {fsym ta nf : Nat} {name rt 
   have ng : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf t'.ffi) := hrel.ffi.1.2
   have hbook : Book T tk cap nI π γ ⟨M', x.ν, K', t', C'⟩ := by
     refine ⟨hb.nonempty, hb.vocab, hb.lastRows, hb.rowsLength, hb.rowsVocab, hb.valuation, hb.promptValue, hb.rowValue, hb.small21,
-      hb.offsetValue, hb.capValue, ⟨hb.context.1, hb.context.2⟩, hb.prompt, hb.reserved,
+      hb.offsetValue, hb.capValue, ⟨hb.context.1, hb.context.2⟩, hb.offsetLow, hb.prompt, hb.reserved,
       (congrFun hext.a 2590).trans hb.emittedAnchor, ?_⟩
     have hip : SetupD1Input.InputAt γ (x.M.node nI) x.t x.C := hb.input
     change SetupD1Input.InputAt γ (M'.node nI) t' C'
@@ -260,7 +260,7 @@ theorem lenM {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Tr : SegInst FF → Pro
   have ng : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf t'.ffi) := Host.Mlx.Ffi.NGrow.refl _
   have hbook : Book T tk cap nI π γ ⟨M, x.ν, x.K, t', x.C⟩ := by
     refine ⟨hb.nonempty, hb.vocab, hb.lastRows, hb.rowsLength, hb.rowsVocab, hb.valuation, hb.promptValue, hb.rowValue, hb.small21,
-      hb.offsetValue, hb.capValue, hb.context, hb.prompt, hb.reserved,
+      hb.offsetValue, hb.capValue, hb.context, hb.offsetLow, hb.prompt, hb.reserved,
       (congrFun ext1.a 2590).trans hb.emittedAnchor, ?_⟩
     have hip : SetupD1Input.InputAt γ (x.M.node nI) x.t x.C := hb.input
     change SetupD1Input.InputAt γ (M.node nI) t' x.C

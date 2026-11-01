@@ -1,0 +1,57 @@
+{
+ "row": "first_tail_x4.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "glue": [
+  "g3d_first",
+  "g4_pf_first"
+ ],
+ "stages": [
+  {
+   "fn": "evalCacheState",
+   "piece": "eval",
+   "name": "eval"
+  }
+ ],
+ "stop": "call:nextPrefillStep",
+ "frames": [
+  2665,
+  2673467,
+  2673472,
+  2673473
+ ],
+ "wide": [
+  [
+   4910,
+   ".memo []"
+  ]
+ ],
+ "baseVals": [],
+ "vars": [],
+ "bridges": [
+  "len"
+ ],
+ "lens": [],
+ "startTokens": [
+  1,
+  2
+ ],
+ "accept": "jsjxs",
+ "D0": 4096,
+ "loadP": [
+  18151,
+  131072,
+  1099511627776,
+  15235,
+  15235
+ ],
+ "litLens": [
+  [
+   2665,
+   7
+  ],
+  [
+   2673467,
+   6
+  ]
+ ]
+}
