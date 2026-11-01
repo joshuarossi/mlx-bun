@@ -2514,6 +2514,8 @@ function genPostChain(args: string[]) {
   const [X, dir] = (spec ?? fail("post-chain <chain>:<dir>")).split(":") as [string, string];
   const opt = (k: string) => { const i = args.indexOf(k); return i < 0 ? undefined : args[i + 1]; };
   const Name = opt("--name") ?? fail("--name"), streams = opt("--streams") ?? fail("--streams"), group = +(opt("--group") ?? 16);
+  // --pop: the first stretch pops the readback (a hook keeps `Tr`); --tail: the chain ends in the tail's spread and the halt
+  const popFirst = args.includes("--pop"), tailEnd = args.includes("--tail");
   const stream = join(streams, `Host.Load.Run.Tpl.${X}`), tplDir = join(HERE, "..", "template", dir);
   const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8")), chain = JSON.parse(readFileSync(join(stream, "chain.json"), "utf8"));
   const T1 = chain.T1 as number, steps = chain.steps as number;
@@ -2528,7 +2530,12 @@ function genPostChain(args: string[]) {
   const pars = "(NB T : Nat) (tk : Nat \u2192 Nat) (cap nI : Nat) (\u03C0 : List Nat) (hcap : cap \u2264 4096 + 1593835520)", parn = "NB T tk cap nI \u03C0 hcap hg Tr hT";
   const hyps = `(hg : \u2200 \u03BD, BookV T tk \u03C0.length \u03BD \u2192 Good \u03BD ${X}.S0.oracle) (Tr : SegInst FF \u2192 Prop) (hT : \u2200 x y, NTrack x y \u2192 Tr x \u2192 Tr y)`;
   const mode = `(${R ? "modeR" : "modeOk"} NB T tk cap hcap)`, impl = "(NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (\u03C0 := \u03C0)";
-  const idx = (k: number) => `withMem Tr (indexedCut NB T tk cap nI \u03C0 ${X}.s${k} ${X}.S${k})`;
+  const endX = `[2673435, ${X}.cacheArray]`;
+  const idx = (k: number) => k === -1 ? `withMem Tr (indexedCut NB T tk cap nI π ${X}.spOpen ${X}.spOpenSrv)`
+    : k === -2 ? `withMem Tr (endCut NB T tk cap ${endX} ${X}.spAfter ${X}.spAfterSrv)`
+    : k === T1 && tailEnd ? `withMem Tr (endCut NB T tk cap ${endX} ${X}.s${k} ${X}.S${k})`
+    : `withMem Tr (indexedCut NB T tk cap nI π ${X}.s${k} ${X}.S${k})`;
+  const hookOf = (k: number) => popFirst ? ` (hP : ∀ x y : SegInst FF, (indexedCut NB T tk cap nI π ${X}.s0 ${X}.S0).R x ${X}.s0 ⟨${X}.S0.tab, []⟩ →\n      (indexedCut NB T tk cap nI π ${X}.s${k} ${X}.S${k}).R y ${X}.s${k} ⟨${X}.S${k}.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node →\n      y.M.a 12504 = x.M.a 12504 → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → Tr x → Tr y)` : "";
   const lk = (j: number) => `((nth? ${X}.ks ${j}).getD 0)`;
   const bridges = (seg.bridges as any[]).slice().sort((a, b) => a.ia - b.ia);
   for (const b of bridges) if (b.kind !== "size" && b.kind !== "len") fail(`${X}: bridge kind ${b.kind}`);
@@ -2553,11 +2560,14 @@ function genPostChain(args: string[]) {
     const B = `${X}.b${sizeK + lenK}`;
     const bMod = `${tplMod}.${isSize ? "Size" : "Len"}${sizeK + lenK}`;
     const stepName = isSize ? `${B}.step` : `${B}.enter`;
+    const isPop = popFirst && a === 0;
     parts.push({
-      term: `callM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} ${X}.accepted${ia - 1} live${ia - 1} ${stepName} ${B}.top ${good(a)} (${live}) br${a}_${ia} cnt${a}_${ia} hT rfl`,
+      term: isPop
+        ? `popCallM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} ${X}.accepted${ia - 1} live${ia - 1} ${stepName} ${B}.top ${good(a)} (${live}) br${a}_${ia} hP rfl`
+        : `callM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} ${X}.accepted${ia - 1} live${ia - 1} ${stepName} ${B}.top ${good(a)} (${live}) br${a}_${ia} cnt${a}_${ia} hT rfl`,
       n: `(${r.n} + 1)`,
       facts: [...orc(a), `kernel_rfl live${ia - 1} : isHalt ${X}.s${ia - 1}.ctl = false`,
-        `kernel_rfl br${a}_${ia} : bridgeOf ${X}.s${ia}.ffi = bridgeOf ${X}.s${a}.ffi`, `kernel_rfl cnt${a}_${ia} : countersOkB ${X}.s${a} ${X}.s${ia} = true`],
+        `kernel_rfl br${a}_${ia} : bridgeOf ${X}.s${ia}.ffi = bridgeOf ${X}.s${a}.ffi`, ...(isPop ? [] : [`kernel_rfl cnt${a}_${ia} : countersOkB ${X}.s${a} ${X}.s${ia} = true`])],
       mods: [...r.mods, accept(a), accept(ia - 1), bMod, hmod(a), hmod(ia)],
     });
     if (isSize) {
@@ -2580,7 +2590,34 @@ function genPostChain(args: string[]) {
     }
     a = ia + 1;
   }
-  if (a < T1) {
+  if (tailEnd) {
+    if (a !== T1 - 1) fail(`${X}: --tail with a stretch before the last boundary: ${a} of ${T1}`);
+    const tail = memberSrc(dir, "Tail"), okName = R ? "PostOk\\.okR" : "PostOk\\.ok";
+    const fuel = +(tail.match(new RegExp(`runOk ${X}\\.F ${okName} (\\d+) ${X}\\.s${a}`)) ?? fail(`${X}: Tail fuel`))[1]!;
+    const runT = `(by have h := ${X}.checkedTail; rw [← ${X}.spreadStart, ← ${X}.tailSrv] at h; exact h)`;
+    const tailMods = ["Tail", "TailSteps", "TailRest", "Endpoint", "SpreadData", "host.sim.template.BootEq"].map(f => f.includes(".") ? f : `${tplMod}.${f}`);
+    parts.push({
+      term: `callM ${impl} (n := ${fuel}) (sb := ${X}.spPre) (Sb := ${X}.spPreSrv) (sc := ${X}.spOpen) (Sc := ${X}.spOpenSrv) ${mode} accTail ${runT} ${X}.acceptedSpPre liveSp ${X}.spInto topSp ${good(a)} (${live}) brSp cntSp hT rfl`,
+      n: `(${fuel} + 1)`,
+      facts: [...orc(a), `boot_rfl accTail from ${X}.s${a} to ${X}.s${a} : ${R ? "PostOk.okR" : "PostOk.ok"} ${X}.s${a} ${X}.S${a} = true`, `kernel_rfl liveSp : isHalt ${X}.spPre.ctl = false`, `kernel_rfl topSp : noRetBlock ${X}.spOpen = true`,
+        `kernel_rfl brSp : bridgeOf ${X}.spOpen.ffi = bridgeOf ${X}.s${a}.ffi`, `kernel_rfl cntSp : countersOkB ${X}.s${a} ${X}.spOpen = true`],
+      mods: [hmod(a), ...tailMods],
+    });
+    parts.push({
+      term: `spreadM ${impl} ${X}.spCtl ${X}.spStack ${X}.spOpenStep ${X}.spIdCtl ${X}.spLookup ${X}.spCellVal ${X}.spCellNoW ${X}.spIdStep ${X}.spCloseCtl ${X}.spCloseStack ${X}.spFwd ${X}.spFwdKind (by decide) wFwd ${X}.spCloseStep ${X}.spRoom proto ${X}.spNewNoW openNoOr ${X}.spAfterNoOracle ${X}.spInactive ${X}.spBridge cntClose hT`,
+      n: "3",
+      facts: [`kernel_rfl wFwd : wideP 2673435 = none`, `kernel_rfl openNoOr : ${X}.spOpenSrv.oracle = []`, `kernel_rfl cntClose : countersOkB ${X}.spOpen ${X}.spAfter = true`,
+        `kernel_rfl proto : Present ${X}.spClose aArrayProto`],
+      mods: tailMods,
+    });
+    parts.push({
+      term: `glueE (extra := [2673435, ${X}.cacheArray]) (NB := NB) (T := T) (tk := tk) (cap := cap) hcap ${X}.acceptedRest ${X}.checkedRest topEnd ${X}.spAfterNoOracle afterInactive brEnd cntEnd hT`,
+      n: `${X}.restFuel`,
+      facts: [`theorem afterInactive : (bridgeOf ${X}.spAfter.ffi).active = false := Host.Load.Boot.replay_active _`, `kernel_rfl topEnd : noRetBlock ${X}.s${T1} = true`,
+        `kernel_rfl brEnd : bridgeOf ${X}.s${T1}.ffi = bridgeOf ${X}.spAfter.ffi`, `kernel_rfl cntEnd : countersOkB ${X}.spAfter ${X}.s${T1} = true`],
+      mods: [...tailMods, hmod(T1)],
+    });
+  } else if (a < T1) {
     const r = runs(a, T1);
     parts.push({
       term: `glueM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} top${T1} ${good(a)} (${live}) br${a}_${T1} cnt${a}_${T1} hT rfl`,
@@ -2607,30 +2644,31 @@ open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
   const bounds: number[] = [0];
   const ends: number[] = [];
   for (const b of bridges) { ends.push(b.ia as number); ends.push((b.ia as number) + 1); }
-  if (a < T1) ends.push(T1);
+  if (tailEnd) { ends.push(-1); ends.push(-2); ends.push(T1); } else if (a < T1) ends.push(T1);
+  const firstEnd = (bridges[0]?.ia ?? fail(`${X}: no bridge`)) as number;
   let pi = 0;
   for (const g of groups) { pi += g.length; bounds.push(ends[pi - 1]!); }
   groups.forEach((g, k) => {
     const start = bounds[k]!, end = bounds[k + 1]!;
     const fold = g.map(p => `(${p.term})`).reduce((acc0, q) => `(${acc0}).trans ${q}`);
     const n = g.map(p => p.n).reduce((acc0, q) => `(${acc0} + ${q})`);
-    writeFileSync(join(outDir, `C${k}.lean`), head(["host.sim.compose.PostChain", `${tplMod}.Good`, ...g.flatMap(p => p.mods)]) +
+    writeFileSync(join(outDir, `C${k}.lean`), head([popFirst || tailEnd ? "host.sim.compose.PostPath" : "host.sim.compose.PostChain", `${tplMod}.Good`, ...g.flatMap(p => p.mods)]) +
       [...new Set(g.flatMap(p => p.facts))].join("\n") + `
 
 abbrev n${k} : Nat := ${n}
 
-theorem c${k} ${pars} ${hyps} :
+theorem c${k} ${pars} ${hyps}${k === 0 ? hookOf(firstEnd) : ""} :
     CutStep (${idx(start)}) (${idx(end)}) n${k} :=
   ${fold}
 ` + tail);
   });
-  const fold = groups.map((_, k) => `(c${k} ${parn})`).reduce((acc0, q) => `(${acc0}).trans ${q}`);
+  const fold = groups.map((_, k) => `(c${k} ${parn}${k === 0 && popFirst ? " hP" : ""})`).reduce((acc0, q) => `(${acc0}).trans ${q}`);
   const nsum = groups.map((_, k) => `n${k}`).reduce((acc0, q) => `(${acc0} + ${q})`);
   writeFileSync(join(outDir, "All.lean"), head(groups.map((_, k) => `${outMod}.C${k}`)) + `abbrev N : Nat := ${steps}
 kernel_rfl stepsEq : N = ${nsum}
 
 /-- **The chain**, in ${steps} steps. -/
-theorem all ${pars} ${hyps} :
+theorem all ${pars} ${hyps}${hookOf(firstEnd)} :
     CutStep (${idx(0)}) (${idx(T1)}) N :=
   (${fold}).cast rfl rfl stepsEq
 ` + tail);

@@ -15,8 +15,7 @@ open Host.Route.PrefGraph
 /-! # A POST row's change of bookkeeping
 
 `hfw`: POST's reference held through time `L + d` before a row, through `L + d + 1` at the row's end, from its checked
-certificate (`RowCert`). The row's map agrees with the start's on the carriers it reads. `memPost_goal`: a halted cut's
-goal from the reference held. -/
+certificate (`RowCert`). The row's map agrees with the start's on the carriers it reads. -/
 
 variable {C : M1Max.Contract} {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
   {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat}
@@ -92,12 +91,5 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
   · rw [hos]
     refine cachesAt_below _ _ _ fun q hq j hj => ?_
     exact hnall _ (hoN q hq j hj)
-
-/-- **A halted cut's goal at `k` tokens**, the reference held far enough. -/
-theorem memPost_goal {j k NB : Nat} {toks : Nat → Nat → Nat} {Cr : Nat → List (Option Nat × Option Nat)} {x : SegInst FF}
-    (hm : memPost P KR NE net env π j toks Cr π.length x) (hk : k ≤ j + 1) :
-    ∃ kind, goalMV P KR NE net env π kind NB k x.t x.C := by
-  obtain ⟨kind, hp⟩ := hm rfl
-  exact ⟨kind, (hp x.C.tab (Host.Ts.Sim.CSrv.Le.refl _)).toGFV hk⟩
 
 end Host.Route.Cert.Row

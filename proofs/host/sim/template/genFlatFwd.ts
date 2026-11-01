@@ -1,12 +1,20 @@
 // Write the checked modules of a flat forward chain (`tpl_chain`, no stage cuts, size bridges only) over `FlatFwd`:
 // boundaries, each ordinary chunk at the fast table, each stretch and size bridge's facts, the pieces and the run
 // `<Name>.fullRun : CutStep (cut … s0 S0) (cut … s<T1> S<T1>) <steps>`, given the book's `FlatFwd.LawsCap` at the admitted offset.
-// usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module> <start state> <start server>
+// usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module> <start state> <start server> [--rebind <source table>] [--ext <n>]
+//   --rebind: the stream's row expression retained at variable 10, and its lookahead tokens, before the boundaries (`Rebind`); the oracle is `OR`, the start's table <source table>.
 //   <box module> defines `<Name>.ps`, `<Name>.V` and `<Name>.lin : Lin.goodLin <Name>.ps <Name>.V <Name>.O = true`.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const [dir, name, row, chunk, buffer, view, boxMod, start, startSrv] = process.argv.slice(2);
+import { syncRowMetadata } from "./syncRowMeta";
+const args = process.argv.slice(2);
+const extAt = args.indexOf("--ext");
+const ext = extAt >= 0 ? Number(args.splice(extAt, 2)[1]) : 20;
+const rebindAt = args.indexOf("--rebind");
+const sourceTable = rebindAt >= 0 ? args.splice(rebindAt, 2)[1] : undefined;
+const [dir, name, row, chunk, buffer, view, boxMod, start, startSrv] = args;
 if (!dir || !name || !row || !chunk || !buffer || !view || !boxMod || !start || !startSrv) throw Error("usage: genFlatFwd.ts dir Name row chunk buffer view boxModule startState startServer");
+if (sourceTable) syncRowMetadata(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const plan = JSON.parse(readFileSync(join(import.meta.dir, dir, "plan.json"), "utf8"));
@@ -31,7 +39,8 @@ const put = (file: string, text: string) => writeFileSync(join(root, file + ".le
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`, F = `${name}.F`, fr = `${name}.fr`;
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
 const pageHead = (imports: string[]) => imports.map(i => `import ${i}\n`).join("") + "set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen Host.Ts\n\n";
-for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, pageHead([j === 0 ? mod("States") : mod(`H${j - 1}`)]) +
+if (sourceTable) put("Rebind", ["host.sim.template.StreamRows", "host.sim.template.StreamTokens", mod("States")].map(i => `import ${i}\n`).join("") + `set_option Elab.async false\nnamespace Host.Load.Run.Tpl\ntpl_stream_keep_lookahead ${name} through ${T1}\ntpl_stream_bind_rows ${name} through ${T1}`);
+for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, pageHead([j === 0 ? mod(sourceTable ? "Rebind" : "States") : mod(`H${j - 1}`)]) +
   Array.from({ length: T1 + 1 }, (_, i) => i).filter(i => Math.floor(i / 32) === j).map(i => `host_stream_state ${name} ${i}\n`).join(""));
 put("Frames", head(["host.sim.template.FlatFwd", boxMod]) +
   `def ${fr} : FlatFwd.Fr := ⟨${row}, ${chunk}, ${buffer}, ${view}, rfl, rfl⟩\n`);
@@ -50,10 +59,11 @@ for (let i = 0; i < sizes.length; i++) {
 const lazy = (n: string, a: number, b: number, t: string) => `boot_rfl ${n} from ${s(a)} to ${s(b)} : ${t}\n`;
 const accepted = (n: string, i: number) => lazy(n, i, i, `(fun bs : List Byte => ${fr}.typedOk bs ${s(i)} ${S(i)}) = fun _ => true`);
 const oracle = (n: string, i: number) => `theorem ${n} : Lin.goodLin ${name}.ps ${name}.V ${S(i)}.oracle = true :=\n  FlatFwd.goodLin_drop ${name}.lin _\n`;
-const table20 = (n: string, i: number) => `kernel_rfl ${n}Check : decide (20 ≤ ${S(i)}.tab.length) = true\ntheorem ${n} : 20 ≤ ${S(i)}.tab.length := of_decide_eq_true ${n}Check\n`;
+const table20 = (n: string, i: number) => `kernel_rfl ${n}Check : decide (${ext} ≤ ${S(i)}.tab.length) = true\ntheorem ${n} : ${ext} ≤ ${S(i)}.tab.length := of_decide_eq_true ${n}Check\n`;
 const inactive = (n: string, i: number) => `theorem ${n} : (bridgeOf ${s(i)}.ffi).active = false := Host.Load.Boot.replay_active _\n`;
 const params = `{NB T cap : Nat} {tk : Nat → Nat} {bytes : List Byte} {Book : SegInst FF → Prop} {M0 : Map} {y0 : Host.Mlx.Ffi.St}\n    (L : FlatFwd.LawsCap ${fr} bytes cap ${name}.ps ${name}.V Book)`;
-const cut = (i: number) => `(FlatFwd.cut ${fr} NB T tk bytes Book M0 y0 ${s(i)} ${S(i)})`;
+const cutName = ext === 20 ? "FlatFwd.cut" : `FlatFwd.cutN ${ext}`, capMod = ext === 20 ? "host.sim.template.FlatFwdCap" : "host.sim.template.FlatFwdN";
+const cut = (i: number) => `(${cutName} ${fr} NB T tk bytes Book M0 y0 ${s(i)} ${S(i)})`;
 type Piece = { from: number; to: number; fuel: number };
 const pieces: Piece[] = [];
 for (let k = 0; k <= bridges.length; k++) {
@@ -91,19 +101,19 @@ for (let k = 0; k <= bridges.length; k++) {
       oracle(`${p}.oracle`, ia) + table20(`${p}.table`, ia) + inactive(`${p}.inactive`, ia) +
       `kernel_rfl ${p}.bridgeInto : bridgeOf ${s(ia)}.ffi = bridgeOf ${s(from)}.ffi\n` +
       `kernel_rfl ${p}.bridgeOut : bridgeOf ${s(ia + 1)}.ffi = bridgeOf ${s(ia)}.ffi\n`);
-    put(`Piece${k}`, head([mod(`Size${k}`), "host.sim.template.FlatFwdCap"]) +
+    put(`Piece${k}`, head([mod(`Size${k}`), capMod]) +
       `theorem ${name}.piece${k} ${params} :\n    CutStep ${cut(from)} ${cut(ia + 1)} ${fuel + 4} :=\n` +
-      `  (FlatFwd.toCallCap L ${name}.accepted${k} ${name}.seg${k} ${p}.acceptedP ${p}.haltP ${p}.step ${p}.top\n` +
+      `  (FlatFwd.${ext === 20 ? "toCallCap" : "toCallN"} L ${name}.accepted${k} ${name}.seg${k} ${p}.acceptedP ${p}.haltP ${p}.step ${p}.top\n` +
       `    ${name}.oracle${k} ${name}.inactive${k} ${p}.bridgeInto ${name}.table${k}).trans\n` +
-      `  (FlatFwd.sizeCap L ${p}.parts ${p}.args_ok ${p}.sym ${p}.mlx ${p}.pay (by decide) ${p}.decode ${p}.pre ${p}.runS\n` +
+      `  (FlatFwd.${ext === 20 ? "sizeCap" : "sizeN"} L ${p}.parts ${p}.args_ok ${p}.sym ${p}.mlx ${p}.pay (by decide) ${p}.decode ${p}.pre ${p}.runS\n` +
       `    ${p}.oracle ${p}.inactive ${p}.bridgeOut ${p}.table)\n`);
     pieces.push({ from, to: ia + 1, fuel: fuel + 4 });
   } else {
-    put(`Piece${k}`, head([mod(`Seg${k}`), "host.sim.template.FlatFwdCap"]) +
+    put(`Piece${k}`, head([mod(`Seg${k}`), capMod]) +
       `kernel_rfl ${name}.finalBridge : bridgeOf ${s(to)}.ffi = bridgeOf ${s(from)}.ffi\n` +
       lazy(`${name}.finalTop`, to, to, `Host.Ts.Sim.Compose.noRetBlock ${s(to)} = true`) +
       `\ntheorem ${name}.piece${k} ${params} :\n    CutStep ${cut(from)} ${cut(to)} ${fuel} :=\n` +
-      `  FlatFwd.finishCap L ${name}.accepted${k} ${name}.seg${k} ${name}.finalTop\n` +
+      `  FlatFwd.${ext === 20 ? "finishCap" : "finishN"} L ${name}.accepted${k} ${name}.seg${k} ${name}.finalTop\n` +
       `    ${name}.oracle${k} ${name}.inactive${k} ${name}.finalBridge ${name}.table${k}\n`);
     pieces.push({ from, to, fuel });
   }
@@ -124,7 +134,7 @@ put("Run", head(groups.map((_, n) => mod(`Group${n}`))) +
 // the chain's start and its token queue, for the links either side
 put("Ends", head([page(T1), page(0), "host.sim.full.Raise"]) +
   `kernel_rfl ${name}.s0_eq : ${s(0)} = ${start}\n` +
-  `kernel_rfl ${name}.s0_tab : ${S(0)}.tab = ${startSrv}.tab\n` +
+  `kernel_rfl ${name}.s0_tab : ${S(0)}.tab = ${sourceTable ?? `${startSrv}.tab`}\n` +
   `kernel_rfl ${name}.ffi_exact : ${F} = Host.Ts.Sim.Full.FF\n` +
   `kernel_rfl ${name}.tokens0 : (Host.Ts.Sim.Full.mlxOf ${s(0)}.ffi).tokens = [.ref 1, .ref 2]\n` +
   `kernel_rfl ${name}.tokensEnd : (Host.Ts.Sim.Full.mlxOf ${s(T1)}.ffi).tokens = [.ref 1, .ref 2]\n`);

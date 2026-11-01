@@ -84,14 +84,26 @@ section
 variable (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap nI : Nat) (hcap : cap ≤ 4096 + 1593835520)
   (hL1 : 1 ≤ π.length) (hL2 : π.length ≤ 224)
 
-/-- The bookkeeping's stretches and changes. -/
-structure Hooks where
+/-- A class's POST, from the prefill's exit to its sampled cut: its own numbering. -/
+structure ClassPre where
+  sH : St FF.S
+  SH : SSrv
+  sC : St FF.S
+  SC : SSrv
+  n : Nat
+  run : ∀ (Tr : SegInst FF → Prop), (∀ x y, NTrack x y → Tr x → Tr y) →
+    CutStep (withMem Tr (indexedCut NB T tk cap nI π sH SH)) (withMem Tr (indexedCut NB T tk cap nI π sC SC)) n
+
+/-- The bookkeeping's stretches and changes. `MemS` is at the class's numbering, `MemP` at the shared tail's. -/
+structure Hooks (P : ClassPre NB T tk π cap nI) where
   Mem0 : Nat → SegInst FF → Prop
+  MemS : Nat → SegInst FF → Prop
   MemP : Nat → Nat → SegInst FF → Prop
   hM0 : ∀ L x y, NTrack x y → Mem0 L x → Mem0 L y
+  hMS : ∀ L x y, NTrack x y → MemS L x → MemS L y
   hMP : ∀ j L x y, NTrack x y → MemP j L x → MemP j L y
-  hsmp : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_common.s4 PRE_pl_common.S4) (Mem0 L) (MemP 0 L)
-  hlink : ∀ L, CutConv (withMem (MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_common.s4 PRE_pl_common.S4))
+  hsmp : ∀ L, Hook (indexedCut NB T tk cap nI π P.sC P.SC) (Mem0 L) (MemS L)
+  hlink : ∀ L, CutConv (withMem (MemS L) (indexedCut NB T tk cap nI π P.sC P.SC))
     (withMem (MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0))
   hpop : ∀ L (x y : SegInst FF),
     (indexedCut NB T tk cap nI π PRE_pl_t2p.s0 PRE_pl_t2p.S0).R x PRE_pl_t2p.s0 ⟨PRE_pl_t2p.S0.tab, []⟩ →
@@ -100,9 +112,10 @@ structure Hooks where
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → MemP 0 L x → MemP 0 L y
   hfw0 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r1.s890 PRE_pl_r1.S890) (MemP 0 L) (MemP 1 L)
   hfw1 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890) (MemP 1 L) (MemP 2 L)
+  fixE : ∀ j L x, MemP j L x → x.M.a 12504 = 12504
 
 variable {NB T tk π cap nI}
-variable (H : Hooks NB T tk π cap nI)
+variable {P : ClassPre NB T tk π cap nI} (H : Hooks P)
 
 /-- A cut of POST under the first bookkeeping. -/
 noncomputable def c0 (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF :=
@@ -112,34 +125,22 @@ noncomputable def c0 (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF :=
 noncomputable def cP (j : Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF :=
   withMem (H.MemP j i.L) (indexedCut NB T tk cap nI π s S)
 
-/-- The selector, to the head's call. -/
-noncomputable def g5 (Adm : Cls.Inst → Prop) (uses : List Row) :
-    RGluePiece FF Adm uses (c0 H PRE_pl_head.s1 PRE_pl_head.S1) (c0 H PRE_pl_call.s1 PRE_pl_call.S1) where
-  m := []
-  n := 131
-  O := []
-  chk _ _ := rfl
-  ok _ _ i _ _ _ :=
-    (glueM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_call.accepted_selector PRE_pl_call.selectorRun selTop
-      (fun _ h => PRE_pl_selector.good h.rowValue) PRE_pl_call.selector_inactive PRE_pl_call.head_bridge selCnt
-      (H.hM0 i.L) rfl).convL (idxConv PRE_pl_selector.s0_eq PRE_pl_selector.s0_tab)
-
-/-- The head, the cold sampler and the first async evaluation, to the sampled cut. -/
+/-- The class's POST to the sampled cut. -/
 noncomputable def smpCold (Adm : Cls.Inst → Prop) (uses : List Row) (obls : List Obl) :
-    RStagePiece FF Adm uses obls (c0 H PRE_pl_call.s1 PRE_pl_call.S1) (cP H 0 PRE_pl_common.s4 PRE_pl_common.S4) where
+    RStagePiece FF Adm uses obls (c0 H P.sH P.SH) (fun i => withMem (H.MemS i.L) (indexedCut NB T tk cap nI π P.sC P.SC)) where
   m := []
-  n := PL.Common.N
+  n := P.n
   O := []
   chk _ _ := rfl
-  ok _ _ i _ _ _ := StageCall.intro (idxConv PRE_pl_common.s0_eq PRE_pl_common.s0_tab)
-    (hookMem (fun x0 => PL.Common.all NB T tk cap nI π hcap (fun _ h => PRE_pl_common.good h.rowValue) (NTrack x0)
-        (fun _ _ h h0 => h0.trans h))
+  ok _ _ i _ _ _ := StageCall.intro (CutConv.refl _)
+    (hookMem (fun x0 => P.run (NTrack x0) (fun _ _ h h0 => h0.trans h))
       (fun x y _ hy _ htr hm => H.hsmp i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
 
 /-- The restart into the shared tail. -/
 noncomputable def g7 (Adm : Cls.Inst → Prop) (uses : List Row) :
-    RGluePiece FF Adm uses (cP H 0 PRE_pl_common.s4 PRE_pl_common.S4) (cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0) where
+    RGluePiece FF Adm uses (fun i => withMem (H.MemS i.L) (indexedCut NB T tk cap nI π P.sC P.SC))
+      (cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0) where
   m := []
   n := 0
   O := []
@@ -209,21 +210,34 @@ noncomputable def fw1 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
         (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
       (CutConv.refl _)
 
+/-- The one-token class: the selector and the common stretch. -/
+noncomputable def classOne : ClassPre NB T tk π cap nI where
+  sH := PRE_pl_head.s1
+  SH := PRE_pl_head.S1
+  sC := PRE_pl_common.s4
+  SC := PRE_pl_common.S4
+  n := 131 + PL.Common.N
+  run Tr hT := ((glueM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_call.accepted_selector PRE_pl_call.selectorRun selTop
+      (fun _ h => PRE_pl_selector.good h.rowValue) PRE_pl_call.selector_inactive PRE_pl_call.head_bridge selCnt hT rfl).convL
+      (idxConv PRE_pl_selector.s0_eq PRE_pl_selector.s0_tab)).trans
+    ((PL.Common.all NB T tk cap nI π hcap (fun _ h => PRE_pl_common.good h.rowValue) Tr hT).convL
+      (idxConv PRE_pl_common.s0_eq PRE_pl_common.s0_tab))
+
 /-- The prefill's invariants, POST's ends at the hooks' bookkeeping. -/
-noncomputable def invs (ld pc0 pf : Nat \u2192 ICut FF) (pc : Nat \u2192 Nat \u2192 ICut FF) : PrefInvsW FF where
+noncomputable def invs (ld pc0 pf : Nat → ICut FF) (pc : Nat → Nat → ICut FF) : PrefInvsW FF where
   ld := ld
   pc0 := pc0
   pc := pc
   pf := pf
-  ps L := withMem (H.Mem0 L) (indexedCut NB T tk cap nI \u03C0 PRE_pl_head.s1 PRE_pl_head.S1)
-  dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI \u03C0 PRE_pl_r2.s890 PRE_pl_r2.S890)
+  ps L := withMem (H.Mem0 L) (indexedCut NB T tk cap nI π P.sH P.SH)
+  dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890)
 
 /-- The cuts between POST's pieces. -/
 noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
-  b_post_g5_o := c0 H PRE_pl_call.s1 PRE_pl_call.S1
-  b_post_g6_i := c0 H PRE_pl_call.s1 PRE_pl_call.S1
-  b_post_g6_o := c0 H PRE_pl_call.s1 PRE_pl_call.S1
-  b_post_g7_i := cP H 0 PRE_pl_common.s4 PRE_pl_common.S4
+  b_post_g5_o := c0 H P.sH P.SH
+  b_post_g6_i := c0 H P.sH P.SH
+  b_post_g6_o := c0 H P.sH P.SH
+  b_post_g7_i := fun i => withMem (H.MemS i.L) (indexedCut NB T tk cap nI π P.sC P.SC)
   b_post_g7_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
   b_post_g8_i := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
   b_post_g8_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
@@ -244,18 +258,18 @@ noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
   b_post_g12_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
 
 /-- **POST's pieces.** -/
-noncomputable def pieces (ld pc0 pf : Nat \u2192 ICut FF) (pc : Nat \u2192 Nat \u2192 ICut FF) :
+noncomputable def pieces (ld pc0 pf : Nat → ICut FF) (pc : Nat → Nat → ICut FF) :
     Gpu.RoutePiecesR FF (invs H ld pc0 pf pc) T tk where
   cuts := cuts H
   q1 :=
-    { post_g5 := g5 hcap H _ _
+    { post_g5 := rgEmpty _ _
       head__post_g5__post_g6 := rsEmpty _ _ _
       post_g6 := rgEmpty _ _
-      smp_cold__post_g6__post_g7 := smpCold hcap H _ _ _
+      smp_cold__post_g6__post_g7 := smpCold H _ _ _
       post_g7 := g7 H _ _
       async__post_g7__post_g8 := rsEmpty _ _ _
       post_g8 := rgEmpty _ _
-      rb__post_g8__post_g9_0 := rb0 hcap H _ (fun _ h => \u27E8h.1, h.2.1\u27E9) _
+      rb__post_g8__post_g9_0 := rb0 hcap H _ (fun _ h => ⟨h.1, h.2.1⟩) _
       post_g9_0 := rgEmpty _ _
       fwd_D1_warm_DFit__post_g9_0__post_g10_0 := fw0 hcap hL1 hL2 H _ _
       post_g10_0 := rgEmpty _ _
@@ -265,13 +279,13 @@ noncomputable def pieces (ld pc0 pf : Nat \u2192 ICut FF) (pc : Nat \u2192 Nat \
       post_g12_0 := rgEmpty _ _
       rb__post_g12_0__post_g9_1 := rsEmpty _ _ _
       post_g9_1 := rgEmpty _ _
-      fwd_D1_warm_DFit__post_g9_1__post_g10_1 := fw1 hcap hL1 hL2 H _ (fun _ h => \u27E8h.1, h.2.1\u27E9) _
+      fwd_D1_warm_DFit__post_g9_1__post_g10_1 := fw1 hcap hL1 hL2 H _ (fun _ h => ⟨h.1, h.2.1⟩) _
       post_g10_1 := rgEmpty _ _
       smp_warm__post_g10_1__post_g11_1 := rsEmpty _ _ _
       post_g11_1 := rgEmpty _ _
       async__post_g11_1__post_g12_1 := rsEmpty _ _ _
       post_g12_1 := rgEmpty _ _ }
-  eqs := \u27E8trivial\u27E9
+  eqs := ⟨trivial⟩
 
 end
 

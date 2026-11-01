@@ -9,6 +9,7 @@ let spread: { chunk: number; pre: number; tokens: number[]; forwarded: number[] 
 { const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok, fwd] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number), forwarded: (fwd ?? "").split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
 const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf("--no-good"), 1);
 const fast = argv.includes("--fast"); if (fast) argv.splice(argv.indexOf("--fast"), 1);
+const withGlue = argv.includes("--glue"); if (withGlue) argv.splice(argv.indexOf("--glue"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
 if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens] [--no-good]");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
@@ -105,7 +106,7 @@ if (spread) {
     `kernel_rfl ${p}.spAfterNoOracle : ${p}.spAfterSrv.oracle = []\n` +
     `theorem ${p}.spInactive : (bridgeOf ${p}.spOpen.ffi).active = false := Host.Load.Boot.replay_active _\n` +
     `kernel_rfl ${p}.spBridge : bridgeOf ${p}.spAfter.ffi = bridgeOf ${p}.spOpen.ffi\n`);
-  put("TailRest", head([mod("SpreadData"), "host.sim.template.BootEq", "host.sim.Chunk"], op) +
+  put("TailRest", head([mod("SpreadData"), page(k + 1), "host.sim.template.BootEq", "host.sim.Chunk"], op) +
     `noncomputable def ${p}.restFuel : Nat := ${fuel(k)} - ${spread.pre} - 4\n` +
     `boot_rfl ${p}.checkedRest from ${p}.spAfter to ${s(k + 1)} :\n  runOk ${name}.F (PostOk.okF [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv =\n    some (${s(k + 1)}, ${S(k + 1)})\n` +
     `kernel_rfl ${p}.acceptedRest :\n  PostOk.okF [2673435, ${p}.cacheArray] ${p}.spAfter ${p}.spAfterSrv = true\n`);
@@ -117,7 +118,7 @@ put("Origin", head([mod("H0"), startMod, "host.sim.full.Rel"]) +
 for (const [j, b] of bridges.entries()) {
   const ia = Number(b.ia), p = `${name}.b${j}`;
   if (b.kind === "size") {
-    put(`Size${j}`, head([page(ia + 1), mod("Origin"), "host.sim.template.a4pre_d1_body.SizeAt", "host.sim.template.BootEq", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    put(`Size${j}`, head([page(ia + 1), mod("Origin"), "host.sim.template.a4pre_d1_body.SizeAt", "host.sim.template.BootEq", "host.load.boot.World", ...(withGlue ? ["host.sim.compose.Glue"] : [])], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
       `noncomputable def ${p}.tys : List Val :=\n  match Disp.sizeParts ${s(ia)} with\n  | some (_, _, _, _, _, tys, _) => tys\n  | none => []\n\n` +
       `noncomputable def ${p}.args : List Val :=\n  match Disp.sizeParts ${s(ia)} with\n  | some (_, _, _, _, _, _, args) => args\n  | none => []\n\n` +
       `kernel_rfl ${p}.parts : Disp.sizeParts ${s(ia)} =\n  some (${b.fsym}, ${b.ta}, ${b.nf}, chars!"${b.name}", chars!"${b.rt}", ${p}.tys, ${p}.args)\n` +

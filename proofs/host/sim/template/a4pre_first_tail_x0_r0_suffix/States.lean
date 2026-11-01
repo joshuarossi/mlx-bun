@@ -1,4 +1,4 @@
-import host.sim.template.a4pre_first_tail_x0_r0_body.Boundary
+import host.sim.template.a4pre_first_tail_x0_r0_body.m.B01
 import host.sim.template.ReturnLiteral
 set_option Elab.async false
 set_option maxRecDepth 1000000

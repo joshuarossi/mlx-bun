@@ -32,7 +32,7 @@ private unsafe def chooseRowCmd (pre : Lean.Name) (sEnd SEnd sStart SStart sEnv 
   let nodesTy := mkApp (mkConst ``List [.zero]) (mkApp2 (mkConst ``RNode) (mkConst ``SDim) (mkConst ``InKey))
   let E ← evalExpr (List (RNode SDim InKey)) nodesTy expected
   let actual := domainNodes (rowNums S d) 15235 15235 [5554869888] x
-  let cert ← match chooseD actual E inputs 15235 with
+  let cert ← match chooseD actual E inputs tok with
     | .ok c => pure c
     | .error m => throwError "simgraph_choose_row: {m}"
   let used : List (InKey × Nat) := (E.zip cert).filterMap fun (n, c) => match n.prim with
