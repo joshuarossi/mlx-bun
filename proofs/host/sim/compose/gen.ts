@@ -2241,7 +2241,8 @@ function genPostLink(args: string[]) {
   const ns = chunked("nodes", "PTrie.keysA " + x0 + ".nodes", st.nnext, "all", l => "(" + l + ").all (nodeOKF " + sg + " " + P + " " + x0 + " " + x1 + ") = true");
   const ps = chunked("prims", "fullKeysF " + P + " " + x0, st.nnext, "map", l =>
     "(" + l + ").map (fun i => (" + x1 + ".nodes.get (" + sg + ".node i)).map Host.Mlx.Ffi.Node.prim) =" + NL + "  (" + l + ").map (fun i => (" + x0 + ".nodes.get i).map fun nd => " + sg + ".prim nd.prim)");
-  const nums = chunked("num", "List.range " + S0 + ".tab.length", st.n, "all", l => "(" + l + ").all " + name + ".numAt = true", 500);
+  // the template's table starts with the state's (one pass); only its new entries are looked up
+  const nHead = Math.min(...(tm.entries as { ref: number }[]).map(e => e.ref));
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
   put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", "host.sim.compose.PfLink") +
@@ -2295,10 +2296,15 @@ function genPostLink(args: string[]) {
   const frs = dropList ? [["P", "2665"]] : [["P", "2665"], ["C", "D1Frames.chunk"]];
   const sf = dropList ? [] : [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
   // one module per kind of whole-state check: a single check can need more memory than the rest together
-  nums.chunks.forEach((c, j) => put(name + "Kn_" + j, head(a4b + "." + name + "Na", endMod) + c));
   const kchecks: string[][] = [[
-    nums.assemble.trimEnd().replace(/theorem (\S+) : .* :=\n/, (_, n) => "theorem " + n + " : (List.range " + S0 + ".tab.length).all " + name + ".numAt = true :=\n"),
-    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true := N.nnum",
+    "kernel_rfl N.numId : numIdB " + D + " " + nHead + " = true",
+    "kernel_rfl N.numHead : (" + S0 + ".tab.take " + nHead + ").map (\u00B7.subst N.\u03B8) = " + S1 + ".tab.take " + nHead,
+    "kernel_rfl N.numTail : (List.range' " + nHead + " (" + S0 + ".tab.length - " + nHead + ")).all N.numAt = true",
+    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true :=",
+    "  checkNum_split N.numId N.numHead N.numTail (fun i e he h => by",
+    "    unfold N.numAt at h",
+    "    rw [he] at h",
+    "    exact of_decide_eq_true h)",
     ...[...frs, ...sf].map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a)], [
     ...frs.flatMap(([k, a]) => [
       "kernel_rfl N.get" + k + " : " + s0 + ".heap.get " + a + " = some (.obj (Template.objOf " + s0 + " " + a + "))",
@@ -2332,8 +2338,8 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
     "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
-  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Full", a4b + "." + E + "Fresh", endMod, ...(j === 0 ? nums.chunks.map((_, i) => a4b + "." + name + "Kn_" + i) : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
-  put(name, head(a4b + "." + name + "Heap", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
+  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, ...(j === 0 ? ["host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
+  put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
       ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),

@@ -1,0 +1,13 @@
+import host.sim.template.a4pre_first_tail_x6_r0_suffix.K0
+import host.sim.template.a4pre_first_tail_x6_r0_suffix.K1
+import host.sim.template.ChainRange
+-- Serialized lookahead: [1,2]
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+open Host.Ts.Sim Host.Ts.Sim.Template
+sim_chain_range PRE_first_tail_x6_r0_suffix PRE_first_tail_x6_r0_suffix.okB0 0 1 runSeg0
+sim_chain_range PRE_first_tail_x6_r0_suffix PRE_first_tail_x6_r0_suffix.okB1 4 5 runSeg1
+sim_chain_range PRE_first_tail_x6_r0_suffix PRE_first_tail_x6_r0_suffix.okB2 7 8 runSeg2
+end Host.Load.Run.Tpl

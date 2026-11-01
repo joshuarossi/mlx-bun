@@ -1,10 +1,6 @@
 {
  "doc": "POST's shared cut after the sampler's compile and first asyncEvalAll: every history-dependent number a place, the trace registry a ghost; the T = 1 tails and T >= 2 rows start here.",
- "frames": [
-  2673479,
-  2673484,
-  2673485
- ],
+ "frames": [],
  "prompt": {
   "addr": 2665
  },

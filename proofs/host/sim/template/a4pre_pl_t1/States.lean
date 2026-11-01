@@ -4,7 +4,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
--- plan revision 2: startTokens, so s0 is serialized with its bridge
+-- plan revision 3: only the prompt framed
 open Host.Ts
 bridge_empty PRE_pl_t1.input from PRE_pl_tail.s0
 server_literal PRE_pl_t1.inputSrv := (⟨PRE_pl_tail.S0.tab, []⟩ : SSrv)

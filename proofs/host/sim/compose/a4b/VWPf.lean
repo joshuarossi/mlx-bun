@@ -16,19 +16,20 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     {P0 : LoadP} {nJ cap : Nat} {Tr : SegInst FF → Prop}
     (F : PfFacts s0 s1 S0.tab S1.tab D inv θ P0 nJ [VWFrames.chunk, VWFrames.buffer, VWFrames.view])
     (hT : ∀ x y, NTrack x y → Tr x → Tr y)
-    (hL : π.length ≤ 2048)
+    (hL : i.L ≤ 2048)
     (hnodes : (mlxOf s1.ffi).nnext ≤ P0.NL) (hNN : D.nn0 = D.nn1) (hNK : PTrie.keys D.node = [])
     (sameNext : s1.next = s0.next) (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next)
     (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext)
     (hθ : ∀ j, j ≠ 11 → j ≠ 16 → θ j = .var j)
-    (h9 : ∀ ν, MapOk ν i m → ν 9 = F64.ofNat π.length)
-    (h10 : ∀ ν, MapOk ν i m → ν 10 = F64.ofNat (π.length - 1))
-    (h11 : ∀ ν, MapOk ν i m → (θ 11).eval ν = F64.ofNat (π.length - 1))
-    (h16 : ∀ ν, MapOk ν i m → (θ 16).eval ν = F64.ofNat (capL (π.length - 1)))
+    (h9 : ∀ ν, MapOk ν i m → ν 9 = F64.ofNat i.L)
+    (h10 : ∀ ν, MapOk ν i m → ν 10 = F64.ofNat (i.L - 1))
+    (h11 : ∀ ν, MapOk ν i m → (θ 11).eval ν = F64.ofNat (i.L - 1))
+    (h16 : ∀ ν, MapOk ν i m → (θ 16).eval ν = F64.ofNat (capL (i.L - 1)))
     (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589)
     (hcap : O.D ≤ cap) (hbound : cap < Sim.bound) :
     CutConv (withMem Tr (bodyCore NB T tk π i Θ O m s1 S1)) (withMem Tr (Pf.cut NB T tk π cap O.H O.N s0 S0)) := by
   rintro x ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ ⟨⟨hfresh, hids⟩, htr⟩
+  have hlen : π.length = i.L := hb.length
   have hfr : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: [VWFrames.chunk, VWFrames.buffer, VWFrames.view] :=
     hb.context.1.2.2
   have hlo : x.K.lo = 18151 := hb.context.1.1
@@ -60,10 +61,10 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
   · refine
       { vocab := hb.vocab
         valuation := ?_
-        promptValue := (hval 9 (by decide) (by decide)).trans (h9 x.ν hmap)
-        rowValue := (hval 10 (by decide) (by decide)).trans (h10 x.ν hmap)
-        offsetValue := h11 x.ν hmap
-        capValue := h16 x.ν hmap
+        promptValue := by rw [hlen]; exact (hval 9 (by decide) (by decide)).trans (h9 x.ν hmap)
+        rowValue := by rw [hlen]; exact (hval 10 (by decide) (by decide)).trans (h10 x.ν hmap)
+        offsetValue := by rw [hlen]; exact h11 x.ν hmap
+        capValue := by rw [hlen]; exact h16 x.ν hmap
         context := ⟨⟨hlo, hhi, fun a => ?_⟩, ?_⟩
         prompt := ?_
         inputs := ⟨?_, ?_⟩ }
@@ -71,10 +72,10 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
       change ∃ k ≤ 2 ^ 20, y.ν j = F64.ofNat k
       by_cases h1 : j = 11
       · subst h1
-        exact ⟨π.length - 1, by omega, h11 x.ν hmap⟩
+        exact ⟨i.L - 1, by omega, h11 x.ν hmap⟩
       · by_cases h2 : j = 16
         · subst h2
-          refine ⟨capL (π.length - 1), ?_, h16 x.ν hmap⟩
+          refine ⟨capL (i.L - 1), ?_, h16 x.ν hmap⟩
           unfold capL
           omega
         · rw [hval j h1 h2]

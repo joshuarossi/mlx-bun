@@ -1,5 +1,5 @@
 // Write the checked modules of a flat POST stretch (`tpl_chain` with no stage cuts): boundaries, one run per glue chunk,
-// the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostHeadSmall.ok.
+// the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostOk.ok.
 // usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>]
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ const root = join(import.meta.dir, dir), mod = (f: string) => `host.sim.template
 const head = (imports: string[], open = "Host.Ts Host.Ts.Sim") => [...new Set(imports)].map(i => `import ${i}\n`).join("") +
   `set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen ${open}\n\n`;
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-const OK = "host.sim.template.a4pre_post_head.Small", ok = "PostHeadSmall.ok";
+const OK = "host.sim.template.PostOk", ok = "PostOk.ok";
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
 // boundary pages of 32 states, each importing the last
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
@@ -31,8 +31,8 @@ for (const k of glue) {
   if (spread?.chunk === k) continue;
   put(`K${k}`, head([page(k + 1), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
     `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
-    `  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${fuel(k)} ${s(k)} ${S(k)}) =\n` +
-    `    fun _ => some (${s(k + 1)}, ${S(k + 1)})`);
+    `  runOk ${name}.F ${ok} ${fuel(k)} ${s(k)} ${S(k)} =\n` +
+    `    some (${s(k + 1)}, ${S(k + 1)})`);
 }
 // A chunk holding the array literal's spread of the framed prompt: the run to it, the spread's own steps (`Disp.step_id_spread`,
 // `step_spread_close`: a target-side frame, no `runOk`), and the run after it at the acceptance framing the new array.
@@ -47,7 +47,7 @@ if (spread) {
   put("TailStates", head([mod("H0"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(tail, s(k), S(k), { stop: `steps:${spread.pre}`, cap: spread.pre }));
   put("TailData", head([mod("TailStates")], "Host.Ts") + `host_stream_state ${tail} 0\nhost_stream_state ${tail} 1\n`);
   put("SpreadStates", head([mod("TailData"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(st, `${tail}.s1`, `${tail}.S1`, { stop: "steps:4", cap: 4, chunk: 1 }));
-  put("SpreadData", head([mod("SpreadStates"), "host.sim.template.a4pre_pl_tail.SimOk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+  put("SpreadData", head([mod("SpreadStates"), "host.sim.template.PostOk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
     [0, 1, 2, 3, 4].map(i => `host_stream_state ${st} ${i}\n`).join("") + "\n" +
     `noncomputable def ${p}.spPre := ${st}.s0\nnoncomputable def ${p}.spPreSrv := ${st}.S0\n` +
     `noncomputable def ${p}.spOpen := ${st}.s1\nnoncomputable def ${p}.spOpenSrv := ${st}.S1\n` +
@@ -63,8 +63,8 @@ if (spread) {
     `kernel_rfl ${p}.tailStart : ${tail}.s0 = ${s(k)}\n` +
     `kernel_rfl ${p}.spreadStart : ${st}.s0 = ${tail}.s1\n` +
     `kernel_rfl ${p}.tailSrv : ${st}.S0 = ${tail}.S1\n` +
-    `boot_rfl ${p}.checkedTail from ${s(k)} to ${tail}.s1 :\n  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${spread.pre} ${s(k)} ${S(k)}) =\n    fun _ => some (${tail}.s1, ${tail}.S1)\n` +
-    `kernel_rfl ${p}.acceptedSpPre :\n  (fun bytes : List Byte => ${ok} bytes ${p}.spPre ${p}.spPreSrv) = fun _ => true\n`);
+    `boot_rfl ${p}.checkedTail from ${s(k)} to ${tail}.s1 :\n  runOk ${name}.F ${ok} ${spread.pre} ${s(k)} ${S(k)} =\n    some (${tail}.s1, ${tail}.S1)\n` +
+    `kernel_rfl ${p}.acceptedSpPre :\n  ${ok} ${p}.spPre ${p}.spPreSrv = true\n`);
   put("TailSteps", head([mod("SpreadData"), ...facts], op) +
     stepFact("spInto", `${p}.spPre`, `${p}.spPreSrv`, `${p}.spOpen`, `${p}.spOpenSrv`) +
     stepFact("spOpenStep", `${p}.spOpen`, `${p}.spOpenSrv`, `${p}.spId`, `${p}.spIdSrv`) +
@@ -85,8 +85,8 @@ if (spread) {
     `kernel_rfl ${p}.spCloseStack : ${p}.spClose.stack =\n  .l (.spread [] [] ${p}.spEnv) :: ${p}.spFs\n` +
     `kernel_rfl ${p}.spFwd : ${p}.spClose.obj? 2673435 = some ${p}.fwdObj\n` +
     `kernel_rfl ${p}.spFwdKind : ${p}.fwdObj.kind = .array []\n` +
-    `kernel_rfl ${p}.spCellNoW : (fun bs : List Byte => D1Frames.typedW bs ${p}.spCell) = fun _ => none\n` +
-    `kernel_rfl ${p}.spNewNoW : (fun bs : List Byte => D1Frames.typedW bs ${p}.cacheArray) = fun _ => none\n` +
+    `kernel_rfl ${p}.spCellNoW : wideP ${p}.spCell = none\n` +
+    `kernel_rfl ${p}.spNewNoW : wideP ${p}.cacheArray = none\n` +
     `kernel_rfl ${p}.spNewNoPrompt : Nat.beq 2665 ${p}.cacheArray = false\n` +
     `kernel_rfl ${p}.spNewNoFwd : Nat.beq 2673435 ${p}.cacheArray = false\n` +
     `kernel_rfl ${p}.spRoom : Nat.blt (${p}.spClose.next + margin) Host.Ts.Sim.bound = true\n` +
@@ -97,8 +97,8 @@ if (spread) {
     `kernel_rfl ${p}.spBridge : bridgeOf ${p}.spAfter.ffi = bridgeOf ${p}.spOpen.ffi\n`);
   put("TailRest", head([mod("SpreadData"), "host.sim.template.BootEq", "host.sim.Chunk"], op) +
     `noncomputable def ${p}.restFuel : Nat := ${fuel(k)} - ${spread.pre} - 4\n` +
-    `boot_rfl ${p}.checkedRest from ${p}.spAfter to ${s(k + 1)} :\n  (fun bytes : List Byte => runOk ${name}.F (PostHeadSim.ok bytes [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv) =\n    fun _ => some (${s(k + 1)}, ${S(k + 1)})\n` +
-    `kernel_rfl ${p}.acceptedRest :\n  (fun bytes : List Byte => PostHeadSim.ok bytes [2673435, ${p}.cacheArray] ${p}.spAfter ${p}.spAfterSrv) = fun _ => true\n`);
+    `boot_rfl ${p}.checkedRest from ${p}.spAfter to ${s(k + 1)} :\n  runOk ${name}.F (PostOk.okF [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv =\n    some (${s(k + 1)}, ${S(k + 1)})\n` +
+    `kernel_rfl ${p}.acceptedRest :\n  PostOk.okF [2673435, ${p}.cacheArray] ${p}.spAfter ${p}.spAfterSrv = true\n`);
 }
 put("Origin", head([mod("H0"), startMod, "host.sim.full.Rel"]) +
   `kernel_rfl ${name}.s0_eq : ${s(0)} = ${start}\n` +
@@ -142,7 +142,7 @@ for (const [j, b] of bridges.entries()) {
   } else throw Error(`bridge ${b.kind}: not generated here`);
 }
 const boundaries = [0, ...glue.filter(k => spread?.chunk !== k).flatMap(k => [k, k + 1])].filter((v, i, a) => a.indexOf(v) === i);
-const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} :\n  (fun bytes : List Byte => ${ok} bytes ${s(i)} ${S(i)}) = fun _ => true\n`);
+const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} : ${ok} ${s(i)} ${S(i)} = true\n`);
 if (groups.length <= 64) put("Accept", head([page(T1), OK]) + groups.join(""));
 else for (let j = 0; j * 50 < groups.length; j++) put(`Accept${j}`, head([page(boundaries[Math.min(groups.length - 1, (j + 1) * 50 - 1)]!), OK]) + groups.slice(j * 50, (j + 1) * 50).join(""));
 if (!noGood) put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +

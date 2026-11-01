@@ -1,10 +1,6 @@
 {
  "doc": "POST's entry template, any prompt length: the singleton's forward return (D1Body.s155) with the KV/SSM offsets and KV capacities as places (11 = o, 16 = cap) and the history-dependent places of prompt.json.",
- "frames": [
-  2673479,
-  2673484,
-  2673485
- ],
+ "frames": [],
  "prompt": {
   "addr": 2665
  },

@@ -4,6 +4,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
+-- plan revision 3: only the prompt framed
 open Host.Ts
 bridge_empty PRE_pl_selector.input from PRE_pl_head.s1
 server_literal PRE_pl_selector.inputSrv := (⟨PRE_pl_head.S1.tab, []⟩ : SSrv)

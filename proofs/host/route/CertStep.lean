@@ -76,6 +76,64 @@ theorem graph_rowsAt (E : List (RNode PDim κ)) (ν : Nat → Int) (x n : Nat) (
   funext d
   exact rowsAt_eval ν x n hx d
 
+/-! A closure's kind is read only where a table names one, so a match survives any table agreeing on the names. -/
+
+theorem closureBody_mono {kind kind' : Nat → Option Compiled} (h : ∀ c k, kind c = some k → kind' c = some k)
+    (cls : Nat) (p : RPrim Int κ) (r : RNode Int κ) (b : Nat → Option (RNode Int κ)) (x : Compiled × List Nat)
+    (hx : closureBody kind cls p r b = some x) : closureBody kind' cls p r b = some x := by
+  unfold closureBody at hx ⊢
+  cases hk : kind cls with
+  | none => rw [hk] at hx; cases hx
+  | some k =>
+    rw [hk] at hx
+    rw [h cls k hk]
+    exact hx
+
+theorem closureLeaves_mono {kind kind' : Nat → Option Compiled} (h : ∀ c k, kind c = some k → kind' c = some k)
+    (G : Nat → Option (RNode Int κ)) (i : Nat) (x : Compiled × List Nat) (hx : closureLeaves kind G i = some x) :
+    closureLeaves kind' G i = some x := by
+  unfold closureLeaves at hx ⊢
+  obtain ⟨r, hr, ha⟩ := Option.bind_eq_some_iff.mp hx
+  rw [hr, Option.bind_some]
+  unfold closureAux at ha ⊢
+  split at ha
+  · rename_i cls p hp
+    split at ha
+    · rename_i he
+      simp only [hp, he, ↓reduceIte]
+      exact closureBody_mono h _ _ _ _ _ ha
+    · cases ha
+  · cases ha
+
+theorem matchesED_mono {δ : Type} [DecidableEq δ] {kind kind' : Nat → Option Compiled}
+    (h : ∀ c k, kind c = some k → kind' c = some k) (G : Nat → Option (RNode δ κ)) (E : List (RNode δ κ)) (cert : List Nat)
+    (hm : MatchesED kind G E cert = true) : MatchesED kind' G E cert = true := by
+  unfold MatchesED at hm ⊢
+  refine List.all_eq_true.mpr fun k hk => ?_
+  have hok := List.all_eq_true.mp hm k hk
+  cases hE : E[k]? with
+  | none => rw [hE] at hok; cases hok
+  | some e =>
+    rw [hE] at hok
+    dsimp only at hok ⊢
+    have hc : (closureCheck kind G cert k e).getD (plainCheck G cert k e) = true →
+        (closureCheck kind' G cert k e).getD (plainCheck G cert k e) = true := by
+      unfold closureCheck
+      cases closureOf? e.prim with
+      | none => exact id
+      | some c =>
+        simp only [Option.map_some, Option.getD_some, decide_eq_true_eq]
+        exact closureLeaves_mono h _ _ _
+    simp only [nodeOkED, Bool.and_eq_true] at hok ⊢
+    refine ⟨hok.1, ?_⟩
+    have h2 := hok.2
+    split at h2
+    · rw [if_pos ‹_›]; exact h2
+    · rw [if_neg ‹_›]
+      split at h2
+      · rw [if_pos ‹_›]; exact h2
+      · rw [if_neg ‹_›]; exact hc h2
+
 /-- **The certificate on the route's graph.** A check of the chain's end graph `Gs` against the family's expected graph
 read at the rows' variable `x`, at the chain's valuation `ν`, along the embedding into the route. -/
 theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List StageLayout) (ν : Nat → Int) (x n : Nat)
@@ -85,7 +143,7 @@ theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List S
     (h : MatchesSeg d kind Gs ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))) cert 0
       ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))).length = true)
     (G : Nat → Option (RNode Int κ)) {σ cl : Nat → Nat} (emb : Embeds σ cl (mapG (PDim.eval ν) Gs) G)
-    (kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c) :
+    (kind' : Nat → Option Compiled) (hk : ∀ c k, kind c = some k → kind' (cl c) = some k) :
     MatchesED kind' G (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1 (cert.map σ) = true := by
   have hm := matchesSeg_map (PDim.eval ν) d kind Gs _ cert 0 _ h
   rw [graph_rowsAt _ ν x n hx,
@@ -94,7 +152,8 @@ theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List S
   have hl : (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1.length ≤ cert.length := by
     rw [← congrArg Prod.fst (family_eval F o₀ n₀ ss₀ (refNu 0 n) 0 n ss hsig), List.length_map]
     exact hlen
-  have hm' := matchesSeg_embed d kind kind' hk _ G emb _ cert 0 _ hl hm
+  have hm' := matchesSeg_embed d (fun c => kind' (cl c)) kind' (fun _ => rfl) _ G emb _ cert 0 _ hl
+    (matchesED_mono hk _ _ _ hm)
   refine matchesSeg_whole d kind' G _ _ ?_
   have hlenE : ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))).length =
       (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1.length := by
