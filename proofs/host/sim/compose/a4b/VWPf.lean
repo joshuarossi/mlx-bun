@@ -20,7 +20,9 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     (hnodes : (mlxOf s1.ffi).nnext ≤ P0.NL) (hNN : D.nn0 = D.nn1) (hNK : PTrie.keys D.node = [])
     (sameNext : s1.next = s0.next) (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next)
     (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext)
-    (hθ : ∀ j, j ≠ 11 → j ≠ 16 → θ j = .var j)
+    (hθ : ∀ j, j ≠ 11 → j ≠ 14 → j ≠ 16 → j ≠ 30 → j ≠ 31 → θ j = .var j) (hθ14 : θ 14 = .var 17)
+    {c30 c31 : Nat} (h30 : ∀ ν : Nat → F64, (θ 30).eval ν = F64.ofNat c30)
+    (h31 : ∀ ν : Nat → F64, (θ 31).eval ν = F64.ofNat c31) (hc30 : c30 ≤ 2 ^ 20) (hc31 : c31 ≤ 2 ^ 20)
     (h9 : ∀ ν, MapOk ν i m → ν 9 = F64.ofNat i.L)
     (h10 : ∀ ν, MapOk ν i m → ν 10 = F64.ofNat (i.L - 1))
     (h11 : ∀ ν, MapOk ν i m → (θ 11).eval ν = F64.ofNat (i.L - 1))
@@ -51,18 +53,22 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     Shift.valuation θ x.ν,
     ⟨dropNext x.M x.K keepP noFrames s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
   have hnode : y.M.node = x.M.node := funext fun k => congrArg x.M.node (nodeF_id hNN hNK k)
-  have hval : ∀ j, j ≠ 11 → j ≠ 16 → y.ν j = x.ν j := by
-    intro j h1 h2
+  have hval : ∀ j, j ≠ 11 → j ≠ 14 → j ≠ 16 → j ≠ 30 → j ≠ 31 → y.ν j = x.ν j := by
+    intro j h1 h3 h2 h4 h5
     change (θ j).eval x.ν = _
-    rw [hθ j h1 h2]
+    rw [hθ j h1 h3 h2 h4 h5]
+    rfl
+  have hval14 : y.ν 14 = x.ν 17 := by
+    change (θ 14).eval x.ν = _
+    rw [hθ14]
     rfl
   have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := drop_prompt F x.M x.K
   refine ⟨y, rfl, rfl, ⟨hrel, ?_⟩, ⟨hfresh, ?_, ?_⟩, hT x y (NTrack.conv rfl rfl hnode) htr⟩
   · refine
       { vocab := hb.vocab
         valuation := ?_
-        promptValue := by rw [hlen]; exact (hval 9 (by decide) (by decide)).trans (h9 x.ν hmap)
-        rowValue := by rw [hlen]; exact (hval 10 (by decide) (by decide)).trans (h10 x.ν hmap)
+        promptValue := by rw [hlen]; exact (hval 9 (by decide) (by decide) (by decide) (by decide) (by decide)).trans (h9 x.ν hmap)
+        rowValue := by rw [hlen]; exact (hval 10 (by decide) (by decide) (by decide) (by decide) (by decide)).trans (h10 x.ν hmap)
         offsetValue := by rw [hlen]; exact h11 x.ν hmap
         capValue := by rw [hlen]; exact h16 x.ν hmap
         context := ⟨⟨hlo, hhi, fun a => ?_⟩, ?_⟩
@@ -73,13 +79,23 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
       by_cases h1 : j = 11
       · subst h1
         exact ⟨i.L - 1, by omega, h11 x.ν hmap⟩
-      · by_cases h2 : j = 16
-        · subst h2
-          refine ⟨capL (i.L - 1), ?_, h16 x.ν hmap⟩
-          unfold capL
-          omega
-        · rw [hval j h1 h2]
-          exact hb.valuation j
+      · by_cases h3 : j = 14
+        · subst h3
+          rw [hval14]
+          exact hb.valuation 17
+        · by_cases h2 : j = 16
+          · subst h2
+            refine ⟨capL (i.L - 1), ?_, h16 x.ν hmap⟩
+            unfold capL
+            omega
+          · by_cases h4 : j = 30
+            · subst h4
+              exact ⟨c30, hc30, h30 x.ν⟩
+            · by_cases h5 : j = 31
+              · subst h5
+                exact ⟨c31, hc31, h31 x.ν⟩
+              · rw [hval j h1 h3 h2 h4 h5]
+                exact hb.valuation j
     · rw [hfrY a]
       by_cases ha : a = 2665
       · subst ha
@@ -96,7 +112,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
       rw [hfrY 2665, if_pos rfl]
       exact hP
     · intro j hj
-      rw [hval j (by omega) (by omega)]
+      rw [hval j (by omega) (by omega) (by omega) (by omega) (by omega)]
       exact hins.1 j hj
     · change x.M.a (D.a 2590) = 2590
       rw [hA]

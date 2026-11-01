@@ -226,6 +226,11 @@ def plainKOk (G : Nat → Option (RNode PDim SimGraph.PKey)) (cert : List Nat) (
     | none => false
   | _ => true
 
+/-- Node `k`'s kernel is plain and its dimension input held. -/
+def extraOk (G : Nat → Option (RNode PDim SimGraph.PKey)) (cert : List Nat) (x : Nat) (S : SSrv) (B : Box) (fixed : List Int)
+    (s : Ffi.St) (ins : SimGraph.PKey → Option Nat) (k : Nat) (e : RNode PDim SimGraph.PKey) : Bool :=
+  plainKOk G cert k e && cellNodeOk x S B fixed s ins k e
+
 /-- An attention layout before any step. -/
 def coldLayout : StageLayout → Bool
   | .delta _ => true
@@ -310,7 +315,7 @@ noncomputable def famGs (s : Ffi.St) (S : SSrv) (B : Box) (fixed : List Int) : N
 
 /-- **A first forward's certificate**: the family's graph at the cold layout, as the chain reads it at its rows' variable
 `x`, on the template `s` at the forward's return. Generated, kernel-checked. -/
-structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) where
+structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) (ss : List StageLayout) where
   n₀ : Nat
   x : Nat
   s : Ffi.St
@@ -324,21 +329,20 @@ structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) where
   Ec : List (RNode PDim SimGraph.PKey)
   tok : Nat
   outs : List (Nat × Nat)
-  family : familyGraph (rowTpl refRows pk mk rd).ops id 0 n₀ Expected.stages = (E, tok, outs)
+  family : familyGraph (rowTpl refRows pk mk rd).ops id 0 n₀ ss = (E, tok, outs)
   hEc : E.map (Host.Mlx.SimGraph.mapN (rowsAt x)) = Ec
   hn₀ : 0 < n₀ ∧ n₀ < 256
   fixedHi : ∀ i ∈ fixed, (131072 : Int) ≤ i ∧ i < 2 ^ 56
   hlen : E.length ≤ cert.length
   hm : MatchesSeg .promptIds (kindOf kinds) (famGs s S B fixed) Ec cert 0 Ec.length = true
   inputs : InputsSeg Ec cert (insOf 15235 cells) 0 Ec.length = true
-  plain : checkNodesD (plainKOk (famGs s S B fixed) cert) 0 Ec = true
-  cellsOk : checkNodesD (cellNodeOk x S B fixed s (insOf 15235 cells)) 0 Ec = true
+  extra : checkNodesD (extraOk (famGs s S B fixed) cert x S B fixed s (insOf 15235 cells)) 0 Ec = true
   kindsPresent : ∀ e ∈ kinds, (s.objs.get e.1).isSome = true
   outsLt : ∀ q ∈ outs, q.1 < cert.length ∧ q.2 < cert.length ∧ certAt cert q.1 < s.nnext ∧ certAt cert q.2 < s.nnext
   outs64 : outs.length = 64
 
 /-- The handles' carriers on the template. -/
-def FamCert.carriers {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd) : List (Option Nat × Option Nat) :=
+def FamCert.carriers {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List StageLayout} (c : FamCert pk mk rd ss) : List (Option Nat × Option Nat) :=
   c.outs.map fun q => (some (certAt c.cert q.1), some (certAt c.cert q.2))
 
 theorem inputs_at {E : List (RNode PDim SimGraph.PKey)} {cert : List Nat} {ins : SimGraph.PKey → Option Nat}
@@ -363,7 +367,7 @@ theorem keyed_of_routeVal (tab : List F64) (y : Ffi.St) (envP : FfiEval.Env SimG
   exact (Host.Mlx.SimGraph.Mach.routeVals_empty P KR env kind tab y i).symm.trans h
 
 /-- **The certificate's embedding** into the route's graph, from the native relation at the forward's return. -/
-theorem FamCert.emb {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd) {Pm : LoadP} {NB : Nat} {M : Map}
+theorem FamCert.emb {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List StageLayout} (c : FamCert pk mk rd ss) {Pm : LoadP} {NB : Nat} {M : Map}
     {m : Nat} {y : Ffi.St} (tab : List F64) (hmr : Host.Ts.Sim.G.MR Pm NB M m c.s y) (hband : Pm.NL = Pm.N0) (hE : (Pm.E : Int) ≤ 131072)
     (ρ : Nat → F64) (ν : Nat → Int)
     (hnum : ∀ i e, nth? c.S.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ))
@@ -387,7 +391,7 @@ theorem FamCert.emb {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk m
 
 /-- **The forward's handles at their carriers**, from the certificate, the native relation at the forward's return, the
 prompt's ids and the checkpoint's parameters. -/
-theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd) {Pm : LoadP} {NB : Nat} {M : Map}
+theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List StageLayout} (c : FamCert pk mk rd ss) {Pm : LoadP} {NB : Nat} {M : Map}
     {m : Nat} {y : Ffi.St} (tab : List F64) (hmr : Host.Ts.Sim.G.MR Pm NB M m c.s y) (hband : Pm.NL = Pm.N0)
     (hE : (Pm.E : Int) ≤ 131072) (ρ : Nat → F64) (ν : Nat → Int) (n : Nat) (π : List Nat)
     (hnum : ∀ i e, nth? c.S.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ))
@@ -397,6 +401,8 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
     (hip : HostInt32 (concrete (CSrv.val ⟨tab⟩)) y (M.node 15235) ((π.take n).map Int.ofNat) [1, n])
     (hpar : ∀ p ∈ parameterTensors parameterChoice, routeVal P KR env kind (fun _ => none) tab y (M.node p.node) =
       some (firstValues P.toMlxContract KR.toKernelContract env tab p))
+    (hlay : chainLayout (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) initialHandles = ss)
+    (hsig : List.Forall₂ (SigRelR kvSigP 0 c.n₀ 0 n) ss ss)
     (hs' : List Handles)
     (hv : rowSem P KR env.weights (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) π
       (rowTpl refRows pk mk rd) 0 n initialHandles = some hs') :
@@ -404,29 +410,26 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
   have emb := c.emb tab hmr hband hE ρ ν hnum hB hρ
   have hGr : GrK tab y = ffiGraphR (κ := SimGraph.PKey) (concrete (CSrv.val ⟨tab⟩)) SourceKernels.sources y :=
     ffiGraphR_key _ _ _ _
-  have hsig := sig_cold c.hn₀ hn _ stages_cold
-  have hfe := family_eval (rowFamily refRows pk mk rd) 0 c.n₀ Expected.stages (refNu 0 n) 0 n Expected.stages hsig
-  have hlay : chainLayout (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) initialHandles =
-      Expected.stages := initial_stage_layout _
-  have hE1 : (familyGraph (rowFamily refRows pk mk rd).ops id 0 c.n₀ Expected.stages).1 = c.E := congrArg Prod.fst c.family
-  have hE2 : (familyGraph (rowFamily refRows pk mk rd).ops id 0 c.n₀ Expected.stages).2.2 = c.outs :=
+  have hfe := family_eval (rowFamily refRows pk mk rd) 0 c.n₀ ss (refNu 0 n) 0 n ss hsig
+  have hE1 : (familyGraph (rowFamily refRows pk mk rd).ops id 0 c.n₀ ss).1 = c.E := congrArg Prod.fst c.family
+  have hE2 : (familyGraph (rowFamily refRows pk mk rd).ops id 0 c.n₀ ss).2.2 = c.outs :=
     congrArg (fun r => r.2.2) c.family
   have hmatch : MatchesED kind (GrK tab y)
-      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).1 (c.cert.map M.node) = true :=
-    cert_route (rowFamily refRows pk mk rd) .promptIds 0 c.n₀ Expected.stages ν c.x n hx Expected.stages hsig
+      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1 (c.cert.map M.node) = true :=
+    cert_route (rowFamily refRows pk mk rd) .promptIds 0 c.n₀ ss ν c.x n hx ss hsig
       (famGs c.s c.S c.B c.fixed) (kindOf c.kinds) c.cert (by rw [hE1]; exact c.hlen)
       (by rw [hE1, c.hEc]; exact c.hm) (GrK tab y) emb kind hk
   -- the graph at the reference's valuation is the chain's reading of `Ec`
   have hEv : c.Ec.map (Host.Mlx.SimGraph.mapN (PDim.eval ν)) =
-      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).1 := by
+      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1 := by
     rw [← c.hEc, graph_rowsAt _ ν c.x n hx, ← hE1]
     exact congrArg Prod.fst hfe
-  have hEv2 : (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).2.2 = c.outs := by
+  have hEv2 : (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).2.2 = c.outs := by
     rw [← hE2]
     exact (congrArg (fun r => r.2.2) hfe).symm
   have hEc_len : c.Ec.length = c.E.length := by rw [← c.hEc, List.length_map]
   have hpick : ∀ {k : Nat} {e : RNode Int SimGraph.PKey},
-      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).1[k]? = some e →
+      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1[k]? = some e →
       ∃ e0, c.Ec[k]? = some e0 ∧ Host.Mlx.SimGraph.mapN (PDim.eval ν) e0 = e ∧ k < c.cert.length := by
     intro k e he
     rw [← hEv, List.getElem?_map] at he
@@ -438,7 +441,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
   -- the inputs
   have hin : ∀ ids, rowIds π 0 n = some ids → InputsHeldR P KR
       (stepEnv env.weights (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) 0 n ids initialHandles) kind
-      (GrK tab y) (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).1
+      (GrK tab y) (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1
       (c.cert.map M.node) := by
     intro ids hids k e key v he hp hv'
     obtain ⟨e0, he0, rfl, hlt⟩ := hpick he
@@ -468,7 +471,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
       rw [← hne]
       exact keyed_of_routeVal P KR env kind tab y _ rfl _ _ (hpar t (parameterInput_mem _ _ ht))
     | cells p j vals shape =>
-      have hok := checkNodesD_get _ _ 0 c.cellsOk he0
+      have hok := (Bool.and_eq_true _ _ ▸ checkNodesD_get _ _ 0 c.extra he0 : _ ∧ _).2
       simp only [cellNodeOk, hp0, cellKeyOk, hins, Bool.and_eq_true] at hok
       obtain ⟨hD, hok⟩ := hok
       cases hnd : c.s.nodes.get (certAt c.cert k) with
@@ -508,16 +511,16 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
               (Host.Mlx.SimGraph.Mach.evalR_routeVal P KR env kind (fun _ => none) tab y _ _ hcar)
         | _ => cases hok
     | iota p j count =>
-      have hok := checkNodesD_get _ _ 0 c.cellsOk he0
+      have hok := (Bool.and_eq_true _ _ ▸ checkNodesD_get _ _ 0 c.extra he0 : _ ∧ _).2
       simp only [cellNodeOk, hp0, cellKeyOk] at hok
       cases hok
   -- the plain kernels
-  have hG : ∀ k e, (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).1[k]? = some e →
+  have hG : ∀ k e, (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1[k]? = some e →
       ∀ nd name cf out, e.prim = .kernel name cf out → GrK tab y (certAt (c.cert.map M.node) k) = some nd → nd.prim = e.prim := by
     intro k e he nd name cf out hp hnd
     obtain ⟨e0, he0, rfl, hlt⟩ := hpick he
     obtain ⟨cf0, hp0⟩ := mapP_kernel hp
-    have hok := checkNodesD_get _ _ 0 c.plain he0
+    have hok := (Bool.and_eq_true _ _ ▸ checkNodesD_get _ _ 0 c.extra he0 : _ ∧ _).1
     simp only [plainKOk, hp0, Nat.zero_add] at hok
     cases hr : famGs c.s c.S c.B c.fixed (certAt c.cert k) with
     | none => rw [hr] at hok; cases hok
@@ -532,7 +535,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
       rfl
   -- the outputs
   have hout : (cachesAt M.node c.carriers).map (fun t => (t.first.map Tensor.node, t.second.map Tensor.node)) =
-      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).2.2.map
+      (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).2.2.map
         (fun (a, b) => (some (certAt (c.cert.map M.node) a), some (certAt (c.cert.map M.node) b))) := by
     have h := cachesAt_nodes M.node c.carriers
     rw [hEv2]
@@ -542,7 +545,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
     obtain ⟨h1, h2, -, -⟩ := c.outsLt q hq
     simp only [Function.comp, Option.map_some]
     rw [certAt_map _ _ _ h1, certAt_map _ _ _ h2]
-  have hlenO : (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n Expected.stages).2.2.length = hs'.length := by
+  have hlenO : (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).2.2.length = hs'.length := by
     rw [hEv2, c.outs64]
     unfold rowSem at hv
     cases hids : rowIds π 0 n with
@@ -550,7 +553,11 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert p
     | some ids =>
       rw [hids] at hv
       dsimp only [bind, Option.bind] at hv
-      cases hr : forwardT (rowTpl refRows pk mk rd) _ (PDim.eval (refNu 0 n)) 0 n _ with
+      cases hr : forwardT (rowTpl refRows pk mk rd) (valueB P KR.toKernelContract
+          (stepEnv env.weights (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) 0 n ids initialHandles)
+          (ksR P KR (stepEnv env.weights (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) 0 n ids initialHandles)))
+          (PDim.eval (refNu 0 n)) 0 n
+          (chainLayout (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) initialHandles) with
       | none => rw [hr] at hv; cases hv
       | some r =>
         rw [hr] at hv

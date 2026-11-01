@@ -1,4 +1,5 @@
 import host.sim.compose.MainFramed
+import host.route.FinalGpu
 import host.sim.compose.Gpu
 set_option maxRecDepth 1000000
 set_option autoImplicit false
@@ -10,7 +11,7 @@ open _root_.Host.Mlx.SimGraph.Mach (refPrompt refPrompt_decodes)
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open _root_.Host.Ts.Sim.Prefill
 open _root_.Host.Ts.Sim.Full (FF fullWorldXD fullWorldFb fullWorldFb_end mlxOf)
-open _root_.Host.Route (RouteArtifactsFramed decCutFb machGxV goalMV goalCV machVal machReads routeVs)
+open _root_.Host.Route (RouteArtifactsX decCutFb machGxV goalMV goalCV machVal machReads routeVs)
 open _root_.Host.Ts.Sim.Lin.Cls (routeI RouteKind DecKind)
 open _root_.Host.Ts.Sim (Addr WFrame LoopFramesA LoopBase LoopStartW HaltSegW valL)
 open _root_.Host.Ts.Sim.Compose (DecodePiecesFramedW DecodeGraphMFramedAt PathPiecesW itersW loopG_ofAtV caseFwdAtV_of_tpl
@@ -27,7 +28,7 @@ variable {C : M1Max.Contract}
 /-- **The route's artifacts of a prompt with no Neural Engine forward.** -/
 noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : _root_.Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
-    (typed : TypedCheckpoint env.weights) (π : List Nat) (kind : Nat → Option Compiled) {T : Nat} {tk : Nat → Nat} (je : _root_.Host.Ts.Env)
+    (typed : TypedCheckpoint env.weights) (π : List Nat) {T : Nat} {tk : Nat → Nat} (je : _root_.Host.Ts.Env)
     (nm : _root_.Host.Ts.Name) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224) (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
     (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA : List Nat) (I : PrefInvsW (fullWorldXD NB).F)
     (Fr : LoopFramesA A) (s0 : St FF.S) (tab0 : List SymE) (Itpl : TplInputs) (B : LoopBase) (ΔJ ΔH ΔN : Nat)
@@ -41,18 +42,20 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (henv : lookupEnv nm je = some A.cE) (hgenv : lookupEnv chars!"generation" je = some A.gen)
     (hA : A.nxt = 17) (hAt : A.tvar = 9) (hAk : A.kvar = 14) (hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0)
     (hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true)
-    (hdec : CutConv (I.dec π.length) (decCutFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
-      (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B))
+    (hdec : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind, (decCutFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
+      (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs)
     (he1 : ∀ t C, (I.dec π.length).Inv t C → C.val (.ref 1) = some (F64.ofNat (tk 1)))
     (htkR : ∀ tab j, j < T → ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
     (htk : ∀ j, j ≤ T → tk j ≤ 248319)
     (hJ : T * ΔJ + B.D < Sim.bound)
     (hH : (mlxOf s0.ffi).next + T * ΔH + B.H + (Pd.E - (mlxOf s0.ffi).next) < 2 ^ 46)
     (hN : (mlxOf s0.ffi).nnext + T * ΔN + B.N + (Pd.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62)
-    (gA : Hp.pA.Goal (goalMV P KR NE net env π kind NB 1)) (gB2 : Hp.pB2.Goal (goalMV P KR NE net env π kind NB 2))
-    (gB0 : Hp.pB0.Goal (goalCV P KR NE net env π kind NB T je)) (gC1 : Hp.pC1.Goal (goalMV P KR NE net env π kind NB 1))
-    (gC0 : Hp.pC0.Goal (goalCV P KR NE net env π kind NB T je)) :
-    RouteArtifactsFramed P KR NE net env π kind T tk je nm :=
+    (gA : Hp.pA.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF))
+    (gB2 : Hp.pB2.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF))
+    (gB0 : Hp.pB0.Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF))
+    (gC1 : Hp.pC1.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF))
+    (gC0 : Hp.pC0.Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF)) :
+    RouteArtifactsX P KR NE net env π T tk je nm :=
   have h2 : π.length ≤ 262143 := by omega
   have ha : PostClass.other.Applies π.length := other_short hπ hL
   have htk' : ∀ j, j ≤ T → tk j ≤ 2 ^ 20 := fun j hj => Nat.le_trans (htk j hj) (by decide)
@@ -122,7 +125,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
         P1 := fun h => pA ⟨by omega, hctx, h, htk 2 (by omega)⟩
         s1H := fun _ => Hp.pA.h.stop Hp.sA _
         hG1 := fun _ => gA }
-    dec := fun h3 b0 =>
+    dec := fun h3 b0 kind =>
       { st := hst b0
         hit := itersW (fullWorldFb_end b0 NB) hA (hst b0) (D h3 b0).cs (D h3 b0).gr (by omega)
           (by simp only [List.length_cons, machReads_length]; omega) htk' htk hJ hH hN

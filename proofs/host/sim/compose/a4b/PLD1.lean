@@ -1,4 +1,6 @@
 import host.sim.compose.a4b.PLD1Heap
+import host.sim.compose.a4b.PLD1Full
+import host.sim.compose.a4b.PLEntryFresh
 import host.sim.compose.a4b.PLD1K0
 import host.sim.compose.a4b.PLD1K1
 import host.sim.compose.a4b.PLD1K2
@@ -10,29 +12,26 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PLD1.facts : Post.LinkFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 where
+theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 [D1Frames.chunk, D1Frames.buffer, D1Frames.view] where
   num := PLD1.num
   heap := by
     intro a h ha hm
-    obtain ⟨q, hq, haq⟩ := PRE_pl_entry.cover a h ha (fun hf => hm (Post.frames_perm (by rw [PRE_pl_entry.frames_eq] at hf; exact hf)))
+    obtain ⟨q, hq, haq⟩ := PRE_pl_entry.cover a h ha (fun hf => hm (by rw [PRE_pl_entry.frames_eq] at hf; simpa using hf))
     have he := PLWalkD1.R.heapAt q hq a haq
     rw [ha] at he
     exact he
   fixP := PLD1.fixP
-  fixC := PLD1.fixC
-  fixB := PLD1.fixB
-  fixV := PLD1.fixV
   getP := PLD1.getP
   kindP := PLD1.kindP
   imgP := PLD1.imgP
-  getC := PLD1.getC
-  kindC := PLD1.kindC
-  imgC := PLD1.imgC
-  getB := PLD1.getB
-  imgB := PLD1.imgB
-  getV := PLD1.getV
-  imgV := PLD1.imgV
-  framesEmpty := PLD1.framesEmpty
+  emptyP := PLD1.emptyP
+  notDrop := by
+    intro a ha b hb he
+    have hc := PRE_pl_entry.allPresent PLD1.ND.all PLD1.ndFramed a ha
+    unfold PLD1.ndAt at hc
+    have h2 := List.all_eq_true.mp hc b hb
+    rw [he] at h2
+    simp at h2
   n0 := PLD1.n0
   n1 := PLD1.n1
   grows := Nat.le_of_ble_eq_true PLD1.grows
@@ -73,6 +72,6 @@ theorem PLD1.facts : Post.LinkFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.
   jsHeap := PRE_pl_entry.jsHeap
   jsRoots := PRE_pl_entry.jsRoots
   jsNative := PRE_pl_entry.jsNative
-  jsFix := Post.jsFix_of_keys (Nat.le_of_ble_eq_true PLD1.jsLe) PLD1.jsKeys
+  jsFix := Pf.jsFix_of_keys (Nat.le_of_ble_eq_true PLD1.jsLe) PLD1.jsKeys
 
 end Host.Load.Run.Tpl

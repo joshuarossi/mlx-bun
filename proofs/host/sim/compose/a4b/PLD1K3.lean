@@ -1,5 +1,4 @@
-import host.sim.compose.a4b.PLD1Full
-import host.sim.compose.a4b.PLEntryFresh
+import host.sim.compose.a4b.PLD1Na
 import host.sim.template.a4pre_d1_body.D4
 set_option Elab.async false
 namespace Host.Load.Run.Tpl

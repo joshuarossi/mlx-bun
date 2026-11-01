@@ -30,29 +30,28 @@ theorem cut_step {NB T cap cap' L n : Nat} {tk : Nat → Nat} {s s' : St FF.S} {
 the acceptance is transported to the admitted offset. -/
 theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
     (hcap : cap ≤ 4096 + 1593835520)
-    (ha : ∀ bs, PostHeadSmall.ok bs sa Sa = true)
-    (hrun : ∀ bs, runOk FF (PostHeadSmall.ok bs) n sa Sa = some (sb, Sb))
+    (ha : PostOk.ok sa Sa = true)
+    (hrun : runOk FF PostOk.ok n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true)
     (hgood : ∀ ν : Nat → F64, ν 10 = F64.ofNat 1 → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi) :
     CutStep (indexedCut NB T tk cap π sa Sa) (indexedCut NB T tk cap π sb Sb) n := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, hf, hanc⟩
-  let bs := bytes γ
   have hs := hr.withOracle (hgood x.ν hb.rowValue)
   have hq : RelB FF
       (Disp.FRJ (FRQ (FullRXD (PostSimulation.params T tk) NB)
         fun y => Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y)))
-      (D1Frames.typedW bs) [] x.M x.ν x.K sa Sa x.t x.C :=
+      wideP [] x.M x.ν x.K sa Sa x.t x.C :=
     { hs with ffi := ⟨⟨hs.ffi.1, Host.Mlx.Ffi.NGrow.refl _⟩, hs.ffi.2⟩ }
-  have hok := PostSimulation.accepted_signed hcap (ha bs)
-  have hrun' := PostSimulation.run_signed hcap (hrun bs)
-  have hsim := PostSimulation.simulationQ NB T tk bs jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
+  have hok := PostSimulation.accepted_signed hcap ha
+  have hrun' := PostSimulation.run_signed hcap hrun
+  have hsim := PostSimulation.simulationQ NB T tk jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
   obtain ⟨M', t', C', ht, he, hx⟩ :=
     Disp.runOk_simXVB FF _ _ _ _ [] _ hsim.xv (fun _ _ _ => .inl rfl) x.ν x.K
       hb.context ⟨hb.valuation, hb.rowValue⟩ n x.M sa Sa x.t x.C sb Sb (.inl hq) hok hrun'
   have hrel := (hx.rel_noRet htop).withOracle (o := []) (fun _ h => nomatch h)
   have hout : RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB))
-      (D1Frames.typedW bs) [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
+      wideP [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
     { hrel with ffi := ⟨hrel.ffi.1.1, hrel.ffi.2⟩ }
   have hbook := hb.grow he hrel.ffi.1.2 (runC_le _ _ _ _ _ ht)
   obtain ⟨_, _, r0⟩ := hs.ffi.1
@@ -72,30 +71,29 @@ theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St F
 theorem glueMem {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
     {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (hcap : cap ≤ 4096 + 1593835520)
-    (ha : ∀ bs, PostHeadSmall.ok bs sa Sa = true)
-    (hrun : ∀ bs, runOk FF (PostHeadSmall.ok bs) n sa Sa = some (sb, Sb))
+    (ha : PostOk.ok sa Sa = true)
+    (hrun : runOk FF PostOk.ok n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true)
     (hgood : ∀ ν : Nat → F64, ν 10 = F64.ofNat 1 → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sb = true) :
     CutStep (withMem Mem (indexedCut NB T tk cap π sa Sa)) (withMem Mem (indexedCut NB T tk cap π sb Sb)) n := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, ⟨hf, hanc⟩, hm⟩
-  let bs := bytes γ
   have hs := hr.withOracle (hgood x.ν hb.rowValue)
   have hq : RelB FF
       (Disp.FRJ (FRQ (FullRXD (PostSimulation.params T tk) NB)
         fun y => Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y)))
-      (D1Frames.typedW bs) [] x.M x.ν x.K sa Sa x.t x.C :=
+      wideP [] x.M x.ν x.K sa Sa x.t x.C :=
     { hs with ffi := ⟨⟨hs.ffi.1, Host.Mlx.Ffi.NGrow.refl _⟩, hs.ffi.2⟩ }
-  have hok := PostSimulation.accepted_signed hcap (ha bs)
-  have hrun' := PostSimulation.run_signed hcap (hrun bs)
-  have hsim := PostSimulation.simulationQ NB T tk bs jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
+  have hok := PostSimulation.accepted_signed hcap ha
+  have hrun' := PostSimulation.run_signed hcap hrun
+  have hsim := PostSimulation.simulationQ NB T tk jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
   obtain ⟨M', t', C', ht, he, hx⟩ :=
     Disp.runOk_simXVB FF _ _ _ _ [] _ hsim.xv (fun _ _ _ => .inl rfl) x.ν x.K
       hb.context ⟨hb.valuation, hb.rowValue⟩ n x.M sa Sa x.t x.C sb Sb (.inl hq) hok hrun'
   have hrel := (hx.rel_noRet htop).withOracle (o := []) (fun _ h => nomatch h)
   have hout : RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB))
-      (D1Frames.typedW bs) [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
+      wideP [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
     { hrel with ffi := ⟨hrel.ffi.1.1, hrel.ffi.2⟩ }
   have hbook := hb.grow he hrel.ffi.1.2 (runC_le _ _ _ _ _ ht)
   obtain ⟨_, _, r0⟩ := hs.ffi.1

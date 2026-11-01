@@ -39,7 +39,6 @@ theorem ldPromptCutAt_of_inv {NB : Nat} {Pw : Sim.LoadP} {W : Nat → Option WFr
 structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat)
     (je : Host.Ts.Env) (nm : Host.Ts.Name) (s0ld tL : St FF.S) where
-  kind : Nat → Option Compiled
   NB : Nat
   Pw : Sim.LoadP
   Pd : Sim.LoadP
@@ -77,16 +76,16 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
   hAk : A.kvar = 14
   hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0
   hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true
-  hdec : Host.Ts.Sim.Prefill.CutConv (I.dec π.length) (decCutFirstFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
-    (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B)
+  hdec : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind, (decCutFirstFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
+    (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs
   hJ : T * ΔJ + B.D < Sim.bound
   hH : (mlxOf s0.ffi).next + T * ΔH + B.H + (Pd.E - (mlxOf s0.ffi).next) < 2 ^ 46
   hN : (mlxOf s0.ffi).nnext + T * ΔN + B.N + (Pd.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
-  gA : Hp.pA.Goal (goalMV P KR NE net env π kind NB 1)
-  gB2 : Hp.pB2.Goal (goalMV P KR NE net env π kind NB 2)
-  gB0 : Hp.pB0.Goal (goalCV P KR NE net env π kind NB T je)
-  gC1 : Hp.pC1.Goal (goalMV P KR NE net env π kind NB 1)
-  gC0 : Hp.pC0.Goal (goalCV P KR NE net env π kind NB T je)
+  gA : Hp.pA.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF)
+  gB2 : Hp.pB2.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF)
+  gB0 : Hp.pB0.Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF)
+  gC1 : Hp.pC1.Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF)
+  gC0 : Hp.pC0.Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF)
 
 /-- **The route's artifacts from the restricted pieces.** -/
 noncomputable def RouteGenGpu.artifacts {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
@@ -96,11 +95,12 @@ noncomputable def RouteGenGpu.artifacts {P : MlxPrefillContract C} {KR : RouteKe
     (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
     (htkR : ∀ tab j, j < T →
       ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
-    (htk : ∀ j, j ≤ T → tk j ≤ 248319) : RouteArtifactsFramed P KR NE net env π Gn.kind T tk je nm :=
-  route_of_stepsFramedAt P KR NE net env leaves typed π Gn.kind je nm hπ hL hT hctx Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.I Gn.Fr
+    (htk : ∀ j, j ≤ T → tk j ≤ 248319) : RouteArtifactsX P KR NE net env π T tk je nm :=
+  route_of_stepsFramedAt P KR NE net env leaves typed π je nm hπ hL hT hctx Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.I Gn.Fr
     Gn.s0 Gn.tab0 Gn.Itpl Gn.B Gn.ΔJ Gn.ΔH Gn.ΔN Gn.Pp Gn.H Gn.Hp Gn.D Gn.Dg Gn.hcE Gn.hb Gn.hgen Gn.hwc Gn.hwe Gn.henv Gn.hgenv
-    Gn.hA Gn.hAt Gn.hAk Gn.hst0 Gn.hfrN (Gn.hdec.trans decCutFirstFb_forget)
-    (fun _ _ h => decCutFirstFb_token (cutConv_inv Gn.hdec h)) htkR htk Gn.hJ Gn.hH Gn.hN Gn.gA Gn.gB2 Gn.gB0 Gn.gC1 Gn.gC0
+    Gn.hA Gn.hAt Gn.hAk Gn.hst0 Gn.hfrN
+    (fun t Cs h => (Gn.hdec t Cs h).imp fun _ h' => cutConv_inv decCutFirstFb_forget h')
+    (fun t Cs h => by obtain ⟨_, h'⟩ := Gn.hdec t Cs h; exact decCutFirstFb_token h') htkR htk Gn.hJ Gn.hH Gn.hN Gn.gA Gn.gB2 Gn.gB0 Gn.gC1 Gn.gC0
 
 /-- **The route of a prompt of at most 224 tokens from its generated pieces**, with the boot's facts as premises
 (`route_main_gpu`, `host.route.MainGpu`, instantiates them at the boot). -/
@@ -120,11 +120,11 @@ theorem route_gen_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelG
     (hboot : ∃ N0 tL CL, runC (fullWorldXD Gn.NB).F N0 (bootStart s)
       (routeServer T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π)) = some (tL, CL) ∧
       (Gn.I.ld π.length).Inv tL CL) :
-    RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π Gn.kind T s Gn.NB := by
+    ∃ kind, RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π kind T s Gn.NB := by
   have hRT := route_refTokens P G Pg B lseSum lseNumerator NE net env leaves typed hπ (by omega) hlt hNE hnet
   obtain ⟨N0, tL, CL, hrun, hld⟩ := hboot
   have hclip : (Gn.I.clip.ld π.length).Inv tL CL := (clip_ld Gn.I hL).symm ▸ hld
-  exact route_final_framed P G Pg B lseSum lseNumerator NE env leaves typed π Gn.kind T hπ hlt hT hctx net hNE hnet s hs
+  exact route_finalX P G Pg B lseSum lseNumerator NE env leaves typed π T hπ hlt hT hctx net hNE hnet s hs
     (Gn.artifacts leaves typed hπ hL hT hctx (fun tab j _ => machTok_def P _ NE net env π (hRT []) hπ tab j)
       (fun j _ => machTok_le P _ NE net env π (hRT []) hπ hlt j))
     ⟨N0, tL, CL, hrun, hclip⟩

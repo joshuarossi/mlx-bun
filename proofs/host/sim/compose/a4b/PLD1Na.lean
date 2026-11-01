@@ -1,7 +1,7 @@
 import host.sim.compose.a4b.PostWalkD1
 import host.sim.compose.a4b.PLEntryClosed
 import host.sim.template.NShiftOf
-import host.sim.compose.PostLink
+import host.sim.compose.PfLink
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route
@@ -13,7 +13,8 @@ noncomputable abbrev PLD1.y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.to
 noncomputable abbrev PLD1.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad D1Body.s155.ffi)
 noncomputable abbrev PLD1.x0 : NSt := PLD1.y0.mlx
 noncomputable abbrev PLD1.x1 : NSt := PLD1.y1.mlx
-noncomputable def PLD1.θ : Nat → SymE := thetaOf PLWalkD1.R.theta
+noncomputable def PLD1.thetaX : List (Nat × SymE) := []
+noncomputable def PLD1.θ : Nat → SymE := thetaOf (PLWalkD1.R.theta ++ PLD1.thetaX)
 noncomputable def PLD1.numAt (i : Nat) : Bool := match nth? PRE_pl_entry.S0.tab i with
   | some e => decide ((⟨D1Body.S155.tab, []⟩ : SSrv).val (PLWalkD1.R.data.map.num i) = some (e.subst PLD1.θ))
   | none => true

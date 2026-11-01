@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.PF15EKeys
+import host.sim.compose.a4b.PFVEKeys
 import host.sim.template.Check
 import host.sim.template.NShiftGen
 set_option Elab.async false
@@ -16,13 +16,13 @@ noncomputable def PRE_pf_vw.suppAt (a : Nat) : Bool :=
   | none => true
 noncomputable def PRE_pf_vw.boundAt (a : Nat) : Bool := Nat.blt a PRE_pf_vw.s0.next
 
-tpl_all_blocks PRE_pf_vw.HS from PF15EV : PRE_pf_vw.suppAt
+tpl_all_blocks PRE_pf_vw.HS from PFVEV : PRE_pf_vw.suppAt
 kernel_rfl PRE_pf_vw.suppFramed : PRE_pf_vw.frames.all PRE_pf_vw.suppAt = true
-tpl_all_blocks PRE_pf_vw.BD from PF15EV : PRE_pf_vw.boundAt
+tpl_all_blocks PRE_pf_vw.BD from PFVEV : PRE_pf_vw.boundAt
 kernel_rfl PRE_pf_vw.boundFramed : PRE_pf_vw.frames.all PRE_pf_vw.boundAt = true
 kernel_rfl PRE_pf_vw.rootsSupp_check : checkRootsSupp PRE_pf_vw.s0 PRE_pf_vw.n = true
 
-theorem PRE_pf_vw.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PF15EV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pf_vw.frames.all p = true) :
+theorem PRE_pf_vw.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PFVEV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pf_vw.frames.all p = true) :
     ∀ a, Present PRE_pf_vw.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha

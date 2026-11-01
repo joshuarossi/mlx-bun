@@ -25,7 +25,7 @@ variable {C : M1Max.Contract}
   (lseNumerator : Inference.Kernels.Attention.SdpaUpdate.Contraction)
   (NE : NeuralEngine) (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey)
   (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
-  (π : List Nat) (kind : Nat → Option Compiled) (T : Nat) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224)
+  (π : List Nat) (T : Nat) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224)
   (hlt : ∀ t ∈ π, t < 248320) (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
   (hNE : NE.Succeeds net)
   (hnet : ∀ tab, Host.Mlx.SimGraph.Mach.AneNetOk net
@@ -36,7 +36,7 @@ local notation "Kr" => routeKernel G bytes Pg lseSum lseNumerator
 local notation "Tk" => machTok P Kr NE net env π
 local notation "Je" => entryEnv (Host.Load.Run.Prompt.P.at0 (π.map natV) (machReads T Tk))
 local notation "FrP" => framesP DEC.s0 (π.map natV)
-local notation "Gx" => machGxV P Kr NE net env π kind 15235 DEC.inputs
+local notation "Gx" => fun kind => machGxV P Kr NE net env π kind 15235 DEC.inputs
 
 /-- Assemble the route of a prompt of at most 224 tokens from the restricted bundles. The remaining premises name the
 POST, short-path executions and graph facts, and the two connections of the prefill invariants. -/
@@ -49,14 +49,14 @@ noncomputable def routeGenOfGpu
       (postPieces.cuts.b_pA_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2)))
       (postPieces.cuts.b_pB_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2)))
       (postPieces.cuts.b_pC_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2))))
-    (postHandoff : CutConv (I.dec π.length)
-      (decCutFirstFb 15235 addrPrompt Gx wideP DEC.Pw FrP DEC.s0 DEC.tab0 terminalFixP
-        (valL (machVal T Tk) T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu))
-    (graphA : shortPaths.pA.Goal (goalMV P Kr NE net env π kind 15235 1))
-    (graphB2 : shortPaths.pB2.Goal (goalMV P Kr NE net env π kind 15235 2))
-    (graphB0 : shortPaths.pB0.Goal (goalCV P Kr NE net env π kind 15235 T Je))
-    (graphC1 : shortPaths.pC1.Goal (goalMV P Kr NE net env π kind 15235 1))
-    (graphC0 : shortPaths.pC0.Goal (goalCV P Kr NE net env π kind 15235 T Je)) :
+    (postHandoff : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind,
+      (decCutFirstFb 15235 addrPrompt (Gx kind) wideP DEC.Pw FrP DEC.s0 DEC.tab0 terminalFixP
+        (valL (machVal T Tk) T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu).Inv t Cs)
+    (graphA : shortPaths.pA.Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 1 tF CF))
+    (graphB2 : shortPaths.pB2.Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 2 tF CF))
+    (graphB0 : shortPaths.pB0.Goal (fun tF CF => ∃ kind, goalCV P Kr NE net env π kind 15235 T Je tF CF))
+    (graphC1 : shortPaths.pC1.Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 1 tF CF))
+    (graphC0 : shortPaths.pC0.Goal (fun tF CF => ∃ kind, goalCV P Kr NE net env π kind 15235 T Je tF CF)) :
     RouteGenGpu P Kr NE net env π T Tk Je chars!"emitted" (ldStT [] []) (ldStT (π.map natV) (machReads T Tk)) := by
   have hRT := route_refTokens P G Pg bytes lseSum lseNumerator NE net env leaves typed
     hπ (by omega) hlt hNE hnet
@@ -85,8 +85,7 @@ noncomputable def routeGenOfGpu
       (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hρ hπ hL h3 hctx
       (fun j _ => hv j) le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2
   refine
-    { kind := kind
-      NB := 15235
+    { NB := 15235
       Pw := setupP
       Pd := DEC.Pw
       A := addrPrompt

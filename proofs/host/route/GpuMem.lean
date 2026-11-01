@@ -27,66 +27,66 @@ Each keeps across a stretch (`*_keep`, the fills' `hMem`). `memCold` holds at an
 (`memCold_wit`, the fills' `hWit`). -/
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
-  (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (kind : Nat → Option Compiled)
+  (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat)
 
 /-- The route's values at every reference state. -/
-noncomputable abbrev gV : RSt → Vals := fun _ => routeVs P KR env kind
+noncomputable abbrev gV (kind : Nat → Option Compiled) : RSt → Vals := fun _ => routeVs P KR env kind
 
 /-- No Neural Engine component. -/
 abbrev gAn : RSt → St FF.S → Prop := fun _ _ => True
 
-/-- Before the first forward. -/
+/-- Before the first forward: no closure has been read, so it holds at every table. -/
 def memCold (L : Nat) (x : SegInst FF) : Prop :=
-  L = π.length → ColdG P KR net env (gV P KR env kind) gAn x
+  L = π.length → ∀ kind, ColdG P KR net env (gV P KR env kind) gAn x
 
-/-- After the first tail, at the length's carriers. -/
+/-- After the first tail, at the length's carriers and the table naming the closures it read. -/
 def memPre (Cr : Nat → List (Option Nat × Option Nat)) (L : Nat) (x : SegInst FF) : Prop :=
-  L = π.length → PreG P KR NE net env π (gV P KR env kind) gAn (Cr L) x
+  L = π.length → ∃ kind, PreG P KR NE net env π (gV P KR env kind) gAn (Cr L) x
 
 /-- At the prefill's exit, cold or after the first tail. -/
 def memExit (Cr : Nat → List (Option Nat × Option Nat)) (L : Nat) (x : SegInst FF) : Prop :=
-  L = π.length → (L = 1 → ColdG P KR net env (gV P KR env kind) gAn x) ∧
-    (2 ≤ L → PreG P KR NE net env π (gV P KR env kind) gAn (Cr L) x)
+  L = π.length → (L = 1 → ∀ kind, ColdG P KR net env (gV P KR env kind) gAn x) ∧
+    (2 ≤ L → ∃ kind, PreG P KR NE net env π (gV P KR env kind) gAn (Cr L) x)
 
 /-- POST, the reference held through time `L + j`, at the length's carriers. -/
 def memPost (j : Nat) (toks : Nat → Nat → Nat) (Cr : Nat → List (Option Nat × Option Nat)) (L : Nat)
     (x : SegInst FF) : Prop :=
-  L = π.length → PostG P.toMlxContract KR.toKernelContract env (routeVs P KR env kind)
+  L = π.length → ∃ kind, PostG P.toMlxContract KR.toKernelContract env (routeVs P KR env kind)
     (refPrompt P KR NE KR.inPlace net env π) L j (toks L) (Cr L) x
 
-variable {P KR NE net env π kind}
+variable {P KR NE net env π}
 
 private theorem glueOk {x y : SegInst FF} (h : NTrack x y) : GlueOk gAn x y :=
   GlueOk.of_track h fun _ _ => trivial
 
-theorem memCold_keep (L : Nat) (x y : SegInst FF) (h : NTrack x y) (hm : memCold P KR net env π kind L x) :
-    memCold P KR net env π kind L y := fun hL => (hm hL).glue (glueOk h)
+theorem memCold_keep (L : Nat) (x y : SegInst FF) (h : NTrack x y) (hm : memCold P KR net env π L x) :
+    memCold P KR net env π L y := fun hL kind => (hm hL kind).glue (glueOk h)
 
 theorem memCold_wit (L : Nat) (x y : SegInst FF) (ht : y.t = x.t) (hC : y.C = x.C)
-    (hm : memCold P KR net env π kind L x) : memCold P KR net env π kind L y :=
-  fun hL => (hm hL).of_eq ht hC
+    (hm : memCold P KR net env π L x) : memCold P KR net env π L y :=
+  fun hL kind => (hm hL kind).of_eq ht hC
 
 theorem memPre_keep {Cr : Nat → List (Option Nat × Option Nat)} (L : Nat) (x y : SegInst FF) (h : NTrack x y)
-    (hm : memPre P KR NE net env π kind Cr L x) : memPre P KR NE net env π kind Cr L y :=
-  fun hL => (hm hL).glue (glueOk h)
+    (hm : memPre P KR NE net env π Cr L x) : memPre P KR NE net env π Cr L y :=
+  fun hL => (hm hL).imp fun _ hp => hp.glue (glueOk h)
 
 theorem memExit_keep {Cr : Nat → List (Option Nat × Option Nat)} (L : Nat) (x y : SegInst FF) (h : NTrack x y)
-    (hm : memExit P KR NE net env π kind Cr L x) : memExit P KR NE net env π kind Cr L y :=
-  fun hL => ⟨fun h1 => ((hm hL).1 h1).glue (glueOk h), fun h2 => ((hm hL).2 h2).glue (glueOk h)⟩
+    (hm : memExit P KR NE net env π Cr L x) : memExit P KR NE net env π Cr L y :=
+  fun hL => ⟨fun h1 kind => ((hm hL).1 h1 kind).glue (glueOk h), fun h2 => ((hm hL).2 h2).imp fun _ hp => hp.glue (glueOk h)⟩
 
 theorem memPost_keep {j : Nat} {toks : Nat → Nat → Nat} {Cr : Nat → List (Option Nat × Option Nat)} (L : Nat)
-    (x y : SegInst FF) (h : NTrack x y) (hm : memPost P KR NE net env π kind j toks Cr L x) :
-    memPost P KR NE net env π kind j toks Cr L y :=
-  fun hL => (hm hL).glue h
+    (x y : SegInst FF) (h : NTrack x y) (hm : memPost P KR NE net env π j toks Cr L x) :
+    memPost P KR NE net env π j toks Cr L y :=
+  fun hL => (hm hL).imp fun _ hp => hp.glue h
 
 /-- The cold stretch reaches the exit at one token. -/
 theorem memExit_of_cold {Cr : Nat → List (Option Nat × Option Nat)} {L : Nat} {x : SegInst FF} (hL1 : L = 1)
-    (hm : memCold P KR net env π kind L x) : memExit P KR NE net env π kind Cr L x :=
+    (hm : memCold P KR net env π L x) : memExit P KR NE net env π Cr L x :=
   fun hL => ⟨fun _ => hm hL, fun h2 => absurd h2 (by omega)⟩
 
 /-- The pre-final stretch reaches the exit from two tokens. -/
 theorem memExit_of_pre {Cr : Nat → List (Option Nat × Option Nat)} {L : Nat} {x : SegInst FF} (hL2 : 2 ≤ L)
-    (hm : memPre P KR NE net env π kind Cr L x) : memExit P KR NE net env π kind Cr L x :=
+    (hm : memPre P KR NE net env π Cr L x) : memExit P KR NE net env π Cr L x :=
   fun hL => ⟨fun h1 => absurd h1 (by omega), fun _ => hm hL⟩
 
 end Host.Route.PrefGraph

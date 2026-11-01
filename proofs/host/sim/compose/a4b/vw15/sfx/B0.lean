@@ -115,7 +115,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-kernel_rfl bodyO0 : PRE_first_tail_x15_r0_suffix.S0.oracle = List.drop (PRE_first_tail_x15_r0_suffix.OR.length - PRE_first_tail_x15_r0_suffix.S0.oracle.length) PRE_first_tail_x15_r0_suffix.OR
+kernel_rfl bodyO0 : PRE_first_tail_x15_r0_suffix.S0.oracle = List.drop (PRE_first_tail_x15_r0_suffix.O.length - PRE_first_tail_x15_r0_suffix.S0.oracle.length) PRE_first_tail_x15_r0_suffix.O
 kernel_rfl bodyBr0 : bridgeOf PRE_first_tail_x15_r0_suffix.s0.ffi = bridgeOf PRE_first_tail_x15_r0_suffix.s0.ffi
 kernel_rfl bodyAcc0 : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows PRE_first_tail_x15_r0_suffix.s0 PRE_first_tail_x15_r0_suffix.S0) = fun _ _ => true
 kernel_rfl bodyAcc1 : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows PRE_first_tail_x15_r0_suffix.s1 PRE_first_tail_x15_r0_suffix.S1) = fun _ _ => true
@@ -285,7 +285,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-kernel_rfl bodyO4 : PRE_first_tail_x15_r0_suffix.S4.oracle = List.drop (PRE_first_tail_x15_r0_suffix.OR.length - PRE_first_tail_x15_r0_suffix.S4.oracle.length) PRE_first_tail_x15_r0_suffix.OR
+kernel_rfl bodyO4 : PRE_first_tail_x15_r0_suffix.S4.oracle = List.drop (PRE_first_tail_x15_r0_suffix.O.length - PRE_first_tail_x15_r0_suffix.S4.oracle.length) PRE_first_tail_x15_r0_suffix.O
 kernel_rfl bodyBr4 : bridgeOf PRE_first_tail_x15_r0_suffix.s4.ffi = bridgeOf PRE_first_tail_x15_r0_suffix.s0.ffi
 kernel_rfl bodyAcc4 : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows PRE_first_tail_x15_r0_suffix.s4 PRE_first_tail_x15_r0_suffix.S4) = fun _ _ => true
 kernel_rfl bodyAcc5 : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows PRE_first_tail_x15_r0_suffix.s5 PRE_first_tail_x15_r0_suffix.S5) = fun _ _ => true
@@ -293,12 +293,12 @@ kernel_rfl bodyBr6 : bridgeOf PRE_first_tail_x15_r0_suffix.s6.ffi = bridgeOf PRE
 kernel_rfl bodyHalt5 : isHalt PRE_first_tail_x15_r0_suffix.s5.ctl = false
 kernel_rfl bodyTop6 : noRetBlock PRE_first_tail_x15_r0_suffix.s6 = true
 kernel_rfl bodyCnt4 : countersOkB PRE_first_tail_x15_r0_suffix.s4 PRE_first_tail_x15_r0_suffix.s6 = true
-kernel_rfl bodyO6 : PRE_first_tail_x15_r0_suffix.S6.oracle = List.drop (PRE_first_tail_x15_r0_suffix.OR.length - PRE_first_tail_x15_r0_suffix.S6.oracle.length) PRE_first_tail_x15_r0_suffix.OR
+kernel_rfl bodyO6 : PRE_first_tail_x15_r0_suffix.S6.oracle = List.drop (PRE_first_tail_x15_r0_suffix.O.length - PRE_first_tail_x15_r0_suffix.S6.oracle.length) PRE_first_tail_x15_r0_suffix.O
 kernel_rfl bodyBr7 : bridgeOf PRE_first_tail_x15_r0_suffix.s7.ffi = bridgeOf PRE_first_tail_x15_r0_suffix.s0.ffi
 kernel_rfl bodyLenSt6 : PRE_first_tail_x15_r0_suffix.s6.stack = .e (.member kLength false) :: PRE_first_tail_x15_r0_suffix.s6.stack.tail
 kernel_rfl bodyLenArr6 : arrOf PRE_first_tail_x15_r0_suffix.s6 2665 = []
 kernel_rfl bodyCnt6 : countersOkB PRE_first_tail_x15_r0_suffix.s6 PRE_first_tail_x15_r0_suffix.s7 = true
-kernel_rfl bodyO7 : PRE_first_tail_x15_r0_suffix.S7.oracle = List.drop (PRE_first_tail_x15_r0_suffix.OR.length - PRE_first_tail_x15_r0_suffix.S7.oracle.length) PRE_first_tail_x15_r0_suffix.OR
+kernel_rfl bodyO7 : PRE_first_tail_x15_r0_suffix.S7.oracle = List.drop (PRE_first_tail_x15_r0_suffix.O.length - PRE_first_tail_x15_r0_suffix.S7.oracle.length) PRE_first_tail_x15_r0_suffix.O
 kernel_rfl bodyAcc7 : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows PRE_first_tail_x15_r0_suffix.s7 PRE_first_tail_x15_r0_suffix.S7) = fun _ _ => true
 kernel_rfl bodyBr8 : bridgeOf PRE_first_tail_x15_r0_suffix.s8.ffi = bridgeOf PRE_first_tail_x15_r0_suffix.s0.ffi
 kernel_rfl bodyTop8 : noRetBlock PRE_first_tail_x15_r0_suffix.s8 = true

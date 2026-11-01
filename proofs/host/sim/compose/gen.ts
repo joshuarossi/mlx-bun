@@ -1563,6 +1563,7 @@ function genBodyFill(args: string[]) {
   const tag = take("--tag")[0] ?? fail("prefill-body: --tag <tag>");
   const fwdRowList = (take("--rows")[0] ?? fail("prefill-body: --rows <r,...>")).split(",");
   const sfxArg = take("--suffix-of")[0];
+  const pfArg = take("--pf")[0];
   const sfx = sfxArg?.split(":") as [string, string, string] | undefined;
   const outDir = join(HERE, "a4b", tag, sfx ? "sfx" : ""), outMod = `host.sim.compose.a4b.${tag}${sfx ? ".sfx" : ""}`;
   const bodyMod = `host.sim.compose.a4b.${tag}`;
@@ -1577,6 +1578,8 @@ function genBodyFill(args: string[]) {
   const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
   const tdir = join(HERE, "../template", dir!), mod = `host.sim.template.${dir!.replaceAll("/", ".")}`;
   const src = (f: string) => memberSrc(dir!, f);
+  // a chain whose rows are rebound has its oracle under `OR` (`tpl_stream_bind_rows`), else under `O`
+  const orName = existsSync(join(tdir, "Rebind.lean")) ? "OR" : "O";
   const oracleFiles = readdirSync(outDir).filter(f => /^VWBodyOracles_\d+\.lean$/.test(f));
   const oracleOf = new Map<string, { file: string; map: string; check: string }>();
   for (const f of oracleFiles) for (const m of readFileSync(join(outDir, f), "utf8")
@@ -1681,13 +1684,13 @@ theorem bodyInactive0 : (bridgeOf ${X}.s0.ffi).active = false := by
 kernel_rfl bodyStart2665 : arrOf ${X}.s0 2665 = []
 kernel_rfl bodyStartChunk : arrOf ${X}.s0 VWFrames.chunk = []
 ` + tail);
-  writeFileSync(join(outDir, "VWBodyMap.lean"), head([`${outMod}.VWBodyChain`, `${mod}.H0`, "host.sim.lin.Table"]) +
+  writeFileSync(join(outDir, "VWBodyMap.lean"), head([`${outMod}.VWBodyChain`, `${mod}.States`, `${mod}.H0`, "host.sim.lin.Table"]) +
     `def bodyM : List (Nat × Q) := ${allMap.map}
 
-kernel_rfl bodyGoodAll : (fwdRows.all fun r => goodLin r.ps (varsOf r.V bodyM) ${X}.OR) = true
+kernel_rfl bodyGoodAll : (fwdRows.all fun r => goodLin r.ps (varsOf r.V bodyM) ${X}.${orName}) = true
 
 theorem bodyGoodDrop {r : Row} {i : Cls.Inst} {ν : Nat → F64} (hr : r ∈ fwdRows) (hi : InRow r i)
-    (hν : MapOk ν i bodyM) (d : Nat) : Good ν (List.drop d ${X}.OR) :=
+    (hν : MapOk ν i bodyM) (d : Nat) : Good ν (List.drop d ${X}.${orName}) :=
   fun q hq => good_of_row (List.all_eq_true.mp bodyGoodAll r hr) hi hν q (List.mem_of_mem_drop hq)
 ` + tail);
   const cnt = (s: string) => s.replace(/\s/g, "");
@@ -1886,7 +1889,7 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
     const steps = (p.steps as number) + (stage ? 1 : 0);
     const brEq = (k: number) => { facts += `kernel_rfl bodyBr${k} : bridgeOf ${X}.s${k}.ffi = bridgeOf ${X}.s0.ffi\n`; };
     const good = (k: number) => {
-      facts += `kernel_rfl bodyO${k} : ${X}.S${k}.oracle = List.drop (${X}.OR.length - ${X}.S${k}.oracle.length) ${X}.OR\n`;
+      facts += `kernel_rfl bodyO${k} : ${X}.S${k}.oracle = List.drop (${X}.${orName}.length - ${X}.S${k}.oracle.length) ${X}.${orName}\n`;
       brEq(k);
       return `(fun _ hm => bodyO${k} ▸ bodyGoodDrop hr hi hm _)`;
     };
@@ -1955,6 +1958,66 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
       foldParts.push(`bodyStep${j} NB T tk π ${trApp} hr hi`);
       foldN += n + 1;
     }
+  }
+  if (!onlySites.length && !onlyGlues.length && bodyEnd && pfArg) {
+    // the step's end at the shared pre-final template: `<link>:<walk>:<template>:<c30>:<c31>`
+    const [PF, PW, PT, c30, c31] = pfArg.split(":") as [string, string, string, string, string];
+    const endK = chain.T1 as number, endO = Ds.get(stages.length) ?? fail("no end offset");
+    const [, , endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
+    const rowNames = fwdRowList.join(", ");
+    writeFileSync(join(outDir, "VWPfEnd.lean"), head(["host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
+      `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [11, 14, 16, 30, 31]
+kernel_rfl pf14 : ${PF}.θ 14 = .var 17
+kernel_rfl pf30 : (fun ν : Nat → F64 => (${PF}.θ 30).eval ν) = fun _ => F64.ofNat ${c30}
+kernel_rfl pf31 : (fun ν : Nat → F64 => (${PF}.θ 31).eval ν) = fun _ => F64.ofNat ${c31}
+kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 11) (some Q.n)) = true
+kernel_rfl pfRow16 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 16) (some Q.cap1)) = true
+kernel_rfl pfNN : ${PW}.R.data.nn0 = ${PW}.R.data.nn1
+kernel_rfl pfNK : PTrie.keys ${PW}.R.data.node = []
+kernel_rfl pfNext : ${X}.s${endK}.next = ${PT}.s0.next
+kernel_rfl pfH : (mlxOf ${X}.s${endK}.ffi).next = (mlxOf ${PT}.s0.ffi).next
+kernel_rfl pfNodes : (mlxOf ${X}.s${endK}.ffi).nnext = (mlxOf ${PT}.s0.ffi).nnext
+kernel_rfl pfBelow : Nat.ble (mlxOf ${X}.s${endK}.ffi).nnext ${PF}.P0.NL = true
+kernel_rfl pfA : ${PW}.R.data.a 2590 = 2590
+kernel_rfl pfB : ${PW}.R.data.a 2586 = 2586
+kernel_rfl pfC : ${PW}.R.data.a 2589 = 2589
+
+/-- The rows' last quantities. -/
+theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : i.cap1 = capL (i.L - 1) := by
+  simp only [fwdRows, List.mem_cons, List.not_mem_nil, or_false] at hr
+  ${fwdRowList.length > 1 ? `rcases hr with ${fwdRowList.map(() => "rfl").join(" | ")}` : "subst hr"}
+  all_goals
+    obtain ⟨_, x, hx, hq⟩ := hi
+    simp only [${rowNames}, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+    unfold capL
+    omega
+
+/-- **The step's end at the pre-final cut.** -/
+theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${endO.match(/⟨(\d+)/)![1]} ≤ cap)
+    (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
+    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
+    CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ${endO} bodyM ${X}.s${endK} ${X}.S${endK}))
+      (withMem Tr (Pf.cut NB T tk π cap ${endH} ${endN} ${PT}.s0 ${PT}.S0)) := by
+  obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
+  have hcapR := rowCap hr hi
+  have h9 : ∀ ν, MapOk ν i bodyM → ν 9 = F64.ofNat i.L := fun ν hm =>
+    (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
+  have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
+    (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
+  exact toPf (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK pfNext pfH pfNodes
+    (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
+      rw [pfKeys]
+      simp only [List.mem_cons, List.not_mem_nil, or_false]
+      omega))
+    pf14 h9 (fun ν hm => by rw [h10n ν hm, hn])
+    (fun ν hm => by
+      rw [← hn]
+      exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
+    (fun ν hm => by
+      rw [← hcapR]
+      exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
+    (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) pfA pfB pfC hcap hbound
+` + tail);
   }
   if (!onlySites.length && !onlyGlues.length && bodyEnd) {
     const { Xb, endB } = bodyEnd, Tn = `${NS}.VWFirst.${Tag}`;
@@ -2121,6 +2184,7 @@ function genPostLink(args: string[]) {
   const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
   const framesLit = take("--frames") ?? "[2673479, 2673484, 2673485, 2665]";
   const dropList = take("--drop");
+  const thetaExtra = take("--theta-extra") ?? "";
   const a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
   const tm = JSON.parse(readFileSync(join(streams, "Host.Load.Run.Tpl." + T, "template.json"), "utf8"));
   const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
@@ -2251,7 +2315,8 @@ function genPostLink(args: string[]) {
     "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
     "noncomputable abbrev " + x0 + " : NSt := " + name + ".y0.mlx" + NL +
     "noncomputable abbrev " + x1 + " : NSt := " + name + ".y1.mlx" + NL +
-    "noncomputable def " + name + ".\u03B8 : Nat \u2192 SymE := thetaOf " + R + ".theta" + NL +
+    "noncomputable def " + name + ".thetaX : List (Nat \u00D7 SymE) := [" + thetaExtra + "]" + NL +
+    "noncomputable def " + name + ".\u03B8 : Nat \u2192 SymE := thetaOf (" + R + ".theta ++ " + name + ".thetaX)" + NL +
     "noncomputable def " + name + ".numAt (i : Nat) : Bool := match nth? " + S0 + ".tab i with" + NL +
     "  | some e => decide ((\u27E8" + S1 + ".tab, []\u27E9 : SSrv).val (" + sg + ".num i) = some (e.subst " + name + ".\u03B8))" + NL +
     "  | none => true" + NL + NL + [

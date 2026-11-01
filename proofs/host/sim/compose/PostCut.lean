@@ -1,13 +1,12 @@
 import host.sim.compose.PreCall
 import host.sim.template.a4pre_d1_dispatch.Frames
+import host.sim.template.PostOk
 import host.simgraph.family.FoldedData
 import host.sim.CasesL
 set_option Elab.async false
 namespace Host.Ts.Sim.Compose.Post
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Load.Run.Tpl Host.Mlx.FfiEval Host.Mlx.SimGraph
-
-def bytes (γ : List Nat) : List Byte := cellBytes .i32 ((γ.map F64.ofNat).map Disp.i32Cell)
 
 structure Book (T : Nat) (tk : Nat → Nat) (cap : Nat) (π γ : List Nat) (x : SegInst FF) : Prop where
   nonempty : 1 ≤ π.length
@@ -20,9 +19,8 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap : Nat) (π γ : List Nat) (x : 
   rowValue : x.ν 10 = F64.ofNat 1
   offsetValue : x.ν 11 = F64.ofNat π.length
   capValue : x.ν 16 = F64.ofNat (capL π.length)
-  context : Disp.KpJ (D1Frames.typedJ (bytes γ)) cap x.K
+  context : Disp.KpJ PostOk.J cap x.K
   prompt : x.K.fr 2665 = some ([], π.map natV)
-  chunk : x.K.fr D1Frames.chunk = some ([], γ.map natV)
   reserved : ∀ j, j < 9 → x.ν j = machVal T tk j
   emittedAnchor : x.M.a 2590 = 2590
   input : x.M.node 15235 < (mlxOf x.t.ffi).nnext ∧
@@ -37,7 +35,7 @@ noncomputable def indexedCut (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (π : L
   tab0 := S.tab
   R := fun x s S => ∃ γ,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      (D1Frames.typedW (bytes γ)) [] x.M x.ν x.K s S x.t x.C ∧ Book T tk cap π γ x
+      wideP [] x.M x.ν x.K s S x.t x.C ∧ Book T tk cap π γ x
   B := fun x => AneFresh x.t ∧ Anchors x
 
 noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (cap L : Nat)
@@ -56,7 +54,7 @@ theorem indexed_to_cut {NB T cap L : Nat} {tk : Nat → Nat} {π : List Nat}
 theorem Book.emit_unframed {T cap : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
     (h : Book T tk cap π γ x) : x.K.fr 2590 = none := by
   by_contra hn
-  exact (by decide : 2590 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view]) ((h.context.1.2.2 2590).mp hn)
+  exact (by decide : 2590 ∉ [2665]) ((h.context.1.2.2 2590).mp hn)
 
 /-- Retain the caller's memory invariant, including active-NE memory ghosts. -/
 noncomputable def indexedCutMem (Mem : SegInst FF → Prop) (NB T : Nat) (tk : Nat → Nat)

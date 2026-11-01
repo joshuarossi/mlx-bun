@@ -1,12 +1,14 @@
 // Write the checked modules of a flat POST stretch (`tpl_chain` with no stage cuts): boundaries, one run per glue chunk,
 // the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostOk.ok.
-// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>]
+// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>] [--fast]
+// --fast: a glue chunk is checked at the fast table (`runOkS` at `PostOk.okN`); its statement stays `runOk` at `PostOk.ok`.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const argv = process.argv.slice(2);
 let spread: { chunk: number; pre: number; tokens: number[] } | undefined;
 { const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
 const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf("--no-good"), 1);
+const fast = argv.includes("--fast"); if (fast) argv.splice(argv.indexOf("--fast"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
 if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens] [--no-good]");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
@@ -29,6 +31,14 @@ const glue = Array.from({ length: T1 }, (_, i) => i).filter(i => !bridgeChunks.h
 const fuel = (k: number) => `((nth? ${name}.ks ${k}).getD 0)`;
 for (const k of glue) {
   if (spread?.chunk === k) continue;
+  if (fast) { put(`K${k}`, head([page(k + 1), "host.sim.template.PostOkFast", "host.sim.template.BootEq", "host.sim.Chunk"]) +
+    `boot_rfl ${name}.run${k}F from ${s(k)} to ${s(k + 1)} :\n` +
+    `  runOkS ${name}.F PostOk.okN ${fuel(k)} ${s(k)} ${S(k)} =\n` +
+    `    some (${s(k + 1)}, ${S(k + 1)})\n\n` +
+    `theorem ${name}.run${k} :\n` +
+    `  runOk ${name}.F ${ok} ${fuel(k)} ${s(k)} ${S(k)} =\n` +
+    `    some (${s(k + 1)}, ${S(k + 1)}) :=\n` +
+    `  (runOkS_eq ${name}.F PostOk.okN_ok _ _ _).symm.trans ${name}.run${k}F`); continue; }
   put(`K${k}`, head([page(k + 1), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
     `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
     `  runOk ${name}.F ${ok} ${fuel(k)} ${s(k)} ${S(k)} =\n` +

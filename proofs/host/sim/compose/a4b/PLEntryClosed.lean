@@ -9,7 +9,7 @@ set_option maxHeartbeats 0
 
 abbrev PRE_pl_entry.n : Nat := 3294
 kernel_rfl PRE_pl_entry.tab_len : PRE_pl_entry.S0.tab.length = PRE_pl_entry.n
-kernel_rfl PRE_pl_entry.frames_eq : PRE_pl_entry.frames = [2673479, 2673484, 2673485, 2665]
+kernel_rfl PRE_pl_entry.frames_eq : PRE_pl_entry.frames = [2665]
 noncomputable def PRE_pl_entry.suppAt (a : Nat) : Bool :=
   match PRE_pl_entry.s0.heap.get a with
   | some h => bHobj (presentB PRE_pl_entry.s0) PRE_pl_entry.n h
