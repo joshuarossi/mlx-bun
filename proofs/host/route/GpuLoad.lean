@@ -25,7 +25,7 @@ parameters at their nodes (the load program is on the loaded graph, `ld_matches`
 
 load_program_matches ld_matches : code, code.cert, Ld.X0
 
-kernel_rfl ld_keys : PTrie.keys Ld.X0.items = []
+kernel_rfl ld_keys : Host.Ts.Sim.Template.PTrie.keys Ld.X0.items = []
 kernel_rfl ld_nnext : Ld.X0.nnext = 15235
 kernel_rfl ld_params_below : (parameterTensors parameterChoice).all (fun t => t.node < 15235) = true
 
@@ -33,7 +33,7 @@ theorem ld_items (k : Nat) : Ld.X0.items.get k = none := by
   cases hg : Ld.X0.items.get k with
   | none => rfl
   | some v =>
-    have := PTrie.mem_keys _ _ _ hg
+    have := Host.Ts.Sim.Template.PTrie.mem_keys _ _ _ hg
     rw [ld_keys] at this
     cases this
 

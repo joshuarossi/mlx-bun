@@ -45,7 +45,7 @@ theorem jsShiftBad_aboveR {D : RData} {n : Nat} (hfix : ∀ b, b < n → D.a b =
   | none => simp only [jsShiftBadB, hp] at h; cases h
   | some p =>
     obtain ⟨b, off⟩ := p
-    obtain ⟨he, hb, _⟩ := Conv.jsPtrOf_some hp
+    obtain ⟨he, hb, _⟩ := jsPtrOf_some hp
     simp only [jsAboveB, hp]
     apply Nat.ble_eq_true_of_le
     refine Nat.le_of_not_lt fun hn => ?_
@@ -346,7 +346,7 @@ theorem linkRel (F : LinkFacts s0 s1 tab0 tab1 D inv θ P0 nJ) {NB T cap : Nat} 
     | none => rfl
     | some p =>
       have hm := (hk.1.2.2 4910).mp (by rw [e]; exact Option.some_ne_none _)
-      exact (by decide : 4910 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view]) hm
+      exact absurd hm (by decide : 4910 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view])
   have hr0 := inactiveMemo hr.ofJ (linkW_agree bs hmemo)
   have hs := linkShift F hk.1 hP hC
   have hband : ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E →

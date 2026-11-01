@@ -1,5 +1,5 @@
 import host.route.PrefStep
-import host.simgraph.world.MachV
+import host.simgraph.world.MachAtV
 set_option maxRecDepth 1000000
 set_option autoImplicit false
 namespace Host.Route.PrefGraph
@@ -23,7 +23,9 @@ forward, so the second readback of POST reads the same memoized node and pops no
 * `PostAt.read`: the readback of a sampled token.
 * `PostAt.next`: one decode forward and sampler.
 * `PostAt.toGIMV`: the decode cut's invariant, at `PostAt 2`.
-* `PostAt.toGFV`, `PostAt.forward`: the short paths' goals. -/
+* `PostAt.toGFV`, `PostAt.forward`: the short paths' goals.
+* `PostAt.fwdStep`: the decode forward's certificate (`CaseFwdAtV`) at the row's end, the premise of `PostAt.next`.
+* `PostG`: `PostAt` as a cut's bookkeeping, at every table above the server; `PostG.glue`, `PostG.congr`. -/
 
 variable {C : M1Max.Contract} (M : MlxContract C) (K : KernelContract C) (env : FfiEval.Env InKey) (Vs : Vals)
 
@@ -173,6 +175,70 @@ theorem PostAt.forward (h : PostAt M K env Vs R L tab j σ toks Cr x) :
   obtain ⟨_, ⟨tok', hs', hR', htok, _⟩, _, _⟩ := h.hist j le_rfl
   obtain ⟨rfl, rfl⟩ := Prod.mk.inj (Option.some.inj (hR'.symm.trans hR))
   exact ⟨tok', hs', hR, htok, hcv⟩
+
+section Row
+variable {Wd : Sim.World} (pr : GraphProj Wd) {A : Sim.Addr} {I : TplInputs} {L0 i NB n : Nat} {s1 : Wd.F.S}
+  {S1tab : List SymE} {outT : Nat} {outs : List (Option Nat × Option Nat)} {P' : Sim.LoadP} {Mp : Sim.Map} {y1 : Wd.F.S}
+  {ν : Nat → F64}
+
+/-- **A POST row's forward from its certificate.** `CaseFwdAtV` is the decode iterations' interface, read at the row's
+time `L0 + i + 1 = L + j`: the template at the row's end takes the handles and token held at time `L + j` to those of the
+next time. -/
+theorem PostAt.fwdStep (h : PostAt M K env Vs R L tab j σ toks Cr x)
+    (fwd : CaseFwdAtV M K env Vs pr A I R L0 s1 S1tab outT outs i NB) (hL : L0 + i + 1 = L + j)
+    (hgy : Host.Mlx.Ffi.NGrow x (Wd.toMlx y1))
+    (hld : Sim.G.LoadR P' NB Mp n (pr.toLoad s1) (pr.toLoad y1)) (hNL : P'.NL = A.NL) (hN0 : P'.N0 = A.N0)
+    (hν : ν A.tvar = F64.ofNat (L0 + i + 1))
+    (hnum : ∀ j e, nth? S1tab j = some e → CSrv.val ⟨tab⟩ (Mp.nv (.ref j)) = some (e.eval ν))
+    (hrope : Mp.big (A.rope : Int) = (A.rope : Int))
+    (hfed : Mp.node I.fed = σ (toks j)) (hc : cachesAt Mp.node I.caches = cachesAt σ Cr)
+    (hnext : ∃ tok' hs', R tab (L + (j + 1)) = some (tok', hs')) (hb : ∀ tok hs, R tab (L + j) = some (tok, hs) → tok < 2 ^ 31) :
+    ∃ tok next, R tab (L + (j + 1)) = some (tok, next) ∧
+      (∃ r, Vs.val tab (Wd.toMlx y1) (Mp.node outT) = some r ∧ itemUint32 r = some tok) ∧
+      CacheValuesV (Vs.val tab (Wd.toMlx y1)) (cachesAt Mp.node outs) next ∧
+      CapsFor (Sim.capL (L + (j + 1))) (stageWeights (weights (firstValues M K env tab))) next := by
+  obtain ⟨tok, hs, hR, hcv, hcaps, hcb⟩ := h.cur
+  obtain ⟨_, ⟨tok1, hs1, hR1, ⟨r, hr, hi⟩, _⟩, ho, _⟩ := h.hist j le_rfl
+  obtain ⟨rfl, rfl⟩ := Prod.mk.inj (Option.some.inj (hR1.symm.trans hR))
+  obtain ⟨tok', hs', hR'⟩ := hnext
+  have e1 : L0 + i + 1 = L + j := hL
+  have e2 : L0 + i + 2 = L + (j + 1) := by omega
+  have hout := fwd tab P' Mp n y1 ν hld hNL hN0 hν hnum hrope tok1 hs1 tok' hs'
+    (by rw [e1]; exact hR) (by rw [e2]; exact hR') (hb _ _ hR) (by rw [e1]; exact hcaps)
+    (by
+      rw [hc]
+      exact hcv.mono fun c hc' v hv u hu => Vs.val_grow h.ok hgy _ _ (hcb c hc' v hv) hu)
+    ⟨r, by rw [hfed]; exact Vs.val_grow h.ok hgy _ _ ho hr, hi⟩
+    (fun t ht => Vs.val_grow h.ok hgy _ _ (h.params t ht).2 (h.params t ht).1)
+  rw [e2] at hout
+  exact ⟨tok', hs', hR', hout⟩
+
+end Row
+
+section Cut
+variable (M K env Vs)
+
+/-- **`PostAt` as a cut's bookkeeping**, at every table above the server, reading the cut's node map. -/
+def PostG (R : MRef) (L j : Nat) (toks : Nat → Nat) (Cr : List (Option Nat × Option Nat))
+    (x : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF) : Prop :=
+  ∀ tab, Host.Ts.Sim.CSrv.Le x.C ⟨tab⟩ → PostAt M K env Vs R L tab j x.M.node toks Cr (Host.Ts.Sim.Full.mlxOf x.t.ffi)
+
+variable {M K env Vs}
+
+theorem PostG.glue {x y : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF} (h : PostG M K env Vs R L j toks Cr x)
+    (hg : Host.Ts.Sim.Compose.NTrack x y) : PostG M K env Vs R L j toks Cr y := by
+  intro tab hC
+  rw [hg.map]
+  exact (h tab (hg.server.trans hC)).grow hg.nodes hg.tokens
+
+theorem PostG.congr {x y : Host.Ts.Sim.SegInst Host.Ts.Sim.Full.FF} (h : PostG M K env Vs R L j toks Cr x)
+    (ht : y.t = x.t) (hC : y.C = x.C) (hσ : ∀ k, k ≤ j → y.M.node (toks' k) = x.M.node (toks k))
+    (hc : cachesAt y.M.node Cr' = cachesAt x.M.node Cr) : PostG M K env Vs R L j toks' Cr' y := by
+  intro tab hle
+  rw [ht]
+  exact (h tab (hC ▸ hle)).congr hσ hc
+
+end Cut
 
 section Zero
 variable {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}

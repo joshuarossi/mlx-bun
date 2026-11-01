@@ -55,7 +55,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegI
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI L) [(9, .L)] → Good ν PRE_first_tail_x15_r0.st1.S0.oracle) :
     CutStep (withMem Mem (npsCut NB T tk ρ L)) (withMem Mem (mergedPinCut NB T tk ρ L)) (PRE_first_tail_x15_r0.st1.tpl.n + 1) := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hb, hins, hids, hbase, hp, hnat⟩, hm⟩
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hb, hins, hids, hbase, hp, hnat⟩, hmem⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have h0 := hr.withOracle (horacle x.ν hq.2.2)
   change RelB FF _ wideP [] x.M x.ν x.K PRE_first_tail_x15_r0.s17
@@ -101,7 +101,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegI
       ⟨(congrFun ext.a 2586).trans hids.1, (congrFun ext.a 2589).trans hids.2⟩,
       hbase, ⟨hr.presentBound, hr.heapSupp⟩, Nat.le_trans top.1.load.mlx.nbl hNL,
       PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step (P := { setupP with rest := machReads T tk }) rfl hr hm' ext.big ext.node cnt18⟩,
-      hMem x _ ⟨runC_le _ _ _ _ _ run, ext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt18)⟩ hm⟩
+      hMem x _ ⟨runC_le _ _ _ _ _ run, ext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt18)⟩ hmem⟩
     intro j hj
     change npsVal x.ν j = _
     rw [show npsVal x.ν j = x.ν j from Conv.resVal_off (by

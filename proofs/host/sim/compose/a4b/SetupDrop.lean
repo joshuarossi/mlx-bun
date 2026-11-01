@@ -110,9 +110,11 @@ theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegInst F
   · exact ⟨hq.2.2.1, trivial⟩
   · exact ⟨hv.1, hv.2⟩
   · exact hids
-  · change NativeAt 0 0 PRE_setup_early_r0.s16 x.t
-    unfold NativeAt
-    rw [nativeEq]
+  · have e : mlxOf (PRE_setup_early_r0.s16 : St FF.S).ffi = mlxOf (PRE_g0b.s10 : St FF.S).ffi :=
+      congrArg mlxOf nativeEq
+    change (mlxOf x.t.ffi).next ≤ (mlxOf (PRE_setup_early_r0.s16 : St FF.S).ffi).next + 0 ∧
+      (mlxOf x.t.ffi).nnext ≤ (mlxOf (PRE_setup_early_r0.s16 : St FF.S).ffi).nnext + 0
+    rw [e]
     exact hnat
 
 end Host.Ts.Sim.Compose.SetupDrop

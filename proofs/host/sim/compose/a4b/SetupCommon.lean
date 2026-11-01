@@ -153,24 +153,24 @@ theorem run {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.I
   have i2 : (bridgeOf PRE_g0b.s2.ffi).active = false := by rw [bridge2]; exact inactive0
   have i5 : (bridgeOf PRE_g0b.s5.ffi).active = false := by rw [bridge5]; exact inactive0
   have i8 : (bridgeOf PRE_g0b.s8.ffi).active = false := by rw [bridge8]; exact inactive0
-  have g0 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle0 r hr)
+  have g0 := glueCall (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle0 r hr)
     accepted0 PRE_g0b.runSeg0 (runOk_ok_end 1017 PRE_g0b.runSeg0 live1) live1 PRE_g0b.stepA1 top2
     (Nat.blt_eq.mp tableLen0) inactive0 bridge2 cnt0
-  have b1 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle2 r hr)
+  have b1 := lengthStep (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle2 r hr)
     PRE_g0b.ctlA1 stack2 PRE_g0b.objA1 (by rw [PRE_g0b.kindA1, empty2]; rfl)
     (Option.some.inj PRE_g0b.patchB1) (Nat.blt_eq.mp tableLen2) i2 (bridge3.trans bridge2.symm) cnt2
-  have g1 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle3 r hr)
+  have g1 := glueCall (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle3 r hr)
     accepted3 PRE_g0b.runSeg1 (runOk_ok_end 23 PRE_g0b.runSeg1 live4) live4 PRE_g0b.stepA2 top5
     (Nat.blt_eq.mp tableLen3) i3
     (bridge5.trans bridge3.symm) cnt3
-  have b2 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle5 r hr)
+  have b2 := lengthStep (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle5 r hr)
     PRE_g0b.ctlA2 stack5 PRE_g0b.objA2 (by rw [PRE_g0b.kindA2, empty5]; rfl)
     (Option.some.inj PRE_g0b.patchB2) (Nat.blt_eq.mp tableLen5) i5 (bridge6.trans bridge5.symm) cnt5
-  have g2 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle6 r hr)
+  have g2 := glueCall (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle6 r hr)
     accepted6 PRE_g0b.runSeg2 (runOk_ok_end 350 PRE_g0b.runSeg2 live7) live7 PRE_g0b.stepA3 top8
     (Nat.blt_eq.mp tableLen6) i6
     (bridge8.trans bridge6.symm) cnt6
-  have b3 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle8 r hr)
+  have b3 := lengthStep (NB := NB) (T := T) (tk := tk) (ρ := ρ) hMem hi (List.all_eq_true.mp oracle8 r hr)
     PRE_g0b.ctlA3 stack8 PRE_g0b.objA3 (by rw [PRE_g0b.kindA3, empty8]; rfl)
     (Option.some.inj PRE_g0b.patchB3) (Nat.blt_eq.mp tableLen8) i8 (bridge9.trans bridge8.symm) cnt8
   have g3 : CutStep (withMem Mem (cut NB T tk ρ PRE_g0b.s9 PRE_g0b.S9 i))

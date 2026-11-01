@@ -79,7 +79,7 @@ theorem initial {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst
   have he := ldCut_setupEntryAt_bound hL hR hB
   refine ⟨{ x with ν := rowVal x.ν L }, rfl, rfl, he.1,
     ⟨⟨⟨he.2.1, (ldCut_setupContext hB).2, he.2.2⟩, ?_, ?_⟩,
-    ⟨(ldCut_setupValues_bound hL hB).2.2, ?_⟩, hp, nativeZero hR hB⟩,
+    ⟨(ldCut_setupValues_bound hL hB).2.2, ?_⟩, hp, nativeZero (x := x) hR hB⟩,
     hMem x _ (NTrack.conv rfl rfl rfl) hm⟩
   · change BigJs x.M
     rw [hB.1]

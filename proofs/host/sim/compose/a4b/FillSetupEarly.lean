@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.SetupCommon
+import host.sim.compose.a4b.SetupLiteralCommon
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
