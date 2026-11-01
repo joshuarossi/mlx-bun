@@ -5,6 +5,8 @@ import host.sim.compose.a4b.SetupChunkStage
 import host.sim.template.a4pre_d1_body.SizeAt
 import host.sim.full.RunFast
 import host.sim.LinGood
+import host.sim.full.BridgeJs
+import host.sim.dispatch.BridgeSpread
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -17,10 +19,208 @@ compose `toCall`, `size`, `finish` into a `CutStep` from the call to the return,
 
 namespace Host.Load.Run.Tpl.FlatFwd
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Route
-open Host.Ts.Sim.Compose Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
+open Host.Ts.Sim.Compose Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk Host.Load.Layers
 
-/-- A class's chunk array, its buffer and its view. -/
+/-! ## Smallness with the row count a singleton
+
+The chunk's length is a variable; a native call's numbers (`n * 5120`) are small only at its value, `1`. -/
+
+/-- The valuations of a forward: bounded, the row count `r` one. -/
+def VP (r : Nat) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ν r = F64.ofNat 1
+
+/-- Used only by the interval input, never by the operational server or native state. -/
+def singleton (r : Nat) : Nat → SymE := fun v => if v = r then .lit (F64.ofNat 1) else .var v
+
+theorem eval_singleton {r : Nat} {ν : Nat → F64} (hν : ν r = F64.ofNat 1) (e : SymE) :
+    (e.subst (singleton r)).eval ν = e.eval ν := by
+  rw [SymE.eval_subst]
+  have hv : (fun i => (singleton r i).eval ν) = ν := by
+    funext i
+    by_cases hi : i = r
+    · subst hi; simp only [singleton, if_true, SymE.eval]; exact hν.symm
+    · simp only [singleton, if_neg hi, SymE.eval]
+  rw [hv]
+
+def refSmall (r : Nat) (S : SSrv) (j : Nat) : Bool :=
+  match nth? S.tab j with
+  | some e => match ivlA loopVB (e.subst (singleton r)) with
+    | some (_, h) => decide (h < 2 ^ 31)
+    | none => false
+  | none => false
+
+theorem refSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {j : Nat}
+    (hν : VP r ν) (h : refSmall r S j = true) : RefSmall ν S j := by
+  unfold refSmall at h
+  split at h
+  · rename_i e he
+    split at h
+    · rename_i lo hi hb
+      obtain ⟨k, -, hk, -, heval⟩ := ivlA_sound hν.1 (e.subst (singleton r)) hb
+      rw [eval_singleton hν.2] at heval
+      exact ⟨e, k, he, heval, by have := of_decide_eq_true h; omega⟩
+    · cases h
+  · cases h
+
+def refGe (r : Nat) (S : SSrv) (c j : Nat) : Bool :=
+  match nth? S.tab j with
+  | some e => match ivl loopVB (e.subst (singleton r)) with
+    | some (l, h) => decide (c ≤ l ∧ h < 2 ^ 31)
+    | none => false
+  | none => false
+
+theorem refGe_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {c j : Nat} (hν : VP r ν) (h : refGe r S c j = true) :
+    G.RefGe ν S c j := by
+  unfold refGe at h
+  split at h
+  · rename_i e he
+    split at h
+    · rename_i l hi hi'
+      obtain ⟨k, k1, k2, -, k4⟩ := ivl_sound hν.1 (e.subst (singleton r)) hi'
+      rw [eval_singleton hν.2] at k4
+      have := of_decide_eq_true h
+      exact ⟨e, k, he, k4, by omega, by omega⟩
+    · cases h
+  · cases h
+
+/-- `symShapeSmallB` at the singleton: a convolution's width, a reshape's dimensions. -/
+def symSmall (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+  match Host.Mlx.Ffi.symOf name with
+  | some .conv1d => match G.convRef x args with
+    | some (j, c0) => refGe r S c0 j
+    | none => true
+  | some .reshape => (G.reshRefs x args).all (refSmall r S)
+  | _ => true
+
+theorem symSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
+    (hν : VP r ν) (h : symSmall r S x name args = true) : G.symShapeSmall ν S x name args := by
+  unfold symSmall at h
+  unfold G.symShapeSmall
+  split
+  · rename_i hs
+    rw [hs] at h
+    intro j c0 hc
+    simp only [hc] at h
+    exact refGe_sound hν h
+  · rename_i hs
+    rw [hs] at h
+    intro j hj
+    exact refSmall_sound hν (List.all_eq_true.mp h j hj)
+  · trivial
+
+def smallFX (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  ((smallRefs (toLoad x).mlx name args).all (refSmall r S) && (G.smallRefsX (toLoad x).mlx name args).all (refSmall r S)) &&
+    (!isSymShape name || symRunOk S x name args)
+
+theorem smallFX_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VP r ν) (h : smallFX r S x name args = true) : Full.smallFX ν S x name args := by
+  simp only [smallFX, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
+  refine ⟨⟨fun j hj => refSmall_sound hν (List.all_eq_true.mp h.1.1 j hj),
+    fun j hj => refSmall_sound hν (List.all_eq_true.mp h.1.2 j hj)⟩, fun hs => ?_⟩
+  rcases h.2 with h2 | h2
+  · rw [hs] at h2; cases h2
+  · exact symRunOk_sound h2
+
+def smallFS (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  bif G.symPath (mlxOf x) name args then symSmall r S (mlxOf x) name args
+  else smallFX r S x name args && G.cloSmallB loopVB S (mlxOf x) name args
+
+theorem smallFS_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VP r ν) (h : smallFS r S x name args = true) : Full.smallFS ν S x name args := by
+  unfold smallFS at h
+  constructor
+  · intro hp; rw [hp, Bool.cond_true] at h; exact symSmall_sound hν h
+  · intro hp; rw [hp, Bool.cond_false, Bool.and_eq_true] at h
+    exact ⟨smallFX_sound hν h.1, G.cloSmallB_sound hν.1 h.2⟩
+
+@[irreducible] def smallFX2 (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  bif (bridgeOf x).active then smallFX r S x name args && (!isSymShape name || aneRunOk S x name args) &&
+    G.cloSmallB loopVB S (mlxOf x) name args
+  else smallFS r S x name args
+
+theorem smallFX2_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VP r ν) (h : smallFX2 r S x name args = true) : Full.smallFX2 ν S x name args := by
+  unfold smallFX2 at h
+  constructor
+  · intro ha; rw [ha, Bool.cond_false] at h; exact smallFS_sound hν h
+  · intro ha
+    rw [ha, Bool.cond_true, Bool.and_eq_true, Bool.and_eq_true] at h
+    refine ⟨smallFX_sound hν h.1.1, fun hs => ?_, G.cloSmallB_sound hν.1 h.2⟩
+    have := h.1.2
+    rw [hs] at this
+    simpa using this
+
+/-! ### Over the fast table -/
+
+def refSmallF (r : Nat) (c : FSrv) (j : Nat) : Bool :=
+  match c.val (.ref j) with
+  | some e => match ivlA loopVB (e.subst (singleton r)) with
+    | some (_, h) => decide (h < 2 ^ 31)
+    | none => false
+  | none => false
+
+theorem refSmallF_eq (r : Nat) {c : FSrv} (h : c.Wf) : refSmallF r c = refSmall r c.toS := by
+  funext j
+  unfold refSmallF refSmall
+  rw [FSrv.val_eq h]
+  rfl
+
+def refGeF (r : Nat) (c : FSrv) (c0 j : Nat) : Bool :=
+  match c.val (.ref j) with
+  | some e => match ivl loopVB (e.subst (singleton r)) with
+    | some (l, h) => decide (c0 ≤ l ∧ h < 2 ^ 31)
+    | none => false
+  | none => false
+
+theorem refGeF_eq (r : Nat) {c : FSrv} (h : c.Wf) (c0 j : Nat) : refGeF r c c0 j = refGe r c.toS c0 j := by
+  unfold refGeF refGe
+  rw [FSrv.val_eq h]
+  rfl
+
+def symSmallF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+  match Host.Mlx.Ffi.symOf name with
+  | some .conv1d => match G.convRef x args with
+    | some (j, c0) => refGeF r c c0 j
+    | none => true
+  | some .reshape => (G.reshRefs x args).all (refSmallF r c)
+  | _ => true
+
+set_option maxRecDepth 1000000 in
+theorem symSmallF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
+    symSmallF r c x name args = symSmall r c.toS x name args := by
+  unfold symSmallF symSmall
+  simp only [refGeF_eq r h, refSmallF_eq r h]
+
+noncomputable def smallFXF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  ((smallRefs (toLoad x).mlx name args).all (refSmallF r c) && (G.smallRefsX (toLoad x).mlx name args).all (refSmallF r c)) &&
+    (!isSymShape name || symRunF c x name args)
+
+theorem smallFXF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+    smallFXF r c x name args = smallFX r c.toS x name args := by
+  unfold smallFXF smallFX
+  rw [refSmallF_eq r h, symRunF_eq h]
+
+noncomputable def smallFSF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  bif G.symPath (mlxOf x) name args then symSmallF r c (mlxOf x) name args
+  else smallFXF r c x name args && cloSmallF loopVB c (mlxOf x) name args
+
+theorem smallFSF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+    smallFSF r c x name args = smallFS r c.toS x name args := by
+  unfold smallFSF smallFS
+  rw [symSmallF_eq r h, smallFXF_eq r h, cloSmallF_eq loopVB h]
+
+noncomputable def smallFX2F (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+  bif (bridgeOf x).active then smallFXF r c x name args && (!isSymShape name || aneRunF c x name args) &&
+    cloSmallF loopVB c (mlxOf x) name args
+  else smallFSF r c x name args
+
+theorem smallFX2F_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+    smallFX2F r c x name args = smallFX2 r c.toS x name args := by
+  unfold smallFX2F smallFX2
+  rw [smallFXF_eq r h, aneRunF_eq h, cloSmallF_eq loopVB h, smallFSF_eq r h]
+
+/-- A class's row count variable, its chunk array, its buffer and its view. -/
 structure Fr where
+  row : Nat
   chunk : Nat
   buffer : Nat
   view : Nat
@@ -34,19 +234,19 @@ def typedW (bytes : List Byte) : Nat → Option WFrame :=
   Disp.wAt (Disp.wAt wideP f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
 
 abbrev typedJ (bytes : List Byte) : Disp.JSP FF :=
-  fullJSPPXS setupP [2665, f.chunk, f.buffer, f.view]
-    [(f.buffer, .buf bytes), (f.view, .typed .i32 f.buffer 0 1), (4910, .memo [])]
+  { fullJSPPXS setupP [2665, f.chunk, f.buffer, f.view]
+      [(f.buffer, .buf bytes), (f.view, .typed .i32 f.buffer 0 1), (4910, .memo [])] with smallB := smallFX2 f.row }
 
 noncomputable def typedOk (bytes : List Byte) : St FF.S → SSrv → Bool :=
   Disp.okJSJ (f.typedJ bytes) (okBackFXS setupP) 4096
 
 /-- `typedOk` over the fast table. -/
 noncomputable def typedOkN (bytes : List Byte) : St FF.S → FSrv → Bool :=
-  Disp.okJSJN (f.typedJ bytes) (okBackFXS setupP) 4096 (smallFX2F loopVB)
+  Disp.okJSJN (f.typedJ bytes) (okBackFXS setupP) 4096 (smallFX2F f.row)
 
 theorem typedOkN_ok (bytes : List Byte) (s : St FF.S) (c : FSrv) (h : c.Wf) :
     f.typedOkN bytes s c = f.typedOk bytes s c.toS :=
-  Disp.okJSJN_eq (f.typedJ bytes) (okBackFXS setupP) 4096 (fun _ x name args hw => smallFX2F_eq loopVB hw x name args) s h
+  Disp.okJSJN_eq (f.typedJ bytes) (okBackFXS setupP) 4096 (fun _ x name args hw => smallFX2F_eq f.row hw x name args) s h
 
 theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes) := by
   intro a w hw
@@ -73,7 +273,7 @@ abbrev Native (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St) :=
 chain's oracle was checked over. -/
 structure Laws (f : Fr) (bytes : List Byte) (ps : List Lin.Prm) (V : List (Nat × Lin.Aff)) (Book : SegInst FF → Prop) : Prop where
   context : ∀ x, Book x → Disp.KpJ (f.typedJ bytes) 4096 x.K
-  valuation : ∀ x, Book x → VBOkF loopVB x.ν
+  valuation : ∀ x, Book x → VP f.row x.ν
   box : ∀ x, Book x → ∃ v, Lin.InBox ps 0 v ∧ Lin.VarsOk x.ν v V
   ext : ∀ {x : SegInst FF} {M' : Map} {t' : St FF.S} {C' : CSrv} {n : Nat}, Book x → Ext x.M M' n →
     Book ⟨M', x.ν, x.K, t', C'⟩
@@ -99,12 +299,19 @@ noncomputable def cut (f : Fr) (NB T : Nat) (tk : Nat → Nat) (bytes : List Byt
 
 theorem simulation (f : Fr) (NB T : Nat) (tk : Nat → Nat) (bytes : List Byte) (y0 : Host.Mlx.Ffi.St) :
     Disp.StepSimXLB FF (Native NB T tk y0) (f.typedOk bytes)
-      (Disp.KpJ (f.typedJ bytes) 4096) (f.typedW bytes) [] (VBOkF loopVB) := by
+      (Disp.KpJ (f.typedJ bytes) 4096) (f.typedW bytes) [] (VP f.row) := by
   let P : LoadP := { setupP with rest := machReads T tk }
   have hj : (f.typedJ bytes).okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
-  have hs := fullStepSimXLBXDJSQ P NB loopVB (f.typedJ bytes) 4096 hj rfl rfl rfl rfl rfl []
-    (f.typed_wp bytes) y0
-  simpa only [Native, P, backRest, Fr.typedOk] using hs
+  have hC : FfiCallSim FF (FullRXD P NB) (f.typedJ bytes).okCall Full.smallFX2 := by
+    rw [hj]; exact fullCallSimXD P NB
+  have hQ := fullTargetPres (FR := FullRXD P NB) fullRXD_ninv y0
+  have hs := Disp.stepSimXLBJS (D0 := 4096) (stk := [])
+    ((fullFfiSimXD P NB).liftQ fullLawful hQ)
+    (backSimS_liftQ (fullBackSimXDS P NB) fullLawful hQ) (hC.liftQ fullLawful hQ)
+    (VBOk := VP f.row) (fun _ _ _ _ _ hν hb => smallFX2_sound hν hb)
+    (fun _ _ _ _ hν hb => smallBackFB_sound hν.1 hb)
+    (fullRXD_laws P NB).liftQ fullLawful (fullNativeFactsXD P NB (f.typedJ bytes) rfl rfl rfl).liftQ (f.typed_wp bytes)
+  simpa only [P, backRest, Fr.typedOk] using hs
 
 private theorem fresh {NB T : Nat} {tk : Nat → Nat} {y0 : Host.Mlx.Ffi.St}
     {W : Nat → Option WFrame} {M M' : Map} {ν : Nat → F64} {K K' : Host.Ts.Sim.Ctx}
@@ -204,7 +411,7 @@ theorem size (L : Laws f bytes ps V Book) {sa sb : St FF.S} {Sa Sb Sdec : SSrv}
   have hpre0 : ∀ ars S1, interpS (decodeArgs FF sa tys args).run Sa = some (some ars, S1) →
       D1BodySize.Pre x.ν S1 sa.ffi ars := by
     intro ars S1 hd
-    exact ⟨sizePre_of hdec hpre hval ars S1 hd, hi⟩
+    exact ⟨sizePre_of hdec hpre hval.1 ars S1 hd, hi⟩
   obtain ⟨M', t', C', _, ⟨⟨gg, hrel, ars, ret, ars', ret', w, hs, ht, hw, hw'⟩, hrun⟩⟩ :=
     (D1BodySize.growAt y0 hr0 hparts hargs hsym hm hpay hfr hpre0).run sb Sb hsize
   let K' : Host.Ts.Sim.Ctx := ⟨x.K.fr, sb.trace, t'.trace, x.K.D, x.K.lo, x.K.hi⟩

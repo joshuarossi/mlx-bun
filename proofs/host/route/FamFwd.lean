@@ -146,8 +146,8 @@ theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
     (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31) {NB T : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB)
     {s : St FF.S} {S : SSrv} {Θ : List Nat × List SymE} {O : Host.Ts.Sim.Compose.VWFirst.BodyOff}
     (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) (hBx : c.B = [(9, 10, 224), (10, 9, 223)]) (hcx : c.x = 10)
-    (hCr : Cr π.length = c.carriers) (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235)
-    {i : Host.Ts.Sim.Lin.Cls.Inst} (hn : 9 ≤ i.n) (hn' : i.n ≤ 223) (hLn : i.L = i.n + 1)
+    (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235)
+    {i : Host.Ts.Sim.Lin.Cls.Inst} (hCr : Cr i.L = c.carriers) (hn : 9 ≤ i.n) (hn' : i.n ≤ 223) (hLn : i.L = i.n + 1)
     (hfam : gpuFamily .tail i.n = some (rowTpl refRows pk mk rd)) {x y : SegInst FF}
     (hy : (Host.Ts.Sim.Compose.VWFirst.bodyCore NB T tk π i Θ O [(9, .L), (10, .n)] s S).R y s ⟨S.tab, []⟩)
     (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hg : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi))
@@ -165,7 +165,7 @@ theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
   have h9 : y.ν 9 = F64.ofNat i.L := hmap.1
   have h10 : y.ν 10 = F64.ofNat i.n := hmap.2.1
   have hin : i.n = π.length - 1 := by omega
-  refine coldFwd c leaves typed Cr hCr hlt (by omega) (by omega) (by rw [← hin]; exact hfam) hmr hband hE hNB
+  refine coldFwd c leaves typed Cr (by rw [hLen]; exact hCr) hlt (by omega) (by omega) (by rw [← hin]; exact hfam) hmr hband hE hNB
     (fun j e h => hr.srv.num j e (hS ▸ h)) (fun j => if j = 9 then (i.L : Int) else (i.n : Int)) ?_ ?_ ?_ ?_ hparam hle hg ht i.L hm
   · rw [hBx]
     intro j l h hget

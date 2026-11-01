@@ -1,12 +1,12 @@
 // Write the checked modules of a flat forward chain (`tpl_chain`, no stage cuts, size bridges only) over `FlatFwd`:
 // boundaries, each ordinary chunk at the fast table, each stretch and size bridge's facts, the pieces and the run
 // `<Name>.fullRun : CutStep (cut … s0 S0) (cut … s<T1> S<T1>) <steps>`, given the book's `FlatFwd.Laws`.
-// usage: bun genFlatFwd.ts <dir under template/> <Name> <chunk> <buffer> <view> <box module>
+// usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module>
 //   <box module> defines `<Name>.ps`, `<Name>.V` and `<Name>.lin : Lin.goodLin <Name>.ps <Name>.V <Name>.O = true`.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const [dir, name, chunk, buffer, view, boxMod] = process.argv.slice(2);
-if (!dir || !name || !chunk || !buffer || !view || !boxMod) throw Error("usage: genFlatFwd.ts dir Name chunk buffer view boxModule");
+const [dir, name, row, chunk, buffer, view, boxMod] = process.argv.slice(2);
+if (!dir || !name || !row || !chunk || !buffer || !view || !boxMod) throw Error("usage: genFlatFwd.ts dir Name row chunk buffer view boxModule");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const plan = JSON.parse(readFileSync(join(import.meta.dir, dir, "plan.json"), "utf8"));
@@ -33,7 +33,7 @@ const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
 for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, head([j === 0 ? mod("States") : mod(`H${j - 1}`)]) +
   Array.from({ length: T1 + 1 }, (_, i) => i).filter(i => Math.floor(i / 32) === j).map(i => `host_stream_state ${name} ${i}\n`).join(""));
 put("Frames", head(["host.sim.template.FlatFwd", boxMod]) +
-  `def ${fr} : FlatFwd.Fr := ⟨${chunk}, ${buffer}, ${view}, rfl, rfl⟩\n`);
+  `def ${fr} : FlatFwd.Fr := ⟨${row}, ${chunk}, ${buffer}, ${view}, rfl, rfl⟩\n`);
 const frames = mod("Frames");
 const special = new Set(bridges.flatMap(b => [b.ia - 1, b.ia]));
 for (let i = 0; i < sizes.length; i++) {

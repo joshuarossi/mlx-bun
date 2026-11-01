@@ -1,12 +1,12 @@
 // Write the checked modules of a flat POST stretch (`tpl_chain` with no stage cuts): boundaries, one run per glue chunk,
 // the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostOk.ok.
-// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>] [--fast]
-// --fast: a glue chunk is checked at the fast table (`runOkS` at `PostOk.okN`); its statement stays `runOk` at `PostOk.ok`.
+// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>[:<the forwarded array's refs>]] [--fast]
+// --fast: a row: checked at `PostOk.okR` (its convolutions small at the row count), each glue chunk at the fast table (`runOkS` at `PostOk.okRN`).
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const argv = process.argv.slice(2);
-let spread: { chunk: number; pre: number; tokens: number[] } | undefined;
-{ const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
+let spread: { chunk: number; pre: number; tokens: number[]; forwarded: number[] } | undefined;
+{ const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok, fwd] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number), forwarded: (fwd ?? "").split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
 const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf("--no-good"), 1);
 const fast = argv.includes("--fast"); if (fast) argv.splice(argv.indexOf("--fast"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
@@ -18,7 +18,7 @@ const root = join(import.meta.dir, dir), mod = (f: string) => `host.sim.template
 const head = (imports: string[], open = "Host.Ts Host.Ts.Sim") => [...new Set(imports)].map(i => `import ${i}\n`).join("") +
   `set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen ${open}\n\n`;
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-const OK = "host.sim.template.PostOk", ok = "PostOk.ok";
+const OK = fast ? "host.sim.template.PostOkFast" : "host.sim.template.PostOk", ok = fast ? "PostOk.okR" : "PostOk.ok";
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
 // boundary pages of 32 states, each importing the last
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
@@ -33,12 +33,12 @@ for (const k of glue) {
   if (spread?.chunk === k) continue;
   if (fast) { put(`K${k}`, head([page(k + 1), "host.sim.template.PostOkFast", "host.sim.template.BootEq", "host.sim.Chunk"]) +
     `boot_rfl ${name}.run${k}F from ${s(k)} to ${s(k + 1)} :\n` +
-    `  runOkS ${name}.F PostOk.okN ${fuel(k)} ${s(k)} ${S(k)} =\n` +
+    `  runOkS ${name}.F PostOk.okRN ${fuel(k)} ${s(k)} ${S(k)} =\n` +
     `    some (${s(k + 1)}, ${S(k + 1)})\n\n` +
     `theorem ${name}.run${k} :\n` +
     `  runOk ${name}.F ${ok} ${fuel(k)} ${s(k)} ${S(k)} =\n` +
     `    some (${s(k + 1)}, ${S(k + 1)}) :=\n` +
-    `  (runOkS_eq ${name}.F PostOk.okN_ok _ _ _).symm.trans ${name}.run${k}F`); continue; }
+    `  (runOkS_eq ${name}.F PostOk.okRN_ok _ _ _).symm.trans ${name}.run${k}F`); continue; }
   put(`K${k}`, head([page(k + 1), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
     `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
     `  runOk ${name}.F ${ok} ${fuel(k)} ${s(k)} ${S(k)} =\n` +
@@ -54,7 +54,7 @@ if (spread) {
   const chain = (c: string, from: string, fromSrv: string, o: any) =>
     `bridge_empty ${c}.input from ${from}\nserver_literal ${c}.inputSrv := (\u27E8${fromSrv}.tab, []\u27E9 : SSrv)\nset_option interpreter.prefer_native true in\n` +
     `tpl_chain ${c} from ${c}.input, ${c}.inputSrv : ${lit({ ...plan, startTokens: spread!.tokens, bridges: [], ...o })} (\u00ABworld\u00BB := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)\n`;
-  put("TailStates", head([mod("H0"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(tail, s(k), S(k), { stop: `steps:${spread.pre}`, cap: spread.pre }));
+  put("TailStates", head([page(k), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(tail, s(k), S(k), { stop: `steps:${spread.pre}`, cap: spread.pre }));
   put("TailData", head([mod("TailStates")], "Host.Ts") + `host_stream_state ${tail} 0\nhost_stream_state ${tail} 1\n`);
   put("SpreadStates", head([mod("TailData"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(st, `${tail}.s1`, `${tail}.S1`, { stop: "steps:4", cap: 4, chunk: 1 }));
   put("SpreadData", head([mod("SpreadStates"), "host.sim.template.PostOk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
@@ -94,7 +94,7 @@ if (spread) {
     `kernel_rfl ${p}.spCloseCtl : ${p}.spClose.ctl = .ret (.obj 2673435)\n` +
     `kernel_rfl ${p}.spCloseStack : ${p}.spClose.stack =\n  .l (.spread [] [] ${p}.spEnv) :: ${p}.spFs\n` +
     `kernel_rfl ${p}.spFwd : ${p}.spClose.obj? 2673435 = some ${p}.fwdObj\n` +
-    `kernel_rfl ${p}.spFwdKind : ${p}.fwdObj.kind = .array []\n` +
+    `kernel_rfl ${p}.spFwdKind : ${p}.fwdObj.kind = .array [${spread.forwarded.map(r => `.num (.ref ${r})`).join(", ")}]\n` +
     `kernel_rfl ${p}.spCellNoW : wideP ${p}.spCell = none\n` +
     `kernel_rfl ${p}.spNewNoW : wideP ${p}.cacheArray = none\n` +
     `kernel_rfl ${p}.spNewNoPrompt : Nat.beq 2665 ${p}.cacheArray = false\n` +

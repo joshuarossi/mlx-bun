@@ -41,7 +41,7 @@ noncomputable def cert : FamCert .split (.wide 2 ⟨8, 2⟩) .causal Host.Load.R
     intro i hi
     obtain rfl := List.mem_singleton.mp hi
     exact ⟨by decide, by decide⟩
-  hlen := by rw [graph_len, cert_len]; exact Nat.le_refl _
+  hlen := by rw [graph_len, cert_len]
   hm := by rw [Ec_len]; exact check.matches
   inputs := by rw [Ec_len]; exact check.inputs
   extra := extra.all
