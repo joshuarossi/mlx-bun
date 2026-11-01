@@ -89,14 +89,14 @@ const backP = meta.loadP && world.jspP && meta.loadP[3] === meta.loadP[4] ? `⟨
 const accept = process.env.CHAIN_ACCEPT ?? (meta as { accept?: string }).accept ?? "auto", D0 = Number(process.env.CHAIN_D0 ?? (meta as { D0?: number }).D0 ?? 4096);
 if (accept === "jsjxs" && (!backP || (worldArg ?? meta.world) !== "full"))
   throw new Error("--accept jsjxs needs the full world and band-free loadP in stage.json");
-const okE = accept === "jskf" ? `Disp.okJSK (${jsp.replace("Host.Ts.Sim.Template.fullJSPP ", "Host.Ts.Sim.Full.fullJSPXF ").replace(/^(Host\.Ts\.Sim\.Full\.fullJSPXF ⟨[^⟩]*⟩) /, "$1 Host.Ts.Sim.loopVB ")}) (fun _ _ => false)` : accept === "jsjxs" ? `Disp.okJSJ (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
+const okE = accept === "jskd" ? `Disp.okJSK (${jsp.replace("Host.Ts.Sim.Template.fullJSPP ", "Host.Load.Run.Tpl.DecOk.decJ ")}) (fun _ _ => false)` : accept === "jsjxs" ? `Disp.okJSJ (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
   : accept === "jskx" && backP ? `Disp.okJSK (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
   : accept === "jsj" && backP ? `Disp.okJSJ (${jsp}) (Host.Ts.Sim.Full.okBackF ${backP}) ${D0}`
   : accept === "jsjs" && backP ? `Disp.okJSJ (${jsp.replace("Template.fullJSPPD ", "Template.fullJSPPDS ")}) (Host.Ts.Sim.Full.okBackFS ${backP}) ${D0}`
   : (accept === "jsk" || accept === "auto") && backP ? `Disp.okJSK (${jsp}) (Host.Ts.Sim.Full.okBackF ${backP})`
   // a banded P (a decode loop's): `okJSK` without continuations (its JS-level disjunct, `Full.fullStepSimXBK`)
   : accept === "js" ? `Disp.okJS (${jsp})` : `Disp.okJSK (${jsp}) (fun _ _ => false)`;
-write("Ok.lean", [`import ${world.okModule}${NL}import host.sim.template.Stage${NL}${accept === "jskf" ? `import host.sim.full.BridgeFrameS${NL}` : ""}${backP ? `import host.sim.full.BackSim${NL}${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? `import host.sim.dispatch.OkJs${NL}` : ""}` : ""}`,
+write("Ok.lean", [`import ${world.okModule}${NL}import host.sim.template.Stage${NL}${accept === "jskd" ? `import host.sim.template.DecOk${NL}` : ""}${backP ? `import host.sim.full.BackSim${NL}${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? `import host.sim.dispatch.OkJs${NL}` : ""}` : ""}`,
   `namespace Host.Load.Run.Tpl${NL}open Host.Ts Host.Ts.Sim${NL}${NL}`,
   `/-- The acceptance of stage \`${name}\` (${meta.piece}, \`${meta.fn}\`): the world's under the caller's frames (its framed${NL}`,
   `arrays and wide frames the start holds, \`Conv.isoCtxW\`), at local states only. -/${NL}`,

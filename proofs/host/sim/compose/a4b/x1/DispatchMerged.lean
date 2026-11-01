@@ -23,7 +23,7 @@ kernel_rfl cnt39 : countersOkB PRE_first_tail_x1_r0.s38 PRE_first_tail_x1_r0.s39
 theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x1_r0.st2.S0.oracle) :
-    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 425 := by
+    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 251 := by
   rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   let d := dispatchSite NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))

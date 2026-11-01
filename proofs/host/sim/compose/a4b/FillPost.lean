@@ -81,7 +81,8 @@ theorem postFacts {r : Row} {i : Cls.Inst} (hr : r ∈ postRows) (hi : InRow r i
   rcases hr with rfl | rfl
   all_goals
     obtain ⟨_, x, hx, hq⟩ := hi
-    simp only [route_post_other.r0, route_post_other.r1, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+    simp only [route_post_other.r0, route_post_other.r1, InBox, QOk, Inst.get, eval_mk, dot, List.mem_cons, List.not_mem_nil,
+      or_false, not_false_eq_true, and_true, true_and] at hx hq
     omega
 
 section

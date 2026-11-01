@@ -91,7 +91,7 @@ noncomputable def hooksOne {P : MlxPrefillContract C} (ha : a < 248320) (leaves 
 /-- The readback's pop on the short paths. -/
 noncomputable def popsOne (H : Hooks NB T tk π cap nI P) (hMem : H.MemP = memP P' KR NE net env π) (hT : 1 ≤ T)
     (htkR : ∀ tab j, j < T → ∃ hs, Host.Mlx.SimGraph.Mach.refPrompt P' KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
-    (htk1 : tk 1 < 2 ^ 31) : PopHooks H where
+    (htk1 : tk 1 < 2 ^ 31) (htk2 : tk 2 < 2 ^ 31) : PopHooks H where
   t1 L x y hx hy hle hn ha' hg hm := by
     rw [hMem] at hm ⊢
     exact ⟨hpopT1 hT htkR htk1 Row.rowToks rfl (Row.rowCr 0) L x y hx hy hle hn hg hm.1, ha'.trans hm.2⟩
@@ -101,6 +101,12 @@ noncomputable def popsOne (H : Hooks NB T tk π cap nI P) (hMem : H.MemP = memP 
   ta L x y hx hy hle hn ha' hg hm := by
     rw [hMem] at hm ⊢
     exact ⟨hpopTa hT htkR htk1 Row.rowToks rfl (Row.rowCr 0) L x y hx hy hle hn hg hm.1, ha'.trans hm.2⟩
+  t2 h2 L x y hx hy hle hn ha' hg hm := by
+    rw [hMem] at hm ⊢
+    exact ⟨hpopT2 h2 htkR htk2 Row.rowToks rfl (Row.rowCr 1) L x y hx hy hle hn hg hm.1, ha'.trans hm.2⟩
+  t2e h2 L x y hx hy hle hn ha' hg hm := by
+    rw [hMem] at hm ⊢
+    exact ⟨hpopT2Eos h2 htkR htk2 Row.rowToks rfl (Row.rowCr 1) L x y hx hy hle hn hg hm.1, ha'.trans hm.2⟩
 
 end
 

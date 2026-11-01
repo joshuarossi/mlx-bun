@@ -84,7 +84,7 @@ theorem spreadM {sO sI sC sA : St FF.S} {SO SI SC SA : SSrv} {env : Env} {fs : L
     (hNewW : wideP sC.next = none)
     (hOr : SO.oracle = []) (_hOrA : SA.oracle = [])
     (hi : (bridgeOf sO.ffi).active = false) (hbr : bridgeOf sA.ffi = bridgeOf sO.ffi)
-    (hcnt : countersOkB sO sA = true) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+    (hcnt : countersOkB sO sA = true) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π sO SO))
       (withMem Tr (endCut NB T tk cap [fwd, sC.next] sA SA)) 3 := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, ⟨hf, hanc⟩, htr⟩
@@ -142,8 +142,8 @@ theorem spreadM {sO sI sC sA : St FF.S} {SO SI SC SA : SSrv} {env : Env} {fs : L
     ⟨hout.withOracle (fun _ h => nomatch h),
       ⟨hk2, hb.valuation, hb.rowValue, hb.reserved, (congrFun hext.a 2590).trans hb.emittedAnchor⟩⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun hext.a 2586).trans hanc.1, (congrFun hext.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ run3, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt),
-      congrFun hext.a 12504⟩ htr⟩
+    hT x _ ⟨⟨runC_le _ _ _ _ _ run3, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt),
+      congrFun hext.a 12504⟩, rfl⟩ htr⟩
 
 /-- The stretch after the spread. -/
 theorem glueE {extra : List Nat} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Tr : SegInst FF → Prop}
@@ -151,7 +151,7 @@ theorem glueE {extra : List Nat} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Tr 
     (ha : PostOk.okF extra sa Sa = true) (hrun : runOk FF (PostOk.okF extra) n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true) (hOr : Sa.oracle = [])
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
-    (hcnt : countersOkB sa sb = true) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+    (hcnt : countersOkB sa sb = true) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (endCut NB T tk cap extra sa Sa)) (withMem Tr (endCut NB T tk cap extra sb Sb)) n := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hb⟩, ⟨hf, hanc⟩, htr⟩
   have hq : RelB FF (Disp.FRJ (FRQ (FullRXD (PostSimulation.params T tk) NB)
@@ -167,8 +167,8 @@ theorem glueE {extra : List Nat} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Tr 
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨hout, ⟨hb.context, hb.valuation, hb.rowValue, hb.reserved, (congrFun he.a 2590).trans hb.emittedAnchor⟩⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt),
-      congrFun he.a 12504⟩ htr⟩
+    hT x _ ⟨⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt),
+      congrFun he.a 12504⟩, rfl⟩ htr⟩
 
 /-- **A short path**: the chain in its prefix, its cut at the halted state, no steps left. -/
 noncomputable def haltPath {extra : List Nat} {s : St FF.S} {S : SSrv} {I0 : ICut (fullWorldXD NB).F} {n : Nat}

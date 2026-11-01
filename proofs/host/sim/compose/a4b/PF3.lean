@@ -1,0 +1,77 @@
+import host.sim.compose.a4b.PF3Heap
+import host.sim.compose.a4b.PF3Full
+import host.sim.compose.a4b.PF15EFresh
+import host.sim.compose.a4b.PF3K0
+import host.sim.compose.a4b.PF3K1
+import host.sim.compose.a4b.PF3K2
+import host.sim.compose.a4b.PF3K3
+import host.sim.compose.a4b.PF3K4
+set_option Elab.async false
+namespace Host.Load.Run.Tpl
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+
+theorem PF3.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x3_r0_suffix.s8 PRE_pf_vw.S0.tab PF3.tabP PFW3.R.data PFW3.R.inv PF3.θ PF3.P0 2825043 [2673467, 2673472, 2673473] where
+  num := PF3.num
+  heap := by
+    intro a h ha hm
+    obtain ⟨q, hq, haq⟩ := PRE_pf_vw.cover a h ha (fun hf => hm (by rw [PRE_pf_vw.frames_eq] at hf; simpa using hf))
+    have he := PFW3.R.heapAt q hq a haq
+    rw [ha] at he
+    exact he
+  fixP := PF3.fixP
+  getP := PF3.getP
+  kindP := PF3.kindP
+  imgP := PF3.imgP
+  emptyP := PF3.emptyP
+  notDrop := by
+    intro a ha b hb he
+    have hc := PRE_pf_vw.allPresent PF3.ND.all PF3.ndFramed a ha
+    unfold PF3.ndAt at hc
+    have h2 := List.all_eq_true.mp hc b hb
+    rw [he] at h2
+    simp at h2
+  n0 := PF3.n0
+  n1 := PF3.n1
+  grows := Nat.le_of_ble_eq_true PF3.grows
+  ren := PF3.ren
+  bound := PRE_pf_vw.presentBound
+  ctl := PF3.ctl
+  stack := PF3.stack
+  jobs := PF3.jobs
+  stores := PF3.stores
+  heapSupp := by rw [PRE_pf_vw.tab_len]; exact PRE_pf_vw.heapSupp
+  ctlSupp := by rw [PRE_pf_vw.tab_len]; exact PRE_pf_vw.rootsSupp.1
+  stackSupp := by rw [PRE_pf_vw.tab_len]; exact PRE_pf_vw.rootsSupp.2.1
+  jobsSupp := by rw [PRE_pf_vw.tab_len]; exact PRE_pf_vw.rootsSupp.2.2.1
+  storesSupp := by rw [PRE_pf_vw.tab_len]; exact PRE_pf_vw.rootsSupp.2.2.2
+  band := PF3.band
+  nh0 := Nat.le_of_ble_eq_true PF3.nh0le
+  intr := by
+    intro a ha
+    have := PF3.intr
+    simp only [List.all_eq_true, List.mem_range, Nat.beq_eq] at this
+    exact this a ha
+  shift := by rw [PRE_pf_vw.tab_len]; exact PF3.fullShift
+  inactive := PF3.inactive
+  raised := .inr ⟨19057, rfl, by decide, rfl⟩
+  bigs := by
+    change bigsOutB (Host.Load.Layers.toLoad PRE_pf_vw.s0.ffi).mlx.next 131072 (Host.Load.Layers.toLoad PRE_pf_vw.s0.ffi).mlx = true
+    rw [PRE_pf_vw.hnext]
+    exact PRE_pf_vw.nativeFresh
+  free := by
+    change NoBigSt (fun i => ((Host.Load.Layers.toLoad PRE_pf_vw.s0.ffi).mlx.next : Int) ≤ i ∧ i < 131072) PRE_pf_vw.s0.trace PRE_pf_vw.s0
+    rw [PRE_pf_vw.hnext]
+    exact PRE_pf_vw.noBigFresh
+  loLe := Nat.le_of_ble_eq_true PF3.lo
+  hi0 := Nat.le_of_ble_eq_true PF3.hi0
+  nhi0 := Nat.le_of_ble_eq_true PF3.nhi0
+  hi1 := Nat.le_of_ble_eq_true PF3.hi1
+  nhi1 := Nat.le_of_ble_eq_true PF3.nhi1
+  jsHeap := PRE_pf_vw.jsHeap
+  jsRoots := PRE_pf_vw.jsRoots
+  jsNative := PRE_pf_vw.jsNative
+  jsFix := Pf.jsFix_of_keys (Nat.le_of_ble_eq_true PF3.jsLe) PF3.jsKeys
+
+end Host.Load.Run.Tpl

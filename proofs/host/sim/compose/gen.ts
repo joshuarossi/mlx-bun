@@ -2616,7 +2616,7 @@ function genPostChain(args: string[]) {
       term: `spreadM ${impl} ${X}.spCtl ${X}.spStack ${X}.spOpenStep ${X}.spIdCtl ${X}.spLookup ${X}.spCellVal ${X}.spCellNoW ${X}.spIdStep ${X}.spCloseCtl ${X}.spCloseStack ${X}.spFwd ${X}.spFwdKind (by decide) wFwd ${X}.spCloseStep ${X}.spRoom proto ${X}.spNewNoW openNoOr ${X}.spAfterNoOracle ${X}.spInactive ${X}.spBridge cntClose hT`,
       n: "3",
       facts: [`kernel_rfl wFwd : wideP 2673435 = none`, `kernel_rfl openNoOr : ${X}.spOpenSrv.oracle = []`, `kernel_rfl cntClose : countersOkB ${X}.spOpen ${X}.spAfter = true`,
-        `kernel_rfl proto : Present ${X}.spClose aArrayProto`],
+        `kernel_rfl proto : (${X}.spClose.heap.get aArrayProto).isSome = true`],
       mods: tailMods,
     });
     parts.push({
@@ -2664,7 +2664,7 @@ open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
     writeFileSync(join(outDir, `C${k}.lean`), head([popFirst || tailEnd ? "host.sim.compose.PostPath" : "host.sim.compose.PostChain", `${tplMod}.Good`, ...g.flatMap(p => p.mods)]) +
       [...new Set(g.flatMap(p => p.facts))].join("\n") + `
 
-abbrev n${k} : Nat := ${n}
+${n.includes("restFuel") ? "noncomputable " : ""}abbrev n${k} : Nat := ${n}
 
 theorem c${k} ${pars} ${hyps}${k === 0 ? hookOf(firstEnd) : ""} :
     CutStep (${idx(start)}) (${idx(end)}) n${k} :=

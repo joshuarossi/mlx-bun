@@ -31,7 +31,7 @@ theorem startJs41 : JsHeapAbove 2673488 PRE_first_tail_x1_r0.s41 := by
   have hp : ∀ i, jsAboveB 2673488 i = true → jsShiftBadB PRE_first_tail_x1_r0.kappa2 i = true := by
     intro i hi
     rw [PRE_first_tail_x1_r0.zkap2]
-    change jsShiftBadB (Conv.Map.compact PRE_first_tail_x1_r0.s38.next 2673519
+    change jsShiftBadB (Conv.Map.compact PRE_first_tail_x1_r0.s38.next 2673510
       PRE_first_tail_x1_r0.S38.tab.length [] (PRE_first_tail_x1_r0.nr2.map NumV.ref)
       PRE_first_tail_x1_r0.kd2.big PRE_first_tail_x1_r0.kd2.region PRE_first_tail_x1_r0.kd2.nodeF) i = true
     rw [Conv.jsShiftBadB_compact_nil (by decide) (Conv.rdata_big_js PRE_first_tail_x1_r0.kd2)]

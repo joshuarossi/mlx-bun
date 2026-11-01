@@ -16,7 +16,7 @@ kernel_rfl dispatchOk1 : (fun (bs : List Byte) (n : Nat) => dispatchOk bs n
   PRE_first_tail_x1_r0.st2.s1 PRE_first_tail_x1_r0.st2.S1) = fun _ _ => true
 
 boot_rfl dispatchRun from PRE_first_tail_x1_r0.st2.s0 to PRE_first_tail_x1_r0.st2.s1 :
-  (fun (bs : List Byte) (n : Nat) => runOk FF (dispatchOk bs n) 424
+  (fun (bs : List Byte) (n : Nat) => runOk FF (dispatchOk bs n) 250
     PRE_first_tail_x1_r0.st2.s0 PRE_first_tail_x1_r0.st2.S0) =
     fun _ _ => some (PRE_first_tail_x1_r0.st2.s1, PRE_first_tail_x1_r0.st2.S1)
 
@@ -27,7 +27,7 @@ noncomputable def dispatchTpl (bs : List Byte) (n : Nat) : Stage.StageTpl FF (di
   S1 := PRE_first_tail_x1_r0.st2.S1
   s2 := PRE_first_tail_x1_r0.st2.s2
   S2 := PRE_first_tail_x1_r0.st2.S2
-  n := 424
+  n := 250
   ok0 := congrFun (congrFun dispatchOk0 bs) n
   run := congrFun (congrFun dispatchRun bs) n
   ok1 := congrFun (congrFun dispatchOk1 bs) n

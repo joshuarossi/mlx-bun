@@ -31,7 +31,7 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Li
   have hr0 := inactiveMemo hr.ofJ (compactW_agree bs n hmemo)
   have hs := dispatchShift hk.1 hb.prompt hb.chunk hcall hnative
   have hnext : (mlxOf PRE_first_tail_x1_r0.s40.ffi).next = 18156 := congrArg Prod.fst PRE_first_tail_x1_r0.ccounters2
-  have hD : x.t.next - PRE_first_tail_x1_r0.s40.next = x.K.D + 31 := by
+  have hD : x.t.next - PRE_first_tail_x1_r0.s40.next = x.K.D + 22 := by
     have h := hr.offset
     change x.t.next = PRE_first_tail_x1_r0.s39.next + x.K.D at h
     rw [PRE_first_tail_x1_r0.zsmn2] at h
@@ -75,7 +75,7 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Li
     (s0 := PRE_first_tail_x1_r0.s40) (s1 := PRE_first_tail_x1_r0.s39)
     (S0 := ⟨PRE_first_tail_x1_r0.S40.tab, []⟩) (S1 := ⟨PRE_first_tail_x1_r0.S39.tab, []⟩)
     PRE_first_tail_x1_r0.raised2 hNB hr0 hs PRE_first_tail_x1_r0.cbigs2 hfree hband
-    (fun _ h => nomatch h) (by rw [hD]; change x.K.D + 31 < Sim.bound; have := hb.offset; simp only [Sim.bound]; omega) hroomN
+    (fun _ h => nomatch h) (by rw [hD]; change x.K.D + 22 < Sim.bound; have := hb.offset; simp only [Sim.bound]; omega) hroomN
   let N := (x.M.after PRE_first_tail_x1_r0.kappa2).rebig (mlxOf PRE_first_tail_x1_r0.s40.ffi).next
     setupP.E (mlxOf x.t.ffi).next
   let K' : Ctx := ⟨Shift.framedNext x.M x.K PRE_first_tail_x1_r0.s39,

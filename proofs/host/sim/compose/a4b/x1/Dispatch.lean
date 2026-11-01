@@ -13,7 +13,7 @@ noncomputable def disp_V23__g1_DTtail_first__g2_first (NB T : Nat) (tk : Nat →
     StagePiece FF fwdClassRows [] (fun i => withMem (Mem i.L) (VWFirst.dispatchCut NB T tk π i))
       (fun i => withMem (Mem i.L) (g2Cut NB T tk π i)) where
   m := npsMap
-  n := 425
+  n := 251
   O := PRE_first_tail_x1_r0.st2.S0.oracle
   chk r hr := List.all_eq_true.mp chkDispatch r hr
   ok r hr i hi ho := StageCall.intro (toDispatch (hMem i.L) (hn r hr i hi))

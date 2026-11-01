@@ -99,7 +99,7 @@ variable {NB T cap nI capC nIC : Nat} {tk : Nat → Nat} {π : List Nat} {P : Cl
   (H : Hooks NB T tk π cap nI P) (hcap : cap ≤ 4096 + 1593835520)
   (hL1 : 1 ≤ π.length) (hL2 : π.length ≤ 224) (htk : ∀ j, tk j ≤ 248319) (hTle : T ≤ 262143)
 
-/-- The readback's pop on the paths whose chain runs from the tail's start. -/
+/-- The readback's pop on each path's own chain. -/
 structure PopHooks where
   t1 : ∀ L (x y : SegInst FF), (indexedCut NB T tk cap nI π PRE_pl_t1.s0 PRE_pl_t1.S0).R x PRE_pl_t1.s0 ⟨PRE_pl_t1.S0.tab, []⟩ →
     (indexedCut NB T tk cap nI π PRE_pl_t1.s2 PRE_pl_t1.S2).R y PRE_pl_t1.s2 ⟨PRE_pl_t1.S2.tab, []⟩ →
@@ -113,6 +113,14 @@ structure PopHooks where
     (indexedCut NB T tk cap nI π PRE_pl_ta.s6 PRE_pl_ta.S6).R y PRE_pl_ta.s6 ⟨PRE_pl_ta.S6.tab, []⟩ →
     CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → H.MemP 0 L x → H.MemP 0 L y
+  t2 : 2 ≤ T → ∀ L (x y : SegInst FF), (indexedCut NB T tk cap nI π PRE_pl_t2.s0 PRE_pl_t2.S0).R x PRE_pl_t2.s0 ⟨PRE_pl_t2.S0.tab, []⟩ →
+    (indexedCut NB T tk cap nI π PRE_pl_t2.s2 PRE_pl_t2.S2).R y PRE_pl_t2.s2 ⟨PRE_pl_t2.S2.tab, []⟩ →
+    CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
+    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → H.MemP 1 L x → H.MemP 1 L y
+  t2e : 2 ≤ T → ∀ L (x y : SegInst FF), (indexedCut NB T tk cap nI π PRE_pl_t2_eos.s0 PRE_pl_t2_eos.S0).R x PRE_pl_t2_eos.s0 ⟨PRE_pl_t2_eos.S0.tab, []⟩ →
+    (indexedCut NB T tk cap nI π PRE_pl_t2_eos.s2 PRE_pl_t2_eos.S2).R y PRE_pl_t2_eos.s2 ⟨PRE_pl_t2_eos.S2.tab, []⟩ →
+    CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
+    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → H.MemP 1 L x → H.MemP 1 L y
 
 variable (Q : PopHooks H)
 
@@ -188,7 +196,7 @@ noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
     .undef ta_halt _ ta_emit ta_kind ta_cell ta_free (H.fixE 0 π.length)
     (fun _ _ => vals0 ta_vals)
 
-include hcap htk hL1 hL2 in
+include hcap Q htk hL1 hL2 in
 /-- `T = 2`, the second token the end. -/
 noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
     PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH))
@@ -200,12 +208,12 @@ noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
           (fun _ b => PRE_pl_t2_eos.good (t1 := tk 1) (by have := htk 1; omega) hne
             ((b.reserved 0 (by omega)).trans (by rw [h]; rfl)) ((b.reserved 1 (by omega)).trans (by simp [machVal]))
             ((b.reserved 2 (by omega)).trans (by simp [machVal, he])))
-          (H.MemP 1 π.length) (fun x y t => H.hMP 1 π.length x y t.toNTrack)).convL
+          (H.MemP 1 π.length) (fun x y t => H.hMP 1 π.length x y t.toNTrack) (Q.t2e (by omega) π.length)).convL
         (idxConv PRE_pl_t2_eos.s0_eq PRE_pl_t2_eos.s0_tab)))
     .undef t2e_halt _ t2e_emit t2e_kind t2e_cell t2e_free (H.fixE 1 π.length)
     (fun _ hν => vals1 t2e_vals t2e_tab1 hν)
 
-include hcap htk hL1 hL2 in
+include hcap Q htk hL1 hL2 in
 /-- `T = 2`, neither token the end. -/
 noncomputable def pB0 (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 248044) :
     PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH))
@@ -217,7 +225,7 @@ noncomputable def pB0 (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 24804
           (fun _ b => PRE_pl_t2.good (t1 := tk 1) (t2 := tk 2) (by have := htk 1; omega) hne (by have := htk 2; omega) hne2
             ((b.reserved 0 (by omega)).trans (by rw [h]; rfl)) ((b.reserved 1 (by omega)).trans (by simp [machVal]))
             ((b.reserved 2 (by omega)).trans (by simp [machVal])))
-          (H.MemP 1 π.length) (fun x y t => H.hMP 1 π.length x y t.toNTrack)).convL
+          (H.MemP 1 π.length) (fun x y t => H.hMP 1 π.length x y t.toNTrack) (Q.t2 (by omega) π.length)).convL
         (idxConv PRE_pl_t2.s0_eq PRE_pl_t2.s0_tab)))
     .undef t2_halt _ t2_emit t2_kind t2_cell t2_free (H.fixE 1 π.length)
     (fun _ hν => vals2 t2_vals t2_tab1 t2_tab2 hν)

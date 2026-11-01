@@ -5,7 +5,8 @@ set_option Elab.async false
 
 `tpl_restart_pad R : T, X i` is `tpl_restart` for a template shared by chains whose tables differ: `Iso.num` covers every template entry, and
 most of them have no image in the source. The source table is taken as `S1.tab ++ T.S0.tab.map (·.subst θ)`, so every entry the walk didn't pair
-(and the token, `var 14`) goes to `.ref (S1.tab.length + i)`. The entries it did pair stay. -/
+(and the token, `var 14`) goes to `.ref (S1.tab.length + i)`. The entries it did pair stay, and those the source already holds at their
+index. -/
 
 namespace Host.Ts.Sim.Template
 open Lean Elab Command Meta Host.Ts Host.Load Host.Ts.Stream
@@ -64,8 +65,13 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
   if loopToken then cand := cand.insert 14 (.var 17)
   -- the source table is extended by the template's images: an entry the walk didn't pair, and the token, at its image
   let paired : Std.HashSet Nat := w.pairs.foldl (fun (t : Std.HashSet Nat) (r, _, _, _) => t.insert r) {}
+  -- an entry that already agrees stays where it is: the native nodes' references read the table by index
+  let θf : Nat → SymE := fun v => (cand.get? v).getD (.var v)
   for r in [0:tab0.size] do
-    if !paired.contains r || (loopToken && decide (tab0[r]? = some (SymE.var 14))) then
+    let same := match tab0[r]?, tab1[r]? with
+      | some e, some e1 => decide (e.subst θf = e1)
+      | _, _ => false
+    if (!paired.contains r && !same) || (loopToken && decide (tab0[r]? = some (SymE.var 14))) then
       numP := numP.set r (.ref (tab1.size + r))
   let theta := cand.toList.filter (fun (v, e) => !decide (e = .var v)) |>.mergeSort (fun a b => a.1 ≤ b.1)
   let D := mkAppN (mkConst ``RData.mk) #[toExpr s0.next, toExpr s1.next, toExpr heapP, toExpr hndP,

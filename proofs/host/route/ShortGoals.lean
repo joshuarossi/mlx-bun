@@ -44,7 +44,7 @@ theorem graphC1 (h : T = 1) (he : tk 1 = 248044) :
 include hMem in
 /-- `T = 2`, the second token the end. -/
 theorem graphB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
-    (pB2 H hcap hL1 hL2 htk h hne he).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF) :=
+    (pB2 H hcap hL1 hL2 htk Q h hne he).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x _ _ htr => memPost_goal (hMem 1 _ x htr) (Nat.le_refl _)
 
 include hMem in
@@ -61,7 +61,7 @@ theorem graphC0 (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) (h : T 
 include hMem in
 /-- `T = 2`, neither token the end. -/
 theorem graphB0 (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 248044) :
-    (pB0 H hcap hL1 hL2 htk h hne hne2).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
+    (pB0 H hcap hL1 hL2 htk Q h hne hne2).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x hr hb htr => by
     change ∃ kind, goalCV P KR NE net env π kind NB T je x.t x.C
     rw [h]

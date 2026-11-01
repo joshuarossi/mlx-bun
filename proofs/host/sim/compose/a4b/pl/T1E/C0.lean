@@ -40,13 +40,13 @@ kernel_rfl cntSp : countersOkB PRE_pl_t1_eos.s6 PRE_pl_t1_eos.spOpen = true
 kernel_rfl wFwd : wideP 2673435 = none
 kernel_rfl openNoOr : PRE_pl_t1_eos.spOpenSrv.oracle = []
 kernel_rfl cntClose : countersOkB PRE_pl_t1_eos.spOpen PRE_pl_t1_eos.spAfter = true
-kernel_rfl proto : Present PRE_pl_t1_eos.spClose aArrayProto
+kernel_rfl proto : (PRE_pl_t1_eos.spClose.heap.get aArrayProto).isSome = true
 theorem afterInactive : (bridgeOf PRE_pl_t1_eos.spAfter.ffi).active = false := Host.Load.Boot.replay_active _
 kernel_rfl topEnd : noRetBlock PRE_pl_t1_eos.s7 = true
 kernel_rfl brEnd : bridgeOf PRE_pl_t1_eos.s7.ffi = bridgeOf PRE_pl_t1_eos.spAfter.ffi
 kernel_rfl cntEnd : countersOkB PRE_pl_t1_eos.spAfter PRE_pl_t1_eos.s7 = true
 
-abbrev n0 : Nat := (((((((((nth? PRE_pl_t1_eos.ks 0).getD 0) + 1) + 1) + (((nth? PRE_pl_t1_eos.ks 3).getD 0) + 1)) + 1) + (33 + 1)) + 3) + PRE_pl_t1_eos.restFuel)
+noncomputable abbrev n0 : Nat := (((((((((nth? PRE_pl_t1_eos.ks 0).getD 0) + 1) + 1) + (((nth? PRE_pl_t1_eos.ks 3).getD 0) + 1)) + 1) + (33 + 1)) + 3) + PRE_pl_t1_eos.restFuel)
 
 theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_t1_eos.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) (hP : ∀ x y : SegInst FF, (indexedCut NB T tk cap nI π PRE_pl_t1_eos.s0 PRE_pl_t1_eos.S0).R x PRE_pl_t1_eos.s0 ⟨PRE_pl_t1_eos.S0.tab, []⟩ →
       (indexedCut NB T tk cap nI π PRE_pl_t1_eos.s2 PRE_pl_t1_eos.S2).R y PRE_pl_t1_eos.s2 ⟨PRE_pl_t1_eos.S2.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node →

@@ -18,7 +18,7 @@ const head = (imports: string[]) => imports.map(i => `import ${i}\n`).join("") +
   "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim Host.Ts.Sim.Template\n\n";
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
 const localOk = `${name}.bodyOkL`;
-put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFramesDefs", "host.sim.template.FullOk", "host.sim.template.FastOk"]) +
+put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFramesDefs", ...(acceptance.includes("bodyLit") ? ["host.sim.compose.a4b.VWLitDefs"] : []), "host.sim.template.FullOk", "host.sim.template.FastOk"]) +
   `noncomputable def ${localOk} (bytes : List Byte) (rows : Nat) : St ${name}.F.S → SSrv → Bool :=\n` +
   `  okLocal (${acceptance} bytes rows)\n\n` +
   // the fast table's acceptance (`${acceptance}N`): what the chunks are checked at
