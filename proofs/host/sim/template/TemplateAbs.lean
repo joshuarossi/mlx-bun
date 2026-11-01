@@ -85,7 +85,7 @@ deriving FromJson, ToJson
 structure AbsSpec where
   sites : Array AbsSite
   vars : Array AbsVar
-  /-- Cells no later step of a chain from this template reads: reset to `undefined`, what only they held collected. -/
+  /-- Cells and maps no later step of a chain from this template reads: reset to `undefined` or empty, what only they held collected. -/
   ghostCells : Option (Array Nat) := none
 deriving FromJson, ToJson
 
@@ -102,7 +102,10 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
   let spec ← match Json.parse text >>= fromJson? (α := AbsSpec) with
     | .ok s => pure s
     | .error e => throwError "tpl_abstract: {e}"
-  let (s, c, _) ← restoreAny (S := F.S) (mkConst (base ++ `s0)) (mkConst (base ++ `S0)) pre
+  -- a template over a native-bridge world is decoded through its bridge-free view (`bridge_empty`)
+  let hasView := (← getEnv).contains (base ++ `chooser)
+  let (s, c, _) ← restoreAny (S := F.S) (mkConst (base ++ (if hasView then `chooser else `s0)))
+    (mkConst (base ++ (if hasView then `chooserSrv else `S0))) pre
   let l := w.proj s
   let m := l.aux.ffi.mlx
   let n := c.tab.length
@@ -121,11 +124,15 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
     let f (k : Nat) : Option Nat := (here.find? (·.site == k)).bind fun x => refOf x.var
     nodes := nodes.set id ((mapNode f nd).run (0, #[])).1
   let ghostCells := (spec.ghostCells.getD #[]).toList
+  let mut heap0 := l.heap
   for a in ghostCells do
     match l.heap.get a with
-    | some (.cell _) => pure ()
-    | _ => throwError "tpl_abstract: ghost {a} is not a cell"
-  let l1 : St LSt := { l with heap := ghostCells.foldl (fun h a => h.set a (.cell (some .undef))) l.heap }
+    | some (.cell _) => heap0 := heap0.set a (.cell (some .undef))
+    | some (.obj o) => match o.kind with
+      | .map _ => heap0 := heap0.set a (.obj { o with kind := .map [] })
+      | _ => throwError "tpl_abstract: ghost {a} is not a cell or a map"
+    | _ => throwError "tpl_abstract: ghost {a} is not a cell or a map"
+  let l1 : St LSt := { l with heap := heap0 }
   let l1 := l1.setFfi { l1.aux.ffi with mlx := { m with nodes } }
   let s1 := w.unproj s l1
   -- what the reset cells alone held goes, as in the template's own collection

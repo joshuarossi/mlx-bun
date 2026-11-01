@@ -12,15 +12,21 @@ open Host.Ts Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph
 A POST row runs the ordinary decode forward at time `L + d` while its table reads the prompt's length: the table's
 numbers are `L + c`, so its dimensions are the template's `pos` at `c = d` and `pos1` at `c = d + 1` (`clsRow`). -/
 
-def boxRow : Box := [(9, 1, 224), (10, 1, 1), (11, 1, 224), (16, 256, 256)]
+/-- The tail's abstracted convolution dims, each worth 3. -/
+def isDim (v : Nat) : Bool := Nat.ble 201 v && Nat.ble v 248
 
-/-- The terms over the box: `k + a·L`, the row count 1 and the capacity 256 being constants. -/
+def dimsBox : Box := (List.range 48).map fun i => (201 + i, 3, 3)
+
+def boxRow : Box := (9, 1, 224) :: (10, 1, 1) :: (11, 1, 224) :: (16, 256, 256) :: dimsBox
+
+/-- The terms over the box: `k + a·L`, the row count 1, the capacity 256 and the dims 3 being constants. -/
 def rowTerms : List (Int × Nat) → Option (Int × Int)
   | [] => some (0, 0)
   | t :: ts => (rowTerms ts).bind fun r =>
     if t.2 = 9 ∨ t.2 = 11 then some (r.1, r.2 + t.1)
     else if t.2 = 10 then some (r.1 + t.1, r.2)
     else if t.2 = 16 then some (r.1 + t.1 * 256, r.2)
+    else if isDim t.2 = true then some (r.1 + t.1 * 3, r.2)
     else none
 
 /-- A normal form as `k + a·L`; its divisions only of constants. -/
@@ -48,10 +54,10 @@ def toP (d : Int) : SDim → PDim
   | .pos => .lin d [(1, 11)]
   | .pos1 => .lin (d + 1) [(1, 11)]
 
-/-- Partial evaluation with the row count fixed. -/
+/-- Partial evaluation with the row count and the dims fixed. -/
 def evalRow : SymE → Option F64
   | .lit f => some f
-  | .var i => if i = 10 then some (F64.ofNat 1) else none
+  | .var i => if i = 10 then some (F64.ofNat 1) else if isDim i = true then some (F64.ofNat 3) else none
   | .un op a => (evalRow a).map (F64.un op)
   | .bin op a b => do pure (F64.bin op (← evalRow a) (← evalRow b))
 

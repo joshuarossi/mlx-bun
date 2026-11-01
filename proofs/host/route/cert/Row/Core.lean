@@ -29,36 +29,79 @@ open Host.Route.PrefGraph
 /-! # POST's decode forwards from their certificates: the row's graph in the target's -/
 
 /-- The box's valuation at a prompt of `L` tokens. -/
-def nuRow (L j : Nat) : Int := if j = 16 then 256 else if j = 10 then 1 else L
+def nuRow (L j : Nat) : Int := if j = 16 then 256 else if j = 10 then 1 else if isDim j = true then 3 else L
+
+theorem nuRow_dim (L : Nat) {j : Nat} (h : isDim j = true) : nuRow L j = 3 := by
+  have hb : 201 ≤ j := by
+    simp only [isDim, Bool.and_eq_true] at h
+    exact Nat.le_of_ble_eq_true h.1
+  unfold nuRow
+  rw [if_neg (by omega), if_neg (by omega), if_pos h]
+
+theorem box_get_cons {a : Nat} {v : Int × Int} {B : Box} {j : Nat} :
+    Box.get ((a, v) :: B) j = if a = j then some v else Box.get B j := by
+  by_cases h : a = j <;> simp [Box.get, List.find?_cons, h]
+
+theorem dimsBox_get {j : Nat} {l h : Int} (hg : Box.get dimsBox j = some (l, h)) : isDim j = true ∧ l = 3 ∧ h = 3 := by
+  unfold Box.get at hg
+  obtain ⟨e, he, hv⟩ := Option.map_eq_some_iff.mp hg
+  have hm := List.mem_of_find?_eq_some he
+  have hp := List.find?_some he
+  simp only [decide_eq_true_eq] at hp
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.mp hm
+  have hi' := List.mem_range.mp hi
+  simp only at hp hv
+  obtain ⟨rfl, rfl⟩ := Prod.mk.inj hv
+  subst hp
+  refine ⟨?_, rfl, rfl⟩
+  simp only [isDim, Bool.and_eq_true, Nat.ble_eq]
+  omega
+
+theorem dimsBox_all : ∀ i, i < 48 → Box.get boxRow (201 + i) = some (3, 3) := by decide
+
+theorem boxRow_dim {j : Nat} (h : isDim j = true) : Box.get boxRow j = some (3, 3) := by
+  simp only [isDim, Bool.and_eq_true, Nat.ble_eq] at h
+  have e := dimsBox_all (j - 201) (by omega)
+  rwa [show 201 + (j - 201) = j by omega] at e
 
 theorem boxRow_cases {j : Nat} {l h : Int} (hg : Box.get boxRow j = some (l, h)) :
-    (j = 9 ∧ l = 1 ∧ h = 224) ∨ (j = 10 ∧ l = 1 ∧ h = 1) ∨ (j = 11 ∧ l = 1 ∧ h = 224) ∨ (j = 16 ∧ l = 256 ∧ h = 256) := by
-  unfold Box.get boxRow at hg
-  by_cases h9 : j = 9
-  · subst h9
-    simp at hg
+    (j = 9 ∧ l = 1 ∧ h = 224) ∨ (j = 10 ∧ l = 1 ∧ h = 1) ∨ (j = 11 ∧ l = 1 ∧ h = 224) ∨ (j = 16 ∧ l = 256 ∧ h = 256) ∨
+      (isDim j = true ∧ l = 3 ∧ h = 3) := by
+  unfold boxRow at hg
+  rw [box_get_cons, box_get_cons, box_get_cons, box_get_cons] at hg
+  split at hg
+  · rename_i e
+    subst e
+    simp only [Option.some.injEq, Prod.mk.injEq] at hg
     exact .inl ⟨rfl, hg.1.symm, hg.2.symm⟩
-  by_cases h10 : j = 10
-  · subst h10
-    simp at hg
+  split at hg
+  · rename_i e
+    subst e
+    simp only [Option.some.injEq, Prod.mk.injEq] at hg
     exact .inr (.inl ⟨rfl, hg.1.symm, hg.2.symm⟩)
-  by_cases h11 : j = 11
-  · subst h11
-    simp at hg
+  split at hg
+  · rename_i e
+    subst e
+    simp only [Option.some.injEq, Prod.mk.injEq] at hg
     exact .inr (.inr (.inl ⟨rfl, hg.1.symm, hg.2.symm⟩))
-  by_cases h16 : j = 16
-  · subst h16
-    simp at hg
-    exact .inr (.inr (.inr ⟨rfl, hg.1.symm, hg.2.symm⟩))
-  simp [Ne.symm h9, Ne.symm h10, Ne.symm h11, Ne.symm h16] at hg
+  split at hg
+  · rename_i e
+    subst e
+    simp only [Option.some.injEq, Prod.mk.injEq] at hg
+    exact .inr (.inr (.inr (.inl ⟨rfl, hg.1.symm, hg.2.symm⟩)))
+  exact .inr (.inr (.inr (.inr (dimsBox_get hg))))
 
 theorem nuRow_box {L : Nat} (h1 : 1 ≤ L) (h2 : L ≤ 224) : InBox boxRow (nuRow L) := by
   intro j l h hg
-  rcases boxRow_cases hg with ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩
-  · simp [nuRow]; omega
-  · simp [nuRow]
-  · simp [nuRow]; omega
-  · simp [nuRow]
+  rcases boxRow_cases hg with ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩ | ⟨hd, rfl, rfl⟩
+  · change (1 : Int) ≤ (L : Int) ∧ (L : Int) ≤ 224
+    omega
+  · exact ⟨le_refl _, le_refl _⟩
+  · change (1 : Int) ≤ (L : Int) ∧ (L : Int) ≤ 224
+    omega
+  · exact ⟨le_refl _, le_refl _⟩
+  · rw [nuRow_dim L hd]
+    exact ⟨le_refl _, le_refl _⟩
 
 theorem rowTerms_eval (L : Nat) : ∀ {ts : List (Int × Nat)} {r : Int × Int}, rowTerms ts = some r →
     termsEval (nuRow L) ts = r.1 + r.2 * L
@@ -75,7 +118,7 @@ theorem rowTerms_eval (L : Nat) : ∀ {ts : List (Int × Nat)} {r : Int × Int},
       simp only [Option.some.injEq] at h
       subst h
       have hv : nuRow L t.2 = L := by
-        rcases ht with e | e <;> simp [nuRow, e]
+        rcases ht with e | e <;> rw [e] <;> rfl
       rw [hv]
       simp only [Int.add_mul]
       omega
@@ -95,7 +138,14 @@ theorem rowTerms_eval (L : Nat) : ∀ {ts : List (Int × Nat)} {r : Int × Int},
           rw [hv]
           simp only
           omega
-        · cases h
+        · split at h
+          · rename_i ht
+            simp only [Option.some.injEq] at h
+            subst h
+            rw [nuRow_dim L ht]
+            simp only
+            omega
+          · cases h
 
 theorem rowLin_eval (L : Nat) : ∀ {p : PDim} {r : Int × Int}, rowLin p = some r →
     PDim.eval (nuRow L) p = r.1 + r.2 * L
@@ -172,7 +222,8 @@ theorem clsRow_sound (S : SSrv) {L d : Nat} (h1 : 1 ≤ L) (h2 : L ≤ 224) (ρ 
   rw [rowS_eval hs]
   exact clsOfX_sound S boxRow (nuRow L) ρ (nuRow_box h1 h2) hρ x p hp
 
-theorem evalRow_sound (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) : ∀ e f, evalRow e = some f → e.eval ρ = f := by
+theorem evalRow_sound (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) (hd : ∀ v, isDim v = true → ρ v = F64.ofNat 3) :
+    ∀ e f, evalRow e = some f → e.eval ρ = f := by
   intro e
   induction e with
   | lit a => intro f hf; exact Option.some.inj hf
@@ -182,7 +233,11 @@ theorem evalRow_sound (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) : ∀ e f, 
     · subst i
       change some (F64.ofNat 1) = some f at hf
       exact hρ.trans (Option.some.inj hf)
-    · simp [evalRow, hi] at hf
+    · by_cases hdi : isDim i = true
+      · have e : evalRow (.var i) = some (F64.ofNat 3) := by simp [evalRow, hi, hdi]
+        rw [e] at hf
+        exact (hd i hdi).trans (Option.some.inj hf)
+      · simp [evalRow, hi, hdi] at hf
   | un op a ih =>
     intro f hf
     obtain ⟨v, hv, rfl⟩ := Option.map_eq_some_iff.mp hf
@@ -194,7 +249,7 @@ theorem evalRow_sound (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) : ∀ e f, 
     obtain ⟨vb, hb, hr⟩ := Option.bind_eq_some_iff.mp hr
     exact (congrArg₂ (F64.bin op) (iha va ha) (ihb vb hb)).trans (Option.some.inj hr)
 
-theorem rowNumVal_sound (S : SSrv) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) (x : NumV) (f : F64)
+theorem rowNumVal_sound (S : SSrv) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) (hd : ∀ v, isDim v = true → ρ v = F64.ofNat 3) (x : NumV) (f : F64)
     (hf : rowNumVal S x = some f) : νsOf S ρ x = some f := by
   cases x with
   | lit a => exact hf
@@ -202,9 +257,9 @@ theorem rowNumVal_sound (S : SSrv) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1
     obtain ⟨e, he, hf⟩ := Option.bind_eq_some_iff.mp hf
     change ((nth? S.tab i).map (SymE.eval ρ)) = some f
     rw [he]
-    exact congrArg some (evalRow_sound ρ hρ e f hf)
+    exact congrArg some (evalRow_sound ρ hρ hd e f hf)
 
-theorem row_agree (S : SSrv) (d : Int) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) (ev : SDim → Int)
+theorem row_agree (S : SSrv) (d : Int) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofNat 1) (hd : ∀ v, isDim v = true → ρ v = F64.ofNat 3) (ev : SDim → Int)
     (hcls : ClsSoundD (clsRow S d) (νsOf S ρ) ev) (hlit : ∀ i, ev (SDim.lit i) = i)
     (νt : NumV → Option F64) (μ : NumV → NumV) (β : Int → Int) (α : Arg → Arg) (η : Nat → Nat)
     (hlitμ : ∀ f, μ (.lit f) = .lit f) (hlitt : ∀ f, νt (.lit f) = some f)
@@ -226,7 +281,7 @@ theorem row_agree (S : SSrv) (d : Int) (ρ : Nat → F64) (hρ : ρ 10 = F64.ofN
       cases hv : rowNumVal S x with
       | none => simp [concreteByte, concreteCell, hv] at hb
       | some f =>
-        have ht := hν x f (rowNumVal_sound S ρ hρ x f hv)
+        have ht := hν x f (rowNumVal_sound S ρ hρ hd x f hv)
         simpa only [concreteByte, concreteCell, ht, hv, Option.map_some] using
           (show concreteByte (rowNumVal S) (.part k (.num x) i) = some v from hb)
 
@@ -243,7 +298,11 @@ theorem row_embeds (s : Ffi.St) (S : SSrv) (d : Nat) (tab : List F64) {Pm : Load
   have hargs : ∀ i nd, exactTplDom 15235 15235 [5554869888] s i = true → s.nodes.get i = some nd →
       PrimArgs (fun a => okArg [5554869888] a = true) nd.prim := fun _ _ hi hn => exactTplDom_args hi hn
   have h10 : ρ 10 = F64.ofNat 1 := hρ 10 1 1 (by decide)
-  have hag := row_agree S (d : Int) ρ h10 (SDim.eval (L + d)) (clsRow_sound S h1 h2 ρ hρ) (fun _ => rfl) (CSrv.val ⟨tab⟩)
+  have hdv : ∀ v, isDim v = true → ρ v = F64.ofNat 3 := fun v hv => by
+    have e := hρ v 3 3 (boxRow_dim hv)
+    rw [nuRow_dim L hv] at e
+    exact e
+  have hag := row_agree S (d : Int) ρ h10 hdv (SDim.eval (L + d)) (clsRow_sound S h1 h2 ρ hρ) (fun _ => rfl) (CSrv.val ⟨tab⟩)
     M.nv M.big M.arg M.handle (nv_lit M) (fun _ => rfl) (numbers_agree S ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum)
     (fun a => okArg [5554869888] a = true)
     (arg_fixed M [5554869888] (fun i hi => by obtain rfl := List.mem_singleton.mp hi; exact hrope))

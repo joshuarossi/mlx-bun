@@ -172,7 +172,7 @@ abbrev decJ (P : LoadP) (framed : List Nat) (wide : List (Nat × WFrame)) : Disp
 /-! ## The end of an iteration
 
 Each iteration leaves a convolution cache one token longer and slices it back, so its dim is `int32((v + 1) - 1)`. At the valuations
-`VP` that is `v` again, and the end's table may read it so (`RelB.retab`), which keeps the iteration's substitution the identity there. -/
+`VP` that is `v` again, and the end's table may read it so (`RelB.retabEq`), which keeps the iteration's substitution the identity there. -/
 
 /-- An entry `int32((v + 1) - 1)` of an abstracted dim, read as its variable. -/
 def convBack : SymE → SymE
@@ -209,7 +209,7 @@ theorem nth?_map_convBack (l : List SymE) (i : Nat) (e' : SymE) (h : nth? (l.map
 theorem retab {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
     {ν : Nat → F64} {K : Ctx} {s : St F.S} {S : SSrv} {t : St F.S} {C : CSrv} (hν : VP ν)
     (h : RelB F FR W stk M ν K s S t C) : RelB F FR W stk M ν K s (convTab S) t C :=
-  h.retab (List.length_map _) rfl fun i e' he' => by
+  h.retabEq (List.length_map _) rfl fun i e' he' => by
     obtain ⟨e, he, rfl⟩ := nth?_map_convBack S.tab i e' he'
     exact ⟨e, he, (convBack_eval hν e).symm⟩
 

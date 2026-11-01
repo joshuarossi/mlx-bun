@@ -1,5 +1,5 @@
 {
- "doc": "POST's shared cut after the sampler's compile and first asyncEvalAll: every history-dependent number a place, the trace registry a ghost; the T = 1 tails and T >= 2 rows start here.",
+ "doc": "POST's shared cut after the sampler's compile and first asyncEvalAll: every history-dependent number a place. traceCalls is v200, clear of the head's v21; the 48 conv caches' lengths are v201-v248, each worth 3, so a class whose rows are symbolic there walks in.",
  "frames": [],
  "prompt": {
   "addr": 2665
@@ -130,7 +130,7 @@
    "kind": "cell",
    "addr": 1054,
    "value": null,
-   "var": 21
+   "var": 200
   },
   {
    "name": "computeG #traceId",
@@ -176,6 +176,534 @@
    "rank": 3,
    "value": null,
    "var": 26
+  },
+  {
+   "name": "conv N15250",
+   "kind": "dim",
+   "nodes": [
+    15250
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 201
+  },
+  {
+   "name": "conv N15315",
+   "kind": "dim",
+   "nodes": [
+    15315
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 202
+  },
+  {
+   "name": "conv N15354",
+   "kind": "dim",
+   "nodes": [
+    15354
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 203
+  },
+  {
+   "name": "conv N15432",
+   "kind": "dim",
+   "nodes": [
+    15432
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 204
+  },
+  {
+   "name": "conv N15471",
+   "kind": "dim",
+   "nodes": [
+    15471
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 205
+  },
+  {
+   "name": "conv N15510",
+   "kind": "dim",
+   "nodes": [
+    15510
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 206
+  },
+  {
+   "name": "conv N15588",
+   "kind": "dim",
+   "nodes": [
+    15588
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 207
+  },
+  {
+   "name": "conv N15627",
+   "kind": "dim",
+   "nodes": [
+    15627
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 208
+  },
+  {
+   "name": "conv N15666",
+   "kind": "dim",
+   "nodes": [
+    15666
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 209
+  },
+  {
+   "name": "conv N15744",
+   "kind": "dim",
+   "nodes": [
+    15744
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 210
+  },
+  {
+   "name": "conv N15783",
+   "kind": "dim",
+   "nodes": [
+    15783
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 211
+  },
+  {
+   "name": "conv N15822",
+   "kind": "dim",
+   "nodes": [
+    15822
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 212
+  },
+  {
+   "name": "conv N15900",
+   "kind": "dim",
+   "nodes": [
+    15900
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 213
+  },
+  {
+   "name": "conv N15939",
+   "kind": "dim",
+   "nodes": [
+    15939
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 214
+  },
+  {
+   "name": "conv N15978",
+   "kind": "dim",
+   "nodes": [
+    15978
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 215
+  },
+  {
+   "name": "conv N16056",
+   "kind": "dim",
+   "nodes": [
+    16056
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 216
+  },
+  {
+   "name": "conv N16095",
+   "kind": "dim",
+   "nodes": [
+    16095
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 217
+  },
+  {
+   "name": "conv N16134",
+   "kind": "dim",
+   "nodes": [
+    16134
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 218
+  },
+  {
+   "name": "conv N16212",
+   "kind": "dim",
+   "nodes": [
+    16212
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 219
+  },
+  {
+   "name": "conv N16251",
+   "kind": "dim",
+   "nodes": [
+    16251
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 220
+  },
+  {
+   "name": "conv N16290",
+   "kind": "dim",
+   "nodes": [
+    16290
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 221
+  },
+  {
+   "name": "conv N16368",
+   "kind": "dim",
+   "nodes": [
+    16368
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 222
+  },
+  {
+   "name": "conv N16407",
+   "kind": "dim",
+   "nodes": [
+    16407
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 223
+  },
+  {
+   "name": "conv N16446",
+   "kind": "dim",
+   "nodes": [
+    16446
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 224
+  },
+  {
+   "name": "conv N16524",
+   "kind": "dim",
+   "nodes": [
+    16524
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 225
+  },
+  {
+   "name": "conv N16563",
+   "kind": "dim",
+   "nodes": [
+    16563
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 226
+  },
+  {
+   "name": "conv N16602",
+   "kind": "dim",
+   "nodes": [
+    16602
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 227
+  },
+  {
+   "name": "conv N16680",
+   "kind": "dim",
+   "nodes": [
+    16680
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 228
+  },
+  {
+   "name": "conv N16719",
+   "kind": "dim",
+   "nodes": [
+    16719
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 229
+  },
+  {
+   "name": "conv N16758",
+   "kind": "dim",
+   "nodes": [
+    16758
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 230
+  },
+  {
+   "name": "conv N16836",
+   "kind": "dim",
+   "nodes": [
+    16836
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 231
+  },
+  {
+   "name": "conv N16875",
+   "kind": "dim",
+   "nodes": [
+    16875
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 232
+  },
+  {
+   "name": "conv N16914",
+   "kind": "dim",
+   "nodes": [
+    16914
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 233
+  },
+  {
+   "name": "conv N16992",
+   "kind": "dim",
+   "nodes": [
+    16992
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 234
+  },
+  {
+   "name": "conv N17031",
+   "kind": "dim",
+   "nodes": [
+    17031
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 235
+  },
+  {
+   "name": "conv N17070",
+   "kind": "dim",
+   "nodes": [
+    17070
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 236
+  },
+  {
+   "name": "conv N17148",
+   "kind": "dim",
+   "nodes": [
+    17148
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 237
+  },
+  {
+   "name": "conv N17187",
+   "kind": "dim",
+   "nodes": [
+    17187
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 238
+  },
+  {
+   "name": "conv N17226",
+   "kind": "dim",
+   "nodes": [
+    17226
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 239
+  },
+  {
+   "name": "conv N17304",
+   "kind": "dim",
+   "nodes": [
+    17304
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 240
+  },
+  {
+   "name": "conv N17343",
+   "kind": "dim",
+   "nodes": [
+    17343
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 241
+  },
+  {
+   "name": "conv N17382",
+   "kind": "dim",
+   "nodes": [
+    17382
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 242
+  },
+  {
+   "name": "conv N17460",
+   "kind": "dim",
+   "nodes": [
+    17460
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 243
+  },
+  {
+   "name": "conv N17499",
+   "kind": "dim",
+   "nodes": [
+    17499
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 244
+  },
+  {
+   "name": "conv N17538",
+   "kind": "dim",
+   "nodes": [
+    17538
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 245
+  },
+  {
+   "name": "conv N17616",
+   "kind": "dim",
+   "nodes": [
+    17616
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 246
+  },
+  {
+   "name": "conv N17655",
+   "kind": "dim",
+   "nodes": [
+    17655
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 247
+  },
+  {
+   "name": "conv N17694",
+   "kind": "dim",
+   "nodes": [
+    17694
+   ],
+   "index": 1,
+   "rank": 3,
+   "value": null,
+   "var": 248
   }
  ],
  "ghosts": [

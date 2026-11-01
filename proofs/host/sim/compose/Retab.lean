@@ -6,11 +6,11 @@ open Host.Ts
 
 /-! # Rewriting a server's table where its values agree
 
-The relation reads a table entry only through its value at the valuation: `RelB.retab` replaces entries of equal value. A decode iteration's
+The relation reads a table entry only through its value at the valuation: `RelB.retabEq` replaces entries of equal value. A decode iteration's
 end can so read an abstracted conv dim as its variable again, keeping the iteration's `θ` the identity there. -/
 
 /-- **The relation at another table of the same values.** -/
-theorem RelB.retab {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
+theorem RelB.retabEq {F : Ffi} {FR : Map → Nat → F.S → F.S → Prop} {W : Nat → Option WFrame} {stk : List Frame} {M : Map}
     {ν : Nat → F64} {K : Ctx} {s : St F.S} {S S' : SSrv} {t : St F.S} {C : CSrv} (h : RelB F FR W stk M ν K s S t C)
     (hlen : S'.tab.length = S.tab.length) (hor : S'.oracle = S.oracle)
     (hev : ∀ i e', nth? S'.tab i = some e' → ∃ e, nth? S.tab i = some e ∧ e.eval ν = e'.eval ν) :
