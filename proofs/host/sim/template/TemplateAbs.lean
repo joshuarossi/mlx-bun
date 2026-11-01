@@ -129,7 +129,7 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
   let l1 := l1.setFfi { l1.aux.ffi with mlx := { m with nodes } }
   let s1 := w.unproj s l1
   -- what the reset cells alone held goes, as in the template's own collection
-  let (T0, dropped) ← if ghostCells.isEmpty then pure (s1, 0) else do
+  let (T0, dropped) : (St F.S × Nat) ← if ghostCells.isEmpty then pure (s1, (0 : Nat)) else do
     let m1 := l1.aux.ffi.mlx
     let roots := ((List.range 40).filter fun a => (l1.heap.get a).isSome) ++ nativeHeapRefs m1
     let ctx : Ctx := { s1 := l1, s2 := l1, t1 := c.tab.toArray, t2 := c.tab.toArray, env := ← getEnv, traceNodes := traceNodesOf m1 }

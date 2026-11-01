@@ -161,6 +161,8 @@ traced once, symbolically.
 
 **`RouteGenGpu` fields left for L=1 first (1 Nov):** `postHandoff` (generator's `DT3`, `DEC3_*`, walk; then route's `ρ` and `Book` facts); `Pp`, `postPieces`, `pA`..`pC0`, `sA`/`sB2`/`sC1`, `I` (links); `graphA`..`graphC0` (`route/ShortGoals`, written, needs links' `FillPaths`); `loadEntry` (route, depends on `I.ld`). Compiled: `Row.hfw0`/`hfw1`, `R1`/`R2` certificates, `One.hfin`/`hsmp`, `hpop` variants, `end_caches`, generic `Fin.hfinV`, VW final-forward certificate (to re-run on regenerated states). Other classes: VW has POST stretch, tail walk and certificate; x0-x4 first tails wait on chains. Boot chain and final build not started.
 
+**Forward state (1 Nov, afternoon):** x1-x3 first-forward certificates pass the kernel at 5,018 nodes; `X1.hfwd` compiles and audits clean. x4's literal approach: L8 bundles all compiled, L9 building. L=1's forward regenerating at the literal row under `DT3`, no size bridges. Links' x1-x3 share `PRE_pf_vw` only if 52 blocking objects are handled (shared-template cells in `tpl_abstract`).
+
 **Before the final `check.ts`:** it doesn't list many generated chains (`a4vwb`, `a4ssm`, x22 and others) and throws on any unregistered module under `proofs/`, so those must be registered or moved out. Delete `/tmp/cost/slimpool.json` and `~/proofdev/build-slim` (12 GB) once no builder passes that pool; `~/proofdev/build-cost` must stay, as it holds streams and compiled files links uses.
 
 **Machine lessons (31 Oct).**

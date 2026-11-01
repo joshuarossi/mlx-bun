@@ -1,4 +1,4 @@
-import host.sim.template.a4pre_d1_body.SR0
+import host.sim.template.a4pre_d1_body.m.B4
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

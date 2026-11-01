@@ -1,4 +1,5 @@
 import host.sim.template.a4pre_pl_head.H0
+-- revision: literal row
 import host.sim.template.ReturnLiteral
 set_option Elab.async false
 set_option maxRecDepth 1000000
