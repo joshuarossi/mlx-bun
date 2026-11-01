@@ -31,13 +31,11 @@ def oneKept : List (Nat × Nat) :=
 kernel_rfl one_outs : Expected.cacheOutputs.all (fun q => Nat.blt q.1 4010 && Nat.blt q.2 4010 &&
   Nat.blt (certAt choice.cert q.1) 17764 && Nat.blt (certAt choice.cert q.2) 17764) = true
 kernel_rfl one_cert_len : choice.cert.length = 4020
-kernel_rfl one_graph_len : Expected.graph.length = 4020
 kernel_rfl one_token_node : Nat.blt 4010 Expected.tokenNode && Nat.blt Expected.tokenNode 4020 = true
 kernel_rfl one_hidden : certAt choice.cert 4009 = 17763
-/-- The tail reads the head only at the hidden state. -/
-kernel_rfl one_boundary : (List.range 4020).all (fun k => match Expected.graph[k]? with
-  | some e => !(Nat.ble 4010 k) || e.ins.all (fun j => Nat.ble 4010 j || Nat.beq j 4009)
-  | none => false) = true
+-- The tail reads the head only at the hidden state.
+kernel_rfl one_boundary : (Expected.graph.drop 4010).all
+  (fun e => e.ins.all fun j => Nat.ble 4010 j || Nat.beq j 4009) = true
 
 theorem oneKept_mem {q : Nat × Nat} (hq : q ∈ oneKept) : q.1 < 4020 ∧ certAt choice.cert q.1 = q.2 := by
   simp only [oneKept, List.mem_cons, List.mem_flatMap] at hq
@@ -132,10 +130,12 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
   obtain ⟨tok, hs, certT, hR, hF, hb, hK⟩ := hk tab hC
   have hR0 := one_ref (P := P) (KR := KR) (NE := NE) (net := net) (env := env) a tab
   obtain ⟨rt, rh⟩ := Prod.mk.inj (Option.some.inj ((show refPrompt P KR NE KR.inPlace net env [a] tab ([a].length - 1) = some (tok, hs) from hR).symm.trans hR0))
-  subst rt rh
+  have rt' := rt.symm
+  subst rt' rh
   obtain ⟨tok0, hs0, tok', hs', h0, h1, -, hsh, -, -⟩ := (hRT tab).2 ([a].length - 1) le_rfl
   obtain ⟨rt0, rh0⟩ := Prod.mk.inj (Option.some.inj (h0.symm.trans hR0))
-  subst rt0 rh0
+  have rt0' := rt0.symm
+  subst rt0' rh0
   have hgr : stepGraphOf (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) initialHandles ([a].length - 1) =
       (Expected.graph, Expected.tokenNode, Expected.cacheOutputs) := initial_step_graph _
   have hheld := one_held (P := P) (KR := KR) (env := env) (kind := κ) ha hnid hb hC hinp
@@ -144,7 +144,9 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
     rw [h1, hR0] at h
     exact h.symm)
   have hKk : ∀ q ∈ oneKept, certAt certT q.1 = y.M.node q.2 := fun q hq => hK q (hKept ▸ hq)
-  have hF' : FinAt P KR env κ tab initialHandles ([a].length - 1) a 4010 certT (mlxOf y.t.ffi) := hKn ▸ hF
+  have hF' : FinAt P KR env κ tab initialHandles ([a].length - 1) a 4010 certT (mlxOf y.t.ffi) := by
+    rw [hKn] at hF
+    exact hF
   rw [hCr, show toks 1 = toks 1 from rfl]
   refine postAt_ofFin leaves typed (σ := y.M.node) (toks := toks 1) (Cr := oneCarriers) (by simp) hR0 h1 (by omega) hF' hb hsh
     (by rw [show Host.Ts.Sim.capL ([a].length + 0) = 256 by simp [Host.Ts.Sim.capL]]; exact hcaps)
@@ -153,17 +155,12 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
     exact hmH tab hC
   · rw [hgr]
     intro k e hk he j hj hjk
-    have hkl : k < 4020 := by
-      by_contra hc
-      have hlt := (List.getElem?_eq_some_iff.mp he).1
-      rw [one_graph_len] at hlt
-      omega
-    have hb := List.all_eq_true.mp one_boundary k (List.mem_range.mpr hkl)
-    change (match Expected.graph[k]? with
-      | some e => !(Nat.ble 4010 k) || e.ins.all (fun j => Nat.ble 4010 j || Nat.beq j 4009)
-      | none => false) = true at hb
-    rw [show Expected.graph[k]? = some e from he] at hb
-    simp only [Nat.ble_eq_true_of_le hk, Bool.not_true, Bool.false_or, List.all_eq_true, Bool.or_eq_true] at hb
+    have hmem : e ∈ Expected.graph.drop 4010 := by
+      refine List.mem_of_getElem? (i := k - 4010) ?_
+      rw [List.getElem?_drop, show 4010 + (k - 4010) = k by omega]
+      exact he
+    have hb := List.all_eq_true.mp one_boundary e hmem
+    simp only [List.all_eq_true, Bool.or_eq_true] at hb
     have hj8 : j = 4009 := by
       rcases hb j hj with h | h
       · have := Nat.le_of_ble_eq_true h
@@ -184,7 +181,7 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
     have h := one_token_node
     simp only [Bool.and_eq_true, Nat.blt_eq] at h
     have hret : certAt choice.cert Expected.tokenNode = 17776 := Host.Ts.Sim.Compose.ColdGraph.actual_return_node
-    rw [certAt_map _ _ _ (by rw [one_cert_len]; exact h.2), hret]
+    rw [certAt_map _ _ _ (by rw [one_cert_len]; exact of_decide_eq_true h.2), hret]
   · rw [hgr]
     refine (cachesAt_nodes y.M.node oneCarriers).trans ?_
     simp only [oneCarriers, List.map_map]

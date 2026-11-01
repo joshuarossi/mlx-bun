@@ -1,12 +1,12 @@
 // Write the checked modules of a flat forward chain (`tpl_chain`, no stage cuts, size bridges only) over `FlatFwd`:
 // boundaries, each ordinary chunk at the fast table, each stretch and size bridge's facts, the pieces and the run
 // `<Name>.fullRun : CutStep (cut … s0 S0) (cut … s<T1> S<T1>) <steps>`, given the book's `FlatFwd.Laws`.
-// usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module>
+// usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module> <start state> <start server>
 //   <box module> defines `<Name>.ps`, `<Name>.V` and `<Name>.lin : Lin.goodLin <Name>.ps <Name>.V <Name>.O = true`.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const [dir, name, row, chunk, buffer, view, boxMod] = process.argv.slice(2);
-if (!dir || !name || !row || !chunk || !buffer || !view || !boxMod) throw Error("usage: genFlatFwd.ts dir Name row chunk buffer view boxModule");
+const [dir, name, row, chunk, buffer, view, boxMod, start, startSrv] = process.argv.slice(2);
+if (!dir || !name || !row || !chunk || !buffer || !view || !boxMod || !start || !startSrv) throw Error("usage: genFlatFwd.ts dir Name row chunk buffer view boxModule startState startServer");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const plan = JSON.parse(readFileSync(join(import.meta.dir, dir, "plan.json"), "utf8"));
@@ -30,7 +30,8 @@ const head = (imports: string[]) => [...new Set(imports)].map(i => `import ${i}\
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`, F = `${name}.F`, fr = `${name}.fr`;
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
-for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, head([j === 0 ? mod("States") : mod(`H${j - 1}`)]) +
+const pageHead = (imports: string[]) => imports.map(i => `import ${i}\n`).join("") + "set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen Host.Ts\n\n";
+for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, pageHead([j === 0 ? mod("States") : mod(`H${j - 1}`)]) +
   Array.from({ length: T1 + 1 }, (_, i) => i).filter(i => Math.floor(i / 32) === j).map(i => `host_stream_state ${name} ${i}\n`).join(""));
 put("Frames", head(["host.sim.template.FlatFwd", boxMod]) +
   `def ${fr} : FlatFwd.Fr := ⟨${row}, ${chunk}, ${buffer}, ${view}, rfl, rfl⟩\n`);
@@ -120,4 +121,11 @@ if (groups.at(-1)!.to !== T1 || groups.reduce((x, g) => x + g.fuel, 0) !== steps
 put("Run", head(groups.map((_, n) => mod(`Group${n}`))) +
   `theorem ${name}.fullRun ${params} :\n    CutStep ${cut(0)} ${cut(T1)} ${steps} :=\n` +
   `  ${chain(groups.map((_, n) => `${name}.group${n} L`))}\n`);
+// the chain's start and its token queue, for the links either side
+put("Ends", head([page(T1), page(0), "host.sim.full.Raise"]) +
+  `kernel_rfl ${name}.s0_eq : ${s(0)} = ${start}\n` +
+  `kernel_rfl ${name}.s0_tab : ${S(0)}.tab = ${startSrv}.tab\n` +
+  `kernel_rfl ${name}.ffi_exact : ${F} = Host.Ts.Sim.Full.FF\n` +
+  `kernel_rfl ${name}.tokens0 : (Host.Ts.Sim.Full.mlxOf ${s(0)}.ffi).tokens = [.ref 1, .ref 2]\n` +
+  `kernel_rfl ${name}.tokensEnd : (Host.Ts.Sim.Full.mlxOf ${s(T1)}.ffi).tokens = [.ref 1, .ref 2]\n`);
 console.log(`${dir}: T1 ${T1}, ${steps} steps, ${sizes.length - special.size} chunks, ${bridges.length} size bridges, ${pieces.length} pieces, ${groups.length} groups`);
