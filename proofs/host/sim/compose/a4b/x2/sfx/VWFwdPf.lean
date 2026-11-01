@@ -18,7 +18,7 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
       CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
       (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 → Mem i.L x → Mem' i.L y) :
     FwdPiece FF uses obls (fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
-      (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap 1254 0 16.s0 16.S0)) where
+      (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap 1254 0 PRE_pf_vw.s0 PRE_pf_vw.S0)) where
   m := [(9, .L)]
   np := 0
   nb := 0 + Host.Ts.Sim.Compose.VWFirst.X2.bodyN + 31460

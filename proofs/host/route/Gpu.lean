@@ -38,6 +38,7 @@ theorem ldPromptCutAt_of_inv {NB : Nat} {Pw : Sim.LoadP} {W : Nat → Option WFr
 structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat)
     (je : Host.Ts.Env) (nm : Host.Ts.Name) (s0ld tL : St FF.S) where
+  ρ : Nat → F64
   NB : Nat
   Pw : Sim.LoadP
   Pd : Sim.LoadP
@@ -68,10 +69,10 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
   sA : ∀ h h', HaltStopSrc (pA h h').hs
   sB2 : ∀ h h' h'', HaltStopSrc (pB2 h h' h'').hs
   sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs
-  D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr (machVal T tk) T tk π.length
+  D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr ρ T tk π.length
     (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN
   Dg : ∀ h3 b0, DecodeGraphMFramedAt P KR env π b0 je Itpl (D h3 b0)
-  tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL (machVal T tk) T tk π.length) tk
+  tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL ρ T tk π.length) tk
     (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN ((D h3 b0).cs k)
   hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ fixA
   hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ fixA
@@ -89,7 +90,7 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
   hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0
   hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true
   hdec : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind, (decCutFirstFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
-    (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs
+    (valL ρ T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs
   hJ : T * ΔJ + B.D < Sim.bound
   hH : (mlxOf s0.ffi).next + T * ΔH + B.H + (Pd.E - (mlxOf s0.ffi).next) < 2 ^ 46
   hN : (mlxOf s0.ffi).nnext + T * ΔN + B.N + (Pd.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
@@ -108,7 +109,7 @@ noncomputable def RouteGenGpu.artifacts {P : MlxPrefillContract C} {KR : RouteKe
     (htkR : ∀ tab j, j < T →
       ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
     (htk : ∀ j, j ≤ T → tk j ≤ 248319) : RouteArtifactsX P KR NE net env π T tk je nm :=
-  route_of_stepsFramedAt P KR NE net env leaves typed π je nm hπ hL hT hctx Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.fixB Gn.hsub Gn.I Gn.Fr
+  route_of_stepsFramedAt P KR NE net env leaves typed π je nm hπ hL hT hctx Gn.ρ Gn.NB Gn.Pw Gn.Pd Gn.A Gn.W Gn.fixA Gn.fixB Gn.hsub Gn.I Gn.Fr
     Gn.s0 Gn.tab0 Gn.Itpl Gn.B Gn.ΔJ Gn.ΔH Gn.ΔN Gn.Pp Gn.H Gn.pA Gn.pB2 Gn.pB0 Gn.pC1 Gn.pC0 Gn.sA Gn.sB2 Gn.sC1 Gn.D Gn.Dg Gn.tails Gn.hc0 Gn.hc1 Gn.hc2 Gn.hcE Gn.hb Gn.hgen Gn.hwc Gn.hwe Gn.henv Gn.hgenv
     Gn.hA Gn.hAt Gn.hAk Gn.hst0 Gn.hfrN
     (fun t Cs h => (Gn.hdec t Cs h).imp fun _ h' => cutConv_inv decCutFirstFb_forget h')

@@ -48,7 +48,7 @@ theorem toPfPad {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {
     omega
   let laws := fullRXD_laws { setupP with rest := machReads T tk } NB
   obtain ⟨M1, hext, hp⟩ := relB_pad laws.stable laws.mono (S0.tab.map (·.subst θ)) hr.ofJ
-  have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP [] M1 x.ν x.K s1
+  have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) _ [] M1 x.ν x.K s1
       ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
   have hrel := pfRel F (π := π) hrP hfr hlo hhi hP (linkRoomSame hr sameH sameN) hNB hD
   have hoff : x.t.next = s1.next + x.K.D := hr.offset

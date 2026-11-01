@@ -1,4 +1,4 @@
-import host.simgraph.Classify
+import host.simgraph.GenLoadRel
 namespace Host.Mlx.SimGraph
 open Host.Ts Host.Mlx.FfiEval
 
@@ -7,7 +7,8 @@ open Host.Ts Host.Mlx.FfiEval
 A decode template can abstract its conv-output dims: positions `lo … hi`, all `3` at every run, each a table entry `var q`.
 
 * `clsConv S p lo hi`: `clsOf S p`, those positions read as the literal `3`.
-* `clsConv_sound`, `embeds_of_runC`: `clsOf_sound`, `embeds_of_run`, the valuation giving those positions `3`. -/
+* `clsConv_sound`, `embeds_of_runC`, `embeds_of_GRunC`: `clsOf_sound`, `embeds_of_run`, `embeds_of_GRun`, the valuation giving
+  those positions `3`. -/
 
 /-- `entryDim`, the conv positions read as `3`. -/
 def entryDimC (p lo hi : Nat) (e : SymE) : Option SDim :=
@@ -74,5 +75,22 @@ theorem embeds_of_runC (S : SSrv) (p lo hi : Nat) (Ks : KernelSources) (s t : Ff
     Embeds σ η (mapG (SDim.eval n) (restrictTo D (symGraph (clsConv S p lo hi) Ks s))) (ffiGraph (concrete νt) Ks t) :=
   embeds_of_image (clsConv S p lo hi) Ks s t n D (νsOf S ρ) νt μ β α η σ hlitμ hlitt
     (numbers_agree S ρ μ νt hlitμ hlitt hnum) (clsConv_sound S p lo hi ρ n hρ hn h3) A hα hargs hk himg
+
+/-- **`embeds_of_GRun` over the conv positions.** -/
+theorem embeds_of_GRunC (S : SSrv) (p lo hi : Nat) (Ks : KernelSources)
+    {P : Sim.LoadP} {NB : Nat} {M : Sim.Map} {n : Nat} {x y : Sim.NSt} (hr : Sim.G.MR P NB M n x y)
+    (time : Nat) (D : Nat → Bool) (ρ : Nat → F64) (hρ : ρ p = F64.ofNat time) (hn : time + 1 < 2 ^ 31)
+    (h3 : ∀ q, lo ≤ q → q ≤ hi → ρ q = F64.ofNat 3)
+    (νt : NumV → Option F64) (hlitt : ∀ f, νt (.lit f) = some f)
+    (hnum : ∀ i e, nth? S.tab i = some e → νt (M.nv (.ref i)) = some (e.eval ρ))
+    (A : Arg → Prop) (hα : ∀ a v, A a → Ffi.argNat a = some v → Ffi.argNat (M.arg a) = some v)
+    (hargs : ∀ i nd, D i = true → x.nodes.get i = some nd → PrimArgs A nd.prim)
+    (hD : ∀ i, D i = true → Sim.Full P i)
+    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → Sim.G.shapeOnly nd = false) :
+    Embeds M.node M.handle
+      (mapG (SDim.eval time) (restrictTo D (symGraph (clsConv S p lo hi) Ks x)))
+      (ffiGraph (concrete νt) Ks y) :=
+  embeds_of_runC S p lo hi Ks x y time D ρ hρ hn h3 νt M.nv M.big M.arg M.handle M.node
+    (nv_lit M) hlitt hnum A hα hargs (kernels_of_GMR hr Ks) (nativeImage_of_GMR hr D hD hExact)
 
 end Host.Mlx.SimGraph

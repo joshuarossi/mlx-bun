@@ -39,7 +39,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (net : _root_.Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
     (typed : TypedCheckpoint env.weights) (π : List Nat) {T : Nat} {tk : Nat → Nat} (je : _root_.Host.Ts.Env)
     (nm : _root_.Host.Ts.Name) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224) (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
-    (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA fixB : List Nat) (hsub : ∀ a ∈ fixA, a ∈ fixB)
+    (ρ : Nat → F64) (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA fixB : List Nat) (hsub : ∀ a ∈ fixA, a ∈ fixB)
     (I : PrefInvsW (fullWorldXD NB).F)
     (Fr : LoopFramesA A) (s0 : St FF.S) (tab0 : List SymE) (Itpl : TplInputs) (B : LoopBase) (ΔJ ΔH ΔN : Nat)
     (Pp : PiecesR (fullWorldXD NB).F I) (H : RoutePiecesR (fullWorldXD NB).F I T tk)
@@ -51,10 +51,10 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (sA : ∀ h h', HaltStopSrc (pA h h').hs)
     (sB2 : ∀ h h' h'', HaltStopSrc (pB2 h h' h'').hs)
     (sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs)
-    (D : ∀ (_ : 3 ≤ T) (b0 : _root_.Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr (machVal T tk) T tk π.length
+    (D : ∀ (_ : 3 ≤ T) (b0 : _root_.Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr (ρ) T tk π.length
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN)
     (Dg : ∀ h3 b0, DecodeGraphMFramedAt P KR env π b0 je Itpl (D h3 b0))
-    (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL (machVal T tk) T tk π.length) tk
+    (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL ρ T tk π.length) tk
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN ((D h3 b0).cs k))
     (hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ fixA) (hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ fixA) (hc2 : ∀ h3 b0, (Dg h3 b0).c2.cc ∈ fixA)
     (hcE : A.cE ∈ fixA) (hb : A.emit ∈ fixA) (hgen : A.gen ∈ fixA) (hwc : W A.cE = none) (hwe : W A.emit = none)
@@ -62,7 +62,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (hA : A.nxt = 17) (hAt : A.tvar = 9) (hAk : A.kvar = 14) (hst0 : LoopStartW (fullWorldXD NB) A Pd s0 tab0)
     (hfrN : ∀ e ∈ tab0, e.noVar A.nxt = true)
     (hdec : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind, (decCutFb NB A (machGxV P KR NE net env π kind NB Itpl) W Pd Fr s0 tab0 fixA
-      (valL (machVal T tk) T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs)
+      (valL ρ T tk π.length) tk (.ref 2 :: machReads T tk) [.num (.ref 1)] B).Inv t Cs)
     (he1 : ∀ t C, (I.dec π.length).Inv t C → C.val (.ref 1) = some (F64.ofNat (tk 1)))
     (htkR : ∀ tab j, j < T → ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
     (htk : ∀ j, j ≤ T → tk j ≤ 248319)
@@ -112,7 +112,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
         s0 := s0
         tab0 := tab0
         Itpl := Itpl
-        ρ := machVal T tk
+        ρ := ρ
         toks := .ref 2 :: machReads T tk
         E0 := [.num (.ref 1)]
         B := B

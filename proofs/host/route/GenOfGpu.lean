@@ -90,7 +90,8 @@ noncomputable def routeGenOfGpu
       (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hρ hπ hL h3 hctx
       (fun j _ => hv j) le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2
   refine
-    { NB := 15235
+    { ρ := machVal T Tk
+      NB := 15235
       Pw := setupP
       Pd := DEC.Pw
       A := addrPrompt
