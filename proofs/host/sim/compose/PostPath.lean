@@ -82,7 +82,7 @@ theorem spreadM {sO sI sC sA : St FF.S} {SO SI SC SA : SSrv} {env : Env} {fs : L
     (hCloseStep : interpS (step FF sC).run SC = some (sA, SA))
     (hRoom : Nat.blt (sC.next + margin) Sim.bound = true) (hProto : Present sC aArrayProto)
     (hNewW : wideP sC.next = none)
-    (hOr : SO.oracle = []) (hOrA : SA.oracle = [])
+    (hOr : SO.oracle = []) (_hOrA : SA.oracle = [])
     (hi : (bridgeOf sO.ffi).active = false) (hbr : bridgeOf sA.ffi = bridgeOf sO.ffi)
     (hcnt : countersOkB sO sA = true) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π sO SO))
@@ -139,7 +139,7 @@ theorem spreadM {sO sI sC sA : St FF.S} {SO SI SC SA : SSrv} {env : Env} {fs : L
     { hr3 with ffi := ⟨hr3.ffi.1.1, hr3.ffi.2⟩ }
   have ng : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf t3.ffi) := hr3.ffi.1.2
   refine ⟨t3, C3, run3, ⟨M3, x.ν, K2, t3, C3⟩, rfl, rfl,
-    ⟨hout.withOracle (by rw [hOrA]; intro _ h; nomatch h),
+    ⟨hout.withOracle (fun _ h => nomatch h),
       ⟨hk2, hb.valuation, hb.rowValue, hb.reserved, (congrFun hext.a 2590).trans hb.emittedAnchor⟩⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun hext.a 2586).trans hanc.1, (congrFun hext.a 2589).trans hanc.2⟩⟩,
     hT x _ ⟨runC_le _ _ _ _ _ run3, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt),
@@ -189,12 +189,13 @@ noncomputable def haltPath {extra : List Nat} {s : St FF.S} {S : SSrv} {I0 : ICu
   xs := []
   hs := haltSegOf (machReads T tk) (O := []) (QA := fun _ _ => True) (QE := fun _ _ => True) (.nil _ _ _)
     { halt := fun _ x hx => ⟨x.M.val v, by rw [hx.1.ctl]; show x.M.ctl s.ctl = _; rw [hhalt]; rfl⟩
-      emitG := ⟨o, hemit, by simpa using hkind⟩
+      emitG := ⟨o, hemit, by simp only [List.append_nil]; exact hkind⟩
       cell := hcell }
   entry := by
     rintro x ⟨hr, hb⟩ ⟨⟨_, hanc⟩, htr⟩
-    refine ⟨hr.ofJ, fun _ h => nomatch h, trivial, ?_, ?_⟩
-    · cases hk : x.K.fr 12504 with
+    refine ⟨hr.ofJ, (by intro q hq; exact absurd hq List.not_mem_nil), trivial, ?_, ?_⟩
+    · change x.K.fr 12504 = none
+      cases hk : x.K.fr 12504 with
       | none => rfl
       | some p =>
         have hm := (hb.context.1.2.2 12504).mp (by rw [hk]; exact Option.some_ne_none _)
@@ -218,13 +219,15 @@ theorem haltPath_goal {extra : List Nat} {s : St FF.S} {S : SSrv} {I0 : ICut (fu
     (hfree : (2665 :: extra).contains 12504 = false) (hTr : ∀ x, Tr x → x.M.a 12504 = 12504)
     (hvals : ∀ ν : Nat → F64, (∀ j, j < 9 → ν j = machVal T tk j) →
       (arrOf s 12504 ++ []).mapM (symValW ⟨S.tab, []⟩ ν) = some vs)
-    {Gf : St FF.S → CSrv → Prop} (hG : ∀ x : SegInst FF, Tr x → Gf x.t x.C) :
+    {Gf : St FF.S → CSrv → Prop}
+    (hG : ∀ x : SegInst FF, (endCut NB T tk cap extra s S).R x s ⟨S.tab, []⟩ → (endCut NB T tk cap extra s S).B x → Tr x → Gf x.t x.C) :
     (haltPath pre v hhalt o hemit hkind hcell hfree hTr hvals).Goal Gf := by
-  rintro x xF _ ⟨_, htr⟩ hrun _ _ _ _
-  have h := hG x htr
+  rintro x xF hR ⟨hB, htr⟩ hrun _ _ _ _
+  have h := hG x hR hB htr
   have hrun' : runC FF 0 x.t x.C = some (xF.t, xF.C) := hrun
   simp only [runC, runWith] at hrun'
-  cases hrun'
+  have e := Option.some.inj hrun'
+  rw [← (Prod.mk.inj e).1, ← (Prod.mk.inj e).2]
   exact h
 
 end

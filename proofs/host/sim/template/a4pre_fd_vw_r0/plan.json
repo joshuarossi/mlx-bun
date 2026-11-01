@@ -1,1 +1,112 @@
-{"row":"final_ord.r0","classes":"/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json","glue":["start","g1_FIN_tailed","g2_fin_tailed"],"stages":[{"fn":"nextPrefillStep","piece":"nps","name":"nps_FIN_tailed"},{"fn":"prompt","piece":"disp","name":"disp_D1"}],"stop":"call:#2671709","frames":[2665],"bridges":["len","slice","typed","ptr","newdata"],"lens":[[2665,9],[2825053,12]],"baseVals":[[9,125],[10,124],[11,124],[12,1],[16,256],[30,16],[31,16]],"vars":[[9,"L"],[11,"o"],[12,"n"],[16,"cap"]],"wide":[[4910,".memo []"]],"accept":"jsjxs","D0":4096,"loadP":[18151,131072,1099511627776,15235,15235],"startTokens":[1,2],"chunk":3333,"stuckStop":true,"cap":200000}
+{
+ "row": "final_ord.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "glue": [
+  "start",
+  "g1_FIN_tailed",
+  "g2_fin_tailed"
+ ],
+ "stages": [
+  {
+   "fn": "nextPrefillStep",
+   "piece": "nps",
+   "name": "nps_FIN_tailed"
+  },
+  {
+   "fn": "prompt",
+   "piece": "disp",
+   "name": "disp_D1"
+  }
+ ],
+ "stop": "call:#2671709",
+ "frames": [
+  2665
+ ],
+ "bridges": [
+  "len",
+  "slice",
+  "typed",
+  "ptr",
+  "newdata"
+ ],
+ "lens": [
+  [
+   2665,
+   9
+  ],
+  [
+   2825053,
+   12
+  ]
+ ],
+ "baseVals": [
+  [
+   9,
+   125
+  ],
+  [
+   10,
+   124
+  ],
+  [
+   11,
+   124
+  ],
+  [
+   12,
+   1
+  ],
+  [
+   16,
+   256
+  ],
+  [
+   30,
+   16
+  ],
+  [
+   31,
+   16
+  ]
+ ],
+ "vars": [
+  [
+   9,
+   "L"
+  ],
+  [
+   11,
+   "o"
+  ],
+  [
+   12,
+   "n"
+  ],
+  [
+   16,
+   "cap"
+  ]
+ ],
+ "wide": [
+  [
+   4910,
+   ".memo []"
+  ]
+ ],
+ "accept": "jsjxs",
+ "D0": 131072,
+ "loadP": [
+  18151,
+  131072,
+  1099511627776,
+  15235,
+  15235
+ ],
+ "startTokens": [
+  1,
+  2
+ ],
+ "chunk": 3333,
+ "stuckStop": true,
+ "cap": 200000
+}

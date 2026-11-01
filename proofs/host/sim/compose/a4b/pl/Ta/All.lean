@@ -21,7 +21,7 @@ abbrev N : Nat := 1493502
 kernel_rfl stepsEq : N = (((((((((((n0 + n1) + n2) + n3) + n4) + n5) + n6) + n7) + n8) + n9) + n10) + n11)
 
 /-- **The chain**, in 1493502 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_ta.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y) (hP : ∀ x y : SegInst FF, (indexedCut NB T tk cap nI π PRE_pl_ta.s0 PRE_pl_ta.S0).R x PRE_pl_ta.s0 ⟨PRE_pl_ta.S0.tab, []⟩ →
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_ta.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) (hP : ∀ x y : SegInst FF, (indexedCut NB T tk cap nI π PRE_pl_ta.s0 PRE_pl_ta.S0).R x PRE_pl_ta.s0 ⟨PRE_pl_ta.S0.tab, []⟩ →
       (indexedCut NB T tk cap nI π PRE_pl_ta.s6 PRE_pl_ta.S6).R y PRE_pl_ta.s6 ⟨PRE_pl_ta.S6.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node →
       y.M.a 12504 = x.M.a 12504 → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_ta.s0 PRE_pl_ta.S0)) (withMem Tr (endCut NB T tk cap [2673435, PRE_pl_ta.cacheArray] PRE_pl_ta.s896 PRE_pl_ta.S896)) N :=

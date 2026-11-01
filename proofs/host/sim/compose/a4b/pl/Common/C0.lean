@@ -24,7 +24,7 @@ kernel_rfl cnt3_4 : countersOkB PRE_pl_common.s3 PRE_pl_common.s4 = true
 
 abbrev n0 : Nat := (((((nth? PRE_pl_common.ks 0).getD 0) + 1) + 3) + ((nth? PRE_pl_common.ks 3).getD 0))
 
-theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_common.s0 PRE_pl_common.S0)) (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_common.s4 PRE_pl_common.S4)) n0 :=
   (((callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_common.accepted0 PRE_pl_common.run0 PRE_pl_common.accepted1 live1 PRE_pl_common.b0.step PRE_pl_common.b0.top hg (Host.Load.Boot.replay_active _) br0_2 cnt0_2 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_common.b0.parts PRE_pl_common.b0.args_ok PRE_pl_common.b0.sym PRE_pl_common.b0.mlx PRE_pl_common.b0.pay (by decide) PRE_pl_common.b0.decode PRE_pl_common.b0.pre PRE_pl_common.b0.runS (fun ν h => by rw [oa2]; exact good_drop _ (hg ν h)) PRE_pl_common.b0.inactive PRE_pl_common.b0.bridge cnt2_3 hT)).trans (glueM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_common.accepted3 PRE_pl_common.run3 top4 (fun ν h => by rw [oa3]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br3_4 cnt3_4 hT rfl)
 

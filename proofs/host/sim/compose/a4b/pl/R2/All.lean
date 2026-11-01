@@ -21,7 +21,7 @@ abbrev N : Nat := 1492413
 kernel_rfl stepsEq : N = (((((((((((n0 + n1) + n2) + n3) + n4) + n5) + n6) + n7) + n8) + n9) + n10) + n11)
 
 /-- **The chain**, in 1492413 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_r2.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_r2.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s0 PRE_pl_r2.S0)) (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890)) N :=
   (((((((((((((c0 NB T tk cap nI π hcap hg Tr hT)).trans (c1 NB T tk cap nI π hcap hg Tr hT)).trans (c2 NB T tk cap nI π hcap hg Tr hT)).trans (c3 NB T tk cap nI π hcap hg Tr hT)).trans (c4 NB T tk cap nI π hcap hg Tr hT)).trans (c5 NB T tk cap nI π hcap hg Tr hT)).trans (c6 NB T tk cap nI π hcap hg Tr hT)).trans (c7 NB T tk cap nI π hcap hg Tr hT)).trans (c8 NB T tk cap nI π hcap hg Tr hT)).trans (c9 NB T tk cap nI π hcap hg Tr hT)).trans (c10 NB T tk cap nI π hcap hg Tr hT)).trans (c11 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
 

@@ -10,7 +10,7 @@ abbrev N : Nat := 1358
 kernel_rfl stepsEq : N = n0
 
 /-- **The chain**, in 1358 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_t2_eos.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_t2_eos.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_t2_eos.s0 PRE_pl_t2_eos.S0)) (withMem Tr (endCut NB T tk cap [2673435, PRE_pl_t2_eos.cacheArray] PRE_pl_t2_eos.s7 PRE_pl_t2_eos.S7)) N :=
   ((c0 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
 

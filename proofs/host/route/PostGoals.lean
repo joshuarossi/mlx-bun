@@ -33,6 +33,12 @@ theorem memPost_link {toksC toks : Nat → Nat → Nat} {CrC Cr : Nat → List (
     congr 1
     exact funext hn
 
+/-- The link where the class's carriers are the tail's: the walk's node map is the identity. -/
+theorem memPost_same {toks : Nat → Nat → Nat} {Cr : Nat → List (Option Nat × Option Nat)} {L : Nat} {x y : SegInst FF}
+    (ht : y.t = x.t) (hC : y.C = x.C) (hn : y.M.node = x.M.node) (hm : memPost P KR NE net env π 0 toks Cr L x) :
+    memPost P KR NE net env π 0 toks Cr L y :=
+  memPost_link (σ := id) ht hC (fun c => congrFun hn c) rfl (by simp) hm
+
 /-- **A halted cut's goal at `k` tokens**, the reference held far enough. -/
 theorem memPost_goal {j k NB : Nat} {toks : Nat → Nat → Nat} {Cr : Nat → List (Option Nat × Option Nat)} {x : SegInst FF}
     (hm : memPost P KR NE net env π j toks Cr π.length x) (hk : k ≤ j + 1) :

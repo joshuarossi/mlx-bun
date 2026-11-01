@@ -44,9 +44,10 @@ def clsV (S : SSrv) (B : Box) (V : VarV) (d : Int) (x : NumV) : Option SDim := (
 def constV (S : SSrv) (B : Box) (V : VarV) (x : NumV) : Option Int :=
   ((clsOfX S B x).bind (linV V)).bind fun r => if r.2 = 0 then some r.1 else none
 
-/-- 32-bit cells read through their constant value, others refused. -/
+/-- Literal cells read directly; 32-bit cells through their constant value; others refused. -/
 def byteV (S : SSrv) (B : Box) (V : VarV) : Byte → Option Nat
   | .lit b => some b
+  | .part k (.num (.lit f)) i => concreteByte litVal (.part k (.num (.lit f)) i)
   | .part .i32 (.num x) i => (constV S B V x).bind fun c => nth? (leBytes 4 (F64.modNat c (2 ^ 32))) i
   | .part .u32 (.num x) i => (constV S B V x).bind fun c => nth? (leBytes 4 (F64.modNat c (2 ^ 32))) i
   | _ => none

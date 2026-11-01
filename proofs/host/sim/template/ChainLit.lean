@@ -29,6 +29,17 @@ def litHit (lits : List (Nat × Nat)) (frames : List Nat) (s : St Host.Load.LSt)
     else none
   | _, _ => none
 
+/-- A size bridge at a literal shape as well: its product is a bigint inside the handle band, which `okCallSX` rejects as a plain
+call, and `Full.fullBridgeSize` relates the two sides through `Number` over either kind of shape (`G.sim_arraySizeS`). -/
+def litSizeHit (kinds : List String) (s : St Host.Load.LSt) : Option BridgeHit :=
+  if kinds.contains "size" && symCallName s == some chars!"mlx_array_size" then
+    match Disp.sizeParts s with
+    | some (fsym, ta, nf, name, rt, _, _) =>
+      some { kind := "size", size := true, extra := [("fsym", Lean.toJson fsym), ("ta", Lean.toJson ta),
+        ("nf", Lean.toJson nf), ("name", Lean.toJson (String.ofList name)), ("rt", Lean.toJson (String.ofList rt))] }
+    | none => none
+  else none
+
 end Bridge
 
 /-- The plan's `litLens`. -/
@@ -203,6 +214,8 @@ unsafe def chainLitCmdW {F : Ffi} (w : TWorld F) (pre srcName srvName : Lean.Nam
         if let some cs := isStage lastRet s' then call := some (cs, s', c', a); break
         if !plan.bridges.isEmpty then
           let bp : Bridge.RouteB := { kinds := plan.bridges, lens := plan.lens.map (fun (a, v) => (a, SymE.var v)) }
+          if let some hit := Bridge.litSizeHit plan.bridges (w.proj s') then
+            bridge := some (hit, s', c', a); break
           if let some hit := Bridge.litHit litLens frames (w.proj s') c' then
             bridge := some (hit, s', c', a); break
           if let some hit := Bridge.routeBridges bp frames (w.proj s') c' then

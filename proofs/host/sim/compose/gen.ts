@@ -2528,7 +2528,7 @@ function genPostChain(args: string[]) {
   const R = memberSrc(dir, "K0").includes("PostOk.okR ");
   const NSV = `Host.Ts.Sim.Compose.Post.PL.${Name}`;
   const pars = "(NB T : Nat) (tk : Nat \u2192 Nat) (cap nI : Nat) (\u03C0 : List Nat) (hcap : cap \u2264 4096 + 1593835520)", parn = "NB T tk cap nI \u03C0 hcap hg Tr hT";
-  const hyps = `(hg : \u2200 \u03BD, BookV T tk \u03C0.length \u03BD \u2192 Good \u03BD ${X}.S0.oracle) (Tr : SegInst FF \u2192 Prop) (hT : \u2200 x y, NTrack x y \u2192 Tr x \u2192 Tr y)`;
+  const hyps = `(hg : \u2200 \u03BD, BookV T tk \u03C0.length \u03BD \u2192 Good \u03BD ${X}.S0.oracle) (Tr : SegInst FF \u2192 Prop) (hT : \u2200 x y, NTrackV x y \u2192 Tr x \u2192 Tr y)`;
   const mode = `(${R ? "modeR" : "modeOk"} NB T tk cap hcap)`, impl = "(NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (\u03C0 := \u03C0)";
   const endX = `[2673435, ${X}.cacheArray]`;
   const idx = (k: number) => k === -1 ? `withMem Tr (indexedCut NB T tk cap nI π ${X}.spOpen ${X}.spOpenSrv)`
@@ -2595,7 +2595,7 @@ function genPostChain(args: string[]) {
     const tail = memberSrc(dir, "Tail"), okName = R ? "PostOk\\.okR" : "PostOk\\.ok";
     const fuel = +(tail.match(new RegExp(`runOk ${X}\\.F ${okName} (\\d+) ${X}\\.s${a}`)) ?? fail(`${X}: Tail fuel`))[1]!;
     const runT = `(by have h := ${X}.checkedTail; rw [← ${X}.spreadStart, ← ${X}.tailSrv] at h; exact h)`;
-    const tailMods = ["Tail", "TailSteps", "TailRest", "Endpoint", "SpreadData", "host.sim.template.BootEq"].map(f => f.includes(".") ? f : `${tplMod}.${f}`);
+    const tailMods = ["Tail", "TailSteps", "TailRest", ...(existsSync(join(HERE, "..", "template", dir, "Endpoint.lean")) ? ["Endpoint"] : []), "SpreadData", "host.sim.template.BootEq"].map(f => f.includes(".") ? f : `${tplMod}.${f}`);
     parts.push({
       term: `callM ${impl} (n := ${fuel}) (sb := ${X}.spPre) (Sb := ${X}.spPreSrv) (sc := ${X}.spOpen) (Sc := ${X}.spOpenSrv) ${mode} accTail ${runT} ${X}.acceptedSpPre liveSp ${X}.spInto topSp ${good(a)} (${live}) brSp cntSp hT rfl`,
       n: `(${fuel} + 1)`,

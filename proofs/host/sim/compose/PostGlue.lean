@@ -8,6 +8,12 @@ namespace Host.Ts.Sim.Compose.Post
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Load.Run.Tpl
 
+/-- A stretch at one template keeps the valuation too. -/
+structure NTrackV (x y : SegInst FF) : Prop extends NTrack x y where
+  val : y.ν = x.ν
+
+theorem NTrackV.refl (x : SegInst FF) : NTrackV x x := ⟨NTrack.refl x, rfl⟩
+
 /-- A wider offset bound keeps the book. -/
 theorem Book.mono {T cap cap' nI : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
     (h : Book T tk cap nI π γ x) (hc : cap ≤ cap') : Book T tk cap' nI π γ x :=
@@ -69,7 +75,7 @@ theorem glue {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : S
 
 /-- `glue` keeping a stretch's property. -/
 theorem glueMem {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
-    {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
+    {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrackV x y → Mem x → Mem y)
     (hcap : cap ≤ 4096 + 1593835520)
     (ha : PostOk.ok sa Sa = true)
     (hrun : runOk FF PostOk.ok n sa Sa = some (sb, Sb))
@@ -108,7 +114,7 @@ theorem glueMem {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb 
     exact hf Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', ht, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hbook⟩, ⟨hf',
     ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ ht, he.node, hrel.ffi.1.2,
-      tokens_of_grow hr hout hrel.ffi.1.2 (countersOkB_tokens hcnt), congrFun he.a 12504⟩ hm⟩
+    hMem x _ ⟨⟨runC_le _ _ _ _ _ ht, he.node, hrel.ffi.1.2,
+      tokens_of_grow hr hout hrel.ffi.1.2 (countersOkB_tokens hcnt), congrFun he.a 12504⟩, rfl⟩ hm⟩
 
 end Host.Ts.Sim.Compose.Post
