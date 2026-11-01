@@ -12,7 +12,6 @@ variable 10), over the fast table: `runOkS` at `okRN` is `runOk` at `okR` (`okRN
 namespace Host.Load.Run.Tpl.PostOk
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Route
 open Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly
-open PostHeadSmall (VP)
 
 abbrev JR : Disp.JSP FF := { J with okCall := okCallFXS setupP, smallB := FlatFwd.smallFX2 10 }
 
@@ -31,7 +30,7 @@ theorem simulationR_ngrow (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St)
     Disp.StepSimXLB FF
       (Disp.FRJ (FRQ (FullRXD { setupP with rest := machReads T tk } NB)
         fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
-      okR (Disp.KpJ JR 4096) wideP [] VP := by
+      okR (Disp.KpJ JR 4096) wideG [] (FlatFwd.VP 10) := by
   let P : LoadP := { setupP with rest := machReads T tk }
   have hj : JR.okCall = okCallFXS P := (FlatFwd.okCallFXS_rest setupP (machReads T tk)).symm
   have hC : FfiCallSim FF (FullRXD P NB) JR.okCall Full.smallFXS := by
@@ -40,7 +39,7 @@ theorem simulationR_ngrow (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St)
   have hs := Disp.stepSimXLBJS (D0 := 4096) (stk := [])
     ((fullFfiSimXD P NB).liftQ fullLawful hQ)
     (backSimS_liftQ (fullBackSimXDS P NB) fullLawful hQ) (hC.liftQ fullLawful hQ)
-    (VBOk := VP) (fun _ _ _ _ _ hν hb => FlatFwd.smallFX2_sound (r := 10) hν hb)
+    (VBOk := FlatFwd.VP 10) (fun _ _ _ _ _ hν hb => FlatFwd.smallFX2_sound (r := 10) hν hb)
     (fun _ _ _ _ hν hb => smallBackFB_sound hν.1 hb)
     (fullRXD_laws P NB).liftQ fullLawful (fullNativeFactsXD P NB JR rfl rfl rfl).liftQ wp
   simpa only [P, backRest, okR] using hs

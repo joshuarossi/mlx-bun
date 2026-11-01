@@ -34,7 +34,7 @@ structure BodyResult (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
   book : BodyBook π K0 x'
   fresh : AneFresh x'.t
   anchors : fixedCells x'
-  ext : Ext x.M x'.M 20
+  ext : Ext x.M x'.M 17
   nativeGrow : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf x'.t.ffi)
   server : CSrv.Le x.C x'.C
   caller : x'.t.stack = x.t.stack
@@ -56,7 +56,7 @@ theorem run_full {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.S
     D1BodySized.fullRun x.t x.C (D1BodyAdvance.enter hr hb hf hc)
   change RelB FF (D1BodyAdvance.Native NB T tk (mlxOf x.t.ffi))
     (D1Frames.typedW (D1Typed.bytes π)) [] x'.M x'.ν x'.K
-    D1BodySized.s635 ⟨D1BodySized.S635.tab, []⟩ x'.t x'.C at hrel
+    D1BodySized.s155 ⟨D1BodySized.S155.tab, []⟩ x'.t x'.C at hrel
   rw [D1BodySized.end_exact, D1BodySized.end_tab] at hrel
   have hend : (D1BodyAdvance.cut NB T tk π K0 x.M (mlxOf x.t.ffi) D1Body.s155 D1Body.S155).R
       x' D1Body.s155 ⟨D1Body.S155.tab, []⟩ := ⟨hrel, hbook⟩
@@ -89,7 +89,7 @@ theorem BodyResult.output {NB T : Nat} {tk : Nat → Nat} {π : List Nat}
       D1Endpoint.privateVal o (chars!"handle") = some (.big (x'.M.big 21985))) ∧
     (mlxOf x'.t.ffi).arrs.get (x'.M.handle 21985) = some (x'.M.node 17763) ∧
     ((mlxOf x'.t.ffi).nodes.get (x'.M.node 17763)).map (fun n => (n.shape, n.dtype)) =
-      some (x'.M.dims [.lit 1, .sym (.ref 55), .lit 5120], 12) := by
+      some (x'.M.dims [.lit 1, .lit 1, .lit 5120], 12) := by
   obtain ⟨origin, hb, hp⟩ := h.book
   exact D1BodyOutput.targetOutput h.relation hb.context.1
 
@@ -107,8 +107,8 @@ theorem BodyResult.caches {NB T : Nat} {tk : Nat → Nat} {π : List Nat}
 theorem BodyResult.outputDimensions {NB T : Nat} {tk : Nat → Nat} {π : List Nat}
     {K0 : Host.Ts.Sim.Ctx} {x x' : SegInst FF} (h : BodyResult NB T tk π K0 x x') :
     DVSs x'.M x'.C ⟨D1Body.S155.tab, []⟩
-      [.lit 1, .sym (.ref 55), .lit 5120] [1, 1, 5120] := by
+      [.lit 1, .lit 1, .lit 5120] [1, 1, 5120] := by
   obtain ⟨origin, hb, hp⟩ := h.book
-  exact D1BodyOutputValue.dimensions h.relation.srv hb.singleton
+  exact D1BodyOutputValue.dimensions
 
 end Host.Ts.Sim.Compose.SetupD1

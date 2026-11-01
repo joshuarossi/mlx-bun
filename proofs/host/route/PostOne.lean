@@ -96,7 +96,7 @@ theorem hfinOne (a : Nat) (ha : a < 248320) (Cr : Nat → List (Option Nat × Op
   have hgr : stepGraphOf (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) initialHandles (1 - 1) =
       (Expected.graph, Expected.tokenNode, Expected.cacheOutputs) := initial_step_graph _
   have hheld := one_held (P := P) (KR := KR) (env := env) (kind := κ) ha hnid hb' hC hinp
-  refine ⟨a, initialHandles, choice.cert.map y.M.node, one_ref a tab, ?_, hb', fun q hq => ?_⟩
+  refine ⟨a, initialHandles, choice.cert.map y.M.node, one_ref a tab, ?_, hb', fun q hq => ?_, fun h => absurd h (by decide)⟩
   · rw [hKn]
     refine ⟨fun z hz => ?_, ?_, fun k hk => ?_, fun k e key v _ he hp hv => ?_⟩
     · rw [hgr]
@@ -127,7 +127,7 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
   subst hL1
   obtain ⟨κ, hk⟩ := hm rfl
   refine ⟨κ, fun tab hC => ?_⟩
-  obtain ⟨tok, hs, certT, hR, hF, hb, hK⟩ := hk tab hC
+  obtain ⟨tok, hs, certT, hR, hF, hb, hK, -⟩ := hk tab hC
   have hR0 := one_ref (P := P) (KR := KR) (NE := NE) (net := net) (env := env) a tab
   obtain ⟨rt, rh⟩ := Prod.mk.inj (Option.some.inj ((show refPrompt P KR NE KR.inPlace net env [a] tab ([a].length - 1) = some (tok, hs) from hR).symm.trans hR0))
   have rt' := rt.symm

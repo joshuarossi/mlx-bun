@@ -15,7 +15,7 @@ The footprint's facts are in `SiteF1`. -/
 kernel_rfl D1StageSplit.iso1 : D1StageSplit.st1.s0 = { D1StageSplit.s20 with stack := [] }
 /-- The caller's frames at the call. -/
 noncomputable def D1StageSplit.rs1 : List Frame := D1StageSplit.s20.stack
-kernel_rfl D1StageSplit.n0_1 : D1StageSplit.S20.tab.length = 20
+kernel_rfl D1StageSplit.n0_1 : D1StageSplit.S20.tab.length = 17
 kernel_rfl D1StageSplit.tab0_1 : D1StageSplit.st1.S0.tab = D1StageSplit.S20.tab
 
 /-- The fresh variables of the stage's results. -/

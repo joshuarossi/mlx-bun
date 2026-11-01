@@ -50,6 +50,15 @@ theorem step_graph (hs : List Handles) (c n : Nat) (caps : CapsFor c (stageWeigh
   rw [← h, templateOf_eq w hs₀ hlay hhead]
 
 include hcaps₀ hlay hhead in
+/-- The whole step at an interior time is the ordinary template's. -/
+theorem step_eq (hs : List Handles) (c n : Nat) (caps : CapsFor c (stageWeights w) hs) (interior : n + 1 < c) :
+    stepGraphOf w hs n = (Tpl.Ordinary.graph.map (mapN (SDim.eval n)), Tpl.Ordinary.tokenNode, Tpl.Ordinary.cacheOutputs) := by
+  have h : ((templateOf w hs₀ 1).1.map (mapN (SDim.eval n)), (templateOf w hs₀ 1).2) = stepGraphOf w hs n :=
+    template_eval SDim.lit 1 .pos .pos1 _ _ (SDim.eval n) n _ (fun _ => rfl) rfl rfl
+      (chainLayout_sig 256 c 1 n (kvSig_interior c n interior).symm _ _ _ hcaps₀ caps)
+  rw [← h, templateOf_eq w hs₀ hlay hhead]
+
+include hcaps₀ hlay hhead in
 /-- **The forward's part of the step matches** at a certificate's carriers. -/
 theorem fin_match {s : Ffi.St} {S : SSrv} {B : Box} {V : VarV} {d : Int} {K : Nat} (c : FinCert s S B V d K)
     (G : Nat → Option (RNode Int InKey)) (σ cl : Nat → Nat) (n : Nat) (emb : Embeds σ cl (mapG (SDim.eval n) (gsV s S B V d)) G)
@@ -146,7 +155,7 @@ theorem hfinV (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.we
   rw [show Host.Mlx.SimGraph.Mach.capL (π.length - 1) = 256 by unfold Host.Mlx.SimGraph.Mach.capL; omega] at hcaps0
   have emb0 := embedsV s S B V (L := π.length) (n := π.length - 1) (d := -1) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC)
   have hin := c.hins y.M.node (fun j hj => hmr.nid j (Nat.lt_of_lt_of_le hj hNB))
-  refine ⟨π.getD (π.length - 1) 0, s2.hs, c.cert.map y.M.node, by rw [refPrompt_start, hs']; rfl, ?_, hy.toBase, ?_⟩
+  refine ⟨π.getD (π.length - 1) 0, s2.hs, c.cert.map y.M.node, by rw [refPrompt_start, hs']; rfl, ?_, hy.toBase, ?_, fun _ => hcaps0⟩
   · rw [hKn]
     refine ⟨fun z hz => ?_, ?_, fun k hk => ?_, fun k e key v hk he hpk hv => ?_⟩
     · have emb' := embeds_grow (G := mapG (SDim.eval (π.length - 1)) (gsV s S B V (-1))) emb0 (fun i r hr => by

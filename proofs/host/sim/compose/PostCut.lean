@@ -56,7 +56,7 @@ theorem indexed_to_cut {NB T cap nI L : Nat} {tk : Nat → Nat} {π : List Nat}
 theorem Book.emit_unframed {T cap nI : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
     (h : Book T tk cap nI π γ x) : x.K.fr 2590 = none := by
   by_contra hn
-  exact (by decide : 2590 ∉ [2665]) ((h.context.1.2.2 2590).mp hn)
+  exact (by decide : 2590 ∉ PostOk.J.framed) ((h.context.1.2.2 2590).mp hn)
 
 /-- Retain the caller's memory invariant, including active-NE memory ghosts. -/
 noncomputable def indexedCutMem (Mem : SegInst FF → Prop) (NB T : Nat) (tk : Nat → Nat)

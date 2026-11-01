@@ -9,6 +9,8 @@ let spread: { chunk: number; pre: number; tokens: number[]; forwarded: number[] 
 { const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok, fwd] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number), forwarded: (fwd ?? "").split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
 const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf("--no-good"), 1);
 const fast = argv.includes("--fast"); if (fast) argv.splice(argv.indexOf("--fast"), 1);
+// --pre: before POST's shared cut (`PostOk.ok0`, the head's frames)
+const pre = argv.includes("--pre"); if (pre) argv.splice(argv.indexOf("--pre"), 1);
 const withGlue = argv.includes("--glue"); if (withGlue) argv.splice(argv.indexOf("--glue"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
 if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens] [--no-good]");
@@ -19,7 +21,7 @@ const root = join(import.meta.dir, dir), mod = (f: string) => `host.sim.template
 const head = (imports: string[], open = "Host.Ts Host.Ts.Sim") => [...new Set(imports)].map(i => `import ${i}\n`).join("") +
   `set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen ${open}\n\n`;
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-const OK = fast ? "host.sim.template.PostOkFast" : "host.sim.template.PostOk", ok = fast ? "PostOk.okR" : "PostOk.ok";
+const OK = fast ? "host.sim.template.PostOkFast" : "host.sim.template.PostOk", ok = fast ? "PostOk.okR" : pre ? "PostOk.ok0" : "PostOk.ok";
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
 // boundary pages of 32 states, each importing the last
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
@@ -96,8 +98,8 @@ if (spread) {
     `kernel_rfl ${p}.spCloseStack : ${p}.spClose.stack =\n  .l (.spread [] [] ${p}.spEnv) :: ${p}.spFs\n` +
     `kernel_rfl ${p}.spFwd : ${p}.spClose.obj? 2673435 = some ${p}.fwdObj\n` +
     `kernel_rfl ${p}.spFwdKind : ${p}.fwdObj.kind = .array [${spread.forwarded.map(r => `.num (.ref ${r})`).join(", ")}]\n` +
-    `kernel_rfl ${p}.spCellNoW : wideP ${p}.spCell = none\n` +
-    `kernel_rfl ${p}.spNewNoW : wideP ${p}.cacheArray = none\n` +
+    `kernel_rfl ${p}.spCellNoW : wideG ${p}.spCell = none\n` +
+    `kernel_rfl ${p}.spNewNoW : wideG ${p}.cacheArray = none\n` +
     `kernel_rfl ${p}.spNewNoPrompt : Nat.beq 2665 ${p}.cacheArray = false\n` +
     `kernel_rfl ${p}.spNewNoFwd : Nat.beq 2673435 ${p}.cacheArray = false\n` +
     `kernel_rfl ${p}.spRoom : Nat.blt (${p}.spClose.next + margin) Host.Ts.Sim.bound = true\n` +

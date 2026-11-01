@@ -163,6 +163,8 @@ traced once, symbolically.
 
 **Forward state (1 Nov, afternoon):** x1-x3 first-forward certificates pass the kernel at 5,018 nodes; `X1.hfwd` compiles and audits clean. x4's literal approach: L8 bundles all compiled, L9 building. L=1's forward regenerating at the literal row under `DT3`, no size bridges. Links' x1-x3 share `PRE_pf_vw` only if 52 blocking objects are handled (shared-template cells in `tpl_abstract`).
 
+**Open risk (1 Nov):** `traceRegistry` (`4941`), a `Map` the code reads when a closure traces. Generator's `r1` trial tests whether class-specific memo cells can be framed as `WFrame.ghost`; a rejected read means the classes differ there, and the fallback is `.mapKeys` or per-class tails. `postHandoff` compiles, generic over `HandWalk`. POST's cut dropped `NativeAt`, links adding it back.
+
 **Before the final `check.ts`:** it doesn't list many generated chains (`a4vwb`, `a4ssm`, x22 and others) and throws on any unregistered module under `proofs/`, so those must be registered or moved out. Delete `/tmp/cost/slimpool.json` and `~/proofdev/build-slim` (12 GB) once no builder passes that pool; `~/proofdev/build-cost` must stay, as it holds streams and compiled files links uses.
 
 **Machine lessons (31 Oct).**

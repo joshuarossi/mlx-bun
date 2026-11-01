@@ -8,6 +8,7 @@ import host.sim.LinGood
 import host.sim.full.BridgeJs
 import host.sim.dispatch.BridgeSpread
 import host.sim.full.ReplayS
+import host.sim.template.Ghosts
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -26,20 +27,27 @@ open Host.Ts.Sim.Compose Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly Host
 
 The chunk's length is a variable; a native call's numbers (`n * 5120`) are small only at its value, `1`. -/
 
-/-- The valuations of a forward: bounded, the row count `r` one. -/
-def VP (r : Nat) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ν r = F64.ofNat 1
+/-- The convolution caches' lengths at POST's shared cut. -/
+def isConvP (v : Nat) : Bool := Nat.ble 201 v && Nat.ble v 248
+
+/-- The valuations of a forward: bounded, the row count `r` one, the convolution caches' lengths three. -/
+def VP (r : Nat) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ν r = F64.ofNat 1 ∧ ∀ v, isConvP v = true → ν v = F64.ofNat 3
 
 /-- Used only by the interval input, never by the operational server or native state. -/
-def singleton (r : Nat) : Nat → SymE := fun v => if v = r then .lit (F64.ofNat 1) else .var v
+def singleton (r : Nat) : Nat → SymE := fun v =>
+  if v = r then .lit (F64.ofNat 1) else bif isConvP v then .lit (F64.ofNat 3) else .var v
 
-theorem eval_singleton {r : Nat} {ν : Nat → F64} (hν : ν r = F64.ofNat 1) (e : SymE) :
+theorem eval_singleton {r : Nat} {ν : Nat → F64} (hν : ν r = F64.ofNat 1)
+    (hc : ∀ v, isConvP v = true → ν v = F64.ofNat 3) (e : SymE) :
     (e.subst (singleton r)).eval ν = e.eval ν := by
   rw [SymE.eval_subst]
   have hv : (fun i => (singleton r i).eval ν) = ν := by
     funext i
     by_cases hi : i = r
     · subst hi; simp only [singleton, if_true, SymE.eval]; exact hν.symm
-    · simp only [singleton, if_neg hi, SymE.eval]
+    · cases hp : isConvP i
+      · simp only [singleton, if_neg hi, hp, cond_false, SymE.eval]
+      · simp only [singleton, if_neg hi, hp, cond_true, SymE.eval]; exact (hc i hp).symm
   rw [hv]
 
 def refSmall (r : Nat) (S : SSrv) (j : Nat) : Bool :=
@@ -57,7 +65,7 @@ theorem refSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {j : Nat}
     split at h
     · rename_i lo hi hb
       obtain ⟨k, -, hk, -, heval⟩ := ivlA_sound hν.1 (e.subst (singleton r)) hb
-      rw [eval_singleton hν.2] at heval
+      rw [eval_singleton hν.2.1 hν.2.2] at heval
       exact ⟨e, k, he, heval, by have := of_decide_eq_true h; omega⟩
     · cases h
   · cases h
@@ -77,7 +85,7 @@ theorem refGe_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {c j : Nat} (hν : V
     split at h
     · rename_i l hi hi'
       obtain ⟨k, k1, k2, -, k4⟩ := ivlA_sound hν.1 (e.subst (singleton r)) hi'
-      rw [eval_singleton hν.2] at k4
+      rw [eval_singleton hν.2.1 hν.2.2] at k4
       have := of_decide_eq_true h
       exact ⟨e, k, he, k4, by omega, by omega⟩
     · cases h
@@ -330,11 +338,11 @@ namespace Fr
 variable (f : Fr)
 
 def typedW (bytes : List Byte) : Nat → Option WFrame :=
-  Disp.wAt (Disp.wAt wideP f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
+  Disp.wAt (Disp.wAt wideGPf f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
 
 abbrev typedJ (bytes : List Byte) : Disp.JSP FF :=
-  { fullJSPPXS setupP [2665, f.chunk, f.buffer, f.view]
-      [(f.buffer, .buf bytes), (f.view, .typed .i32 f.buffer 0 1), (4910, .memo [])] with
+  { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ ghostPf)
+      ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListPf) with
     okCall := okCallFXS setupP, smallB := smallFX2 f.row }
 
 noncomputable def typedOk (bytes : List Byte) : St FF.S → SSrv → Bool :=
@@ -350,7 +358,7 @@ theorem typedOkN_ok (bytes : List Byte) (s : St FF.S) (c : FSrv) (h : c.Wf) :
 
 theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes) := by
   intro a w hw
-  change Disp.lookupW a [(f.buffer, .buf bytes), (f.view, .typed .i32 f.buffer 0 1), (4910, .memo [])] = some w
+  change Disp.lookupW a ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListPf) = some w
   have e1 := f.hvb
   have e2 := f.hbv
   by_cases hv : a = f.view
@@ -361,7 +369,7 @@ theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes)
     · subst hb
       simpa only [typedW, Disp.wAt, Disp.lookupW, e2, Nat.beq_refl, Bool.cond_true, Bool.cond_false] using hw
     · have eb := Template.beq_false hb
-      simpa only [typedW, Disp.wAt, ev, eb, Bool.cond_false, wideP, Disp.lookupW] using hw
+      simpa only [typedW, Disp.wAt, ev, eb, Bool.cond_false, wideGPf, Disp.lookupW] using hw
 
 end Fr
 
@@ -491,7 +499,7 @@ theorem size (L : Laws f bytes ps V Book) {sa sb : St FF.S} {Sa Sb Sdec : SSrv}
     (hargs : Disp.sizeArgsOk sa = true)
     (hsym : Host.Mlx.Ffi.symOf name = some .arraySize) (hm : Host.Load.isMlx name = true)
     (hpay : nameEq name Host.Mlx.FfiAne.payloadName = false)
-    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view])
+    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ ghostPf)
     (hdec : interpS (decodeArgs FF sa tys args).run Sa = some (some asR, Sdec))
     (hpre : sizePreB loopVB Sdec sa.ffi asR = true)
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))

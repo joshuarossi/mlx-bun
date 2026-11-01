@@ -120,7 +120,8 @@ def memFin (Kept : Nat → List (Nat × Nat)) (Kn : Nat → Nat) (L : Nat) (x : 
     refPrompt P KR NE KR.inPlace net env π tab (L - 1) = some (tok, hs) ∧
     FinAt P KR env kind tab hs (L - 1) tok (Kn L) certT (mlxOf x.t.ffi) ∧
     Base P KR env (routeVs P KR env kind) tab x.t ∧
-    ∀ q ∈ Kept L, certAt certT q.1 = x.M.node q.2
+    (∀ q ∈ Kept L, certAt certT q.1 = x.M.node q.2) ∧
+    (2 ≤ L → CapsFor 256 (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) hs)
 
 variable {P KR NE net env π}
 
@@ -138,8 +139,8 @@ theorem memFin_keep {Kept : Nat → List (Nat × Nat)} {Kn : Nat → Nat} (L : N
   intro hL
   obtain ⟨kind, hk⟩ := hm hL
   refine ⟨kind, fun tab hC => ?_⟩
-  obtain ⟨tok, hs, certT, hR, hF, hb, hK⟩ := hk tab (h.server.trans hC)
-  refine ⟨tok, hs, certT, hR, hF.grow hb.ok h.nodes, hb.grow h.nodes h.tokens, fun q hq => ?_⟩
+  obtain ⟨tok, hs, certT, hR, hF, hb, hK, hc⟩ := hk tab (h.server.trans hC)
+  refine ⟨tok, hs, certT, hR, hF.grow hb.ok h.nodes, hb.grow h.nodes h.tokens, fun q hq => ?_, hc⟩
   rw [h.map]
   exact hK q hq
 
@@ -151,8 +152,8 @@ theorem memFin_after {Kept Kept' : Nat → List (Nat × Nat)} {Kn : Nat → Nat}
   intro hL
   obtain ⟨kind, hk⟩ := hm hL
   refine ⟨kind, fun tab hle => ?_⟩
-  obtain ⟨tok, hs, certT, hR, hF, hb, hK⟩ := hk tab (hC ▸ hle)
-  refine ⟨tok, hs, certT, hR, ht ▸ hF, ht ▸ hb, fun q hq => ?_⟩
+  obtain ⟨tok, hs, certT, hR, hF, hb, hK, hc⟩ := hk tab (hC ▸ hle)
+  refine ⟨tok, hs, certT, hR, ht ▸ hF, ht ▸ hb, fun q hq => ?_, hc⟩
   obtain ⟨c, hc, he⟩ := hkept q hq
   rw [he]
   exact hK _ hc
