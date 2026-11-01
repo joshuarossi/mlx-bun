@@ -1,5 +1,8 @@
-import host.sim.compose.PostLink
+import host.sim.compose.JsAbove
+import host.sim.compose.a4b.SetupChunkStage
 import host.sim.compose.CompactDrop
+import host.sim.template.FullShiftGen
+import host.sim.template.Sigma
 import host.sim.CasesL
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -8,12 +11,68 @@ namespace Host.Ts.Sim.Compose.Pf
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Ts.Sim.Compose.SetupChunk
 
-/-! # A first tail's end into the pre-final cut
+/-! # A forward's end into a template that frames only the prompt
 
-`I.pf` holds the prompt only: the tail's chunk, buffer and view are garbage after its forward, and the
-template (a `tpl_template` from the tail's end) has collected them. `PfFacts` are the generated checks
-that the tail's end holds a copy of it under a walked map, and `pfRel` the relation there, through the
-compaction that drops those frames (`Conv.full_compactDropQXD`). -/
+The pre-final cut and POST's entry hold the prompt only: the step's chunk, buffer and view are garbage
+after its forward, and the template (a `tpl_template` from that state) has collected them. `PfFacts` are
+the generated checks that the state holds a copy of the template under a walked map, and `pfRel` the
+relation there, through the compaction that drops those frames (`Conv.full_compactDropQXD`). -/
+
+theorem jsShiftBad_aboveR {D : RData} {n : Nat} (hfix : ∀ b, b < n → D.a b = b) {i : Int}
+    (h : jsShiftBadB D.map i = true) : jsAboveB n i = true := by
+  cases hp : jsPtrOf i with
+  | none => simp only [jsShiftBadB, hp] at h; cases h
+  | some p =>
+    obtain ⟨b, off⟩ := p
+    obtain ⟨he, hb, _⟩ := jsPtrOf_some hp
+    simp only [jsAboveB, hp]
+    apply Nat.ble_eq_true_of_le
+    refine Nat.le_of_not_lt fun hn => ?_
+    have ha : D.map.a b = b := hfix b hn
+    have hi : D.map.big i = i := Conv.rdata_big_js D i (by rw [hp]; exact Option.some_ne_none _)
+    unfold jsShiftBadB at h
+    simp only [hp] at h
+    rw [ha, hi, he] at h
+    simp only [decide_true, Nat.blt_eq.mpr hb, Bool.and_self, Bool.not_true] at h
+    cases h
+
+theorem thetaOf_off {l : List (Nat × SymE)} {j : Nat} (h : j ∉ l.map Prod.fst) : thetaOf l j = .var j := by
+  have hn : l.find? (fun p => p.1 == j) = none := by
+    rw [List.find?_eq_none]
+    intro p hp he
+    apply h
+    have : p.1 = j := by simpa using he
+    rw [← this]
+    exact List.mem_map_of_mem hp
+  simp only [thetaOf, hn, Option.map_none, Option.getD_none]
+
+/-- Addresses below every renamed key are fixed. -/
+theorem jsFix_of_keys {D : RData} {n : Nat} (hn : n ≤ D.n0) (hk : (PTrie.keys D.heap).all (Nat.ble n) = true) :
+    ∀ b, b < n → D.a b = b := by
+  intro b hb
+  rw [RData.a_old D (Nat.lt_of_lt_of_le hb hn)]
+  cases hg : D.heap.get b with
+  | none => rfl
+  | some y =>
+    have := Nat.le_of_ble_eq_true (List.all_eq_true.mp hk b (PTrie.mem_keys D.heap b y hg))
+    omega
+
+theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K : Ctx)
+    (he : arrOf s a = []) : Shift.framedNext M K s a = K.fr a := by
+  unfold Shift.framedNext
+  cases hf : K.fr a with
+  | none => rfl
+  | some p =>
+    obtain ⟨pre, pre'⟩ := p
+    cases hg : s.heap.get a with
+    | none => rfl
+    | some obj =>
+      cases obj with
+      | cell v => rfl
+      | obj o =>
+        cases hk : o.kind <;>
+          simp_all only [arrOf, hg, hk, List.drop_nil, Map.vals, List.map_nil, List.append_nil]
+
 
 /-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt in place and empty; no
 address of `s0` lands on a dropped frame. -/
@@ -63,6 +122,39 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
 section
 variable {s0 s1 : St FF.S} {tab0 tab1 : List SymE} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
   {P0 : LoadP} {nJ : Nat} {drop : List Nat}
+
+theorem linkRoomSame {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {t : St FF.S} {S : SSrv} {C : CSrv}
+    (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W [] M ν K s1 S t C)
+    (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next) (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext) :
+    NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
+  obtain ⟨P', hP, hf⟩ := hr.ffi.1
+  obtain ⟨_, hE, hNE, _⟩ := Raised.restart (.inl rfl) hP
+  constructor
+  · have h := hf.load.mlx.hroom.2
+    rw [hE] at h
+    change (mlxOf t.ffi).next + (setupP.E - (mlxOf s1.ffi).next) < 2 ^ 46 at h
+    rw [sameH] at h
+    exact h
+  · have h := hf.load.mlx.nroom.2.2
+    rw [hNE] at h
+    change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s1.ffi).nnext) < 2 ^ 62 at h
+    rw [sameN] at h
+    exact h
+
+/-- A final's own offsets give the room when its counters are past the entry's. -/
+theorem linkRoomAt {H N : Nat} {t : St FF.S} (hnat : NativeAt H N s1 t) (hH : H ≤ 2 ^ 40) (hN : N ≤ 2 ^ 40)
+    (hhi : (mlxOf s1.ffi).next ≤ setupP.E) (hnhi : (mlxOf s1.ffi).nnext ≤ setupP.NE) :
+    NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
+  obtain ⟨h1, h2⟩ := hnat
+  have hE : setupP.E = 131072 := rfl
+  have hNE : setupP.NE = 1099511627776 := rfl
+  constructor
+  · change (mlxOf t.ffi).next + (setupP.E - (mlxOf s0.ffi).next) < 2 ^ 46
+    omega
+  · change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
+    omega
+
 
 /-- The frame the pre-final cut keeps. -/
 abbrev keepP : Nat → Bool := fun a => Nat.beq a 2665
@@ -137,7 +229,7 @@ theorem drop_prompt (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) (M : Map) 
   by_cases h : a = 2665
   · subst h
     rw [if_pos rfl]
-    exact Post.framedNext_empty M K F.emptyP
+    exact framedNext_empty M K F.emptyP
   · rw [if_neg h]
     have hk : keepP a = false := by
       cases e : keepP a with
@@ -179,7 +271,7 @@ theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {NB T : Nat} {tk
     noBigSt_of_above F.jsHeap F.jsRoots (fun j hj => by
       have hbad := jsBad_after (M := M) (N := N') (σ := D.map) hr.ffi.2 rfl
         (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hj
-      exact Post.jsShiftBad_aboveR F.jsFix hbad)
+      exact jsShiftBad_aboveR F.jsFix hbad)
   have hcJ := (hc.withJs (by change K.lo ≤ 2 ^ 56; rw [hlo]; change 18151 ≤ 2 ^ 56; decide) hJs
     (fullRXD_withJs hc.ffi F.jsNative)).toJ (BigJs.withJs N')
   have hmemo' : K'.fr 4910 = none := by

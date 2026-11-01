@@ -53,6 +53,7 @@ def auxInputsOf (E : List (RNode PDim SimGraph.PKey)) : List (Nat × Nat) :=
 /-- The input carriers. -/
 def insOf (promptN : Nat) (cells : List ((Nat × Nat) × Nat)) : SimGraph.PKey → Option Nat
   | .promptIds => some promptN
+  | .base .tokenIds => none
   | .base b => inputNode parameterChoice parameterChoice.model.finalNorm b
   | key => (auxId key).bind fun a => (cells.find? (·.1 == a)).map (·.2)
 

@@ -70,6 +70,6 @@ theorem PF15.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x15_r0_suffix.s8 PRE
   jsHeap := PRE_pf_vw.jsHeap
   jsRoots := PRE_pf_vw.jsRoots
   jsNative := PRE_pf_vw.jsNative
-  jsFix := Post.jsFix_of_keys (Nat.le_of_ble_eq_true PF15.jsLe) PF15.jsKeys
+  jsFix := Pf.jsFix_of_keys (Nat.le_of_ble_eq_true PF15.jsLe) PF15.jsKeys
 
 end Host.Load.Run.Tpl

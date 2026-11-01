@@ -2244,7 +2244,7 @@ function genPostLink(args: string[]) {
   const nums = chunked("num", "List.range " + S0 + ".tab.length", st.n, "all", l => "(" + l + ").all " + name + ".numAt = true", 500);
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
-  put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", dropList ? "host.sim.compose.PfLink" : "host.sim.compose.PostLink") +
+  put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", "host.sim.compose.PfLink") +
     "def " + P + " : LoadP := setupP.raise " + st.nnext + NL +
     "noncomputable abbrev " + name + ".y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s0 + ".ffi)" + NL +
     "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
@@ -2398,7 +2398,7 @@ function genPostLink(args: string[]) {
     "  jsHeap := " + T + ".jsHeap",
     "  jsRoots := " + T + ".jsRoots",
     "  jsNative := " + T + ".jsNative",
-    "  jsFix := Post.jsFix_of_keys (Nat.le_of_ble_eq_true N.jsLe) N.jsKeys",
+    "  jsFix := Pf.jsFix_of_keys (Nat.le_of_ble_eq_true N.jsLe) N.jsKeys",
     ""].join(NL).replaceAll("N.", name + "."));
   console.log(name + ": link modules written, " + cks.length + " native check modules");
 }

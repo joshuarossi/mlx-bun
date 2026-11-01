@@ -13,6 +13,10 @@ noncomputable abbrev PLD1.y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.to
 noncomputable abbrev PLD1.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad D1Body.s155.ffi)
 noncomputable abbrev PLD1.x0 : NSt := PLD1.y0.mlx
 noncomputable abbrev PLD1.x1 : NSt := PLD1.y1.mlx
+noncomputable def PLD1.θ : Nat → SymE := thetaOf PLWalkD1.R.theta
+noncomputable def PLD1.numAt (i : Nat) : Bool := match nth? PRE_pl_entry.S0.tab i with
+  | some e => decide ((⟨D1Body.S155.tab, []⟩ : SSrv).val (PLWalkD1.R.data.map.num i) = some (e.subst PLD1.θ))
+  | none => true
 
 kernel_rfl PLD1.nnh0 : PLWalkD1.R.data.nh0 = PLD1.x0.next
 kernel_rfl PLD1.nnh1 : PLWalkD1.R.data.nh1 = PLD1.x1.next

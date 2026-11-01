@@ -17,9 +17,9 @@ theorem matches_evalGOn (ev : (Nat → Option (RNode Int κ)) → Nat → Option
     (G : Nat → Option (RNode Int κ)) (E : List (RNode Int κ)) (cert : List Nat) (hm : MatchesED kind G E cert = true)
     (hin : ∀ k e key v, E[k]? = some e → e.prim = .input key → env.inputs key = some v →
       ev G (certAt cert k) = some v)
-    (hpa : ∀ k, k < E.length → ∀ nd (q : RPrim Int κ) xs v, G (certAt cert k) = some nd → strip nd.prim = q →
-      (nd.prim = q ∨ elementwise q = false) → q ≠ .computeG → closureOf? q = none → primEvalE P K env ks q xs = some v →
-      pe nd.prim xs = some v) :
+    (hpa : ∀ k e, E[k]? = some e → ∀ nd xs v, G (certAt cert k) = some nd → strip nd.prim = e.prim →
+      (nd.prim = e.prim ∨ elementwise e.prim = false) → e.prim ≠ .computeG → closureOf? e.prim = none →
+      primEvalE P K env ks e.prim xs = some v → pe nd.prim xs = some v) :
     ∀ k, k < E.length → ∀ v, evalE P K env ks (listGraph E) k = some v → ev G (certAt cert k) = some v := by
   intro k
   induction k using Nat.strong_induction_on with
@@ -135,7 +135,7 @@ theorem matches_evalGOn (ev : (Nat → Option (RNode Int κ)) → Nat → Option
           rw [hcz]
           dsimp only
           rw [hins, hxs', Option.bind_some]
-          exact hpa k hk r e.prim xs v hr hs hor hc hk' hp
+          exact hpa k e hek r xs v hr hs hor hc hk' hp
 
 end
 
@@ -146,16 +146,17 @@ variable {C : M1Max.Contract} (P : MlxPrefillContract C) (K : RouteKernelContrac
 theorem kernelsPlainOn_values (kind : Nat → Option Compiled) (G : Nat → Option (RNode Int κ))
     (E : List (RNode Int κ)) (cert : List Nat) (hm : MatchesED kind G E cert = true)
     (hin : InputsHeldR P K env kind G E cert)
-    (hG : ∀ k, k < E.length → ∀ nd name c out, G (certAt cert k) = some nd → strip nd.prim = .kernel name c out →
-      nd.prim = .kernel name c out)
+    (hG : ∀ k e, E[k]? = some e → ∀ nd name c out, e.prim = .kernel name c out → G (certAt cert k) = some nd →
+      nd.prim = e.prim)
     (i : Nat) (v : Value) (hv : EvE P K.toKernelContract env (ksR P K env) E i v) :
     evalRR P K env kind G (certAt cert i) = some v :=
   matches_evalGOn P K.toKernelContract env (ksR P K env) kind (evalRR P K env kind) (primEvalR P K env)
     (evalRR_eq P K env kind) G E cert hm hin (by
-      intro k hk nd q xs w hj hs hor hc hcl hp
+      intro k e hek nd xs w hj hs hor hc hcl hp
       unfold primEvalE at hp
       split at hp
-      · rw [hG k hk nd _ _ _ hj hs]
+      · rename_i name c out hq
+        rw [hG k e hek nd name c out hq hj, hq]
         exact hp
       · contradiction
       · rw [hcl] at hp

@@ -6,8 +6,9 @@ import { join } from "node:path";
 const argv = process.argv.slice(2);
 let spread: { chunk: number; pre: number; tokens: number[] } | undefined;
 { const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
+const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf("--no-good"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
-if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens]");
+if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens] [--no-good]");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const T1 = Number(seg.T1), bridges: any[] = seg.bridges ?? [];
@@ -17,7 +18,10 @@ const head = (imports: string[], open = "Host.Ts Host.Ts.Sim") => [...new Set(im
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
 const OK = "host.sim.template.a4pre_post_head.Small", ok = "PostHeadSmall.ok";
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
-put("H0", head([mod("States")], "Host.Ts") + Array.from({ length: T1 + 1 }, (_, i) => `host_stream_state ${name} ${i}\n`).join(""));
+// boundary pages of 32 states, each importing the last
+const page = (i: number) => mod(`H${Math.floor(i / 32)}`);
+for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, head([j === 0 ? mod("States") : mod(`H${j - 1}`)], "Host.Ts") +
+  Array.from({ length: T1 + 1 }, (_, i) => i).filter(i => Math.floor(i / 32) === j).map(i => `host_stream_state ${name} ${i}\n`).join(""));
 // chunks entered or left by a bridge are the bridge's facts, not glue runs
 const bridgeChunks = new Map<number, any>();
 for (const b of bridges) { bridgeChunks.set(b.ia - 1, b); bridgeChunks.set(b.ia, b); }
@@ -25,7 +29,7 @@ const glue = Array.from({ length: T1 }, (_, i) => i).filter(i => !bridgeChunks.h
 const fuel = (k: number) => `((nth? ${name}.ks ${k}).getD 0)`;
 for (const k of glue) {
   if (spread?.chunk === k) continue;
-  put(`K${k}`, head([mod("H0"), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
+  put(`K${k}`, head([page(k + 1), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
     `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
     `  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${fuel(k)} ${s(k)} ${S(k)}) =\n` +
     `    fun _ => some (${s(k + 1)}, ${S(k + 1)})`);
@@ -103,7 +107,7 @@ put("Origin", head([mod("H0"), startMod, "host.sim.full.Rel"]) +
 for (const [j, b] of bridges.entries()) {
   const ia = Number(b.ia), p = `${name}.b${j}`;
   if (b.kind === "size") {
-    put(`Size${j}`, head([mod("Origin"), "host.sim.template.a4pre_d1_body.SizeAt", "host.sim.template.BootEq", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    put(`Size${j}`, head([page(ia + 1), mod("Origin"), "host.sim.template.a4pre_d1_body.SizeAt", "host.sim.template.BootEq", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
       `noncomputable def ${p}.tys : List Val :=\n  match Disp.sizeParts ${s(ia)} with\n  | some (_, _, _, _, _, tys, _) => tys\n  | none => []\n\n` +
       `noncomputable def ${p}.args : List Val :=\n  match Disp.sizeParts ${s(ia)} with\n  | some (_, _, _, _, _, _, args) => args\n  | none => []\n\n` +
       `kernel_rfl ${p}.parts : Disp.sizeParts ${s(ia)} =\n  some (${b.fsym}, ${b.ta}, ${b.nf}, chars!"${b.name}", chars!"${b.rt}", ${p}.tys, ${p}.args)\n` +
@@ -122,7 +126,7 @@ for (const [j, b] of bridges.entries()) {
       `boot_rfl ${p}.runS from ${s(ia)} to ${s(ia + 1)} :\n  interpS (Disp.sizeS ${name}.F ${s(ia)}).run ${S(ia)} = some (${s(ia + 1)}, ${S(ia + 1)})\n` +
       `kernel_rfl ${p}.top : Host.Ts.Sim.Compose.noRetBlock ${s(ia)} = true\n`);
   } else if (b.kind === "len") {
-    put(`Len${j}`, head([mod("Origin"), "host.sim.compose.PrefillLen", "host.sim.template.BootEq", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    put(`Len${j}`, head([page(ia + 1), mod("Origin"), "host.sim.compose.PrefillLen", "host.sim.template.BootEq", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
       `noncomputable def ${p}.obj : Obj := (${s(ia)}.obj? ${b.arr}).getD ⟨.ordinary, .null, [], [], true⟩\n` +
       `noncomputable def ${p}.fs := ${s(ia)}.stack.drop 1\n\n` +
       `kernel_rfl ${p}.ctl : ${s(ia)}.ctl = .ret (.obj ${b.arr})\n` +
@@ -139,8 +143,9 @@ for (const [j, b] of bridges.entries()) {
 }
 const boundaries = [0, ...glue.filter(k => spread?.chunk !== k).flatMap(k => [k, k + 1])].filter((v, i, a) => a.indexOf(v) === i);
 const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} :\n  (fun bytes : List Byte => ${ok} bytes ${s(i)} ${S(i)}) = fun _ => true\n`);
-put("Accept", head([mod("H0"), OK]) + groups.join(""));
-put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +
+if (groups.length <= 64) put("Accept", head([page(T1), OK]) + groups.join(""));
+else for (let j = 0; j * 50 < groups.length; j++) put(`Accept${j}`, head([page(boundaries[Math.min(groups.length - 1, (j + 1) * 50 - 1)]!), OK]) + groups.slice(j * 50, (j + 1) * 50).join(""));
+if (!noGood) put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +
   `kernel_rfl ${name}.good_checked :\n  (fun ν : Nat → F64 => PRE_pl_head.singletonGoodB ν ${S(0)}.oracle) = fun _ => true\n\n` +
   `theorem ${name}.good {ν : Nat → F64} (hν : ν 10 = F64.ofNat 1) : Good ν ${S(0)}.oracle :=\n` +
   `  PRE_pl_head.singletonGoodB_sound hν (congrFun ${name}.good_checked ν)\n`);

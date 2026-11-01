@@ -117,9 +117,9 @@ theorem rowStep_of_matches (tab : List F64) (x : Ffi.St) (w : PipelineWeights) (
     (hin : ∀ ids, rowIds π o n = some ids →
       InputsHeldR P KR (stepEnv env.weights w o n ids hs) kind (GrK tab x)
         (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu o n)) o n (chainLayout (stageWeights w) hs)).1 cert)
-    (hG : ∀ k, k < (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu o n)) o n
-        (chainLayout (stageWeights w) hs)).1.length → ∀ nd name c out,
-      GrK tab x (certAt cert k) = some nd → strip nd.prim = .kernel name c out → nd.prim = .kernel name c out)
+    (hG : ∀ k e, (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu o n)) o n
+        (chainLayout (stageWeights w) hs)).1[k]? = some e → ∀ nd name c out, e.prim = .kernel name c out →
+      GrK tab x (certAt cert k) = some nd → nd.prim = e.prim)
     (nextCache : List Cache)
     (hout : nextCache.map (fun c => (c.first.map Tensor.node, c.second.map Tensor.node)) =
       (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu o n)) o n (chainLayout (stageWeights w) hs)).2.2.map
