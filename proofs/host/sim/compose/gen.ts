@@ -32,7 +32,7 @@
  *   (not generated: it reads the bundles only through their composed results).
  *
  * When a piece's template exists, its field is filled by its theorem: only names change. */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const HERE = dirname(new URL(import.meta.url).pathname);
@@ -1552,12 +1552,14 @@ if (process.argv[2] === "prefill") genPrefill(process.argv.slice(3));
 // Usage: prefill-body <chain>:<case-dir> --tag <tag> --rows <r,...> [--site k]... [--glue j]...
 // With --suffix-of <body chain>:<body case-dir>:<D,H,N>, the chain after that body: `a4b/<tag>/sfx`, its cuts carrying
 // the retained property (`Tr`), and `VWForward`, the forward from the prefix's end to this chain's start.
+// --bundle <n>: merge each `n` sites' modules into `B<j>`: most of a small module's cost is its import.
 function genBodyFill(args: string[]) {
   const take = (flag: string) => {
     const out: string[] = [];
     for (let i = args.indexOf(flag); i >= 0; i = args.indexOf(flag)) out.push(args.splice(i, 2)[1]!);
     return out;
   };
+  const bundleSites = +(take("--bundle")[0] ?? 0);
   const tag = take("--tag")[0] ?? fail("prefill-body: --tag <tag>");
   const fwdRowList = (take("--rows")[0] ?? fail("prefill-body: --rows <r,...>")).split(",");
   const sfxArg = take("--suffix-of")[0];
@@ -1610,12 +1612,19 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
     const nB = stagesB.length as number, lastB = nB - 1;
     return { Xb, tplB: `host.sim.template.${dirb.replaceAll("/", ".")}`, endB: chainB.T1 as number, nB, lastB, aB: stagesB[lastB].ia as number };
   })();
+  // a module of the body, or its bundle
+  const bodyModule = (m: string) => {
+    const dirB = join(HERE, "a4b", tag);
+    if (existsSync(join(dirB, `${m}.lean`))) return `${bodyMod}.${m}`;
+    const b = readdirSync(dirB).find(f => /^B\d+\.lean$/.test(f) && readFileSync(join(dirB, f), "utf8").includes(`section -- ${m}\n`));
+    return `${bodyMod}.${(b ?? fail(`no ${m} in ${dirB}`)).slice(0, -5)}`;
+  };
   const startCounters = (src("GlueN0").match(new RegExp(`theorem ${X}\\.gjcl0 \\(h : Conv\\.JClean \\((⟨[^⟩]*⟩) : Conv\\.Cnt\\)`)) ?? fail("GlueN0: gjcl0"))[1]!;
   const startJsN = bodyEnd ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : "2673488";
   if (bodyEnd) {
     const { Xb, tplB, endB, nB, lastB } = bodyEnd;
     writeFileSync(join(outDir, "VWBodyChain.lean"), head(["host.sim.compose.a4b.VWBodyBase", `${mod}.H0`, `${mod}.S0Eq`,
-      `${bodyMod}.VWBodyJ${lastB}`, `${tplB}.GlueN${nB}`, `${tplB}.H${Math.floor(endB / 32)}`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
+      bodyModule(`VWBodyJ${lastB}`), `${tplB}.GlueN${nB}`, `${tplB}.H${Math.floor(endB / 32)}`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
     `/-- The rows this chain serves. -/
 def fwdRows : List Row := [${fwdRowList.join(", ")}]
 
@@ -2042,6 +2051,51 @@ theorem bodyEnter {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst}
 ` + tail);
     console.log(`${X}: fold of ${foldParts.length} pieces, ${foldN} steps, end ${Dend}`);
   }
+  if (bundleSites > 0 && !onlySites.length && !onlyGlues.length) {
+    // each oracle module holds four sites' checks, in order
+    const oracleLeaves = readdirSync(outDir).filter(f => /^VWBodyOracles_\d+\.lean$/.test(f)).map(f => +f.match(/\d+/)![0]).sort((a, b) => a - b);
+    const groups: string[][] = [];
+    for (let b = 0; b * bundleSites < stages.length + 1; b++) {
+      const g: string[] = [];
+      for (let k = b * bundleSites; k < (b + 1) * bundleSites && k <= stages.length; k++) {
+        if (k % 4 === 0 && oracleLeaves.includes(k / 4)) g.push(`VWBodyOracles_${k / 4}`);
+        if (k < stages.length) g.push(`VWBodySite${k}`, `VWBodyJ${k}`);
+        g.push(`VWBodyG${k}`);
+        if (k < stages.length) g.push(`VWBodyS${k}`);
+      }
+      groups.push(g);
+    }
+    const bundleOf = new Map<string, string>();
+    groups.forEach((g, b) => g.forEach(m => bundleOf.set(m, `B${b}`)));
+    const mapImp = (i: string) => {
+      const m = i.startsWith(`${outMod}.`) ? bundleOf.get(i.slice(outMod.length + 1)) : undefined;
+      return m ? `${outMod}.${m}` : i;
+    };
+    const merged = (text: string) => text.split("\n").filter(l => !l.startsWith("import ")).join("\n");
+    groups.forEach((g, b) => {
+      const self = `${outMod}.B${b}`, imports = new Set<string>();
+      let body = "";
+      for (const m of g) {
+        const text = readFileSync(join(outDir, `${m}.lean`), "utf8");
+        for (const l of text.split("\n")) if (l.startsWith("import ")) { const i = mapImp(l.slice(7).trim()); if (i !== self) imports.add(i); }
+        body += `\nsection -- ${m}\n${merged(text)}\nend\n`;
+      }
+      writeFileSync(join(outDir, `B${b}.lean`), [...imports].map(i => `import ${i}`).join("\n") + "\n" + body);
+    });
+    for (const m of bundleOf.keys()) rmSync(join(outDir, `${m}.lean`));
+    for (const f of readdirSync(outDir).filter(f => f.endsWith(".lean") && !/^B\d+\.lean$/.test(f))) {
+      const text = readFileSync(join(outDir, f), "utf8");
+      const seen = new Set<string>();
+      writeFileSync(join(outDir, f), text.split("\n").flatMap(l => {
+        if (!l.startsWith("import ")) return [l];
+        const i = mapImp(l.slice(7).trim());
+        if (seen.has(i)) return [];
+        seen.add(i);
+        return [`import ${i}`];
+      }).join("\n"));
+    }
+    console.log(`${X}: ${bundleOf.size} modules in ${groups.length} bundles`);
+  }
 }
 
 
@@ -2149,7 +2203,7 @@ function genPostLink(args: string[]) {
   const R = walk + ".R", D = R + ".data", sg = D + ".map", P = name + ".P0", x0 = name + ".x0", x1 = name + ".x1";
   put(name + "Heap", head(walkMod, a4b + ".PLEntryKeys") + "tpl_heap_blocks " + R + " from PLEntryV : " + sg + ", " + s0 + ", " + s1 + NL);
   const ck = (nm: string, stmt: string) => "kernel_rfl " + name + ".n" + nm + " : " + stmt + NL;
-  const chunked = (nm: string, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string) => {
+  const chunked = (nm: string, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string, chunk: number = 2000) => {
     const m = Math.max(1, Math.ceil(n / chunk));
     let l = list;
     const ls: string[] = [];
@@ -2164,6 +2218,7 @@ function genPostLink(args: string[]) {
   const ns = chunked("nodes", "PTrie.keysA " + x0 + ".nodes", st.nnext, "all", l => "(" + l + ").all (nodeOKF " + sg + " " + P + " " + x0 + " " + x1 + ") = true");
   const ps = chunked("prims", "fullKeysF " + P + " " + x0, st.nnext, "map", l =>
     "(" + l + ").map (fun i => (" + x1 + ".nodes.get (" + sg + ".node i)).map Host.Mlx.Ffi.Node.prim) =" + NL + "  (" + l + ").map (fun i => (" + x0 + ".nodes.get i).map fun nd => " + sg + ".prim nd.prim)");
+  const nums = chunked("num", "List.range " + S0 + ".tab.length", st.n, "all", l => "(" + l + ").all " + name + ".numAt = true", 500);
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
   put(name + "Na", head(walkMod, a4b + ".PLEntryClosed", "host.sim.template.NShiftOf", "host.sim.compose.PostLink") +
@@ -2171,7 +2226,11 @@ function genPostLink(args: string[]) {
     "noncomputable abbrev " + name + ".y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s0 + ".ffi)" + NL +
     "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
     "noncomputable abbrev " + x0 + " : NSt := " + name + ".y0.mlx" + NL +
-    "noncomputable abbrev " + x1 + " : NSt := " + name + ".y1.mlx" + NL + NL + [
+    "noncomputable abbrev " + x1 + " : NSt := " + name + ".y1.mlx" + NL +
+    "noncomputable def " + name + ".\u03B8 : Nat \u2192 SymE := thetaOf " + R + ".theta" + NL +
+    "noncomputable def " + name + ".numAt (i : Nat) : Bool := match nth? " + S0 + ".tab i with" + NL +
+    "  | some e => decide ((\u27E8" + S1 + ".tab, []\u27E9 : SSrv).val (" + sg + ".num i) = some (e.subst " + name + ".\u03B8))" + NL +
+    "  | none => true" + NL + NL + [
     ck("nh0", D + ".nh0 = " + x0 + ".next"), ck("nh1", D + ".nh1 = " + x1 + ".next"), ck("nn0", D + ".nn0 = " + x0 + ".nnext"),
     ck("nn1", D + ".nn1 = " + x1 + ".nnext"),
     ck("lo", "(Nat.blt 0 " + P + ".lo && Nat.ble " + P + ".lo " + x0 + ".next && Nat.ble " + P + ".lo RData.bigHi && Nat.ble RData.bigHi " + P + ".E) = true"),
@@ -2212,10 +2271,12 @@ function genPostLink(args: string[]) {
     ""].join(NL).replaceAll("N.", name + "."));
   const frs = [["P", "2665"], ["C", "D1Frames.chunk"]];
   const sf = [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
-  put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + ".PLEntryFresh", endMod) + [
-    "noncomputable def N.\u03B8 : Nat \u2192 SymE := thetaOf " + R + ".theta",
-    "kernel_rfl N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true",
-    ...[...frs, ...sf].map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a),
+  // one module per kind of whole-state check: a single check can need more memory than the rest together
+  nums.chunks.forEach((c, j) => put(name + "Kn_" + j, head(a4b + "." + name + "Na", endMod) + c));
+  const kchecks: string[][] = [[
+    nums.assemble.trimEnd().replace(/theorem (\S+) : .* :=\n/, (_, n) => "theorem " + n + " : (List.range " + S0 + ".tab.length).all " + name + ".numAt = true :=\n"),
+    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true := N.nnum",
+    ...[...frs, ...sf].map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a)], [
     ...frs.flatMap(([k, a]) => [
       "kernel_rfl N.get" + k + " : " + s0 + ".heap.get " + a + " = some (.obj (Template.objOf " + s0 + " " + a + "))",
       "kernel_rfl N.kind" + k + " : (Template.objOf " + s0 + " " + a + ").kind = .array []",
@@ -2223,15 +2284,15 @@ function genPostLink(args: string[]) {
     ...sf.flatMap(([k, a]) => [
       "kernel_rfl N.get" + k + " : (" + s0 + ".heap.get " + a + ").isSome = true",
       "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = (" + s0 + ".heap.get " + a + ").map " + sg + ".hobj"]),
-    "kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true",
+    "kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true"], [
     "kernel_rfl N.n0 : " + D + ".n0 = " + s0 + ".next",
     "kernel_rfl N.n1 : " + D + ".n1 = " + s1 + ".next",
     "kernel_rfl N.grows : Nat.ble " + s0 + ".next " + s1 + ".next = true",
-    "kernel_rfl N.ren : checkRen " + s0 + " " + D + " " + R + ".inv = true",
+    "kernel_rfl N.ren : checkRen " + s0 + " " + D + " " + R + ".inv = true"], [
     "kernel_rfl N.ctl : " + s1 + ".ctl = " + sg + ".ctl " + s0 + ".ctl",
     "kernel_rfl N.stack : " + s1 + ".stack = " + s0 + ".stack.map " + sg + ".frame",
     "kernel_rfl N.jobs : " + s1 + ".jobs = " + s0 + ".jobs.map " + sg + ".job",
-    "kernel_rfl N.stores : " + s1 + ".stores = " + sg + ".stores " + s0 + ".stores",
+    "kernel_rfl N.stores : " + s1 + ".stores = " + sg + ".stores " + s0 + ".stores"], [
     "kernel_rfl N.band : " + D + ".checkBand 18151 = true",
     "kernel_rfl N.nh0le : Nat.ble 18151 " + D + ".nh0 = true",
     "kernel_rfl N.intr : (List.range 40).all (fun a => Nat.beq (" + D + ".a a) a) = true",
@@ -2242,8 +2303,9 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.hi1 : Nat.ble " + fq(s1) + ".next setupP.E = true",
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
-    "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true",
-    "",
+    "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
+  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Full", a4b + ".PLEntryFresh", endMod, ...(j === 0 ? nums.chunks.map((_, i) => a4b + "." + name + "Kn_" + i) : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
+  put(name, head(a4b + "." + name + "Heap", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where",
     "  num := N.num",
     "  heap := by",

@@ -1,13 +1,13 @@
 // Write the checked modules of a flat POST stretch (`tpl_chain` with no stage cuts): boundaries, one run per glue chunk,
 // the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostHeadSmall.ok.
-// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>]
+// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>:<token refs at the chunk, comma-separated>]
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const argv = process.argv.slice(2);
-let spread: { chunk: number; pre: number } | undefined;
-{ const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre] = argv[i + 1]!.split(":").map(Number); spread = { chunk: chunk!, pre: pre! }; argv.splice(i, 2); } }
+let spread: { chunk: number; pre: number; tokens: number[] } | undefined;
+{ const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre, tok] = argv[i + 1]!.split(":"); spread = { chunk: Number(chunk), pre: Number(pre), tokens: tok!.split(",").filter(Boolean).map(Number) }; argv.splice(i, 2); } }
 const [dir, name, start, startSrv, startMod] = argv;
-if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre]");
+if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens]");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const T1 = Number(seg.T1), bridges: any[] = seg.bridges ?? [];
@@ -32,33 +32,68 @@ for (const k of glue) {
 }
 // A chunk holding the array literal's spread of the framed prompt: the run to it, the spread's own steps (`Disp.step_id_spread`,
 // `step_spread_close`: a target-side frame, no `runOk`), and the run after it at the acceptance framing the new array.
+// Two chooser chains give every state literal, so `boot_rfl` never replays the bridge: to the spread, then its 4 steps one by one.
 if (spread) {
-  const k = spread.chunk, tail = `${name}Tail`, p = name;
+  const k = spread.chunk, tail = `${name}Tail`, st = `${name}Spread`, p = name;
   const plan = JSON.parse(readFileSync(join(root, "plan.json"), "utf8"));
-  const sub = JSON.stringify(JSON.stringify({ ...plan, stop: `steps:${spread.pre}`, cap: spread.pre, bridges: [] }));
-  put("TailStates", head([mod("H0"), "host.sim.template.ReturnLiteral"], "Host.Ts") +
-    `bridge_empty ${tail}.input from ${s(k)}\nserver_literal ${tail}.inputSrv := (⟨${S(k)}.tab, []⟩ : SSrv)\nset_option interpreter.prefer_native true in\n` +
-    `tpl_chain ${tail} from ${tail}.input, ${tail}.inputSrv : ${sub} («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)\n`);
-  const step = (a: string, A: string) => `(interpS (step FF ${a}).run ${A}).getD (${a}, ${A})`;
-  put("TailData", head([mod("TailStates"), "host.sim.template.a4pre_pl_tail.SimOk", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
-    `host_stream_state ${tail} 0\nhost_stream_state ${tail} 1\n\n` +
-    `noncomputable def ${p}.spPre := ${tail}.s1\nnoncomputable def ${p}.spPreSrv := ${tail}.S1\n` +
-    `noncomputable def ${p}.spOpen := ${p}.spPre.ret (.obj 2665)\n` +
-    `noncomputable def ${p}.spIdPair : St FF.S × SSrv :=\n  ${step(`${p}.spOpen`, `${p}.spPreSrv`)}\n` +
-    `noncomputable def ${p}.spId := ${p}.spIdPair.1\nnoncomputable def ${p}.spIdSrv := ${p}.spIdPair.2\n` +
-    `noncomputable def ${p}.spClosePair : St FF.S × SSrv :=\n  ${step(`${p}.spId`, `${p}.spIdSrv`)}\n` +
-    `noncomputable def ${p}.spClose := ${p}.spClosePair.1\nnoncomputable def ${p}.spCloseSrv := ${p}.spClosePair.2\n` +
-    `noncomputable def ${p}.spAfterPair : St FF.S × SSrv :=\n  ${step(`${p}.spClose`, `${p}.spCloseSrv`)}\n` +
-    `noncomputable def ${p}.spAfter := ${p}.spAfterPair.1\nnoncomputable def ${p}.spAfterSrv := ${p}.spAfterPair.2\n` +
+  const lit = (o: any) => JSON.stringify(JSON.stringify(o));
+  const chain = (c: string, from: string, fromSrv: string, o: any) =>
+    `bridge_empty ${c}.input from ${from}\nserver_literal ${c}.inputSrv := (\u27E8${fromSrv}.tab, []\u27E9 : SSrv)\nset_option interpreter.prefer_native true in\n` +
+    `tpl_chain ${c} from ${c}.input, ${c}.inputSrv : ${lit({ ...plan, startTokens: spread!.tokens, bridges: [], ...o })} (\u00ABworld\u00BB := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)\n`;
+  put("TailStates", head([mod("H0"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(tail, s(k), S(k), { stop: `steps:${spread.pre}`, cap: spread.pre }));
+  put("TailData", head([mod("TailStates")], "Host.Ts") + `host_stream_state ${tail} 0\nhost_stream_state ${tail} 1\n`);
+  put("SpreadStates", head([mod("TailData"), "host.sim.template.ReturnLiteral"], "Host.Ts") + chain(st, `${tail}.s1`, `${tail}.S1`, { stop: "steps:4", cap: 4, chunk: 1 }));
+  put("SpreadData", head([mod("SpreadStates"), "host.sim.template.a4pre_pl_tail.SimOk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    [0, 1, 2, 3, 4].map(i => `host_stream_state ${st} ${i}\n`).join("") + "\n" +
+    `noncomputable def ${p}.spPre := ${st}.s0\nnoncomputable def ${p}.spPreSrv := ${st}.S0\n` +
+    `noncomputable def ${p}.spOpen := ${st}.s1\nnoncomputable def ${p}.spOpenSrv := ${st}.S1\n` +
+    `noncomputable def ${p}.spId := ${st}.s2\nnoncomputable def ${p}.spIdSrv := ${st}.S2\n` +
+    `noncomputable def ${p}.spClose := ${st}.s3\nnoncomputable def ${p}.spCloseSrv := ${st}.S3\n` +
+    `noncomputable def ${p}.spAfter := ${st}.s4\nnoncomputable def ${p}.spAfterSrv := ${st}.S4\n` +
     `noncomputable def ${p}.cacheArray := ${p}.spClose.next\n`);
-  const rest = `host.sim.template.BootEq`;
-  put("Tail", head([mod("TailData"), OK, rest, "host.sim.Chunk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
-    `boot_rfl ${p}.tailStart from ${tail}.s0 to ${s(k)} : ${tail}.s0 = ${s(k)}\n` +
-    `boot_rfl ${p}.checkedTail from ${s(k)} to ${p}.spPre :\n  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${spread.pre} ${s(k)} ${S(k)}) =\n    fun _ => some (${p}.spPre, ${p}.spPreSrv)\n` +
-    `kernel_rfl ${p}.spPreNoOracle : ${p}.spPreSrv.oracle = []\n`);
-  put("TailRest", head([mod("TailData"), rest, "host.sim.Chunk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+  const facts = ["host.sim.template.BootEq", "host.sim.Chunk", "host.load.boot.World"];
+  const op = "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template";
+  const stepFact = (n: string, a: string, A: string, b: string, B: string) =>
+    `boot_rfl ${p}.${n} from ${a} to ${b} : interpS (step ${name}.F ${a}).run ${A} = some (${b}, ${B})\n`;
+  put("Tail", head([mod("SpreadData"), OK, ...facts], op) +
+    `kernel_rfl ${p}.tailStart : ${tail}.s0 = ${s(k)}\n` +
+    `kernel_rfl ${p}.spreadStart : ${st}.s0 = ${tail}.s1\n` +
+    `kernel_rfl ${p}.tailSrv : ${st}.S0 = ${tail}.S1\n` +
+    `boot_rfl ${p}.checkedTail from ${s(k)} to ${tail}.s1 :\n  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${spread.pre} ${s(k)} ${S(k)}) =\n    fun _ => some (${tail}.s1, ${tail}.S1)\n` +
+    `kernel_rfl ${p}.acceptedSpPre :\n  (fun bytes : List Byte => ${ok} bytes ${p}.spPre ${p}.spPreSrv) = fun _ => true\n`);
+  put("TailSteps", head([mod("SpreadData"), ...facts], op) +
+    stepFact("spInto", `${p}.spPre`, `${p}.spPreSrv`, `${p}.spOpen`, `${p}.spOpenSrv`) +
+    stepFact("spOpenStep", `${p}.spOpen`, `${p}.spOpenSrv`, `${p}.spId`, `${p}.spIdSrv`) +
+    stepFact("spIdStep", `${p}.spId`, `${p}.spIdSrv`, `${p}.spClose`, `${p}.spCloseSrv`) +
+    stepFact("spCloseStep", `${p}.spClose`, `${p}.spCloseSrv`, `${p}.spAfter`, `${p}.spAfterSrv`) +
+    `noncomputable def ${p}.spEnv : Env := match ${p}.spOpen.stack with\n  | .l (.spread _ _ env) :: _ => env\n  | _ => []\n` +
+    `noncomputable def ${p}.spFs := ${p}.spOpen.stack.drop 1\n` +
+    `noncomputable def ${p}.spExpr : Expr := match ${p}.spOpen.stack with\n  | .l (.spread _ (.spread e :: _) _) :: _ => e\n  | _ => .id []\n` +
+    `noncomputable def ${p}.spName : Name := match ${p}.spId.ctl with\n  | .ev (.id n) _ => n\n  | _ => []\n` +
+    `noncomputable def ${p}.spCell : Nat := (lookupEnv ${p}.spName ${p}.spEnv).getD 0\n` +
+    `noncomputable def ${p}.fwdObj : Obj :=\n  (${p}.spClose.obj? 2673435).getD \u27E8.ordinary, .null, [], [], true\u27E9\n\n` +
+    `kernel_rfl ${p}.spCtl : ${p}.spOpen.ctl = .ret (.obj 2665)\n` +
+    `kernel_rfl ${p}.spStack : ${p}.spOpen.stack =\n  .l (.spread [] [.spread ${p}.spExpr] ${p}.spEnv) :: ${p}.spFs\n` +
+    `kernel_rfl ${p}.spIdCtl : ${p}.spId.ctl = .ev (.id ${p}.spName) ${p}.spEnv\n` +
+    `kernel_rfl ${p}.spLookup : lookupEnv ${p}.spName ${p}.spEnv = some ${p}.spCell\n` +
+    `kernel_rfl ${p}.spCellVal : ${p}.spId.cell? ${p}.spCell = some (some (.obj 2673435))\n` +
+    `kernel_rfl ${p}.spCloseCtl : ${p}.spClose.ctl = .ret (.obj 2673435)\n` +
+    `kernel_rfl ${p}.spCloseStack : ${p}.spClose.stack =\n  .l (.spread [] [] ${p}.spEnv) :: ${p}.spFs\n` +
+    `kernel_rfl ${p}.spFwd : ${p}.spClose.obj? 2673435 = some ${p}.fwdObj\n` +
+    `kernel_rfl ${p}.spFwdKind : ${p}.fwdObj.kind = .array []\n` +
+    `kernel_rfl ${p}.spCellNoW : (fun bs : List Byte => D1Frames.typedW bs ${p}.spCell) = fun _ => none\n` +
+    `kernel_rfl ${p}.spNewNoW : (fun bs : List Byte => D1Frames.typedW bs ${p}.cacheArray) = fun _ => none\n` +
+    `kernel_rfl ${p}.spNewNoPrompt : Nat.beq 2665 ${p}.cacheArray = false\n` +
+    `kernel_rfl ${p}.spNewNoFwd : Nat.beq 2673435 ${p}.cacheArray = false\n` +
+    `kernel_rfl ${p}.spRoom : Nat.blt (${p}.spClose.next + margin) Host.Ts.Sim.bound = true\n` +
+    `kernel_rfl ${p}.spNoOracle : ${p}.spCloseSrv.oracle = []\n` +
+    `kernel_rfl ${p}.spPreNoOracle : ${p}.spPreSrv.oracle = []\n` +
+    `kernel_rfl ${p}.spAfterNoOracle : ${p}.spAfterSrv.oracle = []\n` +
+    `theorem ${p}.spInactive : (bridgeOf ${p}.spOpen.ffi).active = false := Host.Load.Boot.replay_active _\n` +
+    `kernel_rfl ${p}.spBridge : bridgeOf ${p}.spAfter.ffi = bridgeOf ${p}.spOpen.ffi\n`);
+  put("TailRest", head([mod("SpreadData"), "host.sim.template.BootEq", "host.sim.Chunk"], op) +
     `noncomputable def ${p}.restFuel : Nat := ${fuel(k)} - ${spread.pre} - 4\n` +
-    `kernel_rfl ${p}.checkedRest :\n  (fun bytes : List Byte => runOk ${name}.F (PostHeadSim.ok bytes [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv) =\n    fun _ => some (${s(k + 1)}, ${S(k + 1)})\n` +
+    `boot_rfl ${p}.checkedRest from ${p}.spAfter to ${s(k + 1)} :\n  (fun bytes : List Byte => runOk ${name}.F (PostHeadSim.ok bytes [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv) =\n    fun _ => some (${s(k + 1)}, ${S(k + 1)})\n` +
     `kernel_rfl ${p}.acceptedRest :\n  (fun bytes : List Byte => PostHeadSim.ok bytes [2673435, ${p}.cacheArray] ${p}.spAfter ${p}.spAfterSrv) = fun _ => true\n`);
 }
 put("Origin", head([mod("H0"), startMod, "host.sim.full.Rel"]) +
