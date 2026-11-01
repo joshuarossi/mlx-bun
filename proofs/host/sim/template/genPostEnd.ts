@@ -30,6 +30,6 @@ put("Endpoint", head([mod("H0"), "host.sim.world.Route"], "Host.Ts Host.Ts.Sim H
     : `noncomputable def ${p}.stats : Val :=\n  (ownW ${s} (.obj 2673245) chars!"stats").getD .undef\n\nkernel_rfl ${p}.stats_actual : ownW ${s} (.obj 2673245) chars!"stats" = some ${p}.stats\nkernel_rfl ${p}.budgetFinish : ownW ${s} ${p}.stats chars!"finishReason" = none\nkernel_rfl ${p}.generated : ownW ${s} ${p}.stats chars!"generatedTokens" = some (natV 1)\nkernel_rfl ${p}.cacheTokens : ownW ${s} ${p}.stats chars!"cacheTokens" = some (.obj ${cacheText})\n`));
 put("Support", head([mod("Endpoint")]) +
   `kernel_rfl ${p}.cacheCell : ${s}.cell? 2586 = some (some (.obj 2672295))\n` +
-  `kernel_rfl ${p}.sampledHandleFreed : (mlxOf ${s}.ffi).arrs.get 22016 = some 0\nkernel_rfl ${p}.hiddenHandleFreed : (mlxOf ${s}.ffi).arrs.get 21985 = some 0\n` +
+  `kernel_rfl ${p}.sampledHandleFreed : (mlxOf ${s}.ffi).arrs.get 22016 = some 0\n` +
   `kernel_rfl ${p}.hiddenNodeCollected : ((mlxOf ${s}.ffi).nodes.get 17763).isSome = false\nkernel_rfl ${p}.sampledNodePresent : ((mlxOf ${s}.ffi).nodes.get 17776).isSome = true\n`);
 console.log(`${dir}: Good, Endpoint, Support (${kind})`);

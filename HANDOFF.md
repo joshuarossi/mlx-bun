@@ -163,7 +163,7 @@ traced once, symbolically.
 
 **Forward state (1 Nov, afternoon):** x1-x3 first-forward certificates pass the kernel at 5,018 nodes; `X1.hfwd` compiles and audits clean. x4's literal approach: L8 bundles all compiled, L9 building. L=1's forward regenerating at the literal row under `DT3`, no size bridges. Links' x1-x3 share `PRE_pf_vw` only if 52 blocking objects are handled (shared-template cells in `tpl_abstract`).
 
-**Open risk (1 Nov):** `traceRegistry` (`4941`), a `Map` the code reads when a closure traces. Generator's `r1` trial tests whether class-specific memo cells can be framed as `WFrame.ghost`; a rejected read means the classes differ there, and the fallback is `.mapKeys` or per-class tails. `postHandoff` compiles, generic over `HandWalk`. POST's cut dropped `NativeAt`, links adding it back.
+**Shared POST tail (1 Nov):** POST L=1 compiles at the literal row with `WFrame.ghost` frames over the class-specific cells and `traceRegistry` (`4941`), including `t1`, `t2`, `r1`, `r2`, `ta`, so none of those chains reads them. L=1's forward compiles at the literal row. Open: 20 trace dims stay symbolic in VW's walk into the tail, which may bring size calls back into `fwd`; generator is counting. `postHandoff` compiles, generic over `HandWalk`. POST's cut dropped `NativeAt`, links adding it back.
 
 **Before the final `check.ts`:** it doesn't list many generated chains (`a4vwb`, `a4ssm`, x22 and others) and throws on any unregistered module under `proofs/`, so those must be registered or moved out. Delete `/tmp/cost/slimpool.json` and `~/proofdev/build-slim` (12 GB) once no builder passes that pool; `~/proofdev/build-cost` must stay, as it holds streams and compiled files links uses.
 

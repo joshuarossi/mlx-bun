@@ -8,7 +8,7 @@ open Host.Ts Host.Load.Run.Tpl
 theorem body_values {M M' : Map} {ν ν' : Nat → F64} {C C' : CSrv}
     (h : NumOK M ν ⟨D1Call.S1.tab, []⟩ C)
     (h' : NumOK M' ν' ⟨D1Body.S155.tab, []⟩ C')
-    (he : Ext M M' 20) (hc : CSrv.Le C C') :
+    (he : Ext M M' 17) (hc : CSrv.Le C C') :
     ∀ j, j < 9 → ν' j = ν j :=
   valuation_prefix h h' D1BodyReserved.start D1BodyReserved.finish
     (he.mono (by decide)) hc
@@ -19,7 +19,7 @@ theorem body_reserved {T : Nat} {tk : Nat → Nat} {M M' : Map}
     {ν ν' : Nat → F64} {C C' : CSrv}
     (h : NumOK M ν ⟨D1Call.S1.tab, []⟩ C)
     (h' : NumOK M' ν' ⟨D1Body.S155.tab, []⟩ C')
-    (he : Ext M M' 20) (hc : CSrv.Le C C')
+    (he : Ext M M' 17) (hc : CSrv.Le C C')
     (hv : SetupD1Values.Reserved T tk ν) : SetupD1Values.Reserved T tk ν' := by
   intro j hj
   exact (body_values h h' he hc j hj).trans (hv j hj)

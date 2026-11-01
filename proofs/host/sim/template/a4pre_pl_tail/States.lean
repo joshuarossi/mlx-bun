@@ -7,7 +7,7 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts
--- specs/ghosts_tail.json: the memo cells and the trace registry no chain from here reads
+-- specs/ghosts_tail.json: the memo cells and the trace registry no chain from here reads; the D1 traces' dims v249-v256
 bridge_empty PRE_pl_tail0.chooser from PRE_pl_tail0.s0
 server_data PRE_pl_tail0.chooserSrv := PRE_pl_tail0.S0
 set_option interpreter.prefer_native true in

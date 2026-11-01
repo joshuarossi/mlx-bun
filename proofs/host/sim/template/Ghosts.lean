@@ -18,15 +18,18 @@ def ghostPf : List Nat := [1824, 1834, 1852, 1993, 2001]
 registry, which holds different closures per class but is not read once the sampler has compiled. -/
 def ghostAddrs : List Nat := ghostPf ++ [1279, 1281, 1958, 1959, 4941]
 
-/-- The wide frames from the pre-final template: the memo and its ghosts. -/
-def wideListPf : List (Nat × WFrame) := (4910, .memo []) :: ghostPf.map (fun a => (a, .ghost))
-
-def wideGPf : Nat → Option WFrame := fun a => Disp.lookupW a wideListPf
-
-/-- The wide frames from POST's shared cut. -/
-def wideList : List (Nat × WFrame) := (4910, .memo []) :: ghostAddrs.map (fun a => (a, .ghost))
+/-- The wide frames of a chain: the memo and those ghosts. -/
+def wideListOf (ghosts : List Nat) : List (Nat × WFrame) := (4910, .memo []) :: ghosts.map (fun a => (a, .ghost))
 
 /-- Those frames as a function. -/
-def wideG : Nat → Option WFrame := fun a => Disp.lookupW a wideList
+def wideOf (ghosts : List Nat) : Nat → Option WFrame := fun a => Disp.lookupW a (wideListOf ghosts)
+
+/-- From the pre-final template. -/
+abbrev wideListPf : List (Nat × WFrame) := wideListOf ghostPf
+abbrev wideGPf : Nat → Option WFrame := wideOf ghostPf
+
+/-- From POST's shared cut. -/
+abbrev wideList : List (Nat × WFrame) := wideListOf ghostAddrs
+abbrev wideG : Nat → Option WFrame := wideOf ghostAddrs
 
 end Host.Load.Run.Tpl

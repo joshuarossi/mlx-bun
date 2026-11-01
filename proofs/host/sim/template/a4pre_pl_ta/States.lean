@@ -1,6 +1,6 @@
 import host.sim.template.a4pre_pl_tail.S
 import host.sim.template.ReturnLiteral
--- revision: literal row, ghosts
+-- revision: literal row, ghosts, trace vars
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

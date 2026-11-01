@@ -1,13 +1,14 @@
 import host.sim.full.BridgeFrameS
 import host.sim.template.FullOk
 import host.sim.compose.Retab
+import host.sim.template.DimVals
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
 /-! # The decode template's acceptance with its convolution dims abstracted
 
-`DT3` holds the 48 `#conv` caches' `shape[1]` as variables 114 to 161, each worth 3. A convolution over such a cache and a compiled
+`DT3` holds the 48 `#conv` caches' `shape[1]` as variables 114 to 161, each worth 3, and the D1 traces' dims derived from them as 102 to 109. A convolution over such a cache and a compiled
 closure applied to its output are accepted by `Full.okCallFSS`; their numeric premises hold only at those values (a convolution's
 width has a lower bound). So the smallness here reads the variables at 3 (`pin`), for the valuations `VP`. -/
 
@@ -17,19 +18,29 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template
 /-- The abstracted convolution dims. -/
 def isConv (v : Nat) : Bool := Nat.ble 114 v && Nat.ble v 161
 
-/-- The valuations of a decode chain: bounded, the convolution dims 3. -/
-def VP (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ∀ v, isConv v = true → ν v = F64.ofNat 3
+theorem decVal_conv {v : Nat} (h : isConv v = true) : decVal v = some 3 := by
+  unfold isConv at h
+  unfold decVal
+  rw [h]
+  rfl
+
+/-- The valuations of a decode chain: bounded, the abstracted dims at their values. -/
+def VP (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ∀ v k, decVal v = some k → ν v = F64.ofNat k
 
 /-- Used only by the interval input, never by the operational server or native state. -/
-def pin : Nat → SymE := fun v => bif isConv v then .lit (F64.ofNat 3) else .var v
+def pin : Nat → SymE := fun v =>
+  match decVal v with
+  | some k => .lit (F64.ofNat k)
+  | none => .var v
 
 theorem eval_pin {ν : Nat → F64} (hν : VP ν) (e : SymE) : (e.subst pin).eval ν = e.eval ν := by
   rw [SymE.eval_subst]
   have hv : (fun i => (pin i).eval ν) = ν := by
     funext i
-    cases hi : isConv i
-    · simp only [pin, hi, cond_false, SymE.eval]
-    · simp only [pin, hi, cond_true, SymE.eval]; exact (hν.2 i hi).symm
+    unfold pin
+    cases hi : decVal i with
+    | none => rfl
+    | some k => exact (hν.2 i k hi).symm
   rw [hv]
 
 def refSmall (S : SSrv) (j : Nat) : Bool :=
@@ -190,7 +201,7 @@ theorem convBack_eval {ν : Nat → F64} (hν : VP ν) (e : SymE) : (convBack e)
       rw [cond_true]
       simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
       obtain ⟨⟨hv, rfl⟩, rfl⟩ := hc
-      exact (conv_entry_eval (hν.2 v hv)).symm
+      exact (conv_entry_eval (hν.2 v 3 (decVal_conv hv))).symm
   · rfl
 
 /-- The end's table with its abstracted dims read as their variables. -/

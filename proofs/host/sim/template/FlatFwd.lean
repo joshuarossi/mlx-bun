@@ -9,6 +9,7 @@ import host.sim.full.BridgeJs
 import host.sim.dispatch.BridgeSpread
 import host.sim.full.ReplayS
 import host.sim.template.Ghosts
+import host.sim.template.DimVals
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -27,57 +28,77 @@ open Host.Ts.Sim.Compose Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly Host
 
 The chunk's length is a variable; a native call's numbers (`n * 5120`) are small only at its value, `1`. -/
 
-/-- The convolution caches' lengths at POST's shared cut. -/
-def isConvP (v : Nat) : Bool := Nat.ble 201 v && Nat.ble v 248
+/-- What a forward's smallness knows of its valuations: a variable's value, where it has one. -/
+abbrev Pin := Nat → Option Nat
 
-/-- The valuations of a forward: bounded, the row count `r` one, the convolution caches' lengths three. -/
-def VP (r : Nat) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ν r = F64.ofNat 1 ∧ ∀ v, isConvP v = true → ν v = F64.ofNat 3
+/-- Only the row count `r`, one. -/
+def Pin.row (r : Nat) : Pin := fun v => bif Nat.beq v r then some 1 else none
+
+/-- POST's rows from the shared cut: the row count, the convolution caches' lengths, the trace dims derived from them. -/
+def Pin.post : Pin := fun v => bif Nat.beq v 10 then some 1 else tailVal v
+
+/-- The valuations a smallness reads: bounded, the pinned variables at their values. -/
+def VPin (p : Pin) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ∀ v k, p v = some k → ν v = F64.ofNat k
+
+/-- The valuations of a forward: bounded, the row count `r` one. -/
+def VP (r : Nat) (ν : Nat → F64) : Prop := VBOkF loopVB ν ∧ ν r = F64.ofNat 1
+
+theorem VP.pin {r : Nat} {ν : Nat → F64} (h : VP r ν) : VPin (Pin.row r) ν := by
+  refine ⟨h.1, fun v k hv => ?_⟩
+  unfold Pin.row at hv
+  cases hb : Nat.beq v r with
+  | false => rw [hb] at hv; cases hv
+  | true =>
+    rw [hb] at hv
+    cases hv
+    rw [Nat.eq_of_beq_eq_true hb]
+    exact h.2
 
 /-- Used only by the interval input, never by the operational server or native state. -/
-def singleton (r : Nat) : Nat → SymE := fun v =>
-  if v = r then .lit (F64.ofNat 1) else bif isConvP v then .lit (F64.ofNat 3) else .var v
+def singleton (p : Pin) : Nat → SymE := fun v =>
+  match p v with
+  | some k => .lit (F64.ofNat k)
+  | none => .var v
 
-theorem eval_singleton {r : Nat} {ν : Nat → F64} (hν : ν r = F64.ofNat 1)
-    (hc : ∀ v, isConvP v = true → ν v = F64.ofNat 3) (e : SymE) :
-    (e.subst (singleton r)).eval ν = e.eval ν := by
+theorem eval_singleton {p : Pin} {ν : Nat → F64} (hν : VPin p ν) (e : SymE) :
+    (e.subst (singleton p)).eval ν = e.eval ν := by
   rw [SymE.eval_subst]
-  have hv : (fun i => (singleton r i).eval ν) = ν := by
+  have hv : (fun i => (singleton p i).eval ν) = ν := by
     funext i
-    by_cases hi : i = r
-    · subst hi; simp only [singleton, if_true, SymE.eval]; exact hν.symm
-    · cases hp : isConvP i
-      · simp only [singleton, if_neg hi, hp, cond_false, SymE.eval]
-      · simp only [singleton, if_neg hi, hp, cond_true, SymE.eval]; exact (hc i hp).symm
+    unfold singleton
+    cases hi : p i with
+    | none => rfl
+    | some k => exact (hν.2 i k hi).symm
   rw [hv]
 
-def refSmall (r : Nat) (S : SSrv) (j : Nat) : Bool :=
+def refSmall (r : Pin) (S : SSrv) (j : Nat) : Bool :=
   match nth? S.tab j with
   | some e => match ivlA loopVB (e.subst (singleton r)) with
     | some (_, h) => decide (h < 2 ^ 31)
     | none => false
   | none => false
 
-theorem refSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {j : Nat}
-    (hν : VP r ν) (h : refSmall r S j = true) : RefSmall ν S j := by
+theorem refSmall_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {j : Nat}
+    (hν : VPin r ν) (h : refSmall r S j = true) : RefSmall ν S j := by
   unfold refSmall at h
   split at h
   · rename_i e he
     split at h
     · rename_i lo hi hb
       obtain ⟨k, -, hk, -, heval⟩ := ivlA_sound hν.1 (e.subst (singleton r)) hb
-      rw [eval_singleton hν.2.1 hν.2.2] at heval
+      rw [eval_singleton hν] at heval
       exact ⟨e, k, he, heval, by have := of_decide_eq_true h; omega⟩
     · cases h
   · cases h
 
-def refGe (r : Nat) (S : SSrv) (c j : Nat) : Bool :=
+def refGe (r : Pin) (S : SSrv) (c j : Nat) : Bool :=
   match nth? S.tab j with
   | some e => match ivlA loopVB (e.subst (singleton r)) with
     | some (l, h) => decide (c ≤ l ∧ h < 2 ^ 31)
     | none => false
   | none => false
 
-theorem refGe_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {c j : Nat} (hν : VP r ν) (h : refGe r S c j = true) :
+theorem refGe_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {c j : Nat} (hν : VPin r ν) (h : refGe r S c j = true) :
     G.RefGe ν S c j := by
   unfold refGe at h
   split at h
@@ -85,14 +106,14 @@ theorem refGe_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {c j : Nat} (hν : V
     split at h
     · rename_i l hi hi'
       obtain ⟨k, k1, k2, -, k4⟩ := ivlA_sound hν.1 (e.subst (singleton r)) hi'
-      rw [eval_singleton hν.2.1 hν.2.2] at k4
+      rw [eval_singleton hν] at k4
       have := of_decide_eq_true h
       exact ⟨e, k, he, k4, by omega, by omega⟩
     · cases h
   · cases h
 
 /-- `symShapeSmallB` at the singleton: a convolution's width, a reshape's dimensions. -/
-def symSmall (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+def symSmall (r : Pin) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   match Host.Mlx.Ffi.symOf name with
   | some .conv1d => match G.convRef x args with
     | some (j, c0) => refGe r S c0 j
@@ -100,8 +121,8 @@ def symSmall (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bo
   | some .reshape => (G.reshRefs x args).all (refSmall r S)
   | _ => true
 
-theorem symSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : symSmall r S x name args = true) : G.symShapeSmall ν S x name args := by
+theorem symSmall_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : symSmall r S x name args = true) : G.symShapeSmall ν S x name args := by
   unfold symSmall at h
   unfold G.symShapeSmall
   split
@@ -117,11 +138,11 @@ theorem symSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name :
   · trivial
 
 /-- `cloSmallB` at the singleton: a replayed trace's references. -/
-def cloSmallR (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+def cloSmallR (r : Pin) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   !G.cloSym x name args || ((G.cloRefs x args).all (refSmall r S) && G.cloRunB S x name args)
 
-theorem cloSmallR_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : cloSmallR r S x name args = true) : G.cloSmall ν S x name args := by
+theorem cloSmallR_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : cloSmallR r S x name args = true) : G.cloSmall ν S x name args := by
   intro hc
   unfold cloSmallR at h
   rw [hc] at h
@@ -134,12 +155,12 @@ theorem cloSmallR_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name 
   · cases h2
   · rfl
 
-def smallFX (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+def smallFX (r : Pin) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   ((smallRefs (toLoad x).mlx name args).all (refSmall r S) && (G.smallRefsX (toLoad x).mlx name args).all (refSmall r S)) &&
     (!isSymShape name || symRunOk S x name args)
 
-theorem smallFX_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : smallFX r S x name args = true) : Full.smallFX ν S x name args := by
+theorem smallFX_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : smallFX r S x name args = true) : Full.smallFX ν S x name args := by
   simp only [smallFX, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at h
   refine ⟨⟨fun j hj => refSmall_sound hν (List.all_eq_true.mp h.1.1 j hj),
     fun j hj => refSmall_sound hν (List.all_eq_true.mp h.1.2 j hj)⟩, fun hs => ?_⟩
@@ -147,12 +168,12 @@ theorem smallFX_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name :
   · rw [hs] at h2; cases h2
   · exact symRunOk_sound h2
 
-def smallFS (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+def smallFS (r : Pin) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif G.symPath (mlxOf x) name args then symSmall r S (mlxOf x) name args
   else smallFX r S x name args && cloSmallR r S (mlxOf x) name args
 
-theorem smallFS_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : smallFS r S x name args = true) : Full.smallFS ν S x name args := by
+theorem smallFS_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : smallFS r S x name args = true) : Full.smallFS ν S x name args := by
   unfold smallFS at h
   constructor
   · intro hp; rw [hp, Bool.cond_true] at h; exact symSmall_sound hν h
@@ -160,11 +181,11 @@ theorem smallFS_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name :
     exact ⟨smallFX_sound hν h.1, cloSmallR_sound hν h.2⟩
 
 /-- `cloSmallS` at the singleton: an apply whose trace lookup asks the server. -/
-def cloSmallSR (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+def cloSmallSR (r : Pin) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   !G.cloServer x name args || ((G.cloRefsS x args).all (refSmall r S) && G.cloFoundS S x args && G.cloRunB S x name args)
 
-theorem cloSmallSR_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : cloSmallSR r S x name args = true) : G.cloSmallS ν S x name args := by
+theorem cloSmallSR_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : cloSmallSR r S x name args = true) : G.cloSmallS ν S x name args := by
   intro hc
   unfold cloSmallSR at h
   rw [hc] at h
@@ -177,16 +198,16 @@ theorem cloSmallSR_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name
   · cases h2
   · rfl
 
-def smallFX2O (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+def smallFX2O (r : Pin) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif (bridgeOf x).active then smallFX r S x name args && (!isSymShape name || aneRunOk S x name args) &&
     cloSmallR r S (mlxOf x) name args
   else smallFS r S x name args
 
-@[irreducible] def smallFX2 (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+@[irreducible] def smallFX2 (r : Pin) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   smallFX2O r S x name args && cloSmallSR r S (mlxOf x) name args
 
-theorem smallFX2O_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : smallFX2O r S x name args = true) : Full.smallFX2 ν S x name args := by
+theorem smallFX2O_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : smallFX2O r S x name args = true) : Full.smallFX2 ν S x name args := by
   unfold smallFX2O at h
   constructor
   · intro ha; rw [ha, Bool.cond_false] at h; exact smallFS_sound hν h
@@ -197,8 +218,8 @@ theorem smallFX2O_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name
     rw [hs] at this
     simpa using this
 
-theorem smallFX2_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
-    (hν : VP r ν) (h : smallFX2 r S x name args = true) : Full.smallFXS ν S x name args := by
+theorem smallFX2_sound {r : Pin} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
+    (hν : VPin r ν) (h : smallFX2 r S x name args = true) : Full.smallFXS ν S x name args := by
   unfold smallFX2 at h
   rw [Bool.and_eq_true] at h
   exact ⟨smallFX2O_sound hν h.1, cloSmallSR_sound hν h.2⟩
@@ -219,32 +240,32 @@ theorem okCallFXS_rest (P : LoadP) (r : List NumV) : okCallFXS { P with rest := 
 
 /-! ### Over the fast table -/
 
-def refSmallF (r : Nat) (c : FSrv) (j : Nat) : Bool :=
+def refSmallF (r : Pin) (c : FSrv) (j : Nat) : Bool :=
   match c.val (.ref j) with
   | some e => match ivlA loopVB (e.subst (singleton r)) with
     | some (_, h) => decide (h < 2 ^ 31)
     | none => false
   | none => false
 
-theorem refSmallF_eq (r : Nat) {c : FSrv} (h : c.Wf) : refSmallF r c = refSmall r c.toS := by
+theorem refSmallF_eq (r : Pin) {c : FSrv} (h : c.Wf) : refSmallF r c = refSmall r c.toS := by
   funext j
   unfold refSmallF refSmall
   rw [FSrv.val_eq h]
   rfl
 
-def refGeF (r : Nat) (c : FSrv) (c0 j : Nat) : Bool :=
+def refGeF (r : Pin) (c : FSrv) (c0 j : Nat) : Bool :=
   match c.val (.ref j) with
   | some e => match ivlA loopVB (e.subst (singleton r)) with
     | some (l, h) => decide (c0 ≤ l ∧ h < 2 ^ 31)
     | none => false
   | none => false
 
-theorem refGeF_eq (r : Nat) {c : FSrv} (h : c.Wf) (c0 j : Nat) : refGeF r c c0 j = refGe r c.toS c0 j := by
+theorem refGeF_eq (r : Pin) {c : FSrv} (h : c.Wf) (c0 j : Nat) : refGeF r c c0 j = refGe r c.toS c0 j := by
   unfold refGeF refGe
   rw [FSrv.val_eq h]
   rfl
 
-def symSmallF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+def symSmallF (r : Pin) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   match Host.Mlx.Ffi.symOf name with
   | some .conv1d => match G.convRef x args with
     | some (j, c0) => refGeF r c c0 j
@@ -253,33 +274,33 @@ def symSmallF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : B
   | _ => true
 
 set_option maxRecDepth 1000000 in
-theorem symSmallF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
+theorem symSmallF_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
     symSmallF r c x name args = symSmall r c.toS x name args := by
   unfold symSmallF symSmall
   simp only [refGeF_eq r h, refSmallF_eq r h]
 
-noncomputable def cloSmallRF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+noncomputable def cloSmallRF (r : Pin) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   !G.cloSym x name args || ((G.cloRefs x args).all (refSmallF r c) && cloRunF c x name args)
 
-theorem cloSmallRF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
+theorem cloSmallRF_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
     cloSmallRF r c x name args = cloSmallR r c.toS x name args := by
   unfold cloSmallRF cloSmallR
   rw [refSmallF_eq r h, cloRunF_eq h]
 
-noncomputable def smallFXF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+noncomputable def smallFXF (r : Pin) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   ((smallRefs (toLoad x).mlx name args).all (refSmallF r c) && (G.smallRefsX (toLoad x).mlx name args).all (refSmallF r c)) &&
     (!isSymShape name || symRunF c x name args)
 
-theorem smallFXF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+theorem smallFXF_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
     smallFXF r c x name args = smallFX r c.toS x name args := by
   unfold smallFXF smallFX
   rw [refSmallF_eq r h, symRunF_eq h]
 
-noncomputable def smallFSF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+noncomputable def smallFSF (r : Pin) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif G.symPath (mlxOf x) name args then symSmallF r c (mlxOf x) name args
   else smallFXF r c x name args && cloSmallRF r c (mlxOf x) name args
 
-theorem smallFSF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+theorem smallFSF_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
     smallFSF r c x name args = smallFS r c.toS x name args := by
   unfold smallFSF smallFS
   rw [symSmallF_eq r h, smallFXF_eq r h, cloSmallRF_eq r h]
@@ -307,20 +328,20 @@ theorem cloFoundF_eq {c : FSrv} (h : c.Wf) (x : NSt) (args : List Arg) :
       obtain ⟨o, c1⟩ := p
       cases o <;> rfl
 
-noncomputable def cloSmallSRF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+noncomputable def cloSmallSRF (r : Pin) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
   !G.cloServer x name args || ((G.cloRefsS x args).all (refSmallF r c) && cloFoundF c x args && cloRunF c x name args)
 
-theorem cloSmallSRF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
+theorem cloSmallSRF_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
     cloSmallSRF r c x name args = cloSmallSR r c.toS x name args := by
   unfold cloSmallSRF cloSmallSR
   rw [refSmallF_eq r h, cloFoundF_eq h, cloRunF_eq h]
 
-noncomputable def smallFX2F (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
+noncomputable def smallFX2F (r : Pin) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   (bif (bridgeOf x).active then smallFXF r c x name args && (!isSymShape name || aneRunF c x name args) &&
     cloSmallRF r c (mlxOf x) name args
   else smallFSF r c x name args) && cloSmallSRF r c (mlxOf x) name args
 
-theorem smallFX2F_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
+theorem smallFX2F_eq (r : Pin) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
     smallFX2F r c x name args = smallFX2 r c.toS x name args := by
   unfold smallFX2F smallFX2 smallFX2O
   rw [smallFXF_eq r h, aneRunF_eq h, cloSmallRF_eq r h, smallFSF_eq r h, cloSmallSRF_eq r h]
@@ -331,6 +352,8 @@ structure Fr where
   chunk : Nat
   buffer : Nat
   view : Nat
+  /-- The cells this forward frames as ghosts. -/
+  ghosts : List Nat
   hvb : Nat.beq view buffer = false
   hbv : Nat.beq buffer view = false
 
@@ -338,27 +361,27 @@ namespace Fr
 variable (f : Fr)
 
 def typedW (bytes : List Byte) : Nat → Option WFrame :=
-  Disp.wAt (Disp.wAt wideGPf f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
+  Disp.wAt (Disp.wAt (wideOf f.ghosts) f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
 
 abbrev typedJ (bytes : List Byte) : Disp.JSP FF :=
-  { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ ghostPf)
-      ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListPf) with
-    okCall := okCallFXS setupP, smallB := smallFX2 f.row }
+  { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
+      ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.ghosts) with
+    okCall := okCallFXS setupP, smallB := smallFX2 (Pin.row f.row) }
 
 noncomputable def typedOk (bytes : List Byte) : St FF.S → SSrv → Bool :=
   Disp.okJSJ (f.typedJ bytes) (okBackFXS setupP) 4096
 
 /-- `typedOk` over the fast table. -/
 noncomputable def typedOkN (bytes : List Byte) : St FF.S → FSrv → Bool :=
-  Disp.okJSJN (f.typedJ bytes) (okBackFXS setupP) 4096 (smallFX2F f.row)
+  Disp.okJSJN (f.typedJ bytes) (okBackFXS setupP) 4096 (smallFX2F (Pin.row f.row))
 
 theorem typedOkN_ok (bytes : List Byte) (s : St FF.S) (c : FSrv) (h : c.Wf) :
     f.typedOkN bytes s c = f.typedOk bytes s c.toS :=
-  Disp.okJSJN_eq (f.typedJ bytes) (okBackFXS setupP) 4096 (fun _ x name args hw => smallFX2F_eq f.row hw x name args) s h
+  Disp.okJSJN_eq (f.typedJ bytes) (okBackFXS setupP) 4096 (fun _ x name args hw => smallFX2F_eq (Pin.row f.row) hw x name args) s h
 
 theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes) := by
   intro a w hw
-  change Disp.lookupW a ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListPf) = some w
+  change Disp.lookupW a ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.ghosts) = some w
   have e1 := f.hvb
   have e2 := f.hbv
   by_cases hv : a = f.view
@@ -369,7 +392,7 @@ theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes)
     · subst hb
       simpa only [typedW, Disp.wAt, Disp.lookupW, e2, Nat.beq_refl, Bool.cond_true, Bool.cond_false] using hw
     · have eb := Template.beq_false hb
-      simpa only [typedW, Disp.wAt, ev, eb, Bool.cond_false, wideGPf, Disp.lookupW] using hw
+      simpa only [typedW, Disp.wAt, ev, eb, Bool.cond_false, wideOf, Disp.lookupW] using hw
 
 end Fr
 
@@ -416,7 +439,7 @@ theorem simulation (f : Fr) (NB T : Nat) (tk : Nat → Nat) (bytes : List Byte) 
   have hs := Disp.stepSimXLBJS (D0 := 4096) (stk := [])
     ((fullFfiSimXD P NB).liftQ fullLawful hQ)
     (backSimS_liftQ (fullBackSimXDS P NB) fullLawful hQ) (hC.liftQ fullLawful hQ)
-    (VBOk := VP f.row) (fun _ _ _ _ _ hν hb => smallFX2_sound hν hb)
+    (VBOk := VP f.row) (fun _ _ _ _ _ hν hb => smallFX2_sound hν.pin hb)
     (fun _ _ _ _ hν hb => smallBackFB_sound hν.1 hb)
     (fullRXD_laws P NB).liftQ fullLawful (fullNativeFactsXD P NB (f.typedJ bytes) rfl rfl rfl).liftQ (f.typed_wp bytes)
   simpa only [P, backRest, Fr.typedOk] using hs
@@ -499,7 +522,7 @@ theorem size (L : Laws f bytes ps V Book) {sa sb : St FF.S} {Sa Sb Sdec : SSrv}
     (hargs : Disp.sizeArgsOk sa = true)
     (hsym : Host.Mlx.Ffi.symOf name = some .arraySize) (hm : Host.Load.isMlx name = true)
     (hpay : nameEq name Host.Mlx.FfiAne.payloadName = false)
-    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ ghostPf)
+    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
     (hdec : interpS (decodeArgs FF sa tys args).run Sa = some (some asR, Sdec))
     (hpre : sizePreB loopVB Sdec sa.ffi asR = true)
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))

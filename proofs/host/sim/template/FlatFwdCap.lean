@@ -39,7 +39,7 @@ theorem simulationCap (f : Fr) (NB T : Nat) (tk : Nat → Nat) (bytes : List Byt
   have hs := Disp.stepSimXLBJSLimit (P := f.typedJ bytes) (D0 := cap) (stk := [])
     (VBOk := VP f.row) (Nat.le_refl _) ((fullFfiSimXD P NB).liftQ fullLawful hQ)
     (backSimS_liftQ (fullBackSimXDS P NB) fullLawful hQ) (hC.liftQ fullLawful hQ)
-    (fun _ _ _ _ _ hν hb => smallFX2_sound hν hb)
+    (fun _ _ _ _ _ hν hb => smallFX2_sound hν.pin hb)
     (fun _ _ _ _ hν hb => smallBackFB_sound hν.1 hb)
     (fullRXD_laws P NB).liftQ fullLawful (fullNativeFactsXD P NB (f.typedJ bytes) rfl rfl rfl).liftQ (f.typed_wp bytes)
   simpa only [P, backRest, okL] using hs
@@ -135,7 +135,7 @@ theorem sizeCap (L : LawsCap f bytes cap ps V Book) {sa sb : St FF.S} {Sa Sb Sde
     (hargs : Disp.sizeArgsOk sa = true)
     (hsym : Host.Mlx.Ffi.symOf name = some .arraySize) (hm : Host.Load.isMlx name = true)
     (hpay : nameEq name Host.Mlx.FfiAne.payloadName = false)
-    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ ghostPf)
+    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
     (hdec : interpS (decodeArgs FF sa tys args).run Sa = some (some asR, Sdec))
     (hpre : sizePreB loopVB Sdec sa.ffi asR = true)
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))

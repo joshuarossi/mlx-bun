@@ -8,6 +8,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { syncRowMetadata } from "./syncRowMeta";
 const args = process.argv.slice(2);
+// --ghosts: the cells the forward frames as ghosts (a Lean term; default none)
+const ghostsAt = args.indexOf("--ghosts");
+const ghosts = ghostsAt >= 0 ? args.splice(ghostsAt, 2)[1]! : "[]";
 const extAt = args.indexOf("--ext");
 const ext = extAt >= 0 ? Number(args.splice(extAt, 2)[1]) : 20;
 const rebindAt = args.indexOf("--rebind");
@@ -43,7 +46,7 @@ if (sourceTable) put("Rebind", ["host.sim.template.StreamRows", "host.sim.templa
 for (let j = 0; j <= Math.floor(T1 / 32); j++) put(`H${j}`, pageHead([j === 0 ? mod(sourceTable ? "Rebind" : "States") : mod(`H${j - 1}`)]) +
   Array.from({ length: T1 + 1 }, (_, i) => i).filter(i => Math.floor(i / 32) === j).map(i => `host_stream_state ${name} ${i}\n`).join(""));
 put("Frames", head(["host.sim.template.FlatFwd", boxMod]) +
-  `def ${fr} : FlatFwd.Fr := ⟨${row}, ${chunk}, ${buffer}, ${view}, rfl, rfl⟩\n`);
+  `def ${fr} : FlatFwd.Fr := ⟨${row}, ${chunk}, ${buffer}, ${view}, ${ghosts}, rfl, rfl⟩\n`);
 const frames = mod("Frames");
 const special = new Set(bridges.flatMap(b => [b.ia - 1, b.ia]));
 for (let i = 0; i < sizes.length; i++) {

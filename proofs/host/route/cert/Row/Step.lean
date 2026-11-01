@@ -11,6 +11,7 @@ open Host.Mlx.SimGraph.Mach (refPrompt refPrompt_decodes RefTokens ForwardAtV)
 open Host.Ts.Sim (LoadP Map SegInst capL)
 open Host.Ts.Sim.Full (FF mlxOf)
 open Host.Route.PrefGraph
+open Host.Load.Run.Tpl (tailVal)
 
 /-! # A POST row's change of bookkeeping
 
@@ -33,7 +34,7 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
     (x y : SegInst FF) (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π sE SE).R y sE ⟨SE.tab, []⟩)
     (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hnode : y.M.node = x.M.node)
     (hg : Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi)) (ht : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens)
-    (hdim : ∀ v, isDim v = true → y.ν v = F64.ofNat 3)
+    (hdim : ∀ v k, tailVal v = some k → y.ν v = F64.ofNat k)
     (hm : memPost P KR NE net env π d toks Cr L x) : memPost P KR NE net env π (d + 1) toks Cr' L y := by
   intro hL
   subst hL
@@ -49,13 +50,13 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
   have hcap : capL π.length = 256 := by unfold capL; omega
   have hρ : ∀ j l h, Box.get boxRow j = some (l, h) → y.ν j = F64.ofInt (nuRow π.length j) := by
     intro j l h hget
-    rcases boxRow_cases hget with ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨hd, -, -⟩
+    rcases boxRow_cases hget with ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩ | ⟨k, hd, -, -⟩
     · exact hb.promptValue
     · exact hb.rowValue
     · exact hb.offsetValue
     · exact hb.capValue.trans (by rw [hcap]; rfl)
     · rw [nuRow_dim _ hd]
-      exact hdim j hd
+      exact hdim j k hd
   have hx := hp tab (hle.trans hC)
   rw [hnode]
   obtain ⟨tok, hs, hR, hcv, hcaps, hcb⟩ := hx.cur
