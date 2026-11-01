@@ -1557,6 +1557,9 @@ function genBodyFill(args: string[]) {
   const fwdRowList = (take("--rows")[0] ?? fail("prefill-body: --rows <r,...>")).split(",");
   const sfxArg = take("--suffix-of")[0];
   const pfArg = take("--pf")[0];
+  // a class with its own dispatch: the prefix chain it starts from, and the module with that prefix's end facts
+  const prefixChain = take("--prefix")[0] ?? "PRE_first_tail_x15_r0";
+  const baseMod = take("--base-mod")[0] ?? "host.sim.compose.a4b.VWBodyBase";
   const sfx = sfxArg?.split(":") as [string, string, string] | undefined;
   const outDir = join(HERE, "a4b", tag, sfx ? "sfx" : ""), outMod = `host.sim.compose.a4b.${tag}${sfx ? ".sfx" : ""}`;
   const bodyMod = `host.sim.compose.a4b.${tag}`;
@@ -1619,7 +1622,7 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
   const startJsN = bodyEnd ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : "2673488";
   if (bodyEnd) {
     const { Xb, tplB, endB, nB, lastB } = bodyEnd;
-    writeFileSync(join(outDir, "VWBodyChain.lean"), head(["host.sim.compose.a4b.VWBodyBase", `${mod}.H0`, `${mod}.S0Eq`,
+    writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`,
       bodyModule(`VWBodyJ${lastB}`), `${tplB}.GlueN${nB}`, `${tplB}.H${Math.floor(endB / 32)}`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
     `/-- The rows this chain serves. -/
 def fwdRows : List Row := [${fwdRowList.join(", ")}]
@@ -1653,14 +1656,14 @@ kernel_rfl bodyStart2665 : arrOf ${X}.s0 2665 = []
 kernel_rfl bodyStartChunk : arrOf ${X}.s0 VWFrames.chunk = []
 ` + tail);
   } else
-  writeFileSync(join(outDir, "VWBodyChain.lean"), head(["host.sim.compose.a4b.VWBodyBase", `${mod}.H0`, `${mod}.S0Eq`, `${mod}.BoundaryData`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
+  writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`, `${mod}.BoundaryData`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
     `/-- The rows this chain's forward serves. -/
 def fwdRows : List Row := [${fwdRowList.join(", ")}]
 
 /-- The chain's canonical results and their terms. -/
 noncomputable def bodyΘ : List Nat × List SymE := (${X}.dws, ${X}.drs)
 
-theorem bodyStartEq : (${X}.s0 : St FF.S) = PRE_first_tail_x15_r0.s41 := bodyStartEqOf ${X}.s0_tok
+theorem bodyStartEq : (${X}.s0 : St FF.S) = ${prefixChain}.s41 := bodyStartEqOf ${X}.s0_tok
 
 theorem bodyStartClean : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) ${X}.s0 := by
   rw [bodyStartEq]
@@ -2176,6 +2179,9 @@ function genPostLink(args: string[]) {
   };
   const withTemplate = args.includes("--template");
   if (withTemplate) args.splice(args.indexOf("--template"), 1);
+  // the template shared by chains whose tables differ: the source table is padded with the template's images
+  const pad = args.includes("--pad");
+  if (pad) args.splice(args.indexOf("--pad"), 1);
   const streams = take("--streams") ?? process.env.HOST_STREAM_DIR ?? join(HERE, "../../../.host-stream");
   const name = take("--name") ?? fail("post-link: --name <prefix>");
   const walk = take("--walk") ?? fail("post-link: --walk <walk prefix>"), walkMod = take("--walkmod") ?? fail("post-link: --walkmod <module>");
@@ -2293,7 +2299,7 @@ function genPostLink(args: string[]) {
   }
   if (walkAt) {
     const wf = walkMod.split(".").pop()!;
-    writeFileSync(join(out, wf + ".lean"), head(entryMod, endMod, "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
+    writeFileSync(join(out, wf + ".lean"), head(entryMod, endMod, pad ? "host.sim.template.RestartPad" : "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
       "/-! The map from the pre-final template into the tail's end, chosen natively on the bridge-free views",
       "of both states. Everything about it is a later kernel check. -/",
       "bridge_empty " + walk + ".s0 from " + s0,
@@ -2304,7 +2310,7 @@ function genPostLink(args: string[]) {
       "def " + walk + ".ghosts : List Nat := " + T + ".ghosts",
       "def " + walk + ".maps : List Nat := " + T + ".maps",
       "set_option interpreter.prefer_native true in",
-      "tpl_restart " + walk + ".R : " + walk + ", " + walk + " " + Ti + " (\u00ABworld\u00BB := " + walkAt + ".nativeWorld)",
+      (pad ? "tpl_restart_pad " : "tpl_restart ") + walk + ".R : " + walk + ", " + walk + " " + Ti + " (\u00ABworld\u00BB := " + walkAt + ".nativeWorld)",
       ""].join(NL) + NL + "end Host.Load.Run.Tpl" + NL);
   }
   const R = walk + ".R", D = R + ".data", sg = D + ".map", P = name + ".P0", x0 = name + ".x0", x1 = name + ".x1";
@@ -2345,8 +2351,9 @@ function genPostLink(args: string[]) {
     }).join(", ") + "]" + NL +
       "def " + name + ".renV : List Nat := [" + renamed.map(r => r.fresh).join(", ") + "]" + NL +
       "def " + name + ".renE : List SymE := [" + renamed.map(r => ".var " + r.v).join(", ") + "]" + NL : "") +
+    (pad ? "noncomputable def " + name + ".tabP : List SymE := " + S1 + ".tab ++ " + tab0 + ".map (\u00B7.subst " + name + ".\u03B8)" + NL : "") +
     "noncomputable def " + name + ".numAt (i : Nat) : Bool := match nth? " + tab0 + " i with" + NL +
-    "  | some e => decide ((\u27E8" + S1 + ".tab, []\u27E9 : SSrv).val (" + sg + ".num i) = some (e.subst " + name + ".\u03B8))" + NL +
+    "  | some e => decide ((\u27E8" + (pad ? name + ".tabP" : S1 + ".tab") + ", []\u27E9 : SSrv).val (" + sg + ".num i) = some (e.subst " + name + ".\u03B8))" + NL +
     "  | none => true" + NL + NL + [
     ck("nh0", D + ".nh0 = " + x0 + ".next"), ck("nh1", D + ".nh1 = " + x1 + ".next"), ck("nn0", D + ".nn0 = " + x0 + ".nnext"),
     ck("nn1", D + ".nn1 = " + x1 + ".nnext"),
@@ -2390,14 +2397,16 @@ function genPostLink(args: string[]) {
   const sf = dropList ? [] : [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
   // one module per kind of whole-state check: a single check can need more memory than the rest together
   const kchecks: string[][] = [[
+    ...(pad ? [
+    "kernel_rfl N.numAll : numPadB " + D + " " + S1 + ".tab.length " + tab0 + ".length N.numAt = true"] : [
     "kernel_rfl N.numId : numIdB " + D + " " + nHead + " = true",
     "kernel_rfl N.numHead : (" + tab0 + ".take " + nHead + ").map (\u00B7.subst N.\u03B8) = " + S1 + ".tab.take " + nHead,
-    "kernel_rfl N.numTail : (List.range' " + nHead + " (" + tab0 + ".length - " + nHead + ")).all N.numAt = true",
+    "kernel_rfl N.numTail : (List.range' " + nHead + " (" + tab0 + ".length - " + nHead + ")).all N.numAt = true"]),
     ...(needsV ? [
       "kernel_rfl N.tabLen : " + tab0 + ".length = " + T + ".n",
       "kernel_rfl N.tabEq : " + tab0 + ".map (\u00B7.subst (Conv.compact\u03B8 N.renV N.renE)) = " + S0 + ".tab"] : []),
-    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + tab0 + ", []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true :=",
-    "  checkNum_split N.numId N.numHead N.numTail (fun i e he h => by",
+    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + tab0 + ", []\u27E9 \u27E8" + (pad ? "N.tabP" : S1 + ".tab") + ", []\u27E9 = true :=",
+    (pad ? "  checkNum_pad N.numAll (fun i e he h => by" : "  checkNum_split N.numId N.numHead N.numTail (fun i e he h => by"),
     "    unfold N.numAt at h",
     "    rw [he] at h",
     "    exact of_decide_eq_true h)",
@@ -2434,10 +2443,10 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
     "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
-  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, ...(j === 0 ? ["host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
+  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
-      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
+      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
