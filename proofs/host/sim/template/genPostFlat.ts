@@ -1,14 +1,13 @@
 // Write the checked modules of a flat POST stretch (`tpl_chain` with no stage cuts): boundaries, one run per glue chunk,
 // the source link, the size and length bridges' facts and the oracle check. Everything is checked at PostHeadSmall.ok.
-// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--split <chunk>:<width>]...
+// usage: bun genPostFlat.ts <dir under template/> <Name> <start state> <start server> <start module> [--spread <chunk>:<steps before it>]
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const argv = process.argv.slice(2), splits = new Map<number, number>();
-for (let i = argv.indexOf("--split"); i >= 0; i = argv.indexOf("--split")) {
-  const [c, w] = argv[i + 1]!.split(":").map(Number); splits.set(c!, w!); argv.splice(i, 2);
-}
+const argv = process.argv.slice(2);
+let spread: { chunk: number; pre: number } | undefined;
+{ const i = argv.indexOf("--spread"); if (i >= 0) { const [chunk, pre] = argv[i + 1]!.split(":").map(Number); spread = { chunk: chunk!, pre: pre! }; argv.splice(i, 2); } }
 const [dir, name, start, startSrv, startMod] = argv;
-if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--split chunk:width]");
+if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre]");
 const stream = join(process.env.HOST_STREAM_DIR ?? "", `Host.Load.Run.Tpl.${name}`);
 const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
 const T1 = Number(seg.T1), bridges: any[] = seg.bridges ?? [];
@@ -25,15 +24,42 @@ for (const b of bridges) { bridgeChunks.set(b.ia - 1, b); bridgeChunks.set(b.ia,
 const glue = Array.from({ length: T1 }, (_, i) => i).filter(i => !bridgeChunks.has(i));
 const fuel = (k: number) => `((nth? ${name}.ks ${k}).getD 0)`;
 for (const k of glue) {
-  const width = splits.get(k);
-  if (width === undefined) {
-    put(`K${k}`, head([mod("H0"), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
-      `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
-      `  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${fuel(k)} ${s(k)} ${S(k)}) =\n` +
-      `    fun _ => some (${s(k + 1)}, ${S(k + 1)})`);
-    continue;
-  }
-  throw Error(`chunk ${k}: splitting needs the fuel table; run genPostFlat again after the first check`);
+  if (spread?.chunk === k) continue;
+  put(`K${k}`, head([mod("H0"), OK, "host.sim.template.BootEq", "host.sim.Chunk"]) +
+    `boot_rfl ${name}.run${k} from ${s(k)} to ${s(k + 1)} :\n` +
+    `  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${fuel(k)} ${s(k)} ${S(k)}) =\n` +
+    `    fun _ => some (${s(k + 1)}, ${S(k + 1)})`);
+}
+// A chunk holding the array literal's spread of the framed prompt: the run to it, the spread's own steps (`Disp.step_id_spread`,
+// `step_spread_close`: a target-side frame, no `runOk`), and the run after it at the acceptance framing the new array.
+if (spread) {
+  const k = spread.chunk, tail = `${name}Tail`, p = name;
+  const plan = JSON.parse(readFileSync(join(root, "plan.json"), "utf8"));
+  const sub = JSON.stringify(JSON.stringify({ ...plan, stop: `steps:${spread.pre}`, cap: spread.pre, bridges: [] }));
+  put("TailStates", head([mod("H0"), "host.sim.template.ReturnLiteral"], "Host.Ts") +
+    `bridge_empty ${tail}.input from ${s(k)}\nserver_literal ${tail}.inputSrv := (⟨${S(k)}.tab, []⟩ : SSrv)\nset_option interpreter.prefer_native true in\n` +
+    `tpl_chain ${tail} from ${tail}.input, ${tail}.inputSrv : ${sub} («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)\n`);
+  const step = (a: string, A: string) => `(interpS (step FF ${a}).run ${A}).getD (${a}, ${A})`;
+  put("TailData", head([mod("TailStates"), "host.sim.template.a4pre_pl_tail.SimOk", "host.load.boot.World"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    `host_stream_state ${tail} 0\nhost_stream_state ${tail} 1\n\n` +
+    `noncomputable def ${p}.spPre := ${tail}.s1\nnoncomputable def ${p}.spPreSrv := ${tail}.S1\n` +
+    `noncomputable def ${p}.spOpen := ${p}.spPre.ret (.obj 2665)\n` +
+    `noncomputable def ${p}.spIdPair : St FF.S × SSrv :=\n  ${step(`${p}.spOpen`, `${p}.spPreSrv`)}\n` +
+    `noncomputable def ${p}.spId := ${p}.spIdPair.1\nnoncomputable def ${p}.spIdSrv := ${p}.spIdPair.2\n` +
+    `noncomputable def ${p}.spClosePair : St FF.S × SSrv :=\n  ${step(`${p}.spId`, `${p}.spIdSrv`)}\n` +
+    `noncomputable def ${p}.spClose := ${p}.spClosePair.1\nnoncomputable def ${p}.spCloseSrv := ${p}.spClosePair.2\n` +
+    `noncomputable def ${p}.spAfterPair : St FF.S × SSrv :=\n  ${step(`${p}.spClose`, `${p}.spCloseSrv`)}\n` +
+    `noncomputable def ${p}.spAfter := ${p}.spAfterPair.1\nnoncomputable def ${p}.spAfterSrv := ${p}.spAfterPair.2\n` +
+    `noncomputable def ${p}.cacheArray := ${p}.spClose.next\n`);
+  const rest = `host.sim.template.BootEq`;
+  put("Tail", head([mod("TailData"), OK, rest, "host.sim.Chunk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    `boot_rfl ${p}.tailStart from ${tail}.s0 to ${s(k)} : ${tail}.s0 = ${s(k)}\n` +
+    `boot_rfl ${p}.checkedTail from ${s(k)} to ${p}.spPre :\n  (fun bytes : List Byte => runOk ${name}.F (${ok} bytes) ${spread.pre} ${s(k)} ${S(k)}) =\n    fun _ => some (${p}.spPre, ${p}.spPreSrv)\n` +
+    `kernel_rfl ${p}.spPreNoOracle : ${p}.spPreSrv.oracle = []\n`);
+  put("TailRest", head([mod("TailData"), rest, "host.sim.Chunk"], "Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template") +
+    `noncomputable def ${p}.restFuel : Nat := ${fuel(k)} - ${spread.pre} - 4\n` +
+    `kernel_rfl ${p}.checkedRest :\n  (fun bytes : List Byte => runOk ${name}.F (PostHeadSim.ok bytes [2673435, ${p}.cacheArray]) ${p}.restFuel ${p}.spAfter ${p}.spAfterSrv) =\n    fun _ => some (${s(k + 1)}, ${S(k + 1)})\n` +
+    `kernel_rfl ${p}.acceptedRest :\n  (fun bytes : List Byte => PostHeadSim.ok bytes [2673435, ${p}.cacheArray] ${p}.spAfter ${p}.spAfterSrv) = fun _ => true\n`);
 }
 put("Origin", head([mod("H0"), startMod, "host.sim.full.Rel"]) +
   `kernel_rfl ${name}.s0_eq : ${s(0)} = ${start}\n` +
@@ -76,7 +102,7 @@ for (const [j, b] of bridges.entries()) {
       `kernel_rfl ${p}.bridge : bridgeOf ${s(ia + 1)}.ffi = bridgeOf ${s(ia)}.ffi\n`);
   } else throw Error(`bridge ${b.kind}: not generated here`);
 }
-const boundaries = [0, ...glue.flatMap(k => [k, k + 1]), T1].filter((v, i, a) => a.indexOf(v) === i);
+const boundaries = [0, ...glue.filter(k => spread?.chunk !== k).flatMap(k => [k, k + 1])].filter((v, i, a) => a.indexOf(v) === i);
 const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} :\n  (fun bytes : List Byte => ${ok} bytes ${s(i)} ${S(i)}) = fun _ => true\n`);
 put("Accept", head([mod("H0"), OK]) + groups.join(""));
 put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +

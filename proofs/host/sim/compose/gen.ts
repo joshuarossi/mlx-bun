@@ -1097,6 +1097,35 @@ if (process.argv[2] === "fill") genFill(process.argv.slice(3));
 
 /* ---------- Prefill boundaries and checked call sites ---------- */
 
+/** A merged chain's members live in `m/<bundle>` (`template/genMerge.ts`, `m/members.json`). */
+const memberMaps = new Map<string, Record<string, string> | null>();
+const membersOf = (dir: string) => {
+  let map = memberMaps.get(dir);
+  if (map === undefined) {
+    const f = join(HERE, "../template", dir, "m/members.json");
+    map = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) as Record<string, string> : null;
+    memberMaps.set(dir, map);
+  }
+  return map;
+};
+const bundled = (imp: string): string => {
+  const m = imp.match(/^host\.sim\.template\.(a4pre_[^.]+)\.(.+)$/);
+  const b = m && membersOf(m[1]!)?.[m[2]!.replaceAll(".", "/")];
+  return b ? `host.sim.template.${m![1]}.m.${b}` : imp;
+};
+/** A member's text: its file, or its section of its bundle; `Run` was never bundled (`m/Run.txt`). */
+const memberSrc = (dir: string, f: string): string => {
+  const tdir = join(HERE, "../template", dir), map = membersOf(dir);
+  if (f === "Run" && existsSync(join(tdir, "m/Run.txt"))) return readFileSync(join(tdir, "m/Run.txt"), "utf8");
+  const b = map?.[f];
+  if (!b) return readFileSync(join(tdir, `${f}.lean`), "utf8");
+  const text = readFileSync(join(tdir, "m", `${b}.lean`), "utf8");
+  const at = text.indexOf(`section -- ${f}\n`);
+  if (at < 0) fail(`${dir}: no section ${f} in ${b}`);
+  const end = text.indexOf("\nsection -- ", at + 1);
+  return end < 0 ? text.slice(at) : text.slice(at, end);
+};
+
 function genSetupFill(output: string, X: string, mod: string, h: number, stage: any, bridge: any) {
   const cp = bridge.compaction;
   const C = 2048 / 2 ** h;
@@ -1462,7 +1491,7 @@ noncomputable def ${X}.chunk_K8__g0a__g0b := FillSetupEarly.chunk_K8__g0a__g0b
 noncomputable def ${X}.g0b := FillSetupEarly.g0b
 `;
   }
-  const render = (deps: Iterable<string>, body: string) => `${[...deps].map(x => `import ${x}`).join("\n")}
+  const render = (deps: Iterable<string>, body: string) => `${[...new Set([...deps].map(bundled))].map(x => `import ${x}`).join("\n")}
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -1545,7 +1574,7 @@ function genBodyFill(args: string[]) {
   const X = X0!, full = `Host.Load.Run.Tpl.${X}`, stream = join(streams, full);
   const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8"));
   const tdir = join(HERE, "../template", dir!), mod = `host.sim.template.${dir!.replaceAll("/", ".")}`;
-  const src = (f: string) => readFileSync(join(tdir, `${f}.lean`), "utf8");
+  const src = (f: string) => memberSrc(dir!, f);
   const oracleFiles = readdirSync(outDir).filter(f => /^VWBodyOracles_\d+\.lean$/.test(f));
   const oracleOf = new Map<string, { file: string; map: string; check: string }>();
   for (const f of oracleFiles) for (const m of readFileSync(join(outDir, f), "utf8")
@@ -1555,7 +1584,7 @@ function genBodyFill(args: string[]) {
   const stages = bridges.filter(b => b.kind === "stage").sort((a, b) => a.site - b.site);
   const parseMap = (s: string): [number, string][] =>
     [...s.matchAll(/\((\d+), Q\.(\w+)\)/g)].map(m => [+m[1]!, m[2]!]);
-  const head = (imports: string[]) => `${[...new Set(imports)].map(i => `import ${i}`).join("\n")}
+  const head = (imports: string[]) => `${[...new Set(imports.map(bundled))].map(i => `import ${i}`).join("\n")}
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -1665,7 +1694,7 @@ theorem bodyGoodDrop {r : Row} {i : Cls.Inst} {ν : Nat → F64} (hr : r ∈ fwd
     const cAfter = siteZ.match(new RegExp(`theorem ${X}\\.cjcl${k} \\(h : Conv\\.JClean \\(⟨[^⟩]*⟩ : Conv\\.Cnt\\) ${X}\\.s${a}\\) : Conv\\.JClean \\((⟨[^⟩]*⟩)`)) ?? fail(`${X}: SiteZ${k}: cjcl`);
     const nC = +(siteZ.match(new RegExp(`znC${k} : .* = (\\d+)`)) ?? fail("znC"))[1]!;
     const n1 = +(siteZ.match(new RegExp(`zsmn${k} : .* = (\\d+)`)) ?? fail("zsmn"))[1]!;
-    const tpl = readFileSync(join(tdir, `st${k}/TypedTpl.lean`), "utf8");
+    const tpl = src(`st${k}/TypedTpl`);
     const nSteps = +(tpl.match(/\n  n := (\d+)/) ?? fail(`st${k}: n`))[1]!;
     const T1 = +(tpl.match(new RegExp(`S2 := ${X}\\.st${k}\\.S(\\d+)`)) ?? fail(`st${k}: S2`))[1]!;
     const site = oracleOf.get(`site${k}`) ?? fail(`no map_site${k}`);
@@ -1824,9 +1853,10 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
   }
   // the glue stretches: typed runs and size bridges between the calls
   const stepsAt = new Map<string, { name: string; file: string }>();
-  for (const f of readdirSync(tdir).filter(f => /^TypedSteps\d+\.lean$/.test(f)))
-    for (const m of readFileSync(join(tdir, f), "utf8").matchAll(new RegExp(`boot_rfl ${X}\\.(body(?:StepA|StepB|PatchB)\\d*) from ${X}\\.s(\\d+) to ${X}\\.s(\\d+)`, "g")))
-      stepsAt.set(`${m[2]}->${m[3]}`, { name: m[1]!, file: f.slice(0, -5) });
+  const memberNames = membersOf(dir!) ? Object.keys(membersOf(dir!)!) : readdirSync(tdir).filter(f => f.endsWith(".lean")).map(f => f.slice(0, -5));
+  for (const f of memberNames.filter(f => /^TypedSteps\d+$/.test(f)))
+    for (const m of src(f).matchAll(new RegExp(`boot_rfl ${X}\\.(body(?:StepA|StepB|PatchB)\\d*) from ${X}\\.s(\\d+) to ${X}\\.s(\\d+)`, "g")))
+      stepsAt.set(`${m[2]}->${m[3]}`, { name: m[1]!, file: f });
   const ranges = [...src("Run").matchAll(/^sim_chain_range \S+ \S+ (\d+) (\d+) runSeg(\d+)$/gm)]
     .map(m => ({ a: +m[1]!, b: +m[2]!, r: +m[3]! }));
   const sizeIdx = new Map<number, number>();
@@ -1912,7 +1942,7 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
     foldParts.push(`bodyGlue${j} NB T tk π ${trApp} hr hi`);
     foldN += steps;
     if (stage) {
-      const n = +(readFileSync(join(tdir, `st${j}/TypedTpl.lean`), "utf8").match(/\n  n := (\d+)/) ?? fail(`st${j}: n`))[1]!;
+      const n = +(src(`st${j}/TypedTpl`).match(/\n  n := (\d+)/) ?? fail(`st${j}: n`))[1]!;
       foldParts.push(`bodyStep${j} NB T tk π ${trApp} hr hi`);
       foldN += n + 1;
     }
@@ -2132,7 +2162,7 @@ function genPostLink(args: string[]) {
   };
   const hs = chunked("handles", "handlesOfA " + x0, st.mnext + 4000, "all", l => "(" + l + ").all (handleOK " + sg + " " + P + ".lo " + x0 + " " + x1 + ") = true");
   const ns = chunked("nodes", "PTrie.keysA " + x0 + ".nodes", st.nnext, "all", l => "(" + l + ").all (nodeOKF " + sg + " " + P + " " + x0 + " " + x1 + ") = true");
-  const ps = chunked("prims", "fullKeysF " + P + " " + x0, 4000, "map", l =>
+  const ps = chunked("prims", "fullKeysF " + P + " " + x0, st.nnext, "map", l =>
     "(" + l + ").map (fun i => (" + x1 + ".nodes.get (" + sg + ".node i)).map Host.Mlx.Ffi.Node.prim) =" + NL + "  (" + l + ").map (fun i => (" + x0 + ".nodes.get i).map fun nd => " + sg + ".prim nd.prim)");
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];

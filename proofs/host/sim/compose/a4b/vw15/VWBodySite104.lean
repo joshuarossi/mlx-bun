@@ -1,0 +1,44 @@
+import host.sim.compose.PreCall
+import host.sim.lin.Table
+import host.sim.template.a4pre_first_tail_x15_r0_body.States
+import host.sim.template.a4pre_first_tail_x15_r0_body.m.B25
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Full Host.Ts.Sim.Template
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
+
+noncomputable def PRE_first_tail_x15_r0_body.map_site104 : List (Nat × Q) := ([(9, Q.L), (10, Q.n), (1031, Q.n), (1032, Q.n), (1033, Q.n), (1035, Q.n), (1036, Q.n), (1037, Q.n), (1038, Q.n), (1039, Q.n), (1042, Q.n), (1043, Q.n), (1045, Q.n), (1046, Q.n), (1047, Q.n), (1048, Q.n), (1091, Q.n), (1092, Q.n), (1094, Q.n), (1095, Q.n), (1096, Q.n), (1097, Q.n), (1098, Q.n), (1101, Q.n), (1102, Q.n), (1104, Q.n), (1105, Q.n), (1106, Q.n), (1107, Q.n), (1108, Q.n), (1145, Q.n), (1146, Q.n), (1148, Q.n), (1149, Q.n), (1150, Q.n), (1151, Q.n), (1152, Q.n), (1155, Q.n), (1156, Q.n), (1158, Q.n), (1159, Q.n), (1160, Q.n), (1161, Q.n), (1162, Q.n), (1185, Q.n), (1186, Q.n), (1188, Q.n), (1190, Q.n), (1191, Q.n), (1192, Q.n), (1193, Q.n), (1230, Q.n), (1231, Q.n), (1233, Q.n), (1234, Q.n), (1235, Q.n), (1236, Q.n), (1237, Q.n), (1240, Q.n), (1241, Q.n), (1243, Q.n), (1244, Q.n), (1245, Q.n), (1246, Q.n), (1247, Q.n), (1284, Q.n), (1285, Q.n), (1287, Q.n), (1288, Q.n), (1289, Q.n), (1290, Q.n), (1291, Q.n), (1294, Q.n), (1295, Q.n), (1297, Q.n), (1298, Q.n), (1299, Q.n), (1300, Q.n), (1301, Q.n), (1338, Q.n), (1339, Q.n), (1341, Q.n), (1342, Q.n), (1343, Q.n), (1344, Q.n), (1345, Q.n), (1348, Q.n), (1349, Q.n), (1351, Q.n), (1352, Q.n), (1353, Q.n), (1354, Q.n), (1355, Q.n), (1378, Q.n), (1379, Q.n), (1381, Q.n), (1383, Q.n), (1384, Q.n), (1385, Q.n), (1386, Q.n), (1423, Q.n), (1424, Q.n), (1426, Q.n), (1427, Q.n), (1428, Q.n), (1429, Q.n), (1430, Q.n), (1433, Q.n), (1434, Q.n), (1436, Q.n), (1437, Q.n), (1438, Q.n), (1439, Q.n), (1440, Q.n), (1477, Q.n), (1478, Q.n), (1480, Q.n), (1481, Q.n), (1482, Q.n), (1483, Q.n), (1484, Q.n), (1487, Q.n), (1488, Q.n), (1490, Q.n), (1491, Q.n), (1492, Q.n), (1493, Q.n), (1494, Q.n), (1531, Q.n), (1532, Q.n), (1534, Q.n), (1535, Q.n), (1536, Q.n), (1537, Q.n), (1538, Q.n), (1541, Q.n), (1542, Q.n), (1544, Q.n), (1545, Q.n), (1546, Q.n), (1547, Q.n), (1548, Q.n), (1571, Q.n), (1572, Q.n), (1574, Q.n), (1576, Q.n), (1577, Q.n), (1578, Q.n), (1579, Q.n), (1622, Q.n), (1623, Q.n), (1625, Q.n), (1626, Q.n), (1627, Q.n), (1628, Q.n), (1629, Q.n), (1632, Q.n), (1633, Q.n), (1635, Q.n), (1636, Q.n), (1637, Q.n), (1638, Q.n), (1639, Q.n), (1676, Q.n), (1677, Q.n), (1679, Q.n), (1680, Q.n), (1681, Q.n), (1682, Q.n), (1683, Q.n), (1686, Q.n), (1687, Q.n), (1689, Q.n), (1690, Q.n), (1691, Q.n), (1692, Q.n), (1693, Q.n), (1736, Q.n), (1737, Q.n), (1739, Q.n), (1740, Q.n), (1741, Q.n), (1742, Q.n), (1743, Q.n), (1746, Q.n), (1747, Q.n), (1749, Q.n), (1750, Q.n), (1751, Q.n), (1752, Q.n), (1753, Q.n), (1776, Q.n), (1777, Q.n), (1779, Q.n), (1781, Q.n), (1782, Q.n), (1783, Q.n), (1784, Q.n), (1827, Q.n), (1828, Q.n), (1830, Q.n), (1831, Q.n), (1832, Q.n), (1833, Q.n), (1834, Q.n), (1837, Q.n), (1838, Q.n), (1840, Q.n), (1841, Q.n), (1842, Q.n), (1843, Q.n), (1844, Q.n), (1887, Q.n), (1888, Q.n), (1890, Q.n), (1891, Q.n), (1892, Q.n), (1893, Q.n), (1894, Q.n), (1897, Q.n), (1898, Q.n), (1900, Q.n), (1901, Q.n), (1902, Q.n), (1903, Q.n), (1904, Q.n), (1947, Q.n), (1948, Q.n), (1950, Q.n), (1951, Q.n), (1952, Q.n), (1953, Q.n), (1954, Q.n), (1957, Q.n), (1958, Q.n), (1960, Q.n), (1961, Q.n), (1962, Q.n), (1963, Q.n), (1964, Q.n), (1993, Q.n), (1994, Q.n), (1996, Q.n), (1998, Q.n), (1999, Q.n), (2000, Q.n), (2001, Q.n), (2038, Q.n), (2039, Q.n), (2041, Q.n), (2042, Q.n), (2043, Q.n), (2044, Q.n), (2045, Q.n), (2048, Q.n), (2049, Q.n), (2051, Q.n), (2052, Q.n), (2053, Q.n), (2054, Q.n), (2055, Q.n), (2092, Q.n), (2093, Q.n), (2095, Q.n), (2096, Q.n), (2097, Q.n), (2098, Q.n), (2099, Q.n), (2102, Q.n), (2103, Q.n), (2105, Q.n), (2106, Q.n), (2107, Q.n), (2108, Q.n), (2109, Q.n), (2146, Q.n), (2147, Q.n), (2149, Q.n), (2150, Q.n), (2151, Q.n), (2152, Q.n), (2153, Q.n), (2156, Q.n), (2157, Q.n), (2159, Q.n), (2160, Q.n), (2161, Q.n), (2162, Q.n), (2163, Q.n), (2186, Q.n), (2187, Q.n), (2189, Q.n), (2191, Q.n), (2192, Q.n), (2193, Q.n), (2194, Q.n), (2231, Q.n), (2232, Q.n), (2234, Q.n), (2235, Q.n), (2236, Q.n), (2237, Q.n), (2238, Q.n), (2241, Q.n), (2242, Q.n), (2244, Q.n), (2245, Q.n), (2246, Q.n), (2247, Q.n), (2248, Q.n), (2285, Q.n), (2286, Q.n), (2288, Q.n), (2289, Q.n), (2290, Q.n), (2291, Q.n), (2292, Q.n), (2295, Q.n), (2296, Q.n), (2298, Q.n), (2299, Q.n), (2300, Q.n), (2301, Q.n), (2302, Q.n), (2339, Q.n), (2340, Q.n), (2342, Q.n), (2343, Q.n), (2344, Q.n), (2345, Q.n), (2346, Q.n), (2349, Q.n), (2350, Q.n), (2352, Q.n), (2353, Q.n), (2354, Q.n), (2355, Q.n), (2356, Q.n), (2379, Q.n), (2380, Q.n), (2382, Q.n), (2384, Q.n), (2385, Q.n), (2386, Q.n), (2387, Q.n), (2424, Q.n), (2425, Q.n), (2427, Q.n), (2428, Q.n), (2429, Q.n), (2430, Q.n), (2431, Q.n), (2434, Q.n), (2435, Q.n), (2437, Q.n), (2438, Q.n), (2439, Q.n), (2440, Q.n), (2441, Q.n), (2478, Q.n), (2479, Q.n), (2481, Q.n), (2482, Q.n), (2483, Q.n), (2484, Q.n), (2485, Q.n), (2488, Q.n), (2489, Q.n), (2491, Q.n), (2492, Q.n), (2493, Q.n), (2494, Q.n), (2495, Q.n), (2538, Q.n), (2539, Q.n), (2541, Q.n), (2542, Q.n), (2543, Q.n), (2544, Q.n), (2545, Q.n), (2548, Q.n), (2549, Q.n), (2551, Q.n), (2552, Q.n), (2553, Q.n), (2554, Q.n), (2555, Q.n), (2578, Q.n), (2579, Q.n), (2581, Q.n), (2583, Q.n), (2584, Q.n), (2585, Q.n), (2586, Q.n), (2629, Q.n), (2630, Q.n), (2632, Q.n), (2633, Q.n), (2634, Q.n), (2635, Q.n), (2636, Q.n), (2639, Q.n), (2640, Q.n), (2642, Q.n), (2643, Q.n), (2644, Q.n), (2645, Q.n), (2646, Q.n), (2689, Q.n), (2690, Q.n), (2692, Q.n), (2693, Q.n), (2694, Q.n), (2695, Q.n), (2696, Q.n), (2699, Q.n), (2700, Q.n), (2702, Q.n), (2703, Q.n), (2704, Q.n), (2705, Q.n), (2706, Q.n), (2749, Q.n), (2750, Q.n), (2752, Q.n), (2753, Q.n), (2754, Q.n), (2755, Q.n), (2756, Q.n), (2759, Q.n), (2760, Q.n), (2762, Q.n), (2763, Q.n), (2764, Q.n), (2765, Q.n), (2766, Q.n)]).filter (fun p => Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.S0.oracle.any (fun q => !(q.a.noVar p.1 && q.b.noVar p.1)))
+
+kernel_rfl PRE_first_tail_x15_r0_body.chk_site104 : ([first_tail_x5.r0, first_tail_x7.r0, first_tail_x9.r0, first_tail_x11.r0, first_tail_x13.r0, first_tail_x15.r0, first_tail_x17.r0, first_tail_x19.r0, first_tail_x21.r0].all fun r =>
+  goodEnum r.ps (varsOf r.V PRE_first_tail_x15_r0_body.map_site104) Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.S0.oracle) = true
+
+noncomputable def PRE_first_tail_x15_r0_body.site104
+    (bytes : List Byte) (rows : Nat)
+    {FR : Map → Nat → FF.S → FF.S → Prop} {Kp : Ctx → Prop} {W : Nat → Option WFrame}
+    (hsim : ∀ stk, Disp.StepSimXLB FF FR (Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.bodyOkL bytes rows) Kp W stk (VBOkF loopVB)) :
+    PrefillSite FR Kp W (Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.bodyOkL bytes rows) Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.s1006 Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.s1007 Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.S1006 Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.ws104 where
+  tpl := (Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.bodyTpl bytes rows)
+  wr := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.wr
+  start := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.iso104
+  tab := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.tab0_104
+  sim := hsim
+  localOk := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.bodyLocal bytes rows
+  foot := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.stFoot104
+  nodup := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.wrNodup104
+  bound := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.wrBound104
+  trace := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.trace104
+  merged := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.merged104
+  len := by
+    change Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.ws104.length = (Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.st104.bodyTpl bytes rows).S2.tab.length - Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.S1006.tab.length
+    rw [← Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.tab0_104]
+    exact Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.mergeLen104.symm
+  freshNodup := by decide +kernel
+  fresh := noVar_of_all (by
+    have h := Host.Load.Run.Tpl.PRE_first_tail_x15_r0_body.fresh104
+    simp only [Bool.and_eq_true] at h
+    exact h.1)
+
+
+end Host.Ts.Sim.Compose

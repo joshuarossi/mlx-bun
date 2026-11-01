@@ -51,7 +51,7 @@ theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Mem :
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν g1Oracle) :
     CutStep (withMem Mem (afterNpsCut NB T tk π i)) (withMem Mem (dispatchCut NB T tk π i)) 260 := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨⟨hk, hmemo, ⟨π', hlen, hvc, hfr⟩, hfresh, hins, hids, hbound⟩, hp, hnat⟩, hm⟩
-  rw [SetupDrop.promptEq hvc hπ hfr hp] at hlen hvc hfr
+  obtain rfl := (SetupDrop.promptEq hvc hπ hfr hp).symm
   have hi33 : (bridgeOf PRE_first_tail_x15_r0.s33.ffi).active = false := by rw [bridge33]; exact inactive19
   have hi38 : (bridgeOf PRE_first_tail_x15_r0.s38.ffi).active = false := by rw [bridge38]; exact inactive19
   have hv : x.ν 1087 = F64.ofNat i.n := hq.2.2.2.1

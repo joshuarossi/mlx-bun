@@ -31,14 +31,14 @@ const here = import.meta.dir, root = join(here, dir), outDir = replaceAll_ ? dir
 const prefix = `host.sim.template.${dir.replaceAll("/", ".")}.`, outPrefix = `host.sim.template.${outDir.replaceAll("/", ".")}.`;
 const IMPORT = 6;
 if (rewrites.length) {
-  const bundleOfMember = JSON.parse(readFileSync(join(here, dir, "members.json"), "utf8")) as Record<string, string>;
+  const bundleOfMember = JSON.parse(readFileSync(join(here, outDir, "members.json"), "utf8")) as Record<string, string>;
   for (const file of rewrites) {
     const seen = new Set<string>();
     const lines = readFileSync(file, "utf8").split("\n").flatMap(l => {
       const m = /^import\s+(\S+)\s*$/.exec(l);
       if (!m) return [l];
       const b = m[1]!.startsWith(prefix) ? bundleOfMember[m[1]!.slice(prefix.length).replaceAll(".", "/")] : undefined;
-      const i = b ? `${prefix}${b}` : m[1]!;
+      const i = b ? `${outPrefix}${b}` : m[1]!;
       if (seen.has(i)) return [];
       seen.add(i);
       return [`import ${i}`];
@@ -56,7 +56,7 @@ const walk = (d: string): string[] => readdirSync(d).flatMap(f => {
 });
 const only = onlyArg ? new RegExp(onlyArg) : undefined;
 // a kind's default check cost without measurements (seconds past the import)
-const defaults: [RegExp, number][] = [[/^(st\d+\/)?H\d+$/, 2], [/K\d+$|MicroK/, 12], [/TypedK/, 10], [/SiteZ|SiteS/, 4], [/./, 1]];
+const defaults: [RegExp, number][] = [[/^(st\d+\/)?H\d+$/, 2], [/K\d+$|MicroK/, 12], [/TypedK/, 10], [/^SN\d+$/, 18], [/^SD\d+$/, 8], [/SiteZ|SiteS/, 4], [/./, 1]];
 const measured = new Map<string, number>();
 for (const f of costFiles) for (const l of readFileSync(f, "utf8").split("\n")) {
   const x = /^slot ([\d.]+)s \S*?\/template\/(\S+)\.lean/.exec(l);

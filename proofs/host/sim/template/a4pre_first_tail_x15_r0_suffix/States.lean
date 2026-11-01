@@ -1,11 +1,11 @@
-import host.sim.template.a4pre_first_tail_x15_r0_body.BoundaryData
+import host.sim.template.a4pre_first_tail_x15_r0_body.m.B34
 import host.sim.template.ReturnLiteral
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 
-bridge_empty PRE_first_tail_x15_r0_suffix.input from PRE_first_tail_x15_r0_body.s1681
+bridge_empty PRE_first_tail_x15_r0_suffix.input from PRE_first_tail_x15_r0_body.s1843
 server_literal PRE_first_tail_x15_r0_suffix.inputSrv := PRE_first_tail_x15_r0_body.endSrv
 
 set_option interpreter.prefer_native true in

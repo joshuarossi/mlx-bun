@@ -53,9 +53,9 @@ theorem bindRest {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
   let y : SegInst FF := { x with ν := bindAll i x.ν rest }
   have hrel : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] y.M y.ν y.K s ⟨S.tab, []⟩ y.t y.C := by
-    refine hr.withTab (by simp) ⟨fun j e he => ?_, fun _ h => nomatch h⟩
+    refine hr.withTab rfl ⟨fun j e he => ?_, fun _ h => nomatch h⟩
     rw [hr.srv.num j e he]
-    exact (eval_bindAll e (hfree e (nth?_mem_some he))).symm
+    exact congrArg some (eval_bindAll e (hfree e (nth?_mem_some he))).symm
   have hval : VBOkF loopVB y.ν := by
     intro j
     change ∃ k ≤ 2 ^ 20, bindAll i x.ν rest j = F64.ofNat k
@@ -70,7 +70,7 @@ theorem bindRest {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
     intro p hp
     rcases List.mem_append.mp hp with hp | hp
     · change bindAll i x.ν rest p.1 = _
-      rw [bindAll_off (fun q hq => hdisj q hq p hp)]
+      rw [bindAll_off (fun q hq => (hdisj q hq p hp).symm)]
       exact (Conv.mapOk_iff'.1 hmap) p hp
     · exact bindAll_on hnd hp
   have hbook : BodyBook i π K0 y O.D :=
@@ -97,10 +97,10 @@ theorem endConv {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {
   have hdf' : DefsOk vs es x.ν := by
     change DefsOk (vs.take O.J) (es.take O.J) x.ν at hdf
     rwa [hJv, hJe] at hdf
-  have h := hr.decanon hdf'.nth
-  have e : (⟨(⟨S.tab, []⟩ : SSrv).tab.map (·.subst (Conv.compactθ vs es)), (⟨S.tab, []⟩ : SSrv).oracle⟩ : SSrv) =
-      ⟨S'.tab, []⟩ := congrArg (fun tab => (⟨tab, []⟩ : SSrv)) htab
-  rw [e] at h
+  have h : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K s'
+      ⟨S.tab.map (·.subst (Conv.compactθ vs es)), []⟩ x.t x.C := Host.Ts.Sim.RelB.decanon hr hdf'.nth
+  rw [htab] at h
   exact ⟨x, rfl, rfl, ⟨K0, h, hb, hnat, hip, hins, MapOk.sub hmap hm, DefsOk.nil⟩, hB⟩
 
 /-- **A forward at the graph's hypothesis.** Its run from every start, kept by the trail, and what the

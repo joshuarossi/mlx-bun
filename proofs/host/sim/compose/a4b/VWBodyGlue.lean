@@ -136,7 +136,7 @@ theorem bodyLen {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {
     (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) []
     x.M x.ν x.K sa ⟨Sa.tab, Sa.oracle⟩ x.t x.C at h0
   have heval : (.var 9 : SymE).eval x.ν = F64.ofNat ((π.map natV).length + ([] : List Val).length) := by
-    have hv := (Conv.mapOk_iff'.1 hmap) (9, Q.L) h9
+    have hv : x.ν 9 = F64.ofNat i.L := (Conv.mapOk_iff'.1 hmap) (9, Q.L) h9
     simpa only [SymE.eval, List.length_map, hb.length, List.length_nil, Nat.add_zero] using hv
   obtain ⟨step1, ext1, rel1⟩ := Disp.bridge_len h0.ofJ
     (fullRXD_laws { setupP with rest := machReads T tk } NB) hc hst hb.prompt ho hk (.var 9) heval
