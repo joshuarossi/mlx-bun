@@ -13,15 +13,20 @@ const head = (imports: string[]) => [...new Set(imports)].map(i => `import ${i}\
   "set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\n" +
   "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim Host.Ts.Sim.Template\n\n";
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-put("TypedOk", head(["host.sim.compose.a4b.VWFramesDefs"]) +
+put("TypedOk", head(["host.sim.compose.a4b.VWFramesDefs", "host.sim.template.FastOk"]) +
   `noncomputable def ${name}.bodyOkB (bytes : List Byte) (rows : Nat) : St Host.Load.Layers.full.S → SSrv → Bool :=\n` +
   "  Host.Ts.Sim.Compose.VWFrames.bodyOk bytes rows\n");
 const fuel = (k: number) => `((nth? ${name}.ks ${k}).getD 0)`;
 const indices = [...new Set(ranges.flatMap(r => Array.from({ length: r.b - r.a }, (_, i) => i + r.a)))];
 for (const k of indices) put(`TypedK${k}`, head([mod(`H${Math.floor((k + 1) / 32)}`), mod("TypedOk"), "host.sim.template.BootEq", "host.sim.Chunk"]) +
-  `boot_rfl ${name}.bodyK${k} from ${name}.s${k} to ${name}.s${k + 1} :\n` +
+  // checked at the fast table (`runOkS`); the statement is `runOk`'s
+  `boot_rfl ${name}.bodyK${k}F from ${name}.s${k} to ${name}.s${k + 1} :\n` +
+  `  (fun (bytes : List Byte) (rows : Nat) => runOkS ${name}.F (Host.Ts.Sim.Compose.VWFrames.bodyOkN bytes rows) ${fuel(k)} ${name}.s${k} ${name}.S${k}) =\n` +
+  `    fun _ _ => some (${name}.s${k + 1}, ${name}.S${k + 1})\n` +
+  `theorem ${name}.bodyK${k} :\n` +
   `  (fun (bytes : List Byte) (rows : Nat) => runOk ${name}.F (${name}.bodyOkB bytes rows) ${fuel(k)} ${name}.s${k} ${name}.S${k}) =\n` +
-  `    fun _ _ => some (${name}.s${k + 1}, ${name}.S${k + 1})`);
+  `    fun _ _ => some (${name}.s${k + 1}, ${name}.S${k + 1}) :=\n` +
+  `  runOk_fun_of_runOkS Host.Ts.Sim.Compose.VWFrames.bodyOkN_ok ${name}.bodyK${k}F`);
 for (const [j, r] of ranges.entries()) {
   const applied = (k: number) => `(congrFun (congrFun ${name}.bodyK${k} bytes) rows)`;
   let proof = r.a < r.b ? applied(r.a) : "rfl", sum = r.a < r.b ? fuel(r.a) : "0";

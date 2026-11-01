@@ -39,7 +39,7 @@ with the EOS stop path.
   `route_of_piecesFramedAt` (`compose/MainFramed.lean`). Prefill runs in `fullWorldXD NB`, decode in the pinned world
   `fullWorldFb b0 NB`. `Gn` is being built in `host/route/GenOf.lean`.
 - `Final.lean`'s module doc states the trust boundary and the reference precisely.
-- For the current scope: a bounded theorem and a restricted `RouteGen` added beside these, which stay unedited. Route owns the statement; not written yet.
+- **Current target: `route_main_gpu` (`host/route/MainGpu.lean`), beside `route_main`, which is unedited.** Same conclusion and trust boundary, plus `hL : π.length ≤ 224`, with `RouteGenGpu` (differs only in `Pp : PiecesR`, `H : RoutePiecesR`) instead of `RouteGen`. `route_gen_gpu` (`host/route/Gpu.lean`) is the same theorem with the boot's facts as hypotheses, for compiling before the boot chain. `routeGenOfGpu` (`GenOfGpu.lean`) leaves `I`, `Pp`, `loadEntry`, `postPieces`, `shortPaths`, `postHandoff` and five graph certificates. Row set: `compose/rows-gpu.json`, generated for L = 1..224: 34 of 298 rows, 24 of 130 forwards (17 VW), 4 of 6 decode cases (`clearFill_not`, `clearGrow_not`, by `omega`, for every T). Restricted bundle: `BundleR`, `ClassR`, `RouteBundleR`, `RouteStepsR`. L in 87382..262143 also avoids the Neural Engine but needs 102 rows and all six decode cases; left for a later layer.
 
 
 ## 3. Status
@@ -72,7 +72,6 @@ boot chain `host/load/boot/w/*` needs recompiling against the current core (11-1
 
 **In progress (31 Oct):**
 - VW step `template/a4pre_first_tail_x15_r0` plus `_body`: prefix, setup chunks, `g0b` and suffix compile; the 192-site body restarts on the slimmer imports; the row count is kept as body variable 10.
-- One-token route from `ldCut` to the forward's return compiles (`singleton_forward`, 1,544,195 steps). Per-class drain budgets in `world/Offset`.
 - POST for any prompt length: `PRE_pl_entry/head/selector/call/common` compile with standard axioms; `PRE_pl_tail` and the T=1 tails are running.
 
 **Parked: the Neural Engine (31 Oct, out of current scope). Nothing below is needed for the current target.**
@@ -170,7 +169,7 @@ Estimate after these, not yet measured: about 3 CPU-h per VW forward. x9 and x15
 - Many thousands of log files overflow the argument limit, and `2>/dev/null` hides that: a `grep` over a `.log/*.log` glob can report zero matches falsely. Use `find ... | xargs`.
 - Docker Desktop's VM holds up to about 14.5 GB of the 32 GB when running; closing it would let the gate stay open.
 
-**Biggest blockers (current scope):** (1) the bounded statement and reachable row set, route; (2) bulk cost of the GPU forwards, cost: table cost, where `P.smallB` accounts for 6.4 s of 9.9 s on one chunk, with no measured per-forward number yet; (3) POST for bounded prompts, generator and route; (4) links: `I π`, VW body pieces, fills; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 172 GiB free, floor 110.
+**Biggest blockers (current scope):** (1) compile `route_gen_gpu` and its bounded layer, route; (2) bulk cost of the GPU forwards, cost: x15 body measured at 2.60 slot-h for 31 of 36 modules before the fast check. Decided 31 Oct: no table reset (about 2x at best, and it changes cuts); fast check `runOkS` instead, with statements unchanged and no cut change, B13 744 s to 225 s; being landed; (3) POST for bounded prompts, generator and route; (4) links: `I π`, VW body pieces, fills; (5) feeding generated counters into the growth recurrence (`world/Recurrence.lean`), route; (6) disk: 172 GiB free, floor 110.
 
 **Rules for the machine reference:** for |π| >= 3 the reference is the machine's own computation, because MMA and the
 Neural Engine are uninterpreted; the model-level statement stays limited to |π| <= 2.

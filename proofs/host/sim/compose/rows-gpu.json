@@ -1,0 +1,928 @@
+{
+ "bound": "1 <= L <= 224, any budget T with L + T <= 262144",
+ "counts": {
+  "rows": 34,
+  "of": 298,
+  "forwards": 24,
+  "otherStages": 17
+ },
+ "firstFinal": "L = 1 has no first-step row: first_final is the identity; its chain is final_cold.r0@first.",
+ "decode": [
+  "ord",
+  "clear",
+  "grow",
+  "fill"
+ ],
+ "decodeUnreachable": {
+  "clearFill": "needs L = 254 mod 256",
+  "clearGrow": "needs L = 255 mod 256"
+ },
+ "forwards": {
+  "fwd_D1_cold_DFirst": [
+   "final_cold.r0@first",
+   "first_tail_x0.r0"
+  ],
+  "fwd_D1_dcold_DFit": [
+   "final_ord.r0@tailed"
+  ],
+  "fwd_D1_warm_DFit": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1"
+  ],
+  "fwd_V23_cold_WFirst": [
+   "first_tail_x1.r0"
+  ],
+  "fwd_V4_cold_WFirst": [
+   "first_tail_x2.r0"
+  ],
+  "fwd_V58d_cold_WFirst": [
+   "first_tail_x4.r0"
+  ],
+  "fwd_V58f_cold_WFirst": [
+   "first_tail_x3.r0"
+  ],
+  "fwd_VW_cold_WFirst_p10": [
+   "first_tail_x10.r0"
+  ],
+  "fwd_VW_cold_WFirst_p11": [
+   "first_tail_x11.r0"
+  ],
+  "fwd_VW_cold_WFirst_p12": [
+   "first_tail_x12.r0"
+  ],
+  "fwd_VW_cold_WFirst_p13": [
+   "first_tail_x13.r0"
+  ],
+  "fwd_VW_cold_WFirst_p14": [
+   "first_tail_x14.r0"
+  ],
+  "fwd_VW_cold_WFirst_p15": [
+   "first_tail_x15.r0"
+  ],
+  "fwd_VW_cold_WFirst_p16": [
+   "first_tail_x16.r0"
+  ],
+  "fwd_VW_cold_WFirst_p17": [
+   "first_tail_x17.r0"
+  ],
+  "fwd_VW_cold_WFirst_p18": [
+   "first_tail_x18.r0"
+  ],
+  "fwd_VW_cold_WFirst_p19": [
+   "first_tail_x19.r0"
+  ],
+  "fwd_VW_cold_WFirst_p20": [
+   "first_tail_x20.r0"
+  ],
+  "fwd_VW_cold_WFirst_p21": [
+   "first_tail_x21.r0"
+  ],
+  "fwd_VW_cold_WFirst_p5": [
+   "first_tail_x5.r0"
+  ],
+  "fwd_VW_cold_WFirst_p6": [
+   "first_tail_x6.r0"
+  ],
+  "fwd_VW_cold_WFirst_p7": [
+   "first_tail_x7.r0"
+  ],
+  "fwd_VW_cold_WFirst_p8": [
+   "first_tail_x8.r0"
+  ],
+  "fwd_VW_cold_WFirst_p9": [
+   "first_tail_x9.r0"
+  ]
+ },
+ "stages": {
+  "async": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1",
+   "route_pathC_other.r0",
+   "route_pathC_other.r1"
+  ],
+  "chunk_K2048": [
+   "setup_h0.r0"
+  ],
+  "chunk_K8": [
+   "setup_early.r0"
+  ],
+  "disp_D1": [
+   "final_cold.r0@first",
+   "final_ord.r0@tailed",
+   "first_tail_x0.r0"
+  ],
+  "disp_V23": [
+   "first_tail_x1.r0"
+  ],
+  "disp_V4": [
+   "first_tail_x2.r0"
+  ],
+  "disp_V58": [
+   "first_tail_x3.r0",
+   "first_tail_x4.r0"
+  ],
+  "disp_VW": [
+   "first_tail_x10.r0",
+   "first_tail_x11.r0",
+   "first_tail_x12.r0",
+   "first_tail_x13.r0",
+   "first_tail_x14.r0",
+   "first_tail_x15.r0",
+   "first_tail_x16.r0",
+   "first_tail_x17.r0",
+   "first_tail_x18.r0",
+   "first_tail_x19.r0",
+   "first_tail_x20.r0",
+   "first_tail_x21.r0",
+   "first_tail_x5.r0",
+   "first_tail_x6.r0",
+   "first_tail_x7.r0",
+   "first_tail_x8.r0",
+   "first_tail_x9.r0"
+  ],
+  "eval": [
+   "first_tail_x0.r0",
+   "first_tail_x1.r0",
+   "first_tail_x10.r0",
+   "first_tail_x11.r0",
+   "first_tail_x12.r0",
+   "first_tail_x13.r0",
+   "first_tail_x14.r0",
+   "first_tail_x15.r0",
+   "first_tail_x16.r0",
+   "first_tail_x17.r0",
+   "first_tail_x18.r0",
+   "first_tail_x19.r0",
+   "first_tail_x2.r0",
+   "first_tail_x20.r0",
+   "first_tail_x21.r0",
+   "first_tail_x3.r0",
+   "first_tail_x4.r0",
+   "first_tail_x5.r0",
+   "first_tail_x6.r0",
+   "first_tail_x7.r0",
+   "first_tail_x8.r0",
+   "first_tail_x9.r0"
+  ],
+  "head": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1",
+   "route_pathC_other.r0",
+   "route_pathC_other.r1"
+  ],
+  "nps_DTdec_first": [
+   "first_tail_x0.r0"
+  ],
+  "nps_DTtail_first": [
+   "first_tail_x1.r0",
+   "first_tail_x10.r0",
+   "first_tail_x11.r0",
+   "first_tail_x12.r0",
+   "first_tail_x13.r0",
+   "first_tail_x14.r0",
+   "first_tail_x15.r0",
+   "first_tail_x16.r0",
+   "first_tail_x17.r0",
+   "first_tail_x18.r0",
+   "first_tail_x19.r0",
+   "first_tail_x2.r0",
+   "first_tail_x20.r0",
+   "first_tail_x21.r0",
+   "first_tail_x3.r0",
+   "first_tail_x4.r0",
+   "first_tail_x5.r0",
+   "first_tail_x6.r0",
+   "first_tail_x7.r0",
+   "first_tail_x8.r0",
+   "first_tail_x9.r0"
+  ],
+  "nps_FIN_first": [
+   "final_cold.r0@first"
+  ],
+  "nps_FIN_tailed": [
+   "final_ord.r0@tailed"
+  ],
+  "rb": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1"
+  ],
+  "smp_cold": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1",
+   "route_pathC_other.r0",
+   "route_pathC_other.r1"
+  ],
+  "smp_warm": [
+   "route_post_other.r0",
+   "route_post_other.r1",
+   "route_pathA_other.r0",
+   "route_pathA_other.r1",
+   "route_pathB_other.r0",
+   "route_pathB_other.r1"
+  ]
+ },
+ "rows": {
+  "final_cold.r0@first": {
+   "L": [
+    1,
+    1
+   ],
+   "glue": [
+    "start",
+    "g1_FIN_first",
+    "g2_fin_first",
+    "g3f_first"
+   ],
+   "stages": [
+    "nps_FIN_first",
+    "disp_D1",
+    "fwd_D1_cold_DFirst"
+   ]
+  },
+  "final_ord.r0@tailed": {
+   "L": [
+    2,
+    224
+   ],
+   "glue": [
+    "start",
+    "g1_FIN_tailed",
+    "g2_fin_tailed",
+    "g3f_tailed"
+   ],
+   "stages": [
+    "nps_FIN_tailed",
+    "disp_D1",
+    "fwd_D1_dcold_DFit"
+   ]
+  },
+  "first_tail_x0.r0": {
+   "L": [
+    2,
+    2
+   ],
+   "glue": [
+    "start",
+    "g1_DTdec_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTdec_first",
+    "disp_D1",
+    "fwd_D1_cold_DFirst",
+    "eval"
+   ]
+  },
+  "first_tail_x1.r0": {
+   "L": [
+    3,
+    4
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_V23",
+    "fwd_V23_cold_WFirst",
+    "eval"
+   ]
+  },
+  "first_tail_x10.r0": {
+   "L": [
+    66,
+    73
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p10",
+    "eval"
+   ]
+  },
+  "first_tail_x11.r0": {
+   "L": [
+    74,
+    81
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p11",
+    "eval"
+   ]
+  },
+  "first_tail_x12.r0": {
+   "L": [
+    82,
+    97
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p12",
+    "eval"
+   ]
+  },
+  "first_tail_x13.r0": {
+   "L": [
+    98,
+    113
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p13",
+    "eval"
+   ]
+  },
+  "first_tail_x14.r0": {
+   "L": [
+    114,
+    121
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p14",
+    "eval"
+   ]
+  },
+  "first_tail_x15.r0": {
+   "L": [
+    122,
+    129
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p15",
+    "eval"
+   ]
+  },
+  "first_tail_x16.r0": {
+   "L": [
+    130,
+    145
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p16",
+    "eval"
+   ]
+  },
+  "first_tail_x17.r0": {
+   "L": [
+    146,
+    161
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p17",
+    "eval"
+   ]
+  },
+  "first_tail_x18.r0": {
+   "L": [
+    162,
+    169
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p18",
+    "eval"
+   ]
+  },
+  "first_tail_x19.r0": {
+   "L": [
+    170,
+    177
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p19",
+    "eval"
+   ]
+  },
+  "first_tail_x2.r0": {
+   "L": [
+    5,
+    5
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_V4",
+    "fwd_V4_cold_WFirst",
+    "eval"
+   ]
+  },
+  "first_tail_x20.r0": {
+   "L": [
+    178,
+    217
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p20",
+    "eval"
+   ]
+  },
+  "first_tail_x21.r0": {
+   "L": [
+    218,
+    224
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p21",
+    "eval"
+   ]
+  },
+  "first_tail_x3.r0": {
+   "L": [
+    6,
+    6
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_V58",
+    "fwd_V58f_cold_WFirst",
+    "eval"
+   ]
+  },
+  "first_tail_x4.r0": {
+   "L": [
+    7,
+    9
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_V58",
+    "fwd_V58d_cold_WFirst",
+    "eval"
+   ]
+  },
+  "first_tail_x5.r0": {
+   "L": [
+    10,
+    17
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p5",
+    "eval"
+   ]
+  },
+  "first_tail_x6.r0": {
+   "L": [
+    18,
+    25
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p6",
+    "eval"
+   ]
+  },
+  "first_tail_x7.r0": {
+   "L": [
+    26,
+    33
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p7",
+    "eval"
+   ]
+  },
+  "first_tail_x8.r0": {
+   "L": [
+    34,
+    49
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p8",
+    "eval"
+   ]
+  },
+  "first_tail_x9.r0": {
+   "L": [
+    50,
+    65
+   ],
+   "glue": [
+    "start",
+    "g1_DTtail_first",
+    "g2_first",
+    "g3d_first",
+    "g4_pf_first"
+   ],
+   "stages": [
+    "nps_DTtail_first",
+    "disp_VW",
+    "fwd_VW_cold_WFirst_p9",
+    "eval"
+   ]
+  },
+  "setup_early.r0": {
+   "L": [
+    1,
+    8
+   ],
+   "glue": [
+    "g0a",
+    "g0b"
+   ],
+   "stages": [
+    "chunk_K8"
+   ]
+  },
+  "setup_h0.r0": {
+   "L": [
+    9,
+    224
+   ],
+   "glue": [
+    "g0a",
+    "g0b"
+   ],
+   "stages": [
+    "chunk_K2048"
+   ]
+  },
+  "route_post_other.r0": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "post_g5",
+    "post_g6",
+    "post_g7",
+    "post_g8",
+    "post_g9_0",
+    "post_g10_0",
+    "post_g11_0",
+    "post_g12_0",
+    "post_g9_1",
+    "post_g10_1",
+    "post_g11_1",
+    "post_g12_1"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async"
+   ]
+  },
+  "route_post_other.r1": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "post_g5",
+    "post_g6",
+    "post_g7",
+    "post_g8",
+    "post_g9_0",
+    "post_g10_0",
+    "post_g11_0",
+    "post_g12_0",
+    "post_g9_1",
+    "post_g10_1",
+    "post_g11_1",
+    "post_g12_1"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async"
+   ]
+  },
+  "route_pathA_other.r0": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pA_g5",
+    "pA_g6",
+    "pA_g7",
+    "pA_g8",
+    "pA_g9",
+    "pA_g10",
+    "pA_g11",
+    "pA_g12"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async"
+   ]
+  },
+  "route_pathA_other.r1": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pA_g5",
+    "pA_g6",
+    "pA_g7",
+    "pA_g8",
+    "pA_g9",
+    "pA_g10",
+    "pA_g11",
+    "pA_g12"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async"
+   ]
+  },
+  "route_pathB_other.r0": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pB_g5",
+    "pB_g6",
+    "pB_g7",
+    "pB_g8",
+    "pB_g9",
+    "pB_g10",
+    "pB_g11",
+    "pB_g12",
+    "pB_g13"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async",
+    "rb"
+   ]
+  },
+  "route_pathB_other.r1": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pB_g5",
+    "pB_g6",
+    "pB_g7",
+    "pB_g8",
+    "pB_g9",
+    "pB_g10",
+    "pB_g11",
+    "pB_g12",
+    "pB_g13"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async",
+    "rb",
+    "fwd_D1_warm_DFit",
+    "smp_warm",
+    "async",
+    "rb"
+   ]
+  },
+  "route_pathC_other.r0": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pC_g5",
+    "pC_g6",
+    "pC_g7",
+    "pC_g8"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async"
+   ]
+  },
+  "route_pathC_other.r1": {
+   "L": [
+    1,
+    224
+   ],
+   "glue": [
+    "pC_g5",
+    "pC_g6",
+    "pC_g7",
+    "pC_g8"
+   ],
+   "stages": [
+    "head",
+    "smp_cold",
+    "async"
+   ]
+  }
+ }
+}

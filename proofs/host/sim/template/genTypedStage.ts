@@ -18,16 +18,27 @@ const head = (imports: string[]) => imports.map(i => `import ${i}\n`).join("") +
   "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim Host.Ts.Sim.Template\n\n";
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
 const localOk = `${name}.bodyOkL`;
-put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFramesDefs", "host.sim.template.FullOk"]) +
+put("TypedOk", head([mod(`H${Math.floor(end / 32)}`), "host.sim.compose.a4b.VWFramesDefs", "host.sim.template.FullOk", "host.sim.template.FastOk"]) +
   `noncomputable def ${localOk} (bytes : List Byte) (rows : Nat) : St ${name}.F.S → SSrv → Bool :=\n` +
   `  okLocal (${acceptance} bytes rows)\n\n` +
+  // the fast table's acceptance (`${acceptance}N`): what the chunks are checked at
+  `noncomputable def ${localOk}N (bytes : List Byte) (rows : Nat) : St ${name}.F.S → FSrv → Bool :=\n` +
+  `  okLocalN (${acceptance}N bytes rows)\n\n` +
+  `theorem ${localOk}N_ok (bytes : List Byte) (rows : Nat) (s : St ${name}.F.S) (c : FSrv) (h : c.Wf) :\n` +
+  `    ${localOk}N bytes rows s c = ${localOk} bytes rows s c.toS :=\n` +
+  `  okLocalN_ok (${acceptance}N_ok bytes rows) s c h\n\n` +
   [0, end].map((i, j) => `kernel_rfl ${name}.bodyAccepted${j} :\n` +
     `  (fun (bytes : List Byte) (rows : Nat) => ${localOk} bytes rows ${name}.s${i} ${name}.S${i}) = fun _ _ => true\n`).join("\n"));
 for (let i = 0; i < end; i++) {
   put(`TypedK${i}`, head([mod("TypedOk"), mod(`H${Math.floor((i + 1) / 32)}`), "host.sim.template.BootEq", "host.sim.Chunk"]) +
-    `boot_rfl ${name}.bodyK${i} from ${name}.s${i} to ${name}.s${i + 1} :\n` +
+    // checked at the fast table (`runOkS`); the statement is `runOk`'s
+    `boot_rfl ${name}.bodyK${i}F from ${name}.s${i} to ${name}.s${i + 1} :\n` +
+    `  (fun (bytes : List Byte) (rows : Nat) => runOkS ${name}.F (${localOk}N bytes rows)\n` +
+    `    ((nth? ${name}.ks ${i}).getD 0) ${name}.s${i} ${name}.S${i}) = fun _ _ => some (${name}.s${i + 1}, ${name}.S${i + 1})\n` +
+    `theorem ${name}.bodyK${i} :\n` +
     `  (fun (bytes : List Byte) (rows : Nat) => runOk ${name}.F (${localOk} bytes rows)\n` +
-    `    ((nth? ${name}.ks ${i}).getD 0) ${name}.s${i} ${name}.S${i}) = fun _ _ => some (${name}.s${i + 1}, ${name}.S${i + 1})`);
+    `    ((nth? ${name}.ks ${i}).getD 0) ${name}.s${i} ${name}.S${i}) = fun _ _ => some (${name}.s${i + 1}, ${name}.S${i + 1}) :=\n` +
+    `  runOk_fun_of_runOkS ${localOk}N_ok ${name}.bodyK${i}F`);
 }
 const applied = (k: number) => `(congrFun (congrFun ${name}.bodyK${k} bytes) rows)`;
 let proof = applied(0), consumed = `((nth? ${name}.ks 0).getD 0)`;

@@ -1,4 +1,5 @@
 import host.sim.compose.a4b.VWFramesDefs
+import host.sim.template.FastOk
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

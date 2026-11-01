@@ -8,7 +8,11 @@ set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template
 
-boot_rfl PRE_first_tail_x15_r0_body.bodyK1127 from PRE_first_tail_x15_r0_body.s1127 to PRE_first_tail_x15_r0_body.s1128 :
-  (fun (bytes : List Byte) (rows : Nat) => runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 1127).getD 0) PRE_first_tail_x15_r0_body.s1127 PRE_first_tail_x15_r0_body.S1127) =
+boot_rfl PRE_first_tail_x15_r0_body.bodyK1127F from PRE_first_tail_x15_r0_body.s1127 to PRE_first_tail_x15_r0_body.s1128 :
+  (fun (bytes : List Byte) (rows : Nat) => runOkS PRE_first_tail_x15_r0_body.F (Host.Ts.Sim.Compose.VWFrames.bodyOkN bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 1127).getD 0) PRE_first_tail_x15_r0_body.s1127 PRE_first_tail_x15_r0_body.S1127) =
     fun _ _ => some (PRE_first_tail_x15_r0_body.s1128, PRE_first_tail_x15_r0_body.S1128)
+theorem PRE_first_tail_x15_r0_body.bodyK1127 :
+  (fun (bytes : List Byte) (rows : Nat) => runOk PRE_first_tail_x15_r0_body.F (PRE_first_tail_x15_r0_body.bodyOkB bytes rows) ((nth? PRE_first_tail_x15_r0_body.ks 1127).getD 0) PRE_first_tail_x15_r0_body.s1127 PRE_first_tail_x15_r0_body.S1127) =
+    fun _ _ => some (PRE_first_tail_x15_r0_body.s1128, PRE_first_tail_x15_r0_body.S1128) :=
+  runOk_fun_of_runOkS Host.Ts.Sim.Compose.VWFrames.bodyOkN_ok PRE_first_tail_x15_r0_body.bodyK1127F
 end Host.Load.Run.Tpl
