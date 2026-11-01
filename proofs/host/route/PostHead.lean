@@ -12,10 +12,10 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Compos
 open Host.Load.Run.Tpl
 
 /-- The generated selector reaches the actual head call and retains the original prompt book. -/
-theorem selector_to_head (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (π : List Nat)
+theorem selector_to_head (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat)
     (hcap : cap ≤ 4096 + 1593835520) :
-    CutStep (Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1)
-      (Post.indexedCut NB T tk cap π PRE_pl_call.s1 PRE_pl_call.S1) 131 := by
+    CutStep (Post.indexedCut NB T tk cap nI π PRE_pl_head.s1 PRE_pl_head.S1)
+      (Post.indexedCut NB T tk cap nI π PRE_pl_call.s1 PRE_pl_call.S1) 131 := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, hf, ha⟩
   have h0 : RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB))
       wideP [] x.M x.ν x.K PRE_pl_selector.s0
@@ -59,15 +59,15 @@ theorem selector_to_head (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (π : List 
   exact ⟨(congrFun he.a 2586).trans ha.1, (congrFun he.a 2589).trans ha.2⟩
 
 /-- The common selector glue owns an empty oracle; row-ten's singleton fact proves its checks. -/
-noncomputable def post_g5 (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (π : List Nat)
+noncomputable def post_g5 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat)
     (hcap : cap ≤ 4096 + 1593835520) (Adm : Lin.Cls.Inst → Prop) (uses : List Lin.Cls.Row) :
     RGluePiece FF Adm uses
-      (fun _ => Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1)
-      (fun _ => Post.indexedCut NB T tk cap π PRE_pl_call.s1 PRE_pl_call.S1) where
+      (fun _ => Post.indexedCut NB T tk cap nI π PRE_pl_head.s1 PRE_pl_head.S1)
+      (fun _ => Post.indexedCut NB T tk cap nI π PRE_pl_call.s1 PRE_pl_call.S1) where
   m := []
   n := 131
   O := []
   chk _ _ := rfl
-  ok _ _ _ _ _ _ := selector_to_head NB T tk cap π hcap
+  ok _ _ _ _ _ _ := selector_to_head NB T tk cap nI π hcap
 
 end Host.Route.PostHead

@@ -1,4 +1,5 @@
 import host.route.GpuMem
+import host.route.FamCert
 set_option maxRecDepth 1000000
 set_option autoImplicit false
 namespace Host.Route.PrefGraph
@@ -21,12 +22,10 @@ theorem matches_stepV (tab : List F64) (x : Ffi.St) (w : PipelineWeights) (time 
     (hembed : bufferEmbed P.toMlxContract w.embedWords w.embedScales w.embedBiases ids =
       embedTrace P.toMlxContract w.embedWords w.embedScales w.embedBiases token)
     (hfn : w.finalNorm.shape = [5120]) (hsh : ShapesOk (stageWeights w) hs)
-    (e : stepTrace P.toMlxContract KR.toKernelContract w time token hs = some (t, hs'))
-    (c : Nat) (caps : CapsFor c (stageWeights w) hs) (cert : List Nat)
+    (e : stepTrace P.toMlxContract KR.toKernelContract w time token hs = some (t, hs')) (cert : List Nat)
     (hm : Matches (Gr tab x) (stepGraphOf w hs time).1 cert = true)
     (hin : HeldV (routeVal P KR env kind Z tab x) (stepGraphOf w hs time).1 cert (stepEnvWithIds env.weights w ids hs)) :
     (∃ r, routeVal P KR env kind Z tab x (certAt cert (stepGraphOf w hs time).2.1) = some r ∧ itemUint32 r = some t) ∧
-      CapsFor (kvCap (some c) time) (stageWeights w) hs' ∧
       (stepGraphOf w hs time).2.2.length = hs'.length ∧
       (∀ h ∈ hs', (handleVals h).isSome) ∧
       ∀ q ∈ cacheFacts (stepGraphOf w hs time).2.2 hs', routeVal P KR env kind Z tab x (certAt cert q.1) = some q.2 := by
@@ -34,10 +33,34 @@ theorem matches_stepV (tab : List F64) (x : Ffi.St) (w : PipelineWeights) (time 
     (fun j nd hj hne => Host.Mlx.SimGraph.Mach.ffiGraph_route _ _ _ j nd hj hne) hm hin
   obtain ⟨⟨r, hlt, hr, ht⟩, hlen, hsome, hcf⟩ :=
     stepGraph_eval_ids P.toMlxContract KR.toKernelContract env.weights w time token ids hembed hs hs' t hfn hsh e
-  refine ⟨⟨r, hcarry _ hlt r hr, ht⟩, capsFor_step P.toMlxContract KR.toKernelContract w time _ hs hs' _ c caps e, hlen, hsome,
-    fun q hq => ?_⟩
+  refine ⟨⟨r, hcarry _ hlt r hr, ht⟩, hlen, hsome, fun q hq => ?_⟩
   obtain ⟨hql, hqv⟩ := hcf q hq
   exact hcarry _ hql _ hqv
+
+/-- The inputs of the first step, from the empty caches: the parameters at their nodes, the token at its carrier. -/
+theorem heldV_initial (ev : Nat → Option Value) (σ : Nat → Nat) (ps : List (Option Nat × Option Nat)) (token : Tensor)
+    (value : TensorValues) (weightsEnv : List Char → List Char → Option Value) (ids : Value) (E : List (RNode Int InKey))
+    (cert : List Nat) (hp : ∀ t ∈ parameterTensors parameterChoice, ev t.node = some (value t))
+    (ht : ev token.node = some ids)
+    (hm : inputCarriersMatch E cert (inputNode (Host.Mlx.SimGraph.Iter.loadedAt σ ps) token) = true) :
+    HeldV ev E cert (stepEnvWithIds weightsEnv (weights value) ids initialHandles) := by
+  intro k e key v he hpk hv
+  have hn := inputCarriersMatch_get E cert (inputNode (Host.Mlx.SimGraph.Iter.loadedAt σ ps) token) hm k e key he hpk
+  generalize certAt cert k = n at hn ⊢
+  by_cases hk : key = .tokenIds
+  · subst key
+    have hv2 : some ids = some v := hv
+    cases hv2
+    rw [← (Option.some.inj hn : token.node = n)]
+    exact ht
+  · have hv2 := (initial_input_values value ids key hk).symm.trans hv
+    obtain ⟨t, htensor, rfl⟩ := Option.map_eq_some_iff.mp hv2
+    have heq : parameterInput (Host.Mlx.SimGraph.Iter.loadedAt σ ps) key = parameterInput parameterChoice key := by
+      cases key <;> rfl
+    have hparam := inputNode_parameter _ token key n hk (parameterInput_noncache htensor) hn
+    rw [heq, htensor] at hparam
+    rw [← Option.some.inj hparam]
+    exact hp t (parameterInput_mem _ _ htensor)
 
 variable {KR kind} in
 /-- **POST's first held time**, from the decode step at `L - 1`: the target's graph carries the step's graph at `cert`, the
@@ -56,8 +79,8 @@ theorem postAt_ofStep {NE : NeuralEngine} {net : Host.Mlx.SimGraph.Ref.AneNet} {
         (weights (firstValues P.toMlxContract KR.toKernelContract env tab)).embedBiases tok0)
     (hfn : (weights (firstValues P.toMlxContract KR.toKernelContract env tab)).finalNorm.shape = [5120])
     (hsh : ShapesOk (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) hs)
-    (caps : CapsFor (Host.Mlx.SimGraph.Mach.capL (π.length - 1))
-      (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) hs)
+    (hcaps : CapsFor (Sim.capL (π.length + 0))
+      (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) hs')
     (cert : List Nat)
     (hm : Matches (Gr tab (Host.Ts.Sim.Full.mlxOf y.ffi))
       (stepGraphOf (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) hs (π.length - 1)).1 cert = true)
@@ -78,10 +101,9 @@ theorem postAt_ofStep {NE : NeuralEngine} {net : Host.Mlx.SimGraph.Ref.AneNet} {
     have h := refPrompt_succ P KR NE KR.inPlace net env π tab (π.length - 1) le_rfl
     rw [show π.length - 1 + 1 = π.length + 0 by omega, hR1, hR0] at h
     exact h.symm
-  obtain ⟨⟨r, hr, hi⟩, hcaps, hlen, hsome, hq⟩ := matches_stepV P KR env kind (fun _ => none) tab _ _ _ _ hs hs' t ids
-    hembed hfn hsh e _ caps cert hm hin
+  obtain ⟨⟨r, hr, hi⟩, hlen, hsome, hq⟩ := matches_stepV P KR env kind (fun _ => none) tab _ _ _ _ hs hs' t ids
+    hembed hfn hsh e cert hm hin
   have hval := cacheValuesV_of_facts (cachesAt σ Cr) _ hs' (fun a => certAt cert a) hCr hlen hsome hq
-  rw [Host.Mlx.SimGraph.Mach.kvCap_capL, show π.length - 1 + 1 = π.length + 0 by omega] at hcaps
   exact
     { ok := hb.ok
       hist := fun k hk => by

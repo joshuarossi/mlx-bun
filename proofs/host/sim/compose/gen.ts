@@ -2009,14 +2009,14 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]
       omega))
-    pf14 h9 (fun ν hm => by rw [h10n ν hm, hn])
+    pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 (fun ν hm => by rw [h10n ν hm, hn])
     (fun ν hm => by
       rw [← hn]
       exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
     (fun ν hm => by
       rw [← hcapR]
       exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
-    (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) pfA pfB pfC hcap hbound
+    pfA pfB pfC hcap hbound
 ` + tail);
   }
   if (!onlySites.length && !onlyGlues.length && bodyEnd) {

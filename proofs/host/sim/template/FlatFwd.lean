@@ -107,6 +107,24 @@ theorem symSmall_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name :
     exact refSmall_sound hν (List.all_eq_true.mp h j hj)
   · trivial
 
+/-- `cloSmallB` at the singleton: a replayed trace's references. -/
+def cloSmallR (r : Nat) (S : SSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+  !G.cloSym x name args || ((G.cloRefs x args).all (refSmall r S) && G.cloRunB S x name args)
+
+theorem cloSmallR_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : NSt} {name : Name} {args : List Arg}
+    (hν : VP r ν) (h : cloSmallR r S x name args = true) : G.cloSmall ν S x name args := by
+  intro hc
+  unfold cloSmallR at h
+  rw [hc] at h
+  simp only [Bool.not_true, Bool.false_or, Bool.and_eq_true] at h
+  refine ⟨fun j hj => refSmall_sound hν (List.all_eq_true.mp h.1 j hj), fun r' S' hr' => ?_⟩
+  have h2 := h.2
+  unfold G.cloRunB at h2
+  rw [hr'] at h2
+  cases r'
+  · cases h2
+  · rfl
+
 def smallFX (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   ((smallRefs (toLoad x).mlx name args).all (refSmall r S) && (G.smallRefsX (toLoad x).mlx name args).all (refSmall r S)) &&
     (!isSymShape name || symRunOk S x name args)
@@ -122,7 +140,7 @@ theorem smallFX_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name :
 
 def smallFS (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif G.symPath (mlxOf x) name args then symSmall r S (mlxOf x) name args
-  else smallFX r S x name args && G.cloSmallB loopVB S (mlxOf x) name args
+  else smallFX r S x name args && cloSmallR r S (mlxOf x) name args
 
 theorem smallFS_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
     (hν : VP r ν) (h : smallFS r S x name args = true) : Full.smallFS ν S x name args := by
@@ -130,11 +148,11 @@ theorem smallFS_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name :
   constructor
   · intro hp; rw [hp, Bool.cond_true] at h; exact symSmall_sound hν h
   · intro hp; rw [hp, Bool.cond_false, Bool.and_eq_true] at h
-    exact ⟨smallFX_sound hν h.1, G.cloSmallB_sound hν.1 h.2⟩
+    exact ⟨smallFX_sound hν h.1, cloSmallR_sound hν h.2⟩
 
 @[irreducible] def smallFX2 (r : Nat) (S : SSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif (bridgeOf x).active then smallFX r S x name args && (!isSymShape name || aneRunOk S x name args) &&
-    G.cloSmallB loopVB S (mlxOf x) name args
+    cloSmallR r S (mlxOf x) name args
   else smallFS r S x name args
 
 theorem smallFX2_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name : Name} {args : List Arg}
@@ -144,7 +162,7 @@ theorem smallFX2_sound {r : Nat} {ν : Nat → F64} {S : SSrv} {x : FF.S} {name 
   · intro ha; rw [ha, Bool.cond_false] at h; exact smallFS_sound hν h
   · intro ha
     rw [ha, Bool.cond_true, Bool.and_eq_true, Bool.and_eq_true] at h
-    refine ⟨smallFX_sound hν h.1.1, fun hs => ?_, G.cloSmallB_sound hν.1 h.2⟩
+    refine ⟨smallFX_sound hν h.1.1, fun hs => ?_, cloSmallR_sound hν h.2⟩
     have := h.1.2
     rw [hs] at this
     simpa using this
@@ -190,6 +208,14 @@ theorem symSmallF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (ar
   unfold symSmallF symSmall
   simp only [refGeF_eq r h, refSmallF_eq r h]
 
+noncomputable def cloSmallRF (r : Nat) (c : FSrv) (x : NSt) (name : Name) (args : List Arg) : Bool :=
+  !G.cloSym x name args || ((G.cloRefs x args).all (refSmallF r c) && cloRunF c x name args)
+
+theorem cloSmallRF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : NSt) (name : Name) (args : List Arg) :
+    cloSmallRF r c x name args = cloSmallR r c.toS x name args := by
+  unfold cloSmallRF cloSmallR
+  rw [refSmallF_eq r h, cloRunF_eq h]
+
 noncomputable def smallFXF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   ((smallRefs (toLoad x).mlx name args).all (refSmallF r c) && (G.smallRefsX (toLoad x).mlx name args).all (refSmallF r c)) &&
     (!isSymShape name || symRunF c x name args)
@@ -201,22 +227,22 @@ theorem smallFXF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (ar
 
 noncomputable def smallFSF (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif G.symPath (mlxOf x) name args then symSmallF r c (mlxOf x) name args
-  else smallFXF r c x name args && cloSmallF loopVB c (mlxOf x) name args
+  else smallFXF r c x name args && cloSmallRF r c (mlxOf x) name args
 
 theorem smallFSF_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
     smallFSF r c x name args = smallFS r c.toS x name args := by
   unfold smallFSF smallFS
-  rw [symSmallF_eq r h, smallFXF_eq r h, cloSmallF_eq loopVB h]
+  rw [symSmallF_eq r h, smallFXF_eq r h, cloSmallRF_eq r h]
 
 noncomputable def smallFX2F (r : Nat) (c : FSrv) (x : FF.S) (name : Name) (args : List Arg) : Bool :=
   bif (bridgeOf x).active then smallFXF r c x name args && (!isSymShape name || aneRunF c x name args) &&
-    cloSmallF loopVB c (mlxOf x) name args
+    cloSmallRF r c (mlxOf x) name args
   else smallFSF r c x name args
 
 theorem smallFX2F_eq (r : Nat) {c : FSrv} (h : c.Wf) (x : FF.S) (name : Name) (args : List Arg) :
     smallFX2F r c x name args = smallFX2 r c.toS x name args := by
   unfold smallFX2F smallFX2
-  rw [smallFXF_eq r h, aneRunF_eq h, cloSmallF_eq loopVB h, smallFSF_eq r h]
+  rw [smallFXF_eq r h, aneRunF_eq h, cloSmallRF_eq r h, smallFSF_eq r h]
 
 /-- A class's row count variable, its chunk array, its buffer and its view. -/
 structure Fr where

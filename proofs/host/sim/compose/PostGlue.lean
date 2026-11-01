@@ -9,33 +9,33 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Load.Run.Tpl
 
 /-- A wider offset bound keeps the book. -/
-theorem Book.mono {T cap cap' : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
-    (h : Book T tk cap π γ x) (hc : cap ≤ cap') : Book T tk cap' π γ x :=
+theorem Book.mono {T cap cap' nI : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
+    (h : Book T tk cap nI π γ x) (hc : cap ≤ cap') : Book T tk cap' nI π γ x :=
   { h with context := ⟨h.context.1, Nat.le_trans h.context.2 hc⟩ }
 
-theorem indexedCut_mono {NB T cap cap' : Nat} {tk : Nat → Nat} {π : List Nat} {s : St FF.S} {S : SSrv}
-    (hc : cap ≤ cap') : CutConv (indexedCut NB T tk cap π s S) (indexedCut NB T tk cap' π s S) := by
+theorem indexedCut_mono {NB T cap cap' nI : Nat} {tk : Nat → Nat} {π : List Nat} {s : St FF.S} {S : SSrv}
+    (hc : cap ≤ cap') : CutConv (indexedCut NB T tk cap nI π s S) (indexedCut NB T tk cap' nI π s S) := by
   rintro x ⟨γ, hr, hb⟩ hB
   exact ⟨x, rfl, rfl, ⟨γ, hr, hb.mono hc⟩, hB⟩
 
 /-- A step of every prompt's indexed cut is a step of the length's cut. -/
-theorem cut_step {NB T cap cap' L n : Nat} {tk : Nat → Nat} {s s' : St FF.S} {S S' : SSrv}
-    (h : ∀ π, π.length = L → CutStep (indexedCut NB T tk cap π s S) (indexedCut NB T tk cap' π s' S') n) :
-    CutStep (cut NB T tk cap L s S) (cut NB T tk cap' L s' S') n := by
+theorem cut_step {NB T cap cap' nI L n : Nat} {tk : Nat → Nat} {s s' : St FF.S} {S S' : SSrv}
+    (h : ∀ π, π.length = L → CutStep (indexedCut NB T tk cap nI π s S) (indexedCut NB T tk cap' nI π s' S') n) :
+    CutStep (cut NB T tk cap nI L s S) (cut NB T tk cap' nI L s' S') n := by
   rintro t C ⟨x, rfl, rfl, ⟨π, hπ, hr⟩, hB⟩
   obtain ⟨t', C', hrun, y, ht, hC, hr', hB'⟩ := h π hπ x.t x.C ⟨x, rfl, rfl, hr, hB⟩
   exact ⟨t', C', hrun, y, ht, hC, ⟨π, hπ, hr'⟩, hB'⟩
 
 /-- A checked POST glue stretch keeps the prompt book.  Row ten's singleton fact proves its checks;
 the acceptance is transported to the admitted offset. -/
-theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
+theorem glue {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
     (hcap : cap ≤ 4096 + 1593835520)
     (ha : PostOk.ok sa Sa = true)
     (hrun : runOk FF PostOk.ok n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true)
     (hgood : ∀ ν : Nat → F64, ν 10 = F64.ofNat 1 → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi) :
-    CutStep (indexedCut NB T tk cap π sa Sa) (indexedCut NB T tk cap π sb Sb) n := by
+    CutStep (indexedCut NB T tk cap nI π sa Sa) (indexedCut NB T tk cap nI π sb Sb) n := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, hf, hanc⟩
   have hs := hr.withOracle (hgood x.ν hb.rowValue)
   have hq : RelB FF
@@ -68,7 +68,7 @@ theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St F
     ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩
 
 /-- `glue` keeping a stretch's property. -/
-theorem glueMem {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
+theorem glueMem {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
     {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (hcap : cap ≤ 4096 + 1593835520)
     (ha : PostOk.ok sa Sa = true)
@@ -77,7 +77,7 @@ theorem glueMem {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : S
     (hgood : ∀ ν : Nat → F64, ν 10 = F64.ofNat 1 → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sb = true) :
-    CutStep (withMem Mem (indexedCut NB T tk cap π sa Sa)) (withMem Mem (indexedCut NB T tk cap π sb Sb)) n := by
+    CutStep (withMem Mem (indexedCut NB T tk cap nI π sa Sa)) (withMem Mem (indexedCut NB T tk cap nI π sb Sb)) n := by
   rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, ⟨hf, hanc⟩, hm⟩
   have hs := hr.withOracle (hgood x.ν hb.rowValue)
   have hq : RelB FF
