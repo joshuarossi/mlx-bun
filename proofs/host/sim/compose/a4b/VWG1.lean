@@ -45,16 +45,17 @@ private theorem bridge33 : bridgeOf PRE_first_tail_x15_r0.s33.ffi = bridgeOf PRE
 private theorem bridge38 : bridgeOf PRE_first_tail_x15_r0.s38.ffi = bridgeOf PRE_first_tail_x15_r0.s19.ffi :=
   typedRun37.dst_bridge.trans PRE_first_tail_x15_r0.k19.src_bridge.symm
 
-theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hπ : ∀ k ∈ π, k < 248320)
+theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hπ : ∀ k ∈ π, k < 248320)
     (hL : 2 ≤ i.L) (hLmax : i.L ≤ 2048) (hn : i.n = i.L - 1)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν g1Oracle) :
-    CutStep (afterNpsCut NB T tk π i) (dispatchCut NB T tk π i) 260 := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hk, hmemo, ⟨π', hlen, hvc, hfr⟩, hfresh, hins, hids, hbound⟩, hp, hnat⟩
+    CutStep (withMem Mem (afterNpsCut NB T tk π i)) (withMem Mem (dispatchCut NB T tk π i)) 260 := by
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨⟨hk, hmemo, ⟨π', hlen, hvc, hfr⟩, hfresh, hins, hids, hbound⟩, hp, hnat⟩, hm⟩
   rw [SetupDrop.promptEq hvc hπ hfr hp] at hlen hvc hfr
   have hi33 : (bridgeOf PRE_first_tail_x15_r0.s33.ffi).active = false := by rw [bridge33]; exact inactive19
   have hi38 : (bridgeOf PRE_first_tail_x15_r0.s38.ffi).active = false := by rw [bridge38]; exact inactive19
   have hv : x.ν 1087 = F64.ofNat i.n := hq.2.2.2.1
-  obtain ⟨M', t', C', K', hrun, hext, hrel, hkp, hframes, hD, hlo, hhi, hev, hinput⟩ :=
+  obtain ⟨M', t', C', K', hrun, hext, hrel, hkp, hframes, hD, hlo, hhi, hev, hinput, ng⟩ :=
     g1Run_input hr hk hq.1 (G1Good.ofGood (horacle x.ν hq.2.2)) hfr
       (by omega) (by omega) (by omega) hv hi33 (by omega) hvc
   have hb : ForwardBook i π x.K ⟨M', x.ν, K', t', C'⟩ := by
@@ -77,17 +78,20 @@ theorem g1 {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hπ :
   have inputs : setupInputs T tk (⟨M', x.ν, K', t', C'⟩ : SegInst FF) :=
     ⟨hins.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hins.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨x.K, hrel, hb, hinput, inputs, hq.2.2⟩, fresh, ids,
-    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hrel hext.big hext.node cnt38⟩
+    ⟨x.K, hrel, hb, hinput, inputs, hq.2.2⟩, ⟨fresh, ids,
+    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hrel hext.big hext.node cnt38⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hrel ng (countersOkB_tokens cnt38)⟩ hm⟩
 
-noncomputable def g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320) :
-    GluePiece FF firstTailRows (afterNpsCut NB T tk π) (dispatchCut NB T tk π) where
+noncomputable def g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320)
+    (Mem : Nat → SegInst FF → Prop) (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
+    GluePiece FF firstTailRows (fun i => withMem (Mem i.L) (afterNpsCut NB T tk π i))
+      (fun i => withMem (Mem i.L) (dispatchCut NB T tk π i)) where
   m := npsMap
   n := 260
   O := g1Oracle
   chk r hr := List.all_eq_true.mp g1Check r hr
   ok r hr i hi ho := by
     obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts hr hi
-    exact g1 hπ hL hLmax hn ho.1
+    exact g1 (hMem i.L) hπ hL hLmax hn ho.1
 
 end Host.Ts.Sim.Compose.VWFirst

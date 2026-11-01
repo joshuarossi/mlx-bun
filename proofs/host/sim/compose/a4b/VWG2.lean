@@ -16,10 +16,11 @@ kernel_rfl cnt41 : countersOkB PRE_first_tail_x15_r0.s40 PRE_first_tail_x15_r0.s
 private theorem bridge22 : bridgeOf PRE_first_tail_x15_r0.s41.ffi = bridgeOf PRE_first_tail_x15_r0.s40.ffi :=
   typedRun40.dst_bridge.trans typedRun40.src_bridge.symm
 
-theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
+theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x15_r0.S40.oracle) :
-    CutStep (g2Cut NB T tk π i) (forwardCut NB T tk π i) 7 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
+    CutStep (withMem Mem (g2Cut NB T tk π i)) (withMem Mem (forwardCut NB T tk π i)) 7 := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (typedSim NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length []) hb.context hb.valuation hgood
@@ -52,18 +53,21 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
-    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt41⟩
+    ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
+    hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt41⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt41)⟩ hm⟩
 
 kernel_rfl g2Check : (firstTailRows.all fun r => goodLin r.ps
   (varsOf r.V npsMap) PRE_first_tail_x15_r0.S40.oracle) = true
 
-noncomputable def g2_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
-    GluePiece FF firstTailRows (g2Cut NB T tk π) (forwardCut NB T tk π) where
+noncomputable def g2_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
+    (Mem : Nat → SegInst FF → Prop) (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
+    GluePiece FF firstTailRows (fun i => withMem (Mem i.L) (g2Cut NB T tk π i))
+      (fun i => withMem (Mem i.L) (forwardCut NB T tk π i)) where
   m := npsMap
   n := 7
   O := PRE_first_tail_x15_r0.S40.oracle
   chk r hr := List.all_eq_true.mp g2Check r hr
-  ok _ _ i _ ho := g2 NB T tk π i ho.1
+  ok _ _ i _ ho := g2 NB T tk π i (hMem i.L) ho.1
 
 end Host.Ts.Sim.Compose.VWFirst

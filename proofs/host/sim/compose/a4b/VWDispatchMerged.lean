@@ -19,10 +19,11 @@ noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (π : Lis
 
 kernel_rfl cnt39 : countersOkB PRE_first_tail_x15_r0.s38 PRE_first_tail_x15_r0.s39 = true
 
-theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst)
+theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_first_tail_x15_r0.st2.S0.oracle) :
-    CutStep (dispatchCut NB T tk π i) (mergedDispatchCut NB T tk π i) 425 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, hfresh, hids, hnat⟩
+    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 425 := by
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   let d := dispatchSite NB T tk (tokenBytes (π.take i.n)) (π.take i.n).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (VWFrames.typedW (tokenBytes (π.take i.n)) (π.take i.n).length) [] x.M x.ν x.K PRE_first_tail_x15_r0.s38 d.tpl.S0 x.t x.C := by
@@ -79,8 +80,9 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
     change (mlxOf PRE_first_tail_x15_r0.s38.ffi).nnext ≤ 15236
     rw [← PRE_first_tail_x15_r0.fcnn2]
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', book, ip, inputs, hmap⟩, fresh, ids,
+    ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt39, ⟨hr.presentBound, hr.heapSupp⟩,
-    Nat.le_trans top.1.load.mlx.nbl hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩
+    Nat.le_trans top.1.load.mlx.nbl hNL, PRE_first_tail_x15_r0.cshiftR2 top.1 hNL⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt39)⟩ hm⟩
 
 end Host.Ts.Sim.Compose.VWFirst

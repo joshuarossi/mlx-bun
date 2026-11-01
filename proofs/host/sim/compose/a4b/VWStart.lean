@@ -11,9 +11,10 @@ noncomputable def npsCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (L : Na
   { SetupDrop.cut NB T tk π L with
     s0 := PRE_first_tail_x15_r0.s17, tab0 := PRE_first_tail_x15_r0.S17.tab }
 
-theorem toNps {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} (hC : chunkC L = 2048) :
-    CutConv (SetupCommon.nextCut NB T tk π L) (npsCut NB T tk π L) := by
-  apply (SetupDrop.toOld hC).trans
+theorem toNps {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hC : chunkC L = 2048) :
+    CutConv (withMem Mem (SetupCommon.nextCut NB T tk π L)) (withMem Mem (npsCut NB T tk π L)) := by
+  apply (SetupDrop.toOld hMem hC).trans
   rintro x ⟨hr, hq⟩ hb
   refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb⟩
   change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []

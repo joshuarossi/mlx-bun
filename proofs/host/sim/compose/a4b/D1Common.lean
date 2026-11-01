@@ -7,15 +7,12 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Full
 
 /-- The checked singleton prefix consumes the shared setup cut and keeps its
 reserved values and emitted-cell anchor at the forward call. -/
-theorem toForwardSaved (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
-    CutStep (SetupCommon.nextCut NB T tk π 1) (SetupD1SavedCells.forwardSavedInputCut NB T tk) 603 :=
-  SetupD1SavedCells.toForwardValuesInput.convL (SetupDrop.toSingleton NB T tk π)
-
 /-- The same run keeps the route's prompt in its frame. -/
 theorem toForwardPrompt (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
     CutStep (SetupCommon.nextCut NB T tk π 1)
       (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV)) 603 :=
-  SetupD1PromptIdentity.toForwardValuesInput.convL ((SetupDrop.toSingletonPin NB T tk π).trans
-    fun x hr hb => ⟨x, rfl, rfl, hr, ⟨hb.1, hb.2.1⟩, hb.2.2.1⟩)
+  SetupD1PromptIdentity.toForwardValuesInput.convL ((withMem_true _).trans
+    ((SetupDrop.toSingletonPin NB T tk π (Mem := fun _ => True) (fun _ _ _ h => h)).trans
+      fun x hr hb => ⟨x, rfl, rfl, hr, ⟨hb.1.1, hb.1.2.1⟩, hb.1.2.2.1⟩))
 
 end Host.Ts.Sim.Compose.D1Common

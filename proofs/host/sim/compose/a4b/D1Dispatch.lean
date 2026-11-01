@@ -11,13 +11,16 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable abbrev g2Cut (NB T : Nat) (tk : Nat → Nat) :=
   typedCut NB T tk D1StageSplit.s21 D1StageSplit.S21
 
+kernel_rfl cnt21 : countersOkB D1StageSplit.s20 D1StageSplit.s21 = true
+
 private theorem bridge21 : bridgeOf D1StageSplit.s21.ffi = bridgeOf D1StageSplit.s20.ffi :=
   typedRun21.src_bridge.trans typedRun19.dst_bridge.symm
 
-theorem dispatch (NB T : Nat) (tk : Nat → Nat)
+theorem dispatch (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.st1.S0.oracle) :
-    CutStep (dispatchCut NB T tk) (g2Cut NB T tk) 155 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, hfresh, hids⟩
+    CutStep (withMem Mem (dispatchCut NB T tk)) (withMem Mem (g2Cut NB T tk)) 155 := by
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids⟩, hm⟩
   let d := dispatchSite NB T tk (D1Typed.bytes π)
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (D1Frames.typedW (D1Typed.bytes π)) [] x.M x.ν x.K D1StageSplit.s20 d.tpl.S0 x.t x.C := by
@@ -68,10 +71,12 @@ theorem dispatch (NB T : Nat) (tk : Nat → Nat)
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, fresh, ids⟩
+    ⟨π, K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt21)⟩ hm⟩
 
-noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat → Nat) :
-    StagePiece FF [final_cold.r0] [] (fun _ => dispatchCut NB T tk) (fun _ => g2Cut NB T tk) where
+noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    StagePiece FF [final_cold.r0] [] (fun _ => withMem Mem (dispatchCut NB T tk)) (fun _ => withMem Mem (g2Cut NB T tk)) where
   m := D1StageSplit.map_g1_FIN_first
   n := 155
   O := D1StageSplit.st1.S0.oracle
@@ -81,7 +86,7 @@ noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat →
   ok r hr i hi ho := by
     obtain rfl := List.mem_singleton.mp hr
     have hL := finalRowL hi
-    refine StageCall.intro (CutConv.refl _) (dispatch NB T tk ?_) (CutConv.refl _)
+    refine StageCall.intro (CutConv.refl _) (dispatch NB T tk hMem ?_) (CutConv.refl _)
     intro ν hm
     apply ho.1 ν
     simpa only [D1StageSplit.map_g1_FIN_first, MapOk, setupI, Cls.Inst.get, hL] using hm

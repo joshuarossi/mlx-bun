@@ -25,7 +25,8 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       Disp.KpJ (VWFrames.typedJ (tokenBytes (π.take n)) (π.take n).length) 4096 K' ∧
       K'.fr = (g1Framed K π n).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
       (∃ asR ret tr, K'.base' =
-        ⟨chars!"mlx_array_new_data", .jsPtr (M'.a VWFrames.buffer) 0 (tokenBytes (π.take n)) :: asR, ret⟩ :: tr) ∧ InputAt (π.take n) (M'.node 15235) t' C' := by
+        ⟨chars!"mlx_array_new_data", .jsPtr (M'.a VWFrames.buffer) 0 (tokenBytes (π.take n)) :: asR, ret⟩ :: tr) ∧ InputAt (π.take n) (M'.node 15235) t' C' ∧
+      Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   have hlen : (π.take n).length = n := by rw [List.length_take, Nat.min_eq_left hn]
   have hvlen : ν 1087 = F64.ofNat (π.take n).length := by rw [hlen]; exact hv
   have rr1 : runOk FF PRE_first_tail_x15_r0.okB6 71 PRE_first_tail_x15_r0.s19 PRE_first_tail_x15_r0.S19 =
@@ -36,16 +37,22 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have hk1 : Disp.KpJ VWFrames.chunkJ 4096 K1 :=
     VWFrames.kp_frame (J := setupJ) (J' := VWFrames.chunkJ) rfl rfl rfl hk ([], (π.take n).map natV)
   have hf1 : K1.fr VWFrames.chunk = some ([], (π.take n).map natV) := Disp.Ctx.frameAt_eq K _ _
+  have ng13 := glueCall_ngrow (SetupCommon.simQ NB T tk) accepted19 rr1
+    (runOk_ok_end 70 rr1 live20) live20 PRE_first_tail_x15_r0.stepA7 hvb hk (hr.withOracle hg.s19) r13
   obtain ⟨r34, h4⟩ := slice h3 hfr hn h53 hv
   have rr4 : runOk FF PRE_first_tail_x15_r0.okB7 15 PRE_first_tail_x15_r0.s22 PRE_first_tail_x15_r0.S22 =
       some (PRE_first_tail_x15_r0.s23, PRE_first_tail_x15_r0.S23) := PRE_first_tail_x15_r0.k22
   obtain ⟨M6, t6, C6, r46, e46, h6⟩ := D1Advance.call (chunkSim NB T tk []) hk1 hvb hg.s22
     accepted22 rr4 accepted23 live23 PRE_first_tail_x15_r0.stepA8 top24 h4
-  obtain ⟨M7, t7, r67, e67, h7, _⟩ := length24 h6 (D1Data.laws _ NB) hf1 hvlen
+  have ng46 := glueCall_ngrow (fun y0 => chunkGrowSim NB T tk [] y0) accepted22 rr4 accepted23 live23
+    PRE_first_tail_x15_r0.stepA8 hvb hk1 (h4.withOracle hg.s22) r46
+  obtain ⟨M7, t7, r67, e67, h7, ffi7⟩ := length24 h6 (D1Data.laws _ NB) hf1 hvlen
   have rr7 : runOk FF PRE_first_tail_x15_r0.okB8 18 PRE_first_tail_x15_r0.s25 PRE_first_tail_x15_r0.S25 =
       some (PRE_first_tail_x15_r0.s26, PRE_first_tail_x15_r0.S26) := PRE_first_tail_x15_r0.k25
   obtain ⟨M9, t9, C9, r79, e79, h9⟩ := D1Advance.call (chunkSim NB T tk []) hk1 hvb hg.s25
     accepted25 rr7 accepted26 live26 PRE_first_tail_x15_r0.stepA9 top27 h7
+  have ng79 := glueCall_ngrow (fun y0 => chunkGrowSim NB T tk [] y0) accepted25 rr7 accepted26 live26
+    PRE_first_tail_x15_r0.stepA9 hvb hk1 (h7.withOracle hg.s25) r79
   obtain ⟨r910, h10⟩ := typed h9 hf1
   let K2 := Disp.typedK K1 VWFrames.buffer
   have hk2 := typedContext (tokenBytes (π.take n)) (π.take n).length hk1
@@ -58,12 +65,18 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     D1Advance.call (typedSim NB T tk (tokenBytes (π.take n)) (π.take n).length []) hk2 hvb hg.s28
       (congrFun (congrFun typedAccepted28 _) _) (congrFun (congrFun typedRun28 _) _) (congrFun (congrFun typedAccepted29 _) _) live29
       PRE_first_tail_x15_r0.stepA10 top30 h10
+  have ng1012 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (π.take n)) (π.take n).length 4096 [])
+    (congrFun (congrFun typedAccepted28 _) _) (congrFun (congrFun typedRun28 _) _) (congrFun (congrFun typedAccepted29 _) _) live29
+    PRE_first_tail_x15_r0.stepA10 hvb hk2 (h10.withOracle hg.s28) r1012
   obtain ⟨r1213, h13⟩ := ptr h12 hfv hfb (by rw [hlen]; exact hn0)
   obtain ⟨M15, t15, C15, r1315, e1315, h15⟩ :=
     D1Advance.call (typedSim NB T tk (tokenBytes (π.take n)) (π.take n).length []) hk2 hvb hg.s31
       (congrFun (congrFun typedAccepted31 _) _) (congrFun (congrFun typedRun31 _) _) (congrFun (congrFun typedAccepted32 _) _) live32
       PRE_first_tail_x15_r0.stepA11 top33 h13
-  obtain ⟨M16, t16, C16, r1516, e1516, h16, hev, ip16⟩ := ND.step_input h15 hk2 hvb hg.s33 hi hfb
+  have ng1315 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (π.take n)) (π.take n).length 4096 [])
+    (congrFun (congrFun typedAccepted31 _) _) (congrFun (congrFun typedRun31 _) _) (congrFun (congrFun typedAccepted32 _) _) live32
+    PRE_first_tail_x15_r0.stepA11 hvb hk2 (h13.withOracle hg.s31) r1315
+  obtain ⟨M16, t16, C16, r1516, e1516, h16, hev, ip16, ng1516⟩ := ND.step_input h15 hk2 hvb hg.s33 hi hfb
     (by rw [hlen]; exact hn31) (fun k hk => hvc k (List.mem_of_mem_take hk)) hvlen
   let K3 : Ctx := ⟨K2.fr, PRE_first_tail_x15_r0.s34.trace, t16.trace, K2.D, K2.lo, K2.hi⟩
   have hk3 : Disp.KpJ (VWFrames.typedJ (tokenBytes (π.take n)) (π.take n).length) 4096 K3 := hk2
@@ -97,7 +110,16 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have rr := runC_trans (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans
     (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans r13 r34) r46) r67) r79) r910)
       r1012) r1213) r1315) r1516) r1618) r1819) r1920
-  refine ⟨M20, t20, C20, K3, rr, he, h20, hk3, rfl, rfl, rfl, rfl, ?_, ip20⟩
+  have ng67 : Host.Mlx.Ffi.NGrow (mlxOf t6.ffi) (mlxOf t7.ffi) := by
+    rw [ffi7]
+    exact Host.Mlx.Ffi.NGrow.refl _
+  have ng1819 : Host.Mlx.Ffi.NGrow (mlxOf t18.ffi) (mlxOf t19.ffi) := by
+    rw [ffi19]
+    exact Host.Mlx.Ffi.NGrow.refl _
+  have ng : Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t20.ffi) :=
+    ng13.trans (ng46.trans (ng67.trans (ng79.trans (ng1012.trans (ng1315.trans (ng1516.trans
+      (ng1618.trans (ng1819.trans ng1920))))))))
+  refine ⟨M20, t20, C20, K3, rr, he, h20, hk3, rfl, rfl, rfl, rfl, ?_, ip20, ng⟩
   obtain ⟨asR, ret, hev⟩ := hev
   refine ⟨asR, ret, t15.trace, ?_⟩
   change t16.trace = _

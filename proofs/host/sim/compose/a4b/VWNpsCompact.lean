@@ -18,6 +18,8 @@ noncomputable def afterNpsCut (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) (i
       PRE_first_tail_x15_r0.s19 PRE_first_tail_x15_r0.S19 i with
     B := fun x => afterNpsBook T i.L tk x ∧ PromptFr ρ x ∧ NativeAt 0 0 PRE_first_tail_x15_r0.s19 x.t }
 
+kernel_rfl keepNN1 : PRE_first_tail_x15_r0.kd1.nn0 = PRE_first_tail_x15_r0.kd1.nn1
+kernel_rfl keepNK1 : PTrie.keys PRE_first_tail_x15_r0.kd1.node = []
 kernel_rfl sameNext1 : (mlxOf PRE_first_tail_x15_r0.s18.ffi).next = (mlxOf PRE_first_tail_x15_r0.s19.ffi).next
 kernel_rfl sameNnext1 : (mlxOf PRE_first_tail_x15_r0.s18.ffi).nnext = (mlxOf PRE_first_tail_x15_r0.s19.ffi).nnext
 
@@ -29,10 +31,10 @@ theorem reservedWsOff {j : Nat} (hj : j < 9) : PRE_first_tail_x15_r0.ws1.contain
   have h := Nat.le_of_ble_eq_true (List.all_eq_true.mp npsWsLow j (List.contains_iff_mem.mp hc))
   omega
 
-theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst}
-    (h1 : 1 ≤ i.L) (hL : i.L ≤ 2 ^ 20) (hn : i.n = i.L - 1) :
-    CutConv (mergedPinCut NB T tk ρ i.L) (afterNpsCut NB T tk ρ i) := by
-  rintro x hR ⟨hB, hpin, hnat⟩
+theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (h1 : 1 ≤ i.L) (hL : i.L ≤ 2 ^ 20) (hn : i.n = i.L - 1) :
+    CutConv (withMem Mem (mergedPinCut NB T tk ρ i.L)) (withMem Mem (afterNpsCut NB T tk ρ i)) := by
+  rintro x hR ⟨⟨hB, hpin, hnat⟩, hm⟩
   have hcdata := nps_compact_rel hR hB
   obtain ⟨hr, ν, hν, hvb, hkp, hmap⟩ := hR
   obtain ⟨⟨hframeBook, hsmall, hoffset⟩, hins, hids, hbase, hcall, hNB, hnative⟩ := hB
@@ -66,8 +68,9 @@ theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Ins
     rw [hν]
     exact hvals
   refine ⟨npsPair x, rfl, rfl, ⟨hc, hpq.1, hctx.1, hpq.2⟩,
-    ⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hfrP.trans hpin,
-      ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩
+    ⟨⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hfrP.trans hpin,
+      ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩,
+    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN1 keepNK1 k))) hm⟩
   · intro j hj
     change Shift.valuation θZ1 x.ν j = _
     unfold θZ1

@@ -123,9 +123,10 @@ theorem route_gen_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelG
     RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE net env leaves typed π Gn.kind T s Gn.NB := by
   have hRT := route_refTokens P G Pg B lseSum lseNumerator NE net env leaves typed hπ (by omega) hlt hNE hnet
   obtain ⟨N0, tL, CL, hrun, hld⟩ := hboot
+  have hclip : (Gn.I.clip.ld π.length).Inv tL CL := (clip_ld Gn.I hL).symm ▸ hld
   exact route_final_framed P G Pg B lseSum lseNumerator NE env leaves typed π Gn.kind T hπ hlt hT hctx net hNE hnet s hs
     (Gn.artifacts leaves typed hπ hL hT hctx (fun tab j _ => machTok_def P _ NE net env π (hRT []) hπ tab j)
       (fun j _ => machTok_le P _ NE net env π (hRT []) hπ hlt j))
-    ⟨N0, tL, CL, hrun, by rw [show Gn.I.clip.ld π.length = Gn.I.ld π.length from clip_ld Gn.I hL]; exact hld⟩
+    ⟨N0, tL, CL, hrun, hclip⟩
 
 end Host.Route

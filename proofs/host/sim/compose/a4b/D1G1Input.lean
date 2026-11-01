@@ -8,6 +8,24 @@ set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose.D1Split
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
+theorem chunkGrow (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      D1Input.okB1 (Disp.KpJ D1Frames.chunkJ 4096) wideP [] (VBOkF loopVB) := by
+  let P : LoadP := { setupP with rest := machReads T tk }
+  have hj : D1Frames.chunkJ.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
+  have hs := fullStepSimXLBXDJSQ P NB loopVB D1Frames.chunkJ 4096 hj rfl rfl rfl rfl rfl [] D1Frames.chunk_wp y0
+  have hb : okBackFXS P = okBackFXS setupP := backRest setupP (machReads T tk)
+  have ha : D1Input.okB1 = Disp.okJSJ D1Frames.chunkJ (okBackFXS setupP) 4096 := by
+    funext s S
+    rfl
+  have he : Disp.FRJ (FRQ (FullRXD P NB) (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y))) =
+      FRQ (Disp.FRJ (FullRXD P NB)) (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)) := by
+    funext M m x y
+    exact propext ⟨fun h => ⟨⟨h.1.1, h.2⟩, h.1.2⟩, fun h => ⟨⟨h.1.1, h.2⟩, h.1.2⟩⟩
+  rw [he, hb, ← ha] at hs
+  exact hs
+
 theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     {K : Ctx} {t : St FF.S} {C : CSrv} {π : List Nat}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
@@ -24,7 +42,7 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       K'.fr = (g1Framed K π).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
       (∃ asR ret tr, K'.base' =
         ⟨chars!"mlx_array_new_data", .jsPtr (M'.a D1Frames.buffer) 0 (D1Typed.bytes π) :: asR, ret⟩ :: tr) ∧
-      SetupD1Input.InputAt π (M'.node 15235) t' C' := by
+      SetupD1Input.InputAt π (M'.node 15235) t' C' ∧ Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   have rr1 : runOk FF D1StageSplit.okB1 72 D1StageSplit.s1 D1StageSplit.S1 =
       some (D1StageSplit.s2, D1StageSplit.S2) := D1StageSplit.k1
   obtain ⟨M3, t3, C3, r13, e13, h3⟩ := D1Advance.call (sim1 NB T tk) hk hvb hg.s1 accepted1 rr1
@@ -33,16 +51,22 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have hk1 : Disp.KpJ D1Frames.chunkJ 4096 K1 :=
     D1Frames.kp_frame (J := setupJ) (J' := D1Frames.chunkJ) rfl rfl rfl hk ([], π.map natV)
   have hf1 : K1.fr D1Frames.chunk = some ([], π.map natV) := Disp.Ctx.frameAt_eq K _ _
+  have ng13 := glueCall_ngrow (SetupCommon.simQ NB T tk) accepted1 rr1
+    (runOk_ok_end 71 rr1 live2) live2 D1StageSplit.stepA2 hvb hk (hr.withOracle hg.s1) r13
   obtain ⟨r34, h4⟩ := slice h3 hfr hlen hv
   have rr4 : runOk FF D1StageSplit.okB2 15 D1StageSplit.s4 D1StageSplit.S4 =
       some (D1StageSplit.s5, D1StageSplit.S5) := D1StageSplit.k4
   obtain ⟨M6, t6, C6, r46, e46, h6⟩ := D1Advance.call (D1Sim.chunk NB T tk) hk1 hvb hg.s4
     accepted4 rr4 accepted5 live5 D1StageSplit.stepA3 top6 h4
-  obtain ⟨M7, t7, r67, e67, h7⟩ := length6 h6 (D1Data.laws _ NB) hf1 hlen hv
+  have ng46 := glueCall_ngrow (chunkGrow NB T tk) accepted4 rr4 accepted5 live5
+    D1StageSplit.stepA3 hvb hk1 (h4.withOracle hg.s4) r46
+  obtain ⟨M7, t7, r67, e67, h7, ffi7⟩ := length6_ffi h6 (D1Data.laws _ NB) hf1 hlen hv
   have rr7 : runOk FF D1StageSplit.okB3 18 D1StageSplit.s7 D1StageSplit.S7 =
       some (D1StageSplit.s8, D1StageSplit.S8) := D1StageSplit.k7
   obtain ⟨M9, t9, C9, r79, e79, h9⟩ := D1Advance.call (D1Sim.chunk NB T tk) hk1 hvb hg.s7
     accepted7 rr7 accepted8 live8 D1StageSplit.stepA4 top9 h7
+  have ng79 := glueCall_ngrow (chunkGrow NB T tk) accepted7 rr7 accepted8 live8
+    D1StageSplit.stepA4 hvb hk1 (h7.withOracle hg.s7) r79
   obtain ⟨r910, h10⟩ := typed h9 hf1 hlen
   let K2 := Disp.typedK K1 D1Frames.buffer
   have hk2 := D1Typed.context (D1Typed.bytes π) hk1
@@ -55,12 +79,18 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     D1Advance.call (D1Sim.typed NB T tk (D1Typed.bytes π)) hk2 hvb hg.s10
       (congrFun typedAccepted10 _) (congrFun typedRun10 _) (congrFun typedAccepted11 _) live11
       D1StageSplit.stepA5 top12 h10
+  have ng1012 := glueCall_ngrow (D1InputGrow.typed NB T tk (D1Typed.bytes π))
+    (congrFun typedAccepted10 _) (congrFun typedRun10 _) (congrFun typedAccepted11 _) live11
+    D1StageSplit.stepA5 hvb hk2 (h10.withOracle hg.s10) r1012
   obtain ⟨r1213, h13⟩ := ptr h12 hfv hfb
   obtain ⟨M15, t15, C15, r1315, e1315, h15⟩ :=
     D1Advance.call (D1Sim.typed NB T tk (D1Typed.bytes π)) hk2 hvb hg.s13
       (congrFun typedAccepted13 _) (congrFun typedRun13 _) (congrFun typedAccepted14 _) live14
       D1StageSplit.stepA6 top15 h13
-  obtain ⟨M16, t16, C16, r1516, e1516, h16, hev, ip16⟩ := ND.step_input h15 hk2 hvb hg.s15 hi hfb hlen hvc hv
+  have ng1315 := glueCall_ngrow (D1InputGrow.typed NB T tk (D1Typed.bytes π))
+    (congrFun typedAccepted13 _) (congrFun typedRun13 _) (congrFun typedAccepted14 _) live14
+    D1StageSplit.stepA6 hvb hk2 (h13.withOracle hg.s13) r1315
+  obtain ⟨M16, t16, C16, r1516, e1516, h16, hev, ip16, ng1516⟩ := ND.step_input h15 hk2 hvb hg.s15 hi hfb hlen hvc hv
   let K3 : Ctx := ⟨K2.fr, D1StageSplit.s16.trace, t16.trace, K2.D, K2.lo, K2.hi⟩
   have hk3 : Disp.KpJ (D1Frames.typedJ (D1Typed.bytes π)) 4096 K3 := hk2
   obtain ⟨M18, t18, C18, r1618, e1618, h18⟩ :=
@@ -92,7 +122,16 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have rr := runC_trans (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans
     (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans (runC_trans r13 r34) r46) r67) r79) r910)
       r1012) r1213) r1315) r1516) r1618) r1819) r1920
-  refine ⟨M20, t20, C20, K3, rr, he, h20, hk3, rfl, rfl, rfl, rfl, ?_, ip20⟩
+  have ng67 : Host.Mlx.Ffi.NGrow (mlxOf t6.ffi) (mlxOf t7.ffi) := by
+    rw [ffi7]
+    exact Host.Mlx.Ffi.NGrow.refl _
+  have ng1819 : Host.Mlx.Ffi.NGrow (mlxOf t18.ffi) (mlxOf t19.ffi) := by
+    rw [ffi19]
+    exact Host.Mlx.Ffi.NGrow.refl _
+  have ng : Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t20.ffi) :=
+    ng13.trans (ng46.trans (ng67.trans (ng79.trans (ng1012.trans (ng1315.trans (ng1516.trans
+      (ng1618.trans (ng1819.trans ng1920))))))))
+  refine ⟨M20, t20, C20, K3, rr, he, h20, hk3, rfl, rfl, rfl, rfl, ?_, ip20, ng⟩
   obtain ⟨asR, ret, hev⟩ := hev
   refine ⟨asR, ret, t15.trace, ?_⟩
   change t16.trace = _

@@ -1,5 +1,8 @@
+import host.sim.compose.PreFill
+import host.sim.full.BridgeJs
 import host.sim.full.TargetGrowD
-import host.sim.conv.Compact
+import host.sim.conv.CompactBridge
+import host.sim.template.Sigma
 set_option Elab.async false
 namespace Host.Ts.Sim.Compose
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
@@ -35,6 +38,12 @@ theorem NTrack.conv {x y : SegInst FF} (ht : y.t = x.t) (hC : y.C = x.C) (hn : y
 def withMem (Mem : SegInst FF → Prop) (A : ICut FF) : ICut FF :=
   { A with B := fun x => A.B x ∧ Mem x }
 
+theorem withMem_forget (Mem : SegInst FF → Prop) (A : ICut FF) : CutConv (withMem Mem A) A :=
+  fun x hr hb => ⟨x, rfl, rfl, hr, hb.1⟩
+
+theorem withMem_true (A : ICut FF) : CutConv A (withMem (fun _ => True) A) :=
+  fun x hr hb => ⟨x, rfl, rfl, hr, hb, trivial⟩
+
 /-- Native growth pops nothing when the two relations' queues have the same length. -/
 theorem tokens_of_grow {P : LoadP} {NB : Nat} {W W' : Nat → Option WFrame} {M M' : Map} {ν ν' : Nat → F64}
     {K K' : Ctx} {sa sb t t' : St FF.S} {Sa Sb : SSrv} {C C' : CSrv}
@@ -61,11 +70,8 @@ theorem tokens_of_grow {P : LoadP} {NB : Nat} {W W' : Nat → Option WFrame} {M 
   rw [he]
   rfl
 
-/-- A compaction with no renamed node and no dropped node fixes every node. -/
-theorem compact_node_id {n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {big : Int → Int} {region : Nat → Nat}
-    {D : RData} (hn : D.nn0 = D.nn1) (hk : PTrie.keys D.node = []) (k : Nat) :
-    (Conv.Map.compact n0 n1 nS pl nr big region D.nodeF).node k = k := by
-  change D.nodeF k = k
+/-- A map with no renamed node and no dropped node fixes every node. -/
+theorem nodeF_id {D : RData} (hn : D.nn0 = D.nn1) (hk : PTrie.keys D.node = []) (k : Nat) : D.nodeF k = k := by
   by_cases hle : D.nn0 ≤ k
   · simp only [RData.nodeF, RData.ble_true hle, Bool.cond_true]
     omega
@@ -75,5 +81,10 @@ theorem compact_node_id {n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {big :
       have := PTrie.mem_keys D.node k y hg
       rw [hk] at this
       cases this
+
+theorem compact_node_id {n0 n1 nS : Nat} {pl : List Nat} {nr : List NumV} {big : Int → Int} {region : Nat → Nat}
+    {D : RData} (hn : D.nn0 = D.nn1) (hk : PTrie.keys D.node = []) (k : Nat) :
+    (Conv.Map.compact n0 n1 nS pl nr big region D.nodeF).node k = k :=
+  nodeF_id hn hk k
 
 end Host.Ts.Sim.Compose

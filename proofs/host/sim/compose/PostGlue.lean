@@ -1,5 +1,6 @@
 import host.route.PostSimulation
 import host.sim.compose.PostTransport
+import host.sim.compose.SetupKeep
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -66,5 +67,50 @@ theorem glue {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St F
     exact hf Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', ht, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hbook⟩, hf',
     ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩
+
+/-- `glue` keeping a stretch's property. -/
+theorem glueMem {NB T cap n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
+    {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
+    (hcap : cap ≤ 4096 + 1593835520)
+    (ha : ∀ bs, PostHeadSmall.ok bs sa Sa = true)
+    (hrun : ∀ bs, runOk FF (PostHeadSmall.ok bs) n sa Sa = some (sb, Sb))
+    (htop : noRetBlock sb = true)
+    (hgood : ∀ ν : Nat → F64, ν 10 = F64.ofNat 1 → Good ν Sa.oracle)
+    (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
+    (hcnt : countersOkB sa sb = true) :
+    CutStep (withMem Mem (indexedCut NB T tk cap π sa Sa)) (withMem Mem (indexedCut NB T tk cap π sb Sb)) n := by
+  rintro t C ⟨x, rfl, rfl, ⟨γ, hr, hb⟩, ⟨hf, hanc⟩, hm⟩
+  let bs := bytes γ
+  have hs := hr.withOracle (hgood x.ν hb.rowValue)
+  have hq : RelB FF
+      (Disp.FRJ (FRQ (FullRXD (PostSimulation.params T tk) NB)
+        fun y => Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y)))
+      (D1Frames.typedW bs) [] x.M x.ν x.K sa Sa x.t x.C :=
+    { hs with ffi := ⟨⟨hs.ffi.1, Host.Mlx.Ffi.NGrow.refl _⟩, hs.ffi.2⟩ }
+  have hok := PostSimulation.accepted_signed hcap (ha bs)
+  have hrun' := PostSimulation.run_signed hcap (hrun bs)
+  have hsim := PostSimulation.simulationQ NB T tk bs jsSignedLimit cap (Nat.le_refl _) [] (mlxOf x.t.ffi)
+  obtain ⟨M', t', C', ht, he, hx⟩ :=
+    Disp.runOk_simXVB FF _ _ _ _ [] _ hsim.xv (fun _ _ _ => .inl rfl) x.ν x.K
+      hb.context ⟨hb.valuation, hb.rowValue⟩ n x.M sa Sa x.t x.C sb Sb (.inl hq) hok hrun'
+  have hrel := (hx.rel_noRet htop).withOracle (o := []) (fun _ h => nomatch h)
+  have hout : RelB FF (Disp.FRJ (FullRXD (PostSimulation.params T tk) NB))
+      (D1Frames.typedW bs) [] M' x.ν x.K sb ⟨Sb.tab, []⟩ t' C' :=
+    { hrel with ffi := ⟨hrel.ffi.1.1, hrel.ffi.2⟩ }
+  have hbook := hb.grow he hrel.ffi.1.2 (runC_le _ _ _ _ _ ht)
+  obtain ⟨_, _, r0⟩ := hs.ffi.1
+  obtain ⟨_, _, r1⟩ := hout.ffi.1
+  have hi' : (bridgeOf sb.ffi).active = false :=
+    (congrArg (fun b : Host.Mlx.FfiAne.St => b.active) hbr).trans hi
+  have hbridge : bridgeOf t'.ffi = bridgeOf x.t.ffi :=
+    (r1.toR hi').bridge.1.trans (hbr.trans (r0.toR hi).bridge.1.symm)
+  have hf' : AneFresh t' := by
+    intro Cx Pc Kc weights kind NE IP G init
+    rw [hbridge]
+    exact hf Cx Pc Kc weights kind NE IP G init
+  exact ⟨t', C', ht, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hbook⟩, ⟨hf',
+    ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ ht, he.node, hrel.ffi.1.2,
+      tokens_of_grow hr hout hrel.ffi.1.2 (countersOkB_tokens hcnt)⟩ hm⟩
 
 end Host.Ts.Sim.Compose.Post

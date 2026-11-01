@@ -23,21 +23,24 @@ noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (s : St FF.S) (S : SS
 noncomputable abbrev dispatchCut (NB T : Nat) (tk : Nat → Nat) :=
   typedCut NB T tk D1StageSplit.s20 D1StageSplit.S20
 
+kernel_rfl cnt20 : countersOkB D1StageSplit.s1 D1StageSplit.s20 = true
+
 private theorem bridge15 : bridgeOf D1StageSplit.s15.ffi = bridgeOf D1StageSplit.s1.ffi :=
   D1StageSplit.stepA6.dst_bridge.trans D1StageSplit.k1.src_bridge.symm
 private theorem bridge20 : bridgeOf D1StageSplit.s20.ffi = bridgeOf D1StageSplit.s1.ffi :=
   typedRun19.dst_bridge.trans D1StageSplit.k1.src_bridge.symm
 
-theorem g1 (NB T : Nat) (tk : Nat → Nat)
+theorem g1 (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν g1Oracle) :
-    CutStep (g1Cut NB T tk) (dispatchCut NB T tk) 261 := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb⟩
+    CutStep (withMem Mem (g1Cut NB T tk)) (withMem Mem (dispatchCut NB T tk)) 261 := by
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb, hm⟩
   obtain ⟨hk, hmemo, π, hlen, hvocab, hframe, hd, hfresh⟩ := hb.1.1
   have hi1 : (bridgeOf D1StageSplit.s1.ffi).active = false := by rw [bridge1]; exact inactive0
   have hi15 : (bridgeOf D1StageSplit.s15.ffi).active = false := by rw [bridge15]; exact hi1
   have hi20 : (bridgeOf D1StageSplit.s20.ffi).active = false := by rw [bridge20]; exact hi1
   have hv : x.ν 9 = F64.ofNat 1 := hq.2.2.1
-  obtain ⟨M', t', C', K', hrun, hext, hrel, hkp, hfr, hD, hlo, hhi, hev, hinput⟩ :=
+  obtain ⟨M', t', C', K', hrun, hext, hrel, hkp, hfr, hD, hlo, hhi, hev, hinput, ng⟩ :=
     g1Run_input hr hk hq.1 (G1Good.ofGood (horacle x.ν hq.2.2)) hframe hlen hv hi15 hvocab
   have hbook : SetupD1.ForwardBook π x.K ⟨M', x.ν, K', t', C'⟩ :=
     ⟨hlen, hvocab, hq.1, hv, hkp, hk, hframe, hmemo, hfr, hD.trans hd, hlo, hhi, hev⟩
@@ -56,10 +59,12 @@ theorem g1 (NB T : Nat) (tk : Nat → Nat)
   have hinputs : setupInputs T tk (⟨M', x.ν, K', t', C'⟩ : SegInst FF) := by
     exact ⟨hb.2.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hb.2.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨π, x.K, hrel, hbook, hinput, hinputs, hq.2.2⟩, fresh, hids⟩
+    ⟨π, x.K, hrel, hbook, hinput, hinputs, hq.2.2⟩, ⟨fresh, hids⟩,
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hrel ng (countersOkB_tokens cnt20)⟩ hm⟩
 
-noncomputable def g1_FIN_first (NB T : Nat) (tk : Nat → Nat) :
-    GluePiece FF [final_cold.r0] (fun _ => g1Cut NB T tk) (fun _ => dispatchCut NB T tk) where
+noncomputable def g1_FIN_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    GluePiece FF [final_cold.r0] (fun _ => withMem Mem (g1Cut NB T tk)) (fun _ => withMem Mem (dispatchCut NB T tk)) where
   m := D1StageSplit.map_g1_FIN_first
   n := 261
   O := g1Oracle
@@ -67,7 +72,7 @@ noncomputable def g1_FIN_first (NB T : Nat) (tk : Nat → Nat) :
   ok r hr i hi ho := by
     obtain rfl := List.mem_singleton.mp hr
     have hL := finalRowL hi
-    apply g1
+    apply g1 NB T tk hMem
     intro ν hm
     apply ho.1 ν
     simpa only [D1StageSplit.map_g1_FIN_first, MapOk, setupI, Cls.Inst.get, hL] using hm

@@ -9,9 +9,11 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly
 
-noncomputable def nps_DTtail_first__start__g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
+noncomputable def nps_DTtail_first__start__g1_DTtail_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
+    (Mem : Nat → SegInst FF → Prop) (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
     StagePiece FF firstTailRows [⟨[(0, .L), (1, .o), (2, .C)], Stage.NextStep.DTtail.O⟩]
-      (fun i => SetupCommon.nextCut NB T tk π i.L) (afterNpsCut NB T tk π) where
+      (fun i => withMem (Mem i.L) (SetupCommon.nextCut NB T tk π i.L))
+      (fun i => withMem (Mem i.L) (afterNpsCut NB T tk π i)) where
   m := [(9, .L)]
   n := PRE_first_tail_x15_r0.st1.tpl.n + 1
   O := PRE_first_tail_x15_r0.st1.S0.oracle
@@ -24,5 +26,6 @@ noncomputable def nps_DTtail_first__start__g1_DTtail_first (NB T : Nat) (tk : Na
     have horacle : ∀ ν, MapOk ν (setupI i.L) [(9, .L)] → Good ν PRE_first_tail_x15_r0.st1.S0.oracle := by
       intro ν hm
       exact ho.1 ν ⟨hm.1, trivial⟩
-    exact StageCall.intro (toNps hc) (nps_merged horacle) (nps_compact (by omega) (by omega) hn)
+    exact StageCall.intro (toNps (hMem i.L) hc) (nps_merged (hMem i.L) horacle)
+      (nps_compact (hMem i.L) (by omega) (by omega) hn)
 end Host.Ts.Sim.Compose.VWFirst

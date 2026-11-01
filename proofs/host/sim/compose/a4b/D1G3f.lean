@@ -41,6 +41,8 @@ kernel_rfl inputNode : PLWalkD1.R.data.nodeF 15235 = 15235
 kernel_rfl sameNext : D1Body.s155.next = PRE_pl_entry.s0.next
 kernel_rfl sameHandles : (mlxOf D1Body.s155.ffi).next = (mlxOf PRE_pl_entry.s0.ffi).next
 kernel_rfl sameNodes : (mlxOf D1Body.s155.ffi).nnext = (mlxOf PRE_pl_entry.s0.ffi).nnext
+kernel_rfl walkNN : PLWalkD1.R.data.nn0 = PLWalkD1.R.data.nn1
+kernel_rfl walkNK : PTrie.keys PLWalkD1.R.data.node = []
 kernel_rfl nodesBelow : Nat.ble (mlxOf D1Body.s155.ffi).nnext PLD1.P0.NL = true
 
 /-- The variables the entry binds, at the singleton's row. -/
@@ -76,9 +78,10 @@ private theorem entryValuation {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : �
 
 /-- **The singleton's return at the L-general POST entry.** -/
 theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈ ρ, k < 248320) {cap : Nat}
-    (hcap : 4096 ≤ cap) :
-    CutConv (returnedPromptCut NB T tk ρ) (Post.indexedCut NB T tk cap ρ PRE_pl_entry.s0 PRE_pl_entry.S0) := by
-  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨hf, hc⟩, hp⟩
+    (hcap : 4096 ≤ cap) {Mem : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    CutConv (withMem Mem (returnedPromptCut NB T tk ρ))
+      (withMem Mem (Post.indexedCut NB T tk cap ρ PRE_pl_entry.s0 PRE_pl_entry.S0)) := by
+  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨⟨hf, hc⟩, hp⟩, hm⟩
   obtain ⟨origin, hfb, _⟩ := hb
   have hP : x.K.fr 2665 = some ([], π.map natV) := SetupD1PromptIdentity.forward_prompt hfb
   have hC : x.K.fr D1Frames.chunk = some ([], π.map natV) := by
@@ -109,7 +112,8 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
       (mlxOf x.t.ffi).next).withJs, Shift.valuation PLD1.θ x.ν,
     ⟨Shift.framedNext x.M x.K D1Body.s155, PRE_pl_entry.s0.trace, x.t.trace, x.t.next - PRE_pl_entry.s0.next,
       x.K.lo, x.K.hi⟩, x.t, x.C⟩
-  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, hf, ?_⟩
+  have hnode : y.M.node = x.M.node := funext fun k => congrArg x.M.node (nodeF_id walkNN walkNK k)
+  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, ⟨hf, ?_⟩, hMem x y (NTrack.conv rfl rfl hnode) hm⟩
   · refine
       { nonempty := by omega
         vocab := hfb.vocab
@@ -173,27 +177,34 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
 kernel_rfl headBridge : bridgeOf PRE_pl_head.s1.ffi = bridgeOf PRE_pl_head.s0.ffi
 kernel_rfl headTop : noRetBlock PRE_pl_head.s1 = true
 kernel_rfl headInactive : (bridgeOf PRE_pl_head.s0.ffi).active = false
+kernel_rfl headCnt : countersOkB PRE_pl_head.s0 PRE_pl_head.s1 = true
 
 noncomputable def g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320)
-    (cap : Nat) (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 1593835520) :
-    GluePiece FF [final_cold.r0] (fun _ => returnedPromptCut NB T tk π)
-      (fun _ => Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1) where
+    (cap : Nat) (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 1593835520)
+    (Mem : Nat → SegInst FF → Prop) (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
+    GluePiece FF [final_cold.r0] (fun _ => withMem (Mem 1) (returnedPromptCut NB T tk π))
+      (fun i => withMem (Mem i.L) (Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1)) where
   m := []
   n := 809
   O := []
   chk _ _ := rfl
   ok r hr i hi _ := by
-    have hstep : CutStep (Post.indexedCut NB T tk cap π PRE_pl_head.s0 PRE_pl_head.S0)
-        (Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1) 809 :=
-      Post.glue hcap2 (fun bs => congrFun PRE_pl_head.typedAccepted0 bs) PRE_pl_head.typedRun headTop
-        (fun _ hν => PRE_pl_head.good hν) headInactive headBridge
-    have hhead : CutConv (Post.indexedCut NB T tk cap π PRE_pl_entry.s0 PRE_pl_entry.S0)
-        (Post.indexedCut NB T tk cap π PRE_pl_head.s0 PRE_pl_head.S0) := by
+    obtain rfl := List.mem_singleton.mp hr
+    have hL : i.L = 1 := D1Split.finalRowL hi
+    have hstep : CutStep (withMem (Mem 1) (Post.indexedCut NB T tk cap π PRE_pl_head.s0 PRE_pl_head.S0))
+        (withMem (Mem 1) (Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1)) 809 :=
+      Post.glueMem (hMem 1) hcap2 (fun bs => congrFun PRE_pl_head.typedAccepted0 bs) PRE_pl_head.typedRun headTop
+        (fun _ hν => PRE_pl_head.good hν) headInactive headBridge headCnt
+    have hhead : CutConv (withMem (Mem 1) (Post.indexedCut NB T tk cap π PRE_pl_entry.s0 PRE_pl_entry.S0))
+        (withMem (Mem 1) (Post.indexedCut NB T tk cap π PRE_pl_head.s0 PRE_pl_head.S0)) := by
       rintro x ⟨γ, hrel, hb⟩ hB
       refine ⟨x, rfl, rfl, ⟨γ, ?_, hb⟩, hB⟩
       change RelB FF _ _ [] x.M x.ν x.K PRE_pl_head.s0 ⟨PRE_pl_head.S0.tab, []⟩ x.t x.C
       rw [PRE_pl_head.s0_eq, PRE_pl_head.s0_tab]
       exact hrel
-    exact hstep.convL ((toEntry NB T tk hπ hcap).trans hhead)
+    change CutStep (withMem (Mem 1) (returnedPromptCut NB T tk π))
+      (withMem (Mem i.L) (Post.indexedCut NB T tk cap π PRE_pl_head.s1 PRE_pl_head.S1)) 809
+    rw [hL]
+    exact hstep.convL ((toEntry NB T tk hπ hcap (hMem 1)).trans hhead)
 
 end Host.Ts.Sim.Compose.D1First

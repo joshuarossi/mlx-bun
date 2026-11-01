@@ -61,9 +61,10 @@ theorem tableAt {j : Nat} {e : SymE} (h : nth? PRE_setup_early_r0.S16.tab j = so
 
 /-- Remove the setup-only C entry while retaining the actual lookahead queue,
 loaded values, prompt frame, native state and fixed driver cells. -/
-theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} (hC : chunkC L = 2048) :
-    CutConv (SetupCommon.nextCut NB T tk ρ L) (cut NB T tk ρ L) := by
-  rintro x ⟨hr, hq⟩ ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, hnum⟩, hv, hbase, hsmall⟩, hids, hp, hnat⟩
+theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hC : chunkC L = 2048) :
+    CutConv (withMem Mem (SetupCommon.nextCut NB T tk ρ L)) (withMem Mem (cut NB T tk ρ L)) := by
+  rintro x ⟨hr, hq⟩ ⟨⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, hnum⟩, hv, hbase, hsmall⟩, hids, hp, hnat⟩, hm⟩
   change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
     x.M x.ν x.K (PRE_g0b.s10 : St FF.S) ⟨PRE_g0b.S10.tab, []⟩ x.t x.C at hr
   change x.M.num 10 = .lit (F64.ofNat (chunkC L)) at hnum
@@ -104,7 +105,8 @@ theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} (hC : chunkC L =
       exact eraseNum_supp (F64.ofNat 2048) (by decide : 10 ≤ 14) (by simpa only [newLen] using hj))
     hsrv hffi'
   refine ⟨⟨N, x.ν, x.K, x.t, x.C⟩, rfl, rfl, ⟨hr', hq.1, hq.2.1, ?_⟩,
-    ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩, ?_, ?_, hbase, hp, ?_⟩
+    ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩, ?_, ?_, hbase, hp, ?_⟩,
+    hMem x _ (NTrack.conv rfl rfl hnames.node) hm⟩
   · exact ⟨hq.2.2.1, trivial⟩
   · exact ⟨hv.1, hv.2⟩
   · exact hids

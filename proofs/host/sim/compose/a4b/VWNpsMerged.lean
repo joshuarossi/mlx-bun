@@ -1,4 +1,5 @@
 import host.sim.compose.a4b.VWNpsData
+import host.sim.compose.PreGrow
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -40,10 +41,21 @@ theorem npsSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simp only [Bool.and_eq_true] at h
   simpa only [P, backRest] using h.1
 
-theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat}
+theorem npsGrowSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      PRE_first_tail_x15_r0.st1.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
+  apply (wideGrowSim NB T tk r y0).mono
+  intro s S h
+  change (Disp.okJSJ setupJ (okBackFXS setupP) 4096 s S && Disp.localB s) = true at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1
+
+theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI L) [(9, .L)] → Good ν PRE_first_tail_x15_r0.st1.S0.oracle) :
-    CutStep (npsCut NB T tk ρ L) (mergedPinCut NB T tk ρ L) (PRE_first_tail_x15_r0.st1.tpl.n + 1) := by
-  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, hb, hins, hids, hbase, hp, hnat⟩
+    CutStep (withMem Mem (npsCut NB T tk ρ L)) (withMem Mem (mergedPinCut NB T tk ρ L)) (PRE_first_tail_x15_r0.st1.tpl.n + 1) := by
+  rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hb, hins, hids, hbase, hp, hnat⟩, hm⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have h0 := hr.withOracle (horacle x.ν hq.2.2)
   change RelB FF _ wideP [] x.M x.ν x.K PRE_first_tail_x15_r0.s17
@@ -82,11 +94,14 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat}
   · have hnat0 : NativeAt 0 0 PRE_first_tail_x15_r0.s17 x.t := by
       rw [PRE_first_tail_x15_r0.nps1_eq]
       exact hnat
-    refine ⟨⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, fresh⟩, hsmall⟩,
+    have ng : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf t'.ffi) :=
+      d.ngrow (fun stk y0 => npsGrowSim NB T tk stk y0) hq.1 hk h0 run
+    refine ⟨⟨⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, fresh⟩, hsmall⟩,
       ⟨?_, (congrFun ext.a 2590).trans hins.2⟩,
       ⟨(congrFun ext.a 2586).trans hids.1, (congrFun ext.a 2589).trans hids.2⟩,
       hbase, ⟨hr.presentBound, hr.heapSupp⟩, Nat.le_trans top.1.load.mlx.nbl hNL,
-      PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step (P := { setupP with rest := machReads T tk }) rfl hr hm' ext.big ext.node cnt18⟩
+      PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step (P := { setupP with rest := machReads T tk }) rfl hr hm' ext.big ext.node cnt18⟩,
+      hMem x _ ⟨runC_le _ _ _ _ _ run, ext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt18)⟩ hm⟩
     intro j hj
     change npsVal x.ν j = _
     rw [show npsVal x.ν j = x.ν j from Conv.resVal_off (by
