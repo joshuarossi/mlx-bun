@@ -51,6 +51,33 @@ theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simp only [Bool.and_eq_true] at h
   simpa only [P, backRest] using h.1
 
+/-- The acceptance's simulation with the target's growth from `y0`. -/
+theorem wideGrowSim (NB T : Nat) (tk : Nat → Nat) (stk : List Frame) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      (Disp.okJSJ setupJ (okBackFXS setupP) 4096) (Disp.KpJ setupJ 4096) wideP stk (VBOkF loopVB) := by
+  let P : LoadP := { setupP with rest := machReads T tk }
+  have hj : setupJ.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
+  have hs := fullStepSimXLBXDJSQ P NB loopVB setupJ 4096 hj rfl rfl rfl rfl rfl stk setupW_ok y0
+  have he : Disp.FRJ (FRQ (FullRXD P NB) (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y))) =
+      FRQ (Disp.FRJ (FullRXD P NB)) (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)) := by
+    funext M m x y
+    exact propext ⟨fun h => ⟨⟨h.1.1, h.2⟩, h.1.2⟩, fun h => ⟨⟨h.1.1, h.2⟩, h.1.2⟩⟩
+  rw [he] at hs
+  simpa only [P, backRest] using hs
+
+theorem stageGrowSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      PRE_setup_early_r0.st0.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
+  apply (wideGrowSim NB T tk r y0).mono
+  intro s S h
+  change (Disp.okJSJ setupJ (okBackFXS setupP) 4096 s S && Disp.localB s) = true at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1
+
+kernel_rfl keepNN : PRE_setup_early_r0.kd0.nn0 = PRE_setup_early_r0.kd0.nn1
+kernel_rfl keepNK : PTrie.keys PRE_setup_early_r0.kd0.node = []
 kernel_rfl cntMerged : countersOkB PRE_setup_early_r0.s4 PRE_setup_early_r0.s5 = true
 
 /-- The actual site template runs for 100 steps and its return step, keeping caller entries. -/
@@ -86,7 +113,16 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_setup_early_r0.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_setup_early_r0.ws0
     (Conv.resF SymE.var PRE_setup_early_r0.st0.S2.tab PRE_setup_early_r0.S4.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged⟩
+  have hg0 : Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t'.ffi) := by
+    obtain ⟨_, t1, C1, run1, -, h2⟩ := Conv.site_merge tpl PRE_setup_early_r0.iso0 rfl
+      (fun stk => stageGrowSim NB T tk stk (mlxOf c.t.ffi)) PRE_setup_early_r0.st0.loc hk hq.1
+      PRE_setup_early_r0.stFoot0 PRE_setup_early_r0.wrNodup0 PRE_setup_early_r0.wrBound0 PRE_setup_early_r0.trace0 0 (relB_withQ h0 (Host.Mlx.Ffi.NGrow.refl _))
+    rw [run] at run1
+    cases run1
+    exact h2.ffi.2
+  have ntrack : NTrack c ⟨M', ν', c.K, t', C'⟩ :=
+    ⟨runC_le _ _ _ _ _ run, hext.node, hg0, tokens_of_grow hr hm' hg0 (countersOkB_tokens cntMerged)⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged, ntrack⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_early_r0.s5 ⟨PRE_setup_early_r0.S5.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_early_r0.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩
@@ -200,9 +236,26 @@ theorem initial_chunkCall_fixed_oracle_keeps {NB T L : Nat} {tk : Nat → Nat}
     accepted3 PRE_setup_early_r0.stepA2
   have run3 := runC_trans run2 (runC_one (by rw [h2.isHalt, PRE_setup_early_r0.ctlA1]; rfl) step3)
   have run4 := runC_trans run3 (runC_one (by rw [rel3j.isHalt]; exact unhalted3) step4)
+  have hsimQ : ∀ y0 : Host.Mlx.Ffi.St, Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD P NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y))) PRE_setup_early_r0.okB0 (Disp.KpJ setupJ 4096) wideP [] (VBOkF loopVB) := by
+    intro y0
+    have ha : PRE_setup_early_r0.okB0 = Disp.okJSJ setupJ (okBackFXS setupP) 4096 := by
+      funext s S
+      exact setup_acceptance s S
+    rw [ha]
+    exact wideGrowSim NB T tk [] y0
+  have ng12 : Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t2.ffi) :=
+    glueCall_ngrow hsimQ accepted0 PRE_setup_early_r0.k0 ok1 unhalted1 PRE_setup_early_r0.stepA1 hq.1 hk h0 run2
+  have ng34 : Host.Mlx.Ffi.NGrow (mlxOf t3.ffi) (mlxOf t4.ffi) :=
+    glueCall_ngrow hsimQ (n := 0) accepted3 rfl accepted3 unhalted3 PRE_setup_early_r0.stepA2 hq.1 hk rel3j
+      (runC_one (by rw [rel3j.isHalt]; exact unhalted3) step4)
+  have ng : Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t4.ffi) := ng12.trans ng34
+  have ntrack : NTrack c ⟨M4, c.ν, c.K, t4, C4⟩ :=
+    ⟨runC_le _ _ _ _ _ run4, ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node)), ng,
+      tokens_of_grow h0 (rel4.rel_noRet top4) ng (countersOkB_tokens cntCall)⟩
   refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl h0 (rel4.rel_noRet top4)
     (ext4.big.trans (ext3.big.trans (ext2.big.trans ext1.big)))
-    (ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node))) cntCall⟩
+    (ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node))) cntCall, ntrack⟩
   · exact ⟨(rel4.rel_noRet top4).withOracle (fun _ h => nomatch h), hq⟩
   · constructor
     · have inactive0 : (bridgeOf PRE_setup_early_r0.s0.ffi).active = false := by
@@ -443,7 +496,8 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
     have h := framedNext_of (M := x.M) hframe ho hknd
     simpa only [Map.vals, List.map_nil, List.append_nil] using h
   refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_,
-    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩⟩
+    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩,
+    funext fun k => congrArg x.M.node (compact_node_id keepNN keepNK k)⟩
   · exact ⟨hctx, hmemo', π, hlen, hvocab, hfrK, hD, hfresh⟩
   · have hκ : ∀ a ∈ [2586, 2589], PRE_setup_early_r0.kappa0.a a = a := by
       intro a ha

@@ -13,11 +13,11 @@ theorem rowFacts {i : Cls.Inst} (hi : InRow setup_h2.r0 i) : 8 < i.L ∧ i.C = 5
   simp only [setup_h2.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
   omega
 
-theorem oldCallConv {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} :
-    CutConv (withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk L))
-      (withSetupPin T tk π (chunkCallFixedCut NB T tk L)) := by
-  rintro x ⟨hr, hq⟩ ⟨hb, hv, hp, hn⟩
-  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb, hv, hp, ?_⟩
+theorem oldCallConv {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst FF → Prop} :
+    CutConv (withMem Mem (withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk L)))
+      (withMem Mem (withSetupPin T tk π (chunkCallFixedCut NB T tk L))) := by
+  rintro x ⟨hr, hq⟩ ⟨⟨hb, hv, hp, hn⟩, hm⟩
+  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, ⟨hb, hv, hp, ?_⟩, hm⟩
   · change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
       x.M x.ν x.K (PRE_setup_h2_chunk.s0 : St FF.S) ⟨PRE_setup_h2_chunk.S0.tab, []⟩ x.t x.C
     rw [startEq, startTab]
@@ -26,13 +26,13 @@ theorem oldCallConv {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} :
     rw [startEq]
     exact hn
 
-theorem toLiteral {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (hL : 8 < i.L) :
-    CutConv (withSetupPin T tk π (setupChunkCut NB T tk i.L))
-      (SetupCommon.literalCut NB T tk π 512 i) := by
-  rintro x ⟨hr, hq⟩ ⟨⟨hb, hids⟩, hv, hp, hn⟩
+theorem toLiteral {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop} (hL : 8 < i.L) :
+    CutConv (withMem Mem (withSetupPin T tk π (setupChunkCut NB T tk i.L)))
+      (withMem Mem (SetupCommon.literalCut NB T tk π 512 i)) := by
+  rintro x ⟨hr, hq⟩ ⟨⟨⟨hb, hids⟩, hv, hp, hn⟩, hm⟩
   obtain ⟨hk, hmemo, π', hlen, hvocab, hframe, hd, hfresh⟩ := hb
   refine ⟨x, rfl, rfl, ⟨?_, hq.1, hq.2.1, ?_⟩,
-    ⟨⟨hk, hmemo, π', hlen, hvocab, hframe, hfresh⟩, ?_⟩, hv, hids, hp, ?_⟩
+    ⟨⟨⟨hk, hmemo, π', hlen, hvocab, hframe, hfresh⟩, ?_⟩, hv, hids, hp, ?_⟩, hm⟩
   · change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
       x.M x.ν x.K (PRE_setup_h2_chunk.s2 : St FF.S) ⟨PRE_setup_h2_chunk.S2.tab, []⟩ x.t x.C at hr
     rw [canonicalEq, canonicalTab] at hr
@@ -43,10 +43,11 @@ theorem toLiteral {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst}
     rw [canonicalEq] at hn
     exact hn
 
-noncomputable def chunk_K512__g0a__g0b (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
+noncomputable def chunk_K512__g0a__g0b (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (Mem : Nat → SegInst FF → Prop)
+    (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
     StagePiece FF [setup_h2.r0] [⟨[(0, .L)], Stage.ChunkSize.K512.O⟩]
-      (fun i => withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L))
-      (SetupCommon.cut NB T tk π PRE_g0b.s0 PRE_g0b.S0) where
+      (fun i => withMem (Mem i.L) (withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L)))
+      (fun i => withMem (Mem i.L) (SetupCommon.cut NB T tk π PRE_g0b.s0 PRE_g0b.S0 i)) where
   m := [(9, .L)]
   n := PRE_setup_h2_chunk.st0.tpl.n + 1
   O := PRE_setup_h2_chunk.st0.S0.oracle
@@ -62,8 +63,8 @@ noncomputable def chunk_K512__g0a__g0b (NB T : Nat) (tk : Nat → Nat) (π : Lis
     obtain ⟨hL, hC⟩ := rowFacts hi
     have hchunk : 512 = chunkC i.L :=
       hC.symm.trans (FillSetupEarly.setupC (by simp [FillSetupEarly.setupRows]) hi)
-    exact StageCall.intro oldCallConv ((chunkCall_merged_keeps horacle).pin T tk π)
-      ((merged_compact_keeps.pin T tk π).trans
-        ((toLiteral hL).trans (SetupCommon.abstractChunk hC hchunk (by decide))))
+    exact StageCall.intro oldCallConv ((chunkCall_merged_keeps horacle).pinMem T tk π (hMem i.L))
+      ((merged_compact_keeps.pinMem T tk π (hMem i.L)).trans
+        ((toLiteral hL).trans (SetupCommon.abstractChunk hC hchunk (by decide) (hMem i.L))))
 
 end Host.Ts.Sim.Compose.SetupH2

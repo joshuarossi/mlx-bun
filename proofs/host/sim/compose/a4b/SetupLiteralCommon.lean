@@ -21,10 +21,11 @@ noncomputable def literalCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (c 
     B := fun x => ChunkBook i.L x ∧ setupInputs T tk x ∧ fixedCells x ∧ PromptFr π x ∧ NativeAt 0 0 PRE_setup_early_r0.s6 x.t }
 
 /-- Any checked chunk literal reaches the same C-reference template in zero steps. -/
-theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst}
-    (hC : i.C = c) (hchunk : c = chunkC i.L) (hbound : c ≤ loopVB 10) :
-    CutConv (literalCut NB T tk ρ c i) (cut NB T tk ρ PRE_g0b.s0 PRE_g0b.S0 i) := by
-  rintro x ⟨hr, hq⟩ ⟨hb, hv, hids, hpin, hnat⟩
+theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hC : i.C = c) (hchunk : c = chunkC i.L) (hbound : c ≤ loopVB 10)
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    CutConv (withMem Mem (literalCut NB T tk ρ c i)) (withMem Mem (cut NB T tk ρ PRE_g0b.s0 PRE_g0b.S0 i)) := by
+  rintro x ⟨hr, hq⟩ ⟨⟨hb, hv, hids, hpin, hnat⟩, hm⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have ha := hr.abstractRetLitJ (fullRXD_laws { setupP with rest := machReads T tk } NB) rfl
     (fun e he => List.all_eq_true.mp chunkFresh10 e he) (fun _ h => nomatch h)
@@ -37,7 +38,8 @@ theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls
     ν := upd x.ν 10 (F64.ofNat c) }
   have he := Map.setNum_ext x.M PRE_setup_early_r0.S6.tab.length (.lit (F64.ofNat c))
   refine ⟨y, rfl, rfl, ⟨?_, hval.1, hq.2.1, hval.2⟩,
-    ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, ?_⟩, ?_, ?_, hsmall⟩, ?_⟩
+    ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, ?_⟩, ?_, ?_, hsmall⟩, ?_⟩,
+    hMem x y (NTrack.conv rfl rfl he.node) hm⟩
   · change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
       y.M y.ν y.K (PRE_g0b.s0 : St FF.S) ⟨PRE_g0b.S0.tab, []⟩ y.t y.C
     have hs : (PRE_g0b.s0 : St FF.S) =

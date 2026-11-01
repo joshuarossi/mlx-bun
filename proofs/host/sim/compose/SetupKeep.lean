@@ -1,5 +1,6 @@
 import host.sim.compose.PreFill
 import host.route.LoadCut
+import host.sim.compose.NTrack
 
 namespace Host.Ts.Sim.Compose
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill
@@ -18,7 +19,13 @@ def NativeAt (H N : Nat) (s t : St Full.FF.S) : Prop :=
 /-- The native counters a stretch moves over, inside the fresh band. -/
 def countersOkB (sa sb : St Full.FF.S) : Bool :=
   Nat.ble (Full.mlxOf sa.ffi).next (Full.mlxOf sb.ffi).next && Nat.blt (Full.mlxOf sb.ffi).next 131072 &&
-    Nat.ble (Full.mlxOf sa.ffi).nnext (Full.mlxOf sb.ffi).nnext
+    Nat.ble (Full.mlxOf sa.ffi).nnext (Full.mlxOf sb.ffi).nnext &&
+    Nat.beq (Full.mlxOf sb.ffi).tokens.length (Full.mlxOf sa.ffi).tokens.length
+
+theorem countersOkB_tokens {sa sb : St Full.FF.S} (h : countersOkB sa sb = true) :
+    (Full.mlxOf sb.ffi).tokens.length = (Full.mlxOf sa.ffi).tokens.length := by
+  simp only [countersOkB, Bool.and_eq_true] at h
+  exact Nat.eq_of_beq_eq_true h.2
 
 /-- Both sides allocate the same handles and nodes: the fresh bands of the two relations meet. -/
 theorem NativeAt.step {H N NB : Nat} {P : LoadP} {W W' : Nat → Option WFrame} {M M' : Map}
@@ -29,7 +36,7 @@ theorem NativeAt.step {H N NB : Nat} {P : LoadP} {W W' : Nat → Option WFrame} 
     (hbig : M'.big = M.big) (hnode : M'.node = M.node) (hc : countersOkB sa sb = true) :
     NativeAt H N sb t' := by
   simp only [countersOkB, Bool.and_eq_true] at hc
-  obtain ⟨⟨hle, hlt⟩, hnle⟩ := hc
+  obtain ⟨⟨⟨hle, hlt⟩, hnle⟩, -⟩ := hc
   have hle := Nat.le_of_ble_eq_true hle
   have hlt := Nat.blt_eq.mp hlt
   have hnle := Nat.le_of_ble_eq_true hnle
@@ -69,13 +76,13 @@ def CutStepKeeps (A B : ICut Full.FF) (n : Nat) : Prop :=
   ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x →
     ∃ y, runC Full.FF n x.t x.C = some (y.t, y.C) ∧ B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧
       (∀ j, j < 9 → y.ν j = x.ν j) ∧ y.M.a 2590 = x.M.a 2590 ∧ y.K.fr 2665 = x.K.fr 2665 ∧
-      ∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t
+      (∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t) ∧ NTrack x y
 
 def CutConvKeeps (A B : ICut Full.FF) : Prop :=
   ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x →
     ∃ y, y.t = x.t ∧ y.C = x.C ∧ B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧
       (∀ j, j < 9 → y.ν j = x.ν j) ∧ y.M.a 2590 = x.M.a 2590 ∧ y.K.fr 2665 = x.K.fr 2665 ∧
-      ∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t
+      (∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t) ∧ y.M.node = x.M.node
 
 theorem CutStepKeeps.step {A B : ICut Full.FF} {n : Nat} (h : CutStepKeeps A B n) :
     CutStep A B n := by
@@ -104,18 +111,22 @@ theorem CutConvKeeps.withInputs {A B : ICut Full.FF} (h : CutConvKeeps A B)
 def withSetupPin (T : Nat) (tk : Nat → Nat) (π : List Nat) (A : ICut Full.FF) : ICut Full.FF :=
   { A with B := fun x => A.B x ∧ setupInputs T tk x ∧ PromptFr π x ∧ NativeAt 0 0 A.s0 x.t }
 
-theorem CutStepKeeps.pin {A B : ICut Full.FF} {n : Nat} (h : CutStepKeeps A B n)
-    (T : Nat) (tk : Nat → Nat) (π : List Nat) : CutStep (withSetupPin T tk π A) (withSetupPin T tk π B) n := by
-  rintro t C ⟨x, rfl, rfl, hr, hb, ⟨hv, ha⟩, hp, hn⟩
-  obtain ⟨y, hrun, hr', hb', hν, hA, hf, hN⟩ := h x hr hb
-  exact ⟨y.t, y.C, hrun, y, rfl, rfl, hr', hb', ⟨fun j hj => (hν j hj).trans (hv j hj), hA.trans ha⟩,
-    hf.trans hp, hN _ _ hn⟩
+theorem CutStepKeeps.pinMem {A B : ICut Full.FF} {n : Nat} (h : CutStepKeeps A B n)
+    (T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : SegInst Full.FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    CutStep (withMem Mem (withSetupPin T tk π A)) (withMem Mem (withSetupPin T tk π B)) n := by
+  rintro t C ⟨x, rfl, rfl, hr, ⟨hb, ⟨hv, ha⟩, hp, hn⟩, hm⟩
+  obtain ⟨y, hrun, hr', hb', hν, hA, hf, hN, htr⟩ := h x hr hb
+  exact ⟨y.t, y.C, hrun, y, rfl, rfl, hr', ⟨hb', ⟨fun j hj => (hν j hj).trans (hv j hj), hA.trans ha⟩,
+    hf.trans hp, hN _ _ hn⟩, hMem x y htr hm⟩
 
-theorem CutConvKeeps.pin {A B : ICut Full.FF} (h : CutConvKeeps A B)
-    (T : Nat) (tk : Nat → Nat) (π : List Nat) : CutConv (withSetupPin T tk π A) (withSetupPin T tk π B) := by
-  rintro x hr ⟨hb, ⟨hv, ha⟩, hp, hn⟩
-  obtain ⟨y, ht, hC, hr', hb', hν, hA, hf, hN⟩ := h x hr hb
-  exact ⟨y, ht, hC, hr', hb', ⟨fun j hj => (hν j hj).trans (hv j hj), hA.trans ha⟩,
-    hf.trans hp, hN _ _ hn⟩
+theorem CutConvKeeps.pinMem {A B : ICut Full.FF} (h : CutConvKeeps A B)
+    (T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : SegInst Full.FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
+    CutConv (withMem Mem (withSetupPin T tk π A)) (withMem Mem (withSetupPin T tk π B)) := by
+  rintro x hr ⟨⟨hb, ⟨hv, ha⟩, hp, hn⟩, hm⟩
+  obtain ⟨y, ht, hC, hr', hb', hν, hA, hf, hN, hnode⟩ := h x hr hb
+  exact ⟨y, ht, hC, hr', ⟨hb', ⟨fun j hj => (hν j hj).trans (hv j hj), hA.trans ha⟩,
+    hf.trans hp, hN _ _ hn⟩, hMem x y (NTrack.conv ht hC hnode) hm⟩
 
 end Host.Ts.Sim.Compose

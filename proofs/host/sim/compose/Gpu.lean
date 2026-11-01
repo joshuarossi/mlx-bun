@@ -37,12 +37,12 @@ theorem tailRows_short {L : Nat} (h : L ≤ 224) : tailRows L = L - 1 := by
 
 theorem kvOf_short {o : Nat} (h1 : 1 ≤ o) (h2 : o ≤ 223) : kvOf o = .ord := by
   unfold kvOf
-  rw [Nat.mod_eq_of_lt (by omega : o < 256), if_neg (by omega), if_neg (by omega)]
+  rw [Nat.mod_eq_of_lt (by omega : o < 256), ite_eq_right (by omega), ite_eq_right (by omega)]
 
 /-- **The post class** below 225 tokens. -/
 theorem other_short {L : Nat} (h1 : 1 ≤ L) (h2 : L ≤ 224) : PostClass.other.Applies L := by
   unfold PostClass.Applies postOf
-  rw [Nat.mod_eq_of_lt (by omega : L < 256), if_neg (by omega), if_neg (by omega), if_neg (by omega)]
+  rw [Nat.mod_eq_of_lt (by omega : L < 256), ite_eq_right (by omega), ite_eq_right (by omega), ite_eq_right (by omega)]
 
 /-- A tail of at most 223 rows is in one of the 22 GPU bands. -/
 theorem rowMem_short {X t : Nat} (h : RowMem X t) (ht : t ≤ 223) : X ∈ List.range 22 := by
@@ -51,7 +51,7 @@ theorem rowMem_short {X t : Nat} (h : RowMem X t) (ht : t ≤ 223) : X ∈ List.
     rw [← rowBands_length]
     exact (List.getElem?_eq_some_iff.mp hb).1
   rw [List.mem_range]
-  by_contra hge
+  refine Classical.byContradiction fun hge => ?_
   have h22 : 22 ≤ X := by omega
   have hb2 : 224 ≤ b.1 := by
     have key : ∀ X, X < 37 → 22 ≤ X → ∀ c, rowBands[X]? = some c → 224 ≤ c.1 := by
@@ -81,11 +81,11 @@ theorem CutStep.of_empty {c J : ICut F} {n : Nat} : CutStep (emptyCut c) J n := 
 /-- The cut `c` below 225 tokens, empty above. -/
 def clipCut (L : Nat) (c : ICut F) : ICut F := if L ≤ 224 then c else emptyCut c
 
-theorem clipCut_le {L : Nat} {c : ICut F} (h : L ≤ 224) : clipCut L c = c := if_pos h
+theorem clipCut_le {L : Nat} {c : ICut F} (h : L ≤ 224) : clipCut L c = c := ite_eq_left h
 
 theorem CutStep.of_clip {L n : Nat} {c J : ICut F} (h : ¬ L ≤ 224) : CutStep (clipCut L c) J n := by
   unfold clipCut
-  rw [if_neg h]
+  rw [ite_eq_right h]
   exact CutStep.of_empty
 
 /-- **The prefill's invariants at the prompts with no Neural Engine forward.** The exit and decode cuts stay. -/
@@ -107,7 +107,7 @@ def ClassStepsR.toPrefSteps (S : ClassStepsR I) : PrefStepsPW I.clip where
   setup c L h1 h2 ha := by
     by_cases hL : L ≤ 224
     · have hm : c ∈ ([.early, .h0] : List SetupClass) := by
-        cases c <;> simp only [SetupClass.Applies] at ha <;> first | simp | omega
+        cases c <;> simp only [SetupClass.Applies] at ha <;> first | omega | simp
       exact (S.setup c hm L h1 h2 ha).cast (clipCut_le hL) (clipCut_le hL) rfl
     · exact CutStep.of_clip hL
   nFirst c := match c with
@@ -152,7 +152,7 @@ def ClassStepsR.toPrefSteps (S : ClassStepsR I) : PrefStepsPW I.clip where
         obtain ⟨h2L, hkv⟩ := ha
         have hsrc : pfSrcOf L = .tailed := by
           unfold pfSrcOf
-          rw [if_neg (by omega), if_neg (by rw [tailRows_short hL]; omega)]
+          rw [ite_eq_right (by omega), ite_eq_right (by rw [tailRows_short hL]; omega)]
         rw [kvOf_short (by omega) (by omega)] at hkv
         subst hkv
         rw [hsrc]

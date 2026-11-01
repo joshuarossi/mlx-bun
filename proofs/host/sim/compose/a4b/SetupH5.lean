@@ -70,6 +70,18 @@ theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
   simpa only [P, backRest] using h.1
 
 
+theorem stageGrowSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      PRE_setup_h5_chunk.st0.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
+  apply (SetupChunk.wideGrowSim NB T tk r y0).mono
+  intro s S h
+  change (Disp.okJSJ setupJ (okBackFXS setupP) 4096 s S && Disp.localB s) = true at h
+  simp only [Bool.and_eq_true] at h
+  exact h.1
+
+kernel_rfl keepNN : PRE_setup_h5_chunk.kd0.nn0 = PRE_setup_h5_chunk.kd0.nn1
+kernel_rfl keepNK : PTrie.keys PRE_setup_h5_chunk.kd0.node = []
 kernel_rfl cntMerged : countersOkB PRE_setup_h5_chunk.s0 PRE_setup_h5_chunk.s1 = true
 
 theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
@@ -104,7 +116,16 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     (noVar_of_all (by have h := PRE_setup_h5_chunk.fresh0; simp only [Bool.and_eq_true] at h; exact h.1))
   let ν' := Conv.resVal c.ν PRE_setup_h5_chunk.ws0
     (Conv.resF SymE.var PRE_setup_h5_chunk.st0.S5.tab PRE_setup_h5_chunk.S0.tab.length c.ν)
-  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged⟩
+  have hg0 : Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t'.ffi) := by
+    obtain ⟨_, t1, C1, run1, -, h2⟩ := Conv.site_merge tpl PRE_setup_h5_chunk.iso0 rfl
+      (fun stk => stageGrowSim NB T tk stk (mlxOf c.t.ffi)) PRE_setup_h5_chunk.st0.loc hk hq.1
+      PRE_setup_h5_chunk.stFoot0 PRE_setup_h5_chunk.wrNodup0 PRE_setup_h5_chunk.wrBound0 PRE_setup_h5_chunk.trace0 0 (relB_withQ h0 (Host.Mlx.Ffi.NGrow.refl _))
+    rw [run] at run1
+    cases run1
+    exact h2.ffi.2
+  have ntrack : NTrack c ⟨M', ν', c.K, t', C'⟩ :=
+    ⟨runC_le _ _ _ _ _ run, hext.node, hg0, tokens_of_grow hr hm' hg0 (countersOkB_tokens cntMerged)⟩
+  refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged, ntrack⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_h5_chunk.s1 ⟨PRE_setup_h5_chunk.S1.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_h5_chunk.mergeTab0]
     exact ⟨hm', c.ν, rfl, hq⟩
@@ -295,7 +316,8 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
     have h := framedNext_of (M := x.M) hframe ho hknd
     simpa only [Map.vals, List.map_nil, List.append_nil] using h
   refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_,
-    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩⟩
+    hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩,
+    funext fun k => congrArg x.M.node (compact_node_id keepNN keepNK k)⟩
   · exact ⟨hctx, hmemo', π, hlen, hvocab, hfrK, hD, hfresh⟩
   · have hκ : ∀ a ∈ [2586, 2589], PRE_setup_h5_chunk.kappa0.a a = a := by
       intro a ha

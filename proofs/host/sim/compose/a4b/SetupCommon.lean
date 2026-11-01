@@ -46,6 +46,16 @@ theorem sim (NB T : Nat) (tk : Nat → Nat) :
     exact setup_acceptance s S
   simpa only [P, backRest, ha] using hs
 
+theorem simQ (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St) :
+    Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
+      (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
+      PRE_g0b.okB0 (Disp.KpJ setupJ 4096) wideP [] (VBOkF loopVB) := by
+  have ha : PRE_g0b.okB0 = Disp.okJSJ setupJ (okBackFXS setupP) 4096 := by
+    funext s S
+    exact setup_acceptance s S
+  rw [ha]
+  exact SetupChunk.wideGrowSim NB T tk [] y0
+
 theorem book_fwd {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {L : Nat} {sa sb : St FF.S} {Sa Sb : SSrv}
     {x : SegInst FF} {M : Map} {t : St FF.S} {C : CSrv}
     (h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
@@ -71,7 +81,8 @@ theorem book_fwd {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {L : Nat} {sa s
   · exact ⟨(congrFun he.a 2586).trans hids.1, (congrFun he.a 2589).trans hids.2⟩
 
 theorem glueCall {NB T n : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.Inst}
-    {sa sb sc : St FF.S} {Sa Sb Sc : SSrv} (hrow : InRow r i)
+    {sa sb sc : St FF.S} {Sa Sb Sc : SSrv} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hrow : InRow r i)
     (hor : goodLin r.ps (varsOf r.V m) Sa.oracle = true)
     (hok : PRE_g0b.okB0 sa Sa = true)
     (hrun : runOk FF PRE_g0b.okB0 n sa Sa = some (sb, Sb))
@@ -80,15 +91,19 @@ theorem glueCall {NB T n : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i 
     (h10 : 10 < Sa.tab.length)
     (hi : (bridgeOf sa.ffi).active = false) (hb : bridgeOf sc.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sc = true) :
-    CutStep (cut NB T tk ρ sa Sa i) (cut NB T tk ρ sc Sc i) (n + 1) := by
+    CutStep (withMem Mem (cut NB T tk ρ sa Sa i)) (withMem Mem (cut NB T tk ρ sc Sc i)) (n + 1) := by
   apply cut_glueCall (sim NB T tk) hok hrun hokb hh hstep htop
-  · intro c hq hb; exact ⟨hb.1.1.1, hq.1⟩
+  · intro c hq hb; exact ⟨hb.1.1.1.1, hq.1⟩
   · intro c hq _; exact good_of_row hor hrow hq.2.2
-  · intro c M t C hq hbook hr he _ hr'
-    exact ⟨⟨hr'.withOracle (fun _ h => nomatch h), hq⟩, book_fwd hr hr' he h10 hi hb hcnt hbook⟩
+  · intro c M t C hq hbook hr he hrun' hr'
+    have hg := glueCall_ngrow (simQ NB T tk) hok hrun hokb hh hstep hq.1 hbook.1.1.1.1 hr hrun'
+    exact ⟨⟨hr'.withOracle (fun _ h => nomatch h), hq⟩, book_fwd hr hr' he h10 hi hb hcnt hbook.1,
+      hMem c ⟨M, c.ν, c.K, t, C⟩ ⟨runC_le _ _ _ _ _ hrun', he.node, hg,
+        tokens_of_grow hr hr' hg (countersOkB_tokens hcnt)⟩ hbook.2⟩
 
 theorem lengthStep {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.Inst}
-    {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} (hrow : InRow r i)
+    {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hrow : InRow r i)
     (hor : goodLin r.ps (varsOf r.V m) Sa.oracle = true)
     (hc : sa.ctl = .ret (.obj 2665)) (hst : sa.stack = .e (.member kLength false) :: sa.stack.tail)
     (ho : sa.obj? 2665 = some o) (hk : o.kind = .array ([] ++ ([] : List Val)))
@@ -96,8 +111,8 @@ theorem lengthStep {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i 
     (h10 : 10 < Sa.tab.length)
     (hi : (bridgeOf sa.ffi).active = false) (hb : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sb = true) :
-    CutStep (cut NB T tk ρ sa Sa i) (cut NB T tk ρ sb Sb i) 1 := by
-  rintro t C ⟨c, rfl, rfl, ⟨hr, hq⟩, hbook⟩
+    CutStep (withMem Mem (cut NB T tk ρ sa Sa i)) (withMem Mem (cut NB T tk ρ sb Sb i)) 1 := by
+  rintro t C ⟨c, rfl, rfl, ⟨hr, hq⟩, hbook, hm⟩
   obtain ⟨⟨hctx, hmemo, π, hlen, hvocab, hframe, hfresh, hnum⟩, ⟨hreserved, hem⟩, hbase, hsmall⟩ := hbook.1
   have h0 := hr.withOracle (good_of_row hor hrow hq.2.2)
   change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
@@ -117,7 +132,8 @@ theorem lengthStep {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i 
   have relj := relp.toJ (h0.ffi.2.ext ext1)
   exact ⟨t', c.C, runC_one (by rw [h0.isHalt, hc]; rfl) step1,
     ⟨M, c.ν, c.K, t', c.C⟩, rfl, rfl,
-    ⟨relj.withOracle (fun _ h => nomatch h), hq⟩, book_fwd h0 relj ext1 h10 hi hb hcnt hbook⟩
+    ⟨relj.withOracle (fun _ h => nomatch h), hq⟩, book_fwd h0 relj ext1 h10 hi hb hcnt hbook,
+    hMem c ⟨M, c.ν, c.K, t', c.C⟩ ⟨CSrv.Le.refl _, ext1.node, Host.Mlx.Ffi.NGrow.refl _, rfl⟩ hm⟩
 
 kernel_rfl cnt0 : countersOkB PRE_g0b.s0 PRE_g0b.s2 = true
 kernel_rfl cnt2 : countersOkB PRE_g0b.s2 PRE_g0b.s3 = true
@@ -127,46 +143,52 @@ kernel_rfl cnt6 : countersOkB PRE_g0b.s6 PRE_g0b.s8 = true
 kernel_rfl cnt8 : countersOkB PRE_g0b.s8 PRE_g0b.s9 = true
 kernel_rfl cnt9 : countersOkB PRE_g0b.s9 PRE_g0b.s10 = true
 
-theorem run {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.Inst}
-    (hr : r ∈ FillSetupEarly.setupRows) (hi : InRow r i) :
-    CutStep (cut NB T tk ρ PRE_g0b.s0 PRE_g0b.S0 i) (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i) 1407 := by
+theorem run {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hr : r ∈ FillSetupEarly.setupRows) (hi : InRow r i) :
+    CutStep (withMem Mem (cut NB T tk ρ PRE_g0b.s0 PRE_g0b.S0 i))
+      (withMem Mem (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i)) 1407 := by
   have i3 : (bridgeOf PRE_g0b.s3.ffi).active = false := by rw [bridge3]; exact inactive0
   have i6 : (bridgeOf PRE_g0b.s6.ffi).active = false := by rw [bridge6]; exact inactive0
   have i9 : (bridgeOf PRE_g0b.s9.ffi).active = false := by rw [bridge9]; exact inactive0
   have i2 : (bridgeOf PRE_g0b.s2.ffi).active = false := by rw [bridge2]; exact inactive0
   have i5 : (bridgeOf PRE_g0b.s5.ffi).active = false := by rw [bridge5]; exact inactive0
   have i8 : (bridgeOf PRE_g0b.s8.ffi).active = false := by rw [bridge8]; exact inactive0
-  have g0 := glueCall (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle0 r hr)
+  have g0 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle0 r hr)
     accepted0 PRE_g0b.runSeg0 (runOk_ok_end 1017 PRE_g0b.runSeg0 live1) live1 PRE_g0b.stepA1 top2
     (Nat.blt_eq.mp tableLen0) inactive0 bridge2 cnt0
-  have b1 := lengthStep (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle2 r hr)
+  have b1 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle2 r hr)
     PRE_g0b.ctlA1 stack2 PRE_g0b.objA1 (by rw [PRE_g0b.kindA1, empty2]; rfl)
     (Option.some.inj PRE_g0b.patchB1) (Nat.blt_eq.mp tableLen2) i2 (bridge3.trans bridge2.symm) cnt2
-  have g1 := glueCall (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle3 r hr)
+  have g1 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle3 r hr)
     accepted3 PRE_g0b.runSeg1 (runOk_ok_end 23 PRE_g0b.runSeg1 live4) live4 PRE_g0b.stepA2 top5
     (Nat.blt_eq.mp tableLen3) i3
     (bridge5.trans bridge3.symm) cnt3
-  have b2 := lengthStep (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle5 r hr)
+  have b2 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle5 r hr)
     PRE_g0b.ctlA2 stack5 PRE_g0b.objA2 (by rw [PRE_g0b.kindA2, empty5]; rfl)
     (Option.some.inj PRE_g0b.patchB2) (Nat.blt_eq.mp tableLen5) i5 (bridge6.trans bridge5.symm) cnt5
-  have g2 := glueCall (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle6 r hr)
+  have g2 := glueCall (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle6 r hr)
     accepted6 PRE_g0b.runSeg2 (runOk_ok_end 350 PRE_g0b.runSeg2 live7) live7 PRE_g0b.stepA3 top8
     (Nat.blt_eq.mp tableLen6) i6
     (bridge8.trans bridge6.symm) cnt6
-  have b3 := lengthStep (NB := NB) (T := T) (tk := tk) hi (List.all_eq_true.mp oracle8 r hr)
+  have b3 := lengthStep (NB := NB) (T := T) (tk := tk) hMem hi (List.all_eq_true.mp oracle8 r hr)
     PRE_g0b.ctlA3 stack8 PRE_g0b.objA3 (by rw [PRE_g0b.kindA3, empty8]; rfl)
     (Option.some.inj PRE_g0b.patchB3) (Nat.blt_eq.mp tableLen8) i8 (bridge9.trans bridge8.symm) cnt8
-  have g3 : CutStep (cut NB T tk ρ PRE_g0b.s9 PRE_g0b.S9 i) (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i) 8 := by
+  have g3 : CutStep (withMem Mem (cut NB T tk ρ PRE_g0b.s9 PRE_g0b.S9 i))
+      (withMem Mem (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i)) 8 := by
     apply cut_glue (sim NB T tk) accepted9 PRE_g0b.runSeg3 top10
-    · intro c hq hb; exact ⟨hb.1.1.1, hq.1⟩
+    · intro c hq hb; exact ⟨hb.1.1.1.1, hq.1⟩
     · intro c hq _; exact good_of_row (List.all_eq_true.mp oracle9 r hr) hi hq.2.2
-    · intro c M t C hq hb hrel he _ hrel'
+    · intro c M t C hq hb hrel he hrun' hrel'
+      have hg := glue_ngrow (simQ NB T tk) accepted9 PRE_g0b.runSeg3 hq.1 hb.1.1.1.1 hrel hrun'
       exact ⟨⟨hrel'.withOracle (fun _ h => nomatch h), hq⟩,
-        book_fwd hrel hrel' he (Nat.blt_eq.mp tableLen9) i9 (bridge10.trans bridge9.symm) cnt9 hb⟩
+        book_fwd hrel hrel' he (Nat.blt_eq.mp tableLen9) i9 (bridge10.trans bridge9.symm) cnt9 hb.1,
+        hMem c ⟨M, c.ν, c.K, t, C⟩ ⟨runC_le _ _ _ _ _ hrun', he.node, hg,
+          tokens_of_grow hrel hrel' hg (countersOkB_tokens cnt9)⟩ hb.2⟩
   exact ((((((g0.trans b1).trans g1).trans b2).trans g2).trans b3).trans g3).cast rfl rfl rfl
 
-theorem toNext {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} (hC : i.C = chunkC i.L) :
-    CutConv (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i) (nextCut NB T tk ρ i.L) := by
+theorem toNext {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hC : i.C = chunkC i.L) :
+    CutConv (withMem Mem (cut NB T tk ρ PRE_g0b.s10 PRE_g0b.S10 i)) (withMem Mem (nextCut NB T tk ρ i.L)) := by
   rintro x ⟨hr, hq⟩ hb
   refine ⟨x, rfl, rfl, ⟨hr, hq.1, hq.2.1, ?_⟩, hb⟩
   change x.ν 9 = F64.ofNat i.L ∧ x.ν 10 = F64.ofNat (chunkC i.L) ∧ True
@@ -180,13 +202,14 @@ open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl 
 open Host.Ts.Sim.Compose.SetupChunk
 
 /-- All setup classes share the template PRE_g0b, with C abstracted at table/variable 10. -/
-noncomputable def g0b (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
-    GluePiece FF setupRows (SetupCommon.cut NB T tk π PRE_g0b.s0 PRE_g0b.S0)
-      (fun i => SetupCommon.nextCut NB T tk π i.L) where
+noncomputable def g0b (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (Mem : Nat → SegInst FF → Prop)
+    (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
+    GluePiece FF setupRows (fun i => withMem (Mem i.L) (SetupCommon.cut NB T tk π PRE_g0b.s0 PRE_g0b.S0 i))
+      (fun i => withMem (Mem i.L) (SetupCommon.nextCut NB T tk π i.L)) where
   m := SetupCommon.m
   n := 1407
   O := PRE_g0b.S0.oracle
   chk r hr := List.all_eq_true.mp SetupCommon.oracle0 r hr
-  ok r hr i hi _ := (SetupCommon.run hr hi).convR (SetupCommon.toNext (setupC hr hi))
+  ok r hr i hi _ := (SetupCommon.run (hMem i.L) hr hi).convR (SetupCommon.toNext (setupC hr hi))
 
 end Host.Ts.Sim.Compose.FillSetupEarly

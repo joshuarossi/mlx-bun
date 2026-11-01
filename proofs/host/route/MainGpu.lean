@@ -7,6 +7,7 @@ open Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Ts
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open Host.Ts.Sim.Full (fullWorld mlxOf)
 open Host.Load.Run.Prompt (ldStT aneNetLd_ok)
+open Host.Ts.Sim.Prefill (cutConv_inv)
 
 /-! # The route of a prompt with no Neural Engine forward, from the boot
 
@@ -30,7 +31,8 @@ theorem route_main_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Kernel
     (Gn : RouteGenGpu P (routeKernel G B Pg lseSum lseNumerator) NE
       (netLd P (routeKernel G B Pg lseSum lseNumerator) env init) env π T
       (tokLd P G Pg B lseSum lseNumerator NE env π init)
-      (entryEnv (bootedSt π T (tokLd P G Pg B lseSum lseNumerator NE env π init))) chars!"emitted" (ldStT [] [])) :
+      (entryEnv (bootedSt π T (tokLd P G Pg B lseSum lseNumerator NE env π init))) chars!"emitted" (ldStT [] [])
+      (ldStT (π.map natV) (machReads T (tokLd P G Pg B lseSum lseNumerator NE env π init)))) :
     RouteOutcomeV P (routeKernel G B Pg lseSum lseNumerator) NE
       (netLd P (routeKernel G B Pg lseSum lseNumerator) env init) env leaves typed π Gn.kind T
       (bootedSt π T (tokLd P G Pg B lseSum lseNumerator NE env π init)) Gn.NB :=
@@ -40,7 +42,7 @@ theorem route_main_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Kernel
   route_gen_gpu P G Pg B lseSum lseNumerator NE env leaves typed π T hπ hL hlt hT hctx _ hNE hnet
     _ (bootedSt_boot π T _) Gn
     ⟨_, _, _, bootedSt_run π T _ Gn.NB,
-      cutConv_inv Gn.hI (LoadedCut.ldPromptCut_inv Gn.NB Gn.Pw Gn.hPw Gn.W Gn.hW π hlt T _ (by omega)
-        fun j => Nat.le_trans (machTok_le P _ NE _ env π (hRT []) hπ hlt j) (by decide))⟩
+      cutConv_inv Gn.hI (ldPromptCutAt_of_inv (LoadedCut.ldPromptCut_inv Gn.NB Gn.Pw Gn.hPw Gn.W Gn.hW π hlt T _ (by omega)
+        fun j => Nat.le_trans (machTok_le P _ NE _ env π (hRT []) hπ hlt j) (by decide)))⟩
 
 end Host.Route

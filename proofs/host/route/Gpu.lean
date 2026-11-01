@@ -23,10 +23,22 @@ Neural Engine route. -/
 
 variable {C : M1Max.Contract}
 
-/-- **The generated pieces of a prompt with no Neural Engine forward.** -/
+/-- The load cut at the boot's end state `tL`: the graph bookkeeping entering the prefill reads the target. -/
+def ldPromptCutAt (NB : Nat) (Pw : Sim.LoadP) (W : Nat → Option WFrame) (s0 : St FF.S) (T : Nat) (tk : Nat → Nat)
+    (π : List Nat) (tL : St FF.S) : Host.Ts.Sim.Prefill.ICut FF :=
+  { ldPromptCut NB Pw W s0 T tk π with
+    B := fun x => (ldPromptCut NB Pw W s0 T tk π).B x ∧ x.t = tL }
+
+theorem ldPromptCutAt_of_inv {NB : Nat} {Pw : Sim.LoadP} {W : Nat → Option WFrame} {s0 : St FF.S} {T : Nat}
+    {tk : Nat → Nat} {π : List Nat} {t : St FF.S} {Cs : CSrv} (h : (ldPromptCut NB Pw W s0 T tk π).Inv t Cs) :
+    (ldPromptCutAt NB Pw W s0 T tk π t).Inv t Cs := by
+  obtain ⟨x, ht, hC, hr, hb⟩ := h
+  exact ⟨x, ht, hC, hr, hb, ht⟩
+
+/-- **The generated pieces of a prompt with no Neural Engine forward.** `tL` is the boot's end state. -/
 structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat) (T : Nat) (tk : Nat → Nat)
-    (je : Host.Ts.Env) (nm : Host.Ts.Name) (s0ld : St FF.S) where
+    (je : Host.Ts.Env) (nm : Host.Ts.Name) (s0ld tL : St FF.S) where
   kind : Nat → Option Compiled
   NB : Nat
   Pw : Sim.LoadP
@@ -37,7 +49,7 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
   I : PrefInvsW (fullWorldXD NB).F
   hPw : LdParams Pw NB
   hW : W 2665 = none
-  hI : Host.Ts.Sim.Prefill.CutConv (ldPromptCut NB Pw W s0ld T tk π) (I.ld π.length)
+  hI : Host.Ts.Sim.Prefill.CutConv (ldPromptCutAt NB Pw W s0ld T tk π tL) (I.ld π.length)
   Fr : LoopFramesA A
   s0 : St FF.S
   tab0 : List SymE
@@ -79,7 +91,7 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
 /-- **The route's artifacts from the restricted pieces.** -/
 noncomputable def RouteGenGpu.artifacts {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
     {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat} {T : Nat} {tk : Nat → Nat}
-    {je : Host.Ts.Env} {nm : Host.Ts.Name} {s0ld : St FF.S} (Gn : RouteGenGpu P KR NE net env π T tk je nm s0ld)
+    {je : Host.Ts.Env} {nm : Host.Ts.Name} {s0ld tL : St FF.S} (Gn : RouteGenGpu P KR NE net env π T tk je nm s0ld tL)
     (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224)
     (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
     (htkR : ∀ tab j, j < T →
@@ -100,11 +112,11 @@ theorem route_gen_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelG
     (hctx : π.length + T ≤ 262144) (net : Host.Mlx.SimGraph.Ref.AneNet) (hNE : NE.Succeeds net)
     (hnet : ∀ tab, AneNetOk net (stageWeights (weights (firstValues P.toMlxContract
       (routeKernel G B Pg lseSum lseNumerator).toKernelContract env tab))))
-    {s0ld : St FF.S} (s : St LSt)
+    {s0ld tLd : St FF.S} (s : St LSt)
     (hs : bootL (RoutePrompt.cx π) (routeWorld T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π))
       2000 = some s)
     (Gn : RouteGenGpu P (routeKernel G B Pg lseSum lseNumerator) NE net env π T
-      (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π) (entryEnv s) chars!"emitted" s0ld)
+      (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π) (entryEnv s) chars!"emitted" s0ld tLd)
     (hboot : ∃ N0 tL CL, runC (fullWorldXD Gn.NB).F N0 (bootStart s)
       (routeServer T (machTok P (routeKernel G B Pg lseSum lseNumerator) NE net env π)) = some (tL, CL) ∧
       (Gn.I.ld π.length).Inv tL CL) :

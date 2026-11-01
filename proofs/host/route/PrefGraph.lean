@@ -1,5 +1,6 @@
 import host.route.Final
 import host.simgraph.mach.Vals
+import host.sim.compose.NTrack
 set_option maxRecDepth 1000000
 set_option autoImplicit false
 namespace Host.Route.PrefGraph
@@ -22,13 +23,15 @@ values are the Neural Engine readers of the forwards `s` has run. As in `GIM`, t
 template's carriers `Cr` through the node map. These predicates name no chain, so a piece's cuts carry them as an
 additive bookkeeping layer. `An` is the Neural Engine memory component, read at the same reference state.
 
-* `DrainG Cr k`: at the drain cut after `k` whole chunks (`afterDrains`).
+* `ColdG`: before the first forward, where the reference's handles are empty.
+* `DrainG Cr k`: at the drain cut after `k ≥ 1` whole chunks (`afterDrains`).
 * `PreG Cr`: at the pre-final cut (`preFinal`); `PreG.prefillAt`: that is the reference's `prefillAt`.
 * `ExitG Cr out`: at the prefill's exit cut, after the final D1 forward from `prefillAt`'s state: the node
   `x.M.node out` holds the forward's normalized hidden state and the carriers its next handles.
 * `stepTrace_final`: the reference's step at the last prompt row is that forward, then the head and the sampler.
 * `GlueOk`: what a stretch between forwards keeps; `DrainG.glue`, `PreG.glue`, `ExitG.glue` transport across it.
-* `DrainG.succ`, `DrainG.preG_tail`, `DrainG.preG_of_no_tail`, `PreG.exit`: a forward advances the fold. -/
+* `ColdG.preG_tail`, `ColdG.exit`, `DrainG.succ`, `DrainG.preG_tail`, `DrainG.preG_of_no_tail`, `PreG.exit`: a forward
+  advances the fold. -/
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
   (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat)
@@ -59,7 +62,12 @@ structure Held (W : Vals) (tab : List F64) (hs : List Handles) (σ : Nat → Nat
   values : CacheValuesV (W.val tab (mlxOf t.ffi)) (cachesAt σ Cr) hs
   below : CachesBelow (cachesAt σ Cr) (mlxOf t.ffi).nnext
 
-/-- The drain cut after `k` whole chunks holds the reference's fold to it. -/
+/-- **Before the first forward.** The reference's initial handles are empty (`CacheValuesV` needs populated ones, so
+`Held` is false there): the target holds only the base. This reads no node map. -/
+def ColdG (x : SegInst FF) : Prop :=
+  ∀ tab, Host.Ts.Sim.CSrv.Le x.C ⟨tab⟩ → Base P KR env (V (refInit net)) tab x.t ∧ An (refInit net) x.t
+
+/-- The drain cut after `k ≥ 1` whole chunks holds the reference's fold to it. -/
 def DrainG (Cr : List (Option Nat × Option Nat)) (k : Nat) (x : SegInst FF) : Prop :=
   ∀ tab, Host.Ts.Sim.CSrv.Le x.C ⟨tab⟩ → ∃ s, afterDrains (refStep P KR NE net env π tab) π.length k (refInit net) = some s ∧
     Held P KR env (V s) tab s.hs x.M.node Cr x.t ∧ An s x.t
@@ -209,6 +217,87 @@ theorem ExitG.glue {Cr : List (Option Nat × Option Nat)} {out : Nat} {x y : Seg
     exact Nat.lt_of_lt_of_le hlt hg.nodes.nnext
   · rw [hg.map]
     exact hh.grow hg.nodes hg.tokens
+
+/-- A stretch's facts (`NTrack`, from the pieces) with the Neural Engine component. -/
+theorem GlueOk.of_track {x y : SegInst FF} (h : Host.Ts.Sim.Compose.NTrack x y) (ha : ∀ s, An s x.t → An s y.t) :
+    GlueOk An x y :=
+  ⟨h.server, h.map, h.nodes, h.tokens, ha⟩
+
+/-- `Held` reads the node map only at the carriers: a restart or compaction renaming them keeps it. -/
+theorem Held.congr {W : Vals} {tab : List F64} {hs : List Handles} {σ σ' : Nat → Nat}
+    {Cr Cr' : List (Option Nat × Option Nat)} {t : St FF.S} (h : Held P KR env W tab hs σ Cr t)
+    (hc : cachesAt σ' Cr' = cachesAt σ Cr) : Held P KR env W tab hs σ' Cr' t where
+  toBase := h.toBase
+  values := hc ▸ h.values
+  below := hc ▸ h.below
+
+theorem DrainG.congr {Cr Cr' : List (Option Nat × Option Nat)} {k : Nat} {x y : SegInst FF}
+    (h : DrainG P KR NE net env π V An Cr k x) (ht : y.t = x.t) (hC : y.C = x.C)
+    (hc : cachesAt y.M.node Cr' = cachesAt x.M.node Cr) : DrainG P KR NE net env π V An Cr' k y := by
+  intro tab hle
+  obtain ⟨s, hs, hh, ha⟩ := h tab (hC ▸ hle)
+  exact ⟨s, hs, ht ▸ hh.congr hc, ht ▸ ha⟩
+
+theorem PreG.congr {Cr Cr' : List (Option Nat × Option Nat)} {x y : SegInst FF}
+    (h : PreG P KR NE net env π V An Cr x) (ht : y.t = x.t) (hC : y.C = x.C)
+    (hc : cachesAt y.M.node Cr' = cachesAt x.M.node Cr) : PreG P KR NE net env π V An Cr' y := by
+  intro tab hle
+  obtain ⟨s, hs, hh, ha⟩ := h tab (hC ▸ hle)
+  exact ⟨s, hs, ht ▸ hh.congr hc, ht ▸ ha⟩
+
+theorem ExitG.congr {Cr Cr' : List (Option Nat × Option Nat)} {out out' : Nat} {x y : SegInst FF}
+    (h : ExitG P KR NE net env π V An Cr out x) (ht : y.t = x.t) (hC : y.C = x.C)
+    (hc : cachesAt y.M.node Cr' = cachesAt x.M.node Cr) (ho : y.M.node out' = x.M.node out) :
+    ExitG P KR NE net env π V An Cr' out' y := by
+  intro tab hle
+  obtain ⟨s, hidden, hs', hp, hf, he, hlt, hh, ha⟩ := h tab (hC ▸ hle)
+  exact ⟨s, hidden, hs', hp, hf, ho ▸ ht ▸ he, ho ▸ ht ▸ hlt, ht ▸ hh.congr hc, ht ▸ ha⟩
+
+theorem ColdG.glue {x y : SegInst FF} (h : ColdG P KR net env V An x) (hg : GlueOk An x y) : ColdG P KR net env V An y := by
+  intro tab hC
+  obtain ⟨hb, ha⟩ := h tab (hg.server.trans hC)
+  exact ⟨hb.grow hg.nodes hg.tokens, hg.ane _ ha⟩
+
+/-- `ColdG` reads no node map: any witness at the same target and server holds it. -/
+theorem ColdG.of_eq {x y : SegInst FF} (h : ColdG P KR net env V An x) (ht : y.t = x.t) (hC : y.C = x.C) :
+    ColdG P KR net env V An y := by
+  intro tab hle
+  rw [ht]
+  exact h tab (hC ▸ hle)
+
+/-- **The first tail** of a prompt with no whole chunk: the first forward takes the cold state to the pre-final cut. -/
+theorem ColdG.preG_tail {Cr' : List (Option Nat × Option Nat)} {x y : SegInst FF}
+    (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hd : drains π.length = 0) (ht : tailRows π.length ≠ 0)
+    (h : ColdG P KR net env V An x)
+    (hstep : ∀ tab, Host.Ts.Sim.CSrv.Le y.C ⟨tab⟩ →
+      Base P KR env (V (refInit net)) tab x.t → An (refInit net) x.t →
+      ∃ s', refStep P KR NE net env π tab (tailStep π.length) (refInit net) = some s' ∧
+        Held P KR env (V s') tab s'.hs y.M.node Cr' y.t ∧ An s' y.t) :
+    PreG P KR NE net env π V An Cr' y := by
+  intro tab hC
+  obtain ⟨hb, ha⟩ := h tab (hle.trans hC)
+  obtain ⟨s', hs', hh', ha'⟩ := hstep tab hC hb ha
+  refine ⟨s', ?_, hh', ha'⟩
+  simp only [preFinal, afterDrains, hd, Host.Mlx.SimGraph.Ref.drainsFrom, Option.bind_some, tailThen, ite_eq_right ht]
+  exact hs'
+
+/-- **The one-token prompt's final forward** takes the cold state to the exit cut. -/
+theorem ColdG.exit {Cr' : List (Option Nat × Option Nat)} {out : Nat} {x y : SegInst FF}
+    (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hL : π.length = 1) (h : ColdG P KR net env V An x)
+    (hstep : ∀ tab, Host.Ts.Sim.CSrv.Le y.C ⟨tab⟩ →
+      Base P KR env (V (refInit net)) tab x.t → An (refInit net) x.t →
+      ∃ hidden hs', finalForward P KR env π tab (refInit net).hs = some (hidden, hs') ∧
+        (V (refInit net)).val tab (mlxOf y.t.ffi) (y.M.node out) = some hidden ∧
+        y.M.node out < (mlxOf y.t.ffi).nnext ∧
+        Held P KR env (V (refInit net)) tab hs' y.M.node Cr' y.t ∧ An (refInit net) y.t) :
+    ExitG P KR NE net env π V An Cr' out y := by
+  intro tab hC
+  obtain ⟨hb, ha⟩ := h tab (hle.trans hC)
+  obtain ⟨hidden, hs', hf, he, hlt, hh', ha'⟩ := hstep tab hC hb ha
+  refine ⟨refInit net, hidden, hs', ?_, hf, he, hlt, hh', ha'⟩
+  unfold Host.Mlx.SimGraph.Ref.prefillAt
+  rw [hL]
+  exact Host.Mlx.SimGraph.Ref.prefillState_one _ _
 
 /-- The pre-final cut's fold is the reference's prefill. -/
 theorem PreG.prefillAt {Cr : List (Option Nat × Option Nat)} {x : SegInst FF}

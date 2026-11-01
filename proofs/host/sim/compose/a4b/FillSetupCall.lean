@@ -72,13 +72,15 @@ theorem nativeZero {NB T L : Nat} {tk : Nat → Nat} {x : SegInst FF}
   have a1 := Int.ofNat.inj a0
   constructor <;> simp only [NativeAt] <;> omega
 
-theorem initial {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} (hL : L ≤ 2 ^ 20) :
-    CutConv (ldPinCut NB T tk π L) (withSetupPin T tk π (initialFixedCut NB T tk L)) := by
-  rintro x hR ⟨hB, hp⟩
+theorem initial {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hL : L ≤ 2 ^ 20) :
+    CutConv (withMem Mem (ldPinCut NB T tk π L)) (withMem Mem (withSetupPin T tk π (initialFixedCut NB T tk L))) := by
+  rintro x hR ⟨⟨hB, hp⟩, hm⟩
   have he := ldCut_setupEntryAt_bound hL hR hB
   refine ⟨{ x with ν := rowVal x.ν L }, rfl, rfl, he.1,
-    ⟨⟨he.2.1, (ldCut_setupContext hB).2, he.2.2⟩, ?_, ?_⟩,
-    ⟨(ldCut_setupValues_bound hL hB).2.2, ?_⟩, hp, nativeZero hR hB⟩
+    ⟨⟨⟨he.2.1, (ldCut_setupContext hB).2, he.2.2⟩, ?_, ?_⟩,
+    ⟨(ldCut_setupValues_bound hL hB).2.2, ?_⟩, hp, nativeZero hR hB⟩,
+    hMem x _ (NTrack.conv rfl rfl rfl) hm⟩
   · change BigJs x.M
     rw [hB.1]
     exact BigJs.id
@@ -91,10 +93,11 @@ theorem initial {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} (hL : L ≤ 2 
 
 /-- Concrete boundaries of the compiled setup chain: s4/S4 and s6/S6.
 The final cut is s16/S16, with the framed prompt and anchors retained. -/
-noncomputable def g0a (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
+noncomputable def g0a (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (Mem : Nat → SegInst FF → Prop)
+    (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
     GluePiece FF setupRows
-      (fun i => ldPinCut NB T tk π i.L)
-      (fun i => withSetupPin T tk π (chunkCallFixedCut NB T tk i.L)) where
+      (fun i => withMem (Mem i.L) (ldPinCut NB T tk π i.L))
+      (fun i => withMem (Mem i.L) (withSetupPin T tk π (chunkCallFixedCut NB T tk i.L))) where
   m := [(9, .L)]
   n := 900
   O := PRE_setup_early_r0.S0.oracle
@@ -104,14 +107,15 @@ noncomputable def g0a (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
       have all : ∀ r ∈ setupRows, goodLin r.ps (varsOf r.V [(9, .L)]) PRE_setup_early_r0.S0.oracle = true :=
         by decide +kernel
       exact all r hr
-    exact (((initial_chunkCall_fixed_oracle_keeps (fun _ hm => good_of_row hc hi hm)).pin T tk π).cast rfl rfl rfl).convL
-      (initial (setupBound hr hi))
+    exact (((initial_chunkCall_fixed_oracle_keeps (fun _ hm => good_of_row hc hi hm)).pinMem T tk π (hMem i.L)).cast rfl rfl rfl).convL
+      (initial (hMem i.L) (setupBound hr hi))
 
 /-- The site oracle uses variable 9; the standalone K8 oracle uses variable 0. -/
-noncomputable def chunk_K8_literal (NB T : Nat) (tk : Nat → Nat) (π : List Nat) :
+noncomputable def chunk_K8_literal (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (Mem : Nat → SegInst FF → Prop)
+    (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
     StagePiece FF [setup_early.r0] [⟨[(0, .L)], Stage.ChunkSize.K8.O⟩]
-      (fun i => withSetupPin T tk π (chunkCallFixedCut NB T tk i.L))
-      (fun i => withSetupPin T tk π (setupChunkCut NB T tk i.L)) where
+      (fun i => withMem (Mem i.L) (withSetupPin T tk π (chunkCallFixedCut NB T tk i.L)))
+      (fun i => withMem (Mem i.L) (withSetupPin T tk π (setupChunkCut NB T tk i.L))) where
   m := [(9, .L)]
   n := 101
   O := PRE_setup_early_r0.st0.S0.oracle
@@ -123,7 +127,7 @@ noncomputable def chunk_K8_literal (NB T : Nat) (tk : Nat → Nat) (π : List Na
     have : r = setup_early.r0 := List.mem_singleton.mp hr
     subst r
     obtain ⟨h1, h8⟩ := bounds hi
-    exact StageCall.intro (CutConv.refl _) ((chunkCall_merged_keeps h1 h8).pin T tk π)
-      (merged_compact_keeps.pin T tk π)
+    exact StageCall.intro (CutConv.refl _) ((chunkCall_merged_keeps h1 h8).pinMem T tk π (hMem i.L))
+      (merged_compact_keeps.pinMem T tk π (hMem i.L))
 
 end Host.Ts.Sim.Compose.FillSetupEarly

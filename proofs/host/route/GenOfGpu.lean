@@ -43,7 +43,7 @@ POST, short-path executions and graph facts, and the two connections of the pref
 noncomputable def routeGenOfGpu
     (I : PrefInvsW (fullWorldXD 15235).F)
     (Pp : PiecesR (fullWorldXD 15235).F I)
-    (loadEntry : CutConv (ldPromptCut 15235 setupP wideP (ldStT [] []) T Tk π) (I.ld π.length))
+    (loadEntry : CutConv (ldPromptCutAt 15235 setupP wideP (ldStT [] []) T Tk π (ldStT (π.map natV) (machReads T Tk))) (I.ld π.length))
     (postPieces : RoutePiecesR (fullWorldXD 15235).F I T Tk)
     (shortPaths : PathPiecesW (fullWorldXD 15235) addrPrompt setupP wideP terminalFixP Tk
       (postPieces.cuts.b_pA_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2)))
@@ -57,7 +57,7 @@ noncomputable def routeGenOfGpu
     (graphB0 : shortPaths.pB0.Goal (goalCV P Kr NE net env π kind 15235 T Je))
     (graphC1 : shortPaths.pC1.Goal (goalMV P Kr NE net env π kind 15235 1))
     (graphC0 : shortPaths.pC0.Goal (goalCV P Kr NE net env π kind 15235 T Je)) :
-    RouteGenGpu P Kr NE net env π T Tk Je chars!"emitted" (ldStT [] []) := by
+    RouteGenGpu P Kr NE net env π T Tk Je chars!"emitted" (ldStT [] []) (ldStT (π.map natV) (machReads T Tk)) := by
   have hRT := route_refTokens P G Pg bytes lseSum lseNumerator NE net env leaves typed
     hπ (by omega) hlt hNE hnet
   have hv : ∀ j, Tk j ≤ 248319 := machTok_le P Kr NE net env π (hRT []) hπ hlt

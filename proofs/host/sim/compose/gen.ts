@@ -1451,10 +1451,12 @@ ${typedBody ? "    (bytes : List Byte) (rows : Nat)\n" : ""}\
   if (chain.row === "setup_early.r0" && stages.length === 1 && stages[0].stage.name === "chunk_K8__g0a__g0b") {
     imports.add("host.sim.compose.a4b.FillSetupEarly");
     code += `/-- The bundle uses the shared PRE_g0b template after the zero-step C seam. -/
-noncomputable def ${X}.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
-  withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L)
-noncomputable def ${X}.b_g0b_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat) : Cls.Inst → ICut FF :=
-  SetupCommon.cut NB T tk π Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0
+noncomputable def ${X}.b_g0a_o (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
+    (Mem : Nat → SegInst FF → Prop) (i : Cls.Inst) : ICut FF :=
+  withMem (Mem i.L) (withSetupPin T tk π (SetupChunk.chunkCallFixedCut NB T tk i.L))
+noncomputable def ${X}.b_g0b_i (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
+    (Mem : Nat → SegInst FF → Prop) (i : Cls.Inst) : ICut FF :=
+  withMem (Mem i.L) (SetupCommon.cut NB T tk π Host.Load.Run.Tpl.PRE_g0b.s0 Host.Load.Run.Tpl.PRE_g0b.S0 i)
 noncomputable def ${X}.pc0 := SetupCommon.nextCut
 
 noncomputable def ${X}.g0a := FillSetupEarly.g0a
