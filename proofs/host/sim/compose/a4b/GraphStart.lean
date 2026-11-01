@@ -1,5 +1,6 @@
 import host.sim.compose.a4b.Entry
 import host.sim.compose.FullGraph
+import host.simgraph.Domain
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 1000000
 namespace Host.Ts.Sim.Compose
