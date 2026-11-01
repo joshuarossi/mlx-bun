@@ -33,11 +33,11 @@ theorem row_fwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.
     {tok tok' : Nat} {hs hs' : List Handles} (hR1 : R tab (L + d) = some (tok, hs)) (hR2 : R tab (L + d + 1) = some (tok', hs'))
     (hb : tok < 2 ^ 31) (hL0 : L0 ≤ L + d) (hint : L + d + 1 < capL (L + d))
     (hcaps : CapsFor (capL (L + d)) (stageWeights (weights (firstValues Mx Kx env tab))) hs)
-    (hcv : CacheValuesV (Vs.val tab y) (cachesAt M.node c.ps) hs)
-    (hfed : ∃ r, Vs.val tab y (M.node c.fed) = some r ∧ itemUint32 r = some tok)
-    (hpar : ∀ t ∈ parameterTensors parameterChoice, Vs.val tab y t.node = some (firstValues Mx Kx env tab t)) :
-    (∃ r, Vs.val tab y (M.node (certAt c.cert Tpl.Ordinary.tokenNode)) = some r ∧ itemUint32 r = some tok') ∧
-      CacheValuesV (Vs.val tab y) (cachesAt M.node c.outs) hs' ∧
+    (hcv : CacheValuesV ((routeVs P KR env kind).val tab y) (cachesAt M.node c.ps) hs)
+    (hfed : ∃ r, (routeVs P KR env kind).val tab y (M.node c.fed) = some r ∧ itemUint32 r = some tok)
+    (hpar : ∀ t ∈ parameterTensors parameterChoice, (routeVs P KR env kind).val tab y t.node = some (firstValues Mx Kx env tab t)) :
+    (∃ r, (routeVs P KR env kind).val tab y (M.node (certAt c.cert Tpl.Ordinary.tokenNode)) = some r ∧ itemUint32 r = some tok') ∧
+      CacheValuesV ((routeVs P KR env kind).val tab y) (cachesAt M.node c.outs) hs' ∧
       CapsFor (capL (L + d + 1)) (stageWeights (weights (firstValues Mx Kx env tab))) hs' := by
   have hstep : stepTrace Mx Kx (weights (firstValues Mx Kx env tab)) (L + d) tok hs = some (tok', hs') := by
     have h := hdec tab (L + d) hL0

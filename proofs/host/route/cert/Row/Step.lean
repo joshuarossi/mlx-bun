@@ -59,19 +59,18 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
   obtain ⟨tok, hs, hR, hcv, hcaps, hcb⟩ := hx.cur
   obtain ⟨_, _, tok', hs', h0, hR2, -⟩ := (hRT tab).2 (π.length + d) (by omega)
   obtain ⟨rt, rh⟩ := Prod.mk.inj (Option.some.inj (hR.symm.trans h0))
-  have rt' := rt.symm
-  subst rt' rh
-  obtain ⟨_, _, _, _, -, hprev, hlt, -⟩ := (hRT tab).2 (π.length + d - 1) (by omega)
-  rw [show π.length + d - 1 + 1 = π.length + d by omega, h0] at hprev
+  subst rt rh
+  obtain ⟨_, _, t2, _, -, hprev, hlt, -⟩ := (hRT tab).2 (π.length + d - 1) (by omega)
+  rw [show π.length + d - 1 + 1 = π.length + d by omega, hR] at hprev
   obtain ⟨rt2, -⟩ := Prod.mk.inj (Option.some.inj hprev)
   have hb31 : tok < 2 ^ 31 := by rw [rt2]; omega
   obtain ⟨_, ⟨tok1, hs1, hR1, ⟨r, hr1, hi⟩, _⟩, ho, _⟩ := hx.hist d (Nat.le_refl _)
-  obtain ⟨rt3, rh3⟩ := Prod.mk.inj (Option.some.inj (hR1.symm.trans h0))
+  obtain ⟨rt3, rh3⟩ := Prod.mk.inj (Option.some.inj (hR.symm.trans hR1))
   subst rt3 rh3
   have hgy := hx.ok
   obtain ⟨hrt, hrc, hrcap⟩ := row_fwd P KR env kind leaves typed
     (refPrompt_decodes P KR NE KR.inPlace net env π) c tab hmr hNB hband hrope y.ν hL1 hL2 hρ
-    (fun i e h => hC.val (hr.srv.num i e h)) h0 hR2 hb31 (by omega)
+    (fun i e h => hC.val (hr.srv.num i e h)) hR hR2 hb31 (by omega)
     (by unfold capL; omega) hcaps
     (by
       rw [hnode, ← hps]
