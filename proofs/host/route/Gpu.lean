@@ -71,7 +71,7 @@ structure RouteGenGpu (P : MlxPrefillContract C) (KR : RouteKernelContract C) (N
   sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs
   D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr ρ T tk π.length
     (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN
-  Dg : ∀ h3 b0, DecodeGraphMFramedAt P KR env π b0 je Itpl (D h3 b0)
+  Dg : ∀ h3 b0, Host.Ts.Sim.Compose.Gpu.DecodeGraphR P KR env π b0 je Itpl (D h3 b0)
   tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL ρ T tk π.length) tk
     (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN ((D h3 b0).cs k)
   hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ fixA

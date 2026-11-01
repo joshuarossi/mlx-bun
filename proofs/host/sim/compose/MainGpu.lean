@@ -34,6 +34,46 @@ theorem finalCacheW_restrict {Wd : World} {pr : GraphProj Wd} {A : Addr} {P : Wd
     (c : FinalCacheTpl pr fixB I je hs) (h : c.cc ∈ fixS) : FinalCacheW pr fixS I je hs :=
   ({ c with hfix := h } : FinalCacheTpl pr fixS I je hs).cache
 
+section
+variable {ρ : Nat → F64} {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
+  {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat} {T : Nat} {tk : Nat → Nat}
+  {NB : Nat} {A : Addr} {W : Nat → Option WFrame} {Pd : LoadP} {Fr : LoopFramesA A} {s0 : St FF.S}
+  {tab0 : List SymE} {fixA : List Nat} {B : LoopBase} {ΔJ ΔH ΔN : Nat}
+
+variable (P KR env π) in
+/-- **The decode route's graph facts**, at a template valuation `ρ`, at the machine reference (`host.sim.compose.Mach`) at the pinned
+bridge `b0`: the template start's, each case end's and its decode template at every iteration it is selected
+for, the final and EOS final chains' halted template facts with the final chains' program caches, the exit
+chain's. -/
+structure DecodeGraphR (b0 : Host.Mlx.FfiAne.St) (je : Host.Ts.Env) (Itpl : TplInputs)
+    (D : DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixA Fr ρ T tk π.length
+      (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN) where
+  st : StartGM (fullProjFb b0 NB) A Pd s0 tab0 Itpl
+  en : (k : DecKind) → EndGM Itpl (D.cs k).e
+  tpl : ∀ k i, DecSel T π.length tk k i →
+    CaseTplAtM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) A Itpl π.length (D.cs k).e.s1.ffi
+      (D.cs k).e.S1.tab (en k).outT (en k).outs i NB
+  f0 : LastGM Itpl (D.f0.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  f1 : LastGM Itpl (D.f1.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  f2 : LastGM Itpl (D.f2.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  c0 : FinalCacheTpl (fullProjFb b0 NB) fixA Itpl je (D.f0.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  c1 : FinalCacheTpl (fullProjFb b0 NB) fixA Itpl je (D.f1.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  c2 : FinalCacheTpl (fullProjFb b0 NB) fixA Itpl je (D.f2.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  e0 : LastGM Itpl (D.e0.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  e1 : LastGM Itpl (D.e1.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
+  x : ∀ k, CutGM Itpl (D.x.seg ((.ref 2 :: machReads T tk).drop (k - 1)))
+
+
+
+/-- The facts at the machine valuation are these at `ρ := machVal T tk`. -/
+def DecodeGraphMFramedAt.toR {b0 : _root_.Host.Mlx.FfiAne.St} {je : _root_.Host.Ts.Env} {Itpl : TplInputs}
+    {D : DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixA Fr (machVal T tk) T tk π.length
+      (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN}
+    (h : DecodeGraphMFramedAt P KR env π b0 je Itpl D) : DecodeGraphR P KR env π b0 je Itpl D :=
+  ⟨h.st, h.en, h.tpl, h.f0, h.f1, h.f2, h.c0, h.c1, h.c2, h.e0, h.e1, h.x⟩
+
+end
+
 /-- **The route's artifacts of a prompt with no Neural Engine forward.** -/
 noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
     (net : _root_.Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
@@ -53,7 +93,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs)
     (D : ∀ (_ : 3 ≤ T) (b0 : _root_.Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr (ρ) T tk π.length
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN)
-    (Dg : ∀ h3 b0, DecodeGraphMFramedAt P KR env π b0 je Itpl (D h3 b0))
+    (Dg : ∀ h3 b0, DecodeGraphR P KR env π b0 je Itpl (D h3 b0))
     (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL ρ T tk π.length) tk
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN ((D h3 b0).cs k))
     (hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ fixA) (hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ fixA) (hc2 : ∀ h3 b0, (Dg h3 b0).c2.cc ∈ fixA)

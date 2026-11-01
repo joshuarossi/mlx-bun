@@ -122,11 +122,11 @@ noncomputable def routeGenOfGpu
       sB2 := sB2
       sC1 := sC1
       D := D
-      Dg := fun h3 b0 => DEC.graphPiecesFramedGpu P Kr env π
+      Dg := fun h3 b0 => Host.Ts.Sim.Compose.Gpu.DecodeGraphMFramedAt.toR (DEC.graphPiecesFramedGpu P Kr env π
         (b0 := b0) (NB := 15235) (B := routeLoopBaseGpu)
         (ΔJ := DECG.ΔJ) (ΔH := DECG.ΔH) (ΔN := DECG.ΔN)
         (π.map natV) (by simp) hρ hπ hL h3 hctx (fun j _ => hv j)
-        le_rfl le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2
+        le_rfl le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2)
       tails := fun h3 b0 => DEC.tailsGpu (b0 := b0) (NB := 15235) (B := routeLoopBaseGpu)
         (ΔJ := DECG.ΔJ) (ΔH := DECG.ΔH) (ΔN := DECG.ΔN) (ρ := machVal T Tk)
         (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hρ hπ hL h3 hctx
