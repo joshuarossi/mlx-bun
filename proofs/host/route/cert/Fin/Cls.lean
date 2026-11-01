@@ -10,7 +10,8 @@ open Host.Ts Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph
 /-! # What a class's certificate reads
 
 A template's table numbers are linear in the prompt's length `L`, each variable `v` being `k + a·L` (`VarV`): a dimension is the
-ordinary template's `pos` or `pos1` at time `L + d`, or a literal. Host bytes read the variables fixed by `E`. -/
+ordinary template's `pos` or `pos1` at time `L + d`, or a literal. Host bytes read constants: a row count's expression may mention
+`L` and cancel it. -/
 
 /-- Each variable's value: `(v, k, a)` for `k + a·L`. -/
 abbrev VarV := List (Nat × Int × Int)
@@ -39,27 +40,21 @@ def sdimV (V : VarV) (d : Int) (p : PDim) : Option SDim :=
 
 def clsV (S : SSrv) (B : Box) (V : VarV) (d : Int) (x : NumV) : Option SDim := (clsOfX S B x).bind (sdimV V d)
 
-/-- Partial evaluation with the variables `E` fixed. -/
-def evalV (E : List (Nat × Nat)) : SymE → Option F64
-  | .lit f => some f
-  | .var i => (E.find? (·.1 = i)).map fun q => F64.ofNat q.2
-  | .un op a => (evalV E a).map (F64.un op)
-  | .bin op a b => do pure (F64.bin op (← evalV E a) (← evalV E b))
+/-- A number's value as a constant of the table: its normal form, independent of `L`. -/
+def constV (S : SSrv) (B : Box) (V : VarV) (x : NumV) : Option Int :=
+  ((clsOfX S B x).bind (linV V)).bind fun r => if r.2 = 0 then some r.1 else none
 
-def numValV (S : SSrv) (E : List (Nat × Nat)) : NumV → Option F64
-  | .lit f => some f
-  | .ref i => (nth? S.tab i).bind (evalV E)
-
-def byteV (S : SSrv) (E : List (Nat × Nat)) : Byte → Option Nat
+/-- 32-bit cells read through their constant value, others refused. -/
+def byteV (S : SSrv) (B : Box) (V : VarV) : Byte → Option Nat
   | .lit b => some b
-  | .part k (.num x) i => concreteByte (numValV S E) (.part k (.num x) i)
-  | .part _ (.big _) _ => none
+  | .part .i32 (.num x) i => (constV S B V x).bind fun c => nth? (leBytes 4 (F64.modNat c (2 ^ 32))) i
+  | .part .u32 (.num x) i => (constV S B V x).bind fun c => nth? (leBytes 4 (F64.modNat c (2 ^ 32))) i
+  | _ => none
 
-def numsV (S : SSrv) (B : Box) (V : VarV) (E : List (Nat × Nat)) (d : Int) : Nums SDim :=
-  { symNumsD (clsV S B V d) SDim.lit with byte := byteV S E }
+def numsV (S : SSrv) (B : Box) (V : VarV) (d : Int) : Nums SDim :=
+  { symNumsD (clsV S B V d) SDim.lit with byte := byteV S B V }
 
-noncomputable def gsV (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) (E : List (Nat × Nat)) (d : Int) :
-    Nat → Option (RNode SDim InKey) :=
-  restrictTo (exactTplDom 15235 15235 [5554869888] s) (ffiGraph (numsV S B V E d) SourceKernels.sources s)
+noncomputable def gsV (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) (d : Int) : Nat → Option (RNode SDim InKey) :=
+  restrictTo (exactTplDom 15235 15235 [5554869888] s) (ffiGraph (numsV S B V d) SourceKernels.sources s)
 
 end Host.Route.Cert.Fin

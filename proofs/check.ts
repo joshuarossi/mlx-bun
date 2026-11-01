@@ -8591,6 +8591,7 @@ const proofFiles = [
   "host/sim/dispatch/Ext.lean",
   "host/sim/full/SizeJs.lean",
   "host/sim/full/ReplayS.lean",
+  "host/sim/full/BridgeFrameS.lean",
   "host/sim/full/SizeNE.lean",
   "host/sim/full/LogGrow.lean",
   "host/sim/conv/CompactShift.lean",

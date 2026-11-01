@@ -29,13 +29,12 @@ run_elab do
 
 def box : Box := [(9, 2, 224), (10, 1, 223), (11, 1, 223), (12, 1, 1), (16, 256, 256)]
 def vars : VarV := [(9, 0, 1), (10, -1, 1), (11, -1, 1), (12, 1, 0), (16, 256, 0)]
-def fixedV : List (Nat × Nat) := [(12, 1)]
 
 /-- The forward's part of the ordinary step. -/
 def Eh : List (RNode SDim InKey) := Tpl.Ordinary.graph.take 4010
 
 set_option interpreter.prefer_native false in
 simgraph_choose_fin choice : (endLoad, endSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
-  box, vars, fixedV, -1, 15235, 15235, Eh
+  box, vars, -1, 19057, 19057, Eh
 
 end Host.Route.Cert.Fin.VW

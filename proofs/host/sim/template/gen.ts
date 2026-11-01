@@ -127,7 +127,7 @@ const backP = loadP && world.jspP && loadP[3] === loadP[4] ? `⟨${loadP.join(",
 const accept = process.env.CHAIN_ACCEPT ?? (meta as { accept?: string })?.accept ?? "auto", D0 = Number(process.env.CHAIN_D0 ?? (meta as { D0?: number })?.D0 ?? 4096);
 if (accept === "jsjxs" && (!backP || worldArg && worldArg !== "full"))
   throw new Error("--accept jsjxs needs the full world and band-free loadP in seg.json");
-const okE = (fr: number[]) => accept === "jsjxs" ? `Disp.okJSJ (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
+const okE = (fr: number[]) => accept === "jskf" ? `Disp.okJSK (${jspOf(fr).replace("Host.Ts.Sim.Template.fullJSPP ", "Host.Ts.Sim.Full.fullJSPXF ").replace(/^(Host\.Ts\.Sim\.Full\.fullJSPXF ⟨[^⟩]*⟩) /, "$1 Host.Ts.Sim.loopVB ")}) (fun _ _ => false)` : accept === "jsjxs" ? `Disp.okJSJ (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPXS ")}) (Host.Ts.Sim.Full.okBackFXS ${backP}) ${D0}`
   : accept === "jskx" && backP ? `Disp.okJSK (${jspOf(fr).replace("Template.fullJSPPD ", "Template.fullJSPPX ")}) (Host.Ts.Sim.Full.okBackFX ${backP})`
   : accept === "jsj" && backP ? `Disp.okJSJ (${jspOf(fr)}) (Host.Ts.Sim.Full.okBackF ${backP}) ${D0}`
   // okJSJ with the symbolic-shape continuation returns (`Template.fullJSPPDS`, `Full.okBackFS`; A1's BackSim)
@@ -159,7 +159,7 @@ if (split || okMeta) {
     : [`/-- The acceptance function of \`${name}\` after bridge ${k + 1} (${b.kind} at boundary ${b.ia}). -/\n`,
       `noncomputable def ${okOf(k + 1)} : St ${world.S} → SSrv → Bool := ${okE(framesOf(k + 1))}\n\n`]);
   writeFileSync(join(root, "OkB.lean"), [
-    `import ${okMod0}\n`, backP ? `import host.sim.full.BackSim\n${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? "import host.sim.dispatch.OkJs\n" : ""}` : "", "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim\n\n", ...def0, ...defs.flat(),
+    `import ${okMod0}\n`, accept === "jskf" ? "import host.sim.full.BridgeFrameS\n" : "", backP ? `import host.sim.full.BackSim\n${accept === "jsj" || accept === "jsjs" || accept === "jsjxs" ? "import host.sim.dispatch.OkJs\n" : ""}` : "", "namespace Host.Load.Run.Tpl\nopen Host.Ts Host.Ts.Sim\n\n", ...def0, ...defs.flat(),
     "end Host.Load.Run.Tpl\n"].join(""));
 }
 // chunk i's role: a bridge's step into (i = ia - 1) or out of (i = ia) its state, or segment k's chunk
