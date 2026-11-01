@@ -62,14 +62,14 @@ theorem prompt_forward_returned (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) 
   exact ⟨x'.t, x'.C, h.run, x', rfl, rfl, ⟨π, K0, h.relation, h.book, ip, reserved, emitted⟩,
     ⟨⟨h.fresh, h.anchors⟩, hp'⟩,
     hMem x x' ⟨h.server, h.ext.node, h.nativeGrow,
-      tokens_of_grow hr h.relation h.nativeGrow (countersOkB_tokens cntBody)⟩ hm⟩
+      tokens_of_grow hr h.relation h.nativeGrow (countersOkB_tokens cntBody), congrFun h.ext.a 12504⟩ hm⟩
 
 /-- The final forward. `hfin`: its graph, from what the return knows. -/
 noncomputable def fwd_D1_cold_DFirst__g2_fin_first__g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
     (Mem Mem' : Nat → SegInst FF → Prop) (hWit : ∀ L x y, y.t = x.t → y.C = x.C → Mem L x → Mem L y)
     (hfin : ∀ x y : SegInst FF, (returnedPromptCut NB T tk π).R y (returnedPromptCut NB T tk π).s0
         ⟨(returnedPromptCut NB T tk π).tab0, []⟩ → (returnedPromptCut NB T tk π).B y → CSrv.Le x.C y.C →
-      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
+      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 →
       Mem 1 x → Mem' 1 y) :
     FwdPiece FF [final_cold.r0] [⟨[(0, .o), (1, .cap), (2, .n)], Stage.Cache.KvDFirst.O⟩]
       (fun _ => forwardCut NB T tk π Mem) (fun _ => withMem (Mem' 1) (returnedPromptCut NB T tk π)) where
@@ -80,6 +80,6 @@ noncomputable def fwd_D1_cold_DFirst__g2_fin_first__g3f_first (NB T : Nat) (tk :
   chk _ _ := rfl
   ok _ _ _ _ _ := FwdCall.warm (toForwardPrompt NB T tk π hWit)
     (hookMem (fun x0 => prompt_forward_returned NB T tk π (fun _ _ h h0 => h0.trans h))
-      (fun x y _ hy hby htr hm => hfin x y hy hby htr.server htr.nodes htr.tokens hm)) (CutConv.refl _)
+      (fun x y _ hy hby htr hm => hfin x y hy hby htr.server htr.nodes htr.tokens htr.emit hm)) (CutConv.refl _)
 
 end Host.Ts.Sim.Compose.D1First

@@ -72,7 +72,7 @@ theorem dispatch (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨π, K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt21)⟩ hmem⟩
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt21), congrFun hext.a 12504⟩ hmem⟩
 
 noncomputable def disp_D1__g1_FIN_first__g2_fin_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :

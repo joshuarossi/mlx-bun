@@ -90,7 +90,7 @@ theorem nps {NB T : Nat} {tk : Nat → Nat} {Mem : SegInst FF → Prop}
     (by intro j w q hw hqj; have hqL : q = Q.L := by simpa using nth?_mem_some hqj
         subst q; change 1 ≤ 2 ^ 20; decide)
   refine ⟨⟨hvals.1, hq.2.1, ?_⟩, ?_, hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng,
-    tokens_of_grow hrel hmerged ng (countersOkB_tokens cnt1)⟩ hm⟩
+    tokens_of_grow hrel hmerged ng (countersOkB_tokens cnt1), congrFun hext.a 12504⟩ hm⟩
   · simpa [ws0, D1StageSplit.map_start, D1StageSplit.map_g1_FIN_first] using hvals.2
   · obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hd, hfresh⟩, hids⟩ := hb.1
     have hi1 : (bridgeOf D1StageSplit.s1.ffi).active = false := by rw [bridge1]; exact inactive0

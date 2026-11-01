@@ -55,7 +55,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem :
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt41⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt41)⟩ hm⟩
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt41), congrFun hext.a 12504⟩ hm⟩
 
 kernel_rfl g2Check : (firstTailRows.all fun r => goodLin r.ps
   (varsOf r.V npsMap) PRE_first_tail_x15_r0.S40.oracle) = true

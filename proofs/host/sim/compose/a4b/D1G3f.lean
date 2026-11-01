@@ -42,6 +42,7 @@ kernel_rfl θKeys : (PLWalkD1.R.theta ++ PLD1.thetaX).map Prod.fst = [10, 11, 14
 kernel_rfl anchorA : PLWalkD1.R.data.a 2590 = 2590
 kernel_rfl anchorB : PLWalkD1.R.data.a 2586 = 2586
 kernel_rfl anchorC : PLWalkD1.R.data.a 2589 = 2589
+kernel_rfl anchorE : PLWalkD1.R.data.a 12504 = 12504
 kernel_rfl inputNode : PLWalkD1.R.data.nodeF 15235 = 15235
 kernel_rfl sameNext : D1Body.s155.next = PRE_pl_entry.s0.next
 kernel_rfl sameHandles : (mlxOf D1Body.s155.ffi).next = (mlxOf PRE_pl_entry.s0.ffi).next
@@ -141,7 +142,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
       x.K.lo, x.K.hi⟩, x.t, x.C⟩
   have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := Pf.drop_prompt PLD1.facts x.M x.K
   have hnode : y.M.node = x.M.node := funext fun k => congrArg x.M.node (nodeF_id walkNN walkNK k)
-  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, ⟨hf, ?_⟩, hMem x y (NTrack.conv rfl rfl hnode) hm⟩
+  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, ⟨hf, ?_⟩, hMem x y (NTrack.conv rfl rfl hnode (by change x.M.a (PLWalkD1.R.data.a 12504) = _; rw [anchorE])) hm⟩
   · refine
       { nonempty := by omega
         vocab := hfb.vocab

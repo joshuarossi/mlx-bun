@@ -55,7 +55,7 @@ theorem matchF (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St}
     · cases h0) hz
   have h2 := matches_embed (σ := M.node) (cl := M.handle) _ _ emb' _ choice.cert
     (by rw [List.length_map, List.length_take]; have := cert_length; omega) h1
-  rw [← List.map_take, Host.Ts.Sim.Compose.ColdGraph.One.full_expected_eval] at h2
+  rw [List.map_take, Host.Ts.Sim.Compose.ColdGraph.One.full_expected_eval] at h2
   exact h2
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
@@ -79,7 +79,7 @@ theorem hfin (a : Nat) (Cr : Nat → List (Option Nat × Option Nat)) (Kept : Na
   have hmr : Host.Ts.Sim.G.MR Pm NB y.M D1Body.S155.tab.length nativeF (mlxOf y.t.ffi) := r0.load.mlx
   have hband : Pm.NL = Pm.N0 := by rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> rfl
   have hE : (Pm.E : Int) ≤ 5554869888 := by
-    rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> exact Int.le_of_lt (by decide)
+    rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> exact (by decide : ((131072 : Nat) : Int) ≤ 5554869888)
   have hrope := hmr.bigFixHi 5554869888 hE (by decide)
   exact hfinOne P KR NE net env a ha Cr Kept hKept Kn hKn
     (fun j hj => hmr.nid j (Nat.lt_of_lt_of_le hj hNB))

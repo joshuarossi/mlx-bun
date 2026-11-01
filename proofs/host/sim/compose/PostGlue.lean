@@ -109,6 +109,6 @@ theorem glueMem {NB T cap nI n : Nat} {tk : Nat → Nat} {π : List Nat} {sa sb 
   exact ⟨t', C', ht, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hbook⟩, ⟨hf',
     ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ ht, he.node, hrel.ffi.1.2,
-      tokens_of_grow hr hout hrel.ffi.1.2 (countersOkB_tokens hcnt)⟩ hm⟩
+      tokens_of_grow hr hout hrel.ffi.1.2 (countersOkB_tokens hcnt), congrFun he.a 12504⟩ hm⟩
 
 end Host.Ts.Sim.Compose.Post

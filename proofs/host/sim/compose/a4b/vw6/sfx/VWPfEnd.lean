@@ -27,6 +27,7 @@ kernel_rfl pfBelow : Nat.ble (mlxOf PRE_first_tail_x6_r0_suffix.s8.ffi).nnext PF
 kernel_rfl pfA : PFW6.R.data.a 2590 = 2590
 kernel_rfl pfB : PFW6.R.data.a 2586 = 2586
 kernel_rfl pfC : PFW6.R.data.a 2589 = 2589
+kernel_rfl pfE : PFW6.R.data.a 12504 = 12504
 
 /-- The rows' last quantities. -/
 theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : i.cap1 = capL (i.L - 1) := by
@@ -62,6 +63,6 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (fun ν hm => by
       rw [← hcapR]
       exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
-    pfA pfB pfC hcap hbound
+    pfA pfB pfC pfE hcap hbound
 
 end Host.Ts.Sim.Compose.VWFirst.VW6.Sfx

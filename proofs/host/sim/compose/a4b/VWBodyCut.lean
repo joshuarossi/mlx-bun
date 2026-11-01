@@ -81,7 +81,7 @@ noncomputable def bodyCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : C
   withMem (BodyTrail x0) (bodyCore NB T tk π i Θ O m s S)
 
 theorem BodyTrail.ofTrack (x0 x y : SegInst FF) (h : NTrack x y) (ht : BodyTrail x0 x) : BodyTrail x0 y :=
-  ht.step (fun k _ => congrFun h.map k) h.nodes h.tokens
+  ht.step (fun k _ => congrFun h.map k) h.nodes h.tokens h.emit
 
 /-- The bridge of the target follows the template's while both sides are inactive. -/
 theorem bodyFresh {W : Nat → Option WFrame}

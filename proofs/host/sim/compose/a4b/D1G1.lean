@@ -60,7 +60,7 @@ theorem g1 (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     exact ⟨hb.2.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hb.2.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
     ⟨π, x.K, hrel, hbook, hinput, hinputs, hq.2.2⟩, ⟨fresh, hids⟩,
-    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hrel ng (countersOkB_tokens cnt20)⟩ hm⟩
+    hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hrel ng (countersOkB_tokens cnt20), congrFun hext.a 12504⟩ hm⟩
 
 noncomputable def g1_FIN_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :

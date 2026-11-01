@@ -149,7 +149,7 @@ theorem glueM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} 
   obtain ⟨M', t', C', hrun', he, hout, ng⟩ := stretch m ha hrun htop hgood hr hb
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hb.grow he ng (runC_le _ _ _ _ _ hrun')⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt), congrFun he.a 12504⟩ htr⟩
 
 /-- A stretch and the step into a bridged call, popping nothing. -/
 theorem callM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {sa sb sc : St FF.S} {Sa Sb Sc : SSrv} {Tr : SegInst FF → Prop}
@@ -164,7 +164,7 @@ theorem callM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} 
   obtain ⟨M', t', C', hrun', he, hout, ng⟩ := stretchCall m ha hrun hb' hh hs htop hgood hr hb
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hb.grow he ng (runC_le _ _ _ _ _ hrun')⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun', he.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt), congrFun he.a 12504⟩ htr⟩
 
 /-- A stretch that may pop a token: the bookkeeping changes by `hook`, from what the stretch's end knows. -/
 theorem popM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Mem Mem' : SegInst FF → Prop}
@@ -172,7 +172,7 @@ theorem popM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {
     (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hook : ∀ x y : SegInst FF, (indexedCut NB T tk cap nI π sa Sa).R x sa ⟨Sa.tab, []⟩ →
-      (indexedCut NB T tk cap nI π sb Sb).R y sb ⟨Sb.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node →
+      (indexedCut NB T tk cap nI π sb Sb).R y sb ⟨Sb.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
       Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → Mem x → Mem' y) (hm : m.okS = ok) :
     CutStep (withMem Mem (indexedCut NB T tk cap nI π sa Sa)) (withMem Mem' (indexedCut NB T tk cap nI π sb Sb)) n := by
   subst hm
@@ -181,7 +181,7 @@ theorem popM (m : Mode NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {
   have hb' := hb.grow he ng (runC_le _ _ _ _ _ hrun')
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl, ⟨γ, hout, hb'⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun he.a 2586).trans hanc.1, (congrFun he.a 2589).trans hanc.2⟩⟩,
-    hook x ⟨M', x.ν, x.K, t', C'⟩ ⟨γ, hr, hb⟩ ⟨γ, hout, hb'⟩ (runC_le _ _ _ _ _ hrun') he.node ng htr⟩
+    hook x ⟨M', x.ν, x.K, t', C'⟩ ⟨γ, hr, hb⟩ ⟨γ, hout, hb'⟩ (runC_le _ _ _ _ _ hrun') he.node (congrFun he.a 12504) ng htr⟩
 
 /-- An `mlx_array_size` bridge: three target steps, a new trace base. -/
 theorem sizeM {sa sb : St FF.S} {Sa Sb Sdec : SSrv} {fsym ta nf : Nat} {name rt : Name} {tys args : List Val}
@@ -232,7 +232,7 @@ theorem sizeM {sa sb : St FF.S} {Sa Sb Sdec : SSrv} {fsym ta nf : Nat} {name rt 
     exact hip.grow ng (runC_le _ _ _ _ _ hrun)
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl, ⟨γ, hout, hbook⟩,
     ⟨fresh_of hr hout hi hbr hf, ⟨(congrFun hext.a 2586).trans hanc.1, (congrFun hext.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt), congrFun hext.a 12504⟩ htr⟩
 
 /-- The prompt's length: one target step, the value at `L`. -/
 theorem lenM {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Tr : SegInst FF → Prop}
@@ -268,7 +268,7 @@ theorem lenM {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Tr : SegInst FF → Pro
     exact hip.grow ng (CSrv.Le.refl _)
   exact ⟨t', x.C, runC_one (by rw [h0.isHalt, hc]; rfl) step1, ⟨M, x.ν, x.K, t', x.C⟩, rfl, rfl, ⟨γ, rel', hbook⟩,
     ⟨fresh_of hr rel' hi hbr hf, ⟨(congrFun ext1.a 2586).trans hanc.1, (congrFun ext1.a 2589).trans hanc.2⟩⟩,
-    hT x _ ⟨CSrv.Le.refl _, ext1.node, ng, rfl⟩ htr⟩
+    hT x _ ⟨CSrv.Le.refl _, ext1.node, ng, rfl, congrFun ext1.a 12504⟩ htr⟩
 
 end
 

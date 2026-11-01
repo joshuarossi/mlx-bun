@@ -82,7 +82,7 @@ def CutConvKeeps (A B : ICut Full.FF) : Prop :=
   ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x →
     ∃ y, y.t = x.t ∧ y.C = x.C ∧ B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧
       (∀ j, j < 9 → y.ν j = x.ν j) ∧ y.M.a 2590 = x.M.a 2590 ∧ y.K.fr 2665 = x.K.fr 2665 ∧
-      (∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t) ∧ y.M.node = x.M.node
+      (∀ H N, NativeAt H N A.s0 x.t → NativeAt H N B.s0 y.t) ∧ y.M.node = x.M.node ∧ y.M.a 12504 = x.M.a 12504
 
 theorem CutStepKeeps.step {A B : ICut Full.FF} {n : Nat} (h : CutStepKeeps A B n) :
     CutStep A B n := by
@@ -125,8 +125,8 @@ theorem CutConvKeeps.pinMem {A B : ICut Full.FF} (h : CutConvKeeps A B)
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
     CutConv (withMem Mem (withSetupPin T tk π A)) (withMem Mem (withSetupPin T tk π B)) := by
   rintro x hr ⟨⟨hb, ⟨hv, ha⟩, hp, hn⟩, hm⟩
-  obtain ⟨y, ht, hC, hr', hb', hν, hA, hf, hN, hnode⟩ := h x hr hb
+  obtain ⟨y, ht, hC, hr', hb', hν, hA, hf, hN, hnode, hem⟩ := h x hr hb
   exact ⟨y, ht, hC, hr', ⟨hb', ⟨fun j hj => (hν j hj).trans (hv j hj), hA.trans ha⟩,
-    hf.trans hp, hN _ _ hn⟩, hMem x y (NTrack.conv ht hC hnode) hm⟩
+    hf.trans hp, hN _ _ hn⟩, hMem x y (NTrack.conv ht hC hnode hem) hm⟩
 
 end Host.Ts.Sim.Compose

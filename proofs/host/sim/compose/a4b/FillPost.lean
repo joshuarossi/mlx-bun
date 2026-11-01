@@ -2,7 +2,7 @@ import host.sim.compose.a4b.pl.Common.All
 import host.sim.compose.a4b.pl.R1.All
 import host.sim.compose.a4b.pl.R2.All
 import host.sim.compose.RoutePieces
-import host.sim.compose.BundleR
+import host.sim.compose.RouteBundleR
 import host.sim.template.a4pre_pl_call.Facts
 import host.sim.template.a4pre_pl_selector.Good
 import host.sim.template.a4pre_pl_t2p.K0
@@ -29,7 +29,7 @@ forwards' ends. -/
 /-- A stretch's change of bookkeeping, from what its end knows. -/
 def Hook (c : ICut FF) (M M' : SegInst FF → Prop) : Prop :=
   ∀ x y : SegInst FF, c.R y c.s0 ⟨c.tab0, []⟩ → CSrv.Le x.C y.C →
-    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → M x → M' y
+    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 → M x → M' y
 
 /-- A template's start equal to another's end. -/
 theorem idxConv {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {M : SegInst FF → Prop} {s s' : St FF.S} {S S' : SSrv}
@@ -96,7 +96,8 @@ structure Hooks where
   hpop : ∀ L (x y : SegInst FF),
     (indexedCut NB T tk cap nI π PRE_pl_t2p.s0 PRE_pl_t2p.S0).R x PRE_pl_t2p.s0 ⟨PRE_pl_t2p.S0.tab, []⟩ →
     (indexedCut NB T tk cap nI π PRE_pl_t2p.s1 PRE_pl_t2p.S1).R y PRE_pl_t2p.s1 ⟨PRE_pl_t2p.S1.tab, []⟩ →
-    CSrv.Le x.C y.C → y.M.node = x.M.node → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → MemP 0 L x → MemP 0 L y
+    CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
+    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → MemP 0 L x → MemP 0 L y
   hfw0 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r1.s890 PRE_pl_r1.S890) (MemP 0 L) (MemP 1 L)
   hfw1 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890) (MemP 1 L) (MemP 2 L)
 
@@ -133,7 +134,7 @@ noncomputable def smpCold (Adm : Cls.Inst → Prop) (uses : List Row) (obls : Li
   ok _ _ i _ _ _ := StageCall.intro (idxConv PRE_pl_common.s0_eq PRE_pl_common.s0_tab)
     (hookMem (fun x0 => PL.Common.all NB T tk cap nI π hcap (fun _ h => PRE_pl_common.good h.rowValue) (NTrack x0)
         (fun _ _ h h0 => h0.trans h))
-      (fun x y _ hy _ htr hm => H.hsmp i.L x y hy htr.server htr.nodes htr.tokens hm))
+      (fun x y _ hy _ htr hm => H.hsmp i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
 
 /-- The restart into the shared tail. -/
@@ -162,7 +163,7 @@ noncomputable def rb0 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
         (fun _ h => PRE_pl_t2p.good (T := T) (t := tk 1) (by omega) (by omega) (by omega) hne
           ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])))
         (Host.Load.Boot.replay_active _) t2pBr
-        (fun x y hx hy hle hn hg hm => H.hpop i.L x y hx hy hle hn hg hm) rfl)
+        (fun x y hx hy hle hn ha hg hm => H.hpop i.L x y hx hy hle hn ha hg hm) rfl)
       (CutConv.refl _)
 
 include hL1 hL2 in
@@ -183,7 +184,7 @@ noncomputable def fw0 (Adm : Cls.Inst → Prop) (obls : List Obl) :
         (fun _ h => PRE_pl_r1.good (b := 0) (r := π.length) (by omega) hL1 (by omega) h.rowValue
           (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
         (NTrack x0) (fun _ _ h h0 => h0.trans h))
-      (fun x y _ hy _ htr hm => H.hfw0 i.L x y hy htr.server htr.nodes htr.tokens hm))
+      (fun x y _ hy _ htr hm => H.hfw0 i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
 
 /-- The second warm forward, to the decode cut. -/
@@ -205,8 +206,72 @@ noncomputable def fw1 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
             ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])) h.rowValue
             (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
           (NTrack x0) (fun _ _ h h0 => h0.trans h))
-        (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.nodes htr.tokens hm))
+        (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
       (CutConv.refl _)
+
+/-- The prefill's invariants, POST's ends at the hooks' bookkeeping. -/
+noncomputable def invs (ld pc0 pf : Nat \u2192 ICut FF) (pc : Nat \u2192 Nat \u2192 ICut FF) : PrefInvsW FF where
+  ld := ld
+  pc0 := pc0
+  pc := pc
+  pf := pf
+  ps L := withMem (H.Mem0 L) (indexedCut NB T tk cap nI \u03C0 PRE_pl_head.s1 PRE_pl_head.S1)
+  dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI \u03C0 PRE_pl_r2.s890 PRE_pl_r2.S890)
+
+/-- The cuts between POST's pieces. -/
+noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
+  b_post_g5_o := c0 H PRE_pl_call.s1 PRE_pl_call.S1
+  b_post_g6_i := c0 H PRE_pl_call.s1 PRE_pl_call.S1
+  b_post_g6_o := c0 H PRE_pl_call.s1 PRE_pl_call.S1
+  b_post_g7_i := cP H 0 PRE_pl_common.s4 PRE_pl_common.S4
+  b_post_g7_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
+  b_post_g8_i := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
+  b_post_g8_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
+  b_post_g9_0_i := cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1
+  b_post_g9_0_o := cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1
+  b_post_g10_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g10_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g11_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g11_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g12_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g12_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g9_1_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g9_1_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
+  b_post_g10_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+  b_post_g10_1_o := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+  b_post_g11_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+  b_post_g11_1_o := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+  b_post_g12_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+
+/-- **POST's pieces.** -/
+noncomputable def pieces (ld pc0 pf : Nat \u2192 ICut FF) (pc : Nat \u2192 Nat \u2192 ICut FF) :
+    Gpu.RoutePiecesR FF (invs H ld pc0 pf pc) T tk where
+  cuts := cuts H
+  q1 :=
+    { post_g5 := g5 hcap H _ _
+      head__post_g5__post_g6 := rsEmpty _ _ _
+      post_g6 := rgEmpty _ _
+      smp_cold__post_g6__post_g7 := smpCold hcap H _ _ _
+      post_g7 := g7 H _ _
+      async__post_g7__post_g8 := rsEmpty _ _ _
+      post_g8 := rgEmpty _ _
+      rb__post_g8__post_g9_0 := rb0 hcap H _ (fun _ h => \u27E8h.1, h.2.1\u27E9) _
+      post_g9_0 := rgEmpty _ _
+      fwd_D1_warm_DFit__post_g9_0__post_g10_0 := fw0 hcap hL1 hL2 H _ _
+      post_g10_0 := rgEmpty _ _
+      smp_warm__post_g10_0__post_g11_0 := rsEmpty _ _ _
+      post_g11_0 := rgEmpty _ _
+      async__post_g11_0__post_g12_0 := rsEmpty _ _ _
+      post_g12_0 := rgEmpty _ _
+      rb__post_g12_0__post_g9_1 := rsEmpty _ _ _
+      post_g9_1 := rgEmpty _ _
+      fwd_D1_warm_DFit__post_g9_1__post_g10_1 := fw1 hcap hL1 hL2 H _ (fun _ h => \u27E8h.1, h.2.1\u27E9) _
+      post_g10_1 := rgEmpty _ _
+      smp_warm__post_g10_1__post_g11_1 := rsEmpty _ _ _
+      post_g11_1 := rgEmpty _ _
+      async__post_g11_1__post_g12_1 := rsEmpty _ _ _
+      post_g12_1 := rgEmpty _ _ }
+  eqs := \u27E8trivial\u27E9
 
 end
 

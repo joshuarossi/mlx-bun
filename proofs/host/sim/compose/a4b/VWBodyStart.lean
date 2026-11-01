@@ -21,15 +21,16 @@ the native state has only grown, the token queue is untouched. A forward's compa
 nodes made during the forward, so this is what its end knows about its start. -/
 def BodyTrail (x0 x : SegInst FF) : Prop :=
   (∀ k, k < bodyN0 → x.M.node k = x0.M.node k) ∧
-    Host.Mlx.Ffi.NGrow (mlxOf x0.t.ffi) (mlxOf x.t.ffi) ∧ (mlxOf x.t.ffi).tokens = (mlxOf x0.t.ffi).tokens
+    Host.Mlx.Ffi.NGrow (mlxOf x0.t.ffi) (mlxOf x.t.ffi) ∧ (mlxOf x.t.ffi).tokens = (mlxOf x0.t.ffi).tokens ∧
+    x.M.a 12504 = x0.M.a 12504
 
 theorem BodyTrail.refl (x : SegInst FF) : BodyTrail x x :=
-  ⟨fun _ _ => rfl, Host.Mlx.Ffi.NGrow.refl _, rfl⟩
+  ⟨fun _ _ => rfl, Host.Mlx.Ffi.NGrow.refl _, rfl, rfl⟩
 
 theorem BodyTrail.step {x0 x y : SegInst FF} (h : BodyTrail x0 x)
     (hn : ∀ k, k < bodyN0 → y.M.node k = x.M.node k) (hg : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi))
-    (ht : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) : BodyTrail x0 y :=
-  ⟨fun k hk => (hn k hk).trans (h.1 k hk), h.2.1.trans hg, ht.trans h.2.2⟩
+    (ht : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) (ha : y.M.a 12504 = x.M.a 12504) : BodyTrail x0 y :=
+  ⟨fun k hk => (hn k hk).trans (h.1 k hk), h.2.1.trans hg, ht.trans h.2.2.1, ha.trans h.2.2.2⟩
 
 /-- A chain started from `s1` with the queue it already holds starts at `s1`. -/
 theorem startEqOf {s s1 : St FF.S} {l : List NumV} (ht : (mlxOf s1.ffi).tokens = l)

@@ -16,7 +16,7 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
     (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y : SegInst FF,
       (startCore NB T tk π i).R y (startCore NB T tk π i).s0 ⟨(startCore NB T tk π i).tab0, []⟩ →
       CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
-      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → Mem i.L x → Mem' i.L y) :
+      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 → Mem i.L x → Mem' i.L y) :
     FwdPiece FF uses obls (fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
       (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap 1254 0 PRE_pf_vw.s0 PRE_pf_vw.S0)) where
   m := [(9, .L)]
@@ -27,7 +27,7 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
   ok r hr i hi _ := by
     obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts (htail r (hu r hr)) hi
     have hf := forwardMem (Mem := Mem i.L) (Mem' := Mem' i.L) (forwardAll NB T tk π (hu r hr) hi (by omega))
-      (fun x y _ _ hy _ hrun hg ht hm => hfwd r hr i hi x y hy (runC_le _ _ _ _ _ hrun) hg ht hm)
+      (fun x y _ _ hy _ hrun hg ht he hm => hfwd r hr i hi x y hy (runC_le _ _ _ _ _ hrun) hg ht he hm)
     exact FwdCall.warm (CutConv.refl _)
       (((((hf).trans (bodyGlue0 NB T tk π (Mem' i.L) (hT i.L) (hu r hr) hi)).trans (bodyStep0 NB T tk π (Mem' i.L) (hT i.L) (hu r hr) hi)).trans (bodyGlue1 NB T tk π (Mem' i.L) (hT i.L) (hu r hr) hi)).convR (toPfEnd NB T tk π cap hcap hbound (Mem' i.L) (hT i.L) (hu r hr) hi (htail r (hu r hr))))
       (CutConv.refl _)

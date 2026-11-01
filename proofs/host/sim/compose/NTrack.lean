@@ -19,20 +19,23 @@ structure NTrack (x y : SegInst FF) : Prop where
   map : y.M.node = x.M.node
   nodes : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi)
   tokens : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens
+  /-- The emitted array keeps its address. -/
+  emit : y.M.a 12504 = x.M.a 12504
 
 theorem NTrack.refl (x : SegInst FF) : NTrack x x :=
-  ⟨CSrv.Le.refl _, rfl, Host.Mlx.Ffi.NGrow.refl _, rfl⟩
+  ⟨CSrv.Le.refl _, rfl, Host.Mlx.Ffi.NGrow.refl _, rfl, rfl⟩
 
 theorem NTrack.trans {x y z : SegInst FF} (h : NTrack x y) (h' : NTrack y z) : NTrack x z :=
-  ⟨h.server.trans h'.server, h'.map.trans h.map, h.nodes.trans h'.nodes, h'.tokens.trans h.tokens⟩
+  ⟨h.server.trans h'.server, h'.map.trans h.map, h.nodes.trans h'.nodes, h'.tokens.trans h.tokens, h'.emit.trans h.emit⟩
 
 /-- A conversion moves neither the target nor the server. -/
-theorem NTrack.conv {x y : SegInst FF} (ht : y.t = x.t) (hC : y.C = x.C) (hn : y.M.node = x.M.node) :
-    NTrack x y where
+theorem NTrack.conv {x y : SegInst FF} (ht : y.t = x.t) (hC : y.C = x.C) (hn : y.M.node = x.M.node)
+    (ha : y.M.a 12504 = x.M.a 12504) : NTrack x y where
   server := by rw [hC]; exact CSrv.Le.refl _
   map := hn
   nodes := by rw [ht]; exact Host.Mlx.Ffi.NGrow.refl _
   tokens := by rw [ht]
+  emit := ha
 
 /-- The cut with a retained property of its instance. -/
 def withMem (Mem : SegInst FF → Prop) (A : ICut FF) : ICut FF :=

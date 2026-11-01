@@ -27,7 +27,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     (h10 : ∀ ν, MapOk ν i m → ν 10 = F64.ofNat (i.L - 1))
     (h11 : ∀ ν, MapOk ν i m → (θ 11).eval ν = F64.ofNat (i.L - 1))
     (h16 : ∀ ν, MapOk ν i m → (θ 16).eval ν = F64.ofNat (capL (i.L - 1)))
-    (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589)
+    (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589) (hE : D.a 12504 = 12504)
     (hcap : O.D ≤ cap) (hbound : cap < Sim.bound) :
     CutConv (withMem Tr (bodyCore NB T tk π i Θ O m s1 S1)) (withMem Tr (Pf.cut NB T tk π cap O.H O.N s0 S0)) := by
   rintro x ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ ⟨⟨hfresh, hids⟩, htr⟩
@@ -63,7 +63,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     rw [hθ14]
     rfl
   have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := drop_prompt F x.M x.K
-  refine ⟨y, rfl, rfl, ⟨hrel, ?_⟩, ⟨hfresh, ?_, ?_⟩, hT x y (NTrack.conv rfl rfl hnode) htr⟩
+  refine ⟨y, rfl, rfl, ⟨hrel, ?_⟩, ⟨hfresh, ?_, ?_⟩, hT x y (NTrack.conv rfl rfl hnode (by change x.M.a (D.a 12504) = _; rw [hE])) htr⟩
   · refine
       { vocab := hb.vocab
         valuation := ?_

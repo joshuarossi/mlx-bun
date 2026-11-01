@@ -70,7 +70,8 @@ theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Ins
   refine ⟨npsPair x, rfl, rfl, ⟨hc, hpq.1, hctx.1, hpq.2⟩,
     ⟨⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hfrP.trans hpin,
       ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩,
-    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN1 keepNK1 k))) hm⟩
+    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN1 keepNK1 k))
+      (by change x.M.a (PRE_first_tail_x15_r0.kappa1.a 12504) = _; rw [PRE_first_tail_x15_r0.zkap1, Conv.Map.compact_lt (by decide)])) hm⟩
   · intro j hj
     change Shift.valuation θZ1 x.ν j = _
     unfold θZ1

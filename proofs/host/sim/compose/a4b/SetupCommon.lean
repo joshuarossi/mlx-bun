@@ -99,7 +99,7 @@ theorem glueCall {NB T n : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i 
     have hg := glueCall_ngrow (simQ NB T tk) hok hrun hokb hh hstep hq.1 hbook.1.1.1.1 hr hrun'
     exact ⟨⟨hr'.withOracle (fun _ h => nomatch h), hq⟩, book_fwd hr hr' he h10 hi hb hcnt hbook.1,
       hMem c ⟨M, c.ν, c.K, t, C⟩ ⟨runC_le _ _ _ _ _ hrun', he.node, hg,
-        tokens_of_grow hr hr' hg (countersOkB_tokens hcnt)⟩ hbook.2⟩
+        tokens_of_grow hr hr' hg (countersOkB_tokens hcnt), congrFun he.a 12504⟩ hbook.2⟩
 
 theorem lengthStep {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.Inst}
     {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Mem : SegInst FF → Prop}
@@ -133,7 +133,7 @@ theorem lengthStep {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i 
   exact ⟨t', c.C, runC_one (by rw [h0.isHalt, hc]; rfl) step1,
     ⟨M, c.ν, c.K, t', c.C⟩, rfl, rfl,
     ⟨relj.withOracle (fun _ h => nomatch h), hq⟩, book_fwd h0 relj ext1 h10 hi hb hcnt hbook,
-    hMem c ⟨M, c.ν, c.K, t', c.C⟩ ⟨CSrv.Le.refl _, ext1.node, Host.Mlx.Ffi.NGrow.refl _, rfl⟩ hm⟩
+    hMem c ⟨M, c.ν, c.K, t', c.C⟩ ⟨CSrv.Le.refl _, ext1.node, Host.Mlx.Ffi.NGrow.refl _, rfl, congrFun ext1.a 12504⟩ hm⟩
 
 kernel_rfl cnt0 : countersOkB PRE_g0b.s0 PRE_g0b.s2 = true
 kernel_rfl cnt2 : countersOkB PRE_g0b.s2 PRE_g0b.s3 = true
@@ -183,7 +183,7 @@ theorem run {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {r : Row} {i : Cls.I
       exact ⟨⟨hrel'.withOracle (fun _ h => nomatch h), hq⟩,
         book_fwd hrel hrel' he (Nat.blt_eq.mp tableLen9) i9 (bridge10.trans bridge9.symm) cnt9 hb.1,
         hMem c ⟨M, c.ν, c.K, t, C⟩ ⟨runC_le _ _ _ _ _ hrun', he.node, hg,
-          tokens_of_grow hrel hrel' hg (countersOkB_tokens cnt9)⟩ hb.2⟩
+          tokens_of_grow hrel hrel' hg (countersOkB_tokens cnt9), congrFun he.a 12504⟩ hb.2⟩
   exact ((((((g0.trans b1).trans g1).trans b2).trans g2).trans b3).trans g3).cast rfl rfl rfl
 
 theorem toNext {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}

@@ -121,7 +121,7 @@ theorem chunkCall_merged_keeps {NB T L : Nat} {tk : Nat → Nat}
     cases run1
     exact h2.ffi.2
   have ntrack : NTrack c ⟨M', ν', c.K, t', C'⟩ :=
-    ⟨runC_le _ _ _ _ _ run, hext.node, hg0, tokens_of_grow hr hm' hg0 (countersOkB_tokens cntMerged)⟩
+    ⟨runC_le _ _ _ _ _ run, hext.node, hg0, tokens_of_grow hr hm' hg0 (countersOkB_tokens cntMerged), congrFun hext.a 12504⟩
   refine ⟨⟨M', ν', c.K, t', C'⟩, run, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cntMerged, ntrack⟩
   · change RelB FF _ wideP [] M' ν' c.K PRE_setup_early_r0.s5 ⟨PRE_setup_early_r0.S5.tab, []⟩ t' C' ∧ _
     rw [PRE_setup_early_r0.mergeTab0]
@@ -252,7 +252,8 @@ theorem initial_chunkCall_fixed_oracle_keeps {NB T L : Nat} {tk : Nat → Nat}
   have ng : Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t4.ffi) := ng12.trans ng34
   have ntrack : NTrack c ⟨M4, c.ν, c.K, t4, C4⟩ :=
     ⟨runC_le _ _ _ _ _ run4, ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node)), ng,
-      tokens_of_grow h0 (rel4.rel_noRet top4) ng (countersOkB_tokens cntCall)⟩
+      tokens_of_grow h0 (rel4.rel_noRet top4) ng (countersOkB_tokens cntCall),
+      (congrFun ext4.a 12504).trans ((congrFun ext3.a 12504).trans ((congrFun ext2.a 12504).trans (congrFun ext1.a 12504)))⟩
   refine ⟨⟨M4, c.ν, c.K, t4, C4⟩, run4, ?_, ?_, ?_, ?_, rfl, fun _ _ h => h.step (P := { setupP with rest := machReads T tk }) rfl h0 (rel4.rel_noRet top4)
     (ext4.big.trans (ext3.big.trans (ext2.big.trans ext1.big)))
     (ext4.node.trans (ext3.node.trans (ext2.node.trans ext1.node))) cntCall, ntrack⟩
@@ -497,7 +498,7 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
     simpa only [Map.vals, List.map_nil, List.append_nil] using h
   refine ⟨⟨N.withJs, ν', K', x.t, x.C⟩, rfl, rfl, ⟨hcX, hval.1, hctx.1, hval.2⟩, ⟨?_, ?_⟩, ?_, ?_,
     hfrK.trans hframe.symm, fun _ _ h => ⟨sameNativeNext ▸ h.1, sameNativeNnext ▸ h.2⟩,
-    funext fun k => congrArg x.M.node (compact_node_id keepNN keepNK k)⟩
+    funext fun k => congrArg x.M.node (compact_node_id keepNN keepNK k), ?_⟩
   · exact ⟨hctx, hmemo', π, hlen, hvocab, hfrK, hD, hfresh⟩
   · have hκ : ∀ a ∈ [2586, 2589], PRE_setup_early_r0.kappa0.a a = a := by
       intro a ha
@@ -516,6 +517,10 @@ theorem merged_compact_keeps {NB T L : Nat} {tk : Nat → Nat} :
   · change x.M.a (PRE_setup_early_r0.kappa0.a 2590) = x.M.a 2590
     have hκ : PRE_setup_early_r0.kappa0.a 2590 = 2590 :=
       Conv.Map.compact_lt (by decide : 2590 < 2673336)
+    rw [hκ]
+  · change x.M.a (PRE_setup_early_r0.kappa0.a 12504) = x.M.a 12504
+    have hκ : PRE_setup_early_r0.kappa0.a 12504 = 12504 :=
+      Conv.Map.compact_lt (by decide : 12504 < 2673336)
     rw [hκ]
 
 theorem merged_compact {NB T L : Nat} {tk : Nat → Nat} :

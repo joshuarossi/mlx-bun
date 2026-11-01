@@ -1,40 +1,9 @@
 import host.sim.compose.PostChain
-import host.sim.template.a4pre_pl_r1.Good
-import host.sim.template.a4pre_pl_r1.K854
-import host.sim.template.a4pre_pl_r1.K855
-import host.sim.template.a4pre_pl_r1.K856
-import host.sim.template.a4pre_pl_r1.K857
-import host.sim.template.a4pre_pl_r1.K858
-import host.sim.template.a4pre_pl_r1.K859
-import host.sim.template.a4pre_pl_r1.K860
-import host.sim.template.a4pre_pl_r1.Accept13
-import host.sim.template.a4pre_pl_r1.Size176
+import host.sim.template.a4pre_pl_r1.m.B11
+import host.sim.template.a4pre_pl_r1.m.B10
+import host.sim.template.a4pre_pl_r1.m.B14
 import host.sim.template.a4pre_pl_r1.H26
-import host.sim.template.a4pre_pl_r1.K863
-import host.sim.template.a4pre_pl_r1.K864
-import host.sim.template.a4pre_pl_r1.K865
-import host.sim.template.a4pre_pl_r1.K866
-import host.sim.template.a4pre_pl_r1.K867
-import host.sim.template.a4pre_pl_r1.K868
-import host.sim.template.a4pre_pl_r1.Size177
 import host.sim.template.a4pre_pl_r1.H27
-import host.sim.template.a4pre_pl_r1.K871
-import host.sim.template.a4pre_pl_r1.Size178
-import host.sim.template.a4pre_pl_r1.K874
-import host.sim.template.a4pre_pl_r1.K875
-import host.sim.template.a4pre_pl_r1.K876
-import host.sim.template.a4pre_pl_r1.K877
-import host.sim.template.a4pre_pl_r1.K878
-import host.sim.template.a4pre_pl_r1.K879
-import host.sim.template.a4pre_pl_r1.K880
-import host.sim.template.a4pre_pl_r1.Accept14
-import host.sim.template.a4pre_pl_r1.Size179
-import host.sim.template.a4pre_pl_r1.K883
-import host.sim.template.a4pre_pl_r1.K884
-import host.sim.template.a4pre_pl_r1.K885
-import host.sim.template.a4pre_pl_r1.Size180
-import host.sim.template.a4pre_pl_r1.K888
-import host.sim.template.a4pre_pl_r1.K889
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

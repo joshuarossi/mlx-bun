@@ -39,7 +39,7 @@ theorem abstractChunk {NB T c : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls
   have he := Map.setNum_ext x.M PRE_setup_early_r0.S6.tab.length (.lit (F64.ofNat c))
   refine ⟨y, rfl, rfl, ⟨?_, hval.1, hq.2.1, hval.2⟩,
     ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh, ?_⟩, ?_, ?_, hsmall⟩, ?_⟩,
-    hMem x y (NTrack.conv rfl rfl he.node) hm⟩
+    hMem x y (NTrack.conv rfl rfl he.node (congrFun he.a 12504)) hm⟩
   · change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
       y.M y.ν y.K (PRE_g0b.s0 : St FF.S) ⟨PRE_g0b.S0.tab, []⟩ y.t y.C
     have hs : (PRE_g0b.s0 : St FF.S) =

@@ -106,7 +106,7 @@ theorem toOld {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegInst F
     hsrv hffi'
   refine ⟨⟨N, x.ν, x.K, x.t, x.C⟩, rfl, rfl, ⟨hr', hq.1, hq.2.1, ?_⟩,
     ⟨⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩, ?_, ?_, hbase, hp, ?_⟩,
-    hMem x _ (NTrack.conv rfl rfl hnames.node) hm⟩
+    hMem x _ (NTrack.conv rfl rfl hnames.node (congrFun hnames.a 12504)) hm⟩
   · exact ⟨hq.2.2.1, trivial⟩
   · exact ⟨hv.1, hv.2⟩
   · exact hids

@@ -152,9 +152,12 @@ for (const [j, b] of bridges.entries()) {
   } else throw Error(`bridge ${b.kind}: not generated here`);
 }
 const boundaries = [0, ...glue.filter(k => spread?.chunk !== k).flatMap(k => [k, k + 1])].filter((v, i, a) => a.indexOf(v) === i);
-const groups = boundaries.map(i => `kernel_rfl ${name}.accepted${i} : ${ok} ${s(i)} ${S(i)} = true\n`);
-if (groups.length <= 64) put("Accept", head([page(T1), OK]) + groups.join(""));
-else for (let j = 0; j * 50 < groups.length; j++) put(`Accept${j}`, head([page(boundaries[Math.min(groups.length - 1, (j + 1) * 50 - 1)]!), OK]) + groups.slice(j * 50, (j + 1) * 50).join(""));
+const groups = boundaries.map(i => fast
+  ? `boot_rfl ${name}.accepted${i} from ${s(i)} to ${s(i)} : ${ok} ${s(i)} ${S(i)} = true\n`
+  : `kernel_rfl ${name}.accepted${i} : ${ok} ${s(i)} ${S(i)} = true\n`);
+const acceptFacts = fast ? ["host.sim.template.BootEq"] : [];
+if (groups.length <= 64) put("Accept", head([page(T1), OK, ...acceptFacts]) + groups.join(""));
+else for (let j = 0; j * 50 < groups.length; j++) put(`Accept${j}`, head([page(boundaries[Math.min(groups.length - 1, (j + 1) * 50 - 1)]!), OK, ...acceptFacts]) + groups.slice(j * 50, (j + 1) * 50).join(""));
 if (!noGood) put("Good", head([mod("H0"), "host.sim.template.a4pre_pl_head.Good"]) +
   `kernel_rfl ${name}.good_checked :\n  (fun ν : Nat → F64 => PRE_pl_head.singletonGoodB ν ${S(0)}.oracle) = fun _ => true\n\n` +
   `theorem ${name}.good {ν : Nat → F64} (hν : ν 10 = F64.ofNat 1) : Good ν ${S(0)}.oracle :=\n` +

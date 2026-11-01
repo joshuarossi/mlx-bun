@@ -248,6 +248,7 @@ theorem bodySiteCore {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.
     rw [he]
   have hfrlt : ∀ a, a ∈ [2665, VWFrames.chunk, VWFrames.buffer, VWFrames.view] → a < sa.next :=
     fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp F.zfrlt a ha)
+  have hsaE : 12504 < sa.next := Nat.lt_trans (by decide) (hfrlt VWFrames.chunk (by simp))
   have hsaBig : 2590 < sa.next ∧ 2586 < sa.next ∧ 2589 < sa.next := by
     have := hfrlt 2665 (by simp)
     omega
@@ -298,7 +299,8 @@ theorem bodySiteCore {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.
     rw [← hDe]
     exact hDfree
   refine ⟨y, hrun, ⟨K0, hcW, book, hnatC, ?_, inputs, hval2, defs⟩, ⟨fresh, ids⟩,
-    fun k => congrFun hext.node (κ.node k), ng, tokens_of_grow hr hm' ng (countersOkB_tokens F.cntM)⟩
+    fun k => congrFun hext.node (κ.node k), ng, tokens_of_grow hr hm' ng (countersOkB_tokens F.cntM),
+    (aold 12504 hsaE).trans (congrFun hext.a 12504)⟩
   rw [node]
   exact ip
 
@@ -307,11 +309,11 @@ theorem bodySite {A B : ICut FF} {n : Nat} {κ : Map} {c : Conv.Cnt} {x0 : SegIn
     (hfix : Conv.FixOld c κ) (hold : bodyN0 ≤ c.nn)
     (core : ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x → ∃ y : SegInst FF, runC FF n x.t x.C = some (y.t, y.C) ∧
       B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧ (∀ k, y.M.node k = x.M.node (κ.node k)) ∧
-      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) :
+      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens ∧ y.M.a 12504 = x.M.a 12504) :
     CutStep (withMem (BodyTrail x0) A) (withMem (BodyTrail x0) B) n := by
   rintro t C ⟨x, rfl, rfl, hR, hB, htr⟩
-  obtain ⟨y, hrun, hR', hB', hnode, ng, htok⟩ := core x hR hB
-  refine ⟨_, _, hrun, y, rfl, rfl, hR', hB', htr.step (fun k hk => ?_) ng htok⟩
+  obtain ⟨y, hrun, hR', hB', hnode, ng, htok, hem⟩ := core x hR hB
+  refine ⟨_, _, hrun, y, rfl, rfl, hR', hB', htr.step (fun k hk => ?_) ng htok hem⟩
   rw [hnode k, Conv.node_of_fixOld hfix (Nat.le_refl c.nn) k (Nat.lt_of_lt_of_le hk hold)]
 
 /-- A call whose compaction renames no node: the retained property of any stretch. -/
@@ -319,11 +321,11 @@ theorem memSite {A B : ICut FF} {n : Nat} {κ : Map} {Tr : SegInst FF → Prop}
     (hT : ∀ x y, NTrack x y → Tr x → Tr y) (hκ : ∀ k, κ.node k = k)
     (core : ∀ x, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x → ∃ y : SegInst FF, runC FF n x.t x.C = some (y.t, y.C) ∧
       B.R y B.s0 ⟨B.tab0, []⟩ ∧ B.B y ∧ (∀ k, y.M.node k = x.M.node (κ.node k)) ∧
-      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens) :
+      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧ (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens ∧ y.M.a 12504 = x.M.a 12504) :
     CutStep (withMem Tr A) (withMem Tr B) n := by
   rintro t C ⟨x, rfl, rfl, hR, hB, htr⟩
-  obtain ⟨y, hrun, hR', hB', hnode, ng, htok⟩ := core x hR hB
+  obtain ⟨y, hrun, hR', hB', hnode, ng, htok, hem⟩ := core x hR hB
   exact ⟨_, _, hrun, y, rfl, rfl, hR', hB',
-    hT x y ⟨runC_le _ _ _ _ _ hrun, funext fun k => (hnode k).trans (congrArg x.M.node (hκ k)), ng, htok⟩ htr⟩
+    hT x y ⟨runC_le _ _ _ _ _ hrun, funext fun k => (hnode k).trans (congrArg x.M.node (hκ k)), ng, htok, hem⟩ htr⟩
 
 end Host.Ts.Sim.Compose.VWFirst

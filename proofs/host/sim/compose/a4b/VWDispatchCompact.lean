@@ -130,7 +130,7 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Li
     exact hids
   refine ⟨dispatchPair x, rfl, rfl, ⟨K0, hcW, book, ?_, inputs, ?_⟩, ⟨hfresh, ids,
     ⟨sameNext2 ▸ hnat.1, sameNnext2 ▸ hnat.2⟩⟩,
-    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN2 keepNK2 k))) hm⟩
+    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN2 keepNK2 k)) (aold 12504 (by decide))) hm⟩
   · rw [node]
     exact hip
   · rw [pairν]

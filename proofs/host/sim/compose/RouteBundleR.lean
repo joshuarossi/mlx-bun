@@ -13,45 +13,6 @@ open Host.Ts.Sim.Compose Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Lin
 
 /-- The boundary cuts between pieces. -/
 structure RoutePiecesRCuts (F : Ffi) where
-  b_pA_cut : Cls.Inst → ICut F
-  b_pA_g10_i : Cls.Inst → ICut F
-  b_pA_g10_o : Cls.Inst → ICut F
-  b_pA_g11_i : Cls.Inst → ICut F
-  b_pA_g11_o : Cls.Inst → ICut F
-  b_pA_g12_i : Cls.Inst → ICut F
-  b_pA_g5_o : Cls.Inst → ICut F
-  b_pA_g6_i : Cls.Inst → ICut F
-  b_pA_g6_o : Cls.Inst → ICut F
-  b_pA_g7_i : Cls.Inst → ICut F
-  b_pA_g7_o : Cls.Inst → ICut F
-  b_pA_g8_i : Cls.Inst → ICut F
-  b_pA_g8_o : Cls.Inst → ICut F
-  b_pA_g9_i : Cls.Inst → ICut F
-  b_pA_g9_o : Cls.Inst → ICut F
-  b_pB_cut : Cls.Inst → ICut F
-  b_pB_g10_i : Cls.Inst → ICut F
-  b_pB_g10_o : Cls.Inst → ICut F
-  b_pB_g11_i : Cls.Inst → ICut F
-  b_pB_g11_o : Cls.Inst → ICut F
-  b_pB_g12_i : Cls.Inst → ICut F
-  b_pB_g12_o : Cls.Inst → ICut F
-  b_pB_g13_i : Cls.Inst → ICut F
-  b_pB_g5_o : Cls.Inst → ICut F
-  b_pB_g6_i : Cls.Inst → ICut F
-  b_pB_g6_o : Cls.Inst → ICut F
-  b_pB_g7_i : Cls.Inst → ICut F
-  b_pB_g7_o : Cls.Inst → ICut F
-  b_pB_g8_i : Cls.Inst → ICut F
-  b_pB_g8_o : Cls.Inst → ICut F
-  b_pB_g9_i : Cls.Inst → ICut F
-  b_pB_g9_o : Cls.Inst → ICut F
-  b_pC_cut : Cls.Inst → ICut F
-  b_pC_g5_o : Cls.Inst → ICut F
-  b_pC_g6_i : Cls.Inst → ICut F
-  b_pC_g6_o : Cls.Inst → ICut F
-  b_pC_g7_i : Cls.Inst → ICut F
-  b_pC_g7_o : Cls.Inst → ICut F
-  b_pC_g8_i : Cls.Inst → ICut F
   b_post_g10_0_i : Cls.Inst → ICut F
   b_post_g10_0_o : Cls.Inst → ICut F
   b_post_g10_1_i : Cls.Inst → ICut F
@@ -100,45 +61,6 @@ structure RoutePiecesR_q1 (F : Ffi) (I : PrefInvsW F) (T : Nat) (tk : Nat → Na
   post_g11_1 : RGluePiece F (RunAt T tk) [route_post_other.r0, route_post_other.r1] (K.b_post_g11_1_i) (K.b_post_g11_1_o)
   async__post_g11_1__post_g12_1 : RStagePiece F (RunAt T tk) [route_post_other.r0, route_post_other.r1] [] (K.b_post_g11_1_o) (K.b_post_g12_1_i)
   post_g12_1 : RGluePiece F (RunAt T tk) [route_post_other.r0, route_post_other.r1] (K.b_post_g12_1_i) (fun i => I.dec i.L)
-  pA_g5 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (fun i => I.ps i.L) (K.b_pA_g5_o)
-  head__pA_g5__pA_g6 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g5_o) (K.b_pA_g6_i)
-  pA_g6 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g6_i) (K.b_pA_g6_o)
-  smp_cold__pA_g6__pA_g7 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g6_o) (K.b_pA_g7_i)
-  pA_g7 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g7_i) (K.b_pA_g7_o)
-  async__pA_g7__pA_g8 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g7_o) (K.b_pA_g8_i)
-  pA_g8 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g8_i) (K.b_pA_g8_o)
-  rb__pA_g8__pA_g9 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g8_o) (K.b_pA_g9_i)
-  pA_g9 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g9_i) (K.b_pA_g9_o)
-  fwd_D1_warm_DFit__pA_g9__pA_g10 : RFwdPiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [⟨[(0, .o), (1, .cap), (2, .n)], Stage.Cache.KvDFit.O⟩] (K.b_pA_g9_o) (K.b_pA_g10_i)
-  pA_g10 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g10_i) (K.b_pA_g10_o)
-  smp_warm__pA_g10__pA_g11 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g10_o) (K.b_pA_g11_i)
-  pA_g11 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g11_i) (K.b_pA_g11_o)
-  async__pA_g11__pA_g12 : RStagePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] [] (K.b_pA_g11_o) (K.b_pA_g12_i)
-  pA_g12 : RGluePiece F (RunAt T tk) [route_pathA_other.r0, route_pathA_other.r1] (K.b_pA_g12_i) (fun i => K.b_pA_cut i)
-  pB_g5 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (fun i => I.ps i.L) (K.b_pB_g5_o)
-  head__pB_g5__pB_g6 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g5_o) (K.b_pB_g6_i)
-  pB_g6 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g6_i) (K.b_pB_g6_o)
-  smp_cold__pB_g6__pB_g7 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g6_o) (K.b_pB_g7_i)
-  pB_g7 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g7_i) (K.b_pB_g7_o)
-  async__pB_g7__pB_g8 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g7_o) (K.b_pB_g8_i)
-  pB_g8 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g8_i) (K.b_pB_g8_o)
-  rb__pB_g8__pB_g9 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g8_o) (K.b_pB_g9_i)
-  pB_g9 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g9_i) (K.b_pB_g9_o)
-  fwd_D1_warm_DFit__pB_g9__pB_g10 : RFwdPiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [⟨[(0, .o), (1, .cap), (2, .n)], Stage.Cache.KvDFit.O⟩] (K.b_pB_g9_o) (K.b_pB_g10_i)
-  pB_g10 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g10_i) (K.b_pB_g10_o)
-  smp_warm__pB_g10__pB_g11 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g10_o) (K.b_pB_g11_i)
-  pB_g11 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g11_i) (K.b_pB_g11_o)
-  async__pB_g11__pB_g12 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g11_o) (K.b_pB_g12_i)
-  pB_g12 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g12_i) (K.b_pB_g12_o)
-  rb__pB_g12__pB_g13 : RStagePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] [] (K.b_pB_g12_o) (K.b_pB_g13_i)
-  pB_g13 : RGluePiece F (RunAt T tk) [route_pathB_other.r0, route_pathB_other.r1] (K.b_pB_g13_i) (fun i => K.b_pB_cut i)
-  pC_g5 : RGluePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] (fun i => I.ps i.L) (K.b_pC_g5_o)
-  head__pC_g5__pC_g6 : RStagePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] [] (K.b_pC_g5_o) (K.b_pC_g6_i)
-  pC_g6 : RGluePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] (K.b_pC_g6_i) (K.b_pC_g6_o)
-  smp_cold__pC_g6__pC_g7 : RStagePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] [] (K.b_pC_g6_o) (K.b_pC_g7_i)
-  pC_g7 : RGluePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] (K.b_pC_g7_i) (K.b_pC_g7_o)
-  async__pC_g7__pC_g8 : RStagePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] [] (K.b_pC_g7_o) (K.b_pC_g8_i)
-  pC_g8 : RGluePiece F (RunAt T tk) [route_pathC_other.r0, route_pathC_other.r1] (K.b_pC_g8_i) (fun i => K.b_pC_cut i)
 
 /-- The length equalities between the rows of a class. -/
 structure RoutePiecesREqs (F : Ffi) (I : PrefInvsW F) (T : Nat) (tk : Nat → Nat) (K : RoutePiecesRCuts F) (q1 : RoutePiecesR_q1 F I T tk K) where

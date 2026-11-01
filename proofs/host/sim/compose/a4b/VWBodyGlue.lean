@@ -29,7 +29,7 @@ theorem bodyGlue {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', hb.ext hext, hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap, hdf⟩,
     ⟨bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun', hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun', hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens hcnt), congrFun hext.a 12504⟩ htr⟩
 
 /-- A checked glue stretch and the step into the next bridge or call. -/
 theorem bodyToCall {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE} {Tr : SegInst FF → Prop} {O : BodyOff} {n : Nat}
@@ -58,7 +58,7 @@ theorem bodyToCall {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   exact ⟨t', C', hrun', ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', hb.ext hext, hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap, hdf⟩,
     ⟨bodyFresh hr hm' hi hbr hfresh, fixedCells_ext hids hext⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun', hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun', hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens hcnt), congrFun hext.a 12504⟩ htr⟩
 
 /-- An `mlx_array_size` bridge of the body: three target steps, a new trace base. -/
 theorem bodySize {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE} {Tr : SegInst FF → Prop} {O : BodyOff}
@@ -117,7 +117,7 @@ theorem bodySize {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} 
   refine ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
     ⟨K0, hout, book, hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hout hext.big hext.node hcnt, ip, setupInputs_ext hins hext, hmap, hdf⟩,
     ⟨bodyFresh hr hout hi hbr hfresh, fixedCells_ext hids hext⟩,
-    hT x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt)⟩ htr⟩
+    hT x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hout ng (countersOkB_tokens hcnt), congrFun hext.a 12504⟩ htr⟩
 
 /-- The prompt's length, read by the body: one target step, the value at `L`. -/
 theorem bodyLen {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE}
@@ -157,6 +157,6 @@ theorem bodyLen {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {
     ⟨K0, rel', hb.ext ext1, hnat.step (P := { setupP with rest := machReads T tk }) rfl hr rel' ext1.big ext1.node hcnt,
       ip, setupInputs_ext hins ext1, hmap, hdf⟩,
     ⟨bodyFresh hr rel' hi hbr hfresh, fixedCells_ext hids ext1⟩,
-    hT x _ ⟨CSrv.Le.refl _, ext1.node, ng, rfl⟩ htr⟩
+    hT x _ ⟨CSrv.Le.refl _, ext1.node, ng, rfl, congrFun ext1.a 12504⟩ htr⟩
 
 end Host.Ts.Sim.Compose.VWFirst

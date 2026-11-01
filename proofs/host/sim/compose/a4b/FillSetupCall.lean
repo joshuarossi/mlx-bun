@@ -80,7 +80,7 @@ theorem initial {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst
   refine ⟨{ x with ν := rowVal x.ν L }, rfl, rfl, he.1,
     ⟨⟨⟨he.2.1, (ldCut_setupContext hB).2, he.2.2⟩, ?_, ?_⟩,
     ⟨(ldCut_setupValues_bound hL hB).2.2, ?_⟩, hp, nativeZero (x := x) hR hB⟩,
-    hMem x _ (NTrack.conv rfl rfl rfl) hm⟩
+    hMem x _ (NTrack.conv rfl rfl rfl rfl) hm⟩
   · change BigJs x.M
     rw [hB.1]
     exact BigJs.id

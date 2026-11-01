@@ -110,11 +110,11 @@ theorem forwardMem {A ret : ICut FF} {n : Nat} {Mem Mem' : SegInst FF → Prop}
     (hfwd : ∀ x y, A.R x A.s0 ⟨A.tab0, []⟩ → A.B x → ret.R y ret.s0 ⟨ret.tab0, []⟩ →
       (∀ k, k < bodyN0 → y.M.node k = x.M.node k) → runC FF n x.t x.C = some (y.t, y.C) →
       Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
-      Mem x → Mem' y) :
+      y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
     CutStep (withMem Mem A) (withMem Mem' ret) n := by
   rintro t C ⟨x, rfl, rfl, hR, hB, hm⟩
   obtain ⟨t', C', hrun, y, rfl, rfl, hR', hB', htr⟩ :=
     hstep x x.t x.C ⟨x, rfl, rfl, hR, hB, BodyTrail.refl x⟩
-  exact ⟨_, _, hrun, y, rfl, rfl, hR', hB', hfwd x y hR hB hR' htr.1 hrun htr.2.1 htr.2.2 hm⟩
+  exact ⟨_, _, hrun, y, rfl, rfl, hR', hB', hfwd x y hR hB hR' htr.1 hrun htr.2.1 htr.2.2.1 htr.2.2.2 hm⟩
 
 end Host.Ts.Sim.Compose.VWFirst

@@ -101,7 +101,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegI
       ⟨(congrFun ext.a 2586).trans hids.1, (congrFun ext.a 2589).trans hids.2⟩,
       hbase, ⟨hr.presentBound, hr.heapSupp⟩, Nat.le_trans top.1.load.mlx.nbl hNL,
       PRE_first_tail_x15_r0.cshiftR1 top.1 hNL⟩, hp, hnat0.step (P := { setupP with rest := machReads T tk }) rfl hr hm' ext.big ext.node cnt18⟩,
-      hMem x _ ⟨runC_le _ _ _ _ _ run, ext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt18)⟩ hmem⟩
+      hMem x _ ⟨runC_le _ _ _ _ _ run, ext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt18), congrFun ext.a 12504⟩ hmem⟩
     intro j hj
     change npsVal x.ν j = _
     rw [show npsVal x.ν j = x.ν j from Conv.resVal_off (by

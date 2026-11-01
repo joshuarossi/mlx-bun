@@ -32,26 +32,4 @@ theorem forwardAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i 
       simp only [bodyMap, List.mem_cons, List.not_mem_nil, or_false] at hp
       rcases hp with rfl | rfl <;> simp [Host.Ts.Sim.Compose.VWFirst.VW8.bodyM]))).step
 
-/-- **The first tail's forward** over rows of this body. `hfwd`: the graph, from what the forward's end knows. -/
-noncomputable def fwdPiece (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (uses : List Row)
-    (hu : ∀ r ∈ uses, r ∈ Host.Ts.Sim.Compose.VWFirst.VW8.fwdRows) (htail : ∀ r ∈ Host.Ts.Sim.Compose.VWFirst.VW8.fwdRows, r ∈ firstTailRows) (obls : List Obl)
-    (Mem Mem' : Nat → SegInst FF → Prop)
-    (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y, (forwardCut NB T tk π i).R x (forwardCut NB T tk π i).s0
-        ⟨(forwardCut NB T tk π i).tab0, []⟩ → (forwardCut NB T tk π i).B x →
-      (startCore NB T tk π i).R y (startCore NB T tk π i).s0 ⟨(startCore NB T tk π i).tab0, []⟩ →
-      (∀ k, k < bodyN0 → y.M.node k = x.M.node k) → runC FF (0 + Host.Ts.Sim.Compose.VWFirst.VW8.bodyN) x.t x.C = some (y.t, y.C) →
-      Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
-      Mem i.L x → Mem' i.L y) :
-    FwdPiece FF uses obls (fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
-      (fun i => withMem (Mem' i.L) (startCore NB T tk π i)) where
-  m := [(9, .L)]
-  np := 0
-  nb := 0 + Host.Ts.Sim.Compose.VWFirst.VW8.bodyN
-  O := []
-  chk _ _ := rfl
-  ok r hr i hi _ := by
-    obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts (htail r (hu r hr)) hi
-    exact FwdCall.warm (CutConv.refl _)
-      (forwardMem (forwardAll NB T tk π (hu r hr) hi (by omega)) (hfwd r hr i hi)) (CutConv.refl _)
-
 end Host.Ts.Sim.Compose.VWFirst.VW8.Sfx

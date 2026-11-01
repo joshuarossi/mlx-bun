@@ -30,7 +30,7 @@ def sEmpty (uses : List Row) (obls : List Obl) (A : Cls.Inst → ICut FF) : Stag
 def HFwd (start : Cls.Inst → ICut FF) (rows : List Row) (Mem Mem' : Nat → SegInst FF → Prop) : Prop :=
   ∀ r ∈ rows, ∀ i, InRow r i → ∀ x y : SegInst FF,
     (start i).R y (start i).s0 ⟨(start i).tab0, []⟩ → CSrv.Le x.C y.C →
-    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
+    Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 →
     Mem i.L x → Mem' i.L y
 
 theorem tail15 : ∀ r ∈ VWFirst.VW15.fwdRows, r ∈ VWFirst.firstTailRows := by
