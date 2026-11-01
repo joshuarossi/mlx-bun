@@ -78,7 +78,7 @@ theorem jsFix_of_keys {D : RData} {n : Nat} (hn : n ≤ D.n0) (hk : (PTrie.keys 
     have := Nat.le_of_ble_eq_true (List.all_eq_true.mp hk b (PTrie.mem_keys D.heap b y hg))
     omega
 
-private theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K : Ctx)
+theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K : Ctx)
     (he : arrOf s a = []) : Shift.framedNext M K s a = K.fr a := by
   unfold Shift.framedNext
   cases hf : K.fr a with

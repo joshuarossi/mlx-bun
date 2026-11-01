@@ -1,6 +1,7 @@
 import host.sim.compose.a4b.D1Forward
 import host.sim.compose.a4b.SetupD1Body
 import host.sim.compose.a4b.SetupD1Reserved
+import host.sim.template.a4pre_d1_prompt_identity.Facts
 import host.sim.lin.checks.Kv
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -54,7 +55,8 @@ theorem prompt_forward_returned (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) 
   have emitted : x'.M.a 2590 = 2590 := (congrFun h.ext.a 2590).trans hem
   have hp' : SetupD1PromptIdentity.PromptAt (ρ.map natV) x' := by
     obtain ⟨origin, hfb, _⟩ := h.book
-    have e : x'.K.fr 2665 = some ([], π.map natV) := SetupD1PromptIdentity.forward_prompt hfb
+    have e0 := SetupD1PromptIdentity.forward_prompt hfb
+    have e : x'.K.fr 2665 = some ([], π.map natV) := e0
     exact e.trans ((SetupD1PromptIdentity.forward_prompt hb).symm.trans hp)
   exact ⟨x'.t, x'.C, h.run, x', rfl, rfl, ⟨π, K0, h.relation, h.book, ip, reserved, emitted⟩,
     ⟨⟨h.fresh, h.anchors⟩, hp'⟩,

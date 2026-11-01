@@ -2113,8 +2113,15 @@ function genPostLink(args: string[]) {
   const name = take("--name") ?? fail("post-link: --name <prefix>");
   const walk = take("--walk") ?? fail("post-link: --walk <walk prefix>"), walkMod = take("--walkmod") ?? fail("post-link: --walkmod <module>");
   const endMod = take("--endmod") ?? fail("post-link: --endmod <module>");
+  // the walk, when this link writes its own (the tail's end to the pre-final template)
+  const walkAt = take("--walkfrom");
   const [, X, Ti] = args[0]?.match(/^([^:]+):(\d+)$/) ?? fail("post-link: <chain>:<end>");
-  const T = "PRE_pl_entry", a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
+  // The entry's name and frames; with --drop, the pre-final link: only the prompt kept, the frames listed dropped.
+  const T = take("--entry") ?? "PRE_pl_entry", E = take("--entryname") ?? "PLEntry";
+  const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
+  const framesLit = take("--frames") ?? "[2673479, 2673484, 2673485, 2665]";
+  const dropList = take("--drop");
+  const a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
   const tm = JSON.parse(readFileSync(join(streams, "Host.Load.Run.Tpl." + T, "template.json"), "utf8"));
   const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
   const chunk = 2000, s0 = T + ".s0", S0 = T + ".S0", s1 = X + ".s" + Ti, S1 = X + ".S" + Ti;
@@ -2125,19 +2132,19 @@ function genPostLink(args: string[]) {
     "set_option maxRecDepth 1000000" + NL + "set_option maxHeartbeats 0" + NL + NL;
   const put = (file: string, body: string) => writeFileSync(join(out, file + ".lean"), body + NL + "end Host.Load.Run.Tpl" + NL);
   if (withTemplate) {
-    put("PLEntryKeys", head("host.sim.template.a4pre_pl_entry.S", "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
+    put(E + "Keys", head(entryMod, "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
       "/-! The entry's address groups, listed on its bridge-free view: the bridge is not constructor data. -/",
-      "bridge_empty PLEntryV.s0 from " + T + ".s0",
-      "server_data PLEntryV.S0 := " + T + ".S0",
-      "def PLEntryV.frames : List Nat := " + T + ".frames",
-      "tpl_keys PLEntryV",
-      "theorem " + T + ".cover : \u2200 a x, " + T + ".s0.heap.get a = some x \u2192 a \u2209 " + T + ".frames \u2192 \u2203 q \u2208 PLEntryV.gks, a \u2208 q.2 :=",
-      "  PLEntryV.cover",
+      "bridge_empty " + E + "V.s0 from " + T + ".s0",
+      "server_data " + E + "V.S0 := " + T + ".S0",
+      "def " + E + "V.frames : List Nat := " + T + ".frames",
+      "tpl_keys " + E + "V",
+      "theorem " + T + ".cover : \u2200 a x, " + T + ".s0.heap.get a = some x \u2192 a \u2209 " + T + ".frames \u2192 \u2203 q \u2208 " + E + "V.gks, a \u2208 q.2 :=",
+      "  " + E + "V.cover",
       ""].join(NL));
-    put("PLEntryClosed", head(a4b + ".PLEntryKeys", "host.sim.template.Check", "host.sim.template.NShiftGen") + [
+    put(E + "Closed", head(a4b + "." + E + "Keys", "host.sim.template.Check", "host.sim.template.NShiftGen") + [
       "abbrev T.n : Nat := " + st.n,
       "kernel_rfl T.tab_len : T.S0.tab.length = T.n",
-      "kernel_rfl T.frames_eq : T.frames = [2673479, 2673484, 2673485, 2665]",
+      "kernel_rfl T.frames_eq : T.frames = " + framesLit,
       "noncomputable def T.suppAt (a : Nat) : Bool :=",
       "  match T.s0.heap.get a with",
       "  | some h => bHobj (presentB T.s0) T.n h",
@@ -2150,7 +2157,7 @@ function genPostLink(args: string[]) {
       "kernel_rfl T.boundFramed : T.frames.all T.boundAt = true",
       "kernel_rfl T.rootsSupp_check : checkRootsSupp T.s0 T.n = true",
       "",
-      "theorem T.allPresent {p : Nat \u2192 Bool} (hb : \u2200 q \u2208 PLEntryV.gks, \u2200 a \u2208 q.2, p a = true) (hf : T.frames.all p = true) :",
+      "theorem T.allPresent {p : Nat \u2192 Bool} (hb : \u2200 q \u2208 " + E + "V.gks, \u2200 a \u2208 q.2, p a = true) (hf : T.frames.all p = true) :",
       "    \u2200 a, Present T.s0 a \u2192 p a = true := by",
       "  intro a ha",
       "  obtain \u27E8h, hg\u27E9 := Present.get ha",
@@ -2176,8 +2183,8 @@ function genPostLink(args: string[]) {
       "  have := T.allPresent T.BD.all T.boundFramed a ha",
       "  unfold T.boundAt at this",
       "  simpa [Nat.blt_eq] using this",
-      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from PLEntryV "));
-    put("PLEntryFresh", head(a4b + ".PLEntryClosed", "host.sim.BigFree", "host.sim.native.RebigR", "host.sim.compose.JsAbove") + [
+      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
+    put(E + "Fresh", head(a4b + "." + E + "Closed", "host.sim.BigFree", "host.sim.native.RebigR", "host.sim.compose.JsAbove") + [
       "kernel_rfl T.hnext : " + mlx("T.s0") + ".next = " + st.mnext,
       "noncomputable def T.freshAt (a : Nat) : Bool := noBigAtB " + st.mnext + " 131072 T.s0 a",
       "tpl_all_blocks T.FB from T : T.freshAt",
@@ -2198,10 +2205,26 @@ function genPostLink(args: string[]) {
       "  unfold T.jsAt noBigAtP at hc",
       "  rw [ho] at hc",
       "  exact noBigHobjP_sound (fun _ hi => hi) hc",
-      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from PLEntryV "));
+      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
+  }
+  if (walkAt) {
+    const wf = walkMod.split(".").pop()!;
+    writeFileSync(join(out, wf + ".lean"), head(entryMod, endMod, "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
+      "/-! The map from the pre-final template into the tail's end, chosen natively on the bridge-free views",
+      "of both states. Everything about it is a later kernel check. -/",
+      "bridge_empty " + walk + ".s0 from " + s0,
+      "server_data " + walk + ".S0 := " + S0,
+      "bridge_empty " + walk + ".s" + Ti + " from " + s1,
+      "server_data " + walk + ".S" + Ti + " := " + S1,
+      "def " + walk + ".frames : List Nat := " + T + ".frames",
+      "def " + walk + ".ghosts : List Nat := " + T + ".ghosts",
+      "def " + walk + ".maps : List Nat := " + T + ".maps",
+      "set_option interpreter.prefer_native true in",
+      "tpl_restart " + walk + ".R : " + walk + ", " + walk + " " + Ti + " (\u00ABworld\u00BB := " + walkAt + ".nativeWorld)",
+      ""].join(NL) + NL + "end Host.Load.Run.Tpl" + NL);
   }
   const R = walk + ".R", D = R + ".data", sg = D + ".map", P = name + ".P0", x0 = name + ".x0", x1 = name + ".x1";
-  put(name + "Heap", head(walkMod, a4b + ".PLEntryKeys") + "tpl_heap_blocks " + R + " from PLEntryV : " + sg + ", " + s0 + ", " + s1 + NL);
+  put(name + "Heap", head(walkMod, a4b + "." + E + "Keys") + "tpl_heap_blocks " + R + " from " + E + "V : " + sg + ", " + s0 + ", " + s1 + NL);
   const ck = (nm: string, stmt: string) => "kernel_rfl " + name + ".n" + nm + " : " + stmt + NL;
   const chunked = (nm: string, list: string, n: number, kind: "all" | "map", stmt: (l: string) => string, chunk: number = 2000) => {
     const m = Math.max(1, Math.ceil(n / chunk));
@@ -2221,7 +2244,7 @@ function genPostLink(args: string[]) {
   const nums = chunked("num", "List.range " + S0 + ".tab.length", st.n, "all", l => "(" + l + ").all " + name + ".numAt = true", 500);
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
-  put(name + "Na", head(walkMod, a4b + ".PLEntryClosed", "host.sim.template.NShiftOf", "host.sim.compose.PostLink") +
+  put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", dropList ? "host.sim.compose.PfLink" : "host.sim.compose.PostLink") +
     "def " + P + " : LoadP := setupP.raise " + st.nnext + NL +
     "noncomputable abbrev " + name + ".y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s0 + ".ffi)" + NL +
     "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
@@ -2269,8 +2292,8 @@ function genPostLink(args: string[]) {
     "    liveShift_of N.live, kernShift_of N.kern,",
     "    pendReg_of rfl N.nnh0 N.nnh1 (Nat.le_of_ble_eq_true N.pendLe) N.pendR\u27E9",
     ""].join(NL).replaceAll("N.", name + "."));
-  const frs = [["P", "2665"], ["C", "D1Frames.chunk"]];
-  const sf = [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
+  const frs = dropList ? [["P", "2665"]] : [["P", "2665"], ["C", "D1Frames.chunk"]];
+  const sf = dropList ? [] : [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
   // one module per kind of whole-state check: a single check can need more memory than the rest together
   nums.chunks.forEach((c, j) => put(name + "Kn_" + j, head(a4b + "." + name + "Na", endMod) + c));
   const kchecks: string[][] = [[
@@ -2284,7 +2307,12 @@ function genPostLink(args: string[]) {
     ...sf.flatMap(([k, a]) => [
       "kernel_rfl N.get" + k + " : (" + s0 + ".heap.get " + a + ").isSome = true",
       "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = (" + s0 + ".heap.get " + a + ").map " + sg + ".hobj"]),
-    "kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true"], [
+    ...(dropList ? [
+      "kernel_rfl N.emptyP : arrOf " + s1 + " 2665 = []",
+      "noncomputable def N.ndAt (a : Nat) : Bool := [" + dropList + "].all fun b => !Nat.beq (" + D + ".a a) b",
+      "tpl_all_blocks N.ND from " + E + "V : N.ndAt",
+      "kernel_rfl N.ndFramed : " + T + ".frames.all N.ndAt = true"]
+    : ["kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true"])], [
     "kernel_rfl N.n0 : " + D + ".n0 = " + s0 + ".next",
     "kernel_rfl N.n1 : " + D + ".n1 = " + s1 + ".next",
     "kernel_rfl N.grows : Nat.ble " + s0 + ".next " + s1 + ".next = true",
@@ -2304,20 +2332,32 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
     "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
-  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Full", a4b + ".PLEntryFresh", endMod, ...(j === 0 ? nums.chunks.map((_, i) => a4b + "." + name + "Kn_" + i) : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
+  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Full", a4b + "." + E + "Fresh", endMod, ...(j === 0 ? nums.chunks.map((_, i) => a4b + "." + name + "Kn_" + i) : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
-    "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where",
+    (dropList
+      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
+      : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
     "    intro a h ha hm",
-    "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (Post.frames_perm (by rw [" + T + ".frames_eq] at hf; exact hf)))",
+    dropList
+      ? "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (by rw [" + T + ".frames_eq] at hf; simpa using hf))"
+      : "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (Post.frames_perm (by rw [" + T + ".frames_eq] at hf; exact hf)))",
     "    have he := " + R + ".heapAt q hq a haq",
     "    rw [ha] at he",
     "    exact he",
     ...[...frs, ...sf].map(([k]) => "  fix" + k + " := N.fix" + k),
     ...frs.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  kind" + k + " := N.kind" + k, "  img" + k + " := N.img" + k]),
     ...sf.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  img" + k + " := N.img" + k]),
-    "  framesEmpty := N.framesEmpty",
+    ...(dropList ? [
+      "  emptyP := N.emptyP",
+      "  notDrop := by",
+      "    intro a ha b hb he",
+      "    have hc := " + T + ".allPresent N.ND.all N.ndFramed a ha",
+      "    unfold N.ndAt at hc",
+      "    have h2 := List.all_eq_true.mp hc b hb",
+      "    rw [he] at h2",
+      "    simp at h2"] : ["  framesEmpty := N.framesEmpty"]),
     "  n0 := N.n0",
     "  n1 := N.n1",
     "  grows := Nat.le_of_ble_eq_true N.grows",
