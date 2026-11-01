@@ -28,7 +28,7 @@ forwards' ends. -/
 
 /-- A stretch's change of bookkeeping, from what its end knows. -/
 def Hook (c : ICut FF) (M M' : SegInst FF → Prop) : Prop :=
-  ∀ x y : SegInst FF, c.R y c.s0 ⟨c.tab0, []⟩ → CSrv.Le x.C y.C →
+  ∀ x y : SegInst FF, c.R y c.s0 ⟨c.tab0, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node →
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 → M x → M' y
 
 /-- A template's start equal to another's end. -/
@@ -134,7 +134,7 @@ noncomputable def smpCold (Adm : Cls.Inst → Prop) (uses : List Row) (obls : Li
   ok _ _ i _ _ _ := StageCall.intro (idxConv PRE_pl_common.s0_eq PRE_pl_common.s0_tab)
     (hookMem (fun x0 => PL.Common.all NB T tk cap nI π hcap (fun _ h => PRE_pl_common.good h.rowValue) (NTrack x0)
         (fun _ _ h h0 => h0.trans h))
-      (fun x y _ hy _ htr hm => H.hsmp i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
+      (fun x y _ hy _ htr hm => H.hsmp i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
 
 /-- The restart into the shared tail. -/
@@ -184,7 +184,7 @@ noncomputable def fw0 (Adm : Cls.Inst → Prop) (obls : List Obl) :
         (fun _ h => PRE_pl_r1.good (b := 0) (r := π.length) (by omega) hL1 (by omega) h.rowValue
           (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
         (NTrack x0) (fun _ _ h h0 => h0.trans h))
-      (fun x y _ hy _ htr hm => H.hfw0 i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
+      (fun x y _ hy _ htr hm => H.hfw0 i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
 
 /-- The second warm forward, to the decode cut. -/
@@ -206,7 +206,7 @@ noncomputable def fw1 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
             ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])) h.rowValue
             (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
           (NTrack x0) (fun _ _ h h0 => h0.trans h))
-        (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.nodes htr.tokens htr.emit hm))
+        (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
       (CutConv.refl _)
 
 /-- The prefill's invariants, POST's ends at the hooks' bookkeeping. -/

@@ -17,6 +17,8 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x
   valuation : VBOkF loopVB x.ν
   promptValue : x.ν 9 = F64.ofNat π.length
   rowValue : x.ν 10 = F64.ofNat 1
+  /-- The tail's map adds one to this variable. -/
+  small21 : ∃ k, k + 1 ≤ 2 ^ 20 ∧ x.ν 21 = F64.ofNat k
   offsetValue : x.ν 11 = F64.ofNat π.length
   capValue : x.ν 16 = F64.ofNat (capL π.length)
   context : Disp.KpJ PostOk.J cap x.K

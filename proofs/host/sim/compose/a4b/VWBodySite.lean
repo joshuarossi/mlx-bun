@@ -121,7 +121,7 @@ theorem bodySiteCore {NB T n : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.
     ∃ y : SegInst FF, runC FF (n + 1) x.t x.C = some (y.t, y.C) ∧
       (bodyCore NB T tk π i Θ O' m sc Sc).R y sc ⟨Sc.tab, []⟩ ∧ (bodyCore NB T tk π i Θ O' m sc Sc).B y ∧
       (∀ k, y.M.node k = x.M.node (κ.node k)) ∧ Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) ∧
-      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens := by
+      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens ∧ y.M.a 12504 = x.M.a 12504 := by
   obtain ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ := hR
   obtain ⟨hfresh, hids⟩ := hB
   let bs := tokenBytes (π.take i.n)

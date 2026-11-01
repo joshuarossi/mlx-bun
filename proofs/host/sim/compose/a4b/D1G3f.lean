@@ -152,6 +152,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
         valuation := entryValuation hfb.valuation h9
         promptValue := ?_
         rowValue := θat h9 θ10
+        small21 := ⟨4, by decide, θat h9 θ21⟩
         offsetValue := ?_
         capValue := ?_
         context := ⟨⟨hlo, hhi, fun a => ?_⟩, ?_⟩

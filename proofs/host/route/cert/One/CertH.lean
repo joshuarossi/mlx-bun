@@ -36,7 +36,7 @@ theorem boxH_cases {j : Nat} {l h : Int} (hg : Box.get boxH j = some (l, h)) :
   · subst h16
     simp at hg
     exact .inr (.inr (.inr ⟨rfl, hg.1.symm, hg.2.symm⟩))
-  simp [List.find?_cons, Ne.symm h9, Ne.symm h10, Ne.symm h11, Ne.symm h16] at hg
+  simp [Ne.symm h9, Ne.symm h10, Ne.symm h11, Ne.symm h16] at hg
 
 theorem nuH_box : InBox boxH nuH := by
   intro j l h hg

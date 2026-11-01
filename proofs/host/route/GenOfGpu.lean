@@ -130,9 +130,9 @@ noncomputable def routeGenOfGpu
         (ΔJ := DECG.ΔJ) (ΔH := DECG.ΔH) (ΔN := DECG.ΔN) (ρ := machVal T Tk)
         (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hρ hπ hL h3 hctx
         (fun j _ => hv j) le_rfl le_rfl le_rfl hc.1 hc.2.1 hc.2.2
-      hc0 := fun _ _ => by decide
-      hc1 := fun _ _ => by decide
-      hc2 := fun _ _ => by decide
+      hc0 := fun _ _ => (by decide : 2586 ∈ shortFixP)
+      hc1 := fun _ _ => (by decide : 2586 ∈ shortFixP)
+      hc2 := fun _ _ => (by decide : 2586 ∈ shortFixP)
       hcE := by decide
       hb := by decide
       hgen := by decide

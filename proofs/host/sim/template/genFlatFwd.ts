@@ -1,6 +1,6 @@
 // Write the checked modules of a flat forward chain (`tpl_chain`, no stage cuts, size bridges only) over `FlatFwd`:
 // boundaries, each ordinary chunk at the fast table, each stretch and size bridge's facts, the pieces and the run
-// `<Name>.fullRun : CutStep (cut … s0 S0) (cut … s<T1> S<T1>) <steps>`, given the book's `FlatFwd.Laws`.
+// `<Name>.fullRun : CutStep (cut … s0 S0) (cut … s<T1> S<T1>) <steps>`, given the book's `FlatFwd.LawsCap` at the admitted offset.
 // usage: bun genFlatFwd.ts <dir under template/> <Name> <row variable> <chunk> <buffer> <view> <box module> <start state> <start server>
 //   <box module> defines `<Name>.ps`, `<Name>.V` and `<Name>.lin : Lin.goodLin <Name>.ps <Name>.V <Name>.O = true`.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -52,7 +52,7 @@ const accepted = (n: string, i: number) => lazy(n, i, i, `(fun bs : List Byte =>
 const oracle = (n: string, i: number) => `theorem ${n} : Lin.goodLin ${name}.ps ${name}.V ${S(i)}.oracle = true :=\n  FlatFwd.goodLin_drop ${name}.lin _\n`;
 const table20 = (n: string, i: number) => `kernel_rfl ${n}Check : decide (20 ≤ ${S(i)}.tab.length) = true\ntheorem ${n} : 20 ≤ ${S(i)}.tab.length := of_decide_eq_true ${n}Check\n`;
 const inactive = (n: string, i: number) => `theorem ${n} : (bridgeOf ${s(i)}.ffi).active = false := Host.Load.Boot.replay_active _\n`;
-const params = `{NB T : Nat} {tk : Nat → Nat} {bytes : List Byte} {Book : SegInst FF → Prop} {M0 : Map} {y0 : Host.Mlx.Ffi.St}\n    (L : FlatFwd.Laws ${fr} bytes ${name}.ps ${name}.V Book)`;
+const params = `{NB T cap : Nat} {tk : Nat → Nat} {bytes : List Byte} {Book : SegInst FF → Prop} {M0 : Map} {y0 : Host.Mlx.Ffi.St}\n    (L : FlatFwd.LawsCap ${fr} bytes cap ${name}.ps ${name}.V Book)`;
 const cut = (i: number) => `(FlatFwd.cut ${fr} NB T tk bytes Book M0 y0 ${s(i)} ${S(i)})`;
 type Piece = { from: number; to: number; fuel: number };
 const pieces: Piece[] = [];
@@ -91,19 +91,19 @@ for (let k = 0; k <= bridges.length; k++) {
       oracle(`${p}.oracle`, ia) + table20(`${p}.table`, ia) + inactive(`${p}.inactive`, ia) +
       `kernel_rfl ${p}.bridgeInto : bridgeOf ${s(ia)}.ffi = bridgeOf ${s(from)}.ffi\n` +
       `kernel_rfl ${p}.bridgeOut : bridgeOf ${s(ia + 1)}.ffi = bridgeOf ${s(ia)}.ffi\n`);
-    put(`Piece${k}`, head([mod(`Size${k}`), "host.sim.template.a4pre_d1_body.SizeAt"]) +
+    put(`Piece${k}`, head([mod(`Size${k}`), "host.sim.template.FlatFwdCap"]) +
       `theorem ${name}.piece${k} ${params} :\n    CutStep ${cut(from)} ${cut(ia + 1)} ${fuel + 4} :=\n` +
-      `  (FlatFwd.toCall L ${name}.accepted${k} ${name}.seg${k} ${p}.acceptedP ${p}.haltP ${p}.step ${p}.top\n` +
+      `  (FlatFwd.toCallCap L ${name}.accepted${k} ${name}.seg${k} ${p}.acceptedP ${p}.haltP ${p}.step ${p}.top\n` +
       `    ${name}.oracle${k} ${name}.inactive${k} ${p}.bridgeInto ${name}.table${k}).trans\n` +
-      `  (FlatFwd.size L ${p}.parts ${p}.args_ok ${p}.sym ${p}.mlx ${p}.pay (by decide) ${p}.decode ${p}.pre ${p}.runS\n` +
+      `  (FlatFwd.sizeCap L ${p}.parts ${p}.args_ok ${p}.sym ${p}.mlx ${p}.pay (by decide) ${p}.decode ${p}.pre ${p}.runS\n` +
       `    ${p}.oracle ${p}.inactive ${p}.bridgeOut ${p}.table)\n`);
     pieces.push({ from, to: ia + 1, fuel: fuel + 4 });
   } else {
-    put(`Piece${k}`, head([mod(`Seg${k}`)]) +
+    put(`Piece${k}`, head([mod(`Seg${k}`), "host.sim.template.FlatFwdCap"]) +
       `kernel_rfl ${name}.finalBridge : bridgeOf ${s(to)}.ffi = bridgeOf ${s(from)}.ffi\n` +
       lazy(`${name}.finalTop`, to, to, `Host.Ts.Sim.Compose.noRetBlock ${s(to)} = true`) +
       `\ntheorem ${name}.piece${k} ${params} :\n    CutStep ${cut(from)} ${cut(to)} ${fuel} :=\n` +
-      `  FlatFwd.finish L ${name}.accepted${k} ${name}.seg${k} ${name}.finalTop\n` +
+      `  FlatFwd.finishCap L ${name}.accepted${k} ${name}.seg${k} ${name}.finalTop\n` +
       `    ${name}.oracle${k} ${name}.inactive${k} ${name}.finalBridge ${name}.table${k}\n`);
     pieces.push({ from, to, fuel });
   }
@@ -114,13 +114,13 @@ for (let a = 0, n = 0; a < pieces.length; a += 16, n++) {
   const ps = pieces.slice(a, a + 16), g = { from: ps[0]!.from, to: ps.at(-1)!.to, fuel: ps.reduce((x, p) => x + p.fuel, 0) };
   put(`Group${n}`, head(ps.map((_, j) => mod(`Piece${a + j}`))) +
     `theorem ${name}.group${n} ${params} :\n    CutStep ${cut(g.from)} ${cut(g.to)} ${g.fuel} :=\n` +
-    `  ${chain(ps.map((_, j) => `${name}.piece${a + j} L`))}\n`);
+    `  ${chain(ps.map((_, j) => `(${name}.piece${a + j} L)`))}\n`);
   groups.push(g);
 }
 if (groups.at(-1)!.to !== T1 || groups.reduce((x, g) => x + g.fuel, 0) !== steps) throw Error("incomplete run");
 put("Run", head(groups.map((_, n) => mod(`Group${n}`))) +
   `theorem ${name}.fullRun ${params} :\n    CutStep ${cut(0)} ${cut(T1)} ${steps} :=\n` +
-  `  ${chain(groups.map((_, n) => `${name}.group${n} L`))}\n`);
+  `  ${chain(groups.map((_, n) => `(${name}.group${n} L)`))}\n`);
 // the chain's start and its token queue, for the links either side
 put("Ends", head([page(T1), page(0), "host.sim.full.Raise"]) +
   `kernel_rfl ${name}.s0_eq : ${s(0)} = ${start}\n` +

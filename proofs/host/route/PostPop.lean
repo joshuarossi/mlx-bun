@@ -1,0 +1,106 @@
+import host.route.GpuMem
+import host.sim.compose.PostCut
+import host.sim.template.a4pre_pl_t2p.H0
+set_option maxRecDepth 1000000
+set_option autoImplicit false
+namespace Host.Route.PrefGraph
+open Host.Load Host.Load.Run.Tpl Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Ts
+open Inference Inference.Contracts.Mlx Inference.Models.Qwen
+open Host.Mlx.SimGraph.Mach (refPrompt)
+open Host.Ts.Sim (SegInst)
+open Host.Ts.Sim.Full (FF mlxOf)
+
+/-! # POST's first readback
+
+`PRE_pl_t2p`'s first stretch pops token 1: one token leaves the queue, so one item is new, at the image of the template's
+carrier, holding the table's symbol the machine's readback fixes. `hpop`: the reference held across it. -/
+
+kernel_rfl t2p_tokens0 : (mlxOf PRE_pl_t2p.s0.ffi).tokens = [.ref 1, .ref 2]
+kernel_rfl t2p_tokens1 : (mlxOf PRE_pl_t2p.s1.ffi).tokens = [.ref 2]
+kernel_rfl t2p_item1 : (mlxOf PRE_pl_t2p.s1.ffi).items.get 17776 = some (.ref 1)
+kernel_rfl t2p_item0 : (mlxOf PRE_pl_t2p.s0.ffi).items.get 17776 = none
+kernel_rfl t2p_node0 : ((mlxOf PRE_pl_t2p.s0.ffi).nodes.get 17776).isSome = true
+kernel_rfl t2p_node1 : ((mlxOf PRE_pl_t2p.s1.ffi).nodes.get 17776).isSome = true
+kernel_rfl t2p_tab1 : nth? PRE_pl_t2p.S0.tab 1 = some (.var 1)
+
+/-- One token left the queue: one new item, holding it. -/
+theorem pop_one {x y : Ffi.St} (hg : Ffi.NGrow x y) {a : NumV} {l : List NumV} (hx : x.tokens = a :: l)
+    (hl : l.length = y.tokens.length) : ∃ k, x.items.get k = none ∧ y.items = x.items.set k a := by
+  obtain ⟨ps, he, hp⟩ := hg.pops
+  rw [hx] at he
+  have hlen := congrArg List.length he
+  simp only [List.length_cons, List.length_append, List.length_map, hl] at hlen
+  obtain ⟨p, rfl⟩ : ∃ p, ps = [p] := List.length_eq_one_iff.mp (by omega)
+  simp only [List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.cons.injEq] at he
+  obtain ⟨k, v⟩ := p
+  obtain ⟨hv, -⟩ := he
+  dsimp only at hv
+  subst hv
+  exact ⟨k, hp.1, hp.2⟩
+
+variable {C : M1Max.Contract} {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
+  {net : Host.Mlx.SimGraph.Ref.AneNet} {env : FfiEval.Env InKey} {π : List Nat}
+
+/-- **The first readback keeps the reference held**, the carrier of time `L` being the template's. -/
+theorem hpop {NB T cap nI : Nat} {tk : Nat → Nat} (hT : 1 ≤ T)
+    (htkR : ∀ tab j, j < T → ∃ hs, refPrompt P KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
+    (htk1 : tk 1 < 2 ^ 31) (toks : Nat → Nat → Nat) (htoks : toks π.length 0 = 17776)
+    (Cr : Nat → List (Option Nat × Option Nat)) (L : Nat) (x y : SegInst FF)
+    (hx : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π PRE_pl_t2p.s0 PRE_pl_t2p.S0).R x PRE_pl_t2p.s0
+      ⟨PRE_pl_t2p.S0.tab, []⟩)
+    (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π PRE_pl_t2p.s1 PRE_pl_t2p.S1).R y PRE_pl_t2p.s1
+      ⟨PRE_pl_t2p.S1.tab, []⟩)
+    (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hnode : y.M.node = x.M.node)
+    (hg : Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi)) (hm : memPost P KR NE net env π 0 toks Cr L x) :
+    memPost P KR NE net env π 0 toks Cr L y := by
+  intro hL
+  subst hL
+  obtain ⟨kind, hp⟩ := hm rfl
+  obtain ⟨_, hrx, hbx⟩ := hx
+  obtain ⟨_, hry, -⟩ := hy
+  obtain ⟨Px, hPx, rx⟩ := hrx.ffi.1
+  obtain ⟨Py, hPy, ry⟩ := hry.ffi.1
+  have mx := rx.load.mlx
+  have my := ry.load.mlx
+  have hrest : Py.rest = Px.rest := by
+    rcases hPx with rfl | ⟨k, -, -, rfl⟩ <;> rcases hPy with rfl | ⟨k', -, -, rfl⟩ <;> rfl
+  have tx : (mlxOf x.t.ffi).tokens = x.M.nv (.ref 1) :: (x.M.nv (.ref 2) :: Px.rest) := by
+    have h : (mlxOf x.t.ffi).tokens = (mlxOf PRE_pl_t2p.s0.ffi).tokens.map x.M.nv ++ Px.rest := mx.tokensX
+    rw [t2p_tokens0] at h
+    exact h
+  have ty : (mlxOf y.t.ffi).tokens = y.M.nv (.ref 2) :: Px.rest := by
+    have h : (mlxOf y.t.ffi).tokens = (mlxOf PRE_pl_t2p.s1.ffi).tokens.map y.M.nv ++ Py.rest := my.tokensX
+    rw [t2p_tokens1, hrest] at h
+    exact h
+  obtain ⟨k', hk0, hit⟩ := pop_one hg tx (by rw [ty]; rfl)
+  refine ⟨kind, fun tab hC => ?_⟩
+  have hC' := hle.trans hC
+  rw [hnode]
+  refine (hp tab hC').read hg (k0 := 0) (Nat.le_refl _) ?_ my.yitems
+  intro k v hv
+  rw [hit] at hv
+  rcases PTrie.get_set_some hv with h | ⟨rfl, rfl⟩
+  · exact .inl h
+  · obtain ⟨hs, hR⟩ := htkR tab 0 hT
+    have hyn : (mlxOf y.t.ffi).items.get (x.M.node 17776) = some (y.M.nv (.ref 1)) := by
+      have h : (mlxOf y.t.ffi).items.get (y.M.node 17776) = ((mlxOf PRE_pl_t2p.s1.ffi).items.get 17776).map y.M.nv :=
+        my.items 17776 t2p_node1
+      rw [t2p_item1, hnode] at h
+      exact h
+    have hxn : (mlxOf x.t.ffi).items.get (x.M.node 17776) = none := by
+      have h : (mlxOf x.t.ffi).items.get (x.M.node 17776) = ((mlxOf PRE_pl_t2p.s0.ffi).items.get 17776).map x.M.nv :=
+        mx.items 17776 t2p_node0
+      rw [t2p_item0] at h
+      exact h
+    have hcar : k = x.M.node 17776 := by
+      refine Classical.byContradiction fun hne => ?_
+      rw [hit, PTrie.get_set_ne' _ _ _ _ (Ne.symm hne), hxn] at hyn
+      cases hyn
+    have hval : CSrv.val ⟨tab⟩ (x.M.nv (.ref 1)) = some (F64.ofNat (tk 1)) := by
+      have hn : CSrv.val ⟨tab⟩ (x.M.nv (.ref 1)) = some (x.ν 1) := hC'.val (hrx.srv.num 1 (.var 1) t2p_tab1)
+      rw [hn]
+      have hr := hbx.reserved 1 (by decide)
+      exact congrArg some (hr.trans (by simp [machVal]))
+    exact .inr ⟨by rw [htoks]; exact hcar, tk 1, ⟨hs, hR⟩, htk1, hval⟩
+
+end Host.Route.PrefGraph
