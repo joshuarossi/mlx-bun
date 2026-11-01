@@ -32,25 +32,25 @@ variable {C : M1Max.Contract} {P : MlxPrefillContract C} {KR : RouteKernelContra
 include hMem in
 /-- `T ≥ 2`, the first token the end. -/
 theorem graphA (h : 2 ≤ T) (he : tk 1 = 248044) :
-    (pA H hcap hL1 hL2 htk hTle Q h he).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF) :=
+    (pA (H := H) (hcap := hcap) (hL1 := hL1) (hL2 := hL2) (Q := Q) (hTle := hTle) (h := h) (he := he)).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x _ _ htr => memPost_goal (hMem 0 _ x htr) (Nat.le_refl _)
 
 include hMem in
 /-- `T = 1`, the first token the end. -/
 theorem graphC1 (h : T = 1) (he : tk 1 = 248044) :
-    (pC1 H hcap hL1 hL2 htk Q h he).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF) :=
+    (pC1 (H := H) (hcap := hcap) (Q := Q) (h := h) (he := he)).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 1 tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x _ _ htr => memPost_goal (hMem 0 _ x htr) (Nat.le_refl _)
 
 include hMem in
 /-- `T = 2`, the second token the end. -/
 theorem graphB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
-    (pB2 H hcap hL1 hL2 htk Q h hne he).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF) :=
+    (pB2 (H := H) (hcap := hcap) (hL1 := hL1) (hL2 := hL2) (htk := htk) (Q := Q) (h := h) (hne := hne) (he := he)).Goal (fun tF CF => ∃ kind, goalMV P KR NE net env π kind NB 2 tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x _ _ htr => memPost_goal (hMem 1 _ x htr) (Nat.le_refl _)
 
-include hMem in
+include hMem hL1 in
 /-- `T = 1`, the first token not the end. -/
 theorem graphC0 (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) (h : T = 1) (hne : tk 1 ≠ 248044) :
-    (pC0 H hcap hL1 hL2 htk Q h hne).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
+    (pC0 (H := H) (hcap := hcap) (htk := htk) (Q := Q) (h := h) (hne := hne)).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x hr hb htr => by
     change ∃ kind, goalCV P KR NE net env π kind NB T je x.t x.C
     rw [h]
@@ -61,7 +61,7 @@ theorem graphC0 (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) (h : T 
 include hMem in
 /-- `T = 2`, neither token the end. -/
 theorem graphB0 (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 248044) :
-    (pB0 H hcap hL1 hL2 htk Q h hne hne2).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
+    (pB0 (H := H) (hcap := hcap) (hL1 := hL1) (hL2 := hL2) (htk := htk) (Q := Q) (h := h) (hne := hne) (hne2 := hne2)).Goal (fun tF CF => ∃ kind, goalCV P KR NE net env π kind NB T je tF CF) :=
   haltPath_goal _ _ _ _ _ _ _ _ _ _ fun x hr hb htr => by
     change ∃ kind, goalCV P KR NE net env π kind NB T je x.t x.C
     rw [h]

@@ -127,27 +127,28 @@ theorem coldFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
   · obtain rfl := Option.some.inj hj
     exact hmr.nall _ h2
 
-theorem box_cases {j : Nat} {l h : Int} (hg : Box.get [(9, 10, 224), (10, 9, 223)] j = some (l, h)) :
-    (j = 9 ∧ l = 10 ∧ h = 224) ∨ (j = 10 ∧ l = 9 ∧ h = 223) := by
+theorem box_cases {j : Nat} {l h l9 h9 l10 h10 : Int} (hg : Box.get [(9, l9, h9), (10, l10, h10)] j = some (l, h)) :
+    (j = 9 ∧ l = l9 ∧ h = h9) ∨ (j = 10 ∧ l = l10 ∧ h = h10) := by
   unfold Box.get at hg
-  by_cases h9 : j = 9
-  · subst h9
+  by_cases hj9 : j = 9
+  · subst hj9
     simp at hg
     exact .inl ⟨rfl, hg.1.symm, hg.2.symm⟩
-  · by_cases h10 : j = 10
-    · subst h10
+  · by_cases hj10 : j = 10
+    · subst hj10
       simp at hg
       exact .inr ⟨rfl, hg.1.symm, hg.2.symm⟩
-    · simp [List.find?_cons, Ne.symm h9, Ne.symm h10] at hg
+    · simp [List.find?_cons, Ne.symm hj9, Ne.symm hj10] at hg
 
 /-- **A first tail's forward over a body whose return reads `L` at variable 9 and `n` at variable 10.** -/
 theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd Expected.stages)
     (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31) {NB T : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB)
     {s : St FF.S} {S : SSrv} {Θ : List Nat × List SymE} {O : Host.Ts.Sim.Compose.VWFirst.BodyOff}
-    (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) (hBx : c.B = [(9, 10, 224), (10, 9, 223)]) (hcx : c.x = 10)
+    (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) {l9 h9 l10 h10 : Int} (hBx : c.B = [(9, l9, h9), (10, l10, h10)]) (hcx : c.x = 10)
     (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235)
-    {i : Host.Ts.Sim.Lin.Cls.Inst} (hCr : Cr i.L = c.carriers) (hn : 9 ≤ i.n) (hn' : i.n ≤ 223) (hLn : i.L = i.n + 1)
+    {i : Host.Ts.Sim.Lin.Cls.Inst} (hCr : Cr i.L = c.carriers) (hn : 2 ≤ i.n) (hn' : i.n ≤ 223) (hLn : i.L = i.n + 1)
+    (hb9 : l9 ≤ (i.L : Int) ∧ (i.L : Int) ≤ h9) (hb10 : l10 ≤ (i.n : Int) ∧ (i.n : Int) ≤ h10)
     (hfam : gpuFamily .tail i.n = some (rowTpl refRows pk mk rd)) {x y : SegInst FF}
     (hy : (Host.Ts.Sim.Compose.VWFirst.bodyCore NB T tk π i Θ O [(9, .L), (10, .n)] s S).R y s ⟨S.tab, []⟩)
     (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hg : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi))
@@ -162,23 +163,21 @@ theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
   have hband : Pm.NL = Pm.N0 := by rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> rfl
   have hE : (Pm.E : Int) ≤ 131072 := by
     rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> exact Int.le_refl _
-  have h9 : y.ν 9 = F64.ofNat i.L := hmap.1
-  have h10 : y.ν 10 = F64.ofNat i.n := hmap.2.1
+  have hv9 : y.ν 9 = F64.ofNat i.L := hmap.1
+  have hv10 : y.ν 10 = F64.ofNat i.n := hmap.2.1
   have hin : i.n = π.length - 1 := by omega
   refine coldFwd c leaves typed Cr (by rw [hLen]; exact hCr) hlt (by omega) (by omega) (by rw [← hin]; exact hfam) hmr hband hE hNB
     (fun j e h => hr.srv.num j e (hS ▸ h)) (fun j => if j = 9 then (i.L : Int) else (i.n : Int)) ?_ ?_ ?_ ?_ hparam hle hg ht i.L hm
   · rw [hBx]
     intro j l h hget
     rcases box_cases hget with ⟨rfl, rfl, rfl⟩ | ⟨rfl, rfl, rfl⟩
-    · change (10 : Int) ≤ (i.L : Int) ∧ (i.L : Int) ≤ 224
-      omega
-    · change (9 : Int) ≤ (i.n : Int) ∧ (i.n : Int) ≤ 223
-      omega
+    · exact hb9
+    · exact hb10
   · rw [hBx]
     intro j l h hget
     rcases box_cases hget with ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩
-    · exact h9
-    · exact h10
+    · exact hv9
+    · exact hv10
   · rw [hcx, ← hin]
     simp
   · intro tab hC

@@ -1,9 +1,15 @@
-// bun gen.ts <Tag> <chain tag> <family tag> <blocks> <down.mt> <lo-hi,...> <row x,...>
+// bun gen.ts <Tag> <chain tag> <family tag> <blocks> <down.mt> <lo-hi,...> <row x,...> <nodes>
+// A family below the wide rows: <blocks> and <down.mt> are "-", and `SMALL` holds JSON { box, term, planHyps, planRw, rows }:
+// the return's box, the family's `pk mk rd`, the hypotheses and rewrites of its `gpuFamily` branch, the group's rows' name.
 // Writes host/route/cert/<Tag>/: a first tail's forward certificate on the template at its return, split so that the
 // long kernel check imports only definitions, and its `hfwd`. Example: bun gen.ts VW8 x8 VW83 2 3 33-48,65-72 8,10
 import { mkdirSync } from "fs";
 import { dirname, join } from "path";
 const [Tag, chain, fam, blocks, mt, spans, xs] = process.argv.slice(2);
+const SM = process.env.SMALL ? JSON.parse(process.env.SMALL) : null;
+const term = SM ? SM.term : `.split (.wide ${blocks} ⟨8, ${mt}⟩) .causal`;
+const boxS = SM ? SM.box : "[(9, 10, 224), (10, 9, 223)]";
+const rowsName = SM ? SM.rows : "fwdRows";
 if (!Tag || !chain || !fam || !blocks || !mt || !spans || !xs) throw new Error("usage");
 const dir = join(dirname(import.meta.path), Tag);
 mkdirSync(dir, { recursive: true });
@@ -32,7 +38,7 @@ noncomputable def endLoad : St Host.Load.LSt :=
   ⟨${T}.input.heap, ${T}.input.next, ${T}.input.ctl, ${T}.input.stack,
     ⟨${T}.input.aux.jobs, Host.Load.Layers.toLoad ${T}.input.aux.ffi, ${T}.input.aux.trace, ${T}.input.aux.stores⟩⟩
 
-def box : Box := [(9, 10, 224), (10, 9, 223)]
+def box : Box := ${boxS}
 
 /-- The expected graph, built natively. -/
 def Ecn : List (RNode PDim SimGraph.PKey) :=
@@ -88,7 +94,7 @@ theorem Ec_len : Ec.length = ${NODES} := by
   exact graph_len
 
 /-- **The certificate of the ${chain} group's forward.** -/
-noncomputable def cert : FamCert .split (.wide ${blocks} ⟨8, ${mt}⟩) .causal Host.Load.Run.Full.Expected.stages where
+noncomputable def cert : FamCert ${term} Host.Load.Run.Full.Expected.stages where
   n₀ := 124
   x := 10
   s := native
@@ -124,6 +130,26 @@ const disj = (v: string) => ivs.map(([a, b]) => `(${a} ≤ ${v} ∧ ${v} ≤ ${b
 const dec = ivs.map(([a, b]) => `(decide (${a} ≤ m) && decide (m ≤ ${b}))`).join(" || ");
 const hb = blocks === "3" ? "rw [if_pos]\n    unfold Metal.ceilDiv\n    omega" : "rw [if_neg]\n    unfold Metal.ceilDiv\n    omega";
 const VW = Tag;
+const planBody = SM ? `  ${SM.planHyps.join("\n  ")}
+  dsimp only [gpuFamily]
+  rw [${SM.planRw}]
+  rfl` : `  have h9 : ¬ n ≤ 8 := by omega
+  have h3 : ¬ n ≤ 3 := by omega
+  have h4 : ¬ n = 4 := by omega
+  have h5 : ¬ n = 5 := by omega
+  have h223 : n ≤ 223 := by omega
+  have hb : Metal.Kernels.GateUpMmaWide.rowBlocks n = ${blocks} := by
+    unfold Metal.Kernels.GateUpMmaWide.rowBlocks
+    ${hb}
+  have hd : downPlan n = ⟨8, ${mt}⟩ := by
+    have key : ∀ m, m < 224 → (${dec}) = true → downPlan m = ⟨8, ${mt}⟩ := by decide
+    refine key n (by omega) ?_
+    simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+    omega
+  dsimp only [gpuFamily]
+  rw [if_neg h3, if_neg h4, if_neg h5, if_neg h9, if_pos h223, hb, hd]
+  rfl`;
+const lo = Math.min(...ivs.map(i => i[0])), hi = Math.max(...ivs.map(i => i[1]));
 await write("Fwd", `import host.route.FamFwd
 import host.route.GpuLoad
 import ${m}.Cert
@@ -134,9 +160,9 @@ set_option autoImplicit false
 namespace Host.Ts.Sim.Compose.VWFirst.${VW}
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
 
-theorem rowN {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) :
+theorem rowN {r : Row} {i : Cls.Inst} (hr : r ∈ ${rowsName}) (hi : InRow r i) :
     ${disj("i.n")} := by
-  simp only [fwdRows, List.mem_cons, List.not_mem_nil, or_false] at hr
+  simp only [${rowsName}, List.mem_cons, List.not_mem_nil, or_false] at hr
   rcases hr with ${rows.map(() => "rfl").join(" | ")}
   all_goals
     obtain ⟨_, x, hx, hq⟩ := hi
@@ -154,7 +180,7 @@ open Host.Ts.Sim.Full (FF mlxOf)
 open Host.Ts.Sim.Lin.Cls (Row InRow)
 open Host.Mlx.SimGraph.Ref (gpuFamily refRows downPlan)
 open Host.Ts.Sim.Compose.VWFirst (firstTailFacts firstTailRows)
-open Host.Ts.Sim.Compose.VWFirst.${VW} (fwdRows)
+open Host.Ts.Sim.Compose.VWFirst.${VW} (${rowsName})
 open Host.Ts.Sim.Compose.VWFirst.${VW}.Sfx (startCore)
 open Host.Load.Run.Tpl
 open Host.Route.PrefGraph
@@ -162,26 +188,11 @@ open Host.Route.PrefGraph
 /-! # The ${chain} group's forward at the bookkeeping -/
 
 theorem plan {n : Nat} (h : ${disj("n")}) :
-    gpuFamily .tail n = some (rowTpl refRows .split (.wide ${blocks} ⟨8, ${mt}⟩) .causal) := by
-  have h9 : ¬ n ≤ 8 := by omega
-  have h3 : ¬ n ≤ 3 := by omega
-  have h4 : ¬ n = 4 := by omega
-  have h5 : ¬ n = 5 := by omega
-  have h223 : n ≤ 223 := by omega
-  have hb : Metal.Kernels.GateUpMmaWide.rowBlocks n = ${blocks} := by
-    unfold Metal.Kernels.GateUpMmaWide.rowBlocks
-    ${hb}
-  have hd : downPlan n = ⟨8, ${mt}⟩ := by
-    have key : ∀ m, m < 224 → (${dec}) = true → downPlan m = ⟨8, ${mt}⟩ := by decide
-    refine key n (by omega) ?_
-    simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-    omega
-  dsimp only [gpuFamily]
-  rw [if_neg h3, if_neg h4, if_neg h5, if_neg h9, if_pos h223, hb, hd]
-  rfl
+    gpuFamily .tail n = some (rowTpl refRows ${term}) := by
+${planBody}
 
-theorem rowFacts {r : Row} {i : Host.Ts.Sim.Lin.Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) :
-    9 ≤ i.n ∧ i.n ≤ 223 ∧ gpuFamily .tail i.n = some (rowTpl refRows .split (.wide ${blocks} ⟨8, ${mt}⟩) .causal) := by
+theorem rowFacts {r : Row} {i : Host.Ts.Sim.Lin.Cls.Inst} (hr : r ∈ ${rowsName}) (hi : InRow r i) :
+    ${lo} ≤ i.n ∧ i.n ≤ ${hi} ∧ gpuFamily .tail i.n = some (rowTpl refRows ${term}) := by
   have key := Host.Ts.Sim.Compose.VWFirst.${VW}.rowN hr hi
   exact ⟨by omega, by omega, plan key⟩
 
@@ -191,9 +202,9 @@ variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContra
 /-- **The ${chain} group's \`hfwd\`.** -/
 theorem hfwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31)
-    (hCr : ∀ r ∈ fwdRows, ∀ i, InRow r i → Cr i.L = cert.carriers) (T : Nat) (tk : Nat → Nat)
-    (htail : ∀ r ∈ fwdRows, r ∈ firstTailRows) :
-    ∀ r ∈ fwdRows, ∀ i, InRow r i → ∀ x y : SegInst FF,
+    (hCr : ∀ r ∈ ${rowsName}, ∀ i, InRow r i → Cr i.L = cert.carriers) (T : Nat) (tk : Nat → Nat)
+    (htail : ∀ r ∈ ${rowsName}, r ∈ firstTailRows) :
+    ∀ r ∈ ${rowsName}, ∀ i, InRow r i → ∀ x y : SegInst FF,
       (startCore 15235 T tk π i).R y (startCore 15235 T tk π i).s0 ⟨(startCore 15235 T tk π i).tab0, []⟩ →
       Host.Ts.Sim.CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
       (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
@@ -205,7 +216,7 @@ theorem hfwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.wei
     of_decide_eq_true (List.all_eq_true.mp ld_params_below p hp)
   exact bodyFwd (P := P) (KR := KR) (NE := NE) (net := net) (env := env) (π := π) cert leaves typed Cr hlt (NB := 15235) (T := T)
     (tk := tk) (Nat.le_refl _) (s := ${T}.s0) (S := ${T}.S0)
-    rfl tab_eq rfl rfl hparam (hCr r hr i hi) h9 h223 (by omega) hf hy hle hg ht hm
+    rfl tab_eq rfl rfl hparam (hCr r hr i hi) (by omega) (by omega) (by omega) (by omega) (by omega) hf hy hle hg ht hm
 
 end ${NS}
 `);

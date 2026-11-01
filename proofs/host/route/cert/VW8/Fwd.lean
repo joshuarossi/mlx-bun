@@ -81,6 +81,6 @@ theorem hfwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.wei
     of_decide_eq_true (List.all_eq_true.mp ld_params_below p hp)
   exact bodyFwd (P := P) (KR := KR) (NE := NE) (net := net) (env := env) (π := π) cert leaves typed Cr hlt (NB := 15235) (T := T)
     (tk := tk) (Nat.le_refl _) (s := PRE_first_tail_x8_r0_suffix.s0) (S := PRE_first_tail_x8_r0_suffix.S0)
-    rfl tab_eq rfl rfl hparam (hCr r hr i hi) h9 h223 (by omega) hf hy hle hg ht hm
+    rfl tab_eq rfl rfl hparam (hCr r hr i hi) (by omega) h223 (by omega) (by omega) (by omega) hf hy hle hg ht hm
 
 end Host.Route.Cert.VW8
