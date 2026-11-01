@@ -1,6 +1,7 @@
 import host.simgraph.prompt.ChooseFamily
 import host.simgraph.prompt.NormalizeX
 import host.mlx.RouteKernel
+import host.simgraph.GenLoadRel
 import host.load.Inputs
 import host.load.run.full.Initial
 namespace Host.Mlx.SimGraph
@@ -12,7 +13,7 @@ A prefill forward's end state read for the family's expected graph (`familyGraph
 the exact-quotient classifier (`clsOfX`):
 
 * `symGraphR`: the template graph with `routeKernelName?` (`symGraphD` reads the decode kernels only).
-* `routeDom NL N0 fixed s`: `tplDom` without `arange`, which the route resolves to data and a template reads as
+* `routeDom NL N0 fixed s`: `exactTplDom` without `arange`, which the route resolves to data and a template reads as
   unsupported. A family reads it as an input.
 * `insOf cells`: the input carriers: the prompt's ids at the node `promptN`, the checkpoint's at the loaded model's, the
   dimension data at `cells`.
@@ -33,7 +34,7 @@ def notArange : Ffi.Prim → Bool
 
 /-- The certificate's domain. -/
 def routeDom (NL N0 : Nat) (fixed : List Int) (s : Ffi.St) (i : Nat) : Bool :=
-  tplDom NL N0 fixed s i && match s.nodes.get i with
+  exactTplDom NL N0 fixed s i && match s.nodes.get i with
     | some nd => notArange nd.prim
     | none => true
 

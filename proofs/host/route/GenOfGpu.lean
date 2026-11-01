@@ -35,7 +35,7 @@ variable {C : M1Max.Contract}
 local notation "Kr" => routeKernel G bytes Pg lseSum lseNumerator
 local notation "Tk" => machTok P Kr NE net env π
 local notation "Je" => entryEnv (Host.Load.Run.Prompt.P.at0 (π.map natV) (machReads T Tk))
-local notation "Fr" => framesP DEC.s0 (π.map natV)
+local notation "FrP" => framesP DEC.s0 (π.map natV)
 local notation "Gx" => machGxV P Kr NE net env π kind 15235 DEC.inputs
 
 /-- Assemble the route of a prompt of at most 224 tokens from the restricted bundles. The remaining premises name the
@@ -50,7 +50,7 @@ noncomputable def routeGenOfGpu
       (postPieces.cuts.b_pB_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2)))
       (postPieces.cuts.b_pC_cut (Lin.Cls.routeI π.length T (Tk 1) (Tk 2))))
     (postHandoff : CutConv (I.dec π.length)
-      (decCutFirstFb 15235 addrPrompt Gx wideP DEC.Pw Fr DEC.s0 DEC.tab0 terminalFixP
+      (decCutFirstFb 15235 addrPrompt Gx wideP DEC.Pw FrP DEC.s0 DEC.tab0 terminalFixP
         (valL (machVal T Tk) T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu))
     (graphA : shortPaths.pA.Goal (goalMV P Kr NE net env π kind 15235 1))
     (graphB2 : shortPaths.pB2.Goal (goalMV P Kr NE net env π kind 15235 2))
@@ -93,10 +93,10 @@ noncomputable def routeGenOfGpu
       W := wideP
       fixA := terminalFixP
       I := I
-      hPw := by decide
+      hPw := by unfold LdParams; decide
       hW := rfl
       hI := loadEntry
-      Fr := Fr
+      Fr := FrP
       s0 := DEC.s0
       tab0 := DEC.tab0
       Itpl := DEC.inputs
