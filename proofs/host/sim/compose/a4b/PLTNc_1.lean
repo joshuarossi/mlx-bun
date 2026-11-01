@@ -5,6 +5,6 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-kernel_rfl PLT.nhandles_0 : ((handlesOfA PLT.x0).take 2000).all (handleOK PLTail.R.data.map PLT.P0.lo PLT.x0 PLT.x1) = true
+kernel_rfl PLT.nhandles_0 : ((handlesOfA PLT.x0).take 2000).all (handleOK PLTP.R.data.map PLT.P0.lo PLT.x0 PLT.x1) = true
 
 end Host.Load.Run.Tpl

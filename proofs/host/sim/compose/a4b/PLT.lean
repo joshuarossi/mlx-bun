@@ -12,12 +12,12 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s4 PRE_pl_tail.S0.tab PRE_pl_common.S4.tab PLTail.R.data PLTail.R.inv PLT.θ PLT.P0 2827718 [ ] where
+theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s4 PRE_pl_tail.S0.tab PLT.tabP PLTP.R.data PLTP.R.inv PLT.θ PLT.P0 2827718 [ ] where
   num := PLT.num
   heap := by
     intro a h ha hm
     obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h ha (fun hf => hm (by rw [PRE_pl_tail.frames_eq] at hf; simpa using hf))
-    have he := PLTail.R.heapAt q hq a haq
+    have he := PLTP.R.heapAt q hq a haq
     rw [ha] at he
     exact he
   fixP := PLT.fixP

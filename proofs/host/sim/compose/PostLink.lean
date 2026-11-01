@@ -1,5 +1,6 @@
 import host.sim.compose.PostChain
 import host.sim.compose.PfLink
+import host.sim.compose.PadTab
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -9,12 +10,13 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 
 /-! # A class's sampled cut at the shared tail
 
-The walked copy (`Pf.PfFacts`) carries the relation; the book crosses through the map's anchors and the walk's values. The
-target and server are kept, and the bookkeeping changes by `hook`, reading the class's carriers through the walk's node map. -/
+The class's table is padded with the template's images. The walked copy (`Pf.PfFacts`) carries the relation; the book crosses through
+the map's anchors and the walk's values. The target and server are kept, and the bookkeeping changes by `hook`, reading the class's
+carriers through the walk's node map. -/
 
 theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
     {D : RData} {inv : PTrie Nat} {θ : Nat → SymE} {P0 : LoadP} {nJ : Nat} {Mem Mem' : SegInst FF → Prop}
-    (F : Pf.PfFacts s0 s1 S0.tab S1.tab D inv θ P0 nJ [])
+    (F : Pf.PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [])
     (hnodes : (mlxOf s1.ffi).nnext ≤ P0.NL)
     (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next) (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext)
     (hcap : cap + (s1.next - s0.next) ≤ capT) (hbound : capT < Sim.bound)
@@ -38,14 +40,18 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
   have hNB : NB ≤ P0.NL := Nat.le_trans top.1.load.mlx.nbl hNL
   have hDK : x.K.D ≤ cap := hb.context.2
   have hD : x.K.D + (s1.next - s0.next) < Sim.bound := by omega
-  have hrel := Pf.pfRel F (π := π) hr hfr hlo hhi hP (Pf.linkRoomSame hr sameH sameN) hNB hD
+  let laws := fullRXD_laws { setupP with rest := machReads T tk } NB
+  obtain ⟨M1, hext, hp⟩ := relB_pad laws.stable laws.mono (S0.tab.map (·.subst θ)) hr.ofJ
+  have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP [] M1 x.ν x.K s1
+      ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
+  have hrel := Pf.pfRel F (π := π) hrP hfr hlo hhi hP (Pf.linkRoomSame hr sameH sameN) hNB hD
   have hoff : x.t.next = s1.next + x.K.D := hr.offset
   have hgrow : s0.next ≤ s1.next := F.grows
-  let y : SegInst FF := ⟨((x.M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
+  let y : SegInst FF := ⟨((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
     Shift.valuation θ x.ν,
-    ⟨dropNext x.M x.K Pf.keepP noFrames s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
-  have hnode : ∀ c, y.M.node c = x.M.node (D.nodeF c) := fun _ => rfl
-  have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := Pf.drop_prompt F x.M x.K
+    ⟨dropNext M1 x.K Pf.keepP noFrames s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
+  have hnode : ∀ c, y.M.node c = x.M.node (D.nodeF c) := fun c => congrFun hext.node (D.nodeF c)
+  have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := Pf.drop_prompt F M1 x.K
   have hvar : ∀ {j : Nat}, θ j = .var j → y.ν j = x.ν j := by
     intro j h
     change (θ j).eval x.ν = _
@@ -86,8 +92,8 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
     · change y.K.fr 2665 = _
       rw [hfrY 2665, if_pos rfl]
       exact hP
-    · change x.M.a (D.a 2590) = 2590
-      rw [hA]
+    · change M1.a (D.a 2590) = 2590
+      rw [hA, hext.a]
       exact hb.emittedAnchor
     · have e : y.M.node nIT = x.M.node nI := by
         rw [hnode, hI]
@@ -95,10 +101,10 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
       change SetupD1Input.InputAt γ (y.M.node nIT) x.t x.C
       rw [e]
       exact hi
-  · change x.M.a (D.a 2586) = 2586 ∧ x.M.a (D.a 2589) = 2589
-    rw [hB, hC]
+  · change M1.a (D.a 2586) = 2586 ∧ M1.a (D.a 2589) = 2589
+    rw [hB, hC, hext.a]
     exact hids
-  · change x.M.a (D.a 12504) = _
-    rw [hE]
+  · change M1.a (D.a 12504) = _
+    rw [hE, hext.a]
 
 end Host.Ts.Sim.Compose.Post

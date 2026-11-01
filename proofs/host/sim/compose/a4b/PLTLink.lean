@@ -12,22 +12,22 @@ open Host.Load.Run.Tpl Host.Ts.Sim.Compose.Pf
 
 The walk leaves the nodes alone and the offset. It moves one variable, and sets three. -/
 
-kernel_rfl pltKeys : (PLTail.R.theta ++ PLT.thetaX).map Prod.fst = [14, 20, 21, 23, 25]
+kernel_rfl pltKeys : (PLTP.R.theta ++ PLT.thetaX).map Prod.fst = [14, 20, 21, 23, 25]
 kernel_rfl plt14 : PLT.θ 14 = .var 17
 kernel_rfl plt20 : (fun ν : Nat → F64 => (PLT.θ 20).eval ν) = fun _ => F64.ofNat 6
 kernel_rfl plt21 : PLT.θ 21 = .bin .add (.var 21) (.lit (F64.ofNat 1))
 kernel_rfl plt23 : (fun ν : Nat → F64 => (PLT.θ 23).eval ν) = fun _ => F64.ofNat 5
 kernel_rfl plt25 : (fun ν : Nat → F64 => (PLT.θ 25).eval ν) = fun _ => F64.ofNat 5
-kernel_rfl pltNN : PLTail.R.data.nn0 = PLTail.R.data.nn1
-kernel_rfl pltNK : PTrie.keys PLTail.R.data.node = []
+kernel_rfl pltNN : PLTP.R.data.nn0 = PLTP.R.data.nn1
+kernel_rfl pltNK : PTrie.keys PLTP.R.data.node = []
 kernel_rfl pltNext : PRE_pl_common.s4.next = PRE_pl_tail.s0.next
 kernel_rfl pltH : (mlxOf PRE_pl_common.s4.ffi).next = (mlxOf PRE_pl_tail.s0.ffi).next
 kernel_rfl pltN : (mlxOf PRE_pl_common.s4.ffi).nnext = (mlxOf PRE_pl_tail.s0.ffi).nnext
 kernel_rfl pltBelow : Nat.ble (mlxOf PRE_pl_common.s4.ffi).nnext PLT.P0.NL = true
-kernel_rfl pltA : PLTail.R.data.a 2590 = 2590
-kernel_rfl pltB : PLTail.R.data.a 2586 = 2586
-kernel_rfl pltC : PLTail.R.data.a 2589 = 2589
-kernel_rfl pltE : PLTail.R.data.a 12504 = 12504
+kernel_rfl pltA : PLTP.R.data.a 2590 = 2590
+kernel_rfl pltB : PLTP.R.data.a 2586 = 2586
+kernel_rfl pltC : PLTP.R.data.a 2589 = 2589
+kernel_rfl pltE : PLTP.R.data.a 12504 = 12504
 
 theorem plt_off {j : Nat} (h : j ≠ 14 ∧ j ≠ 20 ∧ j ≠ 21 ∧ j ≠ 23 ∧ j ≠ 25) : PLT.θ j = .var j :=
   thetaOf_off (by

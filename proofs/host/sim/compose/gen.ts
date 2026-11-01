@@ -1957,11 +1957,11 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
   }
   if (!onlySites.length && !onlyGlues.length && bodyEnd && pfArg) {
     // the step's end at the shared pre-final template: `<link>:<walk>:<template>:<c30>:<c31>`
-    const [PF, PW, PT, c30, c31] = pfArg.split(":") as [string, string, string, string, string];
+    const [PF, PW, PT, c30, c31, pfPad] = pfArg.split(":") as [string, string, string, string, string, string | undefined];
     const endK = chain.T1 as number, endO = Ds.get(stages.length) ?? fail("no end offset");
     const [, , endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
     const rowNames = fwdRowList.join(", ");
-    writeFileSync(join(outDir, "VWPfEnd.lean"), head(["host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
+    writeFileSync(join(outDir, "VWPfEnd.lean"), head([pfPad ? "host.sim.compose.a4b.VWPfPad" : "host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
       `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [11, 14, 16, 30, 31]
 kernel_rfl pf14 : ${PF}.θ 14 = .var 17
 kernel_rfl pf30 : (fun ν : Nat → F64 => (${PF}.θ 30).eval ν) = fun _ => F64.ofNat ${c30}
@@ -2001,7 +2001,7 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
   have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPf (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK pfNext pfH pfNodes
+  exact ${pfPad ? "toPfPad" : "toPf"} (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK pfNext pfH pfNodes
     (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]
@@ -2398,7 +2398,7 @@ function genPostLink(args: string[]) {
   // one module per kind of whole-state check: a single check can need more memory than the rest together
   const kchecks: string[][] = [[
     ...(pad ? [
-    "kernel_rfl N.numAll : numPadB " + D + " " + S1 + ".tab.length " + tab0 + ".length N.numAt = true"] : [
+    "kernel_rfl N.numAll : numPadB " + D + " N.\u03B8 " + tab0 + " " + S1 + ".tab N.numAt = true"] : [
     "kernel_rfl N.numId : numIdB " + D + " " + nHead + " = true",
     "kernel_rfl N.numHead : (" + tab0 + ".take " + nHead + ").map (\u00B7.subst N.\u03B8) = " + S1 + ".tab.take " + nHead,
     "kernel_rfl N.numTail : (List.range' " + nHead + " (" + tab0 + ".length - " + nHead + ")).all N.numAt = true"]),
