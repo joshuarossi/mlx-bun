@@ -23,18 +23,6 @@ offset 0 and its rows at its own variable `x`.
 * `rowStep_of_matches`: from that match, the inputs and the plain kernels, the forward's output handles at their carriers
   (`rowStep_values` without a `FamilyTemplate`). -/
 
-/-- The terms at the rows' variable. -/
-def rowsTerms (x : Nat) (ts : List (Int × Nat)) : List (Int × Nat) :=
-  ts.filterMap fun t => if t.2 = 1 then some (t.1, x) else none
-
-/-- A reference dimension at offset `0` and the rows at variable `x`. -/
-def rowsAt (x : Nat) : PDim → PDim
-  | .lit i => .lit i
-  | .lin c ts => Aff.toP ⟨c, rowsTerms x ts⟩
-  | .fdiv d k => .fdiv (rowsAt x d) k
-  | .cdiv d k => .cdiv (rowsAt x d) k
-  | .rup k d => .rup k (rowsAt x d)
-
 theorem termsEval_rowsTerms (ν : Nat → Int) (x n : Nat) (hx : ν x = n) :
     ∀ ts : List (Int × Nat), termsEval ν (rowsTerms x ts) = termsEval (refNu 0 n) ts
   | [] => rfl

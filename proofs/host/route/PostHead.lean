@@ -8,7 +8,7 @@ set_option maxHeartbeats 0
 set_option Elab.async false
 set_option autoImplicit false
 namespace Host.Route.PostHead
-open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Compose
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Compose Host.Ts.Sim.Template
 open Host.Load.Run.Tpl
 
 /-- The generated selector reaches the actual head call and retains the original prompt book. -/

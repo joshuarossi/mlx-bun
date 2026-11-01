@@ -13,9 +13,12 @@ noncomputable abbrev PLD1.y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.to
 noncomputable abbrev PLD1.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad D1Body.s155.ffi)
 noncomputable abbrev PLD1.x0 : NSt := PLD1.y0.mlx
 noncomputable abbrev PLD1.x1 : NSt := PLD1.y1.mlx
-noncomputable def PLD1.thetaX : List (Nat × SymE) := []
+noncomputable def PLD1.thetaX : List (Nat × SymE) := [(40, (nth? D1Body.S155.tab 39).getD (.var 0)), (41, (nth? D1Body.S155.tab 95).getD (.var 0)), (42, (nth? D1Body.S155.tab 2754).getD (.var 0))]
 noncomputable def PLD1.θ : Nat → SymE := thetaOf (PLWalkD1.R.theta ++ PLD1.thetaX)
-noncomputable def PLD1.numAt (i : Nat) : Bool := match nth? PRE_pl_entry.S0.tab i with
+noncomputable def PLD1.tabV : List SymE := (PRE_pl_entry.S0.tab.take 3190) ++ [.var 40, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 41, .var 42, .var 41, .var 42, .var 42, .var 42, .var 41, .var 42, .var 42, .var 42, .var 41, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 16, .var 21, .var 22, .var 24, .var 26, .var 26, .var 26, .var 26, .var 26]
+def PLD1.renV : List Nat := [40, 41, 42]
+def PLD1.renE : List SymE := [.var 11, .var 11, .var 11]
+noncomputable def PLD1.numAt (i : Nat) : Bool := match nth? PLD1.tabV i with
   | some e => decide ((⟨D1Body.S155.tab, []⟩ : SSrv).val (PLWalkD1.R.data.map.num i) = some (e.subst PLD1.θ))
   | none => true
 

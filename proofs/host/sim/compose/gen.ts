@@ -2184,11 +2184,27 @@ function genPostLink(args: string[]) {
   const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
   const framesLit = take("--frames") ?? "[2673479, 2673484, 2673485, 2665]";
   const dropList = take("--drop");
-  const thetaExtra = take("--theta-extra") ?? "";
+  let thetaExtra = take("--theta-extra") ?? "";
   const a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
   const tm = JSON.parse(readFileSync(join(streams, "Host.Load.Run.Tpl." + T, "template.json"), "utf8"));
+  // A place's variable can sit on source terms of several forms with one value. The link's table gives each form
+  // its own variable (`N.tabV`), and `RelB.decanon` renames them back at the end (`N.tabEq`).
+  const formsOf = new Map<number, Map<string, { fresh: number; ref: number }>>();
+  let nextFresh = 40;
+  for (const e of tm.entries as { var: number; orig: string }[]) {
+    const m = e.orig.match(/^ref(\d+)=(.*)$/);
+    if (!m) continue;
+    const g = formsOf.get(e.var) ?? new Map();
+    if (!g.has(m[2]!)) g.set(m[2]!, { fresh: 0, ref: +m[1]! });
+    formsOf.set(e.var, g);
+  }
+  const renamed: { fresh: number; v: number; ref: number }[] = [];
+  for (const [v, g] of formsOf) if (g.size > 1) for (const f of g.values()) { f.fresh = nextFresh++; renamed.push({ fresh: f.fresh, v, ref: f.ref }); }
+  const needsV = renamed.length > 0;
   const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
   const chunk = 2000, s0 = T + ".s0", S0 = T + ".S0", s1 = X + ".s" + Ti, S1 = X + ".S" + Ti;
+  if (needsV) thetaExtra = [thetaExtra, ...renamed.map(r => "(" + r.fresh + ", (nth? " + S1 + ".tab " + r.ref + ").getD (.var 0))")].filter(x => x).join(", ");
+  const tab0 = needsV ? name + ".tabV" : S0 + ".tab";
   const mlx = (s: string) => "(Host.Load.Layers.toLoad " + s + ".ffi).mlx";
   const head = (...imps: string[]) => imps.map(i => "import " + i + NL).join("") +
     "set_option Elab.async false" + NL + "namespace Host.Load.Run.Tpl" + NL +
@@ -2306,7 +2322,8 @@ function genPostLink(args: string[]) {
   const ps = chunked("prims", "fullKeysF " + P + " " + x0, st.nnext, "map", l =>
     "(" + l + ").map (fun i => (" + x1 + ".nodes.get (" + sg + ".node i)).map Host.Mlx.Ffi.Node.prim) =" + NL + "  (" + l + ").map (fun i => (" + x0 + ".nodes.get i).map fun nd => " + sg + ".prim nd.prim)");
   // the template's table starts with the state's (one pass); only its new entries are looked up
-  const nHead = Math.min(...(tm.entries as { ref: number }[]).map(e => e.ref));
+  const entries = (tm.entries as { ref: number; var: number; orig: string }[]).slice().sort((a, b) => a.ref - b.ref);
+  const nHead = entries[0]!.ref;
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
     "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
   put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", "host.sim.compose.PfLink") +
@@ -2317,7 +2334,14 @@ function genPostLink(args: string[]) {
     "noncomputable abbrev " + x1 + " : NSt := " + name + ".y1.mlx" + NL +
     "noncomputable def " + name + ".thetaX : List (Nat \u00D7 SymE) := [" + thetaExtra + "]" + NL +
     "noncomputable def " + name + ".\u03B8 : Nat \u2192 SymE := thetaOf (" + R + ".theta ++ " + name + ".thetaX)" + NL +
-    "noncomputable def " + name + ".numAt (i : Nat) : Bool := match nth? " + S0 + ".tab i with" + NL +
+    (needsV ? "noncomputable def " + name + ".tabV : List SymE := (" + S0 + ".tab.take " + entries[0]!.ref + ") ++ [" + entries.map(e => {
+      const m = e.orig.match(/^ref(\d+)=(.*)$/);
+      const f = m && formsOf.get(e.var)!.get(m[2]!);
+      return ".var " + (f && f.fresh ? f.fresh : e.var);
+    }).join(", ") + "]" + NL +
+      "def " + name + ".renV : List Nat := [" + renamed.map(r => r.fresh).join(", ") + "]" + NL +
+      "def " + name + ".renE : List SymE := [" + renamed.map(r => ".var " + r.v).join(", ") + "]" + NL : "") +
+    "noncomputable def " + name + ".numAt (i : Nat) : Bool := match nth? " + tab0 + " i with" + NL +
     "  | some e => decide ((\u27E8" + S1 + ".tab, []\u27E9 : SSrv).val (" + sg + ".num i) = some (e.subst " + name + ".\u03B8))" + NL +
     "  | none => true" + NL + NL + [
     ck("nh0", D + ".nh0 = " + x0 + ".next"), ck("nh1", D + ".nh1 = " + x1 + ".next"), ck("nn0", D + ".nn0 = " + x0 + ".nnext"),
@@ -2363,9 +2387,12 @@ function genPostLink(args: string[]) {
   // one module per kind of whole-state check: a single check can need more memory than the rest together
   const kchecks: string[][] = [[
     "kernel_rfl N.numId : numIdB " + D + " " + nHead + " = true",
-    "kernel_rfl N.numHead : (" + S0 + ".tab.take " + nHead + ").map (\u00B7.subst N.\u03B8) = " + S1 + ".tab.take " + nHead,
-    "kernel_rfl N.numTail : (List.range' " + nHead + " (" + S0 + ".tab.length - " + nHead + ")).all N.numAt = true",
-    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + S0 + ".tab, []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true :=",
+    "kernel_rfl N.numHead : (" + tab0 + ".take " + nHead + ").map (\u00B7.subst N.\u03B8) = " + S1 + ".tab.take " + nHead,
+    "kernel_rfl N.numTail : (List.range' " + nHead + " (" + tab0 + ".length - " + nHead + ")).all N.numAt = true",
+    ...(needsV ? [
+      "kernel_rfl N.tabLen : " + tab0 + ".length = " + T + ".n",
+      "kernel_rfl N.tabEq : " + tab0 + ".map (\u00B7.subst (Conv.compact\u03B8 N.renV N.renE)) = " + S0 + ".tab"] : []),
+    "theorem N.num : checkNum " + sg + " N.\u03B8 \u27E8" + tab0 + ", []\u27E9 \u27E8" + S1 + ".tab, []\u27E9 = true :=",
     "  checkNum_split N.numId N.numHead N.numTail (fun i e he h => by",
     "    unfold N.numAt at h",
     "    rw [he] at h",
@@ -2406,7 +2433,7 @@ function genPostLink(args: string[]) {
   kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, ...(j === 0 ? ["host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
-      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
+      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
@@ -2438,11 +2465,11 @@ function genPostLink(args: string[]) {
     "  stack := N.stack",
     "  jobs := N.jobs",
     "  stores := N.stores",
-    "  heapSupp := by rw [" + T + ".tab_len]; exact " + T + ".heapSupp",
-    "  ctlSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.1",
-    "  stackSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.1",
-    "  jobsSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.2.1",
-    "  storesSupp := by rw [" + T + ".tab_len]; exact " + T + ".rootsSupp.2.2.2",
+    "  heapSupp := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact " + T + ".heapSupp",
+    "  ctlSupp := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact " + T + ".rootsSupp.1",
+    "  stackSupp := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact " + T + ".rootsSupp.2.1",
+    "  jobsSupp := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact " + T + ".rootsSupp.2.2.1",
+    "  storesSupp := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact " + T + ".rootsSupp.2.2.2",
     "  band := N.band",
     "  nh0 := Nat.le_of_ble_eq_true N.nh0le",
     "  intr := by",
@@ -2450,7 +2477,7 @@ function genPostLink(args: string[]) {
     "    have := N.intr",
     "    simp only [List.all_eq_true, List.mem_range, Nat.beq_eq] at this",
     "    exact this a ha",
-    "  shift := by rw [" + T + ".tab_len]; exact N.fullShift",
+    "  shift := by rw [" + (needsV ? "N.tabLen" : T + ".tab_len") + "]; exact N.fullShift",
     "  inactive := N.inactive",
     "  raised := .inr \u27E8" + st.nnext + ", rfl, by decide, rfl\u27E9",
     "  bigs := by",

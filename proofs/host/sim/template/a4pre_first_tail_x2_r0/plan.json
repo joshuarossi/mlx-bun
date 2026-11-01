@@ -4,18 +4,24 @@
  "glue": [
   "g0a",
   "g0b",
-  "g1_DTtail_first"
+  "g1_DTtail_first",
+  "g2_first"
  ],
  "stages": [
   {
    "fn": "chunkSize",
    "piece": "chunk",
-   "name": "chunk_K2048"
+   "name": "chunk_K8"
   },
   {
    "fn": "nextPrefillStep",
    "piece": "nps",
    "name": "nps_DTtail_first"
+  },
+  {
+   "fn": "prompt",
+   "piece": "disp",
+   "name": "disp_V4"
   }
  ],
  "stop": "call:#2671718",
@@ -36,7 +42,7 @@
   ],
   [
    2673467,
-   1087
+   1008
   ]
  ],
  "baseVals": [

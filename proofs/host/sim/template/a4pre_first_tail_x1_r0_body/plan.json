@@ -1,0 +1,72 @@
+{
+ "row": "first_tail_x1.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "stages": [
+  {
+   "fn": "appendWindow",
+   "piece": "kvW"
+  },
+  {
+   "fn": "recurWindow",
+   "piece": "ssmW"
+  },
+  {
+   "fn": "plan",
+   "piece": "plan"
+  },
+  {
+   "fn": "rowBlocks",
+   "piece": "rowBlocks"
+  }
+ ],
+ "bridges": [
+  "size"
+ ],
+ "stop": "ret",
+ "chunk": 3333,
+ "frames": [
+  2665,
+  2673467,
+  2673472,
+  2673473
+ ],
+ "baseVals": [
+  [
+   9,
+   3
+  ],
+  [
+   10,
+   2
+  ]
+ ],
+ "vars": [
+  [
+   9,
+   "L"
+  ],
+  [
+   10,
+   "n"
+  ]
+ ],
+ "wide": [
+  [
+   4910,
+   ".memo []"
+  ]
+ ],
+ "accept": "jsjxs",
+ "D0": 4096,
+ "startTokens": [
+  1,
+  2
+ ],
+ "loadP": [
+  18151,
+  131072,
+  1099511627776,
+  15235,
+  15235
+ ]
+}

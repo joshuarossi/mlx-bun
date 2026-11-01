@@ -4,7 +4,7 @@ set_option maxHeartbeats 0
 set_option Elab.async false
 set_option autoImplicit false
 namespace Host.Route.Cert.VW15
-open Host.Ts Host.Ts.Sim Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Load.Run.Tpl Host.Route.PrefGraph
+open Host.Ts Host.Ts.Sim Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Load.Run.Tpl
 
 /-! # The x15 forward's certificate: every node of the family's graph at its carrier -/
 

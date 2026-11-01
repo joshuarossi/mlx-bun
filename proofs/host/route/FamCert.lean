@@ -125,18 +125,8 @@ theorem ffiGraphR_key {κ κ' : Type} (f : κ → κ') (N : Nums Int) (S : Kerne
 
 /-! ## The checks -/
 
-/-- Two equal numbers. -/
-def sameNum : NumV → NumV → Bool
-  | .ref i, .ref j => i == j
-  | _, _ => false
-
 theorem sameNum_eq {a b : NumV} (h : sameNum a b = true) : a = b := by
   cases a <;> cases b <;> simp_all [sameNum]
-
-/-- A byte of an int32 cell. -/
-def cellAt (i : Nat) : Byte → Option NumV
-  | .part .i32 (.num a) j => if j = i then some a else none
-  | _ => none
 
 theorem cellAt_eq {i : Nat} {b : Byte} {a : NumV} (h : cellAt i b = some a) : b = .part .i32 (.num a) i := by
   unfold cellAt at h
@@ -148,15 +138,6 @@ theorem cellAt_eq {i : Nat} {b : Byte} {a : NumV} (h : cellAt i b = some a) : b 
       rw [hj]
     · cases h
   · cases h
-
-/-- The numbers a dimension data node's bytes hold. -/
-def cellsNums : List Byte → Option (List NumV)
-  | [] => some []
-  | b0 :: b1 :: b2 :: b3 :: r => match cellAt 0 b0, cellAt 1 b1, cellAt 2 b2, cellAt 3 b3 with
-    | some a, some a1, some a2, some a3 =>
-      if sameNum a a1 && sameNum a a2 && sameNum a a3 then (cellsNums r).map (a :: ·) else none
-    | _, _, _, _ => none
-  | _ => none
 
 theorem cellsNums_eq : ∀ (b : List Byte) (xs : List NumV), cellsNums b = some xs → b = cellsHostBytes xs
   | [], xs, h => by
@@ -193,43 +174,6 @@ theorem cellsNums_eq : ∀ (b : List Byte) (xs : List NumV), cellsNums b = some 
       rw [cellAt_eq h0, cellAt_eq h1, cellAt_eq h2, cellAt_eq h3, cellsNums_eq r xs' hr]
       rfl
     · cases h
-
-/-- A family's dimension input: its carrier holds the cells, as the chain reads them at variable `x`. -/
-def cellKeyOk (x : Nat) (S : SSrv) (B : Box) (fixed : List Int) (s : Ffi.St) (ins : SimGraph.PKey → Option Nat) :
-    SimGraph.PKey → Bool
-  | .cells p j vals shape => match ins (.cells p j vals shape) with
-    | some c => routeDom 15235 15235 fixed s c && match s.nodes.get c with
-      | some nd => match nd.prim with
-        | .data b => match cellsNums b with
-          | some xs => nd.ins.isEmpty && decide (nd.dtype = Ffi.dtInt32) &&
-              decide (xs.mapM (clsOfX S B) = some (vals.map (rowsAt x))) &&
-              decide (nd.shape.mapM (symNumsD (clsOfX S B) PDim.lit).d = some (shape.map (rowsAt x)))
-          | none => false
-        | _ => false
-      | none => false
-    | none => false
-  | .iota _ _ _ => false
-  | _ => true
-
-/-- Node `k`'s dimension input is held. -/
-def cellNodeOk (x : Nat) (S : SSrv) (B : Box) (fixed : List Int) (s : Ffi.St) (ins : SimGraph.PKey → Option Nat)
-    (_ : Nat) (e : RNode PDim SimGraph.PKey) : Bool :=
-  match e.prim with
-  | .input key => cellKeyOk x S B fixed s ins key
-  | _ => true
-
-/-- Node `k`'s kernel is at its carrier unreplayed. -/
-def plainKOk (G : Nat → Option (RNode PDim SimGraph.PKey)) (cert : List Nat) (k : Nat) (e : RNode PDim SimGraph.PKey) : Bool :=
-  match e.prim with
-  | .kernel _ _ _ => match G (certAt cert k) with
-    | some r => decide (r.prim = e.prim)
-    | none => false
-  | _ => true
-
-/-- Node `k`'s kernel is plain and its dimension input held. -/
-def extraOk (G : Nat → Option (RNode PDim SimGraph.PKey)) (cert : List Nat) (x : Nat) (S : SSrv) (B : Box) (fixed : List Int)
-    (s : Ffi.St) (ins : SimGraph.PKey → Option Nat) (k : Nat) (e : RNode PDim SimGraph.PKey) : Bool :=
-  plainKOk G cert k e && cellNodeOk x S B fixed s ins k e
 
 /-- An attention layout before any step. -/
 def coldLayout : StageLayout → Bool
@@ -308,10 +252,6 @@ theorem handlesOf_length : ∀ (ws : List StageWeights) (cs : List (Value × Val
   | _ :: _, [], _, e => by cases ‹StageWeights› <;> simp [handlesOf] at e
 
 /-! ## A forward's certificate -/
-
-/-- The chain's end graph, on the certificate's domain. -/
-noncomputable def famGs (s : Ffi.St) (S : SSrv) (B : Box) (fixed : List Int) : Nat → Option (RNode PDim SimGraph.PKey) :=
-  restrictTo (routeDom 15235 15235 fixed s) (symGraphR (clsOfX S B) PDim.lit SourceKernels.sources s)
 
 /-- **A first forward's certificate**: the family's graph at the cold layout, as the chain reads it at its rows' variable
 `x`, on the template `s` at the forward's return. Generated, kernel-checked. -/

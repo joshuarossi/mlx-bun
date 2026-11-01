@@ -1,6 +1,7 @@
 import host.sim.compose.PostGlue
 import host.sim.compose.a4b.PLD1
 import host.sim.compose.PfLink
+import host.sim.conv.Decanon
 import host.sim.compose.a4b.D1BodyFill
 import host.sim.template.a4pre_pl_head.Origin
 import host.sim.template.a4pre_pl_head.Run
@@ -33,8 +34,11 @@ kernel_rfl θ21 : (fun ν : Nat → F64 => (PLD1.θ 21).eval (upd ν 9 (F64.ofNa
 kernel_rfl θ22 : (fun ν : Nat → F64 => (PLD1.θ 22).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 4
 kernel_rfl θ24 : (fun ν : Nat → F64 => (PLD1.θ 24).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 4
 kernel_rfl θ26 : (fun ν : Nat → F64 => (PLD1.θ 26).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 1
+kernel_rfl θ40 : (fun ν : Nat → F64 => (PLD1.θ 40).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 1
+kernel_rfl θ41 : (fun ν : Nat → F64 => (PLD1.θ 41).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 1
+kernel_rfl θ42 : (fun ν : Nat → F64 => (PLD1.θ 42).eval (upd ν 9 (F64.ofNat 1))) = fun _ => F64.ofNat 1
 kernel_rfl θ14 : PLD1.θ 14 = .var 17
-kernel_rfl θKeys : (PLWalkD1.R.theta ++ PLD1.thetaX).map Prod.fst = [10, 11, 14, 16, 21, 22, 24, 26]
+kernel_rfl θKeys : (PLWalkD1.R.theta ++ PLD1.thetaX).map Prod.fst = [10, 11, 14, 16, 21, 22, 24, 26, 40, 41, 42]
 kernel_rfl anchorA : PLWalkD1.R.data.a 2590 = 2590
 kernel_rfl anchorB : PLWalkD1.R.data.a 2586 = 2586
 kernel_rfl anchorC : PLWalkD1.R.data.a 2589 = 2589
@@ -51,9 +55,9 @@ private theorem entryValuation {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : �
     VBOkF loopVB (Shift.valuation PLD1.θ ν) := by
   intro j
   change ∃ k ≤ 2 ^ 20, Shift.valuation PLD1.θ ν j = F64.ofNat k
-  by_cases hj : j ∈ [10, 11, 14, 16, 21, 22, 24, 26]
+  by_cases hj : j ∈ [10, 11, 14, 16, 21, 22, 24, 26, 40, 41, 42]
   · simp only [List.mem_cons, List.not_mem_nil, or_false] at hj
-    rcases hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    rcases hj with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
     · exact ⟨1, by decide, θat h9 θ10⟩
     · exact ⟨1, by decide, θat h9 θ11⟩
     · have h17 := hv 17
@@ -68,6 +72,9 @@ private theorem entryValuation {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : �
     · exact ⟨4, by decide, θat h9 θ22⟩
     · exact ⟨4, by decide, θat h9 θ24⟩
     · exact ⟨1, by decide, θat h9 θ26⟩
+    · exact ⟨1, by decide, θat h9 θ40⟩
+    · exact ⟨1, by decide, θat h9 θ41⟩
+    · exact ⟨1, by decide, θat h9 θ42⟩
   · have hθ : PLD1.θ j = .var j := Pf.thetaOf_off (by rw [θKeys]; exact hj)
     have h := hv j
     change ∃ k ≤ 2 ^ 20, ν j = F64.ofNat k at h
@@ -103,9 +110,29 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
     rw [hsame]
     simp only [Sim.bound]
     omega
-  have hrel := Pf.pfRel PLD1.facts (π := ρ) hr hfrK hlo hhi hP
-    (Pf.linkRoomSame hr sameHandles sameNodes) hNB hD
   have h9 : x.ν 9 = F64.ofNat 1 := hfb.singleton
+  have hrelV := Pf.pfRel PLD1.facts (π := ρ) hr hfrK hlo hhi hP
+    (Pf.linkRoomSame hr sameHandles sameNodes) hNB hD
+  have hdef : ∀ j v e, nth? PLD1.renV j = some v → nth? PLD1.renE j = some e →
+      Shift.valuation PLD1.θ x.ν v = e.eval (Shift.valuation PLD1.θ x.ν) := by
+    intro j v e hv he
+    match j, hv, he with
+    | 0, hv, he =>
+      obtain rfl : 40 = v := Option.some.inj hv
+      obtain rfl : SymE.var 11 = e := Option.some.inj he
+      exact (θat h9 θ40).trans (θat h9 θ11).symm
+    | 1, hv, he =>
+      obtain rfl : 41 = v := Option.some.inj hv
+      obtain rfl : SymE.var 11 = e := Option.some.inj he
+      exact (θat h9 θ41).trans (θat h9 θ11).symm
+    | 2, hv, he =>
+      obtain rfl : 42 = v := Option.some.inj hv
+      obtain rfl : SymE.var 11 = e := Option.some.inj he
+      exact (θat h9 θ42).trans (θat h9 θ11).symm
+    | j + 3, hv, _ => cases hv
+  have hrel := Host.Ts.Sim.RelB.decanon hrelV hdef
+  change RelB FF _ _ [] _ _ _ _ ⟨PLD1.tabV.map (·.subst (Conv.compactθ PLD1.renV PLD1.renE)), []⟩ _ _ at hrel
+  rw [PLD1.tabEq] at hrel
   have hlen : ρ.length = 1 := hfb.length
   have hoff : x.t.next = D1Body.s155.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((x.M.after PLWalkD1.R.data.map).rebig (mlxOf PRE_pl_entry.s0.ffi).next setupP.E

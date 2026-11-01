@@ -5,7 +5,7 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
 namespace Host.Ts.Sim.Compose.Post
-open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Route
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Load.Run.Tpl
 
 /-- A wider offset bound keeps the book. -/

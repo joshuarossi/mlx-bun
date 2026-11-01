@@ -11,7 +11,7 @@
   {
    "fn": "chunkSize",
    "piece": "chunk",
-   "name": "chunk_K2048"
+   "name": "chunk_K8"
   },
   {
    "fn": "nextPrefillStep",
@@ -42,13 +42,13 @@
   ],
   [
    2673467,
-   1087
+   1008
   ]
  ],
  "baseVals": [
   [
    9,
-   4
+   3
   ]
  ],
  "vars": [

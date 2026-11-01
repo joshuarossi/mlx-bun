@@ -12,7 +12,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 [D1Frames.chunk, D1Frames.buffer, D1Frames.view] where
+theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PLD1.tabV D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 [D1Frames.chunk, D1Frames.buffer, D1Frames.view] where
   num := PLD1.num
   heap := by
     intro a h ha hm
@@ -41,11 +41,11 @@ theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab 
   stack := PLD1.stack
   jobs := PLD1.jobs
   stores := PLD1.stores
-  heapSupp := by rw [PRE_pl_entry.tab_len]; exact PRE_pl_entry.heapSupp
-  ctlSupp := by rw [PRE_pl_entry.tab_len]; exact PRE_pl_entry.rootsSupp.1
-  stackSupp := by rw [PRE_pl_entry.tab_len]; exact PRE_pl_entry.rootsSupp.2.1
-  jobsSupp := by rw [PRE_pl_entry.tab_len]; exact PRE_pl_entry.rootsSupp.2.2.1
-  storesSupp := by rw [PRE_pl_entry.tab_len]; exact PRE_pl_entry.rootsSupp.2.2.2
+  heapSupp := by rw [PLD1.tabLen]; exact PRE_pl_entry.heapSupp
+  ctlSupp := by rw [PLD1.tabLen]; exact PRE_pl_entry.rootsSupp.1
+  stackSupp := by rw [PLD1.tabLen]; exact PRE_pl_entry.rootsSupp.2.1
+  jobsSupp := by rw [PLD1.tabLen]; exact PRE_pl_entry.rootsSupp.2.2.1
+  storesSupp := by rw [PLD1.tabLen]; exact PRE_pl_entry.rootsSupp.2.2.2
   band := PLD1.band
   nh0 := Nat.le_of_ble_eq_true PLD1.nh0le
   intr := by
@@ -53,7 +53,7 @@ theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab 
     have := PLD1.intr
     simp only [List.all_eq_true, List.mem_range, Nat.beq_eq] at this
     exact this a ha
-  shift := by rw [PRE_pl_entry.tab_len]; exact PLD1.fullShift
+  shift := by rw [PLD1.tabLen]; exact PLD1.fullShift
   inactive := PLD1.inactive
   raised := .inr ⟨17764, rfl, by decide, rfl⟩
   bigs := by

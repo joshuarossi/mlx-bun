@@ -5,6 +5,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
+-- plan revision 2: the early chunk class's length variable
 
 open Lean Host.Ts Host.Ts.Sim.Template Host.Load Host.Mlx in
 def PRE_first_tail_x3_r0.ser (p : FS) : Stream.GenM Lean.Expr := do
