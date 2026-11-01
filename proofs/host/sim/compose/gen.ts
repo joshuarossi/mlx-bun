@@ -2435,7 +2435,7 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.band : " + D + ".checkBand 18151 = true",
     "kernel_rfl N.nh0le : Nat.ble 18151 " + D + ".nh0 = true",
     "kernel_rfl N.intr : (List.range 40).all (fun a => Nat.beq (" + D + ".a a) a) = true",
-    "kernel_rfl N.inactive : (bridgeOf " + s0 + ".ffi).active = false",
+    "theorem N.inactive : (bridgeOf " + s0 + ".ffi).active = false := Host.Load.Boot.replay_active _",
     "kernel_rfl N.lo : Nat.ble 18151 " + fq(s0) + ".next = true",
     "kernel_rfl N.hi0 : Nat.ble " + fq(s0) + ".next setupP.E = true",
     "kernel_rfl N.nhi0 : Nat.ble " + fq(s0) + ".nnext setupP.NE = true",
@@ -2443,7 +2443,7 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
     "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
-  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
+  kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, "host.load.boot.World", ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
       ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"

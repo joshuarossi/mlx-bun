@@ -1,3 +1,4 @@
+import host.load.boot.World
 import host.sim.compose.a4b.PF3Na
 import host.sim.template.a4pre_first_tail_x3_r0_suffix.m.B0
 set_option Elab.async false
@@ -9,7 +10,7 @@ set_option maxHeartbeats 0
 kernel_rfl PF3.band : PFW3.R.data.checkBand 18151 = true
 kernel_rfl PF3.nh0le : Nat.ble 18151 PFW3.R.data.nh0 = true
 kernel_rfl PF3.intr : (List.range 40).all (fun a => Nat.beq (PFW3.R.data.a a) a) = true
-kernel_rfl PF3.inactive : (bridgeOf PRE_pf_vw.s0.ffi).active = false
+theorem PF3.inactive : (bridgeOf PRE_pf_vw.s0.ffi).active = false := Host.Load.Boot.replay_active _
 kernel_rfl PF3.lo : Nat.ble 18151 (Host.Ts.Sim.Full.mlxOf PRE_pf_vw.s0.ffi).next = true
 kernel_rfl PF3.hi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pf_vw.s0.ffi).next setupP.E = true
 kernel_rfl PF3.nhi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pf_vw.s0.ffi).nnext setupP.NE = true

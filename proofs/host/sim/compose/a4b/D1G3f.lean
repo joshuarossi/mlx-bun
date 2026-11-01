@@ -211,7 +211,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
 
 kernel_rfl headBridge : bridgeOf PRE_pl_head.s1.ffi = bridgeOf PRE_pl_head.s0.ffi
 kernel_rfl headTop : noRetBlock PRE_pl_head.s1 = true
-kernel_rfl headInactive : (bridgeOf PRE_pl_head.s0.ffi).active = false
+theorem headInactive : (bridgeOf PRE_pl_head.s0.ffi).active = false := Host.Load.Boot.replay_active _
 kernel_rfl headCnt : countersOkB PRE_pl_head.s0 PRE_pl_head.s1 = true
 
 noncomputable def g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320)

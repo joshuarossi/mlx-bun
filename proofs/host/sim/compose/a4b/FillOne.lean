@@ -12,7 +12,7 @@ set_option autoImplicit false
 namespace Host.Ts.Sim.Compose.FillPost
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Ts.Sim.Compose.Post
 open Host.Load.Run.Tpl Host.Route Host.Route.PrefGraph Host.Route.Cert
-open Host.Load Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph
+open Host.Load Host.Load.Extract Host.Load.Program Host.Load.Run.Full Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Mlx.SimGraph
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 
 /-! # POST's bookkeeping
@@ -53,7 +53,7 @@ theorem memOne_enter {Kept : Nat → List (Nat × Nat)} {Kn : Nat → Nat} {L : 
 
 theorem memOne_keep {Kept : Nat → List (Nat × Nat)} {Kn : Nat → Nat} {L : Nat} {x y : SegInst FF} (h : NTrackV x y)
     (hm : memOne0 P KR NE net env π Kept Kn L x) : memOne0 P KR NE net env π Kept Kn L y :=
-  ⟨⟨memFin_keep L x y h.toNTrack hm.1.1, h.emit.trans hm.1.2⟩, h.val.trans hm.2⟩
+  ⟨⟨memFin_keep L x y h.toNTrack hm.1.1, h.emit.trans hm.1.2⟩, (congrFun h.val 21).trans hm.2⟩
 
 end
 
@@ -66,7 +66,7 @@ variable {C : M1Max.Contract} {P : MlxPrefillContract C} {KR : RouteKernelContra
 /-- **The one-token prompt's hooks.** -/
 noncomputable def hooksOne {P : MlxPrefillContract C} (ha : a < 248320) (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (hRT : ∀ tab, Host.Mlx.SimGraph.Mach.RefTokens P KR NE KR.inPlace net env [a] tab)
-    (Kept : Nat → List (Nat × Nat)) (hKept : Kept 1 = One.oneKept) (Kn : Nat → Nat) (hKn : Kn 1 = 4010)
+    (Kept : Nat → List (Nat × Nat)) (hKept : Kept 1 = oneKept) (Kn : Nat → Nat) (hKn : Kn 1 = 4010)
     (hNB : 15235 ≤ NB) (hbound : cap < Sim.bound) (hcap : cap ≤ 4096 + 1593835520) (hT : 1 ≤ T)
     (htkR : ∀ tab j, j < T → ∃ hs, Host.Mlx.SimGraph.Mach.refPrompt P KR NE KR.inPlace net env [a] tab ([a].length + j) = some (tk (j + 1), hs))
     (htk1 : tk 1 < 2 ^ 31) :
@@ -77,7 +77,7 @@ noncomputable def hooksOne {P : MlxPrefillContract C} (ha : a < 248320) (leaves 
   hMP _ _ _ _ h hm := memP_keep h hm
   hsmp L x y hy htr hm :=
     ⟨⟨One.hsmp P KR NE net env a ha leaves typed hRT (Row.rowCr 0) One.rowCr_one Kept hKept Kn hKn Row.rowToks One.rowToks_one hNB hy L
-        (memFin_keep L x y htr.toNTrack hm.1.1), htr.emit.trans hm.1.2⟩, htr.val.trans hm.2⟩
+        (memFin_keep L x y htr.toNTrack hm.1.1), htr.emit.trans hm.1.2⟩, (congrFun htr.val 21).trans hm.2⟩
   hlink _ := hlinkOne hbound (fun _ hm => ⟨4, by decide, hm.2⟩)
     (fun x y ht hC hn ha' hm => ⟨memPost_same ht hC hn hm.1.1, ha'.trans hm.1.2⟩)
   hpop L x y hx hy hle hn ha' hg hm :=
@@ -89,7 +89,7 @@ noncomputable def hooksOne {P : MlxPrefillContract C} (ha : a < 248320) (leaves 
   fixE _ _ _ h := h.2
 
 /-- The readback's pop on the short paths. -/
-noncomputable def popsOne (H : Hooks NB T tk π cap nI P) (hMem : H.MemP = memP P' KR NE net env π) (hT : 1 ≤ T)
+theorem popsOne (H : Hooks NB T tk π cap nI P) (hMem : H.MemP = memP P' KR NE net env π) (hT : 1 ≤ T)
     (htkR : ∀ tab j, j < T → ∃ hs, Host.Mlx.SimGraph.Mach.refPrompt P' KR NE KR.inPlace net env π tab (π.length + j) = some (tk (j + 1), hs))
     (htk1 : tk 1 < 2 ^ 31) (htk2 : tk 2 < 2 ^ 31) : PopHooks H where
   t1 L x y hx hy hle hn ha' hg hm := by

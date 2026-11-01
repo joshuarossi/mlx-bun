@@ -1,3 +1,4 @@
+import host.load.boot.World
 import host.sim.compose.a4b.PLTVNa
 import host.sim.template.a4pre_plvw_common.H0
 set_option Elab.async false
@@ -9,7 +10,7 @@ set_option maxHeartbeats 0
 kernel_rfl PLTV.band : PLTailVW.R.data.checkBand 18151 = true
 kernel_rfl PLTV.nh0le : Nat.ble 18151 PLTailVW.R.data.nh0 = true
 kernel_rfl PLTV.intr : (List.range 40).all (fun a => Nat.beq (PLTailVW.R.data.a a) a) = true
-kernel_rfl PLTV.inactive : (bridgeOf PRE_pl_tail.s0.ffi).active = false
+theorem PLTV.inactive : (bridgeOf PRE_pl_tail.s0.ffi).active = false := Host.Load.Boot.replay_active _
 kernel_rfl PLTV.lo : Nat.ble 18151 (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).next = true
 kernel_rfl PLTV.hi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).next setupP.E = true
 kernel_rfl PLTV.nhi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).nnext setupP.NE = true
