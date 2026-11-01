@@ -23,7 +23,7 @@ theorem bodyStartEqOf {s : St FF.S}
 theorem startClean41 : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_first_tail_x3_r0.s41 :=
   PRE_first_tail_x3_r0.gjcl3 (PRE_first_tail_x3_r0.cjcl2 dispatchCallClean)
 
-kernel_rfl bodyJs41 : PRE_first_tail_x3_r0.gjh3.all
+kernel_rfl prefixJs41 : PRE_first_tail_x3_r0.gjh3.all
   (noBigAtP (jsAboveB 2673488) PRE_first_tail_x3_r0.s41) = true
 
 /-- No heap entry at the prefix's end holds a JS pointer into the fresh addresses. -/
@@ -46,7 +46,7 @@ theorem startJs41 : JsHeapAbove 2673488 PRE_first_tail_x3_r0.s41 := by
   have h40 : JsHeapAbove 2673488 PRE_first_tail_x3_r0.s40 := (dispatchJsFree hp).heap
   exact h40.step (Nat.le_refl _)
     (Conv.heap_off_setAll PRE_first_tail_x3_r0.gjk3
-      (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x3_r0.gjbd3 b hb))) bodyJs41
+      (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_first_tail_x3_r0.gjbd3 b hb))) prefixJs41
 
 theorem inactive41 : (bridgeOf PRE_first_tail_x3_r0.s41.ffi).active = false :=
   (congrArg (fun b : Host.Mlx.FfiAne.St => b.active)
