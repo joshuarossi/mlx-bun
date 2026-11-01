@@ -2067,6 +2067,38 @@ noncomputable def fwdPiece (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (uses
       (forwardMem (forwardAll NB T tk π (hu r hr) hi (by omega)) (hfwd r hr i hi)) (CutConv.refl _)
 ` + tail);
   }
+  if (!onlySites.length && !onlyGlues.length && bodyEnd && pfArg) {
+    // the whole stretch of one group, so the shared pieces after the forward can be empty
+    const PT = pfArg.split(":")[2] as string, Tn = `${NS}.VWFirst.${Tag}`;
+    const endO = Ds.get(stages.length) ?? fail("no end offset");
+    const [, endD, endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
+    const parts = foldParts.map(p => p.replace("Tr hT hr hi", "(Mem' i.L) (hT i.L) (hu r hr) hi"));
+    const fold = parts.reduce((acc0, q) => `(${acc0}).trans (${q})`, "hf");
+    writeFileSync(join(outDir, "VWFwdPf.lean"), head([`${outMod}.VWForward`, `${outMod}.VWPfEnd`,
+      ...foldParts.map(p => `${outMod}.${p.startsWith("bodyGlue") ? "VWBodyG" : "VWBodyS"}${p.match(/\d+/)![0]}`)]) + `/-- **The first tail from the forward to the pre-final cut.** \`hfwd\`: the graph, from what the forward's end knows. -/
+noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${endD} ≤ cap) (hbound : cap < Sim.bound)
+    (uses : List Row) (hu : ∀ r ∈ uses, r ∈ ${Tn}.fwdRows) (htail : ∀ r ∈ ${Tn}.fwdRows, r ∈ firstTailRows) (obls : List Obl)
+    (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)
+    (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y : SegInst FF,
+      (startCore NB T tk π i).R y (startCore NB T tk π i).s0 ⟨(startCore NB T tk π i).tab0, []⟩ →
+      CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
+      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → Mem i.L x → Mem' i.L y) :
+    FwdPiece FF uses obls (fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
+      (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap ${endH} ${endN} ${PT}.s0 ${PT}.S0)) where
+  m := [(9, .L)]
+  np := 0
+  nb := 0 + ${Tn}.bodyN + ${foldN}
+  O := []
+  chk _ _ := rfl
+  ok r hr i hi _ := by
+    obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts (htail r (hu r hr)) hi
+    have hf := forwardMem (Mem := Mem i.L) (Mem' := Mem' i.L) (forwardAll NB T tk π (hu r hr) hi (by omega))
+      (fun x y _ _ hy _ hrun hg ht hm => hfwd r hr i hi x y hy (runC_le _ _ _ _ _ hrun) hg ht hm)
+    exact FwdCall.warm (CutConv.refl _)
+      ((${fold}).convR (toPfEnd NB T tk π cap hcap hbound (Mem' i.L) (hT i.L) (hu r hr) hi (htail r (hu r hr))))
+      (CutConv.refl _)
+` + tail);
+  }
   if (!onlySites.length && !onlyGlues.length && !bodyEnd) {
     const end = chain.T1 as number, Dend = Ds.get(stages.length) ?? fail("no final offset");
     const fold = foldParts.reduce((acc0, q) => acc0 ? `(${acc0}).trans (${q})` : `(${q})`, "");
@@ -2501,5 +2533,138 @@ function genPostLink(args: string[]) {
   console.log(name + ": link modules written, " + cks.length + " native check modules");
 }
 
+/* ---------- POST's flat chains over the prompt's book ---------- */
+
+// post-chain <chain>:<dir> --name <Name> --streams <dir> [--group 16]: `a4b/pl/<Name>/C<k>` (each `--group` bridges) and
+// `a4b/pl/<Name>/All`: `all : CutStep (withMem Tr (indexedCut s0 S0)) (withMem Tr (indexedCut sT ST)) N`.
+function genPostChain(args: string[]) {
+  const [spec] = args;
+  const [X, dir] = (spec ?? fail("post-chain <chain>:<dir>")).split(":") as [string, string];
+  const opt = (k: string) => { const i = args.indexOf(k); return i < 0 ? undefined : args[i + 1]; };
+  const Name = opt("--name") ?? fail("--name"), streams = opt("--streams") ?? fail("--streams"), group = +(opt("--group") ?? 16);
+  const stream = join(streams, `Host.Load.Run.Tpl.${X}`), tplDir = join(HERE, "..", "template", dir);
+  const seg = JSON.parse(readFileSync(join(stream, "seg.json"), "utf8")), chain = JSON.parse(readFileSync(join(stream, "chain.json"), "utf8"));
+  const T1 = chain.T1 as number, steps = chain.steps as number;
+  const tplMod = `host.sim.template.${dir.replaceAll("/", ".")}`, outDir = join(HERE, "a4b", "pl", Name), outMod = `host.sim.compose.a4b.pl.${Name}`;
+  mkdirSync(outDir, { recursive: true });
+  const files = readdirSync(tplDir);
+  const acceptOf = new Map<number, string>();
+  for (const a of files.filter(g => /^Accept\d*\.lean$/.test(g)))
+    for (const m of readFileSync(join(tplDir, a), "utf8").matchAll(new RegExp(`^kernel_rfl ${X}\\.accepted(\\d+) :`, "gm"))) acceptOf.set(+m[1]!, a.slice(0, -5));
+  const R = readFileSync(join(tplDir, "K0.lean"), "utf8").includes("PostOk.okR ");
+  const NSV = `Host.Ts.Sim.Compose.Post.PL.${Name}`;
+  const pars = "(NB T : Nat) (tk : Nat \u2192 Nat) (cap nI : Nat) (\u03C0 : List Nat) (hcap : cap \u2264 4096 + 1593835520)", parn = "NB T tk cap nI \u03C0 hcap hg Tr hT";
+  const hyps = `(hg : \u2200 \u03BD, BookV T tk \u03C0.length \u03BD \u2192 Good \u03BD ${X}.S0.oracle) (Tr : SegInst FF \u2192 Prop) (hT : \u2200 x y, NTrack x y \u2192 Tr x \u2192 Tr y)`;
+  const mode = `(${R ? "modeR" : "modeOk"} NB T tk cap hcap)`, impl = "(NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (\u03C0 := \u03C0)";
+  const idx = (k: number) => `withMem Tr (indexedCut NB T tk cap nI \u03C0 ${X}.s${k} ${X}.S${k})`;
+  const lk = (j: number) => `((nth? ${X}.ks ${j}).getD 0)`;
+  const bridges = (seg.bridges as any[]).slice().sort((a, b) => a.ia - b.ia);
+  for (const b of bridges) if (b.kind !== "size" && b.kind !== "len") fail(`${X}: bridge kind ${b.kind}`);
+  type Part = { term: string; n: string; facts: string[]; mods: string[] };
+  const runs = (a: number, b: number): { hrun: string; n: string; mods: string[] } => {
+    if (a === b) return { hrun: `(runOk_zero FF _ _ _)`, n: "0", mods: [] };
+    let hrun = `${X}.run${a}`, n = lk(a); const mods = [`${tplMod}.K${a}`];
+    for (let j = a + 1; j < b; j++) { hrun = `(runOk_trans FF _ _ _ _ _ _ _ _ _ ${hrun} ${X}.run${j})`; n = `(${n} + ${lk(j)})`; mods.push(`${tplMod}.K${j}`); }
+    return { hrun, n, mods };
+  };
+  const accept = (k: number) => `${tplMod}.${acceptOf.get(k) ?? fail(`${X}: no accepted${k}`)}`;
+  const hmod = (k: number) => `${tplMod}.H${Math.floor(k / 32)}`;
+  const orc = (k: number) => k === 0 ? [] : [`kernel_rfl oa${k} : ${X}.S${k}.oracle = List.drop (${X}.S0.oracle.length - ${X}.S${k}.oracle.length) ${X}.S0.oracle`];
+  const good = (k: number) => k === 0 ? "hg" : `(fun \u03BD h => by rw [oa${k}]; exact good_drop _ (hg \u03BD h))`;
+  const live = "Host.Load.Boot.replay_active _";
+  const parts: Part[] = [];
+  let a = 0, sizeK = 0, lenK = 0;
+  for (const b of bridges) {
+    const ia = b.ia as number;
+    const r = runs(a, ia - 1);
+    const isSize = b.kind === "size";
+    const B = `${X}.b${sizeK + lenK}`;
+    const bMod = `${tplMod}.${isSize ? "Size" : "Len"}${sizeK + lenK}`;
+    const stepName = isSize ? `${B}.step` : `${B}.enter`;
+    parts.push({
+      term: `callM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} ${X}.accepted${ia - 1} live${ia - 1} ${stepName} ${B}.top ${good(a)} (${live}) br${a}_${ia} cnt${a}_${ia} hT rfl`,
+      n: `(${r.n} + 1)`,
+      facts: [...orc(a), `kernel_rfl live${ia - 1} : isHalt ${X}.s${ia - 1}.ctl = false`,
+        `kernel_rfl br${a}_${ia} : bridgeOf ${X}.s${ia}.ffi = bridgeOf ${X}.s${a}.ffi`, `kernel_rfl cnt${a}_${ia} : countersOkB ${X}.s${a} ${X}.s${ia} = true`],
+      mods: [...r.mods, accept(a), accept(ia - 1), bMod, hmod(a), hmod(ia)],
+    });
+    if (isSize) {
+      parts.push({
+        term: `sizeM ${impl} ${B}.parts ${B}.args_ok ${B}.sym ${B}.mlx ${B}.pay (by decide) ${B}.decode ${B}.pre ${B}.runS ${good(ia)} ${B}.inactive ${B}.bridge cnt${ia}_${ia + 1} hT`,
+        n: "3",
+        facts: [...orc(ia), `kernel_rfl cnt${ia}_${ia + 1} : countersOkB ${X}.s${ia} ${X}.s${ia + 1} = true`],
+        mods: [bMod, hmod(ia), hmod(ia + 1)],
+      });
+      sizeK++;
+    } else {
+      parts.push({
+        term: `lenM ${impl} ${B}.ctl lst${ia} ${B}.objGet ${B}.kind ${B}.patch ${good(ia)} ${B}.inactive ${B}.bridge cnt${ia}_${ia + 1} hT`,
+        n: "1",
+        facts: [...orc(ia), `kernel_rfl lst${ia} : ${X}.s${ia}.stack = .e (.member kLength false) :: ${X}.s${ia}.stack.tail`,
+          `kernel_rfl cnt${ia}_${ia + 1} : countersOkB ${X}.s${ia} ${X}.s${ia + 1} = true`],
+        mods: [bMod, hmod(ia), hmod(ia + 1)],
+      });
+      lenK++;
+    }
+    a = ia + 1;
+  }
+  if (a < T1) {
+    const r = runs(a, T1);
+    parts.push({
+      term: `glueM ${impl} ${mode} ${X}.accepted${a} ${r.hrun} top${T1} ${good(a)} (${live}) br${a}_${T1} cnt${a}_${T1} hT rfl`,
+      n: r.n,
+      facts: [...orc(a), `kernel_rfl top${T1} : noRetBlock ${X}.s${T1} = true`,
+        `kernel_rfl br${a}_${T1} : bridgeOf ${X}.s${T1}.ffi = bridgeOf ${X}.s${a}.ffi`, `kernel_rfl cnt${a}_${T1} : countersOkB ${X}.s${a} ${X}.s${T1} = true`],
+      mods: [...r.mods, accept(a), hmod(a), hmod(T1)],
+    });
+  }
+  const head = (imports: string[]) => [...new Set(imports)].map(i => `import ${i}`).join("\n") + `
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace ${NSV}
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Load.Run.Tpl
+open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
+
+`;
+  const tail = `\nend ${NSV}\n`;
+  // groups end after a bridge, so they start at an accepted state
+  const groups: Part[][] = [];
+  for (let i = 0; i < parts.length; i += 2 * group) groups.push(parts.slice(i, i + 2 * group));
+  // each group's start and end boundary
+  const bounds: number[] = [0];
+  const ends: number[] = [];
+  for (const b of bridges) { ends.push(b.ia as number); ends.push((b.ia as number) + 1); }
+  if (a < T1) ends.push(T1);
+  let pi = 0;
+  for (const g of groups) { pi += g.length; bounds.push(ends[pi - 1]!); }
+  groups.forEach((g, k) => {
+    const start = bounds[k]!, end = bounds[k + 1]!;
+    const fold = g.map(p => `(${p.term})`).reduce((acc0, q) => `(${acc0}).trans ${q}`);
+    const n = g.map(p => p.n).reduce((acc0, q) => `(${acc0} + ${q})`);
+    writeFileSync(join(outDir, `C${k}.lean`), head(["host.sim.compose.PostChain", `${tplMod}.Good`, ...g.flatMap(p => p.mods)]) +
+      [...new Set(g.flatMap(p => p.facts))].join("\n") + `
+
+abbrev n${k} : Nat := ${n}
+
+theorem c${k} ${pars} ${hyps} :
+    CutStep (${idx(start)}) (${idx(end)}) n${k} :=
+  ${fold}
+` + tail);
+  });
+  const fold = groups.map((_, k) => `(c${k} ${parn})`).reduce((acc0, q) => `(${acc0}).trans ${q}`);
+  const nsum = groups.map((_, k) => `n${k}`).reduce((acc0, q) => `(${acc0} + ${q})`);
+  writeFileSync(join(outDir, "All.lean"), head(groups.map((_, k) => `${outMod}.C${k}`)) + `abbrev N : Nat := ${steps}
+kernel_rfl stepsEq : N = ${nsum}
+
+/-- **The chain**, in ${steps} steps. -/
+theorem all ${pars} ${hyps} :
+    CutStep (${idx(0)}) (${idx(T1)}) N :=
+  (${fold}).cast rfl rfl stepsEq
+` + tail);
+  console.log(`${X}: ${parts.length} parts in ${groups.length} modules, ${steps} steps, ${R ? "okR" : "ok"}`);
+}
+
 if (process.argv[2] === "post-link") genPostLink(process.argv.slice(3));
+if (process.argv[2] === "post-chain") genPostChain(process.argv.slice(3));
 if (process.argv[2] === "prefill-body") genBodyFill(process.argv.slice(3));

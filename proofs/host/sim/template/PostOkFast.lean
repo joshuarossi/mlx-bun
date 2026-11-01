@@ -14,7 +14,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Route
 open Host.Ts.Sim.Prefill Host.Ts.Sim.Compose.SetupEarly
 open PostHeadSmall (VP)
 
-abbrev JR : Disp.JSP FF := { J with smallB := FlatFwd.smallFX2 10 }
+abbrev JR : Disp.JSP FF := { J with okCall := okCallFXS setupP, smallB := FlatFwd.smallFX2 10 }
 
 noncomputable def okR : St FF.S → SSrv → Bool :=
   Disp.okJSJ JR (okBackFXS setupP) 4096
@@ -33,9 +33,9 @@ theorem simulationR_ngrow (NB T : Nat) (tk : Nat → Nat) (y0 : Host.Mlx.Ffi.St)
         fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
       okR (Disp.KpJ JR 4096) wideP [] VP := by
   let P : LoadP := { setupP with rest := machReads T tk }
-  have hj : JR.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
-  have hC : FfiCallSim FF (FullRXD P NB) JR.okCall Full.smallFX2 := by
-    rw [hj]; exact fullCallSimXD P NB
+  have hj : JR.okCall = okCallFXS P := (FlatFwd.okCallFXS_rest setupP (machReads T tk)).symm
+  have hC : FfiCallSim FF (FullRXD P NB) JR.okCall Full.smallFXS := by
+    rw [hj]; exact fullCallSimXS P NB
   have hQ := fullTargetPres (FR := FullRXD P NB) fullRXD_ninv y0
   have hs := Disp.stepSimXLBJS (D0 := 4096) (stk := [])
     ((fullFfiSimXD P NB).liftQ fullLawful hQ)

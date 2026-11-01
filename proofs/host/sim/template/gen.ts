@@ -101,7 +101,7 @@ for (const [k, b] of bridges.entries()) {
   if (!Number.isSafeInteger(b.ia) || !Number.isSafeInteger(b.aN) || b.ia < min) {
     throw new Error(`split: bridge ${k} at ${b.ia} must be an integer ≥ ${min}`);
   }
-  if (!["spread", "len", "slice", "typed", "ptr", "newdata", "size", "stage"].includes(b.kind)) throw new Error(`bridge kind ${b.kind}`);
+  if (!["spread", "len", "lenLit", "slice", "typed", "ptr", "newdata", "size", "stage"].includes(b.kind)) throw new Error(`bridge kind ${b.kind}`);
 }
 if (split && lastOf(bridges[bridges.length - 1]!) + 1 >= n) throw new Error("split: the last bridge needs ia + 1 < T1");
 // one bridge: the names `runA`/`runB`, `stepA`/`stepB`, `okB` (a chain's calls keep the per-bridge names)

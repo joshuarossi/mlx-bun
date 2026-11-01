@@ -1,0 +1,174 @@
+import host.sim.compose.PostChain
+import host.sim.template.a4pre_pl_r2.Good
+import host.sim.template.a4pre_pl_r2.K535
+import host.sim.template.a4pre_pl_r2.Accept8
+import host.sim.template.a4pre_pl_r2.Size112
+import host.sim.template.a4pre_pl_r2.H16
+import host.sim.template.a4pre_pl_r2.K538
+import host.sim.template.a4pre_pl_r2.K539
+import host.sim.template.a4pre_pl_r2.K540
+import host.sim.template.a4pre_pl_r2.K541
+import host.sim.template.a4pre_pl_r2.Size113
+import host.sim.template.a4pre_pl_r2.H17
+import host.sim.template.a4pre_pl_r2.K544
+import host.sim.template.a4pre_pl_r2.Size114
+import host.sim.template.a4pre_pl_r2.K547
+import host.sim.template.a4pre_pl_r2.K548
+import host.sim.template.a4pre_pl_r2.K549
+import host.sim.template.a4pre_pl_r2.Size115
+import host.sim.template.a4pre_pl_r2.K552
+import host.sim.template.a4pre_pl_r2.Size116
+import host.sim.template.a4pre_pl_r2.K555
+import host.sim.template.a4pre_pl_r2.K556
+import host.sim.template.a4pre_pl_r2.K557
+import host.sim.template.a4pre_pl_r2.K558
+import host.sim.template.a4pre_pl_r2.Size117
+import host.sim.template.a4pre_pl_r2.K561
+import host.sim.template.a4pre_pl_r2.Size118
+import host.sim.template.a4pre_pl_r2.K564
+import host.sim.template.a4pre_pl_r2.K565
+import host.sim.template.a4pre_pl_r2.K566
+import host.sim.template.a4pre_pl_r2.K567
+import host.sim.template.a4pre_pl_r2.K568
+import host.sim.template.a4pre_pl_r2.K569
+import host.sim.template.a4pre_pl_r2.K570
+import host.sim.template.a4pre_pl_r2.Accept9
+import host.sim.template.a4pre_pl_r2.Size119
+import host.sim.template.a4pre_pl_r2.K573
+import host.sim.template.a4pre_pl_r2.K574
+import host.sim.template.a4pre_pl_r2.K575
+import host.sim.template.a4pre_pl_r2.Size120
+import host.sim.template.a4pre_pl_r2.H18
+import host.sim.template.a4pre_pl_r2.K578
+import host.sim.template.a4pre_pl_r2.Size121
+import host.sim.template.a4pre_pl_r2.K581
+import host.sim.template.a4pre_pl_r2.K582
+import host.sim.template.a4pre_pl_r2.K583
+import host.sim.template.a4pre_pl_r2.K584
+import host.sim.template.a4pre_pl_r2.Size122
+import host.sim.template.a4pre_pl_r2.K587
+import host.sim.template.a4pre_pl_r2.Size123
+import host.sim.template.a4pre_pl_r2.K590
+import host.sim.template.a4pre_pl_r2.K591
+import host.sim.template.a4pre_pl_r2.K592
+import host.sim.template.a4pre_pl_r2.Size124
+import host.sim.template.a4pre_pl_r2.K595
+import host.sim.template.a4pre_pl_r2.Size125
+import host.sim.template.a4pre_pl_r2.K598
+import host.sim.template.a4pre_pl_r2.K599
+import host.sim.template.a4pre_pl_r2.K600
+import host.sim.template.a4pre_pl_r2.K601
+import host.sim.template.a4pre_pl_r2.Size126
+import host.sim.template.a4pre_pl_r2.K604
+import host.sim.template.a4pre_pl_r2.Size127
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose.Post.PL.R2
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Load.Run.Tpl
+open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
+
+kernel_rfl oa535 : PRE_pl_r2.S535.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S535.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live536 : isHalt PRE_pl_r2.s536.ctl = false
+kernel_rfl br535_537 : bridgeOf PRE_pl_r2.s537.ffi = bridgeOf PRE_pl_r2.s535.ffi
+kernel_rfl cnt535_537 : countersOkB PRE_pl_r2.s535 PRE_pl_r2.s537 = true
+kernel_rfl oa537 : PRE_pl_r2.S537.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S537.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt537_538 : countersOkB PRE_pl_r2.s537 PRE_pl_r2.s538 = true
+kernel_rfl oa538 : PRE_pl_r2.S538.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S538.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live542 : isHalt PRE_pl_r2.s542.ctl = false
+kernel_rfl br538_543 : bridgeOf PRE_pl_r2.s543.ffi = bridgeOf PRE_pl_r2.s538.ffi
+kernel_rfl cnt538_543 : countersOkB PRE_pl_r2.s538 PRE_pl_r2.s543 = true
+kernel_rfl oa543 : PRE_pl_r2.S543.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S543.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt543_544 : countersOkB PRE_pl_r2.s543 PRE_pl_r2.s544 = true
+kernel_rfl oa544 : PRE_pl_r2.S544.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S544.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live545 : isHalt PRE_pl_r2.s545.ctl = false
+kernel_rfl br544_546 : bridgeOf PRE_pl_r2.s546.ffi = bridgeOf PRE_pl_r2.s544.ffi
+kernel_rfl cnt544_546 : countersOkB PRE_pl_r2.s544 PRE_pl_r2.s546 = true
+kernel_rfl oa546 : PRE_pl_r2.S546.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S546.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt546_547 : countersOkB PRE_pl_r2.s546 PRE_pl_r2.s547 = true
+kernel_rfl oa547 : PRE_pl_r2.S547.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S547.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live550 : isHalt PRE_pl_r2.s550.ctl = false
+kernel_rfl br547_551 : bridgeOf PRE_pl_r2.s551.ffi = bridgeOf PRE_pl_r2.s547.ffi
+kernel_rfl cnt547_551 : countersOkB PRE_pl_r2.s547 PRE_pl_r2.s551 = true
+kernel_rfl oa551 : PRE_pl_r2.S551.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S551.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt551_552 : countersOkB PRE_pl_r2.s551 PRE_pl_r2.s552 = true
+kernel_rfl oa552 : PRE_pl_r2.S552.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S552.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live553 : isHalt PRE_pl_r2.s553.ctl = false
+kernel_rfl br552_554 : bridgeOf PRE_pl_r2.s554.ffi = bridgeOf PRE_pl_r2.s552.ffi
+kernel_rfl cnt552_554 : countersOkB PRE_pl_r2.s552 PRE_pl_r2.s554 = true
+kernel_rfl oa554 : PRE_pl_r2.S554.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S554.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt554_555 : countersOkB PRE_pl_r2.s554 PRE_pl_r2.s555 = true
+kernel_rfl oa555 : PRE_pl_r2.S555.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S555.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live559 : isHalt PRE_pl_r2.s559.ctl = false
+kernel_rfl br555_560 : bridgeOf PRE_pl_r2.s560.ffi = bridgeOf PRE_pl_r2.s555.ffi
+kernel_rfl cnt555_560 : countersOkB PRE_pl_r2.s555 PRE_pl_r2.s560 = true
+kernel_rfl oa560 : PRE_pl_r2.S560.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S560.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt560_561 : countersOkB PRE_pl_r2.s560 PRE_pl_r2.s561 = true
+kernel_rfl oa561 : PRE_pl_r2.S561.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S561.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live562 : isHalt PRE_pl_r2.s562.ctl = false
+kernel_rfl br561_563 : bridgeOf PRE_pl_r2.s563.ffi = bridgeOf PRE_pl_r2.s561.ffi
+kernel_rfl cnt561_563 : countersOkB PRE_pl_r2.s561 PRE_pl_r2.s563 = true
+kernel_rfl oa563 : PRE_pl_r2.S563.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S563.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt563_564 : countersOkB PRE_pl_r2.s563 PRE_pl_r2.s564 = true
+kernel_rfl oa564 : PRE_pl_r2.S564.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S564.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live571 : isHalt PRE_pl_r2.s571.ctl = false
+kernel_rfl br564_572 : bridgeOf PRE_pl_r2.s572.ffi = bridgeOf PRE_pl_r2.s564.ffi
+kernel_rfl cnt564_572 : countersOkB PRE_pl_r2.s564 PRE_pl_r2.s572 = true
+kernel_rfl oa572 : PRE_pl_r2.S572.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S572.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt572_573 : countersOkB PRE_pl_r2.s572 PRE_pl_r2.s573 = true
+kernel_rfl oa573 : PRE_pl_r2.S573.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S573.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live576 : isHalt PRE_pl_r2.s576.ctl = false
+kernel_rfl br573_577 : bridgeOf PRE_pl_r2.s577.ffi = bridgeOf PRE_pl_r2.s573.ffi
+kernel_rfl cnt573_577 : countersOkB PRE_pl_r2.s573 PRE_pl_r2.s577 = true
+kernel_rfl oa577 : PRE_pl_r2.S577.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S577.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt577_578 : countersOkB PRE_pl_r2.s577 PRE_pl_r2.s578 = true
+kernel_rfl oa578 : PRE_pl_r2.S578.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S578.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live579 : isHalt PRE_pl_r2.s579.ctl = false
+kernel_rfl br578_580 : bridgeOf PRE_pl_r2.s580.ffi = bridgeOf PRE_pl_r2.s578.ffi
+kernel_rfl cnt578_580 : countersOkB PRE_pl_r2.s578 PRE_pl_r2.s580 = true
+kernel_rfl oa580 : PRE_pl_r2.S580.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S580.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt580_581 : countersOkB PRE_pl_r2.s580 PRE_pl_r2.s581 = true
+kernel_rfl oa581 : PRE_pl_r2.S581.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S581.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live585 : isHalt PRE_pl_r2.s585.ctl = false
+kernel_rfl br581_586 : bridgeOf PRE_pl_r2.s586.ffi = bridgeOf PRE_pl_r2.s581.ffi
+kernel_rfl cnt581_586 : countersOkB PRE_pl_r2.s581 PRE_pl_r2.s586 = true
+kernel_rfl oa586 : PRE_pl_r2.S586.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S586.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt586_587 : countersOkB PRE_pl_r2.s586 PRE_pl_r2.s587 = true
+kernel_rfl oa587 : PRE_pl_r2.S587.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S587.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live588 : isHalt PRE_pl_r2.s588.ctl = false
+kernel_rfl br587_589 : bridgeOf PRE_pl_r2.s589.ffi = bridgeOf PRE_pl_r2.s587.ffi
+kernel_rfl cnt587_589 : countersOkB PRE_pl_r2.s587 PRE_pl_r2.s589 = true
+kernel_rfl oa589 : PRE_pl_r2.S589.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S589.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt589_590 : countersOkB PRE_pl_r2.s589 PRE_pl_r2.s590 = true
+kernel_rfl oa590 : PRE_pl_r2.S590.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S590.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live593 : isHalt PRE_pl_r2.s593.ctl = false
+kernel_rfl br590_594 : bridgeOf PRE_pl_r2.s594.ffi = bridgeOf PRE_pl_r2.s590.ffi
+kernel_rfl cnt590_594 : countersOkB PRE_pl_r2.s590 PRE_pl_r2.s594 = true
+kernel_rfl oa594 : PRE_pl_r2.S594.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S594.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt594_595 : countersOkB PRE_pl_r2.s594 PRE_pl_r2.s595 = true
+kernel_rfl oa595 : PRE_pl_r2.S595.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S595.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live596 : isHalt PRE_pl_r2.s596.ctl = false
+kernel_rfl br595_597 : bridgeOf PRE_pl_r2.s597.ffi = bridgeOf PRE_pl_r2.s595.ffi
+kernel_rfl cnt595_597 : countersOkB PRE_pl_r2.s595 PRE_pl_r2.s597 = true
+kernel_rfl oa597 : PRE_pl_r2.S597.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S597.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt597_598 : countersOkB PRE_pl_r2.s597 PRE_pl_r2.s598 = true
+kernel_rfl oa598 : PRE_pl_r2.S598.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S598.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live602 : isHalt PRE_pl_r2.s602.ctl = false
+kernel_rfl br598_603 : bridgeOf PRE_pl_r2.s603.ffi = bridgeOf PRE_pl_r2.s598.ffi
+kernel_rfl cnt598_603 : countersOkB PRE_pl_r2.s598 PRE_pl_r2.s603 = true
+kernel_rfl oa603 : PRE_pl_r2.S603.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S603.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt603_604 : countersOkB PRE_pl_r2.s603 PRE_pl_r2.s604 = true
+kernel_rfl oa604 : PRE_pl_r2.S604.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S604.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl live605 : isHalt PRE_pl_r2.s605.ctl = false
+kernel_rfl br604_606 : bridgeOf PRE_pl_r2.s606.ffi = bridgeOf PRE_pl_r2.s604.ffi
+kernel_rfl cnt604_606 : countersOkB PRE_pl_r2.s604 PRE_pl_r2.s606 = true
+kernel_rfl oa606 : PRE_pl_r2.S606.oracle = List.drop (PRE_pl_r2.S0.oracle.length - PRE_pl_r2.S606.oracle.length) PRE_pl_r2.S0.oracle
+kernel_rfl cnt606_607 : countersOkB PRE_pl_r2.s606 PRE_pl_r2.s607 = true
+
+abbrev n7 : Nat := ((((((((((((((((((((((((((((((((((nth? PRE_pl_r2.ks 535).getD 0) + 1) + 3) + ((((((nth? PRE_pl_r2.ks 538).getD 0) + ((nth? PRE_pl_r2.ks 539).getD 0)) + ((nth? PRE_pl_r2.ks 540).getD 0)) + ((nth? PRE_pl_r2.ks 541).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 544).getD 0) + 1)) + 3) + (((((nth? PRE_pl_r2.ks 547).getD 0) + ((nth? PRE_pl_r2.ks 548).getD 0)) + ((nth? PRE_pl_r2.ks 549).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 552).getD 0) + 1)) + 3) + ((((((nth? PRE_pl_r2.ks 555).getD 0) + ((nth? PRE_pl_r2.ks 556).getD 0)) + ((nth? PRE_pl_r2.ks 557).getD 0)) + ((nth? PRE_pl_r2.ks 558).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 561).getD 0) + 1)) + 3) + (((((((((nth? PRE_pl_r2.ks 564).getD 0) + ((nth? PRE_pl_r2.ks 565).getD 0)) + ((nth? PRE_pl_r2.ks 566).getD 0)) + ((nth? PRE_pl_r2.ks 567).getD 0)) + ((nth? PRE_pl_r2.ks 568).getD 0)) + ((nth? PRE_pl_r2.ks 569).getD 0)) + ((nth? PRE_pl_r2.ks 570).getD 0)) + 1)) + 3) + (((((nth? PRE_pl_r2.ks 573).getD 0) + ((nth? PRE_pl_r2.ks 574).getD 0)) + ((nth? PRE_pl_r2.ks 575).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 578).getD 0) + 1)) + 3) + ((((((nth? PRE_pl_r2.ks 581).getD 0) + ((nth? PRE_pl_r2.ks 582).getD 0)) + ((nth? PRE_pl_r2.ks 583).getD 0)) + ((nth? PRE_pl_r2.ks 584).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 587).getD 0) + 1)) + 3) + (((((nth? PRE_pl_r2.ks 590).getD 0) + ((nth? PRE_pl_r2.ks 591).getD 0)) + ((nth? PRE_pl_r2.ks 592).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 595).getD 0) + 1)) + 3) + ((((((nth? PRE_pl_r2.ks 598).getD 0) + ((nth? PRE_pl_r2.ks 599).getD 0)) + ((nth? PRE_pl_r2.ks 600).getD 0)) + ((nth? PRE_pl_r2.ks 601).getD 0)) + 1)) + 3) + (((nth? PRE_pl_r2.ks 604).getD 0) + 1)) + 3)
+
+theorem c7 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_r2.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s535 PRE_pl_r2.S535)) (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s607 PRE_pl_r2.S607)) n7 :=
+  ((((((((((((((((((((((((((((((((callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted535 PRE_pl_r2.run535 PRE_pl_r2.accepted536 live536 PRE_pl_r2.b112.step PRE_pl_r2.b112.top (fun ν h => by rw [oa535]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br535_537 cnt535_537 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b112.parts PRE_pl_r2.b112.args_ok PRE_pl_r2.b112.sym PRE_pl_r2.b112.mlx PRE_pl_r2.b112.pay (by decide) PRE_pl_r2.b112.decode PRE_pl_r2.b112.pre PRE_pl_r2.b112.runS (fun ν h => by rw [oa537]; exact good_drop _ (hg ν h)) PRE_pl_r2.b112.inactive PRE_pl_r2.b112.bridge cnt537_538 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted538 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run538 PRE_pl_r2.run539) PRE_pl_r2.run540) PRE_pl_r2.run541) PRE_pl_r2.accepted542 live542 PRE_pl_r2.b113.step PRE_pl_r2.b113.top (fun ν h => by rw [oa538]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br538_543 cnt538_543 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b113.parts PRE_pl_r2.b113.args_ok PRE_pl_r2.b113.sym PRE_pl_r2.b113.mlx PRE_pl_r2.b113.pay (by decide) PRE_pl_r2.b113.decode PRE_pl_r2.b113.pre PRE_pl_r2.b113.runS (fun ν h => by rw [oa543]; exact good_drop _ (hg ν h)) PRE_pl_r2.b113.inactive PRE_pl_r2.b113.bridge cnt543_544 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted544 PRE_pl_r2.run544 PRE_pl_r2.accepted545 live545 PRE_pl_r2.b114.step PRE_pl_r2.b114.top (fun ν h => by rw [oa544]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br544_546 cnt544_546 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b114.parts PRE_pl_r2.b114.args_ok PRE_pl_r2.b114.sym PRE_pl_r2.b114.mlx PRE_pl_r2.b114.pay (by decide) PRE_pl_r2.b114.decode PRE_pl_r2.b114.pre PRE_pl_r2.b114.runS (fun ν h => by rw [oa546]; exact good_drop _ (hg ν h)) PRE_pl_r2.b114.inactive PRE_pl_r2.b114.bridge cnt546_547 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted547 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run547 PRE_pl_r2.run548) PRE_pl_r2.run549) PRE_pl_r2.accepted550 live550 PRE_pl_r2.b115.step PRE_pl_r2.b115.top (fun ν h => by rw [oa547]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br547_551 cnt547_551 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b115.parts PRE_pl_r2.b115.args_ok PRE_pl_r2.b115.sym PRE_pl_r2.b115.mlx PRE_pl_r2.b115.pay (by decide) PRE_pl_r2.b115.decode PRE_pl_r2.b115.pre PRE_pl_r2.b115.runS (fun ν h => by rw [oa551]; exact good_drop _ (hg ν h)) PRE_pl_r2.b115.inactive PRE_pl_r2.b115.bridge cnt551_552 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted552 PRE_pl_r2.run552 PRE_pl_r2.accepted553 live553 PRE_pl_r2.b116.step PRE_pl_r2.b116.top (fun ν h => by rw [oa552]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br552_554 cnt552_554 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b116.parts PRE_pl_r2.b116.args_ok PRE_pl_r2.b116.sym PRE_pl_r2.b116.mlx PRE_pl_r2.b116.pay (by decide) PRE_pl_r2.b116.decode PRE_pl_r2.b116.pre PRE_pl_r2.b116.runS (fun ν h => by rw [oa554]; exact good_drop _ (hg ν h)) PRE_pl_r2.b116.inactive PRE_pl_r2.b116.bridge cnt554_555 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted555 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run555 PRE_pl_r2.run556) PRE_pl_r2.run557) PRE_pl_r2.run558) PRE_pl_r2.accepted559 live559 PRE_pl_r2.b117.step PRE_pl_r2.b117.top (fun ν h => by rw [oa555]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br555_560 cnt555_560 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b117.parts PRE_pl_r2.b117.args_ok PRE_pl_r2.b117.sym PRE_pl_r2.b117.mlx PRE_pl_r2.b117.pay (by decide) PRE_pl_r2.b117.decode PRE_pl_r2.b117.pre PRE_pl_r2.b117.runS (fun ν h => by rw [oa560]; exact good_drop _ (hg ν h)) PRE_pl_r2.b117.inactive PRE_pl_r2.b117.bridge cnt560_561 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted561 PRE_pl_r2.run561 PRE_pl_r2.accepted562 live562 PRE_pl_r2.b118.step PRE_pl_r2.b118.top (fun ν h => by rw [oa561]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br561_563 cnt561_563 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b118.parts PRE_pl_r2.b118.args_ok PRE_pl_r2.b118.sym PRE_pl_r2.b118.mlx PRE_pl_r2.b118.pay (by decide) PRE_pl_r2.b118.decode PRE_pl_r2.b118.pre PRE_pl_r2.b118.runS (fun ν h => by rw [oa563]; exact good_drop _ (hg ν h)) PRE_pl_r2.b118.inactive PRE_pl_r2.b118.bridge cnt563_564 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted564 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run564 PRE_pl_r2.run565) PRE_pl_r2.run566) PRE_pl_r2.run567) PRE_pl_r2.run568) PRE_pl_r2.run569) PRE_pl_r2.run570) PRE_pl_r2.accepted571 live571 PRE_pl_r2.b119.step PRE_pl_r2.b119.top (fun ν h => by rw [oa564]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br564_572 cnt564_572 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b119.parts PRE_pl_r2.b119.args_ok PRE_pl_r2.b119.sym PRE_pl_r2.b119.mlx PRE_pl_r2.b119.pay (by decide) PRE_pl_r2.b119.decode PRE_pl_r2.b119.pre PRE_pl_r2.b119.runS (fun ν h => by rw [oa572]; exact good_drop _ (hg ν h)) PRE_pl_r2.b119.inactive PRE_pl_r2.b119.bridge cnt572_573 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted573 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run573 PRE_pl_r2.run574) PRE_pl_r2.run575) PRE_pl_r2.accepted576 live576 PRE_pl_r2.b120.step PRE_pl_r2.b120.top (fun ν h => by rw [oa573]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br573_577 cnt573_577 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b120.parts PRE_pl_r2.b120.args_ok PRE_pl_r2.b120.sym PRE_pl_r2.b120.mlx PRE_pl_r2.b120.pay (by decide) PRE_pl_r2.b120.decode PRE_pl_r2.b120.pre PRE_pl_r2.b120.runS (fun ν h => by rw [oa577]; exact good_drop _ (hg ν h)) PRE_pl_r2.b120.inactive PRE_pl_r2.b120.bridge cnt577_578 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted578 PRE_pl_r2.run578 PRE_pl_r2.accepted579 live579 PRE_pl_r2.b121.step PRE_pl_r2.b121.top (fun ν h => by rw [oa578]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br578_580 cnt578_580 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b121.parts PRE_pl_r2.b121.args_ok PRE_pl_r2.b121.sym PRE_pl_r2.b121.mlx PRE_pl_r2.b121.pay (by decide) PRE_pl_r2.b121.decode PRE_pl_r2.b121.pre PRE_pl_r2.b121.runS (fun ν h => by rw [oa580]; exact good_drop _ (hg ν h)) PRE_pl_r2.b121.inactive PRE_pl_r2.b121.bridge cnt580_581 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted581 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run581 PRE_pl_r2.run582) PRE_pl_r2.run583) PRE_pl_r2.run584) PRE_pl_r2.accepted585 live585 PRE_pl_r2.b122.step PRE_pl_r2.b122.top (fun ν h => by rw [oa581]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br581_586 cnt581_586 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b122.parts PRE_pl_r2.b122.args_ok PRE_pl_r2.b122.sym PRE_pl_r2.b122.mlx PRE_pl_r2.b122.pay (by decide) PRE_pl_r2.b122.decode PRE_pl_r2.b122.pre PRE_pl_r2.b122.runS (fun ν h => by rw [oa586]; exact good_drop _ (hg ν h)) PRE_pl_r2.b122.inactive PRE_pl_r2.b122.bridge cnt586_587 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted587 PRE_pl_r2.run587 PRE_pl_r2.accepted588 live588 PRE_pl_r2.b123.step PRE_pl_r2.b123.top (fun ν h => by rw [oa587]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br587_589 cnt587_589 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b123.parts PRE_pl_r2.b123.args_ok PRE_pl_r2.b123.sym PRE_pl_r2.b123.mlx PRE_pl_r2.b123.pay (by decide) PRE_pl_r2.b123.decode PRE_pl_r2.b123.pre PRE_pl_r2.b123.runS (fun ν h => by rw [oa589]; exact good_drop _ (hg ν h)) PRE_pl_r2.b123.inactive PRE_pl_r2.b123.bridge cnt589_590 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted590 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run590 PRE_pl_r2.run591) PRE_pl_r2.run592) PRE_pl_r2.accepted593 live593 PRE_pl_r2.b124.step PRE_pl_r2.b124.top (fun ν h => by rw [oa590]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br590_594 cnt590_594 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b124.parts PRE_pl_r2.b124.args_ok PRE_pl_r2.b124.sym PRE_pl_r2.b124.mlx PRE_pl_r2.b124.pay (by decide) PRE_pl_r2.b124.decode PRE_pl_r2.b124.pre PRE_pl_r2.b124.runS (fun ν h => by rw [oa594]; exact good_drop _ (hg ν h)) PRE_pl_r2.b124.inactive PRE_pl_r2.b124.bridge cnt594_595 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted595 PRE_pl_r2.run595 PRE_pl_r2.accepted596 live596 PRE_pl_r2.b125.step PRE_pl_r2.b125.top (fun ν h => by rw [oa595]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br595_597 cnt595_597 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b125.parts PRE_pl_r2.b125.args_ok PRE_pl_r2.b125.sym PRE_pl_r2.b125.mlx PRE_pl_r2.b125.pay (by decide) PRE_pl_r2.b125.decode PRE_pl_r2.b125.pre PRE_pl_r2.b125.runS (fun ν h => by rw [oa597]; exact good_drop _ (hg ν h)) PRE_pl_r2.b125.inactive PRE_pl_r2.b125.bridge cnt597_598 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted598 (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ (runOk_trans FF _ _ _ _ _ _ _ _ _ PRE_pl_r2.run598 PRE_pl_r2.run599) PRE_pl_r2.run600) PRE_pl_r2.run601) PRE_pl_r2.accepted602 live602 PRE_pl_r2.b126.step PRE_pl_r2.b126.top (fun ν h => by rw [oa598]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br598_603 cnt598_603 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b126.parts PRE_pl_r2.b126.args_ok PRE_pl_r2.b126.sym PRE_pl_r2.b126.mlx PRE_pl_r2.b126.pay (by decide) PRE_pl_r2.b126.decode PRE_pl_r2.b126.pre PRE_pl_r2.b126.runS (fun ν h => by rw [oa603]; exact good_drop _ (hg ν h)) PRE_pl_r2.b126.inactive PRE_pl_r2.b126.bridge cnt603_604 hT)).trans (callM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeR NB T tk cap hcap) PRE_pl_r2.accepted604 PRE_pl_r2.run604 PRE_pl_r2.accepted605 live605 PRE_pl_r2.b127.step PRE_pl_r2.b127.top (fun ν h => by rw [oa604]; exact good_drop _ (hg ν h)) (Host.Load.Boot.replay_active _) br604_606 cnt604_606 hT rfl)).trans (sizeM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) PRE_pl_r2.b127.parts PRE_pl_r2.b127.args_ok PRE_pl_r2.b127.sym PRE_pl_r2.b127.mlx PRE_pl_r2.b127.pay (by decide) PRE_pl_r2.b127.decode PRE_pl_r2.b127.pre PRE_pl_r2.b127.runS (fun ν h => by rw [oa606]; exact good_drop _ (hg ν h)) PRE_pl_r2.b127.inactive PRE_pl_r2.b127.bridge cnt606_607 hT)
+
+end Host.Ts.Sim.Compose.Post.PL.R2

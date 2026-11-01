@@ -18,7 +18,7 @@
 // ia to ia + 1 is the bridge lemma's patched template, stated by `<Name>.patchB<k>`.
 export type Bridge = {
   kind: string; ia: number; aN: number; nA: number; arr?: number; frames?: number[];
-  entry?: string; proto?: number; buf?: number; off?: number; fn?: string; instance?: string; conv?: string;
+  entry?: string; lit?: number; proto?: number; buf?: number; off?: number; fn?: string; instance?: string; conv?: string;
   patched?: boolean; compaction?: unknown; site?: number; name?: string; n0?: number; ws?: number[]; T1?: number;
   fsym?: number; ta?: number; nf?: number; rt?: string;
 };
@@ -57,6 +57,7 @@ export function transitionLine(name: string, b: Bridge, suffix: string): string 
   const T = "Host.Ts.Sim.Template.Bridge";
   switch (b.kind) {
     case "len": return `kernel_rfl ${name}.patchB${suffix} : some (${T}.lenPatch ${s(A)} ${S(A)} (${b.entry})) = ${pair}\n`;
+    case "lenLit": return `kernel_rfl ${name}.patchB${suffix} : some (${T}.lenLitPatch ${s(A)} ${S(A)} (Host.Ts.F64.ofNat ${b.lit})) = ${pair}\n`;
     case "slice": return `kernel_rfl ${name}.patchB${suffix} : some (${T}.slicePatch ${s(A)} ${S(A)}) = ${pair}\n`;
     case "typed": return `kernel_rfl ${name}.patchB${suffix} : some (${T}.typedPatch ${name}.F ${s(A)} ${S(A)} ${b.proto}) = ${pair}\n`;
     case "ptr": return `kernel_rfl ${name}.patchB${suffix} : some (${T}.ptrPatch ${s(A)} ${S(A)} ${b.buf} ${b.off}) = ${pair}\n`;
@@ -90,6 +91,7 @@ kernel_rfl ${name}.stackA${k} : ${A}.stack = .l (.spread ${name}.accA${k} [] ${n
 ${room}kernel_rfl ${name}.arrA${k} : (${A}.heap.get aArrayProto).isSome = true
 kernel_rfl ${name}.newA${k} : ${A}.next = ${b.aN}
 `;
+    case "lenLit":
     case "len": return `kernel_rfl ${name}.ctlA${k} : ${A}.ctl = .ret (.obj ${b.arr})
 kernel_rfl ${name}.lenA${k} : ${T}.isLenFrame ${A}.stack = true
 kernel_rfl ${name}.objA${k} : ${A}.obj? ${b.arr} = some (objOf ${A} ${b.arr})
