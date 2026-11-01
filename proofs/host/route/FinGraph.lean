@@ -223,7 +223,6 @@ theorem embeds_grow {κ : Type} {σ cl : Nat → Nat} {G : Nat → Option (RNode
   node i r hr := ffiGraph_grow N S hg _ _ (hb i r hr) (h.node i r hr)
   order := h.order
 
-variable {P KR NE net env π} in
 /-- **POST's first held time at the sampled cut**, from the forward's part at the target and the head's here. -/
 theorem postAt_ofFin (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights) {kind : Nat → Option Compiled}
     {tab : List F64} {y : St FF.S} {σ toks : Nat → Nat} {Cr : List (Option Nat × Option Nat)} (hπ : 1 ≤ π.length)

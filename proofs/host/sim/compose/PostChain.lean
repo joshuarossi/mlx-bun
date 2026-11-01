@@ -1,5 +1,5 @@
 import host.sim.compose.PostGlue
-import host.sim.compose.NTrack
+import host.sim.compose.HookMem
 import host.sim.template.PostOkFast
 import host.sim.template.a4pre_d1_dispatch.Advance
 import host.sim.template.a4pre_d1_body.SizeAt
@@ -271,15 +271,5 @@ theorem lenM {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Tr : SegInst FF → Pro
     hT x _ ⟨CSrv.Le.refl _, ext1.node, ng, rfl⟩ htr⟩
 
 end
-
-/-- A chain carrying its start changes the bookkeeping. -/
-theorem hookMem {A B : ICut FF} {n : Nat} {Mem Mem' : SegInst FF → Prop}
-    (hstep : ∀ x0, CutStep (withMem (NTrack x0) A) (withMem (NTrack x0) B) n)
-    (hook : ∀ x y : SegInst FF, A.R x A.s0 ⟨A.tab0, []⟩ → B.R y B.s0 ⟨B.tab0, []⟩ → NTrack x y → Mem x → Mem' y) :
-    CutStep (withMem Mem A) (withMem Mem' B) n := by
-  rintro t C ⟨x, rfl, rfl, hR, ⟨hB, hm⟩⟩
-  obtain ⟨t', C', hrun, y, rfl, rfl, hR', ⟨hB', htr⟩⟩ :=
-    hstep x x.t x.C ⟨x, rfl, rfl, hR, ⟨hB, NTrack.refl x⟩⟩
-  exact ⟨y.t, y.C, hrun, y, rfl, rfl, hR', ⟨hB', hook x y hR hR' htr hm⟩⟩
 
 end Host.Ts.Sim.Compose.Post
