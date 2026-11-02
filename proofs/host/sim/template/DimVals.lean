@@ -5,11 +5,14 @@ namespace Host.Load.Run.Tpl
 The D1 traces and the convolution caches hold, in the classes whose rows are symbolic, numbers the row counts cancel out of. The shared
 templates hold them as variables, whose values are these. -/
 
-/-- From POST's shared cut: the convolution caches' lengths `v201`–`v248`, the D1 traces' dims `v249`–`v256`. -/
+/-- From POST's shared cut: the convolution caches' lengths `v201`–`v248`, the D1 traces' dims `v249`–`v256`, and `v257`, `v258`, the primitives' literal
+slices of the final forward's convolution caches. -/
 def tailVal : Nat → Option Nat := fun v =>
   bif Nat.ble 201 v && Nat.ble v 248 then some 3
   else bif Nat.ble 249 v && Nat.ble v 255 then some 1
   else bif Nat.beq v 256 then some 1536
+  else bif Nat.beq v 257 then some 3
+  else bif Nat.beq v 258 then some 1
   else none
 
 /-- In the decode template: the convolution caches' lengths `v114`–`v161`, the D1 traces' dims `v102`–`v109`. -/

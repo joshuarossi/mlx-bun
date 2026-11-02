@@ -29,13 +29,13 @@ theorem litAt_eval {θ : Nat → SymE} {v k : Nat} (h : litAt θ v k = true) (ν
 
 /-- The tail's dimensions all image to literals. -/
 def dimsLitB (θ : Nat → SymE) : Bool :=
-  (List.range 257).all fun v =>
+  (List.range 259).all fun v =>
     match tailVal v with
     | some k => litAt θ v k
     | none => true
 
-theorem tailVal_lt {v k : Nat} (h : tailVal v = some k) : v < 257 := by
-  by_cases h1 : v < 257
+theorem tailVal_lt {v k : Nat} (h : tailVal v = some k) : v < 259 := by
+  by_cases h1 : v < 259
   · exact h1
   · exfalso
     unfold tailVal at h
@@ -51,7 +51,15 @@ theorem tailVal_lt {v k : Nat} (h : tailVal v = some k) : v < 257 := by
       cases e : Nat.beq v 256 with
       | false => rfl
       | true => have := Nat.eq_of_beq_eq_true e; omega
-    simp [h2, h3, h4] at h
+    have h5 : Nat.beq v 257 = false := by
+      cases e : Nat.beq v 257 with
+      | false => rfl
+      | true => have := Nat.eq_of_beq_eq_true e; omega
+    have h6 : Nat.beq v 258 = false := by
+      cases e : Nat.beq v 258 with
+      | false => rfl
+      | true => have := Nat.eq_of_beq_eq_true e; omega
+    simp [h2, h3, h4, h5, h6] at h
 
 theorem dimsLit {θ : Nat → SymE} (h : dimsLitB θ = true) (ν : Nat → F64) : tail.dims (Shift.valuation θ ν) := by
   intro v k hv
@@ -94,9 +102,10 @@ theorem valOf {θ : Nat → SymE} {ν : Nat → F64} {cand keys off : List Nat} 
     exact hv j
 
 /-- The hand-off's values of a short row, a pair each. -/
-def shortVals : List (Nat × Nat) := [(20, 6), (22, 4), (23, 5), (24, 4), (25, 5), (26, 1), (200, 5)]
+def shortVals (L : Nat) : List (Nat × Nat) :=
+  [(20, 6), (22, 4), (23, 5), (24, 4), (25, 5), (26, 1), (200, 5), (259, L - 1), (260, L)]
 
-theorem handVal_short {L v k : Nat} (hL : L ≤ 2) (h : handVal L v = some k) : (v, k) ∈ shortVals := by
+theorem handVal_short {L v k : Nat} (hL : L ≤ 2) (h : handVal L v = some k) : (v, k) ∈ shortVals L := by
   have hb : Nat.ble L 2 = true := Nat.ble_eq_true_of_le hL
   unfold handVal at h
   rw [hb] at h
@@ -113,7 +122,7 @@ structure ShortVals (ν : Nat → F64) : Prop where
   v26 : ν 26 = F64.ofNat 1
 
 /-- A short row's link: where the hand-off's variables go. -/
-structure ShortImg (θ : Nat → SymE) : Prop where
+structure ShortImg (θ : Nat → SymE) (L : Nat) : Prop where
   i20 : litAt θ 20 6 = true
   i22 : θ 22 = .var 22
   i23 : litAt θ 23 5 = true
@@ -121,20 +130,22 @@ structure ShortImg (θ : Nat → SymE) : Prop where
   i25 : litAt θ 25 5 = true
   i26 : θ 26 = .var 26
   i200 : θ 200 = .bin .add (.var 21) (.lit (F64.ofNat 1))
+  i259 : litAt θ 259 (L - 1) = true
+  i260 : litAt θ 260 L = true
 
-theorem ShortImg.v200 {θ : Nat → SymE} {ν : Nat → F64} (i : ShortImg θ) (h : ShortVals ν) :
+theorem ShortImg.v200 {θ : Nat → SymE} {L : Nat} {ν : Nat → F64} (i : ShortImg θ L) (h : ShortVals ν) :
     (θ 200).eval ν = F64.ofNat 5 := by
   rw [i.i200]
   change F64.bin .add (ν 21) (F64.ofNat 1) = _
   rw [h.v21]
   exact bin_add_ofNat 4 1 (by omega)
 
-theorem handShort {θ : Nat → SymE} {ν : Nat → F64} {L : Nat} (hL : L ≤ 2) (i : ShortImg θ) (h : ShortVals ν) :
+theorem handShort {θ : Nat → SymE} {ν : Nat → F64} {L : Nat} (hL : L ≤ 2) (i : ShortImg θ L) (h : ShortVals ν) :
     tail.hand L (Shift.valuation θ ν) := by
   intro v k hv
   have hm := handVal_short hL hv
   simp only [shortVals, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at hm
-  rcases hm with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
+  rcases hm with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩
   · exact litAt_eval i.i20 ν
   · change (θ 22).eval ν = _
     rw [i.i22]
@@ -148,5 +159,7 @@ theorem handShort {θ : Nat → SymE} {ν : Nat → F64} {L : Nat} (hL : L ≤ 2
     rw [i.i26]
     exact h.v26
   · exact i.v200 h
+  · exact litAt_eval i.i259 ν
+  · exact litAt_eval i.i260 ν
 
 end Host.Ts.Sim.Compose.Post

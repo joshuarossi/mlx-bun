@@ -35,7 +35,7 @@ def nuRow (L j : Nat) : Int :=
     | some k => (k : Int)
     | none => L
 
-theorem tailVal_range {j k : Nat} (h : tailVal j = some k) : 201 ≤ j ∧ j ≤ 256 := by
+theorem tailVal_range {j k : Nat} (h : tailVal j = some k) : 201 ≤ j ∧ j ≤ 258 := by
   unfold tailVal at h
   cases h1 : Nat.ble 201 j && Nat.ble j 248
   · rw [h1] at h
@@ -43,7 +43,15 @@ theorem tailVal_range {j k : Nat} (h : tailVal j = some k) : 201 ≤ j ∧ j ≤
     · rw [h2] at h
       cases h3 : Nat.beq j 256
       · rw [h3] at h
-        cases h
+        cases h4 : Nat.beq j 257
+        · rw [h4] at h
+          cases h5 : Nat.beq j 258
+          · rw [h5] at h
+            cases h
+          · have := Nat.eq_of_beq_eq_true h5
+            omega
+        · have := Nat.eq_of_beq_eq_true h4
+          omega
       · have := Nat.eq_of_beq_eq_true h3
         omega
     · simp only [Bool.and_eq_true, Nat.ble_eq] at h2
@@ -60,7 +68,7 @@ theorem box_get_cons {a : Nat} {v : Int × Int} {B : Box} {j : Nat} :
     Box.get ((a, v) :: B) j = if a = j then some v else Box.get B j := by
   by_cases h : a = j <;> simp [Box.get, List.find?_cons, h]
 
-theorem dims_some : ∀ i, i < 56 → (tailVal (201 + i)).isSome = true := by decide
+theorem dims_some : ∀ i, i < 58 → (tailVal (201 + i)).isSome = true := by decide
 
 theorem dimsBox_get {j : Nat} {l h : Int} (hg : Box.get dimsBox j = some (l, h)) : ∃ k, tailVal j = some k ∧ l = k ∧ h = k := by
   unfold Box.get at hg
@@ -76,7 +84,7 @@ theorem dimsBox_get {j : Nat} {l h : Int} (hg : Box.get dimsBox j = some (l, h))
   obtain ⟨k, hk⟩ := Option.isSome_iff_exists.mp (dims_some i hi')
   exact ⟨k, hk, by rw [hk]; rfl, by rw [hk]; rfl⟩
 
-theorem boxRow_all : ∀ i, i < 56 →
+theorem boxRow_all : ∀ i, i < 58 →
     Box.get boxRow (201 + i) = some ((((tailVal (201 + i)).getD 0 : Nat) : Int), (((tailVal (201 + i)).getD 0 : Nat) : Int)) := by decide
 
 theorem boxRow_dim {j k : Nat} (h : tailVal j = some k) : Box.get boxRow j = some ((k : Int), (k : Int)) := by

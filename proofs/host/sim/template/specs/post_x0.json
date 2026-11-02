@@ -139,20 +139,6 @@
    "addr": 18194,
    "value": null,
    "var": 24
-  },
-  {
-   "name": "computeG trace dim",
-   "kind": "dim",
-   "nodes": [
-    15268,
-    15270,
-    15271,
-    15272
-   ],
-   "index": 1,
-   "rank": 3,
-   "value": null,
-   "var": 26
   }
  ],
  "ghosts": [

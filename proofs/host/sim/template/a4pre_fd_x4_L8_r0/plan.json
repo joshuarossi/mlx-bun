@@ -1,0 +1,124 @@
+{
+ "row": "final_ord.r0",
+ "classes": "/Users/joshrossi/Code/mlx-bun-proof-m1max/proofs/host/sim/lin/classes.json",
+ "glue": [
+  "start",
+  "g1_FIN_tailed",
+  "g2_fin_tailed"
+ ],
+ "stages": [
+  {
+   "fn": "nextPrefillStep",
+   "piece": "nps",
+   "name": "nps_FIN_tailed"
+  },
+  {
+   "fn": "prompt",
+   "piece": "disp",
+   "name": "disp_D1"
+  }
+ ],
+ "stop": "call:#2671709",
+ "frames": [
+  2665,
+  4910,
+  1824,
+  1834,
+  1852,
+  1993,
+  2001
+ ],
+ "bridges": [
+  "len",
+  "slice",
+  "typed",
+  "ptr",
+  "newdata"
+ ],
+ "lens": [
+  [
+   2665,
+   9
+  ]
+ ],
+ "baseVals": [
+  [
+   9,
+   8
+  ],
+  [
+   10,
+   1
+  ],
+  [
+   11,
+   7
+  ],
+  [
+   16,
+   256
+  ]
+ ],
+ "vars": [
+  [
+   9,
+   "L"
+  ],
+  [
+   11,
+   "o"
+  ],
+  [
+   16,
+   "cap"
+  ]
+ ],
+ "wide": [
+  [
+   4910,
+   ".memo [85074607649212392847764531980401639532]"
+  ],
+  [
+   1824,
+   ".ghost"
+  ],
+  [
+   1834,
+   ".ghost"
+  ],
+  [
+   1852,
+   ".ghost"
+  ],
+  [
+   1993,
+   ".ghost"
+  ],
+  [
+   2001,
+   ".ghost"
+  ]
+ ],
+ "accept": "jsjxs",
+ "D0": 131072,
+ "loadP": [
+  18151,
+  131072,
+  1099511627776,
+  15235,
+  15235
+ ],
+ "startTokens": [
+  1,
+  2
+ ],
+ "chunk": 3333,
+ "stuckStop": true,
+ "cap": 200000,
+ "litLens": [
+  [
+   2834427,
+   1
+  ]
+ ]
+}

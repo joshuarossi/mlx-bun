@@ -1,5 +1,5 @@
 import host.sim.template.a4pre_fd_vw_r0_body.H28
--- stream revision 1793604237
+-- stream revision 1793638044
 import host.sim.template.ServerData
 import host.sim.template.BridgeLiteral
 set_option Elab.async false
@@ -7,9 +7,9 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts
--- specs/post_vw.json, the forward's row literal. The tail's rows and offset (10, 11, both L - 1) move out of POST's way to 27.
+-- specs/post_vw.json, the forward's row literal. The tail's rows and offset (10, 11) move out of POST's way to 27 and 28.
 def PRE_plvw_entry.rebind (v : Nat) : SymE :=
-  if v = 10 then .var 27 else if v = 11 then .var 27 else .var v
+  if v = 10 then .var 27 else if v = 11 then .var 28 else .var v
 noncomputable def PRE_plvw_entry.rawSrv : SSrv :=
   ⟨PRE_fd_vw_r0_body.S900.tab.map (·.subst PRE_plvw_entry.rebind), []⟩
 server_data PRE_plvw_entry.chooserSrv := PRE_plvw_entry.rawSrv

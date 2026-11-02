@@ -14,7 +14,7 @@ open Host.Load.Run.Tpl (tailVal)
 A POST row runs the ordinary decode forward at time `L + d` while its table reads the prompt's length: the table's
 numbers are `L + c`, so its dimensions are the template's `pos` at `c = d` and `pos1` at `c = d + 1` (`clsRow`). -/
 
-def dimsBox : Box := (List.range 56).map fun i =>
+def dimsBox : Box := (List.range 58).map fun i =>
   (201 + i, (((tailVal (201 + i)).getD 0 : Nat) : Int), (((tailVal (201 + i)).getD 0 : Nat) : Int))
 
 def boxRow : Box := (9, 1, 224) :: (10, 1, 1) :: (11, 1, 224) :: (16, 256, 256) :: dimsBox
