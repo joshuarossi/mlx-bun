@@ -1,6 +1,7 @@
 import host.sim.compose.JsAbove
 import host.sim.compose.a4b.SetupChunkStage
 import host.sim.compose.CompactDrop
+import host.sim.compose.RestartW
 import host.sim.template.FullShiftGen
 import host.sim.template.Sigma
 import host.sim.CasesL
@@ -11,12 +12,12 @@ namespace Host.Ts.Sim.Compose.Pf
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Ts.Sim.Compose.SetupChunk
 
-/-! # A forward's end into a template that frames only the prompt
+/-! # A forward's end into a template the classes share
 
-The pre-final cut and POST's entry hold the prompt only: the step's chunk, buffer and view are garbage
-after its forward, and the template (a `tpl_template` from that state) has collected them. `PfFacts` are
-the generated checks that the state holds a copy of the template under a walked map, and `pfRel` the
-relation there, through the compaction that drops those frames (`Conv.full_compactDropQXD`). -/
+The pre-final cut and POST's entry hold the prompt and the frames `W0`: the step's chunk, buffer and view are garbage after its forward,
+and the template has collected them. `PfFacts` are the generated checks that the state holds a copy of the template under a walked map,
+except at `W0`, where `WideImg` relates the two. `pfRel` is the relation there, through the compaction that drops those frames and adds
+`W0`'s (`Conv.full_compactW`). The template may sit above the class's address counter: only the target's need be above it. -/
 
 theorem jsShiftBad_aboveR {D : RData} {n : Nat} (hfix : ∀ b, b < n → D.a b = b) {i : Int}
     (h : jsShiftBadB D.map i = true) : jsAboveB n i = true := by
@@ -74,12 +75,90 @@ theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K : Ctx)
           simp_all only [arrOf, hg, hk, List.drop_nil, Map.vals, List.map_nil, List.append_nil]
 
 
-/-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt in place and empty; no
-address of `s0` lands on a dropped frame. -/
+/-- What a link needs of a frame after it. -/
+def WideP (D : RData) (s0 s1 : St FF.S) (a : Nat) (w : WFrame) : Prop :=
+  a ≠ 2665 ∧ D.a a = a ∧ Present s0 a ∧ WFix D.map (Present s0) w ∧
+    ∀ h, s0.heap.get a = some h → ∃ h1, s1.heap.get a = some h1 ∧ WideImg w (D.map.hobj h) h1
+
+/-- A ghost's two entries: cells, or an object a frame may hold and a map. -/
+def ghostChkB : Option HObj → Option HObj → Bool
+  | some (.cell _), some (.cell _) => true
+  | some (.obj o), some (.obj o1) =>
+    (match o.kind with | .ordinary | .map _ | .box _ => true | _ => false) &&
+      (match o1.kind with | .map _ => true | _ => false)
+  | _, _ => false
+
+theorem wideP_ghost {D : RData} {s0 s1 : St FF.S} {a : Nat} (hn : a ≠ 2665) (hfix : D.a a = a)
+    (hc : ghostChkB (s0.heap.get a) (s1.heap.get a) = true) : WideP D s0 s1 a .ghost := by
+  cases h0 : s0.heap.get a with
+  | none => rw [h0] at hc; cases hc
+  | some x0 =>
+    cases h1 : s1.heap.get a with
+    | none => rw [h0, h1] at hc; cases x0 <;> cases hc
+    | some x1 =>
+      refine ⟨hn, hfix, Present.of_get h0, trivial, fun h hg => ?_⟩
+      rw [h0] at hg
+      cases hg
+      refine ⟨x1, h1, ?_⟩
+      rw [h0, h1] at hc
+      cases x0 with
+      | cell v => cases x1 with
+        | cell v1 => trivial
+        | obj o1 => cases hc
+      | obj o => cases x1 with
+        | cell v1 => cases hc
+        | obj o1 =>
+          simp only [ghostChkB, Bool.and_eq_true] at hc
+          refine ⟨?_, ?_⟩
+          · change Wideable (D.map.kind o.kind)
+            cases hk : o.kind <;> first | trivial | (rw [hk] at hc; simp at hc)
+          · cases hk : o1.kind <;> first | exact ⟨_, rfl⟩ | (rw [hk] at hc; simp at hc)
+
+theorem wideP_memo {D : RData} {s0 s1 : St FF.S} {a : Nat} {gs : List Nat} {o0 o1 : Obj} {es : List (Val × Val)} (hn : a ≠ 2665)
+    (hfix : D.a a = a) (h0 : s0.heap.get a = some (.obj o0)) (h1 : s1.heap.get a = some (.obj o1)) (hk : o1.kind = .map es)
+    (hi : D.map.obj o0 = { o1 with kind := .map (StringIndex.dropCodes gs es) }) : WideP D s0 s1 a (.memo gs) := by
+  refine ⟨hn, hfix, Present.of_get h0, trivial, fun h hg => ?_⟩
+  rw [h0] at hg
+  cases hg
+  exact ⟨.obj o1, h1, es, hk, hi⟩
+
+theorem lookupW_mem : ∀ {L : List (Nat × WFrame)} {a : Nat} {w : WFrame}, Disp.lookupW a L = some w → (a, w) ∈ L
+  | [], _, _, h => by cases h
+  | (b, x) :: L, a, w, h => by
+    by_cases e : a = b
+    · subst e
+      simp only [Disp.lookupW, Nat.beq_refl, Bool.cond_true, Option.some.injEq] at h
+      subst h
+      exact List.mem_cons_self
+    · have hb : Nat.beq a b = false := by
+        cases he : Nat.beq a b with
+        | false => rfl
+        | true => exact absurd (Nat.eq_of_beq_eq_true he) e
+      simp only [Disp.lookupW, hb, Bool.cond_false] at h
+      exact List.mem_cons_of_mem _ (lookupW_mem h)
+
+theorem lookupW_ne : ∀ {L : List (Nat × WFrame)} {a : Nat}, a ∈ L.map Prod.fst → Disp.lookupW a L ≠ none
+  | [], _, h => by cases h
+  | (b, x) :: L, a, h => by
+    by_cases e : a = b
+    · subst e
+      simp [Disp.lookupW]
+    · have hb : Nat.beq a b = false := by
+        cases he : Nat.beq a b with
+        | false => rfl
+        | true => exact absurd (Nat.eq_of_beq_eq_true he) e
+      simp only [Disp.lookupW, hb, Bool.cond_false]
+      simp only [List.map_cons, List.mem_cons] at h
+      exact lookupW_ne (h.resolve_left e)
+
+/-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt in place and empty, the frames `W0` related by `WideImg`;
+no address of `s0` lands on a dropped frame. -/
 structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
-    (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (drop : List Nat) : Prop where
+    (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (drop : List Nat) (W0 : Nat → Option WFrame) : Prop where
   num : checkNum D.map θ ⟨tab0, []⟩ ⟨tab1, []⟩ = true
-  heap : ∀ a h, s0.heap.get a = some h → a ≠ 2665 → s1.heap.get (D.a a) = some (D.map.hobj h)
+  heap : ∀ a h, s0.heap.get a = some h → a ≠ 2665 → W0 a = none → s1.heap.get (D.a a) = some (D.map.hobj h)
+  wide : ∀ a w, W0 a = some w → a ≠ 2665 ∧ D.a a = a ∧ Present s0 a ∧ WFix D.map (Present s0) w ∧
+    ∀ h, s0.heap.get a = some h → ∃ h1, s1.heap.get a = some h1 ∧ WideImg w (D.map.hobj h) h1
   notDrop : ∀ a, Present s0 a → ∀ b ∈ drop, D.a a ≠ b
   fixP : D.a 2665 = 2665
   getP : s0.heap.get 2665 = some (.obj (Template.objOf s0 2665))
@@ -89,7 +168,6 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
   emptyP : arrOf s1 2665 = []
   n0 : D.n0 = s0.next
   n1 : D.n1 = s1.next
-  grows : s0.next ≤ s1.next
   ren : checkRen s0 D inv = true
   bound : ∀ a, Present s0 a → a < s0.next
   ctl : s1.ctl = D.map.ctl s0.ctl
@@ -121,7 +199,7 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
 
 section
 variable {s0 s1 : St FF.S} {tab0 tab1 : List SymE} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
-  {P0 : LoadP} {nJ : Nat} {drop : List Nat}
+  {P0 : LoadP} {nJ : Nat} {drop : List Nat} {W0 : Nat → Option WFrame}
 
 theorem linkRoomSame {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
     {t : St FF.S} {S : SSrv} {C : CSrv}
@@ -159,10 +237,12 @@ theorem linkRoomAt {H N : Nat} {t : St FF.S} (hnat : NativeAt H N s1 t) (hH : H 
 /-- The frame the pre-final cut keeps. -/
 abbrev keepP : Nat → Bool := fun a => Nat.beq a 2665
 
-theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {K : Ctx} {π : List Nat}
-    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: drop) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
+theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {K : Ctx} {π : List Nat} {kw : List Nat}
+    {W : Nat → Option WFrame}
+    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kw ++ drop)) (hkw : ∀ b ∈ kw, W0 b ≠ none)
+    (hwk : ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
     (hP : K.fr 2665 = some ([], π.map natV)) :
-    ShiftD FF (fun σ x y => x = s0.ffi ∧ Conv.FullShiftQX P0 tab0.length σ x y) D.map θ keepP noFrames K
+    ShiftW FF (fun σ x y => x = s0.ffi ∧ Conv.FullShiftQX P0 tab0.length σ x y) D.map θ keepP W0 W K
       s0 ⟨tab0, []⟩ s1 ⟨tab1, []⟩ := by
   have hinj : ∀ a b, Present s0 a → Present s0 b → D.a a = D.a b → a = b :=
     a_inj (fun x hx => by rw [F.n0]; exact F.bound x hx) F.ren
@@ -175,9 +255,8 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {K : Ctx} {π 
       heap := ?_
       unfr := ?_
       framed := ?_
-      wide := fun _ _ h => nomatch h
+      wide := ?_
       next := ?_
-      grows := F.grows
       present := ?_
       inj := hinj
       presentBound := F.bound
@@ -194,9 +273,9 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {K : Ctx} {π 
       bigFixed := ?_
       bigExt := RData.big_ext _
       intr := F.intr }
-  · intro a h ha hkp _
-    exact F.heap a h ha (hne hkp)
-  · intro a h ha hkp _
+  · intro a h ha hkp hw
+    exact F.heap a h ha (hne hkp) hw
+  · intro a h ha hkp hw
     change K.fr (D.a a) = none
     cases e : K.fr (D.a a) with
     | none => rfl
@@ -204,10 +283,23 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {K : Ctx} {π 
       have hm := (hfr _).mp (by rw [e]; exact Option.some_ne_none _)
       rcases List.mem_cons.mp hm with h1 | h1
       · exact absurd (hinj _ _ (Present.of_get ha) (Present.of_get F.getP) (h1.trans F.fixP.symm)) (hne hkp)
-      · exact absurd rfl (F.notDrop a (Present.of_get ha) _ h1)
+      · rcases List.mem_append.mp h1 with h2 | h2
+        · obtain ⟨w, hb⟩ := Option.ne_none_iff_exists'.1 (hkw _ h2)
+          obtain ⟨-, hfix, hpr, -, -⟩ := F.wide _ w hb
+          have e2 : a = D.a a := hinj _ _ (Present.of_get ha) hpr hfix.symm
+          rw [← e2, hw] at hb
+          cases hb
+        · exact absurd rfl (F.notDrop a (Present.of_get ha) _ h2)
   · intro a hkp
     obtain rfl : a = 2665 := Nat.eq_of_beq_eq_true hkp
     exact ⟨F.fixP, [], π.map natV, _, _, hP, F.getP, F.kindP, F.imgP⟩
+  · intro a w hw
+    obtain ⟨hn, hfix, hpr, hwf, hkeep⟩ := F.wide a w hw
+    have hk : keepP a = false := by
+      cases e : keepP a with
+      | false => rfl
+      | true => exact absurd (Nat.eq_of_beq_eq_true e) hn
+    exact ⟨hk, hfix, hpr, hwf, hwk a w hw, hkeep⟩
   · intro k
     change D.a (s0.next + k) = _
     rw [← F.n0, RData.a_fresh, F.n1]
@@ -218,14 +310,20 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {K : Ctx} {π 
     · subst hf
       rw [F.fixP]
       exact Present.of_get F.imgP
-    · exact Present.of_get (F.heap a h ha hf)
+    · cases hw : W0 a with
+      | none => exact Present.of_get (F.heap a h ha hf hw)
+      | some w =>
+        obtain ⟨-, hfix, -, -, hkeep⟩ := F.wide a w hw
+        obtain ⟨h1, hg1, -⟩ := hkeep h ha
+        rw [hfix]
+        exact Present.of_get hg1
   · intro i hi
     rw [hlo, hhi] at hi
     exact RData.big_fixed D F.band F.nh0 (by decide) i hi
 
-/-- The frames after the link: the prompt's, nothing else. -/
-theorem drop_prompt (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) (M : Map) (K : Ctx) (a : Nat) :
-    dropNext M K keepP noFrames s1 a = if a = 2665 then K.fr 2665 else none := by
+/-- The frames after the link: the prompt's and `W0`'s. -/
+theorem frames_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) (M : Map) (K : Ctx) (a : Nat) :
+    frW M K keepP W0 s1 a = if a = 2665 then K.fr 2665 else if (W0 a).isSome then some ([], []) else none := by
   by_cases h : a = 2665
   · subst h
     rw [if_pos rfl]
@@ -235,21 +333,23 @@ theorem drop_prompt (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) (M : Map) 
       cases e : keepP a with
       | false => rfl
       | true => exact absurd (Nat.eq_of_beq_eq_true e) h
-    simp [dropNext, hk]
+    simp only [frW, hk, cond_false]
+    cases (W0 a).isSome <;> rfl
 
 /-- **The relation at the template.** -/
-theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {NB T : Nat} {tk : Nat → Nat}
-    {W : Nat → Option WFrame} {π : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv}
+theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {NB T : Nat} {tk : Nat → Nat}
+    {W : Nat → Option WFrame} {π : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {kw : List Nat}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W []
       M ν K s1 ⟨tab1, []⟩ t C)
-    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: drop) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
+    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kw ++ drop)) (hkw : ∀ b ∈ kw, W0 b ≠ none)
+    (hwk : ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
     (hP : K.fr 2665 = some ([], π.map natV))
     (hroomN : NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi))
-    (hNB : NB ≤ P0.NL) (hD : K.D + (s1.next - s0.next) < Sim.bound) :
-    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
+    (hNB : NB ≤ P0.NL) (hD : K.D + (s1.next - s0.next) < Sim.bound) (hge : s0.next ≤ s1.next + K.D) :
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W0 []
       (((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
-      ⟨dropNext M K keepP noFrames s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
-  have hs := pfShift F hfr hlo hhi hP
+      ⟨frW M K keepP W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
+  have hs := pfShift F hfr hkw hwk hlo hhi hP
   have hband : ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E →
       ¬ BigFixed K.lo K.hi j ∧ 0 ≤ j ∧ j < 2 ^ 56 := by
     intro j hj
@@ -261,24 +361,18 @@ theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop) {NB T : Nat} {tk
     · omega
     · constructor <;> omega
   have hoff : t.next = s1.next + K.D := hr.offset
-  have hg := F.grows
-  have hc := Conv.full_compactDropQXD NB (P := setupP) (r := machReads T tk)
-    (s0 := s0) (s1 := s1) (S0 := ⟨tab0, []⟩) (S1 := ⟨tab1, []⟩) (W1 := W) (W0 := noFrames) (kp := keepP)
-    F.raised hNB hr.ofJ hs (fun _ _ h => nomatch h) F.bigs F.free hband (fun _ h => nomatch h) (by omega) hroomN
+  have hc := Conv.full_compactW NB (P := setupP) (r := machReads T tk)
+    (s0 := s0) (s1 := s1) (S0 := ⟨tab0, []⟩) (S1 := ⟨tab1, []⟩) (W1 := W) (W0 := W0) (kp := keepP)
+    F.raised hNB hr.ofJ hs F.bigs F.free hband (fun _ h => nomatch h) (by omega) (by omega) hroomN
   let N' := (M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next
-  let K' : Ctx := ⟨dropNext M K keepP noFrames s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
+  let K' : Ctx := ⟨frW M K keepP W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
   have hJs : NoBigSt (JsBad N') K'.base s0 :=
     noBigSt_of_above F.jsHeap F.jsRoots (fun j hj => by
       have hbad := jsBad_after (M := M) (N := N') (σ := D.map) hr.ffi.2 rfl
         (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hj
       exact jsShiftBad_aboveR F.jsFix hbad)
-  have hcJ := (hc.withJs (by change K.lo ≤ 2 ^ 56; rw [hlo]; change 18151 ≤ 2 ^ 56; decide) hJs
+  exact (hc.withJs (by change K.lo ≤ 2 ^ 56; rw [hlo]; change 18151 ≤ 2 ^ 56; decide) hJs
     (fullRXD_withJs hc.ffi F.jsNative)).toJ (BigJs.withJs N')
-  have hmemo' : K'.fr 4910 = none := by
-    change dropNext M K keepP noFrames s1 4910 = none
-    rw [drop_prompt F]
-    rfl
-  exact inactiveMemo hcJ (fun a ha => wideInactive hmemo' a ha)
 
 end
 

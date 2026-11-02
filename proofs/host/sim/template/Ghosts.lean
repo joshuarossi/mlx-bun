@@ -23,6 +23,9 @@ def causalKey : Nat := 85074607649212392847764531980401639532
 
 theorem causalKey_pack : causalKey = pack ['c', 'a', 'u', 's', 'a', 'l'] := rfl
 
+/-- The cells those frames act on: a wide frame only acts on a framed cell, so the memo is framed when it has ghost keys. -/
+def framedOf (memo ghosts : List Nat) : List Nat := (match memo with | [] => [] | _ => [4910]) ++ ghosts
+
 /-- The wide frames of a chain: the memo with its ghost keys, and those ghosts. -/
 def wideListOf (memo ghosts : List Nat) : List (Nat × WFrame) := (4910, .memo memo) :: ghosts.map (fun a => (a, .ghost))
 

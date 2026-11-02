@@ -2192,8 +2192,11 @@ function genPostLink(args: string[]) {
   // The entry's name and frames; with --drop, the pre-final link: only the prompt kept, the frames listed dropped.
   const T = take("--entry") ?? "PRE_pl_entry", E = take("--entryname") ?? "PLEntry";
   const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
-  const framesLit = take("--frames") ?? "[2673479, 2673484, 2673485, 2665]";
   const dropList = take("--drop");
+  // the frames after the link: `--wide <W0 function>:<its list>`, `--wide-memo <address>:<ghost keys>`, `--wide-ghosts <addresses>`
+  const [wideF, wideL] = (take("--wide") ?? fail("post-link: --wide <function>:<list>")).split(":") as [string, string];
+  const wideMemo = (take("--wide-memo") ?? "").split(":") as [string, string];
+  const wideGhosts = (take("--wide-ghosts") ?? "").split(",").filter(x => x);
   let thetaExtra = take("--theta-extra") ?? "";
   const a4b = "host.sim.compose.a4b", out = join(HERE, "a4b"), NL = "\n";
   const tm = JSON.parse(readFileSync(join(streams, "Host.Load.Run.Tpl." + T, "template.json"), "utf8"));
@@ -2226,15 +2229,14 @@ function genPostLink(args: string[]) {
       "/-! The entry's address groups, listed on its bridge-free view: the bridge is not constructor data. -/",
       "bridge_empty " + E + "V.s0 from " + T + ".s0",
       "server_data " + E + "V.S0 := " + T + ".S0",
-      "def " + E + "V.frames : List Nat := " + T + ".frames",
+      "def " + E + "V.frames : List Nat := 2665 :: " + wideL + ".map Prod.fst",
       "tpl_keys " + E + "V",
-      "theorem " + T + ".cover : \u2200 a x, " + T + ".s0.heap.get a = some x \u2192 a \u2209 " + T + ".frames \u2192 \u2203 q \u2208 " + E + "V.gks, a \u2208 q.2 :=",
+      "theorem " + T + ".cover : \u2200 a x, " + T + ".s0.heap.get a = some x \u2192 a \u2209 " + E + "V.frames \u2192 \u2203 q \u2208 " + E + "V.gks, a \u2208 q.2 :=",
       "  " + E + "V.cover",
       ""].join(NL));
     put(E + "Closed", head(a4b + "." + E + "Keys", "host.sim.template.Check", "host.sim.template.NShiftGen") + [
       "abbrev T.n : Nat := " + st.n,
       "kernel_rfl T.tab_len : T.S0.tab.length = T.n",
-      "kernel_rfl T.frames_eq : T.frames = " + framesLit,
       "noncomputable def T.suppAt (a : Nat) : Bool :=",
       "  match T.s0.heap.get a with",
       "  | some h => bHobj (presentB T.s0) T.n h",
@@ -2242,16 +2244,16 @@ function genPostLink(args: string[]) {
       "noncomputable def T.boundAt (a : Nat) : Bool := Nat.blt a T.s0.next",
       "",
       "tpl_all_blocks T.HS from T : T.suppAt",
-      "kernel_rfl T.suppFramed : T.frames.all T.suppAt = true",
+      "kernel_rfl T.suppFramed : FV.frames.all T.suppAt = true",
       "tpl_all_blocks T.BD from T : T.boundAt",
-      "kernel_rfl T.boundFramed : T.frames.all T.boundAt = true",
+      "kernel_rfl T.boundFramed : FV.frames.all T.boundAt = true",
       "kernel_rfl T.rootsSupp_check : checkRootsSupp T.s0 T.n = true",
       "",
-      "theorem T.allPresent {p : Nat \u2192 Bool} (hb : \u2200 q \u2208 " + E + "V.gks, \u2200 a \u2208 q.2, p a = true) (hf : T.frames.all p = true) :",
+      "theorem T.allPresent {p : Nat \u2192 Bool} (hb : \u2200 q \u2208 " + E + "V.gks, \u2200 a \u2208 q.2, p a = true) (hf : FV.frames.all p = true) :",
       "    \u2200 a, Present T.s0 a \u2192 p a = true := by",
       "  intro a ha",
       "  obtain \u27E8h, hg\u27E9 := Present.get ha",
-      "  by_cases hm : a \u2208 T.frames",
+      "  by_cases hm : a \u2208 FV.frames",
       "  \u00B7 exact List.all_eq_true.mp hf a hm",
       "  \u00B7 obtain \u27E8q, hq, haq\u27E9 := T.cover a h hg hm",
       "    exact hb q hq a haq",
@@ -2273,12 +2275,12 @@ function genPostLink(args: string[]) {
       "  have := T.allPresent T.BD.all T.boundFramed a ha",
       "  unfold T.boundAt at this",
       "  simpa [Nat.blt_eq] using this",
-      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
+      ""].join(NL).replaceAll("FV.frames", E + "V.frames").replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
     put(E + "Fresh", head(a4b + "." + E + "Closed", "host.sim.BigFree", "host.sim.native.RebigR", "host.sim.compose.JsAbove") + [
       "kernel_rfl T.hnext : " + mlx("T.s0") + ".next = " + st.mnext,
       "noncomputable def T.freshAt (a : Nat) : Bool := noBigAtB " + st.mnext + " 131072 T.s0 a",
       "tpl_all_blocks T.FB from T : T.freshAt",
-      "kernel_rfl T.freshFramed : T.frames.all T.freshAt = true",
+      "kernel_rfl T.freshFramed : FV.frames.all T.freshAt = true",
       "kernel_rfl T.freshRoots : noBigRootsB " + st.mnext + " 131072 T.s0.trace T.s0 = true",
       "kernel_rfl T.nativeFresh : bigsOutB " + st.mnext + " 131072 " + mlx("T.s0") + " = true",
       "theorem T.noBigFresh : NoBigSt (fun i => (" + st.mnext + " : Int) \u2264 i \u2227 i < 131072) T.s0.trace T.s0 :=",
@@ -2286,7 +2288,7 @@ function genPostLink(args: string[]) {
       "",
       "noncomputable def T.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB " + st.next + ") T.s0 a",
       "tpl_all_blocks T.JH from T : T.jsAt",
-      "kernel_rfl T.jsFramed : T.frames.all T.jsAt = true",
+      "kernel_rfl T.jsFramed : FV.frames.all T.jsAt = true",
       "kernel_rfl T.jsRoots : noBigRootsP (jsAboveB " + st.next + ") T.s0.trace T.s0 = true",
       "kernel_rfl T.jsNative : bigsOutB jsLoN jsHiN " + mlx("T.s0") + " = true",
       "theorem T.jsHeap : JsHeapAbove " + st.next + " T.s0 := by",
@@ -2295,7 +2297,7 @@ function genPostLink(args: string[]) {
       "  unfold T.jsAt noBigAtP at hc",
       "  rw [ho] at hc",
       "  exact noBigHobjP_sound (fun _ hi => hi) hc",
-      ""].join(NL).replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
+      ""].join(NL).replaceAll("FV.frames", E + "V.frames").replaceAll("T.", T + ".").replaceAll(" from T ", " from " + E + "V "));
   }
   if (walkAt) {
     const wf = walkMod.split(".").pop()!;
@@ -2422,11 +2424,19 @@ function genPostLink(args: string[]) {
       "kernel_rfl N.emptyP : arrOf " + s1 + " 2665 = []",
       "noncomputable def N.ndAt (a : Nat) : Bool := [" + dropList + "].all fun b => !Nat.beq (" + D + ".a a) b",
       "tpl_all_blocks N.ND from " + E + "V : N.ndAt",
-      "kernel_rfl N.ndFramed : " + T + ".frames.all N.ndAt = true"]
+      "kernel_rfl N.ndFramed : " + E + "V.frames.all N.ndAt = true",
+      "kernel_rfl N.memoFix : " + D + ".a " + wideMemo[0] + " = " + wideMemo[0],
+      "kernel_rfl N.memoGet0 : " + s0 + ".heap.get " + wideMemo[0] + " = some (.obj (Template.objOf " + s0 + " " + wideMemo[0] + "))",
+      "kernel_rfl N.memoGet1 : " + s1 + ".heap.get " + wideMemo[0] + " = some (.obj (Template.objOf " + s1 + " " + wideMemo[0] + "))",
+      "noncomputable def N.memoEs : List (Val \u00D7 Val) := match (Template.objOf " + s1 + " " + wideMemo[0] + ").kind with | .map es => es | _ => []",
+      "kernel_rfl N.memoKind : (Template.objOf " + s1 + " " + wideMemo[0] + ").kind = .map N.memoEs",
+      "kernel_rfl N.memoImg : " + sg + ".obj (Template.objOf " + s0 + " " + wideMemo[0] + ") = { Template.objOf " + s1 + " " + wideMemo[0] + " with kind := .map (StringIndex.dropCodes " + wideMemo[1] + " N.memoEs) }",
+      ...wideGhosts.flatMap(g => [
+        "kernel_rfl N.ghostFix" + g + " : " + D + ".a " + g + " = " + g,
+        "kernel_rfl N.ghostChk" + g + " : Pf.ghostChkB (" + s0 + ".heap.get " + g + ") (" + s1 + ".heap.get " + g + ") = true"])]
     : ["kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true"])], [
     "kernel_rfl N.n0 : " + D + ".n0 = " + s0 + ".next",
     "kernel_rfl N.n1 : " + D + ".n1 = " + s1 + ".next",
-    "kernel_rfl N.grows : Nat.ble " + s0 + ".next " + s1 + ".next = true",
     "kernel_rfl N.ren : checkRen " + s0 + " " + D + " " + R + ".inv = true"], [
     "kernel_rfl N.ctl : " + s1 + ".ctl = " + sg + ".ctl " + s0 + ".ctl",
     "kernel_rfl N.stack : " + s1 + ".stack = " + s0 + ".stack.map " + sg + ".frame",
@@ -2446,13 +2456,23 @@ function genPostLink(args: string[]) {
   kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, "host.load.boot.World", ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
-      ? "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] where"
+      ? "theorem N.wideAll : \u2200 p \u2208 " + wideL + ", Pf.WideP " + D + " " + s0 + " " + s1 + " p.1 p.2 := by" + NL +
+        "  intro p hp" + NL +
+        "  simp only [" + wideL + ", wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp" + NL +
+        "  rcases hp with " + ["rfl", ...wideGhosts.map(() => "rfl")].join(" | ") + NL +
+        "  \u00B7 exact Pf.wideP_memo (by decide) N.memoFix N.memoGet0 N.memoGet1 N.memoKind N.memoImg" + NL +
+        wideGhosts.map(g => "  \u00B7 exact Pf.wideP_ghost (by decide) N.ghostFix" + g + " N.ghostChk" + g).join(NL) + NL + NL +
+        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] " + wideF + " where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
-    "    intro a h ha hm",
+    "    intro a h ha hm hw",
     dropList
-      ? "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (by rw [" + T + ".frames_eq] at hf; simpa using hf))"
+      ? "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => by" + NL +
+        "      have hf : a \u2208 2665 :: " + wideL + ".map Prod.fst := hf" + NL +
+        "      rcases List.mem_cons.mp hf with h0 | h1" + NL +
+        "      \u00B7 exact hm h0" + NL +
+        "      \u00B7 exact Pf.lookupW_ne h1 hw)"
       : "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (Post.frames_perm (by rw [" + T + ".frames_eq] at hf; exact hf)))",
     "    have he := " + R + ".heapAt q hq a haq",
     "    rw [ha] at he",
@@ -2461,6 +2481,7 @@ function genPostLink(args: string[]) {
     ...frs.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  kind" + k + " := N.kind" + k, "  img" + k + " := N.img" + k]),
     ...sf.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  img" + k + " := N.img" + k]),
     ...(dropList ? [
+      "  wide a w hw := N.wideAll (a, w) (Pf.lookupW_mem hw)",
       "  emptyP := N.emptyP",
       "  notDrop := by",
       "    intro a ha b hb he",
@@ -2471,7 +2492,6 @@ function genPostLink(args: string[]) {
       "    simp at h2"] : ["  framesEmpty := N.framesEmpty"]),
     "  n0 := N.n0",
     "  n1 := N.n1",
-    "  grows := Nat.le_of_ble_eq_true N.grows",
     "  ren := N.ren",
     "  bound := " + T + ".presentBound",
     "  ctl := N.ctl",

@@ -38,6 +38,8 @@ const chunk = Number(take("--chunk") ?? 2000);
 const withTemplate = flag("--template");
 // the end table with the abstracted conv dims read as their variables (`DecOk.convTab`), so `θ` stays the identity on them
 const retab = flag("--retab");
+// a template with ghosts (`tpl_abstract`): its keys on a view framing only the arrays, the frames `framesG`, `wideG`
+const ghost = flag("--ghost");
 // the template's token queue (Lean term) and the banded relation's NL its recorded traces lie below
 const tokens = take("--tokens") ?? "[.ref 79]";
 const handNL = Number(take("--handNL") ?? 20000);
@@ -65,6 +67,9 @@ const S1E = decanon ? `${X}.S1D` : retab ? `${X}.S1R` : S1;
 const mlx = (s: string) => `(Host.Load.Layers.toLoad ${s}.ffi).mlx`;
 const AP = "Host.Load.Run.Prompt.addrPrompt";
 const frames = [2673448, 12504, 2665];
+const TK = ghost ? `${T}K` : T, FR = ghost ? `${T}K.frames` : `${T}.frames`, GKS = `${TK}.gks`;
+const framesT = ghost ? "framesG" : "framesP", wideT = ghost ? "Host.Load.Run.Tpl.wideG" : "wideP";
+const frNone = ghost ? "frG_none" : "frP_none", frSome = ghost ? "frG_some" : "frP_some";
 // the template start's counters (the bookkeeping's at the chain start)
 const tstart = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${T}`, "template.json"), "utf8")).start as
   { n: number; next: number; mnext: number; nnext: number };
@@ -75,26 +80,27 @@ if (withTemplate) {
   const tm = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${T}`, "template.json"), "utf8"));
   const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
   if (JSON.stringify(tm.frames) !== JSON.stringify(frames)) throw new Error(`${T}: frames ${tm.frames}, expected ${frames}`);
-  put(tdir, "Keys", [...head(mod(tdir, "S"), "host.sim.template.RestartCmd"),
+  put(tdir, "Keys", [...head(mod(tdir, "S"), "host.sim.template.RestartCmd", ...(ghost ? ["host.sim.template.BridgeLiteral", "host.sim.template.ServerData"] : [])),
     `/-! The template's unframed present addresses as explicit group chunks (\`${T}.gc<j>\`, \`${T}.gks\`); \`${T}.cover\`. -/${NL}${NL}`,
-    `tpl_keys ${T}${NL}${NL}`]);
+    ...(ghost ? [`bridge_empty ${TK}.s0 from ${T}.s0${NL}`, `server_data ${TK}.S0 := ${T}.S0${NL}`, `def ${TK}.frames : List Nat := [${frames.join(", ")}]${NL}`, `tpl_keys ${TK}${NL}`,
+      `theorem ${T}.cover : ∀ a x, ${T}.s0.heap.get a = some x → a ∉ ${FR} → ∃ q ∈ ${GKS}, a ∈ q.2 :=${NL}  ${TK}.cover${NL}${NL}`] : [`tpl_keys ${T}${NL}${NL}`])]);
   put(tdir, "Closed", [...head(mod(tdir, "Keys"), "host.sim.template.Check", "host.sim.template.NShiftGen"),
     `/-! Closedness of the template \`${T}.s0\` (as \`base/Closed\`, its frames \`${T}.frames\`): every heap entry and the roots mention${NL}`,
     `only present addresses and the first \`${T}.n\` number references; present addresses lie below the counter. -/${NL}${NL}`,
     `abbrev ${T}.n : Nat := ${st.n}${NL}`,
     `kernel_rfl ${T}.tab_len : ${T}.S0.tab.length = ${T}.n${NL}`,
-    `kernel_rfl ${T}.frames_eq : ${T}.frames = [${frames.join(", ")}]${NL}`,
+    `kernel_rfl ${T}.frames_eq : ${FR} = [${frames.join(", ")}]${NL}`,
     `noncomputable def ${T}.suppAt (a : Nat) : Bool :=${NL}  match ${T}.s0.heap.get a with${NL}`,
     `  | some h => bHobj (presentB ${T}.s0) ${T}.n h${NL}  | none => true${NL}`,
     `noncomputable def ${T}.boundAt (a : Nat) : Bool := Nat.blt a ${T}.s0.next${NL}${NL}`,
-    `tpl_all_blocks ${T}.HS from ${T} : ${T}.suppAt${NL}`,
-    `kernel_rfl ${T}.suppFramed : ${T}.frames.all ${T}.suppAt = true${NL}`,
-    `tpl_all_blocks ${T}.BD from ${T} : ${T}.boundAt${NL}`,
-    `kernel_rfl ${T}.boundFramed : ${T}.frames.all ${T}.boundAt = true${NL}`,
+    `tpl_all_blocks ${T}.HS from ${TK} : ${T}.suppAt${NL}`,
+    `kernel_rfl ${T}.suppFramed : ${FR}.all ${T}.suppAt = true${NL}`,
+    `tpl_all_blocks ${T}.BD from ${TK} : ${T}.boundAt${NL}`,
+    `kernel_rfl ${T}.boundFramed : ${FR}.all ${T}.boundAt = true${NL}`,
     `kernel_rfl ${T}.rootsSupp_check : checkRootsSupp ${T}.s0 ${T}.n = true${NL}${NL}`,
-    `theorem ${T}.allPresent {p : Nat → Bool} (hb : ∀ q ∈ ${T}.gks, ∀ a ∈ q.2, p a = true) (hf : ${T}.frames.all p = true) :${NL}`,
+    `theorem ${T}.allPresent {p : Nat → Bool} (hb : ∀ q ∈ ${GKS}, ∀ a ∈ q.2, p a = true) (hf : ${FR}.all p = true) :${NL}`,
     `    ∀ a, Present ${T}.s0 a → p a = true := by${NL}`,
-    `  intro a ha${NL}  obtain ⟨h, hg⟩ := Present.get ha${NL}  by_cases hm : a ∈ ${T}.frames${NL}`,
+    `  intro a ha${NL}  obtain ⟨h, hg⟩ := Present.get ha${NL}  by_cases hm : a ∈ ${FR}${NL}`,
     `  · exact List.all_eq_true.mp hf a hm${NL}  · obtain ⟨q, hq, haq⟩ := ${T}.cover a h hg hm${NL}    exact hb q hq a haq${NL}${NL}`,
     `theorem ${T}.heapSupp : ∀ a h, ${T}.s0.heap.get a = some h → Supp.hobj (Present ${T}.s0) ${T}.n h := by${NL}`,
     `  intro a h ha${NL}  have hp := ${T}.allPresent ${T}.HS.all ${T}.suppFramed a (Present.of_get ha)${NL}`,
@@ -110,8 +116,8 @@ if (withTemplate) {
     `/-! The template start mentions no bigint in its fresh handle range \`[${st.mnext}, ${lp[1]})\` (\`Rel.rebig\`). -/${NL}${NL}`,
     `kernel_rfl ${T}.hnext : ${mlx(`${T}.s0`)}.next = ${st.mnext}${NL}`,
     `noncomputable def ${T}.freshAt (a : Nat) : Bool := noBigAtB ${st.mnext} ${lp[1]} ${T}.s0 a${NL}`,
-    `tpl_all_blocks ${T}.FB from ${T} : ${T}.freshAt${NL}`,
-    `kernel_rfl ${T}.freshFramed : ${T}.frames.all ${T}.freshAt = true${NL}`,
+    `tpl_all_blocks ${T}.FB from ${TK} : ${T}.freshAt${NL}`,
+    `kernel_rfl ${T}.freshFramed : ${FR}.all ${T}.freshAt = true${NL}`,
     `kernel_rfl ${T}.freshRoots : noBigRootsB ${st.mnext} ${lp[1]} ${T}.s0.trace ${T}.s0 = true${NL}`,
     `kernel_rfl ${T}.nativeFresh : bigsOutB ${st.mnext} ${lp[1]} ${mlx(`${T}.s0`)} = true${NL}`,
     `theorem ${T}.noBigFresh : NoBigSt (fun i => (${st.mnext} : Int) ≤ i ∧ i < ${lp[1]}) ${T}.s0.trace ${T}.s0 :=${NL}`,
@@ -134,8 +140,8 @@ if (withTemplate) {
   put(tdir, "JClean", [...head(mod(tdir, "Closed"), "host.sim.template.CallGen"),
     `/-! The JS bookkeeping at the template start (\`Conv.JClean\` at its counters): every present address checked, block by block. -/${NL}${NL}`,
     `noncomputable def ${T}.jcAt (a : Nat) : Bool := Conv.jcleanAtB ${c0} ${T}.s0 a${NL}`,
-    `tpl_all_blocks ${T}.JC from ${T} : ${T}.jcAt${NL}`,
-    `kernel_rfl ${T}.jcFramed : ${T}.frames.all ${T}.jcAt = true${NL}`,
+    `tpl_all_blocks ${T}.JC from ${TK} : ${T}.jcAt${NL}`,
+    `kernel_rfl ${T}.jcFramed : ${FR}.all ${T}.jcAt = true${NL}`,
     `theorem ${T}.jclean : Conv.JClean ${c0} ${T}.s0 :=${NL}`,
     `  jclean_of_present fun a ha => ${T}.allPresent ${T}.JC.all ${T}.jcFramed a ha${NL}${NL}`]);
   console.log(`${T}: Keys, Closed, Fresh, Facts, JClean written in ${tdir}`);
@@ -174,9 +180,9 @@ put(dir, "ERestart", [...head(lastH, mod(tdir, "S"), "host.sim.template.RestartC
   `def ${P} : LoadP := ⟨${lp.join(", ")}, []⟩${NL}${NL}`]);
 put(dir, "EHeap", [...head(mod(dir, "ERestart"), mod(tdir, "Keys")),
   `/-! The heap clause of chain \`${X}\`'s end shift, block by block. -/${NL}${NL}`,
-  `tpl_heap_blocks ${X}.R from ${T} : ${sg}, ${S0s}, ${s1}${NL}${NL}`]);
+  `tpl_heap_blocks ${X}.R from ${TK} : ${sg}, ${S0s}, ${s1}${NL}${NL}`]);
 const fr = frames.map((a, i) => ({ a, i: i + 1 }));
-put(dir, "EShift", [...head(mod(dir, "EHeap"), mod(tdir, "Closed"), "host.sim.template.EndGen"),
+put(dir, "EShift", [...head(mod(dir, "EHeap"), mod(tdir, "Closed"), ghost ? "host.sim.template.EndGenG" : "host.sim.template.EndGen"),
   `/-! The JavaScript part of chain \`${X}\`'s end shift: \`${s1}\` holds a copy of \`${S0s}\` under \`${sg}\`, its numbers the template's${NL}`,
   `substituted by \`${X}.θ\`, the frames \`addrPrompt\`'s and \`framesP\`'s without the wide one. -/${NL}${NL}`,
   `kernel_rfl ${X}.num_check : checkNum ${sg} ${X}.θ ⟨${X}.S0.tab, []⟩ ${X}.S1' = true${NL}`,
@@ -200,14 +206,14 @@ put(dir, "EShift", [...head(mod(dir, "EHeap"), mod(tdir, "Closed"), "host.sim.te
   `${NL}/-- **The JavaScript part of the end shift**, for every context framed by \`frA addrPrompt\` with the prompt route's${NL}`,
   `further frames (any target prefixes) and the band \`[${lp[0]}, ${lp[1]})\`, its wide frame dropped. -/${NL}`,
   `theorem ${X}.shiftJS (q p1 p2 : List Val) (K : Host.Ts.Sim.Ctx)${NL}`,
-  `    (hfr : K.fr = frA ${AP} ${S0s} (framesP ${S0s} q).X p1 p2) (hlo : K.lo = ${lp[0]}) (hhi : K.hi = ${lp[1]}) :${NL}`,
-  `    ShiftJS Host.Load.Layers.full ${sg} ${X}.θ (K.unW wideP) ${S0s} ⟨${X}.S0.tab, []⟩ ${s1} ${X}.S1' where${NL}`,
+  `    (hfr : K.fr = frA ${AP} ${S0s} (${framesT} ${S0s} q).X p1 p2) (hlo : K.lo = ${lp[0]}) (hhi : K.hi = ${lp[1]}) :${NL}`,
+  `    ShiftJS Host.Load.Layers.full ${sg} ${X}.θ (K.unW ${wideT}) ${S0s} ⟨${X}.S0.tab, []⟩ ${s1} ${X}.S1' where${NL}`,
   `  num := checkNum_sound ${X}.num_check${NL}`,
-  `  heap := by${NL}    intro a h ha hk${NL}    have hm := frP_none hfr hk${NL}`,
+  `  heap := by${NL}    intro a h ha hk${NL}    have hm := ${frNone} hfr hk${NL}`,
   `    rw [← ${T}.frames_eq] at hm${NL}    obtain ⟨q', hq, haq⟩ := ${T}.cover a h ha hm${NL}`,
   `    rw [${X}.R.heapAt q' hq a haq, ha]${NL}    rfl${NL}`,
   `  framed := by${NL}    intro a pre pre' hk${NL}`,
-  `    rcases frP_some hfr hk with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩${NL}`,
+  `    rcases ${frSome} hfr hk with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩${NL}`,
   ...fr.map(({ a, i }) => `    · exact ⟨${X}.f${i}a, objOf ${S0s} ${a}, _, ${X}.f${i}g0, ${X}.f${i}k, ${X}.f${i}g1⟩${NL}`),
   `  next := by${NL}    intro k${NL}    show ${X}.R.data.a (${S0s}.next + k) = _${NL}`,
   `    rw [← ${X}.n0_eq, RData.a_fresh, ${X}.n1_eq]${NL}`,
@@ -222,7 +228,7 @@ put(dir, "EShift", [...head(mod(dir, "EHeap"), mod(tdir, "Closed"), "host.sim.te
   `  inj := a_inj (fun x hx => by rw [${X}.n0_eq]; exact ${T}.presentBound x hx) ${X}.ren_check${NL}`,
   `  presentBound := ${T}.presentBound${NL}`,
   `  framedPresent := by${NL}    intro a p hk${NL}    obtain ⟨pre, pre'⟩ := p${NL}`,
-  `    rcases frP_some hfr hk with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩${NL}`,
+  `    rcases ${frSome} hfr hk with ⟨rfl, _⟩ | ⟨rfl, _⟩ | ⟨rfl, _⟩${NL}`,
   ...fr.map(({ i }) => `    · exact Present.of_get ${X}.f${i}g0${NL}`),
   `  ctl := ${X}.ctl_eq${NL}  stack := ${X}.stack_eq${NL}  jobs := ${X}.jobs_eq${NL}  stores := ${X}.stores_eq${NL}`,
   `  heapSupp := by rw [show (⟨${X}.S0.tab, []⟩ : SSrv).tab.length = ${T}.n from ${X}.S0_len]; exact ${T}.heapSupp${NL}`,
@@ -308,7 +314,7 @@ const el = (a: number) => {
   return `[${e.els.join(", ")}]`;
 };
 put(dir, "EFacts", [...head(mod(dir, "ERestart"), mod(dir, "S0Eq"), mod(tdir, "Facts"), mod(tdir, "JClean"), "host.sim.template.FactsGen",
-    "host.sim.template.CallGen", "host.sim.template.EndGen"),
+    "host.sim.template.CallGen", ghost ? "host.sim.template.EndGenG" : "host.sim.template.EndGen"),
   `/-! The facts of chain \`${X}\`'s end the iteration consumes (\`Prefill.IterEndW\` apart from its shift): the token reference,${NL}`,
   `the end counter, freshness of \`var 17\`, the substitution, the framed arrays past the template's, the fixed addresses. -/${NL}${NL}`,
   `-- the chain's start: the template's with its readback suffix dropped (genChain's S0Eq: \`${X}.s0_tok\`), its token the live one${NL}`,
@@ -337,12 +343,16 @@ put(dir, "EFacts", [...head(mod(dir, "ERestart"), mod(dir, "S0Eq"), mod(tdir, "F
   `kernel_rfl ${X}.fix_check : fixP.all (fun a => Nat.beq (${sg}.a a) a) = true${NL}`,
   `theorem ${X}.fix : ∀ a ∈ fixP, ${sg}.a a = a := fun a ha => by${NL}`,
   `  have := List.all_eq_true.mp ${X}.fix_check a ha${NL}  simpa using this${NL}`,
+  ...(ghost ? [
+  `-- the wide frames' addresses fixed and present, holding no array at the end${NL}`,
+  `kernel_rfl ${X}.wideOK : Host.Load.Run.Tpl.wideList.all (fun p => Nat.beq (${sg}.a p.1) p.1 && presentB ${S0s} p.1 && wfixB ${sg} (presentB ${S0s}) p.2) = true${NL}`,
+  `kernel_rfl ${X}.wideNA : (4910 :: Host.Load.Run.Tpl.ghostAddrs).all (fun a => !isArrB ${s1} a) = true${NL}${NL}`] : [
   `-- the wide frame's address fixed and present`,
   `${NL}kernel_rfl ${X}.w4910a : ${sg}.a 4910 = 4910${NL}`,
   `kernel_rfl ${X}.w4910p : (${S0s}.heap.get 4910).isSome = true${NL}`,
   `kernel_rfl ${X}.w4910f : wfixB ${sg} (presentB ${S0s}) (WFrame.memo []) = true${NL}`,
   `-- the wide frame holds no array at the end (its frame keeps no prefix)${NL}`,
-  `kernel_rfl ${X}.w4910k : isArrB ${s1} 4910 = false${NL}${NL}`]);
+  `kernel_rfl ${X}.w4910k : isArrB ${s1} 4910 = false${NL}${NL}`])]);
 put(dir, "EEnd", [...head(mod(dir, "EShift"), mod(dir, "EFull"), mod(dir, "EFacts"), "host.sim.full.World"),
   `/-! Chain \`${X}\`'s end as a decode iteration's end (\`Prefill.IterEndW\` at \`addrPrompt\`, \`${P}\`, \`fixP\`), its shift under the${NL}`,
   `prompt route's frames (\`framesP\`, \`wideP\`), the frames' arrays kept, and the hypothesis form \`${X}.endB\`. -/${NL}${NL}`,
@@ -352,6 +362,11 @@ put(dir, "EEnd", [...head(mod(dir, "EShift"), mod(dir, "EFull"), mod(dir, "EFact
   `  tlen := Nat.le_of_ble_eq_true ${X}.tlen_check${NL}  noVarTab := ${X}.noVarTab${NL}  noVarOr := ${X}.noVarOr${NL}`,
   `  nshift := ${X}.fullShift${NL}  num := ${X}.num79${NL}  hE := ${X}.hE${NL}  theta := ${X}.theta${NL}`,
   `  fwd := ${X}.fwd${NL}  emit := ${X}.emit${NL}  fix := ${X}.fix${NL}${NL}`,
+  ...(ghost ? [
+  `theorem ${X}.shiftFW (NB : Nat) (q : List Val) : (${X}.iterEnd NB).ShiftFW (framesG ${S0s} q) ${wideT} :=${NL}`,
+  `  ⟨fun p1 p2 K hfr hlo hhi => ${X}.shiftJS q p1 p2 K hfr hlo hhi, wideG_fix ${X}.wideOK⟩${NL}${NL}`,
+  `theorem ${X}.keep (q : List Val) : Host.Ts.Sim.Prefill.KeepsAtW (framesG ${S0s} q) ${s1} :=${NL}`,
+  `  keepsG ${X}.prompt ${X}.wideNA${NL}${NL}`] : [
   `theorem ${X}.shiftFW (NB : Nat) (q : List Val) : (${X}.iterEnd NB).ShiftFW (framesP ${S0s} q) wideP := by${NL}`,
   `  refine ⟨fun p1 p2 K hfr hlo hhi => ${X}.shiftJS q p1 p2 K hfr hlo hhi, fun a w hw => ?_⟩${NL}`,
   `  have ha : a = 4910 := by${NL}    unfold wideP at hw${NL}    cases h : Nat.beq a 4910${NL}`,
@@ -364,10 +379,10 @@ put(dir, "EEnd", [...head(mod(dir, "EShift"), mod(dir, "EFull"), mod(dir, "EFact
   `    · have := Nat.eq_of_beq_eq_true h2; subst this${NL}      rw [h1, h2] at hx; cases hx${NL}`,
   `      exact (notArr_of ${X}.w4910k ho hk).elim${NL}`,
   `  · have := Nat.eq_of_beq_eq_true h1; subst this${NL}    rw [h1] at hx; cases hx${NL}`,
-  `    obtain ⟨o', ho', hk'⟩ := ${X}.prompt${NL}    rw [ho] at ho'; cases ho'${NL}    rw [hk'] at hk; cases hk${NL}    simp${NL}${NL}`,
+  `    obtain ⟨o', ho', hk'⟩ := ${X}.prompt${NL}    rw [ho] at ho'; cases ho'${NL}    rw [hk'] at hk; cases hk${NL}    simp${NL}${NL}`,]),
   `/-- **The end in the hypothesis form** (\`A\`, the further frames, the wide frames, the fixed addresses given). -/${NL}`,
   `theorem ${X}.endB {NB : Nat} {A : Addr} {Fr : LoopFramesA A} {W : Nat → Option WFrame} {fixA : List Nat} (q : List Val)${NL}`,
-  `    (hA : A = ${AP}) (hfr : HEq Fr (framesP ${S0s} q)) (hW : W = wideP) (hfix : fixA = fixP) :${NL}`,
+  `    (hA : A = ${AP}) (hfr : HEq Fr (${framesT} ${S0s} q)) (hW : W = ${wideT}) (hfix : fixA = fixP) :${NL}`,
   `    ∃ e : Host.Ts.Sim.Prefill.IterEndW (Host.Ts.Sim.Full.fullWorld NB) A ${P} ${S0s} ${X}.S0.tab fixA,${NL}`,
   `      e.s1 = ${s1} ∧ e.S1 = ${S1E} ∧ e.eR = ${X}.eR ∧ e.ShiftFW Fr W ∧ Host.Ts.Sim.Prefill.KeepsAtW Fr e.s1 := by${NL}`,
   `  subst hA hW hfix${NL}  cases hfr${NL}`,

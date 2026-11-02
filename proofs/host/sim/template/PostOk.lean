@@ -15,7 +15,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Route
 
 /-- Before POST's shared cut: the head compiles the sampler, which writes the trace registry, so only the pre-final ghosts are framed. -/
 abbrev J0 : Disp.JSP FF :=
-  { fullJSPPXS setupP (2665 :: ghostPf) wideListPf with smallB := PostHeadSmall.smallFX2 }
+  { fullJSPPXS setupP (2665 :: 4910 :: ghostPf) wideListPf with smallB := PostHeadSmall.smallFX2 }
 
 noncomputable def ok0 : St FF.S → SSrv → Bool :=
   Disp.okJSJ J0 (okBackFXS setupP) 4096
@@ -23,12 +23,12 @@ noncomputable def ok0 : St FF.S → SSrv → Bool :=
 theorem wp0 : Disp.Wp J0 wideGPf := fun _ _ hw => hw
 
 abbrev J : Disp.JSP FF :=
-  { fullJSPPXS setupP (2665 :: ghostAddrs) wideList with smallB := PostHeadSmall.smallFX2 }
+  { fullJSPPXS setupP (2665 :: 4910 :: ghostAddrs) wideList with smallB := PostHeadSmall.smallFX2 }
 
 noncomputable def ok : St FF.S → SSrv → Bool :=
   Disp.okJSJ J (okBackFXS setupP) 4096
 
-abbrev JF (extra : List Nat) : Disp.JSP FF := { J with framed := 2665 :: (ghostAddrs ++ extra) }
+abbrev JF (extra : List Nat) : Disp.JSP FF := { J with framed := 2665 :: 4910 :: (ghostAddrs ++ extra) }
 
 noncomputable def okF (extra : List Nat) : St FF.S → SSrv → Bool :=
   Disp.okJSJ (JF extra) (okBackFXS setupP) 4096

@@ -1,6 +1,9 @@
 import host.sim.compose.PreCall
+import host.sim.compose.SetupKeep
 import host.sim.template.a4pre_d1_dispatch.Frames
 import host.sim.template.PostOk
+import host.sim.template.DimVals
+import host.sim.template.a4pre_d1_input.Property
 import host.simgraph.family.FoldedData
 import host.sim.CasesL
 set_option Elab.async false
@@ -8,7 +11,24 @@ namespace Host.Ts.Sim.Compose.Post
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Load.Run.Tpl Host.Mlx.FfiEval Host.Mlx.SimGraph
 
-structure Book (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x : SegInst FF) : Prop where
+/-! # POST's cuts
+
+POST has two stretches. Up to its shared cut each class has its own numbering, and the head compiles the sampler, which writes the trace
+registry, so only the pre-final ghosts are framed (`head`). From the shared tail on, the registry and the other kernels are ghosts too, and
+the tail's convolution variables hold the row's literal dimensions (`tail`). -/
+
+/-- A stretch's frames, what its book says of the variables, and the native counters' room above its templates. -/
+structure Stage where
+  J : Disp.JSP FF
+  W : Nat → Option WFrame
+  dims : (Nat → F64) → Prop
+  H : Nat
+  N : Nat
+
+abbrev head : Stage := ⟨PostOk.J0, wideGPf, fun _ => True, 4096, 4096⟩
+abbrev tail : Stage := ⟨PostOk.J, wideG, fun ν => ∀ v k, tailVal v = some k → ν v = F64.ofNat k, 65536, 65536⟩
+
+structure Book (P : Stage) (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x : SegInst FF) : Prop where
   nonempty : 1 ≤ π.length
   vocab : ∀ k ∈ π, k < 248320
   lastRows : γ = π.drop (π.length - 1)
@@ -19,7 +39,7 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x
   rowValue : x.ν 10 = F64.ofNat 1
   offsetValue : x.ν 11 = F64.ofNat π.length
   capValue : x.ν 16 = F64.ofNat (capL π.length)
-  context : Disp.KpJ PostOk.J cap x.K
+  context : Disp.KpJ P.J cap x.K
   /-- The target is at least this far above the template: the hand-off's restart needs the room. -/
   offsetLow : 13 ≤ x.K.D
   prompt : x.K.fr 2665 = some ([], π.map natV)
@@ -27,54 +47,34 @@ structure Book (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x
   emittedAnchor : x.M.a 2590 = 2590
   input : x.M.node nI < (mlxOf x.t.ffi).nnext ∧
     HostInt32 (concrete x.C.val) (mlxOf x.t.ffi) (x.M.node nI) (γ.map Int.ofNat) [1, 1]
+  dims : P.dims x.ν
 
 def Anchors (x : SegInst FF) : Prop := x.M.a 2586 = 2586 ∧ x.M.a 2589 = 2589
 
 /-- The GPU specialization, with the original prompt as an index for graph refinements. -/
-noncomputable def indexedCut (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat)
+noncomputable def indexedCutAt (P : Stage) (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat)
     (s : St FF.S) (S : SSrv) : ICut FF where
   s0 := s
   tab0 := S.tab
   R := fun x s S => ∃ γ,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      wideP [] x.M x.ν x.K s S x.t x.C ∧ Book T tk cap nI π γ x
-  B := fun x => AneFresh x.t ∧ Anchors x
+      P.W [] x.M x.ν x.K s S x.t x.C ∧ Book P T tk cap nI π γ x
+  B := fun x => AneFresh x.t ∧ Anchors x ∧ NativeAt P.H P.N s x.t
 
-noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (cap nI L : Nat)
-    (s : St FF.S) (S : SSrv) : ICut FF where
-  s0 := s
-  tab0 := S.tab
-  R := fun x s S => ∃ π, π.length = L ∧ (indexedCut NB T tk cap nI π s S).R x s S
-  B := fun x => AneFresh x.t ∧ Anchors x
+/-- From POST's shared cut on. -/
+noncomputable abbrev indexedCut := indexedCutAt tail
+/-- Up to POST's shared cut. -/
+noncomputable abbrev indexedCut0 := indexedCutAt head
 
-theorem indexed_to_cut {NB T cap nI L : Nat} {tk : Nat → Nat} {π : List Nat}
-    {s : St FF.S} {S : SSrv} (hπ : π.length = L) :
-    CutConv (indexedCut NB T tk cap nI π s S) (cut NB T tk cap nI L s S) := by
-  intro x hx hb
-  exact ⟨x, rfl, rfl, ⟨π, hπ, hx⟩, hb⟩
-
-theorem Book.emit_unframed {T cap nI : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF}
-    (h : Book T tk cap nI π γ x) : x.K.fr 2590 = none := by
-  by_contra hn
-  exact (by decide : 2590 ∉ PostOk.J.framed) ((h.context.1.2.2 2590).mp hn)
-
-/-- Retain the caller's memory invariant, including active-NE memory ghosts. -/
-noncomputable def indexedCutMem (Mem : SegInst FF → Prop) (NB T : Nat) (tk : Nat → Nat)
-    (cap nI : Nat) (π : List Nat) (s : St FF.S) (S : SSrv) : ICut FF :=
-  { indexedCut NB T tk cap nI π s S with B := fun x => Mem x ∧ Anchors x }
-
-noncomputable def cutMem (Mem : SegInst FF → Prop) (NB T : Nat) (tk : Nat → Nat)
-    (cap nI L : Nat) (s : St FF.S) (S : SSrv) : ICut FF :=
-  { cut NB T tk cap nI L s S with B := fun x => Mem x ∧ Anchors x }
-
-theorem indexed_to_cutMem {Mem : SegInst FF → Prop} {NB T cap nI L : Nat} {tk : Nat → Nat}
-    {π : List Nat} {s : St FF.S} {S : SSrv} (hπ : π.length = L) :
-    CutConv (indexedCutMem Mem NB T tk cap nI π s S) (cutMem Mem NB T tk cap nI L s S) := by
-  intro x hx hb
-  exact ⟨x, rfl, rfl, ⟨π, hπ, hx⟩, hb⟩
-
-theorem indexedCutMem_gpu (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat)
-    (s : St FF.S) (S : SSrv) :
-    indexedCutMem (fun x => AneFresh x.t) NB T tk cap nI π s S = indexedCut NB T tk cap nI π s S := rfl
+theorem Book.grow {P : Stage} {T cap nI n : Nat} {tk : Nat → Nat} {π γ : List Nat}
+    {M M' : Map} {ν : Nat → F64} {K : Ctx} {t t' : St FF.S} {C C' : CSrv}
+    (h : Book P T tk cap nI π γ ⟨M, ν, K, t, C⟩) (he : Ext M M' n)
+    (hg : Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi)) (hc : CSrv.Le C C') :
+    Book P T tk cap nI π γ ⟨M', ν, K, t', C'⟩ := by
+  refine { h with emittedAnchor := (congrFun he.a 2590).trans h.emittedAnchor, input := ?_ }
+  have hi : SetupD1Input.InputAt γ (M.node nI) t C := h.input
+  change SetupD1Input.InputAt γ (M'.node nI) t' C'
+  rw [he.node]
+  exact hi.grow hg hc
 
 end Host.Ts.Sim.Compose.Post

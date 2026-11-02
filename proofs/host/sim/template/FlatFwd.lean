@@ -365,7 +365,7 @@ def typedW (bytes : List Byte) : Nat → Option WFrame :=
   Disp.wAt (Disp.wAt (wideOf f.memo f.ghosts) f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
 
 abbrev typedJ (bytes : List Byte) : Disp.JSP FF :=
-  { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
+  { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ framedOf f.memo f.ghosts)
       ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.memo f.ghosts) with
     okCall := okCallFXS setupP, smallB := smallFX2 (Pin.row f.row) }
 
@@ -523,7 +523,7 @@ theorem size (L : Laws f bytes ps V Book) {sa sb : St FF.S} {Sa Sb Sdec : SSrv}
     (hargs : Disp.sizeArgsOk sa = true)
     (hsym : Host.Mlx.Ffi.symOf name = some .arraySize) (hm : Host.Load.isMlx name = true)
     (hpay : nameEq name Host.Mlx.FfiAne.payloadName = false)
-    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
+    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ framedOf f.memo f.ghosts)
     (hdec : interpS (decodeArgs FF sa tys args).run Sa = some (some asR, Sdec))
     (hpre : sizePreB loopVB Sdec sa.ffi asR = true)
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))

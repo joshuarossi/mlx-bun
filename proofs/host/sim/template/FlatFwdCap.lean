@@ -135,7 +135,7 @@ theorem sizeCap (L : LawsCap f bytes cap ps V Book) {sa sb : St FF.S} {Sa Sb Sde
     (hargs : Disp.sizeArgsOk sa = true)
     (hsym : Host.Mlx.Ffi.symOf name = some .arraySize) (hm : Host.Load.isMlx name = true)
     (hpay : nameEq name Host.Mlx.FfiAne.payloadName = false)
-    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
+    (hta : ta ∉ [2665, f.chunk, f.buffer, f.view] ++ framedOf f.memo f.ghosts)
     (hdec : interpS (decodeArgs FF sa tys args).run Sa = some (some asR, Sdec))
     (hpre : sizePreB loopVB Sdec sa.ffi asR = true)
     (hsize : interpS (Disp.sizeS FF sa).run Sa = some (sb, Sb))

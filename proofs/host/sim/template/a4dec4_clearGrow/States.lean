@@ -1,7 +1,7 @@
 import host.sim.template.a4dec4.S
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
-
+-- stream revision 1793584732687
 /-! Decode case `clearGrow` (row `dec_clearGrow.r0`) as a chain from the decode template `DT4`: the readback, the D1 forward, the sampler and the async evaluation as stage calls, to the next readback. -/
 
 set_option maxRecDepth 1000000 in
