@@ -48,3 +48,5 @@ theorem originalCaller {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Hos
   exact Map.frame_agree he.agree' (h0.stackSupp f hf)
 
 end Host.Load.Run.Tpl.D1BodyAdvance
+
+-- rechecked: literal chunk length

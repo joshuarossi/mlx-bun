@@ -43,3 +43,5 @@ theorem bridge {P : LoadP} {NB : Nat} {W : Nat → Option WFrame} {stk : List Fr
   exact ⟨hx.1, hx.2.1.toJ (h.ffi.2.ext hx.1.ext), hx.2.2⟩
 
 end Host.Load.Run.Tpl.D1BodySize
+
+-- rechecked: literal chunk length

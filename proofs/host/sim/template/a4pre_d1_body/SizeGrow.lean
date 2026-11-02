@@ -32,3 +32,5 @@ theorem callGrow (P : LoadP) (NB : Nat) (y0 : Host.Mlx.Ffi.St) {name : Name}
   callSimQ P NB (fullTargetPres (FR := FullRXD P NB) fullRXD_ninv y0) hsym hm hp A
 
 end Host.Load.Run.Tpl.D1BodySize
+
+-- rechecked: literal chunk length

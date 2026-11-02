@@ -27,3 +27,5 @@ theorem smallB_rest (P : LoadP) (rest : List NumV) (VB : Nat → Nat) :
   rw [additional_rest]
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

@@ -83,3 +83,5 @@ theorem callSim (P : LoadP) (NB : Nat) (hband : P.NL = P.N0) :
         exact ⟨gg, callR_mono (fun _ _ _ _ h => ⟨_, hP, h.toX⟩) hrel⟩
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

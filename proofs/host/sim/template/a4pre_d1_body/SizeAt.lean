@@ -50,3 +50,5 @@ theorem growAt {P : LoadP} {NB : Nat} {W : Nat → Option WFrame} {stk : List Fr
   exact ⟨⟨hg, hr.toJ (h.ffi.2.ext hg.ext), hev⟩, hrun⟩
 
 end Host.Load.Run.Tpl.D1BodySize
+
+-- rechecked: literal chunk length

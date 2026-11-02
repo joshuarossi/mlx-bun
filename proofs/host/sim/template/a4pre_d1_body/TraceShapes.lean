@@ -89,3 +89,5 @@ theorem fitsSim {ν : Nat → F64} :
   | _, _, _, _, _, _ :: _, _, [], _, _, h => h.elim
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

@@ -63,3 +63,5 @@ theorem recordSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64}
   rw [t3, t4, hfr, hb0]
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

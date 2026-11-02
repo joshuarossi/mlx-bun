@@ -67,3 +67,5 @@ theorem checkedSimulation (NB T : Nat) (tk : Nat → Nat) (bytes : List Byte) (y
   · exact simulation NB T tk bytes y0 M ν K s S t C s1 S1 hK hν hr hh hl hnew hrun
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

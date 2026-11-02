@@ -92,3 +92,5 @@ theorem closureApplySim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64}
     exact ⟨hg.grow.trans gg, hp⟩
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

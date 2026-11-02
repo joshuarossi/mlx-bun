@@ -61,3 +61,5 @@ theorem size {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.Sim.C
     fresh, fixed', he0.trans (gg.ext.mono h20) (Nat.le_refl _)⟩
 
 end Host.Load.Run.Tpl.D1BodyAdvance
+
+-- rechecked: literal chunk length

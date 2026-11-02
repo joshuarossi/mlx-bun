@@ -66,3 +66,5 @@ theorem applyDoneSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64}
       exact G.msim_okW' hs hr rfl (by simp only [List.map_cons, List.map_nil, Map.write_u64 M hb]) hr2
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

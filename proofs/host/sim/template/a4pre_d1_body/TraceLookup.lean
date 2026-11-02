@@ -82,3 +82,5 @@ theorem findTraceSim {ν : Nat → F64} {P : LoadP} {NB : Nat} {x y : NSt} {xs :
   | _, _, _, _, _ :: _, [], _, _, _, h => h.elim
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length

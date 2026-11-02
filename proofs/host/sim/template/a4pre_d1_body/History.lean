@@ -60,3 +60,5 @@ theorem BodyBook.inputHistory {π : List Nat} {K0 : Host.Ts.Sim.Ctx} {x : SegIns
   exact ⟨pre, asR, ret, tr, hp.trans (congrArg (pre ++ ·) he)⟩
 
 end Host.Ts.Sim.Compose.SetupD1
+
+-- rechecked: literal chunk length

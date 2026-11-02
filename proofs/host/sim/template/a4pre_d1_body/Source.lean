@@ -65,3 +65,5 @@ noncomputable def runBody : List Stmt :=
 kernel_rfl full64Source : runBody = (List.range 64).map layerStmt ++ [finishStmt]
 
 end Host.Load.Run.Tpl.D1BodySource
+
+-- rechecked: literal chunk length

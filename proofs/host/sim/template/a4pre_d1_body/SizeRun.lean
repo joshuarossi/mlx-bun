@@ -150,3 +150,5 @@ theorem bridgeRun (h : RelB F FR W stk M ν K s S t C) (hFR : FRLaws FR) (hF : F
 
 end
 end Host.Load.Run.Tpl.D1BodySize
+
+-- rechecked: literal chunk length

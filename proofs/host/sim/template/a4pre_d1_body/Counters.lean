@@ -58,3 +58,5 @@ theorem heapDelta {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Host.Ts.
   rw [h1.1.offset, h0.offset, hf.offset, hb.offset, startHeap, D1Body.heapCounter]
 
 end Host.Load.Run.Tpl.D1BodyCounters
+
+-- rechecked: literal chunk length

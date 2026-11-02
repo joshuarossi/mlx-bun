@@ -1,11 +1,11 @@
 import host.sim.template.ChainLit
 import host.sim.template.FullWorld
 import host.load.boot.Ld
+-- revision: chunk literal, the prompt's length a variable
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
--- L literal: the prompt's and the chunk's lengths are literal (`arange`'s cache key)
 
 open Lean Host.Ts Host.Ts.Sim.Template Host.Load Host.Mlx in
 def PRE_first_tail_x4_L7_r0.ser (p : FS) : Stream.GenM Lean.Expr := do

@@ -51,3 +51,5 @@ theorem traceValuesOfNodes {ν : Nat → F64} {M : Map} {S : SSrv} {C : CSrv} {x
     exact ⟨av :: vs, ⟨a, ha, hva⟩, hvs⟩
 
 end Host.Load.Run.Tpl.D1BodyTrace
+
+-- rechecked: literal chunk length
