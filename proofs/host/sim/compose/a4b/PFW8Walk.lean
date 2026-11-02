@@ -1,6 +1,6 @@
 import host.sim.template.a4pre_pf_vw.S
 import host.sim.template.a4pre_first_tail_x8_r0_suffix.m.B0
-import host.sim.template.RestartCmd
+import host.sim.template.RestartPad
 import host.sim.template.BridgeLiteral
 import host.sim.template.ServerData
 set_option Elab.async false
@@ -19,6 +19,6 @@ def PFW8.frames : List Nat := PRE_pf_vw.frames
 def PFW8.ghosts : List Nat := PRE_pf_vw.ghosts
 def PFW8.maps : List Nat := PRE_pf_vw.maps
 set_option interpreter.prefer_native true in
-tpl_restart PFW8.R : PFW8, PFW8 8 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)
+tpl_restart_pad PFW8.R : PFW8, PFW8 8 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)
 
 end Host.Load.Run.Tpl

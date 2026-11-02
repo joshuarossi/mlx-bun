@@ -21,7 +21,7 @@ kernel_rfl outs_below : choice.outputs.all (fun p => (p.1.all fun j => Nat.blt j
   (p.2.all fun j => Nat.blt j native.nnext)) = true
 
 /-- The row's certificate. -/
-noncomputable def cert : RowCert native PRE_pl_r1.S890 0 where
+noncomputable def cert : RowCert native PRE_pl_r1.S448 0 where
   cert := choice.cert
   insT := insT
   tokenNode := 17777
@@ -37,9 +37,9 @@ noncomputable def cert : RowCert native PRE_pl_r1.S890 0 where
   hins := fun σ hσ => inputs_at_bound 15235 choice.inputs ps 17777 inputs_prefix σ hσ
   houts := outputs_check
 
-theorem outN : certAt choice.cert Tpl.Ordinary.tokenNode < (mlxOf PRE_pl_r1.s890.ffi).nnext := Nat.blt_eq.mp out_below
+theorem outN : certAt choice.cert Tpl.Ordinary.tokenNode < (mlxOf PRE_pl_r1.s448.ffi).nnext := Nat.blt_eq.mp out_below
 
-theorem outsN : ∀ p ∈ choice.outputs, ∀ j, (p.1 = some j ∨ p.2 = some j) → j < (mlxOf PRE_pl_r1.s890.ffi).nnext := by
+theorem outsN : ∀ p ∈ choice.outputs, ∀ j, (p.1 = some j ∨ p.2 = some j) → j < (mlxOf PRE_pl_r1.s448.ffi).nnext := by
   intro p hp j hj
   have h := List.all_eq_true.mp outs_below p hp
   simp only [Bool.and_eq_true, Option.all_eq_true] at h

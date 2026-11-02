@@ -8,7 +8,7 @@ open Lean Elab Command Meta Host.Ts Host.Mlx Host.Mlx.FfiEval Host.Load.Extract
 /-! # Choosing an abstract decode template's carriers (search only)
 
 `simgraph_choose_conv X : (sEnd, SEnd), (sStart, SStart), (sEnv, SEnv), p, pin, NL, N0, fixed, tok, E`: `simgraph_choose` reading the end
-state through `clsConv SEnd p pin`. It defines `X.cert`, `X.inputs`, `X.outputs`. Nothing here is trusted: the kernel checks the result. -/
+state through `pinNums SEnd p pin`. It defines `X.cert`, `X.inputs`, `X.outputs`. Nothing here is trusted: the kernel checks the result. -/
 
 private def addDefC (name : Lean.Name) (type value : Lean.Expr) : TermElabM Unit := do
   addDecl (.defnDecl { name, levelParams := [], type, value, hints := .regular 0, safety := .safe })
@@ -34,7 +34,7 @@ private unsafe def chooseConvCmd (pre : Lean.Name) (sEnd SEnd sStart SStart sEnv
   let outs : List (Option Nat × Option Nat) := lE.cache.map fun c => (c.first.map (·.node), c.second.map (·.node))
   let nodesTy := mkApp (mkConst ``List [.zero]) (mkApp2 (mkConst ``RNode) (mkConst ``SDim) (mkConst ``InKey))
   let E ← evalExpr (List (RNode SDim InKey)) nodesTy expected
-  let actual := domainNodes (symNums (clsConv S p pin)) NL N0 fixed x
+  let actual := domainNodes (pinNums S p pin) NL N0 fixed x
   let cert ← match chooseD actual E inputs N0 with
     | .ok c => pure c
     | .error m => throwError "simgraph_choose_conv: {m}"

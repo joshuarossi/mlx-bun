@@ -10,7 +10,7 @@ open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
 /-- **The first tail from the forward to the pre-final cut.** `hfwd`: the graph, from what the forward's end knows. -/
-noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 68833 ≤ cap) (hbound : cap < Sim.bound)
+noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 69985 ≤ cap) (hbound : cap < Sim.bound)
     (uses : List Row) (hu : ∀ r ∈ uses, r ∈ Host.Ts.Sim.Compose.VWFirst.VW15.fwdRows) (htail : ∀ r ∈ Host.Ts.Sim.Compose.VWFirst.VW15.fwdRows, r ∈ firstTailRows) (obls : List Obl)
     (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)
     (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y : SegInst FF,

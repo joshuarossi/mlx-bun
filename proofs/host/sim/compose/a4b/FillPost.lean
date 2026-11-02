@@ -113,8 +113,8 @@ structure Hooks {capC nIC : Nat} (P : ClassPre NB T tk π capC nIC) where
     (indexedCut NB T tk cap nI π PRE_pl_t2p.s1 PRE_pl_t2p.S1).R y PRE_pl_t2p.s1 ⟨PRE_pl_t2p.S1.tab, []⟩ →
     CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → MemP 0 L x → MemP 0 L y
-  hfw0 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r1.s890 PRE_pl_r1.S890) (MemP 0 L) (MemP 1 L)
-  hfw1 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890) (MemP 1 L) (MemP 2 L)
+  hfw0 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r1.s448 PRE_pl_r1.S448) (MemP 0 L) (MemP 1 L)
+  hfw1 : ∀ L, Hook (indexedCut NB T tk cap nI π PRE_pl_r2.s448 PRE_pl_r2.S448) (MemP 1 L) (MemP 2 L)
   fixE : ∀ j L x, MemP j L x → x.M.a 12504 = 12504
 
 variable {NB T tk π cap nI} {capC nIC : Nat}
@@ -177,7 +177,7 @@ theorem capShort : capL π.length = 256 + 256 * 0 := by
 
 /-- The first warm forward. -/
 noncomputable def fw0 (Adm : Cls.Inst → Prop) (obls : List Obl) :
-    RFwdPiece FF Adm postRows obls (cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1) (cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890) where
+    RFwdPiece FF Adm postRows obls (cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1) (cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448) where
   m := []
   np := 0
   nb := PL.R1.N
@@ -193,7 +193,7 @@ noncomputable def fw0 (Adm : Cls.Inst → Prop) (obls : List Obl) :
 
 /-- The second warm forward, to the decode cut. -/
 noncomputable def fw1 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T ∧ i.t1 = tk 1) (obls : List Obl) :
-    RFwdPiece FF Adm postRows obls (cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890) (cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890) where
+    RFwdPiece FF Adm postRows obls (cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448) (cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448) where
   m := []
   np := 0
   nb := PL.R2.N
@@ -236,7 +236,7 @@ noncomputable def invs (ld pc0 pf : Nat → ICut FF) (pc : Nat → Nat → ICut 
   pc := pc
   pf := pf
   ps L := withMem (H.Mem0 L) (indexedCut0 NB T tk capC nIC π P.sH P.SH)
-  dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890)
+  dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI π PRE_pl_r2.s448 PRE_pl_r2.S448)
 
 /-- The cuts between POST's pieces. -/
 noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
@@ -249,19 +249,19 @@ noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
   b_post_g8_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
   b_post_g9_0_i := cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1
   b_post_g9_0_o := cP H 0 PRE_pl_t2p.s1 PRE_pl_t2p.S1
-  b_post_g10_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g10_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g11_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g11_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g12_0_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g12_0_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g9_1_i := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g9_1_o := cP H 1 PRE_pl_r1.s890 PRE_pl_r1.S890
-  b_post_g10_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
-  b_post_g10_1_o := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
-  b_post_g11_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
-  b_post_g11_1_o := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
-  b_post_g12_1_i := cP H 2 PRE_pl_r2.s890 PRE_pl_r2.S890
+  b_post_g10_0_i := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g10_0_o := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g11_0_i := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g11_0_o := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g12_0_i := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g12_0_o := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g9_1_i := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g9_1_o := cP H 1 PRE_pl_r1.s448 PRE_pl_r1.S448
+  b_post_g10_1_i := cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448
+  b_post_g10_1_o := cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448
+  b_post_g11_1_i := cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448
+  b_post_g11_1_o := cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448
+  b_post_g12_1_i := cP H 2 PRE_pl_r2.s448 PRE_pl_r2.S448
 
 /-- **POST's pieces.** -/
 noncomputable def pieces (ld pc0 pf : Nat → ICut FF) (pc : Nat → Nat → ICut FF) :

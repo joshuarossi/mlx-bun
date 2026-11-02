@@ -13,6 +13,22 @@ kernel_rfl PF2.imgP : PRE_first_tail_x2_r0_suffix.s8.heap.get 2665 = some (.obj 
 kernel_rfl PF2.emptyP : arrOf PRE_first_tail_x2_r0_suffix.s8 2665 = []
 noncomputable def PF2.ndAt (a : Nat) : Bool := [2673467, 2673472, 2673473].all fun b => !Nat.beq (PFW2.R.data.a a) b
 tpl_all_blocks PF2.ND from PF15EV : PF2.ndAt
-kernel_rfl PF2.ndFramed : PRE_pf_vw.frames.all PF2.ndAt = true
+kernel_rfl PF2.ndFramed : PF15EV.frames.all PF2.ndAt = true
+kernel_rfl PF2.memoFix : PFW2.R.data.a 4910 = 4910
+kernel_rfl PF2.memoGet0 : PRE_pf_vw.s0.heap.get 4910 = some (.obj (Template.objOf PRE_pf_vw.s0 4910))
+kernel_rfl PF2.memoGet1 : PRE_first_tail_x2_r0_suffix.s8.heap.get 4910 = some (.obj (Template.objOf PRE_first_tail_x2_r0_suffix.s8 4910))
+noncomputable def PF2.memoEs : List (Val × Val) := match (Template.objOf PRE_first_tail_x2_r0_suffix.s8 4910).kind with | .map es => es | _ => []
+kernel_rfl PF2.memoKind : (Template.objOf PRE_first_tail_x2_r0_suffix.s8 4910).kind = .map PF2.memoEs
+kernel_rfl PF2.memoImg : PFW2.R.data.map.obj (Template.objOf PRE_pf_vw.s0 4910) = { Template.objOf PRE_first_tail_x2_r0_suffix.s8 4910 with kind := .map (StringIndex.dropCodes [causalKey] PF2.memoEs) }
+kernel_rfl PF2.ghostFix1824 : PFW2.R.data.a 1824 = 1824
+kernel_rfl PF2.ghostChk1824 : Pf.ghostChkB (PRE_pf_vw.s0.heap.get 1824) (PRE_first_tail_x2_r0_suffix.s8.heap.get 1824) = true
+kernel_rfl PF2.ghostFix1834 : PFW2.R.data.a 1834 = 1834
+kernel_rfl PF2.ghostChk1834 : Pf.ghostChkB (PRE_pf_vw.s0.heap.get 1834) (PRE_first_tail_x2_r0_suffix.s8.heap.get 1834) = true
+kernel_rfl PF2.ghostFix1852 : PFW2.R.data.a 1852 = 1852
+kernel_rfl PF2.ghostChk1852 : Pf.ghostChkB (PRE_pf_vw.s0.heap.get 1852) (PRE_first_tail_x2_r0_suffix.s8.heap.get 1852) = true
+kernel_rfl PF2.ghostFix1993 : PFW2.R.data.a 1993 = 1993
+kernel_rfl PF2.ghostChk1993 : Pf.ghostChkB (PRE_pf_vw.s0.heap.get 1993) (PRE_first_tail_x2_r0_suffix.s8.heap.get 1993) = true
+kernel_rfl PF2.ghostFix2001 : PFW2.R.data.a 2001 = 2001
+kernel_rfl PF2.ghostChk2001 : Pf.ghostChkB (PRE_pf_vw.s0.heap.get 2001) (PRE_first_tail_x2_r0_suffix.s8.heap.get 2001) = true
 
 end Host.Load.Run.Tpl

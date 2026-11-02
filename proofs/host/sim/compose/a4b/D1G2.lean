@@ -20,7 +20,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.S21.oracle) :
     CutStep (withMem Mem (g2Cut NB T tk)) (withMem Mem (forwardCut NB T tk)) 7 := by
-  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids⟩, hm⟩
+  rintro t C ⟨x, rfl, rfl, ⟨π, K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (D1Sim.typed NB T tk (D1Typed.bytes π)) hb.context hb.valuation hgood
@@ -56,7 +56,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) {Mem : SegInst FF → Prop}
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨π, K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids⟩,
+    ⟨π, K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids, hnat.step rfl hr hm' hext.big hext.node cnt22⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt22), congrFun hext.a 12504⟩ hm⟩
 
 noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) (Mem : SegInst FF → Prop)

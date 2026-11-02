@@ -16,7 +16,7 @@ kernel_rfl PF3.hi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pf_vw.s0.ffi).next setu
 kernel_rfl PF3.nhi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pf_vw.s0.ffi).nnext setupP.NE = true
 kernel_rfl PF3.hi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).next setupP.E = true
 kernel_rfl PF3.nhi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).nnext setupP.NE = true
-kernel_rfl PF3.jsKeys : (PTrie.keys PFW3.R.data.heap).all (Nat.ble 2825043) = true
-kernel_rfl PF3.jsLe : Nat.ble 2825043 PFW3.R.data.n0 = true
+kernel_rfl PF3.jsKeys : (PTrie.keys PFW3.R.data.heap).all (Nat.ble 2823887) = true
+kernel_rfl PF3.jsLe : Nat.ble 2823887 PFW3.R.data.n0 = true
 
 end Host.Load.Run.Tpl

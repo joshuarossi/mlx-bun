@@ -1,5 +1,5 @@
 import host.sim.compose.a4b.PFW6Walk
-import host.sim.compose.a4b.PFVEClosed
+import host.sim.compose.a4b.PF15EClosed
 import host.sim.template.NShiftOf
 import host.sim.compose.PfLink
 set_option Elab.async false
@@ -13,10 +13,11 @@ noncomputable abbrev PF6.y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toL
 noncomputable abbrev PF6.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad PRE_first_tail_x6_r0_suffix.s8.ffi)
 noncomputable abbrev PF6.x0 : NSt := PF6.y0.mlx
 noncomputable abbrev PF6.x1 : NSt := PF6.y1.mlx
-noncomputable def PF6.thetaX : List (Nat × SymE) := [(30, SymE.lit (F64.fin false 24 (0))), (31, SymE.lit (F64.fin false 24 (0)))]
+noncomputable def PF6.thetaX : List (Nat × SymE) := [(30, .lit (F64.ofNat 24)), (31, .lit (F64.ofNat 24))]
 noncomputable def PF6.θ : Nat → SymE := thetaOf (PFW6.R.theta ++ PF6.thetaX)
+noncomputable def PF6.tabP : List SymE := PRE_first_tail_x6_r0_suffix.S8.tab ++ PRE_pf_vw.S0.tab.map (·.subst PF6.θ)
 noncomputable def PF6.numAt (i : Nat) : Bool := match nth? PRE_pf_vw.S0.tab i with
-  | some e => decide ((⟨PRE_first_tail_x6_r0_suffix.S8.tab, []⟩ : SSrv).val (PFW6.R.data.map.num i) = some (e.subst PF6.θ))
+  | some e => decide ((⟨PF6.tabP, []⟩ : SSrv).val (PFW6.R.data.map.num i) = some (e.subst PF6.θ))
   | none => true
 
 kernel_rfl PF6.nnh0 : PFW6.R.data.nh0 = PF6.x0.next

@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.VWPfPad
+import host.sim.compose.a4b.VWPf
 import host.sim.compose.a4b.PF3
 import host.sim.compose.a4b.x3.sfx.VWBodyChain
 import host.sim.compose.a4b.x3.sfx.VWBodyMap
@@ -20,9 +20,10 @@ kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (PF3.θ 11) (some Q.n)
 kernel_rfl pfRow16 : (fwdRows.all fun r => resChk r bodyM (PF3.θ 16) (some Q.cap1)) = true
 kernel_rfl pfNN : PFW3.R.data.nn0 = PFW3.R.data.nn1
 kernel_rfl pfNK : PTrie.keys PFW3.R.data.node = []
-kernel_rfl pfNext : PRE_first_tail_x3_r0_suffix.s8.next = PRE_pf_vw.s0.next
-kernel_rfl pfH : (mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).next = (mlxOf PRE_pf_vw.s0.ffi).next
-kernel_rfl pfNodes : (mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).nnext = (mlxOf PRE_pf_vw.s0.ffi).nnext
+kernel_rfl pfGrow : Nat.ble PRE_pf_vw.s0.next PRE_first_tail_x3_r0_suffix.s8.next = true
+kernel_rfl pfDiff : PRE_first_tail_x3_r0_suffix.s8.next - PRE_pf_vw.s0.next = 0
+kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).next (mlxOf PRE_pf_vw.s0.ffi).next = true
+kernel_rfl pfNodes : Nat.ble (mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).nnext (mlxOf PRE_pf_vw.s0.ffi).nnext = true
 kernel_rfl pfBelow : Nat.ble (mlxOf PRE_first_tail_x3_r0_suffix.s8.ffi).nnext PF3.P0.NL = true
 kernel_rfl pfA : PFW3.R.data.a 2590 = 2590
 kernel_rfl pfB : PFW3.R.data.a 2586 = 2586
@@ -51,7 +52,7 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
   have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPfPad (c30 := 16) (c31 := 16) PF3.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK pfNext pfH pfNodes
+  exact toPf (c30 := 16) (c31 := 16) PF3.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes)
     (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]
@@ -63,6 +64,6 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (fun ν hm => by
       rw [← hcapR]
       exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
-    pfA pfB pfC pfE hcap hbound
+    pfA pfB pfC pfE (by rw [pfDiff]; omega) hbound
 
 end Host.Ts.Sim.Compose.VWFirst.X3.Sfx

@@ -50,7 +50,7 @@ theorem tail6 : ∀ r ∈ VWFirst.VW6.fwdRows, r ∈ VWFirst.firstTailRows := by
   simp [VWFirst.firstTailRows]
 
 section
-variable (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 68857 ≤ cap) (hbound : cap < Sim.bound)
+variable (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 70009 ≤ cap) (hbound : cap < Sim.bound)
   (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)
 
 /-- The pre-final cut. -/

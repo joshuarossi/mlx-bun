@@ -102,9 +102,9 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
                 exact hb.valuation j
     · change x.t.next - s0.next ≤ cap
       omega
-    · change y.K.fr 2665 = _
-      rw [frames_after F M1 x.K 2665, if_pos rfl]
-      exact hP
+    · have h := frames_after F M1 x.K 2665
+      rw [if_pos rfl] at h
+      exact h.trans hP
     · intro j hj
       rw [hval j (by omega) (by omega) (by omega) (by omega) (by omega)]
       exact hins.1 j hj
@@ -114,8 +114,6 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
   · change M1.a (D.a 2586) = 2586 ∧ M1.a (D.a 2589) = 2589
     rw [hB, hC, hext.a]
     exact hids
-  · have h1 := hnat.1
-    have h2 := hnat.2
-    exact ⟨by omega, by omega⟩
+  · exact ⟨Nat.le_trans hnat.1 (Nat.add_le_add_right sameH _), Nat.le_trans hnat.2 (Nat.add_le_add_right sameN _)⟩
 
 end Host.Ts.Sim.Compose.VWFirst

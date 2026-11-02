@@ -13,9 +13,9 @@ open Host.Load.Run.Tpl Host.Ts.Sim.Compose.Pf
 
 The walk leaves the nodes alone and the offset. The tail's variables take literals, or the class's own. -/
 
-abbrev pltKeys : List Nat := (PLTP.R.theta ++ PLT.thetaX).map Prod.fst
+noncomputable abbrev pltKeys : List Nat := (PLTP.R.theta ++ PLT.thetaX).map Prod.fst
 
-kernel_rfl pltKept : ((List.range 9) ++ [9, 10, 11, 16]).all (fun j => decide (PLT.θ j = .var j)) = true
+kernel_rfl pltKept : ((List.range 9) ++ [9, 10, 11, 16]).all (fun j => decide (PLT.θ j = SymE.var j)) = true
 kernel_rfl pltSmall : (pltKeys.all fun j => [200].contains j || imgSmall [1, 3, 4, 5, 6, 7, 8, 1536] (PLT.θ j)) = true
 kernel_rfl pltDims : dimsLitB PLT.θ = true
 kernel_rfl plt20 : litAt PLT.θ 20 6 = true
@@ -48,7 +48,7 @@ theorem hlinkOne {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {Mem Mem
     CutConv (withMem Mem (indexedCut0 NB T tk cap nI π PRE_pl_common.s1 PRE_pl_common.S1))
       (withMem Mem' (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0)) :=
   toTail PLT.facts hNB (Nat.le_of_ble_eq_true pltH) (Nat.le_of_ble_eq_true pltN)
-    (by rw [pltNext]; exact Nat.le_refl _) (by rw [pltNext]; omega) hbound
+    (by rw [pltNext]) (by rw [pltNext]; omega) hbound
     (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide))
     (fun j hj => plt_kept (List.mem_append_left _ (List.mem_range.mpr hj)))
     (fun x hm hv => valOf (off := [200]) hv (fun _ hj => thetaOf_off hj) pltSmall (by

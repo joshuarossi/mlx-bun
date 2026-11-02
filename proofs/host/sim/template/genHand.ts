@@ -1,5 +1,6 @@
 // POST's hand-off: the modules of `Host.Route.PrefGraph.HandWalk` from the decode template into POST's end.
-// usage: bun genHand.ts <dir> <T> <tdir> <X> <end> [--pd lo,E,NE,NL,N0]
+// usage: bun genHand.ts <dir> <T> <tdir> <Sc> <X> <end> [--pd lo,E,NE,NL,N0]
+//   <T> the decode template, <Sc> a decode chain from it: `Sc.s0` is the hand-off's start, `T.s0` with its readback suffix dropped.
 //   Walk (`tpl_restart_hand`, chosen natively), Base (the end as the hand-off uses it), Keys, Closed, Fresh, Heap, Na, Nc_<j>, Nb, Full, K<j>, Hand (`Hand.walk`).
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -7,26 +8,28 @@ import { join } from "node:path";
 const argv = process.argv.slice(2);
 const pdAt = argv.indexOf("--pd");
 const pd = pdAt >= 0 ? argv.splice(pdAt, 2)[1]!.split(",") : ["18151", "131072", "2 ^ 40", "20000", "22539"];
-const [dir, T, tdir, X, Ti] = argv as [string, string, string, string, string];
-if (!Ti) throw new Error("usage: genHand.ts <dir> <T> <tdir> <X> <end>");
+const [dir, T, tdir, Sc, X, Ti] = argv as [string, string, string, string, string, string];
+if (!Ti) throw new Error("usage: genHand.ts <dir> <T> <tdir> <Sc> <X> <end>");
 const here = import.meta.dir, NL = "\n", streams = process.env.HOST_STREAM_DIR!;
 const tm = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${T}`, "template.json"), "utf8"));
 const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
 const seg = JSON.parse(readFileSync(join(streams, `Host.Load.Run.Tpl.${X}`, "seg.json"), "utf8"));
+const scdir = process.env.HAND_SCDIR ?? (() => { throw new Error("HAND_SCDIR: the decode chain's directory"); })();
+const scMod = `host.sim.template.${scdir}.m.${JSON.parse(readFileSync(join(here, scdir, "m", "members.json"), "utf8")).H0}`;
 const xdir = process.env.HAND_XDIR ?? (() => { throw new Error("HAND_XDIR: the end's chain directory"); })();
 if (seg.T1 !== +Ti) throw new Error(`${X}: T1 ${seg.T1}, not ${Ti}`);
 mkdirSync(join(here, dir), { recursive: true });
 const mod = (f: string) => `host.sim.template.${dir}.${f}`;
 const head = (...imps: string[]) => imps.map(i => `import ${i}${NL}`).join("") +
-  `set_option Elab.async false${NL}namespace Host.Load.Run.Tpl${NL}open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Route${NL}` +
+  `set_option Elab.async false${NL}namespace Host.Load.Run.Tpl${NL}open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full${NL}` +
   `set_option maxRecDepth 1000000${NL}set_option maxHeartbeats 0${NL}${NL}`;
 const put = (file: string, body: string) => writeFileSync(join(here, dir, file + ".lean"), body + NL + "end Host.Load.Run.Tpl" + NL);
-const s0 = `${T}.s0`, S0 = `${T}.S0`, sE = `${X}.s${Ti}`, SE = `${X}.S${Ti}`, s1 = "Hand.t";
+const s0 = `${Sc}.s0`, S0 = `${Sc}.S0`, sE = `${X}.s${Ti}`, SE = `${X}.S${Ti}`, s1 = "Hand.t";
 const R = "HandP.R", D = `${R}.data`, sg = "Hand.κ", P = "Hand.Pd", x0 = "Hand.x0n", x1 = "Hand.x1n";
 const fq = (a: string) => `(mlxOf ${a}.ffi)`;
 const W = "Host.Load.Run.Tpl.wideG", WL = "Host.Load.Run.Tpl.wideList";
 
-put("Walk", head(`host.sim.template.${tdir}.S`, `host.sim.template.${xdir}.H${Math.floor(+Ti / 32)}`, "host.sim.template.RestartHand",
+put("Walk", head(scMod, `host.sim.template.${xdir}.H${Math.floor(+Ti / 32)}`, "host.sim.template.RestartHand",
   "host.sim.template.BridgeLiteral", "host.sim.template.ServerData", "host.sim.template.Ghosts", "host.sim.template.a4pre_first_tail_x15_r0.States") + [
   `/-! The map from the decode template into POST's end, chosen natively on the bridge-free views of both states. -/`,
   `bridge_empty HandP.s0 from ${s0}`,
@@ -40,6 +43,7 @@ put("Walk", head(`host.sim.template.${tdir}.S`, `host.sim.template.${xdir}.H${Ma
   `tpl_restart_hand ${R} : HandP, HandP ${Ti} tok 79 emit 12504 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)`,
   ""].join(NL));
 put("Base", head(mod("Walk"), "host.route.PostReframe", "host.sim.full.DropTokens", "host.sim.template.SetupP", "host.sim.template.NShiftOf", "host.sim.template.Check") + [
+  `open Host.Route`,
   `/-! POST's end as the hand-off uses it: the prompt array holding the template's elements, its queue the token. -/`,
   `noncomputable def Hand.o : Obj := Template.objOf ${sE} 2665`,
   `noncomputable def Hand.x0 : List Val := arrOf ${s0} 2665`,
@@ -54,7 +58,7 @@ put("Base", head(mod("Walk"), "host.route.PostReframe", "host.sim.full.DropToken
   `noncomputable abbrev ${x0} : NSt := Hand.y0.mlx`,
   `noncomputable abbrev ${x1} : NSt := Hand.y1.mlx`,
   ""].join(NL));
-put("Keys", head(`host.sim.template.${tdir}.S`, "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
+put("Keys", head(scMod, "host.sim.template.RestartCmd", "host.sim.template.BridgeLiteral", "host.sim.template.ServerData") + [
   `/-! The template's address groups, on its bridge-free view: all but the prompt array. -/`,
   `bridge_empty HandV.s0 from ${s0}`,
   `server_data HandV.S0 := ${S0}`,
@@ -215,7 +219,7 @@ const kchecks: string[][] = [[
   `kernel_rfl Hand.nnE : Nat.ble ${fq(sE)}.nnext (2 ^ 40) = true`]];
 kchecks.forEach((c, j) => put(`K${j}`, head(mod("Na"), "host.sim.template.FullShiftGen", "host.sim.template.Ghosts") + c.join(NL) + NL));
 put("Hand", head(mod("Heap"), mod("Full"), mod("Fresh"), ...kchecks.map((_, j) => mod(`K${j}`)), "host.route.PostHandoff", "host.sim.template.HandGen", "host.sim.template.SetupP") + [
-  `open Host.Route.PrefGraph Host.Load.Run.Prompt`,
+  `open Host.Route Host.Route.PrefGraph Host.Load.Run.Prompt`,
   "",
   `/-- The variables the template's table reads. -/`,
   `kernel_rfl Hand.reads : ${S0}.tab.all (readsOnly (fun v => ${R}.used.contains v)) = true`,

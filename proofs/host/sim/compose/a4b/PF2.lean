@@ -12,11 +12,26 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PF2.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x2_r0_suffix.s8 PRE_pf_vw.S0.tab PF2.tabP PFW2.R.data PFW2.R.inv PF2.θ PF2.P0 2825043 [2673467, 2673472, 2673473] where
+theorem PF2.wideAll : ∀ p ∈ wideListPf, Pf.WideP PFW2.R.data PRE_pf_vw.s0 PRE_first_tail_x2_r0_suffix.s8 p.1 p.2 := by
+  intro p hp
+  simp only [wideListPf, wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp
+  rcases hp with rfl | rfl | rfl | rfl | rfl | rfl
+  · exact Pf.wideP_memo (by decide) PF2.memoFix PF2.memoGet0 PF2.memoGet1 PF2.memoKind PF2.memoImg
+  · exact Pf.wideP_ghost (by decide) PF2.ghostFix1824 PF2.ghostChk1824
+  · exact Pf.wideP_ghost (by decide) PF2.ghostFix1834 PF2.ghostChk1834
+  · exact Pf.wideP_ghost (by decide) PF2.ghostFix1852 PF2.ghostChk1852
+  · exact Pf.wideP_ghost (by decide) PF2.ghostFix1993 PF2.ghostChk1993
+  · exact Pf.wideP_ghost (by decide) PF2.ghostFix2001 PF2.ghostChk2001
+
+theorem PF2.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x2_r0_suffix.s8 PRE_pf_vw.S0.tab PF2.tabP PFW2.R.data PFW2.R.inv PF2.θ PF2.P0 2823887 [2673467, 2673472, 2673473] wideGPf where
   num := PF2.num
   heap := by
-    intro a h ha hm
-    obtain ⟨q, hq, haq⟩ := PRE_pf_vw.cover a h ha (fun hf => hm (by rw [PRE_pf_vw.frames_eq] at hf; simpa using hf))
+    intro a h ha hm hw
+    obtain ⟨q, hq, haq⟩ := PRE_pf_vw.cover a h ha (fun hf => by
+      have hf : a ∈ 2665 :: wideListPf.map Prod.fst := hf
+      rcases List.mem_cons.mp hf with h0 | h1
+      · exact hm h0
+      · exact Pf.lookupW_ne h1 hw)
     have he := PFW2.R.heapAt q hq a haq
     rw [ha] at he
     exact he
@@ -24,6 +39,7 @@ theorem PF2.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x2_r0_suffix.s8 PRE_p
   getP := PF2.getP
   kindP := PF2.kindP
   imgP := PF2.imgP
+  wide a w hw := PF2.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PF2.emptyP
   notDrop := by
     intro a ha b hb he
@@ -34,7 +50,6 @@ theorem PF2.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x2_r0_suffix.s8 PRE_p
     simp at h2
   n0 := PF2.n0
   n1 := PF2.n1
-  grows := Nat.le_of_ble_eq_true PF2.grows
   ren := PF2.ren
   bound := PRE_pf_vw.presentBound
   ctl := PF2.ctl

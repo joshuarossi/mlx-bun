@@ -9,7 +9,6 @@ set_option maxHeartbeats 0
 
 kernel_rfl PF2.n0 : PFW2.R.data.n0 = PRE_pf_vw.s0.next
 kernel_rfl PF2.n1 : PFW2.R.data.n1 = PRE_first_tail_x2_r0_suffix.s8.next
-kernel_rfl PF2.grows : Nat.ble PRE_pf_vw.s0.next PRE_first_tail_x2_r0_suffix.s8.next = true
 kernel_rfl PF2.ren : checkRen PRE_pf_vw.s0 PFW2.R.data PFW2.R.inv = true
 
 end Host.Load.Run.Tpl

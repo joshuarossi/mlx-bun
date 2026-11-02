@@ -9,7 +9,6 @@ set_option maxHeartbeats 0
 
 abbrev PRE_pf_vw.n : Nat := 8323
 kernel_rfl PRE_pf_vw.tab_len : PRE_pf_vw.S0.tab.length = PRE_pf_vw.n
-kernel_rfl PRE_pf_vw.frames_eq : PRE_pf_vw.frames = [2665]
 noncomputable def PRE_pf_vw.suppAt (a : Nat) : Bool :=
   match PRE_pf_vw.s0.heap.get a with
   | some h => bHobj (presentB PRE_pf_vw.s0) PRE_pf_vw.n h
@@ -17,16 +16,16 @@ noncomputable def PRE_pf_vw.suppAt (a : Nat) : Bool :=
 noncomputable def PRE_pf_vw.boundAt (a : Nat) : Bool := Nat.blt a PRE_pf_vw.s0.next
 
 tpl_all_blocks PRE_pf_vw.HS from PF15EV : PRE_pf_vw.suppAt
-kernel_rfl PRE_pf_vw.suppFramed : PRE_pf_vw.frames.all PRE_pf_vw.suppAt = true
+kernel_rfl PRE_pf_vw.suppFramed : PF15EV.frames.all PRE_pf_vw.suppAt = true
 tpl_all_blocks PRE_pf_vw.BD from PF15EV : PRE_pf_vw.boundAt
-kernel_rfl PRE_pf_vw.boundFramed : PRE_pf_vw.frames.all PRE_pf_vw.boundAt = true
+kernel_rfl PRE_pf_vw.boundFramed : PF15EV.frames.all PRE_pf_vw.boundAt = true
 kernel_rfl PRE_pf_vw.rootsSupp_check : checkRootsSupp PRE_pf_vw.s0 PRE_pf_vw.n = true
 
-theorem PRE_pf_vw.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PF15EV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pf_vw.frames.all p = true) :
+theorem PRE_pf_vw.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PF15EV.gks, ∀ a ∈ q.2, p a = true) (hf : PF15EV.frames.all p = true) :
     ∀ a, Present PRE_pf_vw.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha
-  by_cases hm : a ∈ PRE_pf_vw.frames
+  by_cases hm : a ∈ PF15EV.frames
   · exact List.all_eq_true.mp hf a hm
   · obtain ⟨q, hq, haq⟩ := PRE_pf_vw.cover a h hg hm
     exact hb q hq a haq

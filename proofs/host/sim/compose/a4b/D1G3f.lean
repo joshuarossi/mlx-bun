@@ -1,17 +1,19 @@
-import host.sim.compose.PostGlue
+import host.sim.compose.a4b.pl.Head.All
+import host.sim.compose.TailVals
 import host.sim.compose.a4b.PLD1
 import host.sim.compose.PfLink
 import host.sim.conv.Decanon
 import host.sim.compose.a4b.D1BodyFill
 import host.sim.template.a4pre_pl_head.Origin
-import host.sim.template.a4pre_pl_head.Run
-import host.sim.template.a4pre_pl_head.Good
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
 namespace Host.Ts.Sim.Compose.D1First
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl
+
+private abbrev head_H : Nat := 4096
+private abbrev head_N : Nat := 4096
 
 private theorem θat {j : Nat} {c : F64} {ν : Nat → F64} (h9 : ν 9 = F64.ofNat 1)
     (h : (fun ν : Nat → F64 => (PLD1.θ j).eval (upd ν 9 (F64.ofNat 1))) = fun _ => c) :
@@ -85,19 +87,23 @@ private theorem entryValuation {ν : Nat → F64} (hv : VBOkF loopVB ν) (h9 : �
     rw [hθ]
     exact he
 
+/-- What the short link reads, at the entry. -/
+private theorem entryShort {ν : Nat → F64} (h9 : ν 9 = F64.ofNat 1) : Post.ShortVals (Shift.valuation PLD1.θ ν) :=
+  ⟨θat h9 θ21, θat h9 θ22, θat h9 θ24, θat h9 θ26⟩
+
 /-- **The singleton's return at the L-general POST entry.** -/
 theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈ ρ, k < 248320) {cap : Nat}
-    (hcap : 4096 ≤ cap) {Mem Mem' : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → y.ν 21 = F64.ofNat 4 → Mem x → Mem' y) :
+    (hcap : 4096 ≤ cap) {Mem Mem' : SegInst FF → Prop} (hMem : ∀ x y, NTrack x y → Post.ShortVals y.ν → Mem x → Mem' y) :
     CutConv (withMem Mem (returnedPromptCut NB T tk ρ))
-      (withMem Mem' (Post.indexedCut NB T tk cap 15235 ρ PRE_pl_entry.s0 PRE_pl_entry.S0)) := by
-  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨⟨hf, hc⟩, hp⟩, hm⟩
+      (withMem Mem' (Post.indexedCut0 NB T tk cap 15235 ρ PRE_pl_entry.s0 PRE_pl_entry.S0)) := by
+  rintro x ⟨π, K0, hr, hb, hip, hv, hem⟩ ⟨⟨⟨hf, hc, hnat⟩, hp⟩, hm⟩
   obtain ⟨origin, hfb, _⟩ := hb
   have hP0 := SetupD1PromptIdentity.forward_prompt hfb
   have hP : x.K.fr 2665 = some ([], π.map natV) := hP0
   have e : ρ = π := (SetupDrop.promptEq hfb.vocab hρ hP hp).symm
   subst e
   have hctx := hfb.context
-  have hfrK : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: [D1Frames.chunk, D1Frames.buffer, D1Frames.view] := hctx.1.2.2
+  have hfrK : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: ([] ++ [D1Frames.chunk, D1Frames.buffer, D1Frames.view]) := hctx.1.2.2
   have hlo : x.K.lo = 18151 := hctx.1.1
   have hhi : x.K.hi = 131072 := hctx.1.2.1
   have hDK : x.K.D ≤ 4096 := hctx.2
@@ -112,8 +118,9 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
     simp only [Sim.bound]
     omega
   have h9 : x.ν 9 = F64.ofNat 1 := hfb.singleton
-  have hrelV := Pf.pfRel PLD1.facts (π := ρ) hr hfrK hlo hhi hP
-    (Pf.linkRoomSame hr sameHandles sameNodes) hNB hD
+  have hrelV := Pf.pfRel PLD1.facts (π := ρ) (kw := []) hr hfrK hlo hhi (fun _ h => nomatch h)
+    (Pf.newFrames (L := wideListPf) (fun _ => rfl) hfrK (by decide)) hP
+    (Pf.linkRoomLe hr (Nat.le_of_eq sameHandles) (Nat.le_of_eq sameNodes)) hNB hD (by rw [sameNext]; omega)
   have hdef : ∀ j v e, nth? PLD1.renV j = some v → nth? PLD1.renE j = some e →
       Shift.valuation PLD1.θ x.ν v = e.eval (Shift.valuation PLD1.θ x.ν) := by
     intro j v e hv he
@@ -138,11 +145,10 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
   have hoff : x.t.next = D1Body.s155.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((x.M.after PLWalkD1.R.data.map).rebig (mlxOf PRE_pl_entry.s0.ffi).next setupP.E
       (mlxOf x.t.ffi).next).withJs, Shift.valuation PLD1.θ x.ν,
-    ⟨dropNext x.M x.K Pf.keepP noFrames D1Body.s155, PRE_pl_entry.s0.trace, x.t.trace, x.t.next - PRE_pl_entry.s0.next,
+    ⟨frW x.M x.K Pf.keepP wideGPf D1Body.s155, PRE_pl_entry.s0.trace, x.t.trace, x.t.next - PRE_pl_entry.s0.next,
       x.K.lo, x.K.hi⟩, x.t, x.C⟩
-  have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else none := Pf.drop_prompt PLD1.facts x.M x.K
   have hnode : y.M.node = x.M.node := funext fun k => congrArg x.M.node (nodeF_id walkNN walkNK k)
-  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, ⟨hf, ?_⟩, hMem x y (NTrack.conv rfl rfl hnode (by change x.M.a (PLWalkD1.R.data.a 12504) = _; rw [anchorE])) (θat h9 θ21) hm⟩
+  refine ⟨y, rfl, rfl, ⟨ρ, hrel, ?_⟩, ⟨hf, ?_, ?_⟩, hMem x y (NTrack.conv rfl rfl hnode (by change x.M.a (PLWalkD1.R.data.a 12504) = _; rw [anchorE])) (entryShort h9) hm⟩
   · refine
       { nonempty := by omega
         vocab := hfb.vocab
@@ -154,12 +160,14 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
         rowValue := θat h9 θ10
         offsetValue := ?_
         capValue := ?_
-        context := ⟨⟨hlo, hhi, fun a => ?_⟩, ?_⟩
+        context := ⟨⟨hlo, hhi, fun a => Pf.framed_after PLD1.facts x.M x.K (L := wideListPf) (fun _ => rfl) hP a⟩, ?_⟩
         offsetLow := ?_
         prompt := ?_
         reserved := ?_
         emittedAnchor := ?_
-        input := ?_ }
+        input := ?_
+        dims := trivial
+        hand := trivial }
     · have hθ : PLD1.θ 9 = .var 9 := Pf.thetaOf_off (by rw [θKeys]; decide)
       change (PLD1.θ 9).eval x.ν = _
       rw [hθ, hlen]
@@ -168,15 +176,6 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
       exact θat h9 θ11
     · rw [hlen]
       exact θat h9 θ16
-    · rw [hfrY a]
-      by_cases ha : a = 2665
-      · subst ha
-        simp only [if_true, List.mem_cons, List.not_mem_nil, or_false, iff_true]
-        rw [hP]
-        exact Option.some_ne_none _
-      · rw [if_neg ha]
-        simp only [ne_eq, not_true_eq_false, List.mem_cons, List.not_mem_nil, or_false, false_iff]
-        exact ha
     · change x.t.next - PRE_pl_entry.s0.next ≤ cap
       rw [hoff, sameNext]
       omega
@@ -184,9 +183,9 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
       change 13 ≤ x.t.next - PRE_pl_entry.s0.next
       rw [hoff, sameNext]
       omega
-    · change y.K.fr 2665 = _
-      rw [hfrY 2665, if_pos rfl]
-      exact hP
+    · have h := Pf.frames_after PLD1.facts x.M x.K 2665
+      rw [if_pos rfl] at h
+      exact h.trans hP
     · intro j hj
       have hθ : PLD1.θ j = .var j := Pf.thetaOf_off (by
         rw [θKeys]
@@ -208,38 +207,41 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
   · change x.M.a (PLWalkD1.R.data.a 2586) = 2586 ∧ x.M.a (PLWalkD1.R.data.a 2589) = 2589
     rw [anchorB, anchorC]
     exact hc
-
-kernel_rfl headBridge : bridgeOf PRE_pl_head.s1.ffi = bridgeOf PRE_pl_head.s0.ffi
-kernel_rfl headTop : noRetBlock PRE_pl_head.s1 = true
-theorem headInactive : (bridgeOf PRE_pl_head.s0.ffi).active = false := Host.Load.Boot.replay_active _
-kernel_rfl headCnt : countersOkB PRE_pl_head.s0 PRE_pl_head.s1 = true
+  · have h1 : (mlxOf x.t.ffi).next ≤ (mlxOf D1Body.s155.ffi).next + 0 := hnat.1
+    have h2 : (mlxOf x.t.ffi).nnext ≤ (mlxOf D1Body.s155.ffi).nnext + 0 := hnat.2
+    rw [sameHandles] at h1
+    rw [sameNodes] at h2
+    exact ⟨Nat.le_trans h1 (Nat.add_le_add_left (Nat.zero_le _) _), Nat.le_trans h2 (Nat.add_le_add_left (Nat.zero_le _) _)⟩
 
 noncomputable def g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (hπ : ∀ k ∈ π, k < 248320)
     (cap : Nat) (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 1593835520)
-    (Mem Mem' : Nat → SegInst FF → Prop) (hEnter : ∀ L x y, NTrack x y → y.ν 21 = F64.ofNat 4 → Mem L x → Mem' L y)
+    (Mem Mem' : Nat → SegInst FF → Prop) (hEnter : ∀ L x y, NTrack x y → Post.ShortVals y.ν → Mem L x → Mem' L y)
     (hKeep : ∀ L x y, Post.NTrackV x y → Mem' L x → Mem' L y) :
     GluePiece FF [final_cold.r0] (fun _ => withMem (Mem 1) (returnedPromptCut NB T tk π))
-      (fun i => withMem (Mem' i.L) (Post.indexedCut NB T tk cap 15235 π PRE_pl_head.s1 PRE_pl_head.S1)) where
+      (fun i => withMem (Mem' i.L) (Post.indexedCut0 NB T tk cap 15235 π PRE_pl_head.s1 PRE_pl_head.S1)) where
   m := []
-  n := 809
+  n := Post.PL.Head.N
   O := []
   chk _ _ := rfl
   ok r hr i hi _ := by
     obtain rfl := List.mem_singleton.mp hr
     have hL : i.L = 1 := D1Split.finalRowL hi
-    have hstep : CutStep (withMem (Mem' 1) (Post.indexedCut NB T tk cap 15235 π PRE_pl_head.s0 PRE_pl_head.S0))
-        (withMem (Mem' 1) (Post.indexedCut NB T tk cap 15235 π PRE_pl_head.s1 PRE_pl_head.S1)) 809 :=
-      Post.glueMem (hKeep 1) hcap2 PRE_pl_head.typedAccepted0 PRE_pl_head.typedRun headTop
-        (fun _ hν => PRE_pl_head.good hν) headInactive headBridge headCnt
-    have hhead : CutConv (withMem (Mem' 1) (Post.indexedCut NB T tk cap 15235 π PRE_pl_entry.s0 PRE_pl_entry.S0))
-        (withMem (Mem' 1) (Post.indexedCut NB T tk cap 15235 π PRE_pl_head.s0 PRE_pl_head.S0)) := by
+    have hstep := Post.PL.Head.all NB T tk cap 15235 π hcap2 (fun _ h => PRE_pl_head.good h.rowValue) (Mem' 1) (hKeep 1)
+    have hhead : CutConv (withMem (Mem' 1) (Post.indexedCut0 NB T tk cap 15235 π PRE_pl_entry.s0 PRE_pl_entry.S0))
+        (withMem (Mem' 1) (Post.indexedCut0 NB T tk cap 15235 π PRE_pl_head.s0 PRE_pl_head.S0)) := by
       rintro x ⟨γ, hrel, hb⟩ hB
-      refine ⟨x, rfl, rfl, ⟨γ, ?_, hb⟩, hB⟩
-      change RelB FF _ _ [] x.M x.ν x.K PRE_pl_head.s0 ⟨PRE_pl_head.S0.tab, []⟩ x.t x.C
-      rw [PRE_pl_head.s0_eq, PRE_pl_head.s0_tab]
-      exact hrel
+      refine ⟨x, rfl, rfl, ⟨γ, ?_, hb⟩, ?_⟩
+      · change RelB FF _ _ [] x.M x.ν x.K PRE_pl_head.s0 ⟨PRE_pl_head.S0.tab, []⟩ x.t x.C
+        rw [PRE_pl_head.s0_eq, PRE_pl_head.s0_tab]
+        exact hrel
+      · change _ ∧ _ at hB
+        refine ⟨?_, hB.2⟩
+        have hs : NativeAt head_H head_N PRE_pl_head.s0 x.t := by
+          rw [PRE_pl_head.s0_eq]
+          exact hB.1.2.2
+        exact ⟨hB.1.1, hB.1.2.1, hs⟩
     change CutStep (withMem (Mem 1) (returnedPromptCut NB T tk π))
-      (withMem (Mem' i.L) (Post.indexedCut NB T tk cap 15235 π PRE_pl_head.s1 PRE_pl_head.S1)) 809
+      (withMem (Mem' i.L) (Post.indexedCut0 NB T tk cap 15235 π PRE_pl_head.s1 PRE_pl_head.S1)) Post.PL.Head.N
     rw [hL]
     exact hstep.convL ((toEntry NB T tk hπ hcap (hEnter 1)).trans hhead)
 

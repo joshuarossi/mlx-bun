@@ -5,7 +5,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose.D1First
-open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl
 
 noncomputable abbrev start (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (Mem : Nat → SegInst FF → Prop) :=
   withMem (Mem 1) (SetupCommon.nextCut NB T tk π 1)
@@ -62,17 +62,27 @@ noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
   chk := (D1Split.g2_fin_first NB T tk (Mem 1) (hMem 1)).chk
   ok r hr i hi ho := CutStep.reached ((D1Split.g2_fin_first NB T tk (Mem 1) (hMem 1)).ok r hr i hi ho)
 
+kernel_rfl forwardNext : (mlxOf D1StageSplit.s22.ffi).next = (mlxOf D1Call.s1.ffi).next
+kernel_rfl forwardNnext : (mlxOf D1StageSplit.s22.ffi).nnext = (mlxOf D1Call.s1.ffi).nnext
+
+/-- The native counters at the forward's call. -/
+abbrev NatForward (x : SegInst FF) : Prop := NativeAt 0 0 D1Call.s1 x.t
+
 /-- The checked prefix and the split stages run from one start, so the prefix's witness has the
-same target and server: the property moves across when it reads no more than those. -/
+same target and server: the property and the native counters move across when they read no more than those. -/
 theorem toForwardPrompt (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : Nat → SegInst FF → Prop}
     (hWit : ∀ L x y, y.t = x.t → y.C = x.C → Mem L x → Mem L y) :
     CutConv (forwardCut NB T tk π Mem)
-      (withMem (Mem 1) (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV))) := by
+      (withMem (Mem 1) (withMem NatForward (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV)))) := by
   rintro x ⟨_, t0, C0, hi, hr⟩ hB
   obtain ⟨t', C', hd, y, hyt, hyc, hyR, hyB⟩ :=
     (D1Common.toForwardPrompt NB T tk π).convL (withMem_forget (Mem 1) _) t0 C0 hi
   rw [hr] at hd
   cases hd
-  exact ⟨y, hyt, hyc, hyR, hyB, hWit 1 x y hyt hyc hB.2⟩
+  have hn : NativeAt 0 0 D1StageSplit.s22 x.t := hB.1.2.2
+  refine ⟨y, hyt, hyc, hyR, ⟨hyB, ?_⟩, hWit 1 x y hyt hyc hB.2⟩
+  change NativeAt 0 0 D1Call.s1 y.t
+  rw [hyt]
+  exact ⟨forwardNext ▸ hn.1, forwardNnext ▸ hn.2⟩
 
 end Host.Ts.Sim.Compose.D1First

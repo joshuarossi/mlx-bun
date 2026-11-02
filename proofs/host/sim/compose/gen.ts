@@ -2217,6 +2217,9 @@ function genPostLink(args: string[]) {
   for (const [v, g] of formsOf) if (g.size > 1) for (const f of g.values()) { f.fresh = nextFresh++; renamed.push({ fresh: f.fresh, v, ref: f.ref }); }
   const needsV = renamed.length > 0;
   const st = tm.start as { n: number; next: number; mnext: number; nnext: number };
+  // No JS pointer in the template at or above this, and the walk moves nothing below it: the template's own counter, unless the
+  // template holds addresses the classes have elsewhere just below it.
+  const nJ = take("--js-above") ?? String(st.next);
   const chunk = 2000, s0 = T + ".s0", S0 = T + ".S0", s1 = X + ".s" + Ti, S1 = X + ".S" + Ti;
   if (needsV) thetaExtra = [thetaExtra, ...renamed.map(r => "(" + r.fresh + ", (nth? " + S1 + ".tab " + r.ref + ").getD (.var 0))")].filter(x => x).join(", ");
   const tab0 = needsV ? name + ".tabV" : S0 + ".tab";
@@ -2288,12 +2291,12 @@ function genPostLink(args: string[]) {
       "theorem T.noBigFresh : NoBigSt (fun i => (" + st.mnext + " : Int) \u2264 i \u2227 i < 131072) T.s0.trace T.s0 :=",
       "  NoBigSt.of_checks (fun a ha => T.allPresent T.FB.all T.freshFramed a ha) T.freshRoots",
       "",
-      "noncomputable def T.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB " + st.next + ") T.s0 a",
+      "noncomputable def T.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB " + nJ + ") T.s0 a",
       "tpl_all_blocks T.JH from T : T.jsAt",
       "kernel_rfl T.jsFramed : FV.frames.all T.jsAt = true",
-      "kernel_rfl T.jsRoots : noBigRootsP (jsAboveB " + st.next + ") T.s0.trace T.s0 = true",
+      "kernel_rfl T.jsRoots : noBigRootsP (jsAboveB " + nJ + ") T.s0.trace T.s0 = true",
       "kernel_rfl T.jsNative : bigsOutB jsLoN jsHiN " + mlx("T.s0") + " = true",
-      "theorem T.jsHeap : JsHeapAbove " + st.next + " T.s0 := by",
+      "theorem T.jsHeap : JsHeapAbove " + nJ + " T.s0 := by",
       "  intro a o ho",
       "  have hc := T.allPresent T.JH.all T.jsFramed a (Present.of_get ho)",
       "  unfold T.jsAt noBigAtP at hc",
@@ -2453,8 +2456,8 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.nhi0 : Nat.ble " + fq(s0) + ".nnext setupP.NE = true",
     "kernel_rfl N.hi1 : Nat.ble " + fq(s1) + ".next setupP.E = true",
     "kernel_rfl N.nhi1 : Nat.ble " + fq(s1) + ".nnext setupP.NE = true",
-    "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + st.next + ") = true",
-    "kernel_rfl N.jsLe : Nat.ble " + st.next + " " + D + ".n0 = true"]];
+    "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + nJ + ") = true",
+    "kernel_rfl N.jsLe : Nat.ble " + nJ + " " + D + ".n0 = true"]];
   kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, "host.load.boot.World", ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
     (dropList
@@ -2464,7 +2467,7 @@ function genPostLink(args: string[]) {
         "  rcases hp with " + ["rfl", ...wideGhosts.map(() => "rfl")].join(" | ") + NL +
         "  \u00B7 exact Pf.wideP_memo (by decide) N.memoFix N.memoGet0 N.memoGet1 N.memoKind N.memoImg" + NL +
         wideGhosts.map(g => "  \u00B7 exact Pf.wideP_ghost (by decide) N.ghostFix" + g + " N.ghostChk" + g).join(NL) + NL + NL +
-        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " [" + dropList + "] " + wideF + " where"
+        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + dropList + "] " + wideF + " where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
@@ -2552,7 +2555,7 @@ function genPostChain(args: string[]) {
   const T1 = chain.T1 as number, steps = chain.steps as number;
   const tplMod = `host.sim.template.${dir.replaceAll("/", ".")}`, outDir = join(HERE, "a4b", "pl", Name), outMod = `host.sim.compose.a4b.pl.${Name}`;
   mkdirSync(outDir, { recursive: true });
-  const names = membersOf(dir) ? Object.keys(membersOf(dir)!) : readdirSync(tplDir).filter(g => g.endsWith(".lean")).map(g => g.slice(0, -5));
+  const names = [...new Set([...Object.keys(membersOf(dir) ?? {}), ...readdirSync(tplDir).filter(g => g.endsWith(".lean")).map(g => g.slice(0, -5))])];
   const acceptOf = new Map<number, string>();
   for (const a of names.filter(g => /^Accept\d*$/.test(g)))
     for (const m of memberSrc(dir, a).matchAll(new RegExp(`^(?:kernel_rfl|boot_rfl) ${X}\\.accepted(\\d+)`, "gm"))) acceptOf.set(+m[1]!, a);

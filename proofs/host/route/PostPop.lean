@@ -4,6 +4,7 @@ import host.sim.template.a4pre_pl_t2p.H0
 import host.sim.template.a4pre_pl_t1.H0
 import host.sim.template.a4pre_pl_t1_eos.H0
 import host.sim.template.a4pre_pl_ta.H0
+import host.sim.template.a4pre_pl_ta.H14
 import host.sim.template.a4pre_pl_t2.H0
 import host.sim.template.a4pre_pl_t2_eos.H0
 import host.route.cert.Row.R1.Choose
@@ -80,11 +81,11 @@ kernel_rfl hpopT1Eos_n1 : ((mlxOf PRE_pl_t1_eos.s2.ffi).nodes.get 17776).isSome 
 kernel_rfl hpopT1Eos_tb : nth? PRE_pl_t1_eos.S0.tab 1 = some (.var 1)
 
 kernel_rfl hpopTa_t0 : (mlxOf PRE_pl_ta.s0.ffi).tokens = [.ref 1, .ref 2]
-kernel_rfl hpopTa_t1 : (mlxOf PRE_pl_ta.s6.ffi).tokens = [.ref 2]
-kernel_rfl hpopTa_i1 : (mlxOf PRE_pl_ta.s6.ffi).items.get 17776 = some (.ref 1)
+kernel_rfl hpopTa_t1 : (mlxOf PRE_pl_ta.s449.ffi).tokens = [.ref 2]
+kernel_rfl hpopTa_i1 : (mlxOf PRE_pl_ta.s449.ffi).items.get 17776 = some (.ref 1)
 kernel_rfl hpopTa_i0 : (mlxOf PRE_pl_ta.s0.ffi).items.get 17776 = none
 kernel_rfl hpopTa_n0 : ((mlxOf PRE_pl_ta.s0.ffi).nodes.get 17776).isSome = true
-kernel_rfl hpopTa_n1 : ((mlxOf PRE_pl_ta.s6.ffi).nodes.get 17776).isSome = true
+kernel_rfl hpopTa_n1 : ((mlxOf PRE_pl_ta.s449.ffi).nodes.get 17776).isSome = true
 kernel_rfl hpopTa_tb : nth? PRE_pl_ta.S0.tab 1 = some (.var 1)
 
 variable {C : M1Max.Contract} {P : MlxPrefillContract C} {KR : RouteKernelContract C} {NE : NeuralEngine}
@@ -199,7 +200,7 @@ theorem hpopTa {NB T cap nI : Nat} {tk : Nat → Nat} (hT : 1 ≤ T)
     (htk1 : tk 1 < 2 ^ 31) (toks : Nat → Nat → Nat) (htoks : toks π.length 0 = 17776)
     (Cr : Nat → List (Option Nat × Option Nat)) (L : Nat) (x y : SegInst FF)
     (hx : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π PRE_pl_ta.s0 PRE_pl_ta.S0).R x PRE_pl_ta.s0 ⟨PRE_pl_ta.S0.tab, []⟩)
-    (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π PRE_pl_ta.s6 PRE_pl_ta.S6).R y PRE_pl_ta.s6 ⟨PRE_pl_ta.S6.tab, []⟩)
+    (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π PRE_pl_ta.s449 PRE_pl_ta.S449).R y PRE_pl_ta.s449 ⟨PRE_pl_ta.S449.tab, []⟩)
     (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hnode : y.M.node = x.M.node)
     (hg : Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi)) (hm : memPost P KR NE net env π 0 toks Cr L x) :
     memPost P KR NE net env π 0 toks Cr L y :=

@@ -7,9 +7,8 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-abbrev PRE_pl_entry.n : Nat := 3294
+abbrev PRE_pl_entry.n : Nat := 121
 kernel_rfl PRE_pl_entry.tab_len : PRE_pl_entry.S0.tab.length = PRE_pl_entry.n
-kernel_rfl PRE_pl_entry.frames_eq : PRE_pl_entry.frames = [2665]
 noncomputable def PRE_pl_entry.suppAt (a : Nat) : Bool :=
   match PRE_pl_entry.s0.heap.get a with
   | some h => bHobj (presentB PRE_pl_entry.s0) PRE_pl_entry.n h
@@ -17,16 +16,16 @@ noncomputable def PRE_pl_entry.suppAt (a : Nat) : Bool :=
 noncomputable def PRE_pl_entry.boundAt (a : Nat) : Bool := Nat.blt a PRE_pl_entry.s0.next
 
 tpl_all_blocks PRE_pl_entry.HS from PLEntryV : PRE_pl_entry.suppAt
-kernel_rfl PRE_pl_entry.suppFramed : PRE_pl_entry.frames.all PRE_pl_entry.suppAt = true
+kernel_rfl PRE_pl_entry.suppFramed : PLEntryV.frames.all PRE_pl_entry.suppAt = true
 tpl_all_blocks PRE_pl_entry.BD from PLEntryV : PRE_pl_entry.boundAt
-kernel_rfl PRE_pl_entry.boundFramed : PRE_pl_entry.frames.all PRE_pl_entry.boundAt = true
+kernel_rfl PRE_pl_entry.boundFramed : PLEntryV.frames.all PRE_pl_entry.boundAt = true
 kernel_rfl PRE_pl_entry.rootsSupp_check : checkRootsSupp PRE_pl_entry.s0 PRE_pl_entry.n = true
 
-theorem PRE_pl_entry.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PLEntryV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pl_entry.frames.all p = true) :
+theorem PRE_pl_entry.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PLEntryV.gks, ∀ a ∈ q.2, p a = true) (hf : PLEntryV.frames.all p = true) :
     ∀ a, Present PRE_pl_entry.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha
-  by_cases hm : a ∈ PRE_pl_entry.frames
+  by_cases hm : a ∈ PLEntryV.frames
   · exact List.all_eq_true.mp hf a hm
   · obtain ⟨q, hq, haq⟩ := PRE_pl_entry.cover a h hg hm
     exact hb q hq a haq

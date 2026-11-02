@@ -1,5 +1,6 @@
 import host.sim.compose.a4b.PLD1Na
 import host.sim.template.a4pre_d1_body.D4
+import host.load.boot.World
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route

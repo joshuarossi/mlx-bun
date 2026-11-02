@@ -36,12 +36,12 @@ kernel_rfl t2e_free : (PostOk.JF [2673435, PRE_pl_t2_eos.cacheArray]).framed.con
 kernel_rfl t2e_vals : arrOf PRE_pl_t2_eos.s7 12504 = [.num (.ref 1)]
 kernel_rfl t2e_tab1 : nth? PRE_pl_t2_eos.S7.tab 1 = some (.var 1)
 
-kernel_rfl ta_halt : PRE_pl_ta.s896.ctl = .halt (.normal .undef)
-kernel_rfl ta_emit : PRE_pl_ta.s896.heap.get 12504 = some (.obj (Template.objOf PRE_pl_ta.s896 12504))
-kernel_rfl ta_kind : (Template.objOf PRE_pl_ta.s896 12504).kind = .array (arrOf PRE_pl_ta.s896 12504)
-kernel_rfl ta_cell : PRE_pl_ta.s896.cell? 2590 = some (some (.obj 12504))
+kernel_rfl ta_halt : PRE_pl_ta.s454.ctl = .halt (.normal .undef)
+kernel_rfl ta_emit : PRE_pl_ta.s454.heap.get 12504 = some (.obj (Template.objOf PRE_pl_ta.s454 12504))
+kernel_rfl ta_kind : (Template.objOf PRE_pl_ta.s454 12504).kind = .array (arrOf PRE_pl_ta.s454 12504)
+kernel_rfl ta_cell : PRE_pl_ta.s454.cell? 2590 = some (some (.obj 12504))
 kernel_rfl ta_free : (PostOk.JF [2673435, PRE_pl_ta.cacheArray]).framed.contains 12504 = false
-kernel_rfl ta_vals : arrOf PRE_pl_ta.s896 12504 = []
+kernel_rfl ta_vals : arrOf PRE_pl_ta.s454 12504 = []
 
 kernel_rfl t1_emit : PRE_pl_t1.s7.heap.get 12504 = some (.obj (Template.objOf PRE_pl_t1.s7 12504))
 kernel_rfl t1_kind : (Template.objOf PRE_pl_t1.s7 12504).kind = .array (arrOf PRE_pl_t1.s7 12504)
@@ -60,13 +60,13 @@ kernel_rfl t2e_own : ownW PRE_pl_t2_eos.s7 (.obj 2673245) chars!"stats" = some (
 kernel_rfl t2e_stop : ownW PRE_pl_t2_eos.s7 (.obj t2e_stats) chars!"finishReason" = some (.str chars!"stop")
 kernel_rfl t2e_wide : wideG t2e_stats = none
 
-kernel_rfl ta_gen : PRE_pl_ta.s896.cell? 2589 = some (some (.obj 2673245))
+kernel_rfl ta_gen : PRE_pl_ta.s454.cell? 2589 = some (some (.obj 2673245))
 noncomputable def ta_stats : Nat :=
-  match ownW PRE_pl_ta.s896 (.obj 2673245) chars!"stats" with
+  match ownW PRE_pl_ta.s454 (.obj 2673245) chars!"stats" with
   | some (.obj w) => w
   | _ => 0
-kernel_rfl ta_own : ownW PRE_pl_ta.s896 (.obj 2673245) chars!"stats" = some (.obj ta_stats)
-kernel_rfl ta_stop : ownW PRE_pl_ta.s896 (.obj ta_stats) chars!"finishReason" = some (.str chars!"stop")
+kernel_rfl ta_own : ownW PRE_pl_ta.s454 (.obj 2673245) chars!"stats" = some (.obj ta_stats)
+kernel_rfl ta_stop : ownW PRE_pl_ta.s454 (.obj ta_stats) chars!"finishReason" = some (.str chars!"stop")
 kernel_rfl ta_wide : wideG ta_stats = none
 
 kernel_rfl t1e_wide : wideG PRE_pl_t1_eos.statsAddr = none
@@ -110,7 +110,7 @@ structure PopHooks where
     CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → H.MemP 0 L x → H.MemP 0 L y
   ta : ∀ L (x y : SegInst FF), (indexedCut NB T tk cap nI π PRE_pl_ta.s0 PRE_pl_ta.S0).R x PRE_pl_ta.s0 ⟨PRE_pl_ta.S0.tab, []⟩ →
-    (indexedCut NB T tk cap nI π PRE_pl_ta.s6 PRE_pl_ta.S6).R y PRE_pl_ta.s6 ⟨PRE_pl_ta.S6.tab, []⟩ →
+    (indexedCut NB T tk cap nI π PRE_pl_ta.s449 PRE_pl_ta.S449).R y PRE_pl_ta.s449 ⟨PRE_pl_ta.S449.tab, []⟩ →
     CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
     Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → H.MemP 0 L x → H.MemP 0 L y
   t2 : 2 ≤ T → ∀ L (x y : SegInst FF), (indexedCut NB T tk cap nI π PRE_pl_t2.s0 PRE_pl_t2.S0).R x PRE_pl_t2.s0 ⟨PRE_pl_t2.S0.tab, []⟩ →
@@ -135,7 +135,7 @@ include hcap hL1 hL2 in
 /-- The first readback and the first warm forward. -/
 theorem toR1Step (L : Nat) (hT2 : 2 ≤ T) (hne : tk 1 ≠ 248044) (ht : tk 1 < 2 ^ 31) (hT31 : T < 2 ^ 31) :
     CutStep (withMem (H.MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0))
-      (withMem (H.MemP 1 L) (indexedCut NB T tk cap nI π PRE_pl_r1.s890 PRE_pl_r1.S890))
+      (withMem (H.MemP 1 L) (indexedCut NB T tk cap nI π PRE_pl_r1.s448 PRE_pl_r1.S448))
       ((nth? PRE_pl_t2p.ks 0).getD 0 + PL.R1.N) :=
   ((popM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_t2p.accepted0 PRE_pl_t2p.run0 t2pTop
       (fun _ h => PRE_pl_t2p.good (T := T) (t := tk 1) (by omega) hT31 ht hne

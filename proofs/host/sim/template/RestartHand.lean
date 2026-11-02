@@ -5,8 +5,8 @@ set_option Elab.async false
 
 `tpl_restart_hand R : T, X i` is `tpl_restart` from the decode template `T.s0` into POST's end `X.s<i>` as the hand-off uses it
 (`Host.Route.PrefGraph.handEnd`): the end's prompt array holding the template's elements, its token queue `[.ref 2]`. The template's token
-entry `tok` goes to `.ref 2`, whose table entry reads `var 2`. An entry the walk didn't pair goes to an end entry of its value, if the end
-holds one. The walk is a choice only; every use is a kernel check. -/
+entry `tok` goes to `.ref 2`, whose table entry reads `var 2`. An entry the walk didn't pair goes to its literal, or to an end entry of its value
+if the end holds one. The walk is a choice only; every use is a kernel check. -/
 
 namespace Host.Ts.Sim.Template
 open Lean Elab Command Meta Host.Ts Host.Load Host.Ts.Stream
@@ -75,9 +75,12 @@ unsafe def restartHandCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name)
   for r in [0:tab0.size] do
     unless paired.contains r do
       let e := (tab0[r]?.getD (.lit .nan)).subst θf
-      match (List.range tab1.size).find? (fun j => decide (tab1[j]? = some e)) with
-      | some j => numP := numP.set r (.ref j); unpaired := unpaired.push (r, true)
-      | none => unpaired := unpaired.push (r, false)
+      match e with
+      | .lit x => numP := numP.set r (.lit x); unpaired := unpaired.push (r, true)
+      | _ =>
+        match (List.range tab1.size).find? (fun j => decide (tab1[j]? = some e)) with
+        | some j => numP := numP.set r (.ref j); unpaired := unpaired.push (r, true)
+        | none => unpaired := unpaired.push (r, false)
   logInfo m!"tpl_restart_hand {pre}: unpaired {unpaired.toList.map fun (r, b) => s!"{r} {fmtSym (tab0[r]?.getD (.lit .nan))} {b}"}; end table head {(tab1.toList.take 20).map fmtSym}"
   let theta := cand.toList.filter (fun (v, e) => !decide (e = .var v)) |>.mergeSort (fun a b => a.1 ≤ b.1)
   let D := mkAppN (mkConst ``RData.mk) #[toExpr s0.next, toExpr s1.next, toExpr heapP, toExpr hndP,

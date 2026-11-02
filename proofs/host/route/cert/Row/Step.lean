@@ -34,7 +34,6 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
     (x y : SegInst FF) (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap nI π sE SE).R y sE ⟨SE.tab, []⟩)
     (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hnode : y.M.node = x.M.node)
     (hg : Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi)) (ht : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens)
-    (hdim : ∀ v k, tailVal v = some k → y.ν v = F64.ofNat k)
     (hm : memPost P KR NE net env π d toks Cr L x) : memPost P KR NE net env π (d + 1) toks Cr' L y := by
   intro hL
   subst hL
@@ -56,7 +55,7 @@ theorem hfw (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weig
     · exact hb.offsetValue
     · exact hb.capValue.trans (by rw [hcap]; rfl)
     · rw [nuRow_dim _ hd]
-      exact hdim j k hd
+      exact hb.dims j k hd
   have hx := hp tab (hle.trans hC)
   rw [hnode]
   obtain ⟨tok, hs, hR, hcv, hcaps, hcb⟩ := hx.cur

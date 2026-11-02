@@ -18,7 +18,7 @@ def Book (T : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
 noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (m : List (Nat × Q))
     (s : St FF.S) (S : SSrv) : ICut FF :=
   { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP m s S (setupI 1)
-    with B := Book T tk }
+    with B := fun x => Book T tk x ∧ NativeAt 0 0 s x.t }
 
 noncomputable abbrev npsCut (NB T : Nat) (tk : Nat → Nat) :=
   cut NB T tk D1StageSplit.map_start D1StageSplit.s0 D1StageSplit.S0
@@ -28,13 +28,16 @@ noncomputable abbrev g1Cut (NB T : Nat) (tk : Nat → Nat) :=
 theorem toNps (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
     CutConv (withMem Mem (SetupCommon.nextCut NB T tk π 1)) (withMem Mem (npsCut NB T tk)) := by
-  apply (SetupDrop.toSingleton NB T tk π hMem).trans
+  apply (SetupDrop.toSingletonPin NB T tk π hMem).trans
   rintro x ⟨hr, hq⟩ hb
-  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb⟩
-  change RelB FF _ wideP [] x.M x.ν x.K (D1StageSplit.s0 : St FF.S)
-    ⟨D1StageSplit.S0.tab, []⟩ x.t x.C
-  rw [startEq, startTab]
-  exact hr
+  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, ⟨⟨hb.1.1, hb.1.2.1⟩, ?_⟩, hb.2⟩
+  · change RelB FF _ wideP [] x.M x.ν x.K (D1StageSplit.s0 : St FF.S)
+      ⟨D1StageSplit.S0.tab, []⟩ x.t x.C
+    rw [startEq, startTab]
+    exact hr
+  · have hn : NativeAt 0 0 PRE_setup_early_r0.s16 x.t := hb.1.2.2.2
+    rw [startEq]
+    exact hn
 
 theorem stageSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
     Disp.StepSimXLB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
@@ -65,16 +68,17 @@ theorem nps {NB T : Nat} {tk : Nat → Nat} {Mem : SegInst FF → Prop}
     (horacle : ∀ ν, MapOk ν (setupI 1) [(9, .L)] → Good ν D1StageSplit.st0.S0.oracle) :
     CutStep (withMem Mem (npsCut NB T tk)) (withMem Mem (g1Cut NB T tk)) (D1StageSplit.st0.tpl.n + 1) := by
   apply (D1StageSplit.site0 (stageSim NB T tk)).step
-    (fun x hq hb => ⟨hb.1.1.1.1, hq.1⟩)
+    (fun x hq hb => ⟨hb.1.1.1.1.1, hq.1⟩)
     (fun x hq _ => horacle x.ν hq.2.2)
-  rintro x M t C hq ⟨hb, hm⟩ hrel hext hrun hmerged
+  rintro x M t C hq ⟨⟨hb, hnat⟩, hm⟩ hrel hext hrun hmerged
   have ng : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf t.ffi) :=
     (D1StageSplit.site0 (stageSim NB T tk)).ngrow (fun stk y0 => stageGrowSim NB T tk stk y0) hq.1 hb.1.1.1 hrel hrun
   change PQ setupJ D1StageSplit.map_g1_FIN_first (setupI 1)
       (⟨M, Conv.resVal x.ν D1StageSplit.ws0
         (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩ : SegInst FF) ∧
-    Book T tk ⟨M, Conv.resVal x.ν D1StageSplit.ws0
+    (Book T tk ⟨M, Conv.resVal x.ν D1StageSplit.ws0
       (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩ ∧
+      NativeAt 0 0 D1StageSplit.s1 t) ∧
     Mem ⟨M, Conv.resVal x.ν D1StageSplit.ws0
       (Conv.resF SymE.var D1StageSplit.st0.S2.tab D1StageSplit.S0.tab.length x.ν), x.K, t, C⟩
   have hvals := post_mergeP (ws := D1StageSplit.ws0) (qs := [.L, .L, .L])
@@ -89,7 +93,7 @@ theorem nps {NB T : Nat} {tk : Nat → Nat} {Mem : SegInst FF → Prop}
       exact resultValue hq.2.2.1 hj)
     (by intro j w q hw hqj; have hqL : q = Q.L := by simpa using nth?_mem_some hqj
         subst q; change 1 ≤ 2 ^ 20; decide)
-  refine ⟨⟨hvals.1, hq.2.1, ?_⟩, ?_, hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng,
+  refine ⟨⟨hvals.1, hq.2.1, ?_⟩, ⟨?_, hnat.step rfl hrel hmerged hext.big hext.node cnt1⟩, hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng,
     tokens_of_grow hrel hmerged ng (countersOkB_tokens cnt1), congrFun hext.a 12504⟩ hm⟩
   · simpa [ws0, D1StageSplit.map_start, D1StageSplit.map_g1_FIN_first] using hvals.2
   · obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hd, hfresh⟩, hids⟩ := hb.1
