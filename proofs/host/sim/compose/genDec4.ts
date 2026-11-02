@@ -1,6 +1,6 @@
 // bun genDec4.ts <spec.json> <kind>: decode case <kind>'s fill from the chain `DEC4_<kind>` (host/sim/template/a4dec4_<kind>):
 // `a4b/Fill_DEC4_<kind>.lean`, the chain's facts; `a4b/Fill_DEC4_<kind>_Fixed.lean`, `DEC4_<kind>.endFixed`, `piecesFixed`, `caseFixed`, `tailS`.
-// `gen.ts fill` at `DecOk.decJ`, the valuations `DecOk.VP`, the frames `framesG`, `wideG`, the fixed addresses `Dec4.fix4`, over
+// `gen.ts fill` at `DecOk.decJ`, the valuations `Host.Load.Run.Tpl.DecOk.VP`, the frames `framesG`, `wideG`, the fixed addresses `Dec4.fix4`, over
 // `host.sim.compose.a4b.Dec4Link`. The pieces' structure is `gen.ts decode --out a4b/DecBundle4_<kind>.lean`'s.
 import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -91,7 +91,6 @@ const dQ = grows ? "(Conv.decQC 9 16)" : "(Conv.decQ 9)";
 let facts = "", runsS = "", runsV: string[] = [], growV: string[] = [], grow = "", links = "";
 links += `  start := Dec4.startLink [] (by decide +kernel) rfl rfl (${X}.hfr q) hVP
     (fun i nx => MapOk.sub (mapOk_decM ρ T tk L i nx) (by decide +kernel)) hJb hHb hNb\n`;
-let cms = `noncomputable def ${X}.cm0 : List (Nat × Nat) := []\n`;
 for (let j = 0; j < nCalls; j++) {
   const cl = pieces[2 * j + 1].stage, gl = pieces[2 * j + 2], last = j === nCalls - 1;
   const a = ia[j]!, k = cl.site as number;
@@ -138,7 +137,7 @@ kernel_rfl ${X}.xn${j} : Nat.ble ${jclC[1]} (mlxOf ${sc}.ffi).next = true
 kernel_rfl ${X}.wa${j} : ((4910 :: Host.Load.Run.Tpl.ghostAddrs).all fun a => !isArrB ${sm} a) = true
 kernel_rfl ${X}.zwa${j} : ((4910 :: Host.Load.Run.Tpl.ghostAddrs).all fun a => (${sc}.heap.get a).isSome) = true
 theorem ${X}.keepG${j} (q : List Val) : KeepsAtW ${FP} ${sm} := keepsG ${c(`arr${k}_2665`)} ${X}.wa${j}
-theorem ${X}.chk${j} : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${m}) ${st}.O = true := by
+theorem ${X}.chk${j} : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${m}) (Dec4.pinO ${st}.O) = true := by
   decide +kernel
 /-- Call ${j}'s results' entries and their values. -/
 noncomputable def ${X}.Es${j} : List (Option SymE) := ${cn("nr")}.map fun r => nth? ${tpl}.S2.tab r
@@ -148,9 +147,9 @@ kernel_rfl ${X}.lq${j} : ${X}.qs${j}.length = ${cn("cws")}.length
 kernel_rfl ${X}.qsOk${j} : ${X}.qs${j}.all (Dec4.rvLe ${grows}) = true
 kernel_rfl ${X}.R'${j} : (${R2}.all fun p => (${R} ++ Dec4.qzip ${cn("cws")} ${X}.qs${j}).contains p) = true
 kernel_rfl ${X}.c0_${j} : (${X}.cm${j}.all fun p => (Conv.idx? p.1 ${cn("cws")}).isNone && !${cn("ws")}.contains p.1) = true
+noncomputable def ${X}.cm${j + 1} : List (Nat × Nat) := ${X}.cm${j} ++ Dec4.kzip ${cn("cws")} ${X}.qs${j}
 
 `;
-  cms += `noncomputable def ${X}.cm${j + 1} : List (Nat × Nat) := ${X}.cm${j} ++ Dec4.kzip ${cn("cws")} ${X}.qs${j}\n`;
   links += `  ${cl.name} := Dec4.callLink ${tpl} ${st}.O hW ${X}.chk${j} ${cn("srvO")} ${sub(m, R)}
     (hs0 := ${cn("iso")}) (htab := ${c(`tab0_${k}`)}) (hfoot := ${cn("stFoot")}) (hnd := ${cn("wrNodup")})
     (hbd := ${cn("wrBound")}) (htr := ${cn("trace")}) (hmer := fun _ => ${cn("merged")}) (hmtab := ${cn("mergeTab")})
@@ -204,12 +203,12 @@ kernel_rfl ${X}.c0_${j} : (${X}.cm${j}.all fun p => (Conv.idx? p.1 ${cn("cws")})
 kernel_rfl ${X}.ok${f} : ${c(okR)} ${c(`s${f}`)} ${c(`S${f}`)} = true
 kernel_rfl ${X}.srv${f} : ${c(`S${f}`)}.oracle = List.drop ${o0} ${c("O")}
 kernel_rfl ${X}.len${f} : Nat.ble ${T0}.tab.length ${c(`S${f}`)}.tab.length = true
-theorem ${X}.chk_${gl.glue} : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${mA}) ${O} = true := by
+theorem ${X}.chk_${gl.glue} : ∀ r ∈ ${rows}, goodLin r.ps (varsOf r.V ${mA}) (Dec4.pinO ${O}) = true := by
   decide +kernel
 `;
   runsS += `  ${rn} : runOk ${c("F")} ${c(okR)} ${n} ${c(`s${f}`)} ${c(`S${f}`)} = some (${c(`s${t}`)}, ${c(`S${t}`)})\n`;
   runsV.push(`${c(rn)}`);
-  grow += `  ${gl.glue} : ∀ (r : List NumV) (c : SegInst FF) (t' : St FF.S) (C' : CSrv), DecOk.VP c.ν →
+  grow += `  ${gl.glue} : ∀ (r : List NumV) (c : SegInst FF) (t' : St FF.S) (C' : CSrv), Host.Load.Run.Tpl.DecOk.VP c.ν →
     Disp.Kp ${DJ} c.K → RelB FF (FLRb b0 ${X}.Pw NB r) W [] c.M c.ν c.K ${c(`s${f}`)} ${c(`S${f}`)} c.t c.C →
     runC FF ${last ? n : `(${n} + 1)`} c.t c.C = some (t', C') → Host.Mlx.Ffi.NGrow (mlxOf c.t.ffi) (mlxOf t'.ffi)\n`;
   if (!last) {
@@ -234,8 +233,7 @@ kernel_rfl ${X}.top${t + 1} : noRetBlock ${c(`s${t + 1}`)} = true\n\n`;
     ${X}.top${t} ${c("dvs")} ${c("des")} (e := ${X}.endFixed b0 NB) rfl ${X}.hS1D
     ${grows ? `(Dec4.hde_decC dec_${kind}.capRow ${X}.hvsB (by decide) (by decide))` : `(Dec4.hde_dec ${X}.hvsB (by decide))`}
     (Nat.le_of_ble_eq_true ${X}.len${f}) Gw.${gl.glue}\n`
-      : `  ${gl.glue} := Dec4.glueLinkEnd ${O} hW ${X}.chk_${gl.glue} ${X}.srv${f} ${X}.ok${f} ${X}.runs.${rn}
-    ${X}.top${t} (e := ${X}.endFixed b0 NB) rfl rfl (Nat.le_of_ble_eq_true ${X}.len${f}) Gw.${gl.glue}\n`;
+      : fail(`${X}: the last glue piece has no derived results`) as string;
     growV.push(`fun r _ _ _ hν hK hr ht => Full.glue_ngrow (Dec4.simQ b0 NB ${X}.Pw ${X}.fr ${X}.wd W hW r []) ${X}.ok${f} R.${rn}
     hν hK hr ht`);
   }
@@ -253,16 +251,19 @@ if (nclSteps.length === 0) fail(`${X}: NClAll: no steps`);
 const jclean = srcOf("EFacts").match(new RegExp(`${X}\\.jclean0 : Conv\\.JClean \\((⟨[^⟩]*⟩) : Conv\\.Cnt\\) `)) ?? fail(`${X}: EFacts: jclean0`);
 const jcl = `theorem ${X}.jcl0 : Conv.JClean (${(jclean as any)[1]} : Conv.Cnt) ${t0} := ${c("jclean0")}\n` + nclSteps.map(s =>
   `theorem ${X}.jcl${s.to} : Conv.JClean (${s.cnt} : Conv.Cnt) ${c(`s${s.to}`)} := ${c(`${s.kind}jcl${s.k}`)} ${X}.jcl${s.from}\n`).join("");
+// the chain's modules are merged: import their bundles (`m/members.json`)
+const members = JSON.parse(readFileSync(join(tdir, "m/members.json"), "utf8")) as Record<string, string>;
+const bundleOf = (m: string) => members[m] ?? fail(`${X}: ${m} is not in m/members.json`);
+const bundles = [...new Set(["H0", "OkB", "Run", ...ia.flatMap((_, k) => [`st${k}/Tpl`, `SiteL${k}`, `SiteD${k}`, `SiteZ${k}`, `SiteR${k}`])].map(bundleOf))].sort();
 const headOpen = `set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Ts.Sim.Full Host.Load.Layers
   Host.Ts.Sim.Template
-open Host.Load.Run.Tpl (DecOk)
 `;
 const pad = (n: string) => n;
-const hfp = (hv: string) => `(${hv} : ∀ i nx, i + 2 < T → nx ≤ 2 ^ 20 → DecOk.VP (valL ρ T tk L i nx))`;
+const hfp = (hv: string) => `(${hv} : ∀ i nx, i + 2 < T → nx ≤ 2 ^ 20 → Host.Load.Run.Tpl.DecOk.VP (valL ρ T tk L i nx))`;
 const bounds = `(hJb : T * ΔJ + B.D < Sim.bound)
     (hHb : (mlxOf ${t0}.ffi).next + T * ΔH + B.H + (${X}.Pw.E - (mlxOf ${t0}.ffi).next) < 2 ^ 46)
     (hNb : (mlxOf ${t0}.ffi).nnext + T * ΔN + B.N + (${X}.Pw.NE - (mlxOf ${t0}.ffi).nnext) < 2 ^ 62)`;
@@ -270,11 +271,8 @@ const dDefs = `def ${X}.dJ : Nat := ${dJ}\ndef ${X}.dH : Nat := ${dH}\ndef ${X}.
 const fill = `import host.sim.compose.a4b.Dec4Link
 import host.sim.compose.a4b.DecBundle4_${kind}
 import host.load.run.prompt.Addr
-import ${mod}.H0
-import ${mod}.OkB
 import ${mod}.EEnd
-import ${mod}.Run
-${ia.map((_, k) => `import ${mod}.st${k}.Tpl\nimport ${mod}.SiteL${k}\nimport ${mod}.SiteD${k}\nimport ${mod}.SiteZ${k}\nimport ${mod}.SiteR${k}\n`).join("")}${headOpen}
+${bundles.map(b => `import ${mod}.m.${b}\n`).join("")}${headOpen}
 /-! # Decode case \`${kind}\`'s facts from chain \`${X}\` (generated by \`host/sim/compose/genDec4.ts\`)
 
 The kernel checks of \`Dec4.callLink\` and the glue links at the chain's boundaries, the ghost, the runs and their growth, the counters
@@ -307,11 +305,13 @@ kernel_rfl ${X}.s0N : Nat.ble (mlxOf ${t0}.ffi).nnext ${X}.Pw.NE = true
 kernel_rfl ${X}.sig2586 : ${c("σ")}.a 2586 = 2586
 kernel_rfl ${X}.sig2589 : ${c("σ")}.a 2589 = 2589
 
-${facts}/-- The results' constants at each cut. -/
-${cms}
+/-- The results' constants at each cut. -/
+noncomputable def ${X}.cm0 : List (Nat × Nat) := []
+
+${facts}
 ${dec ? `-- the end results and terms, each a quantity or a constant the last glue piece's cut holds it at
 kernel_rfl ${X}.hvsB : (${c("dvs")}.zip ${c("des")}).all (Dec4.endOk ${dQ} ${(dec as any).m} ${X}.cm${nCalls}) = true
-kernel_rfl ${X}.hS1D : ${c("S1D")} = ⟨${c(`S${end}`)}.tab.map (·.subst (Conv.compactθ ${c("dvs")} ${c("des")})), ${c(`S${end}`)}.oracle⟩
+kernel_rfl ${X}.hS1D : ${c("S1R")} = Host.Load.Run.Tpl.DecOk.convTab ⟨${c(`S${end}`)}.tab.map (·.subst (Conv.compactθ ${c("dvs")} ${c("des")})), ${c(`S${end}`)}.oracle⟩
 
 ` : ""}/-- **The glue runs.** -/
 structure ${X}.Runs : Prop where

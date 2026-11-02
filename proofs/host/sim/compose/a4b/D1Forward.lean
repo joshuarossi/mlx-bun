@@ -99,13 +99,13 @@ theorem toForwardPrompt (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : N
       | none => rfl
       | some p =>
         have hm := (hbx.context.1.2.2 2590).mp (by rw [e]; exact Option.some_ne_none _)
-        exact absurd hm (by decide)
+        exact absurd hm (by decide : 2590 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view])
     have fy : y.K.fr 2590 = none := by
       cases e : y.K.fr 2590 with
       | none => rfl
       | some p =>
         have hm := (hby.context.1.2.2 2590).mp (by rw [e]; exact Option.some_ne_none _)
-        exact absurd hm (by decide)
+        exact absurd hm (by decide : 2590 ∉ [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view])
     have cx := emitted_cell hrx forwardCell fx hinx.2
     have cy := emitted_cell hry forwardCell' fy hemy
     rw [hyt, cx] at cy

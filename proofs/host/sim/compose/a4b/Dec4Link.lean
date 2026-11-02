@@ -145,6 +145,18 @@ theorem post_call_valC {VB : Nat → Nat} {ν : Nat → F64} {i : Cls.Inst} {m :
       obtain ⟨j, hjc, hjq⟩ := nth?_of_kzip hp
       exact hat j c (.inr k) hjc hjq
 
+/-! ## The oracles
+
+A chain's oracle tests read the abstracted dims. The rows' checks read the oracle with them at their values. -/
+
+/-- An oracle with the abstracted dims at their values. -/
+def pinO (O : List Ans) : List Ans := O.map (·.subst pin)
+
+theorem good_of_pin {ν : Nat → F64} {O : List Ans} (hν : VP ν) (h : Good ν (pinO O)) : Good ν O := by
+  intro q hq
+  have h1 := h (q.subst pin) (List.mem_map_of_mem hq)
+  simpa only [Ans.subst, eval_pin hν] using h1
+
 /-! ## The results' forms -/
 
 def closedB : SymE → Bool
@@ -512,7 +524,7 @@ variable {A : Addr} {Fr : LoopFramesA A} {s0 : St FF.S} {tab0 : List SymE} {fixA
 /-- **A glue piece into the next call as a link.** -/
 def glueLinkCall {m m' : List (Nat × Q)} {cm : List (Nat × Nat)} {θ : Nat → SymE} {g : GhostP} {sa sb sc : St FF.S} {Sa Sb Sc : SSrv}
     {n : Nat} (O : List Ans) (hW : Disp.Wp (J Pw fr wd) W)
-    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) O = true) (hO : Sa.oracle = O)
+    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) (pinO O) = true) (hO : Sa.oracle = O)
     (hok : ok Pw fr wd sa Sa = true)
     (hrun : runOk FF (ok Pw fr wd) n sa Sa = some (sb, Sb))
     (hokb : ok Pw fr wd sb Sb = true) (hhalt : isHalt sb.ctl = false)
@@ -524,17 +536,17 @@ def glueLinkCall {m m' : List (Nat × Q)} {cm : List (Nat × Nat)} {θ : Nat →
     DLink (DecAt L T tk) uses m [] (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ g m cm sa Sa)
       (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ g m' cm sc Sc) where
   n := n + 1
-  O := O
+  O := pinO O
   chk := hchk
   ok _ _ i _ hobl _ x0 := cut_glueCall (sim b0 NB Pw fr wd W hW _ []) hok hrun hokb hhalt hstep htop
-    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν hq.2.2.1)
+    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact good_of_pin hq.1 (hobl.1 c.ν hq.2.2.1))
     (fun c _ t' _ hq hb hc he hr h2 => ⟨⟨h2.withOracle (fun q hq => nomatch hq), hq.1, hq.2.1, MapOk.sub hq.2.2.1 hsub, hq.2.2.2⟩,
       hb.1.conv (he.mono hlen) rfl (fun _ _ _ => rfl) (fun _ _ _ _ => rfl) (hgrow _ c t' _ hq.1 hq.2.1 hc hr), hb.2⟩)
 
 /-- **The last glue piece as a link**, to the iteration's end cut at the end template `e`. -/
 def glueLinkEnd {m : List (Nat × Q)} {cm : List (Nat × Nat)} {e : IterEndW (fullWorldFb b0 NB) A Pw s0 tab0 fixA} {g : GhostP} {sa sb : St FF.S}
     {Sa Sb : SSrv} {n : Nat} (O : List Ans) (hW : Disp.Wp (J Pw fr wd) W)
-    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) O = true) (hO : Sa.oracle = O)
+    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) (pinO O) = true) (hO : Sa.oracle = O)
     (hok : ok Pw fr wd sa Sa = true)
     (hrun : runOk FF (ok Pw fr wd) n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true) (he1 : e.s1 = sb) (hS1 : e.S1 = Sb)
@@ -545,21 +557,21 @@ def glueLinkEnd {m : List (Nat × Q)} {cm : List (Nat × Nat)} {e : IterEndW (fu
     DLink (DecAt L T tk) uses m [] (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN e.θ g m cm sa Sa)
       (fun i x0 => iterEndCW (fullWorldFb b0 NB) A W Pw Fr s0 tab0 fixA toks e g i.k x0) where
   n := n
-  O := O
+  O := pinO O
   chk := hchk
   ok _ _ i _ hobl _ x0 := cut_glue (sim b0 NB Pw fr wd W hW _ []) hok hrun htop
-    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν hq.2.2.1)
+    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact good_of_pin hq.1 (hobl.1 c.ν hq.2.2.1))
     (fun c _ t' _ hq hb hc he hr h2 => ⟨by show RelF FF (FLRb b0 Pw NB _) W _ _ _ e.s1 e.S1 _ _; rw [he1, hS1]; exact h2,
       hb.1.conv (he.mono hlen) rfl (fun _ _ _ => rfl) (fun _ _ _ _ => rfl) (hgrow _ c t' _ hq.1 hq.2.1 hc hr)⟩)
 
-/-- **The last glue piece with the end table de-canonicalized.** -/
+/-- **The last glue piece with the end table de-canonicalized**, its abstracted dims read as their variables (`DecOk.convTab`). -/
 def glueLinkEndD {m : List (Nat × Q)} {cm : List (Nat × Nat)} {e : IterEndW (fullWorldFb b0 NB) A Pw s0 tab0 fixA} {g : GhostP} {sa sb : St FF.S}
     {Sa Sb : SSrv} {n : Nat} (O : List Ans) (hW : Disp.Wp (J Pw fr wd) W)
-    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) O = true) (hO : Sa.oracle = O)
+    (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) (pinO O) = true) (hO : Sa.oracle = O)
     (hok : ok Pw fr wd sa Sa = true)
     (hrun : runOk FF (ok Pw fr wd) n sa Sa = some (sb, Sb))
     (htop : noRetBlock sb = true) (vs : List Nat) (es : List SymE) (he1 : e.s1 = sb)
-    (hS1 : e.S1 = ⟨Sb.tab.map (·.subst (Conv.compactθ vs es)), Sb.oracle⟩)
+    (hS1 : e.S1 = Host.Load.Run.Tpl.DecOk.convTab ⟨Sb.tab.map (·.subst (Conv.compactθ vs es)), Sb.oracle⟩)
     (hde : ∀ r ∈ uses, ∀ i, InRow r i → DecAt L T tk i → ∀ ν, MapOk ν i m → VP ν → CMapOk ν cm →
       ∀ j v e, nth? vs j = some v → nth? es j = some e → ν v = e.eval ν) (hlen : tab0.length ≤ Sa.tab.length)
     (hgrow : ∀ (r : List NumV) (c : SegInst FF) (t' : St FF.S) (C' : CSrv), VP c.ν →
@@ -568,14 +580,14 @@ def glueLinkEndD {m : List (Nat × Q)} {cm : List (Nat × Nat)} {e : IterEndW (f
     DLink (DecAt L T tk) uses m [] (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN e.θ g m cm sa Sa)
       (fun i x0 => iterEndCW (fullWorldFb b0 NB) A W Pw Fr s0 tab0 fixA toks e g i.k x0) where
   n := n
-  O := O
+  O := pinO O
   chk := hchk
   ok r hru i hin hobl hadm x0 := cut_glue (sim b0 NB Pw fr wd W hW _ []) hok hrun htop
-    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν hq.2.2.1)
+    (fun _ hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact good_of_pin hq.1 (hobl.1 c.ν hq.2.2.1))
     (fun c _ t' _ hq hb hc he hr h2 => ⟨by
         show RelF FF (FLRb b0 Pw NB _) W _ _ _ e.s1 e.S1 _ _
         rw [he1, hS1]
-        exact h2.decanon (hde r hru i hin hadm _ hq.2.2.1 hq.1 hq.2.2.2),
+        exact Host.Load.Run.Tpl.DecOk.retab hq.1 (h2.decanon (hde r hru i hin hadm _ hq.2.2.1 hq.1 hq.2.2.2)),
       hb.1.conv (he.mono hlen) rfl (fun _ _ _ => rfl) (fun _ _ _ _ => rfl) (hgrow _ c t' _ hq.1 hq.2.1 hc hr)⟩)
 
 /-- **The first link**, valuations given at the iterations `DecAt` supports. -/
@@ -659,7 +671,7 @@ def callLink {m R R' : List (Nat × Q)} {cm cm' : List (Nat × Nat)} {qs : List 
     {tabm : List SymE} {f eN : List Val}
     (I : Stage.StageTpl FF (Template.okLocal (ok Pw fr wd))) {wr ws cws nr : List Nat} {κ : Map}
     {Es : List (Option SymE)}
-    (O : List Ans) (hW : Disp.Wp (J Pw fr wd) W) (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) O = true)
+    (O : List Ans) (hW : Disp.Wp (J Pw fr wd) W) (hchk : ∀ r ∈ uses, goodLin r.ps (varsOf r.V m) (pinO O) = true)
     (hO : I.S0.oracle = O) (hmR : ∀ p ∈ m, p ∈ R)
     -- the instance and the merge
     (hs0 : I.s0 = { sa with stack := [] }) (htab : I.S0.tab = Sa.tab) (hfoot : Conv.StageFoot wr I.s0 I.s2)
@@ -717,7 +729,7 @@ def callLink {m R R' : List (Nat × Q)} {cm cm' : List (Nat × Nat)} {qs : List 
     DLink (DecAt L T tk) uses m [] (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ g R cm sa Sa)
       (bdCut b0 NB Pw fr wd W A Fr s0 tab0 fixA toks ΔJ ΔH ΔN θ (GhostP.compact (fullWorldFb b0 NB) g sm sc eN) R' cm' sc Sc) where
   n := I.n + 1
-  O := O
+  O := pinO O
   chk := hchk
   ok r hr i hin hobl hadm x0 := CutStep.withP fun hbud => by
     let νr : (Nat → F64) → Nat → F64 := fun ν => Conv.resVal ν ws (Conv.resF SymE.var I.S2.tab Sa.tab.length ν)
@@ -733,7 +745,7 @@ def callLink {m R R' : List (Nat × Q)} {cm cm' : List (Nat × Nat)} {qs : List 
       (fun stk => (sim b0 NB Pw fr wd W hW _ stk).mono fun s S h => by
         simp only [Template.okLocal, Bool.and_eq_true] at h; exact h.1)
       Template.okLocal_localB hfoot hnd hbd htr (hmer _) hwsl hwsnd hfresh
-      (fun c hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact hobl.1 c.ν (MapOk.sub hq.2.2.1 hmR))
+      (fun c hq _ => ⟨hq.2.1, hq.1⟩) (fun c hq _ => by rw [hO]; exact good_of_pin hq.1 (hobl.1 c.ν (MapOk.sub hq.2.2.1 hmR)))
       (fun c M' t' C' hq hb h0 he hrun hm => by
         have hb' := hb.merge (V := (· ∈ ws)) (M' := M') (t' := t') (C' := C') (he.mono hlen)
           (fun v hv => Conv.resVal_off (ν := c.ν) (ws := ws) (f := Conv.resF SymE.var I.S2.tab Sa.tab.length c.ν) hv)

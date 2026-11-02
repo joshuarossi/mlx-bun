@@ -202,11 +202,11 @@ noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
     (fun _ _ => vals0 ta_vals)
 
 include hcap Q htk hL2 hL1 hTle in
-theorem sA (h : 2 ≤ T) (he : tk 1 = 248044) : HaltStopSrc (pA H hcap hL1 hL2 htk hTle Q h he).hs :=
+theorem sA (h : 2 ≤ T) (he : tk 1 = 248044) : HaltStopSrc (pA H hcap hL1 hL2 hTle Q h he).hs :=
   ⟨rfl, 2673245, ta_stats, ta_gen, gen_wide, ta_own, ta_wide, ta_stop⟩
 
 include hcap Q htk hL2 hL1 in
-theorem sC1 (h : T = 1) (he : tk 1 = 248044) : HaltStopSrc (pC1 H hcap hL1 hL2 htk Q h he).hs :=
+theorem sC1 (h : T = 1) (he : tk 1 = 248044) : HaltStopSrc (pC1 H hcap Q h he).hs :=
   ⟨rfl, 2673245, PRE_pl_t1_eos.statsAddr, PRE_pl_t1_eos.generationCell, gen_wide, PRE_pl_t1_eos.stats_actual, t1e_wide, PRE_pl_t1_eos.stopFinish⟩
 
 include hcap Q htk hL1 hL2 in
