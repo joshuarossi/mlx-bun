@@ -1557,6 +1557,9 @@ function genBodyFill(args: string[]) {
   const fwdRowList = (take("--rows")[0] ?? fail("prefill-body: --rows <r,...>")).split(",");
   const sfxArg = take("--suffix-of")[0];
   const pfArg = take("--pf")[0];
+  // --lit: a chain whose prompt length is read as a literal: the body's acceptance is `VWFrames.bodyLitOk`
+  const litBody = args.includes("--lit");
+  if (litBody) args.splice(args.indexOf("--lit"), 1);
   // a class with its own dispatch: the prefix chain it starts from, and the module with that prefix's end facts
   const prefixChain = take("--prefix")[0] ?? "PRE_first_tail_x15_r0";
   const baseMod = take("--base-mod")[0] ?? "host.sim.compose.a4b.VWBodyBase";
@@ -1656,7 +1659,7 @@ kernel_rfl bodyStart2665 : arrOf ${X}.s0 2665 = []
 kernel_rfl bodyStartChunk : arrOf ${X}.s0 VWFrames.chunk = []
 ` + tail);
   } else
-  writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`, `${mod}.BoundaryData`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
+  writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`, existsSync(join(HERE, "../template", dir!, "BoundaryData.lean")) ? `${mod}.BoundaryData` : `${mod}.Boundary`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
     `/-- The rows this chain's forward serves. -/
 def fwdRows : List Row := [${fwdRowList.join(", ")}]
 
@@ -1665,7 +1668,7 @@ noncomputable def bodyΘ : List Nat × List SymE := (${X}.dws, ${X}.drs)
 
 theorem bodyStartEq : (${X}.s0 : St FF.S) = ${prefixChain}.s41 := bodyStartEqOf ${X}.s0_tok
 
-theorem bodyStartClean : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) ${X}.s0 := by
+theorem bodyStartClean : Conv.JClean (⟨18156, 15236, 2673488, ${(src("GlueN0").match(/gjcl0 \(h : Conv\.JClean \(⟨18156, 15236, 2673488, (\d+)⟩/) ?? [])[1] ?? 18}⟩ : Conv.Cnt) ${X}.s0 := by
   rw [bodyStartEq]
   exact startClean41
 
@@ -1734,7 +1737,7 @@ theorem bodyJs${k} : JsHeapAbove ${X}.s${a}.next ${X}.s${cn} :=
   JsHeapAbove.glueSite ${prevJs} (Nat.le_of_ble_eq_true bodyJsLe${k}) ${X}.gjk${k} ${X}.gjbd${k} ${X}.cheap${k} ${X}.zclbd${k} bodyJsList${k}
 ` + tail);
       writeFileSync(join(outDir, `VWBodyS${k}.lean`), head([
-        `${outMod}.VWBodyJ${k}`, `${outMod}.VWBodySite${k}`,
+        `${outMod}.VWBodyJ${k}`, `${outMod}.VWBodySite${k}`, ...(litBody ? ["host.sim.compose.a4b.VWBodyLit"] : []),
         `${outMod}.${site.file}`, `${outMod}.VWBodyMap`,
         `${mod}.SiteD${k}`, `${mod}.SiteZ${k}`, "host.sim.template.CallGen",
       ]) + `${cshift}
@@ -1843,8 +1846,8 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
   ${sfx ? `memSite hT (fun j => by rw [${X}.zkap${k}]; exact compact_node_id bodyKeepNN${k} bodyKeepNK${k} j)` : `bodySite bodyFacts${k}.cfix bodyFacts${k}.trailOld`} fun x hR hB =>
   bodySiteCore (Θ := bodyΘ) (n := ${nSteps}) (S2 := ${X}.st${k}.S${T1}.tab) (Es := bodyEs${k}) (qs := bodyQs${k})
     (ok := ${X}.st${k}.bodyOkL)
-    (fun bs rows => ${NS}.${X}.site${k} bs rows (bodyLocalSim NB T tk bs rows))
-    (fun bs rows stk y0 => bodyGrowLocalSim NB T tk bs rows stk y0)
+    (fun bs rows => ${NS}.${X}.site${k} bs rows (${litBody ? "bodyLitLocalSim" : "bodyLocalSim"} NB T tk bs rows))
+    (fun bs rows stk y0 => ${litBody ? "bodyLitGrowLocalSim" : "bodyGrowLocalSim"} NB T tk bs rows stk y0)
     (fun _ _ => rfl) (fun _ _ => rfl) bodyFacts${k}
     (fun _ _ ν hm => ${site.check === "goodEnum" ? "good_of_row_enum" : "good_of_row"}
       (List.all_eq_true.mp Oracles.${X}.chk_site${k} r hr) hi (MapOk.sub hm (sub_of_all bodySub${k})))
@@ -1878,7 +1881,7 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
     const start = p.from as number, last = stage ? stage.ia as number : p.to as number;
     const inside = bridges.filter(b => (b.kind === "size" || b.kind === "len") && b.ia > start && b.ia <= last).sort((x, y) => x.ia - y.ia);
     const Dj = Ds.get(j) ?? fail(`no offset at glue ${j}`);
-    const imports = new Set<string>(["host.sim.compose.a4b.VWBodyGlue", `${outMod}.VWBodyChain`,
+    const imports = new Set<string>([litBody ? "host.sim.compose.a4b.VWBodyLit" : "host.sim.compose.a4b.VWBodyGlue", `${outMod}.VWBodyChain`,
       `${outMod}.VWBodyMap`, `${mod}.Bridge`]);
     const hOf = (k: number) => imports.add(`${mod}.H${Math.floor(k / 32)}`);
     let facts = "", proof = "";
@@ -1890,7 +1893,7 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
       return `(fun _ hm => bodyO${k} ▸ bodyGoodDrop hr hi hm _)`;
     };
     const acc = (k: number) => {
-      facts += `kernel_rfl bodyAcc${k} : (fun (bs : List Byte) (rows : Nat) => VWFrames.bodyOk bs rows ${X}.s${k} ${X}.S${k}) = fun _ _ => true\n`;
+      facts += `kernel_rfl bodyAcc${k} : (fun (bs : List Byte) (rows : Nat) => VWFrames.${litBody ? "bodyLitOk" : "bodyOk"} bs rows ${X}.s${k} ${X}.S${k}) = fun _ _ => true\n`;
       return `bodyAcc${k}`;
     };
     const cnt = (x: number, y: number) => {
@@ -1911,7 +1914,7 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
       imports.add(`${mod}.${st.file}`); hOf(b + 1);
       const brIn = good(a), acA = acc(a), acB = acc(b), run = seg(a, b);
       facts += `kernel_rfl bodyBr${b + 1} : bridgeOf ${X}.s${b + 1}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyHalt${b} : isHalt ${X}.s${b}.ctl = false\nkernel_rfl bodyTop${b + 1} : noRetBlock ${X}.s${b + 1} = true\n`;
-      pieces.push(`bodyToCall (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Θ := bodyΘ) ${trNamed} (O := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm) ${cnt(a, b + 1)} ${trHyp}`);
+      pieces.push(`${litBody ? "bodyLitToCall" : "bodyToCall"} (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Θ := bodyΘ) ${trNamed} (O := ${Dj}) ${acA} ${run} ${acB} bodyHalt${b} ${X}.${st.name} bodyTop${b + 1} ${brIn} ${active(a)} (bodyBr${b + 1}.trans bodyBr${a}.symm) ${cnt(a, b + 1)} ${trHyp}`);
     };
     for (const br of inside) {
       if (br.ia === last) continue;
@@ -1935,7 +1938,7 @@ kernel_rfl bodyKeepNK${k} : PTrie.keys ${X}.kd${k}.node = []
     else {
       const brIn = good(a), acA = acc(a), run = seg(a, last);
       facts += `kernel_rfl bodyBr${last} : bridgeOf ${X}.s${last}.ffi = bridgeOf ${X}.s0.ffi\nkernel_rfl bodyTop${last} : noRetBlock ${X}.s${last} = true\n`;
-      pieces.push(`bodyGlue (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Θ := bodyΘ) ${trNamed} (O := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm) ${cnt(a, last)} ${trHyp}`);
+      pieces.push(`${litBody ? "bodyLitGlue" : "bodyGlue"} (NB := NB) (T := T) (tk := tk) (π := π) (i := i) (Θ := bodyΘ) ${trNamed} (O := ${Dj}) ${acA} ${run} bodyTop${last} ${brIn} ${active(a)} (bodyBr${last}.trans bodyBr${a}.symm) ${cnt(a, last)} ${trHyp}`);
     }
     const dedup = [...new Set(facts.split("\n"))].join("\n");
     proof = pieces.reduce((acc0, q) => acc0 ? `(${acc0}).trans (${q})` : q, "");
@@ -2024,7 +2027,7 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     writeFileSync(join(outDir, "VWForward.lean"), head([`${bodyMod}.VWBodyFold`, `${outMod}.VWBodyChain`, `${mod}.S0Eq`,
       "host.sim.compose.a4b.VWFirstRows", "host.sim.compose.a4b.VWBodyEntry"]) + `/-- This chain's start: the forward's return. -/
 noncomputable def startCore (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
-  bodyCore NB T tk π i bodyΘ ${off0} bodyMap ${X}.s0 ${X}.S0
+  bodyCore NB T tk π i bodyΘ ${off0} ${litBody ? `${Tn}.bodyM` : "bodyMap"} ${X}.s0 ${X}.S0
 
 kernel_rfl bodyEndJv : ${Tn}.bodyΘ.1.take ${Tn}.bodyJEnd = ${Tn}.bodyΘ.1
 kernel_rfl bodyEndJe : ${Tn}.bodyΘ.2.take ${Tn}.bodyJEnd = ${Tn}.bodyΘ.2
@@ -2037,11 +2040,11 @@ theorem forwardAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i 
     (hr : r ∈ ${Tn}.fwdRows) (hi : InRow r i) (hn : i.n ≤ 2 ^ 20) (x0 : SegInst FF) :
     CutStep (withMem (BodyTrail x0) (forwardCut NB T tk π i)) (withMem (BodyTrail x0) (startCore NB T tk π i))
       (0 + ${Tn}.bodyN) :=
-  (FwdCall.warm ((toBody ${Tn}.bodyStartEq ${Xb}.s0_tab hn).trans (${Tn}.bodyEnter hn))
+  (FwdCall.warm ((toBody ${Tn}.bodyStartEq ${Xb}.s0_tab ${litBody ? "hr hi " : ""}hn).trans (${Tn}.bodyEnter hn))
     (${Tn}.bodyAll NB T tk π x0 hr hi)
-    (endConv (vs := ${Tn}.bodyΘ.1) (es := ${Tn}.bodyΘ.2) bodyEndJv bodyEndJe bodyStartEq endTabEq (fun p hp => by
+    (endConv (vs := ${Tn}.bodyΘ.1) (es := ${Tn}.bodyΘ.2) bodyEndJv bodyEndJe bodyStartEq endTabEq ${litBody ? "(fun _ h => h)" : `(fun p hp => by
       simp only [bodyMap, List.mem_cons, List.not_mem_nil, or_false] at hp
-      rcases hp with rfl | rfl <;> simp [${Tn}.bodyM]))).step
+      rcases hp with rfl | rfl <;> simp [${Tn}.bodyM])`})).step
 ` + tail);
   }
   if (!onlySites.length && !onlyGlues.length && bodyEnd && pfArg) {
@@ -2093,7 +2096,7 @@ theorem bodyAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (x0 : SegInst FF
       (bodyCut NB T tk π i x0 bodyΘ ${Dend} bodyM ${X}.s${end} ${X}.S${end}) bodyN :=
   (${fold}).cast rfl rfl rfl
 
-def bodyRest : List (Nat × Q) := [${rest.join(", ")}]
+${bodyQ.has(10) ? `def bodyRest : List (Nat × Q) := [${rest.join(", ")}]
 kernel_rfl bodySplit : bodyMap ++ bodyRest = bodyM
 kernel_rfl bodyRestFree : ${X}.S0.tab.all (fun e => bodyRest.all fun p => e.noVar p.1) = true
 kernel_rfl bodyRestNd : nodupT (bodyRest.map Prod.fst) PTrie.nil = true
@@ -2120,7 +2123,17 @@ theorem bodyEnter {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst}
       exact hn)
   rw [bodySplit] at h
   exact fromStart.trans h
-` + tail);
+` : `/-- The forward's start: the chain reads only the prompt's length. -/
+theorem bodyEnter {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {x0 : SegInst FF} (hn : i.n ≤ 2 ^ 20) :
+    CutConv (withMem (BodyTrail x0) (bodyStartCut NB T tk π i ${X}.s0 ${X}.S0))
+      (bodyCut NB T tk π i x0 bodyΘ ${Ds.get(0)} bodyM ${X}.s0 ${X}.S0) :=
+  fromStart.trans (by
+    rintro x ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ hB
+    exact ⟨x, rfl, rfl, ⟨K0, hr, hb, hnat, hip, hins, MapOk.sub hmap (fun p hp => by
+      have e : p = (9, Q.L) := List.mem_singleton.mp hp
+      subst e
+      simp [bodyMap]), hdf⟩, hB⟩)
+`}` + tail);
     console.log(`${X}: fold of ${foldParts.length} pieces, ${foldN} steps, end ${Dend}`);
   }
   if (bundleSites > 0 && !onlySites.length && !onlyGlues.length) {
@@ -2190,11 +2203,14 @@ function genPostLink(args: string[]) {
   const endMod = take("--endmod") ?? fail("post-link: --endmod <module>");
   // the walk, when this link writes its own (the tail's end to the pre-final template)
   const walkAt = take("--walkfrom");
+  // the walk also compares primitives' numbers, for a source whose table isn't laid out like the template's
+  const primNums = args.includes("--prim-nums");
+  if (primNums) args.splice(args.indexOf("--prim-nums"), 1);
   const [, X, Ti] = args[0]?.match(/^([^:]+):(\d+)$/) ?? fail("post-link: <chain>:<end>");
-  // The entry's name and frames; with --drop, the pre-final link: only the prompt kept, the frames listed dropped.
+  // The entry's name and frames: only the prompt and the frames of --keep stay, those of --drop go.
   const T = take("--entry") ?? "PRE_pl_entry", E = take("--entryname") ?? "PLEntry";
   const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
-  const dropList = take("--drop");
+  const dropList = take("--drop") ?? fail("post-link: --drop <addrs>");
   // frames kept through the link beside the prompt's
   const keepL = (take("--keep") ?? "").split(",").map(x => x.trim()).filter(x => x);
   // the frames after the link: `--wide <W0 function>:<its list>`, `--wide-memo <address>:<ghost keys>`, `--wide-ghosts <addresses>`
@@ -2319,7 +2335,7 @@ function genPostLink(args: string[]) {
       "def " + walk + ".ghosts : List Nat := " + T + ".ghosts",
       "def " + walk + ".maps : List Nat := " + T + ".maps",
       "set_option interpreter.prefer_native true in",
-      (pad ? "tpl_restart_pad " : "tpl_restart ") + walk + ".R : " + walk + ", " + walk + " " + Ti + " (\u00ABworld\u00BB := " + walkAt + ".nativeWorld)",
+      (pad ? "tpl_restart_pad " : "tpl_restart ") + walk + ".R : " + walk + ", " + walk + " " + Ti + " (\u00ABworld\u00BB := " + walkAt + ".nativeWorld" + (primNums ? ", primNums := true" : "") + ")",
       ""].join(NL) + NL + "end Host.Load.Run.Tpl" + NL);
   }
   const R = walk + ".R", D = R + ".data", sg = D + ".map", P = name + ".P0", x0 = name + ".x0", x1 = name + ".x1";
@@ -2402,8 +2418,7 @@ function genPostLink(args: string[]) {
     "    liveShift_of N.live, kernShift_of N.kern,",
     "    pendReg_of rfl N.nnh0 N.nnh1 (Nat.le_of_ble_eq_true N.pendLe) N.pendR\u27E9",
     ""].join(NL).replaceAll("N.", name + "."));
-  const frs = dropList ? [["P", "2665"]] : [["P", "2665"], ["C", "D1Frames.chunk"]];
-  const sf = dropList ? [] : [["B", "D1Frames.buffer"], ["V", "D1Frames.view"]];
+  const frs = [["P", "2665"]];
   // one module per kind of whole-state check: a single check can need more memory than the rest together
   const kchecks: string[][] = [[
     ...(pad ? [
@@ -2419,15 +2434,12 @@ function genPostLink(args: string[]) {
     "    unfold N.numAt at h",
     "    rw [he] at h",
     "    exact of_decide_eq_true h)",
-    ...[...frs, ...sf].map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a)], [
+    ...frs.map(([k, a]) => "kernel_rfl N.fix" + k + " : " + D + ".a " + a + " = " + a)], [
     ...frs.flatMap(([k, a]) => [
       "kernel_rfl N.get" + k + " : " + s0 + ".heap.get " + a + " = some (.obj (Template.objOf " + s0 + " " + a + "))",
       "kernel_rfl N.kind" + k + " : (Template.objOf " + s0 + " " + a + ").kind = .array []",
       "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = some (.obj { " + sg + ".obj (Template.objOf " + s0 + " " + a + ") with kind := .array ([] ++ arrOf " + s1 + " " + a + ") })"]),
-    ...sf.flatMap(([k, a]) => [
-      "kernel_rfl N.get" + k + " : (" + s0 + ".heap.get " + a + ").isSome = true",
-      "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = (" + s0 + ".heap.get " + a + ").map " + sg + ".hobj"]),
-    ...(dropList ? [
+    ...[
       "kernel_rfl N.emptyP : arrOf " + s1 + " 2665 = []",
       ...keepL.flatMap((c, i) => [
         "kernel_rfl N.keptFix" + i + " : " + D + ".a " + c + " = " + c,
@@ -2447,8 +2459,7 @@ function genPostLink(args: string[]) {
       "kernel_rfl N.memoImg : " + sg + ".obj (Template.objOf " + s0 + " " + wideMemo[0] + ") = { Template.objOf " + s1 + " " + wideMemo[0] + " with kind := .map (StringIndex.dropCodes " + wideMemo[1] + " N.memoEs) }",
       ...wideGhosts.flatMap(g => [
         "kernel_rfl N.ghostFix" + g + " : " + D + ".a " + g + " = " + g,
-        "kernel_rfl N.ghostChk" + g + " : Pf.ghostChkB (" + s0 + ".heap.get " + g + ") (" + s1 + ".heap.get " + g + ") = true"])]
-    : ["kernel_rfl N.framesEmpty : [2665, D1Frames.chunk, D1Frames.buffer, D1Frames.view].all (fun a => (arrOf " + s1 + " a).isEmpty) = true"])], [
+        "kernel_rfl N.ghostChk" + g + " : Pf.ghostChkB (" + s0 + ".heap.get " + g + ") (" + s1 + ".heap.get " + g + ") = true"])]], [
     "kernel_rfl N.n0 : " + D + ".n0 = " + s0 + ".next",
     "kernel_rfl N.n1 : " + D + ".n1 = " + s1 + ".next",
     "kernel_rfl N.ren : checkRen " + s0 + " " + D + " " + R + ".inv = true"], [
@@ -2469,32 +2480,27 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.jsLe : Nat.ble " + nJ + " " + D + ".n0 = true"]];
   kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, "host.load.boot.World", ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
   put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
-    (dropList
-      ? "theorem N.wideAll : \u2200 p \u2208 " + wideL + ", Pf.WideP " + D + " " + s0 + " " + s1 + " p.1 p.2 := by" + NL +
+    "theorem N.wideAll : \u2200 p \u2208 " + wideL + ", Pf.WideP " + D + " " + s0 + " " + s1 + " p.1 p.2 := by" + NL +
         "  intro p hp" + NL +
         "  simp only [" + wideL + ", wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp" + NL +
         "  rcases hp with " + ["rfl", ...wideGhosts.map(() => "rfl")].join(" | ") + NL +
         "  \u00B7 exact Pf.wideP_memo (by decide) N.memoFix N.memoGet0 N.memoGet1 N.memoKind N.memoImg" + NL +
         wideGhosts.map(g => "  \u00B7 exact Pf.wideP_ghost (by decide) N.ghostFix" + g + " N.ghostChk" + g).join(NL) + NL + NL +
-        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + keepL.join(", ") + "] [" + dropList + "] " + wideF + " where"
-      : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
+        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + keepL.join(", ") + "] [" + dropList + "] " + wideF + " where",
     "  num := N.num",
     "  heap := by",
     "    intro a h ha hm hw",
-    dropList
-      ? "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => by" + NL +
+    "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => by" + NL +
         "      have hf : a \u2208 2665 :: " + wideL + ".map Prod.fst := hf" + NL +
         "      rcases List.mem_cons.mp hf with h0 | h1" + NL +
         "      \u00B7 exact hm h0" + NL +
-        "      \u00B7 exact Pf.lookupW_ne h1 hw)"
-      : "    obtain \u27E8q, hq, haq\u27E9 := " + T + ".cover a h ha (fun hf => hm (Post.frames_perm (by rw [" + T + ".frames_eq] at hf; exact hf)))",
+        "      \u00B7 exact Pf.lookupW_ne h1 hw)",
     "    have he := " + R + ".heapAt q hq a haq",
     "    rw [ha] at he",
     "    exact he",
-    ...[...frs, ...sf].map(([k]) => "  fix" + k + " := N.fix" + k),
+    ...frs.map(([k]) => "  fix" + k + " := N.fix" + k),
     ...frs.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  kind" + k + " := N.kind" + k, "  img" + k + " := N.img" + k]),
-    ...sf.flatMap(([k]) => ["  get" + k + " := N.get" + k, "  img" + k + " := N.img" + k]),
-    ...(dropList ? [
+    ...[
       "  wide a w hw := N.wideAll (a, w) (Pf.lookupW_mem hw)",
       "  emptyP := N.emptyP",
       ...(keepL.length ? [
@@ -2509,7 +2515,7 @@ function genPostLink(args: string[]) {
       "    unfold N.ndAt at hc",
       "    have h2 := List.all_eq_true.mp hc b hb",
       "    rw [he] at h2",
-      "    simp at h2"] : ["  framesEmpty := N.framesEmpty"]),
+      "    simp at h2"],
     "  n0 := N.n0",
     "  n1 := N.n1",
     "  ren := N.ren",
