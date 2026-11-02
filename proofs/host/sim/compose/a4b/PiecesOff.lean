@@ -73,7 +73,7 @@ def fwdNone (hA : NoState A) : FwdPiece F uses obls A B where
   ok _ _ i _ _ := FwdCall.warm (fun x _ hb => (hA i x hb).elim) (CutStep.refl _) (CutConv.refl _)
 
 /-- A piece over fewer rows. -/
-def GluePiece.restrict {us : List Row} (hs : ∀ r ∈ us, r ∈ uses) (p : GluePiece F uses A B) : GluePiece F us A B where
+def glueRestrict {us : List Row} (hs : ∀ r ∈ us, r ∈ uses) (p : GluePiece F uses A B) : GluePiece F us A B where
   m := p.m
   n := p.n
   O := p.O

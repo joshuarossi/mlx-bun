@@ -2,6 +2,7 @@ import host.sim.compose.a4b.FillOne
 import host.sim.compose.a4b.FillD1First
 import host.sim.compose.a4b.PiecesOff
 import host.sim.compose.a4b.FillSetupH0
+import host.sim.compose.a4b.FillSetupEarly
 import host.sim.compose.a4b.VWFirstRows
 import host.route.cert.One.CertF
 set_option Elab.async false
@@ -34,7 +35,7 @@ theorem offX0 : RowsOff 1 [first_tail_x0.r0] := by
   intro r hr i hi
   obtain rfl := List.mem_singleton.mp hr
   obtain ⟨_, x, hx, hq⟩ := hi
-  simp only [first_tail_x0.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+  simp only [first_tail_x0.r0, Lin.InBox, QOk, Inst.get, eval_mk, dot] at hx hq
   omega
 
 theorem offXs {uses : List Row} (hu : ∀ r ∈ uses, r ∈ VWFirst.firstTailRows) : RowsOff 1 uses := fun r hr i hi => by
@@ -93,7 +94,7 @@ noncomputable def piecesOne (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 159383
       (D1First.returnedPromptCut NB T tk [a]).B y → CSrv.Le x.C y.C →
       Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
       memCold P KR net env [a] 1 x → memFin P KR NE net env [a] Kept Kn 1 y) :
-    PiecesR FF (invsOne (hcap := hcap2) H) := by
+    PiecesR FF (invsOne (P := P) (KR := KR) (net := net) (env := env) (hcap := hcap2) H) := by
   have hM : ∀ L x y, NTrack x y → M L x → M L y := fun _ _ _ h m => memOneC_keep h m
   have hWit : ∀ L x y, y.t = x.t → y.C = x.C → y.M.a 12504 = x.M.a 12504 → M L x → M L y :=
     fun _ _ _ ht hC he m => memOneC_wit ht hC he m
@@ -134,9 +135,9 @@ noncomputable def piecesOne (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 159383
           b_g3f_tailed_i := fun _ => noneCut PRE_pl_head.s0
           b_g4_pf_first_i := fun _ => noneCut PRE_pl_head.s0 }
       q1 :=
-        { g0a := (FillSetupEarly.g0a NB T tk [a] M hM).restrict rowsSetup
+        { g0a := glueRestrict rowsSetup (FillSetupEarly.g0a NB T tk [a] M hM)
           chunk_K8__g0a__g0b := FillSetupEarly.chunk_K8__g0a__g0b NB T tk [a] M hM
-          g0b := (FillSetupEarly.g0b NB T tk [a] M hM).restrict rowsSetup
+          g0b := glueRestrict rowsSetup (FillSetupEarly.g0b NB T tk [a] M hM)
           chunk_K2048__g0a__g0b := stageOff pin0 offH0
           nps_DTdec_first__start__g1_DTdec_first := stageOff pinC offX0
           g1_DTdec_first := glueNone none0
@@ -146,7 +147,9 @@ noncomputable def piecesOne (hcap : 4096 ≤ cap) (hcap2 : cap ≤ 4096 + 159383
           g3d_first := glueNone none0
           eval__g3d_first__g4_pf_first := stageNone none0
           g4_pf_first := glueNone none0
-          nps_DTtail_first__start__g1_DTtail_first := stageOff pinC (offXs fun _ h => h)
+          nps_DTtail_first__start__g1_DTtail_first := stageOff pinC (offXs fun _ h => by
+          simp only [VWFirst.firstTailRows, List.mem_cons, List.not_mem_nil, or_false] at h ⊢
+          rcases h with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp)
           g1_DTtail_first := glueNone none0
           disp_V23__g1_DTtail_first__g2_first := stageNone none0
           fwd_V23_cold_WFirst__g2_first__g3d_first := fwdNone none0

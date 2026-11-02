@@ -6,7 +6,10 @@ set_option Elab.async false
 `tpl_restart_pad R : T, X i` is `tpl_restart` for a template shared by chains whose tables differ: `Iso.num` covers every template entry, and
 most of them have no image in the source. The source table is taken as `S1.tab ++ T.S0.tab.map (·.subst θ)`, so every entry the walk didn't pair
 (and the token, `var 14`) goes to `.ref (S1.tab.length + i)`. The entries it did pair stay, and those the source already holds at their
-index. -/
+index.
+
+With `(primNums := true)` the walk also compares eager nodes' primitives' numbers: for a source whose table isn't laid out like the template's, where a
+primitive's reference has to be mapped too. A literal in the template against a reference in the source then stops the walk. -/
 
 namespace Host.Ts.Sim.Template
 open Lean Elab Command Meta Host.Ts Host.Load Host.Ts.Stream
@@ -15,7 +18,7 @@ private def addD (name : Lean.Name) (type value : Lean.Expr) : TermElabM Unit :=
   addDecl (.defnDecl { name, levelParams := [], type, value, hints := .regular 0, safety := .safe })
 
 unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) (t1 : Nat) (block : Nat)
-    (loopToken : Bool := true) (subst : Option Lean.Name := none) : TermElabM Unit := do
+    (loopToken : Bool := true) (subst : Option Lean.Name := none) (primNums : Bool := false) : TermElabM Unit := do
   astTabRef.set (← loadAstTab)
   let t0 ← IO.monoMsNow
   let (x0, c0, _) ← restoreAny (S := F.S) (mkConst (base ++ `s0)) (mkConst (base ++ `S0)) pre
@@ -33,7 +36,7 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
   let ghosts ← natsConstD (base ++ `ghosts) []
   let maps ← natsConstD (base ++ `maps) []
   let ctx : Ctx := { s1 := s0, s2 := s1, t1 := tab0, t2 := tab1, env, framed, traceNodes := traceNodesOf m0,
-                     ghosts := ghosts.foldl (·.insert ·) {}, byKey := maps }
+                     ghosts := ghosts.foldl (·.insert ·) {}, byKey := maps, primNums }
   -- a link (`tpl_link`) also walks from the JavaScript objects the native state names, as collection does,
   -- so every present address of the start is paired
   let natR := if loopToken then [] else (nativeHeapRefs m0).map fun a => (a, a)
@@ -93,14 +96,14 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
 elab "tpl_restart_pad " p:ident " : " b:ident ", " c:ident i:num os:(tplOpts)? : command =>
   liftTermElabM <| withOptions (fun o => o.setBool `Elab.async false) do
     let os : TplOpts := tplOptsOf (os.map (·.raw))
-    os.check [`world, `subst]
+    os.check [`world, `subst, `primNums]
     let ns ← getCurrNamespace
     let sub : Option Lean.Name := (os.ident `subst).map (ns ++ ·)
     match os.ident `world with
-    | none | some `lf => unsafe restartPadCmdW lfWorld (ns ++ p.getId) (ns ++ b.getId) (ns ++ c.getId) i.getNat 0
+    | none | some `lf => unsafe restartPadCmdW lfWorld (ns ++ p.getId) (ns ++ b.getId) (ns ++ c.getId) i.getNat 0 true none (os.ident `primNums == some `true)
     | some n =>
       let args := #[toExpr (ns ++ p.getId), toExpr (ns ++ b.getId), toExpr (ns ++ c.getId), toExpr i.getNat, toExpr (0 : Nat),
-        toExpr true, toExpr sub]
+        toExpr true, toExpr sub, toExpr (os.ident `primNums == some `true)]
       unsafe inWorld ``restartPadCmdW (← worldConst n) args
 
 end Host.Ts.Sim.Template
