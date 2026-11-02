@@ -164,7 +164,7 @@ structure KeptF (D : RData) (s0 s1 : St FF.S) (W0 : Nat → Option WFrame) (a : 
 
 /-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt and `kept` in place and empty, the frames `W0` related by
 `WideImg`; no address of `s0` lands on a dropped frame. -/
-structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
+structure PfCore (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
     (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (kept drop : List Nat) (W0 : Nat → Option WFrame) : Prop where
   num : checkNum D.map θ ⟨tab0, []⟩ ⟨tab1, []⟩ = true
   heap : ∀ a h, s0.heap.get a = some h → a ≠ 2665 → W0 a = none → s1.heap.get (D.a a) = some (D.map.hobj h)
@@ -194,7 +194,6 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
   band : D.checkBand 18151 = true
   nh0 : 18151 ≤ D.nh0
   intr : ∀ a, a < aFirst → D.a a = a
-  shift : Conv.FullShiftQ P0 tab0.length D.map s0.ffi s1.ffi
   inactive : (bridgeOf s0.ffi).active = false
   raised : Raised setupP P0
   bigs : bigsOutB (mlxOf s0.ffi).next setupP.E (mlxOf s0.ffi) = true
@@ -208,6 +207,12 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
   jsRoots : noBigRootsP (jsAboveB nJ) s0.trace s0 = true
   jsNative : bigsOutB jsLoN jsHiN (mlxOf s0.ffi) = true
   jsFix : ∀ b, b < nJ → D.a b = b
+
+/-- The checks with a shift keeping every node at or above the template's order. -/
+structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
+    (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (kept drop : List Nat) (W0 : Nat → Option WFrame) : Prop
+    extends PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0 where
+  shift : Conv.FullShiftQ P0 tab0.length D.map s0.ffi s1.ffi
 
 section
 variable {s0 s1 : St FF.S} {tab0 tab1 : List SymE} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
@@ -264,12 +269,12 @@ theorem keepOf_true {kept : List Nat} {a : Nat} (h : keepOf kept a = true) : a =
   · exact .inl (Nat.eq_of_beq_eq_true h)
   · exact .inr (List.contains_iff_mem.mp h)
 
-theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {K : Ctx} {π : List Nat} {kw : List Nat}
-    {W : Nat → Option WFrame}
+theorem pfShift {FS : Map → FF.S → FF.S → Prop} (F : PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (hsh : FS D.map s0.ffi s1.ffi)
+    {K : Ctx} {π : List Nat} {kw : List Nat} {W : Nat → Option WFrame}
     (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kept ++ (kw ++ drop))) (hkw : ∀ b ∈ kw, W0 b ≠ none)
     (hwk : ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
     (hP : K.fr 2665 = some ([], π.map natV)) (hK : ∀ b ∈ kept, ∃ q, K.fr b = some ([], q)) :
-    ShiftW FF (fun σ x y => x = s0.ffi ∧ Conv.FullShiftQX P0 tab0.length σ x y) D.map θ (keepOf kept) W0 W K
+    ShiftW FF (fun σ x y => x = s0.ffi ∧ FS σ x y) D.map θ (keepOf kept) W0 W K
       s0 ⟨tab0, []⟩ s1 ⟨tab1, []⟩ := by
   have hinj : ∀ a b, Present s0 a → Present s0 b → D.a a = D.a b → a = b :=
     a_inj (fun x hx => by rw [F.n0]; exact F.bound x hx) F.ren
@@ -287,7 +292,7 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {K : C
       stack := F.stack
       jobs := F.jobs
       stores := F.stores
-      ffi := ⟨rfl, F.shift.toX F.inactive⟩
+      ffi := ⟨rfl, hsh⟩
       heapSupp := F.heapSupp
       ctlSupp := F.ctlSupp
       stackSupp := F.stackSupp
@@ -358,7 +363,7 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {K : C
     exact RData.big_fixed D F.band F.nh0 (by decide) i hi
 
 /-- The prompt's frame after the link. -/
-theorem frames_prompt (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) :
+theorem frames_prompt (F : PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) :
     frW M K (keepOf kept) W0 s1 2665 = K.fr 2665 :=
   framedNext_empty M K F.emptyP
 
@@ -373,7 +378,7 @@ theorem lookupW_isSome {L : List (Nat × WFrame)} {a : Nat} : (Disp.lookupW a L)
     | some w => rfl
 
 /-- The frames after the link are the prompt's, the list's and those kept. -/
-theorem framed_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) {L : List (Nat × WFrame)}
+theorem framed_after (F : PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) {L : List (Nat × WFrame)}
     (hW : ∀ a, W0 a = Disp.lookupW a L) {xs : List Val} (hP : K.fr 2665 = some ([], xs))
     (hK : ∀ b ∈ kept, ∃ q, K.fr b = some ([], q)) (a : Nat) :
     frW M K (keepOf kept) W0 s1 a ≠ none ↔ a ∈ 2665 :: (L.map Prod.fst ++ kept) := by
@@ -415,6 +420,40 @@ theorem newFrames {K : Ctx} {fr : List Nat} {L : List (Nat × WFrame)} {W W0 : N
     rw [List.contains_iff_mem.mpr h1] at h3
     cases h3
 
+/-- The fresh band the compaction reclaims is clear of the fixed bigs. -/
+theorem linkBand (F : PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {K : Ctx} (hlo : K.lo = 18151) (hhi : K.hi = 131072) :
+    ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E → ¬ BigFixed K.lo K.hi j ∧ 0 ≤ j ∧ j < 2 ^ 56 := by
+  intro j hj
+  have hl := F.loLe
+  rw [hlo, hhi]
+  change _ ∧ j < 131072 at hj
+  unfold BigFixed
+  constructor
+  · omega
+  · constructor <;> omega
+
+/-- The compaction's relation at the link's frames, with the JS bookkeeping back. -/
+theorem pfRelOf (F : PfCore s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {NB T : Nat} {tk : Nat → Nat}
+    {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv}
+    (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W []
+      M ν K s1 ⟨tab1, []⟩ t C)
+    (hc : RelF FF (FullRXD { setupP with rest := machReads T tk } NB) W0
+      ((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next) (Shift.valuation θ ν)
+      ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C)
+    (hlo : K.lo = 18151) :
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W0 []
+      (((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
+      ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
+  let N' := (M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next
+  let K' : Ctx := ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
+  have hJs : NoBigSt (JsBad N') K'.base s0 :=
+    noBigSt_of_above F.jsHeap F.jsRoots (fun j hj => by
+      have hbad := jsBad_after (M := M) (N := N') (σ := D.map) hr.ffi.2 rfl
+        (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hj
+      exact jsShiftBad_aboveR F.jsFix hbad)
+  exact (hc.withJs (by change K.lo ≤ 2 ^ 56; rw [hlo]; change 18151 ≤ 2 ^ 56; decide) hJs
+    (fullRXD_withJs hc.ffi F.jsNative)).toJ (BigJs.withJs N')
+
 /-- **The relation at the template.** -/
 theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {NB T : Nat} {tk : Nat → Nat}
     {W : Nat → Option WFrame} {π : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {kw : List Nat}
@@ -428,30 +467,11 @@ theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {NB T : 
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W0 []
       (((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
       ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
-  have hs := pfShift F hfr hkw hwk hlo hhi hP hK
-  have hband : ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E →
-      ¬ BigFixed K.lo K.hi j ∧ 0 ≤ j ∧ j < 2 ^ 56 := by
-    intro j hj
-    have hl := F.loLe
-    rw [hlo, hhi]
-    change _ ∧ j < 131072 at hj
-    unfold BigFixed
-    constructor
-    · omega
-    · constructor <;> omega
+  have hs := pfShift F.toPfCore (FS := Conv.FullShiftQX P0 tab0.length) (F.shift.toX F.inactive) hfr hkw hwk hlo hhi hP hK
   have hoff : t.next = s1.next + K.D := hr.offset
-  have hc := Conv.full_compactW NB (P := setupP) (r := machReads T tk)
+  exact pfRelOf F.toPfCore hr (Conv.full_compactW NB (P := setupP) (r := machReads T tk)
     (s0 := s0) (s1 := s1) (S0 := ⟨tab0, []⟩) (S1 := ⟨tab1, []⟩) (W1 := W) (W0 := W0) (kp := keepOf kept)
-    F.raised hNB hr.ofJ hs F.bigs F.free hband (fun _ h => nomatch h) (by omega) (by omega) hroomN
-  let N' := (M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next
-  let K' : Ctx := ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
-  have hJs : NoBigSt (JsBad N') K'.base s0 :=
-    noBigSt_of_above F.jsHeap F.jsRoots (fun j hj => by
-      have hbad := jsBad_after (M := M) (N := N') (σ := D.map) hr.ffi.2 rfl
-        (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hj
-      exact jsShiftBad_aboveR F.jsFix hbad)
-  exact (hc.withJs (by change K.lo ≤ 2 ^ 56; rw [hlo]; change 18151 ≤ 2 ^ 56; decide) hJs
-    (fullRXD_withJs hc.ffi F.jsNative)).toJ (BigJs.withJs N')
+    F.raised hNB hr.ofJ hs F.bigs F.free (linkBand F.toPfCore hlo hhi) (fun _ h => nomatch h) (by omega) (by omega) hroomN) hlo
 
 end
 

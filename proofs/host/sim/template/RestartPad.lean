@@ -17,6 +17,14 @@ open Lean Elab Command Meta Host.Ts Host.Load Host.Ts.Stream
 private def addD (name : Lean.Name) (type value : Lean.Expr) : TermElabM Unit :=
   addDecl (.defnDecl { name, levelParams := [], type, value, hints := .regular 0, safety := .safe })
 
+/-- The variables' images a template entry and its image agree on, read off their common shape. -/
+partial def symBind : SymE → SymE → List (Nat × SymE)
+  | .var v, e => [(v, e)]
+  | .bin o a b, .bin o' a' b' => if decide (o = o') then symBind a a' ++ symBind b b' else []
+  | .un o a, .un o' a' => if decide (o = o') then symBind a a' else []
+  | _, _ => []
+
+
 unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) (t1 : Nat) (block : Nat)
     (loopToken : Bool := true) (subst : Option Lean.Name := none) (primNums : Bool := false) : TermElabM Unit := do
   astTabRef.set (← loadAstTab)
@@ -63,6 +71,11 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
     match tab0[r]? with
     | some (.var v) => if !cand.contains v then cand := cand.insert v e1
     | _ => pure ()
+  -- a variable only compound entries read: its image from their pairs
+  for (r, y, _, _) in w.pairs do
+    if let (.ref j, some e) := (y, tab0[r]?) then
+      for (v, e1) in symBind e (tab1[j]?.getD (.lit .nan)) do
+        if !cand.contains v then cand := cand.insert v e1
   -- the decode loop's restart: the token read at the cut, its next-iteration value a fresh end
   -- reference (`var 17`); not for a link (`tpl_link`)
   if loopToken then cand := cand.insert 14 (.var 17)

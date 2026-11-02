@@ -25,11 +25,25 @@ theorem wideAgree : ∀ b ∈ 4910 :: ghostPf, wideGPf b = wideG b := by
   simp only [ghostPf, List.mem_cons, List.not_mem_nil, or_false] at hb
   rcases hb with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
 
-theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
+/-- What the link's shift gives the tail: the relation at the template, from the class's at the padded table. -/
+def TailRel (NB T : Nat) (tk : Nat → Nat) (π extra : List Nat) (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData)
+    (θ : Nat → SymE) : Prop :=
+  ∀ {M1 : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv},
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf [] M1 ν K s1 ⟨tab1, []⟩ t C →
+    (∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: ([] ++ ((4910 :: ghostPf) ++ extra))) →
+    (∀ a w, wideG a = some w → K.fr a = none ∨ wideGPf a = some w) →
+    K.lo = 18151 → K.hi = 131072 → K.fr 2665 = some ([], π.map natV) →
+    NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) →
+    K.D + (s1.next - s0.next) < Sim.bound → s0.next ≤ s1.next + K.D →
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideG []
+      (((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
+      ⟨frW M1 K (Pf.keepOf []) wideG s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C
+
+theorem toTailOf {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
     {D : RData} {inv : PTrie Nat} {θ : Nat → SymE} {P0 : LoadP} {nJ : Nat} {Mem Mem' : SegInst FF → Prop}
-    (F : Pf.PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] extra wideG)
+    (F : Pf.PfCore s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] extra wideG)
+    (hlink : TailRel NB T tk π extra s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D θ)
     (hxw : ∀ b ∈ extra, wideG b = none)
-    (hNB : NB ≤ P0.NL)
     (hH : (mlxOf s1.ffi).next + 4096 ≤ (mlxOf s0.ffi).next + 65536)
     (hN : (mlxOf s1.ffi).nnext + 4096 ≤ (mlxOf s0.ffi).nnext + 65536)
     (hgrow : s0.next ≤ s1.next) (hcap : cap + (s1.next - s0.next) ≤ capT) (hbound : capT < Sim.bound)
@@ -72,7 +86,7 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List 
   obtain ⟨M1, hext, hp⟩ := relB_pad laws.stable laws.mono (S0.tab.map (·.subst θ)) hr.ofJ
   have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf [] M1 x.ν x.K s1
       ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
-  have hrel := Pf.pfRel F (π := π) (kw := 4910 :: ghostPf) hrP hfr kwTail hwk hlo hhi hP (fun _ h => nomatch h) hroomN hNB hD (by omega)
+  have hrel := hlink hrP hfr hwk hlo hhi hP hroomN hD (by omega)
   have hoff : x.t.next = s1.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
     Shift.valuation θ x.ν,
@@ -129,5 +143,27 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List 
     exact ⟨Nat.le_trans ht hH', Nat.le_trans hn hN'⟩
   · change M1.a (D.a 12504) = _
     rw [hE, hext.a]
+
+theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
+    {D : RData} {inv : PTrie Nat} {θ : Nat → SymE} {P0 : LoadP} {nJ : Nat} {Mem Mem' : SegInst FF → Prop}
+    (F : Pf.PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] extra wideG)
+    (hxw : ∀ b ∈ extra, wideG b = none)
+    (hNB : NB ≤ P0.NL)
+    (hH : (mlxOf s1.ffi).next + 4096 ≤ (mlxOf s0.ffi).next + 65536)
+    (hN : (mlxOf s1.ffi).nnext + 4096 ≤ (mlxOf s0.ffi).nnext + 65536)
+    (hgrow : s0.next ≤ s1.next) (hcap : cap + (s1.next - s0.next) ≤ capT) (hbound : capT < Sim.bound)
+    (h9 : θ 9 = .var 9) (h10 : θ 10 = .var 10) (h11 : θ 11 = .var 11) (h16 : θ 16 = .var 16)
+    (hres : ∀ j, j < 9 → θ j = .var j)
+    (hval : ∀ x : SegInst FF, Mem x → VBOkF loopVB x.ν → VBOkF loopVB (Shift.valuation θ x.ν))
+    (hdims : ∀ x : SegInst FF, Mem x → tail.dims (Shift.valuation θ x.ν))
+    (hhand : ∀ x : SegInst FF, Mem x → tail.hand π.length (Shift.valuation θ x.ν))
+    (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589) (hE : D.a 12504 = 12504)
+    (hI : D.nodeF nIT = nI)
+    (hook : ∀ x y : SegInst FF, y.t = x.t → y.C = x.C → (∀ c, y.M.node c = x.M.node (D.nodeF c)) →
+      y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
+    CutConv (withMem Mem (indexedCut0 extra NB T tk cap nI π s1 S1)) (withMem Mem' (indexedCut NB T tk capT nIT π s0 S0)) :=
+  toTailOf F.toPfCore (fun hrP hfr hwk hlo hhi hP hroomN hD hge =>
+      Pf.pfRel F (π := π) (kw := 4910 :: ghostPf) hrP hfr kwTail hwk hlo hhi hP (fun _ h => nomatch h) hroomN hNB hD hge)
+    hxw hH hN hgrow hcap hbound h9 h10 h11 h16 hres hval hdims hhand hA hB hC hE hI hook
 
 end Host.Ts.Sim.Compose.Post

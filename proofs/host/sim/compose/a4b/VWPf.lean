@@ -75,7 +75,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
         rowValue := by rw [hlen]; exact (hval 10 (by decide) (by decide) (by decide) (by decide) (by decide)).trans (h10 x.ν hmap)
         offsetValue := by rw [hlen]; exact h11 x.ν hmap
         capValue := by rw [hlen]; exact h16 x.ν hmap
-        context := ⟨⟨hlo, hhi, fun a => framed_after F M1 x.K (L := wideListPf) (fun _ => rfl) hP (fun _ h => nomatch h) a⟩, ?_⟩
+        context := ⟨⟨hlo, hhi, fun a => framed_after F.toPfCore M1 x.K (L := wideListPf) (fun _ => rfl) hP (fun _ h => nomatch h) a⟩, ?_⟩
         prompt := ?_
         inputs := ⟨?_, ?_⟩ }
     · intro j
@@ -102,7 +102,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
                 exact hb.valuation j
     · change x.t.next - s0.next ≤ cap
       omega
-    · exact (frames_prompt F M1 x.K).trans hP
+    · exact (frames_prompt F.toPfCore M1 x.K).trans hP
     · intro j hj
       rw [hval j (by omega) (by omega) (by omega) (by omega) (by omega)]
       exact hins.1 j hj

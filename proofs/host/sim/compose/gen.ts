@@ -2203,6 +2203,8 @@ function genPostLink(args: string[]) {
   const endMod = take("--endmod") ?? fail("post-link: --endmod <module>");
   // the walk, when this link writes its own (the tail's end to the pre-final template)
   const walkAt = take("--walkfrom");
+  // --t-shift <NB>: a shift renaming nodes above NB, for a class whose compiled traces sit in another order than the template's
+  const tNB = take("--t-shift");
   // the walk also compares primitives' numbers, for a source whose table isn't laid out like the template's
   const primNums = args.includes("--prim-nums");
   if (primNums) args.splice(args.indexOf("--prim-nums"), 1);
@@ -2359,9 +2361,10 @@ function genPostLink(args: string[]) {
   // the template's table starts with the state's (one pass); only its new entries are looked up
   const entries = (tm.entries as { ref: number; var: number; orig: string }[]).slice().sort((a, b) => a.ref - b.ref);
   const nHead = entries[0]!.ref;
+  const es = chunked("edges", "PTrie.keysA " + x0 + ".nodes", st.nnext, "all", l => "(" + l + ").all (edgeOK " + sg + " " + x0 + ") = true");
   const fields = ["nh0", "nh1", "nn0", "nn1", "lo", "cnt", "nband", "hbelow", "handles", "hren", "band", "nh1pos", "objs", "objok",
-    "nodes", "prims", "nren", "nlow", "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
-  put(name + "Na", head(walkMod, a4b + "." + E + "Closed", "host.sim.template.NShiftOf", "host.sim.compose.PfLink") +
+    "nodes", "prims", "nren", "nlow", tNB ? "edges" : "nord", "items", "ssT", "abs0a", "abs0b", "tok1", "pend", "errh", "files", "arch", "sizes", "wired"];
+  put(name + "Na", head(walkMod, a4b + "." + E + "Closed", tNB ? "host.sim.template.NShiftT" : "host.sim.template.NShiftOf", "host.sim.compose.PfLink") +
     "def " + P + " : LoadP := setupP.raise " + st.nnext + NL +
     "noncomputable abbrev " + name + ".y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s0 + ".ffi)" + NL +
     "noncomputable abbrev " + name + ".y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad " + s1 + ".ffi)" + NL +
@@ -2384,13 +2387,15 @@ function genPostLink(args: string[]) {
     ck("nn1", D + ".nn1 = " + x1 + ".nnext"),
     ck("lo", "(Nat.blt 0 " + P + ".lo && Nat.ble " + P + ".lo " + x0 + ".next && Nat.ble " + P + ".lo RData.bigHi && Nat.ble RData.bigHi " + P + ".E) = true"),
     ck("cnt", "(Nat.ble " + x0 + ".next " + x1 + ".next && Nat.ble " + x0 + ".nnext " + x1 + ".nnext) = true"),
-    ck("nband", "(Nat.blt 0 " + P + ".NL && Nat.ble " + P + ".NL " + P + ".N0 && Nat.ble " + P + ".N0 " + x0 + ".nnext) = true"),
+    ck("nband", tNB
+      ? "(Nat.blt 0 " + tNB + " && Nat.ble " + tNB + " " + P + ".NL && Nat.ble " + P + ".NL " + P + ".N0 && Nat.ble " + P + ".N0 " + x0 + ".nnext && Nat.beq " + P + ".NL " + P + ".N0) = true"
+      : "(Nat.blt 0 " + P + ".NL && Nat.ble " + P + ".NL " + P + ".N0 && Nat.ble " + P + ".N0 " + x0 + ".nnext) = true"),
     ck("hbelow", D + ".checkHndBelow = true"),
     ck("hren", "checkRenG " + D + ".hnd " + R + ".hinv (phB " + x0 + ") = true"),
     ck("band", D + ".checkBand " + P + ".lo = true"), ck("nh1pos", "Nat.blt 0 " + D + ".nh1 = true"),
     ck("nren", "checkRenG " + D + ".node " + R + ".ninv (pnB " + x0 + ") = true"),
-    ck("nlow", "(PTrie.keysA " + D + ".node).all (fun j => Nat.ble " + P + ".NL j && Nat.blt (" + D + ".nodeF j) " + x1 + ".nnext) = true"),
-    ck("nord", "(fullAbove " + P + " " + x0 + ").all (fun i => Nat.ble i (" + D + ".nodeF i) &&" + NL + "  (PTrie.keysA " + D + ".node).all fun j => !Nat.blt j i || Nat.blt (" + D + ".nodeF j) (" + D + ".nodeF i)) = true"),
+    ck("nlow", "(PTrie.keysA " + D + ".node).all (fun j => Nat.ble " + (tNB ?? P + ".NL") + " j && Nat.blt (" + D + ".nodeF j) " + x1 + ".nnext) = true"),
+    tNB ? "" : ck("nord", "(fullAbove " + P + " " + x0 + ").all (fun i => Nat.ble i (" + D + ".nodeF i) &&" + NL + "  (PTrie.keysA " + D + ".node).all fun j => !Nat.blt j i || Nat.blt (" + D + ".nodeF j) (" + D + ".nodeF i)) = true"),
     ck("items", "(PTrie.keysA " + x0 + ".items).all (pnB " + x0 + ") = true"), ck("ssT", "checkSSt " + T + ".n " + x0 + " = true"),
     ck("abs0a", x0 + ".arrs.get 0 = none"), ck("abs0b", x0 + ".objs.get 0 = none"), ck("tok1", x1 + ".tokens = []"),
     ck("pend", x1 + ".pending = " + x0 + ".pending.map " + sg + ".pend"), ck("errh", x1 + ".errh = " + x0 + ".errh.map " + sg + ".arg"),
@@ -2398,11 +2403,11 @@ function genPostLink(args: string[]) {
     ck("sizes", x1 + ".deviceSizes = " + x0 + ".deviceSizes"), ck("wired", x1 + ".wired = " + x0 + ".wired"),
     ck("host", name + ".y1.host = " + name + ".y0.host")].join(""));
   const cks = [ck("objs", "(PTrie.keysA " + x0 + ".objs).map (fun h => " + x1 + ".objs.get (" + sg + ".handle h)) =" + NL + "  (PTrie.keysA " + x0 + ".objs).map (fun h => (" + x0 + ".objs.get h).map " + sg + ".nobj)") +
-    ck("objok", "(PTrie.keysA " + x0 + ".objs).all (objOK " + sg + " " + P + ".NL " + x0 + ") = true"), ...hs.chunks, ...ns.chunks, ...ps.chunks];
+    ck("objok", "(PTrie.keysA " + x0 + ".objs).all (objOK " + sg + " " + P + ".NL " + x0 + ") = true"), ...hs.chunks, ...ns.chunks, ...ps.chunks, ...(tNB ? es.chunks : [])];
   cks.forEach((body, j) => put(name + "Nc_" + j, head(a4b + "." + name + "Na") + body));
-  put(name + "Nb", head(...cks.map((_, j) => a4b + "." + name + "Nc_" + j)) + hs.assemble + ns.assemble + ps.assemble + NL +
-    "theorem " + name + ".nshift : NShift " + P + " " + T + ".n " + sg + " " + name + ".y0 " + name + ".y1 :=" + NL +
-    "  nshift_of \u27E8rfl, rfl, rfl, " + fields.map(f => name + ".n" + f).join(", ") + "\u27E9 " + name + ".nhost fun _ => rfl" + NL);
+  put(name + "Nb", head(...cks.map((_, j) => a4b + "." + name + "Nc_" + j)) + hs.assemble + ns.assemble + ps.assemble + (tNB ? es.assemble : "") + NL +
+    "theorem " + name + ".nshift : " + (tNB ? "Conv.TraceNShift " + P + " " + tNB : "NShift " + P) + " " + T + ".n " + sg + " " + name + ".y0 " + name + ".y1 :=" + NL +
+    "  " + (tNB ? "traceNShift_of" : "nshift_of") + " \u27E8rfl, rfl, rfl, " + fields.map(f => name + ".n" + f).join(", ") + "\u27E9 " + name + ".nhost fun _ => rfl" + NL);
   const fq = (a: string) => "(Host.Ts.Sim.Full.mlxOf " + a + ".ffi)";
   put(name + "Full", head(a4b + "." + name + "Nb", "host.sim.template.FullShiftGen") + [
     "kernel_rfl N.tokens : " + fq(s1) + ".tokens = " + fq(s0) + ".tokens.map " + sg + ".nv",
@@ -2413,7 +2418,7 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.pendR : pendRegB " + sg + " " + fq(s0) + " = true",
     "kernel_rfl N.pendLe : Nat.ble " + fq(s0) + ".next " + fq(s1) + ".next = true",
     "",
-    "theorem N.fullShift : Conv.FullShiftQ " + P + " " + T + ".n " + sg + " " + s0 + ".ffi " + s1 + ".ffi :=",
+    "theorem N.fullShift : " + (tNB ? "Conv.FullShiftTB (fun _ x y => bridgeOf y = bridgeOf x) " + P + " " + tNB : "Conv.FullShiftQ " + P) + " " + T + ".n " + sg + " " + s0 + ".ffi " + s1 + ".ffi :=",
     "  \u27E8N.nshift, N.tokens, fun t ht => bSN_sound (List.all_eq_true.mp N.tokSupp t ht), N.bridge,",
     "    liveShift_of N.live, kernShift_of N.kern,",
     "    pendReg_of rfl N.nnh0 N.nnh1 (Nat.le_of_ble_eq_true N.pendLe) N.pendR\u27E9",
@@ -2479,14 +2484,14 @@ function genPostLink(args: string[]) {
     "kernel_rfl N.jsKeys : (PTrie.keys " + D + ".heap).all (Nat.ble " + nJ + ") = true",
     "kernel_rfl N.jsLe : Nat.ble " + nJ + " " + D + ".n0 = true"]];
   kchecks.forEach((c, j) => put(name + "K" + j, head(a4b + "." + name + "Na", endMod, "host.load.boot.World", ...(j === 0 ? [pad ? "host.sim.compose.NumPad" : "host.sim.compose.NumSplit"] : [])) + c.join(NL).replaceAll("N.", name + ".") + NL));
-  put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j)) + [
+  put(name, head(a4b + "." + name + "Heap", a4b + "." + name + "Full", a4b + "." + E + "Fresh", ...kchecks.map((_, j) => a4b + "." + name + "K" + j), ...(tNB ? ["host.sim.compose.PostLinkT"] : [])) + [
     "theorem N.wideAll : \u2200 p \u2208 " + wideL + ", Pf.WideP " + D + " " + s0 + " " + s1 + " p.1 p.2 := by" + NL +
         "  intro p hp" + NL +
         "  simp only [" + wideL + ", wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp" + NL +
         "  rcases hp with " + ["rfl", ...wideGhosts.map(() => "rfl")].join(" | ") + NL +
         "  \u00B7 exact Pf.wideP_memo (by decide) N.memoFix N.memoGet0 N.memoGet1 N.memoKind N.memoImg" + NL +
         wideGhosts.map(g => "  \u00B7 exact Pf.wideP_ghost (by decide) N.ghostFix" + g + " N.ghostChk" + g).join(NL) + NL + NL +
-        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + keepL.join(", ") + "] [" + dropList + "] " + wideF + " where",
+        "theorem N.facts : " + (tNB ? "Post.PfFactsT " + tNB : "Pf.PfFacts") + " " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + keepL.join(", ") + "] [" + dropList + "] " + wideF + " where",
     "  num := N.num",
     "  heap := by",
     "    intro a h ha hm hw",

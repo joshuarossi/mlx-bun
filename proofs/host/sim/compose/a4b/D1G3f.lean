@@ -140,7 +140,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
         rowValue := θat h9 θ10
         offsetValue := ?_
         capValue := ?_
-        context := ⟨⟨hlo, hhi, fun a => Pf.framed_after PLD1.facts x.M x.K (L := wideListPf) (fun _ => rfl) hP hK a⟩, ?_⟩
+        context := ⟨⟨hlo, hhi, fun a => Pf.framed_after PLD1.facts.toPfCore x.M x.K (L := wideListPf) (fun _ => rfl) hP hK a⟩, ?_⟩
         offsetLow := ?_
         prompt := ?_
         reserved := ?_
@@ -163,7 +163,7 @@ theorem toEntry (NB T : Nat) (tk : Nat → Nat) {ρ : List Nat} (hρ : ∀ k ∈
       change 13 ≤ x.t.next - PRE_pl_entry.s0.next
       rw [hoff, sameNext]
       omega
-    · exact (Pf.frames_prompt PLD1.facts x.M x.K).trans hP
+    · exact (Pf.frames_prompt PLD1.facts.toPfCore x.M x.K).trans hP
     · intro j hj
       have hθ : PLD1.θ j = .var j := Pf.thetaOf_off (by
         rw [θKeys]

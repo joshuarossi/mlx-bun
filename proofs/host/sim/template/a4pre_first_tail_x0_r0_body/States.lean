@@ -1,4 +1,5 @@
 import host.sim.template.a4pre_first_tail_x0_r0.Boundary
+-- stream revision 1793642013
 import host.sim.template.BridgeLiteral
 import host.sim.template.ChainLit
 -- revision: chunk literal, the prompt's length a variable
