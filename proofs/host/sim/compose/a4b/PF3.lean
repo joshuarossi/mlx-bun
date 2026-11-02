@@ -23,7 +23,7 @@ theorem PF3.wideAll : ∀ p ∈ wideListPf, Pf.WideP PFW3.R.data PRE_pf_vw.s0 PR
   · exact Pf.wideP_ghost (by decide) PF3.ghostFix1993 PF3.ghostChk1993
   · exact Pf.wideP_ghost (by decide) PF3.ghostFix2001 PF3.ghostChk2001
 
-theorem PF3.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x3_r0_suffix.s8 PRE_pf_vw.S0.tab PF3.tabP PFW3.R.data PFW3.R.inv PF3.θ PF3.P0 2823887 [2673467, 2673472, 2673473] wideGPf where
+theorem PF3.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x3_r0_suffix.s8 PRE_pf_vw.S0.tab PF3.tabP PFW3.R.data PFW3.R.inv PF3.θ PF3.P0 2823887 [] [2673467, 2673472, 2673473] wideGPf where
   num := PF3.num
   heap := by
     intro a h ha hm hw
@@ -41,6 +41,7 @@ theorem PF3.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x3_r0_suffix.s8 PRE_p
   imgP := PF3.imgP
   wide a w hw := PF3.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PF3.emptyP
+  keepF _ h := nomatch h
   notDrop := by
     intro a ha b hb he
     have hc := PRE_pf_vw.allPresent PF3.ND.all PF3.ndFramed a ha

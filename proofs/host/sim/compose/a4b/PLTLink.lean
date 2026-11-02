@@ -40,14 +40,14 @@ theorem plt_kept {j : Nat} (h : j ∈ (List.range 9) ++ [9, 10, 11, 16]) : PLT.�
 
 theorem pltImg : ShortImg PLT.θ := ⟨plt20, plt22, plt23, plt24, plt25, plt26, plt200⟩
 
-/-- **A short row's link.** -/
+/-- **The one-token class's link**: its chunk goes here. -/
 theorem hlinkOne {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {Mem Mem' : SegInst FF → Prop}
     (hNB : NB ≤ PLT.P0.NL) (hbound : cap < Sim.bound) (hL : π.length ≤ 2)
     (hs : ∀ x : SegInst FF, Mem x → ShortVals x.ν)
     (hook : ∀ x y : SegInst FF, y.t = x.t → y.C = x.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
-    CutConv (withMem Mem (indexedCut0 NB T tk cap nI π PRE_pl_common.s1 PRE_pl_common.S1))
+    CutConv (withMem Mem (indexedCut0 [2673479] NB T tk cap nI π PRE_pl_common.s1 PRE_pl_common.S1))
       (withMem Mem' (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0)) :=
-  toTail PLT.facts hNB (Nat.le_of_ble_eq_true pltH) (Nat.le_of_ble_eq_true pltN)
+  toTail PLT.facts (fun b hb => by obtain rfl := List.mem_singleton.mp hb; rfl) hNB (Nat.le_of_ble_eq_true pltH) (Nat.le_of_ble_eq_true pltN)
     (by rw [pltNext]) (by rw [pltNext]; omega) hbound
     (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide))
     (fun j hj => plt_kept (List.mem_append_left _ (List.mem_range.mpr hj)))

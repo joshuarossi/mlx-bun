@@ -152,10 +152,20 @@ theorem lookupW_ne : ∀ {L : List (Nat × WFrame)} {a : Nat}, a ∈ L.map Prod.
       simp only [List.map_cons, List.mem_cons] at h
       exact lookupW_ne (h.resolve_left e)
 
-/-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt in place and empty, the frames `W0` related by `WideImg`;
-no address of `s0` lands on a dropped frame. -/
+/-- A frame a link keeps beside the prompt's: in place, empty in both templates, not one of `W0`'s. -/
+structure KeptF (D : RData) (s0 s1 : St FF.S) (W0 : Nat → Option WFrame) (a : Nat) : Prop where
+  ne : a ≠ 2665
+  none : W0 a = none
+  fix : D.a a = a
+  get : s0.heap.get a = some (.obj (Template.objOf s0 a))
+  kind : (Template.objOf s0 a).kind = .array []
+  img : s1.heap.get a = some (.obj { D.map.obj (Template.objOf s0 a) with kind := .array ([] ++ arrOf s1 a) })
+  empty : arrOf s1 a = []
+
+/-- The generated checks: `s1` holds a copy of `s0` under `D.map`, the prompt and `kept` in place and empty, the frames `W0` related by
+`WideImg`; no address of `s0` lands on a dropped frame. -/
 structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : PTrie Nat)
-    (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (drop : List Nat) (W0 : Nat → Option WFrame) : Prop where
+    (θ : Nat → SymE) (P0 : LoadP) (nJ : Nat) (kept drop : List Nat) (W0 : Nat → Option WFrame) : Prop where
   num : checkNum D.map θ ⟨tab0, []⟩ ⟨tab1, []⟩ = true
   heap : ∀ a h, s0.heap.get a = some h → a ≠ 2665 → W0 a = none → s1.heap.get (D.a a) = some (D.map.hobj h)
   wide : ∀ a w, W0 a = some w → a ≠ 2665 ∧ D.a a = a ∧ Present s0 a ∧ WFix D.map (Present s0) w ∧
@@ -167,6 +177,7 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
   imgP : s1.heap.get 2665 =
     some (.obj { D.map.obj (Template.objOf s0 2665) with kind := .array ([] ++ arrOf s1 2665) })
   emptyP : arrOf s1 2665 = []
+  keepF : ∀ a ∈ kept, KeptF D s0 s1 W0 a
   n0 : D.n0 = s0.next
   n1 : D.n1 = s1.next
   ren : checkRen s0 D inv = true
@@ -200,7 +211,7 @@ structure PfFacts (s0 s1 : St FF.S) (tab0 tab1 : List SymE) (D : RData) (inv : P
 
 section
 variable {s0 s1 : St FF.S} {tab0 tab1 : List SymE} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
-  {P0 : LoadP} {nJ : Nat} {drop : List Nat} {W0 : Nat → Option WFrame}
+  {P0 : LoadP} {nJ : Nat} {kept drop : List Nat} {W0 : Nat → Option WFrame}
 
 /-- The target's room crosses to a template at or above the tail's counters. -/
 theorem linkRoomLe {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
@@ -236,22 +247,32 @@ theorem linkRoomAt {H N : Nat} {t : St FF.S} (hnat : NativeAt H N s1 t) (hH : H 
     omega
 
 
-/-- The frame the pre-final cut keeps. -/
-abbrev keepP : Nat → Bool := fun a => Nat.beq a 2665
+/-- The frames a link keeps: the prompt's and those listed. -/
+abbrev keepOf (kept : List Nat) : Nat → Bool := fun a => Nat.beq a 2665 || kept.contains a
 
-theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {K : Ctx} {π : List Nat} {kw : List Nat}
+theorem keepOf_false {kept : List Nat} {a : Nat} (h : keepOf kept a = false) : a ≠ 2665 ∧ a ∉ kept := by
+  simp only [keepOf, Bool.or_eq_false_iff] at h
+  refine ⟨fun e => ?_, fun hm => ?_⟩
+  · subst e
+    simp at h
+  · rw [List.contains_iff_mem.mpr hm] at h
+    cases h.2
+
+theorem keepOf_true {kept : List Nat} {a : Nat} (h : keepOf kept a = true) : a = 2665 ∨ a ∈ kept := by
+  simp only [keepOf, Bool.or_eq_true] at h
+  rcases h with h | h
+  · exact .inl (Nat.eq_of_beq_eq_true h)
+  · exact .inr (List.contains_iff_mem.mp h)
+
+theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {K : Ctx} {π : List Nat} {kw : List Nat}
     {W : Nat → Option WFrame}
-    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kw ++ drop)) (hkw : ∀ b ∈ kw, W0 b ≠ none)
+    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kept ++ (kw ++ drop))) (hkw : ∀ b ∈ kw, W0 b ≠ none)
     (hwk : ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
-    (hP : K.fr 2665 = some ([], π.map natV)) :
-    ShiftW FF (fun σ x y => x = s0.ffi ∧ Conv.FullShiftQX P0 tab0.length σ x y) D.map θ keepP W0 W K
+    (hP : K.fr 2665 = some ([], π.map natV)) (hK : ∀ b ∈ kept, ∃ q, K.fr b = some ([], q)) :
+    ShiftW FF (fun σ x y => x = s0.ffi ∧ Conv.FullShiftQX P0 tab0.length σ x y) D.map θ (keepOf kept) W0 W K
       s0 ⟨tab0, []⟩ s1 ⟨tab1, []⟩ := by
   have hinj : ∀ a b, Present s0 a → Present s0 b → D.a a = D.a b → a = b :=
     a_inj (fun x hx => by rw [F.n0]; exact F.bound x hx) F.ren
-  have hne : ∀ {a : Nat}, keepP a = false → a ≠ 2665 := by
-    intro a hk e
-    subst e
-    simp at hk
   refine
     { num := checkNum_sound F.num
       heap := ?_
@@ -276,7 +297,7 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {K : Ctx} {
       bigExt := RData.big_ext _
       intr := F.intr }
   · intro a h ha hkp hw
-    exact F.heap a h ha (hne hkp) hw
+    exact F.heap a h ha (keepOf_false hkp).1 hw
   · intro a h ha hkp hw
     change K.fr (D.a a) = none
     cases e : K.fr (D.a a) with
@@ -284,23 +305,36 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {K : Ctx} {
     | some p =>
       have hm := (hfr _).mp (by rw [e]; exact Option.some_ne_none _)
       rcases List.mem_cons.mp hm with h1 | h1
-      · exact absurd (hinj _ _ (Present.of_get ha) (Present.of_get F.getP) (h1.trans F.fixP.symm)) (hne hkp)
-      · rcases List.mem_append.mp h1 with h2 | h2
-        · obtain ⟨w, hb⟩ := Option.ne_none_iff_exists'.1 (hkw _ h2)
-          obtain ⟨-, hfix, hpr, -, -⟩ := F.wide _ w hb
-          have e2 : a = D.a a := hinj _ _ (Present.of_get ha) hpr hfix.symm
-          rw [← e2, hw] at hb
-          cases hb
-        · exact absurd rfl (F.notDrop a (Present.of_get ha) _ h2)
+      · exact absurd (hinj _ _ (Present.of_get ha) (Present.of_get F.getP) (h1.trans F.fixP.symm)) (keepOf_false hkp).1
+      · rcases List.mem_append.mp h1 with h0 | h1
+        · have k := F.keepF _ h0
+          have e2 : a = D.a a := hinj _ _ (Present.of_get ha) (Present.of_get k.get) k.fix.symm
+          rw [← e2] at h0
+          exact absurd h0 (keepOf_false hkp).2
+        · rcases List.mem_append.mp h1 with h2 | h2
+          · obtain ⟨w, hb⟩ := Option.ne_none_iff_exists'.1 (hkw _ h2)
+            obtain ⟨-, hfix, hpr, -, -⟩ := F.wide _ w hb
+            have e2 : a = D.a a := hinj _ _ (Present.of_get ha) hpr hfix.symm
+            rw [← e2, hw] at hb
+            cases hb
+          · exact absurd rfl (F.notDrop a (Present.of_get ha) _ h2)
   · intro a hkp
-    obtain rfl : a = 2665 := Nat.eq_of_beq_eq_true hkp
-    exact ⟨F.fixP, [], π.map natV, _, _, hP, F.getP, F.kindP, F.imgP⟩
+    rcases keepOf_true hkp with rfl | hm
+    · exact ⟨F.fixP, [], π.map natV, _, _, hP, F.getP, F.kindP, F.imgP⟩
+    · have k := F.keepF a hm
+      obtain ⟨q, hq⟩ := hK a hm
+      exact ⟨k.fix, [], q, _, _, hq, k.get, k.kind, k.img⟩
   · intro a w hw
     obtain ⟨hn, hfix, hpr, hwf, hkeep⟩ := F.wide a w hw
-    have hk : keepP a = false := by
-      cases e : keepP a with
+    have hk : keepOf kept a = false := by
+      cases e : keepOf kept a with
       | false => rfl
-      | true => exact absurd (Nat.eq_of_beq_eq_true e) hn
+      | true =>
+        rcases keepOf_true e with h | h
+        · exact absurd h hn
+        · have := (F.keepF a h).none
+          rw [this] at hw
+          cases hw
     exact ⟨hk, hfix, hpr, hwf, hwk a w hw, hkeep⟩
   · intro k
     change D.a (s0.next + k) = _
@@ -323,20 +357,10 @@ theorem pfShift (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {K : Ctx} {
     rw [hlo, hhi] at hi
     exact RData.big_fixed D F.band F.nh0 (by decide) i hi
 
-/-- The frames after the link: the prompt's and `W0`'s. -/
-theorem frames_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) (M : Map) (K : Ctx) (a : Nat) :
-    frW M K keepP W0 s1 a = if a = 2665 then K.fr 2665 else if (W0 a).isSome then some ([], []) else none := by
-  by_cases h : a = 2665
-  · subst h
-    rw [if_pos rfl]
-    exact framedNext_empty M K F.emptyP
-  · rw [if_neg h]
-    have hk : keepP a = false := by
-      cases e : keepP a with
-      | false => rfl
-      | true => exact absurd (Nat.eq_of_beq_eq_true e) h
-    simp only [frW, hk, cond_false]
-    cases (W0 a).isSome <;> rfl
+/-- The prompt's frame after the link. -/
+theorem frames_prompt (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) :
+    frW M K (keepOf kept) W0 s1 2665 = K.fr 2665 :=
+  framedNext_empty M K F.emptyP
 
 theorem lookupW_isSome {L : List (Nat × WFrame)} {a : Nat} : (Disp.lookupW a L).isSome = true ↔ a ∈ L.map Prod.fst := by
   constructor
@@ -348,15 +372,30 @@ theorem lookupW_isSome {L : List (Nat × WFrame)} {a : Nat} : (Disp.lookupW a L)
     | none => exact absurd e (lookupW_ne h)
     | some w => rfl
 
-/-- The frames after the link are the prompt's and the list's. -/
-theorem framed_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) (M : Map) (K : Ctx) {L : List (Nat × WFrame)}
-    (hW : ∀ a, W0 a = Disp.lookupW a L) {xs : List Val} (hP : K.fr 2665 = some ([], xs)) (a : Nat) :
-    frW M K keepP W0 s1 a ≠ none ↔ a ∈ 2665 :: L.map Prod.fst := by
-  rw [frames_after F M K a, List.mem_cons]
-  by_cases ha : a = 2665
-  · subst ha
-    simp [hP]
-  · rw [if_neg ha, or_iff_right ha, hW a, ← lookupW_isSome]
+/-- The frames after the link are the prompt's, the list's and those kept. -/
+theorem framed_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) (M : Map) (K : Ctx) {L : List (Nat × WFrame)}
+    (hW : ∀ a, W0 a = Disp.lookupW a L) {xs : List Val} (hP : K.fr 2665 = some ([], xs))
+    (hK : ∀ b ∈ kept, ∃ q, K.fr b = some ([], q)) (a : Nat) :
+    frW M K (keepOf kept) W0 s1 a ≠ none ↔ a ∈ 2665 :: (L.map Prod.fst ++ kept) := by
+  rw [List.mem_cons, List.mem_append]
+  cases e : keepOf kept a with
+  | true =>
+    have hv : frW M K (keepOf kept) W0 s1 a ≠ none := by
+      simp only [frW, e, cond_true]
+      rcases keepOf_true e with rfl | hm
+      · rw [framedNext_empty M K F.emptyP, hP]
+        exact Option.some_ne_none _
+      · obtain ⟨q, hq⟩ := hK a hm
+        rw [framedNext_empty M K (F.keepF a hm).empty, hq]
+        exact Option.some_ne_none _
+    refine ⟨fun _ => ?_, fun _ => hv⟩
+    rcases keepOf_true e with h | h
+    · exact .inl h
+    · exact .inr (.inr h)
+  | false =>
+    obtain ⟨h1, h2⟩ := keepOf_false e
+    simp only [frW, e, cond_false]
+    rw [or_iff_right h1, or_iff_left h2, hW a, ← lookupW_isSome]
     cases (Disp.lookupW a L).isSome <;> simp
 
 /-- A frame new at the link: the tail doesn't frame it. -/
@@ -377,19 +416,19 @@ theorem newFrames {K : Ctx} {fr : List Nat} {L : List (Nat × WFrame)} {W W0 : N
     cases h3
 
 /-- **The relation at the template.** -/
-theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {NB T : Nat} {tk : Nat → Nat}
+theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ kept drop W0) {NB T : Nat} {tk : Nat → Nat}
     {W : Nat → Option WFrame} {π : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {kw : List Nat}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W []
       M ν K s1 ⟨tab1, []⟩ t C)
-    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kw ++ drop)) (hkw : ∀ b ∈ kw, W0 b ≠ none)
+    (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ 2665 :: (kept ++ (kw ++ drop))) (hkw : ∀ b ∈ kw, W0 b ≠ none)
     (hwk : ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w) (hlo : K.lo = 18151) (hhi : K.hi = 131072)
-    (hP : K.fr 2665 = some ([], π.map natV))
+    (hP : K.fr 2665 = some ([], π.map natV)) (hK : ∀ b ∈ kept, ∃ q, K.fr b = some ([], q))
     (hroomN : NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi))
     (hNB : NB ≤ P0.NL) (hD : K.D + (s1.next - s0.next) < Sim.bound) (hge : s0.next ≤ s1.next + K.D) :
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W0 []
       (((M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next).withJs) (Shift.valuation θ ν)
-      ⟨frW M K keepP W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
-  have hs := pfShift F hfr hkw hwk hlo hhi hP
+      ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩ s0 ⟨tab0, []⟩ t C := by
+  have hs := pfShift F hfr hkw hwk hlo hhi hP hK
   have hband : ∀ j : Int, ((mlxOf s0.ffi).next : Int) ≤ j ∧ j < setupP.E →
       ¬ BigFixed K.lo K.hi j ∧ 0 ≤ j ∧ j < 2 ^ 56 := by
     intro j hj
@@ -402,10 +441,10 @@ theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {NB T : Nat} 
     · constructor <;> omega
   have hoff : t.next = s1.next + K.D := hr.offset
   have hc := Conv.full_compactW NB (P := setupP) (r := machReads T tk)
-    (s0 := s0) (s1 := s1) (S0 := ⟨tab0, []⟩) (S1 := ⟨tab1, []⟩) (W1 := W) (W0 := W0) (kp := keepP)
+    (s0 := s0) (s1 := s1) (S0 := ⟨tab0, []⟩) (S1 := ⟨tab1, []⟩) (W1 := W) (W0 := W0) (kp := keepOf kept)
     F.raised hNB hr.ofJ hs F.bigs F.free hband (fun _ h => nomatch h) (by omega) (by omega) hroomN
   let N' := (M.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf t.ffi).next
-  let K' : Ctx := ⟨frW M K keepP W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
+  let K' : Ctx := ⟨frW M K (keepOf kept) W0 s1, s0.trace, t.trace, t.next - s0.next, K.lo, K.hi⟩
   have hJs : NoBigSt (JsBad N') K'.base s0 :=
     noBigSt_of_above F.jsHeap F.jsRoots (fun j hj => by
       have hbad := jsBad_after (M := M) (N := N') (σ := D.map) hr.ffi.2 rfl

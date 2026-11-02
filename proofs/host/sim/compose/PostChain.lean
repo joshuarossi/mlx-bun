@@ -172,14 +172,14 @@ theorem simulationRQ (NB T : Nat) (tk : Nat → Nat) (limit cap : Nat) (hlimit :
     PostOk.wp
   simpa only [params, backRest, okRL] using hs
 
-/-- `PostOk.ok0`: up to the shared cut. -/
-noncomputable def modeOk0 (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (hcap : cap ≤ 4096 + 1593835520) : Mode head NB T tk cap where
-  okS := PostOk.ok0
-  okT := Disp.okJSJLimit PostOk.J0 jsSignedLimit cap (okBackFXS setupP)
-  Kp := Disp.KpJ PostOk.J0 cap
+/-- `PostOk.okF0`: up to the shared cut. -/
+noncomputable def modeOk0 (extra : List Nat) (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (hcap : cap ≤ 4096 + 1593835520) : Mode (head extra) NB T tk cap where
+  okS := PostOk.okF0 extra
+  okT := Disp.okJSJLimit (PostOk.J0F extra) jsSignedLimit cap (okBackFXS setupP)
+  Kp := Disp.KpJ (PostOk.J0F extra) cap
   Vp := PostHeadSmall.VP
   lift _ _ h := Disp.okJSJLimit_signed_of_allowance hcap h
-  sim y0 := simulationQ NB T tk jsSignedLimit cap (Nat.le_refl _) [] y0 _ _ wideGPf PostOk.wp0
+  sim y0 := simulationQ NB T tk jsSignedLimit cap (Nat.le_refl _) [] y0 _ _ wideGPf (PostOk.wpF0 extra)
   ctx _ h := h
   vp h := ⟨h.valuation, h.rowValue⟩
 

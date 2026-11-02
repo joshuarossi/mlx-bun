@@ -10,8 +10,8 @@ abbrev N : Nat := 809
 kernel_rfl stepsEq : N = n0
 
 /-- **The chain**, in 809 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV head T tk π.length ν → Good ν PRE_pl_head.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
-    CutStep (withMem Tr (indexedCut0 NB T tk cap nI π PRE_pl_head.s0 PRE_pl_head.S0)) (withMem Tr (indexedCut0 NB T tk cap nI π PRE_pl_head.s1 PRE_pl_head.S1)) N :=
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV (head [2673479]) T tk π.length ν → Good ν PRE_pl_head.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut0 [2673479] NB T tk cap nI π PRE_pl_head.s0 PRE_pl_head.S0)) (withMem Tr (indexedCut0 [2673479] NB T tk cap nI π PRE_pl_head.s1 PRE_pl_head.S1)) N :=
   ((c0 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
 
 end Host.Ts.Sim.Compose.Post.PL.Head

@@ -4,6 +4,11 @@ import host.sim.compose.a4b.pl.T1E.All
 import host.sim.compose.a4b.pl.T2.All
 import host.sim.compose.a4b.pl.T2E.All
 import host.sim.compose.a4b.pl.Ta.All
+import host.sim.template.a4pre_pl_t1.Origin
+import host.sim.template.a4pre_pl_t1_eos.Origin
+import host.sim.template.a4pre_pl_t2.Origin
+import host.sim.template.a4pre_pl_t2_eos.Origin
+import host.sim.template.a4pre_pl_ta.Origin
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -126,7 +131,7 @@ variable (Q : PopHooks H)
 
 /-- The class's POST, to the shared tail. -/
 theorem toTailStep (L : Nat) :
-    CutStep (withMem (H.Mem0 L) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
+    CutStep (withMem (H.Mem0 L) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH))
       (withMem (H.MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0)) P.n :=
   (hookMemV (fun x0 => P.run (NTrackV x0) (fun _ _ h h0 => ⟨h0.toNTrack.trans h.toNTrack, h.val.trans h0.val⟩))
       (fun x y _ hy _ htr hm => H.hsmp L x y hy htr hm)).convR (H.hlink L)
@@ -153,7 +158,7 @@ theorem toR1Step (L : Nat) (hT2 : 2 ≤ T) (hne : tk 1 ≠ 248044) (ht : tk 1 < 
 include hcap Q htk hL2 hL1 in
 /-- `T = 1`, the first token the end. -/
 noncomputable def pC1 (h : T = 1) (he : tk 1 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH)) [] :=
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH)) [] :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
       ((PL.T1E.all NB T tk cap nI π hcap
@@ -167,7 +172,7 @@ noncomputable def pC1 (h : T = 1) (he : tk 1 = 248044) :
 include hcap Q htk hL2 hL1 in
 /-- `T = 1`, the first token not the end. -/
 noncomputable def pC0 (h : T = 1) (hne : tk 1 ≠ 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 1) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
@@ -183,7 +188,7 @@ noncomputable def pC0 (h : T = 1) (hne : tk 1 ≠ 248044) :
 include hcap Q htk hL2 hL1 hTle in
 /-- `T ≥ 2`, the first token the end. -/
 noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH)) [] :=
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH)) [] :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
       ((PL.Ta.all NB T tk cap nI π hcap
@@ -198,7 +203,7 @@ noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, the second token the end. -/
 noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 1) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     (((toTailStep H π.length).trans
@@ -215,7 +220,7 @@ noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, neither token the end. -/
 noncomputable def pB0 (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 P.fr NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 2) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     (((toTailStep H π.length).trans

@@ -28,7 +28,7 @@ theorem PLT.wideAll : ∀ p ∈ wideList, Pf.WideP PLTP.R.data PRE_pl_tail.s0 PR
   · exact Pf.wideP_ghost (by decide) PLT.ghostFix1959 PLT.ghostChk1959
   · exact Pf.wideP_ghost (by decide) PLT.ghostFix4941 PLT.ghostChk4941
 
-theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s1 PRE_pl_tail.S0.tab PLT.tabP PLTP.R.data PLTP.R.inv PLT.θ PLT.P0 2827718 [ ] wideG where
+theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s1 PRE_pl_tail.S0.tab PLT.tabP PLTP.R.data PLTP.R.inv PLT.θ PLT.P0 2827718 [] [2673479] wideG where
   num := PLT.num
   heap := by
     intro a h ha hm hw
@@ -46,6 +46,7 @@ theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s1 PRE_pl_tail.S0.ta
   imgP := PLT.imgP
   wide a w hw := PLT.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PLT.emptyP
+  keepF _ h := nomatch h
   notDrop := by
     intro a ha b hb he
     have hc := PRE_pl_tail.allPresent PLT.ND.all PLT.ndFramed a ha

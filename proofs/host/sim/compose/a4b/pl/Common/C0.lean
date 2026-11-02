@@ -16,8 +16,8 @@ kernel_rfl cnt0_1 : countersOkB PRE_pl_common.s0 PRE_pl_common.s1 = true
 
 abbrev n0 : Nat := ((nth? PRE_pl_common.ks 0).getD 0)
 
-theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV head T tk π.length ν → Good ν PRE_pl_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
-    CutStep (withMem Tr (indexedCut0 NB T tk cap nI π PRE_pl_common.s0 PRE_pl_common.S0)) (withMem Tr (indexedCut0 NB T tk cap nI π PRE_pl_common.s1 PRE_pl_common.S1)) n0 :=
-  (glueM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeOk0 NB T tk cap hcap) PRE_pl_common.accepted0 PRE_pl_common.run0 top1 hg (Host.Load.Boot.replay_active _) br0_1 cnt0_1 hT rfl)
+theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV (head [2673479]) T tk π.length ν → Good ν PRE_pl_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut0 [2673479] NB T tk cap nI π PRE_pl_common.s0 PRE_pl_common.S0)) (withMem Tr (indexedCut0 [2673479] NB T tk cap nI π PRE_pl_common.s1 PRE_pl_common.S1)) n0 :=
+  (glueM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeOk0 [2673479] NB T tk cap hcap) PRE_pl_common.accepted0 PRE_pl_common.run0 top1 hg (Host.Load.Boot.replay_active _) br0_1 cnt0_1 hT rfl)
 
 end Host.Ts.Sim.Compose.Post.PL.Common

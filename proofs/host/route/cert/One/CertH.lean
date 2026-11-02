@@ -82,7 +82,7 @@ theorem hsmp (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (typ
     (Cr : Nat → List (Option Nat × Option Nat)) (hCr : Cr 1 = oneCarriers) (Kept : Nat → List (Nat × Nat))
     (hKept : Kept 1 = oneKept) (Kn : Nat → Nat) (hKn : Kn 1 = 4010)
     (toks : Nat → Nat → Nat) (htoks : toks 1 0 = 17776) {NB T cap : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB) {y : SegInst FF}
-    (hy : (Host.Ts.Sim.Compose.Post.indexedCut0 NB T tk cap 15235 [a] PRE_pl_common.s1 PRE_pl_common.S1).R y
+    (hy : (Host.Ts.Sim.Compose.Post.indexedCut0 [2673479] NB T tk cap 15235 [a] PRE_pl_common.s1 PRE_pl_common.S1).R y
       PRE_pl_common.s1 ⟨PRE_pl_common.S1.tab, []⟩)
     (L : Nat) (hm : memFin P KR NE net env [a] Kept Kn L y) : memPost P KR NE net env [a] 0 toks Cr L y := by
   obtain ⟨γ, hr, hb⟩ := hy

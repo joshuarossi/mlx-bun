@@ -2,6 +2,7 @@ import host.sim.compose.MainFramed
 import host.route.FinalGpu
 import host.sim.compose.Gpu
 import host.sim.compose.ShortFix
+import host.sim.compose.MachPin
 set_option maxRecDepth 1000000
 set_option autoImplicit false
 namespace Host.Ts.Sim.Compose.Gpu
@@ -15,7 +16,7 @@ open _root_.Host.Ts.Sim.Full (FF fullWorldXD fullWorldFb fullWorldFb_end mlxOf)
 open _root_.Host.Route (RouteArtifactsX decCutFb machGxV goalMV goalCV machVal machReads routeVs)
 open _root_.Host.Ts.Sim.Lin.Cls (DecKind)
 open _root_.Host.Ts.Sim (Addr WFrame LoopFramesA LoopBase LoopStartW HaltSegW valL)
-open _root_.Host.Ts.Sim.Compose (DecodePiecesFramedW DecodeGraphMFramedAt TailFix itersS loopG_ofAtV caseFwdAtV_of_tpl
+open _root_.Host.Ts.Sim.Compose (DecodePiecesFramedW TailFix itersS loopG_ofAtP pinTab caseFwdAtV_of_tpl
   lastGC_ofV lastG_ofV cutG_ofV machReads_length fullProjFb EndGM)
 
 /-! # The route's artifacts at `L ≤ 224`
@@ -43,16 +44,16 @@ variable {ρ : Nat → F64} {P : MlxPrefillContract C} {KR : RouteKernelContract
 variable (P KR env π) in
 /-- **The decode route's graph facts**, at a template valuation `ρ`, at the machine reference (`host.sim.compose.Mach`) at the pinned
 bridge `b0`: the template start's, each case end's and its decode template at every iteration it is selected
-for, the final and EOS final chains' halted template facts with the final chains' program caches, the exit
-chain's. -/
-structure DecodeGraphR (b0 : Host.Mlx.FfiAne.St) (je : Host.Ts.Env) (Itpl : TplInputs)
+for, at the end's table with the variables `pin` holds read as their values (`host.sim.compose.MachPin`), the final and EOS
+final chains' halted template facts with the final chains' program caches, the exit chain's. -/
+structure DecodeGraphR (pin : Nat → Option Nat) (b0 : Host.Mlx.FfiAne.St) (je : Host.Ts.Env) (Itpl : TplInputs)
     (D : DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixA Fr ρ T tk π.length
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN) where
   st : StartGM (fullProjFb b0 NB) A Pd s0 tab0 Itpl
   en : (k : DecKind) → EndGM Itpl (D.cs k).e
   tpl : ∀ k i, DecSel T π.length tk k i →
     CaseTplAtM P.toMlxContract KR.toKernelContract env (fullProjFb b0 NB) A Itpl π.length (D.cs k).e.s1.ffi
-      (D.cs k).e.S1.tab (en k).outT (en k).outs i NB
+      (pinTab pin (D.cs k).e.S1.tab) (en k).outT (en k).outs i NB
   f0 : LastGM Itpl (D.f0.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
   f1 : LastGM Itpl (D.f1.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
   f2 : LastGM Itpl (D.f2.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
@@ -63,15 +64,6 @@ structure DecodeGraphR (b0 : Host.Mlx.FfiAne.St) (je : Host.Ts.Env) (Itpl : TplI
   e1 : LastGM Itpl (D.e1.seg ((.ref 2 :: machReads T tk).drop (T - 1)))
   x : ∀ k, CutGM Itpl (D.x.seg ((.ref 2 :: machReads T tk).drop (k - 1)))
 
-
-
-/-- The facts at the machine valuation are these at `ρ := machVal T tk`. -/
-def DecodeGraphMFramedAt.toR {b0 : _root_.Host.Mlx.FfiAne.St} {je : _root_.Host.Ts.Env} {Itpl : TplInputs}
-    {D : DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixA Fr (machVal T tk) T tk π.length
-      (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN}
-    (h : DecodeGraphMFramedAt P KR env π b0 je Itpl D) : DecodeGraphR P KR env π b0 je Itpl D :=
-  ⟨h.st, h.en, h.tpl, h.f0, h.f1, h.f2, h.c0, h.c1, h.c2, h.e0, h.e1, h.x⟩
-
 end
 
 /-- **The route's artifacts of a prompt with no Neural Engine forward.** -/
@@ -79,9 +71,11 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (net : _root_.Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (leaves : Leaves code env.weights)
     (typed : TypedCheckpoint env.weights) (π : List Nat) {T : Nat} {tk : Nat → Nat} (je : _root_.Host.Ts.Env)
     (nm : _root_.Host.Ts.Name) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224) (hT : 1 ≤ T) (hctx : π.length + T ≤ 262144)
-    (ρ : Nat → F64) (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA fixB : List Nat) (hsub : ∀ a ∈ fixA, a ∈ fixB)
+    (ρ : Nat → F64) (pin : Nat → Option Nat) (NB : Nat) (Pw Pd : LoadP) (A : Addr) (W : Nat → Option WFrame) (fixA fixB : List Nat) (hsub : ∀ a ∈ fixA, a ∈ fixB)
     (I : PrefInvsW (fullWorldXD NB).F)
     (Fr : LoopFramesA A) (s0 : St FF.S) (tab0 : List SymE) (Itpl : TplInputs) (B : LoopBase) (ΔJ ΔH ΔN : Nat)
+    (hpT : ∀ q k, pin q = some k → ∃ j, nth? tab0 j = some (.var q))
+    (hpρ : ∀ q k, pin q = some k → 17 < q ∧ ρ q = F64.ofNat k)
     (Pp : PiecesR (fullWorldXD NB).F I) (H : RoutePiecesR (fullWorldXD NB).F I T tk)
     (pA : 2 ≤ T → tk 1 = 248044 → PathW (fullWorldXD NB) A W Pw fixA (I.ps π.length) [])
     (pB2 : T = 2 → tk 1 ≠ 248044 → tk 2 = 248044 → PathW (fullWorldXD NB) A W Pw fixA (I.ps π.length) (tokVals tk 1))
@@ -93,7 +87,7 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
     (sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs)
     (D : ∀ (_ : 3 ≤ T) (b0 : _root_.Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 NB) A Pd W s0 tab0 fixB Fr (ρ) T tk π.length
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN)
-    (Dg : ∀ h3 b0, DecodeGraphR P KR env π b0 je Itpl (D h3 b0))
+    (Dg : ∀ h3 b0, DecodeGraphR P KR env π pin b0 je Itpl (D h3 b0))
     (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 NB) A W Pd Fr s0 tab0 fixB fixA (valL ρ T tk π.length) tk
       (.ref 2 :: machReads T tk) [.num (.ref 1)] B ΔJ ΔH ΔN ((D h3 b0).cs k))
     (hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ fixA) (hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ fixA) (hc2 : ∀ h3 b0, (Dg h3 b0).c2.cc ∈ fixA)
@@ -175,8 +169,8 @@ noncomputable def route_of_stepsFramedAt (P : MlxPrefillContract C) (KR : RouteK
       { st := hst b0
         hit := itersS (fullWorldFb_end b0 NB) hA (hst b0) hsub (D h3 b0).cs (tails h3 b0) (D h3 b0).gr (by omega)
           (by simp only [List.length_cons, machReads_length]; omega) htk' htk hJ hH hN
-          fun k i hs _ => loopG_ofAtV P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) (Dg h3 b0).st
-            ((D h3 b0).cs k).g (((Dg h3 b0).en k).restrict hsub) hAt hAk (fun tab j hj => htkR tab j (by have := hs.1.2.1; omega))
+          fun k i hs _ => loopG_ofAtP P.toMlxContract KR.toKernelContract env (routeVs P KR env kind) (fullProjFb b0 NB) pin (Dg h3 b0).st
+            ((D h3 b0).cs k).g (((Dg h3 b0).en k).restrict hsub) hAt hAk hpT hpρ (fun tab j hj => htkR tab j (by have := hs.1.2.1; omega))
             (fun j hj => htkb j (by have := hs.1.2.1; omega))
             (caseFwdAtV_of_tpl P KR env kind (fun _ _ => none) (fullProjFb b0 NB) leaves typed
               (refPrompt_decodes P KR NE KR.inPlace net env π)

@@ -23,7 +23,7 @@ theorem PLD1.wideAll : ∀ p ∈ wideListPf, Pf.WideP PLWalkD1.R.data PRE_pl_ent
   · exact Pf.wideP_ghost (by decide) PLD1.ghostFix1993 PLD1.ghostChk1993
   · exact Pf.wideP_ghost (by decide) PLD1.ghostFix2001 PLD1.ghostChk2001
 
-theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 [D1Frames.chunk, D1Frames.buffer, D1Frames.view] wideGPf where
+theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab D1Body.S155.tab PLWalkD1.R.data PLWalkD1.R.inv PLD1.θ PLD1.P0 2826779 [2673479] [D1Frames.buffer, D1Frames.view] wideGPf where
   num := PLD1.num
   heap := by
     intro a h ha hm hw
@@ -41,6 +41,10 @@ theorem PLD1.facts : Pf.PfFacts PRE_pl_entry.s0 D1Body.s155 PRE_pl_entry.S0.tab 
   imgP := PLD1.imgP
   wide a w hw := PLD1.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PLD1.emptyP
+  keepF a ha := by
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+    rcases ha with rfl
+    · exact ⟨by decide, PLD1.keptNone0, PLD1.keptFix0, PLD1.keptGet0, PLD1.keptKind0, PLD1.keptImg0, PLD1.keptEmpty0⟩
   notDrop := by
     intro a ha b hb he
     have hc := PRE_pl_entry.allPresent PLD1.ND.all PLD1.ndFramed a ha

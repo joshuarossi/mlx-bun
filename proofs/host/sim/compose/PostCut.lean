@@ -2,6 +2,7 @@ import host.sim.compose.PreCall
 import host.sim.compose.SetupKeep
 import host.sim.template.a4pre_d1_dispatch.Frames
 import host.sim.template.PostOk
+import host.sim.template.PostOk0
 import host.sim.template.DimVals
 import host.sim.template.HandVals
 import host.sim.template.a4pre_d1_input.Property
@@ -15,8 +16,9 @@ open Host.Load.Run.Tpl Host.Mlx.FfiEval Host.Mlx.SimGraph
 /-! # POST's cuts
 
 POST has two stretches. Up to its shared cut each class has its own numbering, and the head compiles the sampler, which writes the trace
-registry, so only the pre-final ghosts are framed (`head`). From the shared tail on, the registry and the other kernels are ghosts too, and
-the tail's convolution variables hold the row's literal dimensions (`tail`). -/
+registry, so only the pre-final ghosts are framed, and the class's chunk, which the caller's frame holds until it returns (`head`). From the
+shared tail on, the registry and the other kernels are ghosts too, and the tail's convolution variables hold the row's literal dimensions
+(`tail`). -/
 
 /-- A stretch's frames, what its book says of the variables, and the native counters' room above its templates. -/
 structure Stage where
@@ -28,7 +30,7 @@ structure Stage where
   H : Nat
   N : Nat
 
-abbrev head : Stage := ⟨PostOk.J0, wideGPf, fun _ => True, fun _ _ => True, 4096, 4096⟩
+abbrev head (extra : List Nat) : Stage := ⟨PostOk.J0F extra, wideGPf, fun _ => True, fun _ _ => True, 4096, 4096⟩
 abbrev tail : Stage :=
   ⟨PostOk.J, wideG, fun ν => ∀ v k, tailVal v = some k → ν v = F64.ofNat k,
     fun L ν => ∀ v k, handVal L v = some k → ν v = F64.ofNat k, 65536, 65536⟩
@@ -70,7 +72,7 @@ noncomputable def indexedCutAt (P : Stage) (NB T : Nat) (tk : Nat → Nat) (cap 
 /-- From POST's shared cut on. -/
 noncomputable abbrev indexedCut := indexedCutAt tail
 /-- Up to POST's shared cut. -/
-noncomputable abbrev indexedCut0 := indexedCutAt head
+noncomputable abbrev indexedCut0 (extra : List Nat) := indexedCutAt (head extra)
 
 theorem Book.grow {P : Stage} {T cap nI n : Nat} {tk : Nat → Nat} {π γ : List Nat}
     {M M' : Map} {ν : Nat → F64} {K : Ctx} {t t' : St FF.S} {C C' : CSrv}

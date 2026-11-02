@@ -25,12 +25,13 @@ theorem wideAgree : ∀ b ∈ 4910 :: ghostPf, wideGPf b = wideG b := by
   simp only [ghostPf, List.mem_cons, List.not_mem_nil, or_false] at hb
   rcases hb with rfl | rfl | rfl | rfl | rfl | rfl <;> rfl
 
-theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
+theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List Nat} {s0 s1 : St FF.S} {S0 S1 : SSrv}
     {D : RData} {inv : PTrie Nat} {θ : Nat → SymE} {P0 : LoadP} {nJ : Nat} {Mem Mem' : SegInst FF → Prop}
-    (F : Pf.PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] wideG)
+    (F : Pf.PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] extra wideG)
+    (hxw : ∀ b ∈ extra, wideG b = none)
     (hNB : NB ≤ P0.NL)
-    (hH : (mlxOf s1.ffi).next + head.H ≤ (mlxOf s0.ffi).next + tail.H)
-    (hN : (mlxOf s1.ffi).nnext + head.N ≤ (mlxOf s0.ffi).nnext + tail.N)
+    (hH : (mlxOf s1.ffi).next + 4096 ≤ (mlxOf s0.ffi).next + 65536)
+    (hN : (mlxOf s1.ffi).nnext + 4096 ≤ (mlxOf s0.ffi).nnext + 65536)
     (hgrow : s0.next ≤ s1.next) (hcap : cap + (s1.next - s0.next) ≤ capT) (hbound : capT < Sim.bound)
     (h9 : θ 9 = .var 9) (h10 : θ 10 = .var 10) (h11 : θ 11 = .var 11) (h16 : θ 16 = .var 16)
     (hres : ∀ j, j < 9 → θ j = .var j)
@@ -41,12 +42,9 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
     (hI : D.nodeF nIT = nI)
     (hook : ∀ x y : SegInst FF, y.t = x.t → y.C = x.C → (∀ c, y.M.node c = x.M.node (D.nodeF c)) →
       y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
-    CutConv (withMem Mem (indexedCut0 NB T tk cap nI π s1 S1)) (withMem Mem' (indexedCut NB T tk capT nIT π s0 S0)) := by
+    CutConv (withMem Mem (indexedCut0 extra NB T tk cap nI π s1 S1)) (withMem Mem' (indexedCut NB T tk capT nIT π s0 S0)) := by
   rintro x ⟨γ, hr, hb⟩ ⟨⟨hfresh, hids, hnat⟩, hm⟩
-  have hfr : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: ((4910 :: ghostPf) ++ []) := by
-    intro a
-    rw [List.append_nil]
-    exact hb.context.1.2.2 a
+  have hfr : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: ([] ++ ((4910 :: ghostPf) ++ extra)) := hb.context.1.2.2
   have hwk : ∀ a w, wideG a = some w → x.K.fr a = none ∨ wideGPf a = some w := by
     intro a w hw
     by_cases hm : a ∈ 4910 :: ghostPf
@@ -55,29 +53,31 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
       cases e : x.K.fr a with
       | none => rfl
       | some p =>
-        have h1 := (hb.context.1.2.2 a).mp (by rw [e]; exact Option.some_ne_none _)
+        have h1 := (hfr a).mp (by rw [e]; exact Option.some_ne_none _)
         rcases List.mem_cons.mp h1 with h2 | h2
         · subst h2
           cases hw
-        · exact absurd h2 hm
+        · have h2' : a ∈ (4910 :: ghostPf) ++ extra := h2
+          rcases List.mem_append.mp h2' with h3 | h3
+          · exact absurd h3 hm
+          · rw [hxw a h3] at hw
+            cases hw
   have hlo : x.K.lo = 18151 := hb.context.1.1
   have hhi : x.K.hi = 131072 := hb.context.1.2.1
   have hP := hb.prompt
   have hDK : x.K.D ≤ cap := hb.context.2
   have hD : x.K.D + (s1.next - s0.next) < Sim.bound := by omega
-  have hroomN := Pf.linkRoomAt (s0 := s0) (s1 := s1) hnat (by decide) (by decide) F.hi1 F.nhi1
+  have hroomN := Pf.linkRoomAt (s0 := s0) (s1 := s1) hnat (show 4096 ≤ 2 ^ 40 by decide) (show 4096 ≤ 2 ^ 40 by decide) F.hi1 F.nhi1
   let laws := fullRXD_laws { setupP with rest := machReads T tk } NB
   obtain ⟨M1, hext, hp⟩ := relB_pad laws.stable laws.mono (S0.tab.map (·.subst θ)) hr.ofJ
   have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf [] M1 x.ν x.K s1
       ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
-  have hrel := Pf.pfRel F (π := π) (kw := 4910 :: ghostPf) hrP hfr kwTail hwk hlo hhi hP hroomN hNB hD (by omega)
+  have hrel := Pf.pfRel F (π := π) (kw := 4910 :: ghostPf) hrP hfr kwTail hwk hlo hhi hP (fun _ h => nomatch h) hroomN hNB hD (by omega)
   have hoff : x.t.next = s1.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
     Shift.valuation θ x.ν,
-    ⟨frW M1 x.K Pf.keepP wideG s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
+    ⟨frW M1 x.K (Pf.keepOf []) wideG s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
   have hnode : ∀ c, y.M.node c = x.M.node (D.nodeF c) := fun c => congrFun hext.node (D.nodeF c)
-  have hfrY : ∀ a, y.K.fr a = if a = 2665 then x.K.fr 2665 else if (wideG a).isSome then some ([], []) else none :=
-    Pf.frames_after F M1 x.K
   have hvar : ∀ {j : Nat}, θ j = .var j → y.ν j = x.ν j := by
     intro j h
     change (θ j).eval x.ν = _
@@ -103,15 +103,13 @@ theorem toTail {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {
         input := ?_
         dims := hdims x hm
         hand := hhand x hm }
-    · exact Pf.framed_after F M1 x.K (L := wideList) (fun _ => rfl) hP a
+    · exact Pf.framed_after F M1 x.K (L := wideList) (fun _ => rfl) hP (fun _ h => nomatch h) a
     · change x.t.next - s0.next ≤ capT
       omega
     · have h13 : 13 ≤ x.K.D := hb.offsetLow
       change 13 ≤ x.t.next - s0.next
       omega
-    · change y.K.fr 2665 = _
-      rw [hfrY 2665, if_pos rfl]
-      exact hP
+    · exact (Pf.frames_prompt F M1 x.K).trans hP
     · change M1.a (D.a 2590) = 2590
       rw [hA, hext.a]
       exact hb.emittedAnchor

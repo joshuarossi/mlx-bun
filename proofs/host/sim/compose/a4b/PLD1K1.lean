@@ -11,7 +11,13 @@ kernel_rfl PLD1.getP : PRE_pl_entry.s0.heap.get 2665 = some (.obj (Template.objO
 kernel_rfl PLD1.kindP : (Template.objOf PRE_pl_entry.s0 2665).kind = .array []
 kernel_rfl PLD1.imgP : D1Body.s155.heap.get 2665 = some (.obj { PLWalkD1.R.data.map.obj (Template.objOf PRE_pl_entry.s0 2665) with kind := .array ([] ++ arrOf D1Body.s155 2665) })
 kernel_rfl PLD1.emptyP : arrOf D1Body.s155 2665 = []
-noncomputable def PLD1.ndAt (a : Nat) : Bool := [D1Frames.chunk, D1Frames.buffer, D1Frames.view].all fun b => !Nat.beq (PLWalkD1.R.data.a a) b
+kernel_rfl PLD1.keptFix0 : PLWalkD1.R.data.a 2673479 = 2673479
+kernel_rfl PLD1.keptNone0 : wideGPf 2673479 = none
+kernel_rfl PLD1.keptGet0 : PRE_pl_entry.s0.heap.get 2673479 = some (.obj (Template.objOf PRE_pl_entry.s0 2673479))
+kernel_rfl PLD1.keptKind0 : (Template.objOf PRE_pl_entry.s0 2673479).kind = .array []
+kernel_rfl PLD1.keptImg0 : D1Body.s155.heap.get 2673479 = some (.obj { PLWalkD1.R.data.map.obj (Template.objOf PRE_pl_entry.s0 2673479) with kind := .array ([] ++ arrOf D1Body.s155 2673479) })
+kernel_rfl PLD1.keptEmpty0 : arrOf D1Body.s155 2673479 = []
+noncomputable def PLD1.ndAt (a : Nat) : Bool := [D1Frames.buffer, D1Frames.view].all fun b => !Nat.beq (PLWalkD1.R.data.a a) b
 tpl_all_blocks PLD1.ND from PLEntryV : PLD1.ndAt
 kernel_rfl PLD1.ndFramed : PLEntryV.frames.all PLD1.ndAt = true
 kernel_rfl PLD1.memoFix : PLWalkD1.R.data.a 4910 = 4910

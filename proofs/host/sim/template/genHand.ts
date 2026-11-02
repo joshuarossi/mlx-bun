@@ -163,16 +163,23 @@ cks.forEach((body, j) => put(`Nc_${j}`, head(mod("Na")) + body));
 put("Nb", head(...cks.map((_, j) => mod(`Nc_${j}`))) + hs.assemble + ns.assemble + ps.assemble + NL +
   `theorem Hand.nshift : NShift ${P} Hand.n ${sg} Hand.y0 Hand.y1 :=${NL}` +
   `  nshift_of ⟨rfl, rfl, rfl, ${fields.map(f => `Hand.n${f}`).join(", ")}⟩ Hand.nhost fun _ => rfl${NL}`);
-put("Full", head(mod("Nb"), "host.sim.template.FullShiftGen", "host.sim.conv.HandOff", "host.load.boot.World") + [
+// one module per whole-state check: a single check can need more memory than the rest together
+const fullChecks: string[][] = [[
   `kernel_rfl Hand.tokens : ${fq(s1)}.tokens = ${fq(s0)}.tokens.map ${sg}.nv`,
   `kernel_rfl Hand.tokSupp : ${fq(s0)}.tokens.all (bSN Hand.n) = true`,
-  `theorem Hand.inactive : (bridgeOf ${s0}.ffi).active = false := Host.Load.Boot.replay_active _`,
-  `kernel_rfl Hand.bridge : bridgeOf ${s1}.ffi = bridgeOf ${s0}.ffi`,
-  `kernel_rfl Hand.live : liveShiftB ${sg} ${fq(s0)} (freedOf ${s0}.ffi) (freedOf ${s1}.ffi) = true`,
-  `kernel_rfl Hand.kern : kernShiftB ${sg} Hand.n ${fq(s0)} (krecOf ${s0}.ffi) (krecOf ${s1}.ffi) = true`,
   `kernel_rfl Hand.pendR : pendRegB ${sg} ${fq(s0)} = true`,
-  `kernel_rfl Hand.pendLe : Nat.ble ${fq(s0)}.next ${fq(s1)}.next = true`,
-  "",
+  `kernel_rfl Hand.pendLe : Nat.ble ${fq(s0)}.next ${fq(s1)}.next = true`], [
+  `kernel_rfl Hand.inactive : (bridgeOf ${s0}.ffi).active = false`], [
+  `-- the decode template holds the boot bridge as data, POST's end as the replay; both are the checked boot snapshot's`,
+  `kernel_rfl Hand.brS : bridgeOf ${s0}.ffi = PRENative32.s0.ffi.1.1.bridge`,
+  `kernel_rfl Hand.brT : bridgeOf ${s1}.ffi = Host.Load.Boot.replay Host.Load.Run.Prompt.P.oblog2818`,
+  `theorem Hand.bridge : bridgeOf ${s1}.ffi = bridgeOf ${s0}.ffi := by`,
+  `  rw [Hand.brT, Hand.brS]`,
+  `  exact PRENative32.bridge_exact`], [
+  `kernel_rfl Hand.live : liveShiftB ${sg} ${fq(s0)} (freedOf ${s0}.ffi) (freedOf ${s1}.ffi) = true`], [
+  `kernel_rfl Hand.kern : kernShiftB ${sg} Hand.n ${fq(s0)} (krecOf ${s0}.ffi) (krecOf ${s1}.ffi) = true`]];
+fullChecks.forEach((c, j) => put(`F${j}`, head(mod("Na"), "host.sim.template.FullShiftGen", "host.load.boot.World", ...(j === 2 ? ["host.sim.template.a4pre_setup_native32.BridgeOrigin"] : [])) + c.join(NL) + NL));
+put("Full", head(mod("Nb"), ...fullChecks.map((_, j) => mod(`F${j}`)), "host.sim.conv.HandOff") + [
   `theorem Hand.fullShift : Conv.FullShiftH ${P} Hand.n ${sg} ${s0}.ffi ${s1}.ffi :=`,
   `  ⟨Hand.nshift, Hand.tokens, fun t ht => bSN_sound (List.all_eq_true.mp Hand.tokSupp t ht), ⟨Hand.inactive, .inl Hand.bridge⟩,`,
   `    liveShift_of Hand.live, kernShift_of Hand.kern,`,
@@ -221,7 +228,7 @@ kchecks.forEach((c, j) => put(`K${j}`, head(mod("Na"), "host.sim.template.FullSh
 put("Hand", head(mod("Heap"), mod("Full"), mod("Fresh"), ...kchecks.map((_, j) => mod(`K${j}`)), "host.route.PostHandoff", "host.sim.template.HandGen", "host.sim.template.SetupP") + [
   `open Host.Route Host.Route.PrefGraph Host.Load.Run.Prompt`,
   "",
-  `/-- The variables the template's table reads. -/`,
+  `-- The variables the template's table reads.`,
   `kernel_rfl Hand.reads : ${S0}.tab.all (readsOnly (fun v => ${R}.used.contains v)) = true`,
   "",
   `/-- **The template's shift into POST's end.** -/`,
@@ -263,6 +270,7 @@ put("Hand", head(mod("Heap"), mod("Full"), mod("Fresh"), ...kchecks.map((_, j) =
   `    by_cases hm : a ∈ [2665]`,
   `    · have e : a = 2665 := by simpa using hm`,
   `      subst e`,
+  `      show Present ${s1} (${D}.a 2665)`,
   `      rw [Hand.fixP]`,
   `      exact Present.of_get Hand.imgP`,
   `    · obtain ⟨q', hq, haq⟩ := Hand.cover a h ha hm`,

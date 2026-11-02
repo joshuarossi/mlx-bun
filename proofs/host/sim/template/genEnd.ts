@@ -63,7 +63,8 @@ const s1 = `${X}.s${T1}`, S1 = `${X}.S${T1}`, P = `${X}.PE`, sg = `${X}.σ`, S0s
 // facts' server `<Name>.S1D` (A3's host.sim.conv.Decanon relates it to the end cut's)
 const dth = chain.dtheta as { ws: number[]; rs: string[]; endTab: string[] } | undefined;
 const decanon = !!dth && dth.ws.length > 0;
-const S1E = decanon ? `${X}.S1D` : retab ? `${X}.S1R` : S1;
+const S1E = retab ? `${X}.S1R` : decanon ? `${X}.S1D` : S1;
+const S1B = decanon ? `${X}.S1D` : S1;
 const mlx = (s: string) => `(Host.Load.Layers.toLoad ${s}.ffi).mlx`;
 const AP = "Host.Load.Run.Prompt.addrPrompt";
 const frames = [2673448, 12504, 2665];
@@ -160,17 +161,16 @@ put(dir, "ERestart", [...head(lastH, mod(tdir, "S"), "host.sim.template.RestartC
     `def ${X}.des : List SymE := [${dth!.rs.join(",\n  ")}]${NL}`,
     `def ${X}.dθ : Nat → SymE := Conv.compactθ ${X}.dvs ${X}.des${NL}`,
     `noncomputable def ${X}.S1D : SSrv := ⟨[${dth!.endTab.join(",\n  ")}], ${S1}.oracle⟩${NL}`,
-    `kernel_rfl ${X}.dtab : ${S1}.tab.map (·.subst (Conv.compactθ ${X}.dvs ${X}.des)) = ${X}.S1D.tab${NL}${NL}`,
-    `set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`,
-    `tpl_restart ${X}.R : ${X}, ${X} ${T1} (world := full, subst := ${X}.dθ)${NL}${NL}`] :
-    retab ? [
+    `kernel_rfl ${X}.dtab : ${S1}.tab.map (·.subst (Conv.compactθ ${X}.dvs ${X}.des)) = ${X}.S1D.tab${NL}${NL}`] : []),
+  ...(retab ? [
     `/-- The end's server with its abstracted dims read as their variables, for the restart map. -/${NL}`,
-    `noncomputable def ${X}.S1R : SSrv := DecOk.convTab ${S1}${NL}`,
+    `noncomputable def ${X}.S1R : SSrv := DecOk.convTab ${S1B}${NL}`,
     `noncomputable def ${X}R.s${T1} := ${s1}${NL}`,
-    `server_data ${X}R.S${T1} := (⟨${S1}.tab.map DecOk.convBack, []⟩ : SSrv)${NL}`,
+    `server_data ${X}R.S${T1} := (⟨${S1B}.tab.map DecOk.convBack, []⟩ : SSrv)${NL}`,
     `kernel_rfl ${X}.S1R_tab : ${X}.S1R.tab = ${X}R.S${T1}.tab${NL}${NL}`,
     `set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`,
     `tpl_restart ${X}.R : ${X}, ${X}R ${T1} (world := full)${NL}${NL}`] :
+    decanon ? [`set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`, `tpl_restart ${X}.R : ${X}, ${X} ${T1} (world := full, subst := ${X}.dθ)${NL}${NL}`] :
     [`set_option maxRecDepth 1000000 in${NL}set_option maxHeartbeats 0 in${NL}`, `tpl_restart ${X}.R : ${X}, ${X} ${T1} (world := full)${NL}${NL}`]),
   `noncomputable abbrev ${sg} : Map := ${X}.R.data.map${NL}`,
   `noncomputable def ${X}.θ : Nat → SymE := thetaOf ${X}.R.theta${NL}`,

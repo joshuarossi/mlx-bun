@@ -11,6 +11,8 @@ const noGood = argv.includes("--no-good"); if (noGood) argv.splice(argv.indexOf(
 const fast = argv.includes("--fast"); if (fast) argv.splice(argv.indexOf("--fast"), 1);
 // --pre: before POST's shared cut (`PostOk.ok0`, the head's frames)
 const pre = argv.includes("--pre"); if (pre) argv.splice(argv.indexOf("--pre"), 1);
+// --pre-frame <addr>: `--pre` with a final forward's chunk still framed (`PostOk.okF0`)
+const preFrame = (() => { const i = argv.indexOf("--pre-frame"); return i < 0 ? undefined : argv.splice(i, 2)[1]; })();
 const withGlue = argv.includes("--glue"); if (withGlue) argv.splice(argv.indexOf("--glue"), 1);
 const [dir, name, start, startSrv, startMod] = argv;
 if (!dir || !name || !start || !startSrv || !startMod) throw Error("usage: genPostFlat.ts dir Name startState startServer startModule [--spread chunk:pre:tokens] [--no-good]");
@@ -21,7 +23,7 @@ const root = join(import.meta.dir, dir), mod = (f: string) => `host.sim.template
 const head = (imports: string[], open = "Host.Ts Host.Ts.Sim") => [...new Set(imports)].map(i => `import ${i}\n`).join("") +
   `set_option Elab.async false\nset_option maxRecDepth 1000000\nset_option maxHeartbeats 0\nnamespace Host.Load.Run.Tpl\nopen ${open}\n\n`;
 const put = (file: string, text: string) => writeFileSync(join(root, file + ".lean"), text + "\nend Host.Load.Run.Tpl\n");
-const OK = fast ? "host.sim.template.PostOkFast" : "host.sim.template.PostOk", ok = fast ? "PostOk.okR" : pre ? "PostOk.ok0" : "PostOk.ok";
+const OK = fast ? "host.sim.template.PostOkFast" : preFrame ? "host.sim.template.PostOk0" : "host.sim.template.PostOk", ok = fast ? "PostOk.okR" : preFrame ? `(PostOk.okF0 [${preFrame}])` : pre ? "PostOk.ok0" : "PostOk.ok";
 const s = (i: number) => `${name}.s${i}`, S = (i: number) => `${name}.S${i}`;
 // boundary pages of 32 states, each importing the last
 const page = (i: number) => mod(`H${Math.floor(i / 32)}`);

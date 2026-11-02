@@ -2195,6 +2195,8 @@ function genPostLink(args: string[]) {
   const T = take("--entry") ?? "PRE_pl_entry", E = take("--entryname") ?? "PLEntry";
   const entryMod = take("--entrymod") ?? "host.sim.template.a4pre_pl_entry.S";
   const dropList = take("--drop");
+  // frames kept through the link beside the prompt's
+  const keepL = (take("--keep") ?? "").split(",").map(x => x.trim()).filter(x => x);
   // the frames after the link: `--wide <W0 function>:<its list>`, `--wide-memo <address>:<ghost keys>`, `--wide-ghosts <addresses>`
   const [wideF, wideL] = (take("--wide") ?? fail("post-link: --wide <function>:<list>")).split(":") as [string, string];
   const wideMemo = (take("--wide-memo") ?? "").split(":") as [string, string];
@@ -2427,6 +2429,13 @@ function genPostLink(args: string[]) {
       "kernel_rfl N.img" + k + " : " + s1 + ".heap.get " + a + " = (" + s0 + ".heap.get " + a + ").map " + sg + ".hobj"]),
     ...(dropList ? [
       "kernel_rfl N.emptyP : arrOf " + s1 + " 2665 = []",
+      ...keepL.flatMap((c, i) => [
+        "kernel_rfl N.keptFix" + i + " : " + D + ".a " + c + " = " + c,
+        "kernel_rfl N.keptNone" + i + " : " + wideF + " " + c + " = none",
+        "kernel_rfl N.keptGet" + i + " : " + s0 + ".heap.get " + c + " = some (.obj (Template.objOf " + s0 + " " + c + "))",
+        "kernel_rfl N.keptKind" + i + " : (Template.objOf " + s0 + " " + c + ").kind = .array []",
+        "kernel_rfl N.keptImg" + i + " : " + s1 + ".heap.get " + c + " = some (.obj { " + sg + ".obj (Template.objOf " + s0 + " " + c + ") with kind := .array ([] ++ arrOf " + s1 + " " + c + ") })",
+        "kernel_rfl N.keptEmpty" + i + " : arrOf " + s1 + " " + c + " = []"]),
       "noncomputable def N.ndAt (a : Nat) : Bool := [" + dropList + "].all fun b => !Nat.beq (" + D + ".a a) b",
       "tpl_all_blocks N.ND from " + E + "V : N.ndAt",
       "kernel_rfl N.ndFramed : " + E + "V.frames.all N.ndAt = true",
@@ -2467,7 +2476,7 @@ function genPostLink(args: string[]) {
         "  rcases hp with " + ["rfl", ...wideGhosts.map(() => "rfl")].join(" | ") + NL +
         "  \u00B7 exact Pf.wideP_memo (by decide) N.memoFix N.memoGet0 N.memoGet1 N.memoKind N.memoImg" + NL +
         wideGhosts.map(g => "  \u00B7 exact Pf.wideP_ghost (by decide) N.ghostFix" + g + " N.ghostChk" + g).join(NL) + NL + NL +
-        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + dropList + "] " + wideF + " where"
+        "theorem N.facts : Pf.PfFacts " + s0 + " " + s1 + " " + tab0 + " " + (pad ? "N.tabP" : S1 + ".tab") + " " + D + " " + R + ".inv N.\u03B8 " + P + " " + nJ + " [" + keepL.join(", ") + "] [" + dropList + "] " + wideF + " where"
       : "theorem N.facts : Post.LinkFacts " + s0 + " " + s1 + " " + S0 + ".tab " + S1 + ".tab " + D + " " + R + ".inv N.\u03B8 " + P + " " + st.next + " where"),
     "  num := N.num",
     "  heap := by",
@@ -2488,6 +2497,12 @@ function genPostLink(args: string[]) {
     ...(dropList ? [
       "  wide a w hw := N.wideAll (a, w) (Pf.lookupW_mem hw)",
       "  emptyP := N.emptyP",
+      ...(keepL.length ? [
+        "  keepF a ha := by",
+        "    simp only [List.mem_cons, List.not_mem_nil, or_false] at ha",
+        "    rcases ha with " + keepL.map(() => "rfl").join(" | "),
+        ...keepL.map((_, i) => "    \u00B7 exact \u27E8by decide, N.keptNone" + i + ", N.keptFix" + i + ", N.keptGet" + i + ", N.keptKind" + i + ", N.keptImg" + i + ", N.keptEmpty" + i + "\u27E9")]
+      : ["  keepF _ h := nomatch h"]),
       "  notDrop := by",
       "    intro a ha b hb he",
       "    have hc := " + T + ".allPresent N.ND.all N.ndFramed a ha",
@@ -2559,12 +2574,12 @@ function genPostChain(args: string[]) {
   const acceptOf = new Map<number, string>();
   for (const a of names.filter(g => /^Accept\d*$/.test(g)))
     for (const m of memberSrc(dir, a).matchAll(new RegExp(`^(?:kernel_rfl|boot_rfl) ${X}\\.accepted(\\d+)`, "gm"))) acceptOf.set(+m[1]!, a);
-  const K0 = memberSrc(dir, "K0"), R = K0.includes("PostOk.okR "), H = K0.includes("PostOk.ok0 ");
-  const stage = H ? "head" : "tail", cut = H ? "indexedCut0" : "indexedCut";
+  const K0 = memberSrc(dir, "K0"), R = K0.includes("PostOk.okR "), hf = K0.match(/PostOk\.okF0 (\[[^\]]*\])/)?.[1], H = hf !== undefined;
+  const stage = H ? `(head ${hf})` : "tail", cut = H ? `indexedCut0 ${hf}` : "indexedCut";
   const NSV = `Host.Ts.Sim.Compose.Post.PL.${Name}`;
   const pars = "(NB T : Nat) (tk : Nat \u2192 Nat) (cap nI : Nat) (\u03C0 : List Nat) (hcap : cap \u2264 4096 + 1593835520)", parn = "NB T tk cap nI \u03C0 hcap hg Tr hT";
   const hyps = `(hg : \u2200 \u03BD, BookV ${stage} T tk \u03C0.length \u03BD \u2192 Good \u03BD ${X}.S0.oracle) (Tr : SegInst FF \u2192 Prop) (hT : \u2200 x y, NTrackV x y \u2192 Tr x \u2192 Tr y)`;
-  const mode = `(${H ? "modeOk0" : R ? "modeR" : "modeOk"} NB T tk cap hcap)`, impl = "(NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (\u03C0 := \u03C0)";
+  const mode = `(${H ? `modeOk0 ${hf}` : R ? "modeR" : "modeOk"} NB T tk cap hcap)`, impl = "(NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (\u03C0 := \u03C0)";
   const endX = `[2673435, ${X}.cacheArray]`;
   const idx = (k: number) => k === -1 ? `withMem Tr (${cut} NB T tk cap nI π ${X}.spOpen ${X}.spOpenSrv)`
     : k === -2 ? `withMem Tr (endCut NB T tk cap ${endX} ${X}.spAfter ${X}.spAfterSrv)`

@@ -46,4 +46,10 @@ simgraph_choose_conv choice : (endLoad, endSrv), (startLoad, startSrv),
   (Host.Load.Run.Prompt.P.s0, envSrv),
   9, Host.Load.Run.Tpl.decVal, NL, N0, fixedBigs, tokenNode, Tpl.Ordinary.graph
 
+def insT : InKey → Option Nat := inputsOf choice.inputs
+
+simgraph_check_template check : Gs, Tpl.Ordinary.graph, choice.cert, insT choosing Tpl.Ordinary.graph
+
+theorem cert_length : Tpl.Ordinary.graph.length ≤ choice.cert.length := by decide
+
 end Host.Route.Cert.Dec.Ord

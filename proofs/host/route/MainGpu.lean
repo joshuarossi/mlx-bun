@@ -42,7 +42,7 @@ theorem route_main_gpu (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : Kernel
   route_gen_gpu P G Pg B lseSum lseNumerator NE env leaves typed π T hπ hL hlt hT hctx _ hNE hnet
     _ (bootedSt_boot π T _) Gn
     ⟨_, _, _, bootedSt_run π T _ Gn.NB,
-      cutConv_inv Gn.hI (ldPromptCutAt_of_inv (LoadedCut.ldPromptCut_inv Gn.NB Gn.Pw Gn.hPw Gn.W Gn.hW π hlt T _ (by omega)
+      cutConv_inv Gn.hI (ldPromptCutAt_of_inv (LoadedCut.ldPromptCut_inv Gn.NB Gn.Pw Gn.hPw Gn.Wl Gn.hW π hlt T _ (by omega)
         fun j => Nat.le_trans (machTok_le P _ NE _ env π (hRT []) hπ hlt j) (by decide)))⟩
 
 end Host.Route

@@ -16,7 +16,7 @@ map is untouched, so the retained property crosses. -/
 theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE} {O : BodyOff}
     {m : List (Nat × Q)} {s0 s1 : St FF.S} {S0 S1 : SSrv} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
     {P0 : LoadP} {nJ cap : Nat} {Tr : SegInst FF → Prop}
-    (F : PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [VWFrames.chunk, VWFrames.buffer, VWFrames.view] wideGPf)
+    (F : PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] [VWFrames.chunk, VWFrames.buffer, VWFrames.view] wideGPf)
     (hT : ∀ x y, NTrack x y → Tr x → Tr y)
     (hL : i.L ≤ 2048)
     (hnodes : (mlxOf s1.ffi).nnext ≤ P0.NL) (hNN : D.nn0 = D.nn1) (hNK : PTrie.keys D.node = [])
@@ -51,12 +51,12 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
   have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) _ [] M1 x.ν x.K s1
       ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
   have hrel := pfRel F (π := π) (kw := []) hrP hfr (fun _ h => nomatch h)
-    (newFrames (L := wideListPf) (fun _ => rfl) hfr (by decide)) hlo hhi hP (linkRoomLe hr sameH sameN) hNB hD
+    (newFrames (L := wideListPf) (fun _ => rfl) hfr (by decide)) hlo hhi hP (fun _ h => nomatch h) (linkRoomLe hr sameH sameN) hNB hD
     (by omega)
   have hoff : x.t.next = s1.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
     Shift.valuation θ x.ν,
-    ⟨frW M1 x.K keepP wideGPf s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
+    ⟨frW M1 x.K (keepOf []) wideGPf s1, s0.trace, x.t.trace, x.t.next - s0.next, x.K.lo, x.K.hi⟩, x.t, x.C⟩
   have hnode : y.M.node = x.M.node := funext fun k => (congrFun hext.node (D.nodeF k)).trans (congrArg x.M.node (nodeF_id hNN hNK k))
   have hval : ∀ j, j ≠ 11 → j ≠ 14 → j ≠ 16 → j ≠ 30 → j ≠ 31 → y.ν j = x.ν j := by
     intro j h1 h3 h2 h4 h5
@@ -75,7 +75,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
         rowValue := by rw [hlen]; exact (hval 10 (by decide) (by decide) (by decide) (by decide) (by decide)).trans (h10 x.ν hmap)
         offsetValue := by rw [hlen]; exact h11 x.ν hmap
         capValue := by rw [hlen]; exact h16 x.ν hmap
-        context := ⟨⟨hlo, hhi, fun a => framed_after F M1 x.K (L := wideListPf) (fun _ => rfl) hP a⟩, ?_⟩
+        context := ⟨⟨hlo, hhi, fun a => framed_after F M1 x.K (L := wideListPf) (fun _ => rfl) hP (fun _ h => nomatch h) a⟩, ?_⟩
         prompt := ?_
         inputs := ⟨?_, ?_⟩ }
     · intro j
@@ -102,9 +102,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
                 exact hb.valuation j
     · change x.t.next - s0.next ≤ cap
       omega
-    · have h := frames_after F M1 x.K 2665
-      rw [if_pos rfl] at h
-      exact h.trans hP
+    · exact (frames_prompt F M1 x.K).trans hP
     · intro j hj
       rw [hval j (by omega) (by omega) (by omega) (by omega) (by omega)]
       exact hins.1 j hj
