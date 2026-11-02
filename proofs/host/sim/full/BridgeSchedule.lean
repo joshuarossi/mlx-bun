@@ -5,9 +5,8 @@ import host.sim.full.BridgeClassify
 An evaluation (`FfiAne.schedule`) walks the graph from its roots down to the oldest unscheduled or
 running reader or writer (`reachOf`: nodes at or above it, each pushed once) and starts the
 unscheduled ones it reaches. On related states the target walks the images (`BRel.reach`): the
-renaming is strictly monotone below the template's node counter (every node fully corresponds), so
-it keeps the comparisons with the bound (`minL`, `pushIns`), and it is injective there, so it keeps
-the visited set. The walk only follows inputs below the counter where the template's walk checks
+bound is a pending node, whose comparisons the map keeps (`QOrd`, `minL`, `pushIns`), and the
+renaming is injective below the template's node counter, so it keeps the visited set. The walk only follows inputs below the counter where the template's walk checks
 it (`reachOk`, decided on the template). The ordering checks read the touches and the programs,
 which the relation keeps (`BRel.eventOk`), and the target's bridge after it is the template's
 renamed (`BRel.schedule`). -/
@@ -40,17 +39,23 @@ variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB 
   (hF : ∀ i, Full P i) (hd : DenseN x)
 include hr hF hd
 
-theorem minL_map : ∀ (m : Nat) (l : List Nat), m < x.nnext → (∀ i ∈ l, i < x.nnext) →
+theorem minL_map : ∀ (m : Nat) (l : List Nat), QOrd M x.nnext (m :: l) → m < x.nnext → (∀ i ∈ l, i < x.nnext) →
     minL (M.node m) (l.map M.node) = M.node (minL m l)
-  | _, [], _, _ => rfl
-  | m, i :: l, hm, hl => by
+  | _, [], _, _, _ => rfl
+  | m, i :: l, hq, hm, hl => by
     have hi := hl i List.mem_cons_self
     simp only [List.map_cons, minL]
     have e : Nat.blt (M.node i) (M.node m) = Nat.blt i m := by
-      rw [Bool.eq_iff_iff, Nat.blt_eq, Nat.blt_eq]; exact (hr.bnode_mono hF hd hi hm).symm
+      rw [Bool.eq_iff_iff, Nat.blt_eq, Nat.blt_eq]; exact (hq m List.mem_cons_self i hi).symm
     rw [e]
     have hm' : (bif Nat.blt i m then i else m) < x.nnext := by cases Nat.blt i m <;> assumption
-    have := minL_map (bif Nat.blt i m then i else m) l hm' fun j hj => hl j (List.mem_cons_of_mem _ hj)
+    have hq' : QOrd M x.nnext ((bif Nat.blt i m then i else m) :: l) := fun n hn => by
+      rcases List.mem_cons.mp hn with rfl | hn
+      · cases Nat.blt i m
+        · exact hq m List.mem_cons_self
+        · exact hq i (List.mem_cons_of_mem _ List.mem_cons_self)
+      · exact hq n (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ hn))
+    have := minL_map (bif Nat.blt i m then i else m) l hq' hm' fun j hj => hl j (List.mem_cons_of_mem _ hj)
     cases hc : Nat.blt i m <;> rw [hc] at this <;> exact this
 
 theorem SeenR.set {seen seen' : PTrie Bool} (h : SeenR M x.nnext seen seen') {i : Nat} (hi : i < x.nnext) :
@@ -63,7 +68,8 @@ theorem SeenR.set {seen seen' : PTrie Bool} (h : SeenR M x.nnext seen seen') {i 
     rw [PTrie.get_set_ne' _ _ _ _ e', PTrie.get_set_ne' _ _ _ _ e]
     exact h n hn
 
-theorem pushIns_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (is st : List Nat) {seen seen' : PTrie Bool},
+theorem pushIns_rel {lo : Nat} (hlo : lo < x.nnext) (hq : ∀ j, j < x.nnext → (j < lo ↔ M.node j < M.node lo)) :
+    ∀ (is st : List Nat) {seen seen' : PTrie Bool},
     (∀ i ∈ is, i < x.nnext) → SeenR M x.nnext seen seen' →
       (pushIns (M.node lo) (is.map M.node) (st.map M.node) seen').1 = (pushIns lo is st seen).1.map M.node ∧
       SeenR M x.nnext (pushIns lo is st seen).2 (pushIns (M.node lo) (is.map M.node) (st.map M.node) seen').2 ∧
@@ -74,11 +80,11 @@ theorem pushIns_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (is st : List Nat) {se
     have his : ∀ j ∈ is, j < x.nnext := fun j hj => hi j (List.mem_cons_of_mem _ hj)
     simp only [List.map_cons, pushIns]
     have e1 : Nat.blt (M.node i) (M.node lo) = Nat.blt i lo := by
-      rw [Bool.eq_iff_iff, Nat.blt_eq, Nat.blt_eq]; exact (hr.bnode_mono hF hd hi0 hlo).symm
+      rw [Bool.eq_iff_iff, Nat.blt_eq, Nat.blt_eq]; exact (hq i hi0).symm
     rw [e1, h i hi0]
     cases hc : (Nat.blt i lo || (seen.get i).isSome)
     · simp only [Bool.cond_false]
-      have := pushIns_rel hlo is (i :: st) his (h.set hr hF hd hi0)
+      have := pushIns_rel hlo hq is (i :: st) his (h.set hr hF hd hi0)
       simp only [List.map_cons] at this
       refine ⟨this.1, this.2.1, fun n hn => ?_⟩
       rcases this.2.2 n hn with e | e
@@ -87,14 +93,15 @@ theorem pushIns_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (is st : List Nat) {se
         · exact .inl e
       · exact .inr (List.mem_cons_of_mem _ e)
     · simp only [Bool.cond_true]
-      have := pushIns_rel hlo is st his h
+      have := pushIns_rel hlo hq is st his h
       refine ⟨this.1, this.2.1, fun n hn => ?_⟩
       rcases this.2.2 n hn with e | e
       · exact .inl e
       · exact .inr (List.mem_cons_of_mem _ e)
 
 /-- **The walk under the map**, with at least the template's fuel. -/
-theorem reach_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (f : Nat) (st : List Nat) {seen seen' : PTrie Bool} {r : PTrie Bool},
+theorem reach_rel {lo : Nat} (hlo : lo < x.nnext) (hq : ∀ j, j < x.nnext → (j < lo ↔ M.node j < M.node lo)) :
+    ∀ (f : Nat) (st : List Nat) {seen seen' : PTrie Bool} {r : PTrie Bool},
     (∀ n ∈ st, n < x.nnext) → SeenR M x.nnext seen seen' → reachOk x lo f st seen = true →
       reach x lo f st seen = some r → ∀ f', f ≤ f' →
         ∃ r', reach y (M.node lo) f' (st.map M.node) seen' = some r' ∧ SeenR M x.nnext r r'
@@ -120,7 +127,7 @@ theorem reach_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (f : Nat) (st : List Nat
     obtain ⟨hall, hok⟩ := hok
     have hall' : ∀ i ∈ nd.ins, i < x.nnext := fun i hi => by
       have := List.all_eq_true.mp hall i hi; rw [Nat.blt_eq] at this; exact this
-    obtain ⟨p1, p2, p3⟩ := pushIns_rel hr hF hd hlo nd.ins st hall' h
+    obtain ⟨p1, p2, p3⟩ := pushIns_rel hr hF hd hlo hq nd.ins st hall' h
     unfold reach at e
     rw [hnd] at e
     dsimp only at e
@@ -131,7 +138,7 @@ theorem reach_rel {lo : Nat} (hlo : lo < x.nnext) : ∀ (f : Nat) (st : List Nat
       rcases p3 m hm with e | e
       · exact hst' m e
       · exact hall' m e
-    obtain ⟨r', hr', hrr⟩ := reach_rel hlo f st1 hst2 p2 hok e g (by omega)
+    obtain ⟨r', hr', hrr⟩ := reach_rel hlo hq f st1 hst2 p2 hok e g (by omega)
     refine ⟨r', ?_, hrr⟩
     rw [List.map_cons]
     unfold reach

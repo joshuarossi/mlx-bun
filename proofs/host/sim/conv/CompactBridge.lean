@@ -51,7 +51,17 @@ theorem _root_.Host.Ts.Sim.Full.BridgeX.names {M M' : Map} {x y : FF.S} (h : Bri
     (hn : M'.node = M.node) : BridgeX M' x y := by
   rcases h with h | ⟨ha, h⟩
   · exact .inl h
-  · exact .inr ⟨ha, h.rel.names hn, h.dense⟩
+  · exact .inr ⟨ha, h.rel.names hn, h.dense, h.qord.names hn⟩
+
+/-- The comparisons with the pending nodes compose along the shift's and the relation's maps. -/
+theorem QOrd.comp {σ M : Map} {nx ny nz : Nat} {b b1 b2 : BSt} (hA : QOrd σ nx (b.unscheduled ++ b.running))
+    (hB : QOrd M ny (b1.unscheduled ++ b1.running)) (hs : BRel σ nx ny b b1) (hn : ∀ n, n < nx → σ.node n < ny) (_hr : BRel M ny nz b1 b2) :
+    QOrd (M.after σ) nx (b.unscheduled ++ b.running) := by
+  intro n hm j hj
+  have hm1 : σ.node n ∈ b1.unscheduled ++ b1.running := by
+    rw [hs.unscheduled, hs.running, ← List.map_append]
+    exact List.mem_map.mpr ⟨n, hm, rfl⟩
+  exact (hA n hm j hj).trans (hB _ hm1 _ (hn j hj))
 
 /-- **The bridge relation composes with a shift's**: the shift's bridge part `BridgeX σ x y` and the
 relation's `BridgeX M y z` give `BridgeX (M.after σ) x z`. -/
@@ -64,7 +74,7 @@ theorem bridgeX_after {σ M : Map} {x y z : FF.S} (hs : BridgeX σ x y) (hr : Br
   · have hya : (bridgeOf y).active = true := hA.rel.active.trans hxa
     rcases hr with ⟨-, hyi⟩ | ⟨-, hB⟩
     · rw [hya] at hyi; cases hyi
-    · exact .inr ⟨hxa, hA.rel.comp hB.rel hn, hA.dense⟩
+    · exact .inr ⟨hxa, hA.rel.comp hB.rel hn, hA.dense, QOrd.comp hA.qord hB.qord hA.rel hn hB.rel⟩
 
 /-- The bridge relation is a restart's (`full_restart_dropB`): it reads only node names, and the
 shift's bridge part `BridgeX` composes with it. -/
@@ -282,6 +292,21 @@ theorem ninj_dense {P : LoadP} {n0 : Nat} {σ : Map} {x0 x1 : NSt} (hm : MShift 
   · exact e
   · have := hm.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
 
+/-- A shift keeps every comparison below the counter of a start whose nodes from 1 are present. -/
+theorem qord_of_shift {P : LoadP} {n0 : Nat} {σ : Map} {x0 x1 : NSt} (hm : MShift P n0 σ x0 x1)
+    (hF : ∀ i, Full P i) (hd : DenseN x0) {l : List Nat} (hl : ∀ n ∈ l, n < x0.nnext) : QOrd σ x0.nnext l := by
+  have key : ∀ a b, a < b → b < x0.nnext → σ.node a < σ.node b := fun a b hab hb =>
+    hm.norder b (hd.2 b (by omega) hb) (hF b) a hab
+  intro n hnl j hj
+  have hn := hl n hnl
+  constructor
+  · intro h; exact key j n h hn
+  · intro h
+    rcases Nat.lt_trichotomy j n with e | e | e
+    · exact e
+    · subst e; omega
+    · have := key n j e hj; omega
+
 /-- The start's nodes from 1 up to its counter present, by a check. -/
 theorem dense_of_check {x : NSt} (h1 : 1 ≤ x.nnext)
     (h : (List.range' 1 (x.nnext - 1)).all (fun i => (x.nodes.get i).isSome) = true) : DenseN x :=
@@ -291,8 +316,9 @@ theorem dense_of_check {x : NSt} (h1 : 1 ≤ x.nnext)
 the end's node counters, the start dense. -/
 theorem bridgeX_of_active {σ : Map} {x y : FF.S} (ha : (bridgeOf x).active = true)
     (hrel : BRel σ (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y))
-    (hd : DenseN (mlxOf x)) : BridgeX σ x y :=
-  .inr ⟨ha, hrel, hd⟩
+    (hd : DenseN (mlxOf x)) (hq : QOrd σ (mlxOf x).nnext ((bridgeOf x).unscheduled ++ (bridgeOf x).running)) :
+    BridgeX σ x y :=
+  .inr ⟨ha, hrel, hd, hq⟩
 
 /-- An inactive bridge shift from the checks: the start's bridge inactive, the end's equal. -/
 theorem bridgeX_of_inactive {σ : Map} {x y : FF.S} (ha : (bridgeOf x).active = false)

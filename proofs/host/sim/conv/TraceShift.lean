@@ -1,4 +1,5 @@
 import host.sim.native.Shift
+import host.sim.native.gen.Order
 
 namespace Host.Ts.Sim.Conv
 open Host.Mlx.Ffi (Dim Prim Node Cfg Clo Trace Pending dimOf)
@@ -28,7 +29,7 @@ structure TraceMShift (P : LoadP) (NB n0 : Nat) (σ : Map) (x0 x1 : NSt) : Prop 
   nid : ∀ j, j < NB → σ.node j = j
   nbl : NB ≤ P.NL
   nall : ∀ j, j < x0.nnext → σ.node j < x1.nnext
-  norder : ∀ i, PN x0 i → Full P i → ∀ j, j < i → σ.node j < σ.node i
+  norder : ∀ i, PN x0 i → Full P i → ∀ j, j < i → G.NOrd σ x0 i j
   nfull : ∀ i, PN x0 i → Full P i → Full P (σ.node i)
   nodes : ∀ i nd, x0.nodes.get i = some nd → ∃ nd1, x1.nodes.get (σ.node i) = some nd1 ∧ NodeR P σ i nd nd1
   ninj : ∀ a b, PN x0 a → PN x0 b → σ.node a = σ.node b → a = b
@@ -60,17 +61,10 @@ variable {P : LoadP} {NB n0 : Nat} {σ : Map} {x0 x1 : NSt}
 /-- The old shift supplies every field, restricting only its fixed prefix. -/
 theorem TraceMShift.ofShift (h : MShift P n0 σ x0 x1) (hb : NB ≤ P.NL) :
     TraceMShift P NB n0 σ x0 x1 :=
-  { h with nid := fun j hj => h.nid j (Nat.lt_of_lt_of_le hj hb), nbl := hb }
-
-/-- Recover the unchanged old contract exactly when the larger prefix is fixed. -/
-theorem TraceMShift.toShift (h : TraceMShift P NB n0 σ x0 x1)
-    (hid : ∀ j, j < P.NL → σ.node j = j) : MShift P n0 σ x0 x1 :=
-  { h with nid := hid }
-
-/-- Exact agreement with the old contract, including its larger fixed prefix. -/
-theorem traceMShift_iff (hb : NB ≤ P.NL) :
-    MShift P n0 σ x0 x1 ↔ TraceMShift P NB n0 σ x0 x1 ∧ (∀ j, j < P.NL → σ.node j = j) :=
-  ⟨fun h => ⟨TraceMShift.ofShift h hb, h.nid⟩, fun h => h.1.toShift h.2⟩
+  { h with
+    nid := fun j hj => h.nid j (Nat.lt_of_lt_of_le hj hb)
+    nbl := hb
+    norder := fun i hi hf j hj _ => h.norder i hi hf j hj }
 
 theorem TraceMShift.withRest (h : TraceMShift P NB n0 σ x0 x1) (r : List NumV) :
     TraceMShift { P with rest := r } NB n0 σ x0 x1 := { h with }
@@ -82,14 +76,6 @@ variable {P : LoadP} {NB n0 : Nat} {σ : Map} {x0 x1 : Host.Load.LSt}
 theorem TraceNShift.ofShift (h : NShift P n0 σ x0 x1) (hb : NB ≤ P.NL) :
     TraceNShift P NB n0 σ x0 x1 :=
   ⟨h.host, h.hostReg, h.cbr, TraceMShift.ofShift h.mlx hb⟩
-
-theorem TraceNShift.toShift (h : TraceNShift P NB n0 σ x0 x1)
-    (hid : ∀ j, j < P.NL → σ.node j = j) : NShift P n0 σ x0 x1 :=
-  ⟨h.host, h.hostReg, h.cbr, h.mlx.toShift hid⟩
-
-theorem traceNShift_iff (hb : NB ≤ P.NL) :
-    NShift P n0 σ x0 x1 ↔ TraceNShift P NB n0 σ x0 x1 ∧ (∀ j, j < P.NL → σ.node j = j) :=
-  ⟨fun h => ⟨TraceNShift.ofShift h hb, h.mlx.nid⟩, fun h => h.1.toShift h.2⟩
 
 theorem TraceNShift.withRest (h : TraceNShift P NB n0 σ x0 x1) (r : List NumV) :
     TraceNShift { P with rest := r } NB n0 σ x0 x1 :=

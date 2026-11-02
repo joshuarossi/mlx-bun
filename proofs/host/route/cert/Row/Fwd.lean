@@ -44,7 +44,7 @@ theorem row_fwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.
     rw [hR2, hR1] at h
     exact h.symm
   have emb : Embeds M.node M.handle (mapG (SDim.eval (L + d)) (rowGs s S d)) (Gr tab y) :=
-    row_embeds s S d tab hmr hband hrope ρ h1 h2 hρ hnum
+    row_embeds s S d tab hmr hband hrope ρ h1 h2 hρ hnum c.hdown
   have hin : ∀ key j, c.insT key = some j → inputNode (loadedAt M.node c.ps) (tensorAt (M.node c.tokenNode)) key = some (M.node j) :=
     c.hins M.node (fun j hj => hmr.nid j (Nat.lt_of_lt_of_le hj hNB))
   obtain ⟨hbr, hfb, hea, hout, hinp, hto⟩ := row_tpl _ (populatedLayoutHandles 256) (caps_eq P KR env tab)

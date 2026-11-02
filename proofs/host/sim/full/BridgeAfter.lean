@@ -128,8 +128,8 @@ variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB 
 include hr hF hd
 
 /-- **An evaluation under the map.** -/
-theorem BRel.schedule {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {roots : List Nat}
-    (hok : schedOk b x roots = true) {bl : Bool} {b1 : BSt}
+theorem BRel.schedule {b b' : BSt} (h : BRel M x.nnext y.nnext b b')
+    (hO : QOrd M x.nnext (b.unscheduled ++ b.running)) {roots : List Nat} (hok : schedOk b x roots = true) {bl : Bool} {b1 : BSt}
     (e : Host.Mlx.FfiAne.schedule b x roots bl = some b1) :
     ∃ b1', Host.Mlx.FfiAne.schedule b' y (roots.map M.node) bl = some b1' ∧ BRel M x.nnext y.nnext b1 b1' := by
   unfold schedOk at hok
@@ -148,7 +148,7 @@ theorem BRel.schedule {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {roots : Li
       rw [h.unscheduled, h.running, List.map_append]
     rw [hq]
     have hqx : ∀ i ∈ b.unscheduled ++ b.running, i < x.nnext := h.queued
-    generalize hl : b.unscheduled ++ b.running = l at e hok hqx
+    generalize hl : b.unscheduled ++ b.running = l at e hok hqx hO
     cases l with
     | nil => cases e; exact ⟨b', rfl, h⟩
     | cons t ts =>
@@ -157,9 +157,10 @@ theorem BRel.schedule {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {roots : Li
       have hlo : minL t ts < x.nnext := hqx _ (minL_mem t ts)
       simp only [List.map_cons]
       dsimp only at e hok ⊢
-      rw [minL_map hr hF hd t ts ht hts]
+      rw [minL_map hr hF hd t ts hO ht hts]
       unfold reachOf at e ⊢
-      obtain ⟨p1, p2, p3⟩ := pushIns_rel hr hF hd hlo roots [] hroots' (seen := .nil) (seen' := .nil)
+      have hlq := hO _ (minL_mem t ts)
+      obtain ⟨p1, p2, p3⟩ := pushIns_rel hr hF hd hlo hlq roots [] hroots' (seen := .nil) (seen' := .nil)
         (fun _ _ => rfl)
       simp only [List.map_nil] at p1 p2
       generalize hp : pushIns (minL t ts) roots [] .nil = pp at e hok p1 p2 p3
@@ -176,7 +177,7 @@ theorem BRel.schedule {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {roots : Li
         dsimp only at e
         have hfuel : x.nnext + Host.Ts.len roots + 1 ≤ y.nnext + Host.Ts.len (roots.map M.node) + 1 := by
           rw [Native.len_map]; have := hr.nroom.1; omega
-        obtain ⟨seen', hre', hss⟩ := reach_rel hr hF hd hlo _ st0 hst0 p2 hok hre _ hfuel
+        obtain ⟨seen', hre', hss⟩ := reach_rel hr hF hd hlo hlq _ st0 hst0 p2 hok hre _ hfuel
         generalize hp' : pushIns (M.node (minL t ts)) (roots.map M.node) [] .nil = pp' at p1 p2 hre' ⊢
         obtain ⟨st0', seen0'⟩ := pp'
         dsimp only at p1 p2 hre' ⊢
@@ -300,7 +301,8 @@ theorem BRel.classifyPost {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {b1 : B
 
 /-- **The bridge after an MLX call under the map**: from related bridges before the call, the
 template's checks before it, and the states before and after related. -/
-theorem BRel.after {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {name : Name} {args : List Arg}
+theorem BRel.after {b b' : BSt} (h : BRel M x.nnext y.nnext b b')
+    (hO : QOrd M x.nnext (b.unscheduled ++ b.running)) {name : Name} {args : List Arg}
     (hok : afterOk b x name args = true) {b1 : BSt} (e : Host.Mlx.FfiAne.after b x x' name args = some b1) :
     ∃ b1', Host.Mlx.FfiAne.after b' y y' name (args.map M.arg) = some b1' ∧ BRel M' x'.nnext y'.nnext b1 b1' := by
   have hY := lockstep_nnext hr hr' hn hF hd hd' hxx
@@ -316,7 +318,7 @@ theorem BRel.after {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {name : Name} 
   | roots ns bl =>
     rw [hc] at e hok
     dsimp only [evalMap] at e hok ⊢
-    obtain ⟨b1', e', h1⟩ := h.schedule hr hF hd hok e
+    obtain ⟨b1', e', h1⟩ := h.schedule hr hF hd hO hok e
     exact ⟨b1', e', hw h1⟩
   | all =>
     rw [hc] at e
@@ -331,5 +333,31 @@ theorem BRel.after {b b' : BSt} (h : BRel M x.nnext y.nnext b b') {name : Name} 
     exact h.classifyPost hr hr' hn hF hd hd' hxx e
 
 end
+
+/-! ## Keeping the comparisons with the pending nodes -/
+
+/-- **The comparisons with pending nodes, after the template grows**: each pending node was pending before, or is one
+of the new nodes, whose images continue above every image below the counter. -/
+theorem QOrd.grow {P : LoadP} {NB : Nat} {M M' : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB M k x y)
+    (hn : M'.node = M.node) {l l' : List Nat} {X' : Nat} (hq : QOrd M x.nnext l) (hlt : ∀ n ∈ l, n < x.nnext)
+    (hl : ∀ n ∈ l', n ∈ l ∨ x.nnext ≤ n) : QOrd M' X' l' := by
+  intro n hm j _
+  rw [hn]
+  have hfr : ∀ a, x.nnext ≤ a → M.node a = y.nnext + (a - x.nnext) := fun a ha => by
+    have := hr.nfresh (a - x.nnext)
+    rwa [show x.nnext + (a - x.nnext) = a by omega] at this
+  rcases hl n hm with h | h
+  · have hnx := hlt n h
+    by_cases hj : j < x.nnext
+    · exact hq n h j hj
+    · have h1 := hfr j (by omega)
+      have h2 := hr.nall n hnx
+      constructor <;> intro _ <;> omega
+  · have h1 := hfr n h
+    by_cases hj : j < x.nnext
+    · have h2 := hr.nall j hj
+      constructor <;> intro _ <;> omega
+    · have h2 := hfr j (by omega)
+      constructor <;> intro _ <;> omega
 
 end Host.Ts.Sim.Full

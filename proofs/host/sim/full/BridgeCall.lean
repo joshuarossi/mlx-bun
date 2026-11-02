@@ -104,6 +104,100 @@ theorem after_active {b b1 : BSt} {s s' : Host.Mlx.Ffi.St} {name : Name} {args :
   · cases e; rfl
   · exact classify_active _ _ e
 
+theorem classifyNode_shape {b b1 : BSt} {s : Host.Mlx.Ffi.St} {n : Nat}
+    (e : Host.Mlx.FfiAne.classifyNode b s n = some b1) :
+    b1 = b ∨ (∃ a, b1 = Host.Mlx.FfiAne.asView b n a) ∨ ∃ t, b1 = Host.Mlx.FfiAne.register b n t := by
+  unfold Host.Mlx.FfiAne.classifyNode at e
+  repeat' (first
+    | (cases e; first | exact .inl rfl | exact .inr (.inl ⟨_, rfl⟩) | exact .inr (.inr ⟨_, rfl⟩))
+    | split at e)
+  all_goals (try simp only [Bool.cond_eq_ite] at e)
+  all_goals (try split at e)
+  all_goals first
+    | (cases e; first | exact .inl rfl | exact .inr (.inl ⟨_, rfl⟩) | exact .inr (.inr ⟨_, rfl⟩))
+    | simp at e
+
+/-- A node pending after `classifyNode … n` was pending before, or is `n`. -/
+theorem classifyNode_pend {b b1 : BSt} {s : Host.Mlx.Ffi.St} {n : Nat}
+    (e : Host.Mlx.FfiAne.classifyNode b s n = some b1) :
+    ∀ m ∈ b1.unscheduled ++ b1.running, m ∈ b.unscheduled ++ b.running ∨ n ≤ m := by
+  intro m hm
+  rcases classifyNode_shape e with rfl | ⟨a, rfl⟩ | ⟨t, rfl⟩
+  · exact .inl hm
+  · exact .inl hm
+  · simp only [Host.Mlx.FfiAne.register, List.mem_append, List.mem_singleton] at hm ⊢
+    rcases hm with (h | rfl) | h
+    · exact .inl (.inl h)
+    · exact .inr (Nat.le_refl _)
+    · exact .inl (.inr h)
+
+theorem classify_pend {s : Host.Mlx.Ffi.St} : ∀ (f n : Nat) {b b1 : BSt}, Host.Mlx.FfiAne.classify b s f n = some b1 →
+    ∀ m ∈ b1.unscheduled ++ b1.running, m ∈ b.unscheduled ++ b.running ∨ n ≤ m
+  | 0, _, _, _, e, m, hm => by cases e; exact .inl hm
+  | f + 1, n, b, b1, e, m, hm => by
+    unfold Host.Mlx.FfiAne.classify at e
+    cases h : Nat.blt n s.nnext
+    · rw [h, Bool.cond_false] at e; cases e; exact .inl hm
+    · rw [h, Bool.cond_true] at e
+      cases e2 : Host.Mlx.FfiAne.classifyNode b s n with
+      | none => rw [e2] at e; cases e
+      | some b2 =>
+        rw [e2] at e
+        rcases classify_pend f (n + 1) e m hm with h1 | h1
+        · rcases classifyNode_pend e2 m h1 with h2 | h2
+          · exact .inl h2
+          · exact .inr h2
+        · exact .inr (by omega)
+
+theorem pend_sched {U R : List Nat} {p q r : Nat → Bool} {c : Bool} {m : Nat}
+    (h : m ∈ U.filter p ++ (bif c then (R ++ U.filter q).filter r else R ++ U.filter q)) : m ∈ U ++ R := by
+  have hsub : m ∈ R ++ U.filter q → m ∈ U ++ R := fun hm => by
+    rcases List.mem_append.mp hm with h | h
+    · exact List.mem_append_right _ h
+    · exact List.mem_append_left _ (List.mem_filter.mp h).1
+  rcases List.mem_append.mp h with h | h
+  · exact List.mem_append_left _ (List.mem_filter.mp h).1
+  · cases c
+    · exact hsub h
+    · exact hsub (List.mem_filter.mp h).1
+
+/-- A schedule only starts or completes pending nodes. -/
+theorem schedule_pend {b b1 : BSt} {s : Host.Mlx.Ffi.St} {roots : List Nat} {bl : Bool}
+    (e : Host.Mlx.FfiAne.schedule b s roots bl = some b1) :
+    ∀ m ∈ b1.unscheduled ++ b1.running, m ∈ b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.schedule at e
+  cases hc : (b.unscheduled.isEmpty && (!bl || b.running.isEmpty))
+  · rw [hc, Bool.cond_false] at e
+    cases hl : b.unscheduled ++ b.running with
+    | nil => rw [hl] at e; cases e; exact fun _ hm => by rwa [hl] at hm
+    | cons t ts =>
+      rw [hl] at e
+      dsimp only at e
+      cases hre : Host.Mlx.FfiAne.reachOf s (Host.Mlx.FfiAne.minL t ts) roots with
+      | none => rw [hre] at e; cases e
+      | some seen =>
+        rw [hre] at e
+        dsimp only at e
+        cases hev : Host.Mlx.FfiAne.eventOk b (b.unscheduled.filter fun n => (seen.get n).isSome)
+        · rw [hev, Bool.cond_false] at e; cases e
+        · rw [hev, Bool.cond_true] at e
+          cases e
+          exact fun _ hm => by rw [← hl]; exact pend_sched hm
+  · rw [hc, Bool.cond_true] at e; cases e; exact fun _ hm => hm
+
+/-- A node pending after an MLX call was pending before it, or is new. -/
+theorem after_pend {b b1 : BSt} {s s' : Host.Mlx.Ffi.St} {name : Name} {args : List Arg}
+    (e : Host.Mlx.FfiAne.after b s s' name args = some b1) :
+    ∀ m ∈ b1.unscheduled ++ b1.running, m ∈ b.unscheduled ++ b.running ∨ s.nnext ≤ m := by
+  unfold Host.Mlx.FfiAne.after at e
+  split at e
+  · exact fun m hm => .inl (schedule_pend e m hm)
+  · cases e
+    intro m hm
+    simp only [List.append_nil] at hm
+    exact .inl (List.mem_append_left _ hm)
+  · exact classify_pend _ _ e
+
 /-! ## The layers after the load world's call -/
 
 /-- The full world's result after the load world's call, outside the symbolic-shape layer. -/
@@ -269,12 +363,13 @@ theorem fullCallOfA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
       | some b1 =>
         have hmx' := hlr.mlx
         have hd' : DenseN l.mlx := hbA.dense.keep kx hmx'.xnnext_lt
-        obtain ⟨b1', haf', hrel⟩ := BRel.after hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext hbA.rel haft haf
+        obtain ⟨b1', haf', hrel⟩ := BRel.after hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext hbA.rel hbA.qord haft haf
         rw [fullContA_some x name args haf, fullContA_some y name _ haf']
         have hb : (toLoad x).mlx.next < 2 ^ 64 := by
           have := hr.load.mlx.hnext; have := hr.load.mlx.hroom; omega
         obtain ⟨hnew, hnewK⟩ := call_newFacts hm hb hra
         exact full_some_postX hr hgr hcr kx ky hobs hsupp hka haa hnew hnewK
-          (fun _ _ _ _ => .inr ⟨(after_active haf).trans hact, ⟨hrel, hd'⟩⟩)
+          (fun _ _ _ _ => .inr ⟨(after_active haf).trans hact, ⟨hrel, hd',
+            QOrd.grow hr.load.mlx hgr.ext.node hbA.qord hbA.rel.queued (after_pend haf)⟩⟩)
 
 end Host.Ts.Sim.Full

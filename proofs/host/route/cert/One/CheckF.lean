@@ -11,6 +11,8 @@ open Host.Ts.Sim.Compose.ColdGraph (fullExpected)
 
 simgraph_check_nodes checkF : headOk 4010 GsF choice.cert, fullExpected.1 choosing Ecn
 
+kernel_rfl downF : (List.range nativeF.nnext).all (downB (exactTplDom 15235 15235 [5554869888] nativeF) nativeF) = true
+
 kernel_rfl head_below : (choice.cert.take 4010).all (fun c => Nat.blt c 17764) = true
 kernel_rfl hidden_carrier : certAt choice.cert 4009 = 17763
 

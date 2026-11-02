@@ -84,6 +84,7 @@ theorem fullBackOfA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
           hbA.rel.classifyPost hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext e
         rw [e', Option.map_some, Option.map_some]
         exact full_back_postB hr hgr hcr kx ky
-          (fun _ _ _ _ => .inr ⟨(classify_active _ _ e).trans hact, ⟨hrel, hd'⟩⟩)
+          (fun _ _ _ _ => .inr ⟨(classify_active _ _ e).trans hact, ⟨hrel, hd',
+            QOrd.grow hr.load.mlx hgr.ext.node hbA.qord hbA.rel.queued (classify_pend _ _ e)⟩⟩)
 
 end Host.Ts.Sim.Full

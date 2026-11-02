@@ -43,7 +43,7 @@ theorem MRw.agreeB {P : LoadP} {NB : Nat} {M M' : Map} {n : Nat} {x y : NSt} {Q 
       nid := fun j hj => by rw [h.node]; exact hr.nid j hj
       nbl := hr.nbl
       nall := fun j hj => by rw [h.node]; exact hr.nall j hj
-      norder := fun i hi hf j hj => by rw [h.node]; exact hr.norder i hi hf j hj
+      norder := fun i hi hf j hj he => by rw [h.node]; exact hr.norder i hi hf j hj he
       nodes := fun i nd hn => by
         obtain ⟨nd', h1, hs, hd, hc, hf⟩ := hr.nodes i nd hn
         refine ⟨nd', by rw [h.node]; exact h1, by rw [h.dims]; exact hs, hd,

@@ -174,17 +174,9 @@ theorem embeds_of_runC (S : SSrv) (p : Nat) (pin : Nat → Option Nat) (Ks : Ker
     show (t.nodes.get (σ i)).bind _ = _
     rw [himg.nodes i nd hb hnd, Option.bind_some]
     exact h2
-  order := by
-    intro i j hi hj
-    have hb : D i = true := by
-      cases hd : D i
-      · simp [mapG, restrictTo, hd] at hi
-      · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, restrictTo, hb, ↓reduceIte, pinGraph, ffiGraph, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; cases hi
-    | some _ => rfl
+  order i r hr j hj := by
+    obtain ⟨hb, nd, hnd, hins⟩ := ins_of_restrict (SDim.eval n) (pinNums S p pin) Ks s D hr
+    exact himg.order i nd hb hnd j (hins ▸ hj)
 
 /-- **`embeds_of_GRun` over the pinned variables.** -/
 theorem embeds_of_GRunC (S : SSrv) (p : Nat) (pin : Nat → Option Nat) (Ks : KernelSources)
@@ -196,11 +188,12 @@ theorem embeds_of_GRunC (S : SSrv) (p : Nat) (pin : Nat → Option Nat) (Ks : Ke
     (A : Arg → Prop) (hα : ∀ a v, A a → Ffi.argNat a = some v → Ffi.argNat (M.arg a) = some v)
     (hargs : ∀ i nd, D i = true → x.nodes.get i = some nd → PrimArgs A nd.prim)
     (hD : ∀ i, D i = true → Sim.Full P i)
-    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → Sim.G.shapeOnly nd = false) :
+    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → Sim.G.shapeOnly nd = false)
+    (hDown : ∀ i nd, D i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
     Embeds M.node M.handle
       (mapG (SDim.eval time) (restrictTo D (pinGraph S p pin Ks x)))
       (ffiGraph (concrete νt) Ks y) :=
   embeds_of_runC S p pin Ks x y time D ρ hρ hn hpin νt M.nv M.big M.arg M.handle M.node
-    (nv_lit M) hlitt hnum A hα hargs (kernels_of_GMR hr Ks) (nativeImage_of_GMR hr D hD hExact)
+    (nv_lit M) hlitt hnum A hα hargs (kernels_of_GMR hr Ks) (nativeImage_of_GMR hr D hD hExact hDown)
 
 end Host.Mlx.SimGraph

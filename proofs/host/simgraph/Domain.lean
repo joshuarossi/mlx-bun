@@ -107,8 +107,8 @@ theorem evalR_extend (N : Nums Int) (Ks : KernelSources) (s s' : Ffi.St) (i : Na
     ⟨fun _ _ h => h, fun _ _ h => h, fun _ _ h => h, fun _ _ h => h, fun _ _ _ h => h, kernels⟩
   have hA : ∀ p, PrimArgs (fun _ => True) p := by
     intro p; induction p <;> simp_all [PrimArgs]
-  have emb : Embeds (fun i => i) (fun h => h) B (ffiGraph N Ks s') := by
-    refine ⟨fun j r hr => ?_, fun _ _ _ h => h⟩
+  have emb : ∀ j r, B j = some r → ffiGraph N Ks s' j = some (renameN (fun i => i) (fun h => h) r) := by
+    intro j r hr
     have hj : j ≤ i := by
       by_contra hj; simp [B, hj] at hr
     simp only [B, hj, ↓reduceIte] at hr
@@ -119,7 +119,7 @@ theorem evalR_extend (N : Nums Int) (Ks : KernelSources) (s s' : Ffi.St) (i : Na
     have hnd' : nodeI (fun i => i) SynImg.id nd = nd := by rw [nodeI, primI_id]; simp [SynImg.id]
     rw [hnd', mapN_id] at h
     exact h.trans (congrArg some (renameN_self r))
-  exact evalR_embed M K env B _ emb i v (hB.trans hv)
+  exact evalR_id M K env B _ emb i v (hB.trans hv)
 
 end
 

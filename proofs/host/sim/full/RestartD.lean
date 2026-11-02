@@ -76,10 +76,9 @@ theorem mshift_restartR {x0 x1 z : NSt} (hs : MShift P0 n0 σ x0 x1) (hr : MRw P
         show M.node (σ.node j) = j; rw [hs.nid j (Nat.lt_of_lt_of_le hj hNB), hr.nid j hj]
       nbl := hNB
       nall := fun j hj => hr.nall _ (hs.nall j hj)
-      norder := fun i hi hf j hj => by
-        obtain ⟨nd1, h1, -⟩ := hs.nodes i _ (Option.get_mem hi)
-        exact hr.norder _ (by show (x1.nodes.get (σ.node i)).isSome = true; rw [h1]; rfl)
-          (hF _ (hs.nfull i hi hf)) _ (hs.norder i hi hf j hj)
+      norder := MRw.norder_after hr hs.node0 (fun i hi hf j hj _ => hs.norder i hi hf j hj) (fun i hi hf => hF _ (hs.nfull i hi hf)) fun i nd hn hf => by
+        obtain ⟨nd1, h1, -, -, -, hf1⟩ := hs.nodes i nd hn
+        exact ⟨nd1, h1, (hf1 hf).2⟩
       nodes := fun i nd hn => by
         obtain ⟨nd1, h1, hs1, hd1, hc1, hf1⟩ := hs.nodes i nd hn
         obtain ⟨nd', h2, hs2, hd2, hc2, hf2⟩ := hr.nodes _ nd1 h1

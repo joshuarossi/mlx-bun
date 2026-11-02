@@ -18,6 +18,8 @@ theorem Ec_len : Ec.length = 5018 := by
   rw [List.length_map]
   exact graph_len
 
+kernel_rfl down : (List.range native.nnext).all (downB (routeDom 15235 15235 [5554869888] native) native) = true
+
 /-- **The certificate of the x3 group's forward.** -/
 noncomputable def cert : FamCert .split .codebook .causal Host.Load.Run.Full.Expected.stages where
   n₀ := 124
@@ -40,6 +42,7 @@ noncomputable def cert : FamCert .split .codebook .causal Host.Load.Run.Full.Exp
     intro i hi
     obtain rfl := List.mem_singleton.mp hi
     exact ⟨by decide, by decide⟩
+  hdown := down
   hlen := by rw [graph_len, cert_len]
   hm := by rw [Ec_len]; exact check.matches
   inputs := by rw [Ec_len]; exact check.inputs

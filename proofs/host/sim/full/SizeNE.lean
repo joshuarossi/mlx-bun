@@ -255,7 +255,7 @@ theorem fullSizeCallSimA (P : LoadP) (NB : Nat) {name : Name} (hsym : Host.Mlx.F
           fun b hb => Supp.arg_mono (fun _ _ => trivial) (Nat.le_refl _) (hsupp b hb)
         have hpost := full_size_postX (b1 := x.1.1.bridge) (b1' := y.1.1.bridge) (BR' := BridgeX) hsym hr hgr
           ⟨hl1, rfl, rfl, hv4⟩ kx ky hsupp'
-          (fun _ _ _ _ => .inr ⟨hact, ⟨hbA.rel.names hgr.ext.node, hbA.dense⟩⟩)
+          (fun _ _ _ _ => .inr ⟨hact, ⟨hbA.rel.names hgr.ext.node, hbA.dense, hbA.qord.names hgr.ext.node⟩⟩)
         have hres : fullResA x name [a] (some (toLoad x, r, [])) =
             liftF x name [a] (some (⟨toLoad x, x.1.1.bridge⟩, r, [])) := by
           have : Host.Mlx.FfiAne.after x.1.1.bridge x.1.1.base.mlx (toLoad x).mlx name [a] = some x.1.1.bridge :=

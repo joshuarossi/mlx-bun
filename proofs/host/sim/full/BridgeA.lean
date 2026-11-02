@@ -9,8 +9,9 @@ target's bridge is the template's with those ids renamed by the map (`BridgeA`):
 programs and the create calls' handles are equal; the aliases and touches agree at the images of
 the template's nodes, and both sides record them only below their node counters; the queues and the
 log are the template's images. The template's nodes from 1 up to its counter are all present (`dense`;
-`Ffi.init` starts the counter at 1 and node 0 is never created), so the renaming is ordered and injective
-below the counter (`MR.norder`) and sends the template's fresh nodes to the target's fresh ones.
+`Ffi.init` starts the counter at 1 and node 0 is never created), so the renaming is injective below the
+counter (`MR.ninj`, `MR.norder` at node 0) and sends the template's fresh nodes to the target's fresh ones.
+The scheduler compares nodes only with pending ones, so that is all the order the map has to keep (`qord`).
 
 `BridgeX` is the full world's bridge relation: the inactive bridge (`BridgeI`) or the active one
 under the map; `FullRX` is `FullRB BridgeX`. -/
@@ -49,11 +50,21 @@ structure BRel (M : Map) (nx ny : Nat) (b b' : Host.Mlx.FfiAne.St) : Prop where
   queued : ∀ n ∈ b.unscheduled ++ b.running, n < nx
   log : b'.log = b.log.map M.effect
 
+/-- **The map keeps the comparisons with the nodes `l`** of every node below `X`. -/
+def QOrd (M : Map) (X : Nat) (l : List Nat) : Prop :=
+  ∀ n ∈ l, ∀ j, j < X → (j < n ↔ M.node j < M.node n)
+
+theorem QOrd.names {M M' : Map} {X : Nat} {l : List Nat} (h : QOrd M X l) (hn : M'.node = M.node) : QOrd M' X l := by
+  intro n hm j hj
+  rw [hn]
+  exact h n hm j hj
+
 /-- **The active bridge under the map**: the bridge states related at the node counters, the
-template's nodes from 1 up to its counter present. -/
+template's nodes from 1 up to its counter present, the comparisons with the pending nodes kept. -/
 structure BridgeA (M : Map) (x y : FF.S) : Prop where
   rel : BRel M (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y)
   dense : DenseN (mlxOf x)
+  qord : QOrd M (mlxOf x).nnext ((bridgeOf x).unscheduled ++ (bridgeOf x).running)
 
 /-- **The full world's bridge relation**: inactive and equal, or active under the map. -/
 def BridgeX (M : Map) (x y : FF.S) : Prop := BridgeI M x y ∨ ((bridgeOf x).active = true ∧ BridgeA M x y)
@@ -74,7 +85,7 @@ theorem BRel.names {M M' : Map} {nx ny : Nat} {b b' : Host.Mlx.FfiAne.St} (h : B
       funext e
       cases e <;> simp only [Map.effect, hn] }
 
-theorem bridgeA_stable : BridgeStable BridgeA := fun _ _ _ _ h _ _ _ hn => ⟨h.rel.names hn, h.dense⟩
+theorem bridgeA_stable : BridgeStable BridgeA := fun _ _ _ _ h _ _ _ hn => ⟨h.rel.names hn, h.dense, h.qord.names hn⟩
 
 theorem bridgeX_stable : BridgeStable BridgeX := fun M M' x y h ha hb hr hn => by
   rcases h with h | ⟨ha', h⟩

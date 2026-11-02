@@ -56,6 +56,7 @@ structure RowCert (s : Ffi.St) (S : SSrv) (d : Nat) where
   hins : ∀ σ : Nat → Nat, (∀ j, j < 15235 → σ j = j) → ∀ key j, insT key = some j →
     inputNode (loadedAt σ ps) (tensorAt (σ tokenNode)) key = some (σ j)
   houts : outs = Tpl.Ordinary.cacheOutputs.map (certifiedCachePair cert)
+  hdown : (List.range s.nnext).all (downB (exactTplDom 15235 15235 [5554869888] s) s) = true
 
 theorem outputs_pairs (cert : List Nat) (ps : List (Nat × Nat)) (outs : List (Option Nat × Option Nat))
     (σ : Nat → Nat) (ho : outs = ps.map (certifiedCachePair cert)) :
@@ -90,7 +91,7 @@ theorem row_tpl (w : PipelineWeights) (hs₀ : List Handles) (hcaps₀ : CapsFor
   · rw [htok, emb.node _ _ hfeed]
     rfl
   · rw [htok]
-    exact emb.order c.tokenNode c.fed (by rw [hfeed]; rfl) c.hfl
+    exact emb.order c.tokenNode _ hfeed c.fed (List.mem_singleton.mpr rfl)
   · show _ = (templateOf w hs₀ 1).2.2.map _
     rw [heq]
     change nextCache.map cacheNodePair = Tpl.Ordinary.cacheOutputs.map

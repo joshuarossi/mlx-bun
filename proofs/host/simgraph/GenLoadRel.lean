@@ -33,7 +33,8 @@ theorem kernels_of_GMR {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt}
 theorem nativeImage_of_GMR {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt}
     (hr : G.MR P NB M n x y) (D : Nat → Bool)
     (hD : ∀ i, D i = true → Full P i)
-    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → G.shapeOnly nd = false) :
+    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → G.shapeOnly nd = false)
+    (hDown : ∀ i nd, D i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
     NativeImage M.node (loadImg M) D x y where
   nodes := by
     intro i nd hi hn
@@ -45,9 +46,7 @@ theorem nativeImage_of_GMR {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt
     simp only at hp hins hs hd
     subst hp hins hs hd
     rfl
-  order := by
-    intro i j hi hp hj
-    exact hr.norder i hp (hD i hi) j hj
+  order i nd hi hn j hj := hr.norder i (show (x.nodes.get i).isSome = true by rw [hn]; rfl) (hD i hi) j (hDown i nd hi hn j hj) (.inr ⟨nd, hn, hj⟩)
 
 /-- The template domain restricted to exact source primitives. Absent source nodes
 pass this extra test; present shape-only host data never do. -/
@@ -88,10 +87,11 @@ theorem exactTplDom_full {P : LoadP} {NL N0 : Nat} {fixed : List Int} {x : Ffi.S
   · exact .inr (Nat.le_trans hN0 hi)
 
 theorem nativeImage_of_GMR_exactTplDom {P : LoadP} {NB NL N0 : Nat} {M : Map} {n : Nat} {x y : NSt}
-    (hr : G.MR P NB M n x y) (fixed : List Int) (hNL : NL ≤ P.NL) (hN0 : P.N0 ≤ N0) :
+    (hr : G.MR P NB M n x y) (fixed : List Int) (hNL : NL ≤ P.NL) (hN0 : P.N0 ≤ N0)
+    (hDown : ∀ i nd, exactTplDom NL N0 fixed x i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
     NativeImage M.node (loadImg M) (exactTplDom NL N0 fixed x) x y :=
   nativeImage_of_GMR hr _ (fun _ hi => exactTplDom_full hNL hN0 hi)
-    (fun _ _ hi hn => exactTplDom_exact hi hn)
+    (fun _ _ hi hn => exactTplDom_exact hi hn) hDown
 
 /-- The existing numerical and argument agreement gives an embedding under
 `G.MR` on any full, exact source domain. -/
@@ -103,11 +103,12 @@ theorem embeds_of_GRun (S : SSrv) (p : Nat) (Ks : KernelSources)
     (A : Arg → Prop) (hα : ∀ a v, A a → Ffi.argNat a = some v → Ffi.argNat (M.arg a) = some v)
     (hargs : ∀ i nd, D i = true → x.nodes.get i = some nd → PrimArgs A nd.prim)
     (hD : ∀ i, D i = true → Full P i)
-    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → G.shapeOnly nd = false) :
+    (hExact : ∀ i nd, D i = true → x.nodes.get i = some nd → G.shapeOnly nd = false)
+    (hDown : ∀ i nd, D i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
     Embeds M.node M.handle
       (mapG (SDim.eval time) (restrictTo D (symGraph (clsOf S p) Ks x)))
       (ffiGraph (concrete νt) Ks y) :=
   embeds_of_run S p Ks x y time D ρ hρ hn νt M.nv M.big M.arg M.handle M.node
-    (nv_lit M) hlitt hnum A hα hargs (kernels_of_GMR hr Ks) (nativeImage_of_GMR hr D hD hExact)
+    (nv_lit M) hlitt hnum A hα hargs (kernels_of_GMR hr Ks) (nativeImage_of_GMR hr D hD hExact hDown)
 
 end Host.Mlx.SimGraph

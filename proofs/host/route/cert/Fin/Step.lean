@@ -35,6 +35,7 @@ structure FinCert (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) (d : Int) (K : Na
   hinp : inputCarriersMatchD (Tpl.Ordinary.graph.take K) cert insT = true
   hins : ∀ σ : Nat → Nat, (∀ j, j < 15235 → σ j = j) → ∀ key j, insT key = some j →
     inputNode (loadedAt σ ps) (tensorAt (σ tok)) key = some (σ j)
+  hdown : (List.range s.nnext).all (downB (exactTplDom 15235 15235 [5554869888] s) s) = true
 
 section Template
 variable (w : PipelineWeights) (hs₀ : List Handles) (hcaps₀ : CapsFor 256 (stageWeights w) hs₀)
@@ -153,7 +154,7 @@ theorem hfinV (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.we
   rw [hCr, ← hnode] at hy
   have hcaps0 := capsFor_of_pre (o := π.length - 1) (by omega) hpre2 hy.values.populated
   rw [show Host.Mlx.SimGraph.Mach.capL (π.length - 1) = 256 by unfold Host.Mlx.SimGraph.Mach.capL; omega] at hcaps0
-  have emb0 := embedsV s S B V (L := π.length) (n := π.length - 1) (d := -1) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC)
+  have emb0 := embedsV s S B V (L := π.length) (n := π.length - 1) (d := -1) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC) c.hdown
   have hin := c.hins y.M.node (fun j hj => hmr.nid j (Nat.lt_of_lt_of_le hj hNB))
   refine ⟨π.getD (π.length - 1) 0, s2.hs, c.cert.map y.M.node, by rw [refPrompt_start, hs']; rfl, ?_, hy.toBase, ?_, fun _ => hcaps0⟩
   · rw [hKn]

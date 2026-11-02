@@ -24,9 +24,10 @@ theorem renameCls_astype (p : RPrim Int κ) (d : Nat) : renameCls cl p = .astype
 /-- A closure body survives the renaming. -/
 theorem closureBody_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c) (cls : Nat)
     (p : RPrim Int κ) (r : RNode Int κ) (b b' : Nat → Option (RNode Int κ))
-    (hb : ∀ j x, b j = some x → b' (σ j) = some (renameN σ cl x)) (x : Compiled × List Nat)
+    (Re : Nat → Prop) (hr : ∀ k ∈ r.ins, Re k)
+    (hb : ∀ j x, Re j → b j = some x → b' (σ j) = some (renameN σ cl x) ∧ ∀ k ∈ x.ins, Re k) (x : Compiled × List Nat)
     (h : closureBody kind cls p r b = some x) :
-    closureBody kind' (cl cls) (renameCls cl p) (renameN σ cl r) b' = some (x.1, x.2.map σ) := by
+    closureBody kind' (cl cls) (renameCls cl p) (renameN σ cl r) b' = some (x.1, x.2.map σ) ∧ ∀ a ∈ x.2, Re a := by
   have hrin : (renameN σ cl r).ins = r.ins.map σ := rfl
   have hpr : ∀ (y : RNode Int κ) (c : Nat) (q : RPrim Int κ), y.prim = .replayed c q → renameCls cl q = q →
       (renameN σ cl y).prim = .replayed (cl c) q := by
@@ -51,10 +52,16 @@ theorem closureBody_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, ki
         split at h
         · rename_i hs
           cases h
-          rw [hrin, two?_map, h2, Option.map_some, Option.bind_some]
-          simp only
-          rw [hb _ _ hsn, Option.bind_some, hnd sn cls _ [x0] hs]
-          simp
+          have hm := two?_mem h2
+          have Bs := hb _ _ (hr _ hm.2) hsn
+          refine ⟨?_, ?_⟩
+          · rw [hrin, two?_map, h2, Option.map_some, Option.bind_some]
+            simp only
+            rw [Bs.1, Option.bind_some, hnd sn cls _ [x0] hs]
+            simp
+          · intro a ha
+            obtain rfl := List.mem_singleton.mp ha
+            exact hr _ hm.1
         · cases h
       · simp [hp] at h
     | swiglu =>
@@ -71,14 +78,24 @@ theorem closureBody_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, ki
           split at h
           · rename_i hs
             cases h
-            rw [hrin, two?_map, h2, Option.map_some, Option.bind_some]
-            simp only
-            rw [hb _ _ hmn, Option.bind_some, hpr mn cls _ hm rfl]
-            simp only [↓reduceIte]
-            rw [show (renameN σ cl mn).ins = mn.ins.map σ from rfl, two?_map, h3, Option.map_some, Option.bind_some]
-            simp only
-            rw [hb _ _ hsn, Option.bind_some, hnd sn cls _ [g] hs]
-            simp
+            have m2 := two?_mem h2
+            have Bm := hb _ _ (hr _ m2.1) hmn
+            have m3 := two?_mem h3
+            have Bs := hb _ _ (Bm.2 _ m3.2) hsn
+            refine ⟨?_, ?_⟩
+            · rw [hrin, two?_map, h2, Option.map_some, Option.bind_some]
+              simp only
+              rw [Bm.1, Option.bind_some, hpr mn cls _ hm rfl]
+              simp only [↓reduceIte]
+              rw [show (renameN σ cl mn).ins = mn.ins.map σ from rfl, two?_map, h3, Option.map_some, Option.bind_some]
+              simp only
+              rw [Bs.1, Option.bind_some, hnd sn cls _ [g] hs]
+              simp
+            · intro a ha
+              simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+              rcases ha with rfl | rfl
+              · exact Bm.2 _ m3.1
+              · exact hr _ m2.2
           · cases h
         · cases h
       · simp [hp] at h
@@ -108,27 +125,40 @@ theorem closureBody_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, ki
                 · simp only [hxa, ↓reduceIte] at h
                   obtain ⟨xx, h6, h⟩ := Option.bind_eq_some_iff.mp h
                   cases h
-                  rw [hrin, one?_map, h1, Option.map_some, Option.bind_some, hb _ _ hprn, Option.bind_some,
-                    hpr prn cls _ hpm rfl]
-                  simp only [↓reduceIte]
-                  rw [show (renameN σ cl prn).ins = prn.ins.map σ from rfl, two?_map, h3, Option.map_some,
-                    Option.bind_some]
-                  simp only
-                  rw [hb _ _ hsln, Option.bind_some, hpr sln cls _ hsm rfl]
-                  simp only [↓reduceIte]
-                  rw [show (renameN σ cl sln).ins = sln.ins.map σ from rfl, two?_map, h4, Option.map_some,
-                    Option.bind_some]
-                  simp only
-                  rw [hb _ _ hsn, Option.bind_some, hnd sn cls _ [gf] hs]
-                  simp only [↓reduceIte, List.map_cons, List.map_nil]
-                  rw [hb _ _ hgfn, Option.bind_some, hpr gfn cls _ hga rfl]
-                  simp only [↓reduceIte]
-                  rw [show (renameN σ cl gfn).ins = gfn.ins.map σ from rfl, one?_map, h5, Option.map_some,
-                    Option.bind_some, hb _ _ hxfn, Option.bind_some, hpr xfn cls _ hxa rfl]
-                  simp only [↓reduceIte]
-                  rw [show (renameN σ cl xfn).ins = xfn.ins.map σ from rfl, one?_map, h6, Option.map_some,
-                    Option.bind_some]
-                  simp
+                  have Bp := hb _ _ (hr _ (one?_mem h1)) hprn
+                  have m3 := two?_mem h3
+                  have Bl := hb _ _ (Bp.2 _ m3.1) hsln
+                  have m4 := two?_mem h4
+                  have Bs := hb _ _ (Bl.2 _ m4.2) hsn
+                  have Bg := hb _ _ (Bl.2 _ m4.1) hgfn
+                  have Bx := hb _ _ (Bp.2 _ m3.2) hxfn
+                  refine ⟨?_, ?_⟩
+                  · rw [hrin, one?_map, h1, Option.map_some, Option.bind_some, Bp.1, Option.bind_some,
+                      hpr prn cls _ hpm rfl]
+                    simp only [↓reduceIte]
+                    rw [show (renameN σ cl prn).ins = prn.ins.map σ from rfl, two?_map, h3, Option.map_some,
+                      Option.bind_some]
+                    simp only
+                    rw [Bl.1, Option.bind_some, hpr sln cls _ hsm rfl]
+                    simp only [↓reduceIte]
+                    rw [show (renameN σ cl sln).ins = sln.ins.map σ from rfl, two?_map, h4, Option.map_some,
+                      Option.bind_some]
+                    simp only
+                    rw [Bs.1, Option.bind_some, hnd sn cls _ [gf] hs]
+                    simp only [↓reduceIte, List.map_cons, List.map_nil]
+                    rw [Bg.1, Option.bind_some, hpr gfn cls _ hga rfl]
+                    simp only [↓reduceIte]
+                    rw [show (renameN σ cl gfn).ins = gfn.ins.map σ from rfl, one?_map, h5, Option.map_some,
+                      Option.bind_some, Bx.1, Option.bind_some, hpr xfn cls _ hxa rfl]
+                    simp only [↓reduceIte]
+                    rw [show (renameN σ cl xfn).ins = xfn.ins.map σ from rfl, one?_map, h6, Option.map_some,
+                      Option.bind_some]
+                    simp
+                  · intro a ha
+                    simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+                    rcases ha with rfl | rfl
+                    · exact Bg.2 _ (one?_mem h5)
+                    · exact Bx.2 _ (one?_mem h6)
                 · simp [hxa] at h
               · simp [hga] at h
             · simp [hs] at h
@@ -136,12 +166,14 @@ theorem closureBody_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, ki
         · simp [hpm] at h
       · simp [hp] at h
 
-theorem closureLeaves_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c)
-    (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (x : Compiled × List Nat)
-    (hc : closureLeaves kind G i = some x) : closureLeaves kind' G' (σ i) = some (x.1, x.2.map σ) := by
+theorem closureLeaves_gen (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c)
+    (G G' : Nat → Option (RNode Int κ)) (hn : ∀ j r, G j = some r → G' (σ j) = some (renameN σ cl r)) (i : Nat)
+    (Re : Nat → Prop) (hlt : ∀ j, Re j → j < i → σ j < σ i) (hroot : ∀ r, G i = some r → ∀ k ∈ r.ins, Re k)
+    (hstep : ∀ j x, Re j → j < i → G j = some x → ∀ k ∈ x.ins, Re k) (x : Compiled × List Nat)
+    (hc : closureLeaves kind G i = some x) : closureLeaves kind' G' (σ i) = some (x.1, x.2.map σ) ∧ ∀ a ∈ x.2, Re a := by
   unfold closureLeaves at hc ⊢
   obtain ⟨r, hr, ha⟩ := Option.bind_eq_some_iff.mp hc
-  rw [h.node i r hr, Option.bind_some]
+  rw [hn i r hr, Option.bind_some]
   unfold closureAux at ha ⊢
   split at ha
   · rename_i cls p hp
@@ -149,14 +181,26 @@ theorem closureLeaves_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, 
     · rename_i he
       have hpr : (renameN σ cl r).prim = .replayed (cl cls) (renameCls cl p) := by simp [renameN, hp, renameCls]
       simp only [hpr, elementwise_rename, he, ↓reduceIte]
-      refine closureBody_embed kind kind' hk cls p r _ _ (fun j y hy => ?_) x ha
-      by_cases hj : j < i
-      · rw [ite_eq_left hj] at hy
-        rw [ite_eq_left (h.order i j (by simp [hr]) hj)]
-        exact h.node j y hy
-      · rw [ite_eq_right hj] at hy; cases hy
+      refine closureBody_embed kind kind' hk cls p r _ _ Re (hroot r hr) (fun j y hj hy => ?_) x ha
+      by_cases hji : j < i
+      · rw [ite_eq_left hji] at hy
+        refine ⟨?_, hstep j y hj hji hy⟩
+        rw [ite_eq_left (hlt j hj hji)]
+        exact hn j y hy
+      · rw [ite_eq_right hji] at hy; cases hy
     · cases ha
   · cases ha
+
+theorem closureLeaves_reach (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c)
+    (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (x : Compiled × List Nat)
+    (hc : closureLeaves kind G i = some x) : closureLeaves kind' G' (σ i) = some (x.1, x.2.map σ) ∧ ∀ a ∈ x.2, σ a < σ i :=
+  closureLeaves_gen kind kind' hk G G' h.node i (fun j => σ j < σ i) (fun _ hj _ => hj) (fun r hr => h.order i r hr)
+    (fun j y hj _ hy k hk' => Nat.lt_trans (h.order j y hy k hk') hj) x hc
+
+theorem closureLeaves_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c)
+    (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (x : Compiled × List Nat)
+    (hc : closureLeaves kind G i = some x) : closureLeaves kind' G' (σ i) = some (x.1, x.2.map σ) :=
+  (closureLeaves_reach kind kind' hk G G' h i x hc).1
 
 /-- **Family certificates transport along an embedding.** -/
 theorem matchesED_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind' (cl c) = kind c)
@@ -185,40 +229,29 @@ theorem matchesED_embed (kind kind' : Nat → Option Compiled) (hk : ∀ c, kind
     have : e.ins = [] := by simpa using hrest
     rw [this] at hj; cases hj
   · rw [ite_eq_right hi] at hrest ⊢
-    -- the carrier is a node of `G`
-    have present : (G (certAt cert k)).isSome := by
+    refine ⟨⟨hlt, fun j hj => ?_⟩, ?_⟩
+    · rw [hcm j hj, hck]
+      have hm : certAt cert j ∈ e.ins.map (certAt cert) := List.mem_map_of_mem hj
       by_cases hc : e.prim = .computeG
       · rw [ite_eq_left hc] at hrest
         simp only [decide_eq_true_eq] at hrest
-        unfold cgLeaves at hrest
-        cases hg : G (certAt cert k) with
-        | none => rw [hg] at hrest; cases hrest
-        | some _ => rfl
+        exact (cgLeaves_reach G G' h _ _ hrest).2 _ hm
       · rw [ite_eq_right hc] at hrest
-        cases hcc : closureCheck kind G cert k e with
-        | some bb =>
-          simp only [closureCheck, Option.map_eq_some_iff] at hcc
-          obtain ⟨c, _, rfl⟩ := hcc
-          simp only [closureCheck] at hrest
-          cases hk2 : closureOf? e.prim with
-          | none => rw [hk2] at hrest; simp [hk2] at *
-          | some c' =>
-            rw [hk2] at hrest
-            simp only [Option.map_some, Option.getD_some, decide_eq_true_eq] at hrest
-            rw [closureLeavesD_int] at hrest
-            unfold closureLeaves at hrest
-            cases hg : G (certAt cert k) with
-            | none => rw [hg] at hrest; cases hrest
-            | some _ => rfl
+        cases hk2 : closureOf? e.prim with
+        | some c =>
+          simp only [closureCheck, hk2, Option.map_some, Option.getD_some, decide_eq_true_eq] at hrest
+          rw [closureLeavesD_int] at hrest
+          exact (closureLeaves_reach kind kind' hk G G' h _ _ hrest).2 _ hm
         | none =>
-          rw [hcc] at hrest
-          simp only [Option.getD_none, plainCheck, Bool.and_eq_true] at hrest
-          cases hg : G (certAt cert k) with
-          | none => rw [hg] at hrest; simp at hrest
-          | some _ => rfl
-    refine ⟨⟨hlt, fun j hj => ?_⟩, ?_⟩
-    · rw [hcm j hj, hck]
-      exact h.order _ _ present (hcl j hj)
+          simp only [closureCheck, hk2, Option.map_none, Option.getD_none, plainCheck, Bool.and_eq_true] at hrest
+          obtain ⟨_, hg⟩ := hrest
+          cases hr : G (certAt cert k) with
+          | none => rw [hr] at hg; cases hg
+          | some r =>
+            rw [hr] at hg
+            simp only [decide_eq_true_eq] at hg
+            obtain ⟨_, _, hrins⟩ := hg
+            exact h.order _ r hr _ (hrins ▸ hm)
     · by_cases hc : e.prim = .computeG
       · rw [ite_eq_left hc] at hrest ⊢
         simp only [decide_eq_true_eq] at hrest ⊢

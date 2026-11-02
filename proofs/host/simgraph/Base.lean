@@ -128,8 +128,8 @@ theorem parameter_values_extend (leaves : Leaves code env.weights) (native : Hos
     (first_load_matches table SourceKernels.sources) t ht
   have hB : evalR M K env B t.node = evalR M K env G t.node :=
     evalR_prefix M K env B G t.node fun j hj => by simp only [B, hj, ↓reduceIte]
-  have emb : Embeds (fun i => i) (fun h => h) B G' := by
-    refine ⟨fun j r hr => ?_, fun _ _ _ h => h⟩
+  have emb : ∀ j r, B j = some r → G' j = some (renameN (fun i => i) (fun h => h) r) := by
+    intro j r hr
     have hj : j ≤ t.node := by
       by_contra hj; simp [B, hj] at hr
     simp only [B, hj, ↓reduceIte] at hr
@@ -137,7 +137,7 @@ theorem parameter_values_extend (leaves : Leaves code env.weights) (native : Hos
     show (native.nodes.get j).bind _ = _
     rw [preserved t ht j hj, hnd, Option.bind_some, renameN_id]
     exact resolveNode_kernels _ _ _ kernels nd r hres
-  exact evalR_embed M K env B G' emb t.node _ (hB.trans old)
+  exact evalR_id M K env B G' emb t.node _ (hB.trans old)
 
 /-! ## Output carriers -/
 

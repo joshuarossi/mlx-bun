@@ -13,6 +13,7 @@ noncomputable def exactNodeB (i : Nat) : Bool :=
     | some nd => !G.shapeOnly nd
 
 kernel_rfl exactNodes : (List.range endLoad.ffi.mlx.nnext).all exactNodeB = true
+kernel_rfl downNodes : (List.range endLoad.ffi.mlx.nnext).all (downB (tplDom NL N0 fixedBigs endLoad.ffi.mlx) endLoad.ffi.mlx) = true
 
 /-- Exactness on the checked source domain, using the source bound already supplied by the relation. -/
 theorem source_exact {i : Nat} {nd : Ffi.Node} (hlt : i < endLoad.ffi.mlx.nnext)

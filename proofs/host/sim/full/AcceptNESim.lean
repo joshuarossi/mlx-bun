@@ -210,7 +210,7 @@ theorem fullCallSymSimA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S :
         have ky := keepS_of_runC hcy
         have hmx' := hcr.1.mlx
         have hd' : DenseN l.mlx := hbA.dense.keep kx hmx'.xnnext_lt
-        obtain ⟨b1', haf', hrel⟩ := BRel.after hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext hbA.rel haft haf
+        obtain ⟨b1', haf', hrel⟩ := BRel.after hr.load.mlx hmx' hgr.ext.node hF hbA.dense hd' kx.nnext hbA.rel hbA.qord haft haf
         have hyrun := fullCall_runC y name (args.map M.arg) hm hp hacty (C := C) fun l2 r2 ws2 C1 e => by
           rw [hcy] at e
           simp only [Option.some.injEq, Prod.mk.injEq] at e
@@ -226,7 +226,8 @@ theorem fullCallSymSimA {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S :
           (by intro hs'; rcases hs with e | e <;> rw [e] at hs' <;> cases hs')
           (by intro hs'; rcases hs with e | e <;> rw [e] at hs' <;> cases hs')
           (b1 := b1) (b1' := b1') (BR' := BridgeX)
-          (fun _ _ _ _ => .inr ⟨(after_active haf).trans hact, ⟨hrel, hd'⟩⟩)
+          (fun _ _ _ _ => .inr ⟨(after_active haf).trans hact, ⟨hrel, hd',
+            QOrd.grow hr.load.mlx hgr.ext.node hbA.qord hbA.rel.queued (after_pend haf)⟩⟩)
         have hres : fullResA x name args (some (l, r, ws)) = liftF x name args (some (⟨l, b1⟩, r, ws)) := by
           simp only [fullResA, haf0]
         obtain ⟨M2, b2, C2, hc2, hp2⟩ := MSim.run hpost _ S0 rfl

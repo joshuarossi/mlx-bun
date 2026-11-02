@@ -207,7 +207,7 @@ structure GraphImg (D : Nat → Prop) (σ cl : Nat → Nat) (Gx Gy : Graph) : Pr
   touch : ∀ j, D j → Gy.touch (σ j) = Gx.touch j
   wrapType : ∀ j t, D j → Gx.wrapType j = some t → Gy.wrapType (σ j) = some t
   program : Gy.program = Gx.program
-  order : ∀ i j, D i → (Gx.node i).isSome = true → j < i → σ j < σ i
+  order : ∀ i r, D i → Gx.node i = some r → ∀ j ∈ r.ins, j < i → σ j < σ i
 
 /-- **Related states' graphs**: on a domain of fully corresponding template nodes below the counter, none
 shape-only data, their rope arguments those `A` keeps. -/
@@ -223,15 +223,14 @@ theorem graphImg_of {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt} (hr :
   touch j hj := hb.touch j (hD j hj).2.1
   wrapType j t _ h := wrapType_img hr ha h
   program := by show Host.Ts.nth? b'.programs = Host.Ts.nth? b.programs; rw [hb.programs]
-  order i j hi hn hj := by
-    have hpn : PN x i := by
-      show (x.nodes.get i).isSome = true
-      have : (ffiGraphR N S x i).isSome = true := hn
-      unfold ffiGraphR at this
-      cases e : x.nodes.get i with
-      | none => rw [e] at this; cases this
-      | some _ => rfl
-    exact hr.norder i hpn (hD i hi).1 j hj
+  order i r hi hn j hm hj := by
+    have hn' : ffiGraphR N S x i = some r := hn
+    unfold ffiGraphR at hn'
+    obtain ⟨nd, hnd, hres⟩ := Option.bind_eq_some_iff.mp hn'
+    unfold resolveNodeP at hres
+    obtain ⟨q, hq, rfl⟩ := Option.map_eq_some_iff.mp hres
+    have hpn : PN x i := by show (x.nodes.get i).isSome = true; rw [hnd]; rfl
+    exact hr.norder i hpn (hD i hi).1 j hj (.inr ⟨nd, hnd, hm⟩)
 
 theorem GraphImg.mono {D D' : Nat → Prop} {σ cl : Nat → Nat} {Gx Gy : Graph} (h : GraphImg D σ cl Gx Gy)
     (hD : ∀ j, D' j → D j) : GraphImg D' σ cl Gx Gy where
@@ -241,7 +240,7 @@ theorem GraphImg.mono {D D' : Nat → Prop} {σ cl : Nat → Nat} {Gx Gy : Graph
   touch j hj := h.touch j (hD j hj)
   wrapType j t hj := h.wrapType j t (hD j hj)
   program := h.program
-  order i j hi := h.order i j (hD i hi)
+  order i r hi := h.order i r (hD i hi)
 
 /-! ## Forward facts along the map -/
 
@@ -292,10 +291,10 @@ theorem ReadChain.img {b wo v1 v2 so len M D : Nat} (hc : ReadChain Gx b wo v1 v
   wrapType := h.wrapType _ _ hwo hc.wrapType
   view1 := by rw [h.aliasOf _ h1]; exact hc.view1
   node1 := by rw [h.node _ _ h1 hc.node1]; rfl
-  lt1 := h.order _ _ h1 (by rw [hc.node1]; rfl) hc.lt1
+  lt1 := h.order _ _ h1 hc.node1 wo List.mem_cons_self hc.lt1
   view2 := by rw [h.aliasOf _ h2]; exact hc.view2
   node2 := by rw [h.node _ _ h2 hc.node2]; rfl
-  lt2 := h.order _ _ h2 (by rw [hc.node2]; rfl) hc.lt2
+  lt2 := h.order _ _ h2 hc.node2 v1 List.mem_cons_self hc.lt2
 
 end
 

@@ -25,7 +25,7 @@ theorem bridgeX_setTokens {M : Map} {x y : FF.S} (h : BridgeX M x y) (ts : List 
     BridgeX M (fullSetTokens x ts) y := by
   rcases h with h | ⟨ha, hA⟩
   · exact .inl h
-  · exact .inr ⟨ha, ⟨hA.rel, hA.dense⟩⟩
+  · exact .inr ⟨ha, ⟨hA.rel, hA.dense, hA.qord⟩⟩
 
 theorem _root_.Host.Ts.Sim.Full.FullRX.dropTokens {P : LoadP} {NB : Nat} {r : List NumV} {M : Map} {n : Nat}
     {x y : FF.S} {live τ : List NumV} (hr : FullRX { P with rest := r } NB M n x y)

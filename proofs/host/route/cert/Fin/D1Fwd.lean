@@ -139,6 +139,7 @@ structure D1Cert (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) where
   hins : ∀ σ : Nat → Nat, (∀ j, j < 15235 → σ j = j) → ∀ key j, insT key = some j →
     inputNode (loadedAt σ ps) (tensorAt (σ tok)) key = some (σ j)
   hbelow : ∀ k, k < 4010 → certAt cert k < s.nnext
+  hdown : (List.range s.nnext).all (downB (exactTplDom 15235 15235 [5554869888] s) s) = true
 
 /-- **The first forward of a two-token prompt.** -/
 theorem hfwdD1 (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
@@ -175,7 +176,7 @@ theorem hfwdD1 (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.w
     refine ⟨fun z hz => ?_, ?_, fun k hk => ?_, fun k e0 key v hk he hp hv => ?_⟩
     · rw [hgr]
       have h1 := matchesD_map (SDim.eval 0) _ _ c.cert c.hm
-      have emb := embedsV s S B V (L := π.length) (n := 0) (d := -2) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC)
+      have emb := embedsV s S B V (L := π.length) (n := 0) (d := -2) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC) c.hdown
       have emb' := embeds_grow (G := mapG (SDim.eval 0) (gsV s S B V (-2))) emb (fun i r hr => by
         obtain ⟨r0, h0, -⟩ := Option.map_eq_some_iff.mp hr
         refine hmr.nimg i ?_

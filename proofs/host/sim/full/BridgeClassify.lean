@@ -44,10 +44,13 @@ variable {P : LoadP} {NB : Nat} {M : Map} {k : Nat} {x y : NSt} (hr : G.MR P NB 
 include hr hF hd
 
 theorem _root_.Host.Ts.Sim.G.MR.bnode_inj {i j : Nat} (hi : i < x.nnext) (hj : j < x.nnext) (h : M.node i = M.node j) : i = j := by
-  rcases Nat.lt_trichotomy i j with e | e | e
-  · have := hr.norder j (hd.2 j (by omega) hj) (hF j) i e; omega
-  · exact e
-  · have := hr.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
+  have above0 : ∀ {k}, 0 < k → k < x.nnext → M.node 0 < M.node k := fun {k} h0 hk => by
+    exact hr.norder k (hd.2 k h0 hk) (hF k) 0 h0 (.inl rfl)
+  rcases Nat.eq_zero_or_pos i with rfl | hi0 <;> rcases Nat.eq_zero_or_pos j with rfl | hj0
+  · rfl
+  · have := above0 hj0 hj; omega
+  · have := above0 hi0 hi; omega
+  · exact hr.ninj i j (hd.2 i hi0 hi) (hd.2 j hj0 hj) h
 
 theorem _root_.Host.Ts.Sim.G.MR.bnode_lt {i : Nat} (hi : i < x.nnext) : M.node i < y.nnext := hr.nall i hi
 
@@ -58,16 +61,6 @@ theorem _root_.Host.Ts.Sim.G.MR.bnode_ge {j : Nat} (hj : x.nnext ≤ j) : y.nnex
 
 theorem _root_.Host.Ts.Sim.G.MR.bnode_lt62 {i : Nat} (hi : i < x.nnext) : M.node i < 2 ^ 62 := by
   have := hr.bnode_lt hF hd hi; have := hr.ynnext_lt; omega
-
-theorem _root_.Host.Ts.Sim.G.MR.bnode_mono {i j : Nat} (hi : i < x.nnext) (hj : j < x.nnext) : i < j ↔ M.node i < M.node j := by
-  constructor
-  · intro h; exact hr.norder j (hd.2 j (by omega) hj) (hF j) i h
-  · intro h
-    rcases Nat.lt_or_ge i j with e | e
-    · exact e
-    · rcases Nat.lt_or_eq_of_le e with e | e
-      · have := hr.norder i (hd.2 i (by omega) hi) (hF i) j e; omega
-      · subst e; omega
 
 variable {b b' : BSt} (h : BRel M x.nnext y.nnext b b')
 include h

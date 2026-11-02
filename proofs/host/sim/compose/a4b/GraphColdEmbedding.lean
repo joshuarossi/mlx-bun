@@ -30,15 +30,7 @@ theorem embeds_cold_image (S : SSrv) (ρ : Nat → F64) (hρ : ρ 9 = F64.ofNat 
     show (t.nodes.get (σ i)).bind _ = _
     rw [himg.nodes i nd hb hnd, Option.bind_some]
     exact h2
-  order := by
-    intro i j hi hj
-    have hb : D i = true := by
-      cases hd : D i
-      · simp [mapG, restrictTo, hd] at hi
-      · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, restrictTo, hb, ↓reduceIte, ffiGraph, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; cases hi
-    | some _ => rfl
+  order i r hr j hj := by
+    obtain ⟨hb, nd, hnd, hins⟩ := ins_of_restrict (PDim.eval ν) (coldNums S) Ks s D hr
+    exact himg.order i nd hb hnd j (hins ▸ hj)
 end Host.Ts.Sim.Compose.ColdGraph

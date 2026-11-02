@@ -645,7 +645,7 @@ theorem mr (hNL : P0.NL = P1.NL) : MR (P1.abstractTo xr.nnext) NB H.Mr nr xr y' 
     nid := H.hr1.nid
     nbl := H.hr1.nbl
     nall := H.nall'
-    norder := fun i hi hf j hj => by
+    norder := fun i hi hf j hj he => by
       have hlt := H.nlt' i hi
       have hi1 : i < P1.NL := by
         rcases hf with hf | hf
@@ -653,7 +653,10 @@ theorem mr (hNL : P0.NL = P1.NL) : MR (P1.abstractTo xr.nnext) NB H.Mr nr xr y' 
         · simp only [LoadP.abstractTo] at hf; omega
       have hb := H.hr1.nband
       have hpi1 : PN x1 i := by unfold PN at hi ⊢; rwa [← H.mer.nodesC i (by omega)]
-      exact H.hr1.norder i hpi1 (.inl hi1) j hj
+      refine H.hr1.norder i hpi1 (.inl hi1) j hj ?_
+      rcases he with rfl | ⟨nd, hn, hm⟩
+      · exact .inl rfl
+      · exact .inr ⟨nd, by rw [← H.mer.nodesC i (by omega)]; exact hn, hm⟩
     nodes := H.nodes' hNL
     ninj := H.ninj'
     nlt := H.nlt'

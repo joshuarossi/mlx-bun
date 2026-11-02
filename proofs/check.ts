@@ -6977,6 +6977,7 @@ const proofFiles = [
   "host/mlx/ane/Layers.lean",
   "host/mlx/ane/AffineLogTest.lean",
   "host/mlx/KernelGpuPrefill.lean",
+  "host/sim/native/gen/Order.lean",
   "host/sim/native/gen/Rel.lean",
   "host/sim/native/gen/Update.lean",
   "host/sim/native/gen/Call.lean",

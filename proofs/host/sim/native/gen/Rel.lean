@@ -1,4 +1,5 @@
 import host.sim.native.Args
+import host.sim.native.gen.Order
 namespace Host.Ts.Sim.G
 open Host.Mlx.Ffi (Dim Prim Node Cfg Clo Trace Pending dimOf)
 
@@ -13,7 +14,7 @@ namespace `Host.Ts.Sim.G`), compiled-closure applies under the general check
 * **Renamed post-load band.** Only nodes below `NB ≤ P.NL` (the pre-load band)
   keep their ids (`nid`); nodes in `[NB, P.NL)` (created after load, before the
   decode loop: lazily created constants, compiled traces) are renamed by
-  `M.node` with full correspondence, in order (`norder`). Handles were already
+  `M.node` with full correspondence, each above node 0 and its inputs below it (`norder`). Handles were already
   renamed from `P.lo` on: a history-independent template takes `P.lo` at the
   post-load handle band.
 * **Shape-only data nodes** (`shapeOnly`): a fully corresponding template node of
@@ -29,8 +30,7 @@ payloads carry a trace id: the template holds both as number references
 (`Dim.sym`, `Arg.num (.ref _)`), which `M` sends to the target's values; the
 replay lemma (`host.sim.native.gen.Replay`) allows non-literal recorded shapes.
 
-`Host.Ts.Sim.MR P` is the case `NB = P.NL` without shape-only nodes
-(`MR.toG`, `MR.ofG`, `mr_iff`). -/
+`Host.Ts.Sim.MR P` gives the case `NB = P.NL` (`MR.toG`). -/
 
 /-- A literal dimension other than zero. -/
 def dimNZ : Dim → Bool
@@ -91,10 +91,6 @@ theorem NodeR.ofSim {P : LoadP} {M : Map} {i : Nat} {nd nd' : Node} (h : Sim.Nod
     NodeR P M i nd nd' :=
   ⟨h.1, h.2.1, h.2.2.1, fun hf => ⟨.inl (h.2.2.2 hf).1, (h.2.2.2 hf).2⟩⟩
 
-theorem NodeR.toSim {P : LoadP} {M : Map} {i : Nat} {nd nd' : Node} (h : NodeR P M i nd nd')
-    (hs : Full P i → shapeOnly nd = false) : Sim.NodeR P M i nd nd' :=
-  ⟨h.1, h.2.1, h.2.2.1, fun hf => ⟨(h.2.2.2 hf).1.exact (hs hf), (h.2.2.2 hf).2⟩⟩
-
 /-- The weak native relation (see the module doc). -/
 structure MRw (P : LoadP) (NB : Nat) (M : Map) (n : Nat) (x y : NSt) : Prop where
   lo : 0 < P.lo
@@ -124,7 +120,7 @@ structure MRw (P : LoadP) (NB : Nat) (M : Map) (n : Nat) (x y : NSt) : Prop wher
   nid : ∀ j, j < NB → M.node j = j
   nbl : NB ≤ P.NL
   nall : ∀ j, j < x.nnext → M.node j < y.nnext
-  norder : ∀ i, PN x i → Full P i → ∀ j, j < i → M.node j < M.node i
+  norder : ∀ i, PN x i → Full P i → ∀ j, j < i → (NOrd M x i j)
   nodes : ∀ i nd, x.nodes.get i = some nd → ∃ nd', y.nodes.get (M.node i) = some nd' ∧ NodeR P M i nd nd'
   ninj : ∀ a b, PN x a → PN x b → M.node a = M.node b → a = b
   nlt : ∀ i, PN x i → i < x.nnext
@@ -169,6 +165,25 @@ structure LoadRw (P : LoadP) (NB : Nat) (M : Map) (n : Nat) (x y : Host.Load.LSt
 theorem LoadR.weak {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : Host.Load.LSt} (hr : LoadR P NB M n x y) :
     LoadRw P NB M n x y :=
   ⟨hr.host, hr.hostReg, hr.hostLt, hr.cbr, hr.mlx.toMRw⟩
+
+/-- **`norder` along a renaming** `σ` of `x0`'s nodes into the relation's template: `σ` fixes node 0, keeps the
+order at the full nodes, and sends them to full nodes with the renamed inputs. -/
+theorem MRw.norder_after {P P0 : LoadP} {NB n : Nat} {M σ : Map} {x0 x1 y : NSt} (hr : MRw P NB M n x1 y)
+    (h0 : σ.node 0 = 0) (hodr : ∀ i, PN x0 i → Full P0 i → ∀ j, j < i → NOrd σ x0 i j)
+    (hfull : ∀ i, PN x0 i → Full P0 i → Full P (σ.node i))
+    (hnd : ∀ i nd, x0.nodes.get i = some nd → Full P0 i →
+      ∃ nd1, x1.nodes.get (σ.node i) = some nd1 ∧ nd1.ins = nd.ins.map σ.node) :
+    ∀ i, PN x0 i → Full P0 i → ∀ j, j < i → (j = 0 ∨ ∃ nd, x0.nodes.get i = some nd ∧ j ∈ nd.ins) →
+      M.node (σ.node j) < M.node (σ.node i) := by
+  intro i hp hf j hj he
+  obtain ⟨nd0, hn0⟩ := Option.isSome_iff_exists.mp hp
+  obtain ⟨nd1, h1, -⟩ := hnd i nd0 hn0 hf
+  have hp1 : PN x1 (σ.node i) := by show (x1.nodes.get (σ.node i)).isSome = true; rw [h1]; rfl
+  refine hr.norder _ hp1 (hfull i hp hf) _ (hodr i hp hf j hj he) ?_
+  rcases he with rfl | ⟨nd, hn, hm⟩
+  · exact .inl h0
+  · obtain ⟨nd2, h2, hins⟩ := hnd i nd hn hf
+    exact .inr ⟨nd2, h2, by rw [hins]; exact List.mem_map.mpr ⟨j, hm, rfl⟩⟩
 
 /-! ## Stability: `FRLaws` -/
 
@@ -216,7 +231,7 @@ theorem MRw.agree {P : LoadP} {n : Nat} {x y : NSt} (hr : MRw P NB M n x y) (hcl
       nid := fun j hj => by rw [h.node]; exact hr.nid j hj
       nbl := hr.nbl
       nall := fun j hj => by rw [h.node]; exact hr.nall j hj
-      norder := fun i hi hf j hj => by rw [h.node]; exact hr.norder i hi hf j hj
+      norder := fun i hi hf j hj he => by rw [h.node]; exact hr.norder i hi hf j hj he
       nodes := fun i nd hn => by
         obtain ⟨nd', h1, hs, hd, hc, hf⟩ := hr.nodes i nd hn
         have hsn := hcl.1 i nd hn
@@ -388,11 +403,7 @@ end
 
 /-! ## The special case: `Host.Ts.Sim.MR`
 
-Today's relation is the case where the whole pre-loop band keeps its ids (`NB = P.NL`) and no
-fully corresponding template node is shape-only. -/
-
-/-- No fully corresponding template node is shape-only. -/
-def NoShapeOnly (P : LoadP) (x : NSt) : Prop := ∀ i nd, x.nodes.get i = some nd → Full P i → shapeOnly nd = false
+Today's relation gives the case where the whole pre-loop band keeps its ids (`NB = P.NL`). -/
 
 section
 variable {P : LoadP} {M : Map} {n : Nat} {x y : NSt}
@@ -400,29 +411,13 @@ variable {P : LoadP} {M : Map} {n : Nat} {x y : NSt}
 theorem _root_.Host.Ts.Sim.MRw.toG (h : Sim.MRw P M n x y) : MRw P P.NL M n x y :=
   { h with
     nbl := Nat.le_refl _
+    norder := fun i hi hf j hj _ => h.norder i hi hf j hj
     nodes := fun i nd hn => by
       obtain ⟨nd', h1, h2⟩ := h.nodes i nd hn
       exact ⟨nd', h1, NodeR.ofSim h2⟩ }
 
-theorem MRw.toSim (h : MRw P P.NL M n x y) (hs : NoShapeOnly P x) : Sim.MRw P M n x y :=
-  { h with
-    nodes := fun i nd hn => by
-      obtain ⟨nd', h1, h2⟩ := h.nodes i nd hn
-      exact ⟨nd', h1, h2.toSim (hs i nd hn)⟩ }
-
 theorem _root_.Host.Ts.Sim.MR.toG (h : Sim.MR P M n x y) : MR P P.NL M n x y :=
   { h.toMRw.toG with hfreshB := h.hfreshB, tokensX := h.tokensX }
-
-theorem MR.toSim (h : MR P P.NL M n x y) (hs : NoShapeOnly P x) : Sim.MR P M n x y :=
-  { h.toMRw.toSim hs with hfreshB := h.hfreshB, tokensX := h.tokensX }
-
-/-- **Special-case consistency**: without shape-only nodes, today's weak relation is the general
-one with the whole pre-loop band fixed. -/
-theorem mrw_iff (hs : NoShapeOnly P x) : Sim.MRw P M n x y ↔ MRw P P.NL M n x y :=
-  ⟨fun h => h.toG, fun h => h.toSim hs⟩
-
-theorem mr_iff (hs : NoShapeOnly P x) : Sim.MR P M n x y ↔ MR P P.NL M n x y :=
-  ⟨fun h => h.toG, fun h => h.toSim hs⟩
 
 end
 
@@ -432,20 +427,9 @@ variable {P : LoadP} {M : Map} {n : Nat} {x y : Host.Load.LSt}
 theorem _root_.Host.Ts.Sim.LoadR.toG (h : Sim.LoadR P M n x y) : LoadR P P.NL M n x y :=
   ⟨h.host, h.hostReg, h.hostLt, h.cbr, h.mlx.toG⟩
 
-theorem LoadR.toSim (h : LoadR P P.NL M n x y) (hs : NoShapeOnly P x.mlx) : Sim.LoadR P M n x y :=
-  ⟨h.host, h.hostReg, h.hostLt, h.cbr, h.mlx.toSim hs⟩
-
 theorem _root_.Host.Ts.Sim.LoadRw.toG (h : Sim.LoadRw P M n x y) : LoadRw P P.NL M n x y :=
   ⟨h.host, h.hostReg, h.hostLt, h.cbr, h.mlx.toG⟩
 
-theorem LoadRw.toSim (h : LoadRw P P.NL M n x y) (hs : NoShapeOnly P x.mlx) : Sim.LoadRw P M n x y :=
-  ⟨h.host, h.hostReg, h.hostLt, h.cbr, h.mlx.toSim hs⟩
-
-theorem loadR_iff (hs : NoShapeOnly P x.mlx) : Sim.LoadR P M n x y ↔ LoadR P P.NL M n x y :=
-  ⟨fun h => h.toG, fun h => h.toSim hs⟩
-
-theorem loadRw_iff (hs : NoShapeOnly P x.mlx) : Sim.LoadRw P M n x y ↔ LoadRw P P.NL M n x y :=
-  ⟨fun h => h.toG, fun h => h.toSim hs⟩
 end
 
 end Host.Ts.Sim.G

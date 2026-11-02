@@ -89,6 +89,7 @@ theorem graph_iter (table : List F64) (P : LoadP) (NB : Nat) (Mp : Map) (n : Nat
         show (endLoad.ffi.mlx.nodes.get i).isSome = true
         rw [hn]
         rfl)) hi hn)
+      (down_of_all downNodes hR.mlx.nlt)
   have htok : token.node = Mp.node tokenNode := by
     have := hin .tokenIds tokenNode token_input
     simpa [inputNode] using this
@@ -100,7 +101,7 @@ theorem graph_iter (table : List F64) (P : LoadP) (NB : Nat) (Mp : Map) (n : Nat
   · rw [htok, emb.node _ _ hfeed]
     rfl
   · rw [htok]
-    exact emb.order tokenNode 22538 (by rw [hfeed]; rfl) (by decide)
+    exact emb.order tokenNode _ hfeed 22538 (List.mem_singleton.mpr rfl)
   · show _ = (templateOf w hs₀ 256).2.2.map _
     rw [heq]
     change nextCache.map cacheNodePair = Tpl.Growth.cacheOutputs.map

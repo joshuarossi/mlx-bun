@@ -432,10 +432,16 @@ theorem MR.addNode (nd : Node) (hNE : x.nnext + 1 ≤ P.NE) (hs : SNode (· < n)
     by_cases e : j = x.nnext
     · subst e; rw [hn0]; exact Nat.lt_succ_self _
     · exact Nat.lt_succ_of_lt (hr.nall j (by omega))
-  · intro i hi hf j hj
+  · intro i hi hf j hj he
     rcases pn i hi with rfl | hi
     · rw [hn0]; exact hr.nall j hj
-    · exact hr.norder i hi hf j hj
+    · refine hr.norder i hi hf j hj ?_
+      rcases he with rfl | ⟨nd', h1, h2⟩
+      · exact .inl rfl
+      · refine .inr ⟨nd', ?_, h2⟩
+        change (x.nodes.set x.nnext nd).get i = some nd' at h1
+        rw [gx] at h1
+        simpa only [hxne i hi, ↓reduceIte] using h1
   · intro i nd' hi
     change (x.nodes.set x.nnext nd).get i = some nd' at hi
     rw [gx] at hi

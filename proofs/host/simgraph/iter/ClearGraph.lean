@@ -16,6 +16,8 @@ open Host.Load.Run.Full.Cached (Expected2.stages Expected2.head)
 with the template's handles `hs₀` is the route's (`hlay`, `hhead`); the load
 module instantiates them with the checkpoint's weights. -/
 
+kernel_rfl downNodes : (List.range CLEAR.s150.ffi.mlx.nnext).all (downB (tplDom NL N0 fixedBigs CLEAR.s150.ffi.mlx) CLEAR.s150.ffi.mlx) = true
+
 variable (w : PipelineWeights) (hs₀ : List Handles) (hcaps₀ : CapsFor 256 (stageWeights w) hs₀)
   (hlay : chainLayout (stageWeights w) hs₀ = Expected2.stages) (hhead : linLayout .affineRow w.head = Expected2.head)
 
@@ -75,7 +77,7 @@ theorem graph_iter (table : List F64) (P : Sim.LoadP) (Mp : Sim.Map) (n : Nat) (
     embeds_of_run CLEAR.S150 9 SourceKernels.sources CLEAR.s150.ffi.mlx y.mlx time _ ρ hρ hsmall
       (CSrv.val ⟨table⟩) Mp.nv Mp.big Mp.arg Mp.handle Mp.node (nv_lit Mp) (fun _ => rfl) hnum
       (fun a => okArg fixedBigs a = true) (arg_fixed Mp fixedBigs (by simp [fixedBigs, hrope]))
-      (fun i nd hi hn => tplDom_args hi hn) (kernels_of_MR hR.mlx _) (nativeImage_of_MR hR.mlx _ hD)
+      (fun i nd hi hn => tplDom_args hi hn) (kernels_of_MR hR.mlx _) (nativeImage_of_MR hR.mlx _ hD (down_of_all downNodes hR.mlx.nlt))
   have htok : token.node = Mp.node tokenNode := by
     have := hin .tokenIds tokenNode token_input
     simpa [inputNode] using this
@@ -87,7 +89,7 @@ theorem graph_iter (table : List F64) (P : Sim.LoadP) (Mp : Sim.Map) (n : Nat) (
   · rw [htok, emb.node _ _ hfeed]
     rfl
   · rw [htok]
-    exact emb.order tokenNode 22538 (by rw [hfeed]; rfl) (by decide)
+    exact emb.order tokenNode _ hfeed 22538 (List.mem_singleton.mpr rfl)
   · show _ = (templateOf w hs₀ 1).2.2.map _
     rw [heq]
     exact outputs_pairs choice.cert Tpl.Ordinary.cacheOutputs choice.outputs nextCache Mp.node outputs_check hout

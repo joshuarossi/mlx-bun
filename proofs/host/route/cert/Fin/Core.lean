@@ -183,12 +183,13 @@ theorem agreeV (S : SSrv) (B : Box) (V : VarV) {L n : Nat} {d : Int} (hn : (n : 
 theorem embedsV (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) {L n : Nat} {d : Int} (hn : (n : Int) = L + d) (hB : InBox B (nuV V L))
     (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St} (hmr : Host.Ts.Sim.G.MR Pm NB M m s y) (hband : Pm.NL = Pm.N0)
     (hrope : M.big 5554869888 = 5554869888) (ρ : Nat → F64) (hρ : ∀ x l h, B.get x = some (l, h) → ρ x = F64.ofInt (nuV V L x))
-    (hnum : ∀ i e, nth? S.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ)) :
+    (hnum : ∀ i e, nth? S.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ))
+    (hdown : (List.range s.nnext).all (downB (exactTplDom 15235 15235 [5554869888] s) s) = true) :
     Embeds M.node M.handle (mapG (SDim.eval n) (gsV s S B V d)) (Gr tab y) := by
   have himg : NativeImage M.node (loadImg M) (exactTplDom 15235 15235 [5554869888] s) s y :=
     nativeImage_of_GMR hmr _
       (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
-      (fun _ _ hi hn => exactTplDom_exact hi hn)
+      (fun _ _ hi hn => exactTplDom_exact hi hn) (down_of_all hdown hmr.nlt)
   have hargs : ∀ i nd, exactTplDom 15235 15235 [5554869888] s i = true → s.nodes.get i = some nd →
       PrimArgs (fun a => okArg [5554869888] a = true) nd.prim := fun _ _ hi hn => exactTplDom_args hi hn
   have hag := agreeV S B V hn hB ρ hρ (CSrv.val ⟨tab⟩) M.nv M.big M.arg M.handle (nv_lit M) (fun _ => rfl)
@@ -208,15 +209,8 @@ theorem embedsV (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) {L n : Nat} {d : In
     show (y.nodes.get (M.node i)).bind _ = _
     rw [himg.nodes i nd hb hnd, Option.bind_some]
     exact h2'
-  · intro i j hi hj
-    have hb : exactTplDom 15235 15235 [5554869888] s i = true := by
-      cases hd : exactTplDom 15235 15235 [5554869888] s i
-      · simp [mapG, gsV, restrictTo, hd] at hi
-      · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, gsV, restrictTo, hb, ↓reduceIte, ffiGraph, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; cases hi
-    | some _ => rfl
+  · intro i r hr j hj
+    obtain ⟨hb, nd, hnd, hins⟩ := ins_of_restrict (SDim.eval n) (numsV S B V d) SourceKernels.sources s (exactTplDom 15235 15235 [5554869888] s) hr
+    exact himg.order i nd hb hnd j (hins ▸ hj)
 
 end Host.Route.Cert.Fin

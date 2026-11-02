@@ -26,7 +26,7 @@ theorem fullRX_withJs {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : FF.S}
   refine fullRB_withJs (fun _ _ _ h => ?_) h hb
   rcases h with h | ⟨ha, h⟩
   · exact .inl h
-  · exact .inr ⟨ha, h.rel.names rfl, h.dense⟩
+  · exact .inr ⟨ha, h.rel.names rfl, h.dense, h.qord.names rfl⟩
 
 /-- Restore the JavaScript pointer law at any raise, keeping the bridge relation. -/
 theorem fullRXD_withJs {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : FF.S}
@@ -194,7 +194,7 @@ theorem bridgeX_push : BridgePush BridgeX := fun M x y n w h => by
   have h' : BridgeX (M.setNum n w) x y := h.names rfl
   rcases h' with h' | ⟨ha, hA⟩
   · exact .inl h'
-  · exact .inr ⟨ha, ⟨hA.rel, hA.dense⟩⟩
+  · exact .inr ⟨ha, ⟨hA.rel, hA.dense, hA.qord⟩⟩
 
 /-- **A second token at a raise** (`FullRB.addToken` over `BridgeX`). -/
 theorem FullRXD.addToken {P : LoadP} {NB : Nat} {w : NumV} {r : List NumV} {M : Map} {n : Nat} {x y : FF.S}

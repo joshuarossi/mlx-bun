@@ -37,7 +37,7 @@ shape and dtype only. -/
 theorem MRw.abstractTo (hr : MRw P NB M n x y) (h0 : P.N0 ≤ N0') (h1 : N0' ≤ x.nnext) :
     MRw (P.abstractTo N0') NB M n x y :=
   { hr with
-    norder := fun i hi hf j hj => hr.norder i hi (Full.ofAbstractTo h0 hf) j hj
+    norder := fun i hi hf j hj he => hr.norder i hi (Full.ofAbstractTo h0 hf) j hj he
     nodes := fun i nd hn => by
       obtain ⟨nd', h1', h2⟩ := hr.nodes i nd hn
       exact ⟨nd', h1', h2.abstractTo h0⟩

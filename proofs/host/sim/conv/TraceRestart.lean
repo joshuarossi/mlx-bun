@@ -13,7 +13,7 @@ private theorem hmap_after' {a b c : Nat} (h1 : HMap σ a b) (h2 : HMap M b c) :
     by rw [Map.after_region, h1.2.2, h2.2.2]⟩
 
 /-- Compose exact native states across compatible bands while fixing only `NB`.
-The result retains `G.MRw` unchanged, including trace bounds, strict node order,
+The result retains `G.MRw` unchanged, including trace bounds, node order,
 injection and the same handle/node allocation room. -/
 theorem traceMShift_restartR {x0 x1 z : NSt} (hs : TraceMShift P0 NB n0 σ x0 x1) (hr : G.MRw P1 NB M n1 x1 z)
     (hlo : P1.lo = P0.lo) (hE : P1.E = P0.E) (hNE : P1.NE = P0.NE) (hF : ∀ j, Full P0 j → Full P1 j)
@@ -67,10 +67,9 @@ theorem traceMShift_restartR {x0 x1 z : NSt} (hs : TraceMShift P0 NB n0 σ x0 x1
         show M.node (σ.node j) = j; rw [hs.nid j hj, hr.nid j hj]
       nbl := hs.nbl
       nall := fun j hj => hr.nall _ (hs.nall j hj)
-      norder := fun i hi hf j hj => by
-        obtain ⟨nd1, h1, -⟩ := hs.nodes i _ (Option.get_mem hi)
-        exact hr.norder _ (by show (x1.nodes.get (σ.node i)).isSome = true; rw [h1]; rfl)
-          (hF _ (hs.nfull i hi hf)) _ (hs.norder i hi hf j hj)
+      norder := G.MRw.norder_after hr hs.node0 hs.norder (fun i hi hf => hF _ (hs.nfull i hi hf)) fun i nd hn hf => by
+        obtain ⟨nd1, h1, -, -, -, hf1⟩ := hs.nodes i nd hn
+        exact ⟨nd1, h1, (hf1 hf).2⟩
       nodes := fun i nd hn => by
         obtain ⟨nd1, h1, hs1, hd1, hc1, hf1⟩ := hs.nodes i nd hn
         obtain ⟨nd', h2, hs2, hd2, hc2, hf2⟩ := hr.nodes _ nd1 h1

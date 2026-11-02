@@ -74,6 +74,14 @@ theorem BRel.ofClean {b : BSt} (h : bridgeClean b = true) (M : Map) (nx ny : Nat
       queued := fun n hn => by rw [hu', hr'] at hn; cases hn
       log := hlog }
 
+/-- A clean bridge has nothing pending. -/
+theorem QOrd.ofClean {b : BSt} (h : bridgeClean b = true) (M : Map) (X : Nat) : QOrd M X (b.unscheduled ++ b.running) := by
+  simp only [bridgeClean, Bool.and_eq_true] at h
+  obtain ⟨⟨⟨⟨-, -⟩, hu⟩, hr⟩, -⟩ := h
+  rw [List.isEmpty_iff.mp hu, List.isEmpty_iff.mp hr]
+  intro n hn
+  cases hn
+
 /-- The bridge after a wrap of surface `sid` at node `X` (the template's counter) and its image `Y`. -/
 theorem BRel.wrapSet {M : Map} {X Y : Nat} {b b' : BSt} (h : BRel M X Y b b') (hfr : ∀ i, M.node (X + i) = Y + i)
     (hlt : ∀ m, m < X → M.node m < Y) (hX : X < 2 ^ 62) (hY : Y < 2 ^ 62) (sid : Nat) :
@@ -184,6 +192,21 @@ theorem wrap_rel {P : LoadP} {NB : Nat} {M : Map} {n : Nat} {x y : NSt} (hr : G.
               · exact ((Keep.refl x).addNode nd0).setArr 0 x.nnext
               · exact ((Keep.refl y).addNode nd0).setArr 0 y.nnext
 
+/-- A wrap queues nothing. -/
+theorem wrap_pend {b b1 : BSt} {s s1 : Host.Mlx.Ffi.St} {as : List Arg} {r : Ret}
+    (h : Host.Mlx.FfiAne.wrap b s as = some (s1, b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.wrap at h
+  repeat' split at h
+  all_goals first
+    | (simp only [Bool.cond_eq_ite] at h
+       split at h
+       · simp only [Option.some.injEq, Prod.mk.injEq] at h
+         obtain ⟨-, rfl, -⟩ := h
+         rfl
+       · cases h)
+    | cases h
+
 theorem full_call_wrap (p : FF.S) {name : Name} {args : List Arg} (hm : Host.Load.isMlx name = true)
     (hp : nameEq name Host.Mlx.FfiAne.payloadName = true) :
     FF.call p name args = .pure (liftF p name args ((Host.Mlx.FfiAne.wrap p.1.1.bridge p.1.1.base.mlx args).map
@@ -207,13 +230,13 @@ theorem fullWrapSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
     MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ CallR (F := FF) (FullRX P NB) M' S'.tab.length r r') S C
       (FF.call x name args) (FF.call y name (args.map M.arg)) := by
   have hpre : BRel M (mlxOf x).nnext (mlxOf y).nnext (bridgeOf x) (bridgeOf y) ∧
-      DenseN (mlxOf x) := by
+      DenseN (mlxOf x) ∧ QOrd M (mlxOf x).nnext ((bridgeOf x).unscheduled ++ (bridgeOf x).running) := by
     rcases hr.bridge with hb | ⟨-, hb⟩
     · rcases hst with ha | ⟨hc, hdn⟩
       · rw [hb.2] at ha; cases ha
-      · rw [hb.1]; exact ⟨BRel.ofClean hc M _ _, denseB_sound hdn⟩
-    · exact ⟨hb.rel, hb.dense⟩
-  obtain ⟨hbr, hd⟩ := hpre
+      · rw [hb.1]; exact ⟨BRel.ofClean hc M _ _, denseB_sound hdn, QOrd.ofClean hc M _⟩
+    · exact ⟨hb.rel, hb.dense, hb.qord⟩
+  obtain ⟨hbr, hd, hO⟩ := hpre
   rw [full_call_wrap x hm hp, full_call_wrap y hm hp]
   cases e : Host.Mlx.FfiAne.wrap (bridgeOf x) (mlxOf x) args with
   | none =>
@@ -228,8 +251,10 @@ theorem fullWrapSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSr
     have hob : ObsPost P NB M M S.tab.length S.tab.length (mlxOf x) (mlxOf y) x' y' :=
       ⟨hr.load.mlx, hmr', Ext.refl _ _, Nat.le_refl _, kx, ky⟩
     have hd' : DenseN x' := hd.keep kx hmr'.xnnext_lt
+    have hO' : QOrd M x'.nnext (b1.unscheduled ++ b1.running) :=
+      QOrd.grow hr.load.mlx rfl hO hbr.queued (fun n hn => .inl (by rw [← wrap_pend e]; exact hn))
     refine MSim.pure ⟨Grow.refl hsrv, ⟨?_, rfl, rfl⟩⟩
-    refine ⟨⟨hr.load.host, hr.load.hostReg, hr.load.hostLt, hr.load.cbr, hmr'⟩, .inr ⟨ha1, ⟨hb1, hd'⟩⟩, ?_, ?_,
+    refine ⟨⟨hr.load.host, hr.load.hostReg, hr.load.hostLt, hr.load.cbr, hmr'⟩, .inr ⟨ha1, ⟨hb1, hd', hO'⟩⟩, ?_, ?_,
       hr.pend.step hr.load.mlx hmr' (Ext.refl _ _) kx⟩
     · rw [show (fun e => liveCall e x.1.1.base.mlx name args) = some from
         funext fun e => liveCall_other e _ _ _ fun s _ hs _ => by rw [hsym] at hs; cases hs]

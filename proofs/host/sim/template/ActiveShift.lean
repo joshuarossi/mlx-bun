@@ -14,6 +14,8 @@ theorem fullShiftQX_of_active {P : LoadP} {n0 : Nat} {σ : Map} {x0 x1 : FF.S} (
     (hrel : (∀ i j, i < (mlxOf x0).nnext → j < (mlxOf x0).nnext → σ.node i = σ.node j → i = j) →
       BRel σ (mlxOf x0).nnext (mlxOf x1).nnext (bridgeOf x0) (bridgeOf x1)) :
     FullShiftQX P n0 σ x0 x1 :=
-  ⟨h.load, h.tokens, h.tokSupp, bridgeX_of_active ha (hrel (ninj_dense (x0 := (clearTokens (toLoad x0)).mlx) h.load.mlx hF ⟨hd.1, hd.2⟩)) hd, h.live, h.kern, h.pend⟩
+  have hb := hrel (ninj_dense (x0 := (clearTokens (toLoad x0)).mlx) h.load.mlx hF ⟨hd.1, hd.2⟩)
+  ⟨h.load, h.tokens, h.tokSupp, bridgeX_of_active ha hb hd
+    (qord_of_shift (x0 := (clearTokens (toLoad x0)).mlx) h.load.mlx hF ⟨hd.1, hd.2⟩ hb.queued), h.live, h.kern, h.pend⟩
 
 end Host.Ts.Sim.Conv

@@ -36,7 +36,7 @@ theorem matchF (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St}
   have himg : NativeImage M.node (loadImg M) (exactTplDom 15235 15235 [5554869888] nativeF) nativeF y :=
     nativeImage_of_GMR hmr _
       (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
-      (fun _ _ hi hn => exactTplDom_exact hi hn)
+      (fun _ _ hi hn => exactTplDom_exact hi hn) (down_of_all downF hmr.nlt)
   have emb := Host.Ts.Sim.Compose.ColdGraph.embeds_cold_image D1Body.S155 ρ hρ (fun _ => 0) SourceKernels.sources nativeF y
     (exactTplDom 15235 15235 [5554869888] nativeF) (CSrv.val ⟨tab⟩) M.nv M.big M.arg M.handle M.node (nv_lit M) (fun _ => rfl)
     (numbers_agree D1Body.S155 ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum)

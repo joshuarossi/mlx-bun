@@ -44,7 +44,8 @@ theorem nodeI_map (M : Map) (nd : Node) :
 /-- **The native relation gives the template embedding's native image** on any
 domain inside its full bands. -/
 theorem nativeImage_of_MR {P : LoadP} {M : Map} {n : Nat} {x y : NSt} (hr : MR P M n x y) (D : Nat → Bool)
-    (hD : ∀ i, D i = true → Full P i) : NativeImage M.node (loadImg M) D x y where
+    (hD : ∀ i, D i = true → Full P i) (hDown : ∀ i nd, D i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
+    NativeImage M.node (loadImg M) D x y where
   nodes := by
     intro i nd hi hn
     obtain ⟨nd', h1, hs, hd, _, hf⟩ := hr.nodes i nd hn
@@ -54,9 +55,7 @@ theorem nativeImage_of_MR {P : LoadP} {M : Map} {n : Nat} {x y : NSt} (hr : MR P
     simp only at hp hins hs hd
     subst hp hins hs hd
     rfl
-  order := by
-    intro i j hi hp hj
-    exact hr.norder i hp (hD i hi) j hj
+  order i nd hi hn j hj := hr.norder i (show (x.nodes.get i).isSome = true by rw [hn]; rfl) (hD i hi) j (hDown i nd hi hn j hj)
 
 /-- The native relation keeps every route kernel object. -/
 theorem kernels_of_MR {P : LoadP} {M : Map} {n : Nat} {x y : NSt} (hr : MR P M n x y) (Ks : KernelSources) :

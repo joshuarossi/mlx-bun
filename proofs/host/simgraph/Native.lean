@@ -370,13 +370,41 @@ Every node of template state `s` in `D` is at `σ i` in iteration state `t`,
 as its image under `I`; `σ` keeps every such node above everything below it. -/
 structure NativeImage (σ : Nat → Nat) (I : SynImg) (D : Nat → Bool) (s t : Ffi.St) : Prop where
   nodes : ∀ i nd, D i = true → s.nodes.get i = some nd → t.nodes.get (σ i) = some (nodeI σ I nd)
-  order : ∀ i j, D i = true → (s.nodes.get i).isSome → j < i → σ j < σ i
+  order : ∀ i nd, D i = true → s.nodes.get i = some nd → ∀ j ∈ nd.ins, σ j < σ i
 
 theorem mapN_id {κ : Type} (r : RNode Int κ) : mapN (fun i : Int => i) r = r := by
   obtain ⟨p, ins⟩ := r
   have : mapP (κ := κ) (fun i : Int => i) p = p := by
     induction p <;> simp_all [mapP, mapC]
   simp [mapN, this]
+
+/-- A node's inputs are below it, on `D`: a check of a template state. -/
+def downB (D : Nat → Bool) (x : Ffi.St) (i : Nat) : Bool :=
+  !D i || match x.nodes.get i with
+    | none => true
+    | some nd => nd.ins.all fun j => Nat.blt j i
+
+theorem down_of_all {D : Nat → Bool} {x : Ffi.St} (h : (List.range x.nnext).all (downB D x) = true)
+    (hlt : ∀ i, (x.nodes.get i).isSome = true → i < x.nnext) :
+    ∀ i nd, D i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i := by
+  intro i nd hi hn j hj
+  have hc := List.all_eq_true.mp h i (List.mem_range.mpr (hlt i (by rw [hn]; rfl)))
+  simp only [downB, hi, Bool.not_true, Bool.false_or, hn] at hc
+  exact Nat.blt_eq.mp (List.all_eq_true.mp hc j hj)
+
+/-- A node of a template graph on `D` has the inputs its state's node has. -/
+theorem ins_of_restrict {δ δ' κ : Type} (ev : δ → δ') (N : Nums δ) (Ks : KernelSources) (s : Ffi.St) (D : Nat → Bool) {i : Nat} {r : RNode δ' κ}
+    (hr : mapG ev (restrictTo D (ffiGraph N Ks s)) i = some r) :
+    D i = true ∧ ∃ nd, s.nodes.get i = some nd ∧ r.ins = nd.ins := by
+  obtain ⟨r0, h0, rfl⟩ := Option.map_eq_some_iff.mp hr
+  have hb : D i = true := by
+    cases hd : D i
+    · simp [restrictTo, hd] at h0
+    · rfl
+  simp only [restrictTo, hb, ↓reduceIte] at h0
+  obtain ⟨nd, hnd, hres⟩ := Option.bind_eq_some_iff.mp h0
+  obtain ⟨q, _, rfl⟩ := Option.map_eq_some_iff.mp hres
+  exact ⟨hb, nd, hnd, rfl⟩
 
 /-- **Template to iteration.** If iteration state `t` contains template state
 `s`'s nodes on `D` under node map `σ` and image `numImg μ β α η`, the
@@ -408,17 +436,9 @@ theorem embeds_of_image (cls : NumV → Option SDim) (Ks : KernelSources) (s t :
     show (t.nodes.get (σ i)).bind _ = _
     rw [himg.nodes i nd hb hnd, Option.bind_some]
     exact h2
-  order := by
-    intro i j hi hj
-    have hb : D i = true := by
-      cases hd : D i
-      · simp [mapG, restrictTo, hd] at hi
-      · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, restrictTo, hb, ↓reduceIte, symGraph, ffiGraph, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; cases hi
-    | some _ => rfl
+  order i r hr j hj := by
+    obtain ⟨hb, nd, hnd, hins⟩ := ins_of_restrict (SDim.eval n) (symNums cls) Ks s D hr
+    exact himg.order i nd hb hnd j (hins ▸ hj)
 
 /-! ## Offset numbers -/
 

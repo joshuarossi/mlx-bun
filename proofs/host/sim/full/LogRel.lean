@@ -155,7 +155,7 @@ theorem bridgeXL_after {σ M : Map} {x y z : FF.S} {es L : List Effect} (hs : Br
       (bridgeOf (rebase z0 (bridgeOf y0).programs ((bridgeOf y0).log.map M.effect))) :=
     { hA.rel with programs := rfl, log := rfl }
   have hb1 : BridgeX M y0 (rebase z0 (bridgeOf y0).programs ((bridgeOf y0).log.map M.effect)) :=
-    .inr ⟨hya, ⟨hrel, hA.dense⟩⟩
+    .inr ⟨hya, ⟨hrel, hA.dense, hA.qord⟩⟩
   refine ⟨_, ps2, ?_, ?_, Conv.bridgeX_after hs0 hb1 hn⟩
   · refine fF_rebase ?_
     have e : (bridgeOf z0).log = ((bridgeOf y0).log ++ es).map M.effect := hA.rel.log

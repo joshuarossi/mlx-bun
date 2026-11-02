@@ -40,10 +40,11 @@ theorem routeDom_arange {NL N0 : Nat} {fixed : List Int} {x : Ffi.St} {i : Nat} 
 
 /-- The native image on the certificate's domain. -/
 theorem nativeImage_of_routeDom {P : LoadP} {NB NL N0 : Nat} {M : Map} {n : Nat} {x y : NSt}
-    (hr : G.MR P NB M n x y) (fixed : List Int) (hNL : NL ≤ P.NL) (hN0 : P.N0 ≤ N0) :
+    (hr : G.MR P NB M n x y) (fixed : List Int) (hNL : NL ≤ P.NL) (hN0 : P.N0 ≤ N0)
+    (hDown : ∀ i nd, routeDom NL N0 fixed x i = true → x.nodes.get i = some nd → ∀ j ∈ nd.ins, j < i) :
     NativeImage M.node (loadImg M) (routeDom NL N0 fixed x) x y :=
   nativeImage_of_GMR hr _ (fun _ hi => exactTplDom_full hNL hN0 (routeDom_exact hi))
-    (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn)
+    (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn) hDown
 
 theorem underReplay_primI (I : SynImg) : ∀ p : Prim, notArange p = true → ∀ a b c, underReplay (primI I p) ≠ .arange a b c
   | .arange _ _ _, h, _, _, _ => by simp [notArange] at h
@@ -91,16 +92,15 @@ theorem embeds_of_runR {κ : Type} (S : SSrv) (B : Box) (Ks : KernelSources) (s 
       resolvePrimP_eq _ _ _ _ _ (underReplay_primI _ nd.prim (hna i nd hb hnd))
     rw [hP]
     exact h2
-  order := by
-    intro i j hi hj
+  order i r hr j hj := by
+    obtain ⟨r0, h0, rfl⟩ := Option.map_eq_some_iff.mp hr
     have hb : D i = true := by
       cases hd : D i
-      · simp [mapG, restrictTo, hd] at hi
+      · simp [restrictTo, hd] at h0
       · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, restrictTo, hb, ↓reduceIte, symGraphR, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; simp at hi
-    | some _ => rfl
+    simp only [restrictTo, hb, ↓reduceIte] at h0
+    obtain ⟨nd, hnd, hres⟩ := Option.bind_eq_some_iff.mp h0
+    obtain ⟨_, _, rfl⟩ := Option.map_eq_some_iff.mp hres
+    exact himg.order i nd hb hnd j hj
 
 end Host.Mlx.SimGraph

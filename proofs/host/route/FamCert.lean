@@ -273,6 +273,7 @@ structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) (ss : List StageLay
   hEc : E.map (Host.Mlx.SimGraph.mapN (rowsAt x)) = Ec
   hn₀ : 0 < n₀ ∧ n₀ < 256
   fixedHi : ∀ i ∈ fixed, (131072 : Int) ≤ i ∧ i < 2 ^ 56
+  hdown : (List.range s.nnext).all (downB (routeDom 15235 15235 fixed s) s) = true
   hlen : E.length ≤ cert.length
   hm : MatchesSeg .promptIds (kindOf kinds) (famGs s S B fixed) Ec cert 0 Ec.length = true
   inputs : InputsSeg Ec cert (insOf 15235 cells) 0 Ec.length = true
@@ -318,7 +319,7 @@ theorem FamCert.emb {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List StageL
   have himg : NativeImage M.node (loadImg M) (routeDom 15235 15235 c.fixed c.s) c.s y :=
     nativeImage_of_GMR hmr _
       (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
-      (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn)
+      (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn) (down_of_all c.hdown hmr.nlt)
   have h := embeds_of_runR (κ := SimGraph.PKey) c.S c.B SourceKernels.sources c.s y (routeDom 15235 15235 c.fixed c.s) ν ρ
     hB hρ (CSrv.val ⟨tab⟩) M.nv M.big M.arg M.handle M.node (nv_lit M) (fun _ => rfl) hnum
     (fun a => okArg c.fixed a = true) (arg_fixed M c.fixed hfix)
@@ -436,7 +437,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
               (numbers_agree c.S ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum) (clsOfX_sound c.S c.B ν ρ hB hρ)
               (nativeImage_of_GMR hmr _
                 (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
-                (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn))
+                (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn) (down_of_all c.hdown hmr.nlt))
               _ hD xs sh hnd _ _ hds hsh
             have hm1 : (vals.map (rowsAt c.x)).map (PDim.eval ν) = vals.map (PDim.eval (refNu 0 n)) := by
               rw [List.map_map]

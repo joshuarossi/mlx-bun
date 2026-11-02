@@ -20,6 +20,8 @@ kernel_rfl out_below : Nat.blt (certAt choice.cert Tpl.Ordinary.tokenNode) nativ
 kernel_rfl outs_below : choice.outputs.all (fun p => (p.1.all fun j => Nat.blt j native.nnext) &&
   (p.2.all fun j => Nat.blt j native.nnext)) = true
 
+kernel_rfl down : (List.range native.nnext).all (downB (exactTplDom 15235 15235 [5554869888] native) native) = true
+
 /-- The row's certificate. -/
 noncomputable def cert : RowCert native PRE_pl_r1.S448 0 where
   cert := choice.cert
@@ -36,6 +38,7 @@ noncomputable def cert : RowCert native PRE_pl_r1.S448 0 where
   hfl := Nat.blt_eq.mp fed_below
   hins := fun σ hσ => inputs_at_bound 15235 choice.inputs ps 17777 inputs_prefix σ hσ
   houts := outputs_check
+  hdown := down
 
 theorem outN : certAt choice.cert Tpl.Ordinary.tokenNode < (mlxOf PRE_pl_r1.s448.ffi).nnext := Nat.blt_eq.mp out_below
 

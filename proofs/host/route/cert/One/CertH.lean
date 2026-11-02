@@ -53,7 +53,7 @@ theorem matchH (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St}
   have himg : NativeImage M.node (loadImg M) (exactTplDom 15235 15235 [5554869888] nativeH) nativeH y :=
     nativeImage_of_GMR hmr _
       (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
-      (fun _ _ hi hn => exactTplDom_exact hi hn)
+      (fun _ _ hi hn => exactTplDom_exact hi hn) (down_of_all downH hmr.nlt)
   have hcls : ClsSoundD (clsH PRE_pl_common.S1) (νsOf PRE_pl_common.S1 ρ) (PDim.eval (fun _ => 0)) := by
     intro x d hx
     obtain ⟨d0, h0, rfl⟩ := Option.map_eq_some_iff.mp hx

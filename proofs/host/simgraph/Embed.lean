@@ -61,7 +61,7 @@ end
 /-- `G'` carries `G` under node map `σ`, with replay closures renamed by `cl`. -/
 structure Embeds {κ : Type} (σ cl : Nat → Nat) (G G' : Nat → Option (RNode Int κ)) : Prop where
   node : ∀ i r, G i = some r → G' (σ i) = some (renameN σ cl r)
-  order : ∀ i j, (G i).isSome → j < i → σ j < σ i
+  order : ∀ i r, G i = some r → ∀ j ∈ r.ins, σ j < σ i
 
 section
 variable {κ : Type} [DecidableEq κ] {σ cl : Nat → Nat}
@@ -69,32 +69,72 @@ variable {κ : Type} [DecidableEq κ] {σ cl : Nat → Nat}
 macro "peel_some " h:ident " => " x:ident e:ident : tactic =>
   `(tactic| obtain ⟨$x, $e, $h⟩ := Option.bind_eq_some_iff.mp $h)
 
-/-- compute_g's replayed pattern survives the renaming. -/
-theorem cgAux_embed (r : RNode Int κ) (b b' : Nat → Option (RNode Int κ))
-    (hb : ∀ j x, b j = some x → b' (σ j) = some (renameN σ cl x)) (leaves : List Nat)
-    (h : cgAux r b = some leaves) : cgAux (renameN σ cl r) b' = some (leaves.map σ) := by
+theorem one?_mem {l : List Nat} {a : Nat} (h : one? l = some a) : a ∈ l := by
+  match l, h with
+  | [x], h =>
+    obtain rfl := Option.some.inj h
+    exact List.mem_singleton.mpr rfl
+
+theorem two?_mem {l : List Nat} {a b : Nat} (h : two? l = some (a, b)) : a ∈ l ∧ b ∈ l := by
+  match l, h with
+  | [x, y], h =>
+    obtain ⟨rfl, rfl⟩ := Prod.mk.inj (Option.some.inj h)
+    simp
+
+/-- compute_g's replayed pattern survives the renaming. `Re` holds of the root's inputs and, along each node read, of its inputs: it holds of
+every node the walk reads and of the leaves. -/
+theorem cgAux_embed (r : RNode Int κ) (b b' : Nat → Option (RNode Int κ)) (Re : Nat → Prop) (hr : ∀ k ∈ r.ins, Re k)
+    (hb : ∀ j x, Re j → b j = some x → b' (σ j) = some (renameN σ cl x) ∧ ∀ k ∈ x.ins, Re k) (leaves : List Nat)
+    (h : cgAux r b = some leaves) : cgAux (renameN σ cl r) b' = some (leaves.map σ) ∧ ∀ a ∈ leaves, Re a := by
   simp only [cgAux, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.ite_none_right_eq_some, Option.bind_none,
     Prod.exists, Option.pure_def, Option.some.injEq] at h
   obtain ⟨cls, hcls, m, hm, mn, hmn, p1, ng, sp, hpr, nn, hnn, p2, e1, he1, en, hen, p3, c, hc, cn, hcn, p4,
     x0, hx0, sn, hsn, p5, sm, z, hpr2, smn, hsmn, p6, x1, x2, hpr3, zn, hzn, p7, hl⟩ := h
   subst hl p7
-  simp only [cgAux, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.ite_none_right_eq_some, Option.bind_none,
-    Option.pure_def, Option.some.injEq, renameN, replayedExp_rename, hcls, Option.map_some, one?_map,
-    two?_map, hm, hpr, he1, hc, hx0, hpr2, hpr3, hb _ _ hmn, hb _ _ hnn, hb _ _ hen, hb _ _ hcn, hb _ _ hsn,
-    hb _ _ hsmn, hb _ _ hzn, p1, p2, p3, p4, p5, p6, renameCls, exists_eq_left', List.map_cons, List.map_nil, true_and,
-    and_true]
+  have Bm := hb _ _ (hr _ (one?_mem hm)) hmn
+  have Bn := hb _ _ (Bm.2 _ (two?_mem hpr).1) hnn
+  have Be := hb _ _ (Bn.2 _ (one?_mem he1)) hen
+  have Bc := hb _ _ (Be.2 _ (one?_mem hc)) hcn
+  have Bs := hb _ _ (Bm.2 _ (two?_mem hpr).2) hsn
+  have Bsm := hb _ _ (Bs.2 _ (two?_mem hpr2).1) hsmn
+  have Bz := hb _ _ (Bs.2 _ (two?_mem hpr2).2) hzn
+  refine ⟨?_, ?_⟩
+  · simp only [cgAux, Option.bind_eq_bind, Option.bind_eq_some_iff, Option.ite_none_right_eq_some, Option.bind_none,
+      Option.pure_def, Option.some.injEq, renameN, replayedExp_rename, hcls, Option.map_some, one?_map,
+      two?_map, hm, hpr, he1, hc, hx0, hpr2, hpr3, Bm.1, Bn.1, Bs.1, Be.1, Bc.1, Bsm.1, Bz.1, p1, p2, p3, p4, p5, p6, renameCls,
+      exists_eq_left', List.map_cons, List.map_nil, true_and, and_true]
+  · intro a ha
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
+    rcases ha with rfl | rfl | rfl
+    · exact Bc.2 _ (one?_mem hx0)
+    · exact Bsm.2 _ (two?_mem hpr3).1
+    · exact Bsm.2 _ (two?_mem hpr3).2
 
-theorem cgLeaves_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (leaves : List Nat)
-    (hc : cgLeaves G i = some leaves) : cgLeaves G' (σ i) = some (leaves.map σ) := by
+/-- compute_g's leaves at the image, along a predicate the walk keeps. -/
+theorem cgLeaves_gen (G G' : Nat → Option (RNode Int κ)) (hn : ∀ j r, G j = some r → G' (σ j) = some (renameN σ cl r)) (i : Nat)
+    (Re : Nat → Prop) (hlt : ∀ j, Re j → j < i → σ j < σ i) (hroot : ∀ r, G i = some r → ∀ k ∈ r.ins, Re k)
+    (hstep : ∀ j x, Re j → j < i → G j = some x → ∀ k ∈ x.ins, Re k) (leaves : List Nat)
+    (hc : cgLeaves G i = some leaves) : cgLeaves G' (σ i) = some (leaves.map σ) ∧ ∀ a ∈ leaves, Re a := by
   unfold cgLeaves at hc ⊢
   peel_some hc => r hr
-  rw [h.node i r hr, Option.bind_some]
-  refine cgAux_embed r _ _ (fun j x hx => ?_) leaves hc
-  by_cases hj : j < i
-  · rw [ite_eq_left hj] at hx
-    rw [ite_eq_left (h.order i j (by simp [hr]) hj)]
-    exact h.node j x hx
-  · rw [ite_eq_right hj] at hx; cases hx
+  rw [hn i r hr, Option.bind_some]
+  refine cgAux_embed r _ _ Re (hroot r hr) (fun j x hj hx => ?_) leaves hc
+  by_cases hji : j < i
+  · rw [ite_eq_left hji] at hx
+    refine ⟨?_, hstep j x hj hji hx⟩
+    rw [ite_eq_left (hlt j hj hji)]
+    exact hn j x hx
+  · rw [ite_eq_right hji] at hx; cases hx
+
+/-- compute_g's leaves at the image, each below the root's image. -/
+theorem cgLeaves_reach (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (leaves : List Nat)
+    (hc : cgLeaves G i = some leaves) : cgLeaves G' (σ i) = some (leaves.map σ) ∧ ∀ a ∈ leaves, σ a < σ i :=
+  cgLeaves_gen G G' h.node i (fun j => σ j < σ i) (fun _ hj _ => hj) (fun r hr => h.order i r hr)
+    (fun j x hj _ hx k hk => Nat.lt_trans (h.order j x hx k hk) hj) leaves hc
+
+theorem cgLeaves_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') (i : Nat) (leaves : List Nat)
+    (hc : cgLeaves G i = some leaves) : cgLeaves G' (σ i) = some (leaves.map σ) :=
+  (cgLeaves_reach G G' h i leaves hc).1
 
 end
 
@@ -120,8 +160,10 @@ theorem replayedExp_none {p : RPrim Int κ} {c : Nat} (h : replayedExp? p = some
     show (if elementwise (RPrim.unary (δ := Int) (κ := κ) op) then none else _) = none
     rfl
 
-/-- **Values transport along an embedding.** -/
-theorem evalR_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') :
+/-- **Values transport along a map of nodes** keeping the order of what a node reads. -/
+theorem evalR_gen (G G' : Nat → Option (RNode Int κ)) (hn : ∀ j r, G j = some r → G' (σ j) = some (renameN σ cl r))
+    (hord : ∀ i r, G i = some r → ∀ a ∈ r.ins, a < i → σ a < σ i)
+    (hcg : ∀ i leaves, cgLeaves G i = some leaves → cgLeaves G' (σ i) = some (leaves.map σ) ∧ ∀ a ∈ leaves, a < i → σ a < σ i) :
     ∀ i v, evalR M K env G i = some v → evalR M K env G' (σ i) = some v := by
   intro i
   induction i using Nat.strong_induction_on with
@@ -133,16 +175,15 @@ theorem evalR_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G
   | some r =>
     rw [hg] at hv
     dsimp only at hv
-    have hpres : (G i).isSome := by simp [hg]
     -- arguments of smaller id with values keep them at their images
-    have hargs : ∀ (l : List Nat) (xs : List Value),
+    have hargs : ∀ (l : List Nat) (_ : ∀ a ∈ l, a < i → σ a < σ i) (xs : List Value),
         (l.mapM fun j => if _h : j < i then evalR M K env G j else none) = some xs →
         ((l.map σ).mapM fun j => if _h : j < σ i then evalR M K env G' j else none) = some xs := by
       intro l
       induction l with
-      | nil => intro xs hx; simpa using hx
+      | nil => intro _ xs hx; simpa using hx
       | cons a l ihl =>
-        intro xs hx
+        intro hl xs hx
         rw [List.mapM_cons] at hx
         peel_some hx => x ha
         peel_some hx => ys hys
@@ -151,16 +192,17 @@ theorem evalR_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G
           · exact hai
           · rw [dite_eq_right hai] at ha; cases ha
         rw [dite_eq_left hlt] at ha
-        rw [List.map_cons, List.mapM_cons, dite_eq_left (h.order i a hpres hlt), ih a hlt x ha, ihl ys hys]
+        rw [List.map_cons, List.mapM_cons, dite_eq_left (hl a (List.mem_cons_self ..) hlt), ih a hlt x ha,
+          ihl (fun b hb => hl b (List.mem_cons_of_mem _ hb)) ys hys]
         simpa using hx
     cases hc : cgLeaves G i with
     | some leaves =>
       rw [hc] at hv
       dsimp only at hv
       peel_some hv => xs hxs
-      rw [evalR_eq, h.node i r hg, cgLeaves_embed G G' h i leaves hc]
+      rw [evalR_eq, hn i r hg, (hcg i leaves hc).1]
       dsimp only
-      rw [hargs leaves xs hxs]
+      rw [hargs leaves (hcg i leaves hc).2 xs hxs]
       exact hv
     | none =>
       rw [hc] at hv
@@ -171,13 +213,26 @@ theorem evalR_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G
         | none => rfl
         | some c => rw [replayedExp_none M K env hx] at hv; cases hv
       have hc' : cgLeaves G' (σ i) = none :=
-        cgLeaves_none _ _ (renameN σ cl r) (h.node i r hg) (by simp [renameN, replayedExp_rename, hre])
-      rw [evalR_eq, h.node i r hg, hc']
+        cgLeaves_none _ _ (renameN σ cl r) (hn i r hg) (by simp [renameN, replayedExp_rename, hre])
+      rw [evalR_eq, hn i r hg, hc']
       dsimp only
-      rw [show (renameN σ cl r).ins = r.ins.map σ from rfl, hargs r.ins xs hxs]
+      rw [show (renameN σ cl r).ins = r.ins.map σ from rfl, hargs r.ins (hord i r hg) xs hxs]
       show (some xs).bind (primEval M K env (renameCls cl r.prim)) = some v
       rw [primEval_rename]
       exact hv
+
+/-- **Values transport to a graph holding the same nodes.** -/
+theorem evalR_id (G G' : Nat → Option (RNode Int κ)) (hn : ∀ j r, G j = some r → G' j = some (renameN (fun i => i) (fun h => h) r)) :
+    ∀ i v, evalR M K env G i = some v → evalR M K env G' i = some v :=
+  evalR_gen (σ := fun i => i) (cl := fun h => h) M K env G G' hn (fun _ _ _ _ _ h => h)
+    (fun i leaves hc => ⟨(cgLeaves_gen (σ := fun i => i) (cl := fun h => h) G G' hn i (fun _ => True) (fun _ _ h => h) (fun _ _ _ _ => trivial)
+      (fun _ _ _ _ _ _ _ => trivial) leaves hc).1, fun _ _ h => h⟩)
+
+/-- **Values transport along an embedding.** -/
+theorem evalR_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G G') :
+    ∀ i v, evalR M K env G i = some v → evalR M K env G' (σ i) = some v :=
+  evalR_gen M K env G G' h.node (fun i r hr a ha _ => h.order i r hr a ha)
+    (fun i leaves hc => ⟨(cgLeaves_reach G G' h i leaves hc).1, fun a ha _ => (cgLeaves_reach G G' h i leaves hc).2 a ha⟩)
 
 end
 
@@ -211,34 +266,30 @@ theorem matches_embed (G G' : Nat → Option (RNode Int κ)) (h : Embeds σ cl G
   have hins : e.ins.map (certAt (cert.map σ)) = (e.ins.map (certAt cert)).map σ := by
     rw [List.map_map]
     exact List.map_congr_left fun j hj => hcm j hj
-  -- the carrier of `k` is a node of `G` unless `e` is an input
-  have present : isInput e.prim = false → (G (certAt cert k)).isSome := by
-    intro hi
-    rw [hi] at hrest
-    simp only [Bool.false_eq_true, ↓reduceIte] at hrest
-    by_cases hc : e.prim = .computeG
-    · rw [ite_eq_left hc] at hrest
-      simp only [decide_eq_true_eq] at hrest
-      unfold cgLeaves at hrest
-      cases hg : G (certAt cert k) with
-      | none => rw [hg] at hrest; cases hrest
-      | some _ => rfl
-    · rw [ite_eq_right hc] at hrest
-      simp only [Bool.and_eq_true] at hrest
-      cases hg : G (certAt cert k) with
-      | none => rw [hg] at hrest; simp at hrest
-      | some _ => rfl
   by_cases hi : isInput e.prim = true
   · refine ⟨⟨hlt, ?_⟩, by rw [ite_eq_left hi] at hrest ⊢; exact hrest⟩
     intro j hj
     rw [ite_eq_left hi] at hrest
     have : e.ins = [] := by simpa using hrest
     rw [this] at hj; cases hj
-  · have hi' : isInput e.prim = false := by simpa using hi
-    have hp := present hi'
-    refine ⟨⟨hlt, fun j hj => ?_⟩, ?_⟩
+  · refine ⟨⟨hlt, fun j hj => ?_⟩, ?_⟩
     · rw [hcm j hj, hck]
-      exact h.order _ _ hp (hcl j hj)
+      have hm : certAt cert j ∈ e.ins.map (certAt cert) := List.mem_map_of_mem hj
+      rw [ite_eq_right hi] at hrest
+      by_cases hc : e.prim = .computeG
+      · rw [ite_eq_left hc] at hrest
+        simp only [decide_eq_true_eq] at hrest
+        exact (cgLeaves_reach G G' h _ _ hrest).2 _ hm
+      · rw [ite_eq_right hc] at hrest
+        simp only [Bool.and_eq_true] at hrest
+        obtain ⟨_, hg⟩ := hrest
+        cases hr : G (certAt cert k) with
+        | none => rw [hr] at hg; cases hg
+        | some r =>
+          rw [hr] at hg
+          simp only [decide_eq_true_eq] at hg
+          obtain ⟨_, _, hrins⟩ := hg
+          exact h.order _ r hr _ (hrins ▸ hm)
     · rw [ite_eq_right hi] at hrest ⊢
       by_cases hc : e.prim = .computeG
       · rw [ite_eq_left hc] at hrest ⊢

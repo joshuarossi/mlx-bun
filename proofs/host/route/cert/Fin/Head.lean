@@ -50,6 +50,7 @@ structure HeadCert (s : Ffi.St) (S : SSrv) (B : Box) (V : VarV) (d : Int) where
   hinp : checkNodesD (headInputOk cert) 0 Tpl.Ordinary.graph = true
   toB : certAt cert Tpl.Ordinary.tokenNode < s.nnext
   outsB : ∀ q ∈ Tpl.Ordinary.cacheOutputs, certAt cert q.1 < s.nnext ∧ certAt cert q.2 < s.nnext
+  hdown : (List.range s.nnext).all (downB (exactTplDom 15235 15235 [5554869888] s) s) = true
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
   (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) {π : List Nat}
@@ -142,7 +143,7 @@ theorem hsmpV (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.we
   · rw [hgr]
     have hchecked := Host.Route.PrefGraph.matchesD_tail (gsV s S B V (-1)) Tpl.Ordinary.graph .tokenIds 4010 c.cert c.hm
     have h1' := matchesD_map (SDim.eval (π.length - 1)) _ _ c.cert hchecked
-    have emb := embedsV s S B V (L := π.length) (n := π.length - 1) (d := -1) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC)
+    have emb := embedsV s S B V (L := π.length) (n := π.length - 1) (d := -1) (by omega) hB tab hmr hband hrope y.ν hρ (hnum tab hC) c.hdown
     have h2 := matches_embed (σ := y.M.node) (cl := y.M.handle) _ _ emb _ c.cert
       (by rw [List.length_map, maskSeg_length]; exact c.hlen) h1'
     rw [maskSeg_map] at h2

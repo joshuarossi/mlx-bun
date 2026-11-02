@@ -19,11 +19,12 @@ def bridgeOp (name : Name) (args : List Arg) : Option (Arg × (BSt → Nat → O
   else bif nameEq name chars!"mbane_free" then (match args with | [h] => some (h, Host.Mlx.FfiAne.free) | _ => none)
   else none
 
-/-- A bridge call's action on related bridges gives related results, the bridge's activity kept and a
-literal return. -/
+/-- A bridge call's action on related bridges gives related results, the bridge's activity and pending
+nodes kept and a literal return. -/
 def OpRel (F F' : BSt → Nat → Option (BSt × Ret)) : Prop :=
   ∀ (M : Map) (nx ny : Nat) (b b' : BSt) (n : Nat) (b1 : BSt) (r : Ret), BRel M nx ny b b' → F b n = some (b1, r) →
-    ∃ b1', F' b' n = some (b1', r) ∧ BRel M nx ny b1 b1' ∧ b1.active = b.active ∧ ∀ M' : Map, M'.ret r = r
+    ∃ b1', F' b' n = some (b1', r) ∧ BRel M nx ny b1 b1' ∧ b1.active = b.active ∧ (∀ M' : Map, M'.ret r = r) ∧
+      b1.unscheduled ++ b1.running = b.unscheduled ++ b.running
 
 theorem input_fixed {b b1 : BSt} {n : Nat} {i : Arg} {r : Ret} (e : Host.Mlx.FfiAne.input b n i = some (b1, r)) :
     b1.active = b.active ∧ ∀ M : Map, M.ret r = r := by
@@ -71,25 +72,71 @@ theorem free_fixed {b b1 : BSt} {n : Nat} {r : Ret} (e : Host.Mlx.FfiAne.free b 
     cases hh : Nat.beq p.holders 1 <;> rw [hh] at e <;> simp only [Bool.cond_false, Bool.cond_true] at e <;>
       (simp only [Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e; exact ⟨rfl, fun _ => rfl⟩)
 
+theorem input_pend {b b1 : BSt} {n : Nat} {i : Arg} {r : Ret} (e : Host.Mlx.FfiAne.input b n i = some (b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.input at e
+  split at e
+  · simp only [Bool.cond_eq_ite] at e
+    split at e <;> (simp only [Option.some.injEq, Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e; rfl)
+  · cases e
+
+theorem output_pend {b b1 : BSt} {n : Nat} {r : Ret} (e : Host.Mlx.FfiAne.output b n = some (b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.output at e
+  cases hp : Host.Mlx.FfiAne.program? b n with
+  | none => rw [hp] at e; cases e
+  | some qp => rw [hp] at e; cases e; rfl
+
+theorem evalAsync_pend {b b1 : BSt} {n : Nat} {r : Ret} (e : Host.Mlx.FfiAne.evalAsync b n = some (b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.evalAsync at e
+  split at e
+  · simp only [Bool.cond_eq_ite] at e
+    repeat' split at e
+    all_goals first
+      | (simp only [Option.some.injEq, Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e; rfl)
+      | cases e
+  · cases e
+
+theorem wait_pend {b b1 : BSt} {n : Nat} {r : Ret} (e : Host.Mlx.FfiAne.wait b n = some (b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.wait at e
+  split at e
+  · simp only [Bool.cond_eq_ite] at e
+    split at e <;> (simp only [Option.some.injEq, Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e; rfl)
+  · cases e
+
+theorem free_pend {b b1 : BSt} {n : Nat} {r : Ret} (e : Host.Mlx.FfiAne.free b n = some (b1, r)) :
+    b1.unscheduled ++ b1.running = b.unscheduled ++ b.running := by
+  unfold Host.Mlx.FfiAne.free at e
+  cases hp : Host.Mlx.FfiAne.program? b n with
+  | none => rw [hp] at e; cases e
+  | some qp =>
+    rw [hp] at e
+    obtain ⟨q, p⟩ := qp
+    simp only [Option.map_some, Option.some.injEq] at e
+    cases hh : Nat.beq p.holders 1 <;> rw [hh] at e <;> simp only [Bool.cond_false, Bool.cond_true] at e <;>
+      (simp only [Prod.mk.injEq] at e; obtain ⟨rfl, rfl⟩ := e; rfl)
+
 theorem opRel_input (i i' : Arg) (hi : Host.Mlx.Ffi.argInt i' = Host.Mlx.Ffi.argInt i) :
     OpRel (fun b n => Host.Mlx.FfiAne.input b n i) (fun b n => Host.Mlx.FfiAne.input b n i') := by
   intro M nx ny b b' n b1 r h e
   have e' : Host.Mlx.FfiAne.input b n i' = some (b1, r) := by
     unfold Host.Mlx.FfiAne.input at e ⊢; rw [hi]; exact e
   obtain ⟨b1', e1, h1⟩ := h.input e'
-  exact ⟨b1', e1, h1, input_fixed e⟩
+  exact ⟨b1', e1, h1, (input_fixed e).1, (input_fixed e).2, input_pend e⟩
 
 theorem opRel_output : OpRel Host.Mlx.FfiAne.output Host.Mlx.FfiAne.output := fun _ _ _ _ _ _ _ _ h e => by
-  obtain ⟨b1', e1, h1⟩ := h.output e; exact ⟨b1', e1, h1, output_fixed e⟩
+  obtain ⟨b1', e1, h1⟩ := h.output e; exact ⟨b1', e1, h1, (output_fixed e).1, (output_fixed e).2, output_pend e⟩
 
 theorem opRel_evalAsync : OpRel Host.Mlx.FfiAne.evalAsync Host.Mlx.FfiAne.evalAsync := fun _ _ _ _ _ _ _ _ h e => by
-  obtain ⟨b1', e1, h1⟩ := h.evalAsync e; exact ⟨b1', e1, h1, evalAsync_fixed e⟩
+  obtain ⟨b1', e1, h1⟩ := h.evalAsync e; exact ⟨b1', e1, h1, (evalAsync_fixed e).1, (evalAsync_fixed e).2, evalAsync_pend e⟩
 
 theorem opRel_wait : OpRel Host.Mlx.FfiAne.wait Host.Mlx.FfiAne.wait := fun _ _ _ _ _ _ _ _ h e => by
-  obtain ⟨b1', e1, h1⟩ := h.wait e; exact ⟨b1', e1, h1, wait_fixed e⟩
+  obtain ⟨b1', e1, h1⟩ := h.wait e; exact ⟨b1', e1, h1, (wait_fixed e).1, (wait_fixed e).2, wait_pend e⟩
 
 theorem opRel_free : OpRel Host.Mlx.FfiAne.free Host.Mlx.FfiAne.free := fun _ _ _ _ _ _ _ _ h e => by
-  obtain ⟨b1', e1, h1⟩ := h.free e; exact ⟨b1', e1, h1, free_fixed e⟩
+  obtain ⟨b1', e1, h1⟩ := h.free e; exact ⟨b1', e1, h1, (free_fixed e).1, (free_fixed e).2, free_pend e⟩
 
 /-- The bridge calls' arguments the map keeps: `mbane_input`'s index. -/
 def bridgeOpOk (P : LoadP) (name : Name) (args : List Arg) : Bool :=
@@ -231,11 +278,12 @@ theorem fullOpSim {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {S : SSrv}
     | none => exact MSim.pure ⟨Grow.refl hsrv, trivial⟩
     | some q =>
       obtain ⟨b1, r⟩ := q
-      obtain ⟨b1', e', h1, ha1, hret⟩ := hF M _ _ _ _ n b1 r hbA.rel e
+      obtain ⟨b1', e', h1, ha1, hret, hpe⟩ := hF M _ _ _ _ n b1 r hbA.rel e
+      have hq1 : QOrd M (mlxOf x).nnext (b1.unscheduled ++ b1.running) := by rw [hpe]; exact hbA.qord
       rw [e']
       simp only [Option.map_some, liftF_some]
       refine MSim.pure ⟨Grow.refl hsrv, ⟨?_, (hret M).symm, rfl⟩⟩
-      refine ⟨hr.load, .inr ⟨ha1.trans hact, ⟨h1, hbA.dense⟩⟩, ?_, ?_, hr.pend⟩
+      refine ⟨hr.load, .inr ⟨ha1.trans hact, ⟨h1, hbA.dense, hq1⟩⟩, ?_, ?_, hr.pend⟩
       · rw [show (fun e => liveCall e x.1.1.base.mlx name args) = some from
           funext fun e => liveCall_other e _ _ _ fun s _ hs _ => by rw [hsym] at hs; cases hs]
         rw [show (fun e => liveCall e y.1.1.base.mlx name (args.map M.arg)) = some from

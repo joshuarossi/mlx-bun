@@ -82,7 +82,7 @@ theorem MR.raise (hr : MR P NB M n x y) (hb : P.NL = P.N0) {k : Nat} (hk0 : P.N0
       show i < k
       omega
     nbl := by have := hr.nbl; show NB ≤ k; omega
-    norder := fun i hi hf j hj => hr.norder i hi ((full_raise hb k i).1 hf) j hj
+    norder := fun i hi hf j hj he => hr.norder i hi ((full_raise hb k i).1 hf) j hj he
     nodes := fun i nd hn => by
       obtain ⟨nd', h1, h2⟩ := hr.nodes i nd hn
       exact ⟨nd', h1, h2.1, h2.2.1, h2.2.2.1, fun hf => h2.2.2.2 ((full_raise hb k i).1 hf)⟩

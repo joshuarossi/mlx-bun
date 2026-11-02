@@ -140,8 +140,8 @@ theorem evalZ_grow_graph {Gx Gy : Nat → Option (RNode Int κ)} {n : Nat}
       · simp only [hj, ↓reduceDIte] at hy; cases hy
     let B : Nat → Option (RNode Int κ) := fun j => if j < n then Gx j else none
     have hB : ∀ j, j ≤ i → B j = Gx j := fun j hj => by simp only [B, show j < n by omega, ↓reduceIte]
-    have emb : Embeds (fun j => j) (fun h => h) B Gy := by
-      refine ⟨fun j r hr => ?_, fun _ _ _ h => h⟩
+    have emb : ∀ j r, B j = some r → Gy j = some (renameN (fun j => j) (fun h => h) r) := by
+      intro j r hr
       have hj : j < n := by
         by_contra hj
         simp [B, hj] at hr
@@ -169,7 +169,8 @@ theorem evalZ_grow_graph {Gx Gy : Nat → Option (RNode Int κ)} {n : Nat}
       | some leaves =>
         rw [hc] at hs
         dsimp only at hs
-        have hcy := cgLeaves_embed B Gy emb i leaves (hcgB.trans hc)
+        have hcy := (cgLeaves_gen (σ := fun j => j) (cl := fun h => h) B Gy emb i (fun _ => True) (fun _ _ h => h) (fun _ _ _ _ => trivial)
+          (fun _ _ _ _ _ _ _ => trivial) leaves (hcgB.trans hc)).1
         simp only [List.map_id'] at hcy
         rw [hcy]
         dsimp only
@@ -183,7 +184,8 @@ theorem evalZ_grow_graph {Gx Gy : Nat → Option (RNode Int κ)} {n : Nat}
           obtain ⟨cc, leaves⟩ := x
           rw [hk] at hs
           dsimp only at hs
-          have hky := closureLeaves_embed kind kind (fun _ => rfl) B Gy emb i (cc, leaves) (hclB.trans hk)
+          have hky := (closureLeaves_gen (σ := fun j => j) (cl := fun h => h) kind kind (fun _ => rfl) B Gy emb i (fun _ => True) (fun _ _ h => h)
+          (fun _ _ _ _ => trivial) (fun _ _ _ _ _ _ _ => trivial) (cc, leaves) (hclB.trans hk)).1
           simp only [List.map_id'] at hky
           obtain ⟨xs, hxs, hcv⟩ := Option.bind_eq_some_iff.mp hs
           have hnc : cgLeaves Gy i = none := by

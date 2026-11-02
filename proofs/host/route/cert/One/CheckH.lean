@@ -9,6 +9,8 @@ open Host.Ts.Sim.Compose.ColdGraph (fullExpected)
 
 /-! # The one-token prompt's sampled cut: the head and sampler's nodes at their carriers -/
 
+kernel_rfl downH : (List.range nativeH.nnext).all (downB (exactTplDom 15235 15235 [5554869888] nativeH) nativeH) = true
+
 simgraph_check_nodes checkH : tailOk 4010 GsH choice.cert, fullExpected.1 choosing Ecn
 
 kernel_rfl node_counter : nativeH.nnext = 17777

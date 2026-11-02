@@ -107,7 +107,7 @@ theorem Ld.mrw (P0 : LoadP) (NB : Nat) (hlo : 0 < P0.lo ∧ P0.lo ≤ 18151) (hE
   nid := fun _ _ => rfl
   nbl := hNB
   nall := fun _ hj => hj
-  norder := fun _ _ _ _ hj => hj
+  norder := fun _ _ _ _ hj _ => hj
   nodes := by
     intro i nd hg
     have := Ld.nOK hg

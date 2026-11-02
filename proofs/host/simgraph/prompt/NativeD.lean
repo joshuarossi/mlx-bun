@@ -109,17 +109,9 @@ theorem embeds_of_imageD {δ κ : Type} (cls : NumV → Option δ) (lit : Int �
     show (t.nodes.get (σ i)).bind _ = _
     rw [himg.nodes i nd hb hnd, Option.bind_some]
     exact h2
-  order := by
-    intro i j hi hj
-    have hb : D i = true := by
-      cases hd : D i
-      · simp [mapG, restrictTo, hd] at hi
-      · rfl
-    apply himg.order i j hb _ hj
-    simp only [mapG, restrictTo, hb, ↓reduceIte, symGraphD, ffiGraph, Option.isSome_map] at hi
-    cases hs : s.nodes.get i with
-    | none => rw [hs] at hi; cases hi
-    | some _ => rfl
+  order i r hr j hj := by
+    obtain ⟨hb, nd, hnd, hins⟩ := ins_of_restrict ev (symNumsD cls lit) Ks s D hr
+    exact himg.order i nd hb hnd j (hins ▸ hj)
 
 /-- **The template run carries every iteration in the box.** Template state `s`
 of a symbolic run with table `S`, read with `clsOfP S B`; iteration state `t`
