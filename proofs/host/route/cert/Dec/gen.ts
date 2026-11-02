@@ -453,6 +453,7 @@ end ${ns}
 `);
   await put("End", `import host.route.cert.Dec.${C}.Inputs
 import host.sim.template.a4dec4_${b.l}.EEnd
+import host.sim.compose.ChainFill
 ${opts}
 set_option autoImplicit false
 namespace ${ns}

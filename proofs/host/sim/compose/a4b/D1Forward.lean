@@ -62,6 +62,18 @@ noncomputable def g2_fin_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
   chk := (D1Split.g2_fin_first NB T tk (Mem 1) (hMem 1)).chk
   ok r hr i hi ho := CutStep.reached ((D1Split.g2_fin_first NB T tk (Mem 1) (hMem 1)).ok r hr i hi ho)
 
+kernel_rfl forwardCell : D1StageSplit.s22.heap.get 2590 = some (.cell (some (.obj 12504)))
+kernel_rfl forwardCell' : D1Call.s1.heap.get 2590 = some (.cell (some (.obj 12504)))
+
+/-- The emitted cell in the target names the emitted array's image. -/
+theorem emitted_cell {FR : Map → Nat → FF.S → FF.S → Prop} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
+    {s : St FF.S} {S : SSrv} {t : St FF.S} {C : CSrv} (hr : RelB FF FR W [] M ν K s S t C)
+    (hg : s.heap.get 2590 = some (.cell (some (.obj 12504)))) (hfr : K.fr 2590 = none) (hA : M.a 2590 = 2590) :
+    t.heap.get 2590 = some (.cell (some (.obj (M.a 12504)))) := by
+  have h := (SlotW.of_fr_none hfr).1 (hr.heap 2590 _ hg)
+  rw [hA] at h
+  exact h
+
 kernel_rfl forwardNext : (mlxOf D1StageSplit.s22.ffi).next = (mlxOf D1Call.s1.ffi).next
 kernel_rfl forwardNnext : (mlxOf D1StageSplit.s22.ffi).nnext = (mlxOf D1Call.s1.ffi).nnext
 
@@ -71,16 +83,38 @@ abbrev NatForward (x : SegInst FF) : Prop := NativeAt 0 0 D1Call.s1 x.t
 /-- The checked prefix and the split stages run from one start, so the prefix's witness has the
 same target and server: the property and the native counters move across when they read no more than those. -/
 theorem toForwardPrompt (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {Mem : Nat → SegInst FF → Prop}
-    (hWit : ∀ L x y, y.t = x.t → y.C = x.C → Mem L x → Mem L y) :
+    (hWit : ∀ L x y, y.t = x.t → y.C = x.C → y.M.a 12504 = x.M.a 12504 → Mem L x → Mem L y) :
     CutConv (forwardCut NB T tk π Mem)
       (withMem (Mem 1) (withMem NatForward (SetupD1PromptIdentity.forwardPromptCut NB T tk (π.map natV)))) := by
-  rintro x ⟨_, t0, C0, hi, hr⟩ hB
+  rintro x ⟨⟨_, _, hrx, hbx, _, hinx, _⟩, t0, C0, hi, hr⟩ hB
   obtain ⟨t', C', hd, y, hyt, hyc, hyR, hyB⟩ :=
     (D1Common.toForwardPrompt NB T tk π).convL (withMem_forget (Mem 1) _) t0 C0 hi
   rw [hr] at hd
   cases hd
   have hn : NativeAt 0 0 D1StageSplit.s22 x.t := hB.1.2.2
-  refine ⟨y, hyt, hyc, hyR, ⟨hyB, ?_⟩, hWit 1 x y hyt hyc hB.2⟩
+  have hemit : y.M.a 12504 = x.M.a 12504 := by
+    obtain ⟨_, _, hry, hby, _, _, hemy⟩ := hyR
+    have fx : x.K.fr 2590 = none := by
+      cases e : x.K.fr 2590 with
+      | none => rfl
+      | some p =>
+        have hm := (hbx.context.1.2.2 2590).mp (by rw [e]; exact Option.some_ne_none _)
+        exact absurd hm (by decide)
+    have fy : y.K.fr 2590 = none := by
+      cases e : y.K.fr 2590 with
+      | none => rfl
+      | some p =>
+        have hm := (hby.context.1.2.2 2590).mp (by rw [e]; exact Option.some_ne_none _)
+        exact absurd hm (by decide)
+    have cx := emitted_cell hrx forwardCell fx hinx.2
+    have cy := emitted_cell hry forwardCell' fy hemy
+    rw [hyt, cx] at cy
+    have h1 := Option.some.inj cy
+    injection h1 with h2
+    injection h2 with h3
+    injection h3 with h4
+    exact h4.symm
+  refine ⟨y, hyt, hyc, hyR, ⟨hyB, ?_⟩, hWit 1 x y hyt hyc hemit hB.2⟩
   change NativeAt 0 0 D1Call.s1 y.t
   rw [hyt]
   exact ⟨forwardNext ▸ hn.1, forwardNnext ▸ hn.2⟩

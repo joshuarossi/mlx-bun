@@ -41,9 +41,9 @@ local notation "Je" => entryEnv (Host.Load.Run.Prompt.P.at0 (π.map natV) (machR
 local notation "FrP" => framesG Host.Route.Cert.Dec.s0 (π.map natV)
 local notation "Rh" => handRho T π.length Tk
 local notation "Inp" => Host.Route.Cert.Dec.inputs
-local notation "Pd" => Host.Route.Cert.Dec.Pw
-local notation "S0" => Host.Route.Cert.Dec.s0
-local notation "Tb" => Host.Route.Cert.Dec.tab0
+local notation "Pd4" => Host.Route.Cert.Dec.Pw
+local notation "St4" => Host.Route.Cert.Dec.s0
+local notation "Tb4" => Host.Route.Cert.Dec.tab0
 local notation "Gx" => fun kind => machGxV P Kr NE net env π kind 15235 Inp
 
 /-- **Assemble the route of a prompt of at most 224 tokens.** -/
@@ -61,19 +61,19 @@ noncomputable def routeGenOfGpu
     (sB2 : ∀ h h' h'', HaltStopSrc (pB2 h h' h'').hs)
     (sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs)
     (fixB : List Nat) (hsub : ∀ a ∈ shortFixP, a ∈ fixB) (ΔJ ΔH ΔN : Nat)
-    (D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 15235) addrPrompt Pd wideG S0 Tb fixB FrP Rh T Tk π.length
+    (D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 15235) addrPrompt Pd4 wideG St4 Tb4 fixB FrP Rh T Tk π.length
       (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu ΔJ ΔH ΔN)
     (Dg : ∀ h3 b0, DecodeGraphR P Kr env π decVal b0 Je Inp (D h3 b0))
-    (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 15235) addrPrompt wideG Pd FrP S0 Tb fixB shortFixP (valL Rh T Tk π.length) Tk
+    (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 15235) addrPrompt wideG Pd4 FrP St4 Tb4 fixB shortFixP (valL Rh T Tk π.length) Tk
       (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu ΔJ ΔH ΔN ((D h3 b0).cs k))
     (hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ shortFixP)
     (hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ shortFixP)
     (hc2 : ∀ h3 b0, (Dg h3 b0).c2.cc ∈ shortFixP)
     (hJ : T * ΔJ + routeLoopBaseGpu.D < Sim.bound)
-    (hH : (mlxOf S0.ffi).next + T * ΔH + routeLoopBaseGpu.H + (Pd.E - (mlxOf S0.ffi).next) < 2 ^ 46)
-    (hN : (mlxOf S0.ffi).nnext + T * ΔN + routeLoopBaseGpu.N + (Pd.NE - (mlxOf S0.ffi).nnext) < 2 ^ 62)
+    (hH : (mlxOf (St4).ffi).next + T * ΔH + routeLoopBaseGpu.H + ((Pd4).E - (mlxOf (St4).ffi).next) < 2 ^ 46)
+    (hN : (mlxOf (St4).ffi).nnext + T * ΔN + routeLoopBaseGpu.N + ((Pd4).NE - (mlxOf (St4).ffi).nnext) < 2 ^ 62)
     (postHandoff : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind,
-      (decCutFirstFb 15235 addrPrompt (Gx kind) wideG Pd FrP S0 Tb shortFixP
+      (decCutFirstFb 15235 addrPrompt (Gx kind) wideG Pd4 FrP St4 Tb4 shortFixP
         (valL Rh T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu).Inv t Cs)
     (graphA : ∀ h h', (pA h h').Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 1 tF CF))
     (graphB2 : ∀ h h' h'', (pB2 h h' h'').Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 2 tF CF))
@@ -86,7 +86,7 @@ noncomputable def routeGenOfGpu
       pin := decVal
       NB := 15235
       Pw := setupP
-      Pd := Pd
+      Pd := Pd4
       A := addrPrompt
       W := wideG
       Wl := wideP
@@ -98,8 +98,8 @@ noncomputable def routeGenOfGpu
       hW := rfl
       hI := loadEntry
       Fr := FrP
-      s0 := S0
-      tab0 := Tb
+      s0 := St4
+      tab0 := Tb4
       Itpl := Inp
       B := routeLoopBaseGpu
       ΔJ := ΔJ

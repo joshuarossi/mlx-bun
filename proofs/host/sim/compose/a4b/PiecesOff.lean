@@ -45,6 +45,50 @@ def fwdOff (hA : Pinned L A) (hr : RowsOff L uses) : FwdPiece F uses obls A B wh
   chk _ _ := rfl
   ok r hm i hi _ := FwdCall.warm (convOff hA (hr r hm i hi)) (CutStep.refl _) (CutConv.refl _)
 
+/-- A piece from a cut no state is at. -/
+def NoState (A : Cls.Inst → ICut F) : Prop := ∀ i x, (A i).B x → False
+
+def glueNone (hA : NoState A) : GluePiece F uses A B where
+  m := []
+  n := 0
+  O := []
+  chk _ _ := rfl
+  ok _ _ i _ _ := by
+    rintro t C ⟨x, -, -, -, hb⟩
+    exact (hA i x hb).elim
+
+def stageNone (hA : NoState A) : StagePiece F uses obls A B where
+  m := []
+  n := 0
+  O := []
+  chk _ _ := rfl
+  ok _ _ i _ _ := StageCall.intro (fun x _ hb => (hA i x hb).elim) (CutStep.refl _) (CutConv.refl _)
+
+def fwdNone (hA : NoState A) : FwdPiece F uses obls A B where
+  m := []
+  np := 0
+  nb := 0
+  O := []
+  chk _ _ := rfl
+  ok _ _ i _ _ := FwdCall.warm (fun x _ hb => (hA i x hb).elim) (CutStep.refl _) (CutConv.refl _)
+
+/-- A piece over fewer rows. -/
+def GluePiece.restrict {us : List Row} (hs : ∀ r ∈ us, r ∈ uses) (p : GluePiece F uses A B) : GluePiece F us A B where
+  m := p.m
+  n := p.n
+  O := p.O
+  chk r h := p.chk r (hs r h)
+  ok r h := p.ok r (hs r h)
+
 end
+
+/-- A cut no state is at. -/
+def noneCut {F : Ffi} (s : St F.S) : ICut F where
+  s0 := s
+  tab0 := []
+  R := fun _ _ _ => False
+  B := fun _ => False
+
+theorem noState_none {F : Ffi} (s : St F.S) : NoState (fun _ => noneCut s) := fun _ _ h => h
 
 end Host.Ts.Sim.Compose.Gpu

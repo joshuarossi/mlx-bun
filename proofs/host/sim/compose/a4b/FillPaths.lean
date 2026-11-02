@@ -75,6 +75,7 @@ kernel_rfl ta_stop : ownW PRE_pl_ta.s454 (.obj ta_stats) chars!"finishReason" = 
 kernel_rfl ta_wide : wideG ta_stats = none
 
 kernel_rfl t1e_wide : wideG PRE_pl_t1_eos.statsAddr = none
+kernel_rfl gen_wide : wideG 2673245 = none
 
 end EndFacts
 
@@ -200,6 +201,14 @@ noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
     .undef ta_halt _ ta_emit ta_kind ta_cell ta_free (H.fixE 0 π.length)
     (fun _ _ => vals0 ta_vals)
 
+include hcap Q htk hL2 hL1 hTle in
+theorem sA (h : 2 ≤ T) (he : tk 1 = 248044) : HaltStopSrc (pA H hcap hL1 hL2 htk hTle Q h he).hs :=
+  ⟨rfl, 2673245, ta_stats, ta_gen, gen_wide, ta_own, ta_wide, ta_stop⟩
+
+include hcap Q htk hL2 hL1 in
+theorem sC1 (h : T = 1) (he : tk 1 = 248044) : HaltStopSrc (pC1 H hcap hL1 hL2 htk Q h he).hs :=
+  ⟨rfl, 2673245, PRE_pl_t1_eos.statsAddr, PRE_pl_t1_eos.generationCell, gen_wide, PRE_pl_t1_eos.stats_actual, t1e_wide, PRE_pl_t1_eos.stopFinish⟩
+
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, the second token the end. -/
 noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
@@ -216,6 +225,10 @@ noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
         (idxConv PRE_pl_t2_eos.s0_eq PRE_pl_t2_eos.s0_tab)))
     .undef t2e_halt _ t2e_emit t2e_kind t2e_cell t2e_free (H.fixE 1 π.length)
     (fun _ hν => vals1 t2e_vals t2e_tab1 hν)
+
+include hcap Q htk hL1 hL2 in
+theorem sB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) : HaltStopSrc (pB2 H hcap hL1 hL2 htk Q h hne he).hs :=
+  ⟨rfl, 2673245, t2e_stats, t2e_gen, gen_wide, t2e_own, t2e_wide, t2e_stop⟩
 
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, neither token the end. -/

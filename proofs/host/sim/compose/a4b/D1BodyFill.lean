@@ -54,7 +54,7 @@ theorem prompt_forward_returned (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) 
 
 /-- The final forward. `hfin`: its graph, from what the return knows. -/
 noncomputable def fwd_D1_cold_DFirst__g2_fin_first__g3f_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
-    (Mem Mem' : Nat → SegInst FF → Prop) (hWit : ∀ L x y, y.t = x.t → y.C = x.C → Mem L x → Mem L y)
+    (Mem Mem' : Nat → SegInst FF → Prop) (hWit : ∀ L x y, y.t = x.t → y.C = x.C → y.M.a 12504 = x.M.a 12504 → Mem L x → Mem L y)
     (hfin : ∀ x y : SegInst FF, (returnedPromptCut NB T tk π).R y (returnedPromptCut NB T tk π).s0
         ⟨(returnedPromptCut NB T tk π).tab0, []⟩ → (returnedPromptCut NB T tk π).B y → CSrv.Le x.C y.C →
       Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) → (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 →

@@ -91,7 +91,8 @@
   ]
  ],
  "bridges": [
-  "len"
+  "len",
+  "size"
  ],
  "accept": "jsjxs",
  "D0": 4096,
