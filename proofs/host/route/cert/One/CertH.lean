@@ -12,7 +12,7 @@ open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open Host.Mlx.SimGraph.Iter (Gr)
 open Host.Ts.Sim (LoadP Map SegInst)
 open Host.Ts.Sim.Full (FF mlxOf)
-open Host.Ts.Sim.Compose.ColdGraph (fullExpected choice.cert cert_length)
+open Host.Ts.Sim.Compose.ColdGraph (fullExpected)
 open Host.Route.PrefGraph
 
 /-! # The one-token prompt's sampled cut, from its certificate -/
@@ -46,7 +46,7 @@ theorem nuH_box : InBox boxH nuH := by
 theorem matchH (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St} (hmr : Host.Ts.Sim.G.MR Pm NB M m nativeH y)
     (hband : Pm.NL = Pm.N0) (hrope : M.big 5554869888 = 5554869888) (ρ : Nat → F64)
     (hρ : ∀ x l h, Box.get boxH x = some (l, h) → ρ x = F64.ofInt (nuH x))
-    (hnum : ∀ i e, nth? PRE_pl_common.S4.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ)) :
+    (hnum : ∀ i e, nth? PRE_pl_common.S1.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ)) :
     Matches (Gr tab y) (maskSeg .tokenIds 4010 Expected.graph.length Expected.graph) (choice.cert.map M.node) = true := by
   have hchecked := matchesD_tail GsH fullExpected.1 .tokenIds 4010 choice.cert checkH.all
   have h1 := matchesD_map (PDim.eval (fun _ => 0)) GsH _ choice.cert hchecked
@@ -54,23 +54,23 @@ theorem matchH (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St}
     nativeImage_of_GMR hmr _
       (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
       (fun _ _ hi hn => exactTplDom_exact hi hn)
-  have hcls : ClsSoundD (clsH PRE_pl_common.S4) (νsOf PRE_pl_common.S4 ρ) (PDim.eval (fun _ => 0)) := by
+  have hcls : ClsSoundD (clsH PRE_pl_common.S1) (νsOf PRE_pl_common.S1 ρ) (PDim.eval (fun _ => 0)) := by
     intro x d hx
     obtain ⟨d0, h0, rfl⟩ := Option.map_eq_some_iff.mp hx
-    exact clsOfX_sound PRE_pl_common.S4 boxH nuH ρ nuH_box hρ x d0 h0
-  have emb := embeds_of_imageD (κ := InKey) (clsH PRE_pl_common.S4) PDim.lit (PDim.eval (fun _ => 0)) (fun _ => rfl)
-    SourceKernels.sources nativeH y (exactTplDom 15235 15235 [5554869888] nativeH) (νsOf PRE_pl_common.S4 ρ) (CSrv.val ⟨tab⟩)
+    exact clsOfX_sound PRE_pl_common.S1 boxH nuH ρ nuH_box hρ x d0 h0
+  have emb := embeds_of_imageD (κ := InKey) (clsH PRE_pl_common.S1) PDim.lit (PDim.eval (fun _ => 0)) (fun _ => rfl)
+    SourceKernels.sources nativeH y (exactTplDom 15235 15235 [5554869888] nativeH) (νsOf PRE_pl_common.S1 ρ) (CSrv.val ⟨tab⟩)
     M.nv M.big M.arg M.handle M.node (nv_lit M) (fun _ => rfl)
-    (numbers_agree PRE_pl_common.S4 ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum) hcls
+    (numbers_agree PRE_pl_common.S1 ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum) hcls
     (fun a => okArg [5554869888] a = true)
     (arg_fixed M [5554869888] (fun i hi => by obtain rfl := List.mem_singleton.mp hi; exact hrope))
     (fun _ _ hi hn => exactTplDom_args hi hn) (kernels_of_GMR hmr _) himg
   have h2 := matches_embed (σ := M.node) (cl := M.handle) _ _ emb _ choice.cert
-    (by rw [List.length_map, maskSeg_length]; have := cert_length; simp [fullExpected] at this ⊢; omega) h1
+    (by rw [List.length_map, maskSeg_length]; have := one_cert_length; simp [fullExpected] at this ⊢; omega) h1
   have hlen : fullExpected.1.length = Expected.graph.length := by
-    have := congrArg List.length (Host.Ts.Sim.Compose.ColdGraph.One.full_expected_eval (fun _ => 0))
+    have := congrArg List.length (full_expected_eval (fun _ => 0))
     rwa [List.length_map] at this
-  rw [maskSeg_map, Host.Ts.Sim.Compose.ColdGraph.One.full_expected_eval, hlen] at h2
+  rw [maskSeg_map, full_expected_eval, hlen] at h2
   exact h2
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
@@ -82,14 +82,14 @@ theorem hsmp (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (typ
     (Cr : Nat → List (Option Nat × Option Nat)) (hCr : Cr 1 = oneCarriers) (Kept : Nat → List (Nat × Nat))
     (hKept : Kept 1 = oneKept) (Kn : Nat → Nat) (hKn : Kn 1 = 4010)
     (toks : Nat → Nat → Nat) (htoks : toks 1 0 = 17776) {NB T cap : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB) {y : SegInst FF}
-    (hy : (Host.Ts.Sim.Compose.Post.indexedCut NB T tk cap 15235 [a] PRE_pl_common.s4 PRE_pl_common.S4).R y
-      PRE_pl_common.s4 ⟨PRE_pl_common.S4.tab, []⟩)
+    (hy : (Host.Ts.Sim.Compose.Post.indexedCut0 NB T tk cap 15235 [a] PRE_pl_common.s1 PRE_pl_common.S1).R y
+      PRE_pl_common.s1 ⟨PRE_pl_common.S1.tab, []⟩)
     (L : Nat) (hm : memFin P KR NE net env [a] Kept Kn L y) : memPost P KR NE net env [a] 0 toks Cr L y := by
   obtain ⟨γ, hr, hb⟩ := hy
   have hγ : γ = [a] := by rw [hb.lastRows]; rfl
   subst hγ
   obtain ⟨Pm, hP, r0⟩ := hr.ffi.1
-  have hmr : Host.Ts.Sim.G.MR Pm NB y.M PRE_pl_common.S4.tab.length nativeH (mlxOf y.t.ffi) := r0.load.mlx
+  have hmr : Host.Ts.Sim.G.MR Pm NB y.M PRE_pl_common.S1.tab.length nativeH (mlxOf y.t.ffi) := r0.load.mlx
   have hband : Pm.NL = Pm.N0 := by rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> rfl
   have hE : (Pm.E : Int) ≤ 5554869888 := by
     rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> exact (by decide : ((131072 : Nat) : Int) ≤ 5554869888)

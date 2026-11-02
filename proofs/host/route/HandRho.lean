@@ -39,12 +39,12 @@ theorem decVal_le {j k : Nat} (h : decVal j = some k) : k ≤ 1536 := by
     obtain rfl := Option.some.inj h
     omega
 
-theorem handVal_le {L v k : Nat} (h : handVal L v = some k) : k ≤ max 8 L := by
+theorem handVal_le {L v k : Nat} (h : handVal L v = some k) : k ≤ 8 + L := by
   unfold handVal at h
   cases hL : Nat.ble L 2 <;> rw [hL] at h <;> dsimp only [cond] at h <;> split at h <;>
     first
-      | cases h
       | (obtain rfl := Option.some.inj h; omega)
+      | cases h
 
 /-- The valuation's values are small. -/
 theorem handRho_small {T L : Nat} {tk : Nat → Nat} (hL : L ≤ 224) (hT : T ≤ 2 ^ 20) (hv : ∀ j, tk j ≤ 2 ^ 20) :

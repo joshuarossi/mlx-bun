@@ -7,9 +7,8 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-abbrev PRE_pl_tail.n : Nat := 3412
+abbrev PRE_pl_tail.n : Nat := 285
 kernel_rfl PRE_pl_tail.tab_len : PRE_pl_tail.S0.tab.length = PRE_pl_tail.n
-kernel_rfl PRE_pl_tail.frames_eq : PRE_pl_tail.frames = [2665]
 noncomputable def PRE_pl_tail.suppAt (a : Nat) : Bool :=
   match PRE_pl_tail.s0.heap.get a with
   | some h => bHobj (presentB PRE_pl_tail.s0) PRE_pl_tail.n h
@@ -17,16 +16,16 @@ noncomputable def PRE_pl_tail.suppAt (a : Nat) : Bool :=
 noncomputable def PRE_pl_tail.boundAt (a : Nat) : Bool := Nat.blt a PRE_pl_tail.s0.next
 
 tpl_all_blocks PRE_pl_tail.HS from PLTEV : PRE_pl_tail.suppAt
-kernel_rfl PRE_pl_tail.suppFramed : PRE_pl_tail.frames.all PRE_pl_tail.suppAt = true
+kernel_rfl PRE_pl_tail.suppFramed : PLTEV.frames.all PRE_pl_tail.suppAt = true
 tpl_all_blocks PRE_pl_tail.BD from PLTEV : PRE_pl_tail.boundAt
-kernel_rfl PRE_pl_tail.boundFramed : PRE_pl_tail.frames.all PRE_pl_tail.boundAt = true
+kernel_rfl PRE_pl_tail.boundFramed : PLTEV.frames.all PRE_pl_tail.boundAt = true
 kernel_rfl PRE_pl_tail.rootsSupp_check : checkRootsSupp PRE_pl_tail.s0 PRE_pl_tail.n = true
 
-theorem PRE_pl_tail.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PLTEV.gks, ∀ a ∈ q.2, p a = true) (hf : PRE_pl_tail.frames.all p = true) :
+theorem PRE_pl_tail.allPresent {p : Nat → Bool} (hb : ∀ q ∈ PLTEV.gks, ∀ a ∈ q.2, p a = true) (hf : PLTEV.frames.all p = true) :
     ∀ a, Present PRE_pl_tail.s0 a → p a = true := by
   intro a ha
   obtain ⟨h, hg⟩ := Present.get ha
-  by_cases hm : a ∈ PRE_pl_tail.frames
+  by_cases hm : a ∈ PLTEV.frames
   · exact List.all_eq_true.mp hf a hm
   · obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h hg hm
     exact hb q hq a haq

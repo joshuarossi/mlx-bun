@@ -1,7 +1,6 @@
 import host.route.cert.Seg
 import host.simgraph.prompt.ChooseRoute
-import host.sim.compose.a4b.GraphColdCert
-import host.sim.template.a4pre_d1_body.Endpoint
+import host.route.cert.One.Choice
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -20,9 +19,5 @@ noncomputable def nativeF : Ffi.St := mlxOf D1Body.s155.ffi
 noncomputable def GsF : Nat → Option (RNode PDim InKey) :=
   restrictTo (exactTplDom 15235 15235 [5554869888] nativeF)
     (ffiGraph (Host.Ts.Sim.Compose.ColdGraph.coldNums D1Body.S155) SourceKernels.sources nativeF)
-
-/-- The expected graph, built natively. -/
-def Ecn : List (RNode PDim InKey) :=
-  (stepGraph Expected.stages Expected.head 0).1.map (Host.Mlx.SimGraph.mapN PDim.lit)
 
 end Host.Route.Cert.One

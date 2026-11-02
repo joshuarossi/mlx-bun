@@ -4,6 +4,7 @@ import host.sim.compose.CompactDrop
 import host.sim.compose.RestartW
 import host.sim.template.FullShiftGen
 import host.sim.template.Sigma
+import host.sim.template.PostOk
 import host.sim.CasesL
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -201,10 +202,11 @@ section
 variable {s0 s1 : St FF.S} {tab0 tab1 : List SymE} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
   {P0 : LoadP} {nJ : Nat} {drop : List Nat} {W0 : Nat → Option WFrame}
 
-theorem linkRoomSame {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
+/-- The target's room crosses to a template at or above the tail's counters. -/
+theorem linkRoomLe {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {M : Map} {ν : Nat → F64} {K : Ctx}
     {t : St FF.S} {S : SSrv} {C : CSrv}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) W [] M ν K s1 S t C)
-    (sameH : (mlxOf s1.ffi).next = (mlxOf s0.ffi).next) (sameN : (mlxOf s1.ffi).nnext = (mlxOf s0.ffi).nnext) :
+    (hH : (mlxOf s1.ffi).next ≤ (mlxOf s0.ffi).next) (hN : (mlxOf s1.ffi).nnext ≤ (mlxOf s0.ffi).nnext) :
     NRoom setupP (Host.Load.Layers.toLoad s0.ffi) (Host.Load.Layers.toLoad t.ffi) := by
   obtain ⟨P', hP, hf⟩ := hr.ffi.1
   obtain ⟨_, hE, hNE, _⟩ := Raised.restart (.inl rfl) hP
@@ -212,13 +214,13 @@ theorem linkRoomSame {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame}
   · have h := hf.load.mlx.hroom.2
     rw [hE] at h
     change (mlxOf t.ffi).next + (setupP.E - (mlxOf s1.ffi).next) < 2 ^ 46 at h
-    rw [sameH] at h
-    exact h
+    change (mlxOf t.ffi).next + (setupP.E - (mlxOf s0.ffi).next) < 2 ^ 46
+    omega
   · have h := hf.load.mlx.nroom.2.2
     rw [hNE] at h
     change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s1.ffi).nnext) < 2 ^ 62 at h
-    rw [sameN] at h
-    exact h
+    change (mlxOf t.ffi).nnext + (setupP.NE - (mlxOf s0.ffi).nnext) < 2 ^ 62
+    omega
 
 /-- A final's own offsets give the room when its counters are past the entry's. -/
 theorem linkRoomAt {H N : Nat} {t : St FF.S} (hnat : NativeAt H N s1 t) (hH : H ≤ 2 ^ 40) (hN : N ≤ 2 ^ 40)
@@ -336,6 +338,44 @@ theorem frames_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) (M : M
     simp only [frW, hk, cond_false]
     cases (W0 a).isSome <;> rfl
 
+theorem lookupW_isSome {L : List (Nat × WFrame)} {a : Nat} : (Disp.lookupW a L).isSome = true ↔ a ∈ L.map Prod.fst := by
+  constructor
+  · intro h
+    obtain ⟨w, hw⟩ := Option.isSome_iff_exists.mp h
+    exact List.mem_map.mpr ⟨(a, w), lookupW_mem hw, rfl⟩
+  · intro h
+    cases e : Disp.lookupW a L with
+    | none => exact absurd e (lookupW_ne h)
+    | some w => rfl
+
+/-- The frames after the link are the prompt's and the list's. -/
+theorem framed_after (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) (M : Map) (K : Ctx) {L : List (Nat × WFrame)}
+    (hW : ∀ a, W0 a = Disp.lookupW a L) {xs : List Val} (hP : K.fr 2665 = some ([], xs)) (a : Nat) :
+    frW M K keepP W0 s1 a ≠ none ↔ a ∈ 2665 :: L.map Prod.fst := by
+  rw [frames_after F M K a, List.mem_cons]
+  by_cases ha : a = 2665
+  · subst ha
+    simp [hP]
+  · rw [if_neg ha, or_iff_right ha, hW a, ← lookupW_isSome]
+    cases (Disp.lookupW a L).isSome <;> simp
+
+/-- A frame new at the link: the tail doesn't frame it. -/
+theorem newFrames {K : Ctx} {fr : List Nat} {L : List (Nat × WFrame)} {W W0 : Nat → Option WFrame}
+    (hW : ∀ a, W0 a = Disp.lookupW a L) (hfr : ∀ a, K.fr a ≠ none ↔ a ∈ fr)
+    (hd : (L.map Prod.fst).all (fun a => !fr.contains a) = true) :
+    ∀ a w, W0 a = some w → K.fr a = none ∨ W a = some w := by
+  intro a w hw
+  refine .inl ?_
+  cases e : K.fr a with
+  | none => rfl
+  | some p =>
+    exfalso
+    have h1 := (hfr a).mp (by rw [e]; exact Option.some_ne_none _)
+    have h2 : a ∈ L.map Prod.fst := List.mem_map.mpr ⟨(a, w), lookupW_mem ((hW a).symm.trans hw), rfl⟩
+    have h3 := List.all_eq_true.mp hd a h2
+    rw [List.contains_iff_mem.mpr h1] at h3
+    cases h3
+
 /-- **The relation at the template.** -/
 theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {NB T : Nat} {tk : Nat → Nat}
     {W : Nat → Option WFrame} {π : List Nat} {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {kw : List Nat}
@@ -376,6 +416,7 @@ theorem pfRel (F : PfFacts s0 s1 tab0 tab1 D inv θ P0 nJ drop W0) {NB T : Nat} 
 
 end
 
+open Host.Load.Run.Tpl in
 /-- What the pre-final cut holds: the prompt, the reserved values, and the variables its table reads at
 the quantities of the tail just finished. -/
 structure PfBook (T : Nat) (tk : Nat → Nat) (cap : Nat) (π : List Nat) (x : SegInst FF) : Prop where
@@ -385,16 +426,17 @@ structure PfBook (T : Nat) (tk : Nat → Nat) (cap : Nat) (π : List Nat) (x : S
   rowValue : x.ν 10 = F64.ofNat (π.length - 1)
   offsetValue : x.ν 11 = F64.ofNat (π.length - 1)
   capValue : x.ν 16 = F64.ofNat (capL (π.length - 1))
-  context : Disp.KpJ setupJ cap x.K
+  context : Disp.KpJ PostOk.J0 cap x.K
   prompt : x.K.fr 2665 = some ([], π.map natV)
   inputs : setupInputs T tk x
 
+open Host.Load.Run.Tpl in
 /-- **The pre-final cut**: a prompt of length `L` at the template `s`. -/
 noncomputable def cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (s : St FF.S) (S : SSrv) : ICut FF where
   s0 := s
   tab0 := S.tab
   R := fun x s S =>
-    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP [] x.M x.ν x.K s S x.t x.C ∧
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf [] x.M x.ν x.K s S x.t x.C ∧
     PfBook T tk cap π x
   B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt H N s x.t
 

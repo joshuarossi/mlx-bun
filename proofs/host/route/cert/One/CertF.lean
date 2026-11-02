@@ -13,7 +13,7 @@ open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open Host.Mlx.SimGraph.Iter (Gr)
 open Host.Ts.Sim (LoadP Map SegInst)
 open Host.Ts.Sim.Full (FF mlxOf)
-open Host.Ts.Sim.Compose.ColdGraph (fullExpected choice.cert cert_length)
+open Host.Ts.Sim.Compose.ColdGraph (fullExpected)
 open Host.Route.PrefGraph
 
 /-! # The one-token prompt's final forward, from its certificate -/
@@ -54,8 +54,8 @@ theorem matchF (tab : List F64) {Pm : LoadP} {NB m : Nat} {M : Map} {y : Ffi.St}
       rfl
     · cases h0) hz
   have h2 := matches_embed (σ := M.node) (cl := M.handle) _ _ emb' _ choice.cert
-    (by rw [List.length_map, List.length_take]; have := cert_length; omega) h1
-  rw [List.map_take, Host.Ts.Sim.Compose.ColdGraph.One.full_expected_eval] at h2
+    (by rw [List.length_map, List.length_take]; have := one_cert_length; omega) h1
+  rw [List.map_take, full_expected_eval] at h2
   exact h2
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)

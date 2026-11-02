@@ -1,6 +1,6 @@
-import host.load.boot.World
 import host.sim.compose.a4b.PLTNa
 import host.sim.template.a4pre_pl_common.H0
+import host.load.boot.World
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route
@@ -14,8 +14,8 @@ theorem PLT.inactive : (bridgeOf PRE_pl_tail.s0.ffi).active = false := Host.Load
 kernel_rfl PLT.lo : Nat.ble 18151 (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).next = true
 kernel_rfl PLT.hi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).next setupP.E = true
 kernel_rfl PLT.nhi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).nnext setupP.NE = true
-kernel_rfl PLT.hi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s4.ffi).next setupP.E = true
-kernel_rfl PLT.nhi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s4.ffi).nnext setupP.NE = true
+kernel_rfl PLT.hi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s1.ffi).next setupP.E = true
+kernel_rfl PLT.nhi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s1.ffi).nnext setupP.NE = true
 kernel_rfl PLT.jsKeys : (PTrie.keys PLTP.R.data.heap).all (Nat.ble 2827718) = true
 kernel_rfl PLT.jsLe : Nat.ble 2827718 PLTP.R.data.n0 = true
 

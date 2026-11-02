@@ -11,7 +11,7 @@ set_option maxHeartbeats 0
 kernel_rfl PRE_pl_tail.hnext : (Host.Load.Layers.toLoad PRE_pl_tail.s0.ffi).mlx.next = 22018
 noncomputable def PRE_pl_tail.freshAt (a : Nat) : Bool := noBigAtB 22018 131072 PRE_pl_tail.s0 a
 tpl_all_blocks PRE_pl_tail.FB from PLTEV : PRE_pl_tail.freshAt
-kernel_rfl PRE_pl_tail.freshFramed : PRE_pl_tail.frames.all PRE_pl_tail.freshAt = true
+kernel_rfl PRE_pl_tail.freshFramed : PLTEV.frames.all PRE_pl_tail.freshAt = true
 kernel_rfl PRE_pl_tail.freshRoots : noBigRootsB 22018 131072 PRE_pl_tail.s0.trace PRE_pl_tail.s0 = true
 kernel_rfl PRE_pl_tail.nativeFresh : bigsOutB 22018 131072 (Host.Load.Layers.toLoad PRE_pl_tail.s0.ffi).mlx = true
 theorem PRE_pl_tail.noBigFresh : NoBigSt (fun i => (22018 : Int) ≤ i ∧ i < 131072) PRE_pl_tail.s0.trace PRE_pl_tail.s0 :=
@@ -19,7 +19,7 @@ theorem PRE_pl_tail.noBigFresh : NoBigSt (fun i => (22018 : Int) ≤ i ∧ i < 1
 
 noncomputable def PRE_pl_tail.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2827718) PRE_pl_tail.s0 a
 tpl_all_blocks PRE_pl_tail.JH from PLTEV : PRE_pl_tail.jsAt
-kernel_rfl PRE_pl_tail.jsFramed : PRE_pl_tail.frames.all PRE_pl_tail.jsAt = true
+kernel_rfl PRE_pl_tail.jsFramed : PLTEV.frames.all PRE_pl_tail.jsAt = true
 kernel_rfl PRE_pl_tail.jsRoots : noBigRootsP (jsAboveB 2827718) PRE_pl_tail.s0.trace PRE_pl_tail.s0 = true
 kernel_rfl PRE_pl_tail.jsNative : bigsOutB jsLoN jsHiN (Host.Load.Layers.toLoad PRE_pl_tail.s0.ffi).mlx = true
 theorem PRE_pl_tail.jsHeap : JsHeapAbove 2827718 PRE_pl_tail.s0 := by

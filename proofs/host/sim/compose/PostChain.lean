@@ -80,16 +80,32 @@ theorem hookMemV {A B : ICut FF} {n : Nat} {Mem Mem' : SegInst FF → Prop}
   exact ⟨y.t, y.C, hrun, y, rfl, rfl, hR', ⟨hB', hook x y hR hR' hB' htr hm⟩⟩
 
 /-- What a book says of the valuation. -/
-structure BookV (T : Nat) (tk : Nat → Nat) (L : Nat) (ν : Nat → F64) : Prop where
+structure BookV (P : Stage) (T : Nat) (tk : Nat → Nat) (L : Nat) (ν : Nat → F64) : Prop where
   promptValue : ν 9 = F64.ofNat L
   rowValue : ν 10 = F64.ofNat 1
   offsetValue : ν 11 = F64.ofNat L
   capValue : ν 16 = F64.ofNat (capL L)
   reserved : ∀ j, j < 9 → ν j = machVal T tk j
+  dims : P.dims ν
 
 theorem Book.v {P : Stage} {T cap nI : Nat} {tk : Nat → Nat} {π γ : List Nat} {x : SegInst FF} (h : Book P T tk cap nI π γ x) :
-    BookV T tk π.length x.ν :=
-  ⟨h.promptValue, h.rowValue, h.offsetValue, h.capValue, h.reserved⟩
+    BookV P T tk π.length x.ν :=
+  ⟨h.promptValue, h.rowValue, h.offsetValue, h.capValue, h.reserved, h.dims⟩
+
+/-- The forwards' pinned variables, from the tail's book. -/
+theorem pinPost {ν : Nat → F64} (h1 : ν 10 = F64.ofNat 1) (hd : tail.dims ν) :
+    ∀ v k, FlatFwd.Pin.post v = some k → ν v = F64.ofNat k := by
+  intro v k hv
+  unfold FlatFwd.Pin.post at hv
+  cases e : Nat.beq v 10 with
+  | true =>
+    obtain rfl := Nat.eq_of_beq_eq_true e
+    simp only [Nat.beq_refl, Bool.cond_true, Option.some.injEq] at hv
+    subst hv
+    exact h1
+  | false =>
+    simp only [e, Bool.cond_false] at hv
+    exact hd v k hv
 
 theorem good_drop {ν : Nat → F64} {o : List Ans} (d : Nat) (h : Good ν o) : Good ν (o.drop d) :=
   fun q hq => h q (List.mem_of_mem_drop hq)
@@ -187,17 +203,7 @@ noncomputable def modeR (NB T : Nat) (tk : Nat → Nat) (cap : Nat) (hcap : cap 
   lift _ _ h := Disp.okJSJLimit_signed_of_allowance hcap h
   sim y0 := simulationRQ NB T tk jsSignedLimit cap (Nat.le_refl _) y0
   ctx _ h := h
-  vp h := ⟨h.valuation, fun v k hv => by
-    unfold FlatFwd.Pin.post at hv
-    cases e : Nat.beq v 10 with
-    | true =>
-      obtain rfl := Nat.eq_of_beq_eq_true e
-      simp only [Nat.beq_refl, Bool.cond_true, Option.some.injEq] at hv
-      subst hv
-      exact h.rowValue
-    | false =>
-      simp only [e, Bool.cond_false] at hv
-      exact h.dims v k hv⟩
+  vp h := ⟨h.valuation, pinPost h.rowValue h.dims⟩
 
 /-- The rejection of a Neural Engine state survives any stretch that keeps the bridge. -/
 theorem fresh_of {P : LoadP} {NB : Nat} {W W' : Nat → Option WFrame} {M M' : Map} {ν ν' : Nat → F64} {K K' : Ctx} {sa sb : St FF.S} {Sa Sb : SSrv}
@@ -221,7 +227,7 @@ variable {P : Stage} {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat}
 /-- The target's image of a checked stretch: a run, the map's extension, the relation at the end, the growth. -/
 theorem stretch (m : Mode P NB T tk cap) {n : Nat} {γ : List Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {x : SegInst FF}
     (ha : m.okS sa Sa = true) (hrun : runOk FF m.okS n sa Sa = some (sb, Sb)) (htop : noRetBlock sb = true)
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hr : RelB FF (Disp.FRJ (FullRXD (params T tk) NB)) P.W [] x.M x.ν x.K sa ⟨Sa.tab, []⟩ x.t x.C)
     (hb : Book P T tk cap nI π γ x) :
     ∃ M' t' C', runC FF n x.t x.C = some (t', C') ∧ Ext x.M M' Sa.tab.length ∧
@@ -238,7 +244,7 @@ theorem stretch (m : Mode P NB T tk cap) {n : Nat} {γ : List Nat} {sa sb : St F
 theorem stretchCall (m : Mode P NB T tk cap) {n : Nat} {γ : List Nat} {sa sb sc : St FF.S} {Sa Sb Sc : SSrv} {x : SegInst FF}
     (ha : m.okS sa Sa = true) (hrun : runOk FF m.okS n sa Sa = some (sb, Sb)) (hb' : m.okS sb Sb = true)
     (hh : isHalt sb.ctl = false) (hs : interpS (step FF sb).run Sb = some (sc, Sc)) (htop : noRetBlock sc = true)
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hr : RelB FF (Disp.FRJ (FullRXD (params T tk) NB)) P.W [] x.M x.ν x.K sa ⟨Sa.tab, []⟩ x.t x.C)
     (hb : Book P T tk cap nI π γ x) :
     ∃ M' t' C', runC FF (n + 1) x.t x.C = some (t', C') ∧ Ext x.M M' Sa.tab.length ∧
@@ -255,7 +261,7 @@ theorem stretchCall (m : Mode P NB T tk cap) {n : Nat} {γ : List Nat} {sa sb sc
 /-- A stretch that pops nothing. -/
 theorem glueM (m : Mode P NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Tr : SegInst FF → Prop}
     (ha : ok sa Sa = true) (hrun : runOk FF ok n sa Sa = some (sb, Sb)) (htop : noRetBlock sb = true)
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sb = true) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) (hm : m.okS = ok) :
     CutStep (withMem Tr (indexedCutAt P NB T tk cap nI π sa Sa)) (withMem Tr (indexedCutAt P NB T tk cap nI π sb Sb)) n := by
@@ -271,7 +277,7 @@ theorem glueM (m : Mode P NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat
 theorem callM (m : Mode P NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {sa sb sc : St FF.S} {Sa Sb Sc : SSrv} {Tr : SegInst FF → Prop}
     (ha : ok sa Sa = true) (hrun : runOk FF ok n sa Sa = some (sb, Sb)) (hb' : ok sb Sb = true)
     (hh : isHalt sb.ctl = false) (hs : interpS (step FF sb).run Sb = some (sc, Sc)) (htop : noRetBlock sc = true)
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sc.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sc = true) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) (hm : m.okS = ok) :
     CutStep (withMem Tr (indexedCutAt P NB T tk cap nI π sa Sa)) (withMem Tr (indexedCutAt P NB T tk cap nI π sc Sc)) (n + 1) := by
@@ -286,7 +292,7 @@ theorem callM (m : Mode P NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat
 /-- A stretch that may pop a token: the bookkeeping changes by `hook`, from what the stretch's end knows. -/
 theorem popM (m : Mode P NB T tk cap) {ok : St FF.S → SSrv → Bool} {n : Nat} {sa sb : St FF.S} {Sa Sb : SSrv} {Mem Mem' : SegInst FF → Prop}
     (ha : ok sa Sa = true) (hrun : runOk FF ok n sa Sa = some (sb, Sb)) (htop : noRetBlock sb = true)
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi) (hcnt : countersPopB sa sb = true)
     (hook : ∀ x y : SegInst FF, (indexedCutAt P NB T tk cap nI π sa Sa).R x sa ⟨Sa.tab, []⟩ →
       (indexedCutAt P NB T tk cap nI π sb Sb).R y sb ⟨Sb.tab, []⟩ → CSrv.Le x.C y.C → y.M.node = x.M.node → y.M.a 12504 = x.M.a 12504 →
@@ -306,7 +312,7 @@ theorem lenM {sa sb : St FF.S} {Sa Sb : SSrv} {o : Obj} {Tr : SegInst FF → Pro
     (hc : sa.ctl = .ret (.obj 2665)) (hst : sa.stack = .e (.member kLength false) :: sa.stack.tail)
     (ho : sa.obj? 2665 = some o) (hk : o.kind = .array ([] ++ ([] : List Val)))
     (hp : Bridge.lenPatch sa Sa (.var 9) = (sb, Sb))
-    (hgood : ∀ ν, BookV T tk π.length ν → Good ν Sa.oracle)
+    (hgood : ∀ ν, BookV P T tk π.length ν → Good ν Sa.oracle)
     (hi : (bridgeOf sa.ffi).active = false) (hbr : bridgeOf sb.ffi = bridgeOf sa.ffi)
     (hcnt : countersOkB sa sb = true) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
     CutStep (withMem Tr (indexedCutAt P NB T tk cap nI π sa Sa)) (withMem Tr (indexedCutAt P NB T tk cap nI π sb Sb)) 1 := by

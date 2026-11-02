@@ -13,12 +13,12 @@ set_option maxHeartbeats 0
 of both states. Everything about it is a later kernel check. -/
 bridge_empty PLTP.s0 from PRE_pl_tail.s0
 server_data PLTP.S0 := PRE_pl_tail.S0
-bridge_empty PLTP.s4 from PRE_pl_common.s4
-server_data PLTP.S4 := PRE_pl_common.S4
+bridge_empty PLTP.s1 from PRE_pl_common.s1
+server_data PLTP.S1 := PRE_pl_common.S1
 def PLTP.frames : List Nat := PRE_pl_tail.frames
 def PLTP.ghosts : List Nat := PRE_pl_tail.ghosts
 def PLTP.maps : List Nat := PRE_pl_tail.maps
 set_option interpreter.prefer_native true in
-tpl_restart_pad PLTP.R : PLTP, PLTP 4 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)
+tpl_restart_pad PLTP.R : PLTP, PLTP 1 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)
 
 end Host.Load.Run.Tpl

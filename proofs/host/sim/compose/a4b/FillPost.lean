@@ -1,10 +1,10 @@
+import host.sim.compose.a4b.pl.Selector.All
+import host.sim.compose.a4b.pl.Call.All
 import host.sim.compose.a4b.pl.Common.All
 import host.sim.compose.a4b.pl.R1.All
 import host.sim.compose.a4b.pl.R2.All
 import host.sim.compose.RoutePieces
 import host.sim.compose.RouteBundleR
-import host.sim.template.a4pre_pl_call.Facts
-import host.sim.template.a4pre_pl_selector.Good
 import host.sim.template.a4pre_pl_t2p.K0
 import host.sim.template.a4pre_pl_t2p.Accept
 import host.sim.template.a4pre_pl_t2p.Good
@@ -36,9 +36,9 @@ def HookV (c : ICut FF) (M M' : SegInst FF → Prop) : Prop :=
   ∀ x y : SegInst FF, c.R y c.s0 ⟨c.tab0, []⟩ → NTrackV x y → M x → M' y
 
 /-- A template's start equal to another's end. -/
-theorem idxConv {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {M : SegInst FF → Prop} {s s' : St FF.S} {S S' : SSrv}
+theorem idxConv {Q : Stage} {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {M : SegInst FF → Prop} {s s' : St FF.S} {S S' : SSrv}
     (hs : s' = s) (ht : S'.tab = S.tab) :
-    CutConv (withMem M (indexedCut NB T tk cap nI π s S)) (withMem M (indexedCut NB T tk cap nI π s' S')) := by
+    CutConv (withMem M (indexedCutAt Q NB T tk cap nI π s S)) (withMem M (indexedCutAt Q NB T tk cap nI π s' S')) := by
   subst hs
   rintro x ⟨γ, hrel, hb⟩ hB
   refine ⟨x, rfl, rfl, ⟨γ, ?_, hb⟩, hB⟩
@@ -67,10 +67,9 @@ def rsEmpty : RStagePiece FF Adm uses obls A A where
 
 end Empty
 
-kernel_rfl selTop : noRetBlock PRE_pl_call.s1 = true
-kernel_rfl selCnt : countersOkB PRE_pl_selector.s0 PRE_pl_call.s1 = true
 kernel_rfl t2pTop : noRetBlock PRE_pl_t2p.s1 = true
 kernel_rfl t2pBr : bridgeOf PRE_pl_t2p.s1.ffi = bridgeOf PRE_pl_t2p.s0.ffi
+kernel_rfl t2pCnt : countersPopB PRE_pl_t2p.s0 PRE_pl_t2p.s1 = true
 
 /-- The rows of POST's main path. -/
 def postRows : List Row := [route_post_other.r0, route_post_other.r1]
@@ -97,7 +96,7 @@ structure ClassPre where
   SC : SSrv
   n : Nat
   run : ∀ (Tr : SegInst FF → Prop), (∀ x y, NTrackV x y → Tr x → Tr y) →
-    CutStep (withMem Tr (indexedCut NB T tk cap nI π sH SH)) (withMem Tr (indexedCut NB T tk cap nI π sC SC)) n
+    CutStep (withMem Tr (indexedCut0 NB T tk cap nI π sH SH)) (withMem Tr (indexedCut0 NB T tk cap nI π sC SC)) n
 
 /-- The bookkeeping's stretches and changes. `MemS` is at the class's numbering, `MemP` at the shared tail's. The class's
 cuts have their own offset bound and input node: the link moves the target's offset. -/
@@ -106,8 +105,8 @@ structure Hooks {capC nIC : Nat} (P : ClassPre NB T tk π capC nIC) where
   MemS : Nat → SegInst FF → Prop
   MemP : Nat → Nat → SegInst FF → Prop
   hMP : ∀ j L x y, NTrack x y → MemP j L x → MemP j L y
-  hsmp : ∀ L, HookV (indexedCut NB T tk capC nIC π P.sC P.SC) (Mem0 L) (MemS L)
-  hlink : ∀ L, CutConv (withMem (MemS L) (indexedCut NB T tk capC nIC π P.sC P.SC))
+  hsmp : ∀ L, HookV (indexedCut0 NB T tk capC nIC π P.sC P.SC) (Mem0 L) (MemS L)
+  hlink : ∀ L, CutConv (withMem (MemS L) (indexedCut0 NB T tk capC nIC π P.sC P.SC))
     (withMem (MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0))
   hpop : ∀ L (x y : SegInst FF),
     (indexedCut NB T tk cap nI π PRE_pl_t2p.s0 PRE_pl_t2p.S0).R x PRE_pl_t2p.s0 ⟨PRE_pl_t2p.S0.tab, []⟩ →
@@ -123,7 +122,7 @@ variable {P : ClassPre NB T tk π capC nIC} (H : Hooks NB T tk π cap nI P)
 
 /-- A cut of POST under the first bookkeeping. -/
 noncomputable def c0 (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF :=
-  withMem (H.Mem0 i.L) (indexedCut NB T tk capC nIC π s S)
+  withMem (H.Mem0 i.L) (indexedCut0 NB T tk capC nIC π s S)
 
 /-- A cut of POST with the reference held through `j` times. -/
 noncomputable def cP (j : Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF :=
@@ -131,7 +130,7 @@ noncomputable def cP (j : Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF
 
 /-- The class's POST to the sampled cut. -/
 noncomputable def smpCold (Adm : Cls.Inst → Prop) (uses : List Row) (obls : List Obl) :
-    RStagePiece FF Adm uses obls (c0 H P.sH P.SH) (fun i => withMem (H.MemS i.L) (indexedCut NB T tk capC nIC π P.sC P.SC)) where
+    RStagePiece FF Adm uses obls (c0 H P.sH P.SH) (fun i => withMem (H.MemS i.L) (indexedCut0 NB T tk capC nIC π P.sC P.SC)) where
   m := []
   n := P.n
   O := []
@@ -143,7 +142,7 @@ noncomputable def smpCold (Adm : Cls.Inst → Prop) (uses : List Row) (obls : Li
 
 /-- The restart into the shared tail. -/
 noncomputable def g7 (Adm : Cls.Inst → Prop) (uses : List Row) :
-    RGluePiece FF Adm uses (fun i => withMem (H.MemS i.L) (indexedCut NB T tk capC nIC π P.sC P.SC))
+    RGluePiece FF Adm uses (fun i => withMem (H.MemS i.L) (indexedCut0 NB T tk capC nIC π P.sC P.SC))
       (cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0) where
   m := []
   n := 0
@@ -167,7 +166,7 @@ noncomputable def rb0 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
       (popM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_t2p.accepted0 PRE_pl_t2p.run0 t2pTop
         (fun _ h => PRE_pl_t2p.good (T := T) (t := tk 1) (by omega) (by omega) (by omega) hne
           ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])))
-        (Host.Load.Boot.replay_active _) t2pBr
+        (Host.Load.Boot.replay_active _) t2pBr t2pCnt
         (fun x y hx hy hle hn ha hg hm => H.hpop i.L x y hx hy hle hn ha hg hm) rfl)
       (CutConv.refl _)
 
@@ -187,7 +186,7 @@ noncomputable def fw0 (Adm : Cls.Inst → Prop) (obls : List Obl) :
   ok _ _ i _ _ _ := FwdCall.warm (idxConv PRE_pl_r1.s0_eq PRE_pl_r1.s0_tab)
     (hookMem (fun x0 => PL.R1.all NB T tk cap nI π hcap
         (fun _ h => PRE_pl_r1.good (b := 0) (r := π.length) (by omega) hL1 (by omega) h.rowValue
-          (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
+          (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]) (pinPost h.rowValue h.dims))
         (NTrack x0) (fun _ _ h h0 => h0.trans h.toNTrack))
       (fun x y _ hy _ htr hm => H.hfw0 i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
     (CutConv.refl _)
@@ -209,22 +208,24 @@ noncomputable def fw1 (Adm : Cls.Inst → Prop) (hAdm : ∀ i, Adm i → i.T = T
       (hookMem (fun x0 => PL.R2.all NB T tk cap nI π hcap
           (fun _ h => PRE_pl_r2.good (b := 0) (r := π.length) (T := T) (t := tk 1) (by omega) hL1 (by omega) hT3 hTle ht1 hne
             ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])) h.rowValue
-            (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
+            (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]) (pinPost h.rowValue h.dims))
           (NTrack x0) (fun _ _ h h0 => h0.trans h.toNTrack))
         (fun x y _ hy _ htr hm => H.hfw1 i.L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm))
       (CutConv.refl _)
 
-/-- The one-token class: the selector and the common stretch. -/
+/-- The one-token class: the selector, the call and the common stretch. -/
 noncomputable def classOne (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap nI : Nat) (hcap : cap ≤ 4096 + 1593835520) :
     ClassPre NB T tk π cap nI where
   sH := PRE_pl_head.s1
   SH := PRE_pl_head.S1
-  sC := PRE_pl_common.s4
-  SC := PRE_pl_common.S4
-  n := 131 + PL.Common.N
-  run Tr hT := ((glueM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_call.accepted_selector PRE_pl_call.selectorRun selTop
-      (fun _ h => PRE_pl_selector.good h.rowValue) PRE_pl_call.selector_inactive PRE_pl_call.head_bridge selCnt hT rfl).convL
-      (idxConv PRE_pl_selector.s0_eq PRE_pl_selector.s0_tab)).trans
+  sC := PRE_pl_common.s1
+  SC := PRE_pl_common.S1
+  n := PL.Selector.N + PL.Call.N + PL.Common.N
+  run Tr hT :=
+    (((PL.Selector.all NB T tk cap nI π hcap (fun _ h => PRE_pl_selector.good h.rowValue) Tr hT).convL
+        (idxConv PRE_pl_selector.s0_eq PRE_pl_selector.s0_tab)).trans
+      ((PL.Call.all NB T tk cap nI π hcap (fun _ _ => by rw [PRE_pl_call.empty_oracle]; intro _ hq; cases hq) Tr hT).convL
+        (idxConv PRE_pl_call.s0_eq PRE_pl_call.s0_tab))).trans
     ((PL.Common.all NB T tk cap nI π hcap (fun _ h => PRE_pl_common.good h.rowValue) Tr hT).convL
       (idxConv PRE_pl_common.s0_eq PRE_pl_common.s0_tab))
 
@@ -234,7 +235,7 @@ noncomputable def invs (ld pc0 pf : Nat → ICut FF) (pc : Nat → Nat → ICut 
   pc0 := pc0
   pc := pc
   pf := pf
-  ps L := withMem (H.Mem0 L) (indexedCut NB T tk capC nIC π P.sH P.SH)
+  ps L := withMem (H.Mem0 L) (indexedCut0 NB T tk capC nIC π P.sH P.SH)
   dec L := withMem (H.MemP 2 L) (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890)
 
 /-- The cuts between POST's pieces. -/
@@ -242,7 +243,7 @@ noncomputable def cuts : Gpu.RoutePiecesRCuts FF where
   b_post_g5_o := c0 H P.sH P.SH
   b_post_g6_i := c0 H P.sH P.SH
   b_post_g6_o := c0 H P.sH P.SH
-  b_post_g7_i := fun i => withMem (H.MemS i.L) (indexedCut NB T tk capC nIC π P.sC P.SC)
+  b_post_g7_i := fun i => withMem (H.MemS i.L) (indexedCut0 NB T tk capC nIC π P.sC P.SC)
   b_post_g7_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
   b_post_g8_i := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0
   b_post_g8_o := cP H 0 PRE_pl_tail.s0 PRE_pl_tail.S0

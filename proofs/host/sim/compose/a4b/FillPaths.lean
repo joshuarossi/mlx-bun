@@ -23,7 +23,7 @@ kernel_rfl t2_halt : PRE_pl_t2.s7.ctl = .halt (.normal .undef)
 kernel_rfl t2_emit : PRE_pl_t2.s7.heap.get 12504 = some (.obj (Template.objOf PRE_pl_t2.s7 12504))
 kernel_rfl t2_kind : (Template.objOf PRE_pl_t2.s7 12504).kind = .array (arrOf PRE_pl_t2.s7 12504)
 kernel_rfl t2_cell : PRE_pl_t2.s7.cell? 2590 = some (some (.obj 12504))
-kernel_rfl t2_free : (2665 :: [2673435, PRE_pl_t2.cacheArray]).contains 12504 = false
+kernel_rfl t2_free : (PostOk.JF [2673435, PRE_pl_t2.cacheArray]).framed.contains 12504 = false
 kernel_rfl t2_vals : arrOf PRE_pl_t2.s7 12504 = [.num (.ref 1), .num (.ref 2)]
 kernel_rfl t2_tab1 : nth? PRE_pl_t2.S7.tab 1 = some (.var 1)
 kernel_rfl t2_tab2 : nth? PRE_pl_t2.S7.tab 2 = some (.var 2)
@@ -32,7 +32,7 @@ kernel_rfl t2e_halt : PRE_pl_t2_eos.s7.ctl = .halt (.normal .undef)
 kernel_rfl t2e_emit : PRE_pl_t2_eos.s7.heap.get 12504 = some (.obj (Template.objOf PRE_pl_t2_eos.s7 12504))
 kernel_rfl t2e_kind : (Template.objOf PRE_pl_t2_eos.s7 12504).kind = .array (arrOf PRE_pl_t2_eos.s7 12504)
 kernel_rfl t2e_cell : PRE_pl_t2_eos.s7.cell? 2590 = some (some (.obj 12504))
-kernel_rfl t2e_free : (2665 :: [2673435, PRE_pl_t2_eos.cacheArray]).contains 12504 = false
+kernel_rfl t2e_free : (PostOk.JF [2673435, PRE_pl_t2_eos.cacheArray]).framed.contains 12504 = false
 kernel_rfl t2e_vals : arrOf PRE_pl_t2_eos.s7 12504 = [.num (.ref 1)]
 kernel_rfl t2e_tab1 : nth? PRE_pl_t2_eos.S7.tab 1 = some (.var 1)
 
@@ -40,16 +40,16 @@ kernel_rfl ta_halt : PRE_pl_ta.s896.ctl = .halt (.normal .undef)
 kernel_rfl ta_emit : PRE_pl_ta.s896.heap.get 12504 = some (.obj (Template.objOf PRE_pl_ta.s896 12504))
 kernel_rfl ta_kind : (Template.objOf PRE_pl_ta.s896 12504).kind = .array (arrOf PRE_pl_ta.s896 12504)
 kernel_rfl ta_cell : PRE_pl_ta.s896.cell? 2590 = some (some (.obj 12504))
-kernel_rfl ta_free : (2665 :: [2673435, PRE_pl_ta.cacheArray]).contains 12504 = false
+kernel_rfl ta_free : (PostOk.JF [2673435, PRE_pl_ta.cacheArray]).framed.contains 12504 = false
 kernel_rfl ta_vals : arrOf PRE_pl_ta.s896 12504 = []
 
 kernel_rfl t1_emit : PRE_pl_t1.s7.heap.get 12504 = some (.obj (Template.objOf PRE_pl_t1.s7 12504))
 kernel_rfl t1_kind : (Template.objOf PRE_pl_t1.s7 12504).kind = .array (arrOf PRE_pl_t1.s7 12504)
-kernel_rfl t1_free : (2665 :: [2673435, PRE_pl_t1.cacheArray]).contains 12504 = false
+kernel_rfl t1_free : (PostOk.JF [2673435, PRE_pl_t1.cacheArray]).framed.contains 12504 = false
 
 kernel_rfl t1e_emit : PRE_pl_t1_eos.s7.heap.get 12504 = some (.obj (Template.objOf PRE_pl_t1_eos.s7 12504))
 kernel_rfl t1e_kind : (Template.objOf PRE_pl_t1_eos.s7 12504).kind = .array (arrOf PRE_pl_t1_eos.s7 12504)
-kernel_rfl t1e_free : (2665 :: [2673435, PRE_pl_t1_eos.cacheArray]).contains 12504 = false
+kernel_rfl t1e_free : (PostOk.JF [2673435, PRE_pl_t1_eos.cacheArray]).framed.contains 12504 = false
 
 kernel_rfl t2e_gen : PRE_pl_t2_eos.s7.cell? 2589 = some (some (.obj 2673245))
 noncomputable def t2e_stats : Nat :=
@@ -58,7 +58,7 @@ noncomputable def t2e_stats : Nat :=
   | _ => 0
 kernel_rfl t2e_own : ownW PRE_pl_t2_eos.s7 (.obj 2673245) chars!"stats" = some (.obj t2e_stats)
 kernel_rfl t2e_stop : ownW PRE_pl_t2_eos.s7 (.obj t2e_stats) chars!"finishReason" = some (.str chars!"stop")
-kernel_rfl t2e_wide : wideP t2e_stats = none
+kernel_rfl t2e_wide : wideG t2e_stats = none
 
 kernel_rfl ta_gen : PRE_pl_ta.s896.cell? 2589 = some (some (.obj 2673245))
 noncomputable def ta_stats : Nat :=
@@ -67,9 +67,9 @@ noncomputable def ta_stats : Nat :=
   | _ => 0
 kernel_rfl ta_own : ownW PRE_pl_ta.s896 (.obj 2673245) chars!"stats" = some (.obj ta_stats)
 kernel_rfl ta_stop : ownW PRE_pl_ta.s896 (.obj ta_stats) chars!"finishReason" = some (.str chars!"stop")
-kernel_rfl ta_wide : wideP ta_stats = none
+kernel_rfl ta_wide : wideG ta_stats = none
 
-kernel_rfl t1e_wide : wideP PRE_pl_t1_eos.statsAddr = none
+kernel_rfl t1e_wide : wideG PRE_pl_t1_eos.statsAddr = none
 
 end EndFacts
 
@@ -126,7 +126,7 @@ variable (Q : PopHooks H)
 
 /-- The class's POST, to the shared tail. -/
 theorem toTailStep (L : Nat) :
-    CutStep (withMem (H.Mem0 L) (indexedCut NB T tk capC nIC π P.sH P.SH))
+    CutStep (withMem (H.Mem0 L) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
       (withMem (H.MemP 0 L) (indexedCut NB T tk cap nI π PRE_pl_tail.s0 PRE_pl_tail.S0)) P.n :=
   (hookMemV (fun x0 => P.run (NTrackV x0) (fun _ _ h h0 => ⟨h0.toNTrack.trans h.toNTrack, h.val.trans h0.val⟩))
       (fun x y _ hy _ htr hm => H.hsmp L x y hy htr hm)).convR (H.hlink L)
@@ -140,12 +140,12 @@ theorem toR1Step (L : Nat) (hT2 : 2 ≤ T) (hne : tk 1 ≠ 248044) (ht : tk 1 < 
   ((popM (nI := nI) (π := π) (modeOk NB T tk cap hcap) PRE_pl_t2p.accepted0 PRE_pl_t2p.run0 t2pTop
       (fun _ h => PRE_pl_t2p.good (T := T) (t := tk 1) (by omega) hT31 ht hne
         ((h.reserved 0 (by omega)).trans rfl) ((h.reserved 1 (by omega)).trans (by simp [machVal])))
-      (Host.Load.Boot.replay_active _) t2pBr
+      (Host.Load.Boot.replay_active _) t2pBr t2pCnt
       (fun x y hx hy hle hn ha hg hm => H.hpop L x y hx hy hle hn ha hg hm) rfl).convL
       (idxConv PRE_pl_t2p.s0_eq PRE_pl_t2p.s0_tab)).trans
     ((hookMem (fun x0 => PL.R1.all NB T tk cap nI π hcap
         (fun _ h => PRE_pl_r1.good (b := 0) (r := π.length) (by omega) hL1 (by omega) h.rowValue
-          (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]))
+          (by simpa using h.offsetValue) (by rw [h.capValue, capShort hL1 hL2]) (pinPost h.rowValue h.dims))
         (NTrack x0) (fun _ _ h h0 => h0.trans h.toNTrack))
       (fun x y _ hy _ htr hm => H.hfw0 L x y hy htr.server htr.map htr.nodes htr.tokens htr.emit hm)).convL
       (idxConv PRE_pl_r1.s0_eq PRE_pl_r1.s0_tab))
@@ -153,7 +153,7 @@ theorem toR1Step (L : Nat) (hT2 : 2 ≤ T) (hne : tk 1 ≠ 248044) (ht : tk 1 < 
 include hcap Q htk hL2 hL1 in
 /-- `T = 1`, the first token the end. -/
 noncomputable def pC1 (h : T = 1) (he : tk 1 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH)) [] :=
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH)) [] :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
       ((PL.T1E.all NB T tk cap nI π hcap
@@ -167,7 +167,7 @@ noncomputable def pC1 (h : T = 1) (he : tk 1 = 248044) :
 include hcap Q htk hL2 hL1 in
 /-- `T = 1`, the first token not the end. -/
 noncomputable def pC0 (h : T = 1) (hne : tk 1 ≠ 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 1) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
@@ -183,13 +183,13 @@ noncomputable def pC0 (h : T = 1) (hne : tk 1 ≠ 248044) :
 include hcap Q htk hL2 hL1 hTle in
 /-- `T ≥ 2`, the first token the end. -/
 noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH)) [] :=
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH)) [] :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     ((toTailStep H π.length).trans
       ((PL.Ta.all NB T tk cap nI π hcap
           (fun _ b => PRE_pl_ta.good (b := 0) (r := π.length) (T := T) (by omega) hL1 (by omega) h hTle
             ((b.reserved 0 (by omega)).trans rfl) ((b.reserved 1 (by omega)).trans (by simp [machVal, he])) b.rowValue
-            (by simpa using b.offsetValue) (by rw [b.capValue, capShort hL1 hL2]))
+            (by simpa using b.offsetValue) (by rw [b.capValue, capShort hL1 hL2]) (pinPost b.rowValue b.dims))
           (H.MemP 0 π.length) (fun x y t => H.hMP 0 π.length x y t.toNTrack) (Q.ta π.length)).convL
         (idxConv PRE_pl_ta.s0_eq PRE_pl_ta.s0_tab)))
     .undef ta_halt _ ta_emit ta_kind ta_cell ta_free (H.fixE 0 π.length)
@@ -198,7 +198,7 @@ noncomputable def pA (h : 2 ≤ T) (he : tk 1 = 248044) :
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, the second token the end. -/
 noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 1) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     (((toTailStep H π.length).trans
@@ -215,7 +215,7 @@ noncomputable def pB2 (h : T = 2) (hne : tk 1 ≠ 248044) (he : tk 2 = 248044) :
 include hcap Q htk hL1 hL2 in
 /-- `T = 2`, neither token the end. -/
 noncomputable def pB0 (h : T = 2) (hne : tk 1 ≠ 248044) (hne2 : tk 2 ≠ 248044) :
-    PathW (fullWorldXD NB) addrPrompt wideP setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut NB T tk capC nIC π P.sH P.SH))
+    PathW (fullWorldXD NB) addrPrompt wideG setupP shortFixP (withMem (H.Mem0 π.length) (indexedCut0 NB T tk capC nIC π P.sH P.SH))
       (tokVals tk 2) :=
   haltPath (cap := cap) (T := T) (tk := tk) (NB := NB)
     (((toTailStep H π.length).trans

@@ -12,11 +12,31 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s4 PRE_pl_tail.S0.tab PLT.tabP PLTP.R.data PLTP.R.inv PLT.θ PLT.P0 2827718 [ ] where
+theorem PLT.wideAll : ∀ p ∈ wideList, Pf.WideP PLTP.R.data PRE_pl_tail.s0 PRE_pl_common.s1 p.1 p.2 := by
+  intro p hp
+  simp only [wideList, wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp
+  rcases hp with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  · exact Pf.wideP_memo (by decide) PLT.memoFix PLT.memoGet0 PLT.memoGet1 PLT.memoKind PLT.memoImg
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1824 PLT.ghostChk1824
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1834 PLT.ghostChk1834
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1852 PLT.ghostChk1852
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1993 PLT.ghostChk1993
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix2001 PLT.ghostChk2001
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1279 PLT.ghostChk1279
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1281 PLT.ghostChk1281
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1958 PLT.ghostChk1958
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix1959 PLT.ghostChk1959
+  · exact Pf.wideP_ghost (by decide) PLT.ghostFix4941 PLT.ghostChk4941
+
+theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s1 PRE_pl_tail.S0.tab PLT.tabP PLTP.R.data PLTP.R.inv PLT.θ PLT.P0 2827718 [ ] wideG where
   num := PLT.num
   heap := by
-    intro a h ha hm
-    obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h ha (fun hf => hm (by rw [PRE_pl_tail.frames_eq] at hf; simpa using hf))
+    intro a h ha hm hw
+    obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h ha (fun hf => by
+      have hf : a ∈ 2665 :: wideList.map Prod.fst := hf
+      rcases List.mem_cons.mp hf with h0 | h1
+      · exact hm h0
+      · exact Pf.lookupW_ne h1 hw)
     have he := PLTP.R.heapAt q hq a haq
     rw [ha] at he
     exact he
@@ -24,6 +44,7 @@ theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s4 PRE_pl_tail.S0.ta
   getP := PLT.getP
   kindP := PLT.kindP
   imgP := PLT.imgP
+  wide a w hw := PLT.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PLT.emptyP
   notDrop := by
     intro a ha b hb he
@@ -34,7 +55,6 @@ theorem PLT.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_pl_common.s4 PRE_pl_tail.S0.ta
     simp at h2
   n0 := PLT.n0
   n1 := PLT.n1
-  grows := Nat.le_of_ble_eq_true PLT.grows
   ren := PLT.ren
   bound := PRE_pl_tail.presentBound
   ctl := PLT.ctl

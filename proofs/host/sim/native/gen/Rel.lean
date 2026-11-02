@@ -17,8 +17,9 @@ namespace `Host.Ts.Sim.G`), compiled-closure applies under the general check
   renamed from `P.lo` on: a history-independent template takes `P.lo` at the
   post-load handle band.
 * **Shape-only data nodes** (`shapeOnly`): a fully corresponding template node of
-  host data whose shape is not literal (the B-newdata node `[1, n]` of a framed
-  buffer) corresponds to a target data node with any bytes.
+  host data whose shape is not literal, or with no bytes at a literal shape with
+  elements (the B-newdata node `[1, n]` of a framed buffer), corresponds to a target
+  data node with any bytes.
 * **Target-only entries.** Handles, objects, nodes and readbacks the map does not
   name (live MLX handles of JavaScript ghost fields, their nodes, traces of
   history-only compiled closures) are unconstrained (`MR.ghost`).
@@ -31,11 +32,16 @@ replay lemma (`host.sim.native.gen.Replay`) allows non-literal recorded shapes.
 `Host.Ts.Sim.MR P` is the case `NB = P.NL` without shape-only nodes
 (`MR.toG`, `MR.ofG`, `mr_iff`). -/
 
-/-- Host data with a non-literal shape. -/
+/-- A literal dimension other than zero. -/
+def dimNZ : Dim → Bool
+  | .lit i => !(i == 0)
+  | .sym _ => false
+
+/-- Host data the template holds without its contents: a non-literal shape, or no bytes for a literal shape with elements. -/
 def shapeOnly (nd : Node) : Bool :=
-  (match nd.prim with
-    | .data _ => true
-    | _ => false) && !(nd.shape.all dimLit)
+  match nd.prim with
+  | .data bs => !(nd.shape.all dimLit) || (bs.isEmpty && nd.shape.all dimNZ)
+  | _ => false
 
 /-- The primitive of a fully corresponding node: the image, or any host data for a shape-only node. -/
 def PrimR (M : Map) (nd : Node) (p' : Prim) : Prop :=
@@ -55,16 +61,23 @@ theorem PrimR.exact {M : Map} {nd : Node} {p' : Prim} (h : PrimR M nd p') (hs : 
 under `σ` (same constructor, `σ`-images of its dimensions) is shape-only. -/
 theorem shapeOnly_of_image (σ : Map) {nd nd1 : Node} (hp : nd1.prim = σ.prim nd.prim)
     (hs : nd1.shape = σ.dims nd.shape) (h : shapeOnly nd1 = true) : shapeOnly nd = true := by
-  simp only [shapeOnly, Bool.and_eq_true, Bool.not_eq_true'] at h ⊢
-  refine ⟨?_, ?_⟩
-  · have h1 := h.1
+  have hdata : ∀ bs1, nd1.prim = .data bs1 → ∃ bs, nd.prim = .data bs ∧ bs1 = bs.map σ.byte := by
+    intro bs1 h1
     rw [hp] at h1
-    cases e : nd.prim <;> rw [e] at h1 <;> first | rfl | cases h1
-  · cases hl : nd.shape.all dimLit
+    cases e : nd.prim <;> rw [e] at h1 <;> first | exact ⟨_, rfl, by cases h1; rfl⟩ | cases h1
+  unfold shapeOnly at h
+  split at h
+  · rename_i bs1 e1
+    obtain ⟨bs, e, rfl⟩ := hdata bs1 e1
+    unfold shapeOnly
+    rw [e]
+    dsimp only
+    cases hl : nd.shape.all dimLit
     · rfl
-    · have := h.2
-      rw [hs, dims_lit σ hl, hl] at this
-      cases this
+    · have hsame : nd1.shape = nd.shape := by rw [hs, dims_lit σ hl]
+      rw [hsame, hl] at h
+      simpa using h
+  · cases h
 
 /-- Primitive correspondence composes with a template shift `σ`. -/
 theorem PrimR.after {M σ : Map} {nd nd1 : Node} {p' : Prim} (hp : nd1.prim = σ.prim nd.prim)

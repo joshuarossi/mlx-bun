@@ -1,5 +1,5 @@
 import host.route.FinGraph
-import host.sim.compose.a4b.GraphColdOneValues
+import host.route.cert.One.Inputs
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option autoImplicit false
@@ -11,8 +11,8 @@ open Host.Mlx.SimGraph.Iter (cachesAt cachesAt_nodes cachesAt_below loadedAt ten
 open Host.Mlx.SimGraph.Mach (routeVal HeldV refPrompt refPrompt_start RefTokens prefill_one initial_caps)
 open Host.Ts.Sim (SegInst)
 open Host.Ts.Sim.Full (FF mlxOf)
-open Host.Ts.Sim.Compose.ColdGraph (choice.cert fullExpected coldIds cellsValue_singleton cacheInputs)
-open Host.Ts.Sim.Compose.ColdGraph.One (full_expected_eval)
+open Host.Ts.Sim.Compose.ColdGraph (fullExpected coldIds cellsValue_singleton)
+open Host.Route.Cert.One (choice.cert full_expected_eval cacheInputs)
 
 /-! # POST's first held time at one token
 
@@ -67,7 +67,7 @@ theorem one_held {kind : Nat → Option Compiled} {a : Nat} (ha : a < 248320) {t
     (hinp : Host.Ts.Sim.Compose.SetupD1Input.InputAt [a] (y.M.node 15235) y.t y.C) :
     HeldV (routeVal P KR env kind (fun _ => none) tab (mlxOf y.t.ffi)) Expected.graph (choice.cert.map y.M.node)
       (stepEnvWithIds env.weights (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) (coldIds a) initialHandles) := by
-  have hins := Host.Ts.Sim.Compose.ColdGraph.inputs y.M.node hnid (fun _ => 0)
+  have hins := Host.Route.Cert.One.one_inputs y.M.node hnid (fun _ => 0)
   rw [full_expected_eval] at hins
   have hip := (hinp.grow (Host.Mlx.Ffi.NGrow.refl _) hC).2
   have htok : routeVal P KR env kind (fun _ => none) tab (mlxOf y.t.ffi) (y.M.node 15235) = some (coldIds a) :=
@@ -180,7 +180,7 @@ theorem hsmpOne (a : Nat) (ha : a < 248320) (leaves : Leaves code env.weights) (
     show y.M.node 17776 = certAt (choice.cert.map y.M.node) Expected.tokenNode
     have h := one_token_node
     simp only [Bool.and_eq_true, Nat.blt_eq] at h
-    have hret : certAt choice.cert Expected.tokenNode = 17776 := Host.Ts.Sim.Compose.ColdGraph.actual_return_node
+    have hret : certAt choice.cert Expected.tokenNode = 17776 := Host.Route.Cert.One.actual_return_node
     rw [certAt_map _ _ _ (by rw [one_cert_len]; exact of_decide_eq_true h.2), hret]
   · rw [hgr]
     refine (cachesAt_nodes y.M.node oneCarriers).trans ?_

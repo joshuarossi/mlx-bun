@@ -3,6 +3,7 @@ import host.sim.compose.SetupKeep
 import host.sim.template.a4pre_d1_dispatch.Frames
 import host.sim.template.PostOk
 import host.sim.template.DimVals
+import host.sim.template.HandVals
 import host.sim.template.a4pre_d1_input.Property
 import host.simgraph.family.FoldedData
 import host.sim.CasesL
@@ -22,11 +23,15 @@ structure Stage where
   J : Disp.JSP FF
   W : Nat → Option WFrame
   dims : (Nat → F64) → Prop
+  /-- The trace ids, payloads and dimensions the hand-off reads, by the prompt's length. -/
+  hand : Nat → (Nat → F64) → Prop
   H : Nat
   N : Nat
 
-abbrev head : Stage := ⟨PostOk.J0, wideGPf, fun _ => True, 4096, 4096⟩
-abbrev tail : Stage := ⟨PostOk.J, wideG, fun ν => ∀ v k, tailVal v = some k → ν v = F64.ofNat k, 65536, 65536⟩
+abbrev head : Stage := ⟨PostOk.J0, wideGPf, fun _ => True, fun _ _ => True, 4096, 4096⟩
+abbrev tail : Stage :=
+  ⟨PostOk.J, wideG, fun ν => ∀ v k, tailVal v = some k → ν v = F64.ofNat k,
+    fun L ν => ∀ v k, handVal L v = some k → ν v = F64.ofNat k, 65536, 65536⟩
 
 structure Book (P : Stage) (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x : SegInst FF) : Prop where
   nonempty : 1 ≤ π.length
@@ -48,6 +53,7 @@ structure Book (P : Stage) (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : 
   input : x.M.node nI < (mlxOf x.t.ffi).nnext ∧
     HostInt32 (concrete x.C.val) (mlxOf x.t.ffi) (x.M.node nI) (γ.map Int.ofNat) [1, 1]
   dims : P.dims x.ν
+  hand : P.hand π.length x.ν
 
 def Anchors (x : SegInst FF) : Prop := x.M.a 2586 = 2586 ∧ x.M.a 2589 = 2589
 

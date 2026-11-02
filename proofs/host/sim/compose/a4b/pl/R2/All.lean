@@ -1,15 +1,4 @@
 import host.sim.compose.a4b.pl.R2.C0
-import host.sim.compose.a4b.pl.R2.C1
-import host.sim.compose.a4b.pl.R2.C2
-import host.sim.compose.a4b.pl.R2.C3
-import host.sim.compose.a4b.pl.R2.C4
-import host.sim.compose.a4b.pl.R2.C5
-import host.sim.compose.a4b.pl.R2.C6
-import host.sim.compose.a4b.pl.R2.C7
-import host.sim.compose.a4b.pl.R2.C8
-import host.sim.compose.a4b.pl.R2.C9
-import host.sim.compose.a4b.pl.R2.C10
-import host.sim.compose.a4b.pl.R2.C11
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -18,11 +7,11 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Templa
 open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
 
 abbrev N : Nat := 1492413
-kernel_rfl stepsEq : N = (((((((((((n0 + n1) + n2) + n3) + n4) + n5) + n6) + n7) + n8) + n9) + n10) + n11)
+kernel_rfl stepsEq : N = n0
 
 /-- **The chain**, in 1492413 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_pl_r2.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
-    CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s0 PRE_pl_r2.S0)) (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s890 PRE_pl_r2.S890)) N :=
-  (((((((((((((c0 NB T tk cap nI π hcap hg Tr hT)).trans (c1 NB T tk cap nI π hcap hg Tr hT)).trans (c2 NB T tk cap nI π hcap hg Tr hT)).trans (c3 NB T tk cap nI π hcap hg Tr hT)).trans (c4 NB T tk cap nI π hcap hg Tr hT)).trans (c5 NB T tk cap nI π hcap hg Tr hT)).trans (c6 NB T tk cap nI π hcap hg Tr hT)).trans (c7 NB T tk cap nI π hcap hg Tr hT)).trans (c8 NB T tk cap nI π hcap hg Tr hT)).trans (c9 NB T tk cap nI π hcap hg Tr hT)).trans (c10 NB T tk cap nI π hcap hg Tr hT)).trans (c11 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV tail T tk π.length ν → Good ν PRE_pl_r2.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s0 PRE_pl_r2.S0)) (withMem Tr (indexedCut NB T tk cap nI π PRE_pl_r2.s448 PRE_pl_r2.S448)) N :=
+  ((c0 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
 
 end Host.Ts.Sim.Compose.Post.PL.R2

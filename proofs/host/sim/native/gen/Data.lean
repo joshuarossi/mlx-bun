@@ -5,10 +5,9 @@ open Host.Mlx.Ffi (Dim Prim Node Cfg Clo Trace Pending dimOf)
 /-! # B-newdata: `mlx_array_new_data` on a framed buffer
 
 The prompt chunk's ids (`packages/mlx/src/array.ts:179-181`) come from a buffer the template
-frames: the template's call reads its own bytes `bsT` and a symbolic shape `[1, n]`, the
+frames: the template's call reads no bytes and a shape `[1, n]`, symbolic or literal, the
 target's call the prompt's bytes `bs'` and the shape's image. The template's node is shape-only
-(`shapeOnly`: host data, non-literal shape), so the target's node corresponds whatever its
-bytes. `dataCallSim` is the native side of `bridge_newdata` (`sim/dispatch/BridgeNewData.lean`)
+(`shapeOnly`), so the target's node corresponds whatever its bytes. `dataCallSim` is the native side of `bridge_newdata` (`sim/dispatch/BridgeNewData.lean`)
 under the checks `dataOk` (the arguments after the buffer, decided on the template) and the
 numeric premise `RefSmall` on the shape's references. -/
 
@@ -121,11 +120,11 @@ theorem MR.addNodeR (nd ndT : Node) (hNE : x.nnext + 1 ≤ P.NE) (hs : SNode (·
 end
 
 /-- The checks of a B-newdata call on its arguments after the buffer: dimensions decoding under
-the map, a fixed dtype, room, and a non-literal shape of naturals and number references. -/
+the map, a fixed dtype, room, and a shape of naturals and number references, not literal or with no literal zero. -/
 def dataOk (P : LoadP) (x : NSt) : List Arg → Bool
   | [sh, nd, dt] => dimsOk P sh nd && natOk P dt && decide (x.next + 1 ≤ P.E) && decide (x.nnext + 1 ≤ P.NE) &&
     match Host.Mlx.Ffi.dimsArg sh nd with
-    | some s => s.all dimOkV && !(s.all dimLit)
+    | some s => s.all dimOkV && (!(s.all dimLit) || s.all dimNZ)
     | none => true
   | _ => false
 
@@ -142,19 +141,6 @@ def DataR {F : Ffi} (FR : Map → Nat → F.S → F.S → Prop) (M : Map) (n : N
   | some (x, ret, ws), some (y, ret', ws') =>
     FR M n x y ∧ ret' = M.ret ret ∧ ws = [] ∧ ws' = [] ∧ (∀ f cs, ret ≠ .callback f cs) ∧ Supp.ret A n ret
   | some _, none => False
-
-theorem natsOfDims_lits : ∀ {ds : List Dim} {ns : List Nat}, Host.Mlx.Ffi.natsOfDims ds = some ns → ds.all dimLit = true
-  | [], _, _ => rfl
-  | .lit i :: ds, ns, h => by
-    simp only [Host.Mlx.Ffi.natsOfDims] at h
-    cases hi : decide (0 ≤ i)
-    · rw [hi] at h; cases h
-    · rw [hi] at h
-      simp only [Bool.cond_true] at h
-      cases hr : Host.Mlx.Ffi.natsOfDims ds with
-      | none => rw [hr] at h; cases h
-      | some ms => exact by simp only [List.all_cons, dimLit, Bool.true_and]; exact natsOfDims_lits hr
-  | .sym _ :: _, _, h => by cases h
 
 theorem msim_vals {α β : Type} {Q : Map → SSrv → CSrv → α → β → Prop} {M : Map} {S : SSrv} {C : CSrv}
     {m : Host.Ts.M α} {m' : Host.Ts.M β} {a : α} {b : β} (hm : ∀ γ k, m γ k = k a) (hm' : ∀ γ k, m' γ k = k b)
@@ -183,12 +169,12 @@ theorem loadCall_pure {x : Host.Load.LSt} {name : Name} {args : List Arg} (hm : 
 
 /-- **The native side of B-newdata.** -/
 theorem dataCallSim (P : LoadP) (NB : Nat) {name : Name} (hm : Host.Load.isMlx name = true)
-    (hsym : Host.Mlx.Ffi.symOf name = some .arrayNewData) (b : Nat) (bsT bs' : List Byte) (A : Nat → Prop)
+    (hsym : Host.Mlx.Ffi.symOf name = some .arrayNewData) (b : Nat) (bs' : List Byte) (A : Nat → Prop)
     {M : Map} {ν : Nat → F64} {S : SSrv} {C : CSrv} {x y : Host.Load.LSt} {asR : List Arg}
     (hs : Srv M ν S C) (hr : LoadR P NB M S.tab.length x y) (hok : dataOk P x.mlx asR = true)
-    (hsm : ∀ j ∈ dataRefs asR, RefSmall ν S j) (hbs : SBs (· < S.tab.length) bsT) :
+    (hsm : ∀ j ∈ dataRefs asR, RefSmall ν S j) :
     MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧ DataR (F := Host.Load.ffi) (LoadR P NB) M' S'.tab.length A r r') S C
-      (Host.Load.call x name (.jsPtr b 0 bsT :: asR)) (Host.Load.call y name (.jsPtr (M.a b) 0 bs' :: asR.map M.arg)) := by
+      (Host.Load.call x name (.jsPtr b 0 [] :: asR)) (Host.Load.call y name (.jsPtr (M.a b) 0 bs' :: asR.map M.arg)) := by
   have hshape : ∃ sh nd dt, asR = [sh, nd, dt] := by
     unfold dataOk at hok; split at hok
     · exact ⟨_, _, _, rfl⟩
@@ -201,45 +187,42 @@ theorem dataCallSim (P : LoadP) (NB : Nat) {name : Name} (hm : Host.Load.isMlx n
   have et' := loadCall_pure (x := y) hm er'
   cases e1 : Host.Mlx.Ffi.dimsArg sh nd with
   | none =>
-    have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 bsT :: [sh, nd, dt]) γ k = k none := by
+    have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 [] :: [sh, nd, dt]) γ k = k none := by
       intro γ k; unfold Host.Mlx.Ffi.call; rw [hsym]; simp only [e1]; rfl
     exact msim_vals (loadCall_pure hm et) et' ⟨Grow.refl hs, trivial⟩
   | some shape =>
     rw [e1] at hsh
-    simp only [Bool.and_eq_true, Bool.not_eq_true'] at hsh
+    simp only [Bool.and_eq_true] at hsh
     obtain ⟨hv, hnl⟩ := hsh
     cases e2 : Host.Mlx.Ffi.argNat dt with
     | none =>
-      have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 bsT :: [sh, nd, dt]) γ k = k none := by
+      have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 [] :: [sh, nd, dt]) γ k = k none := by
         intro γ k; unfold Host.Mlx.Ffi.call; rw [hsym]; simp only [e1, e2]; rfl
       exact msim_vals (loadCall_pure hm et) et' ⟨Grow.refl hs, trivial⟩
     | some d =>
       -- the shape's dimensions denote naturals at the target
       obtain ⟨ks, hks, bks⟩ := dvss_of hs hv fun j hj => hsm j (by simp only [dataRefs]; exact dimsArgRefs_mem e1 hj)
       have hcan : ∀ e ∈ shape, DimCanon M e := DVSs.canon hks fun k hk => by have := bks k hk; omega
-      have hnats : Host.Mlx.Ffi.natsOfDims shape = none := by
-        cases h : Host.Mlx.Ffi.natsOfDims shape with
-        | none => rfl
-        | some _ => rw [natsOfDims_lits h] at hnl; cases hnl
       -- the template's node and the target's
-      let ndT : Node := ⟨.data bsT, [], shape, d⟩
+      let ndT : Node := ⟨.data [], [], shape, d⟩
       let bsY : List Byte := match Host.Mlx.Ffi.natsOfDims (M.dims shape) with
         | some ds => bs'.take (ds.foldr (· * ·) 1 * Host.Mlx.Ffi.dtSize d)
         | none => bs'
       let ndY : Node := ⟨.data bsY, [], M.dims shape, d⟩
       have hso : shapeOnly ndT = true := by
-        show (true && !(shape.all dimLit)) = true
-        rw [hnl]; rfl
-      have hr1 := mr.addNodeR ndT ndY hNE ⟨hbs, DVSs.sds hks⟩ hcan rfl rfl (.inr ⟨hso, bsY, rfl⟩) rfl
+        show (!(shape.all dimLit) || shape.all dimNZ) = true
+        exact hnl
+      have hr1 := mr.addNodeR ndT ndY hNE ⟨nofun, DVSs.sds hks⟩ hcan rfl rfl (.inr ⟨hso, bsY, rfl⟩) rfl
       obtain ⟨h, x', h', y', ex, ey, hr2, hbig⟩ := hr1.setArr_map (sl := 0) (.inl rfl) (fun _ => hE) x.mlx.nnext
       rw [mr.handle0, mr.node_next] at ey
-      have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 bsT :: [sh, nd, dt]) γ k =
+      have et : ∀ γ k, Host.Mlx.Ffi.call x.mlx name (.jsPtr b 0 [] :: [sh, nd, dt]) γ k =
           k (some (x', .big h, [])) := by
         intro γ k; unfold Host.Mlx.Ffi.call; rw [hsym]
-        simp only [e1, e2, hnats, Host.Mlx.Ffi.St.addNode]
-        rw [show ({ x.mlx with nnext := x.mlx.nnext + 1, nodes := x.mlx.nodes.set x.mlx.nnext ndT } : NSt) =
-          { x.mlx with nnext := x.mlx.nnext + 1, nodes := x.mlx.nodes.set x.mlx.nnext ndT } from rfl, ex]
-        rfl
+        cases hn : Host.Mlx.Ffi.natsOfDims shape <;>
+          (simp only [e1, e2, hn, List.take_nil, Host.Mlx.Ffi.St.addNode]
+           rw [show ({ x.mlx with nnext := x.mlx.nnext + 1, nodes := x.mlx.nodes.set x.mlx.nnext ndT } : NSt) =
+             { x.mlx with nnext := x.mlx.nnext + 1, nodes := x.mlx.nodes.set x.mlx.nnext ndT } from rfl, ex]
+           rfl)
       have et2 : ∀ γ k, Host.Mlx.Ffi.call y.mlx name (.jsPtr (M.a b) 0 bs' :: [sh, nd, dt].map M.arg) γ k =
           k (some (y', .big h', [])) := by
         intro γ k; unfold Host.Mlx.Ffi.call; rw [hsym]

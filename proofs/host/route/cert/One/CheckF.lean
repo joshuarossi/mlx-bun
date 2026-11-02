@@ -5,7 +5,7 @@ set_option Elab.async false
 set_option autoImplicit false
 namespace Host.Route.Cert.One
 open Host.Ts Host.Ts.Sim Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Load.Run.Tpl Host.Load.Run.Full
-open Host.Ts.Sim.Compose.ColdGraph (fullExpected choice.cert)
+open Host.Ts.Sim.Compose.ColdGraph (fullExpected)
 
 /-! # The one-token prompt's final forward: every node up to the hidden state at its carrier -/
 

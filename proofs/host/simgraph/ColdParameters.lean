@@ -16,7 +16,7 @@ def staticByte : Byte → Bool
   | _ => false
 
 def staticPrim : Ffi.Prim → Bool
-  | .data bs => bs.all staticByte
+  | .data bs => !bs.isEmpty && bs.all staticByte
   | .load .. | .binary .. | .transpose .. | .contiguous => true
   | _ => false
 
@@ -35,7 +35,8 @@ theorem byte_fixed (Mp : Map) (b : Byte) (hb : staticByte b = true) : Mp.byte b 
 theorem prim_fixed (Mp : Map) (p : Ffi.Prim) (hp : staticPrim p = true) : Mp.prim p = p := by
   cases p with
   | data bs =>
-    simp only [staticPrim] at hp
+    simp only [staticPrim, Bool.and_eq_true] at hp
+    replace hp := hp.2
     have hb : bs.map Mp.byte = bs := by
       induction bs with
       | nil => rfl
@@ -61,7 +62,9 @@ theorem dims_fixed (Mp : Map) (ds : List Ffi.Dim) (hs : ds.all dimLit = true) : 
 theorem static_exact (bound : Nat) (nd : Ffi.Node) (hs : staticNode bound nd = true) :
     G.shapeOnly nd = false := by
   simp only [staticNode, Bool.and_eq_true] at hs
-  simp [G.shapeOnly, hs.1.1]
+  obtain ⟨⟨hl, hp⟩, -⟩ := hs
+  unfold G.shapeOnly
+  cases h : nd.prim <;> rw [h] at hp <;> simp_all [staticPrim]
 
 /-- Exact ordinary source nodes retain their ids only inside the explicit fixed band. -/
 theorem node_of_MR {P : LoadP} {NB : Nat} {Mp : Map} {n : Nat} {x y : NSt}
@@ -128,7 +131,8 @@ theorem resolve_static (Cs Ds : CSrv) (kn kn' : Nat → Option (List Char))
   cases h : nd.prim with
   | data bs =>
     rw [h] at hp
-    have hb := bytes_server Cs Ds bs hp
+    simp only [staticPrim, Bool.and_eq_true] at hp
+    have hb := bytes_server Cs Ds bs hp.2
     simp only [resolveNode, h, resolvePrim, hd, hb]
   | load f k => simp only [resolveNode, h, resolvePrim]
   | binary op => simp only [resolveNode, h, resolvePrim]

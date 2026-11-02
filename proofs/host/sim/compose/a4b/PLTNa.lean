@@ -10,12 +10,12 @@ set_option maxHeartbeats 0
 
 def PLT.P0 : LoadP := setupP.raise 17777
 noncomputable abbrev PLT.y0 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad PRE_pl_tail.s0.ffi)
-noncomputable abbrev PLT.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad PRE_pl_common.s4.ffi)
+noncomputable abbrev PLT.y1 : Host.Load.LSt := clearTokens (Host.Load.Layers.toLoad PRE_pl_common.s1.ffi)
 noncomputable abbrev PLT.x0 : NSt := PLT.y0.mlx
 noncomputable abbrev PLT.x1 : NSt := PLT.y1.mlx
 noncomputable def PLT.thetaX : List (Nat × SymE) := []
 noncomputable def PLT.θ : Nat → SymE := thetaOf (PLTP.R.theta ++ PLT.thetaX)
-noncomputable def PLT.tabP : List SymE := PRE_pl_common.S4.tab ++ PRE_pl_tail.S0.tab.map (·.subst PLT.θ)
+noncomputable def PLT.tabP : List SymE := PRE_pl_common.S1.tab ++ PRE_pl_tail.S0.tab.map (·.subst PLT.θ)
 noncomputable def PLT.numAt (i : Nat) : Bool := match nth? PRE_pl_tail.S0.tab i with
   | some e => decide ((⟨PLT.tabP, []⟩ : SSrv).val (PLTP.R.data.map.num i) = some (e.subst PLT.θ))
   | none => true

@@ -1,6 +1,6 @@
 import host.route.cert.Row.R1.Data
 import host.simgraph.iter.InputsPrefix
-import host.sim.compose.a4b.GraphColdCert
+import host.route.cert.One.Choice
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -13,7 +13,7 @@ open Host.Ts Host.Mlx Host.Mlx.SimGraph Host.Mlx.SimGraph.Iter Host.Mlx.FfiEval
 /-- The caches the row starts from. -/
 def ps : List (Option Nat × Option Nat) :=
   Host.Load.Run.Full.Expected.cacheOutputs.map fun q =>
-    (some (certAt Host.Ts.Sim.Compose.ColdGraph.choice.cert q.1), some (certAt Host.Ts.Sim.Compose.ColdGraph.choice.cert q.2))
+    (some (certAt Host.Route.Cert.One.choice.cert q.1), some (certAt Host.Route.Cert.One.choice.cert q.2))
 
 kernel_rfl inputs_part0 : InputsOkAt 15235 ((choice.inputs.drop 0).take 64) ps 17777 = true
 kernel_rfl inputs_part1 : InputsOkAt 15235 ((choice.inputs.drop 64).take 64) ps 17777 = true
