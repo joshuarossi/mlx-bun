@@ -1,7 +1,8 @@
 import host.route.Gpu
 import host.route.SetupEntry
 import host.route.HandRho
-import host.route.cert.Dec.Entry
+import host.route.cert.Dec.Pieces
+import host.route.DecodeBounds
 import host.sim.compose.ShortFix
 import host.sim.template.SavedBindings
 set_option maxRecDepth 1000000
@@ -15,14 +16,14 @@ open Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Compose Host.T
 open Host.Ts.Sim.Compose.Gpu (PiecesR RoutePiecesR DecodeGraphR)
 open Host.Load.Run.Prompt
 open Host.Load.Run.Tpl (wideG decVal)
-open Host.Route.PrefGraph (handRho handRho_pin)
+open Host.Route.PrefGraph (handRho handRho_pin handRho_vp)
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 
 /-! # The route of a prompt of at most 224 tokens, assembled
 
 `routeGenOfGpu`: `RouteGenGpu` over the decode template `DT4`, the frames `framesG` and `wideG`, the valuation `handRho`, the pins
-`decVal`. The premises are the pieces that are not constants: POST's, the short paths' and their goals, the decode chains' and their graph
-facts, the two connections of the prefill's invariants. -/
+`decVal`. The decode chains and their graph facts are `DEC4.piecesFramedGpu`, `DEC4.graphPieces`. The premises are the prefill's, POST's, the short
+paths' and their goals, and the two connections of the prefill's invariants. -/
 
 /-- Counter room reserved for the initial POST-to-decode handoff (`routeLoopBase`). -/
 def routeLoopBaseGpu : LoopBase := ⟨2 ^ 60, 2 ^ 45, 2 ^ 61⟩
@@ -33,7 +34,13 @@ variable {C : M1Max.Contract}
   (bytes : KernelGpu.SetBytes) (lseSum : Bool)
   (lseNumerator : Inference.Kernels.Attention.SdpaUpdate.Contraction)
   (NE : NeuralEngine) (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey)
-  (π : List Nat) (T : Nat)
+  (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+  (π : List Nat) (T : Nat) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224)
+  (hlt : ∀ t ∈ π, t < 248320) (hctx : π.length + T ≤ 262144)
+  (hNE : NE.Succeeds net)
+  (hnet : ∀ tab, Host.Mlx.SimGraph.Mach.AneNetOk net
+    (stageWeights (weights (firstValues P.toMlxContract
+      (routeKernel G bytes Pg lseSum lseNumerator).toKernelContract env tab))))
 
 local notation "Kr" => routeKernel G bytes Pg lseSum lseNumerator
 local notation "Tk" => machTok P Kr NE net env π
@@ -60,18 +67,6 @@ noncomputable def routeGenOfGpu
     (sA : ∀ h h', HaltStopSrc (pA h h').hs)
     (sB2 : ∀ h h' h'', HaltStopSrc (pB2 h h' h'').hs)
     (sC1 : ∀ h h', HaltStopSrc (pC1 h h').hs)
-    (fixB : List Nat) (hsub : ∀ a ∈ shortFixP, a ∈ fixB) (ΔJ ΔH ΔN : Nat)
-    (D : ∀ (_ : 3 ≤ T) (b0 : Host.Mlx.FfiAne.St), DecodePiecesFramedW (fullWorldFb b0 15235) addrPrompt Pd4 wideG St4 Tb4 fixB FrP Rh T Tk π.length
-      (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu ΔJ ΔH ΔN)
-    (Dg : ∀ h3 b0, DecodeGraphR P Kr env π decVal b0 Je Inp (D h3 b0))
-    (tails : ∀ h3 b0 k, TailFix (fullWorldFb b0 15235) addrPrompt wideG Pd4 FrP St4 Tb4 fixB shortFixP (valL Rh T Tk π.length) Tk
-      (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu ΔJ ΔH ΔN ((D h3 b0).cs k))
-    (hc0 : ∀ h3 b0, (Dg h3 b0).c0.cc ∈ shortFixP)
-    (hc1 : ∀ h3 b0, (Dg h3 b0).c1.cc ∈ shortFixP)
-    (hc2 : ∀ h3 b0, (Dg h3 b0).c2.cc ∈ shortFixP)
-    (hJ : T * ΔJ + routeLoopBaseGpu.D < Sim.bound)
-    (hH : (mlxOf (St4).ffi).next + T * ΔH + routeLoopBaseGpu.H + ((Pd4).E - (mlxOf (St4).ffi).next) < 2 ^ 46)
-    (hN : (mlxOf (St4).ffi).nnext + T * ΔN + routeLoopBaseGpu.N + ((Pd4).NE - (mlxOf (St4).ffi).nnext) < 2 ^ 62)
     (postHandoff : ∀ t Cs, (I.dec π.length).Inv t Cs → ∃ kind,
       (decCutFirstFb 15235 addrPrompt (Gx kind) wideG Pd4 FrP St4 Tb4 shortFixP
         (valL Rh T Tk π.length) Tk (.ref 2 :: machReads T Tk) [.num (.ref 1)] routeLoopBaseGpu).Inv t Cs)
@@ -81,6 +76,13 @@ noncomputable def routeGenOfGpu
     (graphC1 : ∀ h h', (pC1 h h').Goal (fun tF CF => ∃ kind, goalMV P Kr NE net env π kind 15235 1 tF CF))
     (graphC0 : ∀ h h', (pC0 h h').Goal (fun tF CF => ∃ kind, goalCV P Kr NE net env π kind 15235 T Je tF CF)) :
     RouteGenGpu P Kr NE net env π T Tk Je chars!"emitted" (ldStT [] []) (ldStT (π.map natV) (machReads T Tk)) := by
+  have hRT := route_refTokens P G Pg bytes lseSum lseNumerator NE net env leaves typed
+    hπ (by omega) hlt hNE hnet
+  have hv : ∀ j, Tk j ≤ 248319 := machTok_le P Kr NE net env π (hRT []) hπ hlt
+  have hVP : ∀ i nx, i + 2 ≤ T → nx ≤ 2 ^ 20 → Host.Load.Run.Tpl.DecOk.VP (valL Rh T Tk π.length i nx) :=
+    fun i nx hi hnx => handRho_vp hL (fun j => Nat.le_trans (hv j) (by decide)) hctx (fun j _ => hv j) i nx hi hnx
+  have hc := decode_counter_bounds (B := routeLoopBaseGpu) (T := T) (h := (mlxOf (St4).ffi).next) (n := (mlxOf (St4).ffi).nnext)
+    (by omega) (Nat.le_of_ble_eq_true Host.Route.Cert.Dec.startNext) (Nat.le_of_ble_eq_true Host.Route.Cert.Dec.startNnext40) le_rfl le_rfl le_rfl
   refine
     { ρ := Rh
       pin := decVal
@@ -91,8 +93,8 @@ noncomputable def routeGenOfGpu
       W := wideG
       Wl := wideP
       fixA := shortFixP
-      fixB := fixB
-      hsub := hsub
+      fixB := Dec4.fix4
+      hsub := Dec4.short_sub
       I := I
       hPw := by unfold LdParams; decide
       hW := rfl
@@ -102,9 +104,9 @@ noncomputable def routeGenOfGpu
       tab0 := Tb4
       Itpl := Inp
       B := routeLoopBaseGpu
-      ΔJ := ΔJ
-      ΔH := ΔH
-      ΔN := ΔN
+      ΔJ := 151312
+      ΔH := 3867
+      ΔN := 4882
       hpT := Host.Route.Cert.Dec.tab0_pin
       hpρ := fun q k h => ⟨by have := Host.Route.decVal_range h; omega, handRho_pin h⟩
       Pp := Pp
@@ -117,12 +119,18 @@ noncomputable def routeGenOfGpu
       sA := sA
       sB2 := sB2
       sC1 := sC1
-      D := D
-      Dg := Dg
-      tails := tails
-      hc0 := hc0
-      hc1 := hc1
-      hc2 := hc2
+      D := fun h3 b0 => DEC4.piecesFramedGpu (b0 := b0) (NB := 15235) (B := routeLoopBaseGpu) (ΔJ := 151312) (ΔH := 3867) (ΔN := 4882)
+        (ρ := Rh) (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hVP hπ hL h3 hctx (fun j _ => hv j)
+        (by decide) (by decide) (by decide) hc.1 hc.2.1 hc.2.2
+      Dg := fun h3 b0 => DEC4.graphPieces P Kr env π (b0 := b0) (NB := 15235) (B := routeLoopBaseGpu) (ΔJ := 151312) (ΔH := 3867) (ΔN := 4882)
+        (π.map natV) (by simp) hVP hπ hL h3 hctx (fun j _ => hv j) le_rfl
+        (by decide) (by decide) (by decide) hc.1 hc.2.1 hc.2.2
+      tails := fun h3 b0 => DEC4.tailsGpu (b0 := b0) (NB := 15235) (B := routeLoopBaseGpu) (ΔJ := 151312) (ΔH := 3867) (ΔN := 4882)
+        (ρ := Rh) (toks := .ref 2 :: machReads T Tk) (π.map natV) (by simp) hVP hπ hL h3 hctx (fun j _ => hv j)
+        (by decide) (by decide) (by decide) hc.1 hc.2.1 hc.2.2
+      hc0 := fun _ _ => (by decide : 2586 ∈ shortFixP)
+      hc1 := fun _ _ => (by decide : 2586 ∈ shortFixP)
+      hc2 := fun _ _ => (by decide : 2586 ∈ shortFixP)
       hcE := by decide
       hb := by decide
       hgen := by decide
@@ -136,9 +144,9 @@ noncomputable def routeGenOfGpu
       hst0 := ?_
       hfrN := ?_
       hdec := postHandoff
-      hJ := hJ
-      hH := hH
-      hN := hN
+      hJ := hc.1
+      hH := hc.2.1
+      hN := hc.2.2
       gA := graphA
       gB2 := graphB2
       gB0 := graphB0

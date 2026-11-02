@@ -1,5 +1,6 @@
 import host.route.cert.Dec.Final.Plain
 import host.route.cert.Dec.Final.Clear0
+import host.route.cert.Dec.Final.Clear1
 import host.sim.template.SavedBindings
 import host.sim.template.EndGenG
 set_option Elab.async false
@@ -55,6 +56,14 @@ kernel_rfl clear0_ok : cachesOkWB Final4Clear0.s10 cacheEnv (4910 :: ghostAddrs)
 kernel_rfl clear0_caches : ExtractSim.cachesT (Template.fullWorld.proj Final4Clear0.s10) cacheEnv = some clear0Caches
 kernel_rfl clear0_nodes : clear0Caches.map cacheNodePair = Dec.inputs.caches
 
+noncomputable def clear1Caches : List Cache :=
+  (ExtractSim.cachesT (Template.fullWorld.proj Final4Clear1.s10) cacheEnv).getD []
+
+kernel_rfl clear1_cell : Final4Clear1.s10.cell? 2586 = some (some (.obj 2672295))
+kernel_rfl clear1_ok : cachesOkWB Final4Clear1.s10 cacheEnv (4910 :: ghostAddrs) = true
+kernel_rfl clear1_caches : ExtractSim.cachesT (Template.fullWorld.proj Final4Clear1.s10) cacheEnv = some clear1Caches
+kernel_rfl clear1_nodes : clear1Caches.map cacheNodePair = Dec.inputs.caches
+
 end Final4Caches
 
 /-- The saved environment's caches at the `plain` chain's end. -/
@@ -106,5 +115,30 @@ noncomputable def DEC4.finalClear0_savedCacheTpl (b0 : BSt) (NB : Nat) (q : List
     FinalCacheTpl (fullProjFb b0 NB) Dec4.fix4 Dec.inputs
       (entryEnv (Host.Load.Run.Prompt.P.at0 fw tail)) ((DEC4.finalClear0 b0 NB q).seg r) :=
   DEC4.finalClear0_cacheTpl b0 NB q r _ (Host.Load.Run.Prompt.saved_cache fw tail)
+
+/-- The saved environment's caches at the `clear1` chain's end. -/
+noncomputable def DEC4.finalClear1_cacheTpl (b0 : BSt) (NB : Nat) (q : List Val) (r : List NumV)
+    (je : Env) (hc : lookupEnv chars!"cache" je = some 2586) :
+    FinalCacheTpl (fullProjFb b0 NB) Dec4.fix4 Dec.inputs je ((DEC4.finalClear1 b0 NB q).seg r) where
+  wl := 4910 :: ghostAddrs
+  hW := fun a w h => (wideG_mem_iff a).mp (by rw [h]; rfl)
+  cc := 2586
+  aL := 2672295
+  hcc := hc
+  hfix := by decide
+  hwc := by decide
+  hcell := Final4Caches.clear1_cell
+  hQF := by
+    intro ν K h
+    exact Disp.Kp.fr_none h.1 (by decide)
+  hok := (Final4Caches.ok_env Final4Clear1.s10 _ hc).trans Final4Caches.clear1_ok
+  cs := Final4Caches.clear1Caches
+  hcs := (Final4Caches.caches_env (Template.fullWorld.proj Final4Clear1.s10) hc).trans Final4Caches.clear1_caches
+  hn := Final4Caches.clear1_nodes
+
+noncomputable def DEC4.finalClear1_savedCacheTpl (b0 : BSt) (NB : Nat) (q : List Val) (r : List NumV) (fw : List Val) (tail : List NumV) :
+    FinalCacheTpl (fullProjFb b0 NB) Dec4.fix4 Dec.inputs
+      (entryEnv (Host.Load.Run.Prompt.P.at0 fw tail)) ((DEC4.finalClear1 b0 NB q).seg r) :=
+  DEC4.finalClear1_cacheTpl b0 NB q r _ (Host.Load.Run.Prompt.saved_cache fw tail)
 
 end Host.Ts.Sim.Compose

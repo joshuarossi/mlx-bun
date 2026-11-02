@@ -47,6 +47,8 @@ noncomputable def sourceCacheNodes : Option (List (Option Nat × Option Nat)) :=
 
 kernel_rfl sourceCacheNodes_eq : sourceCacheNodes = some cacheNodes
 kernel_rfl startNnext : (mlxOf s0.ffi).nnext = 22539
+kernel_rfl startNext : Nat.ble (mlxOf s0.ffi).next 131072 = true
+kernel_rfl startNnext40 : Nat.ble (mlxOf s0.ffi).nnext (2 ^ 40) = true
 kernel_rfl startReadUnread : (mlxOf s0.ffi).items.get 20157 = none
 kernel_rfl startReadPresent : ((mlxOf s0.ffi).nodes.get 20157).isSome = true
 kernel_rfl startFedUnread : (mlxOf s0.ffi).items.get 22538 = none

@@ -2,6 +2,7 @@ import host.route.PostHandoff
 import host.sim.template.HandVals
 import host.sim.template.DimVals
 import host.sim.compose.ValuationBounded
+import host.sim.compose.ValuationTerminal
 import host.sim.template.DecOk
 import host.route.DecVal
 set_option maxRecDepth 1000000
@@ -54,9 +55,9 @@ theorem handRho_pin {T L q k : Nat} {tk : Nat → Nat} (h : decVal q = some k) :
 
 /-- **The loop's valuation at `handRho` is a decode chain's.** -/
 theorem handRho_vp {T L : Nat} {tk : Nat → Nat} (hL : L ≤ 224) (hv : ∀ j, tk j ≤ 2 ^ 20) (hctx : L + T ≤ 262144)
-    (htv : ∀ j, j ≤ T → tk j ≤ 248319) (i nx : Nat) (hi : i + 2 < T) (hnx : nx ≤ 2 ^ 20) :
+    (htv : ∀ j, j ≤ T → tk j ≤ 248319) (i nx : Nat) (hi : i + 2 ≤ T) (hnx : nx ≤ 2 ^ 20) :
     Host.Load.Run.Tpl.DecOk.VP (valL (handRho T L tk) T tk L i nx) :=
-  ⟨Host.Ts.Sim.Compose.valL_vb_supported (handRho_small hL (by omega) hv) hctx htv i nx hi hnx, fun v k hk => by
+  ⟨Host.Ts.Sim.Compose.valL_vb_terminal (handRho_small hL (by omega) hv) hctx htv i nx hi hnx, fun v k hk => by
     have hr := decVal_range hk
     unfold valL
     rw [loopVal_rest v (by omega) (.inr (by omega))]
