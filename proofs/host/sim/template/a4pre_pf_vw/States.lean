@@ -7,7 +7,7 @@ set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Load.Run.Tpl
 open Host.Ts
--- specs/ghosts_pf.json: the kernels only some classes' first forwards create
+-- specs/ghosts_pf.json: the kernels only some classes' first forwards create, the memo's mask
 bridge_empty PRE_pf_vw0.chooser from PRE_pf_vw0.s0
 server_data PRE_pf_vw0.chooserSrv := PRE_pf_vw0.S0
 set_option interpreter.prefer_native true in

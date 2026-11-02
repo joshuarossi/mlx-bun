@@ -82,11 +82,18 @@ structure AbsVar where
   value : Nat
 deriving FromJson, ToJson
 
+structure AbsKey where
+  addr : Nat
+  key : String
+deriving FromJson, ToJson
+
 structure AbsSpec where
   sites : Array AbsSite
   vars : Array AbsVar
   /-- Cells and maps no later step of a chain from this template reads: reset to `undefined` or empty, what only they held collected. -/
   ghostCells : Option (Array Nat) := none
+  /-- String keys of maps no later step reads: removed. -/
+  ghostKeys : Option (Array AbsKey) := none
 deriving FromJson, ToJson
 
 private def addAbsDef (name : Lean.Name) (type value : Lean.Expr) (compile : Bool := false) : TermElabM Unit := do
@@ -132,11 +139,23 @@ unsafe def abstractCmdW {F : Ffi} (w : TWorld F) (pre base : Lean.Name) (specPat
       | .map _ => heap0 := heap0.set a (.obj { o with kind := .map [] })
       | _ => throwError "tpl_abstract: ghost {a} is not a cell or a map"
     | _ => throwError "tpl_abstract: ghost {a} is not a cell or a map"
+  let ghostKeys := (spec.ghostKeys.getD #[]).toList
+  for gk in ghostKeys do
+    match heap0.get gk.addr with
+    | some (.obj o) => match o.kind with
+      | .map es =>
+        let es' := es.filter fun (k, _) => match k with
+          | .str cs => cs != gk.key.toList
+          | _ => true
+        unless es'.length + 1 == es.length do throwError "tpl_abstract: {gk.addr} has no key {gk.key}"
+        heap0 := heap0.set gk.addr (.obj { o with kind := .map es' })
+      | _ => throwError "tpl_abstract: {gk.addr} is not a map"
+    | _ => throwError "tpl_abstract: {gk.addr} is not a map"
   let l1 : St LSt := { l with heap := heap0 }
   let l1 := l1.setFfi { l1.aux.ffi with mlx := { m with nodes } }
   let s1 := w.unproj s l1
   -- what the reset cells alone held goes, as in the template's own collection
-  let (T0, dropped) : (St F.S × Nat) ← if ghostCells.isEmpty then pure (s1, (0 : Nat)) else do
+  let (T0, dropped) : (St F.S × Nat) ← if ghostCells.isEmpty && ghostKeys.isEmpty then pure (s1, (0 : Nat)) else do
     let m1 := l1.aux.ffi.mlx
     let roots := ((List.range 40).filter fun a => (l1.heap.get a).isSome) ++ nativeHeapRefs m1
     let ctx : Ctx := { s1 := l1, s2 := l1, t1 := c.tab.toArray, t2 := c.tab.toArray, env := ← getEnv, traceNodes := traceNodesOf m1 }

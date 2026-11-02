@@ -352,7 +352,8 @@ structure Fr where
   chunk : Nat
   buffer : Nat
   view : Nat
-  /-- The cells this forward frames as ghosts. -/
+  /-- The memo's ghost keys, and the cells this forward frames as ghosts. -/
+  memo : List Nat
   ghosts : List Nat
   hvb : Nat.beq view buffer = false
   hbv : Nat.beq buffer view = false
@@ -361,11 +362,11 @@ namespace Fr
 variable (f : Fr)
 
 def typedW (bytes : List Byte) : Nat → Option WFrame :=
-  Disp.wAt (Disp.wAt (wideOf f.ghosts) f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
+  Disp.wAt (Disp.wAt (wideOf f.memo f.ghosts) f.buffer (.buf bytes)) f.view (.typed .i32 f.buffer 0 1)
 
 abbrev typedJ (bytes : List Byte) : Disp.JSP FF :=
   { fullJSPPXS setupP ([2665, f.chunk, f.buffer, f.view] ++ f.ghosts)
-      ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.ghosts) with
+      ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.memo f.ghosts) with
     okCall := okCallFXS setupP, smallB := smallFX2 (Pin.row f.row) }
 
 noncomputable def typedOk (bytes : List Byte) : St FF.S → SSrv → Bool :=
@@ -381,7 +382,7 @@ theorem typedOkN_ok (bytes : List Byte) (s : St FF.S) (c : FSrv) (h : c.Wf) :
 
 theorem typed_wp (bytes : List Byte) : Disp.Wp (f.typedJ bytes) (f.typedW bytes) := by
   intro a w hw
-  change Disp.lookupW a ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.ghosts) = some w
+  change Disp.lookupW a ((f.buffer, .buf bytes) :: (f.view, .typed .i32 f.buffer 0 1) :: wideListOf f.memo f.ghosts) = some w
   have e1 := f.hvb
   have e2 := f.hbv
   by_cases hv : a = f.view

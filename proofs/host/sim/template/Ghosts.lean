@@ -18,18 +18,23 @@ def ghostPf : List Nat := [1824, 1834, 1852, 1993, 2001]
 registry, which holds different closures per class but is not read once the sampler has compiled. -/
 def ghostAddrs : List Nat := ghostPf ++ [1279, 1281, 1958, 1959, 4941]
 
-/-- The wide frames of a chain: the memo and those ghosts. -/
-def wideListOf (ghosts : List Nat) : List (Nat × WFrame) := (4910, .memo []) :: ghosts.map (fun a => (a, .ghost))
+/-- The memo's key `causal`: the mask a multi-row forward caches. Only some classes' first forwards create it, and no shared template holds it. -/
+def causalKey : Nat := 85074607649212392847764531980401639532
+
+theorem causalKey_pack : causalKey = pack ['c', 'a', 'u', 's', 'a', 'l'] := rfl
+
+/-- The wide frames of a chain: the memo with its ghost keys, and those ghosts. -/
+def wideListOf (memo ghosts : List Nat) : List (Nat × WFrame) := (4910, .memo memo) :: ghosts.map (fun a => (a, .ghost))
 
 /-- Those frames as a function. -/
-def wideOf (ghosts : List Nat) : Nat → Option WFrame := fun a => Disp.lookupW a (wideListOf ghosts)
+def wideOf (memo ghosts : List Nat) : Nat → Option WFrame := fun a => Disp.lookupW a (wideListOf memo ghosts)
 
 /-- From the pre-final template. -/
-abbrev wideListPf : List (Nat × WFrame) := wideListOf ghostPf
-abbrev wideGPf : Nat → Option WFrame := wideOf ghostPf
+abbrev wideListPf : List (Nat × WFrame) := wideListOf [causalKey] ghostPf
+abbrev wideGPf : Nat → Option WFrame := wideOf [causalKey] ghostPf
 
 /-- From POST's shared cut. -/
-abbrev wideList : List (Nat × WFrame) := wideListOf ghostAddrs
-abbrev wideG : Nat → Option WFrame := wideOf ghostAddrs
+abbrev wideList : List (Nat × WFrame) := wideListOf [causalKey] ghostAddrs
+abbrev wideG : Nat → Option WFrame := wideOf [causalKey] ghostAddrs
 
 end Host.Load.Run.Tpl

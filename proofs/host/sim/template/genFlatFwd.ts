@@ -8,9 +8,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { syncRowMetadata } from "./syncRowMeta";
 const args = process.argv.slice(2);
-// --ghosts: the cells the forward frames as ghosts (a Lean term; default none)
-const ghostsAt = args.indexOf("--ghosts");
-const ghosts = ghostsAt >= 0 ? args.splice(ghostsAt, 2)[1]! : "[]";
+// --shared: from a shared template (the memo's ghost key, the pre-final ghosts); default none
+const sharedAt = args.indexOf("--shared");
+if (sharedAt >= 0) args.splice(sharedAt, 1);
+const ghosts = sharedAt >= 0 ? "[Host.Load.Run.Tpl.causalKey], Host.Load.Run.Tpl.ghostPf" : "[], []";
 const extAt = args.indexOf("--ext");
 const ext = extAt >= 0 ? Number(args.splice(extAt, 2)[1]) : 20;
 const rebindAt = args.indexOf("--rebind");

@@ -652,9 +652,11 @@ const hOf = (i: number) => mod(`H${Math.floor(i / per)}`);
 const stok = chain.startTokens as number[] | null | undefined;
 if (stok && chain.source) {
   const src = actualStartArg ?? chain.source as string;
-  putT("S0Eq", [...headT(hOf(0), "host.sim.full.DropTokens"),
+  // with literal boot snapshots, the equation at the snapshots: the kernel never replays the bridge log
+  const s0Boot = process.env.CHAIN_BOOT_BRIDGE === "1" && !!actualStartArg;
+  putT("S0Eq", [...headT(hOf(0), "host.sim.full.DropTokens", ...(s0Boot ? ["host.sim.template.BootEq"] : [])),
     `/-! The start of chain \`${name}\`: its source \`${src}\` with the mlx token queue set to its live tokens. -/${NL}${NL}`,
-    `kernel_rfl ${name}.s0_tok : ${sT(0)} = ${src}.setFfi (Host.Ts.Sim.Full.fullSetTokens ${src}.ffi [${stok.map(r => `.ref ${r}`).join(", ")}])${NL}${NL}`,
+    `${s0Boot ? `boot_rfl ${name}.s0_tok from ${sT(0)} to ${src} :` : `kernel_rfl ${name}.s0_tok :`} ${sT(0)} = ${src}.setFfi (Host.Ts.Sim.Full.fullSetTokens ${src}.ffi [${stok.map(r => `.ref ${r}`).join(", ")}])${NL}${NL}`,
     ...(sourceTableArg ? [`kernel_rfl ${name}.s0_tab : ${name}.S0.tab = ${sourceTableArg}${NL}${NL}`] : [])]);
 }
 const nclMods: string[] = [];

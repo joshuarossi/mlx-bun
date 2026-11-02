@@ -176,7 +176,6 @@ structure HandWalk (Pd : LoadP) (W : Nat → Option WFrame) (sE : St FF.S) (SE :
   wide : ∀ a w, W a = some w → κ.a a = a ∧ Present s0 a ∧ WFix κ (Present s0) w
   w2665 : W 2665 = none
   wPresent : ∀ a, W a ≠ none → Present sE a
-  wideImg : ∀ (M : Map) a w h, W a = some w → sE.heap.get a = some h → WideOK M w h (some (M.hobj h))
   big : bigsOutB (mlxOf s0.ffi).next Pd.E (mlxOf s0.ffi) = true
   free : NoBigSt (fun i => ((mlxOf s0.ffi).next : Int) ≤ i ∧ i < Pd.E) s0.trace s0
   nextLo : sE.next ≤ s0.next
@@ -223,37 +222,6 @@ theorem framedNext_isSome {F : Ffi} (M : Map) (K : Sim.Ctx) (s : St F.S) (a : Na
         cases o.kind <;> rfl
 
 
-/-- An unframed map under a memo frame without ghost keys. -/
-theorem wideOK_memo_image (M : Map) {o : Obj} {es : List (Val × Val)} (hk : o.kind = .map es) :
-    WideOK M (.memo []) (.obj o) (some (.obj (M.obj o))) := by
-  have hf := Host.Ts.Sim.bi_firstValue M
-  refine ⟨es, M.pairs es, hk, ?_, ?_, ?_⟩
-  · show M.obj o = { M.obj o with kind := .map (M.pairs es) }
-    have e : (M.obj o).kind = .map (M.pairs es) := by
-      show M.kind o.kind = _
-      rw [hk]
-      rfl
-    cases hm : M.obj o
-    rw [hm] at e
-    simp only at e
-    rw [e]
-  · intro c v hv
-    refine ⟨M.val v, ?_, .inr rfl⟩
-    rw [hf, hv]
-    rfl
-  · intro c _ hv
-    rw [hf, hv]
-    rfl
-
-/-- An unframed cell under a ghost frame. -/
-theorem wideOK_ghost_cell (M : Map) (v : Option Val) : WideOK M .ghost (.cell v) (some (M.hobj (.cell v))) := trivial
-
-/-- An unframed ghost object of a frameable kind. -/
-theorem wideOK_ghost_obj (M : Map) {o : Obj} (hk : Wideable o.kind) : WideOK M .ghost (.obj o) (some (M.hobj (.obj o))) := by
-  refine ⟨hk, ?_⟩
-  show Wideable (M.kind o.kind)
-  cases hko : o.kind <;> rw [hko] at hk <;> first | exact hk.elim | trivial
-
 /-- A table entry reading only the variables `u`. -/
 def readsOnly (u : Nat → Bool) : SymE → Bool
   | .lit _ => true
@@ -280,7 +248,7 @@ theorem reframeEnd {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {
     {s0 : St FF.S} {tab0 : List SymE} {κ : Map} {θ : Nat → SymE} {oF oM : Obj} {iE : Nat}
     (hw : HandWalk Pd W sE SE o s0 tab0 κ θ oF oM iE) {x : SegInst FF}
     (hr : RelF FF (FullRXD { setupP with rest := machReads T tk } NB) W x.M x.ν x.K sE SE x.t x.C) {q : List Val}
-    (hq : x.K.fr 2665 = some ([], q)) (hdom : ∀ a, x.K.fr a ≠ none → a = 2665 ∨ W a ≠ none) :
+    (hq : x.K.fr 2665 = some ([], q)) (hdom : ∀ a, x.K.fr a ≠ none ↔ a = 2665 ∨ W a ≠ none) :
     RelF FF (FullRXD { setupP with rest := machReads T tk } NB) W x.M x.ν { x.K with fr := frE W (arrOf s0 2665) q }
       (withArr sE 2665 o (arrOf s0 2665)) SE x.t x.C := by
   refine Host.Route.RelB.reframe hr hw.getE (by decide) (arrOf s0 2665) q hw.w2665 hw.suppE hw.kindE hq (frE_2665 _ _ _) ?_ ?_
@@ -290,21 +258,15 @@ theorem reframeEnd {NB T : Nat} {tk : Nat → Nat} {W : Nat → Option WFrame} {
     | none =>
       have h0 : x.K.fr b = none := by
         by_contra hn
-        rcases hdom b hn with e | e
+        rcases (hdom b).mp hn with e | e
         · exact hb e
         · exact e hwb
       have h1 : frE W (arrOf s0 2665) q b = none := by rw [frE_ne hb, hwb]; rfl
       exact slotW_same (.inr (h1.trans h0.symm)) hs
     | some w =>
       have h1 : frE W (arrOf s0 2665) q b = some ([], []) := by rw [frE_ne hb, hwb]; rfl
-      cases hfb : x.K.fr b with
-      | none =>
-        simp only [SlotW, hwb, hfb] at hs
-        simp only [SlotW, hwb, h1]
-        rw [hs]
-        exact hw.wideImg _ b w h' hwb hg
-      | some p =>
-        refine slotW_same (.inl ⟨by simp [hwb], by simp [hfb], by simp [h1]⟩) hs
+      have hfb : x.K.fr b ≠ none := (hdom b).mpr (.inr (by rw [hwb]; simp))
+      refine slotW_same (.inl ⟨by simp [hwb], Option.ne_none_iff_isSome.mp hfb, by simp [h1]⟩) hs
   · intro b p hp
     by_cases hb : b = 2665
     · subst hb
@@ -356,7 +318,7 @@ theorem postHandoff {NB T cap H N : Nat} {tk : Nat → Nat} {W : Nat → Option 
     (hBH : (mlxOf sE.ffi).next + H ≤ (mlxOf s0.ffi).next + B.H)
     (hBN : (mlxOf sE.ffi).nnext + N ≤ (mlxOf s0.ffi).nnext + B.N) {x : SegInst FF}
     (hr : RelF FF (FullRXD { setupP with rest := machReads T tk } NB) W x.M x.ν x.K sE SE x.t x.C)
-    (hq : x.K.fr 2665 = some ([], π.map natV)) (hdom : ∀ a, x.K.fr a ≠ none → a = 2665 ∨ W a ≠ none)
+    (hq : x.K.fr 2665 = some ([], π.map natV)) (hdom : ∀ a, x.K.fr a ≠ none ↔ a = 2665 ∨ W a ≠ none)
     (hlo : x.K.lo = setupP.lo) (hhi : x.K.hi = setupP.E) (hD : x.K.D ≤ cap) (hoff : 13 ≤ x.K.D)
     (hres : ∀ j, j < 9 → x.ν j = machVal T tk j) (hnat : Compose.NativeAt H N sE x.t)
     (hval : ∀ i e, nth? tab0 i = some e → e.eval (valL ρ T tk π.length 1 0) = e.eval (Shift.valuation θ x.ν))
