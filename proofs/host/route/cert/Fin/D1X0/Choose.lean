@@ -13,8 +13,8 @@ open Host.Route.Cert.Fin
 /-! # The D1X0 class's first forward: its choice of carriers -/
 
 noncomputable def endLoad : St Host.Load.LSt :=
-  ⟨PRE_first_tail_x0_r0_suffix.s0.heap, PRE_first_tail_x0_r0_suffix.s0.next, PRE_first_tail_x0_r0_suffix.s0.ctl, PRE_first_tail_x0_r0_suffix.s0.stack,
-    ⟨PRE_first_tail_x0_r0_suffix.s0.aux.jobs, Host.Load.Layers.toLoad PRE_first_tail_x0_r0_suffix.s0.aux.ffi, PRE_first_tail_x0_r0_suffix.s0.aux.trace, PRE_first_tail_x0_r0_suffix.s0.aux.stores⟩⟩
+  ⟨PRE_first_tail_x0_r0_suffix.input.heap, PRE_first_tail_x0_r0_suffix.input.next, PRE_first_tail_x0_r0_suffix.input.ctl, PRE_first_tail_x0_r0_suffix.input.stack,
+    ⟨PRE_first_tail_x0_r0_suffix.input.aux.jobs, Host.Load.Layers.toLoad PRE_first_tail_x0_r0_suffix.input.aux.ffi, PRE_first_tail_x0_r0_suffix.input.aux.trace, PRE_first_tail_x0_r0_suffix.input.aux.stores⟩⟩
 noncomputable def startLoad : St Host.Load.LSt :=
   ⟨PRE_first_tail_x0_r0_body.s0.heap, PRE_first_tail_x0_r0_body.s0.next, PRE_first_tail_x0_r0_body.s0.ctl, PRE_first_tail_x0_r0_body.s0.stack,
     ⟨PRE_first_tail_x0_r0_body.s0.aux.jobs, Host.Load.Layers.toLoad PRE_first_tail_x0_r0_body.s0.aux.ffi, PRE_first_tail_x0_r0_body.s0.aux.trace, PRE_first_tail_x0_r0_body.s0.aux.stores⟩⟩
@@ -22,7 +22,7 @@ noncomputable def startLoad : St Host.Load.LSt :=
 open Lean Meta in
 run_elab do
   let pre ← getCurrNamespace
-  for (name, source) in [(`endSrv, ``PRE_first_tail_x0_r0_suffix.S0), (`startSrv, ``PRE_first_tail_x0_r0_body.S0), (`envSrv, ``Host.Load.Run.Prompt.P.S0)] do
+  for (name, source) in [(`startSrv, ``PRE_first_tail_x0_r0_body.S0), (`envSrv, ``Host.Load.Run.Prompt.P.S0)] do
     let value ← Meta.reduce (mkConst source) (skipTypes := true)
     addDecl (.defnDecl { name := pre ++ name, levelParams := [], type := mkConst ``SSrv, value := value, hints := .regular 0, safety := .safe })
 
@@ -33,7 +33,7 @@ def vars : VarV := [(9, 0, 1)]
 def Ed : List (RNode SDim InKey) := (Host.Load.Run.Full.Expected.graph.map (SimGraph.mapN SDim.lit)).take 4010
 
 set_option interpreter.prefer_native false in
-simgraph_choose_fin choice : (endLoad, endSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
+simgraph_choose_fin choice : (endLoad, PRE_first_tail_x0_r0_suffix.inputSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
   box, vars, -2, 15235, 15235, Ed
 
 end Host.Route.Cert.Fin.D1X0

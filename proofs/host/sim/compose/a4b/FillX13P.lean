@@ -43,7 +43,7 @@ def stageWith {F : Ffi} {us us' : List Row} {obls : List Obl} {A B : Cls.Inst �
   O := p.O
   chk := hchk
   ok r hr i hi ho := (h r hr).elim (fun h' => p.ok r h' i hi ho)
-    (fun h' => StageCall.intro (convOff hA (h' i hi)) (CutStep.refl _) (CutConv.refl _))
+    (fun h' => StageCall.intro (CutConv.refl _) (stepOff hA (h' i hi) _) (CutConv.refl _))
 
 /-- A glue over one row's template. -/
 def glueOne {F : Ffi} {r0 : Row} {A B : Cls.Inst → ICut F} (m : List (Nat × Q)) (O : List Ans) (n : Nat)
@@ -58,7 +58,7 @@ def glueOne {F : Ffi} {r0 : Row} {A B : Cls.Inst → ICut F} (m : List (Nat × Q
 section X1
 
 kernel_rfl c1Cr : Host.Route.Cert.X1.cert.carriers = Host.Route.Cert.Fin.VW.finCert.ps
-kernel_rfl g2Chk1 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.npsMap)
+kernel_rfl g2Chk1 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.X1.npsMap)
   PRE_first_tail_x1_r0.S40.oracle) = true
 
 /-- The first tail's rows, but x1's, are of another length. -/
@@ -188,7 +188,7 @@ noncomputable def piecesX1 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 15938355
           nps_DTdec_first__start__g1_DTdec_first := stageOff pinC (off1 hL1 hL2 (by simp))
           g1_DTdec_first := glueNone none0
           disp_D1__g1_DTdec_first__g2_first := stageNone none0
-          g2_first := glueWith (glueOne (r0 := first_tail_x1.r0) VWFirst.npsMap PRE_first_tail_x1_r0.S40.oracle 7
+          g2_first := glueWith (glueOne (r0 := first_tail_x1.r0) VWFirst.X1.npsMap PRE_first_tail_x1_r0.S40.oracle 7
               (List.all_eq_true.mp g2Chk1 _ (by simp)) (fun i _ ho => VWFirst.X1.g2 15235 T tk π i (hM i.L) ho.1))
             (fun r hr => List.all_eq_true.mp g2Chk1 r hr) pinG (g2Own1 hL1 hL2)
           fwd_D1_cold_DFirst__g2_first__g3d_first := fwdOff pinF (off1 hL1 hL2 (by simp))
@@ -256,7 +256,7 @@ end X1
 section X2
 
 kernel_rfl c2Cr : Host.Route.Cert.X2.cert.carriers = Host.Route.Cert.Fin.VW.finCert.ps
-kernel_rfl g2Chk2 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.npsMap)
+kernel_rfl g2Chk2 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.X2.npsMap)
   PRE_first_tail_x2_r0.S40.oracle) = true
 
 /-- The first tail's rows, but x2's, are of another length. -/
@@ -386,7 +386,7 @@ noncomputable def piecesX2 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 15938355
           nps_DTdec_first__start__g1_DTdec_first := stageOff pinC (off2 hL1 hL2 (by simp))
           g1_DTdec_first := glueNone none0
           disp_D1__g1_DTdec_first__g2_first := stageNone none0
-          g2_first := glueWith (glueOne (r0 := first_tail_x2.r0) VWFirst.npsMap PRE_first_tail_x2_r0.S40.oracle 7
+          g2_first := glueWith (glueOne (r0 := first_tail_x2.r0) VWFirst.X2.npsMap PRE_first_tail_x2_r0.S40.oracle 7
               (List.all_eq_true.mp g2Chk2 _ (by simp)) (fun i _ ho => VWFirst.X2.g2 15235 T tk π i (hM i.L) ho.1))
             (fun r hr => List.all_eq_true.mp g2Chk2 r hr) pinG (g2Own2 hL1 hL2)
           fwd_D1_cold_DFirst__g2_first__g3d_first := fwdOff pinF (off2 hL1 hL2 (by simp))
@@ -454,9 +454,9 @@ end X2
 section X3
 
 kernel_rfl c3Cr : Host.Route.Cert.X3.cert.carriers = Host.Route.Cert.Fin.VW.finCert.ps
-kernel_rfl g2Chk3 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.npsMap)
+kernel_rfl g2Chk3 : ([first_tail_x0.r0, first_tail_x1.r0, first_tail_x2.r0, first_tail_x3.r0, first_tail_x4.r0, first_tail_x5.r0, first_tail_x6.r0, first_tail_x7.r0, first_tail_x8.r0, first_tail_x9.r0, first_tail_x10.r0, first_tail_x11.r0, first_tail_x12.r0, first_tail_x13.r0, first_tail_x14.r0, first_tail_x15.r0, first_tail_x16.r0, first_tail_x17.r0, first_tail_x18.r0, first_tail_x19.r0, first_tail_x20.r0, first_tail_x21.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.X3.npsMap)
   PRE_first_tail_x3_r0.S40.oracle) = true
-kernel_rfl dispChk3 : ([first_tail_x3.r0, first_tail_x4.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.npsMap)
+kernel_rfl dispChk3 : ([first_tail_x3.r0, first_tail_x4.r0].all fun r => goodLin r.ps (varsOf r.V VWFirst.X3.npsMap)
   PRE_first_tail_x3_r0.st2.S0.oracle) = true
 
 /-- The first tail's rows, but x3's, are of another length. -/
@@ -598,7 +598,7 @@ noncomputable def piecesX3 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 15938355
           nps_DTdec_first__start__g1_DTdec_first := stageOff pinC (off3 hL1 hL2 (by simp))
           g1_DTdec_first := glueNone none0
           disp_D1__g1_DTdec_first__g2_first := stageNone none0
-          g2_first := glueWith (glueOne (r0 := first_tail_x3.r0) VWFirst.npsMap PRE_first_tail_x3_r0.S40.oracle 7
+          g2_first := glueWith (glueOne (r0 := first_tail_x3.r0) VWFirst.X3.npsMap PRE_first_tail_x3_r0.S40.oracle 7
               (List.all_eq_true.mp g2Chk3 _ (by simp)) (fun i _ ho => VWFirst.X3.g2 15235 T tk π i (hM i.L) ho.1))
             (fun r hr => List.all_eq_true.mp g2Chk3 r hr) pinG (g2Own3 hL1 hL2)
           fwd_D1_cold_DFirst__g2_first__g3d_first := fwdOff pinF (off3 hL1 hL2 (by simp))
@@ -610,7 +610,7 @@ noncomputable def piecesX3 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 15938355
           g1_DTtail_first := glueRestrict sub21 (VWFirst.g1_DTtail_first 15235 T tk π hπ M hM)
           disp_V23__g1_DTtail_first__g2_first := stageOff pinD (off3 hL1 hL2 (by simp))
           disp_V4__g1_DTtail_first__g2_first := stageOff pinD (off3 hL1 hL2 (by simp))
-          disp_V58__g1_DTtail_first__g2_first := stageWith VWFirst.X3.disp_V58__g1_DTtail_first__g2_first 15235 T tk π M hM hn
+          disp_V58__g1_DTtail_first__g2_first := stageWith (VWFirst.X3.disp_V58__g1_DTtail_first__g2_first 15235 T tk π M hM hn)
             (fun r hr => List.all_eq_true.mp dispChk3 r hr) pinD (dispOwn3 hL1 hL2)
           fwd_V23_cold_WFirst__g2_first__g3d_first := fwdOff pinF (off3 hL1 hL2 (by simp))
           fwd_V4_cold_WFirst__g2_first__g3d_first := fwdOff pinF (off3 hL1 hL2 (by simp))

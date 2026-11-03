@@ -1,0 +1,23 @@
+import host.sim.compose.PostChain
+import host.sim.template.a4pre_plx0_call.Good
+import host.sim.template.a4pre_plx0_call.K0
+import host.sim.template.a4pre_plx0_call.Accept
+import host.sim.template.a4pre_plx0_call.H0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose.Post.PL.X0Call
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Load.Run.Tpl
+open Host.Ts.Sim.Compose Host.Ts.Sim.Compose.Post
+
+kernel_rfl top1 : noRetBlock PRE_plx0_call.s1 = true
+kernel_rfl br0_1 : bridgeOf PRE_plx0_call.s1.ffi = bridgeOf PRE_plx0_call.s0.ffi
+kernel_rfl cnt0_1 : countersOkB PRE_plx0_call.s0 PRE_plx0_call.s1 = true
+
+abbrev n0 : Nat := ((nth? PRE_plx0_call.ks 0).getD 0)
+
+theorem c0 (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV (head [2826777]) T tk π.length ν → Good ν PRE_plx0_call.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut0 [2826777] NB T tk cap nI π PRE_plx0_call.s0 PRE_plx0_call.S0)) (withMem Tr (indexedCut0 [2826777] NB T tk cap nI π PRE_plx0_call.s1 PRE_plx0_call.S1)) n0 :=
+  (glueM (NB := NB) (T := T) (tk := tk) (cap := cap) (nI := nI) (π := π) (modeOk0 [2826777] NB T tk cap hcap) PRE_plx0_call.accepted0 PRE_plx0_call.run0 top1 hg (Host.Load.Boot.replay_active _) br0_1 cnt0_1 hT rfl)
+
+end Host.Ts.Sim.Compose.Post.PL.X0Call

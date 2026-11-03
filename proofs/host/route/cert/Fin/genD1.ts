@@ -24,14 +24,14 @@ if (!nIns) {
 /-! # The ${Tag} class's first forward: its choice of carriers -/
 
 noncomputable def endLoad : St Host.Load.LSt :=
-  ${load(`${S}.s0`)}
+  ${load(`${S}.input`)}
 noncomputable def startLoad : St Host.Load.LSt :=
   ${load(`${Bd}.s0`)}
 
 open Lean Meta in
 run_elab do
   let pre ← getCurrNamespace
-  for (name, source) in [(\`endSrv, \`\`${S}.S0), (\`startSrv, \`\`${Bd}.S0), (\`envSrv, \`\`Host.Load.Run.Prompt.P.S0)] do
+  for (name, source) in [(\`startSrv, \`\`${Bd}.S0), (\`envSrv, \`\`Host.Load.Run.Prompt.P.S0)] do
     let value ← Meta.reduce (mkConst source) (skipTypes := true)
     addDecl (.defnDecl { name := pre ++ name, levelParams := [], type := mkConst \`\`SSrv, value := value, hints := .regular 0, safety := .safe })
 
@@ -42,16 +42,16 @@ def vars : VarV := [(9, 0, 1)]
 def Ed : List (RNode SDim InKey) := (Host.Load.Run.Full.Expected.graph.map (SimGraph.mapN SDim.lit)).take 4010
 
 set_option interpreter.prefer_native false in
-simgraph_choose_fin choice : (endLoad, endSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
+simgraph_choose_fin choice : (endLoad, ${S}.inputSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
   box, vars, -2, ${tok}, ${tok}, Ed
 ` + end);
 } else {
   const P = 4000, N = Number(nF);
-  await write("Data", hdr([`${m}.Choose`, "host.route.cert.Seg", "host.simgraph.prompt.ChooseRoute"], "\nopen Host.Ts.Sim.Full (mlxOf)") + `
+  await write("Data", hdr([`${m}.Choose`, "host.route.cert.Seg", "host.simgraph.prompt.ChooseRoute", `host.sim.template.a4pre_${chain}_suffix.m.B0`], "\nopen Host.Ts.Sim.Full (mlxOf)") + `
 /-! # The ${Tag} class's first forward: what its certificate reads -/
 
 noncomputable def native : Ffi.St := mlxOf ${S}.s0.ffi
-noncomputable abbrev Gs := gsV native ${S}.S0 box vars (-2)
+noncomputable abbrev Gs := gsV native ${S}.inputSrv box vars (-2)
 def insT : InKey → Option Nat := inputsOf choice.inputs
 ` + end);
   await write("Check", hdr([`${m}.Data`]) + `
@@ -104,11 +104,17 @@ theorem inputs_ok : InputsOkAt 15235 choice.inputs ps ${tok} = true := by
   simpa only [List.drop_zero] using inputs_tail0
 `;
   await write("Ins", ins + end);
+  await write("Tab", hdr([`${m}.Data`, `host.sim.template.a4pre_${chain}_suffix.m.B3`]) + `
+kernel_rfl input_tab : ${S}.inputSrv.tab = ${Bd}.endSrv.tab
+
+theorem tab_eq : ${S}.inputSrv.tab = ${S}.S0.tab :=
+  input_tab.trans ${S}.s0_tab.symm
+` + end);
   await write("Cert", hdr([`${m}.Check`, `${m}.Down`, `${m}.Below`, `${m}.Ins`, "host.route.cert.Fin.D1Fwd"], "\nopen Host.Mlx.SimGraph.Iter") + `
 /-! # The ${Tag} class's first forward: its certificate -/
 
 /-- **The ${Tag} class's first forward, checked.** -/
-noncomputable def d1Cert : D1Cert native ${S}.S0 box vars where
+noncomputable def d1Cert : D1Cert native ${S}.inputSrv box vars where
   cert := choice.cert
   insT := insT
   tok := ${tok}

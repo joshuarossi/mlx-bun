@@ -1,4 +1,5 @@
 import host.route.cert.Fin.D1X0.Cert
+import host.route.cert.Fin.D1X0.Tab
 import host.route.FamFwd
 import host.sim.compose.a4b.x0.sfx.VWForward
 set_option maxRecDepth 1000000
@@ -63,7 +64,7 @@ theorem hfwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.wei
       | [a, b], _ => exact ⟨a, b, rfl⟩
     rfl
   refine hfwdD1 P KR NE net env leaves typed hstep d1Cert (Nat.le_refl _) hL ?_ (hlt _ hmem) Cr (hL ▸ hCr) hmr hband hrope ?_
-    (fun tab hC j e h => hC.val (hrel.srv.num j e h)) ?_ hle hg ht i.L hm
+    (fun tab hC j e h => hC.val (hrel.srv.num j e (tab_eq ▸ h))) ?_ hle hg ht i.L hm
   · intro j l h hg'
     unfold Box.get box at hg'
     by_cases h9 : j = 9
