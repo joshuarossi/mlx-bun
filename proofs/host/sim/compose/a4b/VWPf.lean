@@ -15,13 +15,14 @@ off the tail's table at the row (`h11`, `h16`). The template is at or below ever
 map is untouched, so the retained property crosses. -/
 theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ : List Nat × List SymE} {O : BodyOff}
     {m : List (Nat × Q)} {s0 s1 : St FF.S} {S0 S1 : SSrv} {D : RData} {inv : PTrie Nat} {θ : Nat → SymE}
-    {P0 : LoadP} {nJ cap : Nat} {Tr : SegInst FF → Prop}
+    {P0 : LoadP} {nJ cap e : Nat} {Tr : SegInst FF → Prop}
     (F : PfFacts s0 s1 S0.tab (S1.tab ++ S0.tab.map (·.subst θ)) D inv θ P0 nJ [] [VWFrames.chunk, VWFrames.buffer, VWFrames.view] wideGPf)
     (hT : ∀ x y, NTrack x y → Tr x → Tr y)
     (hL : i.L ≤ 2048)
     (hnodes : (mlxOf s1.ffi).nnext ≤ P0.NL) (hNN : D.nn0 = D.nn1) (hNK : PTrie.keys D.node = [])
-    (hgrow : s0.next ≤ s1.next) (sameH : (mlxOf s1.ffi).next ≤ (mlxOf s0.ffi).next)
+    (hgrow : s0.next ≤ s1.next) (sameH : (mlxOf s1.ffi).next ≤ (mlxOf s0.ffi).next + e)
     (sameN : (mlxOf s1.ffi).nnext ≤ (mlxOf s0.ffi).nnext)
+    (hOH : O.H ≤ 2 ^ 40) (hON : O.N ≤ 2 ^ 40)
     (hθ : ∀ j, j ≠ 11 → j ≠ 14 → j ≠ 16 → j ≠ 30 → j ≠ 31 → θ j = .var j) (hθ14 : θ 14 = .var 17)
     {c30 c31 : Nat} (h30 : ∀ ν : Nat → F64, (θ 30).eval ν = F64.ofNat c30)
     (h31 : ∀ ν : Nat → F64, (θ 31).eval ν = F64.ofNat c31) (hc30 : c30 ≤ 2 ^ 20) (hc31 : c31 ≤ 2 ^ 20)
@@ -31,7 +32,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     (h16 : ∀ ν, MapOk ν i m → (θ 16).eval ν = F64.ofNat (capL (i.L - 1)))
     (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589) (hE : D.a 12504 = 12504)
     (hcap : O.D + (s1.next - s0.next) ≤ cap) (hbound : cap < Sim.bound) :
-    CutConv (withMem Tr (bodyCore NB T tk π i Θ O m s1 S1)) (withMem Tr (Pf.cut NB T tk π cap O.H O.N s0 S0)) := by
+    CutConv (withMem Tr (bodyCore NB T tk π i Θ O m s1 S1)) (withMem Tr (Pf.cut NB T tk π cap (O.H + e) O.N s0 S0)) := by
   rintro x ⟨K0, hr, hb, hnat, hip, hins, hmap, hdf⟩ ⟨⟨hfresh, hids⟩, htr⟩
   have hlen : π.length = i.L := hb.length
   have hfr : ∀ a, x.K.fr a ≠ none ↔ a ∈ 2665 :: ([] ++ [VWFrames.chunk, VWFrames.buffer, VWFrames.view]) :=
@@ -51,7 +52,7 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
   have hrP : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) _ [] M1 x.ν x.K s1
       ⟨S1.tab ++ S0.tab.map (·.subst θ), []⟩ x.t x.C := hp.toJ (hr.ffi.2.ext hext)
   have hrel := pfRel F (π := π) (kw := []) hrP hfr (fun _ h => nomatch h)
-    (newFrames (L := wideListPf) (fun _ => rfl) hfr (by decide)) hlo hhi hP (fun _ h => nomatch h) (linkRoomLe hr sameH sameN) hNB hD
+    (newFrames (L := wideListPf) (fun _ => rfl) hfr (by decide)) hlo hhi hP (fun _ h => nomatch h) (linkRoomAt hnat hOH hON F.hi1 F.nhi1) hNB hD
     (by omega)
   have hoff : x.t.next = s1.next + x.K.D := hr.offset
   let y : SegInst FF := ⟨((M1.after D.map).rebig (mlxOf s0.ffi).next setupP.E (mlxOf x.t.ffi).next).withJs,
@@ -112,6 +113,8 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
   · change M1.a (D.a 2586) = 2586 ∧ M1.a (D.a 2589) = 2589
     rw [hB, hC, hext.a]
     exact hids
-  · exact ⟨Nat.le_trans hnat.1 (Nat.add_le_add_right sameH _), Nat.le_trans hnat.2 (Nat.add_le_add_right sameN _)⟩
+  · have h1 : (mlxOf x.t.ffi).next ≤ (mlxOf s1.ffi).next + O.H := hnat.1
+    have h2 : (mlxOf x.t.ffi).nnext ≤ (mlxOf s1.ffi).nnext + O.N := hnat.2
+    exact ⟨by omega, by omega⟩
 
 end Host.Ts.Sim.Compose.VWFirst

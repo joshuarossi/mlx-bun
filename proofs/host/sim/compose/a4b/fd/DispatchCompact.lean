@@ -18,7 +18,7 @@ kernel_rfl sameNext2 : (mlxOf PRE_fd_vw_r0.s22.ffi).next = (mlxOf PRE_fd_vw_r0.s
 kernel_rfl sameNnext2 : (mlxOf PRE_fd_vw_r0.s22.ffi).nnext = (mlxOf PRE_fd_vw_r0.s23.ffi).nnext
 
 theorem dispatchVal (ν : Nat → F64) : Shift.valuation θZ2 ν = ν := rfl
-kernel_rfl dispatchFixNode : PRE_fd_vw_r0.kappa1.node 15235 = 15235
+kernel_rfl dispatchFixNode : PRE_fd_vw_r0.kappa1.node 19057 = 19057
 
 theorem dispatch_compact {NB T cap H N capB : Nat} {tk : Nat → Nat} {π : List Nat} {i : Lin.Cls.Inst} {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hcapB : cap + 18 ≤ capB) (hcapM : capB ≤ 131072) :
@@ -91,8 +91,8 @@ theorem dispatch_compact {NB T cap H N capB : Nat} {tk : Nat → Nat} {π : List
   have hcW := hcJ
   have pairν : (dispatchPair x).ν = x.ν := dispatchVal x.ν
   have pairfr : (dispatchPair x).K.fr = x.K.fr := hfr
-  have node : (dispatchPair x).M.node 15235 = x.M.node 15235 := by
-    change x.M.node (PRE_fd_vw_r0.kappa1.node 15235) = x.M.node 15235
+  have node : (dispatchPair x).M.node 19057 = x.M.node 19057 := by
+    change x.M.node (PRE_fd_vw_r0.kappa1.node 19057) = x.M.node 19057
     rw [dispatchFixNode]
   have aold : ∀ a, a < 2823922 → (dispatchPair x).M.a a = x.M.a a := by
     intro a ha

@@ -47,7 +47,7 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N
     rw [PRE_fd_vw_r0.mergeTab1]
     exact hm
   have ng := d.ngrow (dispatchGrowSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length) hb.valuation hb.context h0 hrun
-  have ip : InputAt (lastRows π) (M'.node 15235) t' C' := by
+  have ip : InputAt (lastRows π) (M'.node 19057) t' C' := by
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun)
   have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) cap := by

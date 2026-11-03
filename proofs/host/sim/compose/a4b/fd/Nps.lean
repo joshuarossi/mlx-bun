@@ -87,12 +87,12 @@ theorem low_off {j : Nat} (hj : j < 1000) : j ∉ PRE_fd_vw_r0.ws0 := fun hm => 
 
 theorem nps_merged {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hcap : cap ≤ 131072)
-    (horacle : ∀ x : SegInst FF, PfBook T tk cap π x → Good x.ν PRE_fd_vw_r0.st0.S0.oracle) :
+    (horacle : ∀ x : SegInst FF, PfBook T tk cap π x → Mem x → Good x.ν PRE_fd_vw_r0.st0.S0.oracle) :
     CutStep (withMem Mem (Pf.cut NB T tk π cap H N PRE_fd_vw_r0.s0 PRE_fd_vw_r0.S0))
       (withMem Mem (mergedCut NB T tk π cap H N)) (PRE_fd_vw_r0.st0.tpl.n + 1) := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hb⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   have hk : Disp.KpJ FDFrames.startJ 131072 x.K := ⟨hb.context.1, Nat.le_trans hb.context.2 hcap⟩
-  have h0 := hr.withOracle (horacle x hb)
+  have h0 := hr.withOracle (horacle x hb hmem)
   change RelB FF _ wideGPf [] x.M x.ν x.K PRE_fd_vw_r0.s0
     ⟨PRE_fd_vw_r0.S0.tab, PRE_fd_vw_r0.st0.S0.oracle⟩ x.t x.C at h0
   rw [← PRE_fd_vw_r0.tab0_0] at h0

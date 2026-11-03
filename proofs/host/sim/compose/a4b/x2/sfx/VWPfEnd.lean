@@ -22,7 +22,7 @@ kernel_rfl pfNN : PFW2.R.data.nn0 = PFW2.R.data.nn1
 kernel_rfl pfNK : PTrie.keys PFW2.R.data.node = []
 kernel_rfl pfGrow : Nat.ble PRE_pf_vw.s0.next PRE_first_tail_x2_r0_suffix.s8.next = true
 kernel_rfl pfDiff : PRE_first_tail_x2_r0_suffix.s8.next - PRE_pf_vw.s0.next = 0
-kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x2_r0_suffix.s8.ffi).next (mlxOf PRE_pf_vw.s0.ffi).next = true
+kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x2_r0_suffix.s8.ffi).next ((mlxOf PRE_pf_vw.s0.ffi).next + 0) = true
 kernel_rfl pfNodes : Nat.ble (mlxOf PRE_first_tail_x2_r0_suffix.s8.ffi).nnext (mlxOf PRE_pf_vw.s0.ffi).nnext = true
 kernel_rfl pfBelow : Nat.ble (mlxOf PRE_first_tail_x2_r0_suffix.s8.ffi).nnext PF2.P0.NL = true
 kernel_rfl pfA : PFW2.R.data.a 2590 = 2590
@@ -52,7 +52,7 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
   have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPf (c30 := 16) (c31 := 16) PF2.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes)
+  exact toPf (c30 := 16) (c31 := 16) PF2.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
     (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]

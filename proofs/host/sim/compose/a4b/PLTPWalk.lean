@@ -19,6 +19,6 @@ def PLTP.frames : List Nat := PRE_pl_tail.frames
 def PLTP.ghosts : List Nat := PRE_pl_tail.ghosts
 def PLTP.maps : List Nat := PRE_pl_tail.maps
 set_option interpreter.prefer_native true in
-tpl_restart_pad PLTP.R : PLTP, PLTP 1 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld)
+tpl_restart_pad PLTP.R : PLTP, PLTP 1 («world» := Host.Load.Run.Tpl.PRE_first_tail_x15_r0.nativeWorld, primNums := true)
 
 end Host.Load.Run.Tpl

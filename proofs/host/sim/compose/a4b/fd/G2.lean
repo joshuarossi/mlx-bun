@@ -27,7 +27,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : 
     (congrFun (congrFun typedAccepted23 _) _) (congrFun (congrFun typedRun23 _) _) top24 hr
   have ng := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted23 _) _) (congrFun (congrFun typedRun23 _) _) hb.valuation hb.context (hr.withOracle hgood) hrun
-  have ip : InputAt (lastRows π) (M'.node 15235) t' C' := by
+  have ip : InputAt (lastRows π) (M'.node 19057) t' C' := by
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun)
   have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) cap := by

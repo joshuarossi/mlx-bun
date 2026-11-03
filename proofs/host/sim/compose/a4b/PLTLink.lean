@@ -16,7 +16,7 @@ The walk leaves the nodes alone and the offset. The tail's variables take litera
 noncomputable abbrev pltKeys : List Nat := (PLTP.R.theta ++ PLT.thetaX).map Prod.fst
 
 kernel_rfl pltKept : ((List.range 9) ++ [9, 10, 11, 16]).all (fun j => decide (PLT.θ j = SymE.var j)) = true
-kernel_rfl pltSmall : (pltKeys.all fun j => [200].contains j || imgSmall [1, 3, 4, 5, 6, 7, 8, 1536] (PLT.θ j)) = true
+kernel_rfl pltSmall : (pltKeys.all fun j => [200].contains j || imgSmall [0, 1, 3, 4, 5, 6, 7, 8, 1536] (PLT.θ j)) = true
 kernel_rfl pltDims : dimsLitB PLT.θ = true
 kernel_rfl plt20 : litAt PLT.θ 20 6 = true
 kernel_rfl plt22 : PLT.θ 22 = .var 22
@@ -53,7 +53,7 @@ theorem hlinkOne {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {Mem Mem
     (by rw [pltNext]) (by rw [pltNext]; omega) hbound
     (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide)) (plt_kept (by decide))
     (fun j hj => plt_kept (List.mem_append_left _ (List.mem_range.mpr hj)))
-    (fun x hm hv => valOf (off := [200]) hv (fun _ hj => thetaOf_off hj) pltSmall (by
+    (fun x hm hv => valOf (cand := [0, 1, 3, 4, 5, 6, 7, 8, 1536]) (off := [200]) hv (fun _ hj => thetaOf_off hj) pltSmall (by
       intro j hj
       simp only [List.mem_cons, List.not_mem_nil, or_false] at hj
       subst hj

@@ -25,7 +25,7 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 131072 K' ∧
       K'.fr = (g1Framed K π).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
       (∃ asR ret tr, K'.base' =
-        ⟨chars!"mlx_array_new_data", .jsPtr (M'.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr) ∧ InputAt (lastRows π) (M'.node 15235) t' C' ∧
+        ⟨chars!"mlx_array_new_data", .jsPtr (M'.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr) ∧ InputAt (lastRows π) (M'.node 19057) t' C' ∧
       Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   have hlenN : (lastRows π).length = 1 := lastRows_length h1
   have rr1 : runOk FF PRE_fd_vw_r0.okB1 71 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 =
@@ -95,12 +95,12 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have ng1920 := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted20 _) _) (congrFun (congrFun typedRun20 _) _) hvb hk3
     (h19.withOracle hg.s37) r1920
-  have ip19 : InputAt (lastRows π) (M19.node 15235) t19 C18 := by
+  have ip19 : InputAt (lastRows π) (M19.node 19057) t19 C18 := by
     rw [e1819.node]
     unfold InputAt
     rw [ffi19, e1618.node]
     exact ip18
-  have ip20 : InputAt (lastRows π) (M20.node 15235) t20 C20 := by
+  have ip20 : InputAt (lastRows π) (M20.node 19057) t20 C20 := by
     rw [e1920.node]
     exact ip19.grow ng1920 (runC_le _ _ _ _ _ r1920)
   have he := (((((((((e13.trans e46 (by decide)).trans e67 (by decide)).trans e79 (by decide)).trans

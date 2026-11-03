@@ -25,8 +25,7 @@ theorem copied {M : Map} {π : List Nat} (hlen : π.length = 1) :
   unfold copy
   rw [hds]
   change (tokenBytes π).take ((1 * (1 * 1)) * 4) = tokenBytes π
-  simp only [Nat.mul_one, Nat.one_mul]
-  rw [← hlen, ← tokenBytes_length π, List.take_length]
+  exact List.take_of_length_le (by rw [tokenBytes_length, hlen])
 
 theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : CSrv}
     {y y' : FF.S} {π : List Nat} {ret : Ret} {ws : List (Nat × Nat × List Byte)}
@@ -38,8 +37,8 @@ theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : C
     (hc : interpC (FF.call y chars!"mlx_array_new_data"
       (.jsPtr (M.a FDFrames.buffer) 0 (tokenBytes π) :: ND.ndArgs.map M.arg)).run C =
         some (some (y', ret, ws), C')) :
-    M.node 15235 < (mlxOf y').nnext ∧
-      HostInt32 (concrete C'.val) (mlxOf y') (M.node 15235) (π.map Int.ofNat) [1, π.length] := by
+    M.node 19057 < (mlxOf y').nnext ∧
+      HostInt32 (concrete C'.val) (mlxOf y') (M.node 19057) (π.map Int.ofNat) [1, π.length] := by
   let sh := nthD (Arg.big 0) ND.ndArgs 0
   let nd := nthD (Arg.big 0) ND.ndArgs 1
   let dt := nthD (Arg.big 0) ND.ndArgs 2
@@ -58,7 +57,7 @@ theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : C
   rw [he] at hc
   change some (some (z, Ret.big (Int.ofNat (mlxOf y).next), []), C) = some (some (y', ret, ws), C') at hc
   cases hc
-  have ej : M.node 15235 = (mlxOf y).nnext := by
+  have ej : M.node 19057 = (mlxOf y).nnext := by
     simpa only [Values.pre_nnext] using hr.node_next
   rw [ej, hz]
   refine ⟨Nat.lt_succ_self _, tokenBytes π, M.dims [.lit 1, .lit 1], ?_, (show (tokenBytes π).mapM (concrete C.val).byte = some (cellsBytes (π.map Int.ofNat)) from bytes_read hvc C), ?_⟩

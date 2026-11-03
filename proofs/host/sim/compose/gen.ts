@@ -1960,7 +1960,7 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
   }
   if (!onlySites.length && !onlyGlues.length && bodyEnd && pfArg) {
     // the step's end at the shared pre-final template: `<link>:<walk>:<template>:<c30>:<c31>`
-    const [PF, PW, PT, c30, c31, pfDiff] = pfArg.split(":") as [string, string, string, string, string, string];
+    const [PF, PW, PT, c30, c31, pfDiff, pfExtra = "0"] = pfArg.split(":") as [string, string, string, string, string, string, string?];
     if (!pfDiff) fail("--pf <link>:<walk>:<template>:<c30>:<c31>:<the end's next above the template>");
     const endK = chain.T1 as number, endO = Ds.get(stages.length) ?? fail("no end offset");
     const [, , endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
@@ -1976,7 +1976,7 @@ kernel_rfl pfNN : ${PW}.R.data.nn0 = ${PW}.R.data.nn1
 kernel_rfl pfNK : PTrie.keys ${PW}.R.data.node = []
 kernel_rfl pfGrow : Nat.ble ${PT}.s0.next ${X}.s${endK}.next = true
 kernel_rfl pfDiff : ${X}.s${endK}.next - ${PT}.s0.next = ${pfDiff}
-kernel_rfl pfH : Nat.ble (mlxOf ${X}.s${endK}.ffi).next (mlxOf ${PT}.s0.ffi).next = true
+kernel_rfl pfH : Nat.ble (mlxOf ${X}.s${endK}.ffi).next ((mlxOf ${PT}.s0.ffi).next + ${pfExtra}) = true
 kernel_rfl pfNodes : Nat.ble (mlxOf ${X}.s${endK}.ffi).nnext (mlxOf ${PT}.s0.ffi).nnext = true
 kernel_rfl pfBelow : Nat.ble (mlxOf ${X}.s${endK}.ffi).nnext ${PF}.P0.NL = true
 kernel_rfl pfA : ${PW}.R.data.a 2590 = 2590
@@ -1999,14 +1999,14 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
     {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
     CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ${endO} bodyM ${X}.s${endK} ${X}.S${endK}))
-      (withMem Tr (Pf.cut NB T tk π cap ${endH} ${endN} ${PT}.s0 ${PT}.S0)) := by
+      (withMem Tr (Pf.cut NB T tk π cap ${+endH! + +pfExtra} ${endN} ${PT}.s0 ${PT}.S0)) := by
   obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
   have hcapR := rowCap hr hi
   have h9 : ∀ ν, MapOk ν i bodyM → ν 9 = F64.ofNat i.L := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
   have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPf (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes)
+  exact toPf (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
     (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]
@@ -2064,7 +2064,7 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
       CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
       (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens → y.M.a 12504 = x.M.a 12504 → Mem i.L x → Mem' i.L y) :
     FwdPiece FF uses obls (fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
-      (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap ${endH} ${endN} ${PT}.s0 ${PT}.S0)) where
+      (fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap ${+endH! + +(pfArg.split(":")[6] ?? 0)} ${endN} ${PT}.s0 ${PT}.S0)) where
   m := [(9, .L)]
   np := 0
   nb := 0 + ${Tn}.bodyN + ${foldN}

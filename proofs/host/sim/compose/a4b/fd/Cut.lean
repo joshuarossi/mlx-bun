@@ -38,7 +38,7 @@ noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap 
   R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] x.M x.ν x.K s S x.t x.C ∧
-    ForwardBook i π K0 x cap ∧ InputAt (lastRows π) (x.M.node 15235) x.t x.C ∧
+    ForwardBook i π K0 x cap ∧ InputAt (lastRows π) (x.M.node 19057) x.t x.C ∧
     setupInputs T tk x ∧ MapOk x.ν i fdMap
   B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt H N s x.t
 
@@ -68,11 +68,12 @@ kernel_rfl bridge16 : bridgeOf PRE_fd_vw_r0.s16.ffi = bridgeOf PRE_fd_vw_r0.s2.f
 kernel_rfl bridge21 : bridgeOf PRE_fd_vw_r0.s21.ffi = bridgeOf PRE_fd_vw_r0.s2.ffi
 
 theorem g1 {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
-    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hrow : InRow final_ord.r0 i) (hL : π.length = i.L) (hcap : cap ≤ 131072)
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hrow : InRow final_ord.r0 i) (hPin : ∀ x, Mem x → π.length = i.L) (hcap : cap ≤ 131072)
     (horacle : ∀ ν, MapOk ν i fdMap → Good ν g1Oracle) :
     CutStep (withMem Mem (Pf.cut NB T tk π cap H N PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2))
       (withMem Mem (dispatchCut NB T tk π cap H N i)) 260 := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hb⟩, ⟨hfresh, hids, hnat⟩, hm⟩
+  have hL := hPin x hm
   have hmap := rowMap hrow hL hb
   obtain ⟨h2, hLmax, _, _⟩ := rowFacts hrow
   have hk : Disp.KpJ FDFrames.startJ 131072 x.K := ⟨hb.context.1, Nat.le_trans hb.context.2 hcap⟩

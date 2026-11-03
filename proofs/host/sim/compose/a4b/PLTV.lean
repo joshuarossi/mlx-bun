@@ -6,25 +6,48 @@ import host.sim.compose.a4b.PLTVK1
 import host.sim.compose.a4b.PLTVK2
 import host.sim.compose.a4b.PLTVK3
 import host.sim.compose.a4b.PLTVK4
+import host.sim.compose.PostLinkT
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-theorem PLTV.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_plvw_common.s4 PRE_pl_tail.S0.tab PRE_plvw_common.S4.tab PLTailVW.R.data PLTailVW.R.inv PLTV.θ PLTV.P0 2827718 [ ] where
+theorem PLTV.wideAll : ∀ p ∈ wideList, Pf.WideP PLTVW.R.data PRE_pl_tail.s0 PRE_plvw_common.s1 p.1 p.2 := by
+  intro p hp
+  simp only [wideList, wideListOf, ghostPf, ghostAddrs, List.map_cons, List.map_nil, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hp
+  rcases hp with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+  · exact Pf.wideP_memo (by decide) PLTV.memoFix PLTV.memoGet0 PLTV.memoGet1 PLTV.memoKind PLTV.memoImg
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1824 PLTV.ghostChk1824
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1834 PLTV.ghostChk1834
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1852 PLTV.ghostChk1852
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1993 PLTV.ghostChk1993
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix2001 PLTV.ghostChk2001
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1279 PLTV.ghostChk1279
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1281 PLTV.ghostChk1281
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1958 PLTV.ghostChk1958
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix1959 PLTV.ghostChk1959
+  · exact Pf.wideP_ghost (by decide) PLTV.ghostFix4941 PLTV.ghostChk4941
+
+theorem PLTV.facts : Post.PfFactsT 15235 PRE_pl_tail.s0 PRE_plvw_common.s1 PRE_pl_tail.S0.tab PLTV.tabP PLTVW.R.data PLTVW.R.inv PLTV.θ PLTV.P0 2673649 [] [2823901] wideG where
   num := PLTV.num
   heap := by
-    intro a h ha hm
-    obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h ha (fun hf => hm (by rw [PRE_pl_tail.frames_eq] at hf; simpa using hf))
-    have he := PLTailVW.R.heapAt q hq a haq
+    intro a h ha hm hw
+    obtain ⟨q, hq, haq⟩ := PRE_pl_tail.cover a h ha (fun hf => by
+      have hf : a ∈ 2665 :: wideList.map Prod.fst := hf
+      rcases List.mem_cons.mp hf with h0 | h1
+      · exact hm h0
+      · exact Pf.lookupW_ne h1 hw)
+    have he := PLTVW.R.heapAt q hq a haq
     rw [ha] at he
     exact he
   fixP := PLTV.fixP
   getP := PLTV.getP
   kindP := PLTV.kindP
   imgP := PLTV.imgP
+  wide a w hw := PLTV.wideAll (a, w) (Pf.lookupW_mem hw)
   emptyP := PLTV.emptyP
+  keepF _ h := nomatch h
   notDrop := by
     intro a ha b hb he
     have hc := PRE_pl_tail.allPresent PLTV.ND.all PLTV.ndFramed a ha
@@ -34,7 +57,6 @@ theorem PLTV.facts : Pf.PfFacts PRE_pl_tail.s0 PRE_plvw_common.s4 PRE_pl_tail.S0
     simp at h2
   n0 := PLTV.n0
   n1 := PLTV.n1
-  grows := Nat.le_of_ble_eq_true PLTV.grows
   ren := PLTV.ren
   bound := PRE_pl_tail.presentBound
   ctl := PLTV.ctl

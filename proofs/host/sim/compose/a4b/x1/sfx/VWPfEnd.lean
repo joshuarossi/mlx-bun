@@ -22,7 +22,7 @@ kernel_rfl pfNN : PFW1.R.data.nn0 = PFW1.R.data.nn1
 kernel_rfl pfNK : PTrie.keys PFW1.R.data.node = []
 kernel_rfl pfGrow : Nat.ble PRE_pf_vw.s0.next PRE_first_tail_x1_r0_suffix.s8.next = true
 kernel_rfl pfDiff : PRE_first_tail_x1_r0_suffix.s8.next - PRE_pf_vw.s0.next = 708
-kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x1_r0_suffix.s8.ffi).next (mlxOf PRE_pf_vw.s0.ffi).next = true
+kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x1_r0_suffix.s8.ffi).next ((mlxOf PRE_pf_vw.s0.ffi).next + 3) = true
 kernel_rfl pfNodes : Nat.ble (mlxOf PRE_first_tail_x1_r0_suffix.s8.ffi).nnext (mlxOf PRE_pf_vw.s0.ffi).nnext = true
 kernel_rfl pfBelow : Nat.ble (mlxOf PRE_first_tail_x1_r0_suffix.s8.ffi).nnext PF1.P0.NL = true
 kernel_rfl pfA : PFW1.R.data.a 2590 = 2590
@@ -45,14 +45,14 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
     (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
     {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
     CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ⟨67849, 1254, 0, 0⟩ bodyM PRE_first_tail_x1_r0_suffix.s8 PRE_first_tail_x1_r0_suffix.S8))
-      (withMem Tr (Pf.cut NB T tk π cap 1254 0 PRE_pf_vw.s0 PRE_pf_vw.S0)) := by
+      (withMem Tr (Pf.cut NB T tk π cap 1257 0 PRE_pf_vw.s0 PRE_pf_vw.S0)) := by
   obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
   have hcapR := rowCap hr hi
   have h9 : ∀ ν, MapOk ν i bodyM → ν 9 = F64.ofNat i.L := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
   have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPf (c30 := 16) (c31 := 16) PF1.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes)
+  exact toPf (c30 := 16) (c31 := 16) PF1.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
     (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]

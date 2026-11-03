@@ -23,14 +23,14 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
         ⟨K.fr, PRE_fd_vw_r0.s17.trace, t'.trace, K.D, K.lo, K.hi⟩
         PRE_fd_vw_r0.s17 ⟨PRE_fd_vw_r0.S17.tab, []⟩ t' C' ∧
       (∃ asR ret, t'.trace = ⟨chars!"mlx_array_new_data", .jsPtr (M.a FDFrames.buffer) 0 (tokenBytes π) :: asR, ret⟩ :: t.trace) ∧
-      Host.Ts.Sim.Compose.FDVW.InputAt π (M'.node 15235) t' C' ∧ Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
+      Host.Ts.Sim.Compose.FDVW.InputAt π (M'.node 19057) t' C' ∧ Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   let P : LoadP := { setupP with rest := machReads T tk }
   have hs : RelB FF (Disp.FRJ (FullRXD P NB)) (FDFrames.typedW (tokenBytes π) π.length) [] M ν K
       PRE_fd_vw_r0.s16 PRE_fd_vw_r0.S16 t C := h.withOracle hg
   have hsig : K.fr sig = none := by
     by_contra hn
     have hm := (hkp.1.2.2 sig).mp hn
-    have hc : [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view].contains sig = true :=
+    have hc : (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])).contains sig = true :=
       List.contains_iff_mem.mpr hm
     rw [sigUnframed] at hc
     cases hc
@@ -53,12 +53,12 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       MSim (fun M' S' C' r r' => Grow M ν S C M' S' C' ∧
         Disp.DataR (Disp.FRJ (FullRXD P NB)) M' S'.tab.length (Present PRE_fd_vw_r0.s16) r r' ∧
         ∀ y' ret ws, r' = some (y', ret, ws) →
-          M'.node 15235 < (mlxOf y').nnext ∧ Host.Mlx.SimGraph.HostInt32
-            (Host.Mlx.FfiEval.concrete C'.val) (mlxOf y') (M'.node 15235) (π.map Int.ofNat) [1, π.length]) S C
+          M'.node 19057 < (mlxOf y').nnext ∧ Host.Mlx.SimGraph.HostInt32
+            (Host.Mlx.FfiEval.concrete C'.val) (mlxOf y') (M'.node 19057) (π.map Int.ofNat) [1, π.length]) S C
         (FF.call x chars!"mlx_array_new_data" (.jsPtr FDFrames.buffer 0 [] :: asR))
         (FF.call y chars!"mlx_array_new_data" (.jsPtr (M.a FDFrames.buffer) 0 (tokenBytes π) :: asR.map M.arg)) := by
     intro M ν S C x y asR hS hR hsup hp
-    obtain ⟨hp, rfl, rfl, rfl, hv9⟩ := hp
+    obtain ⟨hp, rfl, rfl, rfl⟩ := hp
     have hd := D1Data.dataCallSim (name := chars!"mlx_array_new_data") P NB (by decide) (by decide) (by decide)
       FDFrames.buffer (tokenBytes π) (Present PRE_fd_vw_r0.s16) M ν ndSrv C PRE_fd_vw_r0.s16.ffi y
       ndArgs hS hR hsup hp
@@ -88,8 +88,8 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
         Disp.DataR (FRQ (Disp.FRJ (FullRXD P NB)) (fun y => Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf y)))
           M' S'.tab.length (Present PRE_fd_vw_r0.s16) r r' ∧
         ∀ y' ret ws, r' = some (y', ret, ws) →
-          M'.node 15235 < (mlxOf y').nnext ∧ Host.Mlx.SimGraph.HostInt32
-            (Host.Mlx.FfiEval.concrete C'.val) (mlxOf y') (M'.node 15235) (π.map Int.ofNat) [1, π.length]) S C
+          M'.node 19057 < (mlxOf y').nnext ∧ Host.Mlx.SimGraph.HostInt32
+            (Host.Mlx.FfiEval.concrete C'.val) (mlxOf y') (M'.node 19057) (π.map Int.ofNat) [1, π.length]) S C
         (FF.call x chars!"mlx_array_new_data" (.jsPtr FDFrames.buffer 0 [] :: asR))
         (FF.call y chars!"mlx_array_new_data" (.jsPtr (M.a FDFrames.buffer) 0 (tokenBytes π) :: asR.map M.arg)) := by
     intro M ν S C x y asR hS hR hsup hp

@@ -10,8 +10,8 @@ abbrev N : Nat := 8970
 kernel_rfl stepsEq : N = n0
 
 /-- **The chain**, in 8970 steps. -/
-theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV T tk π.length ν → Good ν PRE_plvw_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
-    CutStep (withMem Tr (indexedCut NB T tk cap nI π PRE_plvw_common.s0 PRE_plvw_common.S0)) (withMem Tr (indexedCut NB T tk cap nI π PRE_plvw_common.s4 PRE_plvw_common.S4)) N :=
+theorem all (NB T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π : List Nat) (hcap : cap ≤ 4096 + 1593835520) (hg : ∀ ν, BookV (head [2823901]) T tk π.length ν → Good ν PRE_plvw_common.S0.oracle) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrackV x y → Tr x → Tr y) :
+    CutStep (withMem Tr (indexedCut0 [2823901] NB T tk cap nI π PRE_plvw_common.s0 PRE_plvw_common.S0)) (withMem Tr (indexedCut0 [2823901] NB T tk cap nI π PRE_plvw_common.s1 PRE_plvw_common.S1)) N :=
   ((c0 NB T tk cap nI π hcap hg Tr hT)).cast rfl rfl stepsEq
 
 end Host.Ts.Sim.Compose.Post.PL.VCommon
