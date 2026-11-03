@@ -23,7 +23,7 @@ theorem rowN {r : Row} {i : Host.Ts.Sim.Lin.Cls.Inst} (hr : r ∈ fwdRows) (hi :
   simp only [fwdRows, List.mem_cons, List.not_mem_nil, or_false] at hr
   subst hr
   obtain ⟨_, x, hx, hq⟩ := hi
-  simp only [first_tail_x0.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+  simp only [first_tail_x0.r0, Host.Ts.Sim.Lin.InBox, QOk, Inst.get, eval_mk, dot] at hx hq
   omega
 
 theorem nu9 (L : Nat) : nuV vars L 9 = L := by simp [nuV, varGet, vars]

@@ -25,8 +25,8 @@ run_elab do
     let value ← Meta.reduce (mkConst source) (skipTypes := true)
     addDecl (.defnDecl { name := pre ++ name, levelParams := [], type := mkConst ``SSrv, value := value, hints := .regular 0, safety := .safe })
 
-def box : Box := [(9, 7, 7), (10, 1, 1), (11, 6, 6), (16, 256, 256)]
-def vars : VarV := [(9, 0, 1), (10, 1, 0), (11, -1, 1), (16, 256, 0)]
+def box : Box := [(9, 7, 7), (10, 6, 6), (11, 6, 6), (16, 256, 256)]
+def vars : VarV := [(9, 0, 1), (10, -1, 1), (11, -1, 1), (16, 256, 0)]
 
 /-- The forward's part of the ordinary step. -/
 def Eh : List (RNode SDim InKey) := Tpl.Ordinary.graph.take 4010

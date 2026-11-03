@@ -42,8 +42,8 @@ noncomputable def startLoad : St Host.Load.LSt :=
 
 ${srvs([["endSrv", `${T}.S${end}`], ["startSrv", `${T}.S0`], ["envSrv", "Host.Load.Run.Prompt.P.S0"]])}
 
-def box : Box := [(9, ${L}, ${L}), (10, 1, 1), (11, ${L - 1}, ${L - 1}), (16, 256, 256)]
-def vars : VarV := [(9, 0, 1), (10, 1, 0), (11, -1, 1), (16, 256, 0)]
+def box : Box := [(9, ${L}, ${L}), (10, ${L - 1}, ${L - 1}), (11, ${L - 1}, ${L - 1}), (16, 256, 256)]
+def vars : VarV := [(9, 0, 1), (10, -1, 1), (11, -1, 1), (16, 256, 0)]
 
 /-- The forward's part of the ordinary step. -/
 def Eh : List (RNode SDim InKey) := Tpl.Ordinary.graph.take 4010
