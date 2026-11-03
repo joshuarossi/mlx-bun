@@ -37,6 +37,8 @@ theorem book_fwd {NB T : Nat} {tk : Nat → Nat} {sa sb : St FF.S} {Sa Sb : SSrv
   · exact ⟨(congrFun he.a 2586).trans hids.1, (congrFun he.a 2589).trans hids.2⟩
   · exact (congrFun he.a 2590).trans ha
 
+kernel_rfl cntPre : countersOkB D1StageSplit.s1 D1StageSplit.s3 = true
+
 theorem preSlice {NB T : Nat} {tk : Nat → Nat}
     (horacle : ∀ ν, MapOk ν (setupI 1) D1StageSplit.map_g1_FIN_first → Good ν D1StageSplit.S1.oracle) :
     CutStep (g1Cut NB T tk)
@@ -46,11 +48,11 @@ theorem preSlice {NB T : Nat} {tk : Nat → Nat}
     exact D1StageSplit.k1
   apply cut_glueCall (n := 72) (sim1 NB T tk) accepted1 hrun (runOk_ok_end 71 hrun live2) live2
     D1StageSplit.stepA2 top3
-  · intro x hq hb; exact ⟨hb.1.1.1, hq.1⟩
+  · intro x hq hb; exact ⟨hb.1.1.1.1, hq.1⟩
   · intro x hq _; exact horacle x.ν hq.2.2
   · intro x M t C hq hb hr he _ hr'
-    refine ⟨⟨hr'.withOracle (fun _ h => nomatch h), hq⟩, ?_⟩
-    exact book_fwd hr hr' he
-      ((congrArg (fun b : Host.Mlx.FfiAne.St => b.active) bridge1).trans inactive0) bridge3 hb
+    refine ⟨⟨hr'.withOracle (fun _ h => nomatch h), hq⟩, book_fwd hr hr' he
+      ((congrArg (fun b : Host.Mlx.FfiAne.St => b.active) bridge1).trans inactive0) bridge3 hb.1,
+      hb.2.step rfl hr hr' he.big he.node cntPre⟩
 
 end Host.Ts.Sim.Compose.D1Split

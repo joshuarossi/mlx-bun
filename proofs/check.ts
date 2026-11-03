@@ -8449,6 +8449,7 @@ const proofFiles = [
   "host/route/cert/Head/X4L9/Hsmp.lean",
   "host/route/cert/Head/X0/Hsmp.lean",
   "host/route/cert/Fin/D1X0/Choose.lean",
+  "host/route/cert/Fin/D1X0/Fwd.lean",
   "host/route/cert/Fin/X0/Data.lean",
   "host/route/cert/Fin/X0/Check.lean",
   "host/route/cert/Fin/X0/Down0.lean",
