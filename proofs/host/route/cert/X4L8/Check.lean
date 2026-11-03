@@ -9,6 +9,6 @@ open Host.Mlx.SimGraph.Tpl.Fam
 
 /-! # The x4_L8 forward's certificate: every node of the family's graph at its carrier -/
 
-simgraph_check_segment check : Gs, kindOf choice.kind, Ec, .promptIds, 0, NODES, choice.cert, ins choosing Ecn
+simgraph_check_segment check : Gs, kindOf choice.kind, Ec, .promptIds, 0, 5226, choice.cert, ins choosing Ecn
 
 end Host.Route.Cert.X4L8

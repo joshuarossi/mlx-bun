@@ -11,8 +11,8 @@ open Host.Ts.Sim.Full (mlxOf)
 
 /-! # The VW class's final forward: what its certificate reads -/
 
-noncomputable def native : Ffi.St := mlxOf PRE_fd_vw_r0_body.s895.ffi
-noncomputable abbrev Gs := gsV native PRE_fd_vw_r0_body.S895 box vars (-1)
+noncomputable def native : Ffi.St := mlxOf PRE_fd_vw_r0_body.s900.ffi
+noncomputable abbrev Gs := gsV native PRE_fd_vw_r0_body.S900 box vars (-1)
 def insT : InKey → Option Nat := inputsOf choice.inputs
 
 end Host.Route.Cert.Fin.VW

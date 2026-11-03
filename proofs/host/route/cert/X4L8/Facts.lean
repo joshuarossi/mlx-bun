@@ -13,7 +13,7 @@ kernel_rfl kinds_ok : choice.kind.all (fun e => (native.objs.get e.1).isSome) = 
 kernel_rfl outs_ok : V587.cacheNodes.all (fun q => Nat.blt q.1 choice.cert.length && Nat.blt q.2 choice.cert.length &&
   Nat.blt (certAt choice.cert q.1) native.nnext && Nat.blt (certAt choice.cert q.2) native.nnext) = true
 kernel_rfl outs_len : V587.cacheNodes.length = 64
-kernel_rfl graph_len : V587.graph.length = NODES
-kernel_rfl cert_len : choice.cert.length = NODES
+kernel_rfl graph_len : V587.graph.length = 5226
+kernel_rfl cert_len : choice.cert.length = 5226
 
 end Host.Route.Cert.X4L8

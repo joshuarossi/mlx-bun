@@ -18,6 +18,16 @@ theorem x0Count {r : Row} {i : Cls.Inst} (hr : r ∈ [first_tail_x0.r0]) (hi : I
   rw [e, h9, hc.1, hc.2]
   exact x0Count2.symm
 
+/-- x0's rows, and the four facts `firstTailFacts` gives the wide rows. -/
+def x0Rows : List Row := [first_tail_x0.r0]
+
+theorem x0TailFacts {r : Row} {i : Cls.Inst} (hr : r ∈ x0Rows) (hi : InRow r i) :
+    2 ≤ i.L ∧ i.L ≤ 2048 ∧ i.n = i.L - 1 ∧ i.C = 2048 := by
+  obtain rfl : r = first_tail_x0.r0 := List.mem_singleton.mp hr
+  obtain ⟨_, x, hx, hq⟩ := hi
+  simp only [first_tail_x0.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+  omega
+
 /-- What x0's row fixes. -/
 theorem x0Facts {i : Cls.Inst} (hi : InRow first_tail_x0.r0 i) : i.L = 2 ∧ i.n = 1 ∧ i.C = 2048 := by
   obtain ⟨_, x, hx, hq⟩ := hi

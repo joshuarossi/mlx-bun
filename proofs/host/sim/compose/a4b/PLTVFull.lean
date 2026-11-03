@@ -1,5 +1,6 @@
 import host.sim.compose.a4b.PLTVNb
 import host.sim.template.FullShiftGen
+import host.sim.conv.TraceCompact
 set_option Elab.async false
 namespace Host.Load.Run.Tpl
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compose Host.Route

@@ -18,9 +18,9 @@ theorem Ec_len : Ec.length = 5226 := by
   rw [List.length_map]
   exact graph_len
 
-/-- **The certificate of the x4_L7 group's forward.** -/
 kernel_rfl down : (List.range native.nnext).all (downB (routeDom 15235 15235 [5554869888] native) native) = true
 
+/-- **The certificate of the x4_L7 group's forward.** -/
 noncomputable def cert : FamCert .split .codebook (.folded 6) Host.Load.Run.Full.Expected.stages where
   n₀ := 124
   r := litAt (Ref.refNu 0 6)

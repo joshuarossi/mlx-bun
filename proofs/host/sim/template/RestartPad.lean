@@ -59,8 +59,24 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
   let invP := w.sig.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
   let hndP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
   let hinvP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
-  let nodeP := w.nod.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
-  let ninvP := w.nod.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
+  -- the node map through every paired node's inputs: the walk pairs the nodes the heap names, a renamed node's inputs follow it
+  let mut nodM : Std.HashMap Nat Nat := w.nod.fold (fun (t : Std.HashMap Nat Nat) a b => t.insert a b) {}
+  let mut stack : Array (Nat × Nat) := w.nod.fold (fun (t : Array (Nat × Nat)) a b => t.push (a, b)) #[]
+  repeat
+    match stack.back? with
+    | none => break
+    | some (i, j) =>
+      stack := stack.pop
+      if let (some nd, some nd1) := (m0.nodes.get i, m1.nodes.get j) then
+        unless nd.ins.length == nd1.ins.length do throwError "tpl_restart_pad: N{i} and N{j} differ in inputs"
+        for (p, q) in nd.ins.zip nd1.ins do
+          match nodM.get? p with
+          | some q' => unless q' == q do throwError "tpl_restart_pad: N{p} goes to both N{q'} and N{q}"
+          | none =>
+            nodM := nodM.insert p q
+            stack := stack.push (p, q)
+  let nodeP := nodM.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
+  let ninvP := nodM.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
   let lo := w.hnd.fold (fun (m : Nat) a b => if a == b then m else min m a) (2 ^ 56)
   -- numbers
   let mut numP : PTrie NumV := PTrie.nil
@@ -102,7 +118,7 @@ unsafe def restartPadCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name) 
   let _ := block
   let ren := w.sig.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let renH := w.hnd.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
-  let renN := w.nod.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
+  let renN := nodM.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let ghostLog := if w.ghostSeen.isEmpty && w.ghostEntries.isEmpty then "" else s!"; ghosts {w.ghostSeen.size}, ghost map entries {w.ghostEntries.size}"
   logInfo m!"tpl_restart_pad {pre}: restore {tr - t0} ms, walk+data {(← IO.monoMsNow) - tr} ms; heap {w.sig.size} ({ren} renamed), handles {w.hnd.size} ({renH} renamed, first {lo}), nodes {w.nod.size} ({renN} renamed), {w.pairs.size} number pairs; θ = {theta.map fun (v, e) => s!"v{v} ↦ {fmtSym e}"}{ghostLog}"
 

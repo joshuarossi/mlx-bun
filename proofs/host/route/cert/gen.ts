@@ -97,9 +97,9 @@ theorem Ec_len : Ec.length = ${NODES} := by
   rw [List.length_map]
   exact graph_len
 
-/-- **The certificate of the ${chain} group's forward.** -/
 kernel_rfl down : (List.range native.nnext).all (downB (routeDom 15235 15235 [5554869888] native) native) = true
 
+/-- **The certificate of the ${chain} group's forward.** -/
 noncomputable def cert : FamCert ${term} Host.Load.Run.Full.Expected.stages where
   n₀ := 124
   r := ${rd}

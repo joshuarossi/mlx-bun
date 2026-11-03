@@ -1626,26 +1626,27 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
     return `${bodyMod}.${(b ?? fail(`no ${m} in ${dirB}`)).slice(0, -5)}`;
   };
   const startCounters = (src("GlueN0").match(new RegExp(`theorem ${X}\\.gjcl0 \\(h : Conv\\.JClean \\((⟨[^⟩]*⟩) : Conv\\.Cnt\\)`)) ?? fail("GlueN0: gjcl0"))[1]!;
-  const startJsN = bodyEnd && bodyEnd.nB ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : "2673488";
+  const startJsN = bodyEnd ? (bodyEnd.nB ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : `${bodyEnd.Xb}.s${bodyEnd.endB}.next`) : "2673488";
   if (bodyEnd && !bodyEnd.nB) {
     // no stage in the body: its start's facts carry over its one glue; the JS heap's in the glue's pieces, one module each
     const { Xb, dirb, tplB, endB } = bodyEnd, Tb = `${NS}.VWFirst.${Tag}`;
     const members = membersOf(dirb) ? Object.keys(membersOf(dirb)!) : readdirSync(join(HERE, "../template", dirb)).filter(f => f.endsWith(".lean")).map(f => f.slice(0, -5));
     const js = members.filter(f => /^GlueN0j\d+$/.test(f)).map(f => +f.slice(7)).sort((a, b) => a - b);
     if (!js.length) fail(`${Xb}: no GlueN0j pieces`);
-    let prev = `${Tb}.bodyStartJs`, prevMod = bodyModule("VWBodyChain"), at = 0;
+    let prev = `${Tb}.bodyStartJs`, prevMod = bodyModule("VWBodyChain"), at = 0, prevN = "2673488";
     for (const k of js) {
       const t = memberSrc(dirb, `GlueN0j${k}`);
       const m = t.match(new RegExp(`theorem ${Xb}\\.gjoff0_${k} : ∀ a, a ∉ ${Xb}\\.gjh0_${k} → ${Xb}\\.s(\\d+)\\.heap\\.get a = ${Xb}\\.s(\\d+)\\.heap\\.get a`)) ?? fail(`${Xb}: GlueN0j${k}: gjoff0_${k}`);
       const to = +m[1]!, from = +m[2]!;
       if (from !== at) fail(`${Xb}: GlueN0j${k} starts at ${from}, not ${at}`);
       writeFileSync(join(outDir, `VWBodyJsP${k}.lean`), head([prevMod, `${tplB}.GlueN0j${k}`, `${tplB}.H${Math.floor(to / 32)}`, "host.sim.compose.JsAbove"]) +
-        `kernel_rfl bodyJsList${k} : ${Xb}.gjh0_${k}.all (noBigAtP (jsAboveB 2673488) ${Xb}.s${to}) = true
+        `kernel_rfl bodyJsPLe${k} : Nat.ble ${prevN} ${Xb}.s${to}.next = true
+kernel_rfl bodyJsPList${k} : ${Xb}.gjh0_${k}.all (noBigAtP (jsAboveB ${Xb}.s${to}.next) ${Xb}.s${to}) = true
 
-theorem bodyJsAt${k} : JsHeapAbove 2673488 ${Xb}.s${to} :=
-  ${prev}.step (Nat.le_refl _) ${Xb}.gjoff0_${k} bodyJsList${k}
+theorem bodyJsPAt${k} : JsHeapAbove ${Xb}.s${to}.next ${Xb}.s${to} :=
+  ${prev}.step (Nat.le_of_ble_eq_true bodyJsPLe${k}) ${Xb}.gjoff0_${k} bodyJsPList${k}
 ` + tail);
-      prev = `bodyJsAt${k}`; prevMod = `${outMod}.VWBodyJsP${k}`; at = to;
+      prev = `bodyJsPAt${k}`; prevMod = `${outMod}.VWBodyJsP${k}`; at = to; prevN = `${Xb}.s${to}.next`;
     }
     if (at !== endB) fail(`${Xb}: the JS pieces end at ${at}, not ${endB}`);
     writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`, prevMod,
@@ -2019,8 +2020,8 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
     const endK = chain.T1 as number, endO = Ds.get(stages.length) ?? fail("no end offset");
     const [, , endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
     const rowNames = fwdRowList.join(", ");
-    writeFileSync(join(outDir, "VWPfEnd.lean"), head(["host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
-      `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [${pfLit ? "10, " : ""}11, 14, 16, 30, 31]
+    writeFileSync(join(outDir, "VWPfEnd.lean"), head([pfLit ? "host.sim.compose.a4b.VWPfLit" : "host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
+      `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [11, 14, 16, ${pfLit ? "10, " : ""}30, 31]
 ${pfLit ? `kernel_rfl pf10 : ${PF}.θ 10 = ${pfLit[0]}\n` : ""}kernel_rfl pf14 : ${PF}.θ 14 = .var 17
 kernel_rfl pf30 : (fun ν : Nat → F64 => (${PF}.θ 30).eval ν) = fun _ => F64.ofNat ${c30}
 kernel_rfl pf31 : (fun ν : Nat → F64 => (${PF}.θ 31).eval ν) = fun _ => F64.ofNat ${c31}
@@ -2463,7 +2464,7 @@ function genPostLink(args: string[]) {
     "theorem " + name + ".nshift : " + (tNB ? "Conv.TraceNShift " + P + " " + tNB : "NShift " + P) + " " + T + ".n " + sg + " " + name + ".y0 " + name + ".y1 :=" + NL +
     "  " + (tNB ? "traceNShift_of" : "nshift_of") + " \u27E8rfl, rfl, rfl, " + fields.map(f => name + ".n" + f).join(", ") + "\u27E9 " + name + ".nhost fun _ => rfl" + NL);
   const fq = (a: string) => "(Host.Ts.Sim.Full.mlxOf " + a + ".ffi)";
-  put(name + "Full", head(a4b + "." + name + "Nb", "host.sim.template.FullShiftGen") + [
+  put(name + "Full", head(a4b + "." + name + "Nb", "host.sim.template.FullShiftGen", ...(tNB ? ["host.sim.conv.TraceCompact"] : [])) + [
     "kernel_rfl N.tokens : " + fq(s1) + ".tokens = " + fq(s0) + ".tokens.map " + sg + ".nv",
     "kernel_rfl N.tokSupp : " + fq(s0) + ".tokens.all (bSN " + T + ".n) = true",
     "kernel_rfl N.bridge : bridgeOf " + s1 + ".ffi = bridgeOf " + s0 + ".ffi",
