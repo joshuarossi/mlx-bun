@@ -121,6 +121,15 @@ structure ShortVals (ν : Nat → F64) : Prop where
   v24 : ν 24 = F64.ofNat 4
   v26 : ν 26 = F64.ofNat 1
 
+/-- What the wide rows' class holds on entering POST: the trace ids and payloads, the offset's three copies. -/
+structure VWVals (L : Nat) (ν : Nat → F64) : Prop where
+  v21 : ν 21 = F64.ofNat 6
+  v22 : ν 22 = F64.ofNat 5
+  v24 : ν 24 = F64.ofNat 5
+  v26 : ν 26 = F64.ofNat (L - 1)
+  v27 : ν 27 = F64.ofNat (L - 1)
+  v28 : ν 28 = F64.ofNat (L - 1)
+
 /-- A short row's link: where the hand-off's variables go. -/
 structure ShortImg (θ : Nat → SymE) (L : Nat) : Prop where
   i20 : litAt θ 20 6 = true

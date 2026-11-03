@@ -19,6 +19,7 @@ abbrev fr : FlatFwd.Fr := PRE_fd_vw_r0_body.fr
 
 /-- What the forward keeps, over the valuation and the context. -/
 structure FlatBook (T : Nat) (tk : Nat → Nat) (π : List Nat) (K0 : Ctx) (cap : Nat) (ν : Nat → F64) (K : Ctx) : Prop where
+  length2 : 2 ≤ π.length
   vocab : ∀ k ∈ π, k < 248320
   valuation : VBOkF loopVB ν
   rowOne : ν 12 = F64.ofNat 1
@@ -30,6 +31,7 @@ structure FlatBook (T : Nat) (tk : Nat → Nat) (π : List Nat) (K0 : Ctx) (cap 
   context : Disp.KpJ (fr.typedJ (tokenBytes (lastRows π))) cap K
   incomingPrompt : K0.fr 2665 = some ([], π.map natV)
   frames : K.fr = (g1Framed K0 π).fr
+  offsetLow : 18 ≤ K.D
   box : ∃ v, Lin.InBox PRE_fd_vw_r0_body.ps 0 v ∧ Lin.VarsOk ν v PRE_fd_vw_r0_body.V
 
 theorem flatLaws {T cap : Nat} {tk : Nat → Nat} {π : List Nat} {K0 : Ctx} (hcap : cap ≤ 4096 + 1593835520) :
@@ -83,7 +85,7 @@ theorem flatStep {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cl
     (hcap : cap ≤ 4096 + 1593835520) (hi : InRow final_ord.r0 i) :
     CutStep (withMem (NTrack x0) (forwardCut NB T tk π cap H N i))
       (withMem (NTrack x0) (returnCut NB T tk π cap H N)) 1502774 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, -⟩, ⟨hf, hids, hnat⟩, htr⟩
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, -, hlo⟩, ⟨hf, hids, hnat⟩, htr⟩
   obtain ⟨h2, hLmax, ho, hc⟩ := rowFacts hi
   have hlen : (lastRows π).length = 1 := lastRows_length (by rw [hb.length]; omega)
   have hL := hb.length
@@ -102,7 +104,8 @@ theorem flatStep {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cl
     exact { hrel0 with ffi := ⟨⟨hrel0.ffi.1, Host.Mlx.Ffi.NGrow.refl _⟩, hrel0.ffi.2⟩ }
   have hbook : FlatBook T tk π K0 cap ν' x.K := by
     refine
-      { vocab := hb.vocab
+      { length2 := by rw [hL]; exact h2
+        vocab := hb.vocab
         valuation := ?_
         rowOne := upd_self _ _ _
         promptValue := (hoff (by decide)).trans hb.promptValue
@@ -113,6 +116,7 @@ theorem flatStep {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cl
         context := ?_
         incomingPrompt := hb.incomingPrompt
         frames := hb.frames
+        offsetLow := hlo
         box := rowBox hi (upd_self _ _ _) ?_ ?_ ?_ }
     · intro j
       by_cases h : j = 12

@@ -60,7 +60,7 @@ theorem hlinkOne {NB T cap nI : Nat} {tk : Nat → Nat} {π : List Nat} {Mem Mem
       exact ⟨5, by decide, pltImg.v200 (hs x hm)⟩))
     (fun _ _ => dimsLit pltDims _)
     (fun x hm => hL ▸ handShort (by decide) pltImg (hs x hm))
-    pltA pltB pltC pltE (nodeF_id pltNN pltNK _)
+    pltA pltB pltC pltE
     (fun x y ht hC hn ha hm => hook x y ht hC (funext fun c => (hn c).trans (congrArg x.M.node (nodeF_id pltNN pltNK c))) ha hm)
 
 end Host.Ts.Sim.Compose.Post

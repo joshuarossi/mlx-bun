@@ -32,14 +32,15 @@ structure ForwardBook (i : Cls.Inst) (π : List Nat) (K0 : Ctx) (x : SegInst FF)
   inputEvent : ∃ asR ret pre tr, x.K.base' = pre ++
     ⟨chars!"mlx_array_new_data", .jsPtr (x.M.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr
 
-noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst) : ICut FF where
+noncomputable def typedCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (s : St FF.S) (S : SSrv) (i : Cls.Inst)
+    (lo : Nat := 0) : ICut FF where
   s0 := s
   tab0 := S.tab
   R := fun x s S => ∃ K0,
     RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] x.M x.ν x.K s S x.t x.C ∧
     ForwardBook i π K0 x cap ∧ InputAt (lastRows π) (x.M.node 19057) x.t x.C ∧
-    setupInputs T tk x ∧ MapOk x.ν i fdMap
+    setupInputs T tk x ∧ MapOk x.ν i fdMap ∧ lo ≤ x.K.D
   B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt H N s x.t
 
 noncomputable abbrev dispatchCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) :=
@@ -102,7 +103,7 @@ theorem g1 {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
   have inputs : setupInputs T tk (⟨M', x.ν, K', t', C'⟩ : SegInst FF) :=
     ⟨hb.inputs.1, by change M'.a 2590 = 2590; rw [hext.a]; exact hb.inputs.2⟩
   exact ⟨t', C', hrun, ⟨M', x.ν, K', t', C'⟩, rfl, rfl,
-    ⟨x.K, hrel, hbk, hinput, inputs, hmap⟩, ⟨fresh, ids,
+    ⟨x.K, hrel, hbk, hinput, inputs, hmap, Nat.zero_le _⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hrel hext.big hext.node cnt21⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hrel ng (countersOkB_tokens cnt21), congrFun hext.a 12504⟩ hm⟩
 

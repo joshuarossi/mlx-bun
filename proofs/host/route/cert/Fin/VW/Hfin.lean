@@ -50,7 +50,7 @@ theorem lastRows_eq {π : List Nat} (h : 1 ≤ π.length) : Host.Ts.Sim.Compose.
   obtain ⟨ρ, b, rfl⟩ : ∃ ρ b, π = ρ ++ [b] := by
     rcases List.eq_nil_or_concat π with e | ⟨ρ, b, e⟩
     · subst e; simp at h
-    · exact ⟨ρ, b, e⟩
+    · exact ⟨ρ, b, by rw [e, List.concat_eq_append]⟩
   simp [Host.Ts.Sim.Compose.FDVW.lastRows]
 
 variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
@@ -93,6 +93,7 @@ theorem hfin (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.wei
   · intro tab hC
     have h := (hip.grow (Host.Mlx.Ffi.NGrow.refl _) hC).2
     rw [hlast] at h
+    show HostInt32 _ _ (y.M.node 19057) _ _
     simpa using h
 
 end Host.Route.Cert.Fin.VW

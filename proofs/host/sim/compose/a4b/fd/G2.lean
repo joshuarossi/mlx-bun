@@ -9,7 +9,7 @@ open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl 
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
 noncomputable def forwardCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Cls.Inst) : ICut FF :=
-  typedCut NB T tk π cap H N PRE_fd_vw_r0.s24 PRE_fd_vw_r0.S24 i
+  typedCut NB T tk π cap H N PRE_fd_vw_r0.s24 PRE_fd_vw_r0.S24 i 18
 
 kernel_rfl cnt24 : countersOkB PRE_fd_vw_r0.s23 PRE_fd_vw_r0.s24 = true
 
@@ -20,7 +20,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : 
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i fdMap → Good ν PRE_fd_vw_r0.S23.oracle) :
     CutStep (withMem Mem (g2Cut NB T tk π cap H N i)) (withMem Mem (forwardCut NB T tk π cap H N i)) 7 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap, hlo⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hb.context hb.valuation hgood
@@ -53,7 +53,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : 
     rw [he]
     exact hfresh Cx Pc Kc weights kind NE IP G init
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
+    ⟨K0, hm', book, ip, inputs, hmap, hlo⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt24⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt24), congrFun hext.a 12504⟩ hm⟩
 

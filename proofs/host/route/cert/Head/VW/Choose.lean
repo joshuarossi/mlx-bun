@@ -1,4 +1,7 @@
+import host.route.cert.Fin.ChooseHead
+import host.simgraph.prompt.ChooseRoute
 import host.route.cert.Fin.VW.Choose
+import host.simgraph.tpl.ordinary.Join
 import host.sim.template.a4pre_plvw_common.H0
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -20,15 +23,17 @@ noncomputable def loadH : St Host.Load.LSt :=
 open Lean Meta in
 run_elab do
   let pre ← getCurrNamespace
-  let value ← Meta.reduce (mkConst ``PRE_plvw_common.S1) (skipTypes := true)
-  addDecl (.defnDecl { name := pre ++ `srvH, levelParams := [], type := mkConst ``SSrv, value := value, hints := .regular 0, safety := .safe })
+  for (name, source) in [(`srvH, ``PRE_plvw_common.S1)] do
+    let value ← Meta.reduce (mkConst source) (skipTypes := true)
+    addDecl (.defnDecl { name := pre ++ name, levelParams := [], type := mkConst ``SSrv, value := value, hints := .regular 0, safety := .safe })
 
 /-- POST's valuation: the prompt's length at 9 and 11, one row at 10, the cache's capacity at 16. -/
 def boxH : Box := [(9, 2, 224), (10, 1, 1), (11, 2, 224), (16, 256, 256)]
 def varsH : VarV := [(9, 0, 1), (10, 1, 0), (11, 0, 1), (16, 256, 0)]
 
 set_option interpreter.prefer_native false in
-simgraph_choose_fin choiceH : (loadH, srvH), (Fin.VW.startLoad, Fin.VW.startSrv), (Host.Load.Run.Prompt.P.s0, Fin.VW.envSrv),
-  boxH, varsH, -1, 19057, 19057, Tpl.Ordinary.graph
+simgraph_choose_head choiceH : (loadH, srvH), boxH, varsH, -1, 19057, 4010, Fin.VW.choice.cert,
+  (fun key => (inputsOf Fin.VW.choice.inputs key).orElse fun _ => insOf 0 [] (.base key)),
+  Tpl.Ordinary.graph
 
 end Host.Route.Cert.Head.VW

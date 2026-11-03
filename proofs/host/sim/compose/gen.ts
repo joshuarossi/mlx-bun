@@ -1561,6 +1561,9 @@ function genBodyFill(args: string[]) {
   const tailRows = take("--tail-rows")[0] ?? "firstTailRows", tailFacts = take("--tail-facts")[0] ?? "firstTailFacts";
   // --pf-lit <term>:<count>: a tail with no var 10; the pre-final template's var 10 is `<term>`, its value the row's count by `<count>`
   const pfLit = take("--pf-lit")[0]?.split(":") as [string, string] | undefined;
+  // --pf-pin <k>: a row serving several prompt lengths whose template is this length's: the walk's offset is the literal k - 1,
+  // so the end holds at length k (`hk`), and the forward's memory pins the length (`hpin`)
+  const pfPin = take("--pf-pin")[0] as string | undefined;
   // --lit: a chain whose prompt length is read as a literal: the body's acceptance is `VWFrames.bodyLitOk`
   const litBody = args.includes("--lit");
   if (litBody) args.splice(args.indexOf("--lit"), 1);
@@ -2025,7 +2028,7 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
 ${pfLit ? `kernel_rfl pf10 : ${PF}.θ 10 = ${pfLit[0]}\n` : ""}kernel_rfl pf14 : ${PF}.θ 14 = .var 17
 kernel_rfl pf30 : (fun ν : Nat → F64 => (${PF}.θ 30).eval ν) = fun _ => F64.ofNat ${c30}
 kernel_rfl pf31 : (fun ν : Nat → F64 => (${PF}.θ 31).eval ν) = fun _ => F64.ofNat ${c31}
-kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 11) (some Q.n)) = true
+${pfPin ? `kernel_rfl pf11 : (fun ν : Nat → F64 => (${PF}.θ 11).eval ν) = fun _ => F64.ofNat ${+pfPin - 1}` : `kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 11) (some Q.n)) = true`}
 kernel_rfl pfRow16 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 16) (some Q.cap1)) = true
 kernel_rfl pfNN : ${PW}.R.data.nn0 = ${PW}.R.data.nn1
 kernel_rfl pfNK : PTrie.keys ${PW}.R.data.node = []
@@ -2052,7 +2055,7 @@ theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : 
 /-- **The step's end at the pre-final cut.** -/
 theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${+endO.match(/⟨(\d+)/)![1]! + +pfDiff} ≤ cap)
     (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
-    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ ${tailRows}) :
+    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ ${tailRows})${pfPin ? ` (hk : i.L = ${pfPin})` : ""} :
     CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ${endO} bodyM ${X}.s${endK} ${X}.S${endK}))
       (withMem Tr (Pf.cut NB T tk π cap ${+endH! + +pfExtra} ${endN} ${PT}.s0 ${PT}.S0)) := by
   obtain ⟨hL, hLmax, hn, _⟩ := ${tailFacts} htail hi
@@ -2067,9 +2070,9 @@ ${pfLit ? "" : `  have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n
       simp only [List.mem_cons, List.not_mem_nil, or_false]
       omega))
     pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 ${pfLit ? `(fun ν hm => by rw [pf10, ← ${pfLit[1]} hr hi (h9 ν hm), hn])` : "(fun ν hm => by rw [h10n ν hm, hn])"}
-    (fun ν hm => by
+${pfPin ? `    (fun ν _ => by rw [congrFun pf11 ν, hk])` : `    (fun ν hm => by
       rw [← hn]
-      exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
+      exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)`}
     (fun ν hm => by
       rw [← hcapR]
       exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
@@ -2109,11 +2112,11 @@ theorem forwardAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i 
     const [, endD, endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
     const parts = foldParts.map(p => p.replace("Tr hT hr hi", "(Mem' i.L) (hT i.L) (hu r hr) hi"));
     const fold = parts.reduce((acc0, q) => `(${acc0}).trans (${q})`, "hf");
-    writeFileSync(join(outDir, "VWFwdPf.lean"), head([`${outMod}.VWForward`, `${outMod}.VWPfEnd`,
+    writeFileSync(join(outDir, "VWFwdPf.lean"), head([`${outMod}.VWForward`, `${outMod}.VWPfEnd`, ...(pfPin ? ["host.sim.compose.a4b.PiecesOff"] : []),
       ...foldParts.map(p => `${outMod}.${p.startsWith("bodyGlue") ? "VWBodyG" : "VWBodyS"}${p.match(/\d+/)![0]}`)]) + `/-- **The first tail from the forward to the pre-final cut.** \`hfwd\`: the graph, from what the forward's end knows. -/
 noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${+endD! + (pfArg ? +pfArg.split(":")[5]! : 0)} ≤ cap) (hbound : cap < Sim.bound)
     (uses : List Row) (hu : ∀ r ∈ uses, r ∈ ${Tn}.fwdRows) (htail : ∀ r ∈ ${Tn}.fwdRows, r ∈ ${tailRows}) (obls : List Obl)
-    (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)
+    (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)${pfPin ? ` (hpin : ∀ L x, Mem L x → L = ${pfPin})` : ""}
     (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y : SegInst FF,
       (startCore NB T tk π i).R y (startCore NB T tk π i).s0 ⟨(startCore NB T tk π i).tab0, []⟩ →
       CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
@@ -2126,11 +2129,16 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
   O := []
   chk _ _ := rfl
   ok r hr i hi _ := by
-    obtain ⟨hL, hLmax, hn, _⟩ := ${tailFacts} (htail r (hu r hr)) hi
+${pfPin ? `    by_cases hk : i.L = ${pfPin}
+    swap
+    · refine FwdCall.warm (CutConv.refl _) ?_ (CutConv.refl _)
+      exact Gpu.stepOff (A := fun i => withMem (Mem i.L) (forwardCut NB T tk π i))
+        (B := fun i => withMem (Mem' i.L) (Pf.cut NB T tk π cap ${+endH! + +(pfArg.split(":")[6] ?? 0)} ${endN} ${PT}.s0 ${PT}.S0)) (fun i x hb => hpin i.L x hb.2) hk _
+` : ""}    obtain ⟨hL, hLmax, hn, _⟩ := ${tailFacts} (htail r (hu r hr)) hi
     have hf := forwardMem (Mem := Mem i.L) (Mem' := Mem' i.L) (forwardAll NB T tk π (hu r hr) hi (by omega))
       (fun x y _ _ hy _ hrun hg ht he hm => hfwd r hr i hi x y hy (runC_le _ _ _ _ _ hrun) hg ht he hm)
     exact FwdCall.warm (CutConv.refl _)
-      ((${fold}).convR (toPfEnd NB T tk π cap hcap hbound (Mem' i.L) (hT i.L) (hu r hr) hi (htail r (hu r hr))))
+      ((${fold}).convR (toPfEnd NB T tk π cap hcap hbound (Mem' i.L) (hT i.L) (hu r hr) hi (htail r (hu r hr))${pfPin ? " hk" : ""}))
       (CutConv.refl _)
 ` + tail);
   }

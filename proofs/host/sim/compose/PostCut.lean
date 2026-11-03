@@ -29,11 +29,20 @@ structure Stage where
   hand : Nat → (Nat → F64) → Prop
   H : Nat
   N : Nat
+  /-- The book names the input's node by the stage's index (up to POST's shared cut), or only says a node holds it (the tail,
+  whose node map need not reach a class's input). -/
+  exact : Bool
 
-abbrev head (extra : List Nat) : Stage := ⟨PostOk.J0F extra, wideGPf, fun _ => True, fun _ _ => True, 4096, 4096⟩
+abbrev head (extra : List Nat) : Stage := ⟨PostOk.J0F extra, wideGPf, fun _ => True, fun _ _ => True, 4096, 4096, true⟩
 abbrev tail : Stage :=
   ⟨PostOk.J, wideG, fun ν => ∀ v k, tailVal v = some k → ν v = F64.ofNat k,
-    fun L ν => ∀ v k, handVal L v = some k → ν v = F64.ofNat k, 65536, 65536⟩
+    fun L ν => ∀ v k, handVal L v = some k → ν v = F64.ofNat k, 65536, 65536, false⟩
+
+/-- The prompt's last token held as a native input: at the index's node, or at some node. -/
+def InputIn (exact : Bool) (γ : List Nat) (nI : Nat) (x : SegInst FF) : Prop :=
+  bif exact then x.M.node nI < (mlxOf x.t.ffi).nnext ∧
+    HostInt32 (concrete x.C.val) (mlxOf x.t.ffi) (x.M.node nI) (γ.map Int.ofNat) [1, 1]
+  else ∃ n, SetupD1Input.InputAt γ n x.t x.C
 
 structure Book (P : Stage) (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : List Nat) (x : SegInst FF) : Prop where
   nonempty : 1 ≤ π.length
@@ -52,8 +61,7 @@ structure Book (P : Stage) (T : Nat) (tk : Nat → Nat) (cap nI : Nat) (π γ : 
   prompt : x.K.fr 2665 = some ([], π.map natV)
   reserved : ∀ j, j < 9 → x.ν j = machVal T tk j
   emittedAnchor : x.M.a 2590 = 2590
-  input : x.M.node nI < (mlxOf x.t.ffi).nnext ∧
-    HostInt32 (concrete x.C.val) (mlxOf x.t.ffi) (x.M.node nI) (γ.map Int.ofNat) [1, 1]
+  input : InputIn P.exact γ nI x
   dims : P.dims x.ν
   hand : P.hand π.length x.ν
 
@@ -80,9 +88,16 @@ theorem Book.grow {P : Stage} {T cap nI n : Nat} {tk : Nat → Nat} {π γ : Lis
     (hg : Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi)) (hc : CSrv.Le C C') :
     Book P T tk cap nI π γ ⟨M', ν, K, t', C'⟩ := by
   refine { h with emittedAnchor := (congrFun he.a 2590).trans h.emittedAnchor, input := ?_ }
-  have hi : SetupD1Input.InputAt γ (M.node nI) t C := h.input
-  change SetupD1Input.InputAt γ (M'.node nI) t' C'
-  rw [he.node]
-  exact hi.grow hg hc
+  have hi := h.input
+  unfold InputIn at hi ⊢
+  cases hx : P.exact
+  · rw [hx] at hi
+    obtain ⟨n, hn⟩ := hi
+    exact ⟨n, hn.grow hg hc⟩
+  · rw [hx] at hi
+    have hi' : SetupD1Input.InputAt γ (M.node nI) t C := hi
+    change SetupD1Input.InputAt γ (M'.node nI) t' C'
+    rw [he.node]
+    exact hi'.grow hg hc
 
 end Host.Ts.Sim.Compose.Post

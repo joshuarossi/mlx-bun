@@ -1,0 +1,38 @@
+import host.route.cert.Fin.Choose
+import host.simgraph.tpl.ordinary.Join
+import host.sim.template.a4pre_fd_x0_r0_body.m.B00
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+set_option Elab.async false
+set_option autoImplicit false
+namespace Host.Route.Cert.Fin.X0
+open Host.Ts Host.Ts.Sim Host.Mlx Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Load Host.Load.Extract Host.Load.Run.Tpl
+open Host.Route.Cert.Fin
+
+/-! # The X0 class's final forward: its choice of carriers -/
+
+noncomputable def endLoad : St Host.Load.LSt :=
+  ⟨PRE_fd_x0_r0_body.s447.heap, PRE_fd_x0_r0_body.s447.next, PRE_fd_x0_r0_body.s447.ctl, PRE_fd_x0_r0_body.s447.stack,
+    ⟨PRE_fd_x0_r0_body.s447.aux.jobs, Host.Load.Layers.toLoad PRE_fd_x0_r0_body.s447.aux.ffi, PRE_fd_x0_r0_body.s447.aux.trace, PRE_fd_x0_r0_body.s447.aux.stores⟩⟩
+noncomputable def startLoad : St Host.Load.LSt :=
+  ⟨PRE_fd_x0_r0_body.s0.heap, PRE_fd_x0_r0_body.s0.next, PRE_fd_x0_r0_body.s0.ctl, PRE_fd_x0_r0_body.s0.stack,
+    ⟨PRE_fd_x0_r0_body.s0.aux.jobs, Host.Load.Layers.toLoad PRE_fd_x0_r0_body.s0.aux.ffi, PRE_fd_x0_r0_body.s0.aux.trace, PRE_fd_x0_r0_body.s0.aux.stores⟩⟩
+
+open Lean Meta in
+run_elab do
+  let pre ← getCurrNamespace
+  for (name, source) in [(`endSrv, ``PRE_fd_x0_r0_body.S447), (`startSrv, ``PRE_fd_x0_r0_body.S0), (`envSrv, ``Host.Load.Run.Prompt.P.S0)] do
+    let value ← Meta.reduce (mkConst source) (skipTypes := true)
+    addDecl (.defnDecl { name := pre ++ name, levelParams := [], type := mkConst ``SSrv, value := value, hints := .regular 0, safety := .safe })
+
+def box : Box := [(9, 2, 2), (10, 1, 1), (11, 1, 1), (16, 256, 256)]
+def vars : VarV := [(9, 0, 1), (10, 1, 0), (11, -1, 1), (16, 256, 0)]
+
+/-- The forward's part of the ordinary step. -/
+def Eh : List (RNode SDim InKey) := Tpl.Ordinary.graph.take 4010
+
+set_option interpreter.prefer_native false in
+simgraph_choose_fin choice : (endLoad, endSrv), (startLoad, startSrv), (Host.Load.Run.Prompt.P.s0, envSrv),
+  box, vars, -1, 17764, 17764, Eh
+
+end Host.Route.Cert.Fin.X0

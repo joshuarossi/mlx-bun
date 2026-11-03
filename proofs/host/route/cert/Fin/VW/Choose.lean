@@ -1,7 +1,6 @@
 import host.route.cert.Fin.Choose
 import host.simgraph.tpl.ordinary.Join
-import host.sim.template.a4pre_fd_vw_r0_body.H0
-import host.sim.template.a4pre_fd_vw_r0_body.H28
+import host.sim.template.a4pre_fd_vw_r0_body.m.B00
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false

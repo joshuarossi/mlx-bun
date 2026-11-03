@@ -17,7 +17,7 @@ kernel_rfl pf10 : PF4L7.θ 10 = x4CountTerm
 kernel_rfl pf14 : PF4L7.θ 14 = .var 17
 kernel_rfl pf30 : (fun ν : Nat → F64 => (PF4L7.θ 30).eval ν) = fun _ => F64.ofNat 16
 kernel_rfl pf31 : (fun ν : Nat → F64 => (PF4L7.θ 31).eval ν) = fun _ => F64.ofNat 16
-kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (PF4L7.θ 11) (some Q.n)) = true
+kernel_rfl pf11 : (fun ν : Nat → F64 => (PF4L7.θ 11).eval ν) = fun _ => F64.ofNat 6
 kernel_rfl pfRow16 : (fwdRows.all fun r => resChk r bodyM (PF4L7.θ 16) (some Q.cap1)) = true
 kernel_rfl pfNN : PFW4L7.R.data.nn0 = PFW4L7.R.data.nn1
 kernel_rfl pfNK : PTrie.keys PFW4L7.R.data.node = []
@@ -44,7 +44,7 @@ theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : 
 /-- **The step's end at the pre-final cut.** -/
 theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 67849 ≤ cap)
     (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
-    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
+    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) (hk : i.L = 7) :
     CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ⟨67849, 1254, 0, 0⟩ bodyM PRE_first_tail_x4_L7_r0_suffix.s8 PRE_first_tail_x4_L7_r0_suffix.S8))
       (withMem Tr (Pf.cut NB T tk π cap 1254 0 PRE_pf_x4_L7.s0 PRE_pf_x4_L7.S0)) := by
   obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
@@ -57,9 +57,7 @@ theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hca
       simp only [List.mem_cons, List.not_mem_nil, or_false]
       omega))
     pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 (fun ν hm => by rw [pf10, ← x4Count hr hi (h9 ν hm), hn])
-    (fun ν hm => by
-      rw [← hn]
-      exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
+    (fun ν _ => by rw [congrFun pf11 ν, hk])
     (fun ν hm => by
       rw [← hcapR]
       exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)

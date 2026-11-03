@@ -25,7 +25,7 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i fdMap → Good ν PRE_fd_vw_r0.st1.S0.oracle) :
     CutStep (withMem Mem (dispatchCut NB T tk π cap H N i)) (withMem Mem (mergedDispatchCut NB T tk π cap H N i)) 155 := by
-  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
+  rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap, -⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   let d := dispatchSite NB T tk (tokenBytes (lastRows π)) (lastRows π).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] x.M x.ν x.K PRE_fd_vw_r0.s21 d.tpl.S0 x.t x.C := by
@@ -81,7 +81,7 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N
     change (mlxOf PRE_fd_vw_r0.s21.ffi).nnext ≤ 19058
     rw [nnext21]
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
-    ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
+    ⟨K0, hm', book, ip, inputs, hmap, Nat.zero_le _⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt22, ⟨hr.presentBound, hr.heapSupp⟩,
     Nat.le_trans top.1.load.mlx.nbl hNL, PRE_fd_vw_r0.cshiftR1 top.1 hNL⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt22), congrFun hext.a 12504⟩ hmem⟩

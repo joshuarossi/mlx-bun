@@ -10,7 +10,7 @@ noncomputable def dispatchPair (x : SegInst FF) := prefillCompactPair setupP PRE
   θZ2 PRE_fd_vw_r0.s22 PRE_fd_vw_r0.s23 x
 
 noncomputable def g2Cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Lin.Cls.Inst) : ICut FF :=
-  typedCut NB T tk π cap H N PRE_fd_vw_r0.s23 PRE_fd_vw_r0.S23 i
+  typedCut NB T tk π cap H N PRE_fd_vw_r0.s23 PRE_fd_vw_r0.S23 i 18
 
 kernel_rfl keepNN2 : PRE_fd_vw_r0.kd1.nn0 = PRE_fd_vw_r0.kd1.nn1
 kernel_rfl keepNK2 : PTrie.keys PRE_fd_vw_r0.kd1.node = []
@@ -23,7 +23,7 @@ kernel_rfl dispatchFixNode : PRE_fd_vw_r0.kappa1.node 19057 = 19057
 theorem dispatch_compact {NB T cap H N capB : Nat} {tk : Nat → Nat} {π : List Nat} {i : Lin.Cls.Inst} {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hcapB : cap + 18 ≤ capB) (hcapM : capB ≤ 131072) :
     CutConv (withMem Mem (mergedDispatchCut NB T tk π cap H N i)) (withMem Mem (g2Cut NB T tk π capB H N i)) := by
-  rintro x ⟨K0, hr, hb, hip, hins, hmap⟩ ⟨⟨hfresh, hids, hnat, hcall, hNB, hnative⟩, hm⟩
+  rintro x ⟨K0, hr, hb, hip, hins, hmap, -⟩ ⟨⟨hfresh, hids, hnat, hcall, hNB, hnative⟩, hm⟩
   let bs := tokenBytes (lastRows π)
   let n := (lastRows π).length
   have hk := hb.context
@@ -130,11 +130,14 @@ theorem dispatch_compact {NB T cap H N capB : Nat} {tk : Nat → Nat} {π : List
     change (dispatchPair x).M.a 2586 = 2586 ∧ (dispatchPair x).M.a 2589 = 2589
     rw [aold 2586 (by decide), aold 2589 (by decide)]
     exact hids
-  refine ⟨dispatchPair x, rfl, rfl, ⟨K0, hcW, book, ?_, inputs, ?_⟩, ⟨hfresh, ids,
+  refine ⟨dispatchPair x, rfl, rfl, ⟨K0, hcW, book, ?_, inputs, ?_, ?_⟩, ⟨hfresh, ids,
     ⟨sameNext2 ▸ hnat.1, sameNnext2 ▸ hnat.2⟩⟩,
     hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN2 keepNK2 k)) (aold 12504 (by decide))) hm⟩
   · rw [node]
     exact hip
   · rw [pairν]
     exact hmap
+  · change 18 ≤ x.t.next - PRE_fd_vw_r0.s23.next
+    rw [hD]
+    omega
 end Host.Ts.Sim.Compose.FDVW

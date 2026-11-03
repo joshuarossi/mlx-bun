@@ -54,12 +54,11 @@ theorem toTailT {NB T cap capT nI nIT : Nat} {tk : Nat → Nat} {π extra : List
     (hdims : ∀ x : SegInst FF, Mem x → tail.dims (Shift.valuation θ x.ν))
     (hhand : ∀ x : SegInst FF, Mem x → tail.hand π.length (Shift.valuation θ x.ν))
     (hA : D.a 2590 = 2590) (hB : D.a 2586 = 2586) (hC : D.a 2589 = 2589) (hE : D.a 12504 = 12504)
-    (hI : D.nodeF nIT = nI)
     (hook : ∀ x y : SegInst FF, y.t = x.t → y.C = x.C → (∀ c, y.M.node c = x.M.node (D.nodeF c)) →
       y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
     CutConv (withMem Mem (indexedCut0 extra NB T tk cap nI π s1 S1)) (withMem Mem' (indexedCut NB T tk capT nIT π s0 S0)) :=
   toTailOf F.toPfCore (fun hrP hfr hwk hlo hhi hP hroomN hD hge =>
       F.rel (π := π) (kw := 4910 :: ghostPf) hrP hfr kwTail hwk hlo hhi hP (fun _ h => nomatch h) hroomN hD hge)
-    hxw hH hN hgrow hcap hbound h9 h10 h11 h16 hres hval hdims hhand hA hB hC hE hI hook
+    hxw hH hN hgrow hcap hbound h9 h10 h11 h16 hres hval hdims hhand hA hB hC hE hook
 
 end Host.Ts.Sim.Compose.Post
