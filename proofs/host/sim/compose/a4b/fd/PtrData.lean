@@ -6,10 +6,10 @@ set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose.FDVW
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Template Host.Load.Run.Tpl
 
-kernel_rfl ptrCtl : PRE_fd_vw_r0.s13.ctl = .call (.obj 2638) .undef [.obj 2825059]
+kernel_rfl ptrCtl : PRE_fd_vw_r0.s13.ctl = .call (.obj 2638) .undef [.obj 2823907]
 kernel_rfl ptrFo : PRE_fd_vw_r0.s13.obj? 2638 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s13 2638)
 kernel_rfl ptrKind : (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s13 2638).kind = .fn (.native (.ffi .ptr) [])
-kernel_rfl viewObj : PRE_fd_vw_r0.s13.obj? 2825059 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s13 2825059)
+kernel_rfl viewObj : PRE_fd_vw_r0.s13.obj? 2823907 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s13 2823907)
 
 theorem ptr {FR : Map → Nat → FF.S → FF.S → Prop} {M : Map} {ν : Nat → F64}
     {K : Ctx} {t : St FF.S} {C : CSrv} {bs : List Byte} {n : Nat}

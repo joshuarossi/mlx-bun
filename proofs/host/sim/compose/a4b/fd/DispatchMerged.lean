@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.fd.TypedBook
+import host.sim.compose.a4b.fd.Cut
 import host.sim.template.a4pre_fd_vw_r0.SiteR1
 import host.sim.template.a4pre_fd_vw_r0.SiteZ1
 import host.sim.compose.a4b.fd.DispatchGrow
@@ -14,15 +14,16 @@ noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (π : Lis
   { typedCut NB T tk π PRE_fd_vw_r0.s22 PRE_fd_vw_r0.S22 i with
     B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 PRE_fd_vw_r0.s22 x.t ∧
       Conv.CallFacts PRE_fd_vw_r0.s21 PRE_fd_vw_r0.S21.tab.length ∧
-      NB ≤ PRE_fd_vw_r0.P1.NL ∧ Conv.FullShiftQ PRE_fd_vw_r0.P1 18
+      NB ≤ PRE_fd_vw_r0.P1.NL ∧ Conv.FullShiftQ PRE_fd_vw_r0.P1 15
         PRE_fd_vw_r0.kappa1 PRE_fd_vw_r0.s23.ffi PRE_fd_vw_r0.s22.ffi }
 
+kernel_rfl bridge3938 : bridgeOf PRE_fd_vw_r0.s22.ffi = bridgeOf PRE_fd_vw_r0.s21.ffi
 kernel_rfl cnt22 : countersOkB PRE_fd_vw_r0.s21 PRE_fd_vw_r0.s22 = true
 
 theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
     (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_fd_vw_r0.st1.S0.oracle) :
-    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 425 := by
+    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 367 := by
   rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   let d := dispatchSite NB T tk (tokenBytes (lastRows π)) (lastRows π).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
@@ -60,8 +61,7 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
     change M'.a 2586 = 2586 ∧ M'.a 2589 = 2589
     rw [hext.a]
     exact hids
-  have hsrc : bridgeOf PRE_fd_vw_r0.s22.ffi = bridgeOf PRE_fd_vw_r0.s21.ffi :=
-    PRE_fd_vw_r0.cbridge1.trans (typedRun23.src_bridge.trans typedRun20.dst_bridge.symm)
+  have hsrc : bridgeOf PRE_fd_vw_r0.s22.ffi = bridgeOf PRE_fd_vw_r0.s21.ffi := bridge3938
   have hi4 : (bridgeOf PRE_fd_vw_r0.s22.ffi).active = false :=
     (congrArg (fun b : Host.Mlx.FfiAne.St => b.active) PRE_fd_vw_r0.cbridge1).trans PRE_fd_vw_r0.zbin1
   have hi3 : (bridgeOf PRE_fd_vw_r0.s21.ffi).active = false :=

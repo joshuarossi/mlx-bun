@@ -25,7 +25,7 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem :
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
     (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hb.context hb.valuation hgood
     (congrFun (congrFun typedAccepted23 _) _) (congrFun (congrFun typedRun23 _) _) top24 hr
-  have ng := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 4096 [])
+  have ng := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted23 _) _) (congrFun (congrFun typedRun23 _) _) hb.valuation hb.context (hr.withOracle hgood) hrun
   have ip : InputAt (lastRows π) (M'.node 15235) t' C' := by
     rw [hext.node]
@@ -57,17 +57,9 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem :
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt24⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt24), congrFun hext.a 12504⟩ hm⟩
 
-kernel_rfl g2Check : (firstTailRows.all fun r => goodLin r.ps
-  (varsOf r.V npsMap) PRE_fd_vw_r0.S23.oracle) = true
+def fwdClassRows : List Row := [first_tail_x4.r0]
 
-noncomputable def g2_first (NB T : Nat) (tk : Nat → Nat) (π : List Nat)
-    (Mem : Nat → SegInst FF → Prop) (hMem : ∀ L x y, NTrack x y → Mem L x → Mem L y) :
-    GluePiece FF firstTailRows (fun i => withMem (Mem i.L) (g2Cut NB T tk π i))
-      (fun i => withMem (Mem i.L) (forwardCut NB T tk π i)) where
-  m := npsMap
-  n := 7
-  O := PRE_fd_vw_r0.S23.oracle
-  chk r hr := List.all_eq_true.mp g2Check r hr
-  ok _ _ i _ ho := g2 NB T tk π i (hMem i.L) ho.1
+kernel_rfl g2Check : (fwdClassRows.all fun r => goodLin r.ps
+  (varsOf r.V npsMap) PRE_fd_vw_r0.S23.oracle) = true
 
 end Host.Ts.Sim.Compose.FDVW

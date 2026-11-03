@@ -1,5 +1,5 @@
 import host.sim.template.a4pre_pf_vw.S
-import host.sim.template.a4pre_first_tail_x1_r0_suffix.m.B0
+import host.sim.template.a4pre_first_tail_x1_r0_suffix.m.B3
 import host.sim.template.RestartPad
 import host.sim.template.BridgeLiteral
 import host.sim.template.ServerData
@@ -19,6 +19,6 @@ def PFW1.frames : List Nat := PRE_pf_vw.frames
 def PFW1.ghosts : List Nat := PRE_pf_vw.ghosts
 def PFW1.maps : List Nat := PRE_pf_vw.maps
 set_option interpreter.prefer_native true in
-tpl_restart_pad PFW1.R : PFW1, PFW1 8 («world» := Host.Load.Run.Tpl.PRE_first_tail_x1_r0.nativeWorld)
+tpl_restart_pad PFW1.R : PFW1, PFW1 8 («world» := Host.Load.Run.Tpl.PRE_first_tail_x1_r0.nativeWorld, primNums := true)
 
 end Host.Load.Run.Tpl

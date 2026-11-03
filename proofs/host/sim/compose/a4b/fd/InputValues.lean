@@ -9,9 +9,8 @@ kernel_rfl pre_nnext : (mlxOf PRE_fd_vw_r0.s16.ffi).nnext = 15235
 kernel_rfl post_next : (mlxOf PRE_fd_vw_r0.s17.ffi).next = 18156
 kernel_rfl post_nnext : (mlxOf PRE_fd_vw_r0.s17.ffi).nnext = 15236
 kernel_rfl shape : Host.Mlx.Ffi.dimsArg (nthD (.big 0) ND.ndArgs 0) (nthD (.big 0) ND.ndArgs 1) =
-  some [.lit 1, .sym (.ref 16)]
+  some [.lit 1, .lit 6]
 kernel_rfl dtype : Host.Mlx.Ffi.argNat (nthD (.big 0) ND.ndArgs 2) = some 7
-kernel_rfl ref16 : nth? ND.ndSrv.tab 16 = some (.un .int32 (.var 12))
 kernel_rfl ndCount : ND.ndArgs.length = 3
 kernel_rfl args : ND.ndArgs = [(nthD (.big 0) ND.ndArgs 0), (nthD (.big 0) ND.ndArgs 1), (nthD (.big 0) ND.ndArgs 2)]
 end Host.Ts.Sim.Compose.FDVW.ND.Values

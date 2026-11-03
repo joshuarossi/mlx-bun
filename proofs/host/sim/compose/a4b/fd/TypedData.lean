@@ -10,15 +10,15 @@ open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
 
 def tokenBytes (γ : List Nat) : List Byte := cellBytes .i32 ((γ.map F64.ofNat).map Disp.i32Cell)
 
-kernel_rfl typedCtl : PRE_fd_vw_r0.s10.ctl = .construct (.obj 90) [.obj 2825053] (.obj 90)
+kernel_rfl typedCtl : PRE_fd_vw_r0.s10.ctl = .construct (.obj 90) [.obj 2823901] (.obj 90)
 kernel_rfl typedFo : PRE_fd_vw_r0.s10.obj? 90 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 90)
 kernel_rfl typedKind : (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 90).kind = .fn (.native (.buf .typedCtor) [natV 4, natV 21])
-kernel_rfl chunkObj : PRE_fd_vw_r0.s10.obj? 2825053 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 2825053)
-kernel_rfl chunkEmpty : (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 2825053).kind = .array []
+kernel_rfl chunkObj : PRE_fd_vw_r0.s10.obj? 2823901 = some (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 2823901)
+kernel_rfl chunkEmpty : (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s10 2823901).kind = .array []
 
 theorem typed {FR : Map → Nat → FF.S → FF.S → Prop} {M : Map} {ν : Nat → F64}
     {K : Ctx} {t : St FF.S} {C : CSrv} {γ : List Nat}
-    (h : RelB FF FR wideP [] M ν K PRE_fd_vw_r0.s10 ⟨PRE_fd_vw_r0.S10.tab, []⟩ t C)
+    (h : RelB FF FR wideGPf [] M ν K PRE_fd_vw_r0.s10 ⟨PRE_fd_vw_r0.S10.tab, []⟩ t C)
     (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) :
     runC FF 1 t C = some (Disp.typedT FF t 21 (γ.map F64.ofNat), C) ∧
       RelB FF FR (FDFrames.typedW (tokenBytes γ) γ.length) [] M ν (Disp.typedK K FDFrames.buffer)
@@ -29,19 +29,19 @@ theorem typed {FR : Map → Nat → FF.S → FF.S → Prop} {M : Map} {ν : Nat 
     (Sa := PRE_fd_vw_r0.S10) (Sb := PRE_fd_vw_r0.S11) (fa := 90) (ch := FDFrames.chunk)
     (proto := 21) (a := FDFrames.buffer) h typedCtl typedFo typedKind
     (by decide) (by decide) (by decide) hf chunkObj chunkEmpty
-    (Nat.blt_eq.mp PRE_fd_vw_r0.roomA9_check) PRE_fd_vw_r0.bufA4 PRE_fd_vw_r0.protoA4
+    (Nat.blt_eq.mp PRE_fd_vw_r0.roomA4_check) PRE_fd_vw_r0.bufA4 PRE_fd_vw_r0.protoA4
     PRE_fd_vw_r0.newA4 (Option.some.inj PRE_fd_vw_r0.patchB4)
-  have hw : Disp.typedWF wideP FDFrames.buffer (γ.map F64.ofNat) = FDFrames.typedW (tokenBytes γ) γ.length := by
+  have hw : Disp.typedWF wideGPf FDFrames.buffer (γ.map F64.ofNat) = FDFrames.typedW (tokenBytes γ) γ.length := by
     simp only [Disp.typedWF, FDFrames.typedW, tokenBytes, List.length_map]
     rfl
   rw [hw] at hr
   exact ⟨hs, hr⟩
 
 theorem typedContext (bs : List Byte) (n : Nat) {K : Ctx}
-    (hk : Disp.KpJ FDFrames.chunkJ 4096 K) :
-    Disp.KpJ (FDFrames.typedJ bs n) 4096 (Disp.typedK K FDFrames.buffer) := by
+    (hk : Disp.KpJ FDFrames.chunkJ 131072 K) :
+    Disp.KpJ (FDFrames.typedJ bs n) 131072 (Disp.typedK K FDFrames.buffer) := by
   let J := fullJSPPXS setupP [2665, FDFrames.chunk, FDFrames.buffer] [(4910, .memo [])]
-  have h1 : Disp.KpJ J 4096 (Disp.Ctx.frameAt K FDFrames.buffer ([], [])) :=
+  have h1 : Disp.KpJ J 131072 (Disp.Ctx.frameAt K FDFrames.buffer ([], [])) :=
     FDFrames.kp_frame (J := FDFrames.chunkJ) (J' := J) rfl rfl rfl hk ([], [])
   exact FDFrames.kp_frame (J := J) (J' := FDFrames.typedJ bs n) rfl rfl rfl h1 ([], [])
 

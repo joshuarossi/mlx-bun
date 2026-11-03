@@ -15,7 +15,7 @@ theorem npsCallClean : Conv.JClean (⟨18155, 15235, 2673457, 14⟩ : Conv.Cnt) 
   rw [PRE_fd_vw_r0.chunk-1_eq]
   exact PRE_setup_early_r0.cjcl0 SetupChunk.callClean
 
-theorem npsShift {K : Ctx} (hk : Disp.Kp setupJ K) {π : List Nat}
+theorem npsShift {K : Ctx} (hk : Disp.Kp FDFrames.startJ K) {π : List Nat}
     (hframe : K.fr 2665 = some ([], π.map natV))
     (hcall : Conv.CallFacts PRE_fd_vw_r0.s0 PRE_fd_vw_r0.S0.tab.length)
     (hnative : Conv.FullShiftQ PRE_fd_vw_r0.P0 15 PRE_fd_vw_r0.kappa0

@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.fd.G1
+import host.sim.compose.a4b.VWG1
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

@@ -23,7 +23,7 @@ theorem PF6.wideAll : ∀ p ∈ wideListPf, Pf.WideP PFW6.R.data PRE_pf_vw.s0 PR
   · exact Pf.wideP_ghost (by decide) PF6.ghostFix1993 PF6.ghostChk1993
   · exact Pf.wideP_ghost (by decide) PF6.ghostFix2001 PF6.ghostChk2001
 
-theorem PF6.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x6_r0_suffix.s8 PRE_pf_vw.S0.tab PF6.tabP PFW6.R.data PFW6.R.inv PF6.θ PF6.P0 2823887 [] [2673467, 2673472, 2673473] wideGPf where
+theorem PF6.facts : Pf.PfFacts PRE_pf_vw.s0 PRE_first_tail_x6_r0_suffix.s8 PRE_pf_vw.S0.tab PF6.tabP PFW6.R.data PFW6.R.inv PF6.θ PF6.P0 2674370 [] [2673467, 2673472, 2673473] wideGPf where
   num := PF6.num
   heap := by
     intro a h ha hm hw

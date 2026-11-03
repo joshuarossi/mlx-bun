@@ -1,4 +1,5 @@
 import host.sim.template.RestartCmd
+import host.sim.template.NShiftOf
 set_option Elab.async false
 
 /-! # The restart map of POST's hand-off
@@ -53,8 +54,20 @@ unsafe def restartHandCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name)
     throwError "tpl_restart_hand: the lockstep walk is not a restart ({w.mism.size} mismatches, {w.litDiff.size} literal changes, {w.bigs.size} bigint changes, {w.nats.size} nat changes): {first}"
   let heapP := w.sig.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
   let invP := w.sig.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
-  let hndP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
-  let hinvP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
+  let mut hndP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
+  let mut hinvP := w.hnd.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
+  -- an array of the template the end doesn't hold: nothing reaches it, so it goes to an array of the end on the same node the template doesn't hold
+  let mut spare := (PTrie.keysA m1.arrs).filter fun h => (m0.arrs.get h).isNone && (m0.objs.get h).isNone && (m1.objs.get h).isNone
+  let mut moved : Array (Nat × Nat) := #[]
+  for h in PTrie.keysA m0.arrs do
+    if !w.hnd.contains h && (m1.arrs.get h).isNone && (m1.objs.get h).isNone then
+      match spare.find? (fun h' => decide (m1.arrs.get h' = m0.arrs.get h)) with
+      | some h' =>
+        hndP := hndP.set h h'
+        hinvP := hinvP.set h' h
+        spare := spare.filter (· != h')
+        moved := moved.push (h, h')
+      | none => throwError "tpl_restart_hand: no array of the end for {h}"
   let nodeP := w.nod.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set a b) PTrie.nil
   let ninvP := w.nod.fold (fun (t : PTrie Nat) a b => if a == b then t else t.set b a) PTrie.nil
   let lo := w.hnd.fold (fun (m : Nat) a b => if a == b then m else min m a) (2 ^ 56)
@@ -102,6 +115,7 @@ unsafe def restartHandCmdW {F : Ffi} (wd : TWorld F) (pre base case : Lean.Name)
   let renH := w.hnd.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let renN := w.nod.fold (fun (n : Nat) a b => if a == b then n else n + 1) 0
   let lost := unpaired.filter (!·.2) |>.map (·.1)
+  logInfo m!"tpl_restart_hand {pre}: arrays moved {moved.toList}"
   logInfo m!"tpl_restart_hand {pre}: heap {w.sig.size} ({ren} renamed), handles {w.hnd.size} ({renH} renamed, first {lo}), nodes {w.nod.size} ({renN} renamed), {w.pairs.size} number pairs, {unpaired.size} entries unpaired, {lost.size} with no image {lost.toList}, reads {used}, emit entry {iE}; θ = {theta.map fun (v, e) => s!"v{v} ↦ {fmtSym e}"}"
 
 elab "tpl_restart_hand " p:ident " : " b:ident ", " c:ident i:num " tok " k:num " emit " e:num os:(tplOpts)? : command =>

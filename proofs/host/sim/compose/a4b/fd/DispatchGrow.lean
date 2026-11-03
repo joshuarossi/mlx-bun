@@ -13,9 +13,9 @@ theorem dispatchGrowSim (NB T : Nat) (tk : Nat → Nat) (bs : List Byte) (n : Na
     (stk : List Frame) (y0 : Host.Mlx.Ffi.St) :
     Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
-      (dispatchOk bs n) (Disp.KpJ (FDFrames.typedJ bs n) 4096)
+      (dispatchOk bs n) (Disp.KpJ (FDFrames.typedJ bs n) 131072)
       (FDFrames.typedW bs n) stk (VBOkF loopVB) := by
-  apply (typedGrowSimAt NB T tk bs n 4096 stk y0).mono
+  apply (typedGrowSimAt NB T tk bs n 131072 stk y0).mono
   intro s S h
   simp only [dispatchOk, okLocal, Bool.and_eq_true] at h
   exact h.1

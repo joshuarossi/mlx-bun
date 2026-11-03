@@ -11,7 +11,7 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable def npsVal (ν : Nat → F64) := Conv.resVal ν PRE_fd_vw_r0.ws0
   (Conv.resF SymE.var PRE_fd_vw_r0.st0.S2.tab PRE_fd_vw_r0.S0.tab.length ν)
 def mergedQ (L : Nat) (x : SegInst FF) : Prop := ∃ ν, x.ν = npsVal ν ∧
-  VBOkF loopVB ν ∧ Disp.Kp setupJ x.K ∧ MapOk ν (setupI L) [(9, .L)]
+  VBOkF loopVB ν ∧ Disp.Kp FDFrames.startJ x.K ∧ MapOk ν (setupI L) [(9, .L)]
 def mergedBook (NB T L : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
   SetupCommon.ChunkBook L x ∧ setupInputs T tk x ∧ fixedCells x ∧ baseNums ∧
   Conv.CallFacts PRE_fd_vw_r0.s0 PRE_fd_vw_r0.S0.tab.length ∧
@@ -19,7 +19,7 @@ def mergedBook (NB T L : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
     PRE_fd_vw_r0.kappa0 PRE_fd_vw_r0.s2.ffi PRE_fd_vw_r0.s1.ffi
 noncomputable def mergedCut (NB T : Nat) (tk : Nat → Nat) (L : Nat) : ICut FF :=
   (Cut.mk PRE_fd_vw_r0.s1 PRE_fd_vw_r0.S1.tab
-    (Conv.relB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP [] (mergedQ L))).with
+    (Conv.relB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf [] (mergedQ L))).with
     (mergedBook NB T L tk)
 
 /-- The merged cut at the route's prompt. -/
@@ -31,23 +31,23 @@ kernel_rfl cnt1 : countersOkB PRE_fd_vw_r0.s0 PRE_fd_vw_r0.s1 = true
 
 theorem npsSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) :
     Disp.StepSimXLB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      PRE_fd_vw_r0.st0.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
+      PRE_fd_vw_r0.st0.okL (Disp.KpJ FDFrames.startJ 131072) wideGPf r (VBOkF loopVB) := by
   let P : LoadP := { setupP with rest := machReads T tk }
-  have hj : setupJ.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
-  have hs := fullStepSimXLBXDJS P NB loopVB setupJ 4096 hj rfl rfl rfl rfl rfl r setupW_ok
+  have hj : FDFrames.startJ.okCall = okCallFXD P := (callRaiseRest setupP (machReads T tk)).symm
+  have hs := fullStepSimXLBXDJS P NB loopVB FDFrames.startJ 131072 hj rfl rfl rfl rfl rfl r FDFrames.start_wp
   apply hs.mono
   intro s S h
-  change (Disp.okJSJ setupJ (okBackFXS setupP) 4096 s S && Disp.localB s) = true at h
+  change (Disp.okJSJ FDFrames.startJ (okBackFXS setupP) 131072 s S && Disp.localB s) = true at h
   simp only [Bool.and_eq_true] at h
   simpa only [P, backRest] using h.1
 
 theorem npsGrowSim (NB T : Nat) (tk : Nat → Nat) (r : List Frame) (y0 : Host.Mlx.Ffi.St) :
     Disp.StepSimXLB FF (FRQ (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (fun y => Host.Mlx.Ffi.NGrow y0 (mlxOf y)))
-      PRE_fd_vw_r0.st0.okL (Disp.KpJ setupJ 4096) wideP r (VBOkF loopVB) := by
+      PRE_fd_vw_r0.st0.okL (Disp.KpJ FDFrames.startJ 131072) wideGPf r (VBOkF loopVB) := by
   apply (wideGrowSim NB T tk r y0).mono
   intro s S h
-  change (Disp.okJSJ setupJ (okBackFXS setupP) 4096 s S && Disp.localB s) = true at h
+  change (Disp.okJSJ FDFrames.startJ (okBackFXS setupP) 131072 s S && Disp.localB s) = true at h
   simp only [Bool.and_eq_true] at h
   exact h.1
 
@@ -58,7 +58,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegI
   rintro t C ⟨x, rfl, rfl, ⟨hr, hq⟩, ⟨hb, hins, hids, hbase, hp, hnat⟩, hmem⟩
   obtain ⟨⟨hk, hmemo, π, hlen, hvocab, hframe, hfresh⟩, hsmall⟩ := hb
   have h0 := hr.withOracle (horacle x.ν hq.2.2)
-  change RelB FF _ wideP [] x.M x.ν x.K PRE_fd_vw_r0.s0
+  change RelB FF _ wideGPf [] x.M x.ν x.K PRE_fd_vw_r0.s0
     ⟨PRE_fd_vw_r0.S0.tab, PRE_fd_vw_r0.st0.S0.oracle⟩ x.t x.C at h0
   rw [← PRE_fd_vw_r0.tab0_0] at h0
   let d := PRE_fd_vw_r0.site0 (npsSim NB T tk)
@@ -87,7 +87,7 @@ theorem nps_merged {NB T L : Nat} {tk : Nat → Nat} {ρ : List Nat} {Mem : SegI
     change (mlxOf PRE_fd_vw_r0.s0.ffi).nnext ≤ 15235
     rw [← PRE_fd_vw_r0.fcnn0]
   refine ⟨t', C', run, ⟨M', npsVal x.ν, x.K, t', C'⟩, rfl, rfl, ?_, ?_⟩
-  · change RelB FF _ wideP [] M' (npsVal x.ν) x.K PRE_fd_vw_r0.s1
+  · change RelB FF _ wideGPf [] M' (npsVal x.ν) x.K PRE_fd_vw_r0.s1
       ⟨PRE_fd_vw_r0.S1.tab, []⟩ t' C' ∧ _
     rw [PRE_fd_vw_r0.mergeTab0]
     exact ⟨hm', x.ν, rfl, hq⟩

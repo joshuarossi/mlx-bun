@@ -12,10 +12,10 @@ noncomputable def npsPair (x : SegInst FF) := prefillCompactPair setupP PRE_fd_v
 theorem nps_compact_rel {NB T L : Nat} {tk : Nat → Nat} {x : SegInst FF}
     (hR : (mergedCut NB T tk L).R x PRE_fd_vw_r0.s1 ⟨PRE_fd_vw_r0.S1.tab, []⟩)
     (hB : (mergedCut NB T tk L).B x) :
-    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
+    RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideGPf []
       (npsPair x).M (npsPair x).ν (npsPair x).K PRE_fd_vw_r0.s2
       ⟨PRE_fd_vw_r0.S2.tab, []⟩ x.t x.C ∧
-    Disp.KpJ setupJ 4096 (npsPair x).K ∧ (npsPair x).K.fr 4910 = none ∧
+    Disp.KpJ FDFrames.startJ 131072 (npsPair x).K ∧ (npsPair x).K.fr 4910 = none ∧
     (∃ π : List Nat, π.length = L ∧ (∀ k ∈ π, k < 248320) ∧
       (npsPair x).K.fr 2665 = some ([], π.map natV)) ∧
     (npsPair x).K.D = x.K.D + 14 ∧ (npsPair x).K.fr 2665 = x.K.fr 2665 := by
@@ -79,8 +79,8 @@ theorem nps_compact_rel {NB T L : Nat} {tk : Nat → Nat} {x : SegInst FF}
       (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hi)
   have hcJ := (hc.withJs (by change x.K.lo ≤ 2 ^ 56; rw [hk.1.1]; decide) hJs
     (fullRXD_withJs hc.ffi npsJsNative)).toJ (BigJs.withJs N)
-  have hctx : Disp.KpJ setupJ 4096 K' :=
-    ⟨Kp_restart hkp _ _ _, by change x.t.next - PRE_fd_vw_r0.s2.next ≤ 4096; rw [hD]; omega⟩
+  have hctx : Disp.KpJ FDFrames.startJ 131072 K' :=
+    ⟨Kp_restart hkp _ _ _, by change x.t.next - PRE_fd_vw_r0.s2.next ≤ 131072; rw [hD]; omega⟩
   have hmemo' : K'.fr 4910 = none :=
     (framedNext_none_iff (M := x.M) (s1 := (PRE_fd_vw_r0.s1 : St FF.S)) 4910).mpr hmemo
   have hcW := inactiveMemo hcJ (wideInactive hmemo')

@@ -10,11 +10,11 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
 def npsMap : List (Nat × Q) := [(9, .L), (12, .n)]
 def afterNpsBook (T L : Nat) (tk : Nat → Nat) (x : SegInst FF) : Prop :=
-  Disp.KpJ setupJ 4096 x.K ∧ x.K.fr 4910 = none ∧
+  Disp.KpJ FDFrames.startJ 131072 x.K ∧ x.K.fr 4910 = none ∧
   (∃ π : List Nat, π.length = L ∧ (∀ k ∈ π, k < 248320) ∧ x.K.fr 2665 = some ([], π.map natV)) ∧
   AneFresh x.t ∧ setupInputs T tk x ∧ fixedCells x ∧ x.K.D ≤ 3540
 noncomputable def afterNpsCut (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) (i : Cls.Inst) : ICut FF :=
-  { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP npsMap
+  { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) FDFrames.startJ wideGPf npsMap
       PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 i with
     B := fun x => afterNpsBook T i.L tk x ∧ PromptFr ρ x ∧ NativeAt 0 0 PRE_fd_vw_r0.s2 x.t }
 

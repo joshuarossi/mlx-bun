@@ -11,6 +11,8 @@ namespace Host.Ts.Sim.Compose.FDVW
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl
 
+def npsMap : List (Nat × Q) := [(9, .L), (12, .n), (12, .n)]
+
 kernel_rfl accepted2 : PRE_fd_vw_r0.okB1 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 = true
 kernel_rfl accepted3 : PRE_fd_vw_r0.okB1 PRE_fd_vw_r0.s3 PRE_fd_vw_r0.S3 = true
 kernel_rfl accepted5 : PRE_fd_vw_r0.okB2 PRE_fd_vw_r0.s5 PRE_fd_vw_r0.S5 = true
@@ -33,7 +35,7 @@ kernel_rfl top19 : noRetBlock PRE_fd_vw_r0.s19 = true
 noncomputable def g1Oracle : List Ans :=
   PRE_fd_vw_r0.S2.oracle ++ PRE_fd_vw_r0.S5.oracle ++ PRE_fd_vw_r0.S8.oracle ++ PRE_fd_vw_r0.S11.oracle ++ PRE_fd_vw_r0.S14.oracle ++ PRE_fd_vw_r0.S16.oracle ++ PRE_fd_vw_r0.S17.oracle ++ PRE_fd_vw_r0.S20.oracle
 
-kernel_rfl g1Check : (firstTailRows.all fun r => goodLin r.ps
+kernel_rfl g1Check : ([first_tail_x4.r0].all fun r => goodLin r.ps
   (varsOf r.V npsMap) g1Oracle) = true
 
 structure G1Good (ν : Nat → F64) : Prop where

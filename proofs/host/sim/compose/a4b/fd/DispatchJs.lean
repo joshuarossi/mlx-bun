@@ -1,5 +1,4 @@
 import host.sim.compose.a4b.fd.DispatchShift
-import host.sim.compose.a4b.fd.NpsJs
 import host.sim.conv.CompactJs
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -35,7 +34,7 @@ theorem dispatchJsBad_sub {i : Int} (h : jsShiftBadB PRE_fd_vw_r0.kappa1 i = tru
       rw [ha, hi, he] at h
       simp only [decide_true, Nat.blt_eq.mpr hb, Bool.and_self, Bool.not_true] at h
       cases h
-    have ha : PRE_fd_vw_r0.kappa0.a b = 2825058 + (b - 2673458) := by
+    have ha : PRE_fd_vw_r0.kappa0.a b = 2823906 + (b - 2673458) := by
       have eb : b = PRE_fd_vw_r0.s0.next + PRE_fd_vw_r0.pl0.length + (b - 2673458) := by
         change b = 2673457 + 1 + (b - 2673458)
         omega
@@ -43,13 +42,13 @@ theorem dispatchJsBad_sub {i : Int} (h : jsShiftBadB PRE_fd_vw_r0.kappa1 i = tru
         PRE_fd_vw_r0.kappa0.a b = PRE_fd_vw_r0.kappa0.a
             (PRE_fd_vw_r0.s0.next + PRE_fd_vw_r0.pl0.length + (b - 2673458)) :=
           congrArg PRE_fd_vw_r0.kappa0.a eb
-        _ = 2825058 + (b - 2673458) := by
+        _ = 2823906 + (b - 2673458) := by
           rw [PRE_fd_vw_r0.zkap0]
           exact Conv.Map.compact_next (b - 2673458)
     have hbig : PRE_fd_vw_r0.kappa0.big i = i := by
       rw [PRE_fd_vw_r0.zkap0]
       exact Conv.rdata_big_js PRE_fd_vw_r0.kd0 i (by rw [hp]; exact Option.some_ne_none _)
-    have hne : i ≠ ptrInt (.js (2825058 + (b - 2673458))) off := by
+    have hne : i ≠ ptrInt (.js (2823906 + (b - 2673458))) off := by
       rw [he]
       simp only [ptrInt_js, jsBase, jsOff]
       omega
@@ -78,8 +77,9 @@ theorem dispatchJsFree {I : Int → Prop}
       (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.zclbd1 b hb)) a hcl
     have h17 := Conv.heap_off_setAll PRE_fd_vw_r0.gjk1
       (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.gjbd1 b hb)) a hgl
-    have h19 : PRE_fd_vw_r0.s2.heap.get a = some o :=
-      h17.symm.trans (h19.symm.trans ho)
+    have h19 : PRE_fd_vw_r0.s2.heap.get a = some o := by
+      rw [← s19Eq]
+      exact h17.symm.trans (h19.symm.trans ho)
     exact (npsJsFree (fun i hi => dispatchJsBad_sub (hp i hi))).1 a o h19
 
 end Host.Ts.Sim.Compose.FDVW

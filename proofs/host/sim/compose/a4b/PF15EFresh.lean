@@ -17,12 +17,12 @@ kernel_rfl PRE_pf_vw.nativeFresh : bigsOutB 21966 131072 (Host.Load.Layers.toLoa
 theorem PRE_pf_vw.noBigFresh : NoBigSt (fun i => (21966 : Int) ≤ i ∧ i < 131072) PRE_pf_vw.s0.trace PRE_pf_vw.s0 :=
   NoBigSt.of_checks (fun a ha => PRE_pf_vw.allPresent PRE_pf_vw.FB.all PRE_pf_vw.freshFramed a ha) PRE_pf_vw.freshRoots
 
-noncomputable def PRE_pf_vw.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2823887) PRE_pf_vw.s0 a
+noncomputable def PRE_pf_vw.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2674370) PRE_pf_vw.s0 a
 tpl_all_blocks PRE_pf_vw.JH from PF15EV : PRE_pf_vw.jsAt
 kernel_rfl PRE_pf_vw.jsFramed : PF15EV.frames.all PRE_pf_vw.jsAt = true
-kernel_rfl PRE_pf_vw.jsRoots : noBigRootsP (jsAboveB 2823887) PRE_pf_vw.s0.trace PRE_pf_vw.s0 = true
+kernel_rfl PRE_pf_vw.jsRoots : noBigRootsP (jsAboveB 2674370) PRE_pf_vw.s0.trace PRE_pf_vw.s0 = true
 kernel_rfl PRE_pf_vw.jsNative : bigsOutB jsLoN jsHiN (Host.Load.Layers.toLoad PRE_pf_vw.s0.ffi).mlx = true
-theorem PRE_pf_vw.jsHeap : JsHeapAbove 2823887 PRE_pf_vw.s0 := by
+theorem PRE_pf_vw.jsHeap : JsHeapAbove 2674370 PRE_pf_vw.s0 := by
   intro a o ho
   have hc := PRE_pf_vw.allPresent PRE_pf_vw.JH.all PRE_pf_vw.jsFramed a (Present.of_get ho)
   unfold PRE_pf_vw.jsAt noBigAtP at hc

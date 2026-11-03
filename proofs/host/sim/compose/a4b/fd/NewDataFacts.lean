@@ -13,7 +13,7 @@ noncomputable def ndRest : List Val := [.ptr (.js 2673481) 0, natV 2, natV 7]
 noncomputable def ndDecoded := interpS (decodeArgs FF PRE_fd_vw_r0.s16 ndTys ndRest).run PRE_fd_vw_r0.S16
 noncomputable def ndArgs : List Arg := match ndDecoded with | some (some asR, _) => asR | _ => []
 noncomputable def ndSrv : SSrv := match ndDecoded with | some (_, S) => S | _ => PRE_fd_vw_r0.S16
-kernel_rfl ndExact : Bridge.ndParts PRE_fd_vw_r0.s16 = some (chars!"mlx_array_new_data", chars!"u64", ndTys, ndRest, 2825058)
+kernel_rfl ndExact : Bridge.ndParts PRE_fd_vw_r0.s16 = some (chars!"mlx_array_new_data", chars!"u64", ndTys, ndRest, 2823906)
 kernel_rfl ndDecode : interpS (decodeArgs FF PRE_fd_vw_r0.s16 ndTys ndRest).run PRE_fd_vw_r0.S16 = some (some ndArgs, ndSrv)
 kernel_rfl ndOk : G.dataOk setupP (mlxOf PRE_fd_vw_r0.s16.ffi) ndArgs = true
 kernel_rfl ndSmall : (G.dataRefs ndArgs).all (refSmallB loopVB ndSrv) = true

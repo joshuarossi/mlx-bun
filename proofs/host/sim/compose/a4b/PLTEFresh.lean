@@ -17,12 +17,12 @@ kernel_rfl PRE_pl_tail.nativeFresh : bigsOutB 22018 131072 (Host.Load.Layers.toL
 theorem PRE_pl_tail.noBigFresh : NoBigSt (fun i => (22018 : Int) ≤ i ∧ i < 131072) PRE_pl_tail.s0.trace PRE_pl_tail.s0 :=
   NoBigSt.of_checks (fun a ha => PRE_pl_tail.allPresent PRE_pl_tail.FB.all PRE_pl_tail.freshFramed a ha) PRE_pl_tail.freshRoots
 
-noncomputable def PRE_pl_tail.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2827718) PRE_pl_tail.s0 a
+noncomputable def PRE_pl_tail.jsAt (a : Nat) : Bool := noBigAtP (jsAboveB 2673649) PRE_pl_tail.s0 a
 tpl_all_blocks PRE_pl_tail.JH from PLTEV : PRE_pl_tail.jsAt
 kernel_rfl PRE_pl_tail.jsFramed : PLTEV.frames.all PRE_pl_tail.jsAt = true
-kernel_rfl PRE_pl_tail.jsRoots : noBigRootsP (jsAboveB 2827718) PRE_pl_tail.s0.trace PRE_pl_tail.s0 = true
+kernel_rfl PRE_pl_tail.jsRoots : noBigRootsP (jsAboveB 2673649) PRE_pl_tail.s0.trace PRE_pl_tail.s0 = true
 kernel_rfl PRE_pl_tail.jsNative : bigsOutB jsLoN jsHiN (Host.Load.Layers.toLoad PRE_pl_tail.s0.ffi).mlx = true
-theorem PRE_pl_tail.jsHeap : JsHeapAbove 2827718 PRE_pl_tail.s0 := by
+theorem PRE_pl_tail.jsHeap : JsHeapAbove 2673649 PRE_pl_tail.s0 := by
   intro a o ho
   have hc := PRE_pl_tail.allPresent PRE_pl_tail.JH.all PRE_pl_tail.jsFramed a (Present.of_get ho)
   unfold PRE_pl_tail.jsAt noBigAtP at hc

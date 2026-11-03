@@ -16,7 +16,7 @@ kernel_rfl PLT.hi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).next se
 kernel_rfl PLT.nhi0 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_tail.s0.ffi).nnext setupP.NE = true
 kernel_rfl PLT.hi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s1.ffi).next setupP.E = true
 kernel_rfl PLT.nhi1 : Nat.ble (Host.Ts.Sim.Full.mlxOf PRE_pl_common.s1.ffi).nnext setupP.NE = true
-kernel_rfl PLT.jsKeys : (PTrie.keys PLTP.R.data.heap).all (Nat.ble 2827718) = true
-kernel_rfl PLT.jsLe : Nat.ble 2827718 PLTP.R.data.n0 = true
+kernel_rfl PLT.jsKeys : (PTrie.keys PLTP.R.data.heap).all (Nat.ble 2673649) = true
+kernel_rfl PLT.jsLe : Nat.ble 2673649 PLTP.R.data.n0 = true
 
 end Host.Load.Run.Tpl

@@ -1,3 +1,7 @@
+import host.sim.template.a4pre_fd_vw_r0.States
+import host.sim.template.a4pre_fd_vw_r0.H1
+import host.sim.template.a4pre_fd_vw_r0.SiteL1
+import host.sim.template.a4pre_fd_vw_r0.st2.Tpl
 import host.sim.compose.a4b.PrefillFirstTailX15
 import host.sim.compose.a4b.fd.Sim
 import host.sim.template.BootEq
@@ -17,7 +21,7 @@ kernel_rfl dispatchOk1 : (fun (bs : List Byte) (n : Nat) => dispatchOk bs n
   PRE_fd_vw_r0.st1.s1 PRE_fd_vw_r0.st1.S1) = fun _ _ => true
 
 boot_rfl dispatchRun from PRE_fd_vw_r0.st1.s0 to PRE_fd_vw_r0.st1.s1 :
-  (fun (bs : List Byte) (n : Nat) => runOk FF (dispatchOk bs n) 424
+  (fun (bs : List Byte) (n : Nat) => runOk FF (dispatchOk bs n) 366
     PRE_fd_vw_r0.st1.s0 PRE_fd_vw_r0.st1.S0) =
     fun _ _ => some (PRE_fd_vw_r0.st1.s1, PRE_fd_vw_r0.st1.S1)
 
@@ -28,7 +32,7 @@ noncomputable def dispatchTpl (bs : List Byte) (n : Nat) : Stage.StageTpl FF (di
   S1 := PRE_fd_vw_r0.st1.S1
   s2 := PRE_fd_vw_r0.st1.s2
   S2 := PRE_fd_vw_r0.st1.S2
-  n := 424
+  n := 366
   ok0 := congrFun (congrFun dispatchOk0 bs) n
   run := congrFun (congrFun dispatchRun bs) n
   ok1 := congrFun (congrFun dispatchOk1 bs) n
@@ -38,7 +42,7 @@ noncomputable def dispatchTpl (bs : List Byte) (n : Nat) : Stage.StageTpl FF (di
 
 theorem dispatchSim (NB T : Nat) (tk : Nat → Nat) (bs : List Byte) (n : Nat) (stk : List Frame) :
     Disp.StepSimXLB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      (dispatchOk bs n) (Disp.KpJ (FDFrames.typedJ bs n) 4096) (FDFrames.typedW bs n) stk (VBOkF loopVB) := by
+      (dispatchOk bs n) (Disp.KpJ (FDFrames.typedJ bs n) 131072) (FDFrames.typedW bs n) stk (VBOkF loopVB) := by
   apply (typedSim NB T tk bs n stk).mono
   intro s S h
   simp only [dispatchOk, okLocal, Bool.and_eq_true] at h

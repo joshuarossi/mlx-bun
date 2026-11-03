@@ -7,7 +7,7 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Template Host.Ts.Sim.Full Host.Ts.Sim.Compo
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 
-abbrev PRE_pl_tail.n : Nat := 285
+abbrev PRE_pl_tail.n : Nat := 445
 kernel_rfl PRE_pl_tail.tab_len : PRE_pl_tail.S0.tab.length = PRE_pl_tail.n
 noncomputable def PRE_pl_tail.suppAt (a : Nat) : Bool :=
   match PRE_pl_tail.s0.heap.get a with

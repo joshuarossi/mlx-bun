@@ -9,7 +9,7 @@ theorem step {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     {K : Host.Ts.Sim.Ctx} {t : St FF.S} {C : CSrv} {bs : List Byte} {n : Nat}
     (h : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (FDFrames.typedW bs n) [] M ν K PRE_fd_vw_r0.s16 ⟨PRE_fd_vw_r0.S16.tab, []⟩ t C)
-    (hkp : Disp.KpJ (FDFrames.typedJ bs n) 4096 K) (hv : VBOkF loopVB ν)
+    (hkp : Disp.KpJ (FDFrames.typedJ bs n) 131072 K) (hv : VBOkF loopVB ν)
     (hg : Good ν PRE_fd_vw_r0.S16.oracle) (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false)
     (hfb : K.fr FDFrames.buffer = some ([], [])) :
     ∃ M' t' C', runC FF 1 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S16.tab.length ∧

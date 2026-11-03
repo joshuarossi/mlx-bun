@@ -167,7 +167,9 @@ theorem traceMShift_of (c : TChecks P NB n0 σ D hinv ninv x0 x1) : TraceMShift 
       · exact h0
     · rw [hg] at hg'
       obtain rfl := Option.some.inj hg'
-      exact Nat.blt_eq.mp (or_not_true (hE' j hm) (Nat.blt_eq.mpr hj))
+      rcases hE' j hm with h | h
+      · rw [Nat.blt_eq.mpr hj] at h; exact absurd h (by decide)
+      · exact h
   · intro i _ _
     rcases Nat.lt_or_ge (σ.node i) P.NL with h | h
     · exact .inl h

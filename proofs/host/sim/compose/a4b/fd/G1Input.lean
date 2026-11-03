@@ -12,30 +12,31 @@ open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
 theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     {K : Ctx} {t : St FF.S} {C : CSrv} {π : List Nat} {n : Nat}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      wideP [] M ν K PRE_fd_vw_r0.s2 ⟨PRE_fd_vw_r0.S2.tab, []⟩ t C)
-    (hk : Disp.KpJ setupJ 4096 K) (hvb : VBOkF loopVB ν) (hg : G1Good ν)
+      wideGPf [] M ν K PRE_fd_vw_r0.s2 ⟨PRE_fd_vw_r0.S2.tab, []⟩ t C)
+    (hk : Disp.KpJ FDFrames.startJ 131072 K) (hvb : VBOkF loopVB ν) (hg : G1Good ν)
     (hfr : K.fr 2665 = some ([], π.map natV)) (hn : n ≤ π.length)
-    (h53 : π.length < 2 ^ 53) (hn0 : n ≠ 0) (hv : ν 12 = F64.ofNat n)
+    (h53 : π.length < 2 ^ 53) (hn0 : n ≠ 0) (hv : ν 12 = F64.ofNat n) (hn6 : n = 6)
     (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false)
     (hn31 : n < 2 ^ 31) (hvc : ∀ k ∈ π, k < 248320) :
     ∃ M' t' C' K', runC FF 260 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S2.tab.length ∧
       RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
         (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] M' ν K' PRE_fd_vw_r0.s21
         ⟨PRE_fd_vw_r0.S21.tab, []⟩ t' C' ∧
-      Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 4096 K' ∧
+      Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 131072 K' ∧
       K'.fr = (g1Framed K π n).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
       (∃ asR ret tr, K'.base' =
         ⟨chars!"mlx_array_new_data", .jsPtr (M'.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr) ∧ InputAt (lastRows π) (M'.node 15235) t' C' ∧
       Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   have hlen : (lastRows π).length = n := by rw [List.length_take, Nat.min_eq_left hn]
   have hvlen : ν 12 = F64.ofNat (lastRows π).length := by rw [hlen]; exact hv
+  have hlenN : (lastRows π).length = 6 := hlen.trans hn6
   have rr1 : runOk FF PRE_fd_vw_r0.okB1 71 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 =
       some (PRE_fd_vw_r0.s3, PRE_fd_vw_r0.S3) := PRE_fd_vw_r0.k2
   obtain ⟨M3, t3, C3, r13, e13, h3⟩ := D1Advance.call (SetupCommon.sim NB T tk) hk hvb hg.s19 accepted2 rr1
     (runOk_ok_end 70 rr1 live3) live3 PRE_fd_vw_r0.stepA2 top4 hr
   let K1 := Disp.Ctx.frameAt K FDFrames.chunk ([], (lastRows π).map natV)
-  have hk1 : Disp.KpJ FDFrames.chunkJ 4096 K1 :=
-    FDFrames.kp_frame (J := setupJ) (J' := FDFrames.chunkJ) rfl rfl rfl hk ([], (lastRows π).map natV)
+  have hk1 : Disp.KpJ FDFrames.chunkJ 131072 K1 :=
+    FDFrames.kp_frame (J := FDFrames.startJ) (J' := FDFrames.chunkJ) rfl rfl rfl hk ([], (lastRows π).map natV)
   have hf1 : K1.fr FDFrames.chunk = some ([], (lastRows π).map natV) := Disp.Ctx.frameAt_eq K _ _
   have ng13 := glueCall_ngrow (SetupCommon.simQ NB T tk) accepted2 rr1
     (runOk_ok_end 70 rr1 live3) live3 PRE_fd_vw_r0.stepA2 hvb hk (hr.withOracle hg.s19) r13
@@ -46,7 +47,7 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     accepted5 rr4 accepted6 live6 PRE_fd_vw_r0.stepA3 top7 h4
   have ng46 := glueCall_ngrow (fun y0 => chunkGrowSim NB T tk [] y0) accepted5 rr4 accepted6 live6
     PRE_fd_vw_r0.stepA3 hvb hk1 (h4.withOracle hg.s22) r46
-  obtain ⟨M7, t7, r67, e67, h7, ffi7⟩ := length7 h6 (D1Data.laws _ NB) hf1 hvlen
+  obtain ⟨M7, t7, r67, e67, h7, ffi7⟩ := length7 h6 hf1 hlenN
   have rr7 : runOk FF PRE_fd_vw_r0.okB3 18 PRE_fd_vw_r0.s8 PRE_fd_vw_r0.S8 =
       some (PRE_fd_vw_r0.s9, PRE_fd_vw_r0.S9) := PRE_fd_vw_r0.k8
   obtain ⟨M9, t9, C9, r79, e79, h9⟩ := D1Advance.call (chunkSim NB T tk []) hk1 hvb hg.s25
@@ -65,7 +66,7 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     D1Advance.call (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk2 hvb hg.s28
       (congrFun (congrFun typedAccepted11 _) _) (congrFun (congrFun typedRun11 _) _) (congrFun (congrFun typedAccepted12 _) _) live12
       PRE_fd_vw_r0.stepA5 top13 h10
-  have ng1012 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 4096 [])
+  have ng1012 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted11 _) _) (congrFun (congrFun typedRun11 _) _) (congrFun (congrFun typedAccepted12 _) _) live12
     PRE_fd_vw_r0.stepA5 hvb hk2 (h10.withOracle hg.s28) r1012
   obtain ⟨r1213, h13⟩ := ptr h12 hfv hfb (by rw [hlen]; exact hn0)
@@ -73,27 +74,27 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     D1Advance.call (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk2 hvb hg.s31
       (congrFun (congrFun typedAccepted14 _) _) (congrFun (congrFun typedRun14 _) _) (congrFun (congrFun typedAccepted15 _) _) live15
       PRE_fd_vw_r0.stepA6 top16 h13
-  have ng1315 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 4096 [])
+  have ng1315 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted14 _) _) (congrFun (congrFun typedRun14 _) _) (congrFun (congrFun typedAccepted15 _) _) live15
     PRE_fd_vw_r0.stepA6 hvb hk2 (h13.withOracle hg.s31) r1315
   obtain ⟨M16, t16, C16, r1516, e1516, h16, hev, ip16, ng1516⟩ := ND.step_input h15 hk2 hvb hg.s33 hi hfb
-    (by rw [hlen]; exact hn31) (fun k hk => hvc k (List.mem_of_mem_take hk)) hvlen
+    (by rw [hlen]; exact hn31) (fun k hk => hvc k (List.mem_of_mem_take hk)) hvlen hlenN
   let K3 : Ctx := ⟨K2.fr, PRE_fd_vw_r0.s17.trace, t16.trace, K2.D, K2.lo, K2.hi⟩
-  have hk3 : Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 4096 K3 := hk2
+  have hk3 : Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 131072 K3 := hk2
   obtain ⟨M18, t18, C18, r1618, e1618, h18⟩ :=
     D1Advance.call (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk3 hvb hg.s34
       (congrFun (congrFun typedAccepted17 _) _) (congrFun (congrFun typedRun17 _) _) (congrFun (congrFun typedAccepted18 _) _) live18
       PRE_fd_vw_r0.stepA7 top19 h16
-  have ng1618 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 4096 [])
+  have ng1618 := glueCall_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted17 _) _) (congrFun (congrFun typedRun17 _) _)
     (congrFun (congrFun typedAccepted18 _) _) live18 PRE_fd_vw_r0.stepA7 hvb hk3
     (h16.withOracle hg.s34) r1618
   have ip18 := ip16.grow ng1618 (runC_le _ _ _ _ _ r1618)
-  obtain ⟨M19, t19, r1819, e1819, h19, ffi19⟩ := length19 h18 (D1Data.laws _ NB) hfc hvlen
+  obtain ⟨M19, t19, r1819, e1819, h19, ffi19⟩ := length19 h18 hfc hlenN
   obtain ⟨M20, t20, C20, r1920, e1920, h20⟩ :=
     D1Advance.run (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk3 hvb hg.s37
       (congrFun (congrFun typedAccepted20 _) _) (congrFun (congrFun typedRun20 _) _) top21 h19
-  have ng1920 := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 4096 [])
+  have ng1920 := glue_ngrow (typedGrowSimAt NB T tk (tokenBytes (lastRows π)) (lastRows π).length 131072 [])
     (congrFun (congrFun typedAccepted20 _) _) (congrFun (congrFun typedRun20 _) _) hvb hk3
     (h19.withOracle hg.s37) r1920
   have ip19 : InputAt (lastRows π) (M19.node 15235) t19 C18 := by

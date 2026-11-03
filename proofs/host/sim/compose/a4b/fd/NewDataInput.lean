@@ -13,10 +13,10 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     {K : Host.Ts.Sim.Ctx} {t : St FF.S} {C : CSrv} {π : List Nat}
     (h : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       (FDFrames.typedW (tokenBytes π) π.length) [] M ν K PRE_fd_vw_r0.s16 ⟨PRE_fd_vw_r0.S16.tab, []⟩ t C)
-    (hkp : Disp.KpJ (FDFrames.typedJ (tokenBytes π) π.length) 4096 K) (hv : VBOkF loopVB ν)
+    (hkp : Disp.KpJ (FDFrames.typedJ (tokenBytes π) π.length) 131072 K) (hv : VBOkF loopVB ν)
     (hg : Good ν PRE_fd_vw_r0.S16.oracle) (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false)
     (hfb : K.fr FDFrames.buffer = some ([], []))
-    (h31 : π.length < 2 ^ 31) (hvc : ∀ k ∈ π, k < 248320) (hv9 : ν 12 = F64.ofNat π.length) :
+    (h31 : π.length < 2 ^ 31) (hvc : ∀ k ∈ π, k < 248320) (hv9 : ν 12 = F64.ofNat π.length) (hlenN : π.length = 6) :
     ∃ M' t' C', runC FF 1 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S16.tab.length ∧
       RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
         (FDFrames.typedW (tokenBytes π) π.length) [] M' ν
@@ -74,7 +74,7 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       rcases hP with rfl | ⟨k, _, _, rfl⟩
       · exact hp.2.1
       · rw [dataOk_raise]; exact hp.2.1
-    have hvv := Input.call_input hS hr.load.mlx hiy hok' hv9 h31 hvc (by rw [he] at ht; exact ht)
+    have hvv := Input.call_input hS hr.load.mlx hiy hok' hv9 h31 hlenN hvc (by rw [he] at ht; exact ht)
     rw [hg.ext.node]
     exact hvv
   have hninv : ∀ M n x y, Disp.FRJ (FullRXD P NB) M n x y → Host.Mlx.Ffi.NGrowCall.NInv (mlxOf y) :=

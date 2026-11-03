@@ -1,3 +1,4 @@
+import host.sim.compose.a4b.fd.TypedGlue
 import host.sim.compose.a4b.fd.DispatchTpl
 
 set_option Elab.async false
@@ -9,7 +10,7 @@ open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
 
 noncomputable def dispatchSite (NB T : Nat) (tk : Nat → Nat) (bs : List Byte) (n : Nat) :
     PrefillSite (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
-      (Disp.KpJ (FDFrames.typedJ bs n) 4096) (FDFrames.typedW bs n) (dispatchOk bs n)
+      (Disp.KpJ (FDFrames.typedJ bs n) 131072) (FDFrames.typedW bs n) (dispatchOk bs n)
       PRE_fd_vw_r0.s21 PRE_fd_vw_r0.s22 PRE_fd_vw_r0.S21 PRE_fd_vw_r0.ws1 where
   tpl := dispatchTpl bs n
   wr := PRE_fd_vw_r0.st1.wr

@@ -1,6 +1,5 @@
 import host.sim.compose.a4b.fd.DispatchMerged
 import host.sim.compose.a4b.fd.DispatchFrames
-import host.sim.compose.a4b.fd.NpsShift
 import host.sim.template.a4pre_fd_vw_r0.GlueN1
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -12,15 +11,17 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable def θZ2 : Nat → SymE := Conv.compactθZ PRE_fd_vw_r0.cws1
   PRE_fd_vw_r0.crs1 PRE_fd_vw_r0.ws1
 
-theorem dispatchCallClean : Conv.JClean (⟨18156, 15236, 2673488, 18⟩ : Conv.Cnt) PRE_fd_vw_r0.s21 :=
-  PRE_fd_vw_r0.gjcl1 (PRE_fd_vw_r0.cjcl0 npsCallClean)
+kernel_rfl s17Eq : PRE_fd_vw_r0.s0 = PRE_fd_vw_r0.s0
+
+theorem dispatchCallClean : Conv.JClean (⟨18156, 15236, 2673488, 15⟩ : Conv.Cnt) PRE_fd_vw_r0.s21 :=
+  PRE_fd_vw_r0.gjcl1 (PRE_fd_vw_r0.cjcl0 (by rw [s17Eq]; exact FDVW.npsCallClean))
 
 theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
     (hk : Disp.Kp (FDFrames.typedJ bs n) K)
     (hframe : K.fr 2665 = some ([], π.map natV))
     (hchunk : K.fr FDFrames.chunk = some ([], γ.map natV))
     (hcall : Conv.CallFacts PRE_fd_vw_r0.s21 PRE_fd_vw_r0.S21.tab.length)
-    (hnative : Conv.FullShiftQ PRE_fd_vw_r0.P1 18 PRE_fd_vw_r0.kappa1
+    (hnative : Conv.FullShiftQ PRE_fd_vw_r0.P1 15 PRE_fd_vw_r0.kappa1
       PRE_fd_vw_r0.s23.ffi PRE_fd_vw_r0.s22.ffi) :
     ShiftD FF (fun σ x y => x = PRE_fd_vw_r0.s23.ffi ∧
       Conv.FullShiftQX PRE_fd_vw_r0.P1 PRE_fd_vw_r0.S23.tab.length σ x y)
@@ -87,7 +88,7 @@ theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
         (fun c => !PRE_fd_vw_r0.ws1.contains c) = true)))
   exact { hθ with ffi := ⟨rfl, by
     rw [PRE_fd_vw_r0.ctab1]
-    change Conv.FullShiftQX PRE_fd_vw_r0.P1 18 PRE_fd_vw_r0.kappa1 _ _
+    change Conv.FullShiftQX PRE_fd_vw_r0.P1 15 PRE_fd_vw_r0.kappa1 _ _
     exact hnative.toX PRE_fd_vw_r0.zbin1⟩ }
 
 
