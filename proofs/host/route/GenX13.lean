@@ -44,7 +44,7 @@ noncomputable def hooksRX : FillPost.Hooks 15235 T Tk π 216028 19057 (classVW 1
 include leaves typed hL3 hL6 hlt hNE hnet in
 theorem preX : ∀ tab, ∃ s, Host.Mlx.SimGraph.Ref.prefillAt P Kr NE (Kr).inPlace net env π tab = some s ∧
     List.Forall₂ (Host.Mlx.SimGraph.Mach.StagePre (π.length - 1))
-      (stageWeights (weights (firstValues P.toMlxContract Kr.toKernelContract env tab))) s.hs := fun tab =>
+      (stageWeights (weights (firstValues P.toMlxContract (Kr).toKernelContract env tab))) s.hs := fun tab =>
   Host.Route.Cert.Fin.prefill_pre P Kr NE (Kr).inPlace net env π Pg rfl leaves typed (by omega) (by omega)
     (Host.Mlx.SimGraph.Mach.scheduleTyped P Kr NE net env π leaves typed (by omega) hlt hNE hnet) tab
 

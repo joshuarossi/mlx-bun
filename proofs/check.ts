@@ -8592,6 +8592,7 @@ const proofFiles = [
   "host/route/GenVWH.lean",
   "host/route/GenVW.lean",
   "host/route/GenX13.lean",
+  "host/route/GenAll.lean",
   "host/route/cert/Dec/Pieces.lean",
   "host/route/cert/Dec/Final/Clear1.lean",
   "host/route/cert/Dec/Final/Eos0.lean",
