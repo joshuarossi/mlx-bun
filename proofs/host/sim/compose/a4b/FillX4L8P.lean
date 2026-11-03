@@ -7,7 +7,7 @@ import host.sim.compose.a4b.fd_x4_L8.Entry
 import host.sim.compose.a4b.pl.X4L8Head.All
 import host.sim.template.a4pre_plx4_L8_head.Origin
 import host.sim.template.a4pre_plx4_L8_head.Good
-import host.route.cert.Fin.X4L8.Cert
+import host.route.cert.Fin.X4L8.Hfin
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -122,18 +122,14 @@ local notation "M" => memC P KR net env π T tk
 local notation "Mp" => memX4L8Pre P KR NE net env π T tk
 local notation "Mf" => memFinE P KR NE net env π T tk x4L8Kept (fun _ => 4010)
 
-/-- **The pieces of a prompt of 8 tokens.** `hfin`: the final forward, from what its return knows (route's
-`Host.Route.Cert.Fin.X4L8.hfin` through `memExit_of_pre`). `hEnter`, `hKeep`: `H`'s first bookkeeping, which `hooksX4L8` has as `memX4L80`. -/
+/-- **The pieces of a prompt of 8 tokens.** `hEnter`, `hKeep`: `H`'s first bookkeeping, which `hooksX4L8` has as `memX4L80`. -/
 noncomputable def piecesX4L8 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 1593835520) (hcapE : 70039 ≤ capC)
     (hboundC : capC < Sim.bound) (hL : π.length = 8)
     (hπ : ∀ k ∈ π, k < 248320) (hlt : ∀ t ∈ π, t < 2 ^ 31)
     (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
-    (hfin : ∀ i, InRow final_ord.r0 i → ∀ x y : SegInst FF,
-      (FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).R x (FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).s0
-        ⟨(FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).tab0, []⟩ →
-      (FDX4L8.returnCut 15235 T tk π 70039 1254 0).R y (FDX4L8.returnCut 15235 T tk π 70039 1254 0).s0
-        ⟨(FDX4L8.returnCut 15235 T tk π 70039 1254 0).tab0, []⟩ →
-      (FDX4L8.returnCut 15235 T tk π 70039 1254 0).B y → NTrack x y → Mp i.L x → Mf i.L y)
+    (hpre : ∀ tab, ∃ s, Host.Mlx.SimGraph.Ref.prefillAt P KR NE KR.inPlace net env π tab = some s ∧
+      List.Forall₂ (Host.Mlx.SimGraph.Mach.StagePre (π.length - 1))
+        (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) s.hs)
     (H : Hooks 15235 T tk π cap nI (classX4L8 15235 T tk π capC 19265 hcapC))
     (hEnter : ∀ L x y, NTrack x y → PinVals 6 5 5 (π.length - 1) y.ν → Mf L x → H.Mem0 L y)
     (hKeep : ∀ L x y, NTrackV x y → H.Mem0 L x → H.Mem0 L y) :
@@ -156,6 +152,16 @@ noncomputable def piecesX4L8 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 159383
     fun _ _ hb => hb.2.1
   have pinD : Pinned π.length (fun i : Cls.Inst => withMem (M i.L) (VWFirst.X4_L8.dispatchCut 15235 T tk π i)) :=
     fun _ _ hb => hb.2.1
+  have hfin : ∀ i, InRow final_ord.r0 i → ∀ x y : SegInst FF,
+      (FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).R x (FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).s0
+        ⟨(FDX4L8.forwardCut 15235 T tk π 70039 1254 0 i).tab0, []⟩ →
+      (FDX4L8.returnCut 15235 T tk π 70039 1254 0).R y (FDX4L8.returnCut 15235 T tk π 70039 1254 0).s0
+        ⟨(FDX4L8.returnCut 15235 T tk π 70039 1254 0).tab0, []⟩ →
+      (FDX4L8.returnCut 15235 T tk π 70039 1254 0).B y → NTrack x y → Mp i.L x → Mf i.L y :=
+    fun i _ x y _ hy _ htr hm =>
+      ⟨Host.Route.Cert.Fin.X4L8.hfin P KR NE net env leaves typed hpre hL (fun _ => Host.Route.Cert.Fin.X4L8.finCert.ps) rfl x4L8Kept Host.Route.Cert.Head.X4L8.kept_at (fun _ => 4010) rfl
+          (Nat.le_refl _) hy htr i.L (memExit_of_pre (by rw [hm.1]; omega) hm.2.1),
+        htr.emit.trans hm.2.2.1, hm.2.2.2.grow htr.nodes⟩
   have none0 := noState_none (F := FF) PRE_pl_head.s0
   have hbF : 70009 < Sim.bound := by decide
   have hf : ∀ r ∈ [first_tail_x4.r0], ∀ i, InRow r i → ∀ x y : SegInst FF,

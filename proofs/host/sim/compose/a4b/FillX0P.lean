@@ -7,7 +7,7 @@ import host.sim.compose.a4b.fd_x0.Entry
 import host.sim.compose.a4b.pl.X0Head.All
 import host.sim.template.a4pre_plx0_head.Origin
 import host.sim.template.a4pre_plx0_head.Good
-import host.route.cert.Fin.X0.Cert
+import host.route.cert.Fin.X0.Hfin
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
@@ -99,20 +99,16 @@ local notation "M" => memC P KR net env π T tk
 local notation "Mp" => memX0Pre P KR NE net env π T tk
 local notation "Mf" => memFinE P KR NE net env π T tk x0Kept (fun _ => 4010)
 
-/-- **The pieces of a prompt of 2 tokens.** `hfin`: the final forward, from what its return knows (route's
-`Host.Route.Cert.Fin.X0.hfin` through `memExit_of_pre`). `hEnter`, `hKeep`: `H`'s first bookkeeping, which `hooksX0` has as `memX00`. -/
+/-- **The pieces of a prompt of 2 tokens.** `hEnter`, `hKeep`: `H`'s first bookkeeping, which `hooksX0` has as `memX00`. -/
 noncomputable def piecesX0 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 1593835520) (hcapE : 70039 ≤ capC)
     (hboundC : capC < Sim.bound) (hL : π.length = 2)
     (hπ : ∀ k ∈ π, k < 248320) (hlt : ∀ t ∈ π, t < 2 ^ 31)
     (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (hstep : ∀ tab, ∃ t hs', stepTrace P.toMlxContract KR.toKernelContract (weights (firstValues P.toMlxContract KR.toKernelContract env tab)) 0
       (π.getD 0 0) initialHandles = some (t, hs'))
-    (hfin : ∀ i, InRow final_ord.r0 i → ∀ x y : SegInst FF,
-      (FDX0.forwardCut 15235 T tk π 70039 1 0 i).R x (FDX0.forwardCut 15235 T tk π 70039 1 0 i).s0
-        ⟨(FDX0.forwardCut 15235 T tk π 70039 1 0 i).tab0, []⟩ →
-      (FDX0.returnCut 15235 T tk π 70039 1 0).R y (FDX0.returnCut 15235 T tk π 70039 1 0).s0
-        ⟨(FDX0.returnCut 15235 T tk π 70039 1 0).tab0, []⟩ →
-      (FDX0.returnCut 15235 T tk π 70039 1 0).B y → NTrack x y → Mp i.L x → Mf i.L y)
+    (hpre : ∀ tab, ∃ s, Host.Mlx.SimGraph.Ref.prefillAt P KR NE KR.inPlace net env π tab = some s ∧
+      List.Forall₂ (Host.Mlx.SimGraph.Mach.StagePre (π.length - 1))
+        (stageWeights (weights (firstValues P.toMlxContract KR.toKernelContract env tab))) s.hs)
     (H : Hooks 15235 T tk π cap nI (classX0 15235 T tk π capC 17764 hcapC))
     (hEnter : ∀ L x y, NTrack x y → PinVals 4 4 4 (π.length - 1) y.ν → Mf L x → H.Mem0 L y)
     (hKeep : ∀ L x y, NTrackV x y → H.Mem0 L x → H.Mem0 L y) :
@@ -130,6 +126,16 @@ noncomputable def piecesX0 {cap nI capC : Nat} (hcapC : capC ≤ 4096 + 15938355
     fun _ _ hb => hb.2.1
   have pinF : Pinned π.length (fun i : Cls.Inst => withMem (M i.L) (VWFirst.X0.forwardCut 15235 T tk π i)) :=
     fun _ _ hb => hb.2.1
+  have hfin : ∀ i, InRow final_ord.r0 i → ∀ x y : SegInst FF,
+      (FDX0.forwardCut 15235 T tk π 70039 1 0 i).R x (FDX0.forwardCut 15235 T tk π 70039 1 0 i).s0
+        ⟨(FDX0.forwardCut 15235 T tk π 70039 1 0 i).tab0, []⟩ →
+      (FDX0.returnCut 15235 T tk π 70039 1 0).R y (FDX0.returnCut 15235 T tk π 70039 1 0).s0
+        ⟨(FDX0.returnCut 15235 T tk π 70039 1 0).tab0, []⟩ →
+      (FDX0.returnCut 15235 T tk π 70039 1 0).B y → NTrack x y → Mp i.L x → Mf i.L y :=
+    fun i _ x y _ hy _ htr hm =>
+      ⟨Host.Route.Cert.Fin.X0.hfin P KR NE net env leaves typed hpre hL (fun _ => Host.Route.Cert.Fin.X0.finCert.ps) rfl x0Kept Host.Route.Cert.Head.X0.kept_at (fun _ => 4010) rfl
+          (Nat.le_refl _) hy htr i.L (memExit_of_pre (by rw [hm.1]; omega) hm.2.1),
+        htr.emit.trans hm.2.2.1, hm.2.2.2.grow htr.nodes⟩
   have none0 := noState_none (F := FF) PRE_pl_head.s0
   have hbF : 70009 < Sim.bound := by decide
   have hf : ∀ r ∈ [first_tail_x0.r0], ∀ i, InRow r i → ∀ x y : SegInst FF,

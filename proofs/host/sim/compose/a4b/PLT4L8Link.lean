@@ -12,13 +12,13 @@ open Host.Load.Run.Tpl Host.Ts.Sim.Compose.Pf
 
 /-! # x4 L8's sampled cut at the shared tail
 
-The link renames the class's nodes above `NB` (`PfFactsT`). The class runs one prompt length, so every tail variable it doesn't
-carry takes its literal there; the hand-off reads the entry's trace id and payload and the trace counter's sum. -/
+The link renames the class's nodes above `NB` (`PfFactsT`). The class runs one prompt length, so the tail's dimensions and its
+computed hand-off values are literals; the trace ids and payloads are the entry's, the offsets the entry's `v28`. -/
 
 noncomputable abbrev keys4L8 : List Nat := (PLTW4L8.R.theta ++ PLT4L8.thetaX).map Prod.fst
 
 kernel_rfl t4L8Kept : ((List.range 9) ++ [9, 10, 11, 16]).all (fun j => decide (PLT4L8.θ j = SymE.var j)) = true
-kernel_rfl t4L8Small : (keys4L8.all fun j => [200].contains j || imgSmall [1, 2, 3, 5, 6, 7, 8, 9, 1536] (PLT4L8.θ j)) = true
+kernel_rfl t4L8Small : (keys4L8.all fun j => [200, 259, 260].contains j || imgSmall [1, 2, 3, 5, 6, 7, 8, 9, 1536] (PLT4L8.θ j)) = true
 kernel_rfl t4L8Dims : dimsLitB PLT4L8.θ = true
 kernel_rfl t4L8i20 : litAt PLT4L8.θ 20 8 = true
 kernel_rfl t4L8i22 : PLT4L8.θ 22 = .var 22
@@ -27,8 +27,8 @@ kernel_rfl t4L8i24 : PLT4L8.θ 24 = .var 24
 kernel_rfl t4L8i25 : litAt PLT4L8.θ 25 7 = true
 kernel_rfl t4L8i26 : litAt PLT4L8.θ 26 7 = true
 kernel_rfl t4L8i200 : PLT4L8.θ 200 = .bin .add (.var 21) (.lit (F64.ofNat 1))
-kernel_rfl t4L8i259 : litAt PLT4L8.θ 259 7 = true
-kernel_rfl t4L8i260 : litAt PLT4L8.θ 260 8 = true
+kernel_rfl t4L8i259 : PLT4L8.θ 259 = .un .int32 (.var 28)
+kernel_rfl t4L8i260 : PLT4L8.θ 260 = .un .int32 (.bin .add (.var 28) (.lit (F64.ofNat 1)))
 kernel_rfl t4L8A : PLTW4L8.R.data.a 2590 = 2590
 kernel_rfl t4L8B : PLTW4L8.R.data.a 2586 = 2586
 kernel_rfl t4L8C : PLTW4L8.R.data.a 2589 = 2589
@@ -52,7 +52,7 @@ theorem hand4L8 {v k : Nat} (h : handVal 8 v = some k) : (v, k) ∈ [(20, 8), (2
 /-- **x4 L8's link to the shared tail.** -/
 theorem hlink4L8 {T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {Mem Mem' : SegInst FF → Prop}
     (hcap : cap + 156515 ≤ capT) (hbound : capT < Sim.bound) (hL : π.length = 8)
-    (hs : ∀ x : SegInst FF, Mem x → PinVals 6 5 5 7 x.ν)
+    (hs : ∀ x : SegInst FF, Mem x → PinVals 6 5 5 (π.length - 1) x.ν)
     (hook : ∀ x y : SegInst FF, y.t = x.t → y.C = x.C → (∀ c, y.M.node c = x.M.node (PLTW4L8.R.data.nodeF c)) →
       y.M.a 12504 = x.M.a 12504 → Mem x → Mem' y) :
     CutConv (withMem Mem (indexedCut0 [2834427] 15235 T tk cap nI π PRE_plx4_L8_common.s1 PRE_plx4_L8_common.S1))
@@ -62,18 +62,28 @@ theorem hlink4L8 {T cap capT nI nIT : Nat} {tk : Nat → Nat} {π : List Nat} {M
     (by rw [t4L8Diff]; omega) hbound
     (t4L8_kept (by decide)) (t4L8_kept (by decide)) (t4L8_kept (by decide)) (t4L8_kept (by decide))
     (fun j hj => t4L8_kept (List.mem_append_left _ (List.mem_range.mpr hj)))
-    (fun x hm hv => valOf (cand := [1, 2, 3, 5, 6, 7, 8, 9, 1536]) (off := [200]) hv (fun _ hj => thetaOf_off hj) t4L8Small (by
+    (fun x hm hv => valOf (cand := [1, 2, 3, 5, 6, 7, 8, 9, 1536]) (off := [200, 259, 260]) hv (fun _ hj => thetaOf_off hj) t4L8Small (by
+      have h28 : x.ν 28 = F64.ofNat 7 := (hs x hm).v28.trans (congrArg F64.ofNat (by omega))
       intro j hj
       simp only [List.mem_cons, List.not_mem_nil, or_false] at hj
-      subst hj
-      refine ⟨7, by decide, ?_⟩
-      rw [t4L8i200]
-      change F64.bin .add (x.ν 21) (F64.ofNat 1) = _
-      rw [(hs x hm).v21]
-      exact bin_add_ofNat 6 1 (by omega)))
+      rcases hj with rfl | rfl | rfl
+      · refine ⟨7, by decide, ?_⟩
+        rw [t4L8i200]
+        change F64.bin .add (x.ν 21) (F64.ofNat 1) = _
+        rw [(hs x hm).v21]
+        exact bin_add_ofNat 6 1 (by omega)
+      · refine ⟨7, by decide, ?_⟩
+        rw [t4L8i259]
+        exact eval_int32 h28 (by decide)
+      · refine ⟨8, by decide, ?_⟩
+        rw [t4L8i260]
+        refine eval_int32 ?_ (by decide)
+        change F64.bin .add (x.ν 28) (F64.ofNat 1) = _
+        rw [h28]
+        exact bin_add_ofNat 7 1 (by omega)))
     (fun _ _ => dimsLit t4L8Dims _)
-    (fun x hm => hL ▸ handPin (fun _ _ h => hand4L8 h) t4L8i20 t4L8i22 t4L8i23 t4L8i24 t4L8i25 t4L8i26 t4L8i200 t4L8i259 t4L8i260
-      rfl (by decide) (hs x hm))
+    (fun x hm => handPin (fun _ _ h => hand4L8 (hL ▸ h)) t4L8i20 t4L8i22 t4L8i23 t4L8i24 t4L8i25 t4L8i26 t4L8i200 t4L8i259 t4L8i260
+      rfl (by omega) (by omega) (by decide) (by decide) (hs x hm))
     t4L8A t4L8B t4L8C t4L8E hook
 
 end Host.Ts.Sim.Compose.Post
