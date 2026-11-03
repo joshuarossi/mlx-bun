@@ -1,6 +1,7 @@
 import host.route.GenOne
 import host.route.GenVW
 import host.route.GenX13
+import host.route.GenX04
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 set_option Elab.async false
@@ -15,9 +16,8 @@ open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 
 /-! # The route of every prompt of at most 224 tokens
 
-`routeGenAll`: `RouteGenGpu` by the prompt's length: one token (`routeGenOne`), 3 to 6 (`routeGenX1`-`X3`), 10 to 224 (`routeGenVW`).
-Two tokens (x0) and 7 to 9 (x4) are premises until their prefill pieces land. `route_gen_all`: the route's outcome from the boot's two
-runs. -/
+`routeGenAll`: `RouteGenGpu` by the prompt's length: one token (`routeGenOne`), two (`routeGenX0`), 3 to 6 (`routeGenX1`-`X3`), 7 to 9
+(`routeGenX4L7`-`L9`), 10 to 224 (`routeGenVW`). `route_gen_all`: the route's outcome from the boot's two runs. -/
 
 section
 variable {C : M1Max.Contract}
@@ -38,21 +38,26 @@ local notation "Gen" π => RouteGenGpu P Kr NE net env π T (machTok P Kr NE net
 
 /-- **The route of a prompt of at most 224 tokens**, by its length. -/
 noncomputable def routeGenAll (π : List Nat) (hπ : 1 ≤ π.length) (hL : π.length ≤ 224) (hlt : ∀ t ∈ π, t < 248320)
-    (hctx : π.length + T ≤ 262144)
-    (gen2 : π.length = 2 → Gen π) (gen79 : 7 ≤ π.length → π.length ≤ 9 → Gen π) : Gen π :=
-  match π, hπ, hL, hlt, hctx, gen2, gen79 with
-  | [a], _, _, hlt, hctx, _, _ =>
+    (hctx : π.length + T ≤ 262144) : Gen π :=
+  match π, hπ, hL, hlt, hctx with
+  | [a], _, _, hlt, hctx =>
     routeGenOne P G Pg bytes lseSum lseNumerator NE net env leaves typed a T (hlt a (List.mem_singleton_self a)) hT hctx hNE hnet
-  | a :: b :: rest, _, hL, hlt, hctx, gen2, gen79 =>
+  | a :: b :: rest, _, hL, hlt, hctx =>
     have hge : 2 ≤ (a :: b :: rest).length := by simp
-    if h2 : (a :: b :: rest).length = 2 then gen2 h2
+    if h2 : (a :: b :: rest).length = 2 then
+      routeGenX0 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T hlt hT hctx hNE hnet h2
     else if h4 : (a :: b :: rest).length ≤ 4 then
       routeGenX1 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T (by omega) (by omega) hlt hT hctx hNE hnet h4
     else if h5 : (a :: b :: rest).length = 5 then
       routeGenX2 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T (by omega) (by omega) hlt hT hctx hNE hnet h5
     else if h6 : (a :: b :: rest).length = 6 then
       routeGenX3 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T (by omega) (by omega) hlt hT hctx hNE hnet h6
-    else if h9 : (a :: b :: rest).length ≤ 9 then gen79 (by omega) h9
+    else if h7 : (a :: b :: rest).length = 7 then
+      routeGenX4L7 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T hlt hT hctx hNE hnet h7
+    else if h8 : (a :: b :: rest).length = 8 then
+      routeGenX4L8 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T hlt hT hctx hNE hnet h8
+    else if h9 : (a :: b :: rest).length = 9 then
+      routeGenX4L9 P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T hlt hT hctx hNE hnet h9
     else routeGenVW P G Pg bytes lseSum lseNumerator NE net env leaves typed (a :: b :: rest) T (by omega) hL hlt hT hctx hNE hnet
 
 end
@@ -60,8 +65,7 @@ end
 section
 variable {C : M1Max.Contract}
 
-/-- **The route of a prompt of at most 224 tokens**, from the boot's two runs. Prompts of 2 and of 7 to 9 tokens take their
-`RouteGenGpu` as premises. -/
+/-- **The route of a prompt of at most 224 tokens**, from the boot's two runs. -/
 theorem route_gen_all (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelGpu.RoutePipelines G)
     (bytes : KernelGpu.SetBytes) (lseSum : Bool) (lseNumerator : Inference.Kernels.Attention.SdpaUpdate.Contraction)
     (NE : NeuralEngine) (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey)
@@ -70,14 +74,6 @@ theorem route_gen_all (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelG
     (hctx : π.length + T ≤ 262144) (hNE : NE.Succeeds net)
     (hnet : ∀ tab, Host.Mlx.SimGraph.Mach.AneNetOk net
       (stageWeights (weights (firstValues P.toMlxContract (routeKernel G bytes Pg lseSum lseNumerator).toKernelContract env tab))))
-    (gen2 : π.length = 2 → RouteGenGpu P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π T
-      (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π)
-      (entryEnv (Host.Load.Run.Prompt.P.at0 (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))))
-      chars!"emitted" (ldStT [] []) (ldStT (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))))
-    (gen79 : 7 ≤ π.length → π.length ≤ 9 → RouteGenGpu P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π T
-      (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π)
-      (entryEnv (Host.Load.Run.Prompt.P.at0 (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))))
-      chars!"emitted" (ldStT [] []) (ldStT (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))))
     (hs : bootL (RoutePrompt.cx π) (routeWorld T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π)) 2000 =
       some (Host.Load.Run.Prompt.P.at0 (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))))
     (hrun : ∀ NB, ∃ N0, runC (fullWorldXD NB).F N0
@@ -88,7 +84,7 @@ theorem route_gen_all (P : MlxPrefillContract C) (G : Metal.Gpu C) (Pg : KernelG
     ∃ kind NB, RouteOutcomeV P (routeKernel G bytes Pg lseSum lseNumerator) NE net env leaves typed π kind T
       (Host.Load.Run.Prompt.P.at0 (List.map natV π) (machReads T (machTok P (routeKernel G bytes Pg lseSum lseNumerator) NE net env π))) NB := by
   have hRT := route_refTokens P G Pg bytes lseSum lseNumerator NE net env leaves typed hπ (by omega) hlt hNE hnet
-  let Gn := routeGenAll P G Pg bytes lseSum lseNumerator NE net env leaves typed T hT hNE hnet π hπ hL hlt hctx gen2 gen79
+  let Gn := routeGenAll P G Pg bytes lseSum lseNumerator NE net env leaves typed T hT hNE hnet π hπ hL hlt hctx
   obtain ⟨N0, hr⟩ := hrun Gn.NB
   obtain ⟨kind, h⟩ := route_gen_gpu P G Pg bytes lseSum lseNumerator NE env leaves typed π T hπ hL hlt hT hctx net hNE hnet _ hs Gn
     ⟨N0, _, _, hr, cutConv_inv Gn.hI (ldPromptCutAt_of_inv (LoadedCut.ldPromptCut_inv Gn.NB Gn.Pw Gn.hPw Gn.Wl Gn.hW π hlt T _ (Nat.le_trans (by omega : T ≤ 262143) (by decide))
