@@ -2,6 +2,7 @@ import host.route.PrefStep
 import host.simgraph.family.MatchOn
 import host.simgraph.compose.Split
 import host.simgraph.prompt.EmbedRoute
+import host.simgraph.prompt.RowsRead
 set_option maxRecDepth 1000000
 set_option autoImplicit false
 namespace Host.Route.PrefGraph
@@ -53,16 +54,16 @@ section
 variable {κ : Type} [DecidableEq κ]
 
 /-- The family's graph at the reference's valuation is the chain's reading of it at the chain's. -/
-theorem graph_rowsAt (E : List (RNode PDim κ)) (ν : Nat → Int) (x n : Nat) (hx : ν x = n) :
-    (E.map (Host.Mlx.SimGraph.mapN (rowsAt x))).map (Host.Mlx.SimGraph.mapN (PDim.eval ν)) = E.map (Host.Mlx.SimGraph.mapN (PDim.eval (refNu 0 n))) := by
+theorem graph_rows (E : List (RNode PDim κ)) (ν : Nat → Int) (r : PDim → PDim) (n : Nat) (hr : ∀ d, (r d).eval ν = d.eval (refNu 0 n)) :
+    (E.map (Host.Mlx.SimGraph.mapN r)).map (Host.Mlx.SimGraph.mapN (PDim.eval ν)) = E.map (Host.Mlx.SimGraph.mapN (PDim.eval (refNu 0 n))) := by
   rw [List.map_map]
   refine List.map_congr_left fun nd _ => ?_
-  show mapN (PDim.eval ν) (Host.Mlx.SimGraph.mapN (rowsAt x) nd) = _
+  show mapN (PDim.eval ν) (Host.Mlx.SimGraph.mapN r nd) = _
   obtain ⟨p, ins⟩ := nd
   simp only [Host.Mlx.SimGraph.mapN, mapP_comp]
   congr 2
   funext d
-  exact rowsAt_eval ν x n hx d
+  exact hr d
 
 /-! A closure's kind is read only where a table names one, so a match survives any table agreeing on the names. -/
 
@@ -124,17 +125,17 @@ theorem matchesED_mono {δ : Type} [DecidableEq δ] {kind kind' : Nat → Option
 
 /-- **The certificate on the route's graph.** A check of the chain's end graph `Gs` against the family's expected graph
 read at the rows' variable `x`, at the chain's valuation `ν`, along the embedding into the route. -/
-theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List StageLayout) (ν : Nat → Int) (x n : Nat)
-    (hx : ν x = n) (ss : List StageLayout) (hsig : List.Forall₂ (SigRelR F.ops.sig o₀ n₀ 0 n) ss₀ ss)
+theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List StageLayout) (ν : Nat → Int) (r : PDim → PDim) (n : Nat)
+    (hr : ∀ d, (r d).eval ν = d.eval (refNu 0 n)) (ss : List StageLayout) (hsig : List.Forall₂ (SigRelR F.ops.sig o₀ n₀ 0 n) ss₀ ss)
     (Gs : Nat → Option (RNode PDim κ)) (kind : Nat → Option Compiled) (cert : List Nat)
     (hlen : (familyGraph F.ops id o₀ n₀ ss₀).1.length ≤ cert.length)
-    (h : MatchesSeg d kind Gs ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))) cert 0
-      ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))).length = true)
+    (h : MatchesSeg d kind Gs ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN r)) cert 0
+      ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN r)).length = true)
     (G : Nat → Option (RNode Int κ)) {σ cl : Nat → Nat} (emb : Embeds σ cl (mapG (PDim.eval ν) Gs) G)
     (kind' : Nat → Option Compiled) (hk : ∀ c k, kind c = some k → kind' (cl c) = some k) :
     MatchesED kind' G (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1 (cert.map σ) = true := by
   have hm := matchesSeg_map (PDim.eval ν) d kind Gs _ cert 0 _ h
-  rw [graph_rowsAt _ ν x n hx,
+  rw [graph_rows _ ν r n hr,
     show (familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (PDim.eval (refNu 0 n))) = (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1 from
       congrArg Prod.fst (family_eval F o₀ n₀ ss₀ (refNu 0 n) 0 n ss hsig)] at hm
   have hl : (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1.length ≤ cert.length := by
@@ -143,7 +144,7 @@ theorem cert_route (F : RowFamily κ) (d : κ) (o₀ n₀ : Nat) (ss₀ : List S
   have hm' := matchesSeg_embed d (fun c => kind' (cl c)) kind' (fun _ => rfl) _ G emb _ cert 0 _ hl
     (matchesED_mono hk _ _ _ hm)
   refine matchesSeg_whole d kind' G _ _ ?_
-  have hlenE : ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN (rowsAt x))).length =
+  have hlenE : ((familyGraph F.ops id o₀ n₀ ss₀).1.map (Host.Mlx.SimGraph.mapN r)).length =
       (familyGraph F.ops (PDim.eval (refNu 0 n)) 0 n ss).1.length := by
     rw [← congrArg Prod.fst (family_eval F o₀ n₀ ss₀ (refNu 0 n) 0 n ss hsig), List.length_map, List.length_map]
   rw [← hlenE]

@@ -1557,6 +1557,10 @@ function genBodyFill(args: string[]) {
   const fwdRowList = (take("--rows")[0] ?? fail("prefill-body: --rows <r,...>")).split(",");
   const sfxArg = take("--suffix-of")[0];
   const pfArg = take("--pf")[0];
+  // a class outside the wide rows: its rows' list and the theorem giving `firstTailFacts`'s four facts for them
+  const tailRows = take("--tail-rows")[0] ?? "firstTailRows", tailFacts = take("--tail-facts")[0] ?? "firstTailFacts";
+  // --pf-lit <term>:<count>: a tail with no var 10; the pre-final template's var 10 is `<term>`, its value the row's count by `<count>`
+  const pfLit = take("--pf-lit")[0]?.split(":") as [string, string] | undefined;
   // --lit: a chain whose prompt length is read as a literal: the body's acceptance is `VWFrames.bodyLitOk`
   const litBody = args.includes("--lit");
   if (litBody) args.splice(args.indexOf("--lit"), 1);
@@ -1612,7 +1616,7 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
     const segB = JSON.parse(readFileSync(join(streamB, "seg.json"), "utf8")), chainB = JSON.parse(readFileSync(join(streamB, "chain.json"), "utf8"));
     const stagesB = segB.bridges.filter((b: any) => b.kind === "stage").sort((a: any, b: any) => a.site - b.site);
     const nB = stagesB.length as number, lastB = nB - 1;
-    return { Xb, tplB: `host.sim.template.${dirb.replaceAll("/", ".")}`, endB: chainB.T1 as number, nB, lastB, aB: stagesB[lastB].ia as number };
+    return { Xb, dirb, tplB: `host.sim.template.${dirb.replaceAll("/", ".")}`, endB: chainB.T1 as number, nB, lastB, aB: nB ? stagesB[lastB].ia as number : -1 };
   })();
   // a module of the body, or its bundle
   const bodyModule = (m: string) => {
@@ -1622,8 +1626,58 @@ open ${NS}.SetupEarly ${NS}.SetupChunk
     return `${bodyMod}.${(b ?? fail(`no ${m} in ${dirB}`)).slice(0, -5)}`;
   };
   const startCounters = (src("GlueN0").match(new RegExp(`theorem ${X}\\.gjcl0 \\(h : Conv\\.JClean \\((⟨[^⟩]*⟩) : Conv\\.Cnt\\)`)) ?? fail("GlueN0: gjcl0"))[1]!;
-  const startJsN = bodyEnd ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : "2673488";
-  if (bodyEnd) {
+  const startJsN = bodyEnd && bodyEnd.nB ? `${bodyEnd.Xb}.s${bodyEnd.aB}.next` : "2673488";
+  if (bodyEnd && !bodyEnd.nB) {
+    // no stage in the body: its start's facts carry over its one glue; the JS heap's in the glue's pieces, one module each
+    const { Xb, dirb, tplB, endB } = bodyEnd, Tb = `${NS}.VWFirst.${Tag}`;
+    const members = membersOf(dirb) ? Object.keys(membersOf(dirb)!) : readdirSync(join(HERE, "../template", dirb)).filter(f => f.endsWith(".lean")).map(f => f.slice(0, -5));
+    const js = members.filter(f => /^GlueN0j\d+$/.test(f)).map(f => +f.slice(7)).sort((a, b) => a - b);
+    if (!js.length) fail(`${Xb}: no GlueN0j pieces`);
+    let prev = `${Tb}.bodyStartJs`, prevMod = bodyModule("VWBodyChain"), at = 0;
+    for (const k of js) {
+      const t = memberSrc(dirb, `GlueN0j${k}`);
+      const m = t.match(new RegExp(`theorem ${Xb}\\.gjoff0_${k} : ∀ a, a ∉ ${Xb}\\.gjh0_${k} → ${Xb}\\.s(\\d+)\\.heap\\.get a = ${Xb}\\.s(\\d+)\\.heap\\.get a`)) ?? fail(`${Xb}: GlueN0j${k}: gjoff0_${k}`);
+      const to = +m[1]!, from = +m[2]!;
+      if (from !== at) fail(`${Xb}: GlueN0j${k} starts at ${from}, not ${at}`);
+      writeFileSync(join(outDir, `VWBodyJsP${k}.lean`), head([prevMod, `${tplB}.GlueN0j${k}`, `${tplB}.H${Math.floor(to / 32)}`, "host.sim.compose.JsAbove"]) +
+        `kernel_rfl bodyJsList${k} : ${Xb}.gjh0_${k}.all (noBigAtP (jsAboveB 2673488) ${Xb}.s${to}) = true
+
+theorem bodyJsAt${k} : JsHeapAbove 2673488 ${Xb}.s${to} :=
+  ${prev}.step (Nat.le_refl _) ${Xb}.gjoff0_${k} bodyJsList${k}
+` + tail);
+      prev = `bodyJsAt${k}`; prevMod = `${outMod}.VWBodyJsP${k}`; at = to;
+    }
+    if (at !== endB) fail(`${Xb}: the JS pieces end at ${at}, not ${endB}`);
+    writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`, prevMod,
+      `${tplB}.GlueN0`, `${tplB}.H${Math.floor(endB / 32)}`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
+    `/-- The rows this chain serves. -/
+def fwdRows : List Row := [${fwdRowList.join(", ")}]
+
+/-- No canonical results: the body's end table is already de-canonicalized. -/
+noncomputable def bodyΘ : List Nat × List SymE := ([], [])
+
+kernel_rfl tokensEnd : (mlxOf ${Xb}.s${endB}.ffi).tokens = [.ref 1, .ref 2]
+
+theorem bodyStartEq : (${X}.s0 : St FF.S) = ${Xb}.s${endB} := startEqOf tokensEnd ${X}.s0_tok
+
+theorem bodyStartClean : Conv.JClean (${startCounters} : Conv.Cnt) ${X}.s0 := by
+  rw [bodyStartEq]
+  exact ${Xb}.gjcl0 ${Tb}.bodyStartClean
+
+theorem bodyStartJs : JsHeapAbove ${startJsN} ${X}.s0 := by
+  rw [bodyStartEq]
+  exact ${prev}
+
+kernel_rfl bodyEndBridge : bridgeOf ${Xb}.s${endB}.ffi = bridgeOf ${Xb}.s0.ffi
+
+theorem bodyInactive0 : (bridgeOf ${X}.s0.ffi).active = false := by
+  rw [bodyStartEq]
+  exact (congrArg (fun b : Host.Mlx.FfiAne.St => b.active) bodyEndBridge).trans ${Tb}.bodyInactive0
+
+kernel_rfl bodyStart2665 : arrOf ${X}.s0 2665 = []
+kernel_rfl bodyStartChunk : arrOf ${X}.s0 VWFrames.chunk = []
+` + tail);
+  } else if (bodyEnd) {
     const { Xb, tplB, endB, nB, lastB } = bodyEnd;
     writeFileSync(join(outDir, "VWBodyChain.lean"), head([baseMod, `${mod}.H0`, `${mod}.S0Eq`,
       bodyModule(`VWBodyJ${lastB}`), `${tplB}.GlueN${nB}`, `${tplB}.H${Math.floor(endB / 32)}`, "host.sim.lin.Table", "host.sim.template.CallGen"]) +
@@ -1966,8 +2020,8 @@ theorem bodyGlue${j} (NB T : Nat) (tk : Nat → Nat) (π : List Nat) ${trBinders
     const [, , endH, endN] = endO.match(/⟨(\d+), (\d+), (\d+), /)!;
     const rowNames = fwdRowList.join(", ");
     writeFileSync(join(outDir, "VWPfEnd.lean"), head(["host.sim.compose.a4b.VWPf", `host.sim.compose.a4b.${PF}`, `${outMod}.VWBodyChain`,
-      `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [11, 14, 16, 30, 31]
-kernel_rfl pf14 : ${PF}.θ 14 = .var 17
+      `${outMod}.VWBodyMap`, "host.sim.compose.a4b.VWFirstRows", `${mod}.H0`]) + `kernel_rfl pfKeys : (${PW}.R.theta ++ ${PF}.thetaX).map Prod.fst = [${pfLit ? "10, " : ""}11, 14, 16, 30, 31]
+${pfLit ? `kernel_rfl pf10 : ${PF}.θ 10 = ${pfLit[0]}\n` : ""}kernel_rfl pf14 : ${PF}.θ 14 = .var 17
 kernel_rfl pf30 : (fun ν : Nat → F64 => (${PF}.θ 30).eval ν) = fun _ => F64.ofNat ${c30}
 kernel_rfl pf31 : (fun ν : Nat → F64 => (${PF}.θ 31).eval ν) = fun _ => F64.ofNat ${c31}
 kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (${PF}.θ 11) (some Q.n)) = true
@@ -1997,21 +2051,21 @@ theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : 
 /-- **The step's end at the pre-final cut.** -/
 theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${+endO.match(/⟨(\d+)/)![1]! + +pfDiff} ≤ cap)
     (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
-    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
+    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ ${tailRows}) :
     CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ${endO} bodyM ${X}.s${endK} ${X}.S${endK}))
       (withMem Tr (Pf.cut NB T tk π cap ${+endH! + +pfExtra} ${endN} ${PT}.s0 ${PT}.S0)) := by
-  obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
+  obtain ⟨hL, hLmax, hn, _⟩ := ${tailFacts} htail hi
   have hcapR := rowCap hr hi
   have h9 : ∀ ν, MapOk ν i bodyM → ν 9 = F64.ofNat i.L := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
-  have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
+${pfLit ? "" : `  have h10n : ∀ ν, MapOk ν i bodyM → ν 10 = F64.ofNat i.n := fun ν hm =>
     (Conv.mapOk_iff'.1 hm) (10, Q.n) (by simp [bodyM])
-  exact toPf (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
-    (fun j h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
+`}  exact ${pfLit ? "toPfLit" : "toPf"} (c30 := ${c30}) (c31 := ${c31}) ${PF}.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
+    (fun j ${pfLit ? "h0 " : ""}h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
       rw [pfKeys]
       simp only [List.mem_cons, List.not_mem_nil, or_false]
       omega))
-    pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 (fun ν hm => by rw [h10n ν hm, hn])
+    pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 ${pfLit ? `(fun ν hm => by rw [pf10, ← ${pfLit[1]} hr hi (h9 ν hm), hn])` : "(fun ν hm => by rw [h10n ν hm, hn])"}
     (fun ν hm => by
       rw [← hn]
       exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
@@ -2057,7 +2111,7 @@ theorem forwardAll (NB T : Nat) (tk : Nat → Nat) (π : List Nat) {r : Row} {i 
     writeFileSync(join(outDir, "VWFwdPf.lean"), head([`${outMod}.VWForward`, `${outMod}.VWPfEnd`,
       ...foldParts.map(p => `${outMod}.${p.startsWith("bodyGlue") ? "VWBodyG" : "VWBodyS"}${p.match(/\d+/)![0]}`)]) + `/-- **The first tail from the forward to the pre-final cut.** \`hfwd\`: the graph, from what the forward's end knows. -/
 noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : ${+endD! + (pfArg ? +pfArg.split(":")[5]! : 0)} ≤ cap) (hbound : cap < Sim.bound)
-    (uses : List Row) (hu : ∀ r ∈ uses, r ∈ ${Tn}.fwdRows) (htail : ∀ r ∈ ${Tn}.fwdRows, r ∈ firstTailRows) (obls : List Obl)
+    (uses : List Row) (hu : ∀ r ∈ uses, r ∈ ${Tn}.fwdRows) (htail : ∀ r ∈ ${Tn}.fwdRows, r ∈ ${tailRows}) (obls : List Obl)
     (Mem Mem' : Nat → SegInst FF → Prop) (hT : ∀ L x y, NTrack x y → Mem' L x → Mem' L y)
     (hfwd : ∀ r ∈ uses, ∀ i, InRow r i → ∀ x y : SegInst FF,
       (startCore NB T tk π i).R y (startCore NB T tk π i).s0 ⟨(startCore NB T tk π i).tab0, []⟩ →
@@ -2071,7 +2125,7 @@ noncomputable def fwdPf (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : N
   O := []
   chk _ _ := rfl
   ok r hr i hi _ := by
-    obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts (htail r (hu r hr)) hi
+    obtain ⟨hL, hLmax, hn, _⟩ := ${tailFacts} (htail r (hu r hr)) hi
     have hf := forwardMem (Mem := Mem i.L) (Mem' := Mem' i.L) (forwardAll NB T tk π (hu r hr) hi (by omega))
       (fun x y _ _ hy _ hrun hg ht he hm => hfwd r hr i hi x y hy (runC_le _ _ _ _ _ hrun) hg ht he hm)
     exact FwdCall.warm (CutConv.refl _)

@@ -175,6 +175,42 @@ theorem cellsNums_eq : ∀ (b : List Byte) (xs : List NumV), cellsNums b = some 
       rfl
     · cases h
 
+theorem cellsNumsL_eq : ∀ (b : List Byte) (xs : List NumV), cellsNumsL b = some xs → b = cellsHostBytes xs
+  | [], xs, h => by
+    simp only [cellsNumsL, Option.some.injEq] at h
+    subst h
+    rfl
+  | [_], _, h => by simp [cellsNumsL] at h
+  | [_, _], _, h => by simp [cellsNumsL] at h
+  | [_, _, _], _, h => by simp [cellsNumsL] at h
+  | b0 :: b1 :: b2 :: b3 :: r, xs, h => by
+    unfold cellsNumsL at h
+    cases h0 : cellAt 0 b0 with
+    | none => simp [h0] at h
+    | some a =>
+    cases h1 : cellAt 1 b1 with
+    | none => simp [h0, h1] at h
+    | some a1 =>
+    cases h2 : cellAt 2 b2 with
+    | none => simp [h0, h1, h2] at h
+    | some a2 =>
+    cases h3 : cellAt 3 b3 with
+    | none => simp [h0, h1, h2, h3] at h
+    | some a3 =>
+    simp only [h0, h1, h2, h3] at h
+    split at h
+    · rename_i hs
+      simp only [Bool.and_eq_true] at hs
+      obtain ⟨⟨e1, e2⟩, e3⟩ := hs
+      obtain ⟨xs', hr, rfl⟩ := Option.map_eq_some_iff.mp h
+      have e1' : a = a1 := of_decide_eq_true e1
+      have e2' : a = a2 := of_decide_eq_true e2
+      have e3' : a = a3 := of_decide_eq_true e3
+      subst e1' e2' e3'
+      rw [cellAt_eq h0, cellAt_eq h1, cellAt_eq h2, cellAt_eq h3, cellsNumsL_eq r xs' hr]
+      rfl
+    · cases h
+
 /-- An attention layout before any step. -/
 def coldLayout : StageLayout → Bool
   | .delta _ => true
@@ -257,7 +293,7 @@ theorem handlesOf_length : ∀ (ws : List StageWeights) (cs : List (Value × Val
 `x`, on the template `s` at the forward's return. Generated, kernel-checked. -/
 structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) (ss : List StageLayout) where
   n₀ : Nat
-  x : Nat
+  r : PDim → PDim
   s : Ffi.St
   S : SSrv
   B : Box
@@ -270,14 +306,14 @@ structure FamCert (pk : ProjKind) (mk : MlpKind) (rd : Read) (ss : List StageLay
   tok : Nat
   outs : List (Nat × Nat)
   family : familyGraph (rowTpl refRows pk mk rd).ops id 0 n₀ ss = (E, tok, outs)
-  hEc : E.map (Host.Mlx.SimGraph.mapN (rowsAt x)) = Ec
+  hEc : E.map (Host.Mlx.SimGraph.mapN r) = Ec
   hn₀ : 0 < n₀ ∧ n₀ < 256
   fixedHi : ∀ i ∈ fixed, (131072 : Int) ≤ i ∧ i < 2 ^ 56
   hdown : (List.range s.nnext).all (downB (routeDom 15235 15235 fixed s) s) = true
   hlen : E.length ≤ cert.length
   hm : MatchesSeg .promptIds (kindOf kinds) (famGs s S B fixed) Ec cert 0 Ec.length = true
   inputs : InputsSeg Ec cert (insOf 15235 cells) 0 Ec.length = true
-  extra : checkNodesD (extraOk (famGs s S B fixed) cert x S B fixed s (insOf 15235 cells)) 0 Ec = true
+  extra : checkNodesD (extraOkR (famGs s S B fixed) cert r S B fixed s (insOf 15235 cells)) 0 Ec = true
   kindsPresent : ∀ e ∈ kinds, (s.objs.get e.1).isSome = true
   outsLt : ∀ q ∈ outs, q.1 < cert.length ∧ q.2 < cert.length ∧ certAt cert q.1 < s.nnext ∧ certAt cert q.2 < s.nnext
   outs64 : outs.length = 64
@@ -336,7 +372,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
     {m : Nat} {y : Ffi.St} (tab : List F64) (hmr : Host.Ts.Sim.G.MR Pm NB M m c.s y) (hband : Pm.NL = Pm.N0)
     (hE : (Pm.E : Int) ≤ 131072) (ρ : Nat → F64) (ν : Nat → Int) (n : Nat) (π : List Nat)
     (hnum : ∀ i e, nth? c.S.tab i = some e → CSrv.val ⟨tab⟩ (M.nv (.ref i)) = some (e.eval ρ))
-    (hB : InBox c.B ν) (hρ : ∀ x l h, c.B.get x = some (l, h) → ρ x = F64.ofInt (ν x)) (hx : ν c.x = n)
+    (hB : InBox c.B ν) (hρ : ∀ x l h, c.B.get x = some (l, h) → ρ x = F64.ofInt (ν x)) (hr : ∀ d, (c.r d).eval ν = d.eval (refNu 0 n))
     (hn : 0 < n ∧ n < 256)
     (hk : ∀ c' k, kindOf c.kinds c' = some k → kind (M.handle c') = some k)
     (hip : HostInt32 (concrete (CSrv.val ⟨tab⟩)) y (M.node 15235) ((π.take n).map Int.ofNat) [1, n])
@@ -357,13 +393,13 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
     congrArg (fun r => r.2.2) c.family
   have hmatch : MatchesED kind (GrK tab y)
       (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1 (c.cert.map M.node) = true :=
-    cert_route (rowFamily refRows pk mk rd) .promptIds 0 c.n₀ ss ν c.x n hx ss hsig
+    cert_route (rowFamily refRows pk mk rd) .promptIds 0 c.n₀ ss ν c.r n hr ss hsig
       (famGs c.s c.S c.B c.fixed) (kindOf c.kinds) c.cert (by rw [hE1]; exact c.hlen)
       (by rw [hE1, c.hEc]; exact c.hm) (GrK tab y) emb kind hk
   -- the graph at the reference's valuation is the chain's reading of `Ec`
   have hEv : c.Ec.map (Host.Mlx.SimGraph.mapN (PDim.eval ν)) =
       (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1 := by
-    rw [← c.hEc, graph_rowsAt _ ν c.x n hx, ← hE1]
+    rw [← c.hEc, graph_rows _ ν c.r n hr, ← hE1]
     exact congrArg Prod.fst hfe
   have hEv2 : (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).2.2 = c.outs := by
     rw [← hE2]
@@ -413,7 +449,7 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
       exact keyed_of_routeVal P KR env kind tab y _ rfl _ _ (hpar t (parameterInput_mem _ _ ht))
     | cells p j vals shape =>
       have hok := (Bool.and_eq_true _ _ ▸ checkNodesD_get _ _ 0 c.extra he0 : _ ∧ _).2
-      simp only [cellNodeOk, hp0, cellKeyOk, hins, Bool.and_eq_true] at hok
+      simp only [cellNodeOkR, hp0, cellKeyOkR, hins, Bool.and_eq_true] at hok
       obtain ⟨hD, hok⟩ := hok
       cases hnd : c.s.nodes.get (certAt c.cert k) with
       | none => rw [hnd] at hok; cases hok
@@ -423,14 +459,14 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
         cases prim with
         | data b =>
           dsimp only at hok
-          cases hxs : cellsNums b with
+          cases hxs : cellsNumsL b with
           | none => rw [hxs] at hok; cases hok
           | some xs =>
             rw [hxs] at hok
             simp only [Bool.and_eq_true, decide_eq_true_eq, List.isEmpty_iff] at hok
             obtain ⟨⟨⟨hi, hdt⟩, hds⟩, hsh⟩ := hok
             subst hi hdt
-            rw [cellsNums_eq b xs hxs] at hnd
+            rw [cellsNumsL_eq b xs hxs] at hnd
             have hcar := cells_carrier (M := P.toMlxContract) (K := KR.toKernelContract) (env := env) (clsOfX c.S c.B) PDim.lit
               (PDim.eval ν) (fun _ => rfl) SourceKernels.sources c.s y (routeDom 15235 15235 c.fixed c.s) (νsOf c.S ρ)
               (CSrv.val ⟨tab⟩) M.nv M.big M.arg M.handle M.node (nv_lit M) (fun _ => rfl)
@@ -439,12 +475,12 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
                 (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
                 (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn) (down_of_all c.hdown hmr.nlt))
               _ hD xs sh hnd _ _ hds hsh
-            have hm1 : (vals.map (rowsAt c.x)).map (PDim.eval ν) = vals.map (PDim.eval (refNu 0 n)) := by
+            have hm1 : (vals.map c.r).map (PDim.eval ν) = vals.map (PDim.eval (refNu 0 n)) := by
               rw [List.map_map]
-              exact List.map_congr_left fun d _ => rowsAt_eval ν c.x n hx d
-            have hm2 : (shape.map (rowsAt c.x)).map (PDim.eval ν) = shape.map (PDim.eval (refNu 0 n)) := by
+              exact List.map_congr_left fun d _ => hr d
+            have hm2 : (shape.map c.r).map (PDim.eval ν) = shape.map (PDim.eval (refNu 0 n)) := by
               rw [List.map_map]
-              exact List.map_congr_left fun d _ => rowsAt_eval ν c.x n hx d
+              exact List.map_congr_left fun d _ => hr d
             rw [hm1, hm2] at hcar
             have hv2 : cellsValue (vals.map (PDim.eval (refNu 0 n))) (shape.map (PDim.eval (refNu 0 n))) = some v := hv'
             rw [hv2] at hcar
@@ -453,8 +489,53 @@ theorem FamCert.values {pk : ProjKind} {mk : MlpKind} {rd : Read} {ss : List Sta
         | _ => cases hok
     | iota p j count =>
       have hok := (Bool.and_eq_true _ _ ▸ checkNodesD_get _ _ 0 c.extra he0 : _ ∧ _).2
-      simp only [cellNodeOk, hp0, cellKeyOk] at hok
-      cases hok
+      simp only [cellNodeOkR, hp0, cellKeyOkR, hins] at hok
+      cases hrc : c.r count with
+      | lit N =>
+        rw [hrc] at hok
+        simp only [Bool.and_eq_true] at hok
+        obtain ⟨hD, hok⟩ := hok
+        cases hnd : c.s.nodes.get (certAt c.cert k) with
+        | none => rw [hnd] at hok; cases hok
+        | some nd =>
+          rw [hnd] at hok
+          obtain ⟨prim, ins, sh, dt⟩ := nd
+          cases prim with
+          | data b =>
+            dsimp only at hok
+            cases hxs : cellsNumsL b with
+            | none => rw [hxs] at hok; cases hok
+            | some xs =>
+              rw [hxs] at hok
+              simp only [Bool.and_eq_true, decide_eq_true_eq, List.isEmpty_iff] at hok
+              obtain ⟨⟨⟨hi, hdt⟩, hds⟩, hsh⟩ := hok
+              subst hi hdt
+              rw [cellsNumsL_eq b xs hxs] at hnd
+              have hcar := cells_carrier (M := P.toMlxContract) (K := KR.toKernelContract) (env := env) (clsOfX c.S c.B) PDim.lit
+                (PDim.eval ν) (fun _ => rfl) SourceKernels.sources c.s y (routeDom 15235 15235 c.fixed c.s) (νsOf c.S ρ)
+                (CSrv.val ⟨tab⟩) M.nv M.big M.arg M.handle M.node (nv_lit M) (fun _ => rfl)
+                (numbers_agree c.S ρ M.nv _ (nv_lit M) (fun _ => rfl) hnum) (clsOfX_sound c.S c.B ν ρ hB hρ)
+                (nativeImage_of_GMR hmr _
+                  (fun i _ => by rcases Nat.lt_or_ge i Pm.NL with h | h; exacts [.inl h, .inr (hband ▸ h)])
+                  (fun _ _ hi hn => exactTplDom_exact (routeDom_exact hi) hn) (down_of_all c.hdown hmr.nlt))
+                _ hD xs sh hnd _ _ hds hsh
+              have hN : N = PDim.eval (refNu 0 n) count := by
+                have := hr count
+                rw [hrc] at this
+                exact this
+              have e1 : ((List.range N.toNat).map fun (k : Nat) => PDim.lit (Int.ofNat k)).map (PDim.eval ν) = (List.range N.toNat).map Int.ofNat := by
+                rw [List.map_map]
+                rfl
+              have e2 : [PDim.lit N].map (PDim.eval ν) = [N] := rfl
+              rw [e1, e2] at hcar
+              have hv2 : cellsValue ((List.range (PDim.eval (refNu 0 n) count).toNat).map Int.ofNat) [PDim.eval (refNu 0 n) count] =
+                  some v := hv'
+              rw [← hN] at hv2
+              rw [hv2] at hcar
+              exact keyed_of_routeVal P KR env kind tab y _ rfl _ _
+                (Host.Mlx.SimGraph.Mach.evalR_routeVal P KR env kind (fun _ => none) tab y _ _ hcar)
+          | _ => cases hok
+      | _ => rw [hrc] at hok; cases hok
   -- the plain kernels
   have hG : ∀ k e, (familyGraph (rowTpl refRows pk mk rd).ops (PDim.eval (refNu 0 n)) 0 n ss).1[k]? = some e →
       ∀ nd name cf out, e.prim = .kernel name cf out → GrK tab y (certAt (c.cert.map M.node) k) = some nd → nd.prim = e.prim := by

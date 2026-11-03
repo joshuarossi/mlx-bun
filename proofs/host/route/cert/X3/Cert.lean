@@ -23,7 +23,7 @@ kernel_rfl down : (List.range native.nnext).all (downB (routeDom 15235 15235 [55
 /-- **The certificate of the x3 group's forward.** -/
 noncomputable def cert : FamCert .split .codebook .causal Host.Load.Run.Full.Expected.stages where
   n₀ := 124
-  x := 10
+  r := rowsAt 10
   s := native
   S := PRE_first_tail_x3_r0_suffix.inputSrv
   B := box
@@ -46,7 +46,7 @@ noncomputable def cert : FamCert .split .codebook .causal Host.Load.Run.Full.Exp
   hlen := by rw [graph_len, cert_len]
   hm := by rw [Ec_len]; exact check.matches
   inputs := by rw [Ec_len]; exact check.inputs
-  extra := extra.all
+  extra := checkNodesD_mono (fun _ _ h => extraOkR_of h) 0 _ extra.all
   kindsPresent := fun e he => List.all_eq_true.mp kinds_ok e he
   outsLt := fun q hq => by
     have h := List.all_eq_true.mp outs_ok q hq

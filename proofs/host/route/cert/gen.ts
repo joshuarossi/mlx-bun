@@ -1,14 +1,18 @@
 // bun gen.ts <Tag> <chain tag> <family tag> <blocks> <down.mt> <lo-hi,...> <row x,...> <nodes>
 // A family below the wide rows: <blocks> and <down.mt> are "-", and `SMALL` holds JSON { box, term, planHyps, planRw, rows }:
 // the return's box, the family's `pk mk rd`, the hypotheses and rewrites of its `gpuFamily` branch, the group's rows' name.
-// Writes host/route/cert/<Tag>/: a first tail's forward certificate on the template at its return, split so that the
+// A literal row: `LIT` holds its row count n; the chain reads no rows variable, `<chain>`'s compose directory is `COMPOSE`,
+// namespace `COMPOSE_NS`. Writes host/route/cert/<Tag>/: a first tail's forward certificate on the template at its return, split so that the
 // long kernel check imports only definitions, and its `hfwd`. Example: bun gen.ts VW8 x8 VW83 2 3 33-48,65-72 8,10
 import { mkdirSync } from "fs";
 import { dirname, join } from "path";
 const [Tag, chain, fam, blocks, mt, spans, xs] = process.argv.slice(2);
 const SM = process.env.SMALL ? JSON.parse(process.env.SMALL) : null;
+const LIT = process.env.LIT ? Number(process.env.LIT) : null;
+const rd = LIT === null ? "rowsAt 10" : `litAt (Ref.refNu 0 ${LIT})`;
+
 const term = SM ? SM.term : `.split (.wide ${blocks} ⟨8, ${mt}⟩) .causal`;
-const boxS = SM ? SM.box : "[(9, 10, 224), (10, 9, 223)]";
+const boxS = LIT !== null ? `[(9, ${LIT + 1}, ${LIT + 1})]` : SM ? SM.box : "[(9, 10, 224), (10, 9, 223)]";
 const rowsName = SM ? SM.rows : "fwdRows";
 if (!Tag || !chain || !fam || !blocks || !mt || !spans || !xs) throw new Error("usage");
 const dir = join(dirname(import.meta.path), Tag);
@@ -30,7 +34,7 @@ open Host.Mlx.SimGraph.Tpl.Fam${extraOpen}
 const end = `\nend ${NS}\n`;
 const m = `host.route.cert.${Tag}`;
 const write = (n: string, s: string) => Bun.write(join(dir, `${n}.lean`), s);
-await write("Choose", head(["host.simgraph.prompt.ChooseRoute", `host.simgraph.tpl.fam.${fam}.Join`, `host.sim.template.a4pre_first_tail_${chain}_r0_suffix.States`]) + `
+await write("Choose", head(["host.simgraph.prompt.RowsRead", `host.simgraph.tpl.fam.${fam}.Join`, `host.sim.template.a4pre_first_tail_${chain}_r0_suffix.States`]) + `
 /-! # The ${chain} forward's choice of carriers -/
 
 /-- The template at the forward's return, for restoring its stream. -/
@@ -42,10 +46,10 @@ def box : Box := ${boxS}
 
 /-- The expected graph, built natively. -/
 def Ecn : List (RNode PDim SimGraph.PKey) :=
-  (familyGraph ${fam}.F id 0 124 Host.Load.Run.Full.Expected.stages).1.map (Host.Mlx.SimGraph.mapN (rowsAt 10))
+  (familyGraph ${fam}.F id 0 124 Host.Load.Run.Full.Expected.stages).1.map (Host.Mlx.SimGraph.mapN (${rd}))
 
 set_option interpreter.prefer_native true in
-simgraph_choose_route choice : (endLoad, ${T}.inputSrv), box, 15235, 15235, [5554869888], Ecn, 15235
+${LIT === null ? "simgraph_choose_route choice" : "simgraph_choose_route_lit choice"} : (endLoad, ${T}.inputSrv), box, 15235, 15235, [5554869888], Ecn, 15235${LIT === null ? "" : `, ${rd}`}
 ` + end);
 await write("Data", head([`${m}.Choose`, `host.sim.template.a4pre_first_tail_${chain}_r0_suffix.m.B0`], "\nopen Host.Ts.Sim.Full (mlxOf)") + `
 /-! # The ${chain} forward's certificate: what it reads -/
@@ -55,7 +59,7 @@ noncomputable abbrev Gs := famGs native ${T}.inputSrv box [5554869888]
 noncomputable abbrev ins := insOf 15235 choice.cells
 
 /-- The expected graph, as the chain reads it at its rows' variable. -/
-noncomputable def Ec : List (RNode PDim SimGraph.PKey) := ${fam}.graph.map (Host.Mlx.SimGraph.mapN (rowsAt 10))
+noncomputable def Ec : List (RNode PDim SimGraph.PKey) := ${fam}.graph.map (Host.Mlx.SimGraph.mapN (${rd}))
 ` + end);
 const NODES = process.argv[9] ?? "NODES";
 await write("Check", head([`${m}.Data`]) + `
@@ -66,7 +70,7 @@ simgraph_check_segment check : Gs, kindOf choice.kind, Ec, .promptIds, 0, ${NODE
 await write("Extra", head([`${m}.Data`]) + `
 /-! # The ${chain} forward's certificate: each kernel node plain, each dimension input held -/
 
-simgraph_check_nodes extra : extraOk Gs choice.cert 10 ${T}.inputSrv box [5554869888] native ins, Ec choosing Ecn
+simgraph_check_nodes extra : ${LIT === null ? "extraOk Gs choice.cert 10" : `extraOkR Gs choice.cert (${rd})`} ${T}.inputSrv box [5554869888] native ins, Ec choosing Ecn
 ` + end);
 await write("Facts", head([`${m}.Data`]) + `
 /-! # The ${chain} forward's certificate: its small facts -/
@@ -98,7 +102,7 @@ kernel_rfl down : (List.range native.nnext).all (downB (routeDom 15235 15235 [55
 
 noncomputable def cert : FamCert ${term} Host.Load.Run.Full.Expected.stages where
   n₀ := 124
-  x := 10
+  r := ${rd}
   s := native
   S := ${T}.inputSrv
   B := box
@@ -121,7 +125,7 @@ noncomputable def cert : FamCert ${term} Host.Load.Run.Full.Expected.stages wher
   hlen := by rw [graph_len, cert_len]
   hm := by rw [Ec_len]; exact check.matches
   inputs := by rw [Ec_len]; exact check.inputs
-  extra := extra.all
+  extra := ${LIT === null ? "checkNodesD_mono (fun _ _ h => extraOkR_of h) 0 _ extra.all" : "extra.all"}
   kindsPresent := fun e he => List.all_eq_true.mp kinds_ok e he
   outsLt := fun q hq => by
     have h := List.all_eq_true.mp outs_ok q hq
@@ -129,6 +133,61 @@ noncomputable def cert : FamCert ${term} Host.Load.Run.Full.Expected.stages wher
     exact ⟨h.1.1.1, h.1.1.2, h.1.2, h.2⟩
   outs64 := outs_len
 ` + end);
+if (LIT !== null) {
+  const dir_ = process.env.COMPOSE!, cns = process.env.COMPOSE_NS!;
+  await write("Fwd", `import host.route.FamFwd
+import host.route.GpuLoad
+import ${m}.Cert
+import ${m}.Tab
+import host.sim.compose.a4b.${dir_}.sfx.VWForward
+set_option maxRecDepth 1000000
+set_option autoImplicit false
+namespace ${NS}
+open Host.Load Host.Load.Extract Host.Load.Program Host.Load.Run.Full
+open Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Mlx.SimGraph Host.Ts
+open Inference Inference.Contracts.Mlx Inference.Models.Qwen
+open Host.Ts.Sim (SegInst)
+open Host.Ts.Sim.Full (FF mlxOf)
+open Host.Ts.Sim.Lin.Cls (Row InRow)
+open Host.Mlx.SimGraph.Ref (gpuFamily refRows)
+open Host.Ts.Sim.Compose.VWFirst (firstTailFacts firstTailRows)
+open Host.Ts.Sim.Compose.VWFirst.${cns} (fwdRows)
+open Host.Ts.Sim.Compose.VWFirst.${cns}.Sfx (startCore)
+open Host.Load.Run.Tpl
+open Host.Route.PrefGraph
+
+/-! # The ${chain} group's forward at the bookkeeping: the prompts of ${LIT + 1} tokens -/
+
+theorem plan : gpuFamily .tail ${LIT} = some (rowTpl refRows ${term}) := rfl
+
+variable {C : M1Max.Contract} (P : MlxPrefillContract C) (KR : RouteKernelContract C) (NE : NeuralEngine)
+  (net : Host.Mlx.SimGraph.Ref.AneNet) (env : FfiEval.Env InKey) (π : List Nat)
+
+/-- **The ${chain} group's \`hfwd\`.** -/
+theorem hfwd (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+    (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31)
+    (hCr : Cr ${LIT + 1} = cert.carriers) (hL : π.length = ${LIT + 1}) (T : Nat) (tk : Nat → Nat)
+    (htail : ∀ r ∈ fwdRows, r ∈ firstTailRows) :
+    ∀ r ∈ fwdRows, ∀ i, InRow r i → ∀ x y : SegInst FF,
+      (startCore 15235 T tk π i).R y (startCore 15235 T tk π i).s0 ⟨(startCore 15235 T tk π i).tab0, []⟩ →
+      Host.Ts.Sim.CSrv.Le x.C y.C → Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi) →
+      (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens →
+      memCold P KR net env π i.L x → memPre P KR NE net env π Cr i.L y := by
+  intro r hr i hi x y hy hle hg ht hm
+  obtain ⟨_, _, hn, _⟩ := firstTailFacts (htail r hr) hi
+  have hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235 := fun p hp =>
+    of_decide_eq_true (List.all_eq_true.mp ld_params_below p hp)
+  have hiL : i.L = ${LIT + 1} := by
+    obtain ⟨_, _, hb, _⟩ := hy
+    rw [← hb.length, hL]
+  exact bodyFwdL (P := P) (KR := KR) (NE := NE) (net := net) (env := env) (π := π) cert leaves typed Cr hlt (NB := 15235) (T := T)
+    (tk := tk) (Nat.le_refl _) (s := ${T}.s0) (S := ${T}.S0) ${LIT}
+    rfl tab_eq rfl rfl hparam hL (by decide) (by decide) (by rw [hiL]; exact hCr) (by omega) plan hy hle hg ht hm
+
+end ${NS}
+`);
+  process.exit(0);
+}
 const disj = (v: string) => ivs.map(([a, b]) => `(${a} ≤ ${v} ∧ ${v} ≤ ${b})`).join(" ∨ ");
 const dec = ivs.map(([a, b]) => `(decide (${a} ≤ m) && decide (m ≤ ${b}))`).join(" || ");
 const hb = blocks === "3" ? "rw [if_pos]\n    unfold Metal.ceilDiv\n    omega" : "rw [if_neg]\n    unfold Metal.ceilDiv\n    omega";

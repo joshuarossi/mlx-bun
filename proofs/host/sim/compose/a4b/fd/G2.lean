@@ -57,9 +57,4 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : 
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt24⟩,
     hMem x _ ⟨runC_le _ _ _ _ _ hrun, hext.node, ng, tokens_of_grow hr hm' ng (countersOkB_tokens cnt24), congrFun hext.a 12504⟩ hm⟩
 
-def fwdClassRows : List Row := [first_tail_x4.r0]
-
-kernel_rfl g2Check : (fwdClassRows.all fun r => goodLin r.ps
-  (varsOf r.V npsMap) PRE_fd_vw_r0.S23.oracle) = true
-
 end Host.Ts.Sim.Compose.FDVW

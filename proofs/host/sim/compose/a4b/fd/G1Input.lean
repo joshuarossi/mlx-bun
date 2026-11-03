@@ -18,7 +18,7 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     (h53 : π.length < 2 ^ 53) (hv9 : ν 9 = F64.ofNat π.length) (hv10 : ν 10 = F64.ofNat (π.length - 1))
     (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false)
     (hvc : ∀ k ∈ π, k < 248320) :
-    ∃ M' t' C' K', runC FF 260 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S2.tab.length ∧
+    ∃ M' t' C' K', runC FF 261 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S2.tab.length ∧
       RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
         (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] M' ν K' PRE_fd_vw_r0.s21
         ⟨PRE_fd_vw_r0.S21.tab, []⟩ t' C' ∧
@@ -28,16 +28,16 @@ theorem g1Run_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
         ⟨chars!"mlx_array_new_data", .jsPtr (M'.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr) ∧ InputAt (lastRows π) (M'.node 19057) t' C' ∧
       Host.Mlx.Ffi.NGrow (mlxOf t.ffi) (mlxOf t'.ffi) := by
   have hlenN : (lastRows π).length = 1 := lastRows_length h1
-  have rr1 : runOk FF PRE_fd_vw_r0.okB1 71 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 =
+  have rr1 : runOk FF PRE_fd_vw_r0.okB1 72 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 =
       some (PRE_fd_vw_r0.s3, PRE_fd_vw_r0.S3) := PRE_fd_vw_r0.k2
   obtain ⟨M3, t3, C3, r13, e13, h3⟩ := D1Advance.call (startSim NB T tk []) hk hvb hg.s19 accepted2 rr1
-    (runOk_ok_end 70 rr1 live3) live3 PRE_fd_vw_r0.stepA2 top4 hr
+    (runOk_ok_end 71 rr1 live3) live3 PRE_fd_vw_r0.stepA2 top4 hr
   let K1 := Disp.Ctx.frameAt K FDFrames.chunk ([], (lastRows π).map natV)
   have hk1 : Disp.KpJ FDFrames.chunkJ 131072 K1 :=
     FDFrames.kp_frame (J := FDFrames.startJ) (J' := FDFrames.chunkJ) rfl rfl rfl hk ([], (lastRows π).map natV)
   have hf1 : K1.fr FDFrames.chunk = some ([], (lastRows π).map natV) := Disp.Ctx.frameAt_eq K _ _
   have ng13 := glueCall_ngrow (fun y0 => startGrowSim NB T tk [] y0) accepted2 rr1
-    (runOk_ok_end 70 rr1 live3) live3 PRE_fd_vw_r0.stepA2 hvb hk (hr.withOracle hg.s19) r13
+    (runOk_ok_end 71 rr1 live3) live3 PRE_fd_vw_r0.stepA2 hvb hk (hr.withOracle hg.s19) r13
   obtain ⟨r34, h4⟩ := slice h3 hfr h1 h53 hv9 hv10
   have rr4 : runOk FF PRE_fd_vw_r0.okB2 15 PRE_fd_vw_r0.s5 PRE_fd_vw_r0.S5 =
       some (PRE_fd_vw_r0.s6, PRE_fd_vw_r0.S6) := PRE_fd_vw_r0.k5

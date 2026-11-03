@@ -115,6 +115,10 @@ theorem toPf {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} {Θ 
     exact hids
   · have h1 : (mlxOf x.t.ffi).next ≤ (mlxOf s1.ffi).next + O.H := hnat.1
     have h2 : (mlxOf x.t.ffi).nnext ≤ (mlxOf s1.ffi).nnext + O.N := hnat.2
-    exact ⟨by omega, by omega⟩
+    refine ⟨?_, ?_⟩
+    · change (mlxOf x.t.ffi).next ≤ (mlxOf s0.ffi).next + (O.H + e)
+      omega
+    · change (mlxOf x.t.ffi).nnext ≤ (mlxOf s0.ffi).nnext + O.N
+      omega
 
 end Host.Ts.Sim.Compose.VWFirst

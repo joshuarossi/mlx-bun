@@ -13,7 +13,7 @@ open Host.Mlx Host.Mlx.GlueStep Host.Mlx.FfiEval Host.Mlx.FfiAneEval Host.Mlx.Si
 open Inference Inference.Contracts.Mlx Inference.Models.Qwen
 open Host.Mlx.SimGraph.Iter (cachesAt cachesAt_below)
 open Host.Mlx.SimGraph.Mach (routeVal pipeTy_of_loaded stageW_loaded rowSem_ok gpuFamily_rows initial_pre)
-open Host.Mlx.SimGraph.Ref (RSt refRows routeStep rowSem gpuFamily tailStep)
+open Host.Mlx.SimGraph.Ref (RSt refRows refNu routeStep rowSem gpuFamily tailStep)
 open Host.Ts.Sim (LoadP Map)
 open Host.Ts.Sim.Prefill (drains tailRows)
 open Host.Ts.Sim.Full (FF mlxOf)
@@ -82,7 +82,7 @@ theorem coldFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
     (hNB : 15235 ≤ NB)
     (hnum : ∀ i e, nth? c.S.tab i = some e → y.C.val (y.M.nv (.ref i)) = some (e.eval y.ν))
     (ν : Nat → Int) (hB : InBox c.B ν) (hρ : ∀ j l h, c.B.get j = some (l, h) → y.ν j = F64.ofInt (ν j))
-    (hx : ν c.x = ((π.length - 1 : Nat) : Int))
+    (hr : ∀ d, (c.r d).eval ν = d.eval (refNu 0 (π.length - 1)))
     (hip : ∀ tab, Host.Ts.Sim.CSrv.Le y.C ⟨tab⟩ → HostInt32 (concrete (CSrv.val ⟨tab⟩)) (mlxOf y.t.ffi) (y.M.node 15235)
       ((π.take (π.length - 1)).map Int.ofNat) [1, ((π.length - 1 : Nat) : Int)])
     (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235)
@@ -115,7 +115,7 @@ theorem coldFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
       some (firstValues P.toMlxContract KR.toKernelContract env tab p) := fun p hp => by
     rw [hmr.nid p.node (Nat.lt_of_lt_of_le (hparam p hp) hNB)]
     exact (hb'.params p hp).1
-  have hval := c.values P KR env κ tab hmr hband hE y.ν ν (π.length - 1) π (fun i e h => hC.val (hnum i e h)) hB hρ hx (by omega)
+  have hval := c.values P KR env κ tab hmr hband hE y.ν ν (π.length - 1) π (fun i e h => hC.val (hnum i e h)) hB hρ hr (by omega)
     hk (hip tab hC) hpar (initial_stage_layout _) (sig_cold c.hn₀ (by omega) _ stages_cold) hs' hv
   refine ⟨{ refInit net with hs := hs' }, routeStep_tail _ hd hte hL3 hfam hv, ?_, trivial⟩
   refine { toBase := hb', values := hval, below := cachesAt_below _ _ _ fun p hp j hj => ?_ }
@@ -145,7 +145,7 @@ theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
     (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
     (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31) {NB T : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB)
     {s : St FF.S} {S : SSrv} {Θ : List Nat × List SymE} {O : Host.Ts.Sim.Compose.VWFirst.BodyOff}
-    (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) {l9 h9 l10 h10 : Int} (hBx : c.B = [(9, l9, h9), (10, l10, h10)]) (hcx : c.x = 10)
+    (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) {l9 h9 l10 h10 : Int} (hBx : c.B = [(9, l9, h9), (10, l10, h10)]) (hcx : c.r = rowsAt 10)
     (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235)
     {i : Host.Ts.Sim.Lin.Cls.Inst} (hCr : Cr i.L = c.carriers) (hn : 2 ≤ i.n) (hn' : i.n ≤ 223) (hLn : i.L = i.n + 1)
     (hb9 : l9 ≤ (i.L : Int) ∧ (i.L : Int) ≤ h9) (hb10 : l10 ≤ (i.n : Int) ∧ (i.n : Int) ≤ h10)
@@ -178,8 +178,66 @@ theorem bodyFwd {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd
     rcases box_cases hget with ⟨rfl, -, -⟩ | ⟨rfl, -, -⟩
     · exact hv9
     · exact hv10
-  · rw [hcx, ← hin]
-    simp
+  · intro d
+    rw [hcx, ← hin]
+    exact rowsAt_eval _ 10 i.n (by simp) d
+  · intro tab hC
+    have hg' := (hip.grow (Host.Mlx.Ffi.NGrow.refl _) hC).2
+    have hl : (π.take i.n).length = i.n := by simp; omega
+    rw [hl] at hg'
+    rw [← hin]
+    exact hg'
+
+theorem box_one {j : Nat} {l h l9 h9 : Int} (hg : Box.get [(9, l9, h9)] j = some (l, h)) :
+    j = 9 ∧ l = l9 ∧ h = h9 := by
+  unfold Box.get at hg
+  by_cases hj9 : j = 9
+  · subst hj9
+    simp at hg
+    exact ⟨rfl, hg.1.symm, hg.2.symm⟩
+  · simp [List.find?_cons, Ne.symm hj9] at hg
+
+/-- **A first tail's forward at a literal row**: its body reads `L` at variable 9 and holds the row count `n` as a literal. -/
+theorem bodyFwdL {pk : ProjKind} {mk : MlpKind} {rd : Read} (c : FamCert pk mk rd Expected.stages)
+    (leaves : Leaves code env.weights) (typed : TypedCheckpoint env.weights)
+    (Cr : Nat → List (Option Nat × Option Nat)) (hlt : ∀ t ∈ π, t < 2 ^ 31) {NB T : Nat} {tk : Nat → Nat} (hNB : 15235 ≤ NB)
+    {s : St FF.S} {S : SSrv} {Θ : List Nat × List SymE} {O : Host.Ts.Sim.Compose.VWFirst.BodyOff} (n : Nat)
+    (hs : c.s = mlxOf s.ffi) (hS : c.S.tab = S.tab) (hBx : c.B = [(9, ((n + 1 : Nat) : Int), ((n + 1 : Nat) : Int))])
+    (hcr : c.r = litAt (Host.Mlx.SimGraph.Ref.refNu 0 n))
+    (hparam : ∀ p ∈ parameterTensors parameterChoice, p.node < 15235) (hπ : π.length = n + 1) (hn : 2 ≤ n) (hn' : n ≤ 223)
+    {i : Host.Ts.Sim.Lin.Cls.Inst} (hCr : Cr i.L = c.carriers) (hLn : i.L = i.n + 1)
+    (hfam : gpuFamily .tail n = some (rowTpl refRows pk mk rd)) {x y : SegInst FF}
+    (hy : (Host.Ts.Sim.Compose.VWFirst.bodyCore NB T tk π i Θ O [(9, .L)] s S).R y s ⟨S.tab, []⟩)
+    (hle : Host.Ts.Sim.CSrv.Le x.C y.C) (hg : Host.Mlx.Ffi.NGrow (mlxOf x.t.ffi) (mlxOf y.t.ffi))
+    (ht : (mlxOf y.t.ffi).tokens = (mlxOf x.t.ffi).tokens)
+    (hm : memCold P KR net env π i.L x) : memPre P KR NE net env π Cr i.L y := by
+  obtain ⟨K0, hr, hb, -, hip, -, hmap, -⟩ := hy
+  have hLen : π.length = i.L := hb.length
+  obtain ⟨Pm, hP, r0⟩ := hr.ffi.1
+  have hmr : Host.Ts.Sim.G.MR Pm NB y.M S.tab.length c.s (mlxOf y.t.ffi) := by
+    rw [hs]
+    exact r0.load.mlx
+  have hband : Pm.NL = Pm.N0 := by rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> rfl
+  have hE : (Pm.E : Int) ≤ 131072 := by
+    rcases hP with rfl | ⟨k, -, -, rfl⟩ <;> exact Int.le_refl _
+  have hv9 : y.ν 9 = F64.ofNat i.L := hmap.1
+  have hin : i.n = π.length - 1 := by omega
+  have hnn : π.length - 1 = n := by omega
+  have hiL : i.L = n + 1 := by omega
+  refine coldFwd c leaves typed Cr (by rw [hLen]; exact hCr) hlt (by omega) (by omega) (by rw [hnn]; exact hfam) hmr hband hE hNB
+    (fun j e h => hr.srv.num j e (hS ▸ h)) (fun _ => (i.L : Int)) ?_ ?_ ?_ ?_ hparam hle hg ht i.L hm
+  · rw [hBx]
+    intro j l h hget
+    obtain ⟨rfl, rfl, rfl⟩ := box_one hget
+    rw [hiL]
+    exact ⟨Int.le_refl _, Int.le_refl _⟩
+  · rw [hBx]
+    intro j l h hget
+    obtain ⟨rfl, -, -⟩ := box_one hget
+    exact hv9
+  · intro d
+    rw [hcr, hnn]
+    rfl
   · intro tab hC
     have hg' := (hip.grow (Host.Mlx.Ffi.NGrow.refl _) hC).2
     have hl : (π.take i.n).length = i.n := by simp; omega

@@ -80,7 +80,6 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N
       (mlxOf PRE_fd_vw_r0.s21.ffi).nnext).NL ≤ PRE_fd_vw_r0.P1.NL := by
     change (mlxOf PRE_fd_vw_r0.s21.ffi).nnext ≤ 19058
     rw [nnext21]
-    exact Nat.le_refl _
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt22, ⟨hr.presentBound, hr.heapSupp⟩,

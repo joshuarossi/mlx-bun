@@ -1,0 +1,31 @@
+import host.sim.compose.a4b.SetupDrop
+import host.sim.compose.a4b.VWStart
+import host.sim.template.a4pre_first_tail_x0_r0.H0
+import host.sim.template.a4pre_first_tail_x15_r0.SharedStart
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose.VWFirst.X0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
+open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
+
+kernel_rfl s17Eq : PRE_first_tail_x0_r0.s17 = PRE_first_tail_x15_r0.s17
+kernel_rfl s17Tab : PRE_first_tail_x0_r0.S17.tab = PRE_first_tail_x15_r0.S17.tab
+kernel_rfl chunk0_eq : PRE_first_tail_x0_r0.s6 = PRE_setup_early_r0.s6
+
+noncomputable def npsCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (L : Nat) : ICut FF :=
+  { SetupDrop.cut NB T tk π L with
+    s0 := PRE_first_tail_x0_r0.s17, tab0 := PRE_first_tail_x0_r0.S17.tab }
+
+theorem toNps {NB T L : Nat} {tk : Nat → Nat} {π : List Nat} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hC : chunkC L = 2048) :
+    CutConv (withMem Mem (SetupCommon.nextCut NB T tk π L)) (withMem Mem (npsCut NB T tk π L)) := by
+  apply (SetupDrop.toOld hMem hC).trans
+  rintro x ⟨hr, hq⟩ hb
+  refine ⟨x, rfl, rfl, ⟨?_, hq⟩, hb⟩
+  change RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) wideP []
+    x.M x.ν x.K PRE_first_tail_x0_r0.s17 ⟨PRE_first_tail_x0_r0.S17.tab, []⟩ x.t x.C
+  rw [s17Eq, s17Tab, PRE_first_tail_x15_r0.nps1_eq, PRE_first_tail_x15_r0.nps1_tab_eq]
+  exact hr
+
+end Host.Ts.Sim.Compose.VWFirst.X0

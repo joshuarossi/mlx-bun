@@ -65,26 +65,26 @@ theorem frames_swap (a : Nat) :
   constructor <;> (intro h; rcases h with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> simp)
 
 theorem rowBox {i : Cls.Inst} {ν : Nat → F64} (hi : InRow final_ord.r0 i) (h12 : ν 12 = F64.ofNat 1)
-    (h10 : ν 10 = F64.ofNat (i.L - 1)) (h11 : ν 11 = F64.ofNat (i.L - 1)) (h16 : ν 16 = F64.ofNat (capL (i.L - 1))) :
+    (h10 : ν 10 = F64.ofNat i.o) (h11 : ν 11 = F64.ofNat i.o) (h16 : ν 16 = F64.ofNat i.cap) :
     ∃ v, Lin.InBox PRE_fd_vw_r0_body.ps 0 v ∧ Lin.VarsOk ν v PRE_fd_vw_r0_body.V := by
   obtain ⟨_, x, hx, hq⟩ := hi
-  simp only [final_ord.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+  simp only [final_ord.r0, InBox, QOk, Inst.get, eval_mk, dot, Nat.zero_add] at hx hq
   refine ⟨x, ?_, ?_⟩
-  · simp only [PRE_fd_vw_r0_body.ps, InBox]
+  · simp only [PRE_fd_vw_r0_body.ps, InBox, Nat.zero_add, List.not_mem_nil, not_false_eq_true, and_true]
     omega
   · simp only [PRE_fd_vw_r0_body.V, Lin.VarsOk]
     refine ⟨?_, ?_, ?_, ?_, trivial⟩
-    · rw [h10]; exact ofNat_ofInt (by simp [Aff.eval, dot, Lin.P]; omega)
-    · rw [h11]; exact ofNat_ofInt (by simp [Aff.eval, dot, Lin.P]; omega)
-    · rw [h12]; exact ofNat_ofInt (by simp [Aff.eval, dot])
-    · rw [h16]; exact ofNat_ofInt (by unfold capL; simp [Aff.eval, dot, Lin.P]; omega)
+    · rw [h10]; exact ofNat_ofInt (by simp only [Lin.eval_add, Lin.eval_smul_nat, Lin.eval_P]; omega)
+    · rw [h11]; exact ofNat_ofInt (by simp only [Lin.eval_add, Lin.eval_smul_nat, Lin.eval_P]; omega)
+    · rw [h12]; exact ofNat_ofInt (by simp only [Lin.eval_ofNat]; rfl)
+    · rw [h16]; exact ofNat_ofInt (by simp only [Lin.eval_add, Lin.eval_smul_nat, Lin.eval_P, Lin.eval_ofNat]; omega)
 
 theorem flatStep {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst} (x0 : SegInst FF)
     (hcap : cap ≤ 4096 + 1593835520) (hi : InRow final_ord.r0 i) :
     CutStep (withMem (NTrack x0) (forwardCut NB T tk π cap H N i))
       (withMem (NTrack x0) (returnCut NB T tk π cap H N)) 1502774 := by
   rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, -⟩, ⟨hf, hids, hnat⟩, htr⟩
-  obtain ⟨h2, hLmax, -, -⟩ := rowFacts hi
+  obtain ⟨h2, hLmax, ho, hc⟩ := rowFacts hi
   have hlen : (lastRows π).length = 1 := lastRows_length (by rw [hb.length]; omega)
   have hL := hb.length
   let ν' := upd x.ν 12 (F64.ofNat 1)
@@ -123,9 +123,9 @@ theorem flatStep {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cl
     · refine ⟨⟨hb.context.1.1, hb.context.1.2.1, fun a => ?_⟩, hb.offset⟩
       rw [hb.context.1.2.2 a]
       exact frames_swap a
-    · rw [← hL]; exact (hoff (by decide)).trans hb.rowValue
-    · rw [← hL]; exact (hoff (by decide)).trans hb.offsetValue
-    · rw [← hL]; exact (hoff (by decide)).trans hb.capValue
+    · rw [ho, ← hL]; exact (hoff (by decide)).trans hb.rowValue
+    · rw [ho, ← hL]; exact (hoff (by decide)).trans hb.offsetValue
+    · rw [hc, ← hL]; exact (hoff (by decide)).trans hb.capValue
   obtain ⟨t', C', hrun, z, rfl, rfl, ⟨hz, hbz⟩, hfz, hidsz, hext⟩ :=
     (PRE_fd_vw_r0_body.fullRun (NB := NB) (T := T) (tk := tk) (cap := cap) (M0 := x.M) (y0 := mlxOf x.t.ffi)
       (flatLaws (T := T) (tk := tk) (π := π) (K0 := K0) hcap)) x.t x.C

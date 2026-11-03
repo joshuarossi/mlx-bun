@@ -1,0 +1,85 @@
+import host.sim.compose.a4b.x0.NpsCompactRel
+import host.sim.compose.a4b.x0.NpsValues
+import host.sim.compose.a4b.VWNpsCompact
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose.VWFirst.X0
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
+open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
+
+def npsMap0 : List (Nat × Q) := [(9, .L), (1008, .n)]
+noncomputable def afterNpsCut (NB T : Nat) (tk : Nat → Nat) (ρ : List Nat) (i : Cls.Inst) : ICut FF :=
+  { pbCut (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB)) setupJ wideP npsMap0
+      PRE_first_tail_x0_r0.s19 PRE_first_tail_x0_r0.S19 i with
+    B := fun x => afterNpsBook T i.L tk x ∧ PromptFr ρ x ∧ NativeAt 0 0 PRE_first_tail_x0_r0.s19 x.t }
+
+kernel_rfl keepNN1 : PRE_first_tail_x0_r0.kd1.nn0 = PRE_first_tail_x0_r0.kd1.nn1
+kernel_rfl keepNK1 : PTrie.keys PRE_first_tail_x0_r0.kd1.node = []
+kernel_rfl sameNext1 : (mlxOf PRE_first_tail_x0_r0.s18.ffi).next = (mlxOf PRE_first_tail_x0_r0.s19.ffi).next
+kernel_rfl sameNnext1 : (mlxOf PRE_first_tail_x0_r0.s18.ffi).nnext = (mlxOf PRE_first_tail_x0_r0.s19.ffi).nnext
+
+theorem reservedCwsOff {j : Nat} (hj : j < 9) : Conv.idx? j PRE_first_tail_x0_r0.cws1 = none := by
+  simp [PRE_first_tail_x0_r0.cws1, Conv.idx?, show 1008 ≠ j by omega]
+theorem reservedWsOff {j : Nat} (hj : j < 9) : PRE_first_tail_x0_r0.ws1.contains j = false := by
+  apply Bool.eq_false_iff.mpr
+  intro hc
+  have h := Nat.le_of_ble_eq_true (List.all_eq_true.mp npsWsLow j (List.contains_iff_mem.mp hc))
+  omega
+
+theorem nps_compact {NB T : Nat} {tk : Nat → Nat} {ρ : List Nat} {i : Cls.Inst} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (h1 : 1 ≤ i.L) (hL : i.L ≤ 2 ^ 20) (hn : i.n = i.L - 1) :
+    CutConv (withMem Mem (mergedPinCut NB T tk ρ i.L)) (withMem Mem (afterNpsCut NB T tk ρ i)) := by
+  rintro x hR ⟨⟨hB, hpin, hnat⟩, hm⟩
+  have hcdata := nps_compact_rel hR hB
+  obtain ⟨hr, ν, hν, hvb, hkp, hmap⟩ := hR
+  obtain ⟨⟨hframeBook, hsmall, hoffset⟩, hins, hids, hbase, hcall, hNB, hnative⟩ := hB
+  obtain ⟨hk, hmemo, π', hlen, hvocab, hframe, hfresh⟩ := hframeBook
+  obtain ⟨hc, hctx, hmemo', hp, hD, hfrP⟩ := hcdata
+  have hvals := post_callP (m := [(9, .L)]) (m' := npsMap0) (qs := [.n])
+    (S2 := PRE_first_tail_x0_r0.st1.S2.tab) (Sm := PRE_first_tail_x0_r0.S18.tab)
+    (ws := PRE_first_tail_x0_r0.ws1) (cws := PRE_first_tail_x0_r0.cws1)
+    (nr := PRE_first_tail_x0_r0.nr1) (Es := [some npsResult]) hvb
+    (show MapOk ν i [(9, .L)] from ⟨hmap.1, trivial⟩)
+    (by intro p hp; obtain rfl := List.mem_singleton.mp hp; decide)
+    PRE_first_tail_x0_r0.mergeTab1 rfl
+    (by rw [← PRE_first_tail_x0_r0.tab0_1]; exact PRE_first_tail_x0_r0.mergeLen1.symm)
+    (by decide) (by decide) rfl rfl (by decide) npsResults
+    (by
+      intro j o he
+      cases j with
+      | zero =>
+        cases he
+        refine ⟨npsResult, .n, rfl, rfl, ?_⟩
+        change npsResult.eval ν = F64.ofNat i.n
+        rw [hn]
+        exact npsResultEval hmap.1 h1 (by omega)
+      | succ j => cases he)
+    (by intro j c q hc hq; have hq' : q = Q.n := by simpa using nth?_mem_some hq
+        subst q; change i.n ≤ loopVB c; have hc' : c = 1008 := by simpa [PRE_first_tail_x0_r0.cws1] using nth?_mem_some hc
+        subst c; change i.n ≤ 2 ^ 20; rw [hn]; omega)
+    (by intro p hp; simpa [npsMap0, PRE_first_tail_x0_r0.cws1] using hp)
+  have hpq : VBOkF loopVB (npsPair x).ν ∧ MapOk (npsPair x).ν i npsMap0 := by
+    change VBOkF loopVB (Shift.valuation θZ1 x.ν) ∧ MapOk (Shift.valuation θZ1 x.ν) i npsMap0
+    rw [hν]
+    exact hvals
+  refine ⟨npsPair x, rfl, rfl, ⟨hc, hpq.1, hctx.1, hpq.2⟩,
+    ⟨⟨hctx, hmemo', hp, hfresh, ⟨?_, ?_⟩, ?_, ?_⟩, hfrP.trans hpin,
+      ⟨sameNext1 ▸ hnat.1, sameNnext1 ▸ hnat.2⟩⟩,
+    hMem x _ (NTrack.conv rfl rfl (funext fun k => congrArg x.M.node (compact_node_id keepNN1 keepNK1 k))
+      (by change x.M.a (PRE_first_tail_x0_r0.kappa1.a 12504) = _; rw [PRE_first_tail_x0_r0.zkap1, Conv.Map.compact_lt (by decide)])) hm⟩
+  · intro j hj
+    change Shift.valuation θZ1 x.ν j = _
+    unfold θZ1
+    rw [Conv.valuation_compactθZ_out (reservedCwsOff hj) (reservedWsOff hj)]
+    exact hins.1 j hj
+  · change x.M.a (PRE_first_tail_x0_r0.kappa1.a 2590) = 2590
+    have he : PRE_first_tail_x0_r0.kappa1.a 2590 = 2590 := by rw [PRE_first_tail_x0_r0.zkap1]; exact Conv.Map.compact_lt (by decide)
+    rw [he]; exact hins.2
+  · change x.M.a (PRE_first_tail_x0_r0.kappa1.a 2586) = 2586 ∧ x.M.a (PRE_first_tail_x0_r0.kappa1.a 2589) = 2589
+    have h6 : PRE_first_tail_x0_r0.kappa1.a 2586 = 2586 := by rw [PRE_first_tail_x0_r0.zkap1]; exact Conv.Map.compact_lt (by decide)
+    have h9 : PRE_first_tail_x0_r0.kappa1.a 2589 = 2589 := by rw [PRE_first_tail_x0_r0.zkap1]; exact Conv.Map.compact_lt (by decide)
+    rw [h6, h9]; exact hids
+  · rw [hD]; omega
+end Host.Ts.Sim.Compose.VWFirst.X0

@@ -41,7 +41,7 @@ noncomputable def g1_piece (hcap : cap ≤ 131072) :
       (fun i => withMem (Mem i.L) (Pf.cut NB T tk π cap H N PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2))
       (fun i => withMem (Mem i.L) (dispatchCut NB T tk π cap H N i)) where
   m := fdMap
-  n := 260
+  n := 261
   O := g1Oracle
   chk r hr := by
     obtain rfl := List.mem_singleton.mp hr

@@ -71,7 +71,7 @@ theorem g1 {NB T cap H N : Nat} {tk : Nat → Nat} {π : List Nat} {i : Cls.Inst
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hrow : InRow final_ord.r0 i) (hPin : ∀ x, Mem x → π.length = i.L) (hcap : cap ≤ 131072)
     (horacle : ∀ ν, MapOk ν i fdMap → Good ν g1Oracle) :
     CutStep (withMem Mem (Pf.cut NB T tk π cap H N PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2))
-      (withMem Mem (dispatchCut NB T tk π cap H N i)) 260 := by
+      (withMem Mem (dispatchCut NB T tk π cap H N i)) 261 := by
   rintro t C ⟨x, rfl, rfl, ⟨hr, hb⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   have hL := hPin x hm
   have hmap := rowMap hrow hL hb
