@@ -8,18 +8,18 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-noncomputable def forwardCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
-  typedCut NB T tk π PRE_fd_vw_r0.s24 PRE_fd_vw_r0.S24 i 3571
+noncomputable def forwardCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Cls.Inst) : ICut FF :=
+  typedCut NB T tk π cap H N PRE_fd_vw_r0.s24 PRE_fd_vw_r0.S24 i
 
 kernel_rfl cnt24 : countersOkB PRE_fd_vw_r0.s23 PRE_fd_vw_r0.s24 = true
 
 private theorem bridge5 : bridgeOf PRE_fd_vw_r0.s24.ffi = bridgeOf PRE_fd_vw_r0.s23.ffi :=
   typedRun23.dst_bridge.trans typedRun23.src_bridge.symm
 
-theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
+theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
-    (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_fd_vw_r0.S23.oracle) :
-    CutStep (withMem Mem (g2Cut NB T tk π i)) (withMem Mem (forwardCut NB T tk π i)) 7 := by
+    (horacle : ∀ ν, MapOk ν i fdMap → Good ν PRE_fd_vw_r0.S23.oracle) :
+    CutStep (withMem Mem (g2Cut NB T tk π cap H N i)) (withMem Mem (forwardCut NB T tk π cap H N i)) 7 := by
   rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hm⟩
   have hgood := horacle x.ν hmap
   obtain ⟨M', t', C', hrun, hext, hm'⟩ := D1Advance.run
@@ -30,9 +30,9 @@ theorem g2 (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem :
   have ip : InputAt (lastRows π) (M'.node 15235) t' C' := by
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun)
-  have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) 3571 := by
-    refine ⟨hb.length, hb.vocab, hb.valuation, hb.rows, hb.context, hb.incoming,
-      hb.incomingPrompt, hb.incomingMemo, hb.frames, hb.offset, hb.lo, hb.hi, ?_⟩
+  have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) cap := by
+    refine ⟨hb.length, hb.vocab, hb.valuation, hb.promptValue, hb.rowValue, hb.offsetValue, hb.capValue, hb.context, hb.incoming,
+      hb.incomingPrompt, hb.frames, hb.offset, hb.lo, hb.hi, ?_⟩
     change ∃ asR ret pre tr, x.K.base' = _
     rw [hext.a]
     exact hb.inputEvent

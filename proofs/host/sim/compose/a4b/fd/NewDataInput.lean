@@ -16,7 +16,7 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     (hkp : Disp.KpJ (FDFrames.typedJ (tokenBytes π) π.length) 131072 K) (hv : VBOkF loopVB ν)
     (hg : Good ν PRE_fd_vw_r0.S16.oracle) (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false)
     (hfb : K.fr FDFrames.buffer = some ([], []))
-    (h31 : π.length < 2 ^ 31) (hvc : ∀ k ∈ π, k < 248320) (hv9 : ν 12 = F64.ofNat π.length) (hlenN : π.length = 6) :
+    (hvc : ∀ k ∈ π, k < 248320) (hlenN : π.length = 1) :
     ∃ M' t' C', runC FF 1 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S16.tab.length ∧
       RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
         (FDFrames.typedW (tokenBytes π) π.length) [] M' ν
@@ -41,12 +41,12 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have hsmall : ∀ j ∈ G.dataRefs ndArgs, RefSmall ν ndSrv j :=
     D1Pre.small hv ndSmall
   let Pre := fun (ν : Nat → F64) (S : SSrv) (x : FF.S) (asR : List Arg) =>
-    D1Data.Pre P ν S x asR ∧ S = ndSrv ∧ x = PRE_fd_vw_r0.s16.ffi ∧ asR = ndArgs ∧ ν 12 = F64.ofNat π.length
+    D1Data.Pre P ν S x asR ∧ S = ndSrv ∧ x = PRE_fd_vw_r0.s16.ffi ∧ asR = ndArgs
   have hpre : ∀ asR S1, interpS (decodeArgs FF PRE_fd_vw_r0.s16 ndTys ndRest).run PRE_fd_vw_r0.S16 =
       some (some asR, S1) → Pre ν S1 PRE_fd_vw_r0.s16.ffi asR := by
     exact D1Decode.transport ndDecode
       (show Pre ν ndSrv PRE_fd_vw_r0.s16.ffi ndArgs from
-        ⟨⟨hi, hok, hsmall⟩, rfl, rfl, rfl, hv9⟩)
+        ⟨⟨hi, hok, hsmall⟩, rfl, rfl, rfl⟩)
   have hcall : ∀ M ν S C x y (asR : List Arg), Srv M ν S C →
       Disp.FRJ (FullRXD P NB) M S.tab.length x y →
       (∀ a ∈ asR, Supp.arg (Present PRE_fd_vw_r0.s16) S.tab.length a) → Pre ν S x asR →
@@ -74,7 +74,7 @@ theorem step_input {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
       rcases hP with rfl | ⟨k, _, _, rfl⟩
       · exact hp.2.1
       · rw [dataOk_raise]; exact hp.2.1
-    have hvv := Input.call_input hS hr.load.mlx hiy hok' hv9 h31 hlenN hvc (by rw [he] at ht; exact ht)
+    have hvv := Input.call_input hS hr.load.mlx hiy hok' hlenN hvc (by rw [he] at ht; exact ht)
     rw [hg.ext.node]
     exact hvv
   have hninv : ∀ M n x y, Disp.FRJ (FullRXD P NB) M n x y → Host.Mlx.Ffi.NGrowCall.NInv (mlxOf y) :=

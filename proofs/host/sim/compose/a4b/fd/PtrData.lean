@@ -1,5 +1,10 @@
 import host.sim.compose.a4b.fd.TypedData
-import host.sim.template.a4pre_fd_vw_r0.K7
+import host.sim.template.a4pre_fd_vw_r0.K0
+import host.sim.template.a4pre_fd_vw_r0.K1
+import host.sim.template.a4pre_fd_vw_r0.K2
+import host.sim.template.a4pre_fd_vw_r0.K3
+import host.sim.template.a4pre_fd_vw_r0.K4
+import host.sim.template.a4pre_fd_vw_r0.K5
 set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0

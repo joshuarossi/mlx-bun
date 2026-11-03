@@ -1,6 +1,10 @@
 import host.sim.compose.a4b.fd.SliceData
-import host.sim.template.a4pre_fd_vw_r0.K6
-import host.sim.template.a4pre_fd_vw_r0.K9
+import host.sim.template.a4pre_fd_vw_r0.K0
+import host.sim.template.a4pre_fd_vw_r0.K1
+import host.sim.template.a4pre_fd_vw_r0.K2
+import host.sim.template.a4pre_fd_vw_r0.K3
+import host.sim.template.a4pre_fd_vw_r0.K4
+import host.sim.template.a4pre_fd_vw_r0.K5
 import host.sim.template.BridgeLenLit
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -16,8 +20,8 @@ theorem lengthStep {FR : Map → Nat → FF.S → FF.S → Prop} {W : Nat → Op
     (hc : sa.ctl = .ret (.obj FDFrames.chunk))
     (hst : sa.stack = .e (.member kLength false) :: sa.stack.tail)
     (ho : sa.obj? FDFrames.chunk = some o) (hok : o.kind = .array [])
-    (hp : Bridge.lenLitPatch sa Sa (F64.ofNat 6) = (sb, Sb))
-    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 6) :
+    (hp : Bridge.lenLitPatch sa Sa (F64.ofNat 1) = (sb, Sb))
+    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 1) :
     ∃ M' t', runC FF 1 t C = some (t', C) ∧ Ext M M' Sa.tab.length ∧
       RelB FF FR W [] M' ν K sb ⟨Sb.tab, []⟩ t' C ∧ t'.ffi = t.ffi := by
   have hk : o.kind = .array (([] : List Val) ++ []) := hok
@@ -39,7 +43,7 @@ kernel_rfl empty36 : arrOf PRE_fd_vw_r0.s19 2823901 = []
 theorem length7 {FR : Map → Nat → FF.S → FF.S → Prop} {W : Nat → Option WFrame}
     {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {γ : List Nat}
     (h : RelB FF FR W [] M ν K PRE_fd_vw_r0.s7 ⟨PRE_fd_vw_r0.S7.tab, []⟩ t C)
-    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 6) :
+    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 1) :
     ∃ M' t', runC FF 1 t C = some (t', C) ∧ Ext M M' PRE_fd_vw_r0.S7.tab.length ∧
       RelB FF FR W [] M' ν K PRE_fd_vw_r0.s8 ⟨PRE_fd_vw_r0.S8.tab, []⟩ t' C ∧ t'.ffi = t.ffi :=
   lengthStep h PRE_fd_vw_r0.ctlA3 stack24 PRE_fd_vw_r0.objA3
@@ -49,7 +53,7 @@ theorem length7 {FR : Map → Nat → FF.S → FF.S → Prop} {W : Nat → Optio
 theorem length19 {FR : Map → Nat → FF.S → FF.S → Prop} {W : Nat → Option WFrame}
     {M : Map} {ν : Nat → F64} {K : Ctx} {t : St FF.S} {C : CSrv} {γ : List Nat}
     (h : RelB FF FR W [] M ν K PRE_fd_vw_r0.s19 ⟨PRE_fd_vw_r0.S19.tab, []⟩ t C)
-    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 6) :
+    (hfr : K.fr FDFrames.chunk = some ([], γ.map natV)) (hlen : γ.length = 1) :
     ∃ M' t', runC FF 1 t C = some (t', C) ∧ Ext M M' PRE_fd_vw_r0.S19.tab.length ∧
       RelB FF FR W [] M' ν K PRE_fd_vw_r0.s20 ⟨PRE_fd_vw_r0.S20.tab, []⟩ t' C ∧ t'.ffi = t.ffi :=
   lengthStep h PRE_fd_vw_r0.ctlA7 stack36 PRE_fd_vw_r0.objA7

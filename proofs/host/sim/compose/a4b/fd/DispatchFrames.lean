@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.fd.Cut
+import host.sim.compose.a4b.fd.TypedBook
 import host.sim.template.a4pre_fd_vw_r0.SiteZ1
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -11,42 +11,80 @@ kernel_rfl dispatchChunkGet : PRE_fd_vw_r0.s23.heap.get FDFrames.chunk =
 kernel_rfl dispatchChunkKind : (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s23 FDFrames.chunk).kind = .array []
 kernel_rfl dispatchChunkImage : PRE_fd_vw_r0.s22.heap.get FDFrames.chunk =
   some (.obj {PRE_fd_vw_r0.kappa1.obj (Host.Ts.Sim.Template.objOf PRE_fd_vw_r0.s23 FDFrames.chunk) with kind := .array []})
-kernel_rfl dispatchWidePresent : [FDFrames.buffer, FDFrames.view].all (presentB PRE_fd_vw_r0.s23) = true
 kernel_rfl dispatchFixBuffer : PRE_fd_vw_r0.kappa1.a FDFrames.buffer = FDFrames.buffer
 
-theorem compactW_xs (bs : List Byte) (n a : Nat) :
-    a ∈ [2665, FDFrames.chunk] ↔ a ∈ [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view] ∧ compactW bs n a = none := by
+abbrev compactW (bs : List Byte) (n : Nat) : Nat → Option WFrame := FDFrames.typedW bs n
+
+/-- A wide frame of the typed cut: the buffer, the view, the pre-final cut's. -/
+theorem compactW_cases {bs : List Byte} {n a : Nat} {w : WFrame} (hw : compactW bs n a = some w) :
+    (a = FDFrames.buffer ∧ w = .buf bs) ∨ (a = FDFrames.view ∧ w = .typed .i32 FDFrames.buffer 0 n) ∨ (a, w) ∈ wideListPf := by
   by_cases hv : a = FDFrames.view
-  · subst hv; simp [compactW, Disp.wAt, FDFrames.view, FDFrames.buffer, FDFrames.chunk]
+  · subst hv
+    have he : compactW bs n FDFrames.view = some (.typed .i32 FDFrames.buffer 0 n) := rfl
+    rw [he] at hw
+    cases hw
+    exact .inr (.inl ⟨rfl, rfl⟩)
   · by_cases hb : a = FDFrames.buffer
-    · subst hb; simp [compactW, Disp.wAt, FDFrames.view, FDFrames.buffer, FDFrames.chunk]
-    · rw [compactW_none hb hv]
-      simp only [and_true, List.mem_cons, List.not_mem_nil, or_false, hv, hb, or_false]
+    · subst hb
+      have he : compactW bs n FDFrames.buffer = some (.buf bs) := rfl
+      rw [he] at hw
+      cases hw
+      exact .inl ⟨rfl, rfl⟩
+    · simp only [compactW, FDFrames.typedW, Disp.wAt, beq_false hv, beq_false hb, Bool.cond_false] at hw
+      exact .inr (.inr (Pf.lookupW_mem hw))
+
+theorem compactW_xs (bs : List Byte) (n a : Nat) :
+    a ∈ [2665, FDFrames.chunk] ↔ a ∈ (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])) ∧ compactW bs n a = none := by
+  constructor
+  · intro h
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+    rcases h with rfl | rfl
+    · exact ⟨by simp, rfl⟩
+    · exact ⟨by simp, rfl⟩
+  · rintro ⟨hm, hw⟩
+    simp only [ghostPf, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at hm
+    rcases hm with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl
+    · simp
+    · cases hw
+    · cases hw
+    · cases hw
+    · cases hw
+    · cases hw
+    · cases hw
+    · simp
+    · cases hw
+    · cases hw
 
 theorem compactW_framed (bs : List Byte) (n : Nat) :
-    ∀ a w, compactW bs n a = some w → a ∈ [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view] := by
+    ∀ a w, compactW bs n a = some w → a ∈ (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])) := by
   intro a w hw
-  rcases compactW_domain hw with rfl | rfl <;> simp
+  rcases compactW_cases hw with ⟨rfl, -⟩ | ⟨rfl, -⟩ | hm
+  · simp
+  · simp
+  · simp only [wideListPf, wideListOf, ghostPf, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at hm
+    rcases hm with ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simp [ghostPf]
+
+kernel_rfl dispatchWidePresent : [FDFrames.buffer, FDFrames.view, 4910, 1824, 1834, 1852, 1993, 2001].all (presentB PRE_fd_vw_r0.s23) = true
 
 theorem compactW_present (bs : List Byte) (n : Nat) :
     ∀ a w, compactW bs n a = some w → Present PRE_fd_vw_r0.s23 a := by
   intro a w hw
-  have ha : a ∈ [FDFrames.buffer, FDFrames.view] := by
-    rcases compactW_domain hw with rfl | rfl <;> simp
+  have ha : a ∈ [FDFrames.buffer, FDFrames.view, 4910, 1824, 1834, 1852, 1993, 2001] := by
+    rcases compactW_cases hw with ⟨rfl, -⟩ | ⟨rfl, -⟩ | hm
+    · simp
+    · simp
+    · simp only [wideListPf, wideListOf, ghostPf, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at hm
+      rcases hm with ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ | ⟨rfl, -⟩ <;> simp
   exact List.all_eq_true.mp dispatchWidePresent a ha
 
 theorem compactW_fixed (bs : List Byte) (n : Nat) :
     ∀ a w, compactW bs n a = some w → WFix PRE_fd_vw_r0.kappa1 (Present PRE_fd_vw_r0.s23) w := by
   intro a w hw
-  rcases compactW_domain hw with rfl | rfl
-  · have he : compactW bs n FDFrames.buffer = some (.buf bs) := rfl
-    rw [he] at hw
-    cases hw
-    trivial
-  · have he : compactW bs n FDFrames.view = some (.typed .i32 FDFrames.buffer 0 n) := rfl
-    rw [he] at hw
-    cases hw
-    exact dispatchFixBuffer
+  rcases compactW_cases hw with ⟨-, rfl⟩ | ⟨-, rfl⟩ | hm
+  · trivial
+  · exact dispatchFixBuffer
+  · simp only [wideListPf, wideListOf, ghostPf, List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, or_false, Prod.mk.injEq] at hm
+    rcases hm with ⟨-, rfl⟩ | ⟨-, rfl⟩ | ⟨-, rfl⟩ | ⟨-, rfl⟩ | ⟨-, rfl⟩ | ⟨-, rfl⟩ <;> trivial
 
 private theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K : Ctx)
     (he : arrOf s a = []) : Shift.framedNext M K s a = K.fr a := by
@@ -64,7 +102,7 @@ private theorem framedNext_empty {F : Ffi} {s : St F.S} {a : Nat} (M : Map) (K :
         cases hk : o.kind <;>
           simp_all only [arrOf, hg, hk, List.drop_nil, Map.vals, List.map_nil, List.append_nil]
 
-kernel_rfl dispatchFramesEmpty : [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view].all
+kernel_rfl dispatchFramesEmpty : (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])).all
   (fun a => (arrOf PRE_fd_vw_r0.s22 a).isEmpty) = true
 
 theorem dispatchFramesNext {M : Map} {K : Ctx} {bs : List Byte} {n : Nat}

@@ -11,17 +11,15 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable def θZ2 : Nat → SymE := Conv.compactθZ PRE_fd_vw_r0.cws1
   PRE_fd_vw_r0.crs1 PRE_fd_vw_r0.ws1
 
-kernel_rfl s17Eq : PRE_fd_vw_r0.s0 = PRE_fd_vw_r0.s0
-
-theorem dispatchCallClean : Conv.JClean (⟨18156, 15236, 2673488, 15⟩ : Conv.Cnt) PRE_fd_vw_r0.s21 :=
-  PRE_fd_vw_r0.gjcl1 (PRE_fd_vw_r0.cjcl0 (by rw [s17Eq]; exact FDVW.npsCallClean))
+theorem dispatchCallClean : Conv.JClean (⟨21967, 19058, 2823922, 8323⟩ : Conv.Cnt) PRE_fd_vw_r0.s21 :=
+  PRE_fd_vw_r0.gjcl1 (PRE_fd_vw_r0.cjcl0 PRE_fd_vw_r0.jcl0)
 
 theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
     (hk : Disp.Kp (FDFrames.typedJ bs n) K)
     (hframe : K.fr 2665 = some ([], π.map natV))
     (hchunk : K.fr FDFrames.chunk = some ([], γ.map natV))
     (hcall : Conv.CallFacts PRE_fd_vw_r0.s21 PRE_fd_vw_r0.S21.tab.length)
-    (hnative : Conv.FullShiftQ PRE_fd_vw_r0.P1 15 PRE_fd_vw_r0.kappa1
+    (hnative : Conv.FullShiftQ PRE_fd_vw_r0.P1 8323 PRE_fd_vw_r0.kappa1
       PRE_fd_vw_r0.s23.ffi PRE_fd_vw_r0.s22.ffi) :
     ShiftD FF (fun σ x y => x = PRE_fd_vw_r0.s23.ffi ∧
       Conv.FullShiftQX PRE_fd_vw_r0.P1 PRE_fd_vw_r0.S23.tab.length σ x y)
@@ -40,10 +38,10 @@ theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
     (fun r hr => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.znrHi1 r hr))
     hk.2.2 (by
       intro a ha
-      change a < 2673488
-      change a ∈ [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view] at ha
-      simp only [List.mem_cons, List.not_mem_nil, or_false] at ha
-      rcases ha with rfl | rfl | rfl | rfl <;> decide)
+      change a < 2823922
+      change a ∈ (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])) at ha
+      simp only [ghostPf, List.cons_append, List.nil_append, List.mem_cons, List.not_mem_nil, or_false] at ha
+      rcases ha with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide)
     (Xs := [2665, FDFrames.chunk]) (compactW_xs bs n) (compactW_framed bs n)
     (by
       intro a pre pre' hka hw
@@ -53,10 +51,10 @@ theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
       rcases hx with rfl | rfl
       · rw [hframe] at hka
         cases hka
-        refine ⟨_, [], PRE_fd_vw_r0.zg2_2665, ?_, ?_⟩
-        · simpa only [npsPromptEmpty] using PRE_fd_vw_r0.zk2_2665
-        · simpa only [PRE_fd_vw_r0.arrE2_2665, npsPromptEmpty, List.length_nil, List.drop_zero, List.nil_append,
-            PRE_fd_vw_r0.arrEl2_2665] using PRE_fd_vw_r0.zm2_2665
+        refine ⟨_, [], PRE_fd_vw_r0.zg1_2665, ?_, ?_⟩
+        · simpa only [promptEmpty] using PRE_fd_vw_r0.zk1_2665
+        · simpa only [PRE_fd_vw_r0.arrE1_2665, promptEmpty, List.length_nil, List.drop_zero, List.nil_append,
+            PRE_fd_vw_r0.arrEl1_2665] using PRE_fd_vw_r0.zm1_2665
       · rw [hchunk] at hka
         cases hka
         exact ⟨_, [], dispatchChunkGet, dispatchChunkKind, dispatchChunkImage⟩)
@@ -84,11 +82,10 @@ theorem dispatchShift {K : Ctx} {bs : List Byte} {n : Nat} {π γ : List Nat}
     rw [PRE_fd_vw_r0.ctab1]
     exact Conv.compactθZ_tab
       (noVar_of_all (by have h := PRE_fd_vw_r0.fresh1; simp only [Bool.and_eq_true] at h; exact h.1))
-      (disj_of_all (by decide : PRE_fd_vw_r0.cws1.all
-        (fun c => !PRE_fd_vw_r0.ws1.contains c) = true)))
+      (disj_of_all PRE_fd_vw_r0.cwsDisj1))
   exact { hθ with ffi := ⟨rfl, by
     rw [PRE_fd_vw_r0.ctab1]
-    change Conv.FullShiftQX PRE_fd_vw_r0.P1 15 PRE_fd_vw_r0.kappa1 _ _
+    change Conv.FullShiftQX PRE_fd_vw_r0.P1 8323 PRE_fd_vw_r0.kappa1 _ _
     exact hnative.toX PRE_fd_vw_r0.zbin1⟩ }
 
 

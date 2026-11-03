@@ -9,8 +9,8 @@ open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 noncomputable def dispatchPair (x : SegInst FF) := prefillCompactPair setupP PRE_fd_vw_r0.kappa1
   θZ2 PRE_fd_vw_r0.s22 PRE_fd_vw_r0.s23 x
 
-noncomputable def g2Cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Lin.Cls.Inst) : ICut FF :=
-  typedCut NB T tk π PRE_fd_vw_r0.s23 PRE_fd_vw_r0.S23 i 3571
+noncomputable def g2Cut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Lin.Cls.Inst) : ICut FF :=
+  typedCut NB T tk π cap H N PRE_fd_vw_r0.s23 PRE_fd_vw_r0.S23 i
 
 kernel_rfl keepNN2 : PRE_fd_vw_r0.kd1.nn0 = PRE_fd_vw_r0.kd1.nn1
 kernel_rfl keepNK2 : PTrie.keys PRE_fd_vw_r0.kd1.node = []
@@ -20,18 +20,17 @@ kernel_rfl sameNnext2 : (mlxOf PRE_fd_vw_r0.s22.ffi).nnext = (mlxOf PRE_fd_vw_r0
 theorem dispatchVal (ν : Nat → F64) : Shift.valuation θZ2 ν = ν := rfl
 kernel_rfl dispatchFixNode : PRE_fd_vw_r0.kappa1.node 15235 = 15235
 
-theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Lin.Cls.Inst} {Mem : SegInst FF → Prop}
-    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) :
-    CutConv (withMem Mem (mergedDispatchCut NB T tk π i)) (withMem Mem (g2Cut NB T tk π i)) := by
+theorem dispatch_compact {NB T cap H N capB : Nat} {tk : Nat → Nat} {π : List Nat} {i : Lin.Cls.Inst} {Mem : SegInst FF → Prop}
+    (hMem : ∀ x y, NTrack x y → Mem x → Mem y) (hcapB : cap + 18 ≤ capB) (hcapM : capB ≤ 131072) :
+    CutConv (withMem Mem (mergedDispatchCut NB T tk π cap H N i)) (withMem Mem (g2Cut NB T tk π capB H N i)) := by
   rintro x ⟨K0, hr, hb, hip, hins, hmap⟩ ⟨⟨hfresh, hids, hnat, hcall, hNB, hnative⟩, hm⟩
   let bs := tokenBytes (lastRows π)
   let n := (lastRows π).length
-  have hmemo := hb.memo
   have hk := hb.context
-  have hr0 := inactiveMemo hr.ofJ (compactW_agree bs n hmemo)
+  have hr0 := hr.ofJ
   have hs := dispatchShift hk.1 hb.prompt hb.chunk hcall hnative
-  have hnext : (mlxOf PRE_fd_vw_r0.s23.ffi).next = 18156 := congrArg Prod.fst PRE_fd_vw_r0.ccounters1
-  have hD : x.t.next - PRE_fd_vw_r0.s23.next = x.K.D + 28 := by
+  have hnext : (mlxOf PRE_fd_vw_r0.s23.ffi).next = 21967 := congrArg Prod.fst PRE_fd_vw_r0.ccounters1
+  have hD : x.t.next - PRE_fd_vw_r0.s23.next = x.K.D + 18 := by
     have h := hr.offset
     change x.t.next = PRE_fd_vw_r0.s22.next + x.K.D at h
     rw [PRE_fd_vw_r0.zsmn1] at h
@@ -47,7 +46,7 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Li
     have hlo : x.K.lo = 18151 := hk.1.1
     have hhi : x.K.hi = 131072 := hk.1.2.1
     rw [hlo, hhi]
-    change 18156 ≤ i ∧ i < 131072 at hi
+    change 21967 ≤ i ∧ i < 131072 at hi
     unfold BigFixed
     constructor
     · omega
@@ -75,39 +74,42 @@ theorem dispatch_compact {NB T : Nat} {tk : Nat → Nat} {π : List Nat} {i : Li
     (s0 := PRE_fd_vw_r0.s23) (s1 := PRE_fd_vw_r0.s22)
     (S0 := ⟨PRE_fd_vw_r0.S23.tab, []⟩) (S1 := ⟨PRE_fd_vw_r0.S22.tab, []⟩)
     PRE_fd_vw_r0.raised1 hNB hr0 hs PRE_fd_vw_r0.cbigs1 hfree hband
-    (fun _ h => nomatch h) (by rw [hD]; change x.K.D + 28 < Sim.bound; have := hb.offset; simp only [Sim.bound]; omega) hroomN
+    (fun _ h => nomatch h) (by rw [hD]; change x.K.D + 18 < Sim.bound; have := hb.offset; simp only [Sim.bound]; omega) hroomN
   let N := (x.M.after PRE_fd_vw_r0.kappa1).rebig (mlxOf PRE_fd_vw_r0.s23.ffi).next
     setupP.E (mlxOf x.t.ffi).next
   let K' : Ctx := ⟨Shift.framedNext x.M x.K PRE_fd_vw_r0.s22,
     PRE_fd_vw_r0.s23.trace, x.t.trace, x.t.next - PRE_fd_vw_r0.s23.next, x.K.lo, x.K.hi⟩
   have hJs : NoBigSt (JsBad N) K'.base PRE_fd_vw_r0.s23 :=
-    dispatchJsFree (fun i hi => jsBad_after (M := x.M) (N := N) (σ := PRE_fd_vw_r0.kappa1) hr.ffi.2 rfl
-      (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hi)
+    noBigSt_of_above jsHeap23 jsRoots23 (fun j hj => jsBad_above1
+      (jsBad_after (M := x.M) (N := N) (σ := PRE_fd_vw_r0.kappa1) hr.ffi.2 rfl
+        (fun _ h => jsBig_rebig (by decide : setupP.E ≤ 2 ^ 56) h) hj))
   have hcJ := (hc.withJs (by change x.K.lo ≤ 2 ^ 56; rw [hk.1.1]; change 18151 ≤ 2 ^ 56; decide) hJs
     (fullRXD_withJs hc.ffi dispatchJsNative)).toJ (BigJs.withJs N)
   have hfr : K'.fr = x.K.fr := dispatchFramesNext hk.1
   have hctx : Disp.KpJ (FDFrames.typedJ bs n) 131072 K' :=
     ⟨Kp_restart hk.1 _ _ _, by change x.t.next - PRE_fd_vw_r0.s23.next ≤ 131072; rw [hD]; have := hb.offset; omega⟩
-  have hmemo' : K'.fr 4910 = none := by rw [hfr]; exact hmemo
-  have hcW := inactiveMemo hcJ (fun a ha => (compactW_agree bs n hmemo' a ha).symm)
+  have hcW := hcJ
   have pairν : (dispatchPair x).ν = x.ν := dispatchVal x.ν
   have pairfr : (dispatchPair x).K.fr = x.K.fr := hfr
   have node : (dispatchPair x).M.node 15235 = x.M.node 15235 := by
     change x.M.node (PRE_fd_vw_r0.kappa1.node 15235) = x.M.node 15235
     rw [dispatchFixNode]
-  have aold : ∀ a, a < 2673488 → (dispatchPair x).M.a a = x.M.a a := by
+  have aold : ∀ a, a < 2823922 → (dispatchPair x).M.a a = x.M.a a := by
     intro a ha
     change x.M.a (PRE_fd_vw_r0.kappa1.a a) = x.M.a a
     have he : PRE_fd_vw_r0.kappa1.a a = a := by
       rw [PRE_fd_vw_r0.zkap1]
       exact Conv.Map.compact_lt (by exact ha)
     rw [he]
-  have book : ForwardBook i π K0 (dispatchPair x) 3571 := by
-    refine ⟨hb.length, hb.vocab, ?_, ?_, hctx, hb.incoming, hb.incomingPrompt, hb.incomingMemo,
+  have book : ForwardBook i π K0 (dispatchPair x) capB := by
+    refine ⟨hb.length, hb.vocab, ?_, ?_, ?_, ?_, ?_, hctx, hb.incoming, hb.incomingPrompt,
       pairfr.trans hb.frames, ?_, hb.lo, hb.hi, ?_⟩
     · rw [pairν]; exact hb.valuation
-    · rw [pairν]; exact hb.rows
-    · change x.t.next - PRE_fd_vw_r0.s23.next ≤ 3571
+    · rw [pairν]; exact hb.promptValue
+    · rw [pairν]; exact hb.rowValue
+    · rw [pairν]; exact hb.offsetValue
+    · rw [pairν]; exact hb.capValue
+    · change x.t.next - PRE_fd_vw_r0.s23.next ≤ capB
       rw [hD]
       have := hb.offset
       omega

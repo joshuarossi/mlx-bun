@@ -1,5 +1,10 @@
 import host.sim.compose.a4b.fd.SliceData
-import host.sim.template.a4pre_fd_vw_r0.K6
+import host.sim.template.a4pre_fd_vw_r0.K0
+import host.sim.template.a4pre_fd_vw_r0.K1
+import host.sim.template.a4pre_fd_vw_r0.K2
+import host.sim.template.a4pre_fd_vw_r0.K3
+import host.sim.template.a4pre_fd_vw_r0.K4
+import host.sim.template.a4pre_fd_vw_r0.K5
 import host.sim.template.a4pre_d1_dispatch.GenericTyped
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -40,7 +45,7 @@ theorem typed {FR : Map → Nat → FF.S → FF.S → Prop} {M : Map} {ν : Nat 
 theorem typedContext (bs : List Byte) (n : Nat) {K : Ctx}
     (hk : Disp.KpJ FDFrames.chunkJ 131072 K) :
     Disp.KpJ (FDFrames.typedJ bs n) 131072 (Disp.typedK K FDFrames.buffer) := by
-  let J := fullJSPPXS setupP [2665, FDFrames.chunk, FDFrames.buffer] [(4910, .memo [])]
+  let J := fullJSPPXS setupP (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer])) wideListPf
   have h1 : Disp.KpJ J 131072 (Disp.Ctx.frameAt K FDFrames.buffer ([], [])) :=
     FDFrames.kp_frame (J := FDFrames.chunkJ) (J' := J) rfl rfl rfl hk ([], [])
   exact FDFrames.kp_frame (J := J) (J' := FDFrames.typedJ bs n) rfl rfl rfl h1 ([], [])

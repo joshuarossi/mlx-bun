@@ -1,4 +1,4 @@
-import host.sim.compose.a4b.fd.Cut
+import host.sim.compose.a4b.fd.TypedBook
 import host.sim.template.a4pre_fd_vw_r0.SiteR1
 import host.sim.template.a4pre_fd_vw_r0.SiteZ1
 import host.sim.compose.a4b.fd.DispatchGrow
@@ -10,20 +10,21 @@ open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
 open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
 
-noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) : ICut FF :=
-  { typedCut NB T tk π PRE_fd_vw_r0.s22 PRE_fd_vw_r0.S22 i with
-    B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt 0 0 PRE_fd_vw_r0.s22 x.t ∧
+noncomputable abbrev mergedDispatchCut (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Cls.Inst) : ICut FF :=
+  { typedCut NB T tk π cap H N PRE_fd_vw_r0.s22 PRE_fd_vw_r0.S22 i with
+    B := fun x => AneFresh x.t ∧ fixedCells x ∧ NativeAt H N PRE_fd_vw_r0.s22 x.t ∧
       Conv.CallFacts PRE_fd_vw_r0.s21 PRE_fd_vw_r0.S21.tab.length ∧
-      NB ≤ PRE_fd_vw_r0.P1.NL ∧ Conv.FullShiftQ PRE_fd_vw_r0.P1 15
+      NB ≤ PRE_fd_vw_r0.P1.NL ∧ Conv.FullShiftQ PRE_fd_vw_r0.P1 8323
         PRE_fd_vw_r0.kappa1 PRE_fd_vw_r0.s23.ffi PRE_fd_vw_r0.s22.ffi }
 
 kernel_rfl bridge3938 : bridgeOf PRE_fd_vw_r0.s22.ffi = bridgeOf PRE_fd_vw_r0.s21.ffi
+kernel_rfl nnext21 : (mlxOf PRE_fd_vw_r0.s21.ffi).nnext = 19058
 kernel_rfl cnt22 : countersOkB PRE_fd_vw_r0.s21 PRE_fd_vw_r0.s22 = true
 
-theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
+theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap H N : Nat) (i : Cls.Inst) {Mem : SegInst FF → Prop}
     (hMem : ∀ x y, NTrack x y → Mem x → Mem y)
-    (horacle : ∀ ν, MapOk ν i npsMap → Good ν PRE_fd_vw_r0.st1.S0.oracle) :
-    CutStep (withMem Mem (dispatchCut NB T tk π i)) (withMem Mem (mergedDispatchCut NB T tk π i)) 367 := by
+    (horacle : ∀ ν, MapOk ν i fdMap → Good ν PRE_fd_vw_r0.st1.S0.oracle) :
+    CutStep (withMem Mem (dispatchCut NB T tk π cap H N i)) (withMem Mem (mergedDispatchCut NB T tk π cap H N i)) 155 := by
   rintro t C ⟨x, rfl, rfl, ⟨K0, hr, hb, hip, hins, hmap⟩, ⟨hfresh, hids, hnat⟩, hmem⟩
   let d := dispatchSite NB T tk (tokenBytes (lastRows π)) (lastRows π).length
   have h0 : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
@@ -49,9 +50,9 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
   have ip : InputAt (lastRows π) (M'.node 15235) t' C' := by
     rw [hext.node]
     exact hip.grow ng (runC_le _ _ _ _ _ hrun)
-  have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) := by
-    refine ⟨hb.length, hb.vocab, hb.valuation, hb.rows, hb.context, hb.incoming,
-      hb.incomingPrompt, hb.incomingMemo, hb.frames, hb.offset, hb.lo, hb.hi, ?_⟩
+  have book : ForwardBook i π K0 (⟨M', x.ν, x.K, t', C'⟩ : SegInst FF) cap := by
+    refine ⟨hb.length, hb.vocab, hb.valuation, hb.promptValue, hb.rowValue, hb.offsetValue, hb.capValue, hb.context, hb.incoming,
+      hb.incomingPrompt, hb.frames, hb.offset, hb.lo, hb.hi, ?_⟩
     change ∃ asR ret pre tr, x.K.base' = _
     rw [hext.a]
     exact hb.inputEvent
@@ -77,8 +78,9 @@ theorem dispatch_merged (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (i : Cls
   have top := hr.ffi.1.top (by rfl)
   have hNL : ({ setupP with rest := machReads T tk }.raise
       (mlxOf PRE_fd_vw_r0.s21.ffi).nnext).NL ≤ PRE_fd_vw_r0.P1.NL := by
-    change (mlxOf PRE_fd_vw_r0.s21.ffi).nnext ≤ 15236
-    rw [← PRE_fd_vw_r0.fcnn1]
+    change (mlxOf PRE_fd_vw_r0.s21.ffi).nnext ≤ 19058
+    rw [nnext21]
+    exact Nat.le_refl _
   exact ⟨t', C', hrun, ⟨M', x.ν, x.K, t', C'⟩, rfl, rfl,
     ⟨K0, hm', book, ip, inputs, hmap⟩, ⟨fresh, ids,
     hnat.step (P := { setupP with rest := machReads T tk }) rfl hr hm' hext.big hext.node cnt22, ⟨hr.presentBound, hr.heapSupp⟩,

@@ -12,7 +12,7 @@ namespace Host.Ts.Sim.Compose
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Prefill Host.Ts.Sim.Full Host.Ts.Sim.Template
 open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls
 
-def PRE_fd_vw_r0.map_start : List (Nat × Q) := [(9, Q.L), (11, Q.o), (12, Q.n), (16, Q.cap)]
+def PRE_fd_vw_r0.map_start : List (Nat × Q) := [(9, Q.L), (10, Q.o), (11, Q.o), (16, Q.cap)]
 
 noncomputable def PRE_fd_vw_r0.cut_start_i
     (FR : Map → Nat → FF.S → FF.S → Prop) (J : Disp.JSP FF) (W : Nat → Option WFrame)
@@ -27,7 +27,7 @@ noncomputable def PRE_fd_vw_r0.cut_start_o
 kernel_rfl PRE_fd_vw_r0.chk_start : ([final_ord.r0].all fun r =>
   goodLin r.ps (varsOf r.V PRE_fd_vw_r0.map_start) (List.take 0 (List.drop 0 Host.Load.Run.Tpl.PRE_fd_vw_r0.O))) = true
 
-def PRE_fd_vw_r0.map_site0 : List (Nat × Q) := [(9, Q.L), (11, Q.o), (12, Q.n), (16, Q.cap)]
+def PRE_fd_vw_r0.map_site0 : List (Nat × Q) := [(9, Q.L), (10, Q.o), (11, Q.o), (16, Q.cap)]
 
 kernel_rfl PRE_fd_vw_r0.chk_site0 : ([final_ord.r0].all fun r =>
   goodLin r.ps (varsOf r.V PRE_fd_vw_r0.map_site0) Host.Load.Run.Tpl.PRE_fd_vw_r0.st0.S0.oracle) = true
@@ -57,7 +57,7 @@ noncomputable def PRE_fd_vw_r0.site0
     simp only [Bool.and_eq_true] at h
     exact h.1)
 
-def PRE_fd_vw_r0.map_g1_FIN_tailed : List (Nat × Q) := [(9, Q.L), (11, Q.o), (12, Q.n), (16, Q.cap)]
+def PRE_fd_vw_r0.map_g1_FIN_tailed : List (Nat × Q) := [(9, Q.L), (10, Q.o), (11, Q.o), (16, Q.cap)]
 
 noncomputable def PRE_fd_vw_r0.cut_g1_FIN_tailed_i
     (FR : Map → Nat → FF.S → FF.S → Prop) (J : Disp.JSP FF) (W : Nat → Option WFrame)
@@ -72,7 +72,7 @@ noncomputable def PRE_fd_vw_r0.cut_g1_FIN_tailed_o
 kernel_rfl PRE_fd_vw_r0.chk_g1_FIN_tailed : ([final_ord.r0].all fun r =>
   goodLin r.ps (varsOf r.V PRE_fd_vw_r0.map_g1_FIN_tailed) (List.take 0 (List.drop 0 Host.Load.Run.Tpl.PRE_fd_vw_r0.O))) = true
 
-def PRE_fd_vw_r0.map_site1 : List (Nat × Q) := [(9, Q.L), (11, Q.o), (12, Q.n), (16, Q.cap)]
+def PRE_fd_vw_r0.map_site1 : List (Nat × Q) := [(9, Q.L), (10, Q.o), (11, Q.o), (16, Q.cap)]
 
 kernel_rfl PRE_fd_vw_r0.chk_site1 : ([final_ord.r0].all fun r =>
   goodLin r.ps (varsOf r.V PRE_fd_vw_r0.map_site1) Host.Load.Run.Tpl.PRE_fd_vw_r0.st1.S0.oracle) = true
@@ -102,7 +102,7 @@ noncomputable def PRE_fd_vw_r0.site1
     simp only [Bool.and_eq_true] at h
     exact h.1)
 
-def PRE_fd_vw_r0.map_g2_fin_tailed : List (Nat × Q) := [(9, Q.L), (11, Q.o), (12, Q.n), (16, Q.cap)]
+def PRE_fd_vw_r0.map_g2_fin_tailed : List (Nat × Q) := [(9, Q.L), (10, Q.o), (11, Q.o), (16, Q.cap)]
 
 noncomputable def PRE_fd_vw_r0.cut_g2_fin_tailed_i
     (FR : Map → Nat → FF.S → FF.S → Prop) (J : Disp.JSP FF) (W : Nat → Option WFrame)

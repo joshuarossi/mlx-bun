@@ -10743,6 +10743,7 @@ const proofFiles = [
   "host/sim/compose/a4b/PF1Nc_15.lean",
   "host/sim/compose/a4b/PF1Nc_14.lean",
   "host/sim/compose/a4b/PF15EClosed.lean",
+  "host/sim/compose/a4b/PF15EJClean.lean",
   "host/sim/compose/a4b/PF1Na.lean",
   "host/sim/compose/a4b/PF1Nc_1.lean",
   "host/sim/compose/a4b/PF1Nc_18.lean",

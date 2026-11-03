@@ -17,14 +17,14 @@ theorem tokenBytes_length (π : List Nat) : (tokenBytes π).length = π.length *
     simp only [List.length_append, cellParts, List.length_cons, List.length_nil, ih]
     omega
 
-theorem copied {M : Map} {π : List Nat} (hlen : π.length = 6) :
-    copy (M.dims [.lit 1, .lit 6]) 7 (tokenBytes π) = tokenBytes π := by
-  change copy [Dim.lit 1, Dim.lit 6] 7 (tokenBytes π) = _
-  have hds : Host.Mlx.Ffi.natsOfDims [Dim.lit 1, Dim.lit 6] = some [1, 6] :=
-    Host.Mlx.Ffi.Annotated.natsOfDims_natural [1, 6]
+theorem copied {M : Map} {π : List Nat} (hlen : π.length = 1) :
+    copy (M.dims [.lit 1, .lit 1]) 7 (tokenBytes π) = tokenBytes π := by
+  change copy [Dim.lit 1, Dim.lit 1] 7 (tokenBytes π) = _
+  have hds : Host.Mlx.Ffi.natsOfDims [Dim.lit 1, Dim.lit 1] = some [1, 1] :=
+    Host.Mlx.Ffi.Annotated.natsOfDims_natural [1, 1]
   unfold copy
   rw [hds]
-  change (tokenBytes π).take ((1 * (6 * 1)) * 4) = tokenBytes π
+  change (tokenBytes π).take ((1 * (1 * 1)) * 4) = tokenBytes π
   simp only [Nat.mul_one, Nat.one_mul]
   rw [← hlen, ← tokenBytes_length π, List.take_length]
 
@@ -34,7 +34,7 @@ theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : C
     (hr : G.MR P NB M ND.ndSrv.tab.length (mlxOf PRE_fd_vw_r0.s16.ffi) (mlxOf y))
     (hi : (bridgeOf y).active = false)
     (hok : G.dataOk P (mlxOf PRE_fd_vw_r0.s16.ffi) ND.ndArgs = true)
-    (hv : ν 12 = F64.ofNat π.length) (hsmall : π.length < 2 ^ 31) (hlen : π.length = 6) (hvc : ∀ k ∈ π, k < 248320)
+    (hlen : π.length = 1) (hvc : ∀ k ∈ π, k < 248320)
     (hc : interpC (FF.call y chars!"mlx_array_new_data"
       (.jsPtr (M.a FDFrames.buffer) 0 (tokenBytes π) :: ND.ndArgs.map M.arg)).run C =
         some (some (y', ret, ws), C')) :
@@ -48,7 +48,7 @@ theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : C
   simp only [G.dataOk, Bool.and_eq_true, decide_eq_true_eq] at hok
   obtain ⟨⟨⟨⟨hdims, hdt⟩, -⟩, -⟩, -⟩ := hok
   have hs' : Host.Mlx.Ffi.dimsArg (M.arg sh) (M.arg nd) =
-      some (M.dims [.lit 1, .lit 6]) := hr.dimsArg_map hdims Values.shape
+      some (M.dims [.lit 1, .lit 1]) := hr.dimsArg_map hdims Values.shape
   have hd' : Host.Mlx.Ffi.argNat (M.arg dt) = some 7 :=
     (hr.natOk_argNat hdt).trans Values.dtype
   obtain ⟨z, hz, he⟩ := full_call y (M.a FDFrames.buffer) (tokenBytes π)
@@ -61,10 +61,10 @@ theorem call_input {P : LoadP} {NB : Nat} {M : Map} {ν : Nat → F64} {C C' : C
   have ej : M.node 15235 = (mlxOf y).nnext := by
     simpa only [Values.pre_nnext] using hr.node_next
   rw [ej, hz]
-  refine ⟨Nat.lt_succ_self _, tokenBytes π, M.dims [.lit 1, .lit 6], ?_, (show (tokenBytes π).mapM (concrete C.val).byte = some (cellsBytes (π.map Int.ofNat)) from bytes_read hvc C), ?_⟩
+  refine ⟨Nat.lt_succ_self _, tokenBytes π, M.dims [.lit 1, .lit 1], ?_, (show (tokenBytes π).mapM (concrete C.val).byte = some (cellsBytes (π.map Int.ofNat)) from bytes_read hvc C), ?_⟩
   · change ((mlxOf y).nodes.set (mlxOf y).nnext
-      ⟨.data (copy (M.dims [.lit 1, .lit 6]) 7 (tokenBytes π)), [],
-        M.dims [.lit 1, .lit 6], 7⟩).get (mlxOf y).nnext = _
+      ⟨.data (copy (M.dims [.lit 1, .lit 1]) 7 (tokenBytes π)), [],
+        M.dims [.lit 1, .lit 1], 7⟩).get (mlxOf y).nnext = _
     rw [PTrie.gs _ _ _ hr.ynnext_lt, ite_eq_left rfl, copied hlen]
     rfl
   · rw [hlen]

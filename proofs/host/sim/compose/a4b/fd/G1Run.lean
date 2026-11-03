@@ -7,37 +7,35 @@ namespace Host.Ts.Sim.Compose.FDVW
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Load.Run.Tpl Host.Route
 
-def g1Framed (K : Ctx) (π : List Nat) (n : Nat) : Ctx :=
+def g1Framed (K : Ctx) (π : List Nat) : Ctx :=
   Disp.typedK (Disp.Ctx.frameAt K FDFrames.chunk ([], (lastRows π).map natV)) FDFrames.buffer
 
 theorem g1Run {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
-    {K : Ctx} {t : St FF.S} {C : CSrv} {π : List Nat} {n : Nat}
+    {K : Ctx} {t : St FF.S} {C : CSrv} {π : List Nat}
     (hr : RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
       wideGPf [] M ν K PRE_fd_vw_r0.s2 ⟨PRE_fd_vw_r0.S2.tab, []⟩ t C)
     (hk : Disp.KpJ FDFrames.startJ 131072 K) (hvb : VBOkF loopVB ν) (hg : G1Good ν)
-    (hfr : K.fr 2665 = some ([], π.map natV)) (hn : n ≤ π.length)
-    (h53 : π.length < 2 ^ 53) (hn0 : n ≠ 0) (hv : ν 12 = F64.ofNat n) (hn6 : n = 6)
+    (hfr : K.fr 2665 = some ([], π.map natV)) (h1 : 1 ≤ π.length)
+    (h53 : π.length < 2 ^ 53) (hv9 : ν 9 = F64.ofNat π.length) (hv10 : ν 10 = F64.ofNat (π.length - 1))
     (hi : (bridgeOf PRE_fd_vw_r0.s16.ffi).active = false) :
     ∃ M' t' C' K', runC FF 260 t C = some (t', C') ∧ Ext M M' PRE_fd_vw_r0.S2.tab.length ∧
       RelB FF (Disp.FRJ (FullRXD { setupP with rest := machReads T tk } NB))
         (FDFrames.typedW (tokenBytes (lastRows π)) (lastRows π).length) [] M' ν K' PRE_fd_vw_r0.s21
         ⟨PRE_fd_vw_r0.S21.tab, []⟩ t' C' ∧
       Disp.KpJ (FDFrames.typedJ (tokenBytes (lastRows π)) (lastRows π).length) 131072 K' ∧
-      K'.fr = (g1Framed K π n).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
+      K'.fr = (g1Framed K π).fr ∧ K'.D = K.D ∧ K'.lo = K.lo ∧ K'.hi = K.hi ∧
       ∃ asR ret tr, K'.base' =
         ⟨chars!"mlx_array_new_data", .jsPtr (M'.a FDFrames.buffer) 0 (tokenBytes (lastRows π)) :: asR, ret⟩ :: tr := by
-  have hlen : (lastRows π).length = n := by rw [List.length_take, Nat.min_eq_left hn]
-  have hvlen : ν 12 = F64.ofNat (lastRows π).length := by rw [hlen]; exact hv
-  have hlenN : (lastRows π).length = 6 := hlen.trans hn6
+  have hlenN : (lastRows π).length = 1 := lastRows_length h1
   have rr1 : runOk FF PRE_fd_vw_r0.okB1 71 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 =
       some (PRE_fd_vw_r0.s3, PRE_fd_vw_r0.S3) := PRE_fd_vw_r0.k2
-  obtain ⟨M3, t3, C3, r13, e13, h3⟩ := D1Advance.call (SetupCommon.sim NB T tk) hk hvb hg.s19 accepted2 rr1
+  obtain ⟨M3, t3, C3, r13, e13, h3⟩ := D1Advance.call (startSim NB T tk []) hk hvb hg.s19 accepted2 rr1
     (runOk_ok_end 70 rr1 live3) live3 PRE_fd_vw_r0.stepA2 top4 hr
   let K1 := Disp.Ctx.frameAt K FDFrames.chunk ([], (lastRows π).map natV)
   have hk1 : Disp.KpJ FDFrames.chunkJ 131072 K1 :=
     FDFrames.kp_frame (J := FDFrames.startJ) (J' := FDFrames.chunkJ) rfl rfl rfl hk ([], (lastRows π).map natV)
   have hf1 : K1.fr FDFrames.chunk = some ([], (lastRows π).map natV) := Disp.Ctx.frameAt_eq K _ _
-  obtain ⟨r34, h4⟩ := slice h3 hfr hn h53 hv
+  obtain ⟨r34, h4⟩ := slice h3 hfr h1 h53 hv9 hv10
   have rr4 : runOk FF PRE_fd_vw_r0.okB2 15 PRE_fd_vw_r0.s5 PRE_fd_vw_r0.S5 =
       some (PRE_fd_vw_r0.s6, PRE_fd_vw_r0.S6) := PRE_fd_vw_r0.k5
   obtain ⟨M6, t6, C6, r46, e46, h6⟩ := D1Advance.call (chunkSim NB T tk []) hk1 hvb hg.s22
@@ -59,7 +57,7 @@ theorem g1Run {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
     D1Advance.call (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk2 hvb hg.s28
       (congrFun (congrFun typedAccepted11 _) _) (congrFun (congrFun typedRun11 _) _) (congrFun (congrFun typedAccepted12 _) _) live12
       PRE_fd_vw_r0.stepA5 top13 h10
-  obtain ⟨r1213, h13⟩ := ptr h12 hfv hfb (by rw [hlen]; exact hn0)
+  obtain ⟨r1213, h13⟩ := ptr h12 hfv hfb (by rw [hlenN]; decide)
   obtain ⟨M15, t15, C15, r1315, e1315, h15⟩ :=
     D1Advance.call (typedSim NB T tk (tokenBytes (lastRows π)) (lastRows π).length []) hk2 hvb hg.s31
       (congrFun (congrFun typedAccepted14 _) _) (congrFun (congrFun typedRun14 _) _) (congrFun (congrFun typedAccepted15 _) _) live15

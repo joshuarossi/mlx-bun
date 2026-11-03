@@ -24,7 +24,7 @@ theorem step {NB T : Nat} {tk : Nat → Nat} {M : Map} {ν : Nat → F64}
   have hsig : K.fr sig = none := by
     by_contra hn
     have hm := (hkp.1.2.2 sig).mp hn
-    have hc : [2665, FDFrames.chunk, FDFrames.buffer, FDFrames.view].contains sig = true :=
+    have hc : (2665 :: 4910 :: (ghostPf ++ [FDFrames.chunk, FDFrames.buffer, FDFrames.view])).contains sig = true :=
       List.contains_iff_mem.mpr hm
     rw [sigUnframed] at hc
     cases hc

@@ -7,79 +7,38 @@ namespace Host.Ts.Sim.Compose.FDVW
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
 open Host.Load.Run.Tpl Host.Ts.Sim.Compose.SetupChunk
 
-def dispatchJsChanged : List Nat := PRE_fd_vw_r0.gjh1 ++ PRE_fd_vw_r0.cl1
-kernel_rfl dispatchJsChangedOk : dispatchJsChanged.all
-  (noBigAtP (jsShiftBadB PRE_fd_vw_r0.kappa1) PRE_fd_vw_r0.s23) = true
-kernel_rfl dispatchJsRoots : noBigRootsP (jsShiftBadB PRE_fd_vw_r0.kappa1)
-  PRE_fd_vw_r0.s23.trace PRE_fd_vw_r0.s23 = true
+kernel_rfl jsList21 : PRE_fd_vw_r0.gjh1.all (noBigAtP (jsAboveB 2674370) PRE_fd_vw_r0.s21) = true
+kernel_rfl jsList23 : PRE_fd_vw_r0.cl1.all (noBigAtP (jsAboveB 2674370) PRE_fd_vw_r0.s23) = true
+kernel_rfl jsRoots23 : noBigRootsP (jsAboveB 2674370) PRE_fd_vw_r0.s23.trace PRE_fd_vw_r0.s23 = true
 kernel_rfl dispatchJsNative : bigsOutB jsLoN jsHiN (mlxOf PRE_fd_vw_r0.s23.ffi) = true
 
-theorem dispatchJsBad_sub {i : Int} (h : jsShiftBadB PRE_fd_vw_r0.kappa1 i = true) :
-    jsShiftBadB PRE_fd_vw_r0.kappa0 i = true := by
+theorem jsHeap21 : JsHeapAbove 2674370 PRE_fd_vw_r0.s21 :=
+  jsHeap2.step (Nat.le_refl _) (Conv.heap_off_setAll PRE_fd_vw_r0.gjk1
+    (fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.gjbd1 a ha))) jsList21
+
+theorem jsHeap23 : JsHeapAbove 2674370 PRE_fd_vw_r0.s23 :=
+  jsHeap21.step (Nat.le_refl _) (Conv.heap_off_setAll PRE_fd_vw_r0.cheap1
+    (fun a ha => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.zclbd1 a ha))) jsList23
+
+theorem jsBad_above1 {i : Int} (h : jsShiftBadB PRE_fd_vw_r0.kappa1 i = true) : jsAboveB 2674370 i = true := by
   cases hp : jsPtrOf i with
   | none => simp only [jsShiftBadB, hp] at h; cases h
   | some p =>
     obtain ⟨b, off⟩ := p
     obtain ⟨he, hb, _⟩ := jsPtrOf_some hp
-    have hlow : 2673488 ≤ b := by
-      by_contra hn
-      have ha : PRE_fd_vw_r0.kappa1.a b = b := by
-        rw [PRE_fd_vw_r0.zkap1]
-        exact Conv.Map.compact_lt (by change b < 2673488; omega)
-      have hi : PRE_fd_vw_r0.kappa1.big i = i := by
-        rw [PRE_fd_vw_r0.zkap1]
-        exact Conv.rdata_big_js PRE_fd_vw_r0.kd1 i (by rw [hp]; exact Option.some_ne_none _)
-      unfold jsShiftBadB at h
-      simp only [hp] at h
-      rw [ha, hi, he] at h
-      simp only [decide_true, Nat.blt_eq.mpr hb, Bool.and_self, Bool.not_true] at h
-      cases h
-    have ha : PRE_fd_vw_r0.kappa0.a b = 2823906 + (b - 2673458) := by
-      have eb : b = PRE_fd_vw_r0.s0.next + PRE_fd_vw_r0.pl0.length + (b - 2673458) := by
-        change b = 2673457 + 1 + (b - 2673458)
-        omega
-      calc
-        PRE_fd_vw_r0.kappa0.a b = PRE_fd_vw_r0.kappa0.a
-            (PRE_fd_vw_r0.s0.next + PRE_fd_vw_r0.pl0.length + (b - 2673458)) :=
-          congrArg PRE_fd_vw_r0.kappa0.a eb
-        _ = 2823906 + (b - 2673458) := by
-          rw [PRE_fd_vw_r0.zkap0]
-          exact Conv.Map.compact_next (b - 2673458)
-    have hbig : PRE_fd_vw_r0.kappa0.big i = i := by
-      rw [PRE_fd_vw_r0.zkap0]
-      exact Conv.rdata_big_js PRE_fd_vw_r0.kd0 i (by rw [hp]; exact Option.some_ne_none _)
-    have hne : i ≠ ptrInt (.js (2823906 + (b - 2673458))) off := by
-      rw [he]
-      simp only [ptrInt_js, jsBase, jsOff]
-      omega
-    unfold jsShiftBadB
-    simp only [hp, ha, hbig, hne, decide_false, Bool.false_and, Bool.not_false]
-
-/-- Reuse the checked initial JS heap, checking only the two finite changed lists. -/
-theorem dispatchJsFree {I : Int → Prop}
-    (hp : ∀ i, I i → jsShiftBadB PRE_fd_vw_r0.kappa1 i = true) :
-    NoBigSt I PRE_fd_vw_r0.s23.trace PRE_fd_vw_r0.s23 := by
-  have hs := dispatchJsRoots
-  simp only [noBigRootsP, Bool.and_eq_true, List.all_eq_true] at hs
-  refine ⟨?_, noBigCtlP_sound hp hs.1.1.1.1,
-    fun f hf => noBigFrameP_sound hp (hs.1.1.1.2 f hf),
-    fun j hj => noBigJobP_sound hp (hs.1.1.2 j hj), noBigStoresP_sound hp hs.1.2,
-    fun e he => noBigEventP_sound hp (hs.2 e he)⟩
-  intro a o ho
-  by_cases ha : a ∈ dispatchJsChanged
-  · have hc := List.all_eq_true.mp dispatchJsChangedOk a ha
-    unfold noBigAtP at hc
-    rw [ho] at hc
-    exact noBigHobjP_sound hp hc
-  · have hcl : a ∉ PRE_fd_vw_r0.cl1 := fun h => ha (List.mem_append_right _ h)
-    have hgl : a ∉ PRE_fd_vw_r0.gjh1 := fun h => ha (List.mem_append_left _ h)
-    have h19 := Conv.heap_off_setAll PRE_fd_vw_r0.cheap1
-      (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.zclbd1 b hb)) a hcl
-    have h17 := Conv.heap_off_setAll PRE_fd_vw_r0.gjk1
-      (fun b hb => Nat.blt_eq.mp (List.all_eq_true.mp PRE_fd_vw_r0.gjbd1 b hb)) a hgl
-    have h19 : PRE_fd_vw_r0.s2.heap.get a = some o := by
-      rw [← s19Eq]
-      exact h17.symm.trans (h19.symm.trans ho)
-    exact (npsJsFree (fun i hi => dispatchJsBad_sub (hp i hi))).1 a o h19
+    simp only [jsAboveB, hp]
+    apply Nat.ble_eq_true_of_le
+    refine Nat.le_of_not_lt fun hn => ?_
+    have ha : PRE_fd_vw_r0.kappa1.a b = b := by
+      rw [PRE_fd_vw_r0.zkap1]
+      exact Conv.Map.compact_lt (by change b < 2823922; omega)
+    have hi : PRE_fd_vw_r0.kappa1.big i = i := by
+      rw [PRE_fd_vw_r0.zkap1]
+      exact Conv.rdata_big_js PRE_fd_vw_r0.kd1 i (by rw [hp]; exact Option.some_ne_none _)
+    unfold jsShiftBadB at h
+    simp only [hp] at h
+    rw [ha, hi, he] at h
+    simp only [decide_true, Nat.blt_eq.mpr hb, Bool.and_self, Bool.not_true] at h
+    cases h
 
 end Host.Ts.Sim.Compose.FDVW

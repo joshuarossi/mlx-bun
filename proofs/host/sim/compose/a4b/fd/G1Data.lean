@@ -2,7 +2,12 @@ import host.sim.compose.a4b.fd.PtrData
 import host.sim.compose.a4b.fd.LengthData
 import host.sim.compose.a4b.fd.TypedGlue
 import host.sim.compose.a4b.fd.NewDataStep
+import host.sim.template.a4pre_fd_vw_r0.K0
+import host.sim.template.a4pre_fd_vw_r0.K1
+import host.sim.template.a4pre_fd_vw_r0.K2
+import host.sim.template.a4pre_fd_vw_r0.K3
 import host.sim.template.a4pre_fd_vw_r0.K4
+import host.sim.template.a4pre_fd_vw_r0.K5
 import host.sim.template.a4pre_d1_dispatch.Advance
 set_option Elab.async false
 set_option maxRecDepth 1000000
@@ -11,7 +16,15 @@ namespace Host.Ts.Sim.Compose.FDVW
 open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill
 open Host.Ts.Sim.Template Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl
 
-def npsMap : List (Nat × Q) := [(9, .L), (12, .n), (12, .n)]
+def fdMap : List (Nat × Q) := [(9, .L), (10, .o), (11, .o), (16, .cap)]
+
+/-- What the final step's row says of a prompt's length. -/
+theorem rowFacts {i : Cls.Inst} (hi : InRow final_ord.r0 i) :
+    2 ≤ i.L ∧ i.L ≤ 2 ^ 19 ∧ i.o = i.L - 1 ∧ i.cap = capL (i.L - 1) := by
+  obtain ⟨_, x, hx, hq⟩ := hi
+  simp only [final_ord.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+  unfold capL
+  omega
 
 kernel_rfl accepted2 : PRE_fd_vw_r0.okB1 PRE_fd_vw_r0.s2 PRE_fd_vw_r0.S2 = true
 kernel_rfl accepted3 : PRE_fd_vw_r0.okB1 PRE_fd_vw_r0.s3 PRE_fd_vw_r0.S3 = true
@@ -35,8 +48,8 @@ kernel_rfl top19 : noRetBlock PRE_fd_vw_r0.s19 = true
 noncomputable def g1Oracle : List Ans :=
   PRE_fd_vw_r0.S2.oracle ++ PRE_fd_vw_r0.S5.oracle ++ PRE_fd_vw_r0.S8.oracle ++ PRE_fd_vw_r0.S11.oracle ++ PRE_fd_vw_r0.S14.oracle ++ PRE_fd_vw_r0.S16.oracle ++ PRE_fd_vw_r0.S17.oracle ++ PRE_fd_vw_r0.S20.oracle
 
-kernel_rfl g1Check : ([first_tail_x4.r0].all fun r => goodLin r.ps
-  (varsOf r.V npsMap) g1Oracle) = true
+kernel_rfl g1Check : ([final_ord.r0].all fun r => goodLin r.ps
+  (varsOf r.V fdMap) g1Oracle) = true
 
 structure G1Good (ν : Nat → F64) : Prop where
   s19 : Good ν PRE_fd_vw_r0.S2.oracle

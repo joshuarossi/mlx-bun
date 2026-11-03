@@ -6,7 +6,7 @@ set_option Elab.async false
 set_option maxRecDepth 1000000
 set_option maxHeartbeats 0
 namespace Host.Ts.Sim.Compose.FDVW
-open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template Host.Route Host.Load.Run.Tpl
 open Host.Ts.Sim.Compose.SetupEarly
 
 theorem typedSimAt (NB T : Nat) (tk : Nat → Nat) (bytes : List Byte) (n D0 : Nat) (stk : List Frame) :
