@@ -41,11 +41,11 @@ noncomputable def hooksRX : FillPost.Hooks 15235 T Tk π 216028 19057 (classVW 1
   hooksVW (P := P) (KR := Kr) (NE := NE) (net := net) (env := env) leaves typed hRT hL3 (by omega) (by decide) (by decide)
     (by decide) hT (fun tab j _ => machTok_def P Kr NE net env π (hRT []) (by omega) tab j) (by have := htk 1; omega)
 
-include hL3 hL6 hlt hNE hnet in
-theorem preX : ∀ tab, ∃ s, Host.Mlx.SimGraph.Ref.prefillAt P Kr NE Kr.inPlace net env π tab = some s ∧
+include leaves typed hL3 hL6 hlt hNE hnet in
+theorem preX : ∀ tab, ∃ s, Host.Mlx.SimGraph.Ref.prefillAt P Kr NE (Kr).inPlace net env π tab = some s ∧
     List.Forall₂ (Host.Mlx.SimGraph.Mach.StagePre (π.length - 1))
       (stageWeights (weights (firstValues P.toMlxContract Kr.toKernelContract env tab))) s.hs := fun tab =>
-  Host.Route.Cert.Fin.prefill_pre P Kr NE Kr.inPlace net env π Pg rfl leaves typed (by omega) (by omega)
+  Host.Route.Cert.Fin.prefill_pre P Kr NE (Kr).inPlace net env π Pg rfl leaves typed (by omega) (by omega)
     (Host.Mlx.SimGraph.Mach.scheduleTyped P Kr NE net env π leaves typed (by omega) hlt hNE hnet) tab
 
 local notation "H" => hooksRX P G Pg bytes lseSum lseNumerator NE net env leaves typed π T hL3 hL6 hlt hT hNE hnet
