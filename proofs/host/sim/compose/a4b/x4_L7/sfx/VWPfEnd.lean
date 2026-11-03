@@ -1,0 +1,68 @@
+import host.sim.compose.a4b.VWPfLit
+import host.sim.compose.a4b.PF4L7
+import host.sim.compose.a4b.x4_L7.sfx.VWBodyChain
+import host.sim.compose.a4b.x4_L7.sfx.VWBodyMap
+import host.sim.compose.a4b.VWFirstRows
+import host.sim.template.a4pre_first_tail_x4_L7_r0_suffix.m.B0
+set_option Elab.async false
+set_option maxRecDepth 1000000
+set_option maxHeartbeats 0
+namespace Host.Ts.Sim.Compose.VWFirst.X4_L7.Sfx
+open Host.Ts Host.Ts.Sim Host.Ts.Sim.Full Host.Ts.Sim.Prefill Host.Ts.Sim.Template
+open Host.Ts.Sim.Lin Host.Ts.Sim.Lin.Cls Host.Load.Run.Tpl Host.Route
+open Host.Ts.Sim.Compose.SetupEarly Host.Ts.Sim.Compose.SetupChunk
+
+kernel_rfl pfKeys : (PFW4L7.R.theta ++ PF4L7.thetaX).map Prod.fst = [11, 14, 16, 10, 30, 31]
+kernel_rfl pf10 : PF4L7.θ 10 = x4CountTerm
+kernel_rfl pf14 : PF4L7.θ 14 = .var 17
+kernel_rfl pf30 : (fun ν : Nat → F64 => (PF4L7.θ 30).eval ν) = fun _ => F64.ofNat 16
+kernel_rfl pf31 : (fun ν : Nat → F64 => (PF4L7.θ 31).eval ν) = fun _ => F64.ofNat 16
+kernel_rfl pfRow11 : (fwdRows.all fun r => resChk r bodyM (PF4L7.θ 11) (some Q.n)) = true
+kernel_rfl pfRow16 : (fwdRows.all fun r => resChk r bodyM (PF4L7.θ 16) (some Q.cap1)) = true
+kernel_rfl pfNN : PFW4L7.R.data.nn0 = PFW4L7.R.data.nn1
+kernel_rfl pfNK : PTrie.keys PFW4L7.R.data.node = []
+kernel_rfl pfGrow : Nat.ble PRE_pf_x4_L7.s0.next PRE_first_tail_x4_L7_r0_suffix.s8.next = true
+kernel_rfl pfDiff : PRE_first_tail_x4_L7_r0_suffix.s8.next - PRE_pf_x4_L7.s0.next = 0
+kernel_rfl pfH : Nat.ble (mlxOf PRE_first_tail_x4_L7_r0_suffix.s8.ffi).next ((mlxOf PRE_pf_x4_L7.s0.ffi).next + 0) = true
+kernel_rfl pfNodes : Nat.ble (mlxOf PRE_first_tail_x4_L7_r0_suffix.s8.ffi).nnext (mlxOf PRE_pf_x4_L7.s0.ffi).nnext = true
+kernel_rfl pfBelow : Nat.ble (mlxOf PRE_first_tail_x4_L7_r0_suffix.s8.ffi).nnext PF4L7.P0.NL = true
+kernel_rfl pfA : PFW4L7.R.data.a 2590 = 2590
+kernel_rfl pfB : PFW4L7.R.data.a 2586 = 2586
+kernel_rfl pfC : PFW4L7.R.data.a 2589 = 2589
+kernel_rfl pfE : PFW4L7.R.data.a 12504 = 12504
+
+/-- The rows' last quantities. -/
+theorem rowCap {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) : i.cap1 = capL (i.L - 1) := by
+  simp only [fwdRows, List.mem_cons, List.not_mem_nil, or_false] at hr
+  subst hr
+  all_goals
+    obtain ⟨_, x, hx, hq⟩ := hi
+    simp only [first_tail_x4.r0, InBox, QOk, Inst.get, eval_mk, dot] at hx hq
+    unfold capL
+    omega
+
+/-- **The step's end at the pre-final cut.** -/
+theorem toPfEnd (NB T : Nat) (tk : Nat → Nat) (π : List Nat) (cap : Nat) (hcap : 67849 ≤ cap)
+    (hbound : cap < Sim.bound) (Tr : SegInst FF → Prop) (hT : ∀ x y, NTrack x y → Tr x → Tr y)
+    {r : Row} {i : Cls.Inst} (hr : r ∈ fwdRows) (hi : InRow r i) (htail : r ∈ firstTailRows) :
+    CutConv (withMem Tr (bodyCore NB T tk π i bodyΘ ⟨67849, 1254, 0, 0⟩ bodyM PRE_first_tail_x4_L7_r0_suffix.s8 PRE_first_tail_x4_L7_r0_suffix.S8))
+      (withMem Tr (Pf.cut NB T tk π cap 1254 0 PRE_pf_x4_L7.s0 PRE_pf_x4_L7.S0)) := by
+  obtain ⟨hL, hLmax, hn, _⟩ := firstTailFacts htail hi
+  have hcapR := rowCap hr hi
+  have h9 : ∀ ν, MapOk ν i bodyM → ν 9 = F64.ofNat i.L := fun ν hm =>
+    (Conv.mapOk_iff'.1 hm) (9, Q.L) (by simp [bodyM])
+  exact toPfLit (c30 := 16) (c31 := 16) PF4L7.facts hT hLmax (Nat.le_of_ble_eq_true pfBelow) pfNN pfNK (Nat.le_of_ble_eq_true pfGrow) (Nat.le_of_ble_eq_true pfH) (Nat.le_of_ble_eq_true pfNodes) (by decide) (by decide)
+    (fun j h0 h1 h2 h3 h4 h5 => Pf.thetaOf_off (by
+      rw [pfKeys]
+      simp only [List.mem_cons, List.not_mem_nil, or_false]
+      omega))
+    pf14 (fun ν => congrFun pf30 ν) (fun ν => congrFun pf31 ν) (by decide) (by decide) h9 (fun ν hm => by rw [pf10, ← x4Count hr hi (h9 ν hm), hn])
+    (fun ν hm => by
+      rw [← hn]
+      exact (resChk_sound (List.all_eq_true.mp pfRow11 r hr) hi hm).2 Q.n rfl)
+    (fun ν hm => by
+      rw [← hcapR]
+      exact (resChk_sound (List.all_eq_true.mp pfRow16 r hr) hi hm).2 Q.cap1 rfl)
+    pfA pfB pfC pfE (by rw [pfDiff]; omega) hbound
+
+end Host.Ts.Sim.Compose.VWFirst.X4_L7.Sfx
