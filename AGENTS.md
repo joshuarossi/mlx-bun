@@ -6,6 +6,8 @@ behavior or packaging. [PLAN](PLAN.md) holds open refactor work; history is Git.
 
 ## Policies
 
+- Avoid Python whenever possible, including scripts and verification tooling;
+  prefer Bun/TypeScript or suitable non-Python tools.
 - Josh approves new documentation files and migration scope. Implementation and
   test files needed for the approved refactor are authorized. Do not carry material
   over just because it exists on main. YAGNI and KISS govern the rebuild.
