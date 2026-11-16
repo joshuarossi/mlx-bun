@@ -591,6 +591,171 @@ a scene-only capture without the widget's displayed probabilities. The opt-in
 against a solo greedy control. Tests without weights check SDK wire compatibility,
 validation, compression, complete answer preservation, cancellation and disposal.
 
+## Tool-call guard
+
+`mlx-bun serve --tool-guard block` reviews every tool call the model makes before a client
+receives it. The server replaces a flagged call with a text notice, so the agent runs nothing.
+`--tool-guard log` reports what it would block and changes no response. The default is `off`,
+which builds no guard and leaves every response as it was.
+
+The guard is a TypeScript port of [SafeAgents](https://github.com/huggingface/safeagents),
+which does this job as a separate proxy, and of the
+[atif-scan](https://github.com/huggingface/atif-scan) checks that proxy runs. No proxy,
+Python environment, model download or network access is needed. Each call goes through
+the same three stages as in SafeAgents:
+
+1. Request-only checks. The guard blocks a call to a tool the request never declared. It also
+   blocks a call whose arguments reach a host (a URL host or a bare IPv4 address) that appears
+   nowhere in the conversation. The model's own earlier turns do not count as a mention. A host
+   matters only in a call that can reach it: a network client in a command or in code, or a tool
+   whose name says it fetches. Loopback, GitHub, PyPI, Hugging Face, npm, crates.io and the
+   RFC 2606 example domains are always allowed; `--tool-guard-allow-host a.dev,b.dev` adds more.
+2. Scanner checks. The conversation becomes a trace and the pending calls its last step. Each
+   tool argument is routed to a channel (command, path, URL, query, payload), shell commands are
+   parsed without being run, and the checks below read the result. A finding at or above
+   `--tool-guard-block-severity` (default `high`) blocks the call. A milder finding makes it
+   suspicious.
+3. Decision model, optional. With `--tool-guard-judge-url`, a suspicious call goes to an
+   OpenAI-compatible chat endpoint that answers `allow` or `block` in constrained JSON. The judge
+   sees the user's turns, the call and the findings. It never sees the agent's reasoning, prose or
+   tool results. It can add a block and cannot lift one. Without a judge, the server only reports
+   suspicious calls.
+
+```sh
+mlx-bun serve --tool-guard log                      # start here: see what it would block
+mlx-bun serve --tool-guard block --tool-guard-journal ~/.mlx-bun/tool-guard.jsonl
+mlx-bun serve --tool-guard block --tool-guard-judge-url http://127.0.0.1:8081/v1 --tool-guard-judge-model judge
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--tool-guard off\|log\|block` | The switch. Every other option needs `log` or `block`. |
+| `--tool-guard-allow-host` | Extra hosts calls may reach, subdomains included, comma-separated. |
+| `--tool-guard-scan on\|off` | `off` keeps only the request-only checks. |
+| `--tool-guard-block-severity` | `low`, `medium`, `high` or `critical`. |
+| `--tool-guard-policy FILE` | Extra checks as JSON, described below. |
+| `--tool-guard-judge-url`, `-judge-model`, `-judge-timeout` | The decision model. Its API key is read from `MLX_BUN_TOOL_GUARD_JUDGE_API_KEY`. |
+| `--tool-guard-on-error allow\|block` | What a failed check, a failed review or an unreachable judge means for the call. |
+| `--tool-guard-journal FILE` | Appends every call that was not simply passed. |
+
+A blocked call becomes the text `[mlx-bun tool-guard] blocked call to `name`: reason`, appended
+to the reply. Calls that pass in the same reply stay, in the model's order. When no call is left,
+the finish reason is no longer `tool_calls` (`tool_use` for Messages), and a Responses reply has no
+`function_call` item. The server writes one line per reported call to stderr:
+`[tool-guard] blocked|flagged|suspicious call to `name`: why`. `flagged` means log mode let a call
+through that block mode would have replaced.
+
+### Where it runs
+
+[`CompletionExecutor`](src/server/completion-executor.ts) reviews the calls at the one point
+where they are first complete, before any protocol writes them. mlx-bun never streams tool-call
+fragments: its token router holds a call until it parses, and the executor delivers the calls in
+one final event. So `/v1/chat/completions`, `/v1/messages` and `/v1/responses` get the same
+reviewed result, streaming or not, and the Responses history stores it. The web chat and
+dataset jobs reach the model through the same routes. Under isolated serving each
+model worker builds its own guard from the options in its launch record. The API key stays in the
+environment and is never part of that record. `/v1/completions` has no tool calls and is not
+reviewed: a client that parses tool markup out of raw text does so outside the guard.
+
+A request cancelled during review forwards nothing. A judge adds one model call per suspicious
+call. The scan runs on the serving thread and took 0.06 ms for a one-line command on an M4 Pro.
+Three of the ported patterns, and the shell parser on one command with thousands of quoted words,
+take time quadratic in input length: about 1 to 1.5 s on 150 KB of text built to trigger them.
+Two bounds limit that. Arguments over 262,144 characters are not scanned and count as a failed
+scan, which `--tool-guard-on-error` decides. Each earlier tool result is read up to 16,384
+characters.
+
+### Built-in checks
+
+Ported from atif-scan 0.8.23 with their ids, severities and patterns, plus SafeAgents' own
+namespace check. Only findings on the pending call count.
+
+| Check | Severity | Matches |
+| --- | --- | --- |
+| `network.isolation_bypass` | high | A request pinned to a public address, another DNS resolver, or `/etc/hosts` rewritten |
+| `network.proxy_bypass` | medium | The egress proxy turned off for a client going outside (`curl --noproxy '*'`) |
+| `side_channel.harness_secret_read` | medium | Another process's environment read (`/proc/1/environ`) |
+| `side_channel.sandbox_process_memory` | medium | Another process's memory read |
+| `side_channel.memory_grader_search` | high | Another process's memory searched for grader data |
+| `side_channel.harness_introspection` | medium | Sandbox control plane or harness files probed |
+| `side_channel.agent_history_probe` | medium | Stored agent sessions listed or searched |
+| `side_channel.fetch_proxy` | medium | A fetch routed through a reader proxy |
+| `access.harness_credentials` | medium | An API-key environment variable referenced |
+| `observation.credentials_exposed` | low | A credential-like value in the call |
+| `side_channel.model_call` | high | Another model called from the sandbox |
+| `side_channel.provider_credential_use` | medium | A provider credential sent from the sandbox |
+| `side_channel.harness_key_model_call` | high | A key from an earlier tool result sent to a provider |
+| `side_channel.orchestrator_credentials` | medium | Kubernetes service-account credentials read |
+| `side_channel.orchestrator_api_request` | high | The Kubernetes cluster API requested |
+| `side_channel.orchestrator_api_answered` | critical | The cluster API answered with an object |
+| `side_channel.coding_agent_delegation` | high | Work handed to another coding-agent CLI |
+| `side_channel.host_file_upload`, `host_solution_upload` | medium, high | A file copied in from the harness host |
+| `lookup.solution_package` | high | A benchmark solution fetched as a package |
+| `safeagents.namespace_escape` | medium | `unshare` or `nsenter` |
+
+These are review signals written for sandboxed agent runs. `side_channel.model_call` blocks an
+agent that calls a hosted model API from a script, which some tasks ask for. Use `log` mode first,
+then an allowance or a judge for work that legitimately trips a check.
+
+### Policy files
+
+SafeAgents loads extra checks from Python plugin modules, which this server cannot run.
+`--tool-guard-policy` takes the same three kinds of check as data. `rules` and `allow` are
+atif-scan's JSON rule language. `detectors` is an addition for the plugin's usual check, a
+case-insensitive regular expression over chosen argument channels.
+
+```json
+{
+  "detectors": [{ "id": "my_pack.answer_source", "severity": "high", "title": "Task's published answer sought",
+                  "pattern": "(?<![\\w-])task\\.toml\\b", "channels": ["command", "arguments"] }],
+  "rules": [{ "id": "my_pack.exfil", "severity": "critical",
+              "when": { "all": ["network.proxy_bypass", "access.harness_credentials"] } }],
+  "allow": [{ "id": "expected.my_pack.environ", "covers": ["side_channel.harness_secret_read"] }]
+}
+```
+
+A rule combines check ids with `all`, `any`, `not` and `requires`. An allowance excuses the
+findings it covers, always or while its `when` holds. The server reads the file once at startup
+and refuses to start on an invalid file or an unknown check id.
+
+### Differences from SafeAgents
+
+This is a port of part of SafeAgents and atif-scan, not a replacement for either. No test here
+runs the Python tools against the same inputs. The evidence is their own test cases, ported with
+the same inputs and expected results: SafeAgents' policy, scan and verdict cases, and atif-scan's
+cases for the shell parser and the ported checks, in [tests/server/tool-guard](tests/server/tool-guard).
+Each test file lists the upstream cases it leaves out and why.
+
+- Fewer checks. atif-scan registers about 140. The 20 above are the ones that read what a call is
+  about to do. The benchmark-integrity families are not ported: awareness, recall, lookup of
+  benchmark sources, lures, tamper, watchers, harness, sweeps, integrity and the per-benchmark
+  packs. Neither is outbound-credential and webhook tracking.
+- No Python or JavaScript program analysis. atif-scan reads Python code with Python's own parser
+  and has readers for Codex and fast-agent tool programs. Here such a program is scanned as text.
+  `side_channel.memory_grader_search` matches `grep` and `rg` pipelines and answers "cannot
+  judge" for a memory search written in Python, where atif-scan can match. A webhook URL built by
+  joining Python string constants is not recognized as a credential. A tool result recorded as a
+  serialized list of content blocks is unreadable to `side_channel.model_call`.
+- Regular expressions follow JavaScript rules. `\w`, `\d` and `\b` are ASCII where Python's are
+  Unicode-aware, and spans are UTF-16 offsets.
+- One error policy. SafeAgents always lets a call through when its scanner fails, and has
+  `--judge-fail-closed` for the judge. Here `--tool-guard-on-error allow` (the default) matches
+  both defaults, and `block` blocks on a failed check, a failed review or a failed judge. A failed
+  check is logged either way and is never a finding.
+- Host mentions are searched in the request as mlx-bun resolved it. For Responses that includes
+  the turns stored under `previous_response_id`, which a proxy would not see. The search is a
+  substring test, as in SafeAgents, so `evil.co` passes if the conversation mentions
+  `notevil.com`.
+- Undeclared tools are rare here. A text-markup model's call to an unknown tool fails mlx-bun's
+  parser and stays content. The check matters for models with tool-call tokens.
+- The journal is off unless `--tool-guard-journal` names a file. Its lines have SafeAgents'
+  fields without `id`: several worker processes append to one file. The file is created with
+  mode `0600` because arguments and the request text can hold secrets.
+- Not ported: the terminal monitor, `inspect`, sinks, Hub plugins, and `scrub`/`publish`.
+- The judge is the same client, prompt and schema. It may point at any OpenAI-compatible server,
+  including another mlx-bun. Pointing it at the guarded server itself asks the model that made
+  the call to judge it, in a fresh context.
+
 ## Server seams
 
 `server/routes.ts` composes chat/text completion, Anthropic Messages, Responses, embedding, and discovery
