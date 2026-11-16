@@ -18,6 +18,7 @@ import { RequestError } from "./pipeline";
 import { RequestOwnership } from "./request-plan";
 import type { RequestPrep } from "./request-prep";
 import { StopMatcher, ThinkingTagSplitter } from "./token-streams";
+import type { ToolGuard } from "./tool-guard/guard";
 
 export class ChatStage {
   constructor(
@@ -31,6 +32,8 @@ export class ChatStage {
     private readonly defaultAdapter?: string,
     private readonly preparation?: import("../engine/preparation").PreparationExecutor,
     private readonly buildPrompt: ModelPromptBuilder = modelPromptBuilder(ctx),
+    /** `serve --tool-guard`; absent, tool calls are delivered as generated. */
+    private readonly toolGuard?: ToolGuard,
   ) {}
 
   async run(request: ChatRequest, requestId?: string, signal?: AbortSignal): Promise<InferenceRequest> {
@@ -193,6 +196,9 @@ export class ChatStage {
         ),
         collectToolCalls: true,
       },
+      // The guard reads the conversation as the client sent it. It is attached even without declared
+      // tools: a model with tool-call tokens can emit a call nobody declared, and that call is blocked.
+      ...(this.toolGuard ? { reviewToolCalls: this.toolGuard.forRequest(request.params) } : {}),
       idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
     };
   }

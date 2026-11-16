@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { isImageModelType, isTranscriptionModelType } from "@mlx-bun/inference/models/support";
@@ -12,6 +13,7 @@ import { installedModules, locateTaskModel, MEMORY_TASK_MODEL, type ModuleSettin
 import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
 import type { ModelHostHooks } from "./serve-host";
 import { resolveServingLimits, shutdownTimeoutMs, type RunningApp, type ServeOptions } from "./serve-options";
+import { createToolGuard, type ToolGuardOptions } from "../server/tool-guard/guard";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
 // serve-host (model-scoped). This module parses flags, composes both, and owns
@@ -85,6 +87,38 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
       width: number("hlg-width", 0, 100) ?? 4, shoulder: number("hlg-shoulder", 0, 100) ?? 4,
       toe: number("hlg-toe", 0, 100) ?? 6, pivotOffset: number("hlg-pivot-offset", 0, 100) ?? 6, pivot: "top" } } : {}),
   };
+  // The tool-call guard: one flag turns it on, the others tune it and mean nothing without it.
+  const guardMode = value("tool-guard") ?? "off";
+  if (!["off", "log", "block"].includes(guardMode)) throw new Error("--tool-guard expects off|log|block");
+  const guardScan = value("tool-guard-scan") ?? "on";
+  if (!["on", "off"].includes(guardScan)) throw new Error("--tool-guard-scan expects on|off");
+  const guardSeverity = value("tool-guard-block-severity") ?? "high";
+  if (!["low", "medium", "high", "critical"].includes(guardSeverity)) throw new Error("--tool-guard-block-severity expects low|medium|high|critical");
+  const guardOnError = value("tool-guard-on-error") ?? "allow";
+  if (!["allow", "block"].includes(guardOnError)) throw new Error("--tool-guard-on-error expects allow|block");
+  const guardJudge = value("tool-guard-judge") ?? "off";
+  if (!["on", "off"].includes(guardJudge)) throw new Error("--tool-guard-judge expects on|off");
+  const guardPolicy = value("tool-guard-policy"), guardJournal = value("tool-guard-journal");
+  const guardHosts = value("tool-guard-allow-host")?.split(",").map(host => host.trim().toLowerCase());
+  if (guardHosts?.some(host => !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(host))) throw new Error("--tool-guard-allow-host expects host names or addresses, comma-separated");
+  if (guardPolicy !== undefined && !guardPolicy.trim()) throw new Error("--tool-guard-policy expects a JSON file");
+  if (guardJournal !== undefined && !guardJournal.trim()) throw new Error("--tool-guard-journal expects a file path");
+  const guardFlag = Object.keys(args.values).find(name => name.startsWith("tool-guard-") && args.values[name] !== undefined);
+  if (guardMode === "off" && guardFlag) throw new Error(`--${guardFlag} requires --tool-guard log|block`);
+  if (guardScan === "off" && (guardPolicy !== undefined || guardJudge === "on" || args.values["tool-guard-block-severity"] !== undefined))
+    throw new Error("--tool-guard-scan off leaves no findings for --tool-guard-policy, --tool-guard-block-severity or --tool-guard-judge");
+  const toolGuard: ToolGuardOptions | undefined = guardMode === "off" ? undefined : {
+    mode: guardMode as ToolGuardOptions["mode"],
+    ...(guardHosts ? { allowHosts: guardHosts } : {}),
+    ...(guardScan === "off" ? { scan: false } : {}),
+    ...(guardSeverity !== "high" ? { blockSeverity: guardSeverity as ToolGuardOptions["blockSeverity"] } : {}),
+    ...(guardPolicy !== undefined ? { policyFile: resolve(guardPolicy) } : {}),
+    ...(guardJudge === "on" ? { judge: true } : {}),
+    ...(guardOnError === "block" ? { onError: "block" } : {}),
+    ...(guardJournal !== undefined ? { journal: resolve(guardJournal) } : {}),
+  };
+  // An unreadable or invalid policy file fails here, before a model loads; each served model builds its own guard.
+  if (toolGuard) createToolGuard(toolGuard);
   const adapterDir = value("adapter") ?? value("adapter-path");
   if (adapterDir !== undefined && !adapterDir.trim()) throw new Error("--adapter expects a directory");
   // Main's speculative flags, validated before model selection with its messages.
@@ -167,6 +201,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(whisper ? { whisper } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true, ...(inProcess ? { inProcess } : {}),
     cache, request, fusedSdpa: policy.fusedSdpa,
+    ...(toolGuard ? { toolGuard } : {}),
   };
 }
 

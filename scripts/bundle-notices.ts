@@ -80,6 +80,9 @@ export const CURATED: Record<string, Record<string, string>> = {
     "## Pi": "9756bd6ea6b0f1528e2acd38b80268b093bc854fcd3e6d6aeb29f93c861ee2ff",
     "## Jiti 2.7.0 prebundle": "4e5aa1f7ef4fd6a01604f9ba484dc20120c6d39e07c79f840f29c5649d7e208a",
     "## json-bigint 1.0.0 copied code": "eb03ce6552d2906b0662a905f1cfd63b902b5b05d8b0f7c2545b01c2c87a1d36",
+    // The tool-call guard (apps/mlx-bun/src/server/tool-guard) ports code from both projects.
+    "## atif-scan 0.8.23 ported code": "e720b07e558a2a1011240580ba3ce0607f4e1a25b64260a7220137d1ea851597",
+    "## SafeAgents ported code": "6a4d5da08cfebb09d68936c3749b994ac4b7b8e9314793ea05e41a9adaf77d7e",
   },
   "packages/inference/THIRD_PARTY_NOTICES.md": { "## XGrammar": "6b1f7c8a603b7ac266dbaff737eff232e0634639bb0118e2e2666535ab327edf" },
 };

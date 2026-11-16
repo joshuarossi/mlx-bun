@@ -15,6 +15,9 @@ Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
 - **Familiar interfaces:** browser chat, terminal commands, and OpenAI/Anthropic-compatible APIs.
 - **Local decisions:** use Jev or OpenAI Decisions-compatible endpoints with any
   supported local language model, sharing the same loaded weights as generation.
+- **Tool-call guard:** `--tool-guard block` reviews each tool call the model makes before your agent
+  receives it and replaces the ones it flags with a notice. See the
+  [guard's checks and limits](apps/mlx-bun/README.md#tool-call-guard).
 - **TypeScript libraries:** embed inference in a Bun app, with access to the
   components for generation, quantization, and training.
 

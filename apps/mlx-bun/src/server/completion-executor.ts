@@ -28,6 +28,7 @@ import {
 } from "./request-plan";
 import type { PromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
 import { cleanupFailure } from "@mlx-bun/inference/runtime/resources";
+import type { ToolCallReviewer } from "./tool-guard/guard";
 
 import type { CompletionEngine } from "../engine/completion";
 export type { CompletionEngine } from "../engine/completion";
@@ -40,6 +41,8 @@ export interface CompletionPreparation {
   createFlowControl?(placement: CompletionPlacement):
     | CompletionSinkOptions["flowControl"];
   onPlacement?(placement: CompletionPlacement): void;
+  /** `serve --tool-guard`: reviews the completed tool calls before any consumer sees them. */
+  reviewToolCalls?: ToolCallReviewer;
   idToToken(id: number): string;
 }
 
@@ -83,6 +86,7 @@ export function prepareCompletion(data: CompletionPreparation): PreparedCompleti
       ? { createFlowControl: data.createFlowControl }
       : {}),
     ...(data.onPlacement ? { onPlacement: data.onPlacement } : {}),
+    ...(data.reviewToolCalls ? { reviewToolCalls: data.reviewToolCalls } : {}),
     idToToken: data.idToToken,
   });
   return prepared;
@@ -202,6 +206,24 @@ function combineControl(
   );
 }
 
+/** Apply the guard's verdicts: blocked calls leave the result and a text notice takes their place,
+ * ahead of the calls that remain. With every call blocked the finish reason is no longer
+ * `tool_calls`, so a client runs nothing. */
+async function guardToolCalls(
+  result: CompletionResult,
+  review: ToolCallReviewer,
+  signal?: AbortSignal,
+): Promise<CompletionResult> {
+  const { kept, notices } = await review(result.toolCalls, signal);
+  signal?.throwIfAborted();
+  if (!notices.length) return result;
+  const notice = (result.content ? "\n" : "") + notices.join("\n");
+  const events: CompletionEvent[] = result.events.filter((event) => event.type !== "tool_calls");
+  events.push({ type: "content", text: notice });
+  if (kept.length) events.push({ type: "tool_calls", calls: kept });
+  return { ...result, events, content: result.content + notice, toolCalls: kept };
+}
+
 /** Owns one completion attempt from admission through terminal accounting.
  * Model math and scheduling policy remain in the supplied CompletionEngine. */
 export class CompletionExecutor {
@@ -308,7 +330,12 @@ export class CompletionExecutor {
       );
 
       if (input.stream) control.signal?.throwIfAborted();
-      const result = sink.finish();
+      // The tool calls are complete here and nothing has delivered them: the guard reviews them
+      // before the stream's last events and the summary every protocol reads.
+      const finished = sink.finish();
+      const result = input.reviewToolCalls && finished.toolCalls.length
+        ? await guardToolCalls(finished, input.reviewToolCalls, control.signal)
+        : finished;
       if (result.events.length) await control.onEvents?.(result.events);
 
       const resolvedLane = lane;
