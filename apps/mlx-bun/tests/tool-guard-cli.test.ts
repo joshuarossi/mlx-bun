@@ -22,13 +22,11 @@ test("one flag turns the guard on with SafeAgents' defaults; the others tune it"
   expect(parse("--tool-guard", "block").toolGuard).toEqual({ mode: "block" });
   expect(parse("--tool-guard", "log").toolGuard).toEqual({ mode: "log" });
   expect(parse("--tool-guard", "block", "--tool-guard-allow-host", "api.example.dev, Internal.Corp ,10.0.0.5", "--tool-guard-block-severity", "medium",
-    "--tool-guard-policy", policy, "--tool-guard-judge-url", "http://127.0.0.1:8081/v1", "--tool-guard-judge-model", "qwen-judge",
-    "--tool-guard-judge-timeout", "5", "--tool-guard-on-error", "block", "--tool-guard-journal", join(dir, "calls.jsonl")).toolGuard).toEqual({
+    "--tool-guard-policy", policy, "--tool-guard-judge", "on", "--tool-guard-on-error", "block", "--tool-guard-journal", join(dir, "calls.jsonl")).toolGuard).toEqual({
     mode: "block", allowHosts: ["api.example.dev", "internal.corp", "10.0.0.5"], blockSeverity: "medium", policyFile: policy,
-    judge: { url: "http://127.0.0.1:8081/v1", model: "qwen-judge", timeoutMs: 5000 }, onError: "block", journal: join(dir, "calls.jsonl"),
+    judge: true, onError: "block", journal: join(dir, "calls.jsonl"),
   });
-  expect(parse("--tool-guard", "block", "--tool-guard-judge-url", "http://judge.local/v1").toolGuard)
-    .toEqual({ mode: "block", judge: { url: "http://judge.local/v1", model: "judge", timeoutMs: 30_000 } });
+  expect(parse("--tool-guard", "block", "--tool-guard-judge", "off").toolGuard).toEqual({ mode: "block" });
   expect(parse("--tool-guard", "log", "--tool-guard-scan", "off").toolGuard).toEqual({ mode: "log", scan: false });
   // Relative paths are resolved once, by the process that parsed them: a worker's directory may differ.
   expect(parse("--tool-guard", "log", "--tool-guard-journal", "calls.jsonl").toolGuard!.journal).toBe(join(process.cwd(), "calls.jsonl"));
@@ -43,10 +41,9 @@ test("invalid values and options that would do nothing are refused before anythi
     [["--tool-guard", "block", "--tool-guard-block-severity", "info"], "--tool-guard-block-severity expects low|medium|high|critical"],
     [["--tool-guard", "block", "--tool-guard-on-error", "ignore"], "--tool-guard-on-error expects allow|block"],
     [["--tool-guard", "block", "--tool-guard-allow-host", "https://example.dev/x"], "--tool-guard-allow-host expects host names"],
-    [["--tool-guard", "block", "--tool-guard-judge-url", "judge.local"], "--tool-guard-judge-url expects an http(s) base URL"],
-    [["--tool-guard", "block", "--tool-guard-judge-model", "j"], "require --tool-guard-judge-url"],
-    [["--tool-guard", "block", "--tool-guard-judge-url", "http://j/v1", "--tool-guard-judge-timeout", "0"], "--tool-guard-judge-timeout expects a number in [1, 3600]"],
-    [["--tool-guard", "block", "--tool-guard-scan", "off", "--tool-guard-judge-url", "http://j/v1"], "--tool-guard-scan off leaves no findings"],
+    [["--tool-guard", "block", "--tool-guard-judge", "http://judge.local/v1"], "--tool-guard-judge expects on|off"],
+    [["--tool-guard-judge", "on"], "--tool-guard-judge requires --tool-guard log|block"],
+    [["--tool-guard", "block", "--tool-guard-scan", "off", "--tool-guard-judge", "on"], "--tool-guard-scan off leaves no findings"],
     [["--tool-guard", "block", "--tool-guard-policy", join(dir, "missing.json")], "--tool-guard-policy"],
   ];
   for (const [args, message] of refused) expect(() => parse(...args), args.join(" ")).toThrow(message);
@@ -55,22 +52,19 @@ test("invalid values and options that would do nothing are refused before anythi
   expect(() => parse("--tool-guard", "block", "--tool-guard-policy", invalid)).toThrow("missing_dependency: no.such.check");
 });
 
-test("the options reach a model worker unchanged, and never carry the judge's API key", () => {
-  process.env.MLX_BUN_TOOL_GUARD_JUDGE_API_KEY = "secret-judge-key";
-  try {
-    const options = parse("--tool-guard", "block", "--tool-guard-policy", policy, "--tool-guard-judge-url", "http://127.0.0.1:8081/v1", "--tool-guard-allow-host", "example.dev");
-    const line = encodeLaunch({ version: WORKER_PROTOCOL_VERSION, socketPath: join(dir, "worker.sock"), model: { repoId: "org/model", path: dir }, options });
-    expect(line).not.toContain("secret-judge-key");
-    const launch = parseWorkerLaunch(line);
-    expect("options" in launch && launch.options.toolGuard).toEqual(options.toolGuard!);
-  } finally { delete process.env.MLX_BUN_TOOL_GUARD_JUDGE_API_KEY; }
+test("the options reach a model worker unchanged, and name no endpoint or credential", () => {
+  const options = parse("--tool-guard", "block", "--tool-guard-policy", policy, "--tool-guard-judge", "on", "--tool-guard-allow-host", "example.dev");
+  const line = encodeLaunch({ version: WORKER_PROTOCOL_VERSION, socketPath: join(dir, "worker.sock"), model: { repoId: "org/model", path: dir }, options });
+  const launch = parseWorkerLaunch(line);
+  expect("options" in launch && launch.options.toolGuard).toEqual(options.toolGuard!);
+  expect(Object.keys(options.toolGuard!).sort()).toEqual(["allowHosts", "judge", "mode", "policyFile"]);
 });
 
 test("serve --help documents every guard option with its default", () => {
   const text = help("serve");
   for (const flag of ["--tool-guard <value>", "--tool-guard-allow-host", "--tool-guard-scan", "--tool-guard-block-severity", "--tool-guard-policy",
-    "--tool-guard-judge-url", "--tool-guard-judge-model", "--tool-guard-judge-timeout", "--tool-guard-on-error", "--tool-guard-journal"])
+    "--tool-guard-judge <value>", "--tool-guard-on-error", "--tool-guard-journal"])
     expect(text).toContain(flag);
   expect(text).toContain("off | log | block [default: off]");
-  expect(text).toContain("MLX_BUN_TOOL_GUARD_JUDGE_API_KEY");
+  for (const gone of ["API_KEY", "judge-url", "judge-model"]) expect(text).not.toContain(gone);
 });

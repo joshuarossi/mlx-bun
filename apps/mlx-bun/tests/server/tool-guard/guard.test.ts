@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { blockedNotice, createToolGuard, MAX_SCANNED_ARGUMENTS, type ToolGuardOptions } from "../../../src/server/tool-guard/guard";
-import { buildPrompt, JUDGE_SYSTEM, taskText } from "../../../src/server/tool-guard/judge";
+import { buildPrompt, JUDGE_CHOICES, JUDGE_QUESTION, taskText } from "../../../src/server/tool-guard/judge";
 import { bashRequest, OSS } from "./fixtures";
 
 const dir = mkdtempSync(join(tmpdir(), "mlx-bun-tool-guard-"));
@@ -26,15 +26,20 @@ function guard(options: Partial<ToolGuardOptions> = {}, judgeAnswer?: (body: Rec
   const lines: string[] = [], judged: Record<string, unknown>[] = [];
   const built = createToolGuard({ mode: "block", policyFile, ...options }, {
     model: "test/model", log: line => lines.push(line), now: () => 1_700_000_000_000,
-    fetch: (async (url: string, init: RequestInit) => {
-      const body = JSON.parse(init.body as string);
-      judged.push({ url, headers: init.headers, ...body });
-      return judgeAnswer!(body, init.signal!);
-    }) as unknown as typeof fetch,
+    judgeTimeoutMs: 50,
+    // The served model's own decisions route, as the serving unit hands it over.
+    ...(judgeAnswer ? { decide: async (request: Request) => {
+      const body = await request.json() as Record<string, unknown>;
+      judged.push({ path: new URL(request.url).pathname, ...body });
+      return judgeAnswer(body, request.signal);
+    } } : {}),
   });
   return { review: (request = bashRequest(TASK)) => built.forRequest(request), lines, judged };
 }
-const verdict = (content: string) => Response.json({ choices: [{ message: { content } }] });
+/** A `/v1/decisions` answer: the choice the weights scored highest, with both probabilities. */
+const verdict = (choice: string, probability = 0.9) => Response.json({ model: "test/model", answers: [{ type: "choice", name: "verdict", choice, confidence: 0.8,
+  probabilities: [{ value: choice, probability }, { value: choice === "allow" ? "block" : "allow", probability: 1 - probability }] }] });
+const unavailable = () => Response.json({ error: { message: 'model "test/model" declares no decision scoring operation' } }, { status: 501 });
 
 describe("verdicts", () => {
   test("a clean declared call passes untouched and unreported", async () => {
@@ -126,40 +131,39 @@ describe("verdicts", () => {
 });
 
 describe("judge", () => {
-  const cases: [string, string | null, "allow" | "block", boolean][] = [
-    ["a block verdict blocks", '{"verdict": "block", "reason": "reads PID 1 secrets"}', "allow", true],
-    ["an allow verdict in a code fence passes", '```json\n{"verdict": "allow", "reason": "the user asked"}\n```', "allow", false],
-    ["a failing judge passes by default", null, "allow", false],
-    ["a failing judge blocks with --tool-guard-on-error block", null, "block", true],
-    ["an unusable verdict is a failure", '{"verdict": "maybe", "reason": ""}', "block", true],
+  const cases: [string, () => Response, "allow" | "block", boolean][] = [
+    ["a block decision blocks", () => verdict("block"), "allow", true],
+    ["an allow decision passes", () => verdict("allow"), "allow", false],
+    ["a model without decision scoring passes by default", unavailable, "allow", false],
+    ["a model without decision scoring blocks with --tool-guard-on-error block", unavailable, "block", true],
+    ["an answer that is neither choice is a failure", () => verdict("maybe"), "block", true],
   ];
   for (const [name, answer, onError, blocked] of cases) {
     test(name, async () => {
-      const { review } = guard({ judge: { url: "http://judge/v1/", model: "j" }, onError },
-        () => (answer === null ? new Response("down", { status: 500 }) : verdict(answer)));
+      const { review } = guard({ judge: true, onError }, answer);
       expect((await review()([bash("echo MEDIUM_MARK")])).notices.length === 1).toBe(blocked);
     });
   }
 
-  test("verdicts are reported with the call, and a block names the judge's reason", async () => {
-    const blocking = guard({ judge: { url: "http://judge/v1" } }, () => verdict('{"verdict": "block", "reason": "reads secrets"}'));
-    expect((await blocking.review()([bash("echo MEDIUM_MARK")])).notices).toEqual([blockedNotice("bash", "test.medium (medium); judge: reads secrets")]);
-    const failing = guard({ judge: { url: "http://judge/v1" }, onError: "block" }, () => new Response("down", { status: 500 }));
+  test("decisions are reported with the call and the probability the model gave them", async () => {
+    const blocking = guard({ judge: true }, () => verdict("block", 0.71));
+    expect((await blocking.review()([bash("echo MEDIUM_MARK")])).notices).toEqual([blockedNotice("bash", "test.medium (medium); judge: block p=0.71")]);
+    const failing = guard({ judge: true, onError: "block" }, unavailable);
     expect((await failing.review()([bash("echo MEDIUM_MARK")])).notices).toEqual([blockedNotice("bash", "test.medium (medium); judge unavailable")]);
-    expect(failing.lines).toEqual(["[tool-guard] blocked call to `bash`: test.medium (medium); judge unavailable (judge error: Error: HTTP 500)"]);
-    const allowing = guard({ judge: { url: "http://judge/v1" } }, () => verdict('{"verdict": "allow", "reason": "asked"}'));
+    expect(failing.lines).toEqual(['[tool-guard] blocked call to `bash`: test.medium (medium); judge unavailable (judge error: model "test/model" declares no decision scoring operation)']);
+    const allowing = guard({ judge: true }, () => verdict("allow", 0.93));
     await allowing.review()([bash("echo MEDIUM_MARK")]);
-    expect(allowing.lines).toEqual(["[tool-guard] suspicious call to `bash`: test.medium (medium) (judge allow: asked)"]);
+    expect(allowing.lines).toEqual(["[tool-guard] suspicious call to `bash`: test.medium (medium) (judge allow p=0.93)"]);
   });
 
   test("the judge is asked only about suspicious calls: never clean ones, never ones already blocked", async () => {
-    const { review, judged } = guard({ judge: { url: "http://judge/v1" } }, () => verdict('{"verdict": "block", "reason": "x"}'));
+    const { review, judged } = guard({ judge: true }, () => verdict("block"));
     const outcome = await review()([bash("ls", "clean"), bash("echo HIGH_MARK", "severe"), call("nope", {}, "undeclared")]);
     expect(outcome.kept.map(item => item.id)).toEqual(["clean"]);
     expect(judged).toEqual([]);
   });
 
-  test("the judge sees the user's words, the call and the findings, never reasoning, agent text or tool results", async () => {
+  test("the decision request holds the user's words, the call and the findings, never reasoning, agent text or tool results", async () => {
     const request = { tools: [{ name: "bash", input_schema: {} }], messages: [
       { role: "system", content: "SYSTEM_PROMPT" },
       { role: "user", content: [{ type: "text", text: "fix the tests" }] },
@@ -167,15 +171,12 @@ describe("judge", () => {
         tool_calls: [{ id: "t1", type: "function", function: { name: "bash", arguments: '{"command": "pytest"}' } }] },
       { role: "tool", tool_call_id: "t1", content: "1 failed" },
     ] };
-    const { review, judged } = guard({ judge: { url: "http://judge/v1/", model: "j" } }, () => verdict('{"verdict": "allow", "reason": "ok"}'));
+    const { review, judged } = guard({ judge: true }, () => verdict("allow"));
     await review(request)([bash("echo MEDIUM_MARK")]);
-    expect(judged).toHaveLength(1);
-    expect(judged[0]).toMatchObject({ url: "http://judge/v1/chat/completions", model: "j", temperature: 0, max_tokens: 256 });
-    expect((judged[0]!.response_format as { type: string }).type).toBe("json_schema");
-    const messages = judged[0]!.messages as { role: string; content: string }[];
-    expect(messages[0]).toEqual({ role: "system", content: JUDGE_SYSTEM });
-    expect(messages[1]!.content).toBe('<task>\nfix the tests\n</task>\n\n<tool_call name="bash">\n{"command":"echo MEDIUM_MARK"}\n</tool_call>\n\n<scanner_findings>\n- test.medium (medium): Marked medium\n</scanner_findings>');
-    for (const hidden of ["SECRET_REASONING", "Running them.", "1 failed", "SYSTEM_PROMPT"]) expect(JSON.stringify(messages)).not.toContain(hidden);
+    expect(judged).toEqual([{ path: "/v1/decisions", model: "test/model",
+      input: '<task>\nfix the tests\n</task>\n\n<tool_call name="bash">\n{"command":"echo MEDIUM_MARK"}\n</tool_call>\n\n<scanner_findings>\n- test.medium (medium): Marked medium\n</scanner_findings>',
+      questions: [{ type: "choice", name: "verdict", instructions: JUDGE_QUESTION, choices: JUDGE_CHOICES }] }]);
+    for (const hidden of ["SECRET_REASONING", "Running them.", "1 failed", "SYSTEM_PROMPT"]) expect(JSON.stringify(judged)).not.toContain(hidden);
   });
 
   test("long tasks keep their end and long arguments their start", () => {
@@ -186,19 +187,14 @@ describe("judge", () => {
     expect(buildPrompt("t", "bash", "x".repeat(5000), [])).toContain(`${"x".repeat(4000)} [...]`);
   });
 
-  test("the API key comes from the environment as a bearer token and a slow judge times out as a failure", async () => {
-    process.env.MLX_BUN_TOOL_GUARD_JUDGE_API_KEY = "judge-key";
-    const { createRuntimeConfig, withRuntimeConfig } = await import("@mlx-bun/inference/runtime/config");
-    try {
-      const built = withRuntimeConfig(createRuntimeConfig(process.env), () =>
-        guard({ judge: { url: "http://judge/v1" } }, () => verdict('{"verdict": "allow", "reason": "ok"}')));
-      await built.review()([bash("echo MEDIUM_MARK")]);
-      expect(built.judged[0]!.headers).toMatchObject({ authorization: "Bearer judge-key" });
-    } finally { delete process.env.MLX_BUN_TOOL_GUARD_JUDGE_API_KEY; }
-    const slow = guard({ judge: { url: "http://judge/v1", timeoutMs: 20 }, onError: "block" },
+  test("a decision that does not arrive in time is a failure, and a guard built without a model cannot judge", async () => {
+    const slow = guard({ judge: true, onError: "block" },
       (_body, signal) => new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))));
     expect((await slow.review()([bash("echo MEDIUM_MARK")])).notices).toEqual([blockedNotice("bash", "test.medium (medium); judge unavailable")]);
-    expect(slow.lines[0]).toContain("judge error: Timeout: no answer in 20 ms");
+    expect(slow.lines[0]).toContain("judge error: no decision in 50 ms");
+    const detached = guard({ judge: true, onError: "block" });
+    expect((await detached.review()([bash("echo MEDIUM_MARK")])).notices).toHaveLength(1);
+    expect(detached.lines[0]).toContain("judge error: this model serves no decisions");
   });
 });
 
@@ -206,7 +202,7 @@ describe("failures and cancellation", () => {
   test("a cancelled request stops the review: the judge call is aborted and nothing is forwarded", async () => {
     const abort = new AbortController();
     let judgeSignal: AbortSignal | undefined;
-    const { review } = guard({ judge: { url: "http://judge/v1" } }, (_body, signal) => {
+    const { review } = guard({ judge: true }, (_body, signal) => {
       judgeSignal = signal;
       queueMicrotask(() => abort.abort(new Error("client left")));
       return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
@@ -251,14 +247,14 @@ describe("failures and cancellation", () => {
 describe("journal", () => {
   test("every call not simply passed is appended with its arguments, owner-readable only", async () => {
     const journal = join(dir, "nested", "calls.jsonl");
-    const { review } = guard({ journal, judge: { url: "http://judge/v1" } }, () => verdict('{"verdict": "allow", "reason": "asked"}'));
+    const { review } = guard({ journal, judge: true }, () => verdict("allow", 0.93));
     await review()([bash("ls"), call("shell_exec", { command: "id" }), bash("echo MEDIUM_MARK")]);
     const entries = readFileSync(journal, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
     expect(entries).toEqual([
       { time: 1_700_000_000, verdict: "blocked", tool: "shell_exec", arguments: '{"command":"id"}', reason: "undeclared tool", signals: [], judge: null,
         model: "test/model", task: TASK },
       { time: 1_700_000_000, verdict: "suspicious", tool: "bash", arguments: '{"command":"echo MEDIUM_MARK"}', reason: null,
-        signals: [{ id: "test.medium", severity: "medium", title: "Marked medium" }], judge: "allow: asked", model: "test/model", task: TASK },
+        signals: [{ id: "test.medium", severity: "medium", title: "Marked medium" }], judge: "allow p=0.93", model: "test/model", task: TASK },
     ]);
     expect(statSync(journal).mode & 0o777).toBe(0o600);
   });

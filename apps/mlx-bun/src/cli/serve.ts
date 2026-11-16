@@ -96,27 +96,24 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!["low", "medium", "high", "critical"].includes(guardSeverity)) throw new Error("--tool-guard-block-severity expects low|medium|high|critical");
   const guardOnError = value("tool-guard-on-error") ?? "allow";
   if (!["allow", "block"].includes(guardOnError)) throw new Error("--tool-guard-on-error expects allow|block");
-  const judgeModel = value("tool-guard-judge-model") ?? "judge";
-  const judgeTimeout = number("tool-guard-judge-timeout", 1, 3600) ?? 30;
-  const judgeUrl = value("tool-guard-judge-url"), guardPolicy = value("tool-guard-policy"), guardJournal = value("tool-guard-journal");
+  const guardJudge = value("tool-guard-judge") ?? "off";
+  if (!["on", "off"].includes(guardJudge)) throw new Error("--tool-guard-judge expects on|off");
+  const guardPolicy = value("tool-guard-policy"), guardJournal = value("tool-guard-journal");
   const guardHosts = value("tool-guard-allow-host")?.split(",").map(host => host.trim().toLowerCase());
   if (guardHosts?.some(host => !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(host))) throw new Error("--tool-guard-allow-host expects host names or addresses, comma-separated");
-  if (judgeUrl !== undefined && !/^https?:\/\/[^\s/]+/.test(judgeUrl)) throw new Error("--tool-guard-judge-url expects an http(s) base URL such as http://127.0.0.1:8081/v1");
   if (guardPolicy !== undefined && !guardPolicy.trim()) throw new Error("--tool-guard-policy expects a JSON file");
   if (guardJournal !== undefined && !guardJournal.trim()) throw new Error("--tool-guard-journal expects a file path");
   const guardFlag = Object.keys(args.values).find(name => name.startsWith("tool-guard-") && args.values[name] !== undefined);
   if (guardMode === "off" && guardFlag) throw new Error(`--${guardFlag} requires --tool-guard log|block`);
-  if (judgeUrl === undefined && (args.values["tool-guard-judge-model"] !== undefined || args.values["tool-guard-judge-timeout"] !== undefined))
-    throw new Error("--tool-guard-judge-model and --tool-guard-judge-timeout require --tool-guard-judge-url");
-  if (guardScan === "off" && (guardPolicy !== undefined || judgeUrl !== undefined || args.values["tool-guard-block-severity"] !== undefined))
-    throw new Error("--tool-guard-scan off leaves no findings for --tool-guard-policy, --tool-guard-block-severity or --tool-guard-judge-url");
+  if (guardScan === "off" && (guardPolicy !== undefined || guardJudge === "on" || args.values["tool-guard-block-severity"] !== undefined))
+    throw new Error("--tool-guard-scan off leaves no findings for --tool-guard-policy, --tool-guard-block-severity or --tool-guard-judge");
   const toolGuard: ToolGuardOptions | undefined = guardMode === "off" ? undefined : {
     mode: guardMode as ToolGuardOptions["mode"],
     ...(guardHosts ? { allowHosts: guardHosts } : {}),
     ...(guardScan === "off" ? { scan: false } : {}),
     ...(guardSeverity !== "high" ? { blockSeverity: guardSeverity as ToolGuardOptions["blockSeverity"] } : {}),
     ...(guardPolicy !== undefined ? { policyFile: resolve(guardPolicy) } : {}),
-    ...(judgeUrl !== undefined ? { judge: { url: judgeUrl, model: judgeModel, timeoutMs: judgeTimeout * 1000 } } : {}),
+    ...(guardJudge === "on" ? { judge: true } : {}),
     ...(guardOnError === "block" ? { onError: "block" } : {}),
     ...(guardJournal !== undefined ? { journal: resolve(guardJournal) } : {}),
   };

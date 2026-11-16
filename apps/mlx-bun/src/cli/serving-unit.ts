@@ -125,7 +125,9 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: cache,
       ...limits, tokenHistory, responseHistory: shared.responses,
       transcription: shared.transcription,
-      ...(options.toolGuard ? { toolGuard: createToolGuard(options.toolGuard, { model: context.modelId }) } : {}),
+      ...(options.toolGuard ? { toolGuard: createToolGuard(options.toolGuard, { model: context.modelId,
+        // The judge is this model's own decision scoring, reached in-process.
+        decide: request => completions.handle(request) }) } : {}),
       ...(input.buildPrompt ? { buildPrompt: input.buildPrompt } : {}),
       ...(input.defaultAdapter ? { defaultAdapter: input.defaultAdapter } : {}) });
     const status = createStatusRoutes({ ...(input.owner ? { owner: input.owner } : {}), context, cache,

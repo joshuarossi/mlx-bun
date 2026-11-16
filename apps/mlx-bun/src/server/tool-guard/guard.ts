@@ -15,11 +15,10 @@
 // protocol writes them, so there is nothing to hold or reassemble.
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { SEVERITY, type SeverityName } from "./scan/checks";
 import { loadPolicy } from "./scan/engine";
 import { history, recent, type RawStep } from "./scan/trace";
-import { Judge, JudgeError, taskText } from "./judge";
+import { Judge, JudgeError, taskText, type Decide } from "./judge";
 import { DEFAULT_ALLOWED_HOSTS, RequestPolicy } from "./policy";
 import { Scanner, signalText, type Signal } from "./scanner";
 
@@ -35,22 +34,20 @@ export interface ToolGuardOptions {
   blockSeverity?: Exclude<SeverityName, "info">;
   /** A JSON file of extra detectors, rules and allowances. */
   policyFile?: string;
-  /** The decision model for suspicious calls: an OpenAI-compatible base URL. */
-  judge?: { url: string; model?: string; timeoutMs?: number };
+  /** Ask the served model, as a local decision, about calls with milder findings. */
+  judge?: boolean;
   /** What a scanner or judge failure means for the call it was reviewing [allow]. */
   onError?: "allow" | "block";
   /** A JSON-lines file keeping every call that was not simply passed, with its arguments. */
   journal?: string;
 }
 
-export const DEFAULT_JUDGE_MODEL = "judge";
 // Some of the ported patterns take time quadratic in the length of one line or token run, and the
 // scan runs on the serving thread. These two bounds keep a hostile input from holding it for long.
 /** Arguments longer than this are not scanned: the call is treated as a failed scan. */
 export const MAX_SCANNED_ARGUMENTS = 262_144;
 /** Each earlier tool result is read up to this many characters. */
 export const MAX_SCANNED_RESULT = 16_384;
-export const DEFAULT_JUDGE_TIMEOUT_MS = 30_000;
 
 export interface GuardedCall {
   function: { name: string; arguments: string };
@@ -63,7 +60,7 @@ export interface Review {
   /** Why the call is blocked; null when it may run. */
   reason: string | null;
   signals: Signal[];
-  /** The judge's answer as "allow: why", "block: why" or "error: why". */
+  /** The judge's answer as "allow p=0.93", "block p=0.71" or "error: why". */
   judge: string | null;
 }
 
@@ -88,9 +85,11 @@ export const blockedNotice = (name: string, reason: string): string => `[mlx-bun
 export interface ToolGuardDependencies {
   /** The served model's id, recorded in the journal. */
   model?: string;
-  fetch?: typeof fetch;
+  /** The served model's decision scoring; the judge needs it. */
+  decide?: Decide;
   log?(line: string): void;
   now?(): number;
+  judgeTimeoutMs?: number;
 }
 
 /** Build the guard once per served model: reads the policy file and fails on an invalid one. */
@@ -109,10 +108,8 @@ export function createToolGuard(options: ToolGuardOptions, dependencies: ToolGua
     try { scanner = new Scanner(checks); }
     catch (error) { throw new Error(`--tool-guard-policy ${options.policyFile ?? ""}: ${error instanceof Error ? error.message : String(error)}`); }
   }
-  const apiKey = runtimeValue("MLX_BUN_TOOL_GUARD_JUDGE_API_KEY");
-  const judge = options.judge ? new Judge({ url: options.judge.url, model: options.judge.model ?? DEFAULT_JUDGE_MODEL,
-    timeoutMs: options.judge.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS, ...(apiKey ? { apiKey } : {}),
-    ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}) }) : null;
+  const judge = options.judge
+    ? new Judge(dependencies.decide ?? (async () => null), dependencies.model ?? "", dependencies.judgeTimeoutMs) : null;
 
   let journalFailed = false;
   const record = (entry: Record<string, unknown>): void => {
@@ -153,8 +150,8 @@ export function createToolGuard(options: ToolGuardOptions, dependencies: ToolGua
         try {
           const verdict = await judge.review(request, name, args, signals, signal);
           return verdict.block
-            ? { reason: `${findings}; judge: ${verdict.reason}`, signals, judge: `block: ${verdict.reason}` }
-            : { reason: null, signals, judge: `allow: ${verdict.reason}` };
+            ? { reason: `${findings}; judge: block ${verdict.reason}`.trimEnd(), signals, judge: `block ${verdict.reason}`.trimEnd() }
+            : { reason: null, signals, judge: `allow ${verdict.reason}`.trimEnd() };
         } catch (error) {
           if (!(error instanceof JudgeError)) throw error;
           return { reason: failClosed ? `${findings}; judge unavailable` : null, signals, judge: `error: ${error.message}` };
@@ -187,7 +184,8 @@ export function createToolGuard(options: ToolGuardOptions, dependencies: ToolGua
             record({ time: (dependencies.now ?? Date.now)() / 1000, verdict, tool: name, arguments: args, reason: result.reason,
               signals: result.signals, judge: result.judge, model: dependencies.model ?? "", task: taskText(request) });
             const why = result.reason ?? result.signals.map(signalText).join(", ");
-            log(`[tool-guard] ${verdict} call to \`${name}\`: ${why}${result.judge ? ` (judge ${result.judge})` : ""}`);
+            // A block decision is already in the reason; an allow or a failure is not.
+            log(`[tool-guard] ${verdict} call to \`${name}\`: ${why}${result.judge && !result.judge.startsWith("block") ? ` (judge ${result.judge})` : ""}`);
           }
           if (blocked) notices.push(blockedNotice(name, result.reason!));
           else kept.push(call);
