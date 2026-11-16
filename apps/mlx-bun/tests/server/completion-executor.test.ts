@@ -507,3 +507,77 @@ for (const stream of [false, true]) for (const terminal of ["stop", undefined] a
     expect(result.content).toBe(terminal ? "hello " : "hello world");
   });
 }
+
+describe("tool-call review", () => {
+  const call = (id: string, name: string) => ({ id, type: "function" as const, function: { name, arguments: "{}" } });
+  const calls = [call("a", "keep_one"), call("b", "drop"), call("c", "keep_two")];
+  const run = async (stream: boolean, reviewToolCalls?: Parameters<typeof prepareCompletion>[0]["reviewToolCalls"], signal?: AbortSignal) => {
+    const events: CompletionEvent[] = [];
+    const prepared = prepareCompletion({
+      requestId: "chatcmpl-review",
+      plan: {
+        promptIds: [7], options: { maxTokens: 8, stopSequences: [] }, requestedMaxTokens: 8, contextLimit: 16, stream,
+        wantLogprobs: false, topLogprobs: 0, adapterIds: [], hasVision: false, userSeed: false, hasGrammar: false, hasDraft: false,
+        ownership: new RequestOwnership(),
+      },
+      pipeline: { router: { ...router, toolCalls: () => calls }, stopper, thinking, collectToolCalls: true },
+      ...(reviewToolCalls ? { reviewToolCalls } : {}),
+      idToToken: String,
+    });
+    const summary = await new CompletionExecutor(new ScriptedEngine()).execute(prepared, {
+      ...(signal ? { signal } : {}), onEvents: (batch) => { events.push(...batch); } });
+    return { summary, events };
+  };
+
+  for (const stream of [false, true]) {
+    test(`without a reviewer the calls are delivered as generated (${stream ? "stream" : "collection"})`, async () => {
+      const { summary, events } = await run(stream);
+      expect(summary.toolCalls).toEqual(calls);
+      expect(summary.finishReason).toBe("tool_calls");
+      expect(summary.content).toBe("hello world");
+      expect(events.at(-1)).toEqual({ type: "tool_calls", calls });
+    });
+
+    test(`a reviewer that keeps every call changes nothing (${stream ? "stream" : "collection"})`, async () => {
+      const plain = await run(stream);
+      const reviewed = await run(stream, async (pending) => ({ kept: [...pending], notices: [] }));
+      expect(reviewed).toEqual(plain);
+    });
+
+    test(`blocked calls are replaced by a notice before the remaining calls are delivered (${stream ? "stream" : "collection"})`, async () => {
+      const seen: unknown[] = [];
+      const { summary, events } = await run(stream, async (pending) => {
+        seen.push(pending);
+        return { kept: pending.filter((item) => item.function.name !== "drop"), notices: ["[blocked drop]"] };
+      });
+      expect(seen).toEqual([calls]);
+      expect(summary.toolCalls).toEqual([calls[0]!, calls[2]!]);
+      expect(summary.content).toBe("hello world\n[blocked drop]");
+      expect(summary.finishReason).toBe("tool_calls");
+      expect(events.slice(-2)).toEqual([
+        { type: "content", text: "\n[blocked drop]" },
+        { type: "tool_calls", calls: [calls[0]!, calls[2]!] },
+      ]);
+      expect(events.filter((event) => event.type === "tool_calls")).toHaveLength(1);
+    });
+
+    test(`with every call blocked no tool-call event is delivered and the turn ends as text (${stream ? "stream" : "collection"})`, async () => {
+      const { summary, events } = await run(stream, async () => ({ kept: [], notices: ["[one]", "[two]"] }));
+      expect(summary.toolCalls).toEqual([]);
+      expect(summary.finishReason).toBe("stop");
+      expect(summary.content).toBe("hello world\n[one]\n[two]");
+      expect(events.some((event) => event.type === "tool_calls")).toBe(false);
+    });
+
+    test(`a reviewer that fails or is cancelled delivers no tool call (${stream ? "stream" : "collection"})`, async () => {
+      const abort = new AbortController();
+      const cancelled = run(stream, async (pending, signal) => {
+        abort.abort(new Error("client left"));
+        signal!.throwIfAborted();
+        return { kept: [...pending], notices: [] };
+      }, abort.signal);
+      await expect(cancelled).rejects.toThrow("client left");
+      await expect(run(stream, async () => { throw new Error("reviewer bug"); })).rejects.toThrow("reviewer bug");
+    });
+  }
+});

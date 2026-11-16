@@ -14,6 +14,7 @@ import { InferenceStage } from "./inference-request";
 import { createRequestPrep, type RequestPrepOptions } from "./request-prep";
 import type { PromptTokenHistory } from "./generated-token-history";
 import type { ModelPromptBuilder } from "./prompt-contracts";
+import type { ToolGuard } from "./tool-guard/guard";
 import { admit, errorResponse, respondJson, respondStream, type ErrorFormatter } from "./http";
 import { chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream } from "./openai-wire";
 import { createDiscoveryRoutes, type TranscriptionInfo } from "./discovery-routes";
@@ -47,6 +48,8 @@ export function createCompletionRoutes(engine: {
   defaultAdapter?: string;
   tokenHistory?: PromptTokenHistory;
   buildPrompt?: ModelPromptBuilder;
+  /** `serve --tool-guard`: reviews the tool calls of every chat, Messages and Responses completion. */
+  toolGuard?: ToolGuard;
   /** Process-local history by default; composition owns any replacement store. */
   responseHistory?: ResponseHistory;
   /** The Whisper companion `/v1/models` lists beside the chat model; absent means none is configured. */
@@ -58,7 +61,7 @@ export function createCompletionRoutes(engine: {
   const prep = createRequestPrep({ ctx, serverOptions: options,
     defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory: options.tokenHistory });
   const chat = new ChatStage(ctx, prep, options.promptCache, options.contextLimit,
-    options.defaultAdapter, engine.preparation, options.buildPrompt);
+    options.defaultAdapter, engine.preparation, options.buildPrompt, options.toolGuard);
   const text = new TextCompletionStage(ctx, prep, options.contextLimit, options.defaultGeneratedTokens, options.defaultAdapter, engine.preparation);
   const inference = new InferenceStage(new CompletionExecutor(engine.completion));
   const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription, undefined,

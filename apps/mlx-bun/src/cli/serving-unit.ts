@@ -21,7 +21,7 @@ import type { RouteGroup } from "./serve-state";
 
 /** The serving policy one host applies to every unit: serve's options minus the loader's and the CLI process's own. */
 export type ContextHostOptions = Pick<ServeOptions, "port" | "capacity" | "contextLimit" | "defaultGeneratedTokens" |
-  "kvBudgetBytes" | "memoryBudgetBytes" | "modelBudgetBytes" | "whisper" | "cache" | "request"> & {
+  "kvBudgetBytes" | "memoryBudgetBytes" | "modelBudgetBytes" | "whisper" | "cache" | "request" | "toolGuard"> & {
   /** The interface to bind; null binds Bun's default, every interface. */
   hostname: string | null;
 };
@@ -84,9 +84,9 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
   let cleanup: (() => void | Promise<unknown>) | undefined = () => releaseContext(context, input.ownership);
   try {
     const [{ modelServingBinding, createCacheServices, createAppEngine },
-      { createCompletionRoutes }, { GeneratedTokenHistory }, { createStatusRoutes }, { createCacheRoutes }, { createAdapterOperation }] = await Promise.all([
+      { createCompletionRoutes }, { GeneratedTokenHistory }, { createStatusRoutes }, { createCacheRoutes }, { createAdapterOperation }, { createToolGuard }] = await Promise.all([
       import("../engine"), import("../server/routes"), import("../server/generated-token-history"), import("../server/status-routes"),
-      import("../server/cache-routes"), import("../engine/adapter-operation"),
+      import("../server/cache-routes"), import("../engine/adapter-operation"), import("../server/tool-guard/guard"),
     ]);
     // The default prompt path renders the context's template; a supplied builder replaces it.
     if (!input.buildPrompt) requireChatTemplate(context);
@@ -125,6 +125,7 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: cache,
       ...limits, tokenHistory, responseHistory: shared.responses,
       transcription: shared.transcription,
+      ...(options.toolGuard ? { toolGuard: createToolGuard(options.toolGuard, { model: context.modelId }) } : {}),
       ...(input.buildPrompt ? { buildPrompt: input.buildPrompt } : {}),
       ...(input.defaultAdapter ? { defaultAdapter: input.defaultAdapter } : {}) });
     const status = createStatusRoutes({ ...(input.owner ? { owner: input.owner } : {}), context, cache,

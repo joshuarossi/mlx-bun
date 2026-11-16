@@ -10,6 +10,7 @@ import type { DownloadOwner } from "../hub/downloads";
 import type { KvQuantOverride } from "@mlx-bun/inference/state/kv-scheme";
 import type { TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { AppStoragePaths, ChatPaths } from "./serve-state";
+import type { ToolGuardOptions } from "../server/tool-guard/guard";
 
 export interface ServeOptions {
   query: string | null;
@@ -54,6 +55,9 @@ export interface ServeOptions {
    * TurboQuant spelling, `--quantized-kv-start`). */
   cache: CacheServiceOptions & ServeKvFlags;
   request: RequestPrepOptions;
+  /** `--tool-guard` and its options: every chat-shaped response's tool calls are reviewed before a client
+   * receives them. Absent, nothing is reviewed and responses are unchanged. */
+  toolGuard?: ToolGuardOptions;
   /** App-owned vault and skill destinations; not CLI flags. */
   memoryPaths?: { vault: string; skills: string };
   /** App composition only; where the chat module's stores live instead of its storage entries. */

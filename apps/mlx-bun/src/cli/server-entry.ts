@@ -18,7 +18,7 @@ export type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/in
 
 /** Serving policy, `mlx-bun serve`'s options by their programmatic names. */
 export interface ServerOptions extends Partial<Pick<ServeOptions, "capacity" | "defaultGeneratedTokens" | "kvBudgetBytes" |
-  "memoryBudgetBytes" | "readOnly" | "cache" | "request" | "memoryPaths" | "chatPaths" | "storagePaths">>,
+  "memoryBudgetBytes" | "readOnly" | "cache" | "request" | "toolGuard" | "memoryPaths" | "chatPaths" | "storagePaths">>,
   Omit<ContextHost, "ownership" | "owner"> {
   /** The interface to bind. Omitted: Bun's default, every interface (main's
    * library default); `mlx-bun serve` binds 127.0.0.1. */
@@ -110,7 +110,8 @@ export async function createServer(context: LoadedModelContext, port = 0, option
       contextLimit: options.contextLimit === undefined ? profileContextLimit() : options.contextLimit,
       cache: options.cache ?? {}, request: options.request ?? {},
       defaultGeneratedTokens: options.defaultGeneratedTokens, kvBudgetBytes: options.kvBudgetBytes,
-      memoryBudgetBytes: options.memoryBudgetBytes, whisper: options.whisper };
+      memoryBudgetBytes: options.memoryBudgetBytes, whisper: options.whisper,
+      ...(options.toolGuard ? { toolGuard: options.toolGuard } : {}) };
     const served: ContextHost = { ownership, binding: options.binding, buildPrompt: options.buildPrompt,
       artifact: options.artifact, defaultAdapter: options.defaultAdapter };
     // Memory synthesis gets main's task model, as in `mlx-bun serve`; nothing
